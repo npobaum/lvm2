@@ -1,0 +1,34 @@
+Revision: lvm--dilinger--2--patch-1
+Archive: dilinger@voxel.net--2004
+Creator: Andres Salomon <dilinger@voxel.net>
+Date: Mon May  3 01:22:37 EDT 2004
+Standard-date: 2004-05-03 05:22:37 GMT
+Modified-files: make.tmpl.in
+New-patches: dilinger@voxel.net--2004/lvm--dilinger--2--patch-1
+Summary: add LFS's _FILE_OFFSET_BITS=64
+Keywords: 
+
+In an attempt to get this working better on s390; compile w/
+-D_FILE_OFFSET_BITS=64.  Thanks to
+Thierry DE CARVALHO <thierry.decarvalho@online.fr> for the suggestion/patch.
+
+* added files
+
+    {arch}/lvm/lvm--dilinger/lvm--dilinger--2/dilinger@voxel.net--2004/patch-log/patch-1
+
+* modified files
+
+--- orig/make.tmpl.in
++++ mod/make.tmpl.in
+@@ -57,7 +57,7 @@
+ 
+ SUFFIXES = .c .d .o .so .a .po .pot .mo
+ 
+-CFLAGS += -fPIC -Wall -Wundef -Wshadow -Wcast-align -Wwrite-strings -Wmissing-prototypes -Wmissing-declarations -Wnested-externs -Winline
++CFLAGS += -fPIC -Wall -Wundef -Wshadow -Wcast-align -Wwrite-strings -Wmissing-prototypes -Wmissing-declarations -Wnested-externs -Winline -D_FILE_OFFSET_BITS=64
+ 
+ #CFLAGS += -W -Wconversion -Wpointer-arith -Wredundant-decls -Wbad-function-cast -Wcast-qual -Wmissing-noreturn
+ 
+
+
+

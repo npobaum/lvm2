@@ -1,0 +1,2 @@
+debian/lvm2/etc/lvm/lvm.conf etc/lvm
+debian/lvm2/lib/lvm-200/* sbin
