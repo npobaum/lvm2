@@ -1,0 +1,4 @@
+debian/tmp/etc/lvm/lvm.conf etc/lvm
+debian/tmp/lib/lvm-200/lv* sbin
+debian/tmp/lib/lvm-200/pv* sbin
+debian/tmp/lib/lvm-200/vg* sbin

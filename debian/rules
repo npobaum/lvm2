@@ -1,0 +1,38 @@
+#!/usr/bin/make -f
+
+include /usr/share/cdbs/1/rules/debhelper.mk
+include /usr/share/cdbs/1/rules/simple-patchsys.mk
+include /usr/share/cdbs/1/class/autotools.mk
+
+ifeq ($(DEB_ARCH),mips)
+	DEB_CONFIGURE_EXTRA_FLAGS := --disable-o_direct
+endif
+ifeq ($(DEB_ARCH),mipsel)
+	DEB_CONFIGURE_EXTRA_FLAGS := --disable-o_direct
+endif
+ifeq ($(DEB_ARCH),hppa)
+	DEB_CONFIGURE_EXTRA_FLAGS := --disable-o_direct
+endif
+ifeq ($(DEB_ARCH),arm)
+        DEB_CONFIGURE_EXTRA_FLAGS := --disable-o_direct
+endif
+DEB_CONFIGURE_EXTRA_FLAGS += --with-clvmd --with-cluster=shared
+
+DEB_CONFIGURE_PREFIX = /
+DEB_CONFIGURE_MANDIR = "\$${prefix}/usr/share/man"
+DEB_CONFIGURE_INFODIR = "\$${prefix}/usr/share/info"
+DEB_CONFIGURE_EXTRA_FLAGS += --with-confdir=/etc/lvm
+DEB_AC_AUX_DIR := $(DEB_SRCDIR)/autoconf
+
+DEB_MAKE_INSTALL_TARGET = install prefix=$(DEB_DESTDIR) sbindir=$(DEB_DESTDIR)/lib/lvm-200 confdir=$(DEB_DESTDIR)/etc/lvm
+
+install/clvm::
+	install -d debian/clvm/usr/share/doc/clvm
+	install -m0644 debian/README.clvmd debian/clvm/usr/share/doc/clvm
+	install -m0644 scripts/clvmd_fix_conf.sh debian/clvm/usr/share/doc/clvm
+
+# pvresize not implemented.
+install/lvm2::
+	install -d debian/lvm2/usr/share/doc/lvm2
+	cp -r scripts/lvm2create_initrd debian/lvm2/usr/share/doc/lvm2
+
