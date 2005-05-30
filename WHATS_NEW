@@ -1,3 +1,55 @@
+Version 2.01.04 - 9th February 2005
+===================================
+  Add fixed offset to imported pool minor numbers.
+  Update binary pathnames in clvmd_init_rhel4.
+  lvm2cmd.so should skip the check for open fds.
+  Remove unused -f from pvmove.
+  Gulm clvmd doesn't report "connection refused" errors.
+  clvmd does a basic config file sanity check at startup.
+  Fix potential thread shutdown race in clvmd.
+
+Version 2.01.03 - 1st February 2005
+===================================
+  More 64-bit display/report fixes.
+  More informative startup mesg if can't create /etc/lvm.
+  Fix snapshot device size bug (since 2.01.01).
+  clvmd announces startup and cluster connection in syslog.
+  Gulm clvmd doesn't hang trying to talk to a rebooted node.
+  Gulm clvmd doesn't print cman error on startup.
+
+Version 2.01.02 - 21st January 2005
+===================================
+  Update clvmd_init_rhel4: use lvm.static and don't load dlm.
+  Fix some size_t printing.
+  Fix 64 bit xlate consts.
+  Split out pool sptype_names to avoid unused const.
+  Always fail if random id generation fails.
+  Recognise gnbd devices.
+  Fix clvmd startup bug introduced in cman/gulm amalgamation.
+  Improve reporting of node-specific locking errors.
+
+Version 2.01.01 - 19th January 2005
+===================================
+  Fix clvmd lv_info_by_lvid open_count.
+  Store snapshot and origin sizes separately.
+  Update vgcreate man page.
+
+Version 2.01.00 - 17th January 2005
+===================================
+  Fix vgscan metadata auto-correction.
+  Only ask libdevmapper for open_count when we need it.
+  Adjust RHEL4 clvmd init script priority.
+  Enable building of CMAN & GULM versions of clvmd into a single binary
+
+Version 2.00.33 - 7th January 2005
+==================================
+  pvcreate wipes first 4 sectors unless given --zero n.
+  gulm clvmd now uses new ccsd key names.
+  gulm clvmd now doesn't ignore the first node in cluster.conf
+  Improve clvmd failure message if it's already running.
+  Allow user to kill clvmd during initialisation.
+  Fix off-by-one error in cluster_locking that could cause read hangs.
+
 Version 2.00.32 - 22nd December 2004
 ====================================
   Drop static/dl restriction for now.

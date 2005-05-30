@@ -1,3 +1,43 @@
+lvm2 (2.01.04-5ubuntu1) breezy; urgency=low
+
+  * Bump Build-Deps on libncruses5-dev and libdlm-dev (1.x)
+
+ -- Fabio M. Di Nitto <fabbione@ubuntu.com>  Mon, 30 May 2005 11:05:56 +0200
+
+lvm2 (2.01.04-5) unstable; urgency=low
+
+  * Revert -4's rather widespread changes, except for the amd64 fix.
+
+ -- Andres Salomon <dilinger@debian.org>  Thu, 28 Apr 2005 05:20:08 -0400
+
+lvm2 (2.01.04-4) unstable; urgency=low
+
+  * Don't longer use cdbs.
+  * Remove cruft.
+  * Workaround missing O_NOATIME on amd64. (closes: #298762)
+
+ -- Bastian Blank <waldi@debian.org>  Thu, 28 Apr 2005 09:58:00 +0200
+
+lvm2 (2.01.04-3) unstable; urgency=high
+
+  * Workaround missing O_NOATIME. (closes: #297010)
+
+ -- Bastian Blank <waldi@debian.org>  Tue, 08 Mar 2005 18:40:08 +0100
+
+lvm2 (2.01.04-2) unstable; urgency=low
+
+  * New maintainer.
+  * Always build clvmd and bump version of needed libdlm.
+
+ -- Bastian Blank <waldi@debian.org>  Sun, 27 Feb 2005 16:49:32 +0100
+
+lvm2 (2.01.04-1) unstable; urgency=low
+
+  * New upstream
+    Closes: #292984, 293174
+
+ -- Patrick Caulfield <patrick@debian.org>  Thu, 17 Feb 2005 09:30:18 +0000
+
 lvm2 (2.00.32-1) unstable; urgency=low
 
   * New upstream

@@ -20,7 +20,7 @@ ifeq ("@FSADM@", "yes")
   SUBDIRS += fsadm
 endif
 
-SOURCES =\
+lib_SOURCES =\
 	archiver.c \
 	dumpconfig.c \
 	formats.c \
@@ -64,6 +64,12 @@ SOURCES =\
 	vgscan.c \
 	vgsplit.c
 
+tool_SOURCES = lvm.c
+
+lib_OBJECTS = $(lib_SOURCES:%.c=%.o)
+
+SOURCES = $(lib_SOURCES) $(tool_SOURCES)
+
 TARGETS =\
 	.commands \
 	lvm
@@ -92,14 +98,14 @@ endif
 
 include $(top_srcdir)/make.tmpl
 
-lvm: $(OBJECTS) lvm.o $(top_srcdir)/lib/liblvm.a
-	$(CC) -o $@ $(OBJECTS) lvm.o $(LDFLAGS) $(LVMLIBS) $(LIBS) -rdynamic
+lvm: $(OBJECTS) $(top_srcdir)/lib/liblvm.a
+	$(CC) -o $@ $(OBJECTS) $(LDFLAGS) $(LVMLIBS) $(LIBS) -rdynamic
 
-lvm.static: $(OBJECTS) lvm.o $(top_srcdir)/lib/liblvm.a
-	$(CC) -o $@ $(OBJECTS) lvm.o -static $(LDFLAGS) $(LVMLIBS) $(LIBS) \
+lvm.static: $(OBJECTS) $(top_srcdir)/lib/liblvm.a
+	$(CC) -o $@ $(OBJECTS) -static $(LDFLAGS) $(LVMLIBS) $(LIBS) \
 		-rdynamic
 
-liblvm2cmd.a: $(top_srcdir)/lib/liblvm.a $(OBJECTS)
+liblvm2cmd.a: $(top_srcdir)/lib/liblvm.a $(lib_OBJECTS)
 	cat $(top_srcdir)/lib/liblvm.a > $@
 	$(AR) rs $@ $(OBJECTS)
 
@@ -115,21 +121,21 @@ liblvm2cmd.so: liblvm2cmd.a $(LDDEPS)
 	install_tools_dynamic install_tools_static
 
 install_cmdlib_dynamic: liblvm2cmd.so
-	$(INSTALL) -D $(OWNER) $(GROUP) -m 555 $(STRIP) liblvm2cmd.so \
+	$(INSTALL) -D $(OWNER) $(GROUP) $(STRIP) liblvm2cmd.so \
 		$(libdir)/liblvm2cmd.so.$(LIB_VERSION)
 	$(LN_S) -f liblvm2cmd.so.$(LIB_VERSION) $(libdir)/liblvm2cmd.so
-	$(INSTALL) -D $(OWNER) $(GROUP) -m 444 lvm2cmd.h \
+	$(INSTALL) -D $(OWNER) $(GROUP) -m 644 lvm2cmd.h \
 		$(includedir)/lvm2cmd.h
 
 install_cmdlib_static: liblvm2cmd.a
-	$(INSTALL) -D $(OWNER) $(GROUP) -m 555 $(STRIP) liblvm2cmd.a \
+	$(INSTALL) -D $(OWNER) $(GROUP) $(STRIP) liblvm2cmd.a \
 		$(libdir)/liblvm2cmd.a.$(LIB_VERSION)
 	$(LN_S) -f liblvm2cmd.a.$(LIB_VERSION) $(libdir)/liblvm2cmd.a
-	$(INSTALL) -D $(OWNER) $(GROUP) -m 444 lvm2cmd.h \
+	$(INSTALL) -D $(OWNER) $(GROUP) -m 644 lvm2cmd.h \
 		$(includedir)/lvm2cmd.h
 
 install_tools_dynamic: lvm .commands
-	$(INSTALL) -D $(OWNER) $(GROUP) -m 555 $(STRIP) lvm \
+	$(INSTALL) -D $(OWNER) $(GROUP) $(STRIP) lvm \
 		$(sbindir)/lvm
 	@echo Creating symbolic links for individual commands in $(sbindir)
 	@( \
@@ -140,7 +146,7 @@ install_tools_dynamic: lvm .commands
 	)
 
 install_tools_static: lvm.static
-	$(INSTALL) -D $(OWNER) $(GROUP) -m 555 $(STRIP) lvm.static \
+	$(INSTALL) -D $(OWNER) $(GROUP) $(STRIP) lvm.static \
 		$(staticdir)/lvm.static
 
 install: $(INSTALL_TARGETS)

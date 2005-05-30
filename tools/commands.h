@@ -367,12 +367,13 @@ xx(pvcreate,
    "\t[-u|--uuid uuid] " "\n"
    "\t[-v|--verbose] " "\n"
    "\t[-y|--yes]" "\n"
+   "\t[-Z|--zero {y|n}]\n"
    "\t[--version] " "\n"
    "\tPhysicalVolume [PhysicalVolume...]\n",
 
    force_ARG, test_ARG, labelsector_ARG, metadatatype_ARG, metadatacopies_ARG,
    metadatasize_ARG, physicalvolumesize_ARG, restorefile_ARG, uuidstr_ARG,
-   yes_ARG)
+   yes_ARG, zero_ARG)
 
 xx(pvdata,
    "Display the on-disk metadata for physical volume(s)",
@@ -435,7 +436,6 @@ xx(pvmove,
    "\t[--alloc AllocationPolicy]\n"
    "\t[-b|--background]\n"
    "\t[-d|--debug]\n "
-   "\t[-f|--force]\n"
    "\t[-h|-?|--help]\n"
    "\t[-i|--interval seconds]\n"
    "\t[-t|--test]\n "
@@ -446,7 +446,7 @@ xx(pvmove,
    "\tSourcePhysicalVolume[:PhysicalExtent[-PhysicalExtent]...]}\n"
    "\t[DestinationPhysicalVolume[:PhysicalExtent[-PhysicalExtent]...]...]\n",
 
-   abort_ARG, alloc_ARG, autobackup_ARG, background_ARG, force_ARG,
+   abort_ARG, alloc_ARG, autobackup_ARG, background_ARG, 
    interval_ARG, name_ARG, test_ARG)
 
 xx(pvremove,

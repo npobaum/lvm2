@@ -1,8 +1,9 @@
 Source: lvm2
 Section: admin
 Priority: optional
-Maintainer: Patrick Caulfield <patrick@debian.org>
-Build-Depends: cdbs (>= 0.4.20), debhelper (>> 4.1.16), libdevmapper-dev (>= 2:1.00.07-1), libreadline4-dev, autotools-dev, libdlm-dev
+Maintainer: Debian LVM Team <pkg-lvm-maintainers@lists.alioth.debian.org>
+Uploaders: Bastian Blank <waldi@debian.org>, Andres Salomon <dilinger@debian.org>
+Build-Depends: cdbs (>= 0.4.20), debhelper (>> 4.1.16), libdevmapper-dev (>= 2:1.00.07-1), libreadline5-dev, autotools-dev, libdlm-dev (>= 1.20050527-0ubuntu1)
 Standards-Version: 3.6.1
 
 Package: lvm2
@@ -37,7 +38,7 @@ Description: The Linux Logical Volume Manager
 Package: clvm
 Section: admin
 Priority: extra
-Architecture: i386 ia64 powerpc arm mips hppa alpha mipsel m68k
+Architecture: any
 Depends: ${shlibs:Depends}, lvm2 (>> 2.0.23)
 Suggests: cman, fence
 Description: Cluster LVM Daemon for lvm2
