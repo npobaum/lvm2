@@ -295,7 +295,7 @@ static int _lvkmaj_disp(struct report_handle *rh, struct field *field,
 	struct lvinfo info;
 	uint64_t minusone = UINT64_C(-1);
 
-	if (lv_info(lv, &info) && info.exists)
+	if (lv_info(lv, &info, 0) && info.exists)
 		return _int_disp(rh, field, &info.major);
 	else
 		return _int_disp(rh, field, &minusone);
@@ -310,7 +310,7 @@ static int _lvkmin_disp(struct report_handle *rh, struct field *field,
 	struct lvinfo info;
 	uint64_t minusone = UINT64_C(-1);
 
-	if (lv_info(lv, &info) && info.exists)
+	if (lv_info(lv, &info, 0) && info.exists)
 		return _int_disp(rh, field, &info.minor);
 	else
 		return _int_disp(rh, field, &minusone);
@@ -362,7 +362,7 @@ static int _lvstatus_disp(struct report_handle *rh, struct field *field,
 	else
 		repstr[3] = '-';
 
-	if (lv_info(lv, &info) && info.exists) {
+	if (lv_info(lv, &info, 1) && info.exists) {
 		if (info.suspended)
 			repstr[4] = 's';	/* Suspended */
 		else
@@ -573,7 +573,7 @@ static int _vgsize_disp(struct report_handle *rh, struct field *field,
 	const struct volume_group *vg = (const struct volume_group *) data;
 	uint64_t size;
 
-	size = vg->extent_count * vg->extent_size;
+	size = (uint64_t) vg->extent_count * vg->extent_size;
 
 	return _size64_disp(rh, field, &size);
 }
@@ -584,7 +584,7 @@ static int _segstart_disp(struct report_handle *rh, struct field *field,
 	const struct lv_segment *seg = (const struct lv_segment *) data;
 	uint64_t start;
 
-	start = seg->le * seg->lv->vg->extent_size;
+	start = (uint64_t) seg->le * seg->lv->vg->extent_size;
 
 	return _size64_disp(rh, field, &start);
 }
@@ -595,7 +595,7 @@ static int _segsize_disp(struct report_handle *rh, struct field *field,
 	const struct lv_segment *seg = (const struct lv_segment *) data;
 	uint64_t size;
 
-	size = seg->len * seg->lv->vg->extent_size;
+	size = (uint64_t) seg->len * seg->lv->vg->extent_size;
 
 	return _size64_disp(rh, field, &size);
 }
@@ -610,7 +610,7 @@ static int _pvused_disp(struct report_handle *rh, struct field *field,
 	if (!pv->pe_count)
 		used = 0LL;
 	else
-		used = pv->pe_alloc_count * pv->pe_size;
+		used = (uint64_t) pv->pe_alloc_count * pv->pe_size;
 
 	return _size64_disp(rh, field, &used);
 }
@@ -625,7 +625,7 @@ static int _pvfree_disp(struct report_handle *rh, struct field *field,
 	if (!pv->pe_count)
 		freespace = pv->size;
 	else
-		freespace = (pv->pe_count - pv->pe_alloc_count) * pv->pe_size;
+		freespace = (uint64_t) (pv->pe_count - pv->pe_alloc_count) * pv->pe_size;
 
 	return _size64_disp(rh, field, &freespace);
 }
@@ -640,7 +640,7 @@ static int _pvsize_disp(struct report_handle *rh, struct field *field,
 	if (!pv->pe_count)
 		size = pv->size;
 	else
-		size = pv->pe_count * pv->pe_size;
+		size = (uint64_t) pv->pe_count * pv->pe_size;
 
 	return _size64_disp(rh, field, &size);
 }
@@ -663,7 +663,7 @@ static int _vgfree_disp(struct report_handle *rh, struct field *field,
 	const struct volume_group *vg = (const struct volume_group *) data;
 	uint64_t freespace;
 
-	freespace = vg->free_count * vg->extent_size;
+	freespace = (uint64_t) vg->free_count * vg->extent_size;
 
 	return _size64_disp(rh, field, &freespace);
 }
@@ -774,7 +774,7 @@ static int _snpercent_disp(struct report_handle *rh, struct field *field,
 	}
 
 	if (!(snap = find_cow(lv)) ||
-	    (lv_info(snap->cow, &info) && !info.exists)) {
+	    (lv_info(snap->cow, &info, 0) && !info.exists)) {
 		field->report_string = "";
 		*sortval = UINT64_C(0);
 		field->sort_value = sortval;

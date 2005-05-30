@@ -20,6 +20,8 @@
 #include "metadata.h"
 #include "pool.h"
 
+#define MINOR_OFFSET 65536
+
 /* From NSP.cf */
 #define NSPMajorVersion	4
 #define NSPMinorVersion	1
@@ -65,29 +67,6 @@ struct pool_disk;
 struct pool_list;
 struct user_subpool;
 struct user_device;
-
-/* This must be kept up to date with sistina/pool/module/pool_sptypes.h */
-
-/*  Generic Labels  */
-#define SPTYPE_DATA                (0x00000000)
-
-/*  GFS specific labels  */
-#define SPTYPE_GFS_DATA            (0x68011670)
-#define SPTYPE_GFS_JOURNAL         (0x69011670)
-
-struct sptype_name {
-	const char *name;
-	uint32_t label;
-};
-
-static const struct sptype_name sptype_names[] = {
-	{"data",	SPTYPE_DATA},
-
-	{"gfs_data",	SPTYPE_GFS_DATA},
-	{"gfs_journal",	SPTYPE_GFS_JOURNAL},
-
-	{"", 0x0}		/*  This must be the last flag.  */
-};
 
 struct pool_disk {
 	uint64_t pl_magic;	/* Pool magic number */

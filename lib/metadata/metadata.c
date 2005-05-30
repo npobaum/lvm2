@@ -267,10 +267,13 @@ struct physical_volume *pv_create(const struct format_type *fmt,
 		return NULL;
 	}
 
-	if (!id)
-		id_create(&pv->id);
-	else
+	if (id)
 		memcpy(&pv->id, id, sizeof(*id));
+	else if (!id_create(&pv->id)) {
+		log_error("Failed to create random uuid for %s.",
+			  dev_name(dev));
+		return NULL;
+	}
 
 	pv->dev = dev;
 
@@ -709,6 +712,11 @@ struct volume_group *vg_read(struct cmd_context *cmd, const char *vgname,
 			  "to use version %u", correct_vg->seqno);
 		if (!vg_write(correct_vg)) {
 			log_error("Automatic metadata correction failed");
+			return NULL;
+		}
+		if (!vg_commit(correct_vg)) {
+			log_error("Automatic metadata correction commit "
+				  "failed");
 			return NULL;
 		}
 	}
