@@ -2,6 +2,7 @@
 *******************************************************************************
 **
 **  Copyright (C) Sistina Software, Inc.  2002-2003  All rights reserved.
+**  Copyright (C) 2004-2005 Red Hat, Inc. All rights reserved.
 **
 *******************************************************************************
 ******************************************************************************/
@@ -68,6 +69,7 @@ int init_comms(unsigned short port)
     {
 	int one = 1;
 	setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(int));
+	setsockopt(listen_fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof(int));
     }
 
     memset(&addr, 0, sizeof(addr)); // Bind to INADDR_ANY
@@ -83,6 +85,9 @@ int init_comms(unsigned short port)
     }
 
     listen(listen_fd, 5);
+
+    /* Set Close-on-exec */
+    fcntl(listen_fd, F_SETFD, 1);
 
     return 0;
 }
@@ -100,6 +105,8 @@ void tcp_remove_client(char *csid)
     if (client)
     {
 	hash_remove_binary(sock_hash, csid, GULM_MAX_CSID_LEN);
+	client->removeme = 1;
+	close(client->fd);
     }
 
     /* Look for a mangled one too */
@@ -109,6 +116,8 @@ void tcp_remove_client(char *csid)
     if (client)
     {
 	hash_remove_binary(sock_hash, csid, GULM_MAX_CSID_LEN);
+	client->removeme = 1;
+	close(client->fd);
     }
 
     /* Put it back as we found it */
@@ -221,13 +230,34 @@ int cluster_fd_gulm_callback(struct local_client *fd, char *buf, int len, char *
     return newfd;
 }
 
+/* Try to get at least 'len' bytes from the socket */
+static int really_read(int fd, char *buf, int len)
+{
+	int got, offset;
+
+	got = offset = 0;
+
+	do {
+		got = read(fd, buf+offset, len-offset);
+		DEBUGLOG("really_read. got %d bytes\n", got);
+		offset += got;
+	} while (got > 0 && offset < len);
+
+	if (got < 0)
+		return got;
+	else
+		return offset;
+}
+
 
 static int read_from_tcpsock(struct local_client *client, char *buf, int len, char *csid,
 			     struct local_client **new_client)
 {
     struct sockaddr_in6 addr;
     socklen_t slen = sizeof(addr);
+    struct clvm_header *header = (struct clvm_header *)buf;
     int status;
+    uint32_t arglen;
 
     DEBUGLOG("read_from_tcpsock fd %d\n", client->fd);
     *new_client = NULL;
@@ -236,7 +266,26 @@ static int read_from_tcpsock(struct local_client *client, char *buf, int len, ch
     getpeername(client->fd, (struct sockaddr *)&addr, &slen);
     memcpy(csid, &addr.sin6_addr, GULM_MAX_CSID_LEN);
 
-    status = read(client->fd, buf, len);
+    /* Read just the header first, then get the rest if there is any.
+     * Stream sockets, sigh.
+     */
+    status = really_read(client->fd, buf, sizeof(struct clvm_header));
+    if (status > 0)
+    {
+	    int status2;
+
+	    arglen = ntohl(header->arglen);
+
+	    /* Get the rest */
+	    if (arglen && arglen < GULM_MAX_CLUSTER_MESSAGE)
+	    {
+		    status2 = really_read(client->fd, buf+status, arglen);
+		    if (status2 > 0)
+			    status += status2;
+		    else
+			    status = status2;
+	    }
+    }
 
     DEBUGLOG("read_from_tcpsock, status = %d(errno = %d)\n", status, errno);
 
@@ -259,17 +308,19 @@ static int read_from_tcpsock(struct local_client *client, char *buf, int len, ch
 	add_down_node(remcsid);
     }
     else {
+	    gulm_add_up_node(csid);
 	    /* Send it back to clvmd */
-	    process_message(client, buf, len, csid);
+	    process_message(client, buf, status, csid);
     }
     return status;
 }
 
-static int connect_csid(char *csid, struct local_client **newclient)
+int gulm_connect_csid(char *csid, struct local_client **newclient)
 {
     int fd;
     struct sockaddr_in6 addr;
     int status;
+    int one = 1;
 
     DEBUGLOG("Connecting socket\n");
     fd = socket(PF_INET6, SOCK_STREAM, 0);
@@ -298,6 +349,10 @@ static int connect_csid(char *csid, struct local_client **newclient)
 	close(fd);
 	return -1;
     }
+
+    /* Set Close-on-exec */
+    fcntl(fd, F_SETFD, 1);
+    setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof(int));
 
     status = alloc_client(fd, csid, newclient);
     if (status)
@@ -329,7 +384,7 @@ static int tcp_send_message(void *buf, int msglen, unsigned char *csid, const ch
     client = hash_lookup_binary(sock_hash, csid, GULM_MAX_CSID_LEN);
     if (!client)
     {
-	status = connect_csid(csid, &client);
+	status = gulm_connect_csid(csid, &client);
 	if (status)
 	    return -1;
     }

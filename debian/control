@@ -3,12 +3,12 @@ Section: admin
 Priority: optional
 Maintainer: Debian LVM Team <pkg-lvm-maintainers@lists.alioth.debian.org>
 Uploaders: Bastian Blank <waldi@debian.org>, Andres Salomon <dilinger@debian.org>
-Build-Depends: cdbs (>= 0.4.20), debhelper (>> 4.1.16), libdevmapper-dev (>= 2:1.00.07-1), libreadline5-dev, autotools-dev, libdlm-dev (>= 1.20050527-0ubuntu1)
-Standards-Version: 3.6.1
+Build-Depends: debhelper (>> 4.1.16), libdevmapper-dev (>= 2:1.01.05-1ubuntu2), autotools-dev, libdlm-dev (>= 1.20050527-0ubuntu1), libreadline5-dev
+Standards-Version: 3.6.2
 
 Package: lvm2
 Architecture: any
-Pre-Depends: debconf (>= 0.2.17)
+Pre-Depends: debconf (>= 0.2.17) | debconf-2.0
 Depends: ${shlibs:Depends}, lvm-common (>> 1.5.8)
 Provides: lvm-binaries
 Suggests: dmsetup
@@ -23,6 +23,7 @@ Description: The Linux Logical Volume Manager
  kernel 2.4 or later
 
 Package: lvm2-udeb
+XC-Package-Type: udeb
 Section: debian-installer
 Architecture: any
 Depends: ${shlibs:Depends}

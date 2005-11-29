@@ -1,3 +1,56 @@
+lvm2 (2.01.14-3ubuntu2) dapper; urgency=low
+
+  * Drop selinux support since it breaks lvm2-udeb.
+  * Make sure to build with a proper libdevmapper.
+
+ -- Fabio M. Di Nitto <fabbione@ubuntu.com>  Tue, 29 Nov 2005 09:11:39 +0100
+
+lvm2 (2.01.14-3ubuntu1) dapper; urgency=low
+
+  * Resynchronise with Debian.
+
+ -- Fabio M. Di Nitto <fabbione@ubuntu.com>  Fri, 25 Nov 2005 12:51:58 +0100
+
+lvm2 (2.01.14-3) unstable; urgency=low
+
+  * It is pronounced readline, not ncurses. Fix build-deps. (closes: #330715)
+
+ -- Bastian Blank <waldi@debian.org>  Fri, 30 Sep 2005 13:14:25 +0200
+
+lvm2 (2.01.14-2) unstable; urgency=low
+
+  * Enable readline support for debs. (closes: #257406)
+  * Fix O_DIRECT disable for hppa. (closes: #330166)
+
+ -- Bastian Blank <waldi@debian.org>  Wed, 28 Sep 2005 19:12:53 +0200
+
+lvm2 (2.01.14-1) unstable; urgency=low
+
+  * New upstream version. (closes: #320454)
+  * Enable selinux support for debs. (closes: #315505)
+  * Change optimization for udebs.
+
+ -- Bastian Blank <waldi@debian.org>  Mon, 15 Aug 2005 18:33:41 +0200
+
+lvm2 (2.01.12-2) unstable; urgency=low
+
+  * Fix LVM1 metadata support. (closes: #315339)
+
+ -- Bastian Blank <waldi@debian.org>  Wed, 22 Jun 2005 18:49:36 +0200
+
+lvm2 (2.01.12-1) unstable; urgency=low
+
+  * New upstream version.
+
+ -- Bastian Blank <waldi@debian.org>  Mon, 20 Jun 2005 16:50:41 +0200
+
+lvm2 (2.01.11-1) unstable; urgency=low
+
+  * New upstream version.
+  * Reentregrate changes.
+
+ -- Bastian Blank <waldi@debian.org>  Sun, 19 Jun 2005 13:17:48 +0200
+
 lvm2 (2.01.04-5ubuntu1) breezy; urgency=low
 
   * Bump Build-Deps on libncruses5-dev and libdlm-dev (1.x)

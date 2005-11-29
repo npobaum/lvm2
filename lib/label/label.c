@@ -98,14 +98,11 @@ int label_register_handler(const char *name, struct labeller *handler)
 
 struct labeller *label_get_handler(const char *name)
 {
-	struct list *lih;
 	struct labeller_i *li;
 
-	list_iterate(lih, &_labellers) {
-		li = list_item(lih, struct labeller_i);
+	list_iterate_items(li, &_labellers)
 		if (!strcmp(li->name, name))
 			return li->l;
-	}
 
 	return NULL;
 }
@@ -113,16 +110,20 @@ struct labeller *label_get_handler(const char *name)
 static struct labeller *_find_labeller(struct device *dev, char *buf,
 				       uint64_t *label_sector)
 {
-	struct list *lih;
 	struct labeller_i *li;
 	struct labeller *r = NULL;
 	struct label_header *lh;
+	struct lvmcache_info *info;
 	uint64_t sector;
 	int found = 0;
 	char readbuf[LABEL_SCAN_SIZE];
 
 	if (!dev_open(dev)) {
 		stack;
+
+		if ((info = info_from_pvid(dev->pvid)))
+			lvmcache_update_vgname(info, ORPHAN);
+
 		return NULL;
 	}
 
@@ -161,8 +162,7 @@ static struct labeller *_find_labeller(struct device *dev, char *buf,
 				continue;
 		}
 
-		list_iterate(lih, &_labellers) {
-			li = list_item(lih, struct labeller_i);
+		list_iterate_items(li, &_labellers) {
 			if (li->l->ops->can_handle(li->l, (char *) lh, sector)) {
 				log_very_verbose("%s: %s label detected",
 						 dev_name(dev), li->name);
@@ -182,10 +182,13 @@ static struct labeller *_find_labeller(struct device *dev, char *buf,
 		}
 	}
 
-	if (!found)
-		log_very_verbose("%s: No label detected", dev_name(dev));
-
       out:
+	if (!found) {
+		if ((info = info_from_pvid(dev->pvid)))
+			lvmcache_update_vgname(info, ORPHAN);
+		log_very_verbose("%s: No label detected", dev_name(dev));
+	}
+
 	if (!dev_close(dev))
 		stack;
 
@@ -200,7 +203,6 @@ int label_remove(struct device *dev)
 	int r = 1;
 	uint64_t sector;
 	int wipe;
-	struct list *lih;
 	struct labeller_i *li;
 	struct label_header *lh;
 
@@ -236,8 +238,7 @@ int label_remove(struct device *dev)
 			if (xlate64(lh->sector_xl) == sector)
 				wipe = 1;
 		} else {
-			list_iterate(lih, &_labellers) {
-				li = list_item(lih, struct labeller_i);
+			list_iterate_items(li, &_labellers) {
 				if (li->l->ops->can_handle(li->l, (char *) lh,
 							   sector)) {
 					wipe = 1;
@@ -279,7 +280,7 @@ int label_read(struct device *dev, struct label **result)
 		return 0;
 	}
 
-	if ((r = l->ops->read(l, dev, buf, result)) && result && *result)
+	if ((r = (l->ops->read)(l, dev, buf, result)) && result && *result)
 		(*result)->sector = sector;
 
 	return r;
@@ -309,7 +310,7 @@ int label_write(struct device *dev, struct label *label)
 	lh->sector_xl = xlate64(label->sector);
 	lh->offset_xl = xlate32(sizeof(*lh));
 
-	if (!label->labeller->ops->write(label, buf)) {
+	if (!(label->labeller->ops->write)(label, buf)) {
 		stack;
 		return 0;
 	}

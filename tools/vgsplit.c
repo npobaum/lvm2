@@ -44,6 +44,19 @@ static int _move_pv(struct volume_group *vg_from, struct volume_group *vg_to,
 	return 1;
 }
 
+/* FIXME Why not (lv->vg == vg) ? */
+static int _lv_is_in_vg(struct volume_group *vg, struct logical_volume *lv)
+{
+	struct lv_list *lvl;
+
+	list_iterate_items(lvl, &vg->lvs)
+		if (lv == lvl->lv)
+			 return 1;
+
+	return 0;
+}
+
+
 static int _move_lvs(struct volume_group *vg_from, struct volume_group *vg_to)
 {
 	struct list *lvh, *lvht;
@@ -56,16 +69,19 @@ static int _move_lvs(struct volume_group *vg_from, struct volume_group *vg_to)
 	list_iterate_safe(lvh, lvht, &vg_from->lvs) {
 		lv = list_item(lvh, struct lv_list)->lv;
 
+		if ((lv->status & SNAPSHOT))
+			continue;
+
 		/* Ensure all the PVs used by this LV remain in the same */
 		/* VG as each other */
 		vg_with = NULL;
 		list_iterate_items(seg, &lv->segments) {
 			for (s = 0; s < seg->area_count; s++) {
 				/* FIXME Check AREA_LV too */
-				if (seg->area[s].type != AREA_PV)
+				if (seg_type(seg, s) != AREA_PV)
 					continue;
 
-				pv = seg->area[s].u.pv.pv;
+				pv = seg_pv(seg, s);
 				if (vg_with) {
 					if (!pv_is_in_vg(vg_with, pv)) {
 						log_error("Logical Volume %s "
@@ -89,8 +105,9 @@ static int _move_lvs(struct volume_group *vg_from, struct volume_group *vg_to)
 					  dev_name(pv->dev));
 				return 0;
 			}
-		}
 
+		}
+			
 		if (vg_with == vg_from)
 			continue;
 
@@ -107,39 +124,38 @@ static int _move_lvs(struct volume_group *vg_from, struct volume_group *vg_to)
 	return 1;
 }
 
-static int _lv_is_in_vg(struct volume_group *vg, struct logical_volume *lv)
-{
-	struct lv_list *lvl;
-
-	list_iterate_items(lvl, &vg->lvs)
-		if (lv == lvl->lv)
-			 return 1;
-
-	return 0;
-}
-
 static int _move_snapshots(struct volume_group *vg_from,
 			   struct volume_group *vg_to)
 {
-	struct list *slh, *slth;
-	struct snapshot *snap;
-	int cow_from, origin_from;
+	struct list *lvh, *lvht;
+	struct logical_volume *lv;
+	struct lv_segment *seg;
+	int cow_from = 0;
+	int origin_from = 0;
 
-	list_iterate_safe(slh, slth, &vg_from->snapshots) {
-		snap = list_item(slh, struct snapshot_list)->snapshot;
-		cow_from = _lv_is_in_vg(vg_from, snap->cow);
-		origin_from = _lv_is_in_vg(vg_from, snap->origin);
-		if (cow_from && origin_from)
-			return 1;
-		if ((!cow_from && origin_from) || (cow_from && !origin_from)) {
-			log_error("Snapshot %s split", snap->cow->name);
-			return 0;
+	list_iterate_safe(lvh, lvht, &vg_from->lvs) {
+		lv = list_item(lvh, struct lv_list)->lv;
+
+		if (!(lv->status & SNAPSHOT))
+			continue;
+
+		list_iterate_items(seg, &lv->segments) {
+			cow_from = _lv_is_in_vg(vg_from, seg->cow);
+			origin_from = _lv_is_in_vg(vg_from, seg->origin);
 		}
+		if (cow_from && origin_from)
+			continue;
+		if ((!cow_from && origin_from) || (cow_from && !origin_from)) {
+			log_error("Snapshot %s split", seg->cow->name);
+			return 0;
+		}	
+
+		/* Move this snapshot */
+		list_del(lvh);
+		list_add(&vg_to->lvs, lvh);
+
 		vg_from->snapshot_count--;
 		vg_to->snapshot_count++;
-
-		list_del(slh);
-		list_add(&vg_to->snapshots, slh);
 	}
 
 	return 1;
@@ -203,6 +219,12 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 	if ((vg_to = vg_read(cmd, vg_name_to, &consistent))) {
 		/* FIXME Remove this restriction */
 		log_error("Volume group \"%s\" already exists", vg_name_to);
+		goto error;
+	}
+
+	if (!validate_vg_name(cmd, vg_name_to)) {
+		log_error("New volume group name \"%s\" is invalid",
+			   vg_name_to);
 		goto error;
 	}
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2003-2004 Sistina Software, Inc. All rights reserved.  
+ * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.   
  * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
@@ -13,14 +13,9 @@
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
-#ifndef _LVM_TEXT_IMPORT_H
-#define _LVM_TEXT_IMPORT_H
+#include "lvm2cmdline.h"
 
-struct lv_segment;
-struct config_node;
-
-int text_import_areas(struct lv_segment *seg, const struct config_node *sn,
-		      const struct config_node *cn, struct hash_table *pv_hash,
-		      uint32_t flags);
-
-#endif
+int main(int argc, char **argv)
+{
+	return lvm2_main(argc, argv, 1);
+}

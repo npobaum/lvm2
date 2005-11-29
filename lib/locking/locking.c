@@ -124,6 +124,8 @@ static inline void _update_vg_lock_count(int flags)
  */
 int init_locking(int type, struct config_tree *cft)
 {
+	init_lockingfailed(0);
+
 	switch (type) {
 	case 0:
 		init_no_locking(&_locking, cft);
@@ -165,6 +167,7 @@ int init_locking(int type, struct config_tree *cft)
 	log_verbose("Locking disabled - only read operations permitted.");
 
 	init_no_locking(&_locking, cft);
+	init_lockingfailed(1);
 
 	return 1;
 }
@@ -262,13 +265,10 @@ int lock_vol(struct cmd_context *cmd, const char *vol, int flags)
 /* Unlock list of LVs */
 int resume_lvs(struct cmd_context *cmd, struct list *lvs)
 {
-	struct list *lvh;
-	struct logical_volume *lv;
+	struct lv_list *lvl;
 
-	list_iterate(lvh, lvs) {
-		lv = list_item(lvh, struct lv_list)->lv;
-		resume_lv(cmd, lv->lvid.s);
-	}
+	list_iterate_items(lvl, lvs)
+		resume_lv(cmd, lvl->lv->lvid.s);
 
 	return 1;
 }
@@ -277,15 +277,14 @@ int resume_lvs(struct cmd_context *cmd, struct list *lvs)
 int suspend_lvs(struct cmd_context *cmd, struct list *lvs)
 {
 	struct list *lvh;
-	struct logical_volume *lv;
+	struct lv_list *lvl;
 
-	list_iterate(lvh, lvs) {
-		lv = list_item(lvh, struct lv_list)->lv;
-		if (!suspend_lv(cmd, lv->lvid.s)) {
-			log_error("Failed to suspend %s", lv->name);
-			list_uniterate(lvh, lvs, lvh) {
-				lv = list_item(lvh, struct lv_list)->lv;
-				resume_lv(cmd, lv->lvid.s);
+	list_iterate_items(lvl, lvs) {
+		if (!suspend_lv(cmd, lvl->lv->lvid.s)) {
+			log_error("Failed to suspend %s", lvl->lv->name);
+			list_uniterate(lvh, lvs, &lvl->list) {
+				lvl = list_item(lvh, struct lv_list);
+				resume_lv(cmd, lvl->lv->lvid.s);
 			}
 
 			return 0;
@@ -299,15 +298,14 @@ int suspend_lvs(struct cmd_context *cmd, struct list *lvs)
 int activate_lvs_excl(struct cmd_context *cmd, struct list *lvs)
 {
 	struct list *lvh;
-	struct logical_volume *lv;
+	struct lv_list *lvl;
 
-	list_iterate(lvh, lvs) {
-		lv = list_item(lvh, struct lv_list)->lv;
-		if (!activate_lv_excl(cmd, lv->lvid.s)) {
-			log_error("Failed to activate %s", lv->name);
-			list_uniterate(lvh, lvs, lvh) {
-				lv = list_item(lvh, struct lv_list)->lv;
-				activate_lv(cmd, lv->lvid.s);
+	list_iterate_items(lvl, lvs) {
+		if (!activate_lv_excl(cmd, lvl->lv->lvid.s)) {
+			log_error("Failed to activate %s", lvl->lv->name);
+			list_uniterate(lvh, lvs, &lvl->list) {
+				lvl = list_item(lvh, struct lv_list);
+				activate_lv(cmd, lvl->lv->lvid.s);
 			}
 
 			return 0;
@@ -321,3 +319,9 @@ int vg_write_lock_held(void)
 {
 	return _vg_write_lock_held;
 }
+
+int locking_is_clustered(void)
+{
+	return (_locking.flags & LCK_CLUSTERED) ? 1 : 0;
+}
+

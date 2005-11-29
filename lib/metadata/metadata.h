@@ -50,11 +50,13 @@
 #define VISIBLE_LV		0x00000040	/* LV */
 #define FIXED_MINOR		0x00000080	/* LV */
 /* FIXME Remove when metadata restructuring is completed */
-#define SNAPSHOT		0x00001000	/* LV - tmp internal use only */
+#define SNAPSHOT		0x00001000	/* LV - internal use only */
 #define PVMOVE			0x00002000	/* VG LV SEG */
 #define LOCKED			0x00004000	/* LV */
 #define MIRRORED		0x00008000	/* LV - internal use only */
 #define VIRTUAL			0x00010000	/* LV - internal use only */
+#define MIRROR_LOG		0x00020000	/* LV */
+#define MIRROR_IMAGE		0x00040000	/* LV */
 
 #define LVM_READ              	0x00000100	/* LV VG */
 #define LVM_WRITE             	0x00000200	/* LV VG */
@@ -68,6 +70,7 @@
 #define FMT_UNLIMITED_VOLS	0x00000008	/* Unlimited PVs/LVs? */
 #define FMT_RESTRICTED_LVIDS	0x00000010	/* LVID <= 255 */
 #define FMT_ORPHAN_ALLOCATABLE	0x00000020	/* Orphan PV allocatable? */
+#define FMT_PRECOMMIT		0x00000040	/* Supports pre-commit? */
 
 typedef enum {
 	ALLOC_INVALID,
@@ -78,6 +81,7 @@ typedef enum {
 } alloc_policy_t;
 
 typedef enum {
+	AREA_UNASSIGNED = 0,
 	AREA_PV,
 	AREA_LV
 } area_type_t;
@@ -98,6 +102,18 @@ struct format_type {
 	void *private;
 };
 
+struct pv_segment {
+	struct list list;	/* Member of pv->segments: ordered list
+				 * covering entire data area on this PV */
+
+	struct physical_volume *pv;
+	uint32_t pe;
+	uint32_t len;
+
+	struct lv_segment *lvseg;	/* NULL if free space */
+	uint32_t lv_area;	/* Index to area in LV segment */
+};
+
 struct physical_volume {
 	struct id id;
 	struct device *dev;
@@ -113,6 +129,7 @@ struct physical_volume {
 	uint32_t pe_count;
 	uint32_t pe_alloc_count;
 
+	struct list segments;	/* Ordered pv_segments covering complete PV */
 	struct list tags;
 };
 
@@ -122,6 +139,9 @@ struct format_instance;
 /* Per-format per-metadata area operations */
 struct metadata_area_ops {
 	struct volume_group *(*vg_read) (struct format_instance * fi,
+					 const char *vg_name,
+					 struct metadata_area * mda);
+	struct volume_group *(*vg_read_precommit) (struct format_instance * fi,
 					 const char *vg_name,
 					 struct metadata_area * mda);
 	/*
@@ -140,6 +160,9 @@ struct metadata_area_ops {
 	 */
 	int (*vg_write) (struct format_instance * fid, struct volume_group * vg,
 			 struct metadata_area * mda);
+	int (*vg_precommit) (struct format_instance * fid,
+			     struct volume_group * vg,
+			     struct metadata_area * mda);
 	int (*vg_commit) (struct format_instance * fid,
 			  struct volume_group * vg, struct metadata_area * mda);
 	int (*vg_revert) (struct format_instance * fid,
@@ -184,11 +207,8 @@ struct volume_group {
 
 	/* logical volumes */
 	uint32_t lv_count;
-	struct list lvs;
-
-	/* snapshots */
 	uint32_t snapshot_count;
-	struct list snapshots;
+	struct list lvs;
 
 	struct list tags;
 };
@@ -210,8 +230,11 @@ struct lv_segment {
 	uint32_t area_len;
 	struct logical_volume *origin;
 	struct logical_volume *cow;
-	uint32_t chunk_size;
+	struct list origin_list;
+	uint32_t chunk_size;	/* For snapshots - in sectors */
+	uint32_t region_size;	/* For mirrors - in sectors */
 	uint32_t extents_copied;
+	struct logical_volume *log_lv;
 
 	struct list tags;
 
@@ -220,8 +243,7 @@ struct lv_segment {
 		area_type_t type;
 		union {
 			struct {
-				struct physical_volume *pv;
-				uint32_t pe;
+				struct pv_segment *pvseg;
 			} pv;
 			struct {
 				struct logical_volume *lv;
@@ -230,6 +252,14 @@ struct lv_segment {
 		} u;
 	} area[0];
 };
+
+#define seg_type(seg, s)	(seg)->area[(s)].type
+#define seg_pvseg(seg, s)	(seg)->area[(s)].u.pv.pvseg
+#define seg_pv(seg, s)		(seg)->area[(s)].u.pv.pvseg->pv
+#define seg_dev(seg, s)		(seg)->area[(s)].u.pv.pvseg->pv->dev
+#define seg_pe(seg, s)		(seg)->area[(s)].u.pv.pvseg->pe
+#define seg_lv(seg, s)		(seg)->area[(s)].u.lv.lv
+#define seg_le(seg, s)		(seg)->area[(s)].u.lv.le
 
 struct logical_volume {
 	union lvid lvid;
@@ -246,19 +276,12 @@ struct logical_volume {
 	uint64_t size;
 	uint32_t le_count;
 
+	uint32_t origin_count;
+	struct list snapshot_segs;
+	struct lv_segment *snapshot;
+
 	struct list segments;
 	struct list tags;
-};
-
-struct snapshot {
-	struct id id;
-
-	int persistent;		/* boolean */
-	uint32_t chunk_size;	/* in 512 byte sectors */
-	uint32_t le_count;
-
-	struct logical_volume *origin;
-	struct logical_volume *cow;
 };
 
 struct name_list {
@@ -284,15 +307,14 @@ struct lv_list {
 	struct logical_volume *lv;
 };
 
-struct snapshot_list {
-	struct list list;
-
-	struct snapshot *snapshot;
-};
-
 struct mda_list {
 	struct list list;
 	struct device_area mda;
+};
+
+struct peg_list {
+	struct list list;
+	struct pv_segment *peg;
 };
 
 /*
@@ -369,11 +391,15 @@ struct format_handler {
 /*
  * Utility functions
  */
+int vg_validate(struct volume_group *vg);
 int vg_write(struct volume_group *vg);
 int vg_commit(struct volume_group *vg);
 int vg_revert(struct volume_group *vg);
 struct volume_group *vg_read(struct cmd_context *cmd, const char *vg_name,
 			     int *consistent);
+struct volume_group *vg_read_precommitted(struct cmd_context *cmd,
+					  const char *vg_name,
+					  int *consistent);
 struct volume_group *vg_read_by_vgid(struct cmd_context *cmd, const char *vgid);
 struct physical_volume *pv_read(struct cmd_context *cmd, const char *pv_name,
 				struct list *mdas, uint64_t *label_sector,
@@ -407,20 +433,26 @@ int vg_rename(struct cmd_context *cmd, struct volume_group *vg,
 	      const char *new_name);
 int vg_extend(struct format_instance *fi, struct volume_group *vg,
 	      int pv_count, char **pv_names);
+int vg_change_pesize(struct cmd_context *cmd, struct volume_group *vg,
+		     uint32_t new_extent_size);
 
 /* Manipulate LVs */
 struct logical_volume *lv_create_empty(struct format_instance *fi,
 				       const char *name,
-				       const char *name_format,
+				       union lvid *lvid,
 				       uint32_t status,
 				       alloc_policy_t alloc,
+				       int import,
 				       struct volume_group *vg);
 
-int lv_reduce(struct format_instance *fi,
-	      struct logical_volume *lv, uint32_t extents);
+/* Reduce the size of an LV by extents */
+int lv_reduce(struct logical_volume *lv, uint32_t extents);
 
-int lv_extend(struct format_instance *fid,
-	      struct logical_volume *lv,
+/* Empty an LV prior to deleting it */
+int lv_empty(struct logical_volume *lv);
+
+/* Entry point for all LV extent allocations */
+int lv_extend(struct logical_volume *lv,
 	      struct segment_type *segtype,
 	      uint32_t stripes, uint32_t stripe_size,
 	      uint32_t mirrors, uint32_t extents,
@@ -428,8 +460,8 @@ int lv_extend(struct format_instance *fid,
 	      uint32_t status, struct list *allocatable_pvs,
 	      alloc_policy_t alloc);
 
-/* lv must be part of vg->lvs */
-int lv_remove(struct volume_group *vg, struct logical_volume *lv);
+/* lv must be part of lv->vg->lvs */
+int lv_remove(struct logical_volume *lv);
 
 /* Manipulate PV structures */
 int pv_add(struct volume_group *vg, struct physical_volume *pv);
@@ -440,6 +472,8 @@ struct physical_volume *pv_find(struct volume_group *vg, const char *pv_name);
 struct pv_list *find_pv_in_vg(struct volume_group *vg, const char *pv_name);
 struct physical_volume *find_pv_in_vg_by_uuid(struct volume_group *vg,
 					      struct id *id);
+int get_pv_from_vg_by_id(const struct format_type *fmt, const char *vg_name,
+			 const char *id, struct physical_volume *pv);
 
 /* Find an LV within a given VG */
 struct lv_list *find_lv_in_vg(struct volume_group *vg, const char *lv_name);
@@ -463,6 +497,9 @@ struct physical_volume *find_pv_by_name(struct cmd_context *cmd,
 /* Find LV segment containing given LE */
 struct lv_segment *find_seg_by_le(struct logical_volume *lv, uint32_t le);
 
+/* Find PV segment containing given LE */
+struct pv_segment *find_peg_by_pe(struct physical_volume *pv, uint32_t pe);
+
 /*
  * Remove a dev_dir if present.
  */
@@ -471,7 +508,7 @@ const char *strip_dir(const char *vg_name, const char *dir);
 /*
  * Checks that an lv has no gaps or overlapping segments.
  */
-int lv_check_segments(struct logical_volume *lv);
+int check_lv_segments(struct logical_volume *lv);
 
 /*
  * Sometimes (eg, after an lvextend), it is possible to merge two
@@ -493,24 +530,36 @@ int lv_is_cow(const struct logical_volume *lv);
 
 int pv_is_in_vg(struct volume_group *vg, struct physical_volume *pv);
 
-struct snapshot *find_cow(const struct logical_volume *lv);
-struct snapshot *find_origin(const struct logical_volume *lv);
-struct list *find_snapshots(const struct logical_volume *lv);
+struct lv_segment *find_cow(const struct logical_volume *lv);
 
-int vg_add_snapshot(struct logical_volume *origin, struct logical_volume *cow,
-		    int persistent, struct id *id, uint32_t extent_count,
+int vg_add_snapshot(struct format_instance *fid, const char *name,
+		    struct logical_volume *origin, struct logical_volume *cow,
+		    union lvid *lvid, uint32_t extent_count,
 		    uint32_t chunk_size);
 
-int vg_remove_snapshot(struct volume_group *vg, struct logical_volume *cow);
+int vg_remove_snapshot(struct logical_volume *cow);
 
 /*
  * Mirroring functions
  */
+struct alloc_handle;
+int create_mirror_layers(struct alloc_handle *ah,
+			 uint32_t first_area,
+			 uint32_t num_mirrors,
+			 struct logical_volume *lv,
+			 struct segment_type *segtype,
+			 uint32_t status,
+			 uint32_t region_size,
+			 struct logical_volume *log_lv);
+int remove_mirror_images(struct lv_segment *mirrored_seg, uint32_t num_mirrors);
+int remove_all_mirror_images(struct logical_volume *lv);
+
 int insert_pvmove_mirrors(struct cmd_context *cmd,
 			  struct logical_volume *lv_mirr,
 			  struct list *source_pvl,
 			  struct logical_volume *lv,
 			  struct list *allocatable_pvs,
+			  alloc_policy_t alloc,
 			  struct list *lvs_changed);
 int remove_pvmove_mirrors(struct volume_group *vg,
 			  struct logical_volume *lv_mirr);
@@ -527,6 +576,8 @@ struct list *lvs_using_lv(struct cmd_context *cmd, struct volume_group *vg,
 			  struct logical_volume *lv);
 
 uint32_t find_free_lvnum(struct logical_volume *lv);
+char *generate_lv_name(struct volume_group *vg, const char *format,
+		       char *buffer, size_t len);
 
 static inline int validate_name(const char *n)
 {
@@ -538,6 +589,9 @@ static inline int validate_name(const char *n)
 
 	/* Hyphen used as VG-LV separator - ambiguity if LV starts with it */
 	if (*n == '-')
+		return 0;
+
+	if (!strcmp(n, ".") || !strcmp(n, ".."))
 		return 0;
 
 	while ((len++, c = *n++))

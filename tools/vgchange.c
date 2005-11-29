@@ -27,13 +27,13 @@ static int _activate_lvs_in_vg(struct cmd_context *cmd,
 		lv = lvl->lv;
 
 		/* Only request activation of snapshot origin devices */
-		if (lv_is_cow(lv))
+		if ((lv->status & SNAPSHOT) || lv_is_cow(lv))
 			continue;
 
-		/* Can't deactive a pvmove LV */
+		/* Can't deactive a pvmove or log LV */
 		/* FIXME There needs to be a controlled way of doing this */
 		if (((activate == CHANGE_AN) || (activate == CHANGE_ALN)) &&
-		    (lv->status & PVMOVE))
+		    ((lv->status & PVMOVE) || (lv->status & MIRROR_LOG)))
 			continue;
 
 		if (activate == CHANGE_AN) {
@@ -82,6 +82,16 @@ static int _vgchange_available(struct cmd_context *cmd, struct volume_group *vg)
 			  "logical volume(s)", vg->name, lv_open);
 		return ECMD_FAILED;
 	}
+
+	if (activate && lockingfailed() && (vg->status & CLUSTERED)) {
+		log_error("Locking inactive: ignoring clustered "
+			  "volume group %s", vg->name);
+		return ECMD_FAILED;
+	}
+
+	/* FIXME Move into library where clvmd can use it */
+	if (activate && !lockingfailed())
+		check_current_backup(vg);
 
 	if (activate && (active = lvs_in_vg_activated(vg)))
 		log_verbose("%d logical volume(s) in volume group \"%s\" "
@@ -168,6 +178,41 @@ static int _vgchange_resizeable(struct cmd_context *cmd,
 	return ECMD_PROCESSED;
 }
 
+static int _vgchange_clustered(struct cmd_context *cmd,
+			       struct volume_group *vg)
+{
+	int clustered = !strcmp(arg_str_value(cmd, clustered_ARG, "n"), "y");
+
+	if (clustered && (vg->status & CLUSTERED)) {
+		log_error("Volume group \"%s\" is already clustered",
+			  vg->name);
+		return ECMD_FAILED;
+	}
+
+	if (!clustered && !(vg->status & CLUSTERED)) {
+		log_error("Volume group \"%s\" is already not clustered",
+			  vg->name);
+		return ECMD_FAILED;
+	}
+
+	if (!archive(vg))
+		return ECMD_FAILED;
+
+	if (clustered)
+		vg->status |= CLUSTERED;
+	else
+		vg->status &= ~CLUSTERED;
+
+	if (!vg_write(vg) || !vg_commit(vg))
+		return ECMD_FAILED;
+
+	backup(vg);
+
+	log_print("Volume group \"%s\" successfully changed", vg->name);
+
+	return ECMD_PROCESSED;
+}
+
 static int _vgchange_logicalvolume(struct cmd_context *cmd,
 				   struct volume_group *vg)
 {
@@ -199,6 +244,64 @@ static int _vgchange_logicalvolume(struct cmd_context *cmd,
 		return ECMD_FAILED;
 
 	vg->max_lv = max_lv;
+
+	if (!vg_write(vg) || !vg_commit(vg))
+		return ECMD_FAILED;
+
+	backup(vg);
+
+	log_print("Volume group \"%s\" successfully changed", vg->name);
+
+	return ECMD_PROCESSED;
+}
+
+static int _vgchange_pesize(struct cmd_context *cmd, struct volume_group *vg)
+{
+	uint32_t extent_size;
+
+	if (!(vg->status & RESIZEABLE_VG)) {
+		log_error("Volume group \"%s\" must be resizeable "
+			  "to change PE size", vg->name);
+		return ECMD_FAILED;
+	}
+
+	if (arg_sign_value(cmd, physicalextentsize_ARG, 0) == SIGN_MINUS) {
+		log_error("Physical extent size may not be negative");
+		return EINVALID_CMD_LINE;
+	}
+
+	extent_size = arg_uint_value(cmd, physicalextentsize_ARG, 0) * 2;
+	if (!extent_size) {
+		log_error("Physical extent size may not be zero");
+		return EINVALID_CMD_LINE;
+	}
+
+	if (extent_size == vg->extent_size) {
+		log_error("Physical extent size of VG %s is already %s",
+			  vg->name, display_size(cmd, extent_size, SIZE_SHORT));
+		return ECMD_PROCESSED;
+	}
+
+	if (extent_size & (extent_size - 1)) {
+		log_error("Physical extent size must be a power of 2.");
+		return EINVALID_CMD_LINE;
+	}
+
+	if (extent_size > vg->extent_size) {
+		if ((uint64_t) vg->extent_size * vg->extent_count % extent_size) {
+			/* FIXME Adjust used PV sizes instead */
+			log_error("New extent size is not a perfect fit");
+			return EINVALID_CMD_LINE;
+		}
+	}
+
+	if (!archive(vg))
+		return ECMD_FAILED;
+
+	if (!vg_change_pesize(cmd, vg, extent_size)) {
+		stack;
+		return ECMD_FAILED;
+	}
 
 	if (!vg_write(vg) || !vg_commit(vg))
 		return ECMD_FAILED;
@@ -328,11 +431,17 @@ static int vgchange_single(struct cmd_context *cmd, const char *vg_name,
 	else if (arg_count(cmd, deltag_ARG))
 		r = _vgchange_tag(cmd, vg, deltag_ARG);
 
+	else if (arg_count(cmd, physicalextentsize_ARG))
+		r = _vgchange_pesize(cmd, vg);
+
 	else if (arg_count(cmd, uuid_ARG))
 		r = _vgchange_uuid(cmd, vg);
 
 	else if (arg_count(cmd, alloc_ARG))
 		r = _vgchange_alloc(cmd, vg);
+
+	else if (arg_count(cmd, clustered_ARG))
+		r = _vgchange_clustered(cmd, vg);
 
 	return r;
 }
@@ -343,9 +452,10 @@ int vgchange(struct cmd_context *cmd, int argc, char **argv)
 	    (arg_count(cmd, available_ARG) + arg_count(cmd, logicalvolume_ARG) +
 	     arg_count(cmd, resizeable_ARG) + arg_count(cmd, deltag_ARG) +
 	     arg_count(cmd, addtag_ARG) + arg_count(cmd, uuid_ARG) +
-	     arg_count(cmd, alloc_ARG))) {
-		log_error("One of -a, -l, -x, --alloc, --addtag, --deltag "
-			  "or --uuid required");
+	     arg_count(cmd, physicalextentsize_ARG) +
+	     arg_count(cmd, clustered_ARG) + arg_count(cmd, alloc_ARG))) {
+		log_error("One of -a, -c, -l, -s, -x, --uuid, --alloc, --addtag or "
+			  "--deltag required");
 		return EINVALID_CMD_LINE;
 	}
 
@@ -353,9 +463,10 @@ int vgchange(struct cmd_context *cmd, int argc, char **argv)
 	if (arg_count(cmd, available_ARG) + arg_count(cmd, logicalvolume_ARG) +
 	    arg_count(cmd, resizeable_ARG) + arg_count(cmd, deltag_ARG) +
 	    arg_count(cmd, addtag_ARG) + arg_count(cmd, alloc_ARG) +
-	    arg_count(cmd, uuid_ARG) > 1) {
-		log_error("Only one of -a, -l, -x, --alloc, --addtag, --deltag "
-		          "or --uuid allowed");
+	    arg_count(cmd, uuid_ARG) + arg_count(cmd, clustered_ARG) +
+	    arg_count(cmd, physicalextentsize_ARG) > 1) {
+		log_error("Only one of -a, -c, -l, -s, -x, --uuid, --alloc, "
+			  "--addtag or --deltag allowed");
 		return EINVALID_CMD_LINE;
 	}
 

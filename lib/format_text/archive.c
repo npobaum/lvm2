@@ -53,7 +53,7 @@ struct archive_file {
 	struct list list;
 
 	char *path;
-	int index;
+	uint32_t index;
 };
 
 /*
@@ -91,7 +91,6 @@ static int _split_vg(const char *filename, char *vgname, size_t vg_size,
 
 static void _insert_file(struct list *head, struct archive_file *b)
 {
-	struct list *bh;
 	struct archive_file *bf = NULL;
 
 	if (list_empty(head)) {
@@ -99,11 +98,9 @@ static void _insert_file(struct list *head, struct archive_file *b)
 		return;
 	}
 
-	/* index increases through list */
-	list_iterate(bh, head) {
-		bf = list_item(bh, struct archive_file);
-
-		if (bf->index > b->index) {
+	/* index reduces through list */
+	list_iterate_items(bf, head) {
+		if (b->index > bf->index) {
 			list_add(&bf->list, &b->list);
 			return;
 		}
@@ -132,7 +129,8 @@ static char *_join(struct pool *mem, const char *dir, const char *name)
 static struct list *_scan_archive(struct pool *mem,
 				  const char *vgname, const char *dir)
 {
-	int i, count, ix;
+	int i, count;
+	uint32_t ix;
 	char vgname_found[64], *path;
 	struct dirent **dirent;
 	struct archive_file *af;
@@ -147,13 +145,13 @@ static struct list *_scan_archive(struct pool *mem,
 
 	/* Sort fails beyond 5-digit indexes */
 	if ((count = scandir(dir, &dirent, NULL, alphasort)) < 0) {
-		log_err("Couldn't scan archive directory.");
+		log_err("Couldn't scan the archive directory (%s).", dir);
 		return 0;
 	}
 
 	for (i = 0; i < count; i++) {
-		/* ignore dot files */
-		if (dirent[i]->d_name[0] == '.')
+		if (!strcmp(dirent[i]->d_name, ".") ||
+		    !strcmp(dirent[i]->d_name, ".."))
 			continue;
 
 		/* check the name is the correct format */
@@ -199,7 +197,6 @@ static struct list *_scan_archive(struct pool *mem,
 static void _remove_expired(struct list *archives, uint32_t archives_size,
 			    uint32_t retain_days, uint32_t min_archive)
 {
-	struct list *bh;
 	struct archive_file *bf;
 	struct stat sb;
 	time_t retain_time;
@@ -213,9 +210,7 @@ static void _remove_expired(struct list *archives, uint32_t archives_size,
 	retain_time = time(NULL) - (time_t) retain_days *SECS_PER_DAY;
 
 	/* Assume list is ordered oldest first (by index) */
-	list_iterate(bh, archives) {
-		bf = list_item(bh, struct archive_file);
-
+	list_iterate_items(bf, archives) {
 		/* Get the mtime of the file and unlink if too old */
 		if (stat(bf->path, &sb)) {
 			log_sys_error("stat", bf->path);
@@ -240,7 +235,7 @@ int archive_vg(struct volume_group *vg,
 	       uint32_t retain_days, uint32_t min_archive)
 {
 	int i, fd, renamed = 0;
-	unsigned int ix = 0;
+	uint32_t ix = 0;
 	struct archive_file *last;
 	FILE *fp = NULL;
 	char temp_file[PATH_MAX], archive_name[PATH_MAX];
@@ -272,20 +267,20 @@ int archive_vg(struct volume_group *vg,
 	 * Now we want to rename this file to <vg>_index.vg.
 	 */
 	if (!(archives = _scan_archive(vg->cmd->mem, vg->name, dir))) {
-		log_err("Couldn't scan the archive directory (%s).", dir);
+		stack;
 		return 0;
 	}
 
 	if (list_empty(archives))
 		ix = 0;
 	else {
-		last = list_item(archives->p, struct archive_file);
+		last = list_item(list_first(archives), struct archive_file);
 		ix = last->index + 1;
 	}
 
 	for (i = 0; i < 10; i++) {
 		if (lvm_snprintf(archive_name, sizeof(archive_name),
-				 "%s/%s_%05d.vg", dir, vg->name, ix) < 0) {
+				 "%s/%s_%05u.vg", dir, vg->name, ix) < 0) {
 			log_error("Archive file name too long.");
 			return 0;
 		}
@@ -344,22 +339,19 @@ static void _display_archive(struct cmd_context *cmd, struct archive_file *af)
 
 int archive_list(struct cmd_context *cmd, const char *dir, const char *vgname)
 {
-	struct list *archives, *ah;
+	struct list *archives;
 	struct archive_file *af;
 
 	if (!(archives = _scan_archive(cmd->mem, vgname, dir))) {
-		log_err("Couldn't scan the archive directory (%s).", dir);
+		stack;
 		return 0;
 	}
 
 	if (list_empty(archives))
 		log_print("No archives found in %s.", dir);
 
-	list_iterate(ah, archives) {
-		af = list_item(ah, struct archive_file);
-
+	list_iterate_back_items(af, archives)
 		_display_archive(cmd, af);
-	}
 
 	pool_free(cmd->mem, archives);
 
