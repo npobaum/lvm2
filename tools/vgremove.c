@@ -56,6 +56,14 @@ static int vgremove_single(struct cmd_context *cmd, const char *vg_name,
 		log_verbose("Removing physical volume \"%s\" from "
 			    "volume group \"%s\"", dev_name(pv->dev), vg_name);
 		pv->vg_name = ORPHAN;
+		pv->status = ALLOCATABLE_PV;
+
+		if (!dev_get_size(pv->dev, &pv->size)) {
+			log_error("%s: Couldn't get size.", dev_name(pv->dev));
+			ret = ECMD_FAILED;
+			continue;
+		}
+
 		/* FIXME Write to same sector label was read from */
 		if (!pv_write(cmd, pv, NULL, INT64_C(-1))) {
 			log_error("Failed to remove physical volume \"%s\""
@@ -65,7 +73,7 @@ static int vgremove_single(struct cmd_context *cmd, const char *vg_name,
 		}
 	}
 
-	backup_remove(vg_name);
+	backup_remove(cmd, vg_name);
 
 	if (ret == ECMD_PROCESSED)
 		log_print("Volume group \"%s\" successfully removed", vg_name);

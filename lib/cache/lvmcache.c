@@ -104,9 +104,30 @@ struct lvmcache_vginfo *vginfo_from_vgname(const char *vgname)
 const struct format_type *fmt_from_vgname(const char *vgname)
 {
 	struct lvmcache_vginfo *vginfo;
+	struct lvmcache_info *info;
+	struct label *label;
+	struct list *devh, *tmp;
+	struct list devs;
+	struct device_list *devl;
 
 	if (!(vginfo = vginfo_from_vgname(vgname)))
 		return NULL;
+
+	/* This function is normally called before reading metadata so
+ 	 * we check cached labels here. Unfortunately vginfo is volatile. */
+	list_init(&devs);
+	list_iterate_items(info, &vginfo->infos) {
+		devl = dbg_malloc(sizeof(*devl));
+		devl->dev = info->dev;
+		list_add(&devs, &devl->list);
+	}
+
+	list_iterate_safe(devh, tmp, &devs) {
+		devl = list_item(devh, struct device_list);
+		label_read(devl->dev, &label);
+		list_del(&devl->list);
+		dbg_free(devl);
+	}
 
 	return vginfo->fmt;
 }
@@ -166,7 +187,6 @@ int lvmcache_label_scan(struct cmd_context *cmd, int full_scan)
 	struct label *label;
 	struct dev_iter *iter;
 	struct device *dev;
-	struct list *fmth;
 	struct format_type *fmt;
 
 	static int _scanning_in_progress = 0;
@@ -188,7 +208,7 @@ int lvmcache_label_scan(struct cmd_context *cmd, int full_scan)
 		goto out;
 	}
 
-	if (!(iter = dev_iter_create(cmd->filter))) {
+	if (!(iter = dev_iter_create(cmd->filter, (full_scan == 2) ? 1: 0))) {
 		log_error("dev_iter creation failed");
 		goto out;
 	}
@@ -201,8 +221,7 @@ int lvmcache_label_scan(struct cmd_context *cmd, int full_scan)
 	_has_scanned = 1;
 
 	/* Perform any format-specific scanning e.g. text files */
-	list_iterate(fmth, &cmd->formats) {
-		fmt = list_item(fmth, struct format_type);
+	list_iterate_items(fmt, &cmd->formats) {
 		if (fmt->ops->scan && !fmt->ops->scan(fmt))
 			goto out;
 	}
@@ -266,7 +285,7 @@ struct device *device_from_pvid(struct cmd_context *cmd, struct id *pvid)
 	if (memlock())
 		return NULL;
 
-	lvmcache_label_scan(cmd, 1);
+	lvmcache_label_scan(cmd, 2);
 
 	/* Try again */
 	if ((info = info_from_pvid((char *) pvid))) {
@@ -403,23 +422,24 @@ int lvmcache_update_vgname(struct lvmcache_info *info, const char *vgname)
 	/* FIXME Check consistency of list! */
 	vginfo->fmt = info->fmt;
 
+	log_debug("lvmcache: %s now %s%s", dev_name(info->dev),
+		  *vgname ? "in VG " : "orphaned", vgname);
+
 	return 1;
 }
 
 int lvmcache_update_vg(struct volume_group *vg)
 {
-	struct list *pvh;
-	struct physical_volume *pv;
+	struct pv_list *pvl;
 	struct lvmcache_info *info;
 	char pvid_s[ID_LEN + 1];
 	int vgid_updated = 0;
 
 	pvid_s[sizeof(pvid_s) - 1] = '\0';
 
-	list_iterate(pvh, &vg->pvs) {
-		pv = list_item(pvh, struct pv_list)->pv;
-		strncpy(pvid_s, (char *) &pv->id, sizeof(pvid_s) - 1);
-		/* FIXME Could pv->dev->pvid ever be different? */
+	list_iterate_items(pvl, &vg->pvs) {
+		strncpy(pvid_s, (char *) &pvl->pv->id, sizeof(pvid_s) - 1);
+		/* FIXME Could pvl->pv->dev->pvid ever be different? */
 		if ((info = info_from_pvid(pvid_s))) {
 			lvmcache_update_vgname(info, vg->name);
 			if (!vgid_updated) {
@@ -551,6 +571,8 @@ static void _lvmcache_destroy_lockname(int present)
 
 void lvmcache_destroy(void)
 {
+	log_verbose("Wiping internal VG cache");
+
 	_has_scanned = 0;
 
 	if (_vgid_hash) {

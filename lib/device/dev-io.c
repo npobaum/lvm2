@@ -222,11 +222,25 @@ static int _aligned_io(struct device_area *where, void *buffer,
 	return 1;
 }
 
-/*-----------------------------------------------------------------
- * Public functions
- *---------------------------------------------------------------*/
+static int _dev_get_size_file(const struct device *dev, uint64_t *size)
+{
+	const char *name = dev_name(dev);
+	struct stat info;
 
-int dev_get_size(const struct device *dev, uint64_t *size)
+	if (stat(name, &info)) {
+		log_sys_error("stat", name);
+		return 0;
+	}
+
+	*size = info.st_size;
+	*size >>= SECTOR_SHIFT;	/* Convert to sectors */
+
+	log_very_verbose("%s: size is %" PRIu64 " sectors", name, *size);
+
+	return 1;
+}
+
+static int _dev_get_size_dev(const struct device *dev, uint64_t *size)
 {
 	int fd;
 	const char *name = dev_name(dev);
@@ -250,6 +264,18 @@ int dev_get_size(const struct device *dev, uint64_t *size)
 	log_very_verbose("%s: size is %" PRIu64 " sectors", name, *size);
 
 	return 1;
+}
+
+/*-----------------------------------------------------------------
+ * Public functions
+ *---------------------------------------------------------------*/
+
+int dev_get_size(const struct device *dev, uint64_t *size)
+{
+	if ((dev->flags & DEV_REGULAR))
+		return _dev_get_size_file(dev, size);
+	else
+		return _dev_get_size_dev(dev, size);
 }
 
 /* FIXME Unused
@@ -330,8 +356,13 @@ int dev_open_flags(struct device *dev, int flags, int direct, int quiet)
 	}
 
 #ifdef O_DIRECT_SUPPORT
-	if (direct)
-		flags |= O_DIRECT;
+	if (direct) {
+		if (!(dev->flags & DEV_O_DIRECT_TESTED))
+			dev->flags |= DEV_O_DIRECT;
+
+		if ((dev->flags & DEV_O_DIRECT))
+			flags |= O_DIRECT;
+	}
 #endif
 
 #ifdef O_NOATIME
@@ -343,12 +374,31 @@ int dev_open_flags(struct device *dev, int flags, int direct, int quiet)
 #endif
 
 	if ((dev->fd = open(name, flags, 0777)) < 0) {
-		log_sys_error("open", name);
+#ifdef O_DIRECT_SUPPORT
+		if (direct && !(dev->flags & DEV_O_DIRECT_TESTED)) {
+			flags &= ~O_DIRECT;
+			if ((dev->fd = open(name, flags, 0777)) >= 0) {
+				dev->flags &= ~DEV_O_DIRECT;
+				log_debug("%s: Not using O_DIRECT", name);
+				goto opened;
+			}
+		}
+#endif
+		if (quiet)
+			log_sys_debug("open", name);
+		else
+			log_sys_error("open", name);
 		return 0;
 	}
 
+#ifdef O_DIRECT_SUPPORT
+      opened:
+	if (direct)
+		dev->flags |= DEV_O_DIRECT_TESTED;
+#endif
 	dev->open_count++;
 	dev->flags &= ~DEV_ACCESSED_W;
+
 	if ((flags & O_ACCMODE) == O_RDWR)
 		dev->flags |= DEV_OPENED_RW;
 	else
@@ -372,8 +422,9 @@ int dev_open_flags(struct device *dev, int flags, int direct, int quiet)
 
 	list_add(&_open_devices, &dev->open_list);
 
-	log_debug("Opened %s %s", dev_name(dev),
-		  dev->flags & DEV_OPENED_RW ? "RW" : "RO");
+	log_debug("Opened %s %s%s", dev_name(dev),
+		  dev->flags & DEV_OPENED_RW ? "RW" : "RO",
+		  dev->flags & DEV_O_DIRECT ? " O_DIRECT" : "");
 
 	return 1;
 }

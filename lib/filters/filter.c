@@ -70,6 +70,7 @@ static const device_info_t device_info[] = {
 	{"i2o_block", 16},	/* i2o Block Disk */
 	{"iseries/vd", 8},	/* iSeries disks */
 	{"gnbd", 1},		/* Network block device */
+	{"ramdisk", 1},		/* RAM disk */
 	{NULL, 0}
 };
 
@@ -88,7 +89,7 @@ static int _passes_lvm_type_device_filter(struct dev_filter *f,
 	}
 
 	/* Check it's accessible */
-	if (!dev_open_flags(dev, O_RDONLY, 0, 0)) {
+	if (!dev_open_flags(dev, O_RDONLY, 0, 1)) {
 		log_debug("%s: Skipping: open failed", name);
 		return 0;
 	}

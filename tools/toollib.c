@@ -60,6 +60,9 @@ int process_each_lv_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 	}
 
 	list_iterate_items(lvl, &vg->lvs) {
+		if (lvl->lv->status & SNAPSHOT)
+			continue;
+
 		/* Should we process this LV? */
 		if (process_all)
 			process_lv = 1;
@@ -107,9 +110,9 @@ int process_each_lv(struct cmd_context *cmd, int argc, char **argv,
 	int ret = 0;
 	int consistent;
 
-	struct list *slh, *tags_arg;
+	struct list *tags_arg;
 	struct list *vgnames;	/* VGs to process */
-	struct str_list *sll;
+	struct str_list *sll, *strl;
 	struct volume_group *vg;
 	struct list tags, lvnames;
 	struct list arg_lvnames;	/* Cmdline vgname or vgname/lvname */
@@ -225,8 +228,8 @@ int process_each_lv(struct cmd_context *cmd, int argc, char **argv,
 		}
 	}
 
-	list_iterate(slh, vgnames) {
-		vgname = list_item(slh, struct str_list)->str;
+	list_iterate_items(strl, vgnames) {
+		vgname = strl->str;
 		if (!vgname || !*vgname)
 			continue;	/* FIXME Unnecessary? */
 		if (!lock_vol(cmd, vgname, lock_type)) {
@@ -278,6 +281,28 @@ int process_each_lv(struct cmd_context *cmd, int argc, char **argv,
 		ret = process_each_lv_in_vg(cmd, vg, &lvnames, tags_arg,
 					    handle, process_single);
 		unlock_vg(cmd, vgname);
+		if (ret > ret_max)
+			ret_max = ret;
+	}
+
+	return ret_max;
+}
+
+int process_each_segment_in_pv(struct cmd_context *cmd,
+			       struct volume_group *vg,
+			       struct physical_volume *pv,
+			       void *handle,
+			       int (*process_single) (struct cmd_context * cmd,
+						      struct volume_group * vg,
+						      struct pv_segment * pvseg,
+						      void *handle))
+{
+	struct pv_segment *pvseg;
+	int ret_max = 0;
+	int ret;
+
+	list_iterate_items(pvseg, &pv->segments) {
+		ret = process_single(cmd, vg, pvseg, handle);
 		if (ret > ret_max)
 			ret_max = ret;
 	}
@@ -463,7 +488,7 @@ static int _process_all_devs(struct cmd_context *cmd, void *handle,
 	int ret_max = 0;
 	int ret = 0;
 
-	if (!(iter = dev_iter_create(cmd->filter))) {
+	if (!(iter = dev_iter_create(cmd->filter, 1))) {
 		log_error("dev_iter creation failed");
 		return ECMD_FAILED;
 	}
@@ -472,6 +497,7 @@ static int _process_all_devs(struct cmd_context *cmd, void *handle,
 		if (!(pv = pv_read(cmd, dev_name(dev), NULL, NULL, 0))) {
 			memset(&pv_dummy, 0, sizeof(pv_dummy));
 			list_init(&pv_dummy.tags);
+			list_init(&pv_dummy.segments);
 			pv_dummy.dev = dev;
 			pv_dummy.fmt = NULL;
 			pv = &pv_dummy;
@@ -986,3 +1012,91 @@ int exec_cmd(const char *command, const char *fscmd, const char *lv_path,
 
 	return 1;
 }
+
+int apply_lvname_restrictions(const char *name)
+{
+	if (!strncmp(name, "snapshot", 8)) {
+		log_error("Names starting \"snapshot\" are reserved. "
+			  "Please choose a different LV name.");
+		return 0;
+	}
+
+	if (!strncmp(name, "pvmove", 6)) {
+		log_error("Names starting \"pvmove\" are reserved. "
+			  "Please choose a different LV name.");
+		return 0;
+	}
+
+	if (strstr(name, "_mlog")) {
+		log_error("Names including \"_mlog\" are reserved. "
+			  "Please choose a different LV name.");
+		return 0;
+	}
+
+	if (strstr(name, "_mimage")) {
+		log_error("Names including \"_mimage\" are reserved. "
+			  "Please choose a different LV name.");
+		return 0;
+	}
+
+	return 1;
+}
+
+int validate_vg_name(struct cmd_context *cmd, const char *vg_name)
+{
+	char vg_path[PATH_MAX];
+
+	if (!validate_name(vg_name))
+		return 0;
+
+	snprintf(vg_path, PATH_MAX, "%s%s", cmd->dev_dir, vg_name);
+	if (path_exists(vg_path)) {
+		log_error("%s: already exists in filesystem", vg_path);
+		return 0;
+	}
+
+	return 1;
+}
+
+/*
+ * Volumes may be zeroed to remove old application data.
+ */
+int zero_lv(struct cmd_context *cmd, struct logical_volume *lv)
+{
+	struct device *dev;
+	char *name;
+
+	/*
+	 * FIXME:
+	 * <clausen> also, more than 4k
+	 * <clausen> say, reiserfs puts it's superblock 32k in, IIRC
+	 * <ejt_> k, I'll drop a fixme to that effect
+	 *           (I know the device is at least 4k, but not 32k)
+	 */
+	if (!(name = pool_alloc(cmd->mem, PATH_MAX))) {
+		log_error("Name allocation failed - device not zeroed");
+		return 0;
+	}
+
+	if (lvm_snprintf(name, PATH_MAX, "%s%s/%s", cmd->dev_dir,
+			 lv->vg->name, lv->name) < 0) {
+		log_error("Name too long - device not zeroed (%s)", lv->name);
+		return 0;
+	}
+
+	log_verbose("Zeroing start of logical volume \"%s\"", lv->name);
+
+	if (!(dev = dev_cache_get(name, NULL))) {
+		log_error("%s: not found: device not zeroed", name);
+		return 0;
+	}
+
+	if (!dev_open_quiet(dev))
+		return 0;
+
+	dev_zero(dev, UINT64_C(0), (size_t) 4096);
+	dev_close_immediate(dev);
+
+	return 1;
+}
+

@@ -21,10 +21,10 @@ ifeq ("@FSADM@", "yes")
 endif
 
 lib_SOURCES =\
-	archiver.c \
 	dumpconfig.c \
 	formats.c \
 	lvchange.c \
+	lvconvert.c \
 	lvcreate.c \
 	lvdisplay.c \
 	lvextend.c \
@@ -95,6 +95,8 @@ endif
 ifeq ("@DEVMAPPER@", "yes")
 	LVMLIBS += -ldevmapper
 endif
+
+CFLAGS += -DLVM_SHARED_PATH=\"$(exec_prefix)/sbin/lvm\"
 
 include $(top_srcdir)/make.tmpl
 

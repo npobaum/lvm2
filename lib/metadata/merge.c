@@ -17,6 +17,7 @@
 #include "metadata.h"
 #include "toolcontext.h"
 #include "lv_alloc.h"
+#include "pv_alloc.h"
 #include "str_list.h"
 #include "segtype.h"
 
@@ -57,11 +58,13 @@ int lv_merge_segments(struct logical_volume *lv)
 /*
  * Verify that an LV's segments are consecutive, complete and don't overlap.
  */
-int lv_check_segments(struct logical_volume *lv)
+int check_lv_segments(struct logical_volume *lv)
 {
 	struct lv_segment *seg;
 	uint32_t le = 0;
 	unsigned seg_count = 0;
+	int r = 1;
+	uint32_t area_multiplier, s;
 
 	list_iterate_items(seg, &lv->segments) {
 		seg_count++;
@@ -69,13 +72,65 @@ int lv_check_segments(struct logical_volume *lv)
 			log_error("LV %s invalid: segment %u should begin at "
 				  "LE %" PRIu32 " (found %" PRIu32 ").",
 				  lv->name, seg_count, le, seg->le);
-			return 0;
+			r = 0;
+		}
+
+		area_multiplier = segtype_is_striped(seg->segtype) ? 
+					seg->area_count : 1;
+
+		if (seg->area_len * area_multiplier != seg->len) {
+			log_error("LV %s: segment %u has inconsistent "
+				  "area_len %u",
+				  lv->name, seg_count, seg->area_len);
+			r = 0;
+		}
+
+		for (s = 0; s < seg->area_count; s++) {
+			if (seg_type(seg, s) == AREA_UNASSIGNED) {
+				log_error("LV %s: segment %u has unassigned "
+					  "area %u.",
+					  lv->name, seg_count, s);
+				r = 0;
+			} else if (seg_type(seg, s) == AREA_PV) {
+				if (!seg_pvseg(seg, s) ||
+				    seg_pvseg(seg, s)->lvseg != seg ||
+				    seg_pvseg(seg, s)->lv_area != s) {
+					log_error("LV %s: segment %u has "
+						  "inconsistent PV area %u",
+						  lv->name, seg_count, s);
+					r = 0;
+				}
+			} else {
+				if (!seg_lv(seg, s) ||
+				    seg_lv(seg, s)->vg != lv->vg ||
+				    seg_lv(seg, s) == lv) {
+					log_error("LV %s: segment %u has "
+						  "inconsistent LV area %u",
+						  lv->name, seg_count, s);
+					r = 0;
+				}
+/* FIXME I don't think this ever holds?
+				if (seg_le(seg, s) != le) {
+					log_error("LV %s: segment %u has "
+						  "inconsistent LV area %u "
+						  "size",
+						  lv->name, seg_count, s);
+					r = 0;
+				}
+ */
+			}
 		}
 
 		le += seg->len;
 	}
 
-	return 1;
+	if (le != lv->le_count) {
+		log_error("LV %s: inconsistent LE count %u != %u",
+			  lv->name, le, lv->le_count);
+		r = 0;
+	}
+
+	return r;
 }
 
 /*
@@ -85,26 +140,28 @@ int lv_check_segments(struct logical_volume *lv)
 static int _lv_split_segment(struct logical_volume *lv, struct lv_segment *seg,
 			     uint32_t le)
 {
-	size_t len;
 	struct lv_segment *split_seg;
 	uint32_t s;
 	uint32_t offset = le - seg->le;
 	uint32_t area_offset;
 
-	if (!(seg->segtype->flags & SEG_CAN_SPLIT)) {
+	if (!seg_can_split(seg)) {
 		log_error("Unable to split the %s segment at LE %" PRIu32
 			  " in LV %s", seg->segtype->name, le, lv->name);
 		return 0;
 	}
 
 	/* Clone the existing segment */
-	if (!(split_seg = alloc_lv_segment(lv->vg->cmd->mem, seg->area_count))) {
-		log_error("Couldn't allocate new LV segment.");
+	if (!(split_seg = alloc_lv_segment(lv->vg->cmd->mem, seg->segtype,
+					   seg->lv, seg->le, seg->len,
+					   seg->status, seg->stripe_size,
+					   seg->log_lv,
+					   seg->area_count, seg->area_len,
+					   seg->chunk_size, seg->region_size,
+					   seg->extents_copied))) {
+		log_error("Couldn't allocate cloned LV segment.");
 		return 0;
 	}
-
-	len = sizeof(*seg) + (seg->area_count * sizeof(seg->area[0]));
-	memcpy(split_seg, seg, len);
 
 	if (!str_list_dup(lv->vg->cmd->mem, &split_seg->tags, &seg->tags)) {
 		log_error("LV segment tags duplication failed");
@@ -113,36 +170,8 @@ static int _lv_split_segment(struct logical_volume *lv, struct lv_segment *seg,
 
 	/* In case of a striped segment, the offset has to be / stripes */
 	area_offset = offset;
-	if (seg->segtype->flags & SEG_AREAS_STRIPED)
+	if (seg_is_striped(seg))
 		area_offset /= seg->area_count;
-
-	/* Adjust the PV mapping */
-	for (s = 0; s < seg->area_count; s++) {
-		/* Split area at the offset */
-		switch (seg->area[s].type) {
-		case AREA_LV:
-			split_seg->area[s].u.lv.le =
-			    seg->area[s].u.lv.le + area_offset;
-			log_debug("Split %s:%u[%u] at %u: %s LE %u", lv->name,
-				  seg->le, s, le, seg->area[s].u.lv.lv->name,
-				  split_seg->area[s].u.lv.le);
-			break;
-
-		case AREA_PV:
-			split_seg->area[s].u.pv.pe =
-			    seg->area[s].u.pv.pe + area_offset;
-			log_debug("Split %s:%u[%u] at %u: %s PE %u", lv->name,
-				  seg->le, s, le,
-				  dev_name(seg->area[s].u.pv.pv->dev),
-				  split_seg->area[s].u.pv.pe);
-			break;
-
-		default:
-			log_error("Unrecognised segment type %u",
-				  seg->area[s].type);
-			return 0;
-		}
-	}
 
 	split_seg->area_len -= area_offset;
 	seg->area_len = area_offset;
@@ -151,6 +180,44 @@ static int _lv_split_segment(struct logical_volume *lv, struct lv_segment *seg,
 	seg->len = offset;
 
 	split_seg->le = seg->le + seg->len;
+
+	/* Adjust the PV mapping */
+	for (s = 0; s < seg->area_count; s++) {
+		seg_type(split_seg, s) = seg_type(seg, s);
+
+		/* Split area at the offset */
+		switch (seg_type(seg, s)) {
+		case AREA_LV:
+			seg_lv(split_seg, s) = seg_lv(seg, s);
+			seg_le(split_seg, s) =
+			    seg_le(seg, s) + seg->area_len;
+			log_debug("Split %s:%u[%u] at %u: %s LE %u", lv->name,
+				  seg->le, s, le, seg_lv(seg, s)->name,
+				  seg_le(split_seg, s));
+			break;
+
+		case AREA_PV:
+			if (!(seg_pvseg(split_seg, s) =
+			     assign_peg_to_lvseg(seg_pv(seg, s),
+						 seg_pe(seg, s) +
+						     seg->area_len,
+						 seg_pvseg(seg, s)->len -
+						     seg->area_len,
+						 split_seg, s))) {
+				stack;
+				return 0;
+			}
+			log_debug("Split %s:%u[%u] at %u: %s PE %u", lv->name,
+				  seg->le, s, le,
+				  dev_name(seg_dev(seg, s)),
+				  seg_pe(split_seg, s));
+			break;
+
+		case AREA_UNASSIGNED:
+			log_error("Unassigned area %u found in segment", s);
+			return 0;
+		}
+	}
 
 	/* Add split off segment to the list _after_ the original one */
 	list_add_h(&seg->list, &split_seg->list);
@@ -176,6 +243,11 @@ int lv_split_segment(struct logical_volume *lv, uint32_t le)
 		return 1;
 
 	if (!_lv_split_segment(lv, seg, le)) {
+		stack;
+		return 0;
+	}
+
+	if (!vg_validate(lv->vg)) {
 		stack;
 		return 0;
 	}

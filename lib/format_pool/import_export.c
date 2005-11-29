@@ -21,6 +21,7 @@
 #include "disk_rep.h"
 #include "sptype_names.h"
 #include "lv_alloc.h"
+#include "pv_alloc.h"
 #include "str_list.h"
 #include "display.h"
 #include "segtype.h"
@@ -29,12 +30,9 @@
 
 int import_pool_vg(struct volume_group *vg, struct pool *mem, struct list *pls)
 {
-	struct list *plhs;
 	struct pool_list *pl;
 
-	list_iterate(plhs, pls) {
-		pl = list_item(plhs, struct pool_list);
-
+	list_iterate_items(pl, pls) {
 		vg->extent_count +=
 		    ((pl->pd.pl_blocks) / POOL_PE_SIZE);
 
@@ -47,7 +45,7 @@ int import_pool_vg(struct volume_group *vg, struct pool *mem, struct list *pls)
 		get_pool_vg_uuid(&vg->id, &pl->pd);
 		vg->extent_size = POOL_PE_SIZE;
 		vg->status |= LVM_READ | LVM_WRITE | CLUSTERED | SHARED;
-		vg->free_count = 0;
+		vg->free_count = vg->extent_count;
 		vg->max_lv = 1;
 		vg->max_pv = POOL_MAX_DEVICES;
 		vg->alloc = ALLOC_NORMAL;
@@ -60,7 +58,6 @@ int import_pool_vg(struct volume_group *vg, struct pool *mem, struct list *pls)
 int import_pool_lvs(struct volume_group *vg, struct pool *mem, struct list *pls)
 {
 	struct pool_list *pl;
-	struct list *plhs;
 	struct lv_list *lvl = pool_zalloc(mem, sizeof(*lvl));
 	struct logical_volume *lv;
 
@@ -82,12 +79,12 @@ int import_pool_lvs(struct volume_group *vg, struct pool *mem, struct list *pls)
 	lv->name = NULL;
 	lv->le_count = 0;
 	lv->read_ahead = 0;
+	lv->snapshot = NULL;
+	list_init(&lv->snapshot_segs);
 	list_init(&lv->segments);
 	list_init(&lv->tags);
 
-	list_iterate(plhs, pls) {
-		pl = list_item(plhs, struct pool_list);
-
+	list_iterate_items(pl, pls) {
 		lv->size += pl->pd.pl_blocks;
 
 		if (lv->name)
@@ -112,6 +109,8 @@ int import_pool_lvs(struct volume_group *vg, struct pool *mem, struct list *pls)
 		} else {
 			lv->minor = -1;
 		}
+		lv->snapshot = NULL;
+		list_init(&lv->snapshot_segs);
 		list_init(&lv->segments);
 		list_init(&lv->tags);
 	}
@@ -129,11 +128,8 @@ int import_pool_pvs(const struct format_type *fmt, struct volume_group *vg,
 {
 	struct pv_list *pvl;
 	struct pool_list *pl;
-	struct list *plhs;
 
-	list_iterate(plhs, pls) {
-		pl = list_item(plhs, struct pool_list);
-
+	list_iterate_items(pl, pls) {
 		if (!(pvl = pool_zalloc(mem, sizeof(*pvl)))) {
 			log_error("Unable to allocate pv list structure");
 			return 0;
@@ -175,9 +171,15 @@ int import_pool_pv(const struct format_type *fmt, struct pool *mem,
 	pv->pe_size = POOL_PE_SIZE;
 	pv->pe_start = POOL_PE_START;
 	pv->pe_count = pv->size / POOL_PE_SIZE;
-	pv->pe_alloc_count = pv->pe_count;
+	pv->pe_alloc_count = 0;
 
 	list_init(&pv->tags);
+	list_init(&pv->segments);
+
+	if (!alloc_pv_segment_whole_pv(mem, pv)) {
+		stack;
+		return 0;
+	}
 
 	return 1;
 }
@@ -200,40 +202,44 @@ static int _add_stripe_seg(struct pool *mem,
 			   uint32_t *le_cur)
 {
 	struct lv_segment *seg;
+	struct segment_type *segtype;
 	int j;
+	uint32_t area_len;
 
-	if (!(seg = alloc_lv_segment(mem, usp->num_devs))) {
-		log_error("Unable to allocate striped lv_segment structure");
-		return 0;
-	}
-	if(usp->striping & (usp->striping - 1)) {
+	if (usp->striping & (usp->striping - 1)) {
 		log_error("Stripe size must be a power of 2");
 		return 0;
 	}
-	seg->stripe_size = usp->striping;
-	seg->status |= 0;
-	seg->le += *le_cur;
 
-	/* add the subpool type to the segment tag list */
-	str_list_add(mem, &seg->tags, _cvt_sptype(usp->type));
+	area_len = (usp->devs[0].blocks) / POOL_PE_SIZE;
 
-	for (j = 0; j < usp->num_devs; j++) {
-		if (!(seg->segtype = get_segtype_from_string(lv->vg->cmd,
-							     "striped"))) {
+	if (!(segtype = get_segtype_from_string(lv->vg->cmd,
+						     "striped"))) {
+		stack;
+		return 0;
+	}
+
+	if (!(seg = alloc_lv_segment(mem, segtype, lv, *le_cur, 
+				     area_len * usp->num_devs, 0,
+				     usp->striping, NULL, usp->num_devs,
+				     area_len, 0, 0, 0))) {
+		log_error("Unable to allocate striped lv_segment structure");
+		return 0;
+	}
+
+	for (j = 0; j < usp->num_devs; j++)
+		if (!set_lv_segment_area_pv(seg, j, usp->devs[j].pv, 0)) {
 			stack;
 			return 0;
 		}
 
-		seg->area_len = (usp->devs[j].blocks) / POOL_PE_SIZE;
-		seg->len += seg->area_len;
-		*le_cur += seg->area_len;
-		seg->lv = lv;
+	/* add the subpool type to the segment tag list */
+	str_list_add(mem, &seg->tags, _cvt_sptype(usp->type));
 
-		seg->area[j].type = AREA_PV;
-		seg->area[j].u.pv.pv = usp->devs[j].pv;
-		seg->area[j].u.pv.pe = 0;
-	}
 	list_add(&lv->segments, &seg->list);
+
+	*le_cur += seg->len;
+
 	return 1;
 }
 
@@ -242,54 +248,56 @@ static int _add_linear_seg(struct pool *mem,
 			   uint32_t *le_cur)
 {
 	struct lv_segment *seg;
+	struct segment_type *segtype;
 	int j;
+	uint32_t area_len;
+
+	if (!(segtype = get_segtype_from_string(lv->vg->cmd, "striped"))) {
+		stack;
+		return 0;
+	}
 
 	for (j = 0; j < usp->num_devs; j++) {
-		/* linear segments only have 1 data area */
-		if (!(seg = alloc_lv_segment(mem, 1))) {
+		area_len = (usp->devs[j].blocks) / POOL_PE_SIZE;
+
+		if (!(seg = alloc_lv_segment(mem, segtype, lv, *le_cur,
+					     area_len, 0, usp->striping,
+					     NULL, 1, area_len,
+					     POOL_PE_SIZE, 0, 0))) {
 			log_error("Unable to allocate linear lv_segment "
 				  "structure");
 			return 0;
 		}
-		seg->stripe_size = usp->striping;
-		seg->le += *le_cur;
-		seg->chunk_size = POOL_PE_SIZE;
-		seg->status |= 0;
-		if (!(seg->segtype = get_segtype_from_string(lv->vg->cmd,
-							     "striped"))) {
-			stack;
-			return 0;
-		}
+
 		/* add the subpool type to the segment tag list */
 		str_list_add(mem, &seg->tags, _cvt_sptype(usp->type));
 
-		seg->lv = lv;
-
-		seg->area_len = (usp->devs[j].blocks) / POOL_PE_SIZE;
-		seg->len = seg->area_len;
-		*le_cur += seg->len;
-		seg->area[0].type = AREA_PV;
-		seg->area[0].u.pv.pv = usp->devs[j].pv;
-		seg->area[0].u.pv.pe = 0;
+		if (!set_lv_segment_area_pv(seg, 0, usp->devs[j].pv, 0)) {
+			stack;
+			return 0;
+		}
 		list_add(&lv->segments, &seg->list);
+
+		*le_cur += seg->len;
 	}
+
 	return 1;
 }
 
 int import_pool_segments(struct list *lvs, struct pool *mem,
 			 struct user_subpool *usp, int subpools)
 {
-
-	struct list *lvhs;
 	struct lv_list *lvl;
 	struct logical_volume *lv;
 	uint32_t le_cur = 0;
 	int i;
 
-	list_iterate(lvhs, lvs) {
-		lvl = list_item(lvhs, struct lv_list);
-
+	list_iterate_items(lvl, lvs) {
 		lv = lvl->lv;
+
+		if (lv->status & SNAPSHOT)
+			continue;
+
 		for (i = 0; i < subpools; i++) {
 			if (usp[i].striping) {
 				if (!_add_stripe_seg(mem, &usp[i], lv, &le_cur)) {
@@ -306,5 +314,4 @@ int import_pool_segments(struct list *lvs, struct pool *mem,
 	}
 
 	return 1;
-
 }

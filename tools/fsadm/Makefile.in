@@ -26,6 +26,6 @@ fsadm: $(OBJECTS)
 	$(CC) -o $@ $(OBJECTS) -rdynamic
 
 install: fsadm
-	$(INSTALL) -D $(OWNER) $(GROUP) -m 555 $(STRIP) fsadm \
+	$(INSTALL) -D $(OWNER) $(GROUP) $(STRIP) fsadm \
 		$(sbindir)/fsadm
 

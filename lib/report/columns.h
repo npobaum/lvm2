@@ -19,7 +19,7 @@
 
 /* *INDENT-OFF* */
 FIELD(LVS, lv, STR, "LV UUID", lvid.id[1], 38, uuid, "lv_uuid")
-FIELD(LVS, lv, STR, "LV", name, 4, string, "lv_name")
+FIELD(LVS, lv, STR, "LV", lvid, 4, lvname, "lv_name")
 FIELD(LVS, lv, STR, "Attr", lvid, 4, lvstatus, "lv_attr")
 FIELD(LVS, lv, NUM, "Maj", major, 3, int32, "lv_major")
 FIELD(LVS, lv, NUM, "Min", minor, 3, int32, "lv_minor")
@@ -32,6 +32,7 @@ FIELD(LVS, lv, NUM, "Snap%", lvid, 6, snpercent, "snap_percent")
 FIELD(LVS, lv, NUM, "Copy%", lvid, 6, copypercent, "copy_percent")
 FIELD(LVS, lv, STR, "Move", lvid, 4, movepv, "move_pv")
 FIELD(LVS, lv, STR, "LV Tags", tags, 7, tags, "lv_tags")
+FIELD(LVS, lv, STR, "Log", lvid, 3, loglv, "mirror_log")
 
 FIELD(PVS, pv, STR, "Fmt", id, 3, pvfmt, "pv_fmt")
 FIELD(PVS, pv, STR, "PV UUID", id, 38, uuid, "pv_uuid")
@@ -67,8 +68,12 @@ FIELD(SEGS, seg, STR, "Type", list, 4, segtype, "segtype")
 FIELD(SEGS, seg, NUM, "#Str", area_count, 4, uint32, "stripes")
 FIELD(SEGS, seg, NUM, "Stripe", stripe_size, 6, size32, "stripesize")
 FIELD(SEGS, seg, NUM, "Chunk", chunk_size, 5, size32, "chunksize")
+FIELD(SEGS, seg, NUM, "Region", region_size, 6, size32, "regionsize")
 FIELD(SEGS, seg, NUM, "Start", list, 5, segstart, "seg_start")
 FIELD(SEGS, seg, NUM, "SSize", list, 5, segsize, "seg_size")
 FIELD(SEGS, seg, STR, "Seg Tags", tags, 8, tags, "seg_tags")
 FIELD(SEGS, seg, STR, "Devices", list, 5, devices, "devices")
+
+FIELD(PVSEGS, pvseg, NUM, "Start", pe, 5, uint32, "pvseg_start")
+FIELD(PVSEGS, pvseg, NUM, "SSize", len, 5, uint32, "pvseg_size")
 /* *INDENT-ON* */

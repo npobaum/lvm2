@@ -40,6 +40,14 @@ int process_each_pv(struct cmd_context *cmd, int argc, char **argv,
 					   struct volume_group * vg,
 					   struct physical_volume * pv,
 					   void *handle));
+int process_each_segment_in_pv(struct cmd_context *cmd,
+			       struct volume_group *vg,
+			       struct physical_volume *pv,
+			       void *handle,
+			       int (*process_single) (struct cmd_context * cmd,
+						      struct volume_group * vg,
+						      struct pv_segment * pvseg,
+						      void *handle));
 
 int process_each_lv(struct cmd_context *cmd, int argc, char **argv,
 		    int lock_type, void *handle,
@@ -81,5 +89,11 @@ struct list *clone_pv_list(struct pool *mem, struct list *pvs);
 
 int exec_cmd(const char *command, const char *fscmd, const char *lv_path,
 	     const char *size);
+
+int apply_lvname_restrictions(const char *name);
+
+int validate_vg_name(struct cmd_context *cmd, const char *vg_name);
+
+int zero_lv(struct cmd_context *cmd, struct logical_volume *lv);
 
 #endif

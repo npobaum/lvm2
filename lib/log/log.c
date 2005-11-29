@@ -30,6 +30,7 @@ static int _test = 0;
 static int _partial = 0;
 static int _md_filtering = 0;
 static int _pvmove = 0;
+static int _full_scan_done = 0;	/* Restrict to one full scan during each cmd */
 static int _debug_level = 0;
 static int _syslog = 0;
 static int _log_to_file = 0;
@@ -39,6 +40,7 @@ static int _indent = 1;
 static int _log_cmd_name = 0;
 static int _log_suppress = 0;
 static int _ignorelockingfailure = 0;
+static int _lockingfailed = 0;
 static int _security_level = SECURITY_LEVEL;
 static char _cmd_name[30] = "";
 static char _msg_prefix[30] = "  ";
@@ -70,7 +72,7 @@ void init_log_direct(const char *log_file, int append)
 {
 	int open_flags = append ? 0 : O_TRUNC;
 
-	dev_create_file(log_file, &_log_dev, &_log_dev_alias);
+	dev_create_file(log_file, &_log_dev, &_log_dev_alias, 1);
 	if (!dev_open_flags(&_log_dev, O_RDWR | O_CREAT | open_flags, 1, 0))
 		return;
 
@@ -149,9 +151,19 @@ void init_pvmove(int level)
 	_pvmove = level;
 }
 
+void init_full_scan_done(int level)
+{
+	_full_scan_done = level;
+}
+
 void init_ignorelockingfailure(int level)
 {
 	_ignorelockingfailure = level;
+}
+
+void init_lockingfailed(int level)
+{
+	_lockingfailed = level;
 }
 
 void init_security_level(int level)
@@ -201,6 +213,16 @@ int md_filtering()
 int pvmove_mode()
 {
 	return _pvmove;
+}
+
+int full_scan_done()
+{
+	return _full_scan_done;
+}
+
+int lockingfailed()
+{
+	return _lockingfailed;
 }
 
 int ignorelockingfailure()

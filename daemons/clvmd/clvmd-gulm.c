@@ -2,6 +2,7 @@
 *******************************************************************************
 **
 **  Copyright (C) Sistina Software, Inc.  2002-2003  All rights reserved.
+**  Copyright (C) 2004-2005 Red Hat, Inc. All rights reserved.
 **
 *******************************************************************************
 ******************************************************************************/
@@ -46,6 +47,7 @@
 #include "log.h"
 #include "clvm.h"
 #include "clvmd-comms.h"
+#include "lvm-functions.h"
 #include "clvmd.h"
 #include "hash.h"
 #include "clvmd-gulm.h"
@@ -58,13 +60,15 @@ static struct hash_table *node_hash;
 /* hash list of outstanding lock requests */
 static struct hash_table *lock_hash;
 
-/* Copy of the current core state */
-static uint8_t current_corestate;
+/* Copy of the current quorate state */
+static uint8_t gulm_quorate = 0;
+static enum {INIT_NOTDONE, INIT_DONE, INIT_WAITQUORATE} init_state = INIT_NOTDONE;
 
 /* Number of active nodes */
 static int num_nodes;
 
 static char *cluster_name;
+static int in_shutdown = 0;
 
 static pthread_mutex_t lock_start_mutex;
 static volatile int lock_start_flag;
@@ -114,6 +118,9 @@ static int add_internal_client(int fd, fd_callback_t callback)
     client->callback = callback;
     add_client(client);
 
+    /* Set Close-on-exec */
+    fcntl(fd, F_SETFD, 1);
+
     return 0;
 }
 
@@ -129,12 +136,11 @@ static void badsig_handler(int sig)
     exit(0);
 }
 
-static void sighup_handler(int sig)
+static void _reread_config(void)
 {
-    DEBUGLOG("got SIGHUP\n");
-
-    /* Re-read CCS node list */
-    get_all_cluster_nodes();
+        /* Re-read CCS node list */
+	DEBUGLOG("Re-reading CCS config\n");
+	get_all_cluster_nodes();
 }
 
 static int _init_cluster(void)
@@ -224,7 +230,7 @@ static int _init_cluster(void)
 	exit(status);
     }
 
-    /* Request a list of nodes, we can;t really do anything until
+    /* Request a list of nodes, we can't really do anything until
        this comes back */
     status = lg_core_nodelist(gulm_if);
     if (status)
@@ -237,15 +243,14 @@ static int _init_cluster(void)
     signal(SIGINT, badsig_handler);
     signal(SIGTERM, badsig_handler);
 
-    /* Re-read the node list on SIGHUP */
-    signal(SIGHUP, sighup_handler);
-
     return 0;
 }
 
 static void _cluster_closedown(void)
 {
     DEBUGLOG("cluster_closedown\n");
+    in_shutdown = 1;
+    unlock_all();
     lg_lock_logout(gulm_if);
     lg_core_logout(gulm_if);
     lg_release(gulm_if);
@@ -258,6 +263,7 @@ static void drop_expired_locks(char *nodename)
     struct utsname nodeinfo;
     uint8_t mask[GIO_KEY_SIZE];
 
+    DEBUGLOG("Dropping expired locks for %s\n", nodename?nodename:"(null)");
     memset(mask, 0xff, GIO_KEY_SIZE);
 
     if (!nodename)
@@ -303,12 +309,16 @@ static int core_login_reply(void *misc, uint64_t gen, uint32_t error, uint32_t r
    if (error)
        exit(error);
 
-   current_corestate = corestate;
+   /* Get the current core state (for quorum) */
+   lg_core_corestate(gulm_if);
+
    return 0;
 }
 
 static void set_node_state(struct node_info *ninfo, char *csid, uint8_t nodestate)
 {
+    int oldstate = ninfo->state;
+
     if (nodestate == lg_core_Logged_in)
     {
 	/* Don't clobber NODE_CLVMD state */
@@ -330,11 +340,17 @@ static void set_node_state(struct node_info *ninfo, char *csid, uint8_t nodestat
 	    if (ninfo->state != NODE_DOWN)
 		num_nodes--;
 	    ninfo->state = NODE_DOWN;
-	    tcp_remove_client(csid);
 	}
     }
-    DEBUGLOG("set_node_state, '%s' state = %d, num_nodes=%d\n",
-	     ninfo->name, ninfo->state, num_nodes);
+    /* Gulm doesn't always send node DOWN events, so even if this a a node UP we must
+     * assume (ahem) that it prevously went down at some time. So we close
+     * the sockets here to make sure that we don't have any dead connections
+     * to that node.
+     */
+    tcp_remove_client(csid);
+
+    DEBUGLOG("set_node_state, '%s' state = %d (oldstate=%d), num_nodes=%d\n",
+	     ninfo->name, ninfo->state, oldstate, num_nodes);
 }
 
 static struct node_info *add_or_set_node(char *name, struct in6_addr *ip, uint8_t state)
@@ -391,7 +407,16 @@ static int core_nodelist(void *misc, lglcb_t type, char *name, struct in6_addr *
 		char ourcsid[GULM_MAX_CSID_LEN];
 
 		DEBUGLOG("Got Nodelist, stop\n");
-		clvmd_cluster_init_completed();
+		if (gulm_quorate)
+		{
+			clvmd_cluster_init_completed();
+			init_state = INIT_DONE;
+		}
+		else
+		{
+			if (init_state == INIT_NOTDONE)
+				init_state = INIT_WAITQUORATE;
+		}
 
 		/* Mark ourself as up */
 		_get_our_csid(ourcsid);
@@ -409,10 +434,15 @@ static int core_nodelist(void *misc, lglcb_t type, char *name, struct in6_addr *
 
 static int core_statechange(void *misc, uint8_t corestate, uint8_t quorate, struct in6_addr *masterip, char *mastername)
 {
-    DEBUGLOG("CORE Got statechange  corestate:%#x mastername:%s\n",
-	     corestate, mastername);
+    DEBUGLOG("CORE Got statechange. quorate:%d, corestate:%x mastername:%s\n",
+	     quorate, corestate, mastername);
 
-    current_corestate = corestate;
+    gulm_quorate = quorate;
+    if (quorate && init_state == INIT_WAITQUORATE)
+    {
+	    clvmd_cluster_init_completed();
+	    init_state = INIT_DONE;
+    }
     return 0;
 }
 
@@ -477,6 +507,10 @@ static int lock_lock_state(void *misc, uint8_t *key, uint16_t keylen,
     struct lock_wait *lwait;
 
     DEBUGLOG("LOCK lock state: %s, error = %d\n", key, error);
+
+    /* No waiting process to wake up when we are shutting down */
+    if (in_shutdown)
+	    return 0;
 
     lwait = hash_lookup(lock_hash, key);
     if (!lwait)
@@ -596,10 +630,17 @@ void gulm_add_up_node(char *csid)
     struct node_info *ninfo;
 
     ninfo = hash_lookup_binary(node_hash, csid, GULM_MAX_CSID_LEN);
-    if (!ninfo)
+    if (!ninfo) {
+	    DEBUGLOG("gulm_add_up_node no node_hash entry for csid %s\n", print_csid(csid));
 	return;
+    }
 
+    DEBUGLOG("gulm_add_up_node %s\n", ninfo->name);
+
+    if (ninfo->state == NODE_DOWN)
+	    num_nodes++;
     ninfo->state = NODE_CLVMD;
+
     return;
 
 }
@@ -616,13 +657,14 @@ void add_down_node(char *csid)
        running clvmd - gulm may set it DOWN quite soon */
     if (ninfo->state == NODE_CLVMD)
 	ninfo->state = NODE_UP;
+    drop_expired_locks(ninfo->name);
     return;
 
 }
 
 /* Call a callback for each node, so the caller knows whether it's up or down */
 static int _cluster_do_node_callback(struct local_client *master_client,
-			     void (*callback)(struct local_client *, char *csid, int node_up))
+				     void (*callback)(struct local_client *, char *csid, int node_up))
 {
     struct hash_node *hn;
     struct node_info *ninfo;
@@ -638,8 +680,19 @@ static int _cluster_do_node_callback(struct local_client *master_client,
 	DEBUGLOG("down_callback. node %s, state = %d\n", ninfo->name, ninfo->state);
 
 	client = hash_lookup_binary(sock_hash, csid, GULM_MAX_CSID_LEN);
-	if (client)
-	    callback(master_client, csid, ninfo->state == NODE_CLVMD);
+	if (!client)
+	{
+	    /* If it's up but not connected, try to make contact */
+	    if (ninfo->state == NODE_UP)
+		    gulm_connect_csid(csid, &client);
+
+	    client = hash_lookup_binary(sock_hash, csid, GULM_MAX_CSID_LEN);
+
+	}
+	if (ninfo->state != NODE_DOWN)
+		callback(master_client, csid, ninfo->state == NODE_CLVMD);
+
+
     }
     return 0;
 }
@@ -650,15 +703,13 @@ static int gulm_to_errno(int gulm_ret)
     switch (gulm_ret)
     {
     case lg_err_TryFailed:
-	errno = EAGAIN;
-	break;
-
     case lg_err_AlreadyPend:
-	errno = EBUSY;
+	    errno = EAGAIN;
+	    break;
 
 	/* More?? */
     default:
-	errno = EINVAL;
+	    errno = EINVAL;
     }
 
     return gulm_ret ? -1 : 0;
@@ -729,6 +780,11 @@ static int _unlock_resource(char *resource, int lockid)
 	return status;
     }
 
+    /* When we are shutting down, don't wait for unlocks
+       to be acknowledged, just do it. */
+    if (in_shutdown)
+	    return status;
+
     /* Wait for it to complete */
 
     pthread_cond_wait(&lwait.cond, &lwait.mutex);
@@ -765,7 +821,7 @@ static int _sync_lock(const char *resource, int mode, int flags, int *lockid)
 	if (status)
 	    goto out;
 
-	/* If we can't get this lock then bail out */
+	/* If we can't get this lock too then bail out */
 	status = _lock_resource(lock2, lg_lock_state_Exclusive, LCK_NONBLOCK, lockid);
         if (status == lg_err_TryFailed)
         {
@@ -777,10 +833,16 @@ static int _sync_lock(const char *resource, int mode, int flags, int *lockid)
 
     case LCK_READ:
 	status = _lock_resource(lock1, lg_lock_state_Shared, flags, lockid);
+	if (status)
+		goto out;
+	status = _unlock_resource(lock2, *lockid);
 	break;
 
     case LCK_WRITE:
 	status = _lock_resource(lock2, lg_lock_state_Exclusive, flags, lockid);
+	if (status)
+		goto out;
+	status = _unlock_resource(lock1, *lockid);
 	break;
 
     default:
@@ -807,36 +869,16 @@ static int _sync_unlock(const char *resource, int lockid)
 	   lockid == LCK_READ ||
 	   lockid == LCK_WRITE);
 
-    switch (lockid)
-    {
-    case LCK_EXCL:
-	status = _unlock_resource(lock1, lockid);
-	if (status)
-	    goto out;
-	status = _unlock_resource(lock2, lockid);
-	break;
+    status = _unlock_resource(lock1, lockid);
+    if (!status)
+	    status = _unlock_resource(lock2, lockid);
 
-    case LCK_READ:
-	status = _unlock_resource(lock1, lockid);
-	break;
-
-    case LCK_WRITE:
-	status = _unlock_resource(lock2, lockid);
-	break;
-    }
-
- out:
     return status;
 }
 
 static int _is_quorate()
 {
-    if (current_corestate == lg_core_Slave ||
-	current_corestate == lg_core_Master ||
-	current_corestate == lg_core_Client)
-	return 1;
-    else
-	return 0;
+	return gulm_quorate;
 }
 
 /* Get all the cluster node names & IPs from CCS and
@@ -902,7 +944,13 @@ static int get_all_cluster_nodes()
 	}
 	else
 	{
-	    DEBUGLOG("node %s has clvm disabled\n", nodename);
+		if (!clvmflag) {
+			DEBUGLOG("node %s has clvm disabled\n", nodename);
+		}
+		else {
+			DEBUGLOG("Cannot resolve host name %s\n", nodename);
+			log_err("Cannot resolve host name %s\n", nodename);
+		}
 	}
 	free(nodename);
     }
@@ -940,6 +988,7 @@ static struct cluster_ops _cluster_gulm_ops = {
 	.is_quorate               = _is_quorate,
 	.get_our_csid             = _get_our_csid,
 	.add_up_node              = gulm_add_up_node,
+	.reread_config            = _reread_config,
 	.cluster_closedown        = _cluster_closedown,
 	.sync_lock                = _sync_lock,
 	.sync_unlock              = _sync_unlock,

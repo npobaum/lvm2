@@ -23,6 +23,7 @@ struct lvresize_params {
 
 	uint32_t stripes;
 	uint32_t stripe_size;
+	uint32_t mirrors;
 
 	struct segment_type *segtype;
 
@@ -115,10 +116,11 @@ static int _lvresize(struct cmd_context *cmd, struct lvresize_params *lp)
 {
 	struct volume_group *vg;
 	struct logical_volume *lv;
-	struct snapshot *snap;
+	struct lv_segment *snap_seg;
 	struct lvinfo info;
 	uint32_t stripesize_extents = 0;
 	uint32_t seg_stripes = 0, seg_stripesize = 0, seg_size = 0;
+	uint32_t seg_mirrors = 0;
 	uint32_t extents_used = 0;
 	uint32_t size_rest;
 	alloc_policy_t alloc;
@@ -161,6 +163,13 @@ static int _lvresize(struct cmd_context *cmd, struct lvresize_params *lp)
 			log_print("Varied striping not supported. Ignoring.");
 	}
 
+	if (arg_count(cmd, mirrors_ARG)) {
+		if (vg->fid->fmt->features & FMT_SEGMENTS)
+			lp->mirrors = arg_uint_value(cmd, mirrors_ARG, 1) + 1;
+		else
+			log_print("Mirrors not supported. Ignoring.");
+	}
+
 	if (arg_count(cmd, stripesize_ARG)) {
 		if (arg_sign_value(cmd, stripesize_ARG, 0) == SIGN_MINUS) {
 			log_error("Stripesize may not be negative.");
@@ -171,17 +180,16 @@ static int _lvresize(struct cmd_context *cmd, struct lvresize_params *lp)
 							     stripesize_ARG, 0);
 		else
 			log_print("Varied stripesize not supported. Ignoring.");
+		if (lp->mirrors) {
+			log_error("Mirrors and striping cannot be combined yet.");
+			return ECMD_FAILED;
+		}
 	}
 
 	lv = lvl->lv;
 
 	if (lv->status & LOCKED) {
 		log_error("Can't resize locked LV %s", lv->name);
-		return ECMD_FAILED;
-	}
-
-	if (lv_is_origin(lv)) {
-		log_error("Snapshot origin volumes cannot be resized yet.");
 		return ECMD_FAILED;
 	}
 
@@ -245,7 +253,7 @@ static int _lvresize(struct cmd_context *cmd, struct lvresize_params *lp)
 	if ((lp->extents > lv->le_count) &&
 	    !(lp->stripes == 1 || (lp->stripes > 1 && lp->stripe_size))) {
 		list_iterate_items(seg, &lv->segments) {
-			if (!(seg->segtype->flags & SEG_AREAS_STRIPED))
+			if (!seg_is_striped(seg))
 				continue;
 
 			sz = seg->stripe_size;
@@ -282,21 +290,47 @@ static int _lvresize(struct cmd_context *cmd, struct lvresize_params *lp)
 		}
 	}
 
+	/* If extending, find mirrors of last segment */
+	if ((lp->extents > lv->le_count)) {
+		list_iterate_back_items(seg, &lv->segments) {
+			if (seg_is_mirrored(seg))
+				seg_mirrors = seg->area_count;
+			else
+				seg_mirrors = 0;
+			break;
+		}
+		if (!arg_count(cmd, mirrors_ARG) && seg_mirrors) {
+			log_print("Extending %" PRIu32 " mirror images.",
+				  seg_mirrors);
+			lp->mirrors = seg_mirrors;
+		}
+		if ((arg_count(cmd, mirrors_ARG) || seg_mirrors) &&
+		    (lp->mirrors != seg_mirrors)) {
+			log_error("Cannot vary number of mirrors in LV yet.");
+			return EINVALID_CMD_LINE;
+		}
+	}
+
 	/* If reducing, find stripes, stripesize & size of last segment */
 	if (lp->extents < lv->le_count) {
 		extents_used = 0;
 
-		if (lp->stripes || lp->stripe_size)
-			log_error("Ignoring stripes and stripesize arguments "
-				  "when reducing");
+		if (lp->stripes || lp->stripe_size || lp->mirrors)
+			log_error("Ignoring stripes, stripesize and mirrors "
+				  "arguments when reducing");
 
 		list_iterate_items(seg, &lv->segments) {
 			seg_extents = seg->len;
 
-			if (seg->segtype->flags & SEG_AREAS_STRIPED) {
+			if (seg_is_striped(seg)) {
 				seg_stripesize = seg->stripe_size;
 				seg_stripes = seg->area_count;
 			}
+
+			if (seg_is_mirrored(seg))
+				seg_mirrors = seg->area_count;
+			else
+				seg_mirrors = 0;
 
 			if (lp->extents <= extents_used + seg_extents)
 				break;
@@ -307,6 +341,7 @@ static int _lvresize(struct cmd_context *cmd, struct lvresize_params *lp)
 		seg_size = lp->extents - extents_used;
 		lp->stripe_size = seg_stripesize;
 		lp->stripes = seg_stripes;
+		lp->mirrors = seg_mirrors;
 	}
 
 	if (lp->stripes > 1 && !lp->stripe_size) {
@@ -350,6 +385,28 @@ static int _lvresize(struct cmd_context *cmd, struct lvresize_params *lp)
 			return EINVALID_CMD_LINE;
 		} else
 			lp->resize = LV_EXTEND;
+	}
+
+	if (lp->mirrors && activation() &&
+	    lv_info(lv, &info, 0) && info.exists) {
+		log_error("Mirrors cannot be resized while active yet.");
+		return ECMD_FAILED;
+	}
+
+	if (lv_is_origin(lv)) {
+		if (lp->resize == LV_REDUCE) {
+			log_error("Snapshot origin volumes cannot be reduced "
+				  "in size yet.");
+			return ECMD_FAILED;
+		}
+
+		memset(&info, 0, sizeof(info));
+
+		if (lv_info(lv, &info, 0) && info.exists) {
+			log_error("Snapshot origin volumes can be resized "
+				  "only while inactive: try lvchange -an");
+			return ECMD_FAILED;
+		}
 	}
 
 	if (lp->resize == LV_REDUCE) {
@@ -439,14 +496,14 @@ static int _lvresize(struct cmd_context *cmd, struct lvresize_params *lp)
 			       SIZE_SHORT));
 
 	if (lp->resize == LV_REDUCE) {
-		if (!lv_reduce(vg->fid, lv, lv->le_count - lp->extents)) {
+		if (!lv_reduce(lv, lv->le_count - lp->extents)) {
 			stack;
 			return ECMD_FAILED;
 		}
-	} else if (!lv_extend(vg->fid, lv, lp->segtype, lp->stripes,
-			       lp->stripe_size, 0u,
-			       lp->extents - lv->le_count,
-			       NULL, 0u, 0u, pvh, alloc)) {
+	} else if (!lv_extend(lv, lp->segtype, lp->stripes,
+			      lp->stripe_size, lp->mirrors,
+			      lp->extents - lv->le_count,
+			      NULL, 0u, 0u, pvh, alloc)) {
 		stack;
 		return ECMD_FAILED;
 	}
@@ -460,8 +517,8 @@ static int _lvresize(struct cmd_context *cmd, struct lvresize_params *lp)
 	backup(vg);
 
 	/* If snapshot, must suspend all associated devices */
-	if ((snap = find_cow(lv)))
-		lock_lvid = snap->origin->lvid.s;
+	if ((snap_seg = find_cow(lv)))
+		lock_lvid = snap_seg->origin->lvid.s;
 	else
 		lock_lvid = lv->lvid.s;
 
