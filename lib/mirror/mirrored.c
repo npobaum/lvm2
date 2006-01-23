@@ -165,6 +165,47 @@ static struct mirror_state *_init_target(struct pool *mem,
 	return mirr_state;
 }
 
+static int _compose_log_line(struct dev_manager *dm, struct lv_segment *seg,
+			     char *params, size_t paramsize, int *pos,
+			     int areas, uint32_t region_size)
+{
+	int tw;
+	char devbuf[10];
+	const char *clustered = "";
+
+	/*
+	 * Use clustered mirror log for non-exclusive activation 
+	 * in clustered VG.
+	 */
+	if ((!(seg->lv->status & ACTIVATE_EXCL) &&
+	      (seg->lv->vg->status & CLUSTERED)))
+		clustered = "cluster ";
+
+	if (!seg->log_lv)
+		tw = lvm_snprintf(params, paramsize, "%score 1 %u %u ",
+				  clustered, region_size, areas);
+	else {
+		if (!build_dev_string(dm, seg->log_lv->lvid.s, devbuf,
+				      sizeof(devbuf), "log")) {
+			stack;
+			return 0;
+		}
+
+		/* FIXME add sync parm? */
+		tw = lvm_snprintf(params, paramsize, "%sdisk 2 %s %u %u ",
+				  clustered, devbuf, region_size, areas);
+	}
+
+	if (tw < 0) {
+		stack;
+		return -1;
+	}
+
+	*pos += tw;
+
+	return 1;
+}
+
 static int _compose_target_line(struct dev_manager *dm, struct pool *mem,
 				struct config_tree *cft, void **target_state,
 				struct lv_segment *seg, char *params,
@@ -220,8 +261,8 @@ static int _compose_target_line(struct dev_manager *dm, struct pool *mem,
 			}
 		}
 
-		if ((ret = compose_log_line(dm, seg, params, paramsize, pos,
-					    areas, region_size)) <= 0) {
+		if ((ret = _compose_log_line(dm, seg, params, paramsize, pos,
+					     areas, region_size)) <= 0) {
 			stack;
 			return ret;
 		}
@@ -238,18 +279,41 @@ static int _target_percent(void **target_state, struct pool *mem,
 {
 	struct mirror_state *mirr_state;
 	uint64_t numerator, denominator;
+	unsigned mirror_count, m;
+	int used;
+	char *pos = params;
 
 	if (!*target_state)
 		*target_state = _init_target(mem, cft);
 
 	mirr_state = *target_state;
 
+	/* Status line: <#mirrors> (maj:min)+ <synced>/<total_regions> */
 	log_debug("Mirror status: %s", params);
-	if (sscanf(params, "%*d %*x:%*x %*x:%*x %" PRIu64
-		   "/%" PRIu64, &numerator, &denominator) != 2) {
-		log_error("Failure parsing mirror status: %s", params);
+
+	if (sscanf(pos, "%u %n", mirror_count, used) != 1) {
+		log_error("Failure parsing mirror status mirror count: %s",
+			  params);
 		return 0;
 	}
+	pos += used;
+
+	for (m = 0; m < mirror_count; m++) {
+		if (sscanf(pos, "%*x:%*x %n", &used) != 0) {
+			log_error("Failure parsing mirror status devices: %s",
+				  params);
+			return 0;
+		}
+		pos += used;
+	}
+
+	if (sscanf(pos, "%" PRIu64 "/%" PRIu64 "%n", &numerator, &denominator,
+		   &used) != 2) {
+		log_error("Failure parsing mirror status fraction: %s", params);
+		return 0;
+	}
+	pos += used;
+
 	*total_numerator += numerator;
 	*total_denominator += denominator;
 

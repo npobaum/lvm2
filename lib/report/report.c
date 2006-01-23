@@ -432,7 +432,7 @@ static int _vgstatus_disp(struct report_handle *rh, struct field *field,
 	const struct volume_group *vg = (const struct volume_group *) data;
 	char *repstr;
 
-	if (!(repstr = pool_zalloc(rh->mem, 6))) {
+	if (!(repstr = pool_zalloc(rh->mem, 7))) {
 		log_error("pool_alloc failed");
 		return 0;
 	}
@@ -458,6 +458,11 @@ static int _vgstatus_disp(struct report_handle *rh, struct field *field,
 		repstr[3] = '-';
 
 	repstr[4] = _alloc_policy_char(vg->alloc);
+
+	if (vg->status & CLUSTERED)
+		repstr[5] = 'c';
+	else
+		repstr[5] = '-';
 
 	field->report_string = repstr;
 	field->sort_value = (const void *) field->report_string;
@@ -519,7 +524,8 @@ static int _lvname_disp(struct report_handle *rh, struct field *field,
 	char *repstr;
 	size_t len;
 
-	if (lv->status & VISIBLE_LV) {
+	/* FIXME Remove need for snapshot special case */
+	if (lv->status & VISIBLE_LV || lv_is_cow(lv)) {
 		repstr = lv->name;
 		return _string_disp(rh, field, &repstr);
 	}
@@ -650,6 +656,21 @@ static int _segsize_disp(struct report_handle *rh, struct field *field,
 	uint64_t size;
 
 	size = (uint64_t) seg->len * seg->lv->vg->extent_size;
+
+	return _size64_disp(rh, field, &size);
+}
+
+static int _chunksize_disp(struct report_handle *rh, struct field *field,
+			   const void *data)
+{
+	const struct lv_segment *seg = (const struct lv_segment *) data;
+	struct lv_segment *snap_seg;
+	uint64_t size;
+
+	if ((snap_seg = find_cow(seg->lv)))
+		size = (uint64_t) snap_seg->chunk_size;
+	else
+		size = 0;
 
 	return _size64_disp(rh, field, &size);
 }

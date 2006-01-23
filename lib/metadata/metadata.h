@@ -57,6 +57,7 @@
 #define VIRTUAL			0x00010000	/* LV - internal use only */
 #define MIRROR_LOG		0x00020000	/* LV */
 #define MIRROR_IMAGE		0x00040000	/* LV */
+#define ACTIVATE_EXCL		0x00080000	/* LV - internal use only */
 
 #define LVM_READ              	0x00000100	/* LV VG */
 #define LVM_WRITE             	0x00000200	/* LV VG */
@@ -543,6 +544,8 @@ int vg_remove_snapshot(struct logical_volume *cow);
  * Mirroring functions
  */
 struct alloc_handle;
+uint32_t adjusted_mirror_region_size(uint32_t extent_size, uint32_t extents,
+                                     uint32_t region_size);
 int create_mirror_layers(struct alloc_handle *ah,
 			 uint32_t first_area,
 			 uint32_t num_mirrors,
