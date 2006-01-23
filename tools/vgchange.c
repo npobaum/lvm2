@@ -37,18 +37,18 @@ static int _activate_lvs_in_vg(struct cmd_context *cmd,
 			continue;
 
 		if (activate == CHANGE_AN) {
-			if (!deactivate_lv(cmd, lv->lvid.s))
+			if (!deactivate_lv(cmd, lv))
 				continue;
 		} else if (activate == CHANGE_ALN) {
-			if (!deactivate_lv_local(cmd, lv->lvid.s))
+			if (!deactivate_lv_local(cmd, lv))
 				continue;
 		} else if (lv_is_origin(lv) || (activate == CHANGE_AE)) {
-			if (!activate_lv_excl(cmd, lv->lvid.s))
+			if (!activate_lv_excl(cmd, lv))
 				continue;
 		} else if (activate == CHANGE_ALY) {
-			if (!activate_lv_local(cmd, lv->lvid.s))
+			if (!activate_lv_local(cmd, lv))
 				continue;
-		} else if (!activate_lv(cmd, lv->lvid.s))
+		} else if (!activate_lv(cmd, lv))
 			continue;
 
 		if ((lv->status & PVMOVE) &&
@@ -182,6 +182,7 @@ static int _vgchange_clustered(struct cmd_context *cmd,
 			       struct volume_group *vg)
 {
 	int clustered = !strcmp(arg_str_value(cmd, clustered_ARG, "n"), "y");
+	struct lv_list *lvl;
 
 	if (clustered && (vg->status & CLUSTERED)) {
 		log_error("Volume group \"%s\" is already clustered",
@@ -193,6 +194,17 @@ static int _vgchange_clustered(struct cmd_context *cmd,
 		log_error("Volume group \"%s\" is already not clustered",
 			  vg->name);
 		return ECMD_FAILED;
+	}
+
+	if (clustered) {
+        	list_iterate_items(lvl, &vg->lvs) {
+                	if (lvl->lv->origin_count || lvl->lv->snapshot) {
+				log_error("Volume group %s contains snapshots "
+					  "that are not yet supported.",
+					  vg->name);
+				return ECMD_FAILED;
+			}
+		}
 	}
 
 	if (!archive(vg))

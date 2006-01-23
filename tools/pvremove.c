@@ -72,7 +72,7 @@ static int pvremove_single(struct cmd_context *cmd, const char *pv_name,
 {
 	struct device *dev;
 
-	if (!lock_vol(cmd, "", LCK_VG_WRITE)) {
+	if (!lock_vol(cmd, ORPHAN, LCK_VG_WRITE)) {
 		log_error("Can't get lock for orphan PVs");
 		return ECMD_FAILED;
 	}
@@ -86,6 +86,12 @@ static int pvremove_single(struct cmd_context *cmd, const char *pv_name,
 		goto error;
 	}
 
+	if (!dev_test_excl(dev)) {
+		log_error("Can't open %s exclusively.  Mounted filesystem?",
+			  dev_name(dev));
+		return 0;
+	}
+
 	/* Wipe existing label(s) */
 	if (!label_remove(dev)) {
 		log_error("Failed to wipe existing label(s) on %s", pv_name);
@@ -95,11 +101,11 @@ static int pvremove_single(struct cmd_context *cmd, const char *pv_name,
 	log_print("Labels on physical volume \"%s\" successfully wiped",
 		  pv_name);
 
-	unlock_vg(cmd, "");
+	unlock_vg(cmd, ORPHAN);
 	return ECMD_PROCESSED;
 
       error:
-	unlock_vg(cmd, "");
+	unlock_vg(cmd, ORPHAN);
 	return ECMD_FAILED;
 }
 

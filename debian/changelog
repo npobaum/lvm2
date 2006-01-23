@@ -1,3 +1,9 @@
+lvm2 (2.01.15-0ubuntu1) dapper; urgency=low
+
+  * New upstream version.
+
+ -- Matthias Klose <doko@ubuntu.com>  Mon, 23 Jan 2006 09:58:28 +0100
+
 lvm2 (2.01.14-3ubuntu2) dapper; urgency=low
 
   * Drop selinux support since it breaks lvm2-udeb.
