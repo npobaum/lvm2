@@ -44,7 +44,7 @@ $(BUILD_DIR)/build-deb/config.status:
 	cd $(DIR); \
 	./configure CFLAGS="$(CFLAGS)" $(CONFIGURE_FLAGS) \
 		--with-cluster=shared \
-		--with-clvmd=cman \
+		--with-clvmd=all \
 		--enable-readline \
 		--disable-selinux
 
@@ -132,7 +132,7 @@ binary-arch: build install
 #	dh_installemacsen -a
 #	dh_installpam -a
 #	dh_installmime -a
-#	dh_installinit -a
+	dh_installinit -p clvm --no-restart-on-upgrade -- start 65 S . start 3 0 6 .
 #	dh_installcron -a
 #	dh_installman -a
 #	dh_installinfo -a
