@@ -1,3 +1,17 @@
+lvm2 (2.01.15-0ubuntu3) dapper; urgency=low
+
+  * Call pvscan in clvm init script after clvmd is running
+    to refresh the cache or vgchange might fail.
+
+  * Add wait_for_nodes loop to avoid a possible race condition
+    when starting up the entire cluster all together to clvm init script.
+
+  * Make clvm init script use /etc/default/clvm instead of /etc/default/clvmd.
+
+  * Ship a default clvm.
+
+ -- Fabio M. Di Nitto <fabbione@ubuntu.com>  Thu, 06 Apr 2006 07:32:53 +0200
+
 lvm2 (2.01.15-0ubuntu2) dapper; urgency=low
 
   * Add init script for clvmd.
