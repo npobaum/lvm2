@@ -48,6 +48,8 @@ $(BUILD_DIR)/build-deb/config.status:
 		--enable-readline \
 		--disable-selinux
 
+	cp po/lvm2.po po/lvm2.pot
+
 $(BUILD_DIR)/build-udeb/config.status: DIR = $(BUILD_DIR)/build-udeb
 $(BUILD_DIR)/build-udeb/config.status:
 	dh_testdir
@@ -86,6 +88,7 @@ $(BUILD_DIR)/build-udeb-stamp: $(BUILD_DIR)/build-udeb/config.status
 clean:
 	dh_testdir
 	rm -rf $(BUILD_DIR)
+	rm -f po/lvm2.pot
 
 	dh_clean
 
