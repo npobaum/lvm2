@@ -16,7 +16,6 @@
 #include "lib.h"
 #include "lvm-types.h"
 #include "lvm-string.h"
-#include "pool.h"
 
 #include <ctype.h>
 
@@ -131,15 +130,15 @@ static void _quote_hyphens(char **out, const char *src)
 /*
  * <vg>-<lv>-<layer> or if !layer just <vg>-<lv>.
  */
-char *build_dm_name(struct pool *mem, const char *vg,
-		    const char *lv, const char *layer)
+char *build_dm_name(struct dm_pool *mem, const char *vgname,
+		    const char *lvname, const char *layer)
 {
 	size_t len = 1;
 	int hyphens = 1;
 	char *r, *out;
 
-	_count_hyphens(vg, &len, &hyphens);
-	_count_hyphens(lv, &len, &hyphens);
+	_count_hyphens(vgname, &len, &hyphens);
+	_count_hyphens(lvname, &len, &hyphens);
 
 	if (layer && *layer) {
 		_count_hyphens(layer, &len, &hyphens);
@@ -148,15 +147,16 @@ char *build_dm_name(struct pool *mem, const char *vg,
 
 	len += hyphens;
 
-	if (!(r = pool_alloc(mem, len))) {
-		stack;
+	if (!(r = dm_pool_alloc(mem, len))) {
+		log_error("build_dm_name: Allocation failed for %" PRIsize_t
+			  " for %s %s %s.", len, vgname, lvname, layer);
 		return NULL;
 	}
 
 	out = r;
-	_quote_hyphens(&out, vg);
+	_quote_hyphens(&out, vgname);
 	*out++ = '-';
-	_quote_hyphens(&out, lv);
+	_quote_hyphens(&out, lvname);
 
 	if (layer && *layer) {
 		*out++ = '-';
@@ -175,6 +175,7 @@ static char *_unquote(char *component)
 {
 	char *c = component;
 	char *o = c;
+	char *r;
 
 	while (*c) {
 		if (*(c + 1)) {
@@ -190,14 +191,16 @@ static char *_unquote(char *component)
 		c++;
 	}
 
+	r = (*c) ? c + 1 : c;
 	*o = '\0';
-	return (c + 1);
+
+	return r;
 }
 
-int split_dm_name(struct pool *mem, const char *dmname,
+int split_dm_name(struct dm_pool *mem, const char *dmname,
 		  char **vgname, char **lvname, char **layer)
 {
-	if (!(*vgname = pool_strdup(mem, dmname)))
+	if (!(*vgname = dm_pool_strdup(mem, dmname)))
 		return 0;
 
 	_unquote(*layer = _unquote(*lvname = _unquote(*vgname)));

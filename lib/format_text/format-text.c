@@ -18,9 +18,7 @@
 #include "import-export.h"
 #include "device.h"
 #include "lvm-file.h"
-#include "pool.h"
 #include "config.h"
-#include "hash.h"
 #include "display.h"
 #include "toolcontext.h"
 #include "lvm-string.h"
@@ -44,6 +42,11 @@
 static struct format_instance *_create_text_instance(const struct format_type
 						     *fmt, const char *vgname,
 						     void *context);
+
+struct text_fid_context {
+	char *raw_metadata_buf;
+	uint32_t raw_metadata_buf_size;
+};
 
 struct dir_list {
 	struct list list;
@@ -83,7 +86,7 @@ static int _lv_setup(struct format_instance *fid, struct logical_volume *lv)
 	if (lv->size > max_size) {
 		char *dummy = display_size(max_size, SIZE_SHORT);
 		log_error("logical volumes cannot be larger than %s", dummy);
-		dbg_free(dummy);
+		dm_free(dummy);
 		return 0;
 	}
 */
@@ -119,14 +122,14 @@ static struct mda_header *_raw_read_mda_header(const struct format_type *fmt,
 {
 	struct mda_header *mdah;
 
-	if (!(mdah = pool_alloc(fmt->cmd->mem, MDA_HEADER_SIZE))) {
+	if (!(mdah = dm_pool_alloc(fmt->cmd->mem, MDA_HEADER_SIZE))) {
 		log_error("struct mda_header allocation failed");
 		return NULL;
 	}
 
 	if (!dev_read(dev_area->dev, dev_area->start, MDA_HEADER_SIZE, mdah)) {
 		stack;
-		pool_free(fmt->cmd->mem, mdah);
+		dm_pool_free(fmt->cmd->mem, mdah);
 		return NULL;
 	}
 
@@ -174,7 +177,7 @@ static int _raw_write_mda_header(const struct format_type *fmt,
 
 	if (!dev_write(dev, start_byte, MDA_HEADER_SIZE, mdah)) {
 		stack;
-		pool_free(fmt->cmd->mem, mdah);
+		dm_pool_free(fmt->cmd->mem, mdah);
 		return 0;
 	}
 
@@ -184,17 +187,22 @@ static int _raw_write_mda_header(const struct format_type *fmt,
 static struct raw_locn *_find_vg_rlocn(struct device_area *dev_area,
 				       struct mda_header *mdah,
 				       const char *vgname,
-				       int precommit)
+				       int *precommitted)
 {
 	size_t len;
 	char vgnamebuf[NAME_LEN + 2];
-	struct raw_locn *rlocn;
+	struct raw_locn *rlocn, *rlocn_precommitted;
 	struct lvmcache_info *info;
 
 	rlocn = mdah->raw_locns;	/* Slot 0 */
+	rlocn_precommitted = rlocn + 1;	/* Slot 1 */
 
-	if (precommit)
-		rlocn++;		/* Slot 1 */
+	/* Should we use precommitted metadata? */
+	if (*precommitted && rlocn_precommitted->size &&
+	    (rlocn_precommitted->offset != rlocn->offset)) {
+		rlocn = rlocn_precommitted;
+	} else
+		*precommitted = 0;
 
 	/* FIXME Loop through rlocns two-at-a-time.  List null-terminated. */
 	/* FIXME Ignore if checksum incorrect!!! */
@@ -238,6 +246,7 @@ static int _raw_holds_vgname(struct format_instance *fid,
 			     struct device_area *dev_area, const char *vgname)
 {
 	int r = 0;
+	int noprecommit = 0;
 	struct mda_header *mdah;
 
 	if (!dev_open(dev_area->dev)) {
@@ -250,7 +259,7 @@ static int _raw_holds_vgname(struct format_instance *fid,
 		return 0;
 	}
 
-	if (_find_vg_rlocn(dev_area, mdah, vgname, 0))
+	if (_find_vg_rlocn(dev_area, mdah, vgname, &noprecommit))
 		r = 1;
 
 	if (!dev_close(dev_area->dev))
@@ -262,7 +271,7 @@ static int _raw_holds_vgname(struct format_instance *fid,
 static struct volume_group *_vg_read_raw_area(struct format_instance *fid,
 					      const char *vgname,
 					      struct device_area *area,
-					      int precommit)
+					      int precommitted)
 {
 	struct volume_group *vg = NULL;
 	struct raw_locn *rlocn;
@@ -281,7 +290,7 @@ static struct volume_group *_vg_read_raw_area(struct format_instance *fid,
 		goto out;
 	}
 
-	if (!(rlocn = _find_vg_rlocn(area, mdah, vgname, precommit))) {
+	if (!(rlocn = _find_vg_rlocn(area, mdah, vgname, &precommitted))) {
 		log_debug("VG %s not found on %s", vgname, dev_name(area->dev));
 		goto out;
 	}
@@ -306,9 +315,12 @@ static struct volume_group *_vg_read_raw_area(struct format_instance *fid,
 		goto out;
 	}
 	log_debug("Read %s %smetadata (%u) from %s at %" PRIu64 " size %"
-		  PRIu64, vg->name, precommit ? "pre-commit " : "",
+		  PRIu64, vg->name, precommitted ? "pre-commit " : "",
 		  vg->seqno, dev_name(area->dev),
 		  area->start + rlocn->offset, rlocn->size);
+
+	if (precommitted)
+		vg->status |= PRECOMMITTED;
 
       out:
 	if (!dev_close(area->dev))
@@ -339,13 +351,14 @@ static int _vg_write_raw(struct format_instance *fid, struct volume_group *vg,
 			 struct metadata_area *mda)
 {
 	struct mda_context *mdac = (struct mda_context *) mda->metadata_locn;
+	struct text_fid_context *fidtc = (struct text_fid_context *) fid->private;
 	struct raw_locn *rlocn;
 	struct mda_header *mdah;
 	struct pv_list *pvl;
 	int r = 0;
 	uint32_t new_wrap = 0, old_wrap = 0;
-	char *buf = NULL;
 	int found = 0;
+	int noprecommit = 0;
 
 	/* Ignore any mda on a PV outside the VG. vgsplit relies on this */
 	list_iterate_items(pvl, &vg->pvs) {
@@ -368,13 +381,17 @@ static int _vg_write_raw(struct format_instance *fid, struct volume_group *vg,
 		goto out;
 	}
 
-	rlocn = _find_vg_rlocn(&mdac->area, mdah, vg->name, 0);
+	rlocn = _find_vg_rlocn(&mdac->area, mdah, vg->name, &noprecommit);
 	mdac->rlocn.offset = _next_rlocn_offset(rlocn, mdah);
 
-	if (!(mdac->rlocn.size = text_vg_export_raw(vg, "", &buf))) {
+	if (!fidtc->raw_metadata_buf &&
+	    !(fidtc->raw_metadata_buf_size =
+			text_vg_export_raw(vg, "", &fidtc->raw_metadata_buf))) {
 		log_error("VG %s metadata writing failed", vg->name);
 		goto out;
 	}
+
+	mdac->rlocn.size = fidtc->raw_metadata_buf_size;
 
 	if (mdac->rlocn.offset + mdac->rlocn.size > mdah->size)
 		new_wrap = (mdac->rlocn.offset + mdac->rlocn.size) - mdah->size;
@@ -398,7 +415,8 @@ static int _vg_write_raw(struct format_instance *fid, struct volume_group *vg,
 
 	/* Write text out, circularly */
 	if (!dev_write(mdac->area.dev, mdac->area.start + mdac->rlocn.offset,
-		       (size_t) (mdac->rlocn.size - new_wrap), buf)) {
+		       (size_t) (mdac->rlocn.size - new_wrap),
+		       fidtc->raw_metadata_buf)) {
 		stack;
 		goto out;
 	}
@@ -411,18 +429,20 @@ static int _vg_write_raw(struct format_instance *fid, struct volume_group *vg,
 		if (!dev_write(mdac->area.dev,
 			       mdac->area.start + MDA_HEADER_SIZE,
 			       (size_t) new_wrap,
-			       buf + mdac->rlocn.size - new_wrap)) {
+			       fidtc->raw_metadata_buf + 
+			       mdac->rlocn.size - new_wrap)) {
 			stack;
 			goto out;
 		}
 	}
 
-	mdac->rlocn.checksum = calc_crc(INITIAL_CRC, buf,
+	mdac->rlocn.checksum = calc_crc(INITIAL_CRC, fidtc->raw_metadata_buf,
 					(uint32_t) (mdac->rlocn.size -
 						    new_wrap));
 	if (new_wrap)
 		mdac->rlocn.checksum = calc_crc(mdac->rlocn.checksum,
-						buf + mdac->rlocn.size -
+						fidtc->raw_metadata_buf +
+						mdac->rlocn.size -
 						new_wrap, new_wrap);
 
 	r = 1;
@@ -431,8 +451,6 @@ static int _vg_write_raw(struct format_instance *fid, struct volume_group *vg,
 	if (!r && !dev_close(mdac->area.dev))
 		stack;
 
-	if (buf)
-		dbg_free(buf);
 	return r;
 }
 
@@ -442,11 +460,13 @@ static int _vg_commit_raw_rlocn(struct format_instance *fid,
 				int precommit)
 {
 	struct mda_context *mdac = (struct mda_context *) mda->metadata_locn;
+	struct text_fid_context *fidtc = (struct text_fid_context *) fid->private;
 	struct mda_header *mdah;
 	struct raw_locn *rlocn;
 	struct pv_list *pvl;
 	int r = 0;
 	int found = 0;
+	int noprecommit = 0;
 
 	/* Ignore any mda on a PV outside the VG. vgsplit relies on this */
 	list_iterate_items(pvl, &vg->pvs) {
@@ -464,23 +484,41 @@ static int _vg_commit_raw_rlocn(struct format_instance *fid,
 		goto out;
 	}
 
-	if (!(rlocn = _find_vg_rlocn(&mdac->area, mdah, vg->name, 0))) {
+	if (!(rlocn = _find_vg_rlocn(&mdac->area, mdah, vg->name, &noprecommit))) {
 		mdah->raw_locns[0].offset = 0;
+		mdah->raw_locns[0].size = 0;
+		mdah->raw_locns[0].checksum = 0;
 		mdah->raw_locns[1].offset = 0;
+		mdah->raw_locns[1].size = 0;
+		mdah->raw_locns[1].checksum = 0;
 		mdah->raw_locns[2].offset = 0;
+		mdah->raw_locns[2].size = 0;
+		mdah->raw_locns[2].checksum = 0;
 		rlocn = &mdah->raw_locns[0];
 	}
 
 	if (precommit)
 		rlocn++;
+	else {
+		/* If not precommitting, wipe the precommitted rlocn */
+		mdah->raw_locns[1].offset = 0;
+		mdah->raw_locns[1].size = 0;
+		mdah->raw_locns[1].checksum = 0;
+	}
 
-	rlocn->offset = mdac->rlocn.offset;
-	rlocn->size = mdac->rlocn.size;
-	rlocn->checksum = mdac->rlocn.checksum;
+	/* Is there new metadata to commit? */
+	if (mdac->rlocn.size) {
+		rlocn->offset = mdac->rlocn.offset;
+		rlocn->size = mdac->rlocn.size;
+		rlocn->checksum = mdac->rlocn.checksum;
+		log_debug("%sCommitting %s metadata (%u) to %s header at %"
+			  PRIu64, precommit ? "Pre-" : "", vg->name, vg->seqno,
+			  dev_name(mdac->area.dev), mdac->area.start);
+	} else
+		log_debug("Wiping pre-committed %s metadata from %s "
+			  "header at %" PRIu64, vg->name,
+			  dev_name(mdac->area.dev), mdac->area.start);
 
-	log_debug("%sCommitting %s metadata (%u) to %s header at %" PRIu64,
-		  precommit ? "Pre-" : "", vg->name, vg->seqno,
-		  dev_name(mdac->area.dev), mdac->area.start);
 	if (!_raw_write_mda_header(fid->fmt, mdac->area.dev, mdac->area.start,
 				   mdah)) {
 		log_error("Failed to write metadata area header");
@@ -490,8 +528,14 @@ static int _vg_commit_raw_rlocn(struct format_instance *fid,
 	r = 1;
 
       out:
-	if (!precommit && !dev_close(mdac->area.dev))
-		stack;
+	if (!precommit) {
+		if (!dev_close(mdac->area.dev))
+			stack;
+		if (fidtc->raw_metadata_buf) {
+			dm_free(fidtc->raw_metadata_buf);
+			fidtc->raw_metadata_buf = NULL;
+		}
+	}
 
 	return r;
 }
@@ -528,10 +572,9 @@ static int _vg_revert_raw(struct format_instance *fid, struct volume_group *vg,
 	if (!found)
 		return 1;
 
-	if (!dev_close(mdac->area.dev))
-		stack;
-
-	return 1;
+	/* Wipe pre-committed metadata */
+	mdac->rlocn.size = 0;
+	return _vg_commit_raw_rlocn(fid, vg, mda, 0);
 }
 
 static int _vg_remove_raw(struct format_instance *fid, struct volume_group *vg,
@@ -541,6 +584,7 @@ static int _vg_remove_raw(struct format_instance *fid, struct volume_group *vg,
 	struct mda_header *mdah;
 	struct raw_locn *rlocn;
 	int r = 0;
+	int noprecommit = 0;
 
 	if (!dev_open(mdac->area.dev)) {
 		stack;
@@ -552,7 +596,7 @@ static int _vg_remove_raw(struct format_instance *fid, struct volume_group *vg,
 		goto out;
 	}
 
-	if (!(rlocn = _find_vg_rlocn(&mdac->area, mdah, vg->name, 0))) {
+	if (!(rlocn = _find_vg_rlocn(&mdac->area, mdah, vg->name, &noprecommit))) {
 		rlocn = &mdah->raw_locns[0];
 		mdah->raw_locns[1].offset = 0;
 	}
@@ -595,7 +639,7 @@ static struct volume_group *_vg_read_file_name(struct format_instance *fid,
 	 * check that it contains the correct volume group.
 	 */
 	if (vgname && strcmp(vgname, vg->name)) {
-		pool_free(fid->fmt->cmd->mem, vg);
+		dm_pool_free(fid->fmt->cmd->mem, vg);
 		log_err("'%s' does not contain volume group '%s'.",
 			read_path, vgname);
 		return NULL;
@@ -619,8 +663,14 @@ static struct volume_group *_vg_read_precommit_file(struct format_instance *fid,
 						    struct metadata_area *mda)
 {
 	struct text_context *tc = (struct text_context *) mda->metadata_locn;
+	struct volume_group *vg;
 
-	return _vg_read_file_name(fid, vgname, tc->path_edit);
+	if ((vg = _vg_read_file_name(fid, vgname, tc->path_edit)))
+		vg->status |= PRECOMMITTED;
+	else
+		vg = _vg_read_file_name(fid, vgname, tc->path_live);
+
+	return vg;
 }
 
 static int _vg_write_file(struct format_instance *fid, struct volume_group *vg,
@@ -1160,7 +1210,7 @@ static int _add_raw(struct list *raw_list, struct device_area *dev_area)
 			return 1;
 	}
 
-	if (!(rl = dbg_malloc(sizeof(struct raw_list)))) {
+	if (!(rl = dm_malloc(sizeof(struct raw_list)))) {
 		log_error("_add_raw allocation failed");
 		return 0;
 	}
@@ -1234,11 +1284,11 @@ static int _pv_read(const struct format_type *fmt, const char *pv_name,
 	/* Add copy of mdas to supplied list */
 	list_iterate_items(mda, &info->mdas) {
 		mdac = (struct mda_context *) mda->metadata_locn;
-		if (!(mda_new = pool_alloc(fmt->cmd->mem, sizeof(*mda_new)))) {
+		if (!(mda_new = dm_pool_alloc(fmt->cmd->mem, sizeof(*mda_new)))) {
 			log_error("metadata_area allocation failed");
 			return 0;
 		}
-		if (!(mdac_new = pool_alloc(fmt->cmd->mem, sizeof(*mdac_new)))) {
+		if (!(mdac_new = dm_pool_alloc(fmt->cmd->mem, sizeof(*mdac_new)))) {
 			log_error("metadata_area allocation failed");
 			return 0;
 		}
@@ -1262,7 +1312,7 @@ static void _free_dirs(struct list *dir_list)
 
 	list_iterate_safe(dl, tmp, dir_list) {
 		list_del(dl);
-		dbg_free(dl);
+		dm_free(dl);
 	}
 }
 
@@ -1272,7 +1322,7 @@ static void _free_raws(struct list *raw_list)
 
 	list_iterate_safe(rl, tmp, raw_list) {
 		list_del(rl);
-		dbg_free(rl);
+		dm_free(rl);
 	}
 }
 
@@ -1281,10 +1331,10 @@ static void _destroy(const struct format_type *fmt)
 	if (fmt->private) {
 		_free_dirs(&((struct mda_lists *) fmt->private)->dirs);
 		_free_raws(&((struct mda_lists *) fmt->private)->raws);
-		dbg_free(fmt->private);
+		dm_free(fmt->private);
 	}
 
-	dbg_free((void *) fmt);
+	dm_free((void *) fmt);
 }
 
 static struct metadata_area_ops _metadata_text_file_ops = {
@@ -1361,13 +1411,13 @@ static int _pv_setup(const struct format_type *fmt,
 				if (found)
 					continue;
 
-				if (!(mda_new = pool_alloc(fmt->cmd->mem,
+				if (!(mda_new = dm_pool_alloc(fmt->cmd->mem,
 							   sizeof(*mda_new)))) {
 					stack;
 					return 0;
 				}
 
-				if (!(mdac_new = pool_alloc(fmt->cmd->mem,
+				if (!(mdac_new = dm_pool_alloc(fmt->cmd->mem,
 							    sizeof(*mdac_new)))) {
 					stack;
 					return 0;
@@ -1403,6 +1453,7 @@ static struct format_instance *_create_text_instance(const struct format_type
 						     void *context)
 {
 	struct format_instance *fid;
+	struct text_fid_context *fidtc;
 	struct metadata_area *mda, *mda_new;
 	struct mda_context *mdac, *mdac_new;
 	struct dir_list *dl;
@@ -1412,17 +1463,25 @@ static struct format_instance *_create_text_instance(const struct format_type
 	struct lvmcache_vginfo *vginfo;
 	struct lvmcache_info *info;
 
-	if (!(fid = pool_alloc(fmt->cmd->mem, sizeof(*fid)))) {
+	if (!(fid = dm_pool_alloc(fmt->cmd->mem, sizeof(*fid)))) {
 		log_error("Couldn't allocate format instance object.");
 		return NULL;
 	}
 
-	fid->fmt = fmt;
+	if (!(fidtc = (struct text_fid_context *)
+			dm_pool_zalloc(fmt->cmd->mem,sizeof(*fidtc)))) {
+		log_error("Couldn't allocate text_fid_context.");
+		return NULL;
+	}
 
+	fidtc->raw_metadata_buf = NULL;
+	fid->private = (void *) fidtc;
+
+	fid->fmt = fmt;
 	list_init(&fid->metadata_areas);
 
 	if (!vgname) {
-		if (!(mda = pool_alloc(fmt->cmd->mem, sizeof(*mda)))) {
+		if (!(mda = dm_pool_alloc(fmt->cmd->mem, sizeof(*mda)))) {
 			stack;
 			return NULL;
 		}
@@ -1441,7 +1500,7 @@ static struct format_instance *_create_text_instance(const struct format_type
 			}
 
 			context = create_text_context(fmt->cmd, path, NULL);
-			if (!(mda = pool_alloc(fmt->cmd->mem, sizeof(*mda)))) {
+			if (!(mda = dm_pool_alloc(fmt->cmd->mem, sizeof(*mda)))) {
 				stack;
 				return NULL;
 			}
@@ -1457,12 +1516,12 @@ static struct format_instance *_create_text_instance(const struct format_type
 			if (!_raw_holds_vgname(fid, &rl->dev_area, vgname))
 				continue;
 
-			if (!(mda = pool_alloc(fmt->cmd->mem, sizeof(*mda)))) {
+			if (!(mda = dm_pool_alloc(fmt->cmd->mem, sizeof(*mda)))) {
 				stack;
 				return NULL;
 			}
 
-			if (!(mdac = pool_alloc(fmt->cmd->mem, sizeof(*mdac)))) {
+			if (!(mdac = dm_pool_alloc(fmt->cmd->mem, sizeof(*mdac)))) {
 				stack;
 				return NULL;
 			}
@@ -1487,13 +1546,13 @@ static struct format_instance *_create_text_instance(const struct format_type
 				    (struct mda_context *) mda->metadata_locn;
 
 				/* FIXME Check it holds this VG */
-				if (!(mda_new = pool_alloc(fmt->cmd->mem,
+				if (!(mda_new = dm_pool_alloc(fmt->cmd->mem,
 							   sizeof(*mda_new)))) {
 					stack;
 					return NULL;
 				}
 
-				if (!(mdac_new = pool_alloc(fmt->cmd->mem,
+				if (!(mdac_new = dm_pool_alloc(fmt->cmd->mem,
 							    sizeof(*mdac_new)))) {
 					stack;
 					return NULL;
@@ -1525,17 +1584,17 @@ void *create_text_context(struct cmd_context *cmd, const char *path,
 		return NULL;
 	}
 
-	if (!(tc = pool_alloc(cmd->mem, sizeof(*tc)))) {
+	if (!(tc = dm_pool_alloc(cmd->mem, sizeof(*tc)))) {
 		stack;
 		return NULL;
 	}
 
-	if (!(tc->path_live = pool_strdup(cmd->mem, path))) {
+	if (!(tc->path_live = dm_pool_strdup(cmd->mem, path))) {
 		stack;
 		goto no_mem;
 	}
 
-	if (!(tc->path_edit = pool_alloc(cmd->mem, strlen(path) + 5))) {
+	if (!(tc->path_edit = dm_pool_alloc(cmd->mem, strlen(path) + 5))) {
 		stack;
 		goto no_mem;
 	}
@@ -1544,7 +1603,7 @@ void *create_text_context(struct cmd_context *cmd, const char *path,
 	if (!desc)
 		desc = "";
 
-	if (!(tc->desc = pool_strdup(cmd->mem, desc))) {
+	if (!(tc->desc = dm_pool_strdup(cmd->mem, desc))) {
 		stack;
 		goto no_mem;
 	}
@@ -1552,7 +1611,7 @@ void *create_text_context(struct cmd_context *cmd, const char *path,
 	return (void *) tc;
 
       no_mem:
-	pool_free(cmd->mem, tc);
+	dm_pool_free(cmd->mem, tc);
 
 	log_err("Couldn't allocate text format context object.");
 	return NULL;
@@ -1575,7 +1634,7 @@ static int _add_dir(const char *dir, struct list *dir_list)
 	struct dir_list *dl;
 
 	if (create_dir(dir)) {
-		if (!(dl = dbg_malloc(sizeof(struct list) + strlen(dir) + 1))) {
+		if (!(dl = dm_malloc(sizeof(struct list) + strlen(dir) + 1))) {
 			log_error("_add_dir allocation failed");
 			return 0;
 		}
@@ -1647,7 +1706,7 @@ struct format_type *create_text_format(struct cmd_context *cmd)
 	struct config_value *cv;
 	struct mda_lists *mda_lists;
 
-	if (!(fmt = dbg_malloc(sizeof(*fmt)))) {
+	if (!(fmt = dm_malloc(sizeof(*fmt)))) {
 		stack;
 		return NULL;
 	}
@@ -1657,9 +1716,9 @@ struct format_type *create_text_format(struct cmd_context *cmd)
 	fmt->name = FMT_TEXT_NAME;
 	fmt->alias = FMT_TEXT_ALIAS;
 	fmt->features = FMT_SEGMENTS | FMT_MDAS | FMT_TAGS | FMT_PRECOMMIT |
-			FMT_UNLIMITED_VOLS;
+			FMT_UNLIMITED_VOLS | FMT_RESIZE_PV;
 
-	if (!(mda_lists = dbg_malloc(sizeof(struct mda_lists)))) {
+	if (!(mda_lists = dm_malloc(sizeof(struct mda_lists)))) {
 		log_error("Failed to allocate dir_list");
 		return NULL;
 	}
@@ -1710,6 +1769,6 @@ struct format_type *create_text_format(struct cmd_context *cmd)
       err:
 	_free_dirs(&mda_lists->dirs);
 
-	dbg_free(fmt);
+	dm_free(fmt);
 	return NULL;
 }

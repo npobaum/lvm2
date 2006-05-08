@@ -1,5 +1,6 @@
 /*
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.  
+ * Copyright (C) 2004-2005 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -12,11 +13,7 @@
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
-#ifndef _LVM_SELINUX_H
-#define _LVM_SELINUX_H
+#include "lib.h"
 
-#include <sys/types.h>
-
-int set_selinux_context(const char * path, mode_t mode);
-
-#endif
+int exec_cmd(const char *command, const char *fscmd, const char *lv_path,
+	     const char *size);

@@ -1,3 +1,65 @@
+Version 2.02.02 - 7th February 2006
+===================================
+  Add %.so: %.a make template rule.
+  Switchover library building to use LIB_SUFFIX.
+  Only do lockfs filesystem sync when suspending snapshots.
+  Always print warning if activation is disabled.
+  vgreduce removes mirror images.
+  Add --mirrorsonly to vgreduce.
+  vgreduce replaces active LVs with error segment before removing them.
+  Set block_on_error parameter if available.
+  Add target_version.
+  Add details to format1 'Invalid LV in extent map' error message.
+  Fix lvscan snapshot full display.
+  Bring lvdisplay man page example into line.
+  Add mirror dmeventd library.
+  Add some activation logic to remove_mirror_images().
+  lvconvert can remove specified PVs from a mirror.
+  lvconvert turns an existing LV into a mirror.
+  Allow signed mirrors arguments.
+  Move create_mirror_log() into toollib.
+  Determine parallel PVs to avoid with ALLOC_NORMAL allocation.
+  Fix lv_empty.
+
+Version 2.02.01 - 23rd November 2005
+====================================
+  Fix lvdisplay cmdline to accept snapshots.
+  Fix open RO->RW promotion.
+  Fix missing vg_revert in lvcreate error path.
+
+Version 2.02.00 - 10th November 2005
+====================================
+  Extend allocation areas to avoid overflow with contiguous with other PVs.
+  Stop lvcreate attempting to wipe zero or error segments.
+  Added new lvs table attributes.
+  Separated out activation preload.
+  Moved activation functions into libdevmapper.
+  Fixed build_dm_name.
+  Add return macros.
+  Added xen xvd devices.
+  Clear up precommitted metadata better.
+  A pvresize implementation.
+  Fix contiguous allocation when there are no preceding segments.
+  Add mirror_seg pointer to lv_segment struct.
+  Only keep a device open if it's known to belong to a locked VG.
+  Fix lvdisplay to show all mirror destinations.
+  Replacement suspend code using libdevmapper dependency tree.
+  Add DEFS to make.tmpl.
+  Use dm_is_dm_major instead of local copy.
+  Allow mapped devices to be used as PVs.
+  Move set_selinux_context into libdevmapper.
+  Fix automatic text metadata buffer expansion (using macro).
+  Cache formatted text metadata buffer between metadata area writes.
+  Add pe_start field to pvs.
+  Add 'LVM-' prefix to uuids.
+  Split lv_segment_area from lv_segment to permit extension.
+  Replacement deactivation code using libdevmapper dependency tree.
+  Simplify dev_manager_info().
+  Attempt to load missing targets using modprobe.
+  Add -a to lvscan.
+  Move mknodes into libdevmapper.
+  Move bitset, hash, pool and dbg_malloc into libdevmapper.
+
 Version 2.01.15 - 16th October 2005
 ===================================
   Refuse to run pvcreate/pvremove on devices we can't open exclusively.
