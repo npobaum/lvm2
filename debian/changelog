@@ -1,3 +1,44 @@
+lvm2 (2.02.02-1ubuntu1) dapper; urgency=low
+
+  * merged with debian (required to fix ubuntu #38007)
+  * daemons/clvmd/Makefile.in: 
+    * added -lpthreads to LDFLAGS to make it build
+
+ -- Michael Vogt <michael.vogt@ubuntu.com>  Mon,  8 May 2006 11:42:45 +0200
+
+lvm2 (2.02.02-1) unstable; urgency=low
+
+  * New upstream version.
+  * Enable md_component_detection. (closes: #278180)
+  * Set device permissions.
+  * Don't use O_DIRECT on armeb. (closes: #351632)
+
+ -- Bastian Blank <waldi@debian.org>  Sun, 12 Feb 2006 13:00:23 +0100
+
+lvm2 (2.02.01-3) unstable; urgency=low
+
+  * Fix snapshot check to work with set -e. (closes: #348154)
+
+ -- Bastian Blank <waldi@debian.org>  Sun, 15 Jan 2006 13:29:06 +0100
+
+lvm2 (2.02.01-2) unstable; urgency=low
+
+  * Abort installation on kernel < 2.6.12.
+
+ -- Bastian Blank <waldi@debian.org>  Sat, 14 Jan 2006 10:51:33 +0100
+
+lvm2 (2.02.01-1) unstable; urgency=low
+
+  * New upstream version.
+
+ -- Bastian Blank <waldi@debian.org>  Sat, 03 Dec 2005 18:15:24 +0100
+
+lvm2 (2.02.00-1) unstable; urgency=low
+
+  * New upstream version.
+
+ -- Bastian Blank <waldi@debian.org>  Sat, 26 Nov 2005 10:26:42 +0100
+
 lvm2 (2.01.15-0ubuntu5) dapper; urgency=low
 
   * debian/rules: Copy lvm2.po to lvm2.pot at build, remove it at clean.

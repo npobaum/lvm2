@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2005 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -14,6 +14,7 @@
  */
 
 #include "tools.h"
+#include "lv_alloc.h"
 
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -145,7 +146,7 @@ int process_each_lv(struct cmd_context *cmd, int argc, char **argv,
 					continue;
 				}
 				if (!str_list_add(cmd->mem, &tags,
-						  pool_strdup(cmd->mem,
+						  dm_pool_strdup(cmd->mem,
 							      vgname + 1))) {
 					log_error("strlist allocation failed");
 					return ECMD_FAILED;
@@ -191,21 +192,21 @@ int process_each_lv(struct cmd_context *cmd, int argc, char **argv,
 				lv_name = NULL;
 
 			if (!str_list_add(cmd->mem, &arg_vgnames,
-					  pool_strdup(cmd->mem, vgname))) {
+					  dm_pool_strdup(cmd->mem, vgname))) {
 				log_error("strlist allocation failed");
 				return ECMD_FAILED;
 			}
 
 			if (!lv_name) {
 				if (!str_list_add(cmd->mem, &arg_lvnames,
-						  pool_strdup(cmd->mem,
+						  dm_pool_strdup(cmd->mem,
 							      vgname))) {
 					log_error("strlist allocation failed");
 					return ECMD_FAILED;
 				}
 			} else {
 				vglv_sz = strlen(vgname) + strlen(lv_name) + 2;
-				if (!(vglv = pool_alloc(cmd->mem, vglv_sz)) ||
+				if (!(vglv = dm_pool_alloc(cmd->mem, vglv_sz)) ||
 				    lvm_snprintf(vglv, vglv_sz, "%s/%s", vgname,
 						 lv_name) < 0) {
 					log_error("vg/lv string alloc failed");
@@ -270,7 +271,7 @@ int process_each_lv(struct cmd_context *cmd, int argc, char **argv,
 			} else if (!strncmp(vg_name, vgname, strlen(vgname)) &&
 				   strlen(vgname) == lv_name - vg_name) {
 				if (!str_list_add(cmd->mem, &lvnames,
-						  pool_strdup(cmd->mem,
+						  dm_pool_strdup(cmd->mem,
 							      lv_name + 1))) {
 					log_error("strlist allocation failed");
 					return ECMD_FAILED;
@@ -401,7 +402,7 @@ int process_each_vg(struct cmd_context *cmd, int argc, char **argv,
 					continue;
 				}
 				if (!str_list_add(cmd->mem, &tags,
-						  pool_strdup(cmd->mem,
+						  dm_pool_strdup(cmd->mem,
 							      vg_name + 1))) {
 					log_error("strlist allocation failed");
 					return ECMD_FAILED;
@@ -422,7 +423,7 @@ int process_each_vg(struct cmd_context *cmd, int argc, char **argv,
 				continue;
 			}
 			if (!str_list_add(cmd->mem, &arg_vgnames,
-					  pool_strdup(cmd->mem, vg_name))) {
+					  dm_pool_strdup(cmd->mem, vg_name))) {
 				log_error("strlist allocation failed");
 				return ECMD_FAILED;
 			}
@@ -547,7 +548,7 @@ int process_each_pv(struct cmd_context *cmd, int argc, char **argv,
 					continue;
 				}
 				if (!str_list_add(cmd->mem, &tags,
-						  pool_strdup(cmd->mem,
+						  dm_pool_strdup(cmd->mem,
 							      tagname))) {
 					log_error("strlist allocation failed");
 					return ECMD_FAILED;
@@ -661,7 +662,7 @@ const char *extract_vgname(struct cmd_context *cmd, const char *lv_name)
 			return 0;
 		}
 
-		vg_name = pool_strdup(cmd->mem, vg_name);
+		vg_name = dm_pool_strdup(cmd->mem, vg_name);
 		if (!vg_name) {
 			log_error("Allocation of vg_name failed");
 			return 0;
@@ -709,13 +710,13 @@ char *default_vgname(struct cmd_context *cmd)
 		return 0;
 	}
 
-	return pool_strdup(cmd->mem, vg_path);
+	return dm_pool_strdup(cmd->mem, vg_path);
 }
 
 /*
  * Process physical extent range specifiers
  */
-static int _add_pe_range(struct pool *mem, struct list *pe_ranges,
+static int _add_pe_range(struct dm_pool *mem, struct list *pe_ranges,
 			 uint32_t start, uint32_t count)
 {
 	struct pe_range *per;
@@ -736,7 +737,7 @@ static int _add_pe_range(struct pool *mem, struct list *pe_ranges,
 		}
 	}
 
-	if (!(per = pool_alloc(mem, sizeof(*per)))) {
+	if (!(per = dm_pool_alloc(mem, sizeof(*per)))) {
 		log_error("Allocation of list failed");
 		return 0;
 	}
@@ -748,7 +749,7 @@ static int _add_pe_range(struct pool *mem, struct list *pe_ranges,
 	return 1;
 }
 
-static int _parse_pes(struct pool *mem, char *c, struct list *pe_ranges,
+static int _parse_pes(struct dm_pool *mem, char *c, struct list *pe_ranges,
 		      uint32_t size)
 {
 	char *endptr;
@@ -820,7 +821,7 @@ static int _parse_pes(struct pool *mem, char *c, struct list *pe_ranges,
 	return 0;
 }
 
-static void _create_pv_entry(struct pool *mem, struct pv_list *pvl,
+static void _create_pv_entry(struct dm_pool *mem, struct pv_list *pvl,
 			     char *colon, int allocatable_only, struct list *r)
 {
 	const char *pvname;
@@ -839,14 +840,14 @@ static void _create_pv_entry(struct pool *mem, struct pv_list *pvl,
 		return;
 	}
 
-	if (!(new_pvl = pool_alloc(mem, sizeof(*new_pvl)))) {
+	if (!(new_pvl = dm_pool_alloc(mem, sizeof(*new_pvl)))) {
 		log_err("Unable to allocate physical volume list.");
 		return;
 	}
 
 	memcpy(new_pvl, pvl, sizeof(*new_pvl));
 
-	if (!(pe_ranges = pool_alloc(mem, sizeof(*pe_ranges)))) {
+	if (!(pe_ranges = dm_pool_alloc(mem, sizeof(*pe_ranges)))) {
 		log_error("Allocation of pe_ranges list failed");
 		return;
 	}
@@ -862,7 +863,7 @@ static void _create_pv_entry(struct pool *mem, struct pv_list *pvl,
 	list_add(r, &new_pvl->list);
 }
 
-struct list *create_pv_list(struct pool *mem, struct volume_group *vg, int argc,
+struct list *create_pv_list(struct dm_pool *mem, struct volume_group *vg, int argc,
 			    char **argv, int allocatable_only)
 {
 	struct list *r;
@@ -873,7 +874,7 @@ struct list *create_pv_list(struct pool *mem, struct volume_group *vg, int argc,
 	int i;
 
 	/* Build up list of PVs */
-	if (!(r = pool_alloc(mem, sizeof(*r)))) {
+	if (!(r = dm_pool_alloc(mem, sizeof(*r)))) {
 		log_error("Allocation of list failed");
 		return NULL;
 	}
@@ -902,7 +903,7 @@ struct list *create_pv_list(struct pool *mem, struct volume_group *vg, int argc,
 		pvname = argv[i];
 
 		if ((colon = strchr(pvname, ':'))) {
-			if (!(pvname = pool_strndup(mem, pvname,
+			if (!(pvname = dm_pool_strndup(mem, pvname,
 						    (unsigned) (colon -
 								pvname)))) {
 				log_error("Failed to clone PV name");
@@ -924,20 +925,20 @@ struct list *create_pv_list(struct pool *mem, struct volume_group *vg, int argc,
 	return list_empty(r) ? NULL : r;
 }
 
-struct list *clone_pv_list(struct pool *mem, struct list *pvsl)
+struct list *clone_pv_list(struct dm_pool *mem, struct list *pvsl)
 {
 	struct list *r;
 	struct pv_list *pvl, *new_pvl;
 
 	/* Build up list of PVs */
-	if (!(r = pool_alloc(mem, sizeof(*r)))) {
+	if (!(r = dm_pool_alloc(mem, sizeof(*r)))) {
 		log_error("Allocation of list failed");
 		return NULL;
 	}
 	list_init(r);
 
 	list_iterate_items(pvl, pvsl) {
-		if (!(new_pvl = pool_zalloc(mem, sizeof(*new_pvl)))) {
+		if (!(new_pvl = dm_pool_zalloc(mem, sizeof(*new_pvl)))) {
 			log_error("Unable to allocate physical volume list.");
 			return NULL;
 		}
@@ -967,50 +968,6 @@ struct volume_group *recover_vg(struct cmd_context *cmd, const char *vgname,
 	}
 
 	return vg_read(cmd, vgname, &consistent);
-}
-
-/*
- * Execute and wait for external command
- */
-int exec_cmd(const char *command, const char *fscmd, const char *lv_path,
-	     const char *size)
-{
-	pid_t pid;
-	int status;
-
-	log_verbose("Executing: %s %s %s %s", command, fscmd, lv_path, size);
-
-	if ((pid = fork()) == -1) {
-		log_error("fork failed: %s", strerror(errno));
-		return 0;
-	}
-
-	if (!pid) {
-		/* Child */
-		/* FIXME Use execve directly */
-		execlp(command, command, fscmd, lv_path, size, NULL);
-		log_sys_error("execlp", command);
-		exit(errno);
-	}
-
-	/* Parent */
-	if (wait4(pid, &status, 0, NULL) != pid) {
-		log_error("wait4 child process %u failed: %s", pid,
-			  strerror(errno));
-		return 0;
-	}
-
-	if (!WIFEXITED(status)) {
-		log_error("Child %u exited abnormally", pid);
-		return 0;
-	}
-
-	if (WEXITSTATUS(status)) {
-		log_error("%s failed: %u", command, WEXITSTATUS(status));
-		return 0;
-	}
-
-	return 1;
 }
 
 int apply_lvname_restrictions(const char *name)
@@ -1091,7 +1048,7 @@ int zero_lv(struct cmd_context *cmd, struct logical_volume *lv)
 	 * <ejt_> k, I'll drop a fixme to that effect
 	 *           (I know the device is at least 4k, but not 32k)
 	 */
-	if (!(name = pool_alloc(cmd->mem, PATH_MAX))) {
+	if (!(name = dm_pool_alloc(cmd->mem, PATH_MAX))) {
 		log_error("Name allocation failed - device not zeroed");
 		return 0;
 	}
@@ -1118,3 +1075,71 @@ int zero_lv(struct cmd_context *cmd, struct logical_volume *lv)
 	return 1;
 }
 
+struct logical_volume *create_mirror_log(struct cmd_context *cmd,
+					 struct volume_group *vg,
+					 struct alloc_handle *ah,
+					 alloc_policy_t alloc,
+					 const char *lv_name)
+{
+	struct logical_volume *log_lv;
+	char *log_name;
+	size_t len;
+
+	len = strlen(lv_name) + 32;
+	if (!(log_name = alloca(len)) ||
+	    !(generate_log_name_format(vg, lv_name, log_name, len))) {
+		log_error("log_name allocation failed. "
+			  "Remove new LV and retry.");
+		return NULL;
+	}
+
+	if (!(log_lv = lv_create_empty(vg->fid, log_name, NULL,
+				       VISIBLE_LV | LVM_READ | LVM_WRITE,
+				       alloc, 0, vg))) {
+		stack;
+		return NULL;
+	}
+
+	if (!lv_add_log_segment(ah, log_lv)) {
+		stack;
+		goto error;
+	}
+
+	/* store mirror log on disk(s) */
+	if (!vg_write(vg)) {
+		stack;
+		goto error;
+	}
+
+	backup(vg);
+
+	if (!vg_commit(vg)) {
+		stack;
+		goto error;
+	}
+
+	if (!activate_lv(cmd, log_lv)) {
+		log_error("Aborting. Failed to activate mirror log. "
+			  "Remove new LVs and retry.");
+		goto error;
+	}
+
+	if (activation() && !zero_lv(cmd, log_lv)) {
+		log_error("Aborting. Failed to wipe mirror log. "
+			  "Remove new LV and retry.");
+		goto error;
+	}
+
+	if (!deactivate_lv(cmd, log_lv)) {
+		log_error("Aborting. Failed to deactivate mirror log. "
+			  "Remove new LV and retry.");
+		goto error;
+	}
+
+	log_lv->status &= ~VISIBLE_LV;
+
+	return log_lv;
+error:
+	/* FIXME Attempt to clean up. */
+	return NULL;
+}

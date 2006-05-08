@@ -42,6 +42,7 @@ lib_SOURCES =\
 	pvdisplay.c \
 	pvmove.c \
 	pvremove.c \
+	pvresize.c \
 	pvscan.c \
 	reporter.c \
 	segtypes.c \
@@ -92,6 +93,10 @@ ifeq ("@CMDLIB@", "yes")
 	INSTALL_TARGETS += $(INSTALL_CMDLIB_TARGETS)
 endif
 
+ifeq ("@DMEVENTD@", "yes")
+	LVMLIBS += -ldevmapper-event -lpthread
+endif
+
 ifeq ("@DEVMAPPER@", "yes")
 	LVMLIBS += -ldevmapper
 endif
@@ -112,8 +117,6 @@ liblvm2cmd.a: $(top_srcdir)/lib/liblvm.a $(lib_OBJECTS)
 	$(AR) rs $@ $(OBJECTS)
 
 liblvm2cmd.so: liblvm2cmd.a $(LDDEPS)
-	$(CC) -o liblvm2cmd.so $(SOFLAG) $(CLDFLAGS) \
-		$(CLDWHOLEARCHIVE) liblvm2cmd.a $(CLDNOWHOLEARCHIVE)
 
 .commands: commands.h cmdnames.h Makefile
 	$(CC) -E -P cmdnames.h 2> /dev/null | \

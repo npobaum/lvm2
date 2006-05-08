@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved. 
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2005 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -291,6 +291,10 @@ static int _read_params(struct lvcreate_params *lp, struct cmd_context *cmd,
 		lp->mirrors = arg_uint_value(cmd, mirrors_ARG, 0) + 1;
 		if (lp->mirrors == 1)
 			log_print("Redundant mirrors argument: default is 0");
+		if (arg_sign_value(cmd, mirrors_ARG, 0) == SIGN_MINUS) {
+			log_error("Mirrors argument may not be negative");
+			return 0;
+		}
 	}
 
 	if (lp->snapshot) {
@@ -359,7 +363,8 @@ static int _read_params(struct lvcreate_params *lp, struct cmd_context *cmd,
 	/*
 	 * Should we zero the lv.
 	 */
-	lp->zero = strcmp(arg_str_value(cmd, zero_ARG, "y"), "n");
+	lp->zero = strcmp(arg_str_value(cmd, zero_ARG, 
+		(lp->segtype->flags & SEG_CANNOT_BE_ZEROED) ? "n" : "y"), "n");
 
 	/*
 	 * Alloc policy
@@ -431,9 +436,8 @@ static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 	const char *tag;
 	int consistent = 1;
 	struct alloc_handle *ah = NULL;
-	char *log_name, lv_name_buf[128];
+	char lv_name_buf[128];
 	const char *lv_name;
-	size_t len;
 
 	status |= lp->permission | VISIBLE_LV;
 
@@ -583,71 +587,25 @@ static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 	}
 
 	if (lp->mirrors > 1) {
+		/* FIXME Calculate how many extents needed for the log */
+
+		if (!(ah = allocate_extents(vg, NULL, lp->segtype, lp->stripes,
+					    lp->mirrors, 1, lp->extents,
+					    NULL, 0, 0, pvh, lp->alloc,
+					    NULL))) {
+			stack;
+			return 0;
+		}
+
 		lp->region_size = adjusted_mirror_region_size(vg->extent_size,
 							      lp->extents,
 							      lp->region_size);
 
-		/* FIXME Calculate how many extents needed for the log */
-
-		len = strlen(lv_name) + 32;
-        	if (!(log_name = alloca(len)) ||
-		    !(generate_log_name_format(vg, lv_name, log_name, len))) {
-                	log_error("log_name allocation failed. "
-	                          "Remove new LV and retry.");
-                	return 0;
-        	}
-
-		if (!(log_lv = lv_create_empty(vg->fid, log_name, NULL,
-				VISIBLE_LV | LVM_READ | LVM_WRITE,
-				lp->alloc, 0, vg))) {
-			stack;
+		if (!(log_lv = create_mirror_log(cmd, vg, ah, lp->alloc,
+						 lv_name))) {
+			log_error("Failed to create mirror log.");
 			return 0;
 		}
-
-		if (!(ah = allocate_extents(vg, NULL, lp->segtype, lp->stripes,
-					    lp->mirrors, 1, lp->extents,
-					    NULL, 0, 0, pvh, lp->alloc))) {
-			stack;
-			return 0;
-		}
-
-		if (!lv_add_log_segment(ah, log_lv)) {
-			stack;
-			goto error;
-		}
-
-		/* store mirror log on disk(s) */
-		if (!vg_write(vg)) {
-			stack;
-			goto error;
-		}
-
-		backup(vg);
-
-		if (!vg_commit(vg)) {
-			stack;
-			goto error;
-		}
-
-		if (!activate_lv(cmd, log_lv)) {
-			log_error("Aborting. Failed to activate mirror log. "
-				  "Remove new LVs and retry.");
-			goto error;
-		}
-
-		if (activation() && !zero_lv(cmd, log_lv)) {
-			log_error("Aborting. Failed to wipe mirror log. "
-				  "Remove new LV and retry.");
-			goto error;
-		}
-
-		if (!deactivate_lv(cmd, log_lv)) {
-			log_error("Aborting. Failed to deactivate mirror log. "
-				  "Remove new LV and retry.");
-			goto error;
-		}
-
-		log_lv->status &= ~VISIBLE_LV;
 	}
 
 	if (!(lv = lv_create_empty(vg->fid, lv_name ? lv_name : "lvol%d", NULL,
@@ -748,12 +706,6 @@ static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 			return 0;
 		}
 
-		/* FIXME write/commit/backup sequence issue */
-		if (!suspend_lv(cmd, org)) {
-			log_error("Failed to suspend origin %s", org->name);
-			return 0;
-		}
-
 		if (!vg_add_snapshot(vg->fid, NULL, org, lv, NULL,
 				     org->le_count, lp->chunk_size)) {
 			log_err("Couldn't create snapshot.");
@@ -761,7 +713,16 @@ static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 		}
 
 		/* store vg on disk(s) */
-		if (!vg_write(vg) || !vg_commit(vg))
+		if (!vg_write(vg))
+			return 0;
+
+		if (!suspend_lv(cmd, org)) {
+			log_error("Failed to suspend origin %s", org->name);
+			vg_revert(vg);
+			return 0;
+		}
+
+		if (!vg_commit(vg))
 			return 0;
 
 		if (!resume_lv(cmd, org)) {

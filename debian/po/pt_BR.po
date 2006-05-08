@@ -14,8 +14,8 @@
 msgid ""
 msgstr ""
 "Project-Id-Version: lvm2\n"
-"Report-Msgid-Bugs-To: debian-l10n-portuguese@lists.debian.org\n"
-"POT-Creation-Date: 2004-07-05 03:03-0700\n"
+"Report-Msgid-Bugs-To: pkg-lvm-maintainers@lists.alioth.debian.org\n"
+"POT-Creation-Date: 2006-02-12 12:56+0100\n"
 "PO-Revision-Date: 2004-10-28 21:05-0300\n"
 "Last-Translator: André Luís Lopes <andrelop@debian.org>\n"
 "Language-Team: Debian-BR Project <debian-l10n-portuguese@lists.debian.org>\n"
@@ -25,13 +25,13 @@ msgstr ""
 
 #. Type: note
 #. Description
-#: ../templates:3
+#: ../lvm2.templates:3
 msgid "Snapshot format changes"
 msgstr "Mudanças no formato de snapshots"
 
 #. Type: note
 #. Description
-#: ../templates:3
+#: ../lvm2.templates:3
 msgid ""
 "The internal format of snapshots has changed between LVM1 and LVM2. Any "
 "snapshots you have in LVM1 will be not be available to LVM2."
@@ -41,18 +41,31 @@ msgstr ""
 
 #. Type: note
 #. Description
-#: ../templates:3
+#: ../lvm2.templates:3
 msgid ""
-"The installation procedure has detected that you have LVM1 snapshots on "
-"your system. Before you complete the upgrade to LVM2 it is recommended "
-"that you remove these snapshots and save their data if necessary."
+"The installation procedure has detected that you have LVM1 snapshots on your "
+"system. Before you complete the upgrade to LVM2 it is recommended that you "
+"remove these snapshots and save their data if necessary."
 msgstr ""
-"O procedimento de instalação detectou que você possui snapshots LVM1 em "
-"seu sistema. Antes de completar a atualização para LVM2 é recomendado "
-"que você remova esses snapshots e salve seus dados caso necessário."
+"O procedimento de instalação detectou que você possui snapshots LVM1 em seu "
+"sistema. Antes de completar a atualização para LVM2 é recomendado que você "
+"remova esses snapshots e salve seus dados caso necessário."
 
 #. Type: note
 #. Description
-#: ../templates:3
+#: ../lvm2.templates:3
 msgid "All other LVM data will be preserved in the upgrade."
 msgstr "Todos os outros dados do LVM serão preservados durante a atualização."
+
+#. Type: note
+#. Description
+#: ../lvm2.templates:15
+msgid "Running kernel TOO old"
+msgstr ""
+
+#. Type: note
+#. Description
+#: ../lvm2.templates:15
+msgid ""
+"Your running kernel is < 2.6.12. lvm2 since 2.02.00 does not work with them."
+msgstr ""

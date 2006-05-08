@@ -2,8 +2,8 @@ Source: lvm2
 Section: admin
 Priority: optional
 Maintainer: Debian LVM Team <pkg-lvm-maintainers@lists.alioth.debian.org>
-Uploaders: Bastian Blank <waldi@debian.org>, Andres Salomon <dilinger@debian.org>
-Build-Depends: debhelper (>> 4.1.16), libdevmapper-dev (>= 2:1.01.05-1ubuntu2), autotools-dev, libdlm-dev (>= 1.20050527-0ubuntu1), libgulm-dev, libccs-dev, libreadline5-dev
+Uploaders: Bastian Blank <waldi@debian.org>
+Build-Depends: debhelper (>> 4.2), libdevmapper-dev (>> 2:1.02.03), autotools-dev, libdlm-dev (>= 1.20060222-0ubuntu4), libreadline5-dev, libgulm-dev, libccs-dev
 Standards-Version: 3.6.2
 
 Package: lvm2

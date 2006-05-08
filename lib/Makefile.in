@@ -1,6 +1,6 @@
 #
 # Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
-# Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+# Copyright (C) 2004-2005 Red Hat, Inc. All rights reserved.
 #
 # This file is part of the LVM2.
 #
@@ -37,9 +37,7 @@ SOURCES =\
 	cache/lvmcache.c \
 	commands/toolcontext.c \
 	config/config.c \
-	datastruct/bitset.c \
 	datastruct/btree.c \
-	datastruct/hash.c \
 	datastruct/str_list.c \
 	device/dev-cache.c \
 	device/dev-io.c \
@@ -76,11 +74,10 @@ SOURCES =\
 	metadata/segtype.c \
 	metadata/snapshot_manip.c \
 	misc/crc.c \
+	misc/lvm-exec.c \
 	misc/lvm-file.c \
 	misc/lvm-string.c \
-	mm/dbg_malloc.c \
 	mm/memlock.c \
-	mm/pool.c \
 	regex/matcher.c \
 	regex/parse_rx.c \
 	regex/ttree.c \
@@ -136,8 +133,8 @@ ifeq ("@HAVE_LIBDL@", "yes")
 	misc/sharedlib.c
 endif
 
-ifeq ("@HAVE_SELINUX@", "yes")
-  SOURCES += misc/selinux.c
+ifeq ("@DMEVENTD@", "yes")
+  CLDFLAGS += -ldevmapper-event
 endif
 
 LIB_STATIC = liblvm.a

@@ -18,10 +18,6 @@
 
 #include "metadata.h"
 
-#ifdef DEVMAPPER_SUPPORT
-#  include <libdevmapper.h>
-#endif
-
 struct lvinfo {
 	int exists;
 	int suspended;
@@ -29,6 +25,8 @@ struct lvinfo {
 	int major;
 	int minor;
 	int read_only;
+	int live_table;
+	int inactive_table;
 };
 
 void set_activation(int activation);
@@ -38,7 +36,9 @@ int driver_version(char *version, size_t size);
 int library_version(char *version, size_t size);
 int lvm1_present(struct cmd_context *cmd);
 
-int target_present(const char *target_name);
+int target_present(const char *target_name, int use_modprobe);
+int target_version(const char *target_name, uint32_t *maj,
+                   uint32_t *min, uint32_t *patchlevel);
 
 void activation_exit(void);
 
@@ -56,7 +56,7 @@ int lv_mknodes(struct cmd_context *cmd, const struct logical_volume *lv);
 /*
  * Returns 1 if info structure has been populated, else 0.
  */
-int lv_info(const struct logical_volume *lv, struct lvinfo *info,
+int lv_info(struct cmd_context *cmd, const struct logical_volume *lv, struct lvinfo *info,
 	    int with_open_count);
 int lv_info_by_lvid(struct cmd_context *cmd, const char *lvid_s,
 		    struct lvinfo *info, int with_open_count);
@@ -71,7 +71,7 @@ int lv_activation_filter(struct cmd_context *cmd, const char *lvid_s,
  * Returns 1 if percent has been set, else 0.
  */
 int lv_snapshot_percent(struct logical_volume *lv, float *percent);
-int lv_mirror_percent(struct logical_volume *lv, int wait, float *percent,
+int lv_mirror_percent(struct cmd_context *cmd, struct logical_volume *lv, int wait, float *percent,
 		      uint32_t *event_nr);
 
 /*
@@ -80,6 +80,10 @@ int lv_mirror_percent(struct logical_volume *lv, int wait, float *percent,
 int lvs_in_vg_activated(struct volume_group *vg);
 int lvs_in_vg_opened(struct volume_group *vg);
 
-int lv_setup_cow_store(struct logical_volume *lv);
+/*
+ * Returns 1 if PV has a dependency tree that uses anything in VG.
+ */
+int pv_uses_vg(struct cmd_context *cmd, struct physical_volume *pv,
+	       struct volume_group *vg);
 
 #endif
