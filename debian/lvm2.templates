@@ -10,8 +10,3 @@ _Description: Snapshot format changes
  .
  All other LVM data will be preserved in the upgrade.
 
-Template: lvm2/kernel
-Type: note
-_Description: Running kernel TOO old
- Your running kernel is < 2.6.12. lvm2 since 2.02.00 does not work with them.
-

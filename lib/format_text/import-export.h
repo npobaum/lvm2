@@ -47,6 +47,10 @@ struct text_vg_version_ops {
 					 struct config_tree * cf);
 	void (*read_desc) (struct dm_pool * mem, struct config_tree * cf,
 			   time_t *when, char **desc);
+	const char *(*read_vgname) (const struct format_type *fmt,
+				    struct config_tree *cft,
+				    struct id *vgid, uint32_t *vgstatus,
+				    char **creation_host);
 };
 
 struct text_vg_version_ops *text_vg_vsn1_init(void);
@@ -70,5 +74,12 @@ struct volume_group *text_vg_import_fd(struct format_instance *fid,
 				       checksum_fn_t checksum_fn,
 				       uint32_t checksum,
 				       time_t *when, char **desc);
+const char *text_vgname_import(const struct format_type *fmt,
+			       struct device *dev,
+                               off_t offset, uint32_t size,
+                               off_t offset2, uint32_t size2,
+                               checksum_fn_t checksum_fn, uint32_t checksum,
+                               struct id *vgid, uint32_t *vgstatus,
+			       char **creation_host);
 
 #endif

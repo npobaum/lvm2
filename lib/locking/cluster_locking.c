@@ -330,6 +330,15 @@ static int _lock_for_cluster(unsigned char cmd, unsigned int flags, char *name)
 	args[0] = flags & 0x7F; /* Maskoff lock flags */
 	args[1] = flags & 0xC0; /* Bitmap flags */
 
+	if (partial_mode())
+		args[1] |= LCK_PARTIAL_MODE;
+
+	if (mirror_in_sync())
+		args[1] |= LCK_MIRROR_NOSYNC_MODE;
+
+	if (dmeventd_register_mode())
+		args[1] |= LCK_DMEVENTD_REGISTER_MODE;
+
 	/*
 	 * VG locks are just that: locks, and have no side effects
 	 * so we only need to do them on the local node because all
@@ -383,11 +392,12 @@ int lock_resource(struct cmd_context *cmd, const char *resource, int flags)
 	int cluster_cmd = 0;
 
 	assert(strlen(resource) < sizeof(lockname));
+	assert(resource);
 
 	switch (flags & LCK_SCOPE_MASK) {
 	case LCK_VG:
 		/* If the VG name is empty then lock the unused PVs */
-		if (!resource || !*resource)
+		if (!*resource)
 			lvm_snprintf(lockname, sizeof(lockname), "P_orphans");
 		else
 			lvm_snprintf(lockname, sizeof(lockname), "V_%s",

@@ -1,3 +1,66 @@
+Version 2.02.06 - 12th May 2006
+===============================
+  Propagate --monitor around cluster.
+  Add --monitor to vgcreate and lvcreate to control dmeventd registration.
+  Filter LCK_NONBLOCK in clvmd lock_vg.
+  Add --nosync to lvcreate with LV flag NOTSYNCED.
+  Use mirror's uuid for a core log.
+  Add mirror log fault-handling policy.
+  Improve mirror warning messages and tidy dmeventd syslog output.
+  Propagate nosync flag around cluster.
+  Allow vgreduce to handle mirror log failures.
+  Add --corelog to lvcreate and lvconvert.
+  Create a log header for replacement in-sync mirror log.
+  Use set_lv() and dev_set() to wipe sections of devices.
+  Add mirror_in_sync() flag to avoid unnecessary resync on activation.
+  Add mirror_library description to example.conf.
+  Fix uuid_from_num() buffer overrun.
+  Make SIZE_SHORT the default for display_size().
+  Fix some memory leaks in error paths found by coverity.
+  Use C99 struct initialisers.
+  Move DEFS into configure.h.
+  Clean-ups to remove miscellaneous compiler warnings.
+  Improve stripe size validation.
+  Increase maximum stripe size limit to physical extent size for lvm2 metadata.
+  Fix activation code to check for pre-existing mirror logs.
+  Tighten region size validation.
+  Ignore empty strings in config files.
+  Require non-zero regionsize and document parameter on lvcreate man page.
+  Invalidate cache if composition of VG changed externally.
+
+Version 2.02.05 - 21st April 2006
+=================================
+  Fix vgid string termination in recent cache code.
+
+Version 2.02.04 - 19th April 2006
+=================================
+  Check for libsepol.
+  Add some cflow & scope support.
+  Separate out DEFS from CFLAGS.
+  Remove inlines and use unique function names.
+
+Version 2.02.03 - 14th April 2006
+=================================
+  vgrename accepts vgid and exported VG.
+  Add --partial to pvs.
+  When choosing between identically-named VGs, also consider creation_host.
+  Provide total log suppression with 2.
+  Fix vgexport/vgimport to set/reset PV exported flag so pv_attr is correct.
+  Add vgid to struct physical_volume and pass with vg_name to some functions.
+  If two or more VGs are found with the same name, use one that is not exported.
+  Whenever vgname is captured, also capture vgid and whether exported.
+  Remove an incorrect unlock_vg() from process_each_lv().
+  Update extent size information in vgchange and vgcreate man pages.
+  Introduce origin_from_cow() and lv_is_visible().
+  pvremove without -f now fails if there's no PV label.
+  Support lvconvert -s.
+  Suppress locking library load failure message if --ignorelockingfailure.
+  Propagate partial mode around cluster.
+  Fix archive file expiration.
+  Fix dmeventd build.
+  clvmd now uses libcman rather than cman ioctls.
+  clvmd will allow new cman to shutdown on request.
+
 Version 2.02.02 - 7th February 2006
 ===================================
   Add %.so: %.a make template rule.

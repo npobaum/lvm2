@@ -15,9 +15,70 @@
 
 #include "tools.h"
 #include "lv_alloc.h"
+#include "xlate.h"
 
 #include <sys/stat.h>
 #include <sys/wait.h>
+
+/* From linux/drivers/md/dm-log.c */
+#define MIRROR_MAGIC 0x4D695272
+#define MIRROR_DISK_VERSION 2
+
+/* Command line args */
+unsigned arg_count(struct cmd_context *cmd, int a)
+{
+	return cmd->args[a].count;
+}
+
+const char *arg_value(struct cmd_context *cmd, int a)
+{
+	return cmd->args[a].value;
+}
+
+const char *arg_str_value(struct cmd_context *cmd, int a, const char *def)
+{
+	return arg_count(cmd, a) ? cmd->args[a].value : def;
+}
+
+int32_t arg_int_value(struct cmd_context *cmd, int a, const int32_t def)
+{
+	return arg_count(cmd, a) ? cmd->args[a].i_value : def;
+}
+
+uint32_t arg_uint_value(struct cmd_context *cmd, int a, const uint32_t def)
+{
+	return arg_count(cmd, a) ? cmd->args[a].ui_value : def;
+}
+
+int64_t arg_int64_value(struct cmd_context *cmd, int a, const int64_t def)
+{
+	return arg_count(cmd, a) ? cmd->args[a].i64_value : def;
+}
+
+uint64_t arg_uint64_value(struct cmd_context *cmd, int a, const uint64_t def)
+{
+	return arg_count(cmd, a) ? cmd->args[a].ui64_value : def;
+}
+
+const void *arg_ptr_value(struct cmd_context *cmd, int a, const void *def)
+{
+	return arg_count(cmd, a) ? cmd->args[a].ptr : def;
+}
+
+sign_t arg_sign_value(struct cmd_context *cmd, int a, const sign_t def)
+{
+	return arg_count(cmd, a) ? cmd->args[a].sign : def;
+}
+
+int arg_count_increment(struct cmd_context *cmd, int a)
+{
+	return cmd->args[a].count++;
+}
+
+const char *command_name(struct cmd_context *cmd)
+{
+	return cmd->command->name;
+}
 
 /*
  * Metadata iteration functions
@@ -31,11 +92,11 @@ int process_each_lv_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 {
 	int ret_max = 0;
 	int ret = 0;
-	int process_all = 0;
-	int process_lv = 0;
-	int tags_supplied = 0;
-	int lvargs_supplied = 0;
-	int lvargs_matched = 0;
+	unsigned process_all = 0;
+	unsigned process_lv = 0;
+	unsigned tags_supplied = 0;
+	unsigned lvargs_supplied = 0;
+	unsigned lvargs_matched = 0;
 
 	struct lv_list *lvl;
 
@@ -241,7 +302,7 @@ int process_each_lv(struct cmd_context *cmd, int argc, char **argv,
 			consistent = 1;
 		else
 			consistent = 0;
-		if (!(vg = vg_read(cmd, vgname, &consistent)) || !consistent) {
+		if (!(vg = vg_read(cmd, vgname, NULL, &consistent)) || !consistent) {
 			unlock_vg(cmd, vgname);
 			if (!vg)
 				log_error("Volume group \"%s\" "
@@ -250,7 +311,6 @@ int process_each_lv(struct cmd_context *cmd, int argc, char **argv,
 				log_error("Volume group \"%s\" "
 					  "inconsistent", vgname);
 			if (!vg || !(vg = recover_vg(cmd, vgname, lock_type))) {
-				unlock_vg(cmd, vgname);
 				if (ret_max < ECMD_FAILED)
 					ret_max = ECMD_FAILED;
 				continue;
@@ -332,6 +392,7 @@ int process_each_segment_in_lv(struct cmd_context *cmd,
 }
 
 static int _process_one_vg(struct cmd_context *cmd, const char *vg_name,
+			   const char *vgid,
 			   struct list *tags, struct list *arg_vgnames,
 			   int lock_type, int consistent, void *handle,
 			   int ret_max,
@@ -349,7 +410,11 @@ static int _process_one_vg(struct cmd_context *cmd, const char *vg_name,
 	}
 
 	log_verbose("Finding volume group \"%s\"", vg_name);
-	vg = vg_read(cmd, vg_name, &consistent);
+	if (!(vg = vg_read(cmd, vg_name, vgid, &consistent))) {
+		log_error("Volume group \"%s\" not found", vg_name);
+		unlock_vg(cmd, vg_name);
+		return ECMD_FAILED;
+	}
 
 	if (!list_empty(tags)) {
 		/* Only process if a tag matches or it's on arg_vgnames */
@@ -381,10 +446,10 @@ int process_each_vg(struct cmd_context *cmd, int argc, char **argv,
 	int ret_max = 0;
 
 	struct str_list *sl;
-	struct list *vgnames;
+	struct list *vgnames, *vgids;
 	struct list arg_vgnames, tags;
 
-	const char *vg_name;
+	const char *vg_name, *vgid;
 	char *dev_dir = cmd->dev_dir;
 
 	list_init(&tags);
@@ -434,19 +499,30 @@ int process_each_vg(struct cmd_context *cmd, int argc, char **argv,
 
 	if (!argc || !list_empty(&tags)) {
 		log_verbose("Finding all volume groups");
-		if (!(vgnames = get_vgs(cmd, 0)) || list_empty(vgnames)) {
+		if (!(vgids = get_vgids(cmd, 0)) || list_empty(vgids)) {
 			log_error("No volume groups found");
 			return ret_max;
 		}
-	}
-
-	list_iterate_items(sl, vgnames) {
-		vg_name = sl->str;
-		if (!vg_name || !*vg_name)
-			continue;	/* FIXME Unnecessary? */
-		ret_max = _process_one_vg(cmd, vg_name, &tags, &arg_vgnames,
-					  lock_type, consistent, handle,
-					  ret_max, process_single);
+		list_iterate_items(sl, vgids) {
+			vgid = sl->str;
+			if (!vgid || !(vg_name = vgname_from_vgid(cmd->mem, vgid)) ||
+			    !*vg_name)
+				continue;
+			ret_max = _process_one_vg(cmd, vg_name, vgid, &tags,
+						  &arg_vgnames,
+					  	  lock_type, consistent, handle,
+					  	  ret_max, process_single);
+		}
+	} else {
+		list_iterate_items(sl, vgnames) {
+			vg_name = sl->str;
+			if (!vg_name || !*vg_name)
+				continue;	/* FIXME Unnecessary? */
+			ret_max = _process_one_vg(cmd, vg_name, NULL, &tags,
+						  &arg_vgnames,
+					  	  lock_type, consistent, handle,
+					  	  ret_max, process_single);
+		}
 	}
 
 	return ret_max;
@@ -582,7 +658,11 @@ int process_each_pv(struct cmd_context *cmd, int argc, char **argv,
 		if (!list_empty(&tags) && (vgnames = get_vgs(cmd, 0)) &&
 		    !list_empty(vgnames)) {
 			list_iterate_items(sll, vgnames) {
-				vg = vg_read(cmd, sll->str, &consistent);
+				if (!(vg = vg_read(cmd, sll->str, NULL, &consistent))) {
+					log_error("Volume group \"%s\" not found", sll->str);
+					ret_max = ECMD_FAILED;
+					continue;
+				}
 				if (!consistent)
 					continue;
 				ret = process_each_pv_in_vg(cmd, vg, &tags,
@@ -967,7 +1047,7 @@ struct volume_group *recover_vg(struct cmd_context *cmd, const char *vgname,
 		return NULL;
 	}
 
-	return vg_read(cmd, vgname, &consistent);
+	return vg_read(cmd, vgname, NULL, &consistent);
 }
 
 int apply_lvname_restrictions(const char *name)
@@ -1015,28 +1095,30 @@ int validate_vg_name(struct cmd_context *cmd, const char *vg_name)
 	return 1;
 }
 
-int generate_log_name_format(struct volume_group *vg, const char *lv_name,
-			     char *buffer, size_t size)
+int generate_log_name_format(struct volume_group *vg __attribute((unused)),
+			     const char *lv_name, char *buffer, size_t size)
 {
 	if (lvm_snprintf(buffer, size, "%s_mlog", lv_name) < 0) {
 		stack;
 		return 0;
 	}
 
+	/* FIXME I think we can cope without this.  Cf. _add_lv_to_dtree()
 	if (find_lv_in_vg(vg, buffer) &&
 	    lvm_snprintf(buffer, size, "%s_mlog_%%d",
 			 lv_name) < 0) {
 		stack;
 		return 0;
 	}
+	*******/
 
 	return 1;
 }
 
 /*
- * Volumes may be zeroed to remove old application data.
+ * Initialize the LV with 'value'.
  */
-int zero_lv(struct cmd_context *cmd, struct logical_volume *lv)
+int set_lv(struct cmd_context *cmd, struct logical_volume *lv, int value)
 {
 	struct device *dev;
 	char *name;
@@ -1046,30 +1128,83 @@ int zero_lv(struct cmd_context *cmd, struct logical_volume *lv)
 	 * <clausen> also, more than 4k
 	 * <clausen> say, reiserfs puts it's superblock 32k in, IIRC
 	 * <ejt_> k, I'll drop a fixme to that effect
-	 *           (I know the device is at least 4k, but not 32k)
+	 *	   (I know the device is at least 4k, but not 32k)
 	 */
 	if (!(name = dm_pool_alloc(cmd->mem, PATH_MAX))) {
-		log_error("Name allocation failed - device not zeroed");
+		log_error("Name allocation failed - device not cleared");
 		return 0;
 	}
 
 	if (lvm_snprintf(name, PATH_MAX, "%s%s/%s", cmd->dev_dir,
 			 lv->vg->name, lv->name) < 0) {
-		log_error("Name too long - device not zeroed (%s)", lv->name);
+		log_error("Name too long - device not cleared (%s)", lv->name);
 		return 0;
 	}
 
-	log_verbose("Zeroing start of logical volume \"%s\"", lv->name);
+	log_verbose("Clearing start of logical volume \"%s\"", lv->name);
 
 	if (!(dev = dev_cache_get(name, NULL))) {
-		log_error("%s: not found: device not zeroed", name);
+		log_error("%s: not found: device not cleared", name);
 		return 0;
 	}
 
 	if (!dev_open_quiet(dev))
 		return 0;
 
-	dev_zero(dev, UINT64_C(0), (size_t) 4096);
+	dev_set(dev, UINT64_C(0), (size_t) 4096, value);
+	dev_close_immediate(dev);
+
+	return 1;
+}
+
+
+/*
+ * This function writes a new header to the mirror log header to the lv
+ *
+ * Returns: 1 on success, 0 on failure
+ */
+static int _write_log_header(struct cmd_context *cmd, struct logical_volume *lv)
+{
+	struct device *dev;
+	char *name;
+	struct { /* The mirror log header */
+		uint32_t magic;
+		uint32_t version;
+		uint64_t nr_regions;
+	} log_header;
+
+	log_header.magic = xlate32(MIRROR_MAGIC);
+	log_header.version = xlate32(MIRROR_DISK_VERSION);
+	log_header.nr_regions = xlate64((uint64_t)-1);
+
+	if (!(name = dm_pool_alloc(cmd->mem, PATH_MAX))) {
+		log_error("Name allocation failed - log header not written (%s)",
+			lv->name);
+		return 0;
+	}
+
+	if (lvm_snprintf(name, PATH_MAX, "%s%s/%s", cmd->dev_dir,
+			 lv->vg->name, lv->name) < 0) {
+		log_error("Name too long - log header not written (%s)", lv->name);
+		return 0;
+	}
+
+	log_verbose("Writing log header to device, %s", lv->name);
+
+	if (!(dev = dev_cache_get(name, NULL))) {
+		log_error("%s: not found: log header not written", name);
+		return 0;
+	}
+
+	if (!dev_open_quiet(dev))
+		return 0;
+
+	if (!dev_write(dev, UINT64_C(0), sizeof(log_header), &log_header)) {
+		log_error("Failed to write log header to %s", name);
+		dev_close_immediate(dev);
+		return 0;
+	}
+
 	dev_close_immediate(dev);
 
 	return 1;
@@ -1079,7 +1214,8 @@ struct logical_volume *create_mirror_log(struct cmd_context *cmd,
 					 struct volume_group *vg,
 					 struct alloc_handle *ah,
 					 alloc_policy_t alloc,
-					 const char *lv_name)
+					 const char *lv_name,
+					 int in_sync)
 {
 	struct logical_volume *log_lv;
 	char *log_name;
@@ -1124,8 +1260,14 @@ struct logical_volume *create_mirror_log(struct cmd_context *cmd,
 		goto error;
 	}
 
-	if (activation() && !zero_lv(cmd, log_lv)) {
+	if (activation() && !set_lv(cmd, log_lv, in_sync)) {
 		log_error("Aborting. Failed to wipe mirror log. "
+			  "Remove new LV and retry.");
+		goto error;
+	}
+
+	if (!_write_log_header(cmd, log_lv)) {
+		log_error("Aborting. Failed to write mirror log header. "
 			  "Remove new LV and retry.");
 		goto error;
 	}

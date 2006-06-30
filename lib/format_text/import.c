@@ -23,6 +23,53 @@
 /* FIXME Use tidier inclusion method */
 static struct text_vg_version_ops *(_text_vsn_list[2]);
 
+const char *text_vgname_import(const struct format_type *fmt,
+			       struct device *dev,
+			       off_t offset, uint32_t size,
+			       off_t offset2, uint32_t size2,
+			       checksum_fn_t checksum_fn, uint32_t checksum,
+			       struct id *vgid, uint32_t *vgstatus,
+			       char **creation_host)
+{
+	struct config_tree *cft;
+	struct text_vg_version_ops **vsn;
+	const char *vgname = NULL;
+
+	static int _text_import_initialised = 0;
+
+	if (!_text_import_initialised) {
+		_text_vsn_list[0] = text_vg_vsn1_init();
+		_text_vsn_list[1] = NULL;
+		_text_import_initialised = 1;
+	}
+
+	if (!(cft = create_config_tree(NULL)))
+		return_NULL;
+
+	if ((!dev && !read_config_file(cft)) ||
+	    (dev && !read_config_fd(cft, dev, offset, size,
+				    offset2, size2, checksum_fn, checksum)))
+		goto_out;
+
+	/* 
+	 * Find a set of version functions that can read this file
+	 */
+	for (vsn = &_text_vsn_list[0]; *vsn; vsn++) {
+		if (!(*vsn)->check_version(cft))
+			continue;
+
+		if (!(vgname = (*vsn)->read_vgname(fmt, cft, vgid, vgstatus,
+						   creation_host)))
+			goto_out;
+
+		break;
+	}
+
+      out:
+	destroy_config_tree(cft);
+	return vgname;
+}
+
 struct volume_group *text_vg_import_fd(struct format_instance *fid,
 				       const char *file,
 				       struct device *dev,
@@ -36,21 +83,19 @@ struct volume_group *text_vg_import_fd(struct format_instance *fid,
 	struct config_tree *cft;
 	struct text_vg_version_ops **vsn;
 
-	static int _initialised = 0;
+	static int _text_vg_import_initialised = 0;
 
-	if (!_initialised) {
+	if (!_text_vg_import_initialised) {
 		_text_vsn_list[0] = text_vg_vsn1_init();
 		_text_vsn_list[1] = NULL;
-		_initialised = 1;
+		_text_vg_import_initialised = 1;
 	}
 
 	*desc = NULL;
 	*when = 0;
 
-	if (!(cft = create_config_tree(file))) {
-		stack;
-		goto out;
-	}
+	if (!(cft = create_config_tree(file)))
+		return_NULL;
 
 	if ((!dev && !read_config_file(cft)) ||
 	    (dev && !read_config_fd(cft, dev, offset, size,
@@ -84,6 +129,6 @@ struct volume_group *text_vg_import_file(struct format_instance *fid,
 					 const char *file,
 					 time_t *when, char **desc)
 {
-	return text_vg_import_fd(fid, file, NULL, 0, 0, 0, 0, NULL, 0,
+	return text_vg_import_fd(fid, file, NULL, (off_t)0, 0, (off_t)0, 0, NULL, 0,
 				 when, desc);
 }

@@ -1,3 +1,41 @@
+lvm2 (2.02.06-2ubuntu1) edgy; urgency=low
+
+  * Merge from debian unstable.
+
+ -- Michael Vogt <michael.vogt@ubuntu.com>  Fri, 30 Jun 2006 11:16:28 +0200
+
+lvm2 (2.02.06-2) unstable; urgency=low
+
+  * Fix return value for unknown vg. (closes: #373644)
+
+ -- Bastian Blank <waldi@debian.org>  Wed, 14 Jun 2006 23:47:36 +0200
+
+lvm2 (2.02.06-1) unstable; urgency=low
+
+  * New upstream version.
+
+ -- Bastian Blank <waldi@debian.org>  Tue, 13 Jun 2006 07:35:37 +0000
+
+lvm2 (2.02.05-3) unstable; urgency=low
+
+  * Realy set default permissions.
+
+ -- Bastian Blank <waldi@debian.org>  Tue,  6 Jun 2006 17:21:18 +0000
+
+lvm2 (2.02.05-2) unstable; urgency=low
+
+  * Set default permissions to 0, 6, 0660. (closes: #370684)
+
+ -- Bastian Blank <waldi@debian.org>  Tue, 06 Jun 2006 13:01:13 +0000
+
+lvm2 (2.02.05-1) unstable; urgency=low
+
+  * New upstream version.
+  * Don't longer disallow installation on older kernels. (closes: #358373)
+  * Explicitely link libpthread. (closes: #358305)
+
+ -- Bastian Blank <waldi@debian.org>  Fri, 12 May 2006 18:20:01 +0000
+
 lvm2 (2.02.02-1ubuntu1) dapper; urgency=low
 
   * merged with debian (required to fix ubuntu #38007)

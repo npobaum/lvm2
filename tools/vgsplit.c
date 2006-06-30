@@ -64,7 +64,7 @@ static int _move_lvs(struct volume_group *vg_from, struct volume_group *vg_to)
 	struct lv_segment *seg;
 	struct physical_volume *pv;
 	struct volume_group *vg_with;
-	unsigned int s;
+	unsigned s;
 
 	list_iterate_safe(lvh, lvht, &vg_from->lvs) {
 		lv = list_item(lvh, struct lv_list)->lv;
@@ -190,7 +190,7 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 		return ECMD_FAILED;
 	}
 
-	if (!(vg_from = vg_read(cmd, vg_name_from, &consistent)) || !consistent) {
+	if (!(vg_from = vg_read(cmd, vg_name_from, NULL, &consistent)) || !consistent) {
 		log_error("Volume group \"%s\" doesn't exist", vg_name_from);
 		unlock_vg(cmd, vg_name_from);
 		return ECMD_FAILED;
@@ -216,7 +216,7 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 	}
 
 	consistent = 0;
-	if ((vg_to = vg_read(cmd, vg_name_to, &consistent))) {
+	if ((vg_to = vg_read(cmd, vg_name_to, NULL, &consistent))) {
 		/* FIXME Remove this restriction */
 		log_error("Volume group \"%s\" already exists", vg_name_to);
 		goto error;
@@ -287,7 +287,7 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 
 	/* Remove EXPORTED flag from new VG */
 	consistent = 1;
-	if (!(vg_to = vg_read(cmd, vg_name_to, &consistent)) || !consistent) {
+	if (!(vg_to = vg_read(cmd, vg_name_to, NULL, &consistent)) || !consistent) {
 		log_error("Volume group \"%s\" became inconsistent: please "
 			  "fix manually", vg_name_to);
 		goto error;

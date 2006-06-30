@@ -33,7 +33,7 @@ static int _vg_lock_count = 0;		/* Number of locks held */
 static int _vg_write_lock_held = 0;	/* VG write lock held? */
 static int _signals_blocked = 0;
 
-static void _block_signals(int flags)
+static void _block_signals(int flags __attribute((unused)))
 {
 	sigset_t set;
 
@@ -102,7 +102,7 @@ void reset_locking(void)
 		_unblock_signals();
 }
 
-static inline void _update_vg_lock_count(int flags)
+static void _update_vg_lock_count(int flags)
 {
 	if ((flags & LCK_SCOPE_MASK) != LCK_VG)
 		return;

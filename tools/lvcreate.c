@@ -24,6 +24,8 @@ struct lvcreate_params {
 	int zero;
 	int major;
 	int minor;
+	int corelog;
+	int nosync;
 
 	char *origin;
 	const char *vg_name;
@@ -36,7 +38,7 @@ struct lvcreate_params {
 
 	uint32_t mirrors;
 
-	struct segment_type *segtype;
+	const struct segment_type *segtype;
 
 	/* size */
 	uint32_t extents;
@@ -50,8 +52,9 @@ struct lvcreate_params {
 	char **pvs;
 };
 
-static int _read_name_params(struct lvcreate_params *lp,
-			     struct cmd_context *cmd, int *pargc, char ***pargv)
+static int _lvcreate_name_params(struct lvcreate_params *lp,
+				 struct cmd_context *cmd,
+				 int *pargc, char ***pargv)
 {
 	int argc = *pargc;
 	char **argv = *pargv, *ptr;
@@ -153,7 +156,7 @@ static int _read_name_params(struct lvcreate_params *lp,
 }
 
 static int _read_size_params(struct lvcreate_params *lp,
-			     struct cmd_context *cmd, int *pargc, char ***pargv)
+			     struct cmd_context *cmd)
 {
 	if (arg_count(cmd, extents_ARG) + arg_count(cmd, size_ARG) != 1) {
 		log_error("Please specify either size or extents (not both)");
@@ -180,15 +183,25 @@ static int _read_size_params(struct lvcreate_params *lp,
 	return 1;
 }
 
+/* The stripe size is limited by the size of a uint32_t, but since the
+ * value given by the user is doubled, and the final result must be a
+ * power of 2, we must divide UINT_MAX by four and add 1 (to round it
+ * up to the power of 2) */
 static int _read_stripe_params(struct lvcreate_params *lp,
 			       struct cmd_context *cmd,
-			       int *pargc, char ***pargv)
+			       int *pargc)
 {
 	int argc = *pargc;
 
 	if (arg_count(cmd, stripesize_ARG)) {
 		if (arg_sign_value(cmd, stripesize_ARG, 0) == SIGN_MINUS) {
 			log_error("Negative stripesize is invalid");
+			return 0;
+		}
+		/* Check to make sure we won't overflow lp->stripe_size */
+		if(arg_uint_value(cmd, stripesize_ARG, 0) > STRIPE_SIZE_LIMIT) {
+			log_error("Stripe size cannot be larger than %s",
+				  display_size(cmd, (uint64_t) STRIPE_SIZE_LIMIT));
 			return 0;
 		}
 		lp->stripe_size = 2 * arg_uint_value(cmd, stripesize_ARG, 0);
@@ -203,7 +216,8 @@ static int _read_stripe_params(struct lvcreate_params *lp,
 		lp->stripe_size = find_config_int(cmd->cft->root,
 						  "metadata/stripesize",
 						  DEFAULT_STRIPESIZE) * 2;
-		log_print("Using default stripesize %dKB", lp->stripe_size / 2);
+		log_print("Using default stripesize %s",
+			  display_size(cmd, (uint64_t) lp->stripe_size));
 	}
 
 	if (argc && (unsigned) argc < lp->stripes) {
@@ -218,10 +232,11 @@ static int _read_stripe_params(struct lvcreate_params *lp,
 		return 0;
 	}
 
+	/* MAX size check is in _lvcreate */
 	if (lp->stripes > 1 && (lp->stripe_size < STRIPE_SIZE_MIN ||
-				lp->stripe_size > STRIPE_SIZE_MAX ||
 				lp->stripe_size & (lp->stripe_size - 1))) {
-		log_error("Invalid stripe size %d", lp->stripe_size);
+		log_error("Invalid stripe size %s",
+			  display_size(cmd, (uint64_t) lp->stripe_size));
 		return 0;
 	}
 
@@ -230,9 +245,11 @@ static int _read_stripe_params(struct lvcreate_params *lp,
 
 static int _read_mirror_params(struct lvcreate_params *lp,
 			       struct cmd_context *cmd,
-			       int *pargc, char ***pargv)
+			       int *pargc)
 {
 	int argc = *pargc;
+	int region_size;
+	int pagesize = getpagesize();
 
 	if (argc && (unsigned) argc < lp->mirrors) {
 		log_error("Too few physical volumes on "
@@ -246,10 +263,17 @@ static int _read_mirror_params(struct lvcreate_params *lp,
 			return 0;
 		}
 		lp->region_size = 2 * arg_uint_value(cmd, regionsize_ARG, 0);
-	} else
-		lp->region_size = 2 * find_config_int(cmd->cft->root,
+	} else {
+		region_size = 2 * find_config_int(cmd->cft->root,
 					"activation/mirror_region_size",
 					DEFAULT_MIRROR_REGION_SIZE);
+		if (region_size < 0) {
+			log_error("Negative regionsize in configuration file "
+				  "is invalid");
+			return 0;
+		}
+		lp->region_size = region_size;
+	}
 
 	if (lp->region_size & (lp->region_size - 1)) {
 		log_error("Region size (%" PRIu32 ") must be a power of 2",
@@ -257,11 +281,26 @@ static int _read_mirror_params(struct lvcreate_params *lp,
 		return 0;
 	}
 
+	if (lp->region_size % (pagesize >> SECTOR_SHIFT)) {
+		log_error("Region size (%" PRIu32 ") must be a multiple of "
+			  "machine memory page size (%d)",
+			  lp->region_size, pagesize >> SECTOR_SHIFT);
+		return 0;
+	}
+
+	if (!lp->region_size) {
+		log_error("Non-zero region size must be supplied.");
+		return 0;
+	}
+
+	lp->corelog = arg_count(cmd, corelog_ARG) ? 1 : 0;
+	lp->nosync = arg_count(cmd, nosync_ARG) ? 1 : 0;
+
 	return 1;
 }
 
-static int _read_params(struct lvcreate_params *lp, struct cmd_context *cmd,
-			int argc, char **argv)
+static int _lvcreate_params(struct lvcreate_params *lp, struct cmd_context *cmd,
+			    int argc, char **argv)
 {
 	int contiguous;
 
@@ -270,7 +309,7 @@ static int _read_params(struct lvcreate_params *lp, struct cmd_context *cmd,
 	/*
 	 * Check selected options are compatible and determine segtype
 	 */
-	lp->segtype = (struct segment_type *)
+	lp->segtype = (const struct segment_type *)
 	    arg_ptr_value(cmd, type_ARG,
 			  get_segtype_from_string(cmd, "striped"));
 
@@ -343,6 +382,16 @@ static int _read_params(struct lvcreate_params *lp, struct cmd_context *cmd,
 			stack;
 			return 0;
 		}
+	} else {
+		if (arg_count(cmd, corelog_ARG)) {
+			log_error("--corelog is only available with mirrors");
+			return 0;
+		}
+
+		if (arg_count(cmd, nosync_ARG)) {
+			log_error("--nosync is only available with mirrors");
+			return 0;
+		}
 	}
 
 	if (activation() && lp->segtype->ops->target_present &&
@@ -352,10 +401,10 @@ static int _read_params(struct lvcreate_params *lp, struct cmd_context *cmd,
 		return 0;
 	}
 
-	if (!_read_name_params(lp, cmd, &argc, &argv) ||
-	    !_read_size_params(lp, cmd, &argc, &argv) ||
-	    !_read_stripe_params(lp, cmd, &argc, &argv) ||
-	    !_read_mirror_params(lp, cmd, &argc, &argv)) {
+	if (!_lvcreate_name_params(lp, cmd, &argc, &argv) ||
+	    !_read_size_params(lp, cmd) ||
+	    !_read_stripe_params(lp, cmd, &argc) ||
+	    !_read_mirror_params(lp, cmd, &argc)) {
 		stack;
 		return 0;
 	}
@@ -373,7 +422,7 @@ static int _read_params(struct lvcreate_params *lp, struct cmd_context *cmd,
 
 	lp->alloc = contiguous ? ALLOC_CONTIGUOUS : ALLOC_INHERIT;
 
-	lp->alloc = (alloc_policy_t) arg_uint_value(cmd, alloc_ARG, lp->alloc);
+	lp->alloc = arg_uint_value(cmd, alloc_ARG, lp->alloc);
 
 	if (contiguous && (lp->alloc != ALLOC_CONTIGUOUS)) {
 		log_error("Conflicting contiguous and alloc arguments");
@@ -444,7 +493,7 @@ static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 	/* does VG exist? */
 	log_verbose("Finding volume group \"%s\"", lp->vg_name);
 
-	if (!(vg = vg_read(cmd, lp->vg_name, &consistent))) {
+	if (!(vg = vg_read(cmd, lp->vg_name, NULL, &consistent))) {
 		log_error("Volume group \"%s\" doesn't exist", lp->vg_name);
 		return 0;
 	}
@@ -483,10 +532,20 @@ static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 		pvh = &vg->pvs;
 
 	if (lp->stripe_size > vg->extent_size) {
-		log_error("Setting stripe size %d KB to physical extent "
-			  "size %u KB", lp->stripe_size / 2,
-			  vg->extent_size / 2);
+		log_error("Reducing requested stripe size %s to maximum, "
+			  "physical extent size %s",
+			  display_size(cmd, (uint64_t) lp->stripe_size),
+			  display_size(cmd, (uint64_t) vg->extent_size));
 		lp->stripe_size = vg->extent_size;
+	}
+
+	/* Need to check the vg's format to verify this - the cmd format isn't setup properly yet */
+	if (lp->stripes > 1 &&
+	    !(vg->fid->fmt->features & FMT_UNLIMITED_STRIPESIZE) &&
+	    (lp->stripe_size > STRIPE_SIZE_MAX)) {
+		log_error("Stripe size may not exceed %s",
+			  display_size(cmd, (uint64_t) STRIPE_SIZE_MAX));
+		return 0;
 	}
 
 	if (lp->size) {
@@ -497,7 +556,7 @@ static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 			tmp_size += vg->extent_size - tmp_size %
 			    vg->extent_size;
 			log_print("Rounding up size to full physical extent %s",
-				  display_size(cmd, tmp_size, SIZE_SHORT));
+				  display_size(cmd, tmp_size));
 		}
 
 		lp->extents = tmp_size / vg->extent_size;
@@ -590,9 +649,9 @@ static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 		/* FIXME Calculate how many extents needed for the log */
 
 		if (!(ah = allocate_extents(vg, NULL, lp->segtype, lp->stripes,
-					    lp->mirrors, 1, lp->extents,
-					    NULL, 0, 0, pvh, lp->alloc,
-					    NULL))) {
+					    lp->mirrors, lp->corelog ? 0 : 1,
+					    lp->extents, NULL, 0, 0,
+					    pvh, lp->alloc, NULL))) {
 			stack;
 			return 0;
 		}
@@ -601,8 +660,16 @@ static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 							      lp->extents,
 							      lp->region_size);
 
+		init_mirror_in_sync(lp->nosync);
+
+		if (lp->nosync) {
+			log_print("WARNING: New mirror won't be synchronised. "
+				  "Don't read what you didn't write!");
+			status |= MIRROR_NOTSYNCED;
+		}
+
 		if (!(log_lv = create_mirror_log(cmd, vg, ah, lp->alloc,
-						 lv_name))) {
+						 lv_name, lp->nosync))) {
 			log_error("Failed to create mirror log.");
 			return 0;
 		}
@@ -686,7 +753,7 @@ static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 	}
 
 	if ((lp->zero || lp->snapshot) && activation()) {
-		if (!zero_lv(cmd, lv) && lp->snapshot) {
+		if (!set_lv(cmd, lv, 0) && lp->snapshot) {
 			/* FIXME Remove the failed lv we just added */
 			log_error("Aborting. Failed to wipe snapshot "
 				  "exception store. Remove new LV and retry.");
@@ -755,7 +822,7 @@ int lvcreate(struct cmd_context *cmd, int argc, char **argv)
 
 	memset(&lp, 0, sizeof(lp));
 
-	if (!_read_params(&lp, cmd, argc, argv))
+	if (!_lvcreate_params(&lp, cmd, argc, argv))
 		return EINVALID_CMD_LINE;
 
 	if (!lock_vol(cmd, lp.vg_name, LCK_VG_WRITE)) {

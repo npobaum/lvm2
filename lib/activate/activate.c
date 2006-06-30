@@ -95,12 +95,12 @@ int lv_info_by_lvid(struct cmd_context *cmd, const char *lvid_s,
 {
 	return 0;
 }
-int lv_snapshot_percent(struct logical_volume *lv, float *percent)
+int lv_snapshot_percent(const struct logical_volume *lv, float *percent)
 {
 	return 0;
 }
-int lv_mirror_percent(struct logical_volume *lv, int wait, float *percent,
-		      uint32_t *event_nr)
+int lv_mirror_percent(struct cmd_context *cmd, struct logical_volume *lv,
+		      int wait, float *percent, uint32_t *event_nr)
 {
 	return 0;
 }
@@ -152,7 +152,7 @@ int lv_mknodes(struct cmd_context *cmd, const struct logical_volume *lv)
 }
 
 int pv_uses_vg(struct cmd_context *cmd, struct physical_volume *pv,
-               struct volume_group *vg)
+	       struct volume_group *vg)
 {
 	return 0;
 }
@@ -407,7 +407,7 @@ int lv_info_by_lvid(struct cmd_context *cmd, const char *lvid_s,
 /*
  * Returns 1 if percent set, else 0 on failure.
  */
-int lv_snapshot_percent(struct logical_volume *lv, float *percent)
+int lv_snapshot_percent(const struct logical_volume *lv, float *percent)
 {
 	int r;
 	struct dev_manager *dm;
@@ -427,8 +427,8 @@ int lv_snapshot_percent(struct logical_volume *lv, float *percent)
 }
 
 /* FIXME Merge with snapshot_percent */
-int lv_mirror_percent(struct cmd_context *cmd, struct logical_volume *lv, int wait, float *percent,
-		      uint32_t *event_nr)
+int lv_mirror_percent(struct cmd_context *cmd, struct logical_volume *lv,
+		      int wait, float *percent, uint32_t *event_nr)
 {
 	int r;
 	struct dev_manager *dm;
@@ -574,14 +574,30 @@ int lvs_in_vg_opened(struct volume_group *vg)
 	return count;
 }
 
-static int _register_dev_for_events(struct cmd_context *cmd,
-				    struct logical_volume *lv, int do_reg)
+/*
+ * register_dev_for_events
+ *
+ * This function uses proper error codes (but breaks convention)
+ * to return:
+ *      -1 on error
+ *       0 if the lv's targets don't do event [un]registration
+ *       0 if the lv is already [un]registered -- FIXME: not implemented
+ *       1 if the lv had a segment which was [un]registered
+ *
+ * Returns: -1 on error
+ */
+int register_dev_for_events(struct cmd_context *cmd,
+			    struct logical_volume *lv, int do_reg)
 {
 #ifdef DMEVENTD
+	int r = 0;
 	struct list *tmp;
 	struct lv_segment *seg;
 	int (*reg) (struct dm_pool *mem, struct lv_segment *,
 		    struct config_tree *cft, int events);
+
+	if (do_reg && !dmeventd_register_mode())
+		return 1;
 
 	list_iterate(tmp, &lv->segments) {
 		seg = list_item(tmp, struct lv_segment);
@@ -594,16 +610,22 @@ static int _register_dev_for_events(struct cmd_context *cmd,
 		} else if (seg->segtype->ops->target_unregister_events)
 			reg = seg->segtype->ops->target_unregister_events;
 
-		if (reg)
-			/* FIXME specify events */
-			if (!reg(cmd->mem, seg, cmd->cft, 0)) {
-				stack;
-				return 0;
-			}
+		if (!reg)
+			continue;
+
+		/* FIXME specify events */
+		if (!reg(cmd->mem, seg, cmd->cft, 0)) {
+			stack;
+			return -1;
+		}
+
+		r = 1;
 	}
 
-#endif
+	return r;
+#else
 	return 1;
+#endif
 }
 
 static int _lv_suspend(struct cmd_context *cmd, const char *lvid_s,
@@ -641,7 +663,8 @@ static int _lv_suspend(struct cmd_context *cmd, const char *lvid_s,
 		}
 	}
 
-	if (!_register_dev_for_events(cmd, lv, 0))
+	if (register_dev_for_events(cmd, lv, 0) != 1)
+		/* FIXME Consider aborting here */
 		stack;
 
 	memlock_inc();
@@ -694,7 +717,7 @@ static int _lv_resume(struct cmd_context *cmd, const char *lvid_s,
 	memlock_dec();
 	fs_unlock();
 
-	if (!_register_dev_for_events(cmd, lv, 1))
+	if (register_dev_for_events(cmd, lv, 1) != 1)
 		stack;
 
 	return 1;
@@ -740,7 +763,7 @@ int lv_deactivate(struct cmd_context *cmd, const char *lvid_s)
 		return 0;
 	}
 
-	if (!_register_dev_for_events(cmd, lv, 0))
+	if (register_dev_for_events(cmd, lv, 0) != 1)
 		stack;
 
 	memlock_inc();
@@ -827,8 +850,8 @@ static int _lv_activate(struct cmd_context *cmd, const char *lvid_s,
 	}
 	else {
 		lv->uid = 0;
-		lv->gid = 0;
-		lv->mode = 0600;
+		lv->gid = 6;
+		lv->mode = 0660;
 	}
 
 	memlock_inc();
@@ -836,7 +859,7 @@ static int _lv_activate(struct cmd_context *cmd, const char *lvid_s,
 	memlock_dec();
 	fs_unlock();
 
-	if (!_register_dev_for_events(cmd, lv, 1))
+	if (!register_dev_for_events(cmd, lv, 1) != 1)
 		stack;
 
 	return r;
@@ -882,28 +905,16 @@ int lv_mknodes(struct cmd_context *cmd, const struct logical_volume *lv)
  * Does PV use VG somewhere in its construction?
  * Returns 1 on failure.
  */
-int pv_uses_vg(struct cmd_context *cmd, struct physical_volume *pv,
-               struct volume_group *vg)
+int pv_uses_vg(struct physical_volume *pv,
+	       struct volume_group *vg)
 {
-	struct dev_manager *dm;
-	int r;
-
 	if (!activation())
 		return 0;
 
 	if (!dm_is_dm_major(MAJOR(pv->dev->dev)))
 		return 0;
 
-	if (!(dm = dev_manager_create(cmd, vg->name))) {
-		stack;
-		return 1;
-	}
-
-	r = dev_manager_device_uses_vg(dm, pv->dev, vg);
-
-	dev_manager_destroy(dm);
-
-	return r;
+	return dev_manager_device_uses_vg(pv->dev, vg);
 }
 
 void activation_exit(void)

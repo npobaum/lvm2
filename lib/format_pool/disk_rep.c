@@ -98,7 +98,7 @@ int read_pool_label(struct pool_list *pl, struct labeller *l,
 	log_debug("Calculated uuid %s for %s", uuid, pd->pl_pool_name);
 
 	if (!(info = lvmcache_add(l, (char *) &pvid, dev, pd->pl_pool_name,
-				  (char *) &vgid))) {
+				  (char *) &vgid, 0))) {
 		stack;
 		return 0;
 	}
@@ -248,7 +248,7 @@ static int _read_vg_pds(const struct format_type *fmt, struct dm_pool *mem,
 
 	uint32_t sp_count = 0;
 	uint32_t *sp_devs = NULL;
-	int i;
+	uint32_t i;
 
 	/* FIXME: maybe should return a different error in memory
 	 * allocation failure */
@@ -314,7 +314,7 @@ int read_pool_pds(const struct format_type *fmt, const char *vg_name,
 		/*
 		 * If the cache scanning doesn't work, this will never work
 		 */
-		if (vg_name && (vginfo = vginfo_from_vgname(vg_name)) &&
+		if (vg_name && (vginfo = vginfo_from_vgname(vg_name, NULL)) &&
 		    vginfo->infos.n) {
 
 			if (_read_vg_pds(fmt, mem, vginfo, pdhead, &totaldevs)) {
