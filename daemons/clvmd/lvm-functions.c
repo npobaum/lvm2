@@ -45,6 +45,7 @@
 #include "log.h"
 #include "activate.h"
 #include "locking.h"
+#include "defaults.h"
 
 static struct cmd_context *cmd = NULL;
 static struct dm_hash_table *lv_hash = NULL;
@@ -303,6 +304,15 @@ int do_lock_lv(unsigned char command, unsigned char lock_flags, char *resource)
 		}
 	}
 
+	if (lock_flags & LCK_PARTIAL_MODE)
+		init_partial(1);
+
+	if (lock_flags & LCK_MIRROR_NOSYNC_MODE)
+		init_mirror_in_sync(1);
+
+	if (!(lock_flags & LCK_DMEVENTD_REGISTER_MODE))
+		init_dmeventd_register(0);
+
 	switch (command) {
 	case LCK_LV_EXCLUSIVE:
 		status = do_activate_lv(resource, lock_flags, LKM_EXMODE);
@@ -330,6 +340,15 @@ int do_lock_lv(unsigned char command, unsigned char lock_flags, char *resource)
 		status = EINVAL;
 		break;
 	}
+
+	if (lock_flags & LCK_PARTIAL_MODE)
+		init_partial(0);
+
+	if (lock_flags & LCK_MIRROR_NOSYNC_MODE)
+		init_mirror_in_sync(0);
+
+	if (!(lock_flags & LCK_DMEVENTD_REGISTER_MODE))
+		init_dmeventd_register(DEFAULT_DMEVENTD_MONITOR);
 
 	/* clean the pool for another command */
 	dm_pool_empty(cmd->mem);

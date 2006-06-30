@@ -60,7 +60,7 @@ static int _add_pv_to_vg(struct format_instance *fid, struct volume_group *vg,
 	}
 
 	/* Ensure PV doesn't depend on another PV already in the VG */
-	if (pv_uses_vg(fid->fmt->cmd, pv, vg)) {
+	if (pv_uses_vg(pv, vg)) {
 		log_error("Physical volume %s might be constructed from same "
 			  "volume group %s", pv_name, vg->name);
 		return 0;
@@ -70,6 +70,8 @@ static int _add_pv_to_vg(struct format_instance *fid, struct volume_group *vg,
 		log_error("vg->name allocation failed for '%s'", pv_name);
 		return 0;
 	}
+
+	memcpy(&pv->vgid, &vg->id, sizeof(vg->id));
 
 	/* Units of 512-byte sectors */
 	pv->pe_size = vg->extent_size;
@@ -143,13 +145,14 @@ static int _copy_pv(struct physical_volume *pv_to,
 }
 
 int get_pv_from_vg_by_id(const struct format_type *fmt, const char *vg_name,
-			 const char *id, struct physical_volume *pv)
+			 const char *vgid, const char *pvid,
+			 struct physical_volume *pv)
 {
 	struct volume_group *vg;
 	struct pv_list *pvl;
 	int consistent = 0;
 
-	if (!(vg = vg_read(fmt->cmd, vg_name, &consistent))) {
+	if (!(vg = vg_read(fmt->cmd, vg_name, vgid, &consistent))) {
 		log_error("get_pv_from_vg_by_id: vg_read failed to read VG %s",
 			  vg_name);
 		return 0;
@@ -160,7 +163,7 @@ int get_pv_from_vg_by_id(const struct format_type *fmt, const char *vg_name,
 			  vg_name);
 
 	list_iterate_items(pvl, &vg->pvs) {
-		if (id_equal(&pvl->pv->id, (const struct id *) id)) {
+		if (id_equal(&pvl->pv->id, (const struct id *) pvid)) {
 			if (!_copy_pv(pv, pvl->pv)) {
 				stack;
 				return 0;
@@ -239,7 +242,7 @@ struct volume_group *vg_create(struct cmd_context *cmd, const char *vg_name,
 	/* is this vg name already in use ? */
 	old_partial = partial_mode();
 	init_partial(1);
-	if (vg_read(cmd, vg_name, &consistent)) {
+	if (vg_read(cmd, vg_name, NULL, &consistent)) {
 		log_err("A volume group called '%s' already exists.", vg_name);
 		goto bad;
 	}
@@ -263,7 +266,10 @@ struct volume_group *vg_create(struct cmd_context *cmd, const char *vg_name,
 	vg->seqno = 0;
 
 	vg->status = (RESIZEABLE_VG | LVM_READ | LVM_WRITE);
-	vg->system_id = dm_pool_alloc(mem, NAME_LEN);
+	if (!(vg->system_id = dm_pool_alloc(mem, NAME_LEN))) {
+		stack;
+		goto bad;
+	}
 	*vg->system_id = '\0';
 
 	vg->extent_size = extent_size;
@@ -286,7 +292,7 @@ struct volume_group *vg_create(struct cmd_context *cmd, const char *vg_name,
 	list_init(&vg->tags);
 
 	if (!(vg->fid = cmd->fmt->ops->create_instance(cmd->fmt, vg_name,
-						       NULL))) {
+						       NULL, NULL))) {
 		log_error("Failed to create format instance");
 		goto bad;
 	}
@@ -496,7 +502,7 @@ struct physical_volume *pv_create(const struct format_type *fmt,
 				  uint64_t pvmetadatasize, struct list *mdas)
 {
 	struct dm_pool *mem = fmt->cmd->mem;
-	struct physical_volume *pv = dm_pool_alloc(mem, sizeof(*pv));
+	struct physical_volume *pv = dm_pool_zalloc(mem, sizeof(*pv));
 
 	if (!pv) {
 		stack;
@@ -862,7 +868,7 @@ static struct volume_group *_vg_read_orphans(struct cmd_context *cmd)
 	struct volume_group *vg;
 	struct physical_volume *pv;
 
-	if (!(vginfo = vginfo_from_vgname(ORPHAN))) {
+	if (!(vginfo = vginfo_from_vgname(ORPHAN, NULL))) {
 		stack;
 		return NULL;
 	}
@@ -907,6 +913,7 @@ static struct volume_group *_vg_read_orphans(struct cmd_context *cmd)
  */
 static struct volume_group *_vg_read(struct cmd_context *cmd,
 				     const char *vgname,
+				     const char *vgid,
 				     int *consistent, int precommitted)
 {
 	struct format_instance *fid;
@@ -915,6 +922,8 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 	struct metadata_area *mda;
 	int inconsistent = 0;
 	int use_precommitted = precommitted;
+	struct list *pvids;
+	struct pv_list *pvl;
 
 	if (!*vgname) {
 		if (use_precommitted) {
@@ -928,15 +937,15 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 
 	/* Find the vgname in the cache */
 	/* If it's not there we must do full scan to be completely sure */
-	if (!(fmt = fmt_from_vgname(vgname))) {
+	if (!(fmt = fmt_from_vgname(vgname, vgid))) {
 		lvmcache_label_scan(cmd, 0);
-		if (!(fmt = fmt_from_vgname(vgname))) {
+		if (!(fmt = fmt_from_vgname(vgname, vgid))) {
 			if (memlock()) {
 				stack;
 				return NULL;
 			}
 			lvmcache_label_scan(cmd, 2);
-			if (!(fmt = fmt_from_vgname(vgname))) {
+			if (!(fmt = fmt_from_vgname(vgname, vgid))) {
 				stack;
 				return NULL;
 			}
@@ -946,8 +955,14 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 	if (use_precommitted && !(fmt->features & FMT_PRECOMMIT))
 		use_precommitted = 0;
 
+	/* Store pvids for later so we can check if any are missing */
+	if (!(pvids = lvmcache_get_pvids(cmd, vgname, vgid))) {
+		stack;
+		return NULL;
+	}
+
 	/* create format instance with appropriate metadata area */
-	if (!(fid = fmt->ops->create_instance(fmt, vgname, NULL))) {
+	if (!(fid = fmt->ops->create_instance(fmt, vgname, vgid, NULL))) {
 		log_error("Failed to create format instance");
 		return NULL;
 	}
@@ -973,12 +988,28 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 		}
 	}
 
+	/* Ensure every PV in the VG was in the cache */
+	if (correct_vg) {
+		if (list_size(&correct_vg->pvs) != list_size(pvids)) {
+			log_debug("Cached VG %s had incorrect PV list",
+				  vg->name);
+			correct_vg = NULL;
+		} else list_iterate_items(pvl, &correct_vg->pvs) {
+			if (!str_list_match_item(pvids, pvl->pv->dev->pvid)) {
+				log_debug("Cached VG %s had incorrect PV list",
+					  vg->name);
+				correct_vg = NULL;
+				break;
+			}
+		}
+	}
+
 	/* Failed to find VG where we expected it - full scan and retry */
 	if (!correct_vg) {
 		inconsistent = 0;
 
 		lvmcache_label_scan(cmd, 2);
-		if (!(fmt = fmt_from_vgname(vgname))) {
+		if (!(fmt = fmt_from_vgname(vgname, vgid))) {
 			stack;
 			return NULL;
 		}
@@ -987,7 +1018,7 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 			use_precommitted = 0;
 
 		/* create format instance with appropriate metadata area */
-		if (!(fid = fmt->ops->create_instance(fmt, vgname, NULL))) {
+		if (!(fid = fmt->ops->create_instance(fmt, vgname, vgid, NULL))) {
 			log_error("Failed to create format instance");
 			return NULL;
 		}
@@ -1069,12 +1100,12 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 }
 
 struct volume_group *vg_read(struct cmd_context *cmd, const char *vgname,
-			     int *consistent)
+			     const char *vgid, int *consistent)
 {
 	struct volume_group *vg;
 	struct lv_list *lvl;
 
-	if (!(vg = _vg_read(cmd, vgname, consistent, 0)))
+	if (!(vg = _vg_read(cmd, vgname, vgid, consistent, 0)))
 		return NULL;
 
 	if (!check_pv_segments(vg)) {
@@ -1112,9 +1143,9 @@ static struct volume_group *_vg_read_by_vgid(struct cmd_context *cmd,
 	/* Is corresponding vgname already cached? */
 	if ((vginfo = vginfo_from_vgid(vgid)) &&
 	    vginfo->vgname && *vginfo->vgname) {
-		if ((vg = _vg_read(cmd, vginfo->vgname,
+		if ((vg = _vg_read(cmd, vginfo->vgname, vgid,
 				   &consistent, precommitted)) &&
-		    !strncmp(vg->id.uuid, vgid, ID_LEN)) {
+		    !strncmp((char *)vg->id.uuid, vgid, ID_LEN)) {
 			if (!consistent) {
 				log_error("Volume group %s metadata is "
 					  "inconsistent", vginfo->vgname);
@@ -1143,9 +1174,9 @@ static struct volume_group *_vg_read_by_vgid(struct cmd_context *cmd,
 		if (!vgname || !*vgname)
 			continue;	// FIXME Unnecessary? 
 		consistent = 0;
-		if ((vg = _vg_read(cmd, vgname, &consistent,
+		if ((vg = _vg_read(cmd, vgname, vgid, &consistent,
 				   precommitted)) &&
-		    !strncmp(vg->id.uuid, vgid, ID_LEN)) {
+		    !strncmp((char *)vg->id.uuid, vgid, ID_LEN)) {
 			if (!consistent) {
 				log_error("Volume group %s metadata is "
 					  "inconsistent", vgname);
@@ -1169,7 +1200,7 @@ struct logical_volume *lv_from_lvid(struct cmd_context *cmd, const char *lvid_s,
 	lvid = (const union lvid *) lvid_s;
 
 	log_very_verbose("Finding volume group for uuid %s", lvid_s);
-	if (!(vg = _vg_read_by_vgid(cmd, lvid->id[0].uuid, precommitted))) {
+	if (!(vg = _vg_read_by_vgid(cmd, (char *)lvid->id[0].uuid, precommitted))) {
 		log_error("Volume group for uuid not found: %s", lvid_s);
 		return NULL;
 	}
@@ -1245,13 +1276,18 @@ struct list *get_vgs(struct cmd_context *cmd, int full_scan)
 	return lvmcache_get_vgnames(cmd, full_scan);
 }
 
+struct list *get_vgids(struct cmd_context *cmd, int full_scan)
+{
+	return lvmcache_get_vgids(cmd, full_scan);
+}
+
 struct list *get_pvs(struct cmd_context *cmd)
 {
 	struct str_list *strl;
 	struct list *results;
-	const char *vgname;
+	const char *vgname, *vgid;
 	struct list *pvh, *tmp;
-	struct list *vgnames;
+	struct list *vgids;
 	struct volume_group *vg;
 	int consistent = 0;
 	int old_partial;
@@ -1267,7 +1303,7 @@ struct list *get_pvs(struct cmd_context *cmd)
 	list_init(results);
 
 	/* Get list of VGs */
-	if (!(vgnames = get_vgs(cmd, 0))) {
+	if (!(vgids = get_vgids(cmd, 0))) {
 		log_error("get_pvs: get_vgs failed");
 		return NULL;
 	}
@@ -1278,12 +1314,16 @@ struct list *get_pvs(struct cmd_context *cmd)
 	old_pvmove = pvmove_mode();
 	init_partial(1);
 	init_pvmove(1);
-	list_iterate_items(strl, vgnames) {
-		vgname = strl->str;
-		if (!vgname)
+	list_iterate_items(strl, vgids) {
+		vgid = strl->str;
+		if (!vgid)
 			continue;	/* FIXME Unnecessary? */
 		consistent = 0;
-		if (!(vg = vg_read(cmd, vgname, &consistent))) {
+		if (!(vgname = vgname_from_vgid(NULL, vgid))) {
+			stack;
+			continue;
+		}
+		if (!(vg = vg_read(cmd, vgname, vgid, &consistent))) {
 			stack;
 			continue;
 		}
@@ -1302,7 +1342,7 @@ struct list *get_pvs(struct cmd_context *cmd)
 	return results;
 }
 
-int pv_write(struct cmd_context *cmd, struct physical_volume *pv,
+int pv_write(struct cmd_context *cmd __attribute((unused)), struct physical_volume *pv,
 	     struct list *mdas, int64_t label_sector)
 {
 	if (!pv->fmt->ops->pv_write) {

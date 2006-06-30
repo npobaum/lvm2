@@ -35,7 +35,7 @@ static int _vgmerge_single(struct cmd_context *cmd, const char *vg_name_to,
 		return ECMD_FAILED;
 	}
 
-	if (!(vg_to = vg_read(cmd, vg_name_to, &consistent)) || !consistent) {
+	if (!(vg_to = vg_read(cmd, vg_name_to, NULL, &consistent)) || !consistent) {
 		log_error("Volume group \"%s\" doesn't exist", vg_name_to);
 		unlock_vg(cmd, vg_name_to);
 		return ECMD_FAILED;
@@ -61,7 +61,7 @@ static int _vgmerge_single(struct cmd_context *cmd, const char *vg_name_to,
 	}
 
 	consistent = 1;
-	if (!(vg_from = vg_read(cmd, vg_name_from, &consistent)) || !consistent) {
+	if (!(vg_from = vg_read(cmd, vg_name_from, NULL, &consistent)) || !consistent) {
 		log_error("Volume group \"%s\" doesn't exist", vg_name_from);
 		goto error;
 	}
@@ -125,7 +125,7 @@ static int _vgmerge_single(struct cmd_context *cmd, const char *vg_name_to,
 
 	/* Check no PVs are constructed from either VG */
 	list_iterate_items(pvl, &vg_to->pvs) {
-		if (pv_uses_vg(cmd, pvl->pv, vg_from)) {
+		if (pv_uses_vg(pvl->pv, vg_from)) {
 			log_error("Physical volume %s might be constructed "
 				  "from same volume group %s.",
 				  dev_name(pvl->pv->dev), vg_from->name);
@@ -134,7 +134,7 @@ static int _vgmerge_single(struct cmd_context *cmd, const char *vg_name_to,
 	}
 
 	list_iterate_items(pvl, &vg_from->pvs) {
-		if (pv_uses_vg(cmd, pvl->pv, vg_to)) {
+		if (pv_uses_vg(pvl->pv, vg_to)) {
 			log_error("Physical volume %s might be constructed "
 				  "from same volume group %s.",
 				  dev_name(pvl->pv->dev), vg_to->name);

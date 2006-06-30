@@ -72,6 +72,38 @@ static int lvchange_permission(struct cmd_context *cmd,
 	return 1;
 }
 
+static int lvchange_registration(struct cmd_context *cmd,
+				 struct logical_volume *lv)
+{
+	int r;
+	struct lvinfo info;
+
+	if (!lv_info(cmd, lv, &info, 0) || !info.exists) {
+		log_error("Logical volume, %s, is not active", lv->name);
+		return 0;
+	}
+
+	/* do not register pvmove lv's */
+	if (lv->status & PVMOVE)
+		return 1;
+
+	log_verbose("%smonitoring logical volume \"%s\"",
+		    (dmeventd_register_mode()) ? "" : "Not ", lv->name);
+	r = register_dev_for_events(cmd, lv, dmeventd_register_mode());
+
+	if (r < 0) {
+		log_error("Unable to %smonitor logical volume, %s",
+			  (dmeventd_register_mode()) ? "" : "un", lv->name);
+		r = 0;
+	} else if (!r) {
+		log_verbose("Logical volume %s needs no monitoring.",
+			    lv->name);
+		r = 1;
+	}
+
+	return r;
+}
+
 static int lvchange_availability(struct cmd_context *cmd,
 				 struct logical_volume *lv)
 {
@@ -150,7 +182,7 @@ static int lvchange_alloc(struct cmd_context *cmd, struct logical_volume *lv)
 
 	want_contiguous = strcmp(arg_str_value(cmd, contiguous_ARG, "n"), "n");
 	alloc = want_contiguous ? ALLOC_CONTIGUOUS : ALLOC_INHERIT;
-	alloc = (alloc_policy_t) arg_uint_value(cmd, alloc_ARG, alloc);
+	alloc = arg_uint_value(cmd, alloc_ARG, alloc);
 
 	if (alloc == lv->alloc) {
 		log_error("Allocation policy of logical volume \"%s\" is "
@@ -186,7 +218,7 @@ static int lvchange_alloc(struct cmd_context *cmd, struct logical_volume *lv)
 static int lvchange_readahead(struct cmd_context *cmd,
 			      struct logical_volume *lv)
 {
-	unsigned int read_ahead = 0;
+	unsigned read_ahead = 0;
 
 	read_ahead = arg_uint_value(cmd, readahead_ARG, 0);
 
@@ -369,7 +401,7 @@ static int lvchange_tag(struct cmd_context *cmd, struct logical_volume *lv,
 }
 
 static int lvchange_single(struct cmd_context *cmd, struct logical_volume *lv,
-			   void *handle)
+			   void *handle __attribute((unused)))
 {
 	int doit = 0;
 	int archived = 0;
@@ -421,6 +453,8 @@ static int lvchange_single(struct cmd_context *cmd, struct logical_volume *lv,
 			  lv->name);
 		return ECMD_FAILED;
 	}
+
+	init_dmeventd_register(arg_int_value(cmd, monitor_ARG, DEFAULT_DMEVENTD_MONITOR));
 
 	/* access permission change */
 	if (arg_count(cmd, permission_ARG)) {
@@ -474,13 +508,21 @@ static int lvchange_single(struct cmd_context *cmd, struct logical_volume *lv,
 		log_print("Logical volume \"%s\" changed", lv->name);
 
 	/* availability change */
-	if (arg_count(cmd, available_ARG))
+	if (arg_count(cmd, available_ARG)) {
 		if (!lvchange_availability(cmd, lv))
 			return ECMD_FAILED;
+	}
 
 	if (arg_count(cmd, refresh_ARG))
 		if (!lvchange_refresh(cmd, lv))
 			return ECMD_FAILED;
+
+	if (!arg_count(cmd, available_ARG) &&
+	    !arg_count(cmd, refresh_ARG) &&
+	    arg_count(cmd, monitor_ARG)) {
+		if (!lvchange_registration(cmd, lv))
+			return ECMD_FAILED;
+	}
 
 	return ECMD_PROCESSED;
 }
@@ -492,9 +534,10 @@ int lvchange(struct cmd_context *cmd, int argc, char **argv)
 	    && !arg_count(cmd, minor_ARG) && !arg_count(cmd, major_ARG)
 	    && !arg_count(cmd, persistent_ARG) && !arg_count(cmd, addtag_ARG)
 	    && !arg_count(cmd, deltag_ARG) && !arg_count(cmd, refresh_ARG)
-	    && !arg_count(cmd, alloc_ARG)) {
-		log_error("One or more of -a, -C, -j, -m, -M, -p, -r, "
-			  "--refresh, --alloc, --addtag or --deltag required");
+	    && !arg_count(cmd, alloc_ARG) && !arg_count(cmd, monitor_ARG)) {
+		log_error("Need 1 or more of -a, -C, -j, -m, -M, -p, -r, "
+			  "--refresh, --alloc, --addtag, --deltag "
+			  "or --monitor");
 		return EINVALID_CMD_LINE;
 	}
 

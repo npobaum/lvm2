@@ -166,7 +166,7 @@ static void _calc_functions(struct matcher *m)
 	}
 }
 
-static inline struct dfa_state *_create_dfa_state(struct dm_pool *mem)
+static struct dfa_state *_create_dfa_state(struct dm_pool *mem)
 {
 	return dm_pool_zalloc(mem, sizeof(struct dfa_state));
 }
@@ -196,17 +196,13 @@ static int _calc_states(struct matcher *m, struct rx_node *rx)
 	struct state_queue *h, *t, *tmp;
 	struct dfa_state *dfa, *ldfa;
 	int i, a, set_bits = 0, count = 0;
-	dm_bitset_t bs = dm_bitset_create(m->scratch, m->num_nodes), dfa_bits;
+	dm_bitset_t bs, dfa_bits;
 
-	if (!tt) {
-		stack;
-		return 0;
-	}
+	if (!tt)
+		return_0;
 
-	if (!bs) {
-		stack;
-		return 0;
-	}
+	if (!(bs = dm_bitset_create(m->scratch, m->num_nodes)))
+		return_0;
 
 	/* create first state */
 	dfa = _create_dfa_state(m->mem);
@@ -284,6 +280,7 @@ struct matcher *matcher_create(struct dm_pool *mem, const char **patterns,
 
 	if (!(m = dm_pool_alloc(mem, sizeof(*m)))) {
 		stack;
+		dm_pool_destroy(scratch);
 		return NULL;
 	}
 
@@ -337,8 +334,7 @@ struct matcher *matcher_create(struct dm_pool *mem, const char **patterns,
 	return NULL;
 }
 
-static inline struct dfa_state *_step_matcher(int c,
-					      struct dfa_state *cs, int *r)
+static struct dfa_state *_step_matcher(int c, struct dfa_state *cs, int *r)
 {
 	if (!(cs = cs->lookup[(unsigned char) c]))
 		return NULL;

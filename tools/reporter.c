@@ -16,8 +16,9 @@
 #include "tools.h"
 #include "report.h"
 
-static int _vgs_single(struct cmd_context *cmd, const char *vg_name,
-		       struct volume_group *vg, int consistent, void *handle)
+static int _vgs_single(struct cmd_context *cmd __attribute((unused)),
+		       const char *vg_name, struct volume_group *vg,
+		       int consistent __attribute((unused)), void *handle)
 {
 	if (!vg) {
 		log_error("Volume group %s not found", vg_name);
@@ -35,9 +36,7 @@ static int _vgs_single(struct cmd_context *cmd, const char *vg_name,
 static int _lvs_single(struct cmd_context *cmd, struct logical_volume *lv,
 		       void *handle)
 {
-	/* FIXME Avoid snapshot special-case */
-	if (!arg_count(cmd, all_ARG) && !(lv->status & VISIBLE_LV) &&
-	    !(lv_is_cow(lv)))
+	if (!arg_count(cmd, all_ARG) && !lv_is_visible(lv))
 		return ECMD_PROCESSED;
 
 	if (!report_object(handle, lv->vg, lv, NULL, NULL, NULL))
@@ -46,8 +45,8 @@ static int _lvs_single(struct cmd_context *cmd, struct logical_volume *lv,
 	return ECMD_PROCESSED;
 }
 
-static int _segs_single(struct cmd_context *cmd, struct lv_segment *seg,
-			void *handle)
+static int _segs_single(struct cmd_context *cmd __attribute((unused)),
+			struct lv_segment *seg, void *handle)
 {
 	if (!report_object(handle, seg->lv->vg, seg->lv, NULL, seg, NULL))
 		return ECMD_FAILED;
@@ -67,7 +66,7 @@ static int _pvsegs_sub_single(struct cmd_context *cmd, struct volume_group *vg,
 		return ECMD_FAILED;
 	}
 
-	if (!(vg = vg_read(cmd, pv->vg_name, &consistent))) {
+	if (!(vg = vg_read(cmd, pv->vg_name, NULL, &consistent))) {
 		log_error("Can't read %s: skipping", pv->vg_name);
 		unlock_vg(cmd, pv->vg_name);
 		return ECMD_FAILED;
@@ -83,9 +82,7 @@ static int _pvsegs_sub_single(struct cmd_context *cmd, struct volume_group *vg,
 static int _lvsegs_single(struct cmd_context *cmd, struct logical_volume *lv,
 			  void *handle)
 {
-	/* FIXME Avoid snapshot special-case */
-	if (!arg_count(cmd, all_ARG) && !(lv->status & VISIBLE_LV) &&
-	    !(lv_is_cow(lv)))
+	if (!arg_count(cmd, all_ARG) && !lv_is_visible(lv))
 		return ECMD_PROCESSED;
 
 	return process_each_segment_in_lv(cmd, lv, handle, _segs_single);
@@ -110,7 +107,7 @@ static int _pvs_single(struct cmd_context *cmd, struct volume_group *vg,
 			return ECMD_FAILED;
 		}
 
-		if (!(vg = vg_read(cmd, pv->vg_name, &consistent))) {
+		if (!(vg = vg_read(cmd, pv->vg_name, (char *)&pv->vgid, &consistent))) {
 			log_error("Can't read %s: skipping", pv->vg_name);
 			unlock_vg(cmd, pv->vg_name);
 			return ECMD_FAILED;
@@ -217,8 +214,11 @@ static int _report(struct cmd_context *cmd, int argc, char **argv,
 			return 0;
 		}
 		if (*opts == '+') {
-			str = dm_pool_alloc(cmd->mem,
-					 strlen(options) + strlen(opts) + 1);
+			if (!(str = dm_pool_alloc(cmd->mem,
+					 strlen(options) + strlen(opts) + 1))) {
+				log_error("options string allocation failed");
+				return 0;
+			}
 			strcpy(str, options);
 			strcat(str, ",");
 			strcat(str, opts + 1);

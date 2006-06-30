@@ -111,7 +111,13 @@ static int _remove_lv(struct cmd_context *cmd, struct logical_volume *lv,
 	 * and add to list of LVs to be removed later.
 	 * Doesn't apply to snapshots/origins yet - they're already deactivated.
 	 */
-	if (lv_info(cmd, lv, &info, 0) && info.exists) {
+	/*
+	 * If the LV is a part of mirror segment,
+	 * the mirrored LV also should be cleaned up.
+	 * Clean-up is currently done by caller (_make_vg_consistent()).
+	 */
+	if ((lv_info(cmd, lv, &info, 0) && info.exists)
+	    || first_seg(lv)->mirror_seg) {
 		extents = lv->le_count;
 		mirror_seg = first_seg(lv)->mirror_seg;
 		if (!lv_empty(lv)) {
@@ -157,8 +163,8 @@ static int _make_vg_consistent(struct cmd_context *cmd, struct volume_group *vg)
 	struct physical_volume *pv;
 	struct lv_segment *seg, *mirrored_seg;
 	struct lv_segment_area area;
-	unsigned int s;
-	uint32_t mimages;
+	unsigned s;
+	uint32_t mimages, remove_log;
 	int list_unsafe, only_mirror_images_found;
 	LIST_INIT(lvs_changed);
 	only_mirror_images_found = 1;
@@ -259,7 +265,10 @@ static int _make_vg_consistent(struct cmd_context *cmd, struct volume_group *vg)
 			mirrored_seg = first_seg(lvl->lv);
 			if (!seg_is_mirrored(mirrored_seg))
 				continue;
+
 			mimages = mirrored_seg->area_count;
+			remove_log = 0;
+
 			for (s = 0; s < mirrored_seg->area_count; s++) {
 				list_iterate_items_safe(lvl2, lvlt, &lvs_changed) {
 					if (seg_type(mirrored_seg, s) != AREA_LV ||
@@ -272,8 +281,24 @@ static int _make_vg_consistent(struct cmd_context *cmd, struct volume_group *vg)
 					mimages--;	/* FIXME Assumes uniqueness */
 				}
 			}
-			if (mimages != mirrored_seg->area_count) {
-				if (!remove_mirror_images(mirrored_seg, mimages, NULL, 0)) {
+
+			if (mirrored_seg->log_lv) {
+				list_iterate_items(seg, &mirrored_seg->log_lv->segments) {
+					/* FIXME: The second test shouldn't be required */
+					if ((seg->segtype ==
+					     get_segtype_from_string(vg->cmd, "error")) ||
+					    (!strcmp(seg->segtype->name, "error"))) {
+						log_print("The log device for %s/%s has failed.",
+							  vg->name, mirrored_seg->lv->name);
+						remove_log = 1;
+						break;
+					}
+				}
+			}
+
+			if ((mimages != mirrored_seg->area_count) || (remove_log)){
+				if (!reconfigure_mirror_images(mirrored_seg, mimages,
+							       NULL, remove_log)) {
 					stack;
 					return 0;
 				}
@@ -295,14 +320,20 @@ static int _make_vg_consistent(struct cmd_context *cmd, struct volume_group *vg)
 
 		/* Deactivate error LVs */
 		if (!test_mode()) {
-			list_iterate_items(lvl, &lvs_changed) {
+			list_iterate_items_safe(lvl, lvlt, &lvs_changed) {
 				log_verbose("Deactivating (if active) logical volume %s",
 					    lvl->lv->name);
 
 				if (!deactivate_lv(cmd, lvl->lv)) {
 					log_error("Failed to deactivate LV %s",
 						  lvl->lv->name);
-					return 0;
+					/*
+					 * We failed to deactivate.
+					 * Probably because this was a mirror log.
+					 * Don't try to lv_remove it.
+					 * Continue work on others.
+					 */
+					list_del(&lvl->list);
 				}
 			}
 		}
@@ -323,7 +354,8 @@ static int _make_vg_consistent(struct cmd_context *cmd, struct volume_group *vg)
 
 /* Or take pv_name instead? */
 static int _vgreduce_single(struct cmd_context *cmd, struct volume_group *vg,
-			    struct physical_volume *pv, void *handle)
+			    struct physical_volume *pv,
+			    void *handle __attribute((unused)))
 {
 	struct pv_list *pvl;
 	const char *name = dev_name(pv->dev);
@@ -432,7 +464,7 @@ int vgreduce(struct cmd_context *cmd, int argc, char **argv)
 		return ECMD_FAILED;
 	}
 
-	if ((!(vg = vg_read(cmd, vg_name, &consistent)) || !consistent) &&
+	if ((!(vg = vg_read(cmd, vg_name, NULL, &consistent)) || !consistent) &&
 	    !arg_count(cmd, removemissing_ARG)) {
 		log_error("Volume group \"%s\" doesn't exist", vg_name);
 		unlock_vg(cmd, vg_name);
@@ -449,7 +481,7 @@ int vgreduce(struct cmd_context *cmd, int argc, char **argv)
 
 		init_partial(1);
 		consistent = 0;
-		if (!(vg = vg_read(cmd, vg_name, &consistent))) {
+		if (!(vg = vg_read(cmd, vg_name, NULL, &consistent))) {
 			log_error("Volume group \"%s\" not found", vg_name);
 			unlock_vg(cmd, vg_name);
 			return ECMD_FAILED;

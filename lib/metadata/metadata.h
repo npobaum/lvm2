@@ -23,14 +23,15 @@
 
 #include "ctype.h"
 #include "dev-cache.h"
+#include "lvm-string.h"
 #include "uuid.h"
 
-#define NAME_LEN 128
-#define MAX_STRIPES 128
+#define MAX_STRIPES 128U
 #define SECTOR_SHIFT 9L
 #define SECTOR_SIZE ( 1L << SECTOR_SHIFT )
-#define STRIPE_SIZE_MIN ( getpagesize() >> SECTOR_SHIFT)	/* PAGESIZE in sectors */
+#define STRIPE_SIZE_MIN ( (unsigned) getpagesize() >> SECTOR_SHIFT)	/* PAGESIZE in sectors */
 #define STRIPE_SIZE_MAX ( 512L * 1024L >> SECTOR_SHIFT)	/* 512 KB in sectors */
+#define STRIPE_SIZE_LIMIT ((UINT_MAX >> 2) + 1)
 #define PV_MIN_SIZE ( 512L * 1024L >> SECTOR_SHIFT)	/* 512 KB in sectors */
 #define PE_ALIGN (65536UL >> SECTOR_SHIFT)	/* PE alignment */
 #define MAX_RESTRICTED_LVS 255	/* Used by FMT_RESTRICTED_LVIDS */
@@ -38,45 +39,47 @@
 /* Various flags */
 /* Note that the bits no longer necessarily correspond to LVM1 disk format */
 
-#define PARTIAL_VG		0x00000001	/* VG */
-#define EXPORTED_VG          	0x00000002	/* VG PV */
-#define RESIZEABLE_VG        	0x00000004	/* VG */
+#define PARTIAL_VG		0x00000001U	/* VG */
+#define EXPORTED_VG          	0x00000002U	/* VG PV */
+#define RESIZEABLE_VG        	0x00000004U	/* VG */
 
 /* May any free extents on this PV be used or must they be left free? */
-#define ALLOCATABLE_PV         	0x00000008	/* PV */
+#define ALLOCATABLE_PV         	0x00000008U	/* PV */
 
-#define SPINDOWN_LV          	0x00000010	/* LV */
-#define BADBLOCK_ON       	0x00000020	/* LV */
-#define VISIBLE_LV		0x00000040	/* LV */
-#define FIXED_MINOR		0x00000080	/* LV */
+#define SPINDOWN_LV          	0x00000010U	/* LV */
+#define BADBLOCK_ON       	0x00000020U	/* LV */
+#define VISIBLE_LV		0x00000040U	/* LV */
+#define FIXED_MINOR		0x00000080U	/* LV */
 /* FIXME Remove when metadata restructuring is completed */
-#define SNAPSHOT		0x00001000	/* LV - internal use only */
-#define PVMOVE			0x00002000	/* VG LV SEG */
-#define LOCKED			0x00004000	/* LV */
-#define MIRRORED		0x00008000	/* LV - internal use only */
-#define VIRTUAL			0x00010000	/* LV - internal use only */
-#define MIRROR_LOG		0x00020000	/* LV */
-#define MIRROR_IMAGE		0x00040000	/* LV */
-#define ACTIVATE_EXCL		0x00080000	/* LV - internal use only */
-#define PRECOMMITTED		0x00100000	/* VG - internal use only */
+#define SNAPSHOT		0x00001000U	/* LV - internal use only */
+#define PVMOVE			0x00002000U	/* VG LV SEG */
+#define LOCKED			0x00004000U	/* LV */
+#define MIRRORED		0x00008000U	/* LV - internal use only */
+#define VIRTUAL			0x00010000U	/* LV - internal use only */
+#define MIRROR_LOG		0x00020000U	/* LV */
+#define MIRROR_IMAGE		0x00040000U	/* LV */
+#define MIRROR_NOTSYNCED	0x00080000U	/* LV */
+#define ACTIVATE_EXCL		0x00100000U	/* LV - internal use only */
+#define PRECOMMITTED		0x00200000U	/* VG - internal use only */
 
-#define LVM_READ              	0x00000100	/* LV VG */
-#define LVM_WRITE             	0x00000200	/* LV VG */
-#define CLUSTERED         	0x00000400	/* VG */
-#define SHARED            	0x00000800	/* VG */
+#define LVM_READ              	0x00000100U	/* LV VG */
+#define LVM_WRITE             	0x00000200U	/* LV VG */
+#define CLUSTERED         	0x00000400U	/* VG */
+#define SHARED            	0x00000800U	/* VG */
 
 /* Format features flags */
-#define FMT_SEGMENTS		0x00000001	/* Arbitrary segment params? */
-#define FMT_MDAS		0x00000002	/* Proper metadata areas? */
-#define FMT_TAGS		0x00000004	/* Tagging? */
-#define FMT_UNLIMITED_VOLS	0x00000008	/* Unlimited PVs/LVs? */
-#define FMT_RESTRICTED_LVIDS	0x00000010	/* LVID <= 255 */
-#define FMT_ORPHAN_ALLOCATABLE	0x00000020	/* Orphan PV allocatable? */
-#define FMT_PRECOMMIT		0x00000040	/* Supports pre-commit? */
-#define FMT_RESIZE_PV		0x00000080	/* Supports pvresize? */
+#define FMT_SEGMENTS		0x00000001U	/* Arbitrary segment params? */
+#define FMT_MDAS		0x00000002U	/* Proper metadata areas? */
+#define FMT_TAGS		0x00000004U	/* Tagging? */
+#define FMT_UNLIMITED_VOLS	0x00000008U	/* Unlimited PVs/LVs? */
+#define FMT_RESTRICTED_LVIDS	0x00000010U	/* LVID <= 255 */
+#define FMT_ORPHAN_ALLOCATABLE	0x00000020U	/* Orphan PV allocatable? */
+#define FMT_PRECOMMIT		0x00000040U	/* Supports pre-commit? */
+#define FMT_RESIZE_PV		0x00000080U	/* Supports pvresize? */
+#define FMT_UNLIMITED_STRIPESIZE 0x00000100U	/* Unlimited stripe size? */
 
 typedef enum {
-	ALLOC_INVALID,
+	ALLOC_INVALID = 0,
 	ALLOC_INHERIT,
 	ALLOC_CONTIGUOUS,
 	ALLOC_NORMAL,
@@ -122,6 +125,7 @@ struct physical_volume {
 	struct device *dev;
 	const struct format_type *fmt;
 	const char *vg_name;
+	struct id vgid;
 
 	uint32_t status;
 	uint64_t size;
@@ -236,7 +240,7 @@ struct lv_segment {
 	struct list list;
 	struct logical_volume *lv;
 
-	struct segment_type *segtype;
+	const struct segment_type *segtype;
 	uint32_t le;
 	uint32_t len;
 
@@ -378,13 +382,14 @@ struct format_handler {
 	 * Check whether particular segment type is supported.
 	 */
 	int (*segtype_supported) (struct format_instance *fid,
-				  struct segment_type *segtype);
+				  const struct segment_type *segtype);
 
 	/*
 	 * Create format instance with a particular metadata area
 	 */
 	struct format_instance *(*create_instance) (const struct format_type *
 						    fmt, const char *vgname,
+						    const char *vgid,
 						    void *context);
 
 	/*
@@ -406,7 +411,7 @@ int vg_write(struct volume_group *vg);
 int vg_commit(struct volume_group *vg);
 int vg_revert(struct volume_group *vg);
 struct volume_group *vg_read(struct cmd_context *cmd, const char *vg_name,
-			     int *consistent);
+			     const char *vgid, int *consistent);
 struct physical_volume *pv_read(struct cmd_context *cmd, const char *pv_name,
 				struct list *mdas, uint64_t *label_sector,
 				int warnings);
@@ -414,6 +419,7 @@ struct list *get_pvs(struct cmd_context *cmd);
 
 /* Set full_scan to 1 to re-read every (filtered) device label */
 struct list *get_vgs(struct cmd_context *cmd, int full_scan);
+struct list *get_vgids(struct cmd_context *cmd, int full_scan);
 
 int pv_write(struct cmd_context *cmd, struct physical_volume *pv,
 	     struct list *mdas, int64_t label_sector);
@@ -461,7 +467,7 @@ int lv_empty(struct logical_volume *lv);
 
 /* Entry point for all LV extent allocations */
 int lv_extend(struct logical_volume *lv,
-	      struct segment_type *segtype,
+	      const struct segment_type *segtype,
 	      uint32_t stripes, uint32_t stripe_size,
 	      uint32_t mirrors, uint32_t extents,
 	      struct physical_volume *mirrored_pv, uint32_t mirrored_pe,
@@ -481,7 +487,8 @@ struct pv_list *find_pv_in_vg(struct volume_group *vg, const char *pv_name);
 struct physical_volume *find_pv_in_vg_by_uuid(struct volume_group *vg,
 					      struct id *id);
 int get_pv_from_vg_by_id(const struct format_type *fmt, const char *vg_name,
-			 const char *id, struct physical_volume *pv);
+			 const char *vgid, const char *pvid,
+			 struct physical_volume *pv);
 
 /* Find an LV within a given VG */
 struct lv_list *find_lv_in_vg(struct volume_group *vg, const char *lv_name);
@@ -538,10 +545,15 @@ int lv_split_segment(struct logical_volume *lv, uint32_t le);
  */
 int lv_is_origin(const struct logical_volume *lv);
 int lv_is_cow(const struct logical_volume *lv);
+int lv_is_visible(const struct logical_volume *lv);
 
 int pv_is_in_vg(struct volume_group *vg, struct physical_volume *pv);
 
+/* Given a cow LV, return return the snapshot lv_segment that uses it */
 struct lv_segment *find_cow(const struct logical_volume *lv);
+
+/* Given a cow LV, return its origin */
+struct logical_volume *origin_from_cow(const struct logical_volume *lv);
 
 int vg_add_snapshot(struct format_instance *fid, const char *name,
 		    struct logical_volume *origin, struct logical_volume *cow,
@@ -560,7 +572,7 @@ int create_mirror_layers(struct alloc_handle *ah,
 			 uint32_t first_area,
 			 uint32_t num_mirrors,
 			 struct logical_volume *lv,
-			 struct segment_type *segtype,
+			 const struct segment_type *segtype,
 			 uint32_t status,
 			 uint32_t region_size,
 			 struct logical_volume *log_lv);
@@ -568,10 +580,12 @@ int add_mirror_layers(struct alloc_handle *ah,
 		      uint32_t num_mirrors,
 		      uint32_t existing_mirrors,
 		      struct logical_volume *lv,
-		      struct segment_type *segtype);
+		      const struct segment_type *segtype);
 
 int remove_mirror_images(struct lv_segment *mirrored_seg, uint32_t num_mirrors,
 			 struct list *removable_pvs, int remove_log);
+int reconfigure_mirror_images(struct lv_segment *mirrored_seg, uint32_t num_mirrors,
+			      struct list *removable_pvs, int remove_log);
 /*
  * Given mirror image or mirror log segment, find corresponding mirror segment 
  */
@@ -602,30 +616,5 @@ struct list *lvs_using_lv(struct cmd_context *cmd, struct volume_group *vg,
 uint32_t find_free_lvnum(struct logical_volume *lv);
 char *generate_lv_name(struct volume_group *vg, const char *format,
 		       char *buffer, size_t len);
-
-static inline int validate_name(const char *n)
-{
-	register char c;
-	register int len = 0;
-
-	if (!n || !*n)
-		return 0;
-
-	/* Hyphen used as VG-LV separator - ambiguity if LV starts with it */
-	if (*n == '-')
-		return 0;
-
-	if (!strcmp(n, ".") || !strcmp(n, ".."))
-		return 0;
-
-	while ((len++, c = *n++))
-		if (!isalnum(c) && c != '.' && c != '_' && c != '-' && c != '+')
-			return 0;
-
-	if (len > NAME_LEN)
-		return 0;
-
-	return 1;
-}
 
 #endif

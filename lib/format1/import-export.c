@@ -49,23 +49,26 @@ static char *_create_lv_name(struct dm_pool *mem, const char *full_name)
 
 int import_pv(struct dm_pool *mem, struct device *dev,
 	      struct volume_group *vg,
-	      struct physical_volume *pv, struct pv_disk *pvd)
+	      struct physical_volume *pv, struct pv_disk *pvd,
+	      struct vg_disk *vgd)
 {
 	memset(pv, 0, sizeof(*pv));
 	memcpy(&pv->id, pvd->pv_uuid, ID_LEN);
 
 	pv->dev = dev;
-	if (!(pv->vg_name = dm_pool_strdup(mem, pvd->vg_name))) {
+	if (!(pv->vg_name = dm_pool_strdup(mem, (char *)pvd->vg_name))) {
 		stack;
 		return 0;
 	}
 
+	memcpy(&pv->vgid, vgd->vg_uuid, sizeof(vg->id));
+
 	/* Store system_id from first PV if PV belongs to a VG */
 	if (vg && !*vg->system_id)
-		strncpy(vg->system_id, pvd->system_id, NAME_LEN);
+		strncpy(vg->system_id, (char *)pvd->system_id, NAME_LEN);
 
 	if (vg &&
-	    strncmp(vg->system_id, pvd->system_id, sizeof(pvd->system_id)))
+	    strncmp(vg->system_id, (char *)pvd->system_id, sizeof(pvd->system_id)))
 		    log_very_verbose("System ID %s on %s differs from %s for "
 				     "volume group", pvd->system_id,
 				     dev_name(pv->dev), vg->system_id);
@@ -121,19 +124,17 @@ int export_pv(struct cmd_context *cmd, struct dm_pool *mem,
 
 	memcpy(pvd->pv_uuid, pv->id.uuid, ID_LEN);
 
-	if (!_check_vg_name(pv->vg_name)) {
-		stack;
-		return 0;
+	if (pv->vg_name) {
+		if (!_check_vg_name(pv->vg_name)) {
+			stack;
+			return 0;
+		}
+		strncpy((char *)pvd->vg_name, pv->vg_name, sizeof(pvd->vg_name));
 	}
-
-	memset(pvd->vg_name, 0, sizeof(pvd->vg_name));
-
-	if (pv->vg_name)
-		strncpy(pvd->vg_name, pv->vg_name, sizeof(pvd->vg_name));
 
 	/* Preserve existing system_id if it exists */
 	if (vg && *vg->system_id)
-		strncpy(pvd->system_id, vg->system_id, sizeof(pvd->system_id));
+		strncpy((char *)pvd->system_id, vg->system_id, sizeof(pvd->system_id));
 
 	/* Is VG already exported or being exported? */
 	if (vg && (vg->status & EXPORTED_VG)) {
@@ -141,24 +142,24 @@ int export_pv(struct cmd_context *cmd, struct dm_pool *mem,
 		if (!*vg->system_id ||
 		    strncmp(vg->system_id, EXPORTED_TAG,
 			    sizeof(EXPORTED_TAG) - 1)) {
-			if (!_system_id(cmd, pvd->system_id, EXPORTED_TAG)) {
+			if (!_system_id(cmd, (char *)pvd->system_id, EXPORTED_TAG)) {
 				stack;
 				return 0;
 			}
 		}
-		if (strlen(pvd->vg_name) + sizeof(EXPORTED_TAG) >
+		if (strlen((char *)pvd->vg_name) + sizeof(EXPORTED_TAG) >
 		    sizeof(pvd->vg_name)) {
 			log_error("Volume group name %s too long to export",
 				  pvd->vg_name);
 			return 0;
 		}
-		strcat(pvd->vg_name, EXPORTED_TAG);
+		strcat((char *)pvd->vg_name, EXPORTED_TAG);
 	}
 
 	/* Is VG being imported? */
 	if (vg && !(vg->status & EXPORTED_VG) && *vg->system_id &&
 	    !strncmp(vg->system_id, EXPORTED_TAG, sizeof(EXPORTED_TAG) - 1)) {
-		if (!_system_id(cmd, pvd->system_id, IMPORTED_TAG)) {
+		if (!_system_id(cmd, (char *)pvd->system_id, IMPORTED_TAG)) {
 			stack;
 			return 0;
 		}
@@ -166,7 +167,7 @@ int export_pv(struct cmd_context *cmd, struct dm_pool *mem,
 
 	/* Generate system_id if PV is in VG */
 	if (!pvd->system_id || !*pvd->system_id)
-		if (!_system_id(cmd, pvd->system_id, "")) {
+		if (!_system_id(cmd, (char *)pvd->system_id, "")) {
 			stack;
 			return 0;
 		}
@@ -174,8 +175,8 @@ int export_pv(struct cmd_context *cmd, struct dm_pool *mem,
 	/* Update internal system_id if we changed it */
 	if (vg &&
 	    (!*vg->system_id ||
-	     strncmp(vg->system_id, pvd->system_id, sizeof(pvd->system_id))))
-		    strncpy(vg->system_id, pvd->system_id, NAME_LEN);
+	     strncmp(vg->system_id, (char *)pvd->system_id, sizeof(pvd->system_id))))
+		    strncpy(vg->system_id, (char *)pvd->system_id, NAME_LEN);
 
 	//pvd->pv_major = MAJOR(pv->dev);
 
@@ -201,12 +202,12 @@ int import_vg(struct dm_pool *mem,
 	struct vg_disk *vgd = &dl->vgd;
 	memcpy(vg->id.uuid, vgd->vg_uuid, ID_LEN);
 
-	if (!_check_vg_name(dl->pvd.vg_name)) {
+	if (!_check_vg_name((char *)dl->pvd.vg_name)) {
 		stack;
 		return 0;
 	}
 
-	if (!(vg->name = dm_pool_strdup(mem, dl->pvd.vg_name))) {
+	if (!(vg->name = dm_pool_strdup(mem, (char *)dl->pvd.vg_name))) {
 		stack;
 		return 0;
 	}
@@ -289,7 +290,7 @@ int import_lv(struct dm_pool *mem, struct logical_volume *lv, struct lv_disk *lv
 {
 	lvid_from_lvnum(&lv->lvid, &lv->vg->id, lvd->lv_number);
 
-	if (!(lv->name = _create_lv_name(mem, lvd->lv_name))) {
+	if (!(lv->name = _create_lv_name(mem, (char *)lvd->lv_name))) {
 		stack;
 		return 0;
 	}
@@ -339,10 +340,10 @@ static void _export_lv(struct lv_disk *lvd, struct volume_group *vg,
 		       struct logical_volume *lv, const char *dev_dir)
 {
 	memset(lvd, 0, sizeof(*lvd));
-	snprintf(lvd->lv_name, sizeof(lvd->lv_name), "%s%s/%s",
+	snprintf((char *)lvd->lv_name, sizeof(lvd->lv_name), "%s%s/%s",
 		 dev_dir, vg->name, lv->name);
 
-	strcpy(lvd->vg_name, vg->name);
+	strcpy((char *)lvd->vg_name, vg->name);
 
 	if (lv->status & LVM_READ)
 		lvd->lv_access |= LV_READ;
@@ -413,7 +414,7 @@ int export_extents(struct disk_list *dl, uint32_t lv_num,
 
 int import_pvs(const struct format_type *fmt, struct dm_pool *mem,
 	       struct volume_group *vg,
-	       struct list *pvds, struct list *results, int *count)
+	       struct list *pvds, struct list *results, uint32_t *count)
 {
 	struct disk_list *dl;
 	struct pv_list *pvl;
@@ -426,7 +427,7 @@ int import_pvs(const struct format_type *fmt, struct dm_pool *mem,
 			return 0;
 		}
 
-		if (!import_pv(mem, dl->dev, vg, pvl->pv, &dl->pvd)) {
+		if (!import_pv(mem, dl->dev, vg, pvl->pv, &dl->pvd, &dl->vgd)) {
 			stack;
 			return 0;
 		}
@@ -475,7 +476,7 @@ int import_lvs(struct dm_pool *mem, struct volume_group *vg, struct list *pvds)
 		list_iterate_items(ll, &dl->lvds) {
 			lvd = &ll->lvd;
 
-			if (!find_lv(vg, lvd->lv_name) &&
+			if (!find_lv(vg, (char *)lvd->lv_name) &&
 			    !_add_lv(mem, vg, lvd)) {
 				stack;
 				return 0;
@@ -583,14 +584,14 @@ int import_snapshots(struct dm_pool *mem, struct volume_group *vg,
 
 			lvnum = lvd->lv_number;
 
-			if (lvnum > MAX_LV) {
+			if (lvnum >= MAX_LV) {
 				log_err("Logical volume number "
 					"out of bounds.");
 				return 0;
 			}
 
 			if (!lvs[lvnum] &&
-			    !(lvs[lvnum] = find_lv(vg, lvd->lv_name))) {
+			    !(lvs[lvnum] = find_lv(vg, (char *)lvd->lv_name))) {
 				log_err("Couldn't find logical volume '%s'.",
 					lvd->lv_name);
 				return 0;

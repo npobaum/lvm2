@@ -25,7 +25,7 @@ struct lvresize_params {
 	uint32_t stripe_size;
 	uint32_t mirrors;
 
-	struct segment_type *segtype;
+	const struct segment_type *segtype;
 
 	/* size */
 	uint32_t extents;
@@ -45,8 +45,8 @@ struct lvresize_params {
 	char **argv;
 };
 
-static int _read_params(struct cmd_context *cmd, int argc, char **argv,
-			struct lvresize_params *lp)
+static int _lvresize_params(struct cmd_context *cmd, int argc, char **argv,
+			    struct lvresize_params *lp)
 {
 	const char *cmd_name;
 	char *st;
@@ -116,7 +116,6 @@ static int _lvresize(struct cmd_context *cmd, struct lvresize_params *lp)
 {
 	struct volume_group *vg;
 	struct logical_volume *lv;
-	struct lv_segment *snap_seg;
 	struct lvinfo info;
 	uint32_t stripesize_extents = 0;
 	uint32_t seg_stripes = 0, seg_stripesize = 0, seg_size = 0;
@@ -134,7 +133,7 @@ static int _lvresize(struct cmd_context *cmd, struct lvresize_params *lp)
 	char size_buf[SIZE_BUF];
 	char lv_path[PATH_MAX];
 
-	if (!(vg = vg_read(cmd, lp->vg_name, &consistent))) {
+	if (!(vg = vg_read(cmd, lp->vg_name, NULL, &consistent))) {
 		log_error("Volume group %s doesn't exist", lp->vg_name);
 		return ECMD_FAILED;
 	}
@@ -179,14 +178,33 @@ static int _lvresize(struct cmd_context *cmd, struct lvresize_params *lp)
 			log_error("Stripesize may not be negative.");
 			return ECMD_FAILED;
 		}
-		if (vg->fid->fmt->features & FMT_SEGMENTS)
+
+		if (arg_uint_value(cmd, stripesize_ARG, 0) > STRIPE_SIZE_LIMIT) {
+			log_error("Stripe size cannot be larger than %s",
+				  display_size(cmd, (uint64_t) STRIPE_SIZE_LIMIT));
+			return 0;
+		}
+
+		if (!(vg->fid->fmt->features & FMT_SEGMENTS))
+			log_print("Varied stripesize not supported. Ignoring.");
+		else if (arg_uint_value(cmd, stripesize_ARG, 0) > vg->extent_size) {
+                	log_error("Reducing stripe size %s to maximum, "
+				  "physical extent size %s",
+				  display_size(cmd,
+					(uint64_t) arg_uint_value(cmd, stripesize_ARG, 0) * 2),
+	                          display_size(cmd, (uint64_t) vg->extent_size));
+                	lp->stripe_size = vg->extent_size;
+        	} else
 			lp->stripe_size = 2 * arg_uint_value(cmd,
 							     stripesize_ARG, 0);
-		else
-			log_print("Varied stripesize not supported. Ignoring.");
+
 		if (lp->mirrors) {
 			log_error("Mirrors and striping cannot be combined yet.");
 			return ECMD_FAILED;
+		}
+		if (lp->stripe_size & (lp->stripe_size - 1)) {
+			log_error("Stripe size must be power of 2");
+			return 0;
 		}
 	}
 
@@ -197,7 +215,7 @@ static int _lvresize(struct cmd_context *cmd, struct lvresize_params *lp)
 		return ECMD_FAILED;
 	}
 
-	alloc = (alloc_policy_t) arg_uint_value(cmd, alloc_ARG, lv->alloc);
+	alloc = arg_uint_value(cmd, alloc_ARG, lv->alloc);
 
 	if (lp->size) {
 		if (lp->size % vg->extent_size) {
@@ -208,8 +226,7 @@ static int _lvresize(struct cmd_context *cmd, struct lvresize_params *lp)
 				    (lp->size % vg->extent_size);
 
 			log_print("Rounding up size to full physical extent %s",
-				  display_size(cmd, (uint64_t) lp->size,
-					       SIZE_SHORT));
+				  display_size(cmd, (uint64_t) lp->size));
 		}
 
 		lp->extents = lp->size / vg->extent_size;
@@ -247,8 +264,7 @@ static int _lvresize(struct cmd_context *cmd, struct lvresize_params *lp)
 	}
 
 	/* FIXME Support LVs with mixed segment types */
-	if (lp->segtype != (struct segment_type *) arg_ptr_value(cmd, type_ARG,
-								 lp->segtype)) {
+	if (lp->segtype != arg_ptr_value(cmd, type_ARG, lp->segtype)) {
 		log_error("VolumeType does not match (%s)", lp->segtype->name);
 		return EINVALID_CMD_LINE;
 	}
@@ -280,16 +296,16 @@ static int _lvresize(struct cmd_context *cmd, struct lvresize_params *lp)
 
 		if (!lp->stripe_size && lp->stripes > 1) {
 			if (seg_stripesize) {
-				log_print("Using stripesize of last segment "
-					  "%dKB", seg_stripesize / 2);
+				log_print("Using stripesize of last segment %s",
+					  display_size(cmd, (uint64_t) seg_stripesize));
 				lp->stripe_size = seg_stripesize;
 			} else {
 				lp->stripe_size =
 					find_config_int(cmd->cft->root,
 							"metadata/stripesize",
 							DEFAULT_STRIPESIZE) * 2;
-				log_print("Using default stripesize %dKB",
-					  lp->stripe_size / 2);
+				log_print("Using default stripesize %s",
+					  display_size(cmd, (uint64_t) lp->stripe_size));
 			}
 		}
 	}
@@ -362,6 +378,12 @@ static int _lvresize(struct cmd_context *cmd, struct lvresize_params *lp)
 				  "boundary size for segment (%d extents)",
 				  lp->extents, lp->extents - size_rest);
 			lp->extents = lp->extents - size_rest;
+		}
+
+		if (lp->stripe_size < STRIPE_SIZE_MIN) {
+			log_error("Invalid stripe size %s",
+				  display_size(cmd, (uint64_t) lp->stripe_size));
+			return 0;
 		}
 	}
 
@@ -440,8 +462,7 @@ static int _lvresize(struct cmd_context *cmd, struct lvresize_params *lp)
 			log_print("WARNING: Reducing active%s logical volume "
 				  "to %s", info.open_count ? " and open" : "",
 				  display_size(cmd, (uint64_t) lp->extents *
-						    vg->extent_size,
-					       SIZE_SHORT));
+						    vg->extent_size));
 
 			log_print("THIS MAY DESTROY YOUR DATA "
 				  "(filesystem etc.)");
@@ -496,8 +517,7 @@ static int _lvresize(struct cmd_context *cmd, struct lvresize_params *lp)
 	log_print("%sing logical volume %s to %s",
 		  (lp->resize == LV_REDUCE) ? "Reduc" : "Extend",
 		  lp->lv_name,
-		  display_size(cmd, (uint64_t) lp->extents * vg->extent_size,
-			       SIZE_SHORT));
+		  display_size(cmd, (uint64_t) lp->extents * vg->extent_size));
 
 	if (lp->resize == LV_REDUCE) {
 		if (!lv_reduce(lv, lv->le_count - lp->extents)) {
@@ -521,8 +541,8 @@ static int _lvresize(struct cmd_context *cmd, struct lvresize_params *lp)
 	backup(vg);
 
 	/* If snapshot, must suspend all associated devices */
-	if ((snap_seg = find_cow(lv)))
-		lock_lv = snap_seg->origin;
+	if (lv_is_cow(lv))
+		lock_lv = origin_from_cow(lv);
 	else
 		lock_lv = lv;
 
@@ -562,7 +582,7 @@ int lvresize(struct cmd_context *cmd, int argc, char **argv)
 
 	memset(&lp, 0, sizeof(lp));
 
-	if (!_read_params(cmd, argc, argv, &lp))
+	if (!_lvresize_params(cmd, argc, argv, &lp))
 		return EINVALID_CMD_LINE;
 
 	log_verbose("Finding volume group %s", lp.vg_name);

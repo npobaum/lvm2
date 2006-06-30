@@ -16,13 +16,6 @@ case "$1" in
 	  db_input critical lvm2/snapshots || true
 	  db_go
 	fi
-
-	if ! dpkg --compare-versions $(uname -r) ge '2.6.12'; then
-	  db_fset lvm2/kernel seen false
-	  db_input critical lvm2/kernel || true
-	  db_go
-	  exit 1
-	fi
     ;;
 
     abort-upgrade)

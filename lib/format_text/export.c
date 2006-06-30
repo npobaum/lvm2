@@ -183,7 +183,8 @@ static int _out_with_comment_file(struct formatter *f, const char *comment,
 	return 1;
 }
 
-static int _out_with_comment_raw(struct formatter *f, const char *comment,
+static int _out_with_comment_raw(struct formatter *f,
+				 const char *comment __attribute((unused)),
 				 const char *fmt, va_list ap)
 {
 	int n;
@@ -281,7 +282,7 @@ int out_text(struct formatter *f, const char *fmt, ...)
 }
 
 static int _print_header(struct formatter *f,
-			 struct volume_group *vg, const char *desc)
+			 const char *desc)
 {
 	time_t t;
 
@@ -354,8 +355,7 @@ static int _print_vg(struct formatter *f, struct volume_group *vg)
  * Get the pv%d name from the formatters hash
  * table.
  */
-static inline const char *_get_pv_name(struct formatter *f,
-				       struct physical_volume *pv)
+static const char *_get_pv_name(struct formatter *f, struct physical_volume *pv)
 {
 	return (pv) ? (const char *)
 	    dm_hash_lookup(f->pv_names, dev_name(pv->dev)) : "Missing";
@@ -666,7 +666,7 @@ static int _text_vg_export(struct formatter *f,
 	}
 #define fail do {stack; goto out;} while(0)
 
-	if (f->header && !_print_header(f, vg, desc))
+	if (f->header && !_print_header(f, desc))
 		fail;
 
 	if (!out_text(f, "%s {", vg->name))
@@ -689,7 +689,7 @@ static int _text_vg_export(struct formatter *f,
 	if (!out_text(f, "}"))
 		fail;
 
-	if (!f->header && !_print_header(f, vg, desc))
+	if (!f->header && !_print_header(f, desc))
 		fail;
 
 #undef fail

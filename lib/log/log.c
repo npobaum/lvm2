@@ -17,6 +17,7 @@
 #include "device.h"
 #include "memlock.h"
 #include "lvm-string.h"
+#include "defaults.h"
 
 #include <stdarg.h>
 #include <syslog.h>
@@ -45,6 +46,8 @@ static int _security_level = SECURITY_LEVEL;
 static char _cmd_name[30] = "";
 static char _msg_prefix[30] = "  ";
 static int _already_logging = 0;
+static int _mirror_in_sync = 0;
+static int _dmeventd_register = DEFAULT_DMEVENTD_MONITOR;
 
 static lvm2_log_fn_t _lvm2_log_fn = NULL;
 
@@ -90,9 +93,13 @@ void init_syslog(int facility)
 	_syslog = 1;
 }
 
-void log_suppress(int suppress)
+int log_suppress(int suppress)
 {
+	int old_suppress = _log_suppress;
+
 	_log_suppress = suppress;
+
+	return old_suppress;
 }
 
 void release_log_memory(void)
@@ -171,6 +178,16 @@ void init_security_level(int level)
 	_security_level = level;
 }
 
+void init_mirror_in_sync(int in_sync)
+{
+	_mirror_in_sync = in_sync;
+}
+
+void init_dmeventd_register(int reg)
+{
+	_dmeventd_register = reg;
+}
+
 void init_cmd_name(int status)
 {
 	_log_cmd_name = status;
@@ -235,6 +252,16 @@ int security_level()
 	return _security_level;
 }
 
+int mirror_in_sync(void)
+{
+	return _mirror_in_sync;
+}
+
+int dmeventd_register_mode(void)
+{
+	return _dmeventd_register;
+}
+
 void init_debug(int level)
 {
 	_debug_level = level;
@@ -252,6 +279,9 @@ void print_log(int level, const char *file, int line, const char *format, ...)
 	int bufused, n;
 	const char *message;
 	const char *trformat;		/* Translated format string */
+
+	if (_log_suppress == 2)
+		return;
 
 	trformat = _(format);
 

@@ -87,7 +87,7 @@ static int _split_vg(const char *filename, char *vgname, size_t vg_size,
 	return 1;
 }
 
-static void _insert_file(struct list *head, struct archive_file *b)
+static void _insert_archive_file(struct list *head, struct archive_file *b)
 {
 	struct archive_file *bf = NULL;
 
@@ -107,7 +107,7 @@ static void _insert_file(struct list *head, struct archive_file *b)
 	list_add_h(&bf->list, &b->list);
 }
 
-static char *_join(struct dm_pool *mem, const char *dir, const char *name)
+static char *_join_file_to_dir(struct dm_pool *mem, const char *dir, const char *name)
 {
 	if (!dm_pool_begin_object(mem, 32) ||
 	    !dm_pool_grow_object(mem, dir, strlen(dir)) ||
@@ -161,7 +161,7 @@ static struct list *_scan_archive(struct dm_pool *mem,
 		if (strcmp(vgname, vgname_found))
 			continue;
 
-		if (!(path = _join(mem, dir, dirent[i]->d_name))) {
+		if (!(path = _join_file_to_dir(mem, dir, dirent[i]->d_name))) {
 			stack;
 			goto out;
 		}
@@ -181,7 +181,7 @@ static struct list *_scan_archive(struct dm_pool *mem,
 		/*
 		 * Insert it to the correct part of the list.
 		 */
-		_insert_file(results, af);
+		_insert_archive_file(results, af);
 	}
 
       out:
@@ -207,8 +207,8 @@ static void _remove_expired(struct list *archives, uint32_t archives_size,
 	/* Convert retain_days into the time after which we must retain */
 	retain_time = time(NULL) - (time_t) retain_days *SECS_PER_DAY;
 
-	/* Assume list is ordered oldest first (by index) */
-	list_iterate_items(bf, archives) {
+	/* Assume list is ordered newest first (by index) */
+	list_iterate_back_items(bf, archives) {
 		/* Get the mtime of the file and unlink if too old */
 		if (stat(bf->path, &sb)) {
 			log_sys_error("stat", bf->path);
@@ -311,7 +311,7 @@ static void _display_archive(struct cmd_context *cmd, struct archive_file *af)
 
 	if (!(context = create_text_context(cmd, af->path, NULL)) ||
 	    !(tf = cmd->fmt_backup->ops->create_instance(cmd->fmt_backup, NULL,
-							 context))) {
+							 NULL, context))) {
 		log_error("Couldn't create text instance object.");
 		return;
 	}
@@ -328,7 +328,7 @@ static void _display_archive(struct cmd_context *cmd, struct archive_file *af)
 	}
 
 	log_print("VG name:    \t%s", vg->name);
-	log_print("Description:\t%s", desc ? desc : "<No description>");
+	log_print("Description:\t%s", desc ? : "<No description>");
 	log_print("Backup Time:\t%s", ctime(&when));
 
 	dm_pool_free(cmd->mem, vg);
@@ -360,7 +360,7 @@ int backup_list(struct cmd_context *cmd, const char *dir, const char *vgname)
 {
 	struct archive_file af;
 
-	if (!(af.path = _join(cmd->mem, dir, vgname))) {
+	if (!(af.path = _join_file_to_dir(cmd->mem, dir, vgname))) {
 		stack;
 		return 0;
 	}

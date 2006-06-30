@@ -41,7 +41,8 @@ int dev_manager_info(struct dm_pool *mem, const char *name,
 		     const struct logical_volume *lv,
 		     int mknodes, int with_open_count, struct dm_info *info);
 int dev_manager_snapshot_percent(struct dev_manager *dm,
-				 struct logical_volume *lv, float *percent);
+				 const struct logical_volume *lv,
+				 float *percent);
 int dev_manager_mirror_percent(struct dev_manager *dm,
 			       struct logical_volume *lv, int wait,
 			       float *percent, uint32_t *event_nr);
@@ -58,7 +59,7 @@ int dev_manager_lv_rmnodes(const struct logical_volume *lv);
  */
 int dev_manager_execute(struct dev_manager *dm);
 
-int dev_manager_device_uses_vg(struct dev_manager *dm, struct device *dev,
+int dev_manager_device_uses_vg(struct device *dev,
 			       struct volume_group *vg);
 
 #endif

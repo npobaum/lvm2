@@ -13,6 +13,9 @@
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
+#ifndef _LVM_LOCKING_H
+#define _LVM_LOCKING_H
+
 #include "uuid.h"
 #include "config.h"
 
@@ -68,6 +71,14 @@ int check_lvm1_vg_inactive(struct cmd_context *cmd, const char *vgname);
 #define LCK_CLUSTER_VG	0x00000080	/* VG is clustered */
 
 /*
+ * Additional lock bits for cluster communication
+ */
+#define LCK_PARTIAL_MODE	0x00000001	/* Running in partial mode */
+#define LCK_MIRROR_NOSYNC_MODE	0x00000002	/* Mirrors don't require sync */
+#define LCK_DMEVENTD_REGISTER_MODE	0x00000004	/* Register with dmeventd */
+
+
+/*
  * Common combinations
  */
 #define LCK_VG_READ		(LCK_VG | LCK_READ | LCK_HOLD)
@@ -104,3 +115,4 @@ int suspend_lvs(struct cmd_context *cmd, struct list *lvs);
 int resume_lvs(struct cmd_context *cmd, struct list *lvs);
 int activate_lvs_excl(struct cmd_context *cmd, struct list *lvs);
 
+#endif

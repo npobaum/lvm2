@@ -70,9 +70,9 @@ int lv_activation_filter(struct cmd_context *cmd, const char *lvid_s,
 /*
  * Returns 1 if percent has been set, else 0.
  */
-int lv_snapshot_percent(struct logical_volume *lv, float *percent);
-int lv_mirror_percent(struct cmd_context *cmd, struct logical_volume *lv, int wait, float *percent,
-		      uint32_t *event_nr);
+int lv_snapshot_percent(const struct logical_volume *lv, float *percent);
+int lv_mirror_percent(struct cmd_context *cmd, struct logical_volume *lv,
+		      int wait, float *percent, uint32_t *event_nr);
 
 /*
  * Return number of LVs in the VG that are active.
@@ -80,10 +80,14 @@ int lv_mirror_percent(struct cmd_context *cmd, struct logical_volume *lv, int wa
 int lvs_in_vg_activated(struct volume_group *vg);
 int lvs_in_vg_opened(struct volume_group *vg);
 
+
+int register_dev_for_events(struct cmd_context *cmd,
+			    struct logical_volume *lv, int do_reg);
+
 /*
  * Returns 1 if PV has a dependency tree that uses anything in VG.
  */
-int pv_uses_vg(struct cmd_context *cmd, struct physical_volume *pv,
+int pv_uses_vg(struct physical_volume *pv,
 	       struct volume_group *vg);
 
 #endif

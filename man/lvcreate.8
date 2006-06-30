@@ -13,6 +13,7 @@ lvcreate \- create a logical volume in an existing volume group
 [\-M/\-\-persistent y/n] [\-\-minor minor]
 [\-n/\-\-name LogicalVolumeName]
 [\-p/\-\-permission r/rw] [\-r/\-\-readahead ReadAheadSectors]
+[-R|--regionsize MirrorLogRegionSize]
 [\-t/\-\-test]
 [\-v/\-\-verbose] [\-Z/\-\-zero y/n]
 VolumeGroupName [PhysicalVolumePath...]
@@ -57,7 +58,9 @@ the logical volume.
 .I \-I, \-\-stripesize StripeSize
 Gives the number of kilobytes for the granularity of the stripes.
 .br
-StripeSize must be 2^n (n = 2 to 9)
+StripeSize must be 2^n (n = 2 to 9) for metadata in LVM1 format.
+For metadata in LVM2 format, the stripe size may be a larger
+power of 2 but must not exceed the physical extent size.
 .TP
 .I \-l, \-\-extents LogicalExtentsNumber
 Gives the number of logical extents to allocate for the new
@@ -90,6 +93,10 @@ Default is read and write.
 .I \-r, \-\-readahead ReadAheadSectors
 Set read ahead sector count of this logical volume to a value between 2 and 120.
 Ignored by device-mapper.
+.TP
+.I \-R \-\-regionsize MirrorLogRegionSize
+A mirror is divided into regions of this size (in KB), and the mirror log 
+uses this granularity to track which regions are in sync.
 .TP
 .I \-s, \-\-snapshot
 Create a snapshot logical volume (or snapshot) for an existing, so called
