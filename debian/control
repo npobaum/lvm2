@@ -3,7 +3,7 @@ Section: admin
 Priority: optional
 Maintainer: Debian LVM Team <pkg-lvm-maintainers@lists.alioth.debian.org>
 Uploaders: Bastian Blank <waldi@debian.org>
-Build-Depends: debhelper (>> 4.2), libdevmapper-dev (>> 2:1.02.07), autotools-dev, libccs-dev, libcman-dev, libdlm-dev (>> 1.02.00), libgulm-dev, libreadline5-dev
+Build-Depends: debhelper (>> 4.2), libdevmapper-dev (>> 2:1.02.07), autotools-dev, libccs-dev (>= 2.0), libcman-dev (>= 2.0), libdlm-dev (>= 2.0), libreadline5-dev
 Standards-Version: 3.6.2
 
 Package: lvm2
@@ -36,7 +36,7 @@ Description: The Linux Logical Volume Manager
 Package: clvm
 Section: admin
 Architecture: any
-Depends: ${shlibs:Depends}, lvm2 (>> 2.0.23), cman | gulm, fence
+Depends: ${shlibs:Depends}, lvm2 (>> 2.0.23), cman
 Description: Cluster LVM Daemon for lvm2
  This package provides the clustering interface for lvm2, when used with 
  Red Hat's "cman" cluster infrastructure. It allows logical volumes to
