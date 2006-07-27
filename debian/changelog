@@ -1,3 +1,13 @@
+lvm2 (2.02.06-2ubuntu2) edgy; urgency=low
+
+  * Drop B-D on libgulm-dev since gulm locking is obsoleted.
+
+  * Update Depends: to drop gulm and fence.
+
+  * Rebuild for libdlm2.
+
+ -- Fabio M. Di Nitto <fabbione@ubuntu.com>  Thu, 27 Jul 2006 05:50:20 +0200
+
 lvm2 (2.02.06-2ubuntu1) edgy; urgency=low
 
   * Merge from debian unstable.

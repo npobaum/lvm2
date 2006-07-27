@@ -44,7 +44,7 @@ $(BUILD_DIR)/build-deb/config.status:
 	cd $(DIR); \
 	./configure CFLAGS="$(CFLAGS)" $(CONFIGURE_FLAGS) \
 		--with-cluster=shared \
-		--with-clvmd=all \
+		--with-clvmd=cman \
 		--enable-readline \
 		--disable-selinux
 
