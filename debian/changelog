@@ -1,3 +1,9 @@
+lvm2 (2.02.06-2ubuntu3) edgy; urgency=low
+
+  * Disable gcc stack protector to fix some weird segfaults/bus errors.
+
+ -- Fabio M. Di Nitto <fabbione@ubuntu.com>  Wed, 13 Sep 2006 09:59:29 +0200
+
 lvm2 (2.02.06-2ubuntu2) edgy; urgency=low
 
   * Drop B-D on libgulm-dev since gulm locking is obsoleted.

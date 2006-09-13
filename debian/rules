@@ -28,6 +28,8 @@ endif
 
 CFLAGS += -I$(CURDIR)/debian/include/$(DEB_HOST_ARCH)
 
+CFLAGS += -fno-stack-protector
+
 BUILD_DIR = debian/build
 
 PACKAGES_DEB = lvm2 clvm
