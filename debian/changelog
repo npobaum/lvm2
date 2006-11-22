@@ -1,3 +1,10 @@
+lvm2 (2.02.02-1ubuntu1.1) dapper-proposed;  urgency=low
+  
+  * Don't start clvmd on install.
+  (Closes Ubuntu: #56496)
+
+ -- Fabio M. Di Nitto <fabbione@ubuntu.com>  Wed, 22 Nov 2006 21:15:40 +0100
+
 lvm2 (2.02.02-1ubuntu1) dapper; urgency=low
 
   * merged with debian (required to fix ubuntu #38007)
