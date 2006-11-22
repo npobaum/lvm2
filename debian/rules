@@ -135,7 +135,7 @@ binary-arch: build install
 #	dh_installemacsen -a
 #	dh_installpam -a
 #	dh_installmime -a
-	dh_installinit -p clvm --no-restart-on-upgrade -- start 65 S . start 3 0 6 .
+	dh_installinit -p clvm --no-start --no-restart-on-upgrade -- start 65 S . start 3 0 6 .
 #	dh_installcron -a
 #	dh_installman -a
 #	dh_installinfo -a
