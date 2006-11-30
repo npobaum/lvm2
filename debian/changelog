@@ -1,3 +1,12 @@
+lvm2 (2.02.02-1ubuntu1.2) dapper-updates; urgency=low
+
+  * Don't start clvmd on install.
+  (Closes Ubuntu: #56496)
+
+  Verification tests done by Fabio M. Di Nitto and Simon Law.
+
+ -- Fabio M. Di Nitto <fabbione@ubuntu.com>  Thu, 30 Nov 2006 07:15:39 +0100
+
 lvm2 (2.02.02-1ubuntu1.1) dapper-proposed;  urgency=low
   
   * Don't start clvmd on install.
