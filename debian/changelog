@@ -1,3 +1,16 @@
+lvm2 (2.02.06-2ubuntu4) feisty; urgency=low
+
+  UdevLvm implementation:
+  * Provide udev rules to 1. run vgchange to activate lvs on new block
+    devices containing lvm volumes; 2. run vgmknodes when new dm devices
+    appear, to ensure that things which might depend on the lv symlinks
+    only run after vgchange has finished.
+  * Do symlink-to-..tmp-and-then-rename rather than unlink/symlink,
+    in vgchange, vgmknodes, etc., for /dev/vg/lv link.  (This fixes
+    an obscure race.  Reported with patch to Debian as #402132.)
+
+ -- Ian Jackson <iwj@ubuntu.com>  Fri,  8 Dec 2006 15:22:20 +0000
+
 lvm2 (2.02.06-2ubuntu3) edgy; urgency=low
 
   * Disable gcc stack protector to fix some weird segfaults/bus errors.
