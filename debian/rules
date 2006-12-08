@@ -108,6 +108,9 @@ install-deb: build-deb
 	$(MAKE) -C $(DIR) install DESTDIR=$(CURDIR)/$(INSTALL_DIR)
 
 	dh_install $(DH_OPTIONS) --sourcedir=$(INSTALL_DIR)
+	install -m755 -d debian/lvm2/etc/udev/rules.d
+	install -m644 -oroot -groot scripts/70-lvm.rules \
+		debian/lvm2/etc/udev/rules.d/.
 
 install-udeb: DH_OPTIONS = $(addprefix -p,$(PACKAGES_UDEB))
 install-udeb: DIR = $(BUILD_DIR)/build-udeb

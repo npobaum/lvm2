@@ -1,0 +1,2 @@
+SUBSYSTEM=="block", ACTION=="add", ENV{ID_FS_TYPE}=="lvm*|LVM*", RUN+="watershed /sbin/vgchange -a y"
+SUBSYSTEM=="block", ACTION=="add", KERNEL=="dm-*", RUN+="watershed /sbin/vgmknodes"
