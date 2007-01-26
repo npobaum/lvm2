@@ -15,7 +15,6 @@
 
 #include "lib.h"
 #include "metadata.h"
-#include "xlate.h"
 
 /* Lifted from <linux/raid/md_p.h> because of difficulty including it */
 
@@ -54,7 +53,7 @@ int dev_is_md(struct device *dev, uint64_t *sb)
 
 	/* Check if it is an md component device. */
 	if (dev_read(dev, sb_offset, sizeof(uint32_t), &md_magic) &&
-	    (md_magic == xlate32(MD_SB_MAGIC))) {
+	    (md_magic == MD_SB_MAGIC)) {
 		if (sb)
 			*sb = sb_offset;
 		ret = 1;

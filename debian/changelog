@@ -1,3 +1,10 @@
+lvm2 (2.02.02-1ubuntu1.3) dapper-proposed; urgency=low
+  
+  * Fix dev_is_md check on big endian machines.
+  (Closes Ubuntu: 81598)
+
+ -- Fabio M. Di Nitto <fabbione@ubuntu.com>  Fri, 26 Jan 2007 09:36:27 +0100
+
 lvm2 (2.02.02-1ubuntu1.2) dapper-updates; urgency=low
 
   * Don't start clvmd on install.
