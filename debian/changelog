@@ -1,3 +1,14 @@
+lvm2 (2.02.02-1ubuntu1.4) dapper-proposed; urgency=low
+  
+  * Backport endian fix for dev_is_md from upstream.
+    After a deeper investigation we found out that md super block 0.90.0
+    are machine endian and super block 1 or higher are little endian.
+    On big endian machine (that are the only one affected) we need to compare
+    both values.
+  (Closes Ubuntu: 81598)
+
+ -- Fabio M. Di Nitto <fabbione@ubuntu.com>  Sun, 28 Jan 2007 05:58:35 +0100
+
 lvm2 (2.02.02-1ubuntu1.3) dapper-proposed; urgency=low
   
   * Fix dev_is_md check on big endian machines.
