@@ -1,3 +1,10 @@
+lvm2 (2.02.06-2ubuntu8) feisty; urgency=low
+
+  UdevLvm fix:
+  * Run vgscan and vgchange on block device change as well as add.
+
+ -- Ian Jackson <iwj@ubuntu.com>  Tue,  6 Feb 2007 19:25:40 +0000
+
 lvm2 (2.02.06-2ubuntu7) feisty; urgency=low
 
   UdevLvm:
