@@ -1,2 +1,2 @@
-SUBSYSTEM=="block", ACTION=="add", ENV{ID_FS_TYPE}=="lvm*|LVM*", RUN+="watershed sh -c '/sbin/lvm vgscan; /sbin/lvm vgchange -a y'"
-SUBSYSTEM=="block", ACTION=="add", KERNEL=="dm-*", RUN+="watershed /sbin/lvm vgck"
+SUBSYSTEM=="block", ACTION=="add|change", ENV{ID_FS_TYPE}=="lvm*|LVM*", RUN+="watershed sh -c '/sbin/lvm vgscan; /sbin/lvm vgchange -a y'"
+SUBSYSTEM=="block", ACTION=="add|change", KERNEL=="dm-*", RUN+="watershed /sbin/lvm vgck"
