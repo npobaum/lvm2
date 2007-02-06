@@ -1,3 +1,19 @@
+lvm2 (2.02.06-2ubuntu7) feisty; urgency=low
+
+  UdevLvm:
+  * Force loading of dm_mod in initramfs (for some reason the lvm tools do
+    not do this themselves).
+  * Update the initramfs in the postinst.
+  * Update the 70-lvm.rules to
+    - run vgscan as needed;
+    - invoke things via /sbin/lvm rather than relying on the symlinks
+    - run vgck and not vgmknodes (since udev makes the nodes now)
+  * Declare Breaks against old lvm-common and old udev, since our new
+    node generation requires the new working machinery in lvm-common and
+    the corresponding support in udev.
+
+ -- Ian Jackson <iwj@ubuntu.com>  Tue,  6 Feb 2007 16:35:04 +0000
+
 lvm2 (2.02.06-2ubuntu6) feisty; urgency=low
   
   * Backport endian fix for dev_is_md from upstream.
