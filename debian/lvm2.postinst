@@ -19,6 +19,8 @@ if test "$1" = "configure"; then
     if test -f /etc/init.d/lvm2; then
         update-rc.d -f lvm2 remove >/dev/null 2>&1 || true
     fi
+
+    update-initramfs -u
 fi
 
 #DEBHELPER#
