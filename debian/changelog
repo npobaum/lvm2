@@ -1,3 +1,17 @@
+lvm2 (2.02.06-2ubuntu3.5) edgy-updates; urgency=low
+  
+  * Backport endian fix for dev_is_md from upstream.
+    After a deeper investigation we found out that md super block 0.90.0
+    are machine endian and super block 1 or higher are little endian.
+    On big endian machine (that are the only one affected) we need to compare
+    both values.
+  (Closes Ubuntu: 81598)
+
+  Verification tests done by Fabio M. Di Nitto and Simon Law.
+  Bug acknoledged, fixed, tested by upstream.
+
+ -- Fabio M. Di Nitto <fabbione@ubuntu.com>  Mon, 12 Feb 2007 07:29:21 +0100
+
 lvm2 (2.02.06-2ubuntu3.4) edgy-proposed; urgency=low
   
   * Backport endian fix for dev_is_md from upstream.
