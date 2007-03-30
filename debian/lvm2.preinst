@@ -16,6 +16,11 @@ case "$1" in
 	  db_input critical lvm2/snapshots || true
 	  db_go
 	fi
+
+	# Remove old configuration file
+	if [ -f /etc/udev/rules.d/70-lvm.rules ]; then
+	  rm -f /etc/udev/rules.d/70-lvm.rules
+	fi
     ;;
 
     abort-upgrade)
