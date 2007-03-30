@@ -109,8 +109,8 @@ install-deb: build-deb
 
 	dh_install $(DH_OPTIONS) --sourcedir=$(INSTALL_DIR)
 	install -m755 -d debian/lvm2/etc/udev/rules.d
-	install -m644 -oroot -groot scripts/70-lvm.rules \
-		debian/lvm2/etc/udev/rules.d/.
+	install -m644 -oroot -groot scripts/85-lvm.rules \
+		debian/lvm2/etc/udev/rules.d
 	install -m755 -d debian/lvm2/usr/share/initramfs-tools/hooks
 	install -m755 -o root -g root debian/lvm2.initramfs-hook \
 		debian/lvm2/usr/share/initramfs-tools/hooks/lvm2

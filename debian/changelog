@@ -1,3 +1,16 @@
+lvm2 (2.02.06-2ubuntu9) feisty; urgency=low
+
+  * Remove the call to vgck on the creation of devmapper devices; this
+    would cause udev to block, and thus prevent LVM from creating snapshot
+    devices.  LP: #84672.
+    (This also needs a newer libdevmapper to complete the fix)
+ 
+  * Rename 70-lvm.rules to 85-lvm.rules so that it appears at the correct
+    point; remove the old file rather than transitioning since it was
+    broken anyway.
+
+ -- Scott James Remnant <scott@ubuntu.com>  Fri, 30 Mar 2007 17:29:09 +0100
+
 lvm2 (2.02.06-2ubuntu8) feisty; urgency=low
 
   UdevLvm fix:
