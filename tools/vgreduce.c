@@ -18,7 +18,7 @@
 
 static int _remove_pv(struct volume_group *vg, struct pv_list *pvl)
 {
-	char uuid[64];
+	char uuid[64] __attribute((aligned(8)));
 
 	if (vg->pv_count == 1) {
 		log_error("Volume Groups must always contain at least one PV");
@@ -286,9 +286,14 @@ static int _make_vg_consistent(struct cmd_context *cmd, struct volume_group *vg)
 				list_iterate_items(seg, &mirrored_seg->log_lv->segments) {
 					/* FIXME: The second test shouldn't be required */
 					if ((seg->segtype ==
-					     get_segtype_from_string(vg->cmd, "error")) ||
-					    (!strcmp(seg->segtype->name, "error"))) {
+					     get_segtype_from_string(vg->cmd, "error"))) {
 						log_print("The log device for %s/%s has failed.",
+							  vg->name, mirrored_seg->lv->name);
+						remove_log = 1;
+						break;
+					}
+					if (!strcmp(seg->segtype->name, "error")) {
+						log_print("Log device for %s/%s has failed.",
 							  vg->name, mirrored_seg->lv->name);
 						remove_log = 1;
 						break;
@@ -342,7 +347,9 @@ static int _make_vg_consistent(struct cmd_context *cmd, struct volume_group *vg)
 		list_iterate_items(lvl, &lvs_changed) {
 			log_verbose("Removing LV %s from VG %s", lvl->lv->name,
 				    lvl->lv->vg->name);
-			if (!lv_remove(lvl->lv)) {
+				/* Skip LVs already removed by mirror code */
+				if (find_lv_in_vg(vg, lvl->lv->name) &&
+				    !lv_remove(lvl->lv)) {
 				stack;
 				return 0;
 			}
@@ -420,13 +427,13 @@ int vgreduce(struct cmd_context *cmd, int argc, char **argv)
 	int ret = 1;
 	int consistent = 1;
 
-	if (!argc & !arg_count(cmd, removemissing_ARG)) {
+	if (!argc && !arg_count(cmd, removemissing_ARG)) {
 		log_error("Please give volume group name and "
 			  "physical volume paths");
 		return EINVALID_CMD_LINE;
 	}
 
-	if (!argc & arg_count(cmd, removemissing_ARG)) {
+	if (!argc && arg_count(cmd, removemissing_ARG)) {
 		log_error("Please give volume group name");
 		return EINVALID_CMD_LINE;
 	}
@@ -454,9 +461,15 @@ int vgreduce(struct cmd_context *cmd, int argc, char **argv)
 		return EINVALID_CMD_LINE;
 	}
 
-	vg_name = argv[0];
+	vg_name = skip_dev_dir(cmd, argv[0], NULL);
 	argv++;
 	argc--;
+
+	if (!validate_name(vg_name)) {
+		log_error("Volume group name \"%s\" is invalid",
+			  vg_name);
+		return ECMD_FAILED;
+	}
 
 	log_verbose("Finding volume group \"%s\"", vg_name);
 	if (!lock_vol(cmd, vg_name, LCK_VG_WRITE)) {
@@ -471,18 +484,32 @@ int vgreduce(struct cmd_context *cmd, int argc, char **argv)
 		return ECMD_FAILED;
 	}
 
+	if (vg && (vg->status & CLUSTERED) && !locking_is_clustered() &&
+	    !lockingfailed()) {
+		log_error("Skipping clustered volume group %s", vg->name);
+		unlock_vg(cmd, vg_name);
+		return ECMD_FAILED;
+	}
+
 	if (arg_count(cmd, removemissing_ARG)) {
 		if (vg && consistent) {
 			log_error("Volume group \"%s\" is already consistent",
 				  vg_name);
 			unlock_vg(cmd, vg_name);
-			return ECMD_FAILED;
+			return ECMD_PROCESSED;
 		}
 
 		init_partial(1);
 		consistent = 0;
 		if (!(vg = vg_read(cmd, vg_name, NULL, &consistent))) {
 			log_error("Volume group \"%s\" not found", vg_name);
+			unlock_vg(cmd, vg_name);
+			return ECMD_FAILED;
+		}
+		if ((vg->status & CLUSTERED) && !locking_is_clustered() &&
+		    !lockingfailed()) {
+			log_error("Skipping clustered volume group %s",
+				  vg->name);
 			unlock_vg(cmd, vg_name);
 			return ECMD_FAILED;
 		}

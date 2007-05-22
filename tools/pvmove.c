@@ -27,9 +27,7 @@ static const char *_extract_lvname(struct cmd_context *cmd, const char *vgname,
 	if (!strchr(arg, '/'))
 		return arg;
 
-	lvname = arg;
-	if (!strncmp(lvname, cmd->dev_dir, strlen(cmd->dev_dir)))
-		lvname += strlen(cmd->dev_dir);
+	lvname = skip_dev_dir(cmd, arg, NULL);
 	while (*lvname == '/')
 		lvname++;
 	if (!strchr(lvname, '/')) {
@@ -65,6 +63,12 @@ static struct volume_group *_get_vg(struct cmd_context *cmd, const char *vgname)
 	if (!(vg = vg_read(cmd, vgname, NULL, &consistent)) || !consistent) {
 		log_error("Volume group \"%s\" doesn't exist", vgname);
 		unlock_vg(cmd, vgname);
+		return NULL;
+	}
+
+	if ((vg->status & CLUSTERED) && !locking_is_clustered() &&
+	    !lockingfailed()) {
+		log_error("Skipping clustered volume group %s", vgname);
 		return NULL;
 	}
 

@@ -66,6 +66,7 @@ void init_partial(int level);
 void init_md_filtering(int level);
 void init_pvmove(int level);
 void init_full_scan_done(int level);
+void init_trust_cache(int trustcache);
 void init_debug(int level);
 void init_cmd_name(int status);
 void init_msg_prefix(const char *prefix);
@@ -74,7 +75,8 @@ void init_ignorelockingfailure(int level);
 void init_lockingfailed(int level);
 void init_security_level(int level);
 void init_mirror_in_sync(int in_sync);
-void init_dmeventd_register(int reg);
+void init_dmeventd_monitor(int reg);
+void init_ignore_suspended_devices(int ignore);
 
 void set_cmd_name(const char *cmd_name);
 
@@ -83,12 +85,16 @@ int partial_mode(void);
 int md_filtering(void);
 int pvmove_mode(void);
 int full_scan_done(void);
+int trust_cache(void);
 int debug_level(void);
 int ignorelockingfailure(void);
 int lockingfailed(void);
 int security_level(void);
 int mirror_in_sync(void);
-int dmeventd_register_mode(void);
+int ignore_suspended_devices(void);
+
+#define DMEVENTD_MONITOR_IGNORE -1
+int dmeventd_monitor_mode(void);
 
 /* Suppress messages to stdout/stderr (1) or everywhere (2) */
 /* Returns previous setting */

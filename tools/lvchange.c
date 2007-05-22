@@ -19,6 +19,7 @@ static int lvchange_permission(struct cmd_context *cmd,
 			       struct logical_volume *lv)
 {
 	uint32_t lv_access;
+	struct lvinfo info;
 
 	lv_access = arg_uint_value(cmd, permission_ARG, 0);
 
@@ -31,6 +32,13 @@ static int lvchange_permission(struct cmd_context *cmd,
 	if (!(lv_access & LVM_WRITE) && !(lv->status & LVM_WRITE)) {
 		log_error("Logical volume \"%s\" is already read only",
 			  lv->name);
+		return 0;
+	}
+
+	if ((lv->status & MIRRORED) && (lv->vg->status & CLUSTERED) &&
+	    lv_info(cmd, lv, &info, 0) && info.exists) {
+		log_error("Cannot change permissions of mirror \"%s\" "
+			  "while active.", lv->name);
 		return 0;
 	}
 
@@ -72,10 +80,9 @@ static int lvchange_permission(struct cmd_context *cmd,
 	return 1;
 }
 
-static int lvchange_registration(struct cmd_context *cmd,
-				 struct logical_volume *lv)
+static int lvchange_monitoring(struct cmd_context *cmd,
+			       struct logical_volume *lv)
 {
-	int r;
 	struct lvinfo info;
 
 	if (!lv_info(cmd, lv, &info, 0) || !info.exists) {
@@ -83,25 +90,15 @@ static int lvchange_registration(struct cmd_context *cmd,
 		return 0;
 	}
 
-	/* do not register pvmove lv's */
+	/* do not monitor pvmove lv's */
 	if (lv->status & PVMOVE)
 		return 1;
 
-	log_verbose("%smonitoring logical volume \"%s\"",
-		    (dmeventd_register_mode()) ? "" : "Not ", lv->name);
-	r = register_dev_for_events(cmd, lv, dmeventd_register_mode());
+	if ((dmeventd_monitor_mode() != DMEVENTD_MONITOR_IGNORE) &&
+	    !monitor_dev_for_events(cmd, lv, dmeventd_monitor_mode()))
+		stack;
 
-	if (r < 0) {
-		log_error("Unable to %smonitor logical volume, %s",
-			  (dmeventd_register_mode()) ? "" : "un", lv->name);
-		r = 0;
-	} else if (!r) {
-		log_verbose("Logical volume %s needs no monitoring.",
-			    lv->name);
-		r = 1;
-	}
-
-	return r;
+	return 1;
 }
 
 static int lvchange_availability(struct cmd_context *cmd,
@@ -127,10 +124,10 @@ static int lvchange_availability(struct cmd_context *cmd,
 		}
 	} else {
 		if (lockingfailed() && (lv->vg->status & CLUSTERED)) {
-                	log_verbose("Locking failed: ignoring clustered "
+			log_verbose("Locking failed: ignoring clustered "
 				    "logical volume %s", lv->name);
-                	return 0;
-        	}
+			return 0;
+		}
 
 		if (lv_is_origin(lv) || (activate == CHANGE_AE)) {
 			log_verbose("Activating logical volume \"%s\" "
@@ -171,6 +168,159 @@ static int lvchange_refresh(struct cmd_context *cmd, struct logical_volume *lv)
 	log_verbose("Refreshing logical volume \"%s\" (if active)", lv->name);
 	if (!suspend_lv(cmd, lv) || !resume_lv(cmd, lv))
 		return 0;
+
+	return 1;
+}
+
+static int lvchange_resync(struct cmd_context *cmd,
+			      struct logical_volume *lv)
+{
+	int active = 0;
+	struct lvinfo info;
+	struct logical_volume *log_lv;
+
+	if (!(lv->status & MIRRORED)) {
+		log_error("Unable to resync %s because it is not mirrored.",
+			  lv->name);
+		return 1;
+	}
+
+	if (lv->status & PVMOVE) {
+		log_error("Unable to resync pvmove volume %s", lv->name);
+		return 0;
+	}
+
+	if (lv->status & LOCKED) {
+		log_error("Unable to resync locked volume %s", lv->name);
+		return 0;
+	}
+
+	if (lv_info(cmd, lv, &info, 1)) {
+		if (info.open_count) {
+			log_error("Can't resync open logical volume \"%s\"",
+				  lv->name);
+			return ECMD_FAILED;
+		}
+
+		if (info.exists) {
+			if (!arg_count(cmd, yes_ARG) &&
+			    yes_no_prompt("Do you really want to deactivate "
+					  "logical volume %s to resync it? [y/n]: ",
+					  lv->name) == 'n') {
+				log_print("Logical volume \"%s\" not resynced",
+					  lv->name);
+				return ECMD_FAILED;
+			}
+
+			active = 1;
+		}
+	}
+
+	if ((lv->vg->status & CLUSTERED) && !activate_lv_excl(cmd, lv)) {
+		log_error("Can't get exclusive access to clustered volume %s",
+			  lv->name);
+		return ECMD_FAILED;
+	}
+
+	if (!deactivate_lv(cmd, lv)) {
+		log_error("Unable to deactivate %s for resync", lv->name);
+		return 0;
+	}
+
+	log_lv = first_seg(lv)->log_lv;
+
+	log_very_verbose("Starting resync of %s%s%s mirror \"%s\"",
+			 (active) ? "active " : "",
+			 (lv->vg->status & CLUSTERED) ? "clustered " : "",
+			 (log_lv) ? "disk-logged" : "core-logged",
+			 lv->name);
+
+	/*
+	 * If this mirror has a core log (i.e. !log_lv),
+	 * then simply deactivating/activating will cause
+	 * it to reset the sync status.  We only need to
+	 * worry about persistent logs.
+	 */
+	if (!log_lv && !(lv->status & MIRROR_NOTSYNCED)) {
+		if (active && !activate_lv(cmd, lv)) {
+			log_error("Failed to reactivate %s to resynchronize "
+				  "mirror", lv->name);
+			return 0;
+		}
+		return 1;
+	}
+
+	lv->status &= ~MIRROR_NOTSYNCED;
+
+	if (log_lv) {
+		/* Separate mirror log so we can clear it */
+		first_seg(lv)->log_lv = NULL;
+		log_lv->status &= ~MIRROR_LOG;
+		log_lv->status |= VISIBLE_LV;
+
+		if (!vg_write(lv->vg)) {
+			log_error("Failed to write intermediate VG metadata.");
+			if (active) {
+				first_seg(lv)->log_lv = log_lv;
+				log_lv->status |= MIRROR_LOG;
+				log_lv->status &= ~VISIBLE_LV;
+				if (!activate_lv(cmd, lv))
+					stack;
+			}
+			return 0;
+		}
+
+		backup(lv->vg);
+
+		if (!vg_commit(lv->vg)) {
+			log_error("Failed to commit intermediate VG metadata.");
+			if (active) {
+				first_seg(lv)->log_lv = log_lv;
+				log_lv->status |= MIRROR_LOG;
+				log_lv->status &= ~VISIBLE_LV;
+				if (!activate_lv(cmd, lv))
+					stack;
+			}
+			return 0;
+		}
+
+		if (!activate_lv(cmd, log_lv)) {
+			log_error("Unable to activate %s for mirror log resync",
+				  log_lv->name);
+			return 0;
+		}
+
+		log_very_verbose("Clearing log device %s", log_lv->name);
+		if (!set_lv(cmd, log_lv, log_lv->size, 0)) {
+			log_error("Unable to reset sync status for %s", lv->name);
+			if (!deactivate_lv(cmd, log_lv))
+				log_error("Failed to deactivate log LV after "
+					  "wiping failed");
+			return 0;
+		}
+
+		if (!deactivate_lv(cmd, log_lv)) {
+			log_error("Unable to deactivate log LV %s after wiping "
+				  "for resync", log_lv->name);
+			return 0;
+		}
+
+		/* Put mirror log back in place */
+		first_seg(lv)->log_lv = log_lv;
+		log_lv->status |= MIRROR_LOG;
+		log_lv->status &= ~VISIBLE_LV;
+	}
+
+	log_very_verbose("Updating logical volume \"%s\" on disk(s)", lv->name);
+	if (!vg_write(lv->vg) || !vg_commit(lv->vg)) {
+		log_error("Failed to update metadata on disk.");
+		return 0;
+	}
+
+	if (active && !activate_lv(cmd, lv)) {
+		log_error("Failed to reactivate %s after resync", lv->name);
+		return 0;
+	}
 
 	return 1;
 }
@@ -294,16 +444,15 @@ static int lvchange_persistent(struct cmd_context *cmd,
 			log_error("Major number must be specified with -My");
 			return 0;
 		}
-		if (lv_info(cmd, lv, &info, 0) && info.exists &&
-		    !arg_count(cmd, force_ARG)) {
-			if (yes_no_prompt("Logical volume %s will be "
-					  "deactivated temporarily. "
-					  "Continue? [y/n]: ", lv->name) == 'n') {
-				log_print("%s device number not changed.",
-					  lv->name);
-				return 0;
-			}
+		if (lv_info(cmd, lv, &info, 0) && info.exists)
 			active = 1;
+		if (active && !arg_count(cmd, force_ARG) &&
+		    yes_no_prompt("Logical volume %s will be "
+				  "deactivated temporarily. "
+				  "Continue? [y/n]: ", lv->name) == 'n') {
+			log_print("%s device number not changed.",
+				  lv->name);
+			return 0;
 		}
 		log_verbose("Ensuring %s is inactive.", lv->name);
 		if (!deactivate_lv(cmd, lv)) {
@@ -315,14 +464,7 @@ static int lvchange_persistent(struct cmd_context *cmd,
 		lv->major = arg_int_value(cmd, major_ARG, lv->major);
 		log_verbose("Setting persistent device number to (%d, %d) "
 			    "for \"%s\"", lv->major, lv->minor, lv->name);
-		if (active) {
-			log_verbose("Re-activating logical volume \"%s\"",
-				    lv->name);
-			if (!activate_lv(cmd, lv)) {
-				log_error("%s: reactivation failed", lv->name);
-				return 0;
-			}
-		}
+
 	}
 
 	log_very_verbose("Updating logical volume \"%s\" on disk(s)", lv->name);
@@ -333,21 +475,17 @@ static int lvchange_persistent(struct cmd_context *cmd,
 
 	backup(lv->vg);
 
-	if (!suspend_lv(cmd, lv)) {
-		log_error("Failed to lock %s", lv->name);
-		vg_revert(lv->vg);
-		return 0;
-	}
-
 	if (!vg_commit(lv->vg)) {
-		resume_lv(cmd, lv);
+		stack;
 		return 0;
 	}
 
-	log_very_verbose("Updating permissions for \"%s\" in kernel", lv->name);
-	if (!resume_lv(cmd, lv)) {
-		log_error("Problem reactivating %s", lv->name);
-		return 0;
+	if (active) {
+		log_verbose("Re-activating logical volume \"%s\"", lv->name);
+		if (!activate_lv(cmd, lv)) {
+			log_error("%s: reactivation failed", lv->name);
+			return 0;
+		}
 	}
 
 	return 1;
@@ -454,7 +592,9 @@ static int lvchange_single(struct cmd_context *cmd, struct logical_volume *lv,
 		return ECMD_FAILED;
 	}
 
-	init_dmeventd_register(arg_int_value(cmd, monitor_ARG, DEFAULT_DMEVENTD_MONITOR));
+	init_dmeventd_monitor(arg_int_value(cmd, monitor_ARG,
+					    cmd->is_static ?
+					    DMEVENTD_MONITOR_IGNORE : DEFAULT_DMEVENTD_MONITOR));
 
 	/* access permission change */
 	if (arg_count(cmd, permission_ARG)) {
@@ -507,6 +647,10 @@ static int lvchange_single(struct cmd_context *cmd, struct logical_volume *lv,
 	if (doit)
 		log_print("Logical volume \"%s\" changed", lv->name);
 
+	if (arg_count(cmd, resync_ARG))
+		if (!lvchange_resync(cmd, lv))
+			return ECMD_FAILED;
+
 	/* availability change */
 	if (arg_count(cmd, available_ARG)) {
 		if (!lvchange_availability(cmd, lv))
@@ -520,7 +664,7 @@ static int lvchange_single(struct cmd_context *cmd, struct logical_volume *lv,
 	if (!arg_count(cmd, available_ARG) &&
 	    !arg_count(cmd, refresh_ARG) &&
 	    arg_count(cmd, monitor_ARG)) {
-		if (!lvchange_registration(cmd, lv))
+		if (!lvchange_monitoring(cmd, lv))
 			return ECMD_FAILED;
 	}
 
@@ -534,9 +678,10 @@ int lvchange(struct cmd_context *cmd, int argc, char **argv)
 	    && !arg_count(cmd, minor_ARG) && !arg_count(cmd, major_ARG)
 	    && !arg_count(cmd, persistent_ARG) && !arg_count(cmd, addtag_ARG)
 	    && !arg_count(cmd, deltag_ARG) && !arg_count(cmd, refresh_ARG)
-	    && !arg_count(cmd, alloc_ARG) && !arg_count(cmd, monitor_ARG)) {
+	    && !arg_count(cmd, alloc_ARG) && !arg_count(cmd, monitor_ARG)
+	    && !arg_count(cmd, resync_ARG)) {
 		log_error("Need 1 or more of -a, -C, -j, -m, -M, -p, -r, "
-			  "--refresh, --alloc, --addtag, --deltag "
+			  "--resync, --refresh, --alloc, --addtag, --deltag "
 			  "or --monitor");
 		return EINVALID_CMD_LINE;
 	}

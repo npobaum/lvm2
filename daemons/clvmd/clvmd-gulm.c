@@ -730,7 +730,7 @@ static int _lock_resource(char *resource, int mode, int flags, int *lockid)
     pthread_mutex_lock(&lwait.mutex);
 
     /* This needs to be converted from DLM/LVM2 value for GULM */
-    if (flags == LCK_NONBLOCK) flags = lg_lock_flag_Try;
+    if (flags & LKF_NOQUEUE) flags = lg_lock_flag_Try;
 
     dm_hash_insert(lock_hash, resource, &lwait);
     DEBUGLOG("lock_resource '%s', flags=%d, mode=%d\n", resource, flags, mode);
@@ -828,6 +828,7 @@ static int _sync_lock(const char *resource, int mode, int flags, int *lockid)
         }
 	break;
 
+    case LCK_PREAD:
     case LCK_READ:
 	status = _lock_resource(lock1, lg_lock_state_Shared, flags, lockid);
 	if (status)
@@ -864,6 +865,7 @@ static int _sync_unlock(const char *resource, int lockid)
     /* The held lock mode is in the lock id */
     assert(lockid == LCK_EXCL ||
 	   lockid == LCK_READ ||
+	   lockid == LCK_PREAD ||
 	   lockid == LCK_WRITE);
 
     status = _unlock_resource(lock1, lockid);
@@ -973,6 +975,12 @@ static int _cluster_send_message(void *buf, int msglen, char *csid, const char *
 	return gulm_cluster_send_message(buf, msglen, csid, errtext);
 }
 
+static int _get_cluster_name(char *buf, int buflen)
+{
+	strncpy(buf, cluster_name, buflen);
+	return 0;
+}
+
 static struct cluster_ops _cluster_gulm_ops = {
 	.cluster_init_completed   = NULL,
 	.cluster_send_message     = _cluster_send_message,
@@ -987,6 +995,7 @@ static struct cluster_ops _cluster_gulm_ops = {
 	.add_up_node              = gulm_add_up_node,
 	.reread_config            = _reread_config,
 	.cluster_closedown        = _cluster_closedown,
+	.get_cluster_name         = _get_cluster_name,
 	.sync_lock                = _sync_lock,
 	.sync_unlock              = _sync_unlock,
 };

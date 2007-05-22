@@ -68,13 +68,20 @@ static int _pvsegs_sub_single(struct cmd_context *cmd, struct volume_group *vg,
 
 	if (!(vg = vg_read(cmd, pv->vg_name, NULL, &consistent))) {
 		log_error("Can't read %s: skipping", pv->vg_name);
-		unlock_vg(cmd, pv->vg_name);
-		return ECMD_FAILED;
+		goto out;
+	}
+
+	if ((vg->status & CLUSTERED) && !locking_is_clustered() &&
+	    !lockingfailed()) {
+		log_error("Skipping clustered volume group %s", vg->name);
+		ret = ECMD_FAILED;
+		goto out;
 	}
 
 	if (!report_object(handle, vg, NULL, pv, NULL, pvseg))
 		ret = ECMD_FAILED;
 
+out:
 	unlock_vg(cmd, pv->vg_name);
 	return ret;
 }
@@ -109,18 +116,50 @@ static int _pvs_single(struct cmd_context *cmd, struct volume_group *vg,
 
 		if (!(vg = vg_read(cmd, pv->vg_name, (char *)&pv->vgid, &consistent))) {
 			log_error("Can't read %s: skipping", pv->vg_name);
-			unlock_vg(cmd, pv->vg_name);
-			return ECMD_FAILED;
+			goto out;
+		}
+
+		if ((vg->status & CLUSTERED) && !locking_is_clustered() &&
+		    !lockingfailed()) {
+			log_error("Skipping clustered volume group %s",
+				  vg->name);
+			ret = ECMD_FAILED;
+			goto out;
 		}
 	}
 
 	if (!report_object(handle, vg, NULL, pv, NULL, NULL))
 		ret = ECMD_FAILED;
 
+out:
 	if (pv->vg_name)
 		unlock_vg(cmd, pv->vg_name);
 
 	return ret;
+}
+
+static int _pvs_in_vg(struct cmd_context *cmd, const char *vg_name,
+		      struct volume_group *vg, int consistent,
+		      void *handle)
+{
+	if (!vg) {
+		log_error("Volume group %s not found", vg_name);
+		return ECMD_FAILED;
+	}                     
+
+	return process_each_pv_in_vg(cmd, vg, NULL, handle, &_pvs_single);
+}
+
+static int _pvsegs_in_vg(struct cmd_context *cmd, const char *vg_name,
+			 struct volume_group *vg, int consistent,
+			 void *handle)
+{
+	if (!vg) {
+		log_error("Volume group %s not found", vg_name);
+		return ECMD_FAILED;
+	}                     
+
+	return process_each_pv_in_vg(cmd, vg, NULL, handle, &_pvsegs_single);
 }
 
 static int _report(struct cmd_context *cmd, int argc, char **argv,
@@ -131,76 +170,78 @@ static int _report(struct cmd_context *cmd, int argc, char **argv,
 	char *str;
 	const char *keys = NULL, *options = NULL, *separator;
 	int r = ECMD_PROCESSED;
-
 	int aligned, buffered, headings;
+	unsigned args_are_pvs;
 
-	aligned = find_config_int(cmd->cft->root, "report/aligned",
+	aligned = find_config_tree_int(cmd, "report/aligned",
 				  DEFAULT_REP_ALIGNED);
-	buffered = find_config_int(cmd->cft->root, "report/buffered",
+	buffered = find_config_tree_int(cmd, "report/buffered",
 				   DEFAULT_REP_BUFFERED);
-	headings = find_config_int(cmd->cft->root, "report/headings",
+	headings = find_config_tree_int(cmd, "report/headings",
 				   DEFAULT_REP_HEADINGS);
-	separator = find_config_str(cmd->cft->root, "report/separator",
+	separator = find_config_tree_str(cmd, "report/separator",
 				    DEFAULT_REP_SEPARATOR);
+
+	args_are_pvs = (report_type == PVS || report_type == PVSEGS) ? 1 : 0;
 
 	switch (report_type) {
 	case LVS:
-		keys = find_config_str(cmd->cft->root, "report/lvs_sort",
+		keys = find_config_tree_str(cmd, "report/lvs_sort",
 				       DEFAULT_LVS_SORT);
 		if (!arg_count(cmd, verbose_ARG))
-			options = find_config_str(cmd->cft->root,
+			options = find_config_tree_str(cmd,
 						  "report/lvs_cols",
 						  DEFAULT_LVS_COLS);
 		else
-			options = find_config_str(cmd->cft->root,
+			options = find_config_tree_str(cmd,
 						  "report/lvs_cols_verbose",
 						  DEFAULT_LVS_COLS_VERB);
 		break;
 	case VGS:
-		keys = find_config_str(cmd->cft->root, "report/vgs_sort",
+		keys = find_config_tree_str(cmd, "report/vgs_sort",
 				       DEFAULT_VGS_SORT);
 		if (!arg_count(cmd, verbose_ARG))
-			options = find_config_str(cmd->cft->root,
+			options = find_config_tree_str(cmd,
 						  "report/vgs_cols",
 						  DEFAULT_VGS_COLS);
 		else
-			options = find_config_str(cmd->cft->root,
+			options = find_config_tree_str(cmd,
 						  "report/vgs_cols_verbose",
 						  DEFAULT_VGS_COLS_VERB);
 		break;
 	case PVS:
-		keys = find_config_str(cmd->cft->root, "report/pvs_sort",
+		keys = find_config_tree_str(cmd, "report/pvs_sort",
 				       DEFAULT_PVS_SORT);
 		if (!arg_count(cmd, verbose_ARG))
-			options = find_config_str(cmd->cft->root,
+			options = find_config_tree_str(cmd,
 						  "report/pvs_cols",
 						  DEFAULT_PVS_COLS);
 		else
-			options = find_config_str(cmd->cft->root,
+			options = find_config_tree_str(cmd,
 						  "report/pvs_cols_verbose",
 						  DEFAULT_PVS_COLS_VERB);
 		break;
 	case SEGS:
-		keys = find_config_str(cmd->cft->root, "report/segs_sort",
+		keys = find_config_tree_str(cmd, "report/segs_sort",
 				       DEFAULT_SEGS_SORT);
 		if (!arg_count(cmd, verbose_ARG))
-			options = find_config_str(cmd->cft->root,
+			options = find_config_tree_str(cmd,
 						  "report/segs_cols",
 						  DEFAULT_SEGS_COLS);
 		else
-			options = find_config_str(cmd->cft->root,
+			options = find_config_tree_str(cmd,
 						  "report/segs_cols_verbose",
 						  DEFAULT_SEGS_COLS_VERB);
 		break;
 	case PVSEGS:
-		keys = find_config_str(cmd->cft->root, "report/pvsegs_sort",
+		keys = find_config_tree_str(cmd, "report/pvsegs_sort",
 				       DEFAULT_PVSEGS_SORT);
 		if (!arg_count(cmd, verbose_ARG))
-			options = find_config_str(cmd->cft->root,
+			options = find_config_tree_str(cmd,
 						  "report/pvsegs_cols",
 						  DEFAULT_PVSEGS_COLS);
 		else
-			options = find_config_str(cmd->cft->root,
+			options = find_config_tree_str(cmd,
 						  "report/pvsegs_cols_verbose",
 						  DEFAULT_PVSEGS_COLS_VERB);
 		break;
@@ -245,7 +286,28 @@ static int _report(struct cmd_context *cmd, int argc, char **argv,
 	if (!(report_handle = report_init(cmd, options, keys, &report_type,
 					  separator, aligned, buffered,
 					  headings)))
+		return_0;
+
+	/* Ensure options selected are compatible */
+	if (report_type & SEGS)
+		report_type |= LVS;
+	if (report_type & PVSEGS)
+		report_type |= PVS;
+	if ((report_type & LVS) && (report_type & PVS)) {
+		log_error("Can't report LV and PV fields at the same time");
+		dm_report_free(report_handle);
 		return 0;
+	}
+
+	/* Change report type if fields specified makes this necessary */
+	if (report_type & SEGS)
+		report_type = SEGS;
+	else if (report_type & LVS)
+		report_type = LVS;
+	else if (report_type & PVSEGS)
+		report_type = PVSEGS;
+	else if (report_type & PVS)
+		report_type = PVS;
 
 	switch (report_type) {
 	case LVS:
@@ -257,22 +319,30 @@ static int _report(struct cmd_context *cmd, int argc, char **argv,
 				    report_handle, &_vgs_single);
 		break;
 	case PVS:
-		r = process_each_pv(cmd, argc, argv, NULL, report_handle,
-				    &_pvs_single);
+		if (args_are_pvs)
+			r = process_each_pv(cmd, argc, argv, NULL,
+					    report_handle, &_pvs_single);
+		else
+			r = process_each_vg(cmd, argc, argv, LCK_VG_READ, 0,
+					    report_handle, &_pvs_in_vg);
 		break;
 	case SEGS:
 		r = process_each_lv(cmd, argc, argv, LCK_VG_READ, report_handle,
 				    &_lvsegs_single);
 		break;
 	case PVSEGS:
-		r = process_each_pv(cmd, argc, argv, NULL, report_handle,
-				    &_pvsegs_single);
+		if (args_are_pvs)
+			r = process_each_pv(cmd, argc, argv, NULL,
+					    report_handle, &_pvsegs_single);
+		else
+			r = process_each_vg(cmd, argc, argv, LCK_VG_READ, 0,
+					    report_handle, &_pvsegs_in_vg);
 		break;
 	}
 
-	report_output(report_handle);
+	dm_report_output(report_handle);
 
-	report_free(report_handle);
+	dm_report_free(report_handle);
 	return r;
 }
 

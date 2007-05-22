@@ -3,15 +3,14 @@ Section: admin
 Priority: optional
 Maintainer: Debian LVM Team <pkg-lvm-maintainers@lists.alioth.debian.org>
 Uploaders: Bastian Blank <waldi@debian.org>
-Build-Depends: debhelper (>> 4.2), libdevmapper-dev (>> 2:1.02.07), autotools-dev, libccs-dev (>= 2.0), libcman-dev (>= 2.0), libdlm-dev (>= 2.0), libreadline5-dev
+Build-Depends: debhelper (>> 4.2), libdevmapper-dev (>> 2:1.02.18), autotools-dev, libccs-dev (>= 2.0), libcman-dev (>= 2.0), libdlm-dev (>> 2.0), libselinux1-dev, libreadline5-dev
 Standards-Version: 3.6.2
 
 Package: lvm2
 Architecture: any
-Pre-Depends: debconf (>= 0.2.17) | debconf-2.0
-Depends: ${shlibs:Depends}, lvm-common (>> 1.5.8)
-Provides: lvm-binaries
-Breaks: udev (<< 103-0ubuntu3), lvm-common (<< 1.5.20ubuntu11)
+Depends: ${shlibs:Depends}, udev (>= 111-0ubuntu1), initramfs-tools (>= 0.85eubuntu11)
+Conflicts: lvm-common
+Replaces: lvm-common
 Suggests: dmsetup
 Description: The Linux Logical Volume Manager
  This is LVM2, the rewrite of The Linux Logical Volume Manager.  LVM
@@ -36,6 +35,7 @@ Description: The Linux Logical Volume Manager
 
 Package: clvm
 Section: admin
+Priority: extra
 Architecture: any
 Depends: ${shlibs:Depends}, lvm2 (>> 2.0.23), cman
 Description: Cluster LVM Daemon for lvm2

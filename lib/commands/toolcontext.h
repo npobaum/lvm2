@@ -64,6 +64,8 @@ struct cmd_context {
 	struct command *command;
 	struct arg *args;
 	char **argv;
+	unsigned is_static;	/* Static binary? */
+	unsigned is_long_lived;	/* Optimises persistent_filter handling */
 
 	struct dev_filter *filter;
 	int dump_filter;	/* Dump filter when exiting? */
@@ -71,6 +73,7 @@ struct cmd_context {
 	struct list config_files;
 	int config_valid;
 	struct config_tree *cft;
+	struct config_tree *cft_override;
 	struct config_info default_settings;
 	struct config_info current_settings;
 
@@ -86,7 +89,7 @@ struct cmd_context {
 	char proc_dir[PATH_MAX];
 };
 
-struct cmd_context *create_toolcontext(struct arg *the_args);
+struct cmd_context *create_toolcontext(struct arg *the_args, unsigned is_static, unsigned is_long_lived);
 void destroy_toolcontext(struct cmd_context *cmd);
 int refresh_toolcontext(struct cmd_context *cmd);
 int config_files_changed(struct cmd_context *cmd);

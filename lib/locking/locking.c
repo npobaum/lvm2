@@ -20,6 +20,7 @@
 #include "activate.h"
 #include "toolcontext.h"
 #include "memlock.h"
+#include "defaults.h"
 
 #include <signal.h>
 #include <sys/stat.h>
@@ -122,36 +123,43 @@ static void _update_vg_lock_count(int flags)
 /*
  * Select a locking type
  */
-int init_locking(int type, struct config_tree *cft)
+int init_locking(int type, struct cmd_context *cmd)
 {
 	init_lockingfailed(0);
 
 	switch (type) {
 	case 0:
-		init_no_locking(&_locking, cft);
+		init_no_locking(&_locking, cmd);
 		log_print("WARNING: Locking disabled. Be careful! "
 			  "This could corrupt your metadata.");
 		return 1;
 
 	case 1:
-		if (!init_file_locking(&_locking, cft))
+		log_very_verbose("File-based locking selected.");
+		if (!init_file_locking(&_locking, cmd))
 			break;
-		log_very_verbose("File-based locking enabled.");
 		return 1;
 
 #ifdef HAVE_LIBDL
 	case 2:
-		if (!init_external_locking(&_locking, cft))
+		if (!cmd->is_static) {
+			log_very_verbose("External locking selected.");
+			if (init_external_locking(&_locking, cmd))
+				return 1;
+		}
+		if (!find_config_tree_int(cmd, "locking/fallback_to_clustered_locking",
+					  DEFAULT_FALLBACK_TO_CLUSTERED_LOCKING))
 			break;
-		log_very_verbose("External locking enabled.");
-		return 1;
 #endif
 
 #ifdef CLUSTER_LOCKING_INTERNAL
+		log_very_verbose("Falling back to internal clustered locking.");
+		/* Fall through */
+
 	case 3:
-		if (!init_cluster_locking(&_locking, cft))
+		log_very_verbose("Cluster locking selected.");
+		if (!init_cluster_locking(&_locking, cmd))
 			break;
-		log_very_verbose("Cluster locking enabled.");
 		return 1;
 #endif
 
@@ -160,13 +168,23 @@ int init_locking(int type, struct config_tree *cft)
 		return 0;
 	}
 
+	if ((type == 2 || type == 3) &&
+            find_config_tree_int(cmd, "locking/fallback_to_local_locking",
+				 DEFAULT_FALLBACK_TO_LOCAL_LOCKING)) {
+		log_print("WARNING: Falling back to local file-based locking.");
+		log_print("Volume Groups with the clustered attribute will "
+			  "be inaccessible.");
+		if (init_file_locking(&_locking, cmd))
+			return 1;
+	}
+
 	if (!ignorelockingfailure())
 		return 0;
 
 	/* FIXME Ensure only read ops are permitted */
 	log_verbose("Locking disabled - only read operations permitted.");
 
-	init_no_locking(&_locking, cft);
+	init_no_locking(&_locking, cmd);
 	init_lockingfailed(1);
 
 	return 1;
@@ -189,7 +207,7 @@ int check_lvm1_vg_inactive(struct cmd_context *cmd, const char *vgname)
 	if (!*vgname)
 		return 1;
 
-	if (lvm_snprintf(path, sizeof(path), "%s/lvm/VGs/%s", cmd->proc_dir,
+	if (dm_snprintf(path, sizeof(path), "%s/lvm/VGs/%s", cmd->proc_dir,
 			 vgname) < 0) {
 		log_error("LVM1 proc VG pathname too long for %s", vgname);
 		return 0;
@@ -231,7 +249,7 @@ static int _lock_vol(struct cmd_context *cmd, const char *resource, int flags)
 
 int lock_vol(struct cmd_context *cmd, const char *vol, int flags)
 {
-	char resource[258];
+	char resource[258] __attribute((aligned(8)));
 
 	switch (flags & LCK_SCOPE_MASK) {
 	case LCK_VG:

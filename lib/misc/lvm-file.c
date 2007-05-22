@@ -50,7 +50,7 @@ int create_temp_name(const char *dir, char *buffer, size_t len, int *fd)
 
 	for (i = 0; i < 20; i++, num++) {
 
-		if (lvm_snprintf(buffer, len, "%s/.lvm_%s_%d_%d",
+		if (dm_snprintf(buffer, len, "%s/.lvm_%s_%d_%d",
 				 dir, hostname, pid, num) == -1) {
 			log_err("Not enough space to build temporary file "
 				"string.");
@@ -66,7 +66,8 @@ int create_temp_name(const char *dir, char *buffer, size_t len, int *fd)
 		if (!fcntl(*fd, F_SETLK, &lock))
 			return 1;
 
-		close(*fd);
+		if (close(*fd))
+			log_sys_error("close", buffer);
 	}
 
 	return 0;
@@ -239,8 +240,80 @@ void sync_dir(const char *file)
 	if (fsync(fd) && (errno != EROFS) && (errno != EINVAL))
 		log_sys_error("fsync", dir);
 
-	close(fd);
+	if (close(fd))
+		log_sys_error("close", dir);
 
       out:
 	dm_free(dir);
 }
+
+/*
+ * Attempt to obtain fcntl lock on a file, if necessary creating file first
+ * or waiting.
+ * Returns file descriptor on success, else -1.
+ * mode is F_WRLCK or F_RDLCK
+ */
+int fcntl_lock_file(const char *file, short lock_type, int warn_if_read_only)
+{
+	int lockfd;
+	char *dir;
+	char *c;
+	struct flock lock = {
+		.l_type = lock_type,
+		.l_whence = 0,
+		.l_start = 0,
+		.l_len = 0
+	};
+
+	if (!(dir = dm_strdup(file))) {
+		log_error("fcntl_lock_file failed in strdup.");
+		return -1;
+	}
+
+	if ((c = strrchr(dir, '/')))
+		*c = '\0';
+
+	if (!create_dir(dir))
+		return -1;
+
+	log_very_verbose("Locking %s (%s, %hd)", file,
+			 (lock_type == F_WRLCK) ? "F_WRLCK" : "F_RDLCK",
+			 lock_type);
+	if ((lockfd = open(file, O_RDWR | O_CREAT, 0777)) < 0) {
+		/* EACCES has been reported on NFS */
+		if (warn_if_read_only || (errno != EROFS && errno != EACCES))
+			log_sys_error("open", file);
+		else
+			stack;
+
+		return -1;
+	}
+
+	if (fcntl(lockfd, F_SETLKW, &lock)) {
+		log_sys_error("fcntl", file);
+		return -1;
+	}
+
+	return lockfd;
+}
+
+void fcntl_unlock_file(int lockfd)
+{
+	struct flock lock = {
+		.l_type = F_UNLCK,
+		.l_whence = 0,
+		.l_start = 0,
+		.l_len = 0
+	};
+
+	log_very_verbose("Unlocking fd %d", lockfd);
+
+	if (fcntl(lockfd, F_SETLK, &lock) == -1)
+		log_error("fcntl unlock failed on fd %d: %s", lockfd,
+			  strerror(errno));
+
+	if (close(lockfd))
+		log_error("lock file close failed on fd %d: %s", lockfd,
+			  strerror(errno));
+}
+

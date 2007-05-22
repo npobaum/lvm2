@@ -30,7 +30,7 @@ static int _mk_dir(const char *dev_dir, const char *vg_name)
 {
 	char vg_path[PATH_MAX];
 
-	if (lvm_snprintf(vg_path, sizeof(vg_path), "%s%s",
+	if (dm_snprintf(vg_path, sizeof(vg_path), "%s%s",
 			 dev_dir, vg_name) == -1) {
 		log_error("Couldn't construct name of volume "
 			  "group directory.");
@@ -53,7 +53,7 @@ static int _rm_dir(const char *dev_dir, const char *vg_name)
 {
 	char vg_path[PATH_MAX];
 
-	if (lvm_snprintf(vg_path, sizeof(vg_path), "%s%s",
+	if (dm_snprintf(vg_path, sizeof(vg_path), "%s%s",
 			 dev_dir, vg_name) == -1) {
 		log_error("Couldn't construct name of volume "
 			  "group directory.");
@@ -87,7 +87,7 @@ static void _rm_blks(const char *dir)
 		if (!strcmp(name, ".") || !strcmp(name, ".."))
 			continue;
 
-		if (lvm_snprintf(path, sizeof(path), "%s/%s", dir, name) == -1) {
+		if (dm_snprintf(path, sizeof(path), "%s/%s", dir, name) == -1) {
 			log_error("Couldn't create path for %s", name);
 			continue;
 		}
@@ -106,38 +106,31 @@ static int _mk_link(const char *dev_dir, const char *vg_name,
 		    const char *lv_name, const char *dev)
 {
 	char lv_path[PATH_MAX], link_path[PATH_MAX], lvm1_group_path[PATH_MAX];
-	char vg_path[PATH_MAX], lv_path_tmp[PATH_MAX];
+	char vg_path[PATH_MAX];
 	struct stat buf;
 
-	if (lvm_snprintf(vg_path, sizeof(vg_path), "%s%s",
+	if (dm_snprintf(vg_path, sizeof(vg_path), "%s%s",
 			 dev_dir, vg_name) == -1) {
 		log_error("Couldn't create path for volume group dir %s",
 			  vg_name);
 		return 0;
 	}
 
-	if (lvm_snprintf(lv_path, sizeof(lv_path), "%s/%s", vg_path,
+	if (dm_snprintf(lv_path, sizeof(lv_path), "%s/%s", vg_path,
 			 lv_name) == -1) {
 		log_error("Couldn't create source pathname for "
 			  "logical volume link %s", lv_name);
 		return 0;
 	}
 
-	if (lvm_snprintf(lv_path_tmp, sizeof(lv_path_tmp), "%s..tmp",
-			 lv_path) == -1) {
-		log_error("Couldn't create temporary pathname for "
-			  "logical volume link %s", lv_path);
-		return 0;
-	}
-
-	if (lvm_snprintf(link_path, sizeof(link_path), "%s/%s",
+	if (dm_snprintf(link_path, sizeof(link_path), "%s/%s",
 			 dm_dir(), dev) == -1) {
 		log_error("Couldn't create destination pathname for "
 			  "logical volume link for %s", lv_name);
 		return 0;
 	}
 
-	if (lvm_snprintf(lvm1_group_path, sizeof(lvm1_group_path), "%s/group",
+	if (dm_snprintf(lvm1_group_path, sizeof(lvm1_group_path), "%s/group",
 			 vg_path) == -1) {
 		log_error("Couldn't create pathname for LVM1 group file for %s",
 			  vg_name);
@@ -167,11 +160,17 @@ static int _mk_link(const char *dev_dir, const char *vg_name,
 				  link_path);
 			return 0;
 		}
+
+		log_very_verbose("Removing %s", lv_path);
+		if (unlink(lv_path) < 0) {
+			log_sys_error("unlink", lv_path);
+			return 0;
+		}
 	}
 
-	log_very_verbose("Linking %s -> %s", lv_path_tmp, link_path);
-	if (symlink(link_path, lv_path_tmp) < 0) {
-		log_sys_error("symlink", lv_path_tmp);
+	log_very_verbose("Linking %s -> %s", lv_path, link_path);
+	if (symlink(link_path, lv_path) < 0) {
+		log_sys_error("symlink", lv_path);
 		return 0;
 	}
 
@@ -182,12 +181,6 @@ static int _mk_link(const char *dev_dir, const char *vg_name,
         }
 #endif
 
-	log_very_verbose("Installing symlink %s as %s", lv_path_tmp, lv_path);
-	if (rename(lv_path_tmp, lv_path) < 0) {
-		log_sys_error("rename", lv_path_tmp);
-		return 0;
-	}
-
 	return 1;
 }
 
@@ -197,7 +190,7 @@ static int _rm_link(const char *dev_dir, const char *vg_name,
 	struct stat buf;
 	char lv_path[PATH_MAX];
 
-	if (lvm_snprintf(lv_path, sizeof(lv_path), "%s%s/%s",
+	if (dm_snprintf(lv_path, sizeof(lv_path), "%s%s/%s",
 			 dev_dir, vg_name, lv_name) == -1) {
 		log_error("Couldn't determine link pathname.");
 		return 0;

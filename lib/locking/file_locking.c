@@ -163,8 +163,8 @@ static int _lock_file(const char *file, int flags)
 	log_very_verbose("Locking %s %c%c", ll->res, state,
 			 flags & LCK_NONBLOCK ? ' ' : 'B');
 	do {
-		if (ll->lf > -1)
-			close(ll->lf);
+		if ((ll->lf > -1) && close(ll->lf))
+			log_sys_error("close", file);
 
 		if ((ll->lf = open(file, O_CREAT | O_APPEND | O_RDWR, 0777))
 		    < 0) {
@@ -212,10 +212,10 @@ static int _file_lock_resource(struct cmd_context *cmd, const char *resource,
 	switch (flags & LCK_SCOPE_MASK) {
 	case LCK_VG:
 		if (!*resource)
-			lvm_snprintf(lockfile, sizeof(lockfile),
+			dm_snprintf(lockfile, sizeof(lockfile),
 				     "%s/P_orphans", _lock_dir);
 		else
-			lvm_snprintf(lockfile, sizeof(lockfile),
+			dm_snprintf(lockfile, sizeof(lockfile),
 				     "%s/V_%s", _lock_dir, resource);
 
 		if (!_lock_file(lockfile, flags))
@@ -271,7 +271,7 @@ static int _file_lock_resource(struct cmd_context *cmd, const char *resource,
 	return 1;
 }
 
-int init_file_locking(struct locking_type *locking, struct config_tree *cft)
+int init_file_locking(struct locking_type *locking, struct cmd_context *cmd)
 {
 	locking->lock_resource = _file_lock_resource;
 	locking->reset_locking = _reset_file_locking;
@@ -279,8 +279,8 @@ int init_file_locking(struct locking_type *locking, struct config_tree *cft)
 	locking->flags = 0;
 
 	/* Get lockfile directory from config file */
-	strncpy(_lock_dir, find_config_str(cft->root, "global/locking_dir",
-					   DEFAULT_LOCK_DIR),
+	strncpy(_lock_dir, find_config_tree_str(cmd, "global/locking_dir",
+						DEFAULT_LOCK_DIR),
 		sizeof(_lock_dir));
 
 	if (!create_dir(_lock_dir))

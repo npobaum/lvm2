@@ -1,0 +1,29 @@
+#!/bin/sh
+
+PREREQ="udev"
+
+prereqs()
+{
+	echo "$PREREQ"
+}
+
+case $1 in
+prereqs)
+	prereqs
+	exit 0
+	;;
+esac
+
+if [ ! -x /sbin/vgchange ]; then
+	exit 0
+fi
+
+. /usr/share/initramfs-tools/hook-functions
+
+copy_exec /sbin/lvm /sbin
+
+cp -p /etc/udev/rules.d/85-lvm2.rules ${DESTDIR}/etc/udev/rules.d
+
+for x in dm_mod dm_snapshot dm_mirror; do
+	force_load ${x}
+done

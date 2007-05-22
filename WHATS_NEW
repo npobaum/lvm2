@@ -1,3 +1,256 @@
+Version 2.02.24 - 19th March 2007
+=================================
+  Fix processing of exit status in init scripts
+  Fix vgremove to require at least one vg argument.
+  Fix reading of striped LVs in LVM1 format.
+  Flag nolocking as clustered so clvmd startup sees clustered LVs. (2.02.10)
+  Add a few missing pieces of vgname command line validation.
+  Support the /dev/mapper prefix on most command lines.
+
+Version 2.02.23 - 8th March 2007
+================================
+  Fix vgrename active LV check to ignore differing vgids.
+  Remove no-longer-used uuid_out parameter from activation info functions.
+  Fix two more segfaults if an empty config file section encountered.
+  Move .cache file into a new /etc/lvm/cache directory by default.
+  Add devices/cache_dir & devices/cache_file_prefix, deprecating devices/cache.
+  Create directory in fcntl_lock_file() if required.
+  Exclude readline support from lvm.static.
+  Fix a leak in a reporting error path (2.02.19).
+
+Version 2.02.22 - 13th February 2007
+====================================
+  Correct -b and -P on a couple of man pages.
+  Add global/units to example.conf.
+  Fix loading of segment_libraries.
+  If a PV reappears after it was removed from its VG, make it an orphan.
+  Don't update metadata automatically if VGIDs don't match.
+  Fix some vgreduce --removemissing command line validation.
+
+Version 2.02.21 - 30th January 2007
+===================================
+  Add warning to lvm2_monitoring_init_rhel4 if attempting to stop monitoring.
+  Fix vgsplit to handle mirrors.
+  Reorder fields in reporting field definitions.
+  Fix vgs to treat args as VGs even when PV fields are displayed.
+  Fix md signature check to handle both endiannesses.
+
+Version 2.02.20 - 25th January 2007
+===================================
+  dmeventd mirror sets ignore_suspended_devices and avoids scanning mirrors.
+  Add devices/ignore_suspended_devices to ignore suspended dm devices.
+  Add some missing close() and fclose() return code checks.
+  Fix exit statuses of reporting tools (2.02.19).
+  Add init script for dmeventd monitoring.
+  lvm.static no longer interacts with dmeventd unless explicitly asked to.
+  Add field definitions to report help text.
+  Remove unnecessary cmd arg from target_*monitor_events().
+  Add private variable to dmeventd shared library interface.
+  Long-lived processes write out persistent dev cache in refresh_toolcontext().
+  Fix refresh_toolcontext() always to wipe persistent device filter cache.
+  Add is_long_lived to toolcontext.
+  Add --clustered to man pages.
+  Streamline dm_report_field_* interface.
+  Change remaining dmeventd terminology 'register' to 'monitor'.
+  Update reporting man pages.
+  No longer necessary to specify alignment type for report fields.
+
+Version 2.02.19 - 17th January 2007
+===================================
+  Fix a segfault if an empty config file section encountered.
+  Move basic reporting functions into libdevmapper.
+  Fix partition table processing after sparc changes (2.02.16).
+  Fix cmdline PE range processing segfault (2.02.13).
+  Some libdevmapper-event interface changes.
+  Report dmeventd mirror monitoring status.
+  Fix dmeventd mirror status line processing.
+
+Version 2.02.18 - 11th January 2007
+===================================
+  Revised libdevmapper-event interface for dmeventd.
+  Remove dmeventd mirror status line word limit.
+  Use CFLAGS when linking so mixed sparc builds can supply -m64.
+  Prevent permission changes on active mirrors.
+  Print warning instead of error message if lvconvert cannot zero volume.
+  Add snapshot options to lvconvert man page.
+  dumpconfig accepts a list of configuration variables to display.
+  Change dumpconfig to use --file to redirect output to a file.
+  Avoid vgreduce error when mirror code removes the log LV.
+  Remove 3 redundant AC_MSG_RESULTs from configure.in.
+  Free memory in _raw_read_mda_header() error paths.
+  Fix ambiguous vgsplit error message for split LV.
+  Fix lvextend man page typo.
+  Add configure --with-dmdir to compile against a device-mapper source tree.
+  Use no flush suspending for mirrors.
+  Add dmeventd_mirror register_mutex, tidy initialisation & add memlock.
+  Fix create mirror with name longer than 22 chars.
+  Fix some activate.c prototypes when compiled without devmapper.
+  Fix dmeventd mirror to cope if monitored device disappears.
+
+Version 2.02.17 - 14th December 2006
+====================================
+  Add missing pvremove error message when device doesn't exist.
+  When lvconvert allocates a mirror log, respect parallel area constraints.
+  Use loop to iterate through the now-ordered policy list in _allocate().
+  Check for failure to allocate just the mirror log.
+  Introduce calc_area_multiple().
+  Support mirror log allocation when there is only one PV: area_count now 0.
+  Fix detection of smallest area in _alloc_parallel_area() for cling policy.
+  Add manpage entry for clvmd -T
+  Fix gulm operation of clvmd, including a hang when doing lvchange -aey
+  Fix hang in clvmd if a pre-command failed.
+
+Version 2.02.16 - 1st December 2006
+===================================
+  Fix VG clustered read locks to use PR not CR.
+  Adjust some alignments for ia64/sparc.
+  Fix mirror segment removal to use temporary error segment.
+  Always compile debug logging into clvmd.
+  Add startup timeout to RHEL4 clvmd startup script.
+  Add -T (startup timeout) switch to clvmd.
+  Improve lvm_dump.sh robustness.
+  Update lvm2create_initrd to support gentoo.
+
+Version 2.02.15 - 21st November 2006
+====================================
+  Fix clvmd_init_rhel4 line truncation (2.02.14).
+  Install lvmdump by default.
+  Fix check for snapshot module when activating snapshot.
+  Fix pvremove error path for case when PV is in use.
+  Warn if certain duplicate config file entries are seen.
+  Enhance lvm_dump.sh for sysreport integration and add man page.
+  Fix --autobackup argument which could never disable backups.
+  Fix a label_verify error path.
+
+Version 2.02.14 - 10th November 2006
+====================================
+  Fix adjusted_mirror_region_size() to handle 64-bit size.
+  Add some missing bounds checks on 32-bit extent counters.
+  Add Petabyte and Exabyte support.
+  Fix lvcreate error message when 0 extents requested.
+  lvremove man page: volumes must be cluster inactive before being removed.
+  Protect .cache manipulations with fcntl locking.
+  Change .cache timestamp comparisons to use ctime.
+  Fix mirror log LV writing to set all bits in whole LV.
+  Fix clustered VG detection and default runlevels in clvmd_init_rhel4.
+  Fix high-level free space check for partial allocations.
+
+Version 2.02.13 - 27th October 2006
+===================================
+  Add couple of missing files to tools/Makefile CLEAN_TARGETS.
+  When adding snapshot leave cow LV mapped device active after zeroing.
+  Fix a clvmd debug message.
+  Add dev_flush() to set_lv().
+  Add lvchange --resync.
+  Perform high-level free space check before each allocation attempt.
+  Don't allow a node to remove an LV that's exclusively active on anther node.
+  Cope if same PV is included more than once in cmdline PE range list.
+  Set PV size to current device size if it is found to be zero.
+  Add segment parameter to target_present functions.
+
+Version 2.02.12 - 16th October 2006
+===================================
+  Fix pvdisplay to use vg_read() for non-orphans.
+  Fall back to internal locking if external locking lib is missing or fails.
+  Retain activation state after changing LV minor number with --force.
+  Propagate clustered flag in vgsplit and require resizeable flag.
+
+Version 2.02.11 - 12th October 2006
+===================================
+  Add clvmd function to return the cluster name. not used by LVM yet.
+  Add cling allocation policy.
+  Change _check_contiguous() to use _for_each_pv().
+  Extend _for_each_pv() to allow termination without error.
+  Abstract _is_contiguous().
+  Remove duplicated pv arg from _check_contiguous().
+  Accept regionsize with lvconvert.
+  Add report columns with underscore before field names ending 'size'.
+  Correct regionsize default on lvcreate man page (MB).
+  Fix clvmd bug that could cause it to die when a node with a long name crashed.
+  Add device size to text metadata.
+  Fix format_text mda_setup pv->size and pv_setup pe_count calculations.
+  Fix _for_each_pv() for mirror with core log.
+  Add lvm_dump.sh script to create a tarball of debugging info from a system.
+  Capture error messages in clvmd and pass them back to the user.
+  Remove unused #defines from filter-md.c.
+  Make clvmd restart init script wait until clvmd has died before starting it.
+  Add -R to clvmd which tells running clvmds to reload their device cache.
+  Add LV column to reports listing kernel modules needed for activation.
+  Show available fields if report given invalid field. (e.g. lvs -o list)
+  Add timestamp functions with --disable-realtime configure option.
+  Add %VG, %LV and %FREE suffices to lvcreate/lvresize --extents arg.
+  Fix two potential NULL pointer derefs in error cases in vg_read().
+  Separate --enable-cluster from locking lib options in lvmconf.sh.
+  Add a missing comma in lvcreate man page.
+
+Version 2.02.10 - 19th September 2006
+=====================================
+  Fix lvconvert mirror change case detection logic.
+  Fix mirror log detachment so it correctly becomes a standalone LV.
+  Extend _check_contiguous() to detect single-area LVs.
+  Include mirror log (untested) in _for_each_pv() processing.
+  Use MIRROR_LOG_SIZE constant.
+  Remove struct seg_pvs from _for_each_pv() to generalise.
+  Avoid adding duplicates to list of parallel PVs to avoid.
+  Fix several incorrect comparisons in parallel area avoidance code.
+  Fix segment lengths when flattening existing parallel areas.
+  Log existing parallel areas prior to allocation.
+  Fix mirror log creation when activation disabled.
+  Don't attempt automatic recovery without proper locking.
+  When using local file locking, skip clustered VGs.
+  Add fallback_to_clustered_locking and fallback_to_local_locking parameters.
+  lvm.static uses built-in cluster locking instead of external locking.
+  Don't attempt to load shared libraries if built statically.
+  Change default locking_lib to liblvm2clusterlock.so.
+  Add skip_dev_dir() to process command line VGs.
+  Stop clvmd complaining about nodes that have left the cluster.
+  Move lvm_snprintf(), split_words() and split_dm_name() into libdevmapper.
+  Add lvconvert man page.
+  Add mirror options to man pages.
+  Prevent mirror renames.
+  Move CMDLIB code into separate file and record whether static build.
+
+Version 2.02.09 - 17th August 2006
+==================================
+  Fix PE_ALIGN for pagesize over 32KB.
+  Separate out LVM1_PE_ALIGN and pe_align().
+  Add lvm_getpagesize wrapper.
+  Add --maxphysicalvolumes to vgchange.
+
+Version 2.02.08 - 15th August 2006
+==================================
+  Add checks for duplicate LV name, lvid and PV id before writing metadata.
+  Report all sanity check failures, not just the first.
+  Fix missing lockfs on first snapshot creation.
+  Add unreliable --trustcache option to reporting commands.
+  Fix locking for mimage removal.
+  Fix clvmd_init_rhel4 'status' exit code.
+
+Version 2.02.07 - 17th July 2006
+================================
+  Fix activation logic in lvchange --persistent.
+  Don't ignore persistent minor numbers when activating.
+  Use RTLD_GLOBAL when loading shared libraries.
+  Add some forgotten memlock checks to _vg_read to protect against full scans.
+  Add mutex to dmeventd_mirror to avoid concurrent execution.
+  Fix vgreduce --removemissing to return success if VG is already consistent.
+  Fix return code if VG specified on command line is not found.
+  Fix PV tools to include orphaned PVs in default output again.
+  Fixed unaligned access when using clvm.
+  Fix an extra dev_close in a label_read error path.
+  Append patches to commit emails.
+  Fix target_register_events args.
+  Prevent snapshots of mirrors.
+  Add DISTCLEAN_TARGETS to make template for configure.h.
+  More fixes to error paths.
+  Fix lvcreate corelog validation.
+  Add --config for overriding most config file settings from cmdline.
+  Quote arguments when printing command line.
+  Remove linefeed from 'initialising logging' message.
+  Add 'Completed' debug message.
+  Don't attempt library exit after reloading config files.
+  Always compile with libdevmapper, even if device-mapper is disabled.
+
 Version 2.02.06 - 12th May 2006
 ===============================
   Propagate --monitor around cluster.

@@ -116,6 +116,7 @@ static int _read_pv(struct format_instance *fid, struct dm_pool *mem,
 	struct physical_volume *pv;
 	struct pv_list *pvl;
 	struct config_node *cn;
+	uint64_t size;
 
 	if (!(pvl = dm_pool_zalloc(mem, sizeof(*pvl))) ||
 	    !(pvl->pv = dm_pool_zalloc(mem, sizeof(*pvl->pv)))) {
@@ -148,7 +149,7 @@ static int _read_pv(struct format_instance *fid, struct dm_pool *mem,
 	 * Convert the uuid into a device.
 	 */
 	if (!(pv->dev = device_from_pvid(fid->fmt->cmd, &pv->id))) {
-		char buffer[64];
+		char buffer[64] __attribute((aligned(8)));
 
 		if (!id_write_format(&pv->id, buffer, sizeof(buffer)))
 			log_error("Couldn't find device.");
@@ -179,6 +180,9 @@ static int _read_pv(struct format_instance *fid, struct dm_pool *mem,
 		return 0;
 	}
 
+	/* Late addition */
+	_read_int64(pvn, "dev_size", &pv->size);
+
 	if (!_read_int64(pvn, "pe_start", &pv->pe_start)) {
 		log_error("Couldn't read extent size for volume group.");
 		return 0;
@@ -206,9 +210,28 @@ static int _read_pv(struct format_instance *fid, struct dm_pool *mem,
 	vg->free_count += pv->pe_count;
 
 	pv->pe_size = vg->extent_size;
-	pv->size = vg->extent_size * (uint64_t) pv->pe_count;
+
 	pv->pe_alloc_count = 0;
 	pv->fmt = fid->fmt;
+
+        /* Fix up pv size if missing */
+        if (!pv->size && pv->dev) {
+                if (!dev_get_size(pv->dev, &pv->size)) {
+                        log_error("%s: Couldn't get size.", dev_name(pv->dev));
+                        return 0;
+                }
+                log_verbose("Fixing up missing format1 size (%s) "
+                            "for PV %s", display_size(fid->fmt->cmd, pv->size),
+                            dev_name(pv->dev));
+                if (vg) {
+                        size = pv->pe_count * (uint64_t) vg->extent_size +
+                               pv->pe_start;
+                        if (size > pv->size)
+                                log_error("WARNING: Physical Volume %s is too "
+                                          "large for underlying device",
+                                          dev_name(pv->dev));
+                }
+        }
 
 	if (!alloc_pv_segment_whole_pv(mem, pv)) {
 		stack;
