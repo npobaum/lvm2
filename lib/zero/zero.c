@@ -40,7 +40,7 @@ static int _zero_merge_segments(struct lv_segment *seg1, struct lv_segment *seg2
 #ifdef DEVMAPPER_SUPPORT
 static int _zero_add_target_line(struct dev_manager *dm __attribute((unused)),
 				struct dm_pool *mem __attribute((unused)),
-                                struct config_tree *cft __attribute((unused)),
+                                struct cmd_context *cmd __attribute((unused)),
 				void **target_state __attribute((unused)),
                                 struct lv_segment *seg __attribute((unused)),
                                 struct dm_tree_node *node,uint64_t len,
@@ -49,7 +49,7 @@ static int _zero_add_target_line(struct dev_manager *dm __attribute((unused)),
 	return dm_tree_node_add_zero_target(node, len);
 }
 
-static int _zero_target_present(void)
+static int _zero_target_present(const struct lv_segment *seg __attribute((unused)))
 {
 	static int _zero_checked = 0;
 	static int _zero_present = 0;
@@ -63,6 +63,18 @@ static int _zero_target_present(void)
 }
 #endif
 
+static int _zero_modules_needed(struct dm_pool *mem,
+				const struct lv_segment *seg,
+				struct list *modules)
+{
+	if (!str_list_add(mem, modules, "zero")) {
+		log_error("zero module string list allocation failed");
+		return 0;
+	}
+
+	return 1;
+}
+
 static void _zero_destroy(const struct segment_type *segtype)
 {
 	dm_free((void *) segtype);
@@ -75,6 +87,7 @@ static struct segtype_handler _zero_ops = {
 	.add_target_line = _zero_add_target_line,
 	.target_present = _zero_target_present,
 #endif
+	.modules_needed = _zero_modules_needed,
 	.destroy = _zero_destroy,
 };
 

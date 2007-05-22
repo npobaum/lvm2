@@ -29,6 +29,7 @@ struct device;
 struct dev_manager *dev_manager_create(struct cmd_context *cmd,
 				       const char *vg_name);
 void dev_manager_destroy(struct dev_manager *dm);
+void dev_manager_release(void);
 void dev_manager_exit(void);
 
 /*
@@ -46,7 +47,8 @@ int dev_manager_snapshot_percent(struct dev_manager *dm,
 int dev_manager_mirror_percent(struct dev_manager *dm,
 			       struct logical_volume *lv, int wait,
 			       float *percent, uint32_t *event_nr);
-int dev_manager_suspend(struct dev_manager *dm, struct logical_volume *lv);
+int dev_manager_suspend(struct dev_manager *dm, struct logical_volume *lv,
+			int lockfs);
 int dev_manager_activate(struct dev_manager *dm, struct logical_volume *lv);
 int dev_manager_preload(struct dev_manager *dm, struct logical_volume *lv);
 int dev_manager_deactivate(struct dev_manager *dm, struct logical_volume *lv);

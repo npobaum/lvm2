@@ -35,17 +35,11 @@ int vgrename(struct cmd_context *cmd, int argc, char **argv)
 		return EINVALID_CMD_LINE;
 	}
 
-	vg_name_old = argv[0];
-	vg_name_new = argv[1];
+	vg_name_old = skip_dev_dir(cmd, argv[0], NULL);
+	vg_name_new = skip_dev_dir(cmd, argv[1], NULL);
 
 	dev_dir = cmd->dev_dir;
 	length = strlen(dev_dir);
-
-	/* If present, strip dev_dir */
-	if (!strncmp(vg_name_old, dev_dir, length))
-		vg_name_old += length;
-	if (!strncmp(vg_name_new, dev_dir, length))
-		vg_name_new += length;
 
 	/* Check sanity of new name */
 	if (strlen(vg_name_new) > NAME_LEN - length - 2) {
@@ -108,6 +102,13 @@ int vgrename(struct cmd_context *cmd, int argc, char **argv)
 		return ECMD_FAILED;
 	}
 
+	if ((vg_old->status & CLUSTERED) && !locking_is_clustered() &&
+	    !lockingfailed()) {
+		log_error("Skipping clustered volume group %s", vg_old->name);
+		unlock_vg(cmd, vg_name_old);
+		return ECMD_FAILED;
+	}
+
 	if (vg_old->status & EXPORTED_VG)
 		log_info("Volume group \"%s\" is exported", vg_old->name);
 
@@ -117,7 +118,7 @@ int vgrename(struct cmd_context *cmd, int argc, char **argv)
 		return ECMD_FAILED;
 	}
 
-	if (lvs_in_vg_activated(vg_old)) {
+	if (lvs_in_vg_activated_by_uuid_only(vg_old)) {
 		unlock_vg(cmd, vg_name_old);
 		log_error("Volume group \"%s\" still has active LVs",
 			  vg_name_old);

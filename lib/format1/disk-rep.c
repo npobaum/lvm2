@@ -248,7 +248,7 @@ static int _read_uuids(struct disk_list *data)
 {
 	unsigned num_read = 0;
 	struct uuid_list *ul;
-	char buffer[NAME_LEN];
+	char buffer[NAME_LEN] __attribute((aligned(8)));
 	uint64_t pos = data->pvd.pv_uuidlist_on_disk.base;
 	uint64_t end = pos + data->pvd.pv_uuidlist_on_disk.size;
 
@@ -458,7 +458,7 @@ static void _add_pv_to_list(struct list *head, struct disk_list *data)
 
 /*
  * Build a list of pv_d's structures, allocated from mem.
- * We keep track of the first object allocated form the pool
+ * We keep track of the first object allocated from the pool
  * so we can free off all the memory if something goes wrong.
  */
 int read_pvs_in_vg(const struct format_type *fmt, const char *vg_name,

@@ -176,7 +176,7 @@ static int _aligned_io(struct device_area *where, void *buffer,
 	}
 
 	if (!block_size)
-		block_size = getpagesize();
+		block_size = lvm_getpagesize();
 
 	_widen_region(block_size, where, &widened);
 
@@ -292,11 +292,14 @@ int dev_get_sectsize(struct device *dev, uint32_t *size)
 
 	if (ioctl(fd, BLKSSZGET, &s) < 0) {
 		log_sys_error("ioctl BLKSSZGET", name);
-		close(fd);
+		if (close(fd))
+			log_sys_error("close", name);
 		return 0;
 	}
 
-	close(fd);
+	if (close(fd))
+		log_sys_error("close", name);
+
 	*size = (uint32_t) s;
 
 	log_very_verbose("%s: sector size is %" PRIu32 " bytes", name, *size);
@@ -376,8 +379,6 @@ int dev_open_flags(struct device *dev, int flags, int direct, int quiet)
 	/* Don't update atime on device inodes */
 	if (!(dev->flags & DEV_REGULAR))
 		flags |= O_NOATIME;
-#else
-# error miss O_NOATIME
 #endif
 
 	if ((dev->fd = open(name, flags, 0777)) < 0) {
@@ -607,7 +608,7 @@ int dev_write(struct device *dev, uint64_t offset, size_t len, void *buffer)
 int dev_set(struct device *dev, uint64_t offset, size_t len, int value)
 {
 	size_t s;
-	char buffer[4096];
+	char buffer[4096] __attribute((aligned(8)));
 
 	if (!dev_open(dev)) {
 		stack;

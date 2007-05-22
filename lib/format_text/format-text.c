@@ -132,37 +132,40 @@ static struct mda_header *_raw_read_mda_header(const struct format_type *fmt,
 
 	if (!dev_read(dev_area->dev, dev_area->start, MDA_HEADER_SIZE, mdah)) {
 		stack;
-		dm_pool_free(fmt->cmd->mem, mdah);
-		return NULL;
+		goto error;
 	}
 
 	if (mdah->checksum_xl != xlate32(calc_crc(INITIAL_CRC, mdah->magic,
 						  MDA_HEADER_SIZE -
 						  sizeof(mdah->checksum_xl)))) {
 		log_error("Incorrect metadata area header checksum");
-		return NULL;
+		goto error;
 	}
 
 	_xlate_mdah(mdah);
 
 	if (strncmp((char *)mdah->magic, FMTT_MAGIC, sizeof(mdah->magic))) {
 		log_error("Wrong magic number in metadata area header");
-		return NULL;
+		goto error;
 	}
 
 	if (mdah->version != FMTT_VERSION) {
 		log_error("Incompatible metadata area header version: %d",
 			  mdah->version);
-		return NULL;
+		goto error;
 	}
 
 	if (mdah->start != dev_area->start) {
 		log_error("Incorrect start sector in metadata area header: %"
 			  PRIu64, mdah->start);
-		return NULL;
+		goto error;
 	}
 
 	return mdah;
+
+error:
+	dm_pool_free(fmt->cmd->mem, mdah);
+	return NULL;
 }
 
 static int _raw_write_mda_header(const struct format_type *fmt,
@@ -193,7 +196,7 @@ static struct raw_locn *_find_vg_rlocn(struct device_area *dev_area,
 				       int *precommitted)
 {
 	size_t len;
-	char vgnamebuf[NAME_LEN + 2];
+	char vgnamebuf[NAME_LEN + 2] __attribute((aligned(8)));
 	struct raw_locn *rlocn, *rlocn_precommitted;
 	struct lvmcache_info *info;
 
@@ -707,7 +710,8 @@ static int _vg_write_file(struct format_instance *fid, struct volume_group *vg,
 
 	if (!(fp = fdopen(fd, "w"))) {
 		log_sys_error("fdopen", temp_file);
-		close(fd);
+		if (close(fd))
+			log_sys_error("fclose", temp_file);
 		return 0;
 	}
 
@@ -715,13 +719,15 @@ static int _vg_write_file(struct format_instance *fid, struct volume_group *vg,
 
 	if (!text_vg_export_file(vg, tc->desc, fp)) {
 		log_error("Failed to write metadata to %s.", temp_file);
-		fclose(fp);
+		if (fclose(fp))
+			log_sys_error("fclose", temp_file);
 		return 0;
 	}
 
 	if (fsync(fd) && (errno != EROFS) && (errno != EINVAL)) {
 		log_sys_error("fsync", tc->path_edit);
-		fclose(fp);
+		if (fclose(fp))
+			log_sys_error("fclose", tc->path_edit);
 		return 0;
 	}
 
@@ -853,7 +859,7 @@ static int _scan_file(const struct format_type *fmt)
 			     tmp != dirent->d_name + strlen(dirent->d_name)
 			     - 4)) {
 				vgname = dirent->d_name;
-				if (lvm_snprintf(path, PATH_MAX, "%s/%s",
+				if (dm_snprintf(path, PATH_MAX, "%s/%s",
 						 dl->dir, vgname) < 0) {
 					log_error("Name too long %s/%s",
 						  dl->dir, vgname);
@@ -885,8 +891,8 @@ const char *vgname_from_mda(const struct format_type *fmt,
 	uint32_t wrap = 0;
 	const char *vgname = NULL;
 	unsigned int len = 0;
-	char buf[NAME_LEN + 1];
-        char uuid[64];
+	char buf[NAME_LEN + 1] __attribute((aligned(8)));
+	char uuid[64] __attribute((aligned(8)));
 
 	if (!dev_open(dev_area->dev)) {
 		stack;
@@ -994,7 +1000,7 @@ static int _text_scan(const struct format_type *fmt)
 }
 
 /* For orphan, creates new mdas according to policy.
-   Always have an mda between end-of-label and PE_ALIGN boundary */
+   Always have an mda between end-of-label and pe_align() boundary */
 static int _mda_setup(const struct format_type *fmt,
 		      uint64_t pe_start, uint64_t pe_end,
 		      int pvmetadatacopies,
@@ -1005,15 +1011,12 @@ static int _mda_setup(const struct format_type *fmt,
 	uint64_t start1, mda_size1;	/* First area - start of disk */
 	uint64_t start2, mda_size2;	/* Second area - end of disk */
 	uint64_t wipe_size = 8 << SECTOR_SHIFT;
-	size_t pagesize = getpagesize();
+	size_t pagesize = lvm_getpagesize();
 
-	if (!pvmetadatacopies) {
-		/* Space available for PEs */
-		pv->size -= PE_ALIGN;
+	if (!pvmetadatacopies)
 		return 1;
-	}
 
-	alignment = PE_ALIGN << SECTOR_SHIFT;
+	alignment = pe_align() << SECTOR_SHIFT;
 	disk_size = pv->size << SECTOR_SHIFT;
 	pe_start <<= SECTOR_SHIFT;
 	pe_end <<= SECTOR_SHIFT;
@@ -1027,9 +1030,6 @@ static int _mda_setup(const struct format_type *fmt,
 	/* Requested metadatasize */
 	mda_size1 = pvmetadatasize << SECTOR_SHIFT;
 
-	/* Space available for PEs (before any mdas created) */
-	pv->size -= LABEL_SCAN_SECTORS;
-
 	/* Place mda straight after label area at start of disk */
 	start1 = LABEL_SCAN_SIZE;
 
@@ -1037,11 +1037,8 @@ static int _mda_setup(const struct format_type *fmt,
 	if ((!pe_start && !pe_end) ||
 	    ((pe_start > start1) && (pe_start - start1 >= MDA_SIZE_MIN))) {
 		mda_adjustment = start1 % pagesize;
-		if (mda_adjustment) {
+		if (mda_adjustment)
 			start1 += (pagesize - mda_adjustment);
-			pv->size -= ((pagesize - mda_adjustment) >>
-				     SECTOR_SHIFT);
-		}
 	}
 
 	/* Ensure it's not going to be bigger than the disk! */
@@ -1055,7 +1052,7 @@ static int _mda_setup(const struct format_type *fmt,
 		pvmetadatacopies = 1;
 	}
 
-	/* Round up to PE_ALIGN boundary */
+	/* Round up to pe_align() boundary */
 	mda_adjustment = (mda_size1 + start1) % alignment;
 	if (mda_adjustment)
 		mda_size1 += (alignment - mda_adjustment);
@@ -1071,7 +1068,8 @@ static int _mda_setup(const struct format_type *fmt,
 	/* FIXME If creating new mdas, wipe them! */
 	if (mda_size1) {
 		if (!add_mda(fmt, fmt->cmd->mem, mdas, pv->dev, start1,
-			     mda_size1)) return 0;
+			     mda_size1))
+			return 0;
 
 		if (!dev_set((struct device *) pv->dev, start1,
 			     (size_t) (mda_size1 >
@@ -1080,7 +1078,6 @@ static int _mda_setup(const struct format_type *fmt,
 			return 0;
 		}
 
-		pv->size -= mda_size1 >> SECTOR_SHIFT;
 		if (pvmetadatacopies == 1)
 			return 1;
 	} else
@@ -1125,7 +1122,6 @@ static int _mda_setup(const struct format_type *fmt,
 			log_error("Failed to wipe new metadata area");
 			return 0;
 		}
-		pv->size -= mda_size2 >> SECTOR_SHIFT;
 	} else
 		return 0;
 
@@ -1141,7 +1137,7 @@ static int _text_pv_write(const struct format_type *fmt, struct physical_volume 
 	struct lvmcache_info *info;
 	struct mda_context *mdac;
 	struct metadata_area *mda;
-	char buf[MDA_HEADER_SIZE];
+	char buf[MDA_HEADER_SIZE] __attribute((aligned(8)));
 	struct mda_header *mdah = (struct mda_header *) buf;
 	uint64_t adjustment;
 
@@ -1189,18 +1185,18 @@ static int _text_pv_write(const struct format_type *fmt, struct physical_volume 
 
 	/* Set pe_start to first aligned sector after any metadata 
 	 * areas that begin before pe_start */
-	pv->pe_start = PE_ALIGN;
+	pv->pe_start = pe_align();
 	list_iterate_items(mda, &info->mdas) {
 		mdac = (struct mda_context *) mda->metadata_locn;
 		if (pv->dev == mdac->area.dev &&
-		    (mdac->area.start < (pv->pe_start << SECTOR_SHIFT)) &&
+		    (mdac->area.start <= (pv->pe_start << SECTOR_SHIFT)) &&
 		    (mdac->area.start + mdac->area.size >
 		     (pv->pe_start << SECTOR_SHIFT))) {
 			pv->pe_start = (mdac->area.start + mdac->area.size)
 			    >> SECTOR_SHIFT;
-			adjustment = pv->pe_start % PE_ALIGN;
+			adjustment = pv->pe_start % pe_align();
 			if (adjustment)
-				pv->pe_start += (PE_ALIGN - adjustment);
+				pv->pe_start += (pe_align() - adjustment);
 		}
 	}
 	if (!add_da
@@ -1416,8 +1412,9 @@ static int _text_pv_setup(const struct format_type *fmt,
 	struct lvmcache_info *info;
 	int found;
 	uint64_t pe_end = 0;
-
-	/* FIXME if vg, adjust start/end of pe area to avoid mdas! */
+	unsigned mda_count = 0;
+	uint64_t mda_size2 = 0;
+	uint64_t pe_count;
 
 	/* FIXME Cope with pvchange */
 	/* FIXME Merge code with _text_create_text_instance */
@@ -1428,10 +1425,15 @@ static int _text_pv_setup(const struct format_type *fmt,
 		if ((info = info_from_pvid(pv->dev->pvid))) {
 			pvmdas = &info->mdas;
 			list_iterate_items(mda, pvmdas) {
+				mda_count++;
 				mdac =
 				    (struct mda_context *) mda->metadata_locn;
 
 				/* FIXME Check it isn't already in use */
+
+				/* Reduce usable device size */
+				if (mda_count > 1)
+					mda_size2 = mdac->area.size >> SECTOR_SHIFT;
 
 				/* Ensure it isn't already on list */
 				found = 0;
@@ -1468,6 +1470,26 @@ static int _text_pv_setup(const struct format_type *fmt,
 				mda_new->metadata_locn = mdac_new;
 				list_add(mdas, &mda_new->list);
 			}
+		}
+
+		/* FIXME Cope with genuine pe_count 0 */
+
+		/* If missing, estimate pv->size from file-based metadata */
+		if (!pv->size && pv->pe_count)
+			pv->size = pv->pe_count * (uint64_t) vg->extent_size +
+				   pv->pe_start + mda_size2;
+
+		/* Recalculate number of extents that will fit */
+		if (!pv->pe_count) {
+			pe_count = (pv->size - pv->pe_start - mda_size2) /
+				   vg->extent_size;
+			if (pe_count > UINT32_MAX) {
+				log_error("PV %s too large for extent size %s.",
+					  dev_name(pv->dev),
+					  display_size(vg->cmd, (uint64_t) vg->extent_size));
+				return 0;
+			}
+			pv->pe_count = (uint32_t) pe_count;
 		}
 
 		/* Unlike LVM1, we don't store this outside a VG */
@@ -1533,7 +1555,7 @@ static struct format_instance *_text_create_text_instance(const struct format_ty
 		dir_list = &((struct mda_lists *) fmt->private)->dirs;
 
 		list_iterate_items(dl, dir_list) {
-			if (lvm_snprintf(path, PATH_MAX, "%s/%s",
+			if (dm_snprintf(path, PATH_MAX, "%s/%s",
 					 dl->dir, vgname) < 0) {
 				log_error("Name too long %s/%s", dl->dir,
 					  vgname);
@@ -1726,7 +1748,7 @@ static int _get_config_disk_area(struct cmd_context *cmd,
 	}
 
 	if (!(dev_area.dev = device_from_pvid(cmd, &id))) {
-		char buffer[64];
+		char buffer[64] __attribute((aligned(8)));
 
 		if (!id_write_format(&id, buffer, sizeof(buffer)))
 			log_err("Couldn't find device.");
@@ -1783,7 +1805,7 @@ struct format_type *create_text_format(struct cmd_context *cmd)
 		return NULL;
 	}
 
-	if ((cn = find_config_node(cmd->cft->root, "metadata/dirs"))) {
+	if ((cn = find_config_tree_node(cmd, "metadata/dirs"))) {
 		for (cv = cn->v; cv; cv = cv->next) {
 			if (cv->type != CFG_STRING) {
 				log_error("Invalid string in config file: "
@@ -1799,7 +1821,7 @@ struct format_type *create_text_format(struct cmd_context *cmd)
 		}
 	}
 
-	if ((cn = find_config_node(cmd->cft->root, "metadata/disk_areas"))) {
+	if ((cn = find_config_tree_node(cmd, "metadata/disk_areas"))) {
 		for (cn = cn->child; cn; cn = cn->sib) {
 			if (!_get_config_disk_area(cmd, cn, &mda_lists->raws))
 				goto err;

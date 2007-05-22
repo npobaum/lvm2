@@ -30,6 +30,7 @@ static struct {
 } _policies[] = {
 	{
 	ALLOC_CONTIGUOUS, "contiguous"}, {
+	ALLOC_CLING, "cling"}, {
 	ALLOC_NORMAL, "normal"}, {
 	ALLOC_ANYWHERE, "anywhere"}, {
 	ALLOC_INHERIT, "inherit"}
@@ -81,6 +82,12 @@ uint64_t units_to_bytes(const char *units, char *unit_type)
 	case 't':
 		v *= KILO * KILO * KILO * KILO;
 		break;
+	case 'p':
+		v *= KILO * KILO * KILO * KILO * KILO;
+		break;
+	case 'e':
+		v *= KILO * KILO * KILO * KILO * KILO * KILO;
+		break;
 #undef KILO
 #define KILO UINT64_C(1000)
 	case 'K':
@@ -94,6 +101,12 @@ uint64_t units_to_bytes(const char *units, char *unit_type)
 		break;
 	case 'T':
 		v *= KILO * KILO * KILO * KILO;
+		break;
+	case 'P':
+		v *= KILO * KILO * KILO * KILO * KILO;
+		break;
+	case 'E':
+		v *= KILO * KILO * KILO * KILO * KILO * KILO;
 		break;
 #undef KILO
 	default:
@@ -142,6 +155,8 @@ static const char *_display_size(struct cmd_context *cmd, uint64_t size, size_le
 	uint64_t units = UINT64_C(1024);
 	char *size_buf = NULL;
 	const char *size_str[][3] = {
+		{" Exabyte", " EB", "E"},
+		{" Petabyte", " PB", "P"},
 		{" Terabyte", " TB", "T"},
 		{" Gigabyte", " GB", "G"},
 		{" Megabyte", " MB", "M"},
@@ -160,7 +175,7 @@ static const char *_display_size(struct cmd_context *cmd, uint64_t size, size_le
 
 	suffix = cmd->current_settings.suffix;
 
-	for (s = 0; s < 8; s++)
+	for (s = 0; s < 10; s++)
 		if (toupper((int) cmd->current_settings.unit_type) ==
 		    *size_str[s][2])
 			break;
@@ -170,7 +185,7 @@ static const char *_display_size(struct cmd_context *cmd, uint64_t size, size_le
 		return size_buf;
 	}
 
-	if (s < 8) {
+	if (s < 10) {
 		byte = cmd->current_settings.unit_factor;
 		size *= UINT64_C(512);
 	} else {
@@ -180,7 +195,7 @@ static const char *_display_size(struct cmd_context *cmd, uint64_t size, size_le
 			units = UINT64_C(1000);
 		else
 			units = UINT64_C(1024);
-		byte = units * units * units;
+		byte = units * units * units * units * units;
 		s = 0;
 		while (size_str[s] && size < byte)
 			s++, byte /= units;
@@ -219,7 +234,7 @@ const char *display_size(struct cmd_context *cmd, uint64_t size)
 
 void pvdisplay_colons(struct physical_volume *pv)
 {
-	char uuid[64];
+	char uuid[64] __attribute((aligned(8)));
 
 	if (!pv)
 		return;
@@ -247,7 +262,7 @@ void pvdisplay_colons(struct physical_volume *pv)
 void pvdisplay_full(struct cmd_context *cmd, struct physical_volume *pv,
 		    void *handle __attribute((unused)))
 {
-	char uuid[64];
+	char uuid[64] __attribute((aligned(8)));
 	const char *size;
 
 	uint32_t pe_free;
@@ -309,7 +324,7 @@ int pvdisplay_short(struct cmd_context *cmd __attribute((unused)),
 		    struct physical_volume *pv,
 		    void *handle __attribute((unused)))
 {
-	char uuid[64];
+	char uuid[64] __attribute((aligned(8)));
 
 	if (!pv)
 		return 0;
@@ -356,7 +371,7 @@ int lvdisplay_full(struct cmd_context *cmd, struct logical_volume *lv,
 {
 	struct lvinfo info;
 	int inkernel, snap_active = 0;
-	char uuid[64];
+	char uuid[64] __attribute((aligned(8)));
 	struct lv_segment *snap_seg = NULL;
 	float snap_percent;	/* fused, fsize; */
 
@@ -522,7 +537,7 @@ void vgdisplay_full(struct volume_group *vg)
 {
 	uint32_t access;
 	uint32_t active_pvs;
-	char uuid[64];
+	char uuid[64] __attribute((aligned(8)));
 
 	if (vg->status & PARTIAL_VG)
 		active_pvs = list_size(&vg->pvs);
@@ -601,7 +616,7 @@ void vgdisplay_colons(struct volume_group *vg)
 {
 	uint32_t active_pvs;
 	const char *access;
-	char uuid[64];
+	char uuid[64] __attribute((aligned(8)));
 
 	if (vg->status & PARTIAL_VG)
 		active_pvs = list_size(&vg->pvs);

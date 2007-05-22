@@ -1,5 +1,7 @@
 etc/lvm/lvm.conf
-sbin/lv* sbin/pv* sbin/vg* lib/lvm-200/
+sbin/lv*
+sbin/pv*
+sbin/vg*
 usr/share/man/man8/lv*
 usr/share/man/man8/pv*
 usr/share/man/man8/vg*

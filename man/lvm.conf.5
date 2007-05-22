@@ -95,8 +95,8 @@ pattern it is rejected; otherwise it is accepted.
 As an example, to ignore /dev/cdrom you could use:
 \fBdevices { filter=["r|cdrom|"] }\fP 
 .IP
-\fBcache\fP \(em Persistent filter cache file.
-Defaults to "/etc/lvm/.cache".
+\fBcache_dir\fP \(em Persistent filter cache file directory.
+Defaults to "/etc/lvm/cache".
 .IP
 \fBwrite_cache_state\fP \(em Set to 0 to disable the writing out of the 
 persistent filter cache file when \fBlvm\fP exits.
@@ -252,7 +252,7 @@ if \fBlocking_type\fP is set to 1.  The default is \fB/var/lock/lvm\fP.
 .IP
 \fBlocking_library\fP \(em The name of the external locking
 library to load if \fBlocking_type\fP is set to 2.
-The default is \fBlvm2_locking.so\fP.  If you need to write
+The default is \fBliblvm2clusterlock.so\fP.  If you need to write
 such a library, look at the lib/locking source code directory.
 .TP
 \fBtags\fP \(em Host tag settings
@@ -364,9 +364,9 @@ understand how things work: to make changes you should always use
 the tools as normal, or else vgcfgbackup, edit backup, vgcfgrestore.
 .SH FILES
 .I /etc/lvm/lvm.conf
-.I /etc/lvm/.cache
 .I /etc/lvm/archive
 .I /etc/lvm/backup
+.I /etc/lvm/cache/.cache
 .I /var/lock/lvm
 .SH SEE ALSO
 .BR lvm (8),

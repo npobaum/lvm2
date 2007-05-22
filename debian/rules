@@ -26,8 +26,6 @@ ifneq (,$(findstring $(DEB_HOST_ARCH), arm armeb hppa mips mipsel))
 CONFIGURE_FLAGS += --disable-o_direct
 endif
 
-CFLAGS += -I$(CURDIR)/debian/include/$(DEB_HOST_ARCH)
-
 CFLAGS += -fno-stack-protector
 
 BUILD_DIR = debian/build
@@ -47,8 +45,7 @@ $(BUILD_DIR)/build-deb/config.status:
 	./configure CFLAGS="$(CFLAGS)" $(CONFIGURE_FLAGS) \
 		--with-cluster=shared \
 		--with-clvmd=cman \
-		--enable-readline \
-		--disable-selinux
+		--enable-readline
 
 	cp po/lvm2.po po/lvm2.pot
 
@@ -108,12 +105,8 @@ install-deb: build-deb
 	$(MAKE) -C $(DIR) install DESTDIR=$(CURDIR)/$(INSTALL_DIR)
 
 	dh_install $(DH_OPTIONS) --sourcedir=$(INSTALL_DIR)
-	install -m755 -d debian/lvm2/etc/udev/rules.d
-	install -m644 -oroot -groot scripts/85-lvm.rules \
-		debian/lvm2/etc/udev/rules.d
-	install -m755 -d debian/lvm2/usr/share/initramfs-tools/hooks
-	install -m755 -o root -g root debian/lvm2.initramfs-hook \
-		debian/lvm2/usr/share/initramfs-tools/hooks/lvm2
+	cp -a debian/initramfs-tools debian/lvm2/usr/share
+	chmod +x -R debian/lvm2/usr/share/initramfs-tools
 
 install-udeb: DH_OPTIONS = $(addprefix -p,$(PACKAGES_UDEB))
 install-udeb: DIR = $(BUILD_DIR)/build-udeb
@@ -135,7 +128,7 @@ binary-indep:
 binary-arch: build install
 	dh_testdir -a
 	dh_testroot -a
-#	dh_installdebconf -a
+	dh_installdebconf -a
 	dh_installdocs -a
 	dh_installexamples -a
 #	dh_installmenu -a
@@ -143,7 +136,8 @@ binary-arch: build install
 #	dh_installemacsen -a
 #	dh_installpam -a
 #	dh_installmime -a
-	dh_installinit -p clvm --no-restart-on-upgrade -- start 65 S . start 3 0 6 .
+	#dh_installinit -plvm2 --no-start -- start 26 S . start 50 0 6 .
+	dh_installudev -a --priority=85
 #	dh_installcron -a
 #	dh_installman -a
 #	dh_installinfo -a

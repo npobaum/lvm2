@@ -43,6 +43,7 @@ struct lvcreate_params {
 	/* size */
 	uint32_t extents;
 	uint64_t size;
+	percent_t percent;
 
 	uint32_t permission;
 	uint32_t read_ahead;
@@ -94,19 +95,7 @@ static int _lvcreate_name_params(struct lvcreate_params *lp,
 			}
 
 		} else {
-			vg_name = argv[0];
-			/* Strip dev_dir (optional) */
-			if (*vg_name == '/') {
-				while (*vg_name == '/')
-					vg_name++;
-				vg_name--;
-			}
-			if (!strncmp(vg_name, cmd->dev_dir,
-				     strlen(cmd->dev_dir))) {
-				vg_name += strlen(cmd->dev_dir);
-				while (*vg_name == '/')
-					vg_name++;
-			}
+			vg_name = skip_dev_dir(cmd, argv[0], NULL);
 			if (strrchr(vg_name, '/')) {
 				log_error("Volume group name expected "
 					  "(no slash)");
@@ -169,6 +158,7 @@ static int _read_size_params(struct lvcreate_params *lp,
 			return 0;
 		}
 		lp->extents = arg_uint_value(cmd, extents_ARG, 0);
+		lp->percent = arg_percent_value(cmd, extents_ARG, PERCENT_NONE);
 	}
 
 	/* Size returned in kilobyte units; held in sectors */
@@ -178,6 +168,7 @@ static int _read_size_params(struct lvcreate_params *lp,
 			return 0;
 		}
 		lp->size = arg_uint64_value(cmd, size_ARG, UINT64_C(0)) * 2;
+		lp->percent = PERCENT_NONE;
 	}
 
 	return 1;
@@ -213,7 +204,7 @@ static int _read_stripe_params(struct lvcreate_params *lp,
 	}
 
 	if (lp->stripes > 1 && !lp->stripe_size) {
-		lp->stripe_size = find_config_int(cmd->cft->root,
+		lp->stripe_size = find_config_tree_int(cmd,
 						  "metadata/stripesize",
 						  DEFAULT_STRIPESIZE) * 2;
 		log_print("Using default stripesize %s",
@@ -249,7 +240,7 @@ static int _read_mirror_params(struct lvcreate_params *lp,
 {
 	int argc = *pargc;
 	int region_size;
-	int pagesize = getpagesize();
+	int pagesize = lvm_getpagesize();
 
 	if (argc && (unsigned) argc < lp->mirrors) {
 		log_error("Too few physical volumes on "
@@ -264,7 +255,7 @@ static int _read_mirror_params(struct lvcreate_params *lp,
 		}
 		lp->region_size = 2 * arg_uint_value(cmd, regionsize_ARG, 0);
 	} else {
-		region_size = 2 * find_config_int(cmd->cft->root,
+		region_size = 2 * find_config_tree_int(cmd,
 					"activation/mirror_region_size",
 					DEFAULT_MIRROR_REGION_SIZE);
 		if (region_size < 0) {
@@ -395,7 +386,7 @@ static int _lvcreate_params(struct lvcreate_params *lp, struct cmd_context *cmd,
 	}
 
 	if (activation() && lp->segtype->ops->target_present &&
-	    !lp->segtype->ops->target_present()) {
+	    !lp->segtype->ops->target_present(NULL)) {
 		log_error("%s: Required device-mapper target(s) not "
 			  "detected in your kernel", lp->segtype->name);
 		return 0;
@@ -442,6 +433,10 @@ static int _lvcreate_params(struct lvcreate_params *lp, struct cmd_context *cmd,
 		lp->permission = arg_uint_value(cmd, permission_ARG, 0);
 	else
 		lp->permission = LVM_READ | LVM_WRITE;
+
+	/* Must not zero read only volume */
+	if (!(lp->permission & LVM_WRITE))
+		lp->zero = 0;
 
 	lp->minor = arg_int_value(cmd, minor_ARG, -1);
 	lp->major = arg_int_value(cmd, major_ARG, -1);
@@ -495,6 +490,12 @@ static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 
 	if (!(vg = vg_read(cmd, lp->vg_name, NULL, &consistent))) {
 		log_error("Volume group \"%s\" doesn't exist", lp->vg_name);
+		return 0;
+	}
+
+	if ((vg->status & CLUSTERED) && !locking_is_clustered() &&
+	    !lockingfailed()) {
+		log_error("Skipping clustered volume group %s", lp->vg_name);
 		return 0;
 	}
 
@@ -559,7 +560,30 @@ static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 				  display_size(cmd, tmp_size));
 		}
 
-		lp->extents = tmp_size / vg->extent_size;
+		if (tmp_size > (uint64_t) UINT32_MAX * vg->extent_size) {
+			log_error("Volume too large (%s) for extent size %s. "
+				  "Upper limit is %s.",
+				  display_size(cmd, tmp_size),
+				  display_size(cmd, vg->extent_size),
+				  display_size(cmd, (uint64_t) UINT32_MAX *
+						   vg->extent_size));
+			return 0;
+		}
+		lp->extents = (uint64_t) tmp_size / vg->extent_size;
+	}
+
+	switch(lp->percent) {
+		case PERCENT_VG:
+			lp->extents = lp->extents * vg->extent_count / 100;
+			break;
+		case PERCENT_FREE:
+			lp->extents = lp->extents * vg->free_count / 100;
+			break;
+		case PERCENT_LV:
+			log_error("Please express size as %%VG or %%FREE.");
+			return 0;
+		case PERCENT_NONE:
+			break;
 	}
 
 	if ((size_rest = lp->extents % lp->stripes)) {
@@ -595,13 +619,19 @@ static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 				  "supported yet");
 			return 0;
 		}
+		if (org->status & MIRROR_IMAGE ||
+		    org->status & MIRROR_LOG ||
+		    org->status & MIRRORED) {
+			log_error("Snapshots and mirrors may not yet be mixed.");
+			return 0;
+		}
+ 
 		/* Must zero cow */
 		status |= LVM_WRITE;
 	}
 
 	if (!lp->extents) {
-		log_error("Unable to create logical volume %s with no extents",
-			  lp->lv_name);
+		log_error("Unable to create new logical volume with no extents");
 		return 0;
 	}
 
@@ -668,7 +698,8 @@ static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 			status |= MIRROR_NOTSYNCED;
 		}
 
-		if (!(log_lv = create_mirror_log(cmd, vg, ah, lp->alloc,
+		if (!lp->corelog &&
+		    !(log_lv = create_mirror_log(cmd, vg, ah, lp->alloc,
 						 lv_name, lp->nosync))) {
 			log_error("Failed to create mirror log.");
 			return 0;
@@ -742,18 +773,19 @@ static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 		return 0;
 	}
 
-	if (!activate_lv(cmd, lv)) {
-		if (lp->snapshot)
-			/* FIXME Remove the failed lv we just added */
+	if (lp->snapshot) {
+		if (!activate_lv_excl(cmd, lv)) {
 			log_error("Aborting. Failed to activate snapshot "
 				  "exception store. Remove new LV and retry.");
-		else
-			log_error("Failed to activate new LV.");
+			return 0;
+		}
+	} else if (!activate_lv(cmd, lv)) {
+		log_error("Failed to activate new LV.");
 		return 0;
 	}
 
 	if ((lp->zero || lp->snapshot) && activation()) {
-		if (!set_lv(cmd, lv, 0) && lp->snapshot) {
+		if (!set_lv(cmd, lv, 0, 0) && lp->snapshot) {
 			/* FIXME Remove the failed lv we just added */
 			log_error("Aborting. Failed to wipe snapshot "
 				  "exception store. Remove new LV and retry.");
@@ -768,10 +800,8 @@ static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 		/* Reset permission after zeroing */
 		if (!(lp->permission & LVM_WRITE))
 			lv->status &= ~LVM_WRITE;
-		if (!deactivate_lv(cmd, lv)) {
-			log_err("Couldn't deactivate new snapshot.");
-			return 0;
-		}
+
+		/* cow LV remains active and becomes snapshot LV */
 
 		if (!vg_add_snapshot(vg->fid, NULL, org, lv, NULL,
 				     org->le_count, lp->chunk_size)) {

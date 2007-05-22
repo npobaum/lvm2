@@ -1,3 +1,90 @@
+lvm2 (2.02.24-6ubuntu1) gutsy; urgency=low
+
+  * Merge from debian unstable, remaining changes:
+    - tighter build-depends on libccs-dev, libcman-dev & libdlm-dev
+    - scan and activate new volumes whenever udev detects a new block device
+      containing LVM metadata.
+    - compile with -fno-stack-protector
+    - copy lvm2.po to lvm2.pot for Rosetta
+    - clvm depends on cman, rather than suggests, and don't support fence
+    - init script for clvm
+
+  * Turns out that doing merges dependency-first isn't necessarily the right
+    way; this package replaces lvm-common!  So merge changes I just made
+    there to here:
+    - remove the init script, since it clashes with our udev rules
+    - make initramfs hook prereq on udev
+    - copy the lvm binary and udev rules across
+    - load the dm-mod, dm-snapshot and dm-mirror modules
+  * Depend on both udev and initramfs-tools
+
+ -- Scott James Remnant <scott@ubuntu.com>  Tue, 22 May 2007 12:43:07 +0100
+
+lvm2 (2.02.24-6) unstable; urgency=low
+
+  * Also replace lvm-common.
+
+ -- Bastian Blank <waldi@debian.org>  Wed, 11 Apr 2007 20:40:39 +0000
+
+lvm2 (2.02.24-5) unstable; urgency=low
+
+  * Install correct files in initramfs-tools hook. (closes: #418652, #418661)
+
+ -- Bastian Blank <waldi@debian.org>  Wed, 11 Apr 2007 05:43:40 +0000
+
+lvm2 (2.02.24-4) unstable; urgency=low
+
+  * Make initramfs-tools hook also executable.
+
+ -- Bastian Blank <waldi@debian.org>  Tue, 10 Apr 2007 09:01:33 +0000
+
+lvm2 (2.02.24-3) unstable; urgency=low
+
+  * Make initramfs-tools script executable. (closes: #418490)
+
+ -- Bastian Blank <waldi@debian.org>  Tue, 10 Apr 2007 08:35:09 +0000
+
+lvm2 (2.02.24-2) unstable; urgency=low
+
+  * Really add init script.
+  * Remove old code from maintainer scripts.
+
+ -- Bastian Blank <waldi@debian.org>  Tue, 10 Apr 2007 08:02:39 +0000
+
+lvm2 (2.02.24-1) unstable; urgency=low
+
+  * Add initramfs-tools hooks.
+  * New upstream version.
+  * Remove O_NOATIME hack.
+  * Remove lvm2create_initrd. (closes: #417938)
+  * Deprecate lvm-common.
+
+ -- Bastian Blank <waldi@debian.org>  Mon,  9 Apr 2007 18:58:57 +0000
+
+lvm2 (2.02.06-4) unstable; urgency=low
+
+  * Update translations.
+    - Norwegian Bokmål (closes: #393191)
+    - German (closes: #396268)
+    - Galician (closes: #411832)
+    - Swedish
+
+ -- Bastian Blank <waldi@debian.org>  Tue, 27 Feb 2007 18:53:04 +0000
+
+lvm2 (2.02.06-3) unstable; urgency=low
+
+  * Update translations. (closes: #349843)
+    - Vietnamese
+    - Swedish
+    - French
+    - Czech
+    - Dutch
+    - Portuguese
+    - Catalan
+  * Use error debconf template.
+
+ -- Bastian Blank <waldi@debian.org>  Sun, 15 Oct 2006 12:05:01 +0000
+
 lvm2 (2.02.06-2ubuntu9) feisty; urgency=low
 
   * Remove the call to vgck on the creation of devmapper devices; this

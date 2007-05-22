@@ -50,11 +50,17 @@
 static struct cmd_context *cmd = NULL;
 static struct dm_hash_table *lv_hash = NULL;
 static pthread_mutex_t lv_hash_lock;
+static char last_error[1024];
 
 struct lv_info {
 	int lock_id;
 	int lock_mode;
 };
+
+char *get_last_lvm_error()
+{
+	return last_error;
+}
 
 /* Return the mode a lock is currently held at (or -1 if not held) */
 static int get_current_lock(char *resource)
@@ -201,8 +207,17 @@ static int do_activate_lv(char *resource, unsigned char lock_flags, int mode)
 	/* Try to get the lock if it's a clustered volume group */
 	if (lock_flags & LCK_CLUSTER_VG) {
 		status = hold_lock(resource, mode, LKF_NOQUEUE);
-		if (status)
+		if (status) {
+			/* Return an LVM-sensible error for this.
+			 * Forcing EIO makes the upper level return this text
+			 * rather than the strerror text for EAGAIN.
+			 */
+			if (errno == EAGAIN) {
+				sprintf(last_error, "Volume is busy on another node");
+				errno = EIO;
+			}
 			return errno;
+		}
 	}
 
 	/* If it's suspended then resume it */
@@ -228,7 +243,7 @@ static int do_resume_lv(char *resource)
 	/* Is it open ? */
 	oldmode = get_current_lock(resource);
 	if (oldmode == -1) {
-		DEBUGLOG("do_deactivate_lock, lock not already held\n");
+		DEBUGLOG("do_resume_lv, lock not already held\n");
 		return 0;	/* We don't need to do anything */
 	}
 
@@ -310,8 +325,8 @@ int do_lock_lv(unsigned char command, unsigned char lock_flags, char *resource)
 	if (lock_flags & LCK_MIRROR_NOSYNC_MODE)
 		init_mirror_in_sync(1);
 
-	if (!(lock_flags & LCK_DMEVENTD_REGISTER_MODE))
-		init_dmeventd_register(0);
+	if (!(lock_flags & LCK_DMEVENTD_MONITOR_MODE))
+		init_dmeventd_monitor(0);
 
 	switch (command) {
 	case LCK_LV_EXCLUSIVE:
@@ -347,8 +362,8 @@ int do_lock_lv(unsigned char command, unsigned char lock_flags, char *resource)
 	if (lock_flags & LCK_MIRROR_NOSYNC_MODE)
 		init_mirror_in_sync(0);
 
-	if (!(lock_flags & LCK_DMEVENTD_REGISTER_MODE))
-		init_dmeventd_register(DEFAULT_DMEVENTD_MONITOR);
+	if (!(lock_flags & LCK_DMEVENTD_MONITOR_MODE))
+		init_dmeventd_monitor(DEFAULT_DMEVENTD_MONITOR);
 
 	/* clean the pool for another command */
 	dm_pool_empty(cmd->mem);
@@ -416,6 +431,13 @@ int do_check_lvm1(char *vgname)
 	return status == 1 ? 0 : EBUSY;
 }
 
+int do_refresh_cache()
+{
+	DEBUGLOG("Refreshing context\n");
+	log_notice("Refreshing context");
+	return refresh_toolcontext(cmd)==1?0:-1;
+}
+
 
 /* Only called at gulm startup. Drop any leftover VG or P_orphan locks
    that might be hanging around if we died for any reason
@@ -451,7 +473,8 @@ static void drop_vg_locks()
 		sync_unlock(vg, LCK_EXCL);
 
 	}
-	fclose(vgs);
+	if (fclose(vgs))
+		DEBUGLOG("vgs fclose failed: %s\n", strerror(errno));
 }
 
 /*
@@ -501,8 +524,23 @@ static void *get_initial_state()
 			}
 		}
 	}
-	fclose(lvs);
+	if (fclose(lvs))
+		DEBUGLOG("lvs fclose failed: %s\n", strerror(errno));
 	return NULL;
+}
+
+static void lvm2_log_fn(int level, const char *file, int line,
+			const char *message)
+{
+	/*
+	 * Ignore non-error messages, but store the latest one for returning 
+	 * to the user.
+	 */
+	if (level != _LOG_ERR && level != _LOG_FATAL)
+		return;
+
+	strncpy(last_error, message, sizeof(last_error));
+	last_error[sizeof(last_error)-1] = '\0';
 }
 
 /* This checks some basic cluster-LVM configuration stuff */
@@ -510,7 +548,7 @@ static void check_config()
 {
 	int locking_type;
 
-	locking_type = find_config_int(cmd->cft->root, "global/locking_type", 1);
+	locking_type = find_config_tree_int(cmd, "global/locking_type", 1);
 
 	if (locking_type == 3) /* compiled-in cluster support */
 		return;
@@ -518,7 +556,7 @@ static void check_config()
 	if (locking_type == 2) { /* External library, check name */
 		const char *libname;
 
-		libname = find_config_str(cmd->cft->root, "global/locking_library",
+		libname = find_config_tree_str(cmd, "global/locking_library",
 					  "");
 		if (strstr(libname, "liblvm2clusterlock.so"))
 			return;
@@ -539,7 +577,7 @@ void init_lvhash()
 /* Called to initialise the LVM context of the daemon */
 int init_lvm(int using_gulm)
 {
-	if (!(cmd = create_toolcontext(NULL))) {
+	if (!(cmd = create_toolcontext(NULL, 0, 1))) {
 		log_error("Failed to allocate command context");
 		return 0;
 	}
@@ -556,6 +594,9 @@ int init_lvm(int using_gulm)
 		drop_vg_locks();
 
 	get_initial_state();
+
+	/* Trap log messages so we can pass them back to the user */
+	init_log_fn(lvm2_log_fn);
 
 	return 1;
 }

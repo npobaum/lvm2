@@ -9,6 +9,8 @@ vgchange \- change attributes of a volume group
 .IR AllocationPolicy ]
 .RB [ \-A | \-\-autobackup " {" y | n }]
 .RB [ \-a | \-\-available " [e|l] {" y | n }]
+.RB [ \-\-monitor " {" y | n }]
+.RB [ \-c | \-\-clustered " {" y | n }]
 .RB [ \-d | \-\-debug]
 .RB [ \-\-deltag
 .IR Tag ]
@@ -16,6 +18,8 @@ vgchange \- change attributes of a volume group
 .RB [ \-\-ignorelockingfailure]
 .RB [ \-l | \-\-logicalvolume
 .IR MaxLogicalVolumes ]
+.RB [ -p | \-\-maxphysicalvolumes
+.IR MaxPhysicalVolumes ]
 .RB [ \-P | \-\-partial]
 .RB [ \-s | \-\-physicalextentsize
 .IR PhysicalExtentSize [ \fBkKmMgGtT\fR ]]
@@ -41,12 +45,12 @@ snapshots should be removed (see
 .SH OPTIONS
 See \fBlvm\fP for common options.
 .TP
-.BR \-A ", " \-\-autobackup { y | n }
+.BR \-A ", " \-\-autobackup " " { y | n }
 Controls automatic backup of metadata after the change.  See
 .B vgcfgbackup (8).
 Default is yes.
 .TP
-.BR \-a ", " \-\-available [e|l] { y | n }
+.BR \-a ", " \-\-available " " [e|l] { y | n }
 Controls the availability of the logical volumes in the volume 
 group for input/output.
 In other words, makes the logical volumes known/unknown to the kernel.
@@ -57,9 +61,40 @@ on the local node.
 Logical volumes with single-host snapshots are always activated
 exclusively because they can only be used on one node at once.
 .TP
+.BR \-c ", " \-\-clustered " " { y | n }
+If clustered locking is enabled, this indicates whether this
+Volume Group is shared with other nodes in the cluster or whether
+it contains only local disks that are not visible on the other nodes.
+If the cluster infrastructure is unavailable on a particular node at a
+particular time, you may still be able to use Volume Groups that
+are not marked as clustered.
+.TP
+.BR \-\-monitor " " { y | n }
+Controls whether or not a mirrored logical volume is monitored by
+dmeventd, if it is installed.
+If a device used by a monitored mirror reports an I/O error,
+the failure is handled according to 
+.BR mirror_image_fault_policy
+and 
+.BR mirror_log_fault_policy
+set in 
+.BR lvm.conf (5).
+.TP
 .BR \-l ", " \-\-logicalvolume " " \fIMaxLogicalVolumes\fR
 Changes the maximum logical volume number of an existing inactive
 volume group.
+.TP
+.BR \-p ", " \-\-maxphysicalvolumes " " \fIMaxPhysicalVolumes\fR
+Changes the maximum number of physical volumes that can belong
+to this volume group.
+For volume groups with metadata in lvm1 format, the limit is 255.
+If the metadata uses lvm2 format, the value 0
+removes this restriction: there is then no limit.
+If you have a large number of physical volumes in
+a volume group with metadata in lvm2 format,
+for tool performance reasons, you should consider
+some use of \fB--metadatacopies 0\fP
+as described in \fBpvcreate(8)\fP.
 .TP
 .BR \-s ", " \-\-physicalextentsize " " \fIPhysicalExtentSize\fR[\fBkKmMgGtT\fR]
 Changes the physical extent size on physical volumes of this volume group.
@@ -82,7 +117,7 @@ impact on I/O performance to the logical volume.  The smallest PE is 1KB.
  
 The 2.4 kernel has a limitation of 2TB per block device.
 .TP
-.BR \-x ", " \-\-resizeable { y | n }
+.BR \-x ", " \-\-resizeable " " { y | n }
 Enables or disables the extension/reduction of this volume group
 with/by physical volumes.
 .SH EXAMPLES

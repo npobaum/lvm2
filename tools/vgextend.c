@@ -32,12 +32,18 @@ int vgextend(struct cmd_context *cmd, int argc, char **argv)
 		return EINVALID_CMD_LINE;
 	}
 
-	vg_name = argv[0];
+	vg_name = skip_dev_dir(cmd, argv[0], NULL);
 	argc--;
 	argv++;
 
 	if (!lock_vol(cmd, ORPHAN, LCK_VG_WRITE)) {
 		log_error("Can't get lock for orphan PVs");
+		return ECMD_FAILED;
+	}
+
+	if (!validate_name(vg_name)) {
+		log_error("Volume group name \"%s\" is invalid",
+			  vg_name);
 		return ECMD_FAILED;
 	}
 
@@ -50,6 +56,12 @@ int vgextend(struct cmd_context *cmd, int argc, char **argv)
 
 	if (!(vg = vg_read(cmd, vg_name, NULL, &consistent)) || !consistent) {
 		log_error("Volume group \"%s\" not found.", vg_name);
+		goto error;
+	}
+
+	if ((vg->status & CLUSTERED) && !locking_is_clustered() &&
+	    !lockingfailed()) {
+		log_error("Skipping clustered volume group %s", vg->name);
 		goto error;
 	}
 

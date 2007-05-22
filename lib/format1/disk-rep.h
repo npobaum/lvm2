@@ -148,7 +148,7 @@ struct pe_disk {
 
 struct uuid_list {
 	struct list list;
-	char uuid[NAME_LEN];
+	char uuid[NAME_LEN] __attribute((aligned(8)));
 };
 
 struct lvd_list {
@@ -161,17 +161,18 @@ struct disk_list {
 	struct dm_pool *mem;
 	struct device *dev;
 
-	struct pv_disk pvd;
-	struct vg_disk vgd;
-	struct list uuids;
-	struct list lvds;
-	struct pe_disk *extents;
+	struct pv_disk pvd __attribute((aligned(8)));
+	struct vg_disk vgd __attribute((aligned(8)));
+	struct list uuids __attribute((aligned(8)));
+	struct list lvds __attribute((aligned(8)));
+	struct pe_disk *extents __attribute((aligned(8)));
 };
 
 /*
  * Layout constants.
  */
 #define METADATA_ALIGN 4096UL
+#define LVM1_PE_ALIGN (65536UL >> SECTOR_SHIFT)      /* PE alignment */
 
 #define	METADATA_BASE 0UL
 #define	PV_SIZE 1024UL
@@ -202,8 +203,8 @@ int write_disks(const struct format_type *fmt, struct list *pvds);
  * Functions to translate to between disk and in
  * core structures.
  */
-int import_pv(struct dm_pool *mem, struct device *dev,
-	      struct volume_group *vg,
+int import_pv(const struct format_type *fmt, struct dm_pool *mem,
+	      struct device *dev, struct volume_group *vg,
 	      struct physical_volume *pv, struct pv_disk *pvd,
 	      struct vg_disk *vgd);
 int export_pv(struct cmd_context *cmd, struct dm_pool *mem,

@@ -32,6 +32,7 @@ static int _partial = 0;
 static int _md_filtering = 0;
 static int _pvmove = 0;
 static int _full_scan_done = 0;	/* Restrict to one full scan during each cmd */
+static int _trust_cache = 0; /* Don't scan when incomplete VGs encountered */
 static int _debug_level = 0;
 static int _syslog = 0;
 static int _log_to_file = 0;
@@ -47,7 +48,8 @@ static char _cmd_name[30] = "";
 static char _msg_prefix[30] = "  ";
 static int _already_logging = 0;
 static int _mirror_in_sync = 0;
-static int _dmeventd_register = DEFAULT_DMEVENTD_MONITOR;
+static int _dmeventd_monitor = DEFAULT_DMEVENTD_MONITOR;
+static int _ignore_suspended_devices = 0;
 
 static lvm2_log_fn_t _lvm2_log_fn = NULL;
 
@@ -119,7 +121,8 @@ void fin_log(void)
 	}
 
 	if (_log_to_file) {
-		fclose(_log_file);
+		if (fclose(_log_file))
+			fprintf(stderr, "fclose() on log file failed: %s", strerror(errno));
 		_log_to_file = 0;
 	}
 }
@@ -163,6 +166,11 @@ void init_full_scan_done(int level)
 	_full_scan_done = level;
 }
 
+void init_trust_cache(int trustcache)
+{
+	_trust_cache = trustcache;
+}
+
 void init_ignorelockingfailure(int level)
 {
 	_ignorelockingfailure = level;
@@ -183,9 +191,14 @@ void init_mirror_in_sync(int in_sync)
 	_mirror_in_sync = in_sync;
 }
 
-void init_dmeventd_register(int reg)
+void init_dmeventd_monitor(int reg)
 {
-	_dmeventd_register = reg;
+	_dmeventd_monitor = reg;
+}
+
+void init_ignore_suspended_devices(int ignore)
+{
+	_ignore_suspended_devices = ignore;
 }
 
 void init_cmd_name(int status)
@@ -237,6 +250,11 @@ int full_scan_done()
 	return _full_scan_done;
 }
 
+int trust_cache()
+{
+	return _trust_cache;
+}
+
 int lockingfailed()
 {
 	return _lockingfailed;
@@ -257,9 +275,14 @@ int mirror_in_sync(void)
 	return _mirror_in_sync;
 }
 
-int dmeventd_register_mode(void)
+int dmeventd_monitor_mode(void)
 {
-	return _dmeventd_register;
+	return _dmeventd_monitor;
+}
+
+int ignore_suspended_devices(void)
+{
+	return _ignore_suspended_devices;
 }
 
 void init_debug(int level)
@@ -307,7 +330,7 @@ void print_log(int level, const char *file, int line, const char *format, ...)
       log_it:
 	if (!_log_suppress) {
 		if (_verbose_level > _LOG_DEBUG)
-			lvm_snprintf(locn, sizeof(locn), "#%s:%d ",
+			dm_snprintf(locn, sizeof(locn), "#%s:%d ",
 				     file, line);
 		else
 			locn[0] = '\0';
@@ -402,7 +425,7 @@ void print_log(int level, const char *file, int line, const char *format, ...)
 		_already_logging = 1;
 		memset(&buf, ' ', sizeof(buf));
 		bufused = 0;
-		if ((n = lvm_snprintf(buf, sizeof(buf) - bufused - 1,
+		if ((n = dm_snprintf(buf, sizeof(buf) - bufused - 1,
 				      "%s:%d %s%s", file, line, _cmd_name,
 				      _msg_prefix)) == -1)
 			goto done;

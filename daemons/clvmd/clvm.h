@@ -63,4 +63,8 @@ static const char CLVMD_SOCKNAME[] = "\0clvmd";
 #define CLVMD_CMD_LOCK_LV           50
 #define CLVMD_CMD_LOCK_VG           51
 
+/* Misc functions */
+#define CLVMD_CMD_REFRESH	    40
+#define CLVMD_CMD_GET_CLUSTERNAME   41
+
 #endif

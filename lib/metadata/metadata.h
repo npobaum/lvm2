@@ -29,12 +29,12 @@
 #define MAX_STRIPES 128U
 #define SECTOR_SHIFT 9L
 #define SECTOR_SIZE ( 1L << SECTOR_SHIFT )
-#define STRIPE_SIZE_MIN ( (unsigned) getpagesize() >> SECTOR_SHIFT)	/* PAGESIZE in sectors */
+#define STRIPE_SIZE_MIN ( (unsigned) lvm_getpagesize() >> SECTOR_SHIFT)	/* PAGESIZE in sectors */
 #define STRIPE_SIZE_MAX ( 512L * 1024L >> SECTOR_SHIFT)	/* 512 KB in sectors */
 #define STRIPE_SIZE_LIMIT ((UINT_MAX >> 2) + 1)
 #define PV_MIN_SIZE ( 512L * 1024L >> SECTOR_SHIFT)	/* 512 KB in sectors */
-#define PE_ALIGN (65536UL >> SECTOR_SHIFT)	/* PE alignment */
 #define MAX_RESTRICTED_LVS 255	/* Used by FMT_RESTRICTED_LVIDS */
+#define MIRROR_LOG_SIZE 1	/* Extents */
 
 /* Various flags */
 /* Note that the bits no longer necessarily correspond to LVM1 disk format */
@@ -78,16 +78,18 @@
 #define FMT_RESIZE_PV		0x00000080U	/* Supports pvresize? */
 #define FMT_UNLIMITED_STRIPESIZE 0x00000100U	/* Unlimited stripe size? */
 
+/* Ordered list - see lv_manip.c */
 typedef enum {
-	ALLOC_INVALID = 0,
-	ALLOC_INHERIT,
+	ALLOC_INVALID,
 	ALLOC_CONTIGUOUS,
+	ALLOC_CLING,
 	ALLOC_NORMAL,
-	ALLOC_ANYWHERE
+	ALLOC_ANYWHERE,
+	ALLOC_INHERIT
 } alloc_policy_t;
 
 typedef enum {
-	AREA_UNASSIGNED = 0,
+	AREA_UNASSIGNED,
 	AREA_PV,
 	AREA_LV
 } area_type_t;
@@ -283,11 +285,8 @@ struct logical_volume {
 	uint32_t read_ahead;
 	int32_t major;
 	int32_t minor;
-	uid_t uid;
-	gid_t gid;
-	mode_t mode;
 
-	uint64_t size;
+	uint64_t size;		/* Sectors */
 	uint32_t le_count;
 
 	uint32_t origin_count;
@@ -406,6 +405,7 @@ struct format_handler {
 /*
  * Utility functions
  */
+unsigned long pe_align(void);
 int vg_validate(struct volume_group *vg);
 int vg_write(struct volume_group *vg);
 int vg_commit(struct volume_group *vg);
@@ -423,6 +423,7 @@ struct list *get_vgids(struct cmd_context *cmd, int full_scan);
 
 int pv_write(struct cmd_context *cmd, struct physical_volume *pv,
 	     struct list *mdas, int64_t label_sector);
+int pv_write_orphan(struct cmd_context *cmd, struct physical_volume *pv);
 
 /* pe_start and pe_end relate to any existing data so that new metadata
  * areas can avoid overlap */

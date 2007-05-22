@@ -76,6 +76,8 @@ int process_each_lv_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 
 char *default_vgname(struct cmd_context *cmd);
 const char *extract_vgname(struct cmd_context *cmd, const char *lv_name);
+char *skip_dev_dir(struct cmd_context *cmd, const char *vg_name,
+		   unsigned *dev_dir_found);
 
 /*
  * Builds a list of pv's from the names in argv.  Used in
@@ -100,6 +102,7 @@ struct logical_volume *create_mirror_log(struct cmd_context *cmd,
 					 const char *lv_name,
 					 int in_sync);
 
-int set_lv(struct cmd_context *cmd, struct logical_volume *lv, int value);
+int set_lv(struct cmd_context *cmd, struct logical_volume *lv,
+	   uint64_t sectors, int value);
 
 #endif
