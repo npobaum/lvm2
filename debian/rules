@@ -137,6 +137,7 @@ binary-arch: build install
 #	dh_installpam -a
 #	dh_installmime -a
 	#dh_installinit -plvm2 --no-start -- start 26 S . start 50 0 6 .
+	dh_installinit -p clvm --no-restart-on-upgrade -- start 65 S . start 3 0 6 .
 	dh_installudev -a --priority=85
 #	dh_installcron -a
 #	dh_installman -a
