@@ -13,6 +13,16 @@ fi
 
 [ -n "$CLVMDTIMEOUT" ] || CLVMDTIMEOUT=60
 
+if [ ! -f /etc/cluster/cluster.conf ]; then
+	echo "clvmd: cluster not configured. Aborting."
+	exit 0
+fi
+
+if ! cman_tool status >/dev/null; then
+	echo "clvmd: cluster is not running. Aborting."
+	exit 0
+fi
+
 set -e
 
 wait_for_nodes() {
@@ -35,20 +45,22 @@ wait_for_nodes() {
 case "$1" in
   start)
 	echo -n "Starting $DESC "
-	start-stop-daemon --start --quiet --exec $DAEMON -- $DAEMON_OPTS
-	wait_for_nodes
+	if start-stop-daemon --start --quiet --exec $DAEMON -- $DAEMON_OPTS; then
+		wait_for_nodes
+	fi
 	;;
   stop)
 	echo -n "Stopping $DESC "
-	start-stop-daemon --stop --quiet --exec $DAEMON
+	start-stop-daemon --stop --oknodo --quiet --exec $DAEMON
 	echo "done."
 	;;
   reload|restart|force-reload)
 	echo -n "Restarting $DESC "
-	start-stop-daemon --stop --quiet --exec $DAEMON
+	start-stop-daemon --stop --oknodo --quiet --exec $DAEMON
 	sleep 1
-	start-stop-daemon --start --quiet --exec $DAEMON -- $DAEMON_OPTS
-	wait_for_nodes
+	if start-stop-daemon --start --oknodo --quiet --exec $DAEMON -- $DAEMON_OPTS; then
+		wait_for_nodes
+	fi
 	;;
   *)
 	N=/etc/init.d/$NAME
