@@ -1,3 +1,12 @@
+lvm2 (2.02.24-6ubuntu3) gutsy; urgency=low
+
+  * Drop libccs-dev Build-Dep:
+    - it was only required for gulm locking (dead since edgy).
+    - HAVE_CCS has not been set for a while and ccs support never built since
+      it was useful only for gulm.
+
+ -- Fabio M. Di Nitto <fabbione@ubuntu.com>  Mon, 11 Jun 2007 12:03:35 +0200
+
 lvm2 (2.02.24-6ubuntu2) gutsy; urgency=low
 
   * Readd clvm init script.
