@@ -31,7 +31,7 @@ static void _pvscan_display_single(struct cmd_context *cmd,
 
 	/* short listing? */
 	if (arg_count(cmd, short_ARG) > 0) {
-		log_print("%s", dev_name(pv->dev));
+		log_print("%s", dev_name(get_pv_dev(pv)));
 		return;
 	}
 
@@ -48,7 +48,7 @@ static void _pvscan_display_single(struct cmd_context *cmd,
 
 	memset(pv_tmp_name, 0, sizeof(pv_tmp_name));
 
-	vg_name_len = strlen(pv->vg_name) + 1;
+	vg_name_len = strlen(get_pv_vg_name(pv)) + 1;
 
 	if (arg_count(cmd, uuid_ARG)) {
 		if (!id_write_format(&pv->id, uuid, sizeof(uuid))) {
@@ -57,42 +57,43 @@ static void _pvscan_display_single(struct cmd_context *cmd,
 		}
 
 		sprintf(pv_tmp_name, "%-*s with UUID %s",
-			pv_max_name_len - 2, dev_name(pv->dev), uuid);
+			pv_max_name_len - 2, dev_name(get_pv_dev(pv)), uuid);
 	} else {
-		sprintf(pv_tmp_name, "%s", dev_name(pv->dev));
+		sprintf(pv_tmp_name, "%s", dev_name(get_pv_dev(pv)));
 	}
 
-	if (!*pv->vg_name) {
+	if (!*get_pv_vg_name(pv)) {
 		log_print("PV %-*s    %-*s %s [%s]",
 			  pv_max_name_len, pv_tmp_name,
 			  vg_max_name_len, " ",
 			  pv->fmt ? pv->fmt->name : "    ",
-			  display_size(cmd, pv->size));
+			  display_size(cmd, get_pv_size(pv)));
 		return;
 	}
 
-	if (pv->status & EXPORTED_VG) {
-		strncpy(vg_name_this, pv->vg_name, vg_name_len);
+	if (get_pv_status(pv) & EXPORTED_VG) {
+		strncpy(vg_name_this, get_pv_vg_name(pv), vg_name_len);
 		log_print("PV %-*s  is in exported VG %s "
 			  "[%s / %s free]",
 			  pv_max_name_len, pv_tmp_name,
 			  vg_name_this,
-			  display_size(cmd, (uint64_t) pv->pe_count *
-				       pv->pe_size),
-			  display_size(cmd, (uint64_t) (pv->pe_count -
-							pv->pe_alloc_count)
-				       * pv->pe_size));
+			  display_size(cmd, (uint64_t) get_pv_pe_count(pv) *
+				       get_pv_pe_size(pv)),
+			  display_size(cmd, (uint64_t) (get_pv_pe_count(pv) -
+						get_pv_pe_alloc_count(pv))
+				       * get_pv_pe_size(pv)));
 		return;
 	}
 
-	sprintf(vg_tmp_name, "%s", pv->vg_name);
+	sprintf(vg_tmp_name, "%s", get_pv_vg_name(pv));
 	log_print("PV %-*s VG %-*s %s [%s / %s free]", pv_max_name_len,
 		  pv_tmp_name, vg_max_name_len, vg_tmp_name,
 		  pv->fmt ? pv->fmt->name : "    ",
-		  display_size(cmd, (uint64_t) pv->pe_count * pv->pe_size),
-		  display_size(cmd,
-			       (uint64_t) (pv->pe_count - pv->pe_alloc_count) *
-					   pv->pe_size));
+		  display_size(cmd, (uint64_t) get_pv_pe_count(pv) * 
+					       get_pv_pe_size(pv)),
+		  display_size(cmd, (uint64_t) (get_pv_pe_count(pv) - 
+						get_pv_pe_alloc_count(pv)) *
+					   get_pv_pe_size(pv)));
 	return;
 }
 
@@ -135,8 +136,8 @@ int pvscan(struct cmd_context *cmd, int argc __attribute((unused)),
 		pv = pvl->pv;
 
 		if ((arg_count(cmd, exported_ARG)
-		     && !(pv->status & EXPORTED_VG))
-		    || (arg_count(cmd, novolumegroup_ARG) && (*pv->vg_name))) {
+		     && !(get_pv_status(pv) & EXPORTED_VG))
+		    || (arg_count(cmd, novolumegroup_ARG) && (*get_pv_vg_name(pv)))) {
 			list_del(&pvl->list);
 			continue;
 		}
@@ -153,22 +154,22 @@ int pvscan(struct cmd_context *cmd, int argc __attribute((unused)),
 ********/
 		pvs_found++;
 
-		if (!*pv->vg_name) {
+		if (!*get_pv_vg_name(pv)) {
 			new_pvs_found++;
-			size_new += pv->size;
-			size_total += pv->size;
+			size_new += get_pv_size(pv);
+			size_total += get_pv_size(pv);
 		} else
-			size_total += pv->pe_count * pv->pe_size;
+			size_total += get_pv_pe_count(pv) * get_pv_pe_size(pv);
 	}
 
 	/* find maximum pv name length */
 	pv_max_name_len = vg_max_name_len = 0;
 	list_iterate_items(pvl, pvslist) {
 		pv = pvl->pv;
-		len = strlen(dev_name(pv->dev));
+		len = strlen(dev_name(get_pv_dev(pv)));
 		if (pv_max_name_len < len)
 			pv_max_name_len = len;
-		len = strlen(pv->vg_name);
+		len = strlen(get_pv_vg_name(pv));
 		if (vg_max_name_len < len)
 			vg_max_name_len = len;
 	}

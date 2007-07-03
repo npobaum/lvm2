@@ -19,12 +19,16 @@
 #include "device.h"
 #include "str_list.h"
 #include "toolcontext.h"
+#include "lvm-string.h"
 
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <ctype.h>
+
+#define SECTION_B_CHAR '{'
+#define SECTION_E_CHAR '}'
 
 enum {
 	TOK_INT,
@@ -79,7 +83,8 @@ static const int sep = '/';
 
 #define match(t) do {\
    if (!_match_aux(p, (t))) {\
-	log_error("Parse error at byte %d (line %d): unexpected token", p->tb - p->fb + 1, p->line); \
+	log_error("Parse error at byte %" PRIptrdiff_t " (line %d): unexpected token", \
+		  p->tb - p->fb + 1, p->line); \
       return 0;\
    } \
 } while(0);
@@ -183,7 +188,7 @@ int read_config_fd(struct config_tree *cft, struct device *dev,
 	int r = 0;
 	int use_mmap = 1;
 	off_t mmap_offset = 0;
-	char *buf;
+	char *buf = NULL;
 
 	if (!(p = dm_pool_alloc(c->mem, sizeof(*p)))) {
 		stack;
@@ -210,17 +215,9 @@ int read_config_fd(struct config_tree *cft, struct device *dev,
 			stack;
 			return 0;
 		}
-		if (!dev_read(dev, (uint64_t) offset, size, buf)) {
-			log_error("Read from %s failed", dev_name(dev));
+		if (!dev_read_circular(dev, (uint64_t) offset, size,
+				       (uint64_t) offset2, size2, buf)) {
 			goto out;
-		}
-		if (size2) {
-			if (!dev_read(dev, (uint64_t) offset2, size2,
-				      buf + size)) {
-				log_error("Circular read from %s failed",
-					  dev_name(dev));
-				goto out;
-			}
 		}
 		p->fb = buf;
 	}
@@ -360,7 +357,7 @@ static void _write_value(FILE *fp, struct config_value *v)
 		break;
 
 	case CFG_INT:
-		fprintf(fp, "%d", v->v.i);
+		fprintf(fp, "%" PRId64, v->v.i);
 		break;
 
 	case CFG_EMPTY_ARRAY:
@@ -482,7 +479,7 @@ static struct config_node *_file(struct parser *p)
 
 static struct config_node *_section(struct parser *p)
 {
-	/* IDENTIFIER '{' VALUE* '}' */
+	/* IDENTIFIER SECTION_B_CHAR VALUE* SECTION_E_CHAR */
 	struct config_node *root, *n, *l = NULL;
 	if (!(root = _create_node(p))) {
 		stack;
@@ -571,7 +568,7 @@ static struct config_value *_type(struct parser *p)
 	switch (p->t) {
 	case TOK_INT:
 		v->type = CFG_INT;
-		v->v.i = strtol(p->tb, NULL, 0);	/* FIXME: check error */
+		v->v.i = strtoll(p->tb, NULL, 0);	/* FIXME: check error */
 		match(TOK_INT);
 		break;
 
@@ -594,7 +591,8 @@ static struct config_value *_type(struct parser *p)
 		break;
 
 	default:
-		log_error("Parse error at byte %d (line %d): expected a value", p->tb - p->fb + 1, p->line);
+		log_error("Parse error at byte %" PRIptrdiff_t " (line %d): expected a value",
+			  p->tb - p->fb + 1, p->line);
 		return 0;
 	}
 	return v;
@@ -631,12 +629,12 @@ static void _get_token(struct parser *p, int tok_prev)
 	p->t = TOK_INT;		/* fudge so the fall through for
 				   floats works */
 	switch (*p->te) {
-	case '{':
+	case SECTION_B_CHAR:
 		p->t = TOK_SECTION_B;
 		p->te++;
 		break;
 
-	case '}':
+	case SECTION_E_CHAR:
 		p->t = TOK_SECTION_E;
 		p->te++;
 		break;
@@ -716,8 +714,9 @@ static void _get_token(struct parser *p, int tok_prev)
 	default:
 		p->t = TOK_IDENTIFIER;
 		while ((p->te != p->fe) && (*p->te) && !isspace(*p->te) &&
-		       (*p->te != '#') && (*p->te != '=') && (*p->te != '{') &&
-		       (*p->te != '}'))
+		       (*p->te != '#') && (*p->te != '=') &&
+		       (*p->te != SECTION_B_CHAR) &&
+		       (*p->te != SECTION_E_CHAR))
 			p->te++;
 		break;
 	}
@@ -872,25 +871,26 @@ const char *find_config_str(const struct config_node *cn,
 	return _find_config_str(cn, NULL, path, fail);
 }
 
-static int _find_config_int(const struct config_node *cn1,
-			    const struct config_node *cn2,
-			    const char *path, int fail)
+static int64_t _find_config_int64(const struct config_node *cn1,
+				  const struct config_node *cn2,
+				  const char *path, int64_t fail)
 {
 	const struct config_node *n = _find_first_config_node(cn1, cn2, path);
 
 	if (n && n->v && n->v->type == CFG_INT) {
-		log_very_verbose("Setting %s to %d", path, n->v->v.i);
+		log_very_verbose("Setting %s to %" PRId64, path, n->v->v.i);
 		return n->v->v.i;
 	}
 
-	log_very_verbose("%s not found in config: defaulting to %d",
+	log_very_verbose("%s not found in config: defaulting to %" PRId64,
 			 path, fail);
 	return fail;
 }
 
 int find_config_int(const struct config_node *cn, const char *path, int fail)
 {
-	return _find_config_int(cn, NULL, path, fail);
+	/* FIXME Add log_error message on overflow */
+	return (int) _find_config_int64(cn, NULL, path, (int64_t) fail);
 }
 
 static float _find_config_float(const struct config_node *cn1,
@@ -932,7 +932,8 @@ const char *find_config_tree_str(struct cmd_context *cmd,
 int find_config_tree_int(struct cmd_context *cmd, const char *path,
                          int fail)
 {
-	return _find_config_int(cmd->cft_override ? cmd->cft_override->root : NULL, cmd->cft->root, path, fail);
+	/* FIXME Add log_error message on overflow */
+	return (int) _find_config_int64(cmd->cft_override ? cmd->cft_override->root : NULL, cmd->cft->root, path, (int64_t) fail);
 }
 
 float find_config_tree_float(struct cmd_context *cmd, const char *path,
@@ -1024,7 +1025,6 @@ int get_config_uint64(const struct config_node *cn, const char *path,
 	if (!n || !n->v || n->v->type != CFG_INT)
 		return 0;
 
-	/* FIXME Support 64-bit value! */
 	*result = (uint64_t) n->v->v.i;
 	return 1;
 }
@@ -1153,4 +1153,62 @@ int merge_config_tree(struct cmd_context *cmd, struct config_tree *cft,
 	}
 
 	return 1;
+}
+
+/*
+ * Convert a token type to the char it represents.
+ */
+static char _token_type_to_char(int type)
+{
+	switch (type) {
+		case TOK_SECTION_B:
+			return SECTION_B_CHAR;
+		case TOK_SECTION_E:
+			return SECTION_E_CHAR;
+		default:
+			return 0;
+	}
+}
+
+/*
+ * Returns:
+ *  # of 'type' tokens in 'str'.
+ */
+static unsigned _count_tokens (const char *str, unsigned len, int type)
+{
+	char c;
+
+	c = _token_type_to_char(type);
+
+	return(count_chars_len(str, len, c));
+}
+
+/*
+ * Heuristic function to make a quick guess as to whether a text
+ * region probably contains a valid config "section".  (Useful for
+ * scanning areas of the disk for old metadata.)
+ * Config sections contain various tokens, may contain other sections
+ * and strings, and are delimited by begin (type 'TOK_SECTION_B') and
+ * end (type 'TOK_SECTION_E') tokens.  As a quick heuristic, we just
+ * count the number of begin and end tokens, and see if they are
+ * non-zero and the counts match.
+ * Full validation of the section should be done with another function
+ * (for example, read_config_fd).
+ *
+ * Returns:
+ *  0 - probably is not a valid config section
+ *  1 - probably _is_ a valid config section
+ */
+unsigned maybe_config_section(const char *str, unsigned len)
+{
+	int begin_count;
+	int end_count;
+
+	begin_count = _count_tokens(str, len, TOK_SECTION_B);
+	end_count = _count_tokens(str, len, TOK_SECTION_E);
+
+	if (begin_count && end_count && (begin_count - end_count == 0))
+		return 1;
+	else
+		return 0;
 }

@@ -35,11 +35,11 @@ static int _move_pv(struct volume_group *vg_from, struct volume_group *vg_to,
 
 	pv = list_item(pvl, struct pv_list)->pv;
 
-	vg_from->extent_count -= pv->pe_count;
-	vg_to->extent_count += pv->pe_count;
+	vg_from->extent_count -= get_pv_pe_count(pv);
+	vg_to->extent_count += get_pv_pe_count(pv);
 
-	vg_from->free_count -= pv->pe_count - pv->pe_alloc_count;
-	vg_to->free_count += pv->pe_count - pv->pe_alloc_count;
+	vg_from->free_count -= get_pv_pe_count(pv) - get_pv_pe_alloc_count(pv);
+	vg_to->free_count += get_pv_pe_count(pv) - get_pv_pe_alloc_count(pv);
 
 	return 1;
 }
@@ -105,7 +105,7 @@ static int _move_lvs(struct volume_group *vg_from, struct volume_group *vg_to)
 					continue;
 				}
 				log_error("Physical Volume %s not found",
-					  dev_name(pv->dev));
+					  dev_name(get_pv_dev(pv)));
 				return 0;
 			}
 
@@ -145,13 +145,16 @@ static int _move_snapshots(struct volume_group *vg_from,
 		list_iterate_items(seg, &lv->segments) {
 			cow_from = _lv_is_in_vg(vg_from, seg->cow);
 			origin_from = _lv_is_in_vg(vg_from, seg->origin);
+
+			if (cow_from && origin_from)
+				continue;
+			if ((!cow_from && origin_from) ||
+			     (cow_from && !origin_from)) {
+				log_error("Can't split snapshot %s between"
+					  " two Volume Groups", seg->cow->name);
+				return 0;
+			}
 		}
-		if (cow_from && origin_from)
-			continue;
-		if ((!cow_from && origin_from) || (cow_from && !origin_from)) {
-			log_error("Snapshot %s split", seg->cow->name);
-			return 0;
-		}	
 
 		/* Move this snapshot */
 		list_del(lvh);
@@ -190,7 +193,8 @@ static int _move_mirrors(struct volume_group *vg_from,
 		if ((seg_in && seg_in < seg->area_count) || 
 		    (seg_in && seg->log_lv && !log_in) || 
 		    (!seg_in && seg->log_lv && log_in)) {
-			log_error("Mirror %s split", lv->name);
+			log_error("Can't split mirror %s between "
+				  "two Volume Groups", lv->name);
 			return 0;
 		}
 
@@ -247,27 +251,8 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 		return ECMD_FAILED;
 	}
 
-	if ((vg_from->status & CLUSTERED) && !locking_is_clustered() &&
-	    !lockingfailed()) {
-		log_error("Skipping clustered volume group %s", vg_from->name);
-		unlock_vg(cmd, vg_name_from);
-		return ECMD_FAILED;
-	}
-
-	if (vg_from->status & EXPORTED_VG) {
-		log_error("Volume group \"%s\" is exported", vg_from->name);
-		unlock_vg(cmd, vg_name_from);
-		return ECMD_FAILED;
-	}
-
-	if (!(vg_from->status & RESIZEABLE_VG)) {
-		log_error("Volume group \"%s\" is not resizeable", vg_from->name);
-		unlock_vg(cmd, vg_name_from);
-		return ECMD_FAILED;
-	}
-
-	if (!(vg_from->status & LVM_WRITE)) {
-		log_error("Volume group \"%s\" is read-only", vg_from->name);
+	if (!vg_check_status(vg_from, CLUSTERED | EXPORTED_VG |
+				      RESIZEABLE_VG | LVM_WRITE)) {
 		unlock_vg(cmd, vg_name_from);
 		return ECMD_FAILED;
 	}
@@ -298,6 +283,10 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 			  vg_name_from);
 		goto error;
 	}
+
+	/* Set metadata format of original VG */
+	/* FIXME: need some common logic */
+	cmd->fmt = vg_from->fid->fmt;
 
 	/* Create new VG structure */
 	if (!(vg_to = vg_create(cmd, vg_name_to, vg_from->extent_size,
@@ -330,11 +319,15 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 	if (!(_move_mirrors(vg_from, vg_to)))
 		goto error;
 
-	/* FIXME Split mdas properly somehow too! */
-	/* Currently we cheat by sharing the format instance and relying on 
-	 * vg_write to ignore mdas outside the VG!  Done this way, with text 
-	 * format, vg_from disappears for a short time. */
-	vg_to->fid = vg_from->fid;
+	/* Split metadata areas and check if both vgs have at least one area */
+	if (!(vg_split_mdas(cmd, vg_from, vg_to))) {
+		log_error("Cannot split: Nowhere to store metadata for new Volume Group");
+		goto error;
+	}
+
+	/* Set proper name for all PVs in new VG */
+	if (!vg_rename(cmd, vg_to, vg_name_to))
+		goto error;
 
 	/* store it on disks */
 	log_verbose("Writing out updated volume groups");

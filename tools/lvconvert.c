@@ -307,7 +307,7 @@ static int lvconvert_mirrors(struct cmd_context * cmd, struct logical_volume * l
 					if (!(log_lv = create_mirror_log(cmd, lv->vg, ah,
 									 lp->alloc, lv->name,
 									 (sync_percent >= 100.0) ?
-									 1 : 0))) {
+									 1 : 0, &lv->tags))) {
 						log_error("Failed to create mirror log.");
 						return 0;
 					}
@@ -385,7 +385,7 @@ static int lvconvert_mirrors(struct cmd_context * cmd, struct logical_volume * l
 			if (!arg_count(cmd, corelog_ARG) &&
 			    !(log_lv = create_mirror_log(cmd, lv->vg, ah,
 							 lp->alloc,
-							 lv->name, 0))) {
+							 lv->name, 0, &lv->tags))) {
 				log_error("Failed to create mirror log.");
 				return 0;
 			}
@@ -557,21 +557,8 @@ int lvconvert(struct cmd_context * cmd, int argc, char **argv)
 		goto error;
 	}
 
-	if ((vg->status & CLUSTERED) && !locking_is_clustered() &&
-	    !lockingfailed()) {
-		log_error("Skipping clustered volume group %s", lp.vg_name);
+	if (!vg_check_status(vg, CLUSTERED | EXPORTED_VG | LVM_WRITE))
 		goto error;
-	}
-
-	if (vg->status & EXPORTED_VG) {
-		log_error("Volume group \"%s\" is exported", lp.vg_name);
-		goto error;
-	}
-
-	if (!(vg->status & LVM_WRITE)) {
-		log_error("Volume group \"%s\" is read-only", lp.vg_name);
-		goto error;
-	}
 
 	if (!(lvl = find_lv_in_vg(vg, lp.lv_name))) {
 		log_error("Logical volume \"%s\" not found in "

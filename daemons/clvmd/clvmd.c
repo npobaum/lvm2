@@ -37,6 +37,7 @@
 #include <getopt.h>
 #include <syslog.h>
 #include <errno.h>
+#include <libdlm.h>
 
 #include "clvmd-comms.h"
 #include "lvm-functions.h"
@@ -44,8 +45,6 @@
 #include "version.h"
 #include "clvmd.h"
 #include "refresh_clvmd.h"
-#include "libdlm.h"
-#include "system-lv.h"
 #include "list.h"
 #include "log.h"
 
@@ -56,9 +55,7 @@
 #define FALSE 0
 #endif
 
-/* The maximum size of a message that will fit into a packet. Anything bigger
-   than this is sent via the system LV */
-#define MAX_INLINE_MESSAGE (max_cluster_message-sizeof(struct clvm_header))
+#define MAX_RETRIES 4
 
 #define ISLOCAL_CSID(c) (memcmp(c, our_csid, max_csid_len) == 0)
 
@@ -113,31 +110,32 @@ static void send_local_reply(struct local_client *client, int status,
 static void free_reply(struct local_client *client);
 static void send_version_message(void);
 static void *pre_and_post_thread(void *arg);
-static int send_message(void *buf, int msglen, char *csid, int fd,
+static int send_message(void *buf, int msglen, const char *csid, int fd,
 			const char *errtext);
 static int read_from_local_sock(struct local_client *thisfd);
 static int process_local_command(struct clvm_header *msg, int msglen,
 				 struct local_client *client,
 				 unsigned short xid);
 static void process_remote_command(struct clvm_header *msg, int msglen, int fd,
-				   char *csid);
-static int process_reply(struct clvm_header *msg, int msglen, char *csid);
+				   const char *csid);
+static int process_reply(const struct clvm_header *msg, int msglen,
+			 const char *csid);
 static int open_local_sock(void);
 static struct local_client *find_client(int clientid);
 static void main_loop(int local_sock, int cmd_timeout);
 static void be_daemon(int start_timeout);
 static int check_all_clvmds_running(struct local_client *client);
 static int local_rendezvous_callback(struct local_client *thisfd, char *buf,
-				     int len, char *csid,
+				     int len, const char *csid,
 				     struct local_client **new_client);
 static void *lvm_thread_fn(void *);
 static int add_to_lvmqueue(struct local_client *client, struct clvm_header *msg,
-			   int msglen, char *csid);
+			   int msglen, const char *csid);
 static int distribute_command(struct local_client *thisfd);
 static void hton_clvm(struct clvm_header *hdr);
 static void ntoh_clvm(struct clvm_header *hdr);
 static void add_reply_to_list(struct local_client *client, int status,
-			      char *csid, const char *buf, int len);
+			      const char *csid, const char *buf, int len);
 
 static void usage(char *prog, FILE *file)
 {
@@ -293,6 +291,15 @@ int main(int argc, char *argv[])
 			syslog(LOG_NOTICE, "Cluster LVM daemon started - connected to GULM");
 		}
 #endif
+#ifdef USE_OPENAIS
+	if (!clops)
+		if ((clops = init_openais_cluster())) {
+			max_csid_len = OPENAIS_CSID_LEN;
+			max_cluster_message = OPENAIS_MAX_CLUSTER_MESSAGE;
+			max_cluster_member_name_len = OPENAIS_MAX_CLUSTER_MEMBER_NAME_LEN;
+			syslog(LOG_NOTICE, "Cluster LVM daemon started - connected to OpenAIS");
+		}
+#endif
 
 	if (!clops) {
 		DEBUGLOG("Can't initialise cluster interface\n");
@@ -325,7 +332,7 @@ int main(int argc, char *argv[])
 	/* This needs to be started after cluster initialisation
 	   as it may need to take out locks */
 	DEBUGLOG("starting LVM thread\n");
-	pthread_create(&lvm_thread, NULL, lvm_thread_fn, 
+	pthread_create(&lvm_thread, NULL, lvm_thread_fn,
 			(void *)(long)using_gulm);
 
 	/* Tell the rest of the cluster our version number */
@@ -357,7 +364,8 @@ void clvmd_cluster_init_completed()
 
 /* Data on a connected socket */
 static int local_sock_callback(struct local_client *thisfd, char *buf, int len,
-			       char *csid, struct local_client **new_client)
+			       const char *csid,
+			       struct local_client **new_client)
 {
 	*new_client = NULL;
 	return read_from_local_sock(thisfd);
@@ -365,7 +373,7 @@ static int local_sock_callback(struct local_client *thisfd, char *buf, int len,
 
 /* Data on a connected socket */
 static int local_rendezvous_callback(struct local_client *thisfd, char *buf,
-				     int len, char *csid,
+				     int len, const char *csid,
 				     struct local_client **new_client)
 {
 	/* Someone connected to our local socket, accept it. */
@@ -374,6 +382,9 @@ static int local_rendezvous_callback(struct local_client *thisfd, char *buf,
 	struct local_client *newfd;
 	socklen_t sl = sizeof(socka);
 	int client_fd = accept(thisfd->fd, (struct sockaddr *) &socka, &sl);
+
+	if (client_fd == -1 && errno == EINTR)
+		return 1;
 
 	if (client_fd >= 0) {
 		newfd = malloc(sizeof(struct local_client));
@@ -403,7 +414,7 @@ static int local_rendezvous_callback(struct local_client *thisfd, char *buf,
 }
 
 static int local_pipe_callback(struct local_client *thisfd, char *buf,
-			       int maxlen, char *csid,
+			       int maxlen, const char *csid,
 			       struct local_client **new_client)
 {
 	int len;
@@ -412,6 +423,8 @@ static int local_pipe_callback(struct local_client *thisfd, char *buf,
 	int status = -1;	/* in error by default */
 
 	len = read(thisfd->fd, buffer, sizeof(int));
+	if (len == -1 && errno == EINTR)
+		return 1;
 
 	if (len == sizeof(int)) {
 		memcpy(&status, buffer, sizeof(int));
@@ -477,7 +490,7 @@ static int local_pipe_callback(struct local_client *thisfd, char *buf,
    add one with "ETIMEDOUT".
    NOTE: This won't race with real replies because they happen in the same thread.
 */
-static void timedout_callback(struct local_client *client, char *csid,
+static void timedout_callback(struct local_client *client, const char *csid,
 			      int node_up)
 {
 	if (node_up) {
@@ -786,6 +799,8 @@ static int read_from_local_sock(struct local_client *thisfd)
 	char buffer[PIPE_BUF];
 
 	len = read(thisfd->fd, buffer, sizeof(buffer));
+	if (len == -1 && errno == EINTR)
+		return 1;
 
 	DEBUGLOG("Read on local socket %d, len = %d\n", thisfd->fd, len);
 
@@ -901,8 +916,12 @@ static int read_from_local_sock(struct local_client *thisfd)
 		    len - strlen(inheader->node) - sizeof(struct clvm_header);
 		missing_len = inheader->arglen - argslen;
 
+		if (missing_len < 0)
+			missing_len = 0;
+
 		/* Save the message */
 		thisfd->bits.localsock.cmd = malloc(len + missing_len);
+
 		if (!thisfd->bits.localsock.cmd) {
 			struct clvm_header reply;
 			reply.cmd = CLVMD_CMD_REPLY;
@@ -927,9 +946,8 @@ static int read_from_local_sock(struct local_client *thisfd)
 				DEBUGLOG
 				    ("got %d bytes, need another %d (total %d)\n",
 				     argslen, missing_len, inheader->arglen);
-				len =
-				    read(thisfd->fd, argptr + argslen,
-					 missing_len);
+				len = read(thisfd->fd, argptr + argslen,
+					   missing_len);
 				if (len >= 0) {
 					missing_len -= len;
 					argslen += len;
@@ -1039,31 +1057,6 @@ int add_client(struct local_client *new_client)
 	return 0;
 }
 
-
-/*
- * Send a long message using the System LV
- */
-static int send_long_message(struct local_client *thisfd, struct clvm_header *inheader, int len)
-{
-    struct clvm_header new_header;
-    int status;
-
-    DEBUGLOG("Long message: being sent via system LV:\n");
-
-    /* Use System LV */
-    status = system_lv_write_data((char *)inheader, len);
-    if (status < 0)
-	    return errno;
-
-    /* Send message indicating System-LV is being used */
-    memcpy(&new_header, inheader, sizeof(new_header));
-    new_header.flags |= CLVMD_FLAG_SYSTEMLV;
-    new_header.xid = thisfd->xid;
-
-    return send_message(&new_header, sizeof(new_header), NULL, -1,
-		 "Error forwarding long message to cluster");
-}
-
 /* Called when the pre-command has completed successfully - we
    now execute the real command on all the requested nodes */
 static int distribute_command(struct local_client *thisfd)
@@ -1090,13 +1083,9 @@ static int distribute_command(struct local_client *thisfd)
 			add_to_lvmqueue(thisfd, inheader, len, NULL);
 
 			DEBUGLOG("Sending message to all cluster nodes\n");
-			if (len > MAX_INLINE_MESSAGE) {
-			        send_long_message(thisfd, inheader, len );
-			} else {
-				inheader->xid = thisfd->xid;
-				send_message(inheader, len, NULL, -1,
-					     "Error forwarding message to cluster");
-			}
+			inheader->xid = thisfd->xid;
+			send_message(inheader, len, NULL, -1,
+				     "Error forwarding message to cluster");
 		} else {
                         /* Do it on a single node */
 			char csid[MAX_CSID_LEN];
@@ -1117,14 +1106,10 @@ static int distribute_command(struct local_client *thisfd)
 				} else {
 					DEBUGLOG("Sending message to single node: %s\n",
 						 inheader->node);
-					if (len > MAX_INLINE_MESSAGE) {
-					        send_long_message(thisfd, inheader, len );
-					} else {
-						inheader->xid = thisfd->xid;
-						send_message(inheader, len,
-							     csid, -1,
-							     "Error forwarding message to cluster node");
-					}
+					inheader->xid = thisfd->xid;
+					send_message(inheader, len,
+						     csid, -1,
+						     "Error forwarding message to cluster node");
 				}
 			}
 		}
@@ -1140,7 +1125,7 @@ static int distribute_command(struct local_client *thisfd)
 
 /* Process a command from a remote node and return the result */
 static void process_remote_command(struct clvm_header *msg, int msglen, int fd,
-			    	   char *csid)
+			    	   const char *csid)
 {
 	char *replyargs;
 	char nodename[max_cluster_member_name_len];
@@ -1155,55 +1140,6 @@ static void process_remote_command(struct clvm_header *msg, int msglen, int fd,
 	DEBUGLOG("process_remote_command %d for clientid 0x%x XID %d on node %s\n",
 		 msg->cmd, msg->clientid, msg->xid, nodename);
 
-	/* Is the data to be found in the system LV ? */
-	if (msg->flags & CLVMD_FLAG_SYSTEMLV) {
-		struct clvm_header *newmsg;
-
-		DEBUGLOG("Reading message from system LV\n");
-		newmsg =
-		    (struct clvm_header *) malloc(msg->arglen +
-						  sizeof(struct clvm_header));
-		if (newmsg) {
-			ssize_t len;
-			if (system_lv_read_data(nodename, (char *) newmsg,
-			     			&len) == 0) {
-				msg = newmsg;
-				msg_malloced = 1;
-				msglen = len;
-			} else {
-				struct clvm_header head;
-				DEBUGLOG("System LV read failed\n");
-
-				/* Return a failure response */
-				head.cmd = CLVMD_CMD_REPLY;
-				head.status = EFBIG;
-				head.flags = 0;
-				head.clientid = msg->clientid;
-				head.arglen = 0;
-				head.node[0] = '\0';
-				send_message(&head, sizeof(struct clvm_header),
-					     csid, fd,
-					     "Error sending ENOMEM command reply");
-				return;
-			}
-		} else {
-			struct clvm_header head;
-			DEBUGLOG
-			    ("Error attempting to malloc %d bytes for system LV read\n",
-			     msg->arglen);
-			/* Return a failure response */
-			head.cmd = CLVMD_CMD_REPLY;
-			head.status = ENOMEM;
-			head.flags = 0;
-			head.clientid = msg->clientid;
-			head.arglen = 0;
-			head.node[0] = '\0';
-			send_message(&head, sizeof(struct clvm_header), csid,
-				     fd, "Error sending ENOMEM command reply");
-			return;
-		}
-	}
-
 	/* Check for GOAWAY and sulk */
 	if (msg->cmd == CLVMD_CMD_GOAWAY) {
 
@@ -1215,7 +1151,7 @@ static void process_remote_command(struct clvm_header *msg, int msglen, int fd,
 	/* Version check is internal - don't bother exposing it in
 	   clvmd-command.c */
 	if (msg->cmd == CLVMD_CMD_VERSION) {
-		int version_nums[3]; 
+		int version_nums[3];
 		char node[256];
 
 		memcpy(version_nums, msg->args, sizeof(version_nums));
@@ -1278,40 +1214,16 @@ static void process_remote_command(struct clvm_header *msg, int msglen, int fd,
 				replyargs, replylen);
 
 			agghead->xid = msg->xid;
-
-			/* Use the system LV ? */
-			if (replylen > MAX_INLINE_MESSAGE) {
-				agghead->cmd = CLVMD_CMD_REPLY;
-				agghead->status = status;
-				agghead->flags = CLVMD_FLAG_SYSTEMLV;
-				agghead->clientid = msg->clientid;
-				agghead->arglen = replylen;
-				agghead->node[0] = '\0';
-
-				/* If System LV operation failed then report it as EFBIG but only do it
-				   if the data buffer has something in it. */
-				if (system_lv_write_data(aggreply,
-							 replylen + sizeof(struct clvm_header)) < 0
-				    && replylen > 0)
-					agghead->status = EFBIG;
-
-				send_message(agghead,
-					     sizeof(struct clvm_header), csid,
-					     fd,
-					     "Error sending long command reply");
-
-			} else {
-				agghead->cmd = CLVMD_CMD_REPLY;
-				agghead->status = status;
-				agghead->flags = 0;
-				agghead->clientid = msg->clientid;
-				agghead->arglen = replylen;
-				agghead->node[0] = '\0';
-				send_message(aggreply,
-					     sizeof(struct clvm_header) +
-					     replylen, csid, fd,
-					     "Error sending command reply");
-			}
+			agghead->cmd = CLVMD_CMD_REPLY;
+			agghead->status = status;
+			agghead->flags = 0;
+			agghead->clientid = msg->clientid;
+			agghead->arglen = replylen;
+			agghead->node[0] = '\0';
+			send_message(aggreply,
+				     sizeof(struct clvm_header) +
+				     replylen, csid, fd,
+				     "Error sending command reply");
 		} else {
 			struct clvm_header head;
 
@@ -1340,7 +1252,7 @@ static void process_remote_command(struct clvm_header *msg, int msglen, int fd,
    If we have got a full set then send them to the waiting client down the local
    socket */
 static void add_reply_to_list(struct local_client *client, int status,
-			      char *csid, const char *buf, int len)
+			      const char *csid, const char *buf, int len)
 {
 	struct node_reply *reply;
 
@@ -1395,6 +1307,7 @@ static __attribute__ ((noreturn)) void *pre_and_post_thread(void *arg)
 {
 	struct local_client *client = (struct local_client *) arg;
 	int status;
+	int write_status;
 	sigset_t ss;
 	int pipe_fd = client->bits.localsock.pipe;
 
@@ -1424,8 +1337,19 @@ static __attribute__ ((noreturn)) void *pre_and_post_thread(void *arg)
 			client->bits.localsock.all_success = 0;
 
 		DEBUGLOG("Writing status %d down pipe %d\n", status, pipe_fd);
+
 		/* Tell the parent process we have finished this bit */
-		write(pipe_fd, &status, sizeof(int));
+		do {
+			write_status = write(pipe_fd, &status, sizeof(int));
+			if (write_status == sizeof(int))
+				break;
+			if (write_status < 0 &&
+			    (errno == EINTR || errno == EAGAIN))
+				continue;
+			log_error("Error sending to pipe: %m\n");
+			break;
+		} while(1);
+
 		if (status)
 			continue; /* Wait for another PRE command */
 
@@ -1446,7 +1370,16 @@ static __attribute__ ((noreturn)) void *pre_and_post_thread(void *arg)
 		status = 0;
 		do_post_command(client);
 
-		write(pipe_fd, &status, sizeof(int));
+		do {
+			write_status = write(pipe_fd, &status, sizeof(int));
+			if (write_status == sizeof(int))
+				break;
+			if (write_status < 0 &&
+			    (errno == EINTR || errno == EAGAIN))
+				continue;
+			log_error("Error sending to pipe: %m\n");
+			break;
+		} while(1);
 
 		DEBUGLOG("Waiting for next pre command\n");
 
@@ -1496,7 +1429,7 @@ static int process_local_command(struct clvm_header *msg, int msglen,
 	return status;
 }
 
-static int process_reply(struct clvm_header *msg, int msglen, char *csid)
+static int process_reply(const struct clvm_header *msg, int msglen, const char *csid)
 {
 	struct local_client *client = NULL;
 
@@ -1646,10 +1579,15 @@ static void send_version_message()
 }
 
 /* Send a message to either a local client or another server */
-static int send_message(void *buf, int msglen, char *csid, int fd,
+static int send_message(void *buf, int msglen, const char *csid, int fd,
 			const char *errtext)
 {
 	int len;
+	int saved_errno = 0;
+	struct timespec delay;
+	struct timespec remtime;
+
+	int retry_cnt = 0;
 
 	/* Send remote messages down the cluster socket */
 	if (csid == NULL || !ISLOCAL_CSID(csid)) {
@@ -1660,14 +1598,38 @@ static int send_message(void *buf, int msglen, char *csid, int fd,
 
 		/* Make sure it all goes */
 		do {
+			if (retry_cnt > MAX_RETRIES)
+			{
+				errno = saved_errno;
+				log_error("%s", errtext);
+				errno = saved_errno;
+				break;
+			}
+
 			len = write(fd, buf + ptr, msglen - ptr);
 
 			if (len <= 0) {
-				log_error(errtext);
+				if (errno == EINTR)
+					continue;
+				if (errno == EAGAIN ||
+				    errno == EIO ||
+				    errno == ENOSPC) {
+					saved_errno = errno;
+					retry_cnt++;
+
+					delay.tv_sec = 0;
+					delay.tv_nsec = 100000;
+					remtime.tv_sec = 0;
+					remtime.tv_nsec = 0;
+					(void) nanosleep (&delay, &remtime);
+
+					continue;
+				}
+				log_error("%s", errtext);
 				break;
 			}
 			ptr += len;
-		} while (len < msglen);
+		} while (ptr < msglen);
 	}
 	return len;
 }
@@ -1749,7 +1711,7 @@ static __attribute__ ((noreturn)) void *lvm_thread_fn(void *arg)
 
 /* Pass down some work to the LVM thread */
 static int add_to_lvmqueue(struct local_client *client, struct clvm_header *msg,
-			   int msglen, char *csid)
+			   int msglen, const char *csid)
 {
 	struct lvm_thread_cmd *cmd;
 
@@ -1827,7 +1789,8 @@ static int open_local_sock()
 	return local_socket;
 }
 
-void process_message(struct local_client *client, char *buf, int len, char *csid)
+void process_message(struct local_client *client, const char *buf, int len,
+		     const char *csid)
 {
 	struct clvm_header *inheader;
 
@@ -1840,7 +1803,7 @@ void process_message(struct local_client *client, char *buf, int len, char *csid
 }
 
 
-static void check_all_callback(struct local_client *client, char *csid,
+static void check_all_callback(struct local_client *client, const char *csid,
 			       int node_up)
 {
 	if (!node_up)

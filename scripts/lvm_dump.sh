@@ -147,7 +147,10 @@ myecho "Gathering /etc/lvm info..."
 log "$CP -a /etc/lvm $dir/lvm 2>> $log"
 
 myecho "Gathering /dev listing..."
-log "$LS -la /dev > $dir/dev_listing 2>> $log"
+log "$LS -laR /dev > $dir/dev_listing 2>> $log"
+
+myecho "Gathering /sys/block listing..."
+log "$LS -laR /sys/block > $dir/sysblock_listing"
 
 if (( $metadata )); then
 	myecho "Gathering LVM metadata from Physical Volumes..."
