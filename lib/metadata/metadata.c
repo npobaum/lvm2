@@ -24,8 +24,42 @@
 #include "pv_alloc.h"
 #include "activate.h"
 #include "display.h"
+#include "locking.h"
 
 #include <sys/param.h>
+
+/*
+ * FIXME: Check for valid handle before dereferencing field or log error?
+ */
+#define pv_field(handle, field)				\
+	(((struct physical_volume *)(handle))->field)
+
+static struct physical_volume *_pv_read(struct cmd_context *cmd, 
+					const char *pv_name,
+					struct list *mdas, 
+					uint64_t *label_sector,
+					int warnings);
+
+static struct physical_volume *_pv_create(const struct format_type *fmt,
+				  struct device *dev,
+				  struct id *id, uint64_t size,
+				  uint64_t pe_start,
+				  uint32_t existing_extent_count,
+				  uint32_t existing_extent_size,
+				  int pvmetadatacopies,
+				  uint64_t pvmetadatasize, struct list *mdas);
+
+static int _pv_write(struct cmd_context *cmd __attribute((unused)), 
+		     struct physical_volume *pv,
+	     	     struct list *mdas, int64_t label_sector);
+
+static struct physical_volume *_find_pv_by_name(struct cmd_context *cmd,
+			 			const char *pv_name);
+
+static struct pv_list *_find_pv_in_vg(struct volume_group *vg, const char *pv_name);
+
+static struct physical_volume *_find_pv_in_vg_by_uuid(struct volume_group *vg,
+						      struct id *id);
 
 unsigned long pe_align(void)
 {
@@ -49,7 +83,7 @@ static int _add_pv_to_vg(struct format_instance *fid, struct volume_group *vg,
 	}
 
 	list_init(&mdas);
-	if (!(pv = pv_read(fid->fmt->cmd, pv_name, &mdas, NULL, 1))) {
+	if (!(pv = _pv_read(fid->fmt->cmd, pv_name, &mdas, NULL, 1))) {
 		log_error("%s not identified as an existing physical volume",
 			  pv_name);
 		return 0;
@@ -102,7 +136,7 @@ static int _add_pv_to_vg(struct format_instance *fid, struct volume_group *vg,
 		return 0;
 	}
 
-	if (find_pv_in_vg(vg, pv_name)) {
+	if (_find_pv_in_vg(vg, pv_name)) {
 		log_error("Physical volume '%s' listed more than once.",
 			  pv_name);
 		return 0;
@@ -280,10 +314,9 @@ struct volume_group *vg_create(struct cmd_context *cmd, const char *vg_name,
 	vg->seqno = 0;
 
 	vg->status = (RESIZEABLE_VG | LVM_READ | LVM_WRITE);
-	if (!(vg->system_id = dm_pool_alloc(mem, NAME_LEN))) {
-		stack;
-		goto bad;
-	}
+	if (!(vg->system_id = dm_pool_alloc(mem, NAME_LEN)))
+		goto_bad;
+
 	*vg->system_id = '\0';
 
 	vg->extent_size = extent_size;
@@ -320,7 +353,7 @@ struct volume_group *vg_create(struct cmd_context *cmd, const char *vg_name,
 
 	/* attach the pv's */
 	if (!vg_extend(vg->fid, vg, pv_count, pv_names))
-		goto bad;
+		goto_bad;
 
 	return vg;
 
@@ -505,8 +538,72 @@ int vg_change_pesize(struct cmd_context *cmd, struct volume_group *vg,
 	return 1;
 }
 
+int vg_split_mdas(struct cmd_context *cmd, struct volume_group *vg_from,
+		  struct volume_group *vg_to)
+{
+	struct metadata_area *mda, *mda2;
+	struct list *mdas_from, *mdas_to;
+	int common_mda = 0;
+
+	mdas_from = &vg_from->fid->metadata_areas;
+	mdas_to = &vg_to->fid->metadata_areas;
+
+	list_iterate_items_safe(mda, mda2, mdas_from) {
+		if (!mda->ops->mda_in_vg) {
+			common_mda = 1;
+			continue;
+		}
+
+		if (!mda->ops->mda_in_vg(vg_from->fid, vg_from, mda)) {
+			list_del(&mda->list);
+			list_add(mdas_to, &mda->list);
+		}
+	}
+
+	if (list_empty(mdas_from) || list_empty(mdas_to))
+		return common_mda;
+
+	return 1;
+}
+
+/**
+ * pv_create - initialize a physical volume for use with a volume group
+ * @fmt: format type
+ * @dev: PV device to initialize
+ * @id: PV UUID to use for initialization
+ * @size: size of the PV in sectors
+ * @pe_start: physical extent start
+ * @existing_extent_count
+ * @existing_extent_size
+ * @pvmetadatacopies
+ * @pvmetadatasize
+ * @mdas
+ *
+ * Returns:
+ *   PV handle - physical volume initialized successfully
+ *   NULL - invalid parameter or problem initializing the physical volume
+ *
+ * Note:
+ *   FIXME - liblvm todo - tidy up arguments for external use (fmt, mdas, etc)
+ */
+pv_t *pv_create(const struct format_type *fmt,
+		struct device *dev,
+		struct id *id, uint64_t size,
+		uint64_t pe_start,
+		uint32_t existing_extent_count,
+		uint32_t existing_extent_size,
+		int pvmetadatacopies,
+		uint64_t pvmetadatasize, struct list *mdas)
+{
+	return _pv_create(fmt, dev, id, size, pe_start, 
+			  existing_extent_count,
+			  existing_extent_size,
+			  pvmetadatacopies,
+			  pvmetadatasize, mdas);
+}
+
 /* Sizes in sectors */
-struct physical_volume *pv_create(const struct format_type *fmt,
+static struct physical_volume *_pv_create(const struct format_type *fmt,
 				  struct device *dev,
 				  struct id *id, uint64_t size,
 				  uint64_t pe_start,
@@ -533,10 +630,8 @@ struct physical_volume *pv_create(const struct format_type *fmt,
 
 	pv->dev = dev;
 
-	if (!(pv->vg_name = dm_pool_zalloc(mem, NAME_LEN))) {
-		stack;
-		goto bad;
-	}
+	if (!(pv->vg_name = dm_pool_zalloc(mem, NAME_LEN)))
+		goto_bad;
 
 	pv->status = ALLOCATABLE_PV;
 
@@ -584,7 +679,13 @@ struct physical_volume *pv_create(const struct format_type *fmt,
 	return NULL;
 }
 
+/* FIXME: liblvm todo - make into function that returns handle */
 struct pv_list *find_pv_in_vg(struct volume_group *vg, const char *pv_name)
+{
+	return _find_pv_in_vg(vg, pv_name);
+}
+
+static struct pv_list *_find_pv_in_vg(struct volume_group *vg, const char *pv_name)
 {
 	struct pv_list *pvl;
 
@@ -606,8 +707,26 @@ int pv_is_in_vg(struct volume_group *vg, struct physical_volume *pv)
 	return 0;
 }
 
-struct physical_volume *find_pv_in_vg_by_uuid(struct volume_group *vg,
-					      struct id *id)
+/**
+ * find_pv_in_vg_by_uuid - Find PV in VG by PV UUID
+ * @vg: volume group to search
+ * @id: UUID of the PV to match
+ *
+ * Returns:
+ *   PV handle - if UUID of PV found in VG
+ *   NULL - invalid parameter or UUID of PV not found in VG
+ *
+ * Note
+ *   FIXME - liblvm todo - make into function that takes VG handle
+ */
+pv_t *find_pv_in_vg_by_uuid(struct volume_group *vg, struct id *id)
+{
+	return _find_pv_in_vg_by_uuid(vg, id);
+}
+
+
+static struct physical_volume *_find_pv_in_vg_by_uuid(struct volume_group *vg,
+						      struct id *id)
 {
 	struct pv_list *pvl;
 
@@ -665,12 +784,20 @@ struct physical_volume *find_pv(struct volume_group *vg, struct device *dev)
 	return NULL;
 }
 
+/* FIXME: liblvm todo - make into function that returns handle */
 struct physical_volume *find_pv_by_name(struct cmd_context *cmd,
 					const char *pv_name)
 {
+	return _find_pv_by_name(cmd, pv_name);
+}
+
+
+static struct physical_volume *_find_pv_by_name(struct cmd_context *cmd,
+			 			const char *pv_name)
+{
 	struct physical_volume *pv;
 
-	if (!(pv = pv_read(cmd, pv_name, NULL, NULL, 1))) {
+	if (!(pv = _pv_read(cmd, pv_name, NULL, NULL, 1))) {
 		log_error("Physical volume %s not found", pv_name);
 		return NULL;
 	}
@@ -758,6 +885,12 @@ int vg_validate(struct volume_group *vg)
 					  vg->name);
 				r = 0;
 			}
+		}
+
+		if (strcmp(pvl->pv->vg_name, vg->name)) {
+			log_error("Internal error: VG name for PV %s is corrupted",
+				  dev_name(pvl->pv->dev));
+			r = 0;
 		}
 	}
 
@@ -948,7 +1081,7 @@ static struct volume_group *_vg_read_orphans(struct cmd_context *cmd)
 	}
 
 	list_iterate_items(info, &vginfo->infos) {
-		if (!(pv = pv_read(cmd, dev_name(info->dev), NULL, NULL, 1))) {
+		if (!(pv = _pv_read(cmd, dev_name(info->dev), NULL, NULL, 1))) {
 			continue;
 		}
 		if (!(pvl = dm_pool_zalloc(cmd->mem, sizeof(*pvl)))) {
@@ -1354,10 +1487,34 @@ struct logical_volume *lv_from_lvid(struct cmd_context *cmd, const char *lvid_s,
 	return lvl->lv;
 }
 
-/* FIXME Use label functions instead of PV functions */
+/**
+ * pv_read - read and return a handle to a physical volume
+ * @cmd: LVM command initiating the pv_read
+ * @pv_name: full device name of the PV, including the path
+ * @mdas: list of metadata areas of the PV
+ * @label_sector: sector number where the PV label is stored on @pv_name
+ * @warnings:
+ *
+ * Returns:
+ *   PV handle - valid pv_name and successful read of the PV, or
+ *   NULL - invalid parameter or error in reading the PV
+ *
+ * Note:
+ *   FIXME - liblvm todo - make into function that returns handle
+ */
 struct physical_volume *pv_read(struct cmd_context *cmd, const char *pv_name,
 				struct list *mdas, uint64_t *label_sector,
 				int warnings)
+{
+	return _pv_read(cmd, pv_name, mdas, label_sector, warnings);
+}
+
+/* FIXME Use label functions instead of PV functions */
+static struct physical_volume *_pv_read(struct cmd_context *cmd, 
+					const char *pv_name,
+					struct list *mdas, 
+					uint64_t *label_sector,
+					int warnings)
 {
 	struct physical_volume *pv;
 	struct label *label;
@@ -1369,7 +1526,7 @@ struct physical_volume *pv_read(struct cmd_context *cmd, const char *pv_name,
 		return NULL;
 	}
 
-	if (!(label_read(dev, &label))) {
+	if (!(label_read(dev, &label, UINT64_C(0)))) {
 		if (warnings)
 			log_error("No physical volume label read from %s",
 				  pv_name);
@@ -1478,8 +1635,17 @@ struct list *get_pvs(struct cmd_context *cmd)
 	return results;
 }
 
-int pv_write(struct cmd_context *cmd __attribute((unused)), struct physical_volume *pv,
+/* FIXME: liblvm todo - make into function that takes handle */
+int pv_write(struct cmd_context *cmd __attribute((unused)),
+	     struct physical_volume *pv,
 	     struct list *mdas, int64_t label_sector)
+{
+	return _pv_write(cmd, pv, mdas, label_sector);
+}
+
+static int _pv_write(struct cmd_context *cmd __attribute((unused)), 
+		     struct physical_volume *pv,
+	     	     struct list *mdas, int64_t label_sector)
 {
 	if (!pv->fmt->ops->pv_write) {
 		log_error("Format does not support writing physical volumes");
@@ -1512,7 +1678,7 @@ int pv_write_orphan(struct cmd_context *cmd, struct physical_volume *pv)
 		return 0;
 	}
 
-	if (!pv_write(cmd, pv, NULL, INT64_C(-1))) {
+	if (!_pv_write(cmd, pv, NULL, INT64_C(-1))) {
 		log_error("Failed to clear metadata from physical "
 			  "volume \"%s\" after removal from \"%s\"",
 			  dev_name(pv->dev), old_vg_name);
@@ -1520,4 +1686,155 @@ int pv_write_orphan(struct cmd_context *cmd, struct physical_volume *pv)
 	}
 
 	return 1;
+}
+
+/**
+ * is_orphan - Determine whether a pv is an orphan based on its vg_name
+ * @pv: handle to the physical volume
+ */
+int is_orphan(pv_t *pv)
+{
+	return (pv_field(pv, vg_name)[0] ? 0 : 1);
+}
+
+
+/*
+ * Returns:
+ *  0 - fail
+ *  1 - success
+ */
+int pv_analyze(struct cmd_context *cmd, const char *pv_name,
+	       int64_t label_sector)
+{
+	struct label *label;
+	struct device *dev;
+	struct metadata_area *mda;
+	struct lvmcache_info *info;
+
+	dev = dev_cache_get(pv_name, cmd->filter);
+	if (!dev) {
+		log_error("Device %s not found (or ignored by filtering).",
+			  pv_name);
+		return 0;
+	}
+
+	/*
+	 * First, scan for LVM labels.
+	 */
+	if (!label_read(dev, &label, label_sector)) {
+		log_error("Could not find LVM label on %s",
+			  pv_name);
+		return 0;
+	}
+
+	log_print("Found label on %s, sector %"PRIu64", type=%s",
+		  pv_name, label->sector, label->type);
+
+	/*
+	 * Next, loop through metadata areas
+	 */
+	info = label->info;
+	list_iterate_items(mda, &info->mdas)
+		mda->ops->pv_analyze_mda(info->fmt, mda);
+
+	return 1;
+}
+
+
+
+/**
+ * vg_check_status - check volume group status flags and log error
+ * @vg - volume group to check status flags
+ * @status_flags - specific status flags to check (e.g. EXPORTED_VG)
+ *
+ * Returns:
+ * 0 - fail
+ * 1 - success
+ */
+int vg_check_status(struct volume_group *vg, uint32_t status_flags)
+{
+	if ((status_flags & CLUSTERED) &&
+	    (vg->status & CLUSTERED) && !locking_is_clustered() &&
+	    !lockingfailed()) {
+		log_error("Skipping clustered volume group %s", vg->name);
+		return 0;
+	}
+
+	if ((status_flags & EXPORTED_VG) &&
+	    (vg->status & EXPORTED_VG)) {
+		log_error("Volume group %s is exported", vg->name);
+		return 0;
+	}
+
+	if ((status_flags & LVM_WRITE) &&
+	    !(vg->status & LVM_WRITE)) {
+		log_error("Volume group %s is read-only", vg->name);
+		return 0;
+	}
+	if ((status_flags & RESIZEABLE_VG) &&
+	    !(vg->status & RESIZEABLE_VG)) {
+		log_error("Volume group %s is not resizeable.", vg->name);
+		return 0;
+	}
+
+	return 1;
+}
+
+
+/*
+ * Gets/Sets for external LVM library
+ */
+struct id get_pv_id(pv_t *pv)
+{
+	return pv_field(pv, id);
+}
+
+const struct format_type *get_pv_format_type(pv_t *pv)
+{
+	return pv_field(pv, fmt);
+}
+
+struct id get_pv_vgid(pv_t *pv)
+{
+	return pv_field(pv, vgid);
+}
+
+struct device *get_pv_dev(pv_t *pv)
+{
+	return pv_field(pv, dev);
+}
+
+const char *get_pv_vg_name(pv_t *pv)
+{
+	return pv_field(pv, vg_name);
+}
+
+uint64_t get_pv_size(pv_t *pv)
+{
+	return pv_field(pv, size);
+}
+
+uint32_t get_pv_status(pv_t *pv)
+{
+	return pv_field(pv, status);
+}
+
+uint32_t get_pv_pe_size(pv_t *pv)
+{
+	return pv_field(pv, pe_size);
+}
+
+uint64_t get_pv_pe_start(pv_t *pv)
+{
+	return pv_field(pv, pe_start);
+}
+
+uint32_t get_pv_pe_count(pv_t *pv)
+{
+	return pv_field(pv, pe_count);
+}
+
+uint32_t get_pv_pe_alloc_count(pv_t *pv)
+{
+	return pv_field(pv, pe_alloc_count);
 }

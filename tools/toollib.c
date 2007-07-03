@@ -209,6 +209,8 @@ int process_each_lv_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 		ret = process_single(cmd, lvl->lv, handle);
 		if (ret > ret_max)
 			ret_max = ret;
+		if (sigint_caught())
+			return ret_max;
 	}
 
 	if (lvargs_supplied && lvargs_matched != list_size(arg_lvnames)) {
@@ -357,11 +359,7 @@ int process_each_lv(struct cmd_context *cmd, int argc, char **argv,
 				log_error("Volume group \"%s\" "
 					  "not found", vgname);
 			else {
-				if ((vg->status & CLUSTERED) &&
-			    	    !locking_is_clustered() &&
-				    !lockingfailed()) {
-					log_error("Skipping clustered volume "
-						  "group %s", vgname);
+				if (!vg_check_status(vg, CLUSTERED)) {
 					if (ret_max < ECMD_FAILED)
 						ret_max = ECMD_FAILED;
 					continue;
@@ -377,10 +375,8 @@ int process_each_lv(struct cmd_context *cmd, int argc, char **argv,
 			}
 		}
 
-		if ((vg->status & CLUSTERED) && !locking_is_clustered() &&
-		    !lockingfailed()) {
+		if (!vg_check_status(vg, CLUSTERED)) {
 			unlock_vg(cmd, vgname);
-			log_error("Skipping clustered volume group %s", vgname);
 			if (ret_max < ECMD_FAILED)
 				ret_max = ECMD_FAILED;
 			continue;
@@ -413,6 +409,8 @@ int process_each_lv(struct cmd_context *cmd, int argc, char **argv,
 		unlock_vg(cmd, vgname);
 		if (ret > ret_max)
 			ret_max = ret;
+		if (sigint_caught())
+			return ret_max;
 	}
 
 	return ret_max;
@@ -435,6 +433,8 @@ int process_each_segment_in_pv(struct cmd_context *cmd,
 		ret = process_single(cmd, vg, pvseg, handle);
 		if (ret > ret_max)
 			ret_max = ret;
+		if (sigint_caught())
+			return ret_max;
 	}
 
 	return ret_max;
@@ -455,6 +455,8 @@ int process_each_segment_in_lv(struct cmd_context *cmd,
 		ret = process_single(cmd, seg, handle);
 		if (ret > ret_max)
 			ret_max = ret;
+		if (sigint_caught())
+			return ret_max;
 	}
 
 	return ret_max;
@@ -485,9 +487,7 @@ static int _process_one_vg(struct cmd_context *cmd, const char *vg_name,
 		return ECMD_FAILED;
 	}
 
-	if ((vg->status & CLUSTERED) && !locking_is_clustered() &&
-	    !lockingfailed()) {
-		log_error("Skipping clustered volume group %s", vg_name);
+	if (!vg_check_status(vg, CLUSTERED)) {
 		unlock_vg(cmd, vg_name);
 		return ECMD_FAILED;
 	}
@@ -505,6 +505,9 @@ static int _process_one_vg(struct cmd_context *cmd, const char *vg_name,
 				  handle)) > ret_max) {
 		ret_max = ret;
 	}
+
+	if (sigint_caught())
+		return ret_max;
 
 	unlock_vg(cmd, vg_name);
 
@@ -581,6 +584,8 @@ int process_each_vg(struct cmd_context *cmd, int argc, char **argv,
 						  &arg_vgnames,
 					  	  lock_type, consistent, handle,
 					  	  ret_max, process_single);
+			if (sigint_caught())
+				return ret_max;
 		}
 	} else {
 		list_iterate_items(sl, vgnames) {
@@ -591,6 +596,8 @@ int process_each_vg(struct cmd_context *cmd, int argc, char **argv,
 						  &arg_vgnames,
 					  	  lock_type, consistent, handle,
 					  	  ret_max, process_single);
+			if (sigint_caught())
+				return ret_max;
 		}
 	}
 
@@ -615,6 +622,8 @@ int process_each_pv_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 		}
 		if ((ret = process_single(cmd, vg, pvl->pv, handle)) > ret_max)
 			ret_max = ret;
+		if (sigint_caught())
+			return ret_max;
 	}
 
 	return ret_max;
@@ -651,6 +660,8 @@ static int _process_all_devs(struct cmd_context *cmd, void *handle,
 		ret = process_single(cmd, NULL, pv, handle);
 		if (ret > ret_max)
 			ret_max = ret;
+		if (sigint_caught())
+			return ret_max;
 	}
 
 	dev_iter_destroy(iter);
@@ -723,6 +734,8 @@ int process_each_pv(struct cmd_context *cmd, int argc, char **argv,
 			ret = process_single(cmd, vg, pv, handle);
 			if (ret > ret_max)
 				ret_max = ret;
+			if (sigint_caught())
+				return ret_max;
 		}
 		if (!list_empty(&tags) && (vgnames = get_vgs(cmd, 0)) &&
 		    !list_empty(vgnames)) {
@@ -735,19 +748,16 @@ int process_each_pv(struct cmd_context *cmd, int argc, char **argv,
 				if (!consistent)
 					continue;
 
-				if ((vg->status & CLUSTERED) &&
-				    !locking_is_clustered() &&
-				    !lockingfailed()) {
-					log_error("Skipping clustered volume "
-						  "group %s", sll->str);
+				if (!vg_check_status(vg, CLUSTERED))
 					continue;
-				}
 
 				ret = process_each_pv_in_vg(cmd, vg, &tags,
 							    handle,
 							    process_single);
 				if (ret > ret_max)
 					ret_max = ret;
+				if (sigint_caught())
+					return ret_max;
 			}
 		}
 	} else {
@@ -758,10 +768,14 @@ int process_each_pv(struct cmd_context *cmd, int argc, char **argv,
 						    process_single);
 			if (ret > ret_max)
 				ret_max = ret;
+			if (sigint_caught())
+				return ret_max;
 		} else if (arg_count(cmd, all_ARG)) {
 			ret = _process_all_devs(cmd, handle, process_single);
 			if (ret > ret_max)
 				ret_max = ret;
+			if (sigint_caught())
+				return ret_max;
 		} else {
 			log_verbose("Scanning for physical volume names");
 			if (!(pvslist = get_pvs(cmd)))
@@ -772,6 +786,8 @@ int process_each_pv(struct cmd_context *cmd, int argc, char **argv,
 						     handle);
 				if (ret > ret_max)
 					ret_max = ret;
+				if (sigint_caught())
+					return ret_max;
 			}
 		}
 	}
@@ -1310,11 +1326,13 @@ struct logical_volume *create_mirror_log(struct cmd_context *cmd,
 					 struct alloc_handle *ah,
 					 alloc_policy_t alloc,
 					 const char *lv_name,
-					 int in_sync)
+					 int in_sync,
+					 struct list *tags)
 {
 	struct logical_volume *log_lv;
 	char *log_name;
 	size_t len;
+	struct str_list *sl;
 
 	len = strlen(lv_name) + 32;
 	if (!(log_name = alloca(len)) ||
@@ -1335,6 +1353,13 @@ struct logical_volume *create_mirror_log(struct cmd_context *cmd,
 		stack;
 		goto error;
 	}
+
+	/* Temporary tag mirror log */
+	list_iterate_items(sl, tags)
+		if (!str_list_add(cmd->mem, &log_lv->tags, sl->str)) {
+			log_error("Aborting. Unable to tag mirror log.");
+			goto error;
+		}
 
 	/* store mirror log on disk(s) */
 	if (!vg_write(vg)) {
@@ -1360,6 +1385,11 @@ struct logical_volume *create_mirror_log(struct cmd_context *cmd,
 			  "Remove new LVs and retry.");
 		goto error;
 	}
+
+	list_iterate_items(sl, tags)
+		if (!str_list_del(&log_lv->tags, sl->str))
+			log_error("Failed to remove tag %s from mirror log.",
+				  sl->str);
 
 	if (activation() && !set_lv(cmd, log_lv, log_lv->size,
 				    in_sync ? -1 : 0)) {

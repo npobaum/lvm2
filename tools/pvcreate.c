@@ -45,18 +45,21 @@ static int pvcreate_check(struct cmd_context *cmd, const char *name)
 
 	/* Allow partial & exported VGs to be destroyed. */
 	/* We must have -ff to overwrite a non orphan */
-	if (pv && pv->vg_name[0] && arg_count(cmd, force_ARG) != 2) {
+	if (pv && !is_orphan(pv) && arg_count(cmd, force_ARG) != 2) {
 		log_error("Can't initialize physical volume \"%s\" of "
-			  "volume group \"%s\" without -ff", name, pv->vg_name);
+			  "volume group \"%s\" without -ff", name, get_pv_vg_name(pv));
 		return 0;
 	}
 
 	/* prompt */
-	if (pv && pv->vg_name[0] && !arg_count(cmd, yes_ARG) &&
-	    yes_no_prompt(_really_init, name, pv->vg_name) == 'n') {
+	if (pv && !is_orphan(pv) && !arg_count(cmd, yes_ARG) &&
+	    yes_no_prompt(_really_init, name, get_pv_vg_name(pv)) == 'n') {
 		log_print("%s: physical volume not initialized", name);
 		return 0;
 	}
+
+	if (sigint_caught())
+		return 0;
 
 	dev = dev_cache_get(name, cmd->filter);
 
@@ -103,12 +106,15 @@ static int pvcreate_check(struct cmd_context *cmd, const char *name)
 		}
 	}
 
-	if (pv && pv->vg_name[0] && arg_count(cmd, force_ARG)) {
+	if (sigint_caught())
+		return 0;
+
+	if (pv && !is_orphan(pv) && arg_count(cmd, force_ARG)) {
 		log_print("WARNING: Forcing physical volume creation on "
 			  "%s%s%s%s", name,
-			  pv->vg_name[0] ? " of volume group \"" : "",
-			  pv->vg_name[0] ? pv->vg_name : "",
-			  pv->vg_name[0] ? "\"" : "");
+			  !is_orphan(pv) ? " of volume group \"" : "",
+			  !is_orphan(pv) ? get_pv_vg_name(pv) : "",
+			  !is_orphan(pv) ? "\"" : "");
 	}
 
 	return 1;
@@ -118,7 +124,8 @@ static int pvcreate_single(struct cmd_context *cmd, const char *pv_name,
 			   void *handle)
 {
 	struct pvcreate_params *pp = (struct pvcreate_params *) handle;
-	struct physical_volume *pv, *existing_pv;
+	void *pv;
+	void *existing_pv;
 	struct id id, *idp = NULL;
 	const char *uuid = NULL;
 	uint64_t size = 0;
@@ -159,9 +166,9 @@ static int pvcreate_single(struct cmd_context *cmd, const char *pv_name,
 				  uuid, restorefile);
 			return ECMD_FAILED;
 		}
-		pe_start = existing_pv->pe_start;
-		extent_size = existing_pv->pe_size;
-		extent_count = existing_pv->pe_count;
+		pe_start = get_pv_pe_start(existing_pv);
+		extent_size = get_pv_pe_size(existing_pv);
+		extent_count = get_pv_pe_count(existing_pv);
 	}
 
 	if (!lock_vol(cmd, ORPHAN, LCK_VG_WRITE)) {
@@ -170,6 +177,9 @@ static int pvcreate_single(struct cmd_context *cmd, const char *pv_name,
 	}
 
 	if (!pvcreate_check(cmd, pv_name))
+		goto error;
+
+	if (sigint_caught())
 		goto error;
 
 	if (arg_sign_value(cmd, physicalvolumesize_ARG, 0) == SIGN_MINUS) {
@@ -210,10 +220,10 @@ static int pvcreate_single(struct cmd_context *cmd, const char *pv_name,
 	}
 
 	log_verbose("Set up physical volume for \"%s\" with %" PRIu64
-		    " available sectors", pv_name, pv->size);
+		    " available sectors", pv_name, get_pv_size(pv));
 
 	/* Wipe existing label first */
-	if (!label_remove(pv->dev)) {
+	if (!label_remove(get_pv_dev(pv))) {
 		log_error("Failed to wipe existing label on %s", pv_name);
 		goto error;
 	}
@@ -235,7 +245,8 @@ static int pvcreate_single(struct cmd_context *cmd, const char *pv_name,
 
 	log_very_verbose("Writing physical volume data to disk \"%s\"",
 			 pv_name);
-	if (!(pv_write(cmd, pv, &mdas, arg_int64_value(cmd, labelsector_ARG,
+	if (!(pv_write(cmd, (struct physical_volume *)pv, &mdas,
+		       arg_int64_value(cmd, labelsector_ARG,
 						       DEFAULT_LABELSECTOR)))) {
 		log_error("Failed to write physical volume \"%s\"", pv_name);
 		goto error;
@@ -307,6 +318,8 @@ int pvcreate(struct cmd_context *cmd, int argc, char **argv)
 		r = pvcreate_single(cmd, argv[i], &pp);
 		if (r > ret)
 			ret = r;
+		if (sigint_caught())
+			return ret;
 	}
 
 	return ret;

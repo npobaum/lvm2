@@ -185,7 +185,7 @@ static int _make_vg_consistent(struct cmd_context *cmd, struct volume_group *vg)
 				/* FIXME Also check for segs on deleted LVs */
 
 				pv = seg_pv(seg, s);
-				if (!pv || !pv->dev) {
+				if (!pv || !get_pv_dev(pv)) {
 					if (arg_count(cmd, mirrorsonly_ARG) &&
 					    !(lv->status & MIRROR_IMAGE)) {
 						log_error("Non-mirror-image LV %s found: can't remove.", lv->name);
@@ -365,9 +365,9 @@ static int _vgreduce_single(struct cmd_context *cmd, struct volume_group *vg,
 			    void *handle __attribute((unused)))
 {
 	struct pv_list *pvl;
-	const char *name = dev_name(pv->dev);
+	const char *name = dev_name(get_pv_dev(pv));
 
-	if (pv->pe_alloc_count) {
+	if (get_pv_pe_alloc_count(pv)) {
 		log_error("Physical volume \"%s\" still in use", name);
 		return ECMD_FAILED;
 	}
@@ -391,14 +391,14 @@ static int _vgreduce_single(struct cmd_context *cmd, struct volume_group *vg,
 	pv->vg_name = ORPHAN;
 	pv->status = ALLOCATABLE_PV;
 
-	if (!dev_get_size(pv->dev, &pv->size)) {
-		log_error("%s: Couldn't get size.", dev_name(pv->dev));
+	if (!dev_get_size(get_pv_dev(pv), &pv->size)) {
+		log_error("%s: Couldn't get size.", dev_name(get_pv_dev(pv)));
 		return ECMD_FAILED;
 	}
 
 	vg->pv_count--;
-	vg->free_count -= pv->pe_count - pv->pe_alloc_count;
-	vg->extent_count -= pv->pe_count;
+	vg->free_count -= get_pv_pe_count(pv) - get_pv_pe_alloc_count(pv);
+	vg->extent_count -= get_pv_pe_count(pv);
 
 	if (!vg_write(vg) || !vg_commit(vg)) {
 		log_error("Removal of physical volume \"%s\" from "
@@ -484,9 +484,7 @@ int vgreduce(struct cmd_context *cmd, int argc, char **argv)
 		return ECMD_FAILED;
 	}
 
-	if (vg && (vg->status & CLUSTERED) && !locking_is_clustered() &&
-	    !lockingfailed()) {
-		log_error("Skipping clustered volume group %s", vg->name);
+	if (vg && !vg_check_status(vg, CLUSTERED)) {
 		unlock_vg(cmd, vg_name);
 		return ECMD_FAILED;
 	}
@@ -506,10 +504,7 @@ int vgreduce(struct cmd_context *cmd, int argc, char **argv)
 			unlock_vg(cmd, vg_name);
 			return ECMD_FAILED;
 		}
-		if ((vg->status & CLUSTERED) && !locking_is_clustered() &&
-		    !lockingfailed()) {
-			log_error("Skipping clustered volume group %s",
-				  vg->name);
+		if (!vg_check_status(vg, CLUSTERED)) {
 			unlock_vg(cmd, vg_name);
 			return ECMD_FAILED;
 		}

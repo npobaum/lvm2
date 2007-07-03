@@ -31,7 +31,7 @@ enum {
 struct config_value {
 	int type;
 	union {
-		int i;
+		int64_t i;
 		float r;
 		char *str;
 	} v;
@@ -107,5 +107,7 @@ int get_config_uint64(const struct config_node *cn, const char *path,
 
 int get_config_str(const struct config_node *cn, const char *path,
 		   char **result);
+
+unsigned maybe_config_section(const char *str, unsigned len);
 
 #endif

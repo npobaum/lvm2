@@ -373,6 +373,7 @@ char yes_no_prompt(const char *prompt, ...)
 	int c = 0, ret = 0;
 	va_list ap;
 
+	sigint_allow();
 	do {
 		if (c == '\n' || !c) {
 			va_start(ap, prompt);
@@ -389,6 +390,8 @@ char yes_no_prompt(const char *prompt, ...)
 		if ((c == 'y') || (c == 'n'))
 			ret = c;
 	} while (!ret || c != '\n');
+
+	sigint_restore();
 
 	if (c != '\n')
 		printf("\n");
@@ -827,30 +830,30 @@ static char *_copy_command_line(struct cmd_context *cmd, int argc, char **argv)
 	 * description for backups.
 	 */
 	if (!dm_pool_begin_object(cmd->mem, 128))
-		goto bad;
+		goto_bad;
 
 	for (i = 0; i < argc; i++) {
 		space = strchr(argv[i], ' ') ? 1 : 0;
 
 		if (space && !dm_pool_grow_object(cmd->mem, "'", 1))
-			goto bad;
+			goto_bad;
 
 		if (!dm_pool_grow_object(cmd->mem, argv[i], strlen(argv[i])))
-			goto bad;
+			goto_bad;
 
 		if (space && !dm_pool_grow_object(cmd->mem, "'", 1))
-			goto bad;
+			goto_bad;
 
 		if (i < (argc - 1))
 			if (!dm_pool_grow_object(cmd->mem, " ", 1))
-				goto bad;
+				goto_bad;
 	}
 
 	/*
 	 * Terminate.
 	 */
 	if (!dm_pool_grow_object(cmd->mem, "\0", 1))
-		goto bad;
+		goto_bad;
 
 	return dm_pool_end_object(cmd->mem);
 
@@ -864,6 +867,9 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 {
 	int ret = 0;
 	int locking_type;
+
+	/* each command should start out with sigint flag cleared */
+	sigint_clear();
 
 	if (!(cmd->cmd_line = _copy_command_line(cmd, argc, argv)))
 		return ECMD_FAILED;

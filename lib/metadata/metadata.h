@@ -142,6 +142,7 @@ struct physical_volume {
 	struct list tags;
 };
 
+typedef struct physical_volume pv_t;
 struct metadata_area;
 struct format_instance;
 
@@ -178,6 +179,17 @@ struct metadata_area_ops {
 			  struct volume_group * vg, struct metadata_area * mda);
 	int (*vg_remove) (struct format_instance * fi, struct volume_group * vg,
 			  struct metadata_area * mda);
+	/*
+	 * Check if metadata area belongs to vg
+	 */
+	int (*mda_in_vg) (struct format_instance * fi,
+			    struct volume_group * vg, struct metadata_area *mda);
+	/*
+	 * Analyze a metadata area on a PV.
+	 */
+	int (*pv_analyze_mda) (const struct format_type * fmt,
+			       struct metadata_area *mda);
+
 };
 
 struct metadata_area {
@@ -424,20 +436,23 @@ struct list *get_vgids(struct cmd_context *cmd, int full_scan);
 int pv_write(struct cmd_context *cmd, struct physical_volume *pv,
 	     struct list *mdas, int64_t label_sector);
 int pv_write_orphan(struct cmd_context *cmd, struct physical_volume *pv);
+int is_orphan(pv_t *pv);
 
 /* pe_start and pe_end relate to any existing data so that new metadata
  * areas can avoid overlap */
-struct physical_volume *pv_create(const struct format_type *fmt,
-				  struct device *dev,
-				  struct id *id,
-				  uint64_t size,
-				  uint64_t pe_start,
-				  uint32_t existing_extent_count,
-				  uint32_t existing_extent_size,
-				  int pvmetadatacopies,
-				  uint64_t pvmetadatasize, struct list *mdas);
+pv_t *pv_create(const struct format_type *fmt,
+		      struct device *dev,
+		      struct id *id,
+		      uint64_t size,
+		      uint64_t pe_start,
+		      uint32_t existing_extent_count,
+		      uint32_t existing_extent_size,
+		      int pvmetadatacopies,
+		      uint64_t pvmetadatasize, struct list *mdas);
 int pv_resize(struct physical_volume *pv, struct volume_group *vg,
               uint32_t new_pe_count);
+int pv_analyze(struct cmd_context *cmd, const char *pv_name,
+	       int64_t label_sector);
 
 struct volume_group *vg_create(struct cmd_context *cmd, const char *name,
 			       uint32_t extent_size, uint32_t max_pv,
@@ -450,6 +465,8 @@ int vg_extend(struct format_instance *fi, struct volume_group *vg,
 	      int pv_count, char **pv_names);
 int vg_change_pesize(struct cmd_context *cmd, struct volume_group *vg,
 		     uint32_t new_extent_size);
+int vg_split_mdas(struct cmd_context *cmd, struct volume_group *vg_from,
+		  struct volume_group *vg_to);
 
 /* Manipulate LVs */
 struct logical_volume *lv_create_empty(struct format_instance *fi,
@@ -485,8 +502,7 @@ struct physical_volume *pv_find(struct volume_group *vg, const char *pv_name);
 
 /* Find a PV within a given VG */
 struct pv_list *find_pv_in_vg(struct volume_group *vg, const char *pv_name);
-struct physical_volume *find_pv_in_vg_by_uuid(struct volume_group *vg,
-					      struct id *id);
+pv_t *find_pv_in_vg_by_uuid(struct volume_group *vg, struct id *id);
 int get_pv_from_vg_by_id(const struct format_type *fmt, const char *vg_name,
 			 const char *vgid, const char *pvid,
 			 struct physical_volume *pv);
@@ -563,6 +579,8 @@ int vg_add_snapshot(struct format_instance *fid, const char *name,
 
 int vg_remove_snapshot(struct logical_volume *cow);
 
+int vg_check_status(struct volume_group *vg, uint32_t status_flags);
+
 /*
  * Mirroring functions
  */
@@ -617,5 +635,20 @@ struct list *lvs_using_lv(struct cmd_context *cmd, struct volume_group *vg,
 uint32_t find_free_lvnum(struct logical_volume *lv);
 char *generate_lv_name(struct volume_group *vg, const char *format,
 		       char *buffer, size_t len);
+
+/*
+ * Gets/Sets for external LVM library
+ */
+struct id get_pv_id(pv_t *pv);
+const struct format_type *get_pv_format_type(pv_t *pv);
+struct id get_pv_vgid(pv_t *pv);
+struct device *get_pv_dev(pv_t *pv);
+const char *get_pv_vg_name(pv_t *pv);
+uint64_t get_pv_size(pv_t *pv);
+uint32_t get_pv_status(pv_t *pv);
+uint32_t get_pv_pe_size(pv_t *pv);
+uint64_t get_pv_pe_start(pv_t *pv);
+uint32_t get_pv_pe_count(pv_t *pv);
+uint32_t get_pv_pe_alloc_count(pv_t *pv);
 
 #endif

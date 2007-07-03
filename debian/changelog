@@ -1,3 +1,30 @@
+lvm2 (2.02.26-1ubuntu1) gutsy; urgency=low
+
+  * Merge from debian unstable, remaining changes:
+    - Drop libccs-dev/libgulm-dev Build-Dep
+    - Keep clvm around and all related bits (init, defaults, etc)
+    - scan and activate new volumes whenever udev detects a new block device
+      containing LVM metadata
+    - compile with -fno-stack-protector
+    - clvm depends on cman, rather than suggests, and don't support fence
+    - remove lvm2 init script, since it clashes with our udev rules
+    - make initramfs hook prereq on udev
+    - copy the lvm binary and udev rules across
+    - load the dm-mod, dm-snapshot and dm-mirror modules
+    - Depend on both udev and initramfs-tools
+    - Build-Deps on a newer devmapper
+    - Ubuntu maintainer foobar
+    - copy lvm2.po to lvm2.pot for Rosetta
+
+ -- Fabio M. Di Nitto <fabbione@ubuntu.com>  Tue, 03 Jul 2007 08:20:30 +0200
+
+lvm2 (2.02.26-1) unstable; urgency=low
+
+  * New upstream release.
+  * Drop clvm for now.
+
+ -- Bastian Blank <waldi@debian.org>  Fri, 22 Jun 2007 11:33:50 +0000
+
 lvm2 (2.02.24-6ubuntu3) gutsy; urgency=low
 
   * Drop libccs-dev Build-Dep:
