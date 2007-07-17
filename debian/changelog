@@ -1,3 +1,9 @@
+lvm2 (2.02.26-1ubuntu2) gutsy; urgency=low
+  
+  * Make lvm2 recognize SUN's LDOM virtual disks.
+
+ -- Fabio M. Di Nitto <fabbione@ubuntu.com>  Tue, 17 Jul 2007 09:37:50 +0200
+
 lvm2 (2.02.26-1ubuntu1) gutsy; urgency=low
 
   * Merge from debian unstable, remaining changes:
