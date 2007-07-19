@@ -9,10 +9,9 @@ Standards-Version: 3.6.2
 
 Package: lvm2
 Architecture: any
-Depends: ${shlibs:Depends}, udev (>= 111-0ubuntu1), initramfs-tools (>= 0.85eubuntu11)
+Depends: ${shlibs:Depends}, udev (>= 111-0ubuntu1), initramfs-tools (>= 0.85eubuntu11), dmsetup
 Conflicts: lvm-common
 Replaces: lvm-common
-Suggests: dmsetup
 Description: The Linux Logical Volume Manager
  This is LVM2, the rewrite of The Linux Logical Volume Manager.  LVM
  supports enterprise level volume management of disk and disk subsystems

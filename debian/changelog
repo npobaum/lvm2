@@ -1,3 +1,10 @@
+lvm2 (2.02.26-1ubuntu4) gutsy; urgency=low
+
+  * Bump dmsetup Suggests: to a Depends:, since without it we do not get
+    /dev/disks/by-uuid/ and thus cannot mount anything. (LP: #126776)
+
+ -- Martin Pitt <martin.pitt@ubuntu.com>  Thu, 19 Jul 2007 16:55:25 +0200
+
 lvm2 (2.02.26-1ubuntu3) gutsy; urgency=low
 
   * Max partitions for vdisk is 8 and not 16.
