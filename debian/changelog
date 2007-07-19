@@ -1,3 +1,9 @@
+lvm2 (2.02.26-1ubuntu3) gutsy; urgency=low
+
+  * Max partitions for vdisk is 8 and not 16.
+
+ -- Fabio M. Di Nitto <fabbione@ubuntu.com>  Thu, 19 Jul 2007 07:32:59 +0200
+
 lvm2 (2.02.26-1ubuntu2) gutsy; urgency=low
   
   * Make lvm2 recognize SUN's LDOM virtual disks.
