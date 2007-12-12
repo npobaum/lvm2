@@ -1,0 +1,17 @@
+#
+# Debian: http://bugs.debian.org/cgi-bin/bugreport.cgi?bug=455976
+# Description: drop build-dependencies on libccs-dev and libgulm-dev because
+# gulm locking is obsolete
+#
+diff -u lvm2-2.02.26/debian/control lvm2-2.02.26/debian/control
+--- lvm2-2.02.26/debian/control
++++ lvm2-2.02.26/debian/control
+@@ -1,7 +1,7 @@
+ Priority: optional
+ Maintainer: Debian LVM Team <pkg-lvm-maintainers@lists.alioth.debian.org>
+ Uploaders: Bastian Blank <waldi@debian.org>
+-Build-Depends: debhelper (>> 4.2), libdevmapper-dev (>> 2:1.02.20), autotools-dev, libccs-dev, libcman-dev, libdlm-dev (>> 1.02.00), libgulm-dev, libselinux1-dev, libreadline5-dev
++Build-Depends: debhelper (>> 4.2), libdevmapper-dev (>> 2:1.02.20), autotools-dev, libcman-dev, libdlm-dev (>> 1.02.00), libselinux1-dev, libreadline5-dev
+ Standards-Version: 3.6.2
+ 
+ Package: lvm2

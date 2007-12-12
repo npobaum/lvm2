@@ -26,8 +26,6 @@ ifneq (,$(findstring $(DEB_HOST_ARCH), arm armeb hppa mips mipsel))
 CONFIGURE_FLAGS += --disable-o_direct
 endif
 
-CFLAGS += -fno-stack-protector
-
 BUILD_DIR = debian/build
 
 PACKAGES_DEB = lvm2 clvm
