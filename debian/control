@@ -4,7 +4,7 @@ Priority: optional
 Maintainer: Ubuntu Core developers <ubuntu-devel-discuss@lists.ubuntu.com>
 XSBC-Original-Maintainer: Debian LVM Team <pkg-lvm-maintainers@lists.alioth.debian.org>
 Uploaders: Bastian Blank <waldi@debian.org>
-Build-Depends: debhelper (>> 4.2), libdevmapper-dev (>> 2:1.02.20), autotools-dev, libcman-dev (>= 2.0), libdlm-dev (>> 2.0), libselinux1-dev, libreadline5-dev
+Build-Depends: debhelper (>> 4.2), libdevmapper-dev (>> 2:1.02.20), autotools-dev, libcman-dev, libdlm-dev (>> 1.02.00), libselinux1-dev, libreadline5-dev
 Standards-Version: 3.6.2
 
 Package: lvm2

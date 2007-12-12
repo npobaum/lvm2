@@ -1,0 +1,128 @@
+#
+# Debian: http://bugs.debian.org/cgi-bin/bugreport.cgi?bug=455978
+# Description: enable cluster support and build clvm daemon placing it in
+# a separate clvm package
+# 
+--- lvm2-2.02.26/debian/control
++++ lvm2-2.02.26/debian/control
+@@ -35,0 +36,9 @@
++Package: clvm
++Section: admin
++Priority: extra
++Architecture: any
++Depends: ${shlibs:Depends}, lvm2 (>> 2.0.23), cman
++Description: Cluster LVM Daemon for lvm2
++ This package provides the clustering interface for lvm2, when used with 
++ Red Hat's "cman" cluster infrastructure. It allows logical volumes to
++ be created on shared storage devices (eg Fibre Channel, or iSCSI). 
+--- lvm2-2.02.26/debian/rules
++++ lvm2-2.02.26/debian/rules
+@@ -28,7 +28,7 @@
+ 
+ BUILD_DIR = debian/build
+ 
+-PACKAGES_DEB = lvm2
++PACKAGES_DEB = lvm2 clvm
+ PACKAGES_UDEB = lvm2-udeb
+ 
+ $(BUILD_DIR)/build-deb/config.status: DIR = $(BUILD_DIR)/build-deb
+@@ -41,8 +41,9 @@
+ 	cp --remove-destination /usr/share/misc/config.sub /usr/share/misc/config.guess $(DIR)/autoconf
+ 	cd $(DIR); \
+ 	./configure CFLAGS="$(CFLAGS)" $(CONFIGURE_FLAGS) \
+-		--with-cluster=none \
++		--with-cluster=shared \
++		--with-clvmd=cman \
+ 		--enable-readline
+ 
+ $(BUILD_DIR)/build-udeb/config.status: DIR = $(BUILD_DIR)/build-udeb
+ $(BUILD_DIR)/build-udeb/config.status:
+@@ -130,6 +134,7 @@
+ #	dh_installpam -a
+ #	dh_installmime -a
+ 	dh_installinit -plvm2 --no-start -- start 26 S . start 50 0 6 .
++	dh_installinit -p clvm --no-restart-on-upgrade -- start 65 S . start 3 0 6 .
+ #	dh_installcron -a
+ #	dh_installman -a
+ #	dh_installinfo -a
+--- lvm2-2.02.26.orig/debian/clvm.default
++++ lvm2-2.02.26/debian/clvm.default
+@@ -0,0 +1,3 @@
++# Specify how many seconds the init script should wait
++# for other nodes of the cluster to join before giving up.
++# CLVMDTIMEOUT=60
+--- lvm2-2.02.26.orig/debian/clvm.init
++++ lvm2-2.02.26/debian/clvm.init
+@@ -0,0 +1,72 @@
++#! /bin/sh
++
++PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
++DAEMON=/sbin/clvmd
++NAME=clvmd
++DESC="Cluster LVM Daemon"
++
++test -x $DAEMON || exit 0
++
++if [ -f /etc/default/clvm ] ; then
++	. /etc/default/clvm
++fi
++
++[ -n "$CLVMDTIMEOUT" ] || CLVMDTIMEOUT=60
++
++if [ ! -f /etc/cluster/cluster.conf ]; then
++	echo "clvmd: cluster not configured. Aborting."
++	exit 0
++fi
++
++if ! cman_tool status >/dev/null; then
++	echo "clvmd: cluster is not running. Aborting."
++	exit 0
++fi
++
++set -e
++
++wait_for_nodes() {
++	vgscan > /dev/null 2>&1
++	wait=0
++	while [ -n "$(vgchange -a y 2>&1 |grep "clvmd not running")" ]; do
++		if [ $wait -lt $CLVMDTIMEOUT ]; then
++			echo "clvmd: Waiting for other nodes to join the cluster.."
++			sleep 3
++			wait=$(($wait + 3))
++		else
++			echo "failed."
++			exit 1
++		fi
++	done
++	echo "done."
++	exit 0
++}
++
++case "$1" in
++  start)
++	echo -n "Starting $DESC "
++	if start-stop-daemon --start --quiet --exec $DAEMON -- $DAEMON_OPTS; then
++		wait_for_nodes
++	fi
++	;;
++  stop)
++	echo -n "Stopping $DESC "
++	start-stop-daemon --stop --oknodo --quiet --exec $DAEMON
++	echo "done."
++	;;
++  reload|restart|force-reload)
++	echo -n "Restarting $DESC "
++	start-stop-daemon --stop --oknodo --quiet --exec $DAEMON
++	sleep 1
++	if start-stop-daemon --start --oknodo --quiet --exec $DAEMON -- $DAEMON_OPTS; then
++		wait_for_nodes
++	fi
++	;;
++  *)
++	N=/etc/init.d/$NAME
++	echo "Usage: $N {start|stop|restart|reload|force-reload}" >&2
++	exit 1
++	;;
++esac
++
++exit 0

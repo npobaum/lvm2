@@ -1,3 +1,27 @@
+lvm2 (2.02.26-1ubuntu5) hardy; urgency=low
+
+  * Changes from Debian audited, remaining changes:
+    - Recognise SUN's LDOM virtual block devices.
+      (forwarded upstream and to Debian #455975).
+    - Drop build-dependencies on libccs-dev and libgulm-dev since gulm
+      locking is obsolete.
+      (forwarded to Debian #455976).
+    - Separate clvm package.
+      (forwarded to Debian #455978).
+    - Use udev to activate new LVM physical volumes, and thus volume groups
+      and logical volumes.
+      (forwarded to Debian #455979).
+    - Copy lvm2.po to lvm2.pot for Rosetta.
+    - Migrate configuration files from earlier Ubuntu versions.
+
+  * Drop compilation without stack protector, no bugs are referenced as
+    justification for that change.
+  * Drop higher build requirements on libdlm-dev since we don't actually
+    seem to have any patch that necessitates it (it builds fine with either,
+    so just build with whatever we have).
+
+ -- Scott James Remnant <scott@ubuntu.com>  Wed, 12 Dec 2007 18:15:39 +0000
+
 lvm2 (2.02.26-1ubuntu4) gutsy; urgency=low
 
   * Bump dmsetup Suggests: to a Depends:, since without it we do not get
