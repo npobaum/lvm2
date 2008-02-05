@@ -1,3 +1,11 @@
+lvm2 (2.02.26-1ubuntu6) hardy; urgency=low
+
+  * Create init-premount hook script for the initramfs, to provide
+    information at boot, if the root device is not functional.
+  * Tighten initramfs-tools dependency.
+
+ -- Luke Yelavich <themuso@ubuntu.com>  Tue, 05 Feb 2008 14:16:36 +1100
+
 lvm2 (2.02.26-1ubuntu5) hardy; urgency=low
 
   * Changes from Debian audited, remaining changes:

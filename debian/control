@@ -9,7 +9,7 @@ Standards-Version: 3.6.2
 
 Package: lvm2
 Architecture: any
-Depends: ${shlibs:Depends}, udev (>= 111-0ubuntu1), initramfs-tools (>= 0.85eubuntu11), dmsetup
+Depends: ${shlibs:Depends}, udev (>= 111-0ubuntu1), initramfs-tools (>= 0.85eubuntu24), dmsetup
 Conflicts: lvm-common
 Replaces: lvm-common
 Description: The Linux Logical Volume Manager
