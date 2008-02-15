@@ -1,3 +1,10 @@
+lvm2 (2.02.26-1ubuntu7) hardy; urgency=low
+
+  * debian/initramfs-tools/scripts/init-premount/lvm2:
+    /sbin/mdadm -> /sbin/lvm (Thanks Kees.)
+
+ -- Luke Yelavich <luke.yelavich@canonical.com>  Fri, 15 Feb 2008 12:28:14 +1100
+
 lvm2 (2.02.26-1ubuntu6) hardy; urgency=low
 
   * Create init-premount hook script for the initramfs, to provide
