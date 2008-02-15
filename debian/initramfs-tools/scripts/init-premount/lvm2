@@ -10,7 +10,7 @@ prereqs()
 
 mountroot_fail()
 {
-	if ! /sbin/mdadm vgscan 2> /dev/null ; then
+	if ! /sbin/lvm vgscan 2> /dev/null ; then
 		cat <<EOF
 There appears to be one or more degraded LVM volumes, and your root device may
 depend on the LVM volumes being online. One or more of the following LVM volumes
