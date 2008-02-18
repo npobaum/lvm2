@@ -1,3 +1,10 @@
+lvm2 (2.02.26-1ubuntu8) hardy; urgency=low
+
+  * debian/initramfs-tools/scripts/init-premount/lvm2: Ensure we exit if
+    the script is called with mountfail.
+
+ -- Luke Yelavich <luke.yelavich@canonical.com>  Mon, 18 Feb 2008 11:56:54 +1100
+
 lvm2 (2.02.26-1ubuntu7) hardy; urgency=low
 
   * debian/initramfs-tools/scripts/init-premount/lvm2:
