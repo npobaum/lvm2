@@ -29,6 +29,7 @@ prereqs)
 	;;
 mountfail)
 	mountroot_fail
+	exit 0
 	;;
 esac
 
