@@ -76,6 +76,7 @@ static const device_info_t device_info[] = {
 	{"device-mapper", 1},	/* Other mapped devices */
 	{"xvd", 16},		/* Xen virtual block device */
 	{"vdisk", 8},		/* SUN's LDOM virtual block device */
+	{"virtblk", 8},         /* VirtIO disk */
 	{NULL, 0}
 };
 
