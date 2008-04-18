@@ -1,3 +1,10 @@
+lvm2 (2.02.26-1ubuntu9) hardy; urgency=low
+
+  * Include virtio block type in the filters. (LP: #218574)
+    This change is included upstream in 2.02.34.
+
+ -- James Westby <james.westby@canonical.com>  Fri, 18 Apr 2008 14:08:56 +0100
+
 lvm2 (2.02.26-1ubuntu8) hardy; urgency=low
 
   * debian/initramfs-tools/scripts/init-premount/lvm2: Ensure we exit if
