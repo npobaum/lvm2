@@ -1,14 +1,14 @@
 /*
- * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved. 
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -35,8 +35,8 @@ static int lvchange_permission(struct cmd_context *cmd,
 		return 0;
 	}
 
-	if ((lv->status & MIRRORED) && (lv->vg->status & CLUSTERED) &&
-	    lv_info(cmd, lv, &info, 0) && info.exists) {
+	if ((lv->status & MIRRORED) && (vg_is_clustered(lv->vg)) &&
+	    lv_info(cmd, lv, &info, 0, 0) && info.exists) {
 		log_error("Cannot change permissions of mirror \"%s\" "
 			  "while active.", lv->name);
 		return 0;
@@ -53,10 +53,8 @@ static int lvchange_permission(struct cmd_context *cmd,
 	}
 
 	log_very_verbose("Updating logical volume \"%s\" on disk(s)", lv->name);
-	if (!vg_write(lv->vg)) {
-		stack;
-		return 0;
-	}
+	if (!vg_write(lv->vg))
+		return_0;
 
 	backup(lv->vg);
 
@@ -85,7 +83,7 @@ static int lvchange_monitoring(struct cmd_context *cmd,
 {
 	struct lvinfo info;
 
-	if (!lv_info(cmd, lv, &info, 0) || !info.exists) {
+	if (!lv_info(cmd, lv, &info, 0, 0) || !info.exists) {
 		log_error("Logical volume, %s, is not active", lv->name);
 		return 0;
 	}
@@ -106,24 +104,22 @@ static int lvchange_availability(struct cmd_context *cmd,
 {
 	int activate;
 	const char *pvname;
+	char *lv_full_name;
+	uint32_t len;
 
 	activate = arg_uint_value(cmd, available_ARG, 0);
 
 	if (activate == CHANGE_ALN) {
 		log_verbose("Deactivating logical volume \"%s\" locally",
 			    lv->name);
-		if (!deactivate_lv_local(cmd, lv)) {
-			stack;
-			return 0;
-		}
+		if (!deactivate_lv_local(cmd, lv))
+			return_0;
 	} else if (activate == CHANGE_AN) {
 		log_verbose("Deactivating logical volume \"%s\"", lv->name);
-		if (!deactivate_lv(cmd, lv)) {
-			stack;
-			return 0;
-		}
+		if (!deactivate_lv(cmd, lv))
+			return_0;
 	} else {
-		if (lockingfailed() && (lv->vg->status & CLUSTERED)) {
+		if (lockingfailed() && (vg_is_clustered(lv->vg))) {
 			log_verbose("Locking failed: ignoring clustered "
 				    "logical volume %s", lv->name);
 			return 0;
@@ -132,24 +128,18 @@ static int lvchange_availability(struct cmd_context *cmd,
 		if (lv_is_origin(lv) || (activate == CHANGE_AE)) {
 			log_verbose("Activating logical volume \"%s\" "
 				    "exclusively", lv->name);
-			if (!activate_lv_excl(cmd, lv)) {
-				stack;
-				return 0;
-			}
+			if (!activate_lv_excl(cmd, lv))
+				return_0;
 		} else if (activate == CHANGE_ALY) {
 			log_verbose("Activating logical volume \"%s\" locally",
 				    lv->name);
-			if (!activate_lv_local(cmd, lv)) {
-				stack;
-				return 0;
-			}
+			if (!activate_lv_local(cmd, lv))
+				return_0;
 		} else {
 			log_verbose("Activating logical volume \"%s\"",
 				    lv->name);
-			if (!activate_lv(cmd, lv)) {
-				stack;
-				return 0;
-			}
+			if (!activate_lv(cmd, lv))
+				return_0;
 		}
 
 		if ((lv->status & LOCKED) &&
@@ -157,6 +147,18 @@ static int lvchange_availability(struct cmd_context *cmd,
 			log_verbose("Spawning background pvmove process for %s",
 				    pvname);
 			pvmove_poll(cmd, pvname, 1);
+		}
+
+		if (lv->status & CONVERTING) {
+			len = strlen(lv->vg->name) + strlen(lv->name) + 2;
+			if (!(lv_full_name = alloca(len)))
+				return_0;
+			if (!dm_snprintf(lv_full_name, len, "%s/%s",
+					 lv->vg->name, lv->name))
+				return_0;
+			log_verbose("Spawning background lvconvert process for %s",
+				    lv->name);
+			lvconvert_poll(cmd, lv_full_name, 1);
 		}
 	}
 
@@ -176,6 +178,7 @@ static int lvchange_resync(struct cmd_context *cmd,
 			      struct logical_volume *lv)
 {
 	int active = 0;
+	int monitored;
 	struct lvinfo info;
 	struct logical_volume *log_lv;
 
@@ -195,7 +198,7 @@ static int lvchange_resync(struct cmd_context *cmd,
 		return 0;
 	}
 
-	if (lv_info(cmd, lv, &info, 1)) {
+	if (lv_info(cmd, lv, &info, 1, 0)) {
 		if (info.open_count) {
 			log_error("Can't resync open logical volume \"%s\"",
 				  lv->name);
@@ -219,7 +222,11 @@ static int lvchange_resync(struct cmd_context *cmd,
 		}
 	}
 
-	if ((lv->vg->status & CLUSTERED) && !activate_lv_excl(cmd, lv)) {
+	/* Activate exclusively to ensure no nodes still have LV active */
+	monitored = dmeventd_monitor_mode();
+	init_dmeventd_monitor(0);
+
+	if (vg_is_clustered(lv->vg) && !activate_lv_excl(cmd, lv)) {
 		log_error("Can't get exclusive access to clustered volume %s",
 			  lv->name);
 		return ECMD_FAILED;
@@ -230,11 +237,13 @@ static int lvchange_resync(struct cmd_context *cmd,
 		return 0;
 	}
 
+	init_dmeventd_monitor(monitored);
+
 	log_lv = first_seg(lv)->log_lv;
 
 	log_very_verbose("Starting resync of %s%s%s mirror \"%s\"",
 			 (active) ? "active " : "",
-			 (lv->vg->status & CLUSTERED) ? "clustered " : "",
+			 vg_is_clustered(lv->vg) ? "clustered " : "",
 			 (log_lv) ? "disk-logged" : "core-logged",
 			 lv->name);
 
@@ -257,19 +266,14 @@ static int lvchange_resync(struct cmd_context *cmd,
 
 	if (log_lv) {
 		/* Separate mirror log so we can clear it */
-		first_seg(lv)->log_lv = NULL;
-		log_lv->status &= ~MIRROR_LOG;
-		log_lv->status |= VISIBLE_LV;
+		detach_mirror_log(first_seg(lv));
 
 		if (!vg_write(lv->vg)) {
 			log_error("Failed to write intermediate VG metadata.");
-			if (active) {
-				first_seg(lv)->log_lv = log_lv;
-				log_lv->status |= MIRROR_LOG;
-				log_lv->status &= ~VISIBLE_LV;
-				if (!activate_lv(cmd, lv))
-					stack;
-			}
+			if (!attach_mirror_log(first_seg(lv), log_lv))
+				stack;
+			if (active && !activate_lv(cmd, lv))
+				stack;
 			return 0;
 		}
 
@@ -277,13 +281,10 @@ static int lvchange_resync(struct cmd_context *cmd,
 
 		if (!vg_commit(lv->vg)) {
 			log_error("Failed to commit intermediate VG metadata.");
-			if (active) {
-				first_seg(lv)->log_lv = log_lv;
-				log_lv->status |= MIRROR_LOG;
-				log_lv->status &= ~VISIBLE_LV;
-				if (!activate_lv(cmd, lv))
-					stack;
-			}
+			if (!attach_mirror_log(first_seg(lv), log_lv))
+				stack;
+			if (active && !activate_lv(cmd, lv))
+				stack;
 			return 0;
 		}
 
@@ -309,9 +310,8 @@ static int lvchange_resync(struct cmd_context *cmd,
 		}
 
 		/* Put mirror log back in place */
-		first_seg(lv)->log_lv = log_lv;
-		log_lv->status |= MIRROR_LOG;
-		log_lv->status &= ~VISIBLE_LV;
+		if (!attach_mirror_log(first_seg(lv), log_lv))
+			stack;
 	}
 
 	log_very_verbose("Updating logical volume \"%s\" on disk(s)", lv->name);
@@ -352,18 +352,14 @@ static int lvchange_alloc(struct cmd_context *cmd, struct logical_volume *lv)
 
 	log_very_verbose("Updating logical volume \"%s\" on disk(s)", lv->name);
 
-	if (!vg_write(lv->vg)) {
-		stack;
-		return 0;
-	}
+	if (!vg_write(lv->vg))
+		return_0;
 
 	backup(lv->vg);
 
 	/* No need to suspend LV for this change */
-	if (!vg_commit(lv->vg)) {
-		stack;
-		return 0;
-	}
+	if (!vg_commit(lv->vg))
+		return_0;
 
 	return 1;
 }
@@ -372,19 +368,30 @@ static int lvchange_readahead(struct cmd_context *cmd,
 			      struct logical_volume *lv)
 {
 	unsigned read_ahead = 0;
+	unsigned pagesize = (unsigned) lvm_getpagesize() >> SECTOR_SHIFT;
 
 	read_ahead = arg_uint_value(cmd, readahead_ARG, 0);
 
-/******* FIXME Ranges?
-	if (read_ahead < LVM_MIN_READ_AHEAD || read_ahead > LVM_MAX_READ_AHEAD) {
-		log_error("read ahead sector argument is invalid");
+	if (read_ahead != DM_READ_AHEAD_AUTO &&
+	    (lv->vg->fid->fmt->features & FMT_RESTRICTED_READAHEAD) &&
+	    (read_ahead < 2 || read_ahead > 120)) {
+		log_error("Metadata only supports readahead values between 2 and 120.");
 		return 0;
 	}
-********/
+
+	if (read_ahead != DM_READ_AHEAD_AUTO &&
+	    read_ahead != DM_READ_AHEAD_NONE && read_ahead % pagesize) {
+		read_ahead = (read_ahead / pagesize) * pagesize;
+		log_verbose("Rounding down readahead to %u sectors, a multiple "
+			    "of page size %u.", read_ahead, pagesize);
+	}
 
 	if (lv->read_ahead == read_ahead) {
-		log_error("Read ahead is already %u for \"%s\"",
-			  read_ahead, lv->name);
+		if (read_ahead == DM_READ_AHEAD_AUTO)
+			log_error("Read ahead is already auto for \"%s\"", lv->name);
+		else
+			log_error("Read ahead is already %u for \"%s\"",
+				  read_ahead, lv->name);
 		return 0;
 	}
 
@@ -394,10 +401,8 @@ static int lvchange_readahead(struct cmd_context *cmd,
 		    lv->name);
 
 	log_very_verbose("Updating logical volume \"%s\" on disk(s)", lv->name);
-	if (!vg_write(lv->vg)) {
-		stack;
-		return 0;
-	}
+	if (!vg_write(lv->vg))
+		return_0;
 
 	backup(lv->vg);
 
@@ -447,7 +452,7 @@ static int lvchange_persistent(struct cmd_context *cmd,
 			log_error("Major number must be specified with -My");
 			return 0;
 		}
-		if (lv_info(cmd, lv, &info, 0) && info.exists)
+		if (lv_info(cmd, lv, &info, 0, 0) && info.exists)
 			active = 1;
 		if (active && !arg_count(cmd, force_ARG) &&
 		    yes_no_prompt("Logical volume %s will be "
@@ -475,17 +480,13 @@ static int lvchange_persistent(struct cmd_context *cmd,
 	}
 
 	log_very_verbose("Updating logical volume \"%s\" on disk(s)", lv->name);
-	if (!vg_write(lv->vg)) {
-		stack;
-		return 0;
-	}
+	if (!vg_write(lv->vg))
+		return_0;
 
 	backup(lv->vg);
 
-	if (!vg_commit(lv->vg)) {
-		stack;
-		return 0;
-	}
+	if (!vg_commit(lv->vg))
+		return_0;
 
 	if (active) {
 		log_verbose("Re-activating logical volume \"%s\"", lv->name);
@@ -529,18 +530,14 @@ static int lvchange_tag(struct cmd_context *cmd, struct logical_volume *lv,
 	}
 
 	log_very_verbose("Updating logical volume \"%s\" on disk(s)", lv->name);
-	if (!vg_write(lv->vg)) {
-		stack;
-		return 0;
-	}
+	if (!vg_write(lv->vg))
+		return_0;
 
 	backup(lv->vg);
 
 	/* No need to suspend LV for this change */
-	if (!vg_commit(lv->vg)) {
-		stack;
-		return 0;
-	}
+	if (!vg_commit(lv->vg))
+		return_0;
 
 	return 1;
 }
@@ -600,7 +597,7 @@ static int lvchange_single(struct cmd_context *cmd, struct logical_volume *lv,
 	}
 
 	init_dmeventd_monitor(arg_int_value(cmd, monitor_ARG,
-					    cmd->is_static ?
+					    (cmd->is_static || arg_count(cmd, ignoremonitoring_ARG)) ?
 					    DMEVENTD_MONITOR_IGNORE : DEFAULT_DMEVENTD_MONITOR));
 
 	/* access permission change */

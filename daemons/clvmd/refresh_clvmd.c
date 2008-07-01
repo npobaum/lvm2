@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2002-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2006 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -46,7 +46,7 @@ typedef struct lvm_response {
 
 static int _clvmd_sock = -1;
 
-/* Open connection to the Cluster Manager daemon */
+/* Open connection to the clvm daemon */
 static int _open_local_sock(void)
 {
 	int local_socket;
@@ -80,7 +80,7 @@ static int _open_local_sock(void)
 }
 
 /* Send a request and return the status */
-static int _send_request(char *inbuf, int inlen, char **retbuf)
+static int _send_request(const char *inbuf, int inlen, char **retbuf)
 {
 	char outbuf[PIPE_BUF];
 	struct clvm_header *outheader = (struct clvm_header *) outbuf;
@@ -304,6 +304,49 @@ int refresh_clvmd()
 			errno = response[i].status;
 		} else if (response[i].status) {
 			fprintf(stderr, "Error resetting node %s: %s",
+				  response[i].node,
+				  response[i].response[0] ?
+				  	response[i].response :
+				  	strerror(response[i].status));
+			status = 0;
+			errno = response[i].status;
+		}
+	}
+
+	saved_errno = errno;
+	_cluster_free_request(response, num_responses);
+	errno = saved_errno;
+
+	return status;
+}
+
+int debug_clvmd(int level, int clusterwide)
+{
+	int num_responses;
+	char args[1];
+	const char *nodes;
+	lvm_response_t *response;
+	int saved_errno;
+	int status;
+	int i;
+
+	args[0] = level;
+	if (clusterwide)
+		nodes = "*";
+	else
+		nodes = ".";
+
+	status = _cluster_request(CLVMD_CMD_SET_DEBUG, nodes, args, 1, &response, &num_responses);
+
+	/* If any nodes were down then display them and return an error */
+	for (i = 0; i < num_responses; i++) {
+		if (response[i].status == EHOSTDOWN) {
+			fprintf(stderr, "clvmd not running on node %s",
+				  response[i].node);
+			status = 0;
+			errno = response[i].status;
+		} else if (response[i].status) {
+			fprintf(stderr, "Error setting debug on node %s: %s",
 				  response[i].node,
 				  response[i].response[0] ?
 				  	response[i].response :

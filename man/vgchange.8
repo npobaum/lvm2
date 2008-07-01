@@ -11,11 +11,13 @@ vgchange \- change attributes of a volume group
 .RB [ \-a | \-\-available " [e|l] {" y | n }]
 .RB [ \-\-monitor " {" y | n }]
 .RB [ \-c | \-\-clustered " {" y | n }]
+.RB [ \-u | \-\-uuid ]
 .RB [ \-d | \-\-debug]
 .RB [ \-\-deltag
 .IR Tag ]
 .RB [ \-h | \-\-help]
 .RB [ \-\-ignorelockingfailure]
+.RB [ \-\-ignoremonitoring]
 .RB [ \-l | \-\-logicalvolume
 .IR MaxLogicalVolumes ]
 .RB [ -p | \-\-maxphysicalvolumes
@@ -69,6 +71,9 @@ If the cluster infrastructure is unavailable on a particular node at a
 particular time, you may still be able to use Volume Groups that
 are not marked as clustered.
 .TP
+.BR \-u ", " \-\-uuid
+Generate new random UUID for specified Volume Groups.
+.TP
 .BR \-\-monitor " " { y | n }
 Controls whether or not a mirrored logical volume is monitored by
 dmeventd, if it is installed.
@@ -79,6 +84,12 @@ and
 .BR mirror_log_fault_policy
 set in 
 .BR lvm.conf (5).
+.TP
+.BR \-\-ignoremonitoring
+Make no attempt to interact with dmeventd unless 
+.BR \-\-monitor
+is specified.
+Do not use this if dmeventd is already monitoring a device.
 .TP
 .BR \-l ", " \-\-logicalvolume " " \fIMaxLogicalVolumes\fR
 Changes the maximum logical volume number of an existing inactive

@@ -1,14 +1,14 @@
 /*
- * Copyright (C) 2002-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004-2005 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -100,10 +100,8 @@ static struct dm_task *_setup_task(const char *name, const char *uuid,
 {
 	struct dm_task *dmt;
 
-	if (!(dmt = dm_task_create(task))) {
-		stack;
-		return NULL;
-	}
+	if (!(dmt = dm_task_create(task)))
+		return_NULL;
 
 	if (name)
 		dm_task_set_name(dmt, name);
@@ -118,7 +116,8 @@ static struct dm_task *_setup_task(const char *name, const char *uuid,
 }
 
 static int _info_run(const char *name, const char *dlid, struct dm_info *info,
-		     int mknodes, int with_open_count)
+		     uint32_t *read_ahead, int mknodes, int with_open_count,
+		     int with_read_ahead)
 {
 	int r = 0;
 	struct dm_task *dmt;
@@ -126,10 +125,8 @@ static int _info_run(const char *name, const char *dlid, struct dm_info *info,
 
 	dmtask = mknodes ? DM_DEVICE_MKNODES : DM_DEVICE_INFO;
 
-	if (!(dmt = _setup_task(name, dlid, 0, dmtask))) {
-		stack;
-		return 0;
-	}
+	if (!(dmt = _setup_task(name, dlid, 0, dmtask)))
+		return_0;
 
 	if (!with_open_count)
 		if (!dm_task_no_open_count(dmt))
@@ -140,6 +137,12 @@ static int _info_run(const char *name, const char *dlid, struct dm_info *info,
 
 	if (!dm_task_get_info(dmt, info))
 		goto_out;
+
+	if (with_read_ahead) {
+		if (!dm_task_get_read_ahead(dmt, read_ahead))
+			goto_out;
+	} else if (read_ahead)
+		*read_ahead = DM_READ_AHEAD_NONE;
 
 	r = 1;
 
@@ -153,9 +156,9 @@ int device_is_usable(dev_t dev)
 	struct dm_task *dmt;
 	struct dm_info info;
 	const char *name;
-        uint64_t start, length;
-        char *target_type = NULL;
-        char *params;
+	uint64_t start, length;
+	char *target_type = NULL;
+	char *params;
 	void *next = NULL;
 	int r = 0;
 
@@ -183,13 +186,13 @@ int device_is_usable(dev_t dev)
 	/* FIXME Also check for mirror block_on_error and mpath no paths */
 	/* For now, we exclude all mirrors */
 
-        do {
-                next = dm_get_next_target(dmt, next, &start, &length,
-                                          &target_type, &params);
-                /* Skip if target type doesn't match */
-                if (target_type && !strcmp(target_type, "mirror"))
+	do {
+		next = dm_get_next_target(dmt, next, &start, &length,
+					  &target_type, &params);
+		/* Skip if target type doesn't match */
+		if (target_type && !strcmp(target_type, "mirror"))
 			goto out;
-        } while (next);
+	} while (next);
 
 	/* FIXME Also check dependencies? */
 
@@ -201,27 +204,32 @@ int device_is_usable(dev_t dev)
 }
 
 static int _info(const char *name, const char *dlid, int mknodes,
-		 int with_open_count, struct dm_info *info)
+		 int with_open_count, int with_read_ahead,
+		 struct dm_info *info, uint32_t *read_ahead)
 {
 	if (!mknodes && dlid && *dlid) {
-		if (_info_run(NULL, dlid, info, 0, with_open_count) &&
+		if (_info_run(NULL, dlid, info, read_ahead, 0, with_open_count,
+			      with_read_ahead) &&
 	    	    info->exists)
 			return 1;
 		else if (_info_run(NULL, dlid + sizeof(UUID_PREFIX) - 1, info,
-				   0, with_open_count) &&
+				   read_ahead, 0, with_open_count,
+				   with_read_ahead) &&
 			 info->exists)
 			return 1;
 	}
 
 	if (name)
-		return _info_run(name, NULL, info, mknodes, with_open_count);
+		return _info_run(name, NULL, info, read_ahead, mknodes,
+				 with_open_count, with_read_ahead);
 
 	return 0;
 }
 
 int dev_manager_info(struct dm_pool *mem, const char *name,
 		     const struct logical_volume *lv, int with_mknodes,
-		     int with_open_count, struct dm_info *info)
+		     int with_open_count, int with_read_ahead,
+		     struct dm_info *info, uint32_t *read_ahead)
 {
 	const char *dlid;
 
@@ -230,7 +238,8 @@ int dev_manager_info(struct dm_pool *mem, const char *name,
 		return 0;
 	}
 
-	return _info(name, dlid, with_mknodes, with_open_count, info);
+	return _info(name, dlid, with_mknodes, with_open_count, with_read_ahead,
+		     info, read_ahead);
 }
 
 /* FIXME Interface must cope with multiple targets */
@@ -246,10 +255,8 @@ static int _status_run(const char *name, const char *uuid,
 	char *type = NULL;
 	char *params = NULL;
 
-	if (!(dmt = _setup_task(name, uuid, 0, DM_DEVICE_STATUS))) {
-		stack;
-		return 0;
-	}
+	if (!(dmt = _setup_task(name, uuid, 0, DM_DEVICE_STATUS)))
+		return_0;
 
 	if (!dm_task_no_open_count(dmt))
 		log_error("Failed to disable open_count");
@@ -335,10 +342,8 @@ static int _percent_run(struct dev_manager *dm, const char *name,
 	*percent = -1;
 
 	if (!(dmt = _setup_task(name, dlid, event_nr,
-				wait ? DM_DEVICE_WAITEVENT : DM_DEVICE_STATUS))) {
-		stack;
-		return 0;
-	}
+				wait ? DM_DEVICE_WAITEVENT : DM_DEVICE_STATUS)))
+		return_0;
 
 	if (!dm_task_no_open_count(dmt))
 		log_error("Failed to disable open_count");
@@ -430,10 +435,8 @@ struct dev_manager *dev_manager_create(struct cmd_context *cmd,
 	struct dm_pool *mem;
 	struct dev_manager *dm;
 
-	if (!(mem = dm_pool_create("dev_manager", 16 * 1024))) {
-		stack;
-		return NULL;
-	}
+	if (!(mem = dm_pool_create("dev_manager", 16 * 1024)))
+		return_NULL;
 
 	if (!(dm = dm_pool_alloc(mem, sizeof(*dm))))
 		goto_bad;
@@ -496,10 +499,8 @@ int dev_manager_snapshot_percent(struct dev_manager *dm,
 	 */
 	log_debug("Getting device status percentage for %s", name);
 	if (!(_percent(dm, name, dlid, "snapshot", 0, NULL, percent,
-		       NULL))) {
-		stack;
-		return 0;
-	}
+		       NULL)))
+		return_0;
 
 	/* FIXME dm_pool_free ? */
 
@@ -531,10 +532,8 @@ int dev_manager_mirror_percent(struct dev_manager *dm,
 
 	log_debug("Getting device mirror status percentage for %s", name);
 	if (!(_percent(dm, name, dlid, "mirror", wait, lv, percent,
-		       event_nr))) {
-		stack;
-		return 0;
-	}
+		       event_nr)))
+		return_0;
 
 	return 1;
 }
@@ -561,9 +560,9 @@ int dev_manager_mirror_percent(struct dev_manager *dm,
 	log_debug("Getting device info for %s", dl->name);
 
 	/* Rename? */
-		if ((suffix = rindex(dl->dlid + sizeof(UUID_PREFIX) - 1, '-')))
+		if ((suffix = strrchr(dl->dlid + sizeof(UUID_PREFIX) - 1, '-')))
 			suffix++;
-		newname = build_dm_name(dm->mem, dm->vg_name, dl->lv->name,
+		new_name = build_dm_name(dm->mem, dm->vg_name, dl->lv->name,
 					suffix);
 
 static int _belong_to_vg(const char *vgname, const char *name)
@@ -630,11 +629,11 @@ static int _add_dev_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 	if (!(dlid = build_dlid(dm, lv->lvid.s, layer)))
 		return_0;
 
-        log_debug("Getting device info for %s [%s]", name, dlid);
-        if (!_info(name, dlid, 0, 1, &info)) {
-                log_error("Failed to get info for %s [%s].", name, dlid);
-                return 0;
-        }
+	log_debug("Getting device info for %s [%s]", name, dlid);
+	if (!_info(name, dlid, 0, 1, 0, &info, NULL)) {
+		log_error("Failed to get info for %s [%s].", name, dlid);
+		return 0;
+	}
 
 	if (info.exists && !dm_tree_add_dev(dtree, info.major, info.minor)) {
 		log_error("Failed to add device (%" PRIu32 ":%" PRIu32") to dtree",
@@ -678,31 +677,25 @@ static struct dm_tree *_create_partial_dtree(struct dev_manager *dm, struct logi
 		return NULL;
 	}
 
-	if (!_add_lv_to_dtree(dm, dtree, lv)) {
-		stack;
-		goto fail;
-	}
+	if (!_add_lv_to_dtree(dm, dtree, lv))
+		goto_bad;
 
 	/* Add any snapshots of this LV */
 	list_iterate_safe(snh, snht, &lv->snapshot_segs)
-		if (!_add_lv_to_dtree(dm, dtree, list_struct_base(snh, struct lv_segment, origin_list)->cow)) {
-			stack;
-			goto fail;
-		}
+		if (!_add_lv_to_dtree(dm, dtree, list_struct_base(snh, struct lv_segment, origin_list)->cow))
+			goto_bad;
 
 	/* Add any LVs used by segments in this LV */
 	list_iterate_items(seg, &lv->segments)
 		for (s = 0; s < seg->area_count; s++)
 			if (seg_type(seg, s) == AREA_LV && seg_lv(seg, s)) {
-				if (!_add_lv_to_dtree(dm, dtree, seg_lv(seg, s))) {
-					stack;
-					goto fail;
-				}
+				if (!_add_lv_to_dtree(dm, dtree, seg_lv(seg, s)))
+					goto_bad;
 			}
 
 	return dtree;
 
-fail:
+bad:
 	dm_tree_free(dtree);
 	return NULL;
 }
@@ -830,7 +823,7 @@ static int _add_segment_to_dtree(struct dev_manager *dm,
 		  layer ? "-" : "", layer ? : "");
 
 	if (seg_present->segtype->ops->target_present &&
-	    !seg_present->segtype->ops->target_present(seg_present)) {
+	    !seg_present->segtype->ops->target_present(seg_present, NULL)) {
 		log_error("Can't expand LV %s: %s target support missing "
 			  "from kernel?", seg->lv->name, seg_present->segtype->name);
 		return 0;
@@ -843,7 +836,7 @@ static int _add_segment_to_dtree(struct dev_manager *dm,
 
 	/* If this is a snapshot origin, add real LV */
 	if (lv_is_origin(seg->lv) && !layer) {
-		if (seg->lv->vg->status & CLUSTERED) {
+		if (vg_is_clustered(seg->lv->vg)) {
 			log_error("Clustered snapshots are not yet supported");
 			return 0;
 		}
@@ -886,6 +879,9 @@ static int _add_new_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 	struct lv_layer *lvlayer;
 	struct dm_tree_node *dnode;
 	char *name, *dlid;
+	uint32_t max_stripe_size = UINT32_C(0);
+	uint32_t read_ahead = lv->read_ahead;
+	uint32_t read_ahead_flags = UINT32_C(0);
 
 	if (!(name = build_dm_name(dm->mem, lv->vg->name, lv->name, layer)))
 		return_0;
@@ -932,7 +928,17 @@ static int _add_new_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 			break;
 		if (lv_is_cow(lv) && !layer)
 			break;
+		if (max_stripe_size < seg->stripe_size * seg->area_count)
+			max_stripe_size = seg->stripe_size * seg->area_count;
 	}
+
+	if (read_ahead == DM_READ_AHEAD_AUTO) {
+		/* we need RA at least twice a whole stripe - see the comment in md/raid0.c */
+		read_ahead = max_stripe_size * 2;
+		read_ahead_flags = DM_READ_AHEAD_MINIMUM_FLAG;
+	}
+
+	dm_tree_node_set_read_ahead(dnode, read_ahead, read_ahead_flags);
 
 	return 1;
 }
@@ -961,10 +967,10 @@ static int _create_lv_symlinks(struct dev_manager *dm, struct dm_tree_node *root
 		name = dm_tree_node_get_name(child);
 
 		if (name && lvlayer->old_name && *lvlayer->old_name && strcmp(name, lvlayer->old_name)) {
-	        	if (!dm_split_lvm_name(dm->mem, lvlayer->old_name, &vgname, &lvname, &layer)) {
-                		log_error("_create_lv_symlinks: Couldn't split up old device name %s", lvlayer->old_name);
-                		return 0;
-        		}
+			if (!dm_split_lvm_name(dm->mem, lvlayer->old_name, &vgname, &lvname, &layer)) {
+				log_error("_create_lv_symlinks: Couldn't split up old device name %s", lvlayer->old_name);
+				return 0;
+			}
 			fs_rename_lv(lvlayer->lv, name, lvname);
 		} else if (!dev_manager_lv_mknodes(lvlayer->lv))
 			r = 0;
@@ -984,10 +990,13 @@ static int _remove_lv_symlinks(struct dev_manager *dm, struct dm_tree_node *root
 	int r = 1;
 
 	while ((child = dm_tree_next_child(&handle, root, 0))) {
-        	if (!dm_split_lvm_name(dm->mem, dm_tree_node_get_name(child), &vgname, &lvname, &layer)) {
+		if (!dm_split_lvm_name(dm->mem, dm_tree_node_get_name(child), &vgname, &lvname, &layer)) {
 			r = 0;
 			continue;
 		}
+
+		if (!*vgname)
+			continue;
 
 		/* only top level layer has symlinks */
 		if (*layer)
@@ -1013,10 +1022,10 @@ static int _clean_tree(struct dev_manager *dm, struct dm_tree_node *root)
 		if (!(uuid = dm_tree_node_get_uuid(child)))
 			continue;
 
-        	if (!dm_split_lvm_name(dm->mem, name, &vgname, &lvname, &layer)) {
-                	log_error("_clean_tree: Couldn't split up device name %s.", name);
-                	return 0;
-        	}
+		if (!dm_split_lvm_name(dm->mem, name, &vgname, &lvname, &layer)) {
+			log_error("_clean_tree: Couldn't split up device name %s.", name);
+			return 0;
+		}
 
 		/* Not meant to be top level? */
 		if (!*layer)

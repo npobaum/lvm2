@@ -8,13 +8,13 @@ lvcreate \- create a logical volume in an existing volume group
 [\-A/\-\-autobackup y/n] [\-C/\-\-contiguous y/n] [\-d/\-\-debug]
 [\-h/\-?/\-\-help]
 [\-i/\-\-stripes Stripes [\-I/\-\-stripesize StripeSize]]
-{\-l/\-\-extents LogicalExtentsNumber[%{VG|FREE}] |
+{\-l/\-\-extents LogicalExtentsNumber[%{VG|PVS|FREE}] |
  \-L/\-\-size LogicalVolumeSize[kKmMgGtT]}
 [\-M/\-\-persistent y/n] [\-\-minor minor]
-[\-m/\-\-mirrors Mirrors [\-\-nosync] [\-\-corelog]
+[\-m/\-\-mirrors Mirrors [\-\-nosync] [\-\-mirrorlog {disk|core}] [\-\-corelog]
 [\-R/\-\-regionsize MirrorLogRegionSize]]
 [\-n/\-\-name LogicalVolumeName]
-[\-p/\-\-permission r/rw] [\-r/\-\-readahead ReadAheadSectors]
+[\-p/\-\-permission r/rw] [\-r/\-\-readahead ReadAheadSectors|auto|none]
 [\-t/\-\-test]
 [\-v/\-\-verbose] [\-Z/\-\-zero y/n]
 VolumeGroupName [PhysicalVolumePath...]
@@ -63,12 +63,14 @@ StripeSize must be 2^n (n = 2 to 9) for metadata in LVM1 format.
 For metadata in LVM2 format, the stripe size may be a larger
 power of 2 but must not exceed the physical extent size.
 .TP
-.I \-l, \-\-extents LogicalExtentsNumber[%{VG|FREE}]
+.I \-l, \-\-extents LogicalExtentsNumber[%{VG|PVS|FREE}]
 Gives the number of logical extents to allocate for the new
 logical volume.
 This can also be expressed as a percentage of the total space
-in the Volume Group with the suffix %VG or of the remaining free space
-with the suffix %FREE.
+in the Volume Group with the suffix %VG, of the remaining
+free space in the Volume Group with the suffix %FREE, or
+of the remaining free space for the specified PhysicalVolume(s)
+with the suffix %PVS,
 .TP
 .I \-L, \-\-size LogicalVolumeSize[kKmMgGtTpPeE]
 Gives the size to allocate for the new logical volume.
@@ -85,21 +87,25 @@ Set the minor number.
 Set to y to make the minor number specified persistent.
 .TP
 .I \-m, \-\-mirrors Mirrors
-Creates a mirrored logical volume with "Mirrors" copies.  For example,
+Creates a mirrored logical volume with Mirrors copies.  For example,
 specifying "-m 1" would result in a mirror with two-sides; that is, a
 linear volume plus one copy.
 
-Specifying the optional argument "--nosync" will cause the creation
+Specifying the optional argument --nosync will cause the creation
 of the mirror to skip the initial resynchronization.  Any data written
 afterwards will be mirrored, but the original contents will not be
 copied.  This is useful for skipping a potentially long and resource
-intensive initial sync.
+intensive initial sync of an empty device.
 
-Specifying the optional argument "--corelog" will create a mirror with
-an in-memory log verses a disk-based (persistent) log.  While this
-removes the need for an extra log device and *may* be slightly faster,
-it requires that the entire mirror be resynchronized upon each
-instantiation (e.g. a reboot).
+The optional argument --mirrorlog specifies the type of log to be used.
+The default is disk, which is persistent and requires
+a small amount of storage space, usually on a separate device from the
+data being mirrored. Using core means the mirror is regenerated
+by copying the data from the first device again each time the
+device is activated, for example, after every reboot.
+
+The optional argument --corelog is equivalent to --mirrorlog core.
+
 .TP
 .I \-n, \-\-name LogicalVolumeName
 The name for the new logical volume.
@@ -112,9 +118,13 @@ Set access permissions to read only or read and write.
 .br
 Default is read and write.
 .TP
-.I \-r, \-\-readahead ReadAheadSectors
-Set read ahead sector count of this logical volume to a value between 2 and 120.
-Ignored by device-mapper.
+.I \-r, \-\-readahead ReadAheadSectors|auto|none
+Set read ahead sector count of this logical volume.
+For volume groups with metadata in lvm1 format, this must
+be a value between 2 and 120.
+The default value is "auto" which allows the kernel to choose
+a suitable value automatically.
+"None" is equivalent to specifying zero.
 .TP
 .I \-R, \-\-regionsize MirrorLogRegionSize
 A mirror is divided into regions of this size (in MB), and the mirror log 
@@ -156,6 +166,10 @@ group named vg00. The logical volume name will be chosen by lvcreate.
 with 2 sides with a useable size of 500 MiB.  This operation would
 require 3 devices - two for the mirror devices and one for the disk
 log.
+
+"lvcreate -m1 --mirrorlog core -L 500M vg00" tries to create a mirror logical volume
+with 2 sides with a useable size of 500 MiB.  This operation would
+require 2 devices - the log is "in-memory".
 
 "lvcreate --size 100m --snapshot --name snap /dev/vg00/lvol1"
 .br

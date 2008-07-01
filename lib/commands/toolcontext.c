@@ -1,17 +1,16 @@
 /*
- * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
- *
  */
 
 #include "lib.h"
@@ -154,6 +153,7 @@ static void _init_logging(struct cmd_context *cmd)
 static int _process_config(struct cmd_context *cmd)
 {
 	mode_t old_umask;
+	const char *read_ahead;
 
 	/* umask */
 	cmd->default_settings.umask = find_config_tree_int(cmd,
@@ -184,7 +184,7 @@ static int _process_config(struct cmd_context *cmd)
 	}
 
 	if (*cmd->proc_dir && !dir_exists(cmd->proc_dir)) {
-		log_error("Warning: proc dir %s not found - some checks will be bypassed",
+		log_error("WARNING: proc dir %s not found - some checks will be bypassed",
 			  cmd->proc_dir);
 		cmd->proc_dir[0] = '\0';
 	}
@@ -205,6 +205,16 @@ static int _process_config(struct cmd_context *cmd)
 					     DEFAULT_UNITS),
 			     &cmd->default_settings.unit_type))) {
 		log_error("Invalid units specification");
+		return 0;
+	}
+
+	read_ahead = find_config_tree_str(cmd, "activation/readahead", DEFAULT_READ_AHEAD);
+	if (!strcasecmp(read_ahead, "auto"))
+		cmd->default_settings.read_ahead = DM_READ_AHEAD_AUTO;
+	else if (!strcasecmp(read_ahead, "none"))
+		cmd->default_settings.read_ahead = DM_READ_AHEAD_NONE;
+	else {
+		log_error("Invalid readahead specification");
 		return 0;
 	}
 
@@ -272,10 +282,8 @@ static int _init_tags(struct cmd_context *cmd, struct config_tree *cft)
 	if (!cmd->hosttags && find_config_int(cft->root, "tags/hosttags",
 					      DEFAULT_HOSTTAGS)) {
 		/* FIXME Strip out invalid chars: only A-Za-z0-9_+.- */
-		if (!_set_tag(cmd, cmd->hostname)) {
-			stack;
-			return 0;
-		}
+		if (!_set_tag(cmd, cmd->hostname))
+			return_0;
 		cmd->hosttags = 1;
 	}
 
@@ -291,17 +299,13 @@ static int _init_tags(struct cmd_context *cmd, struct config_tree *cft)
 		}
 		if (cn->child) {
 			passes = 0;
-			if (!_check_host_filters(cmd, cn->child, &passes)) {
-				stack;
-				return 0;
-			}
+			if (!_check_host_filters(cmd, cn->child, &passes))
+				return_0;
 			if (!passes)
 				continue;
 		}
-		if (!_set_tag(cmd, tag)) {
-			stack;
-			return 0;
-		}
+		if (!_set_tag(cmd, tag))
+			return_0;
 	}
 
 	return 1;
@@ -375,10 +379,8 @@ static int _init_lvm_conf(struct cmd_context *cmd)
 		return 1;
 	}
 
-	if (!_load_config_file(cmd, "")) {
-		stack;
-		return 0;
-	}
+	if (!_load_config_file(cmd, ""))
+		return_0;
 
 	return 1;
 }
@@ -390,11 +392,8 @@ static int _init_tag_configs(struct cmd_context *cmd)
 
 	/* Tag list may grow while inside this loop */
 	list_iterate_items(sl, &cmd->tags) {
-		if (!_load_config_file(cmd, sl->str)) {
-			stack;
-			return 0;
-		}
-
+		if (!_load_config_file(cmd, sl->str))
+			return_0;
 	}
 
 	return 1;
@@ -414,10 +413,8 @@ static int _merge_config_files(struct cmd_context *cmd)
 
 	list_iterate_items(cfl, &cmd->config_files) {
 		/* Merge all config trees into cmd->cft using merge/tag rules */
-		if (!merge_config_tree(cmd, cmd->cft, cfl->cft)) {
-			stack;
-			return 0;
-		}
+		if (!merge_config_tree(cmd, cmd->cft, cfl->cft))
+			return_0;
 	}
 
 	return 1;
@@ -532,7 +529,7 @@ static struct dev_filter *_init_filter_components(struct cmd_context *cmd)
 
 	/*
 	 * sysfs filter. Only available on 2.6 kernels.  Non-critical.
-	 * Listed first because it's very efficient at eliminating 
+	 * Listed first because it's very efficient at eliminating
 	 * unavailable devices.
 	 */
 	if (find_config_tree_bool(cmd, "devices/sysfs_scan",
@@ -611,7 +608,10 @@ static int _init_filters(struct cmd_context *cmd, unsigned load_persistent_cache
 		return 0;
 	}
 
-	if (!(f4 = persistent_filter_create(f3, dev_cache ? : cache_file))) {
+	if (!dev_cache)
+		dev_cache = cache_file;
+
+	if (!(f4 = persistent_filter_create(f3, dev_cache))) {
 		log_error("Failed to create persistent device filter");
 		return 0;
 	}
@@ -681,10 +681,8 @@ static int _init_formats(struct cmd_context *cmd)
 				return 0;
 			}
 			if (!(lib = load_shared_library(cmd, cv->v.str,
-							"format", 0))) {
-				stack;
-				return 0;
-			}
+							"format", 0)))
+				return_0;
 
 			if (!(init_format_fn = dlsym(lib, "init_format"))) {
 				log_error("Shared library %s does not contain "
@@ -723,6 +721,17 @@ static int _init_formats(struct cmd_context *cmd)
 	return 0;
 }
 
+int init_lvmcache_orphans(struct cmd_context *cmd)
+{
+	struct format_type *fmt;
+
+	list_iterate_items(fmt, &cmd->formats)
+		if (!lvmcache_add_orphan_vginfo(fmt->orphan_vg_name, fmt))
+			return_0;
+
+	return 1;
+}
+
 static int _init_segtypes(struct cmd_context *cmd)
 {
 	struct segment_type *segtype;
@@ -742,6 +751,11 @@ static int _init_segtypes(struct cmd_context *cmd)
 	list_add(&cmd->segtypes, &segtype->list);
 
 	if (!(segtype = init_error_segtype(cmd)))
+		return 0;
+	segtype->library = NULL;
+	list_add(&cmd->segtypes, &segtype->list);
+
+	if (!(segtype = init_free_segtype(cmd)))
 		return 0;
 	segtype->library = NULL;
 	list_add(&cmd->segtypes, &segtype->list);
@@ -777,10 +791,8 @@ static int _init_segtypes(struct cmd_context *cmd)
 				return 0;
 			}
 			if (!(lib = load_shared_library(cmd, cv->v.str,
-							"segment type", 0))) {
-				stack;
-				return 0;
-			}
+							"segment type", 0)))
+				return_0;
 
 			if (!(init_segtype_fn = dlsym(lib, "init_segtype"))) {
 				log_error("Shared library %s does not contain "
@@ -936,7 +948,7 @@ struct cmd_context *create_toolcontext(struct arg *the_args, unsigned is_static,
 		goto error;
 
 	/* Create system directory if it doesn't already exist */
-	if (*cmd->sys_dir && !create_dir(cmd->sys_dir)) {
+	if (*cmd->sys_dir && !dm_create_dir(cmd->sys_dir)) {
 		log_error("Failed to create LVM2 system dir for metadata backups, config "
 			  "files and internal cache.");
 		log_error("Set environment variable LVM_SYSTEM_DIR to alternative location "
@@ -985,12 +997,16 @@ struct cmd_context *create_toolcontext(struct arg *the_args, unsigned is_static,
 	if (!_init_formats(cmd))
 		goto error;
 
+	if (!init_lvmcache_orphans(cmd))
+		goto error;
+
 	if (!_init_segtypes(cmd))
 		goto error;
 
 	if (!_init_backup(cmd))
 		goto error;
 
+	cmd->default_settings.cache_vgmetadata = 1;
 	cmd->current_settings = cmd->default_settings;
 
 	cmd->config_valid = 1;
@@ -1047,7 +1063,7 @@ int refresh_toolcontext(struct cmd_context *cmd)
 	 */
 
 	activation_release();
-	lvmcache_destroy();
+	lvmcache_destroy(cmd, 0);
 	label_exit();
 	_destroy_segtypes(&cmd->segtypes);
 	_destroy_formats(&cmd->formats);
@@ -1089,6 +1105,9 @@ int refresh_toolcontext(struct cmd_context *cmd)
 	if (!_init_formats(cmd))
 		return 0;
 
+	if (!init_lvmcache_orphans(cmd))
+		return 0;
+
 	if (!_init_segtypes(cmd))
 		return 0;
 
@@ -1110,7 +1129,7 @@ void destroy_toolcontext(struct cmd_context *cmd)
 
 	archive_exit(cmd);
 	backup_exit(cmd);
-	lvmcache_destroy();
+	lvmcache_destroy(cmd, 0);
 	label_exit();
 	_destroy_segtypes(&cmd->segtypes);
 	_destroy_formats(&cmd->formats);

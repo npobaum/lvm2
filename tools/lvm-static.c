@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.   
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -20,7 +20,8 @@ int main(int argc, char **argv)
 	return lvm2_main(argc, argv, 1);
 }
 
-int lvm_shell(struct cmd_context *cmd, struct cmdline_context *cmdline)
+int lvm_shell(struct cmd_context *cmd __attribute((unused)),
+	      struct cmdline_context *cmdline __attribute((unused)))
 {
 	return 0;
 }

@@ -1,14 +1,14 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -38,8 +38,7 @@
 #include "filter-composite.h"
 #include "filter-persistent.h"
 #include "filter-regex.h"
-#include "format-text.h"
-#include "metadata.h"
+#include "metadata-exported.h"
 #include "list.h"
 #include "locking.h"
 #include "lvm-exec.h"
@@ -69,7 +68,7 @@ typedef int (*command_fn) (struct cmd_context * cmd, int argc, char **argv);
 
 /* define the enums for the command line switches */
 enum {
-#define arg(a, b, c, d) a ,
+#define arg(a, b, c, d, e) a ,
 #include "args.h"
 #undef arg
 };
@@ -84,7 +83,8 @@ typedef enum {
 	PERCENT_NONE = 0,
 	PERCENT_VG,
 	PERCENT_FREE,
-	PERCENT_LV
+	PERCENT_LV,
+	PERCENT_PVS
 } percent_t;
 
 enum {
@@ -95,6 +95,8 @@ enum {
 	CHANGE_ALN = 4
 };
 
+#define ARG_REPEATABLE 0x00000001
+
 /* a global table of possible arguments */
 struct arg {
 	const char short_arg;
@@ -102,6 +104,7 @@ struct arg {
 	const char *long_arg;
 
 	int (*fn) (struct cmd_context * cmd, struct arg * a);
+	uint32_t flags;
 
 	unsigned count;
 	char *value;
@@ -114,12 +117,16 @@ struct arg {
 	void *ptr;
 };
 
+#define CACHE_VGMETADATA 0x00000001
+
 /* a register of the lvm commands */
 struct command {
 	const char *name;
 	const char *desc;
 	const char *usage;
 	command_fn fn;
+
+	unsigned flags;
 
 	int num_args;
 	int *valid_args;
@@ -144,11 +151,10 @@ int metadatatype_arg(struct cmd_context *cmd, struct arg *a);
 int units_arg(struct cmd_context *cmd, struct arg *a);
 int segtype_arg(struct cmd_context *cmd, struct arg *a);
 int alloc_arg(struct cmd_context *cmd, struct arg *a);
-
-char yes_no_prompt(const char *prompt, ...);
+int readahead_arg(struct cmd_context *cmd, struct arg *a);
 
 /* we use the enums to access the switches */
-unsigned int arg_count(struct cmd_context *cmd, int a);
+unsigned int arg_count(const struct cmd_context *cmd, int a);
 const char *arg_value(struct cmd_context *cmd, int a);
 const char *arg_str_value(struct cmd_context *cmd, int a, const char *def);
 int32_t arg_int_value(struct cmd_context *cmd, int a, const int32_t def); 
@@ -163,5 +169,6 @@ int arg_count_increment(struct cmd_context *cmd, int a);
 const char *command_name(struct cmd_context *cmd);
 
 int pvmove_poll(struct cmd_context *cmd, const char *pv, unsigned background);
+int lvconvert_poll(struct cmd_context *cmd, const char *lv_name, unsigned background);
 
 #endif

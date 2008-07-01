@@ -1,14 +1,14 @@
 /*
  * Copyright (C) 2002-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -86,10 +86,8 @@ int label_register_handler(const char *name, struct labeller *handler)
 {
 	struct labeller_i *li;
 
-	if (!(li = _alloc_li(name, handler))) {
-		stack;
-		return 0;
-	}
+	if (!(li = _alloc_li(name, handler)))
+		return_0;
 
 	list_add(&_labellers, &li->list);
 	return 1;
@@ -145,7 +143,7 @@ static struct labeller *_find_labeller(struct device *dev, char *buf,
 				continue;
 			}
 			if (calc_crc(INITIAL_CRC, &lh->offset_xl, LABEL_SIZE -
-				     ((void *) &lh->offset_xl - (void *) lh)) !=
+				     ((uintptr_t) &lh->offset_xl - (uintptr_t) lh)) !=
 			    xlate32(lh->crc_xl)) {
 				log_info("Label checksum incorrect on %s - "
 					 "ignoring", dev_name(dev));
@@ -179,8 +177,9 @@ static struct labeller *_find_labeller(struct device *dev, char *buf,
 
       out:
 	if (!found) {
-		if ((info = info_from_pvid(dev->pvid)))
-			lvmcache_update_vgname_and_id(info, ORPHAN, ORPHAN,
+		if ((info = info_from_pvid(dev->pvid, 0)))
+			lvmcache_update_vgname_and_id(info, info->fmt->orphan_vg_name,
+						      info->fmt->orphan_vg_name,
 						      0, NULL);
 		log_very_verbose("%s: No label detected", dev_name(dev));
 	}
@@ -203,10 +202,8 @@ int label_remove(struct device *dev)
 
 	log_very_verbose("Scanning for labels to wipe from %s", dev_name(dev));
 
-	if (!dev_open(dev)) {
-		stack;
-		return 0;
-	}
+	if (!dev_open(dev))
+		return_0;
 
 	/*
 	 * We flush the device just in case someone is stupid
@@ -260,7 +257,6 @@ int label_remove(struct device *dev)
 	return r;
 }
 
-/* FIXME Avoid repeated re-reading if cache lock held */
 int label_read(struct device *dev, struct label **result,
 		uint64_t scan_sector)
 {
@@ -270,11 +266,18 @@ int label_read(struct device *dev, struct label **result,
 	struct lvmcache_info *info;
 	int r = 0;
 
+	if ((info = info_from_pvid(dev->pvid, 1))) {
+		log_debug("Using cached label for %s", dev_name(dev));
+		*result = info->label;
+		return 1;
+	}
+
 	if (!dev_open(dev)) {
 		stack;
 
-		if ((info = info_from_pvid(dev->pvid)))
-			lvmcache_update_vgname_and_id(info, ORPHAN, ORPHAN,
+		if ((info = info_from_pvid(dev->pvid, 0)))
+			lvmcache_update_vgname_and_id(info, info->fmt->orphan_vg_name,
+						      info->fmt->orphan_vg_name,
 						      0, NULL);
 
 		return r;
@@ -317,18 +320,14 @@ int label_write(struct device *dev, struct label *label)
 	lh->sector_xl = xlate64(label->sector);
 	lh->offset_xl = xlate32(sizeof(*lh));
 
-	if (!(label->labeller->ops->write)(label, buf)) {
-		stack;
-		return 0;
-	}
+	if (!(label->labeller->ops->write)(label, buf))
+		return_0;
 
 	lh->crc_xl = xlate32(calc_crc(INITIAL_CRC, &lh->offset_xl, LABEL_SIZE -
-				      ((void *) &lh->offset_xl - (void *) lh)));
+				      ((uintptr_t) &lh->offset_xl - (uintptr_t) lh)));
 
-	if (!dev_open(dev)) {
-		stack;
-		return 0;
-	}
+	if (!dev_open(dev))
+		return_0;
 
 	log_info("%s: Writing label to sector %" PRIu64, dev_name(dev),
 		 label->sector);
@@ -353,8 +352,9 @@ int label_verify(struct device *dev)
 	int r = 0;
 
 	if (!dev_open(dev)) {
-		if ((info = info_from_pvid(dev->pvid)))
-			lvmcache_update_vgname_and_id(info, ORPHAN, ORPHAN,
+		if ((info = info_from_pvid(dev->pvid, 0)))
+			lvmcache_update_vgname_and_id(info, info->fmt->orphan_vg_name,
+						      info->fmt->orphan_vg_name,
 						      0, NULL);
 
 		return_0;

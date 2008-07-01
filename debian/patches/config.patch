@@ -1,0 +1,13 @@
+Index: debian/doc/example.conf
+===================================================================
+--- debian.orig/doc/example.conf	2008-06-12 12:29:49.000000000 +0100
++++ debian/doc/example.conf	2008-07-01 16:52:45.000000000 +0100
+@@ -259,7 +259,7 @@
+     # Full pathnames can be given.
+ 
+     # Search this directory first for shared libraries.
+-    #   library_dir = "/lib"
++    #   library_dir = "/lib/lvm2"
+ 
+     # The external locking library to load if locking_type is set to 2.
+     #   locking_library = "liblvm2clusterlock.so"

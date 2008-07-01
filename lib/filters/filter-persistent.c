@@ -1,14 +1,14 @@
 /*
- * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004-2006 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -18,6 +18,7 @@
 #include "dev-cache.h"
 #include "filter-persistent.h"
 #include "lvm-file.h"
+#include "lvm-string.h"
 
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -42,10 +43,8 @@ static int _init_hash(struct pfilter *pf)
 	if (pf->devices)
 		dm_hash_destroy(pf->devices);
 
-	if (!(pf->devices = dm_hash_create(128))) {
-		stack;
-		return 0;
-	}
+	if (!(pf->devices = dm_hash_create(128)))
+		return_0;
 
 	return 1;
 }
@@ -99,13 +98,13 @@ int persistent_filter_load(struct dev_filter *f, struct config_tree **cft_out)
 {
 	struct pfilter *pf = (struct pfilter *) f->private;
 	struct config_tree *cft;
-        struct stat info;
+	struct stat info;
 	int r = 0;
 
-        if (!stat(pf->file, &info))
+	if (!stat(pf->file, &info))
 		pf->ctime = info.st_ctime;
 	else {
-                log_very_verbose("%s: stat failed: %s", pf->file,
+		log_very_verbose("%s: stat failed: %s", pf->file,
 				 strerror(errno));
 		return_0;
 	}
@@ -144,6 +143,7 @@ static void _write_array(struct pfilter *pf, FILE *fp, const char *path,
 {
 	void *d;
 	int first = 1;
+	char *buf, *str;
 	struct dm_hash_node *n;
 
 	for (n = dm_hash_get_first(pf->devices); n;
@@ -160,7 +160,13 @@ static void _write_array(struct pfilter *pf, FILE *fp, const char *path,
 			first = 0;
 		}
 
-		fprintf(fp, "\t\t\"%s\"", dm_hash_get_key(pf->devices, n));
+		str = dm_hash_get_key(pf->devices, n);
+		if (!(buf = alloca(escaped_len(str)))) {
+			log_error("persistent filter device path stack "
+				  "allocation failed");
+			return;
+		}
+		fprintf(fp, "\t\t\"%s\"", escape_double_quotes(buf, str));
 	}
 
 	if (!first)
@@ -208,7 +214,7 @@ int persistent_filter_dump(struct dev_filter *f)
 			goto out;
 		}
 
-		if (!memcmp(&info.st_ino, &info2.st_ino, sizeof(ino_t)))
+		if (is_same_inode(info, info2))
 			break;
 	
 		fcntl_unlock_file(lockfd);
@@ -239,10 +245,8 @@ int persistent_filter_dump(struct dev_filter *f)
 	/* _write_array(pf, fp, "invalid_devices", PF_BAD_DEVICE); */
 
 	fprintf(fp, "}\n");
-	if (fclose(fp)) {
-		log_sys_error("fclose", tmp_file);
-		goto out;
-	}
+	if (lvm_fclose(fp, tmp_file))
+		goto_out;
 
 	if (rename(tmp_file, pf->file))
 		log_error("%s: rename to %s failed: %s", tmp_file, pf->file,
@@ -295,10 +299,8 @@ struct dev_filter *persistent_filter_create(struct dev_filter *real,
 	struct pfilter *pf;
 	struct dev_filter *f = NULL;
 
-	if (!(pf = dm_malloc(sizeof(*pf)))) {
-		stack;
-		return NULL;
-	}
+	if (!(pf = dm_malloc(sizeof(*pf))))
+		return_NULL;
 	memset(pf, 0, sizeof(*pf));
 
 	if (!(pf->file = dm_malloc(strlen(file) + 1)))

@@ -1,14 +1,14 @@
 /*
- * Copyright (C) 1997-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 1997-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2006 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -33,8 +33,8 @@
 #define CPOUT_64(x, y) {(y) = xlate64_be((x));}
 
 static int __read_pool_disk(const struct format_type *fmt, struct device *dev,
-			    struct dm_pool *mem, struct pool_list *pl,
-			    const char *vg_name)
+			    struct dm_pool *mem __attribute((unused)), struct pool_list *pl,
+			    const char *vg_name __attribute((unused)))
 {
 	char buf[512] __attribute((aligned(8)));
 
@@ -45,10 +45,8 @@ static int __read_pool_disk(const struct format_type *fmt, struct device *dev,
 		return 0;
 	}
 
-	if (!read_pool_label(pl, fmt->labeller, dev, buf, NULL)) {
-		stack;
-		return 0;
-	}
+	if (!read_pool_label(pl, fmt->labeller, dev, buf, NULL))
+		return_0;
 
 	return 1;
 }
@@ -98,10 +96,8 @@ int read_pool_label(struct pool_list *pl, struct labeller *l,
 	log_debug("Calculated uuid %s for %s", uuid, pd->pl_pool_name);
 
 	if (!(info = lvmcache_add(l, (char *) &pvid, dev, pd->pl_pool_name,
-				  (char *) &vgid, 0))) {
-		stack;
-		return 0;
-	}
+				  (char *) &vgid, 0)))
+		return_0;
 	if (label)
 		*label = info->label;
 
@@ -252,10 +248,8 @@ static int _read_vg_pds(const struct format_type *fmt, struct dm_pool *mem,
 
 	/* FIXME: maybe should return a different error in memory
 	 * allocation failure */
-	if (!(tmpmem = dm_pool_create("pool read_vg", 512))) {
-		stack;
-		return 0;
-	}
+	if (!(tmpmem = dm_pool_create("pool read_vg", 512)))
+		return_0;
 
 	list_iterate_items(info, &vginfo->infos) {
 		if (info->dev &&
@@ -354,20 +348,16 @@ struct pool_list *read_pool_disk(const struct format_type *fmt,
 {
 	struct pool_list *pl;
 
-	if (!dev_open(dev)) {
-		stack;
-		return NULL;
-	}
+	if (!dev_open(dev))
+		return_NULL;
 
 	if (!(pl = dm_pool_zalloc(mem, sizeof(*pl)))) {
 		log_error("Unable to allocate pool list structure");
 		return 0;
 	}
 
-	if (!__read_pool_disk(fmt, dev, mem, pl, vg_name)) {
-		stack;
-		return NULL;
-	}
+	if (!__read_pool_disk(fmt, dev, mem, pl, vg_name))
+		return_NULL;
 
 	if (!dev_close(dev))
 		stack;

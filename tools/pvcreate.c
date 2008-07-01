@@ -1,19 +1,20 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
 #include "tools.h"
+#include "metadata.h"
 
 struct pvcreate_params {
 	int zero;
@@ -43,17 +44,29 @@ static int pvcreate_check(struct cmd_context *cmd, const char *name)
 	/* FIXME Use partial mode here? */
 	pv = pv_read(cmd, name, NULL, NULL, 0);
 
+	/*
+	 * If a PV has no MDAs it may appear to be an orphan until the
+	 * metadata is read off another PV in the same VG.  Detecting
+	 * this means checking every VG by scanning every PV on the
+	 * system.
+	 */
+	if (pv && is_orphan(pv)) {
+		if (!scan_vgs_for_pvs(cmd))
+			return_0;
+		pv = pv_read(cmd, name, NULL, NULL, 0);
+	}
+
 	/* Allow partial & exported VGs to be destroyed. */
 	/* We must have -ff to overwrite a non orphan */
 	if (pv && !is_orphan(pv) && arg_count(cmd, force_ARG) != 2) {
 		log_error("Can't initialize physical volume \"%s\" of "
-			  "volume group \"%s\" without -ff", name, get_pv_vg_name(pv));
+			  "volume group \"%s\" without -ff", name, pv_vg_name(pv));
 		return 0;
 	}
 
 	/* prompt */
 	if (pv && !is_orphan(pv) && !arg_count(cmd, yes_ARG) &&
-	    yes_no_prompt(_really_init, name, get_pv_vg_name(pv)) == 'n') {
+	    yes_no_prompt(_really_init, name, pv_vg_name(pv)) == 'n') {
 		log_print("%s: physical volume not initialized", name);
 		return 0;
 	}
@@ -65,13 +78,13 @@ static int pvcreate_check(struct cmd_context *cmd, const char *name)
 
 	/* Is there an md superblock here? */
 	if (!dev && md_filtering()) {
-		unlock_vg(cmd, ORPHAN);
+		unlock_vg(cmd, VG_ORPHANS);
 
 		persistent_filter_wipe(cmd->filter);
-		lvmcache_destroy();
+		lvmcache_destroy(cmd, 1);
 
 		init_md_filtering(0);
-		if (!lock_vol(cmd, ORPHAN, LCK_VG_WRITE)) {
+		if (!lock_vol(cmd, VG_ORPHANS, LCK_VG_WRITE)) {
 			log_error("Can't get lock for orphan PVs");
 			init_md_filtering(1);
 			return 0;
@@ -86,6 +99,7 @@ static int pvcreate_check(struct cmd_context *cmd, const char *name)
 	}
 
 	if (!dev_test_excl(dev)) {
+		/* FIXME Detect whether device-mapper itself is still using it */
 		log_error("Can't open %s exclusively.  Mounted filesystem?",
 			  name);
 		return 0;
@@ -95,7 +109,7 @@ static int pvcreate_check(struct cmd_context *cmd, const char *name)
 	if (dev_is_md(dev, &md_superblock) &&
 	    ((!arg_count(cmd, uuidstr_ARG) &&
 	      !arg_count(cmd, restorefile_ARG)) ||
-	     arg_count(cmd, yes_ARG) || 
+	     arg_count(cmd, yes_ARG) ||
 	     (yes_no_prompt("Software RAID md superblock "
 			    "detected on %s. Wipe it? [y/n] ", name) == 'y'))) {
 		log_print("Wiping software RAID md superblock on %s", name);
@@ -110,10 +124,10 @@ static int pvcreate_check(struct cmd_context *cmd, const char *name)
 		return 0;
 
 	if (pv && !is_orphan(pv) && arg_count(cmd, force_ARG)) {
-		log_print("WARNING: Forcing physical volume creation on "
+		log_warn("WARNING: Forcing physical volume creation on "
 			  "%s%s%s%s", name,
 			  !is_orphan(pv) ? " of volume group \"" : "",
-			  !is_orphan(pv) ? get_pv_vg_name(pv) : "",
+			  !is_orphan(pv) ? pv_vg_name(pv) : "",
 			  !is_orphan(pv) ? "\"" : "");
 	}
 
@@ -166,12 +180,12 @@ static int pvcreate_single(struct cmd_context *cmd, const char *pv_name,
 				  uuid, restorefile);
 			return ECMD_FAILED;
 		}
-		pe_start = get_pv_pe_start(existing_pv);
-		extent_size = get_pv_pe_size(existing_pv);
-		extent_count = get_pv_pe_count(existing_pv);
+		pe_start = pv_pe_start(existing_pv);
+		extent_size = pv_pe_size(existing_pv);
+		extent_count = pv_pe_count(existing_pv);
 	}
 
-	if (!lock_vol(cmd, ORPHAN, LCK_VG_WRITE)) {
+	if (!lock_vol(cmd, VG_ORPHANS, LCK_VG_WRITE)) {
 		log_error("Can't get lock for orphan PVs");
 		return ECMD_FAILED;
 	}
@@ -186,14 +200,13 @@ static int pvcreate_single(struct cmd_context *cmd, const char *pv_name,
 		log_error("Physical volume size may not be negative");
 		goto error;
 	}
-	size = arg_uint64_value(cmd, physicalvolumesize_ARG, UINT64_C(0)) * 2;
+	size = arg_uint64_value(cmd, physicalvolumesize_ARG, UINT64_C(0));
 
 	if (arg_sign_value(cmd, metadatasize_ARG, 0) == SIGN_MINUS) {
 		log_error("Metadata size may not be negative");
 		goto error;
 	}
-	pvmetadatasize = arg_uint64_value(cmd, metadatasize_ARG, UINT64_C(0))
-	    * 2;
+	pvmetadatasize = arg_uint64_value(cmd, metadatasize_ARG, UINT64_C(0));
 	if (!pvmetadatasize)
 		pvmetadatasize = find_config_tree_int(cmd,
 						 "metadata/pvmetadatasize",
@@ -212,7 +225,7 @@ static int pvcreate_single(struct cmd_context *cmd, const char *pv_name,
 	}
 
 	list_init(&mdas);
-	if (!(pv = pv_create(cmd->fmt, dev, idp, size, pe_start,
+	if (!(pv = pv_create(cmd, dev, idp, size, pe_start,
 			     extent_count, extent_size,
 			     pvmetadatacopies, pvmetadatasize, &mdas))) {
 		log_error("Failed to setup physical volume \"%s\"", pv_name);
@@ -220,10 +233,10 @@ static int pvcreate_single(struct cmd_context *cmd, const char *pv_name,
 	}
 
 	log_verbose("Set up physical volume for \"%s\" with %" PRIu64
-		    " available sectors", pv_name, get_pv_size(pv));
+		    " available sectors", pv_name, pv_size(pv));
 
 	/* Wipe existing label first */
-	if (!label_remove(get_pv_dev(pv))) {
+	if (!label_remove(pv_dev(pv))) {
 		log_error("Failed to wipe existing label on %s", pv_name);
 		goto error;
 	}
@@ -254,11 +267,11 @@ static int pvcreate_single(struct cmd_context *cmd, const char *pv_name,
 
 	log_print("Physical volume \"%s\" successfully created", pv_name);
 
-	unlock_vg(cmd, ORPHAN);
+	unlock_vg(cmd, VG_ORPHANS);
 	return ECMD_PROCESSED;
 
       error:
-	unlock_vg(cmd, ORPHAN);
+	unlock_vg(cmd, VG_ORPHANS);
 	return ECMD_FAILED;
 }
 

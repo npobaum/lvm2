@@ -1,14 +1,14 @@
 /*
- * Copyright (C) 2002-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2006 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -48,8 +48,7 @@ struct logical_volume *origin_from_cow(const struct logical_volume *lv)
 	return lv->snapshot->origin;
 }
 
-int vg_add_snapshot(struct format_instance *fid, const char *name,
-		    struct logical_volume *origin,
+int vg_add_snapshot(const char *name, struct logical_volume *origin,
 		    struct logical_volume *cow, union lvid *lvid,
 		    uint32_t extent_count, uint32_t chunk_size)
 {
@@ -64,19 +63,20 @@ int vg_add_snapshot(struct format_instance *fid, const char *name,
 		return 0;
 	}
 
-	if (!(snap = lv_create_empty(fid, name ? name : "snapshot%d",
-				     lvid, LVM_READ | LVM_WRITE | VISIBLE_LV,
-				     ALLOC_INHERIT, 1, origin->vg))) {
-		stack;
+	if (cow == origin) {
+		log_error("Snapshot and origin LVs must differ.");
 		return 0;
 	}
+
+	if (!(snap = lv_create_empty(name ? name : "snapshot%d",
+				     lvid, LVM_READ | LVM_WRITE | VISIBLE_LV,
+				     ALLOC_INHERIT, 1, origin->vg)))
+		return_0;
 
 	snap->le_count = extent_count;
 
-	if (!(seg = alloc_snapshot_seg(snap, 0, 0))) {
-		stack;
-		return 0;
-	}
+	if (!(seg = alloc_snapshot_seg(snap, 0, 0)))
+		return_0;
 
 	seg->chunk_size = chunk_size;
 	seg->origin = origin;

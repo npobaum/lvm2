@@ -1,14 +1,14 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -147,7 +147,8 @@ alloc_policy_t get_alloc_from_string(const char *str)
 }
 
 /* Size supplied in sectors */
-static const char *_display_size(struct cmd_context *cmd, uint64_t size, size_len_t sl)
+static const char *_display_size(const struct cmd_context *cmd,
+				 uint64_t size, size_len_t sl)
 {
 	int s;
 	int suffix = 1, precision;
@@ -185,17 +186,17 @@ static const char *_display_size(struct cmd_context *cmd, uint64_t size, size_le
 		return size_buf;
 	}
 
-	if (s < 10) {
+	size *= UINT64_C(512);
+
+	if (s < 10)
 		byte = cmd->current_settings.unit_factor;
-		size *= UINT64_C(512);
-	} else {
-		size /= 2;
+	else {
 		suffix = 1;
 		if (cmd->current_settings.unit_type == 'H')
 			units = UINT64_C(1000);
 		else
 			units = UINT64_C(1024);
-		byte = units * units * units * units * units;
+		byte = units * units * units * units * units * units;
 		s = 0;
 		while (size_str[s] && size < byte)
 			s++, byte /= units;
@@ -217,22 +218,22 @@ static const char *_display_size(struct cmd_context *cmd, uint64_t size, size_le
 	return size_buf;
 }
 
-const char *display_size_long(struct cmd_context *cmd, uint64_t size)
+const char *display_size_long(const struct cmd_context *cmd, uint64_t size)
 {
 	return _display_size(cmd, size, SIZE_LONG);
 }
 
-const char *display_size_units(struct cmd_context *cmd, uint64_t size)
+const char *display_size_units(const struct cmd_context *cmd, uint64_t size)
 {
 	return _display_size(cmd, size, SIZE_UNIT);
 }
 
-const char *display_size(struct cmd_context *cmd, uint64_t size)
+const char *display_size(const struct cmd_context *cmd, uint64_t size)
 {
 	return _display_size(cmd, size, SIZE_SHORT);
 }
 
-void pvdisplay_colons(struct physical_volume *pv)
+void pvdisplay_colons(const struct physical_volume *pv)
 {
 	char uuid[64] __attribute((aligned(8)));
 
@@ -245,7 +246,7 @@ void pvdisplay_colons(struct physical_volume *pv)
 	}
 
 	log_print("%s:%s:%" PRIu64 ":-1:%u:%u:-1:%" PRIu32 ":%u:%u:%u:%s",
-		  dev_name(pv->dev), pv->vg_name, pv->size,
+		  pv_dev_name(pv), pv->vg_name, pv->size,
 		  /* FIXME pv->pv_number, Derive or remove? */
 		  pv->status,	/* FIXME Support old or new format here? */
 		  pv->status & ALLOCATABLE_PV,	/* FIXME remove? */
@@ -258,9 +259,9 @@ void pvdisplay_colons(struct physical_volume *pv)
 	return;
 }
 
-void pvdisplay_segments(struct physical_volume *pv)
+void pvdisplay_segments(const struct physical_volume *pv)
 {
-	struct pv_segment *pvseg;
+	const struct pv_segment *pvseg;
 
 	if (pv->pe_size)
 		log_print("--- Physical Segments ---");
@@ -269,7 +270,7 @@ void pvdisplay_segments(struct physical_volume *pv)
 		log_print("Physical extent %u to %u:",
 			  pvseg->pe, pvseg->pe + pvseg->len - 1);
 
-		if (pvseg->lvseg) {
+		if (pvseg_is_allocated(pvseg)) {
 			log_print("  Logical volume\t%s%s/%s",
 				  pvseg->lvseg->lv->vg->cmd->dev_dir,
 				  pvseg->lvseg->lv->vg->name,
@@ -286,13 +287,15 @@ void pvdisplay_segments(struct physical_volume *pv)
 }
 
 /* FIXME Include label fields */
-void pvdisplay_full(struct cmd_context *cmd, struct physical_volume *pv,
+void pvdisplay_full(const struct cmd_context *cmd,
+		    const struct physical_volume *pv,
 		    void *handle __attribute((unused)))
 {
 	char uuid[64] __attribute((aligned(8)));
 	const char *size;
 
 	uint32_t pe_free;
+	uint64_t data_size, pvsize, unusable;
 
 	if (!pv)
 		return;
@@ -303,23 +306,25 @@ void pvdisplay_full(struct cmd_context *cmd, struct physical_volume *pv,
 	}
 
 	log_print("--- %sPhysical volume ---", pv->pe_size ? "" : "NEW ");
-	log_print("PV Name               %s", dev_name(pv->dev));
-	log_print("VG Name               %s%s", pv->vg_name,
+	log_print("PV Name               %s", pv_dev_name(pv));
+	log_print("VG Name               %s%s",
+		  is_orphan(pv) ? "" : pv->vg_name,
 		  pv->status & EXPORTED_VG ? " (exported)" : "");
 
-	size = display_size(cmd, (uint64_t) pv->size);
-	if (pv->pe_size && pv->pe_count) {
+	data_size = (uint64_t) pv->pe_count * pv->pe_size;
+	if (pv->size > data_size + pv->pe_start) {
+		pvsize = pv->size;
+		unusable = pvsize - data_size;
+	} else {
+		pvsize = data_size + pv->pe_start;
+		unusable = pvsize - pv->size;
+	}
 
-/******** FIXME display LVM on-disk data size
-		size2 = display_size(cmd, pv->size);
-********/
-
-		log_print("PV Size               %s" " / not usable %s",	/*  [LVM: %s]", */
-			  size,
-			  display_size(cmd, (pv->size -
-				       (uint64_t) pv->pe_count * pv->pe_size)));
-
-	} else
+	size = display_size(cmd, pvsize);
+	if (data_size)
+		log_print("PV Size               %s / not usable %s",	/*  [LVM: %s]", */
+			  size, display_size(cmd, unusable));
+	else
 		log_print("PV Size               %s", size);
 
 	/* PV number not part of LVM2 design
@@ -346,9 +351,9 @@ void pvdisplay_full(struct cmd_context *cmd, struct physical_volume *pv,
 	return;
 }
 
-int pvdisplay_short(struct cmd_context *cmd __attribute((unused)),
-		    struct volume_group *vg __attribute((unused)),
-		    struct physical_volume *pv,
+int pvdisplay_short(const struct cmd_context *cmd __attribute((unused)),
+		    const struct volume_group *vg __attribute((unused)),
+		    const struct physical_volume *pv,
 		    void *handle __attribute((unused)))
 {
 	char uuid[64] __attribute((aligned(8)));
@@ -356,12 +361,10 @@ int pvdisplay_short(struct cmd_context *cmd __attribute((unused)),
 	if (!pv)
 		return 0;
 
-	if (!id_write_format(&pv->id, uuid, sizeof(uuid))) {
-		stack;
-		return 0;
-	}
+	if (!id_write_format(&pv->id, uuid, sizeof(uuid)))
+		return_0;
 
-	log_print("PV Name               %s     ", dev_name(pv->dev));
+	log_print("PV Name               %s     ", pv_dev_name(pv));
 	/* FIXME  pv->pv_number); */
 	log_print("PV UUID               %s", *uuid ? uuid : "none");
 	log_print("PV Status             %sallocatable",
@@ -373,11 +376,11 @@ int pvdisplay_short(struct cmd_context *cmd __attribute((unused)),
 	return 0;
 }
 
-void lvdisplay_colons(struct logical_volume *lv)
+void lvdisplay_colons(const struct logical_volume *lv)
 {
 	int inkernel;
 	struct lvinfo info;
-	inkernel = lv_info(lv->vg->cmd, lv, &info, 1) && info.exists;
+	inkernel = lv_info(lv->vg->cmd, lv, &info, 1, 0) && info.exists;
 
 	log_print("%s%s/%s:%s:%d:%d:-1:%d:%" PRIu64 ":%d:-1:%d:%d:%d:%d",
 		  lv->vg->cmd->dev_dir,
@@ -393,7 +396,8 @@ void lvdisplay_colons(struct logical_volume *lv)
 	return;
 }
 
-int lvdisplay_full(struct cmd_context *cmd, struct logical_volume *lv,
+int lvdisplay_full(struct cmd_context *cmd,
+		   const struct logical_volume *lv,
 		   void *handle __attribute((unused)))
 {
 	struct lvinfo info;
@@ -402,12 +406,10 @@ int lvdisplay_full(struct cmd_context *cmd, struct logical_volume *lv,
 	struct lv_segment *snap_seg = NULL;
 	float snap_percent;	/* fused, fsize; */
 
-	if (!id_write_format(&lv->lvid.id[1], uuid, sizeof(uuid))) {
-		stack;
-		return 0;
-	}
+	if (!id_write_format(&lv->lvid.id[1], uuid, sizeof(uuid)))
+		return_0;
 
-	inkernel = lv_info(cmd, lv, &info, 1) && info.exists;
+	inkernel = lv_info(cmd, lv, &info, 1, 1) && info.exists;
 
 	log_print("--- Logical volume ---");
 
@@ -488,7 +490,15 @@ int lvdisplay_full(struct cmd_context *cmd, struct logical_volume *lv,
 ***********/
 
 	log_print("Allocation             %s", get_alloc_string(lv->alloc));
-	log_print("Read ahead sectors     %u", lv->read_ahead);
+	if (lv->read_ahead == DM_READ_AHEAD_AUTO)
+		log_print("Read ahead sectors     auto");
+	else if (lv->read_ahead == DM_READ_AHEAD_NONE)
+		log_print("Read ahead sectors     0");
+	else
+		log_print("Read ahead sectors     %u", lv->read_ahead);
+
+	if (inkernel && lv->read_ahead != info.read_ahead)
+		log_print("- currently set to     %u", info.read_ahead);
 
 	if (lv->status & FIXED_MINOR) {
 		if (lv->major >= 0)
@@ -512,7 +522,7 @@ void display_stripe(const struct lv_segment *seg, uint32_t s, const char *pre)
 		/* FIXME Re-check the conditions for 'Missing' */
 		log_print("%sPhysical volume\t%s", pre,
 			  seg_pv(seg, s) ?
-			  dev_name(seg_dev(seg, s)) :
+			  pv_dev_name(seg_pv(seg, s)) :
 			    "Missing");
 
 		if (seg_pv(seg, s))
@@ -535,9 +545,9 @@ void display_stripe(const struct lv_segment *seg, uint32_t s, const char *pre)
 	}
 }
 
-int lvdisplay_segments(struct logical_volume *lv)
+int lvdisplay_segments(const struct logical_volume *lv)
 {
-	struct lv_segment *seg;
+	const struct lv_segment *seg;
 
 	log_print("--- Segments ---");
 
@@ -555,15 +565,17 @@ int lvdisplay_segments(struct logical_volume *lv)
 	return 1;
 }
 
-void vgdisplay_extents(struct volume_group *vg __attribute((unused)))
+void vgdisplay_extents(const struct volume_group *vg __attribute((unused)))
 {
 	return;
 }
 
-void vgdisplay_full(struct volume_group *vg)
+void vgdisplay_full(const struct volume_group *vg)
 {
 	uint32_t access;
 	uint32_t active_pvs;
+	uint32_t lv_count = 0;
+	struct lv_list *lvl;
 	char uuid[64] __attribute((aligned(8)));
 
 	if (vg->status & PARTIAL_VG)
@@ -592,13 +604,18 @@ void vgdisplay_full(struct volume_group *vg)
 	/* vg number not part of LVM2 design
 	   log_print ("VG #                  %u\n", vg->vg_number);
 	 */
-	if (vg->status & CLUSTERED) {
+	if (vg_is_clustered(vg)) {
 		log_print("Clustered             yes");
 		log_print("Shared                %s",
 			  vg->status & SHARED ? "yes" : "no");
 	}
+
+	list_iterate_items(lvl, &vg->lvs)
+		if (lv_is_visible(lvl->lv) && !(lvl->lv->status & SNAPSHOT))
+			lv_count++;
+
 	log_print("MAX LV                %u", vg->max_lv);
-	log_print("Cur LV                %u", vg->lv_count + vg->snapshot_count);
+	log_print("Cur LV                %u", lv_count);
 	log_print("Open LV               %u", lvs_in_vg_opened(vg));
 /****** FIXME Max LV Size
       log_print ( "MAX LV Size           %s",
@@ -639,9 +656,11 @@ void vgdisplay_full(struct volume_group *vg)
 	return;
 }
 
-void vgdisplay_colons(struct volume_group *vg)
+void vgdisplay_colons(const struct volume_group *vg)
 {
 	uint32_t active_pvs;
+	uint32_t lv_count;
+	struct lv_list *lvl;
 	const char *access;
 	char uuid[64] __attribute((aligned(8)));
 
@@ -649,6 +668,10 @@ void vgdisplay_colons(struct volume_group *vg)
 		active_pvs = list_size(&vg->pvs);
 	else
 		active_pvs = vg->pv_count;
+
+	list_iterate_items(lvl, &vg->lvs)
+		if (lv_is_visible(lvl->lv) && !(lvl->lv->status & SNAPSHOT))
+			lv_count++;
 
 	switch (vg->status & (LVM_READ | LVM_WRITE)) {
 		case LVM_READ | LVM_WRITE:
@@ -685,13 +708,13 @@ void vgdisplay_colons(struct volume_group *vg)
 		(uint64_t) vg->extent_count * (vg->extent_size / 2),
 		vg->extent_size / 2,
 		vg->extent_count,
-		vg->extent_count - vg->free_count, 
+		vg->extent_count - vg->free_count,
 		vg->free_count,
 		uuid[0] ? uuid : "none");
 	return;
 }
 
-void vgdisplay_short(struct volume_group *vg)
+void vgdisplay_short(const struct volume_group *vg)
 {
 	log_print("\"%s\" %-9s [%-9s used / %s free]", vg->name,
 /********* FIXME if "open" print "/used" else print "/idle"???  ******/
@@ -705,21 +728,52 @@ void vgdisplay_short(struct volume_group *vg)
 	return;
 }
 
-void display_formats(struct cmd_context *cmd)
+void display_formats(const struct cmd_context *cmd)
 {
-	struct format_type *fmt;
+	const struct format_type *fmt;
 
 	list_iterate_items(fmt, &cmd->formats) {
 		log_print("%s", fmt->name);
 	}
 }
 
-void display_segtypes(struct cmd_context *cmd)
+void display_segtypes(const struct cmd_context *cmd)
 {
-	struct segment_type *segtype;
+	const struct segment_type *segtype;
 
 	list_iterate_items(segtype, &cmd->segtypes) {
 		log_print("%s", segtype->name);
 	}
+}
+
+char yes_no_prompt(const char *prompt, ...)
+{
+	int c = 0, ret = 0;
+	va_list ap;
+
+	sigint_allow();
+	do {
+		if (c == '\n' || !c) {
+			va_start(ap, prompt);
+			vprintf(prompt, ap);
+			va_end(ap);
+		}
+
+		if ((c = getchar()) == EOF) {
+			ret = 'n';
+			break;
+		}
+
+		c = tolower(c);
+		if ((c == 'y') || (c == 'n'))
+			ret = c;
+	} while (!ret || c != '\n');
+
+	sigint_restore();
+
+	if (c != '\n')
+		printf("\n");
+
+	return ret;
 }
 

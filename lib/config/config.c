@@ -1,14 +1,14 @@
 /*
- * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -20,6 +20,7 @@
 #include "str_list.h"
 #include "toolcontext.h"
 #include "lvm-string.h"
+#include "lvm-file.h"
 
 #include <sys/stat.h>
 #include <sys/mman.h>
@@ -33,7 +34,8 @@
 enum {
 	TOK_INT,
 	TOK_FLOAT,
-	TOK_STRING,
+	TOK_STRING,		/* Single quotes */
+	TOK_STRING_ESCAPED,	/* Double quotes */
 	TOK_EQ,
 	TOK_SECTION_B,
 	TOK_SECTION_E,
@@ -64,6 +66,11 @@ struct cs {
 	int exists;
 	int keep_open;
 	struct device *dev;
+};
+
+struct output_line {
+	FILE *fp;
+	struct dm_pool *mem;
 };
 
 static void _get_token(struct parser *p, int tok_prev);
@@ -150,7 +157,7 @@ static int _parse_config_file(struct parser *p, struct config_tree *cft)
 	return 1;
 }
 
-struct config_tree *create_config_tree_from_string(struct cmd_context *cmd,
+struct config_tree *create_config_tree_from_string(struct cmd_context *cmd __attribute((unused)),
 						   const char *config_settings)
 {
 	struct cs *c;
@@ -190,10 +197,8 @@ int read_config_fd(struct config_tree *cft, struct device *dev,
 	off_t mmap_offset = 0;
 	char *buf = NULL;
 
-	if (!(p = dm_pool_alloc(c->mem, sizeof(*p)))) {
-		stack;
-		return 0;
-	}
+	if (!(p = dm_pool_alloc(c->mem, sizeof(*p))))
+		return_0;
 	p->mem = c->mem;
 
 	/* Only use mmap with regular files */
@@ -211,10 +216,8 @@ int read_config_fd(struct config_tree *cft, struct device *dev,
 		}
 		p->fb = p->fb + mmap_offset;
 	} else {
-		if (!(buf = dm_malloc(size + size2))) {
-			stack;
-			return 0;
-		}
+		if (!(buf = dm_malloc(size + size2)))
+			return_0;
 		if (!dev_read_circular(dev, (uint64_t) offset, size,
 				       (uint64_t) offset2, size2, buf)) {
 			goto out;
@@ -231,10 +234,8 @@ int read_config_fd(struct config_tree *cft, struct device *dev,
 
 	p->fe = p->fb + size + size2;
 
-	if (!_parse_config_file(p, cft)) {
-		stack;
-		goto out;
-	}
+	if (!_parse_config_file(p, cft))
+		goto_out;
 
 	r = 1;
 
@@ -345,33 +346,96 @@ int config_file_changed(struct config_tree *cft)
 	return 1;
 }
 
-static void _write_value(FILE *fp, struct config_value *v)
+static int _line_start(struct output_line *outline)
 {
+	if (!dm_pool_begin_object(outline->mem, 128)) {
+		log_error("dm_pool_begin_object failed for config line");
+		return 0;
+	}
+
+	return 1;
+}
+
+static int _line_append(struct output_line *outline, const char *fmt, ...)
+  __attribute__ ((format(printf, 2, 3)));
+static int _line_append(struct output_line *outline, const char *fmt, ...)
+{
+	char buf[4096];
+	va_list ap;
+	int n;
+
+	va_start(ap, fmt);
+	n = vsnprintf(&buf[0], sizeof buf - 1, fmt, ap);
+	if (n < 0 || n > (int) sizeof buf - 1) {
+		log_error("vsnprintf failed for config line");
+		return 0;
+	}
+	va_end(ap);
+
+	if (!dm_pool_grow_object(outline->mem, &buf[0], strlen(buf))) {
+		log_error("dm_pool_grow_object failed for config line");
+		return 0;
+	}
+
+	return 1;
+}
+
+#define line_append(args...) do {if (!_line_append(outline, args)) {return_0;}} while (0)
+
+static int _line_end(struct output_line *outline)
+{
+	const char *line;
+
+	if (!dm_pool_grow_object(outline->mem, "\0", 1)) {
+		log_error("dm_pool_grow_object failed for config line");
+		return 0;
+	}
+
+	line = dm_pool_end_object(outline->mem);
+	if (!outline->fp)
+		log_print("%s", line);
+	else
+		fprintf(outline->fp, "%s\n", line);
+
+	return 1;
+}
+
+static int _write_value(struct output_line *outline, struct config_value *v)
+{
+	char *buf;
+
 	switch (v->type) {
 	case CFG_STRING:
-		fprintf(fp, "\"%s\"", v->v.str);
+		if (!(buf = alloca(escaped_len(v->v.str)))) {
+			log_error("temporary stack allocation for a config "
+				  "string failed");
+			return 0;
+		}
+		line_append("\"%s\"", escape_double_quotes(buf, v->v.str));
 		break;
 
 	case CFG_FLOAT:
-		fprintf(fp, "%f", v->v.r);
+		line_append("%f", v->v.r);
 		break;
 
 	case CFG_INT:
-		fprintf(fp, "%" PRId64, v->v.i);
+		line_append("%" PRId64, v->v.i);
 		break;
 
 	case CFG_EMPTY_ARRAY:
-		fprintf(fp, "[]");
+		line_append("[]");
 		break;
 
 	default:
 		log_error("_write_value: Unknown value type: %d", v->type);
 
 	}
+
+	return 1;
 }
 
-static int _write_config(struct config_node *n, int only_one, FILE *fp,
-			 int level)
+static int _write_config(struct config_node *n, int only_one,
+			 struct output_line *outline, int level)
 {
 	char space[MAX_INDENT + 1];
 	int l = (level < MAX_INDENT) ? level : MAX_INDENT;
@@ -385,29 +449,38 @@ static int _write_config(struct config_node *n, int only_one, FILE *fp,
 	space[i] = '\0';
 
 	do {
-		fprintf(fp, "%s%s", space, n->key);
+		if (!_line_start(outline))
+			return_0;
+		line_append("%s%s", space, n->key);
 		if (!n->v) {
 			/* it's a sub section */
-			fprintf(fp, " {\n");
-			_write_config(n->child, 0, fp, level + 1);
-			fprintf(fp, "%s}", space);
+			line_append(" {");
+			if (!_line_end(outline))
+				return_0;
+			if (!_line_start(outline))
+				return_0;
+			_write_config(n->child, 0, outline, level + 1);
+			line_append("%s}", space);
 		} else {
 			/* it's a value */
 			struct config_value *v = n->v;
-			fprintf(fp, "=");
+			line_append("=");
 			if (v->next) {
-				fprintf(fp, "[");
+				line_append("[");
 				while (v) {
-					_write_value(fp, v);
+					if (!_write_value(outline, v))
+						return_0;
 					v = v->next;
 					if (v)
-						fprintf(fp, ", ");
+						line_append(", ");
 				}
-				fprintf(fp, "]");
+				line_append("]");
 			} else
-				_write_value(fp, v);
+				if (!_write_value(outline, v))
+					return_0;
 		}
-		fprintf(fp, "\n");
+		if (!_line_end(outline))
+			return_0;
 		n = n->sib;
 	} while (n && !only_one);
 	/* FIXME: add error checking */
@@ -419,25 +492,27 @@ int write_config_file(struct config_tree *cft, const char *file,
 {
 	struct config_node *cn;
 	int r = 1;
-	FILE *fp;
+	struct output_line outline;
+	outline.fp = NULL;
 
-	if (!file) {
-		fp = stdout;
+	if (!file)
 		file = "stdout";
-	} else if (!(fp = fopen(file, "w"))) {
+	else if (!(outline.fp = fopen(file, "w"))) {
 		log_sys_error("open", file);
 		return 0;
 	}
 
+	outline.mem = dm_pool_create("config_line", 1024);
+
 	log_verbose("Dumping configuration to %s", file);
 	if (!argc) {
-		if (!_write_config(cft->root, 0, fp, 0)) {
+		if (!_write_config(cft->root, 0, &outline, 0)) {
 			log_error("Failure while writing to %s", file);
 			r = 0;
 		}
 	} else while (argc--) {
 		if ((cn = find_config_node(cft->root, *argv))) {
-			if (!_write_config(cn, 1, fp, 0)) {
+			if (!_write_config(cn, 1, &outline, 0)) {
 				log_error("Failure while writing to %s", file);
 				r = 0;
 			}
@@ -448,11 +523,12 @@ int write_config_file(struct config_tree *cft, const char *file,
 		argv++;
 	}
 
-	if ((fp != stdout) && fclose(fp)) {
-		log_sys_error("fclose", file);
+	if (outline.fp && lvm_fclose(outline.fp, file)) {
+		stack;
 		r = 0;
 	}
 
+	dm_pool_destroy(outline.mem);
 	return r;
 }
 
@@ -463,10 +539,8 @@ static struct config_node *_file(struct parser *p)
 {
 	struct config_node *root = NULL, *n, *l = NULL;
 	while (p->t != TOK_EOF) {
-		if (!(n = _section(p))) {
-			stack;
-			return 0;
-		}
+		if (!(n = _section(p)))
+			return_0;
 
 		if (!root)
 			root = n;
@@ -481,25 +555,19 @@ static struct config_node *_section(struct parser *p)
 {
 	/* IDENTIFIER SECTION_B_CHAR VALUE* SECTION_E_CHAR */
 	struct config_node *root, *n, *l = NULL;
-	if (!(root = _create_node(p))) {
-		stack;
-		return 0;
-	}
+	if (!(root = _create_node(p)))
+		return_0;
 
-	if (!(root->key = _dup_tok(p))) {
-		stack;
-		return 0;
-	}
+	if (!(root->key = _dup_tok(p)))
+		return_0;
 
 	match(TOK_IDENTIFIER);
 
 	if (p->t == TOK_SECTION_B) {
 		match(TOK_SECTION_B);
 		while (p->t != TOK_SECTION_E) {
-			if (!(n = _section(p))) {
-				stack;
-				return 0;
-			}
+			if (!(n = _section(p)))
+				return_0;
 
 			if (!root->child)
 				root->child = n;
@@ -510,10 +578,8 @@ static struct config_node *_section(struct parser *p)
 		match(TOK_SECTION_E);
 	} else {
 		match(TOK_EQ);
-		if (!(root->v = _value(p))) {
-			stack;
-			return 0;
-		}
+		if (!(root->v = _value(p)))
+			return_0;
 	}
 
 	return root;
@@ -526,10 +592,8 @@ static struct config_value *_value(struct parser *p)
 	if (p->t == TOK_ARRAY_B) {
 		match(TOK_ARRAY_B);
 		while (p->t != TOK_ARRAY_E) {
-			if (!(l = _type(p))) {
-				stack;
-				return 0;
-			}
+			if (!(l = _type(p)))
+				return_0;
 
 			if (!h)
 				h = l;
@@ -582,12 +646,21 @@ static struct config_value *_type(struct parser *p)
 		v->type = CFG_STRING;
 
 		p->tb++, p->te--;	/* strip "'s */
-		if (!(v->v.str = _dup_tok(p))) {
-			stack;
-			return 0;
-		}
+		if (!(v->v.str = _dup_tok(p)))
+			return_0;
 		p->te++;
 		match(TOK_STRING);
+		break;
+
+	case TOK_STRING_ESCAPED:
+		v->type = CFG_STRING;
+
+		p->tb++, p->te--;	/* strip "'s */
+		if (!(v->v.str = _dup_tok(p)))
+			return_0;
+		unescape_double_quotes(v->v.str);
+		p->te++;
+		match(TOK_STRING_ESCAPED);
 		break;
 
 	default:
@@ -660,7 +733,7 @@ static void _get_token(struct parser *p, int tok_prev)
 		break;
 
 	case '"':
-		p->t = TOK_STRING;
+		p->t = TOK_STRING_ESCAPED;
 		p->te++;
 		while ((p->te != p->fe) && (*p->te) && (*p->te != '"')) {
 			if ((*p->te == '\\') && (p->te + 1 != p->fe) &&
@@ -725,11 +798,9 @@ static void _get_token(struct parser *p, int tok_prev)
 static void _eat_space(struct parser *p)
 {
 	while ((p->tb != p->fe) && (*p->tb)) {
-		if (*p->te == '#') {
+		if (*p->te == '#')
 			while ((p->te != p->fe) && (*p->te) && (*p->te != '\n'))
 				p->te++;
-			p->line++;
-		}
 
 		else if (isspace(*p->te)) {
 			while ((p->te != p->fe) && (*p->te) && isspace(*p->te)) {
@@ -773,10 +844,8 @@ static char *_dup_tok(struct parser *p)
 {
 	size_t len = p->te - p->tb;
 	char *str = dm_pool_alloc(p->mem, len + 1);
-	if (!str) {
-		stack;
-		return 0;
-	}
+	if (!str)
+		return_0;
 	strncpy(str, p->tb, len);
 	str[len] = '\0';
 	return str;
@@ -918,26 +987,26 @@ float find_config_float(const struct config_node *cn, const char *path,
 }
 
 struct config_node *find_config_tree_node(struct cmd_context *cmd,
-                                          const char *path)
+					  const char *path)
 {
 	return _find_first_config_node(cmd->cft_override ? cmd->cft_override->root : NULL, cmd->cft->root, path);
 }
 
 const char *find_config_tree_str(struct cmd_context *cmd,
-                                 const char *path, const char *fail)
+				 const char *path, const char *fail)
 {
 	return _find_config_str(cmd->cft_override ? cmd->cft_override->root : NULL, cmd->cft->root, path, fail);
 }
 
 int find_config_tree_int(struct cmd_context *cmd, const char *path,
-                         int fail)
+			 int fail)
 {
 	/* FIXME Add log_error message on overflow */
 	return (int) _find_config_int64(cmd->cft_override ? cmd->cft_override->root : NULL, cmd->cft->root, path, (int64_t) fail);
 }
 
 float find_config_tree_float(struct cmd_context *cmd, const char *path,
-                             float fail)
+			     float fail)
 {
 	return _find_config_float(cmd->cft_override ? cmd->cft_override->root : NULL, cmd->cft->root, path, fail);
 }
@@ -1174,13 +1243,13 @@ static char _token_type_to_char(int type)
  * Returns:
  *  # of 'type' tokens in 'str'.
  */
-static unsigned _count_tokens (const char *str, unsigned len, int type)
+static unsigned _count_tokens(const char *str, unsigned len, int type)
 {
 	char c;
 
 	c = _token_type_to_char(type);
 
-	return(count_chars_len(str, len, c));
+	return count_chars(str, len, c);
 }
 
 /*

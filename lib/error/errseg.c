@@ -1,13 +1,13 @@
 /*
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -24,6 +24,7 @@
 #include "lvm-string.h"
 #include "activate.h"
 #include "str_list.h"
+#include "metadata.h"
 
 static const char *_errseg_name(const struct lv_segment *seg)
 {
@@ -50,7 +51,8 @@ static int _errseg_add_target_line(struct dev_manager *dm __attribute((unused)),
 	return dm_tree_node_add_error_target(node, len);
 }
 
-static int _errseg_target_present(const struct lv_segment *seg __attribute((unused)))
+static int _errseg_target_present(const struct lv_segment *seg __attribute((unused)),
+				  unsigned *attributes __attribute((unused)))
 {
 	static int _errseg_checked = 0;
 	static int _errseg_present = 0;
@@ -66,7 +68,7 @@ static int _errseg_target_present(const struct lv_segment *seg __attribute((unus
 #endif
 
 static int _errseg_modules_needed(struct dm_pool *mem,
-				  const struct lv_segment *seg,
+				  const struct lv_segment *seg __attribute((unused)),
 				  struct list *modules)
 {
 	if (!str_list_add(mem, modules, "error")) {
@@ -76,7 +78,7 @@ static int _errseg_modules_needed(struct dm_pool *mem,
 
 	return 1;
 }
- 
+
 static void _errseg_destroy(const struct segment_type *segtype)
 {
 	dm_free((void *)segtype);

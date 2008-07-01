@@ -35,6 +35,8 @@ struct node_reply {
 	struct node_reply *next;
 };
 
+typedef enum {DEBUG_OFF, DEBUG_STDERR, DEBUG_SYSLOG} debug_t;
+
 /*
  * These exist for the use of local sockets only when we are
  * collecting responses from all cluster nodes
@@ -115,7 +117,8 @@ extern int add_client(struct local_client *new_client);
 extern void clvmd_cluster_init_completed(void);
 extern void process_message(struct local_client *client, const char *buf,
 			    int len, const char *csid);
-extern void debuglog(const char *fmt, ... );
+extern void debuglog(const char *fmt, ... )
+  __attribute__ ((format(printf, 1, 2)));
 
 int sync_lock(const char *resource, int mode, int flags, int *lockid);
 int sync_unlock(const char *resource, int lockid);

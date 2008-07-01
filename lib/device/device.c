@@ -1,14 +1,14 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -27,16 +27,16 @@
 #define PART_OFFSET UINT64_C(0x1BE)
 
 struct partition {
-        uint8_t boot_ind;
-        uint8_t head;
-        uint8_t sector;
-        uint8_t cyl;
-        uint8_t sys_ind;	/* partition type */
-        uint8_t end_head;
-        uint8_t end_sector;
-        uint8_t end_cyl;
-        uint32_t start_sect;
-        uint32_t nr_sects;
+	uint8_t boot_ind;
+	uint8_t head;
+	uint8_t sector;
+	uint8_t cyl;
+	uint8_t sys_ind;	/* partition type */
+	uint8_t end_head;
+	uint8_t end_sector;
+	uint8_t end_cyl;
+	uint32_t start_sect;
+	uint32_t nr_sects;
 } __attribute__((packed));
 
 static int _is_partitionable(struct device *dev)
@@ -62,10 +62,8 @@ static int _has_partition_table(struct device *dev)
 		return -1;
 	}
 
-	if (!dev_read(dev, UINT64_C(0), sizeof(buf), &buf)) {
-		stack;
-		goto out;
-	}
+	if (!dev_read(dev, UINT64_C(0), sizeof(buf), &buf))
+		goto_out;
 
 	/* FIXME Check for other types of partition table too */
 

@@ -1,14 +1,14 @@
 /*
- * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -138,7 +138,7 @@ static int _mk_link(const char *dev_dir, const char *vg_name,
 	}
 
 	/* To reach this point, the VG must have been locked.
-	 * As locking fails if the VG is active under LVM1, it's 
+	 * As locking fails if the VG is active under LVM1, it's
 	 * now safe to remove any LVM1 devices we find here
 	 * (as well as any existing LVM2 symlink). */
 	if (!lstat(lvm1_group_path, &buf)) {
@@ -175,10 +175,8 @@ static int _mk_link(const char *dev_dir, const char *vg_name,
 	}
 
 #ifdef HAVE_SELINUX
-        if (!dm_set_selinux_context(lv_path, S_IFLNK)) {
-                stack;
-                return 0;
-        }
+	if (!dm_set_selinux_context(lv_path, S_IFLNK))
+		return_0;
 #endif
 
 	return 1;
@@ -225,17 +223,13 @@ static int _do_fs_op(fs_op_t type, const char *dev_dir, const char *vg_name,
 	switch (type) {
 	case FS_ADD:
 		if (!_mk_dir(dev_dir, vg_name) ||
-		    !_mk_link(dev_dir, vg_name, lv_name, dev)) {
-			stack;
-			return 0;
-		}
+		    !_mk_link(dev_dir, vg_name, lv_name, dev))
+			return_0;
 		break;
 	case FS_DEL:
 		if (!_rm_link(dev_dir, vg_name, lv_name) ||
-		    !_rm_dir(dev_dir, vg_name)) {
-			stack;
-			return 0;
-		}
+		    !_rm_dir(dev_dir, vg_name))
+			return_0;
 		break;
 		/* FIXME Use rename() */
 	case FS_RENAME:
@@ -316,10 +310,8 @@ static int _fs_op(fs_op_t type, const char *dev_dir, const char *vg_name,
 {
 	if (memlock()) {
 		if (!_stack_fs_op(type, dev_dir, vg_name, lv_name, dev,
-				  old_lv_name)) {
-			stack;
-			return 0;
-		}
+				  old_lv_name))
+			return_0;
 		return 1;
 	}
 
