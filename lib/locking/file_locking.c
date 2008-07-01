@@ -1,14 +1,14 @@
 /*
- * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -64,7 +64,7 @@ static int _release_lock(const char *file, int unlock)
 			if (!flock(ll->lf, LOCK_NB | LOCK_EX) &&
 			    !stat(ll->res, &buf1) &&
 			    !fstat(ll->lf, &buf2) &&
-			    !memcmp(&buf1.st_ino, &buf2.st_ino, sizeof(ino_t)))
+			    is_same_inode(buf1, buf2))
 				if (unlink(ll->res))
 					log_sys_error("unlink", ll->res);
 
@@ -124,7 +124,7 @@ static void _install_ctrl_c_handler()
 	siginterrupt(SIGINT, 1);
 }
 
-static int _lock_file(const char *file, int flags)
+static int _lock_file(const char *file, uint32_t flags)
 {
 	int operation;
 	int r = 1;
@@ -185,11 +185,12 @@ static int _lock_file(const char *file, int flags)
 		if (r) {
 			errno = old_errno;
 			log_sys_error("flock", ll->res);
+			close(ll->lf);
 			goto err;
 		}
 
 		if (!stat(ll->res, &buf1) && !fstat(ll->lf, &buf2) &&
-		    !memcmp(&buf1.st_ino, &buf2.st_ino, sizeof(ino_t)))
+		    is_same_inode(buf1, buf2))
 			break;
 	} while (!(flags & LCK_NONBLOCK));
 
@@ -203,58 +204,57 @@ static int _lock_file(const char *file, int flags)
 }
 
 static int _file_lock_resource(struct cmd_context *cmd, const char *resource,
-			       int flags)
+			       uint32_t flags)
 {
 	char lockfile[PATH_MAX];
 
-	assert(resource);
-
 	switch (flags & LCK_SCOPE_MASK) {
 	case LCK_VG:
-		if (!*resource)
+		/* Skip cache refresh for VG_GLOBAL - the caller handles it */
+		if (strcmp(resource, VG_GLOBAL))
+			lvmcache_drop_metadata(resource);
+
+		/* LCK_CACHE does not require a real lock */
+		if (flags & LCK_CACHE)
+			break;
+
+		if (*resource == '#')
 			dm_snprintf(lockfile, sizeof(lockfile),
-				     "%s/P_orphans", _lock_dir);
+				     "%s/P_%s", _lock_dir, resource + 1);
 		else
 			dm_snprintf(lockfile, sizeof(lockfile),
 				     "%s/V_%s", _lock_dir, resource);
 
 		if (!_lock_file(lockfile, flags))
-			return 0;
-
-		switch (flags & LCK_TYPE_MASK) {
-		case LCK_UNLOCK:
-			lvmcache_unlock_vgname(resource);
-			break;
-		default:
-			lvmcache_lock_vgname(resource,
-					     (flags & LCK_TYPE_MASK) ==
-					     LCK_READ);
-		}
+			return_0;
 		break;
 	case LCK_LV:
 		switch (flags & LCK_TYPE_MASK) {
 		case LCK_UNLOCK:
-			log_debug("Unlocking LV %s", resource);
+			log_very_verbose("Unlocking LV %s", resource);
 			if (!lv_resume_if_active(cmd, resource))
 				return 0;
 			break;
 		case LCK_NULL:
-			log_debug("Locking LV %s (NL)", resource);
+			log_very_verbose("Locking LV %s (NL)", resource);
 			if (!lv_deactivate(cmd, resource))
 				return 0;
 			break;
 		case LCK_READ:
-			log_debug("Locking LV %s (R)", resource);
+			log_very_verbose("Locking LV %s (R)", resource);
 			if (!lv_activate_with_filter(cmd, resource, 0))
 				return 0;
 			break;
+		case LCK_PREAD:
+			log_very_verbose("Locking LV %s (PR) - ignored", resource);
+			break;
 		case LCK_WRITE:
-			log_debug("Locking LV %s (W)", resource);
+			log_very_verbose("Locking LV %s (W)", resource);
 			if (!lv_suspend_if_active(cmd, resource))
 				return 0;
 			break;
 		case LCK_EXCL:
-			log_debug("Locking LV %s (EX)", resource);
+			log_very_verbose("Locking LV %s (EX)", resource);
 			if (!lv_activate_with_filter(cmd, resource, 1))
 				return 0;
 			break;
@@ -283,7 +283,7 @@ int init_file_locking(struct locking_type *locking, struct cmd_context *cmd)
 						DEFAULT_LOCK_DIR),
 		sizeof(_lock_dir));
 
-	if (!create_dir(_lock_dir))
+	if (!dm_create_dir(_lock_dir))
 		return 0;
 
 	/* Trap a read-only file system */

@@ -1,14 +1,14 @@
 /*
- * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -118,10 +118,8 @@ static int _fill_maps(struct dm_hash_table *maps, struct volume_group *vg,
 		e = dl->extents;
 
 		/* build an array of lv's for this pv */
-		if (!_fill_lv_array(lvms, maps, dl)) {
-			stack;
-			return 0;
-		}
+		if (!_fill_lv_array(lvms, maps, dl))
+			return_0;
 
 		for (i = 0; i < dl->pvd.pe_total; i++) {
 			lv_num = e[i].lv_num;
@@ -189,10 +187,8 @@ static int _check_maps_are_complete(struct dm_hash_table *maps)
 	for (n = dm_hash_get_first(maps); n; n = dm_hash_get_next(maps, n)) {
 		lvm = (struct lv_map *) dm_hash_get_data(maps, n);
 
-		if (!_check_single_map(lvm)) {
-			stack;
-			return 0;
-		}
+		if (!_check_single_map(lvm))
+			return_0;
 	}
 	return 1;
 }
@@ -216,10 +212,8 @@ static int _read_linear(struct cmd_context *cmd, struct lv_map *lvm)
 	struct lv_segment *seg;
 	struct segment_type *segtype;
 
-	if (!(segtype = get_segtype_from_string(cmd, "striped"))) {
-		stack;
-		return 0;
-	}
+	if (!(segtype = get_segtype_from_string(cmd, "striped")))
+		return_0;
 
 	while (le < lvm->lv->le_count) {
 		len = _area_length(lvm, le);
@@ -286,7 +280,7 @@ static int _read_stripes(struct cmd_context *cmd, struct lv_map *lvm)
 	while (first_area_le < total_area_len) {
 		area_len = 1;
 
-		/* 
+		/*
 		 * Find how many extents are contiguous in all stripes
 		 * and so can form part of this segment
 		 */
@@ -334,10 +328,8 @@ static int _build_all_segments(struct cmd_context *cmd, struct dm_hash_table *ma
 
 	for (n = dm_hash_get_first(maps); n; n = dm_hash_get_next(maps, n)) {
 		lvm = (struct lv_map *) dm_hash_get_data(maps, n);
-		if (!_build_segments(cmd, lvm)) {
-			stack;
-			return 0;
-		}
+		if (!_build_segments(cmd, lvm))
+			return_0;
 	}
 
 	return 1;
@@ -350,10 +342,8 @@ int import_extents(struct cmd_context *cmd, struct volume_group *vg,
 	struct dm_pool *scratch = dm_pool_create("lvm1 import_extents", 10 * 1024);
 	struct dm_hash_table *maps;
 
-	if (!scratch) {
-		stack;
-		return 0;
-	}
+	if (!scratch)
+		return_0;
 
 	if (!(maps = _create_lv_maps(scratch, vg))) {
 		log_err("Couldn't allocate logical volume maps.");
@@ -365,10 +355,8 @@ int import_extents(struct cmd_context *cmd, struct volume_group *vg,
 		goto out;
 	}
 
-	if (!_check_maps_are_complete(maps) && !(vg->status & PARTIAL_VG)) {
-		stack;
-		goto out;
-	}
+	if (!_check_maps_are_complete(maps) && !(vg->status & PARTIAL_VG))
+		goto_out;
 
 	if (!_build_all_segments(cmd, maps)) {
 		log_err("Couldn't build extent segments.");

@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2004 Luca Berra
+ * Copyright (C) 2004-2006 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -18,7 +19,8 @@
 
 #ifdef linux
 
-static int _ignore_md(struct dev_filter *f, struct device *dev)
+static int _ignore_md(struct dev_filter *f __attribute((unused)),
+		      struct device *dev)
 {
 	int ret;
 	

@@ -2,7 +2,7 @@
 # Copyright (C) 2003-2004 Sistina Software, Inc. All rights reserved.
 # Copyright (C) 2004 Red Hat, Inc. All rights reserved.
 #
-# This file is part of the LVM2.
+# This file is part of LVM2.
 #
 # This copyrighted material is made available to anyone wishing to use,
 # modify, copy, or redistribute it subject to the terms and conditions
@@ -23,7 +23,7 @@ LIB_SHARED = liblvm2clusterlock.so
 include $(top_srcdir)/make.tmpl
 
 install install_cluster: liblvm2clusterlock.so
-	$(INSTALL) -D $(OWNER) $(GROUP) $(STRIP) $< \
+	$(INSTALL) -D $(OWNER) $(GROUP) -m 555 $(STRIP) $< \
 		$(libdir)/liblvm2clusterlock.so.$(LIB_VERSION)
 	$(LN_S) -f liblvm2clusterlock.so.$(LIB_VERSION) \
 		$(libdir)/liblvm2clusterlock.so

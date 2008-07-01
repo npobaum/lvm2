@@ -1,14 +1,14 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -16,51 +16,44 @@
 #include "tools.h"
 
 static int _pvdisplay_single(struct cmd_context *cmd,
-			     struct volume_group *vg __attribute((unused)),
+			     struct volume_group *vg,
 			     struct physical_volume *pv, void *handle)
 {
 	struct pv_list *pvl;
-	int consistent = 0;
 	int ret = ECMD_PROCESSED;
 	uint64_t size;
 
-	const char *pv_name = dev_name(get_pv_dev(pv));
+	const char *pv_name = pv_dev_name(pv);
+	const char *vg_name = NULL;
 
-	 if (get_pv_vg_name(pv)) {
-	         if (!lock_vol(cmd, get_pv_vg_name(pv), LCK_VG_READ)) {
-	                 log_error("Can't lock %s: skipping", get_pv_vg_name(pv));
-	                 return ECMD_FAILED;
-	         }
+	if (!is_orphan(pv) && !vg) {
+		vg_name = pv_vg_name(pv);
+		if (!(vg = vg_lock_and_read(cmd, vg_name, (char *)&pv->vgid,
+					    LCK_VG_READ, CLUSTERED, 0))) {
+		 	log_error("Skipping volume group %s", vg_name);
+			/* FIXME If CLUSTERED should return ECMD_PROCESSED here */
+		 	return ECMD_FAILED;
+	 	}
 
-	         if (!(vg = vg_read(cmd, get_pv_vg_name(pv), (char *)&pv->vgid, &consistent))) {
-	                 log_error("Can't read %s: skipping", get_pv_vg_name(pv));
-	                 goto out;
-	         }
-
-		 if (!vg_check_status(vg, CLUSTERED)) {
-	                 ret = ECMD_FAILED;
-	                 goto out;
-	         }
-
-		 /*
-		  * Replace possibly incomplete PV structure with new one
-		  * allocated in vg_read() path.
-		  */
+	 	/*
+		 * Replace possibly incomplete PV structure with new one
+		 * allocated in vg_read() path.
+		 */
 		 if (!(pvl = find_pv_in_vg(vg, pv_name))) {
 			 log_error("Unable to find \"%s\" in volume group \"%s\"",
 				   pv_name, vg->name);
-	                 ret = ECMD_FAILED;
-	                 goto out;
+			 ret = ECMD_FAILED;
+			 goto out;
 		 }
 
 		 pv = pvl->pv;
 	}
 
-	if (!*get_pv_vg_name(pv))
-		size = get_pv_size(pv);
+	if (is_orphan(pv))
+		size = pv_size(pv);
 	else
-		size = (get_pv_pe_count(pv) - get_pv_pe_alloc_count(pv)) * 
-			get_pv_pe_size(pv);
+		size = (pv_pe_count(pv) - pv_pe_alloc_count(pv)) *
+			pv_pe_size(pv);
 
 	if (arg_count(cmd, short_ARG)) {
 		log_print("Device \"%s\" has a capacity of %s", pv_name,
@@ -68,11 +61,11 @@ static int _pvdisplay_single(struct cmd_context *cmd,
 		goto out;
 	}
 
-	if (get_pv_status(pv) & EXPORTED_VG)
+	if (pv_status(pv) & EXPORTED_VG)
 		log_print("Physical volume \"%s\" of volume group \"%s\" "
-			  "is exported", pv_name, get_pv_vg_name(pv));
+			  "is exported", pv_name, pv_vg_name(pv));
 
-	if (!get_pv_vg_name(pv))
+	if (is_orphan(pv))
 		log_print("\"%s\" is a new physical volume of \"%s\"",
 			  pv_name, display_size(cmd, size));
 
@@ -87,8 +80,8 @@ static int _pvdisplay_single(struct cmd_context *cmd,
 		pvdisplay_segments(pv);
 
 out:
-        if (get_pv_vg_name(pv))
-                unlock_vg(cmd, get_pv_vg_name(pv));
+	if (vg_name)
+		unlock_vg(cmd, vg_name);
 
 	return ret;
 }
@@ -117,5 +110,6 @@ int pvdisplay(struct cmd_context *cmd, int argc, char **argv)
 		return EINVALID_CMD_LINE;
 	}
 
-	return process_each_pv(cmd, argc, argv, NULL, NULL, _pvdisplay_single);
+	return process_each_pv(cmd, argc, argv, NULL, LCK_VG_READ, NULL,
+			       _pvdisplay_single);
 }

@@ -1,14 +1,14 @@
 /*
- * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved. 
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -27,7 +27,7 @@ static int _monitor_lvs_in_vg(struct cmd_context *cmd,
 	list_iterate_items(lvl, &vg->lvs) {
 		lv = lvl->lv;
 
-		if (!lv_info(cmd, lv, &info, 0))
+		if (!lv_info(cmd, lv, &info, 0, 0))
 			lv_active = 0;
 		else
 			lv_active = info.exists;
@@ -66,10 +66,14 @@ static int _activate_lvs_in_vg(struct cmd_context *cmd,
 		if ((lv->status & SNAPSHOT) || lv_is_cow(lv))
 			continue;
 
-		/* Can't deactive a pvmove or log LV */
+		/* Only request activation of mirror LV */
+		if ((lv->status & MIRROR_IMAGE) || (lv->status & MIRROR_LOG))
+			continue;
+
+		/* Can't deactivate a pvmove LV */
 		/* FIXME There needs to be a controlled way of doing this */
 		if (((activate == CHANGE_AN) || (activate == CHANGE_ALN)) &&
-		    ((lv->status & PVMOVE) || (lv->status & MIRROR_LOG)))
+		    ((lv->status & PVMOVE) ))
 			continue;
 
 		if (activate == CHANGE_AN) {
@@ -134,7 +138,7 @@ static int _vgchange_available(struct cmd_context *cmd, struct volume_group *vg)
 		return ECMD_FAILED;
 	}
 
-	if (activate && lockingfailed() && (vg->status & CLUSTERED)) {
+	if (activate && lockingfailed() && (vg_is_clustered(vg))) {
 		log_error("Locking inactive: ignoring clustered "
 			  "volume group %s", vg->name);
 		return ECMD_FAILED;
@@ -207,13 +211,13 @@ static int _vgchange_resizeable(struct cmd_context *cmd,
 {
 	int resizeable = !strcmp(arg_str_value(cmd, resizeable_ARG, "n"), "y");
 
-	if (resizeable && (vg->status & RESIZEABLE_VG)) {
+	if (resizeable && (vg_status(vg) & RESIZEABLE_VG)) {
 		log_error("Volume group \"%s\" is already resizeable",
 			  vg->name);
 		return ECMD_FAILED;
 	}
 
-	if (!resizeable && !(vg->status & RESIZEABLE_VG)) {
+	if (!resizeable && !(vg_status(vg) & RESIZEABLE_VG)) {
 		log_error("Volume group \"%s\" is already not resizeable",
 			  vg->name);
 		return ECMD_FAILED;
@@ -243,21 +247,21 @@ static int _vgchange_clustered(struct cmd_context *cmd,
 	int clustered = !strcmp(arg_str_value(cmd, clustered_ARG, "n"), "y");
 	struct lv_list *lvl;
 
-	if (clustered && (vg->status & CLUSTERED)) {
+	if (clustered && (vg_is_clustered(vg))) {
 		log_error("Volume group \"%s\" is already clustered",
 			  vg->name);
 		return ECMD_FAILED;
 	}
 
-	if (!clustered && !(vg->status & CLUSTERED)) {
+	if (!clustered && !(vg_is_clustered(vg))) {
 		log_error("Volume group \"%s\" is already not clustered",
 			  vg->name);
 		return ECMD_FAILED;
 	}
 
 	if (clustered) {
-        	list_iterate_items(lvl, &vg->lvs) {
-                	if (lv_is_origin(lvl->lv) || lv_is_cow(lvl->lv)) {
+		list_iterate_items(lvl, &vg->lvs) {
+			if (lv_is_origin(lvl->lv) || lv_is_cow(lvl->lv)) {
 				log_error("Volume group %s contains snapshots "
 					  "that are not yet supported.",
 					  vg->name);
@@ -289,7 +293,7 @@ static int _vgchange_logicalvolume(struct cmd_context *cmd,
 {
 	uint32_t max_lv = arg_uint_value(cmd, logicalvolume_ARG, 0);
 
-	if (!(vg->status & RESIZEABLE_VG)) {
+	if (!(vg_status(vg) & RESIZEABLE_VG)) {
 		log_error("Volume group \"%s\" must be resizeable "
 			  "to change MaxLogicalVolume", vg->name);
 		return ECMD_FAILED;
@@ -331,7 +335,7 @@ static int _vgchange_physicalvolumes(struct cmd_context *cmd,
 {
 	uint32_t max_pv = arg_uint_value(cmd, maxphysicalvolumes_ARG, 0);
 
-	if (!(vg->status & RESIZEABLE_VG)) {
+	if (!(vg_status(vg) & RESIZEABLE_VG)) {
 		log_error("Volume group \"%s\" must be resizeable "
 			  "to change MaxPhysicalVolumes", vg->name);
 		return ECMD_FAILED;
@@ -377,7 +381,7 @@ static int _vgchange_pesize(struct cmd_context *cmd, struct volume_group *vg)
 {
 	uint32_t extent_size;
 
-	if (!(vg->status & RESIZEABLE_VG)) {
+	if (!(vg_status(vg) & RESIZEABLE_VG)) {
 		log_error("Volume group \"%s\" must be resizeable "
 			  "to change PE size", vg->name);
 		return ECMD_FAILED;
@@ -388,7 +392,7 @@ static int _vgchange_pesize(struct cmd_context *cmd, struct volume_group *vg)
 		return EINVALID_CMD_LINE;
 	}
 
-	extent_size = arg_uint_value(cmd, physicalextentsize_ARG, 0) * 2;
+	extent_size = arg_uint_value(cmd, physicalextentsize_ARG, 0);
 	if (!extent_size) {
 		log_error("Physical extent size may not be zero");
 		return EINVALID_CMD_LINE;
@@ -525,18 +529,18 @@ static int vgchange_single(struct cmd_context *cmd, const char *vg_name,
 			return ECMD_FAILED;
 	}
 
-	if (!(vg->status & LVM_WRITE) && !arg_count(cmd, available_ARG)) {
+	if (!(vg_status(vg) & LVM_WRITE) && !arg_count(cmd, available_ARG)) {
 		log_error("Volume group \"%s\" is read-only", vg->name);
 		return ECMD_FAILED;
 	}
 
-	if (vg->status & EXPORTED_VG) {
+	if (vg_status(vg) & EXPORTED_VG) {
 		log_error("Volume group \"%s\" is exported", vg_name);
 		return ECMD_FAILED;
 	}
 
 	init_dmeventd_monitor(arg_int_value(cmd, monitor_ARG,
-					    cmd->is_static ?
+					    (cmd->is_static || arg_count(cmd, ignoremonitoring_ARG)) ?
 					    DMEVENTD_MONITOR_IGNORE : DEFAULT_DMEVENTD_MONITOR));
 
 	if (arg_count(cmd, available_ARG))

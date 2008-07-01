@@ -1,14 +1,14 @@
 /*
- * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -21,6 +21,7 @@
 #include "toolcontext.h"
 #include "memlock.h"
 #include "defaults.h"
+#include "lvmcache.h"
 
 #include <signal.h>
 #include <sys/stat.h>
@@ -118,7 +119,7 @@ void sigint_restore(void)
 	sigaction(SIGINT, &_oldhandler, NULL);
 }
 
-static void _block_signals(int flags __attribute((unused)))
+static void _block_signals(uint32_t flags __attribute((unused)))
 {
 	sigset_t set;
 
@@ -156,7 +157,7 @@ static void _unblock_signals(void)
 	return;
 }
 
-static void _lock_memory(int flags)
+static void _lock_memory(uint32_t flags)
 {
 	if (!(_locking.flags & LCK_PRE_MEMLOCK))
 		return;
@@ -165,7 +166,7 @@ static void _lock_memory(int flags)
 		memlock_inc();
 }
 
-static void _unlock_memory(int flags)
+static void _unlock_memory(uint32_t flags)
 {
 	if (!(_locking.flags & LCK_PRE_MEMLOCK))
 		return;
@@ -187,7 +188,7 @@ void reset_locking(void)
 		_unblock_signals();
 }
 
-static void _update_vg_lock_count(int flags)
+static void _update_vg_lock_count(uint32_t flags)
 {
 	if ((flags & LCK_SCOPE_MASK) != LCK_VG)
 		return;
@@ -214,7 +215,7 @@ int init_locking(int type, struct cmd_context *cmd)
 	switch (type) {
 	case 0:
 		init_no_locking(&_locking, cmd);
-		log_print("WARNING: Locking disabled. Be careful! "
+		log_warn("WARNING: Locking disabled. Be careful! "
 			  "This could corrupt your metadata.");
 		return 1;
 
@@ -253,10 +254,10 @@ int init_locking(int type, struct cmd_context *cmd)
 	}
 
 	if ((type == 2 || type == 3) &&
-            find_config_tree_int(cmd, "locking/fallback_to_local_locking",
+	    find_config_tree_int(cmd, "locking/fallback_to_local_locking",
 				 DEFAULT_FALLBACK_TO_LOCAL_LOCKING)) {
-		log_print("WARNING: Falling back to local file-based locking.");
-		log_print("Volume Groups with the clustered attribute will "
+		log_warn("WARNING: Falling back to local file-based locking.");
+		log_warn("Volume Groups with the clustered attribute will "
 			  "be inaccessible.");
 		if (init_file_locking(&_locking, cmd))
 			return 1;
@@ -288,7 +289,7 @@ int check_lvm1_vg_inactive(struct cmd_context *cmd, const char *vgname)
 	char path[PATH_MAX];
 
 	/* We'll allow operations on orphans */
-	if (!*vgname)
+	if (is_orphan_vg(vgname))
 		return 1;
 
 	if (dm_snprintf(path, sizeof(path), "%s/lvm/VGs/%s", cmd->proc_dir,
@@ -313,27 +314,52 @@ int check_lvm1_vg_inactive(struct cmd_context *cmd, const char *vgname)
  * VG locking is by VG name.
  * FIXME This should become VG uuid.
  */
-static int _lock_vol(struct cmd_context *cmd, const char *resource, int flags)
+static int _lock_vol(struct cmd_context *cmd, const char *resource, uint32_t flags)
 {
+	int ret = 0;
+
 	_block_signals(flags);
 	_lock_memory(flags);
 
-	if (!(_locking.lock_resource(cmd, resource, flags))) {
-		_unlock_memory(flags);
-		_unblock_signals();
+	assert(resource);
+
+	if (!*resource) {
+		log_error("Internal error: Use of P_orphans is deprecated.");
 		return 0;
 	}
 
-	_update_vg_lock_count(flags);
+	if (*resource == '#' && (flags & LCK_CACHE)) {
+		log_error("Internal error: P_%s referenced", resource);
+		return 0;
+	}
+
+	if ((ret = _locking.lock_resource(cmd, resource, flags))) {
+		if ((flags & LCK_SCOPE_MASK) == LCK_VG &&
+		    !(flags & LCK_CACHE)) {
+			if ((flags & LCK_TYPE_MASK) == LCK_UNLOCK)
+				lvmcache_unlock_vgname(resource);
+			else
+				lvmcache_lock_vgname(resource, (flags & LCK_TYPE_MASK)
+								== LCK_READ);
+		}
+
+		_update_vg_lock_count(flags);
+	}
+
 	_unlock_memory(flags);
 	_unblock_signals();
 
-	return 1;
+	return ret;
 }
 
-int lock_vol(struct cmd_context *cmd, const char *vol, int flags)
+int lock_vol(struct cmd_context *cmd, const char *vol, uint32_t flags)
 {
 	char resource[258] __attribute((aligned(8)));
+
+	if (flags == LCK_NONE) {
+		log_debug("Internal error: %s: LCK_NONE lock requested", vol);
+		return 1;
+	}
 
 	switch (flags & LCK_SCOPE_MASK) {
 	case LCK_VG:
@@ -354,8 +380,12 @@ int lock_vol(struct cmd_context *cmd, const char *vol, int flags)
 	if (!_lock_vol(cmd, resource, flags))
 		return 0;
 
-	/* Perform immediate unlock unless LCK_HOLD set */
-	if (!(flags & LCK_HOLD) && ((flags & LCK_TYPE_MASK) != LCK_UNLOCK)) {
+	/*
+	 * If a real lock was acquired (i.e. not LCK_CACHE),
+	 * perform an immediate unlock unless LCK_HOLD was requested.
+	 */
+	if (!(flags & LCK_CACHE) && !(flags & LCK_HOLD) &&
+	    ((flags & LCK_TYPE_MASK) != LCK_UNLOCK)) {
 		if (!_lock_vol(cmd, resource,
 			       (flags & ~LCK_TYPE_MASK) | LCK_UNLOCK))
 			return 0;
@@ -397,19 +427,23 @@ int suspend_lvs(struct cmd_context *cmd, struct list *lvs)
 }
 
 /* Lock a list of LVs */
-int activate_lvs_excl(struct cmd_context *cmd, struct list *lvs)
+int activate_lvs(struct cmd_context *cmd, struct list *lvs, unsigned exclusive)
 {
 	struct list *lvh;
 	struct lv_list *lvl;
 
 	list_iterate_items(lvl, lvs) {
-		if (!activate_lv_excl(cmd, lvl->lv)) {
+		if (!exclusive) {
+			if (!activate_lv(cmd, lvl->lv)) {
+				log_error("Failed to activate %s", lvl->lv->name);
+				return 0;
+			}
+		} else if (!activate_lv_excl(cmd, lvl->lv)) {
 			log_error("Failed to activate %s", lvl->lv->name);
 			list_uniterate(lvh, lvs, &lvl->list) {
 				lvl = list_item(lvh, struct lv_list);
 				activate_lv(cmd, lvl->lv);
 			}
-
 			return 0;
 		}
 	}

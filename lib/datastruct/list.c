@@ -1,14 +1,14 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -66,9 +66,18 @@ void list_del(struct list *elem)
 }
 
 /*
+ * Remove an element from existing list and insert before 'head'.
+ */
+void list_move(struct list *head, struct list *elem)
+{
+        list_del(elem);
+        list_add(head, elem);
+}
+
+/*
  * Is the list empty?
  */
-int list_empty(struct list *head)
+int list_empty(const struct list *head)
 {
 	return head->n == head;
 }
@@ -76,7 +85,7 @@ int list_empty(struct list *head)
 /*
  * Is this the first element of the list?
  */
-int list_start(struct list *head, struct list *elem)
+int list_start(const struct list *head, const struct list *elem)
 {
 	return elem->p == head;
 }
@@ -84,7 +93,7 @@ int list_start(struct list *head, struct list *elem)
 /*
  * Is this the last element of the list?
  */
-int list_end(struct list *head, struct list *elem)
+int list_end(const struct list *head, const struct list *elem)
 {
 	return elem->n == head;
 }
@@ -92,7 +101,7 @@ int list_end(struct list *head, struct list *elem)
 /*
  * Return first element of the list or NULL if empty
  */
-struct list *list_first(struct list *head)
+struct list *list_first(const struct list *head)
 {
 	return (list_empty(head) ? NULL : head->n);
 }
@@ -100,7 +109,7 @@ struct list *list_first(struct list *head)
 /*
  * Return last element of the list or NULL if empty
  */
-struct list *list_last(struct list *head)
+struct list *list_last(const struct list *head)
 {
 	return (list_empty(head) ? NULL : head->p);
 }
@@ -108,7 +117,7 @@ struct list *list_last(struct list *head)
 /*
  * Return the previous element of the list, or NULL if we've reached the start.
  */
-struct list *list_prev(struct list *head, struct list *elem)
+struct list *list_prev(const struct list *head, const struct list *elem)
 {
 	return (list_start(head, elem) ? NULL : elem->p);
 }
@@ -116,7 +125,7 @@ struct list *list_prev(struct list *head, struct list *elem)
 /*
  * Return the next element of the list, or NULL if we've reached the end.
  */
-struct list *list_next(struct list *head, struct list *elem)
+struct list *list_next(const struct list *head, const struct list *elem)
 {
 	return (list_end(head, elem) ? NULL : elem->n);
 }

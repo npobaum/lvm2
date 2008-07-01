@@ -1,14 +1,14 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -45,15 +45,8 @@ static int vgconvert_single(struct cmd_context *cmd, const char *vg_name,
 			return ECMD_FAILED;
 	}
 
-	if (!(vg->status & LVM_WRITE)) {
-		log_error("Volume group \"%s\" is read-only", vg->name);
+	if (!vg_check_status(vg, LVM_WRITE | EXPORTED_VG))
 		return ECMD_FAILED;
-	}
-
-	if (vg->status & EXPORTED_VG) {
-		log_error("Volume group \"%s\" is exported", vg_name);
-		return ECMD_FAILED;
-	}
 
 	if (vg->fid->fmt == cmd->fmt) {
 		log_error("Volume group \"%s\" already uses format %s",
@@ -68,7 +61,7 @@ static int vgconvert_single(struct cmd_context *cmd, const char *vg_name,
 		}
 
 		pvmetadatasize = arg_uint64_value(cmd, metadatasize_ARG,
-						  UINT64_C(0)) * 2;
+						  UINT64_C(0));
 		if (!pvmetadatasize)
 			pvmetadatasize =
 			    find_config_tree_int(cmd,
@@ -96,7 +89,7 @@ static int vgconvert_single(struct cmd_context *cmd, const char *vg_name,
 				continue;
 			if (lvnum_from_lvid(&lv->lvid) < MAX_RESTRICTED_LVS)
 				continue;
-			if (lv_info(cmd, lv, &info, 0) && info.exists) {
+			if (lv_info(cmd, lv, &info, 0, 0) && info.exists) {
 				log_error("Logical volume %s must be "
 					  "deactivated before conversion.",
 					   lv->name);
@@ -114,18 +107,18 @@ static int vgconvert_single(struct cmd_context *cmd, const char *vg_name,
 	list_iterate_items(pvl, &vg->pvs) {
 		existing_pv = pvl->pv;
 
-		pe_start = get_pv_pe_start(existing_pv);
-		pe_end = get_pv_pe_count(existing_pv) * get_pv_pe_size(existing_pv)
+		pe_start = pv_pe_start(existing_pv);
+		pe_end = pv_pe_count(existing_pv) * pv_pe_size(existing_pv)
 		    + pe_start - 1;
 
 		list_init(&mdas);
-		if (!(pv = pv_create(cmd->fmt, get_pv_dev(existing_pv),
+		if (!(pv = pv_create(cmd, pv_dev(existing_pv),
 				     &existing_pv->id, size,
-				     pe_start, get_pv_pe_count(existing_pv),
-				     get_pv_pe_size(existing_pv), pvmetadatacopies,
+				     pe_start, pv_pe_count(existing_pv),
+				     pv_pe_size(existing_pv), pvmetadatacopies,
 				     pvmetadatasize, &mdas))) {
 			log_error("Failed to setup physical volume \"%s\"",
-				  dev_name(get_pv_dev(existing_pv)));
+				  pv_dev_name(existing_pv));
 			if (change_made)
 				log_error("Use pvcreate and vgcfgrestore to "
 					  "repair from archived metadata.");
@@ -136,30 +129,30 @@ static int vgconvert_single(struct cmd_context *cmd, const char *vg_name,
 		change_made = 1;
 
 		log_verbose("Set up physical volume for \"%s\" with %" PRIu64
-			    " available sectors", dev_name(get_pv_dev(pv)), get_pv_size(pv));
+			    " available sectors", pv_dev_name(pv), pv_size(pv));
 
 		/* Wipe existing label first */
-		if (!label_remove(get_pv_dev(pv))) {
+		if (!label_remove(pv_dev(pv))) {
 			log_error("Failed to wipe existing label on %s",
-				  dev_name(get_pv_dev(pv)));
+				  pv_dev_name(pv));
 			log_error("Use pvcreate and vgcfgrestore to repair "
 				  "from archived metadata.");
 			return ECMD_FAILED;
 		}
 
 		log_very_verbose("Writing physical volume data to disk \"%s\"",
-				 dev_name(get_pv_dev(pv)));
+				 pv_dev_name(pv));
 		if (!(pv_write(cmd, pv, &mdas,
 			       arg_int64_value(cmd, labelsector_ARG,
 					       DEFAULT_LABELSECTOR)))) {
 			log_error("Failed to write physical volume \"%s\"",
-				  dev_name(get_pv_dev(pv)));
+				  pv_dev_name(pv));
 			log_error("Use pvcreate and vgcfgrestore to repair "
 				  "from archived metadata.");
 			return ECMD_FAILED;
 		}
 		log_verbose("Physical volume \"%s\" successfully created",
-			    dev_name(get_pv_dev(pv)));
+			    pv_dev_name(pv));
 
 	}
 

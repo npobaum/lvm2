@@ -6,9 +6,9 @@
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -32,7 +32,7 @@ int pvck(struct cmd_context *cmd, int argc, char **argv)
 		log_verbose("Scanning %s", argv[i]);
 
 		pv_analyze(cmd, argv[i],
-			   arg_int64_value(cmd, labelsector_ARG,
+			   arg_uint64_value(cmd, labelsector_ARG,
 					   UINT64_C(0)));
 	}
 

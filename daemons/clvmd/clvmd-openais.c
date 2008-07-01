@@ -37,7 +37,6 @@
 
 #include <openais/saAis.h>
 #include <openais/saLck.h>
-#include <openais/saClm.h>
 #include <openais/cpg.h>
 
 #include "list.h"
@@ -51,11 +50,6 @@
 /* Timeout value for several openais calls */
 #define TIMEOUT 10
 
-static void lck_lock_callback(SaInvocationT invocation,
-			      SaLckLockStatusT lockStatus,
-			      SaAisErrorT error);
-static void lck_unlock_callback(SaInvocationT invocation,
-				SaAisErrorT error);
 static void cpg_deliver_callback (cpg_handle_t handle,
 				  struct cpg_name *groupName,
 				  uint32_t nodeid,
@@ -93,14 +87,6 @@ cpg_callbacks_t cpg_callbacks = {
 	.cpg_confchg_fn =            cpg_confchg_callback,
 };
 
-SaLckCallbacksT lck_callbacks = {
-        .saLckLockGrantCallback      = lck_lock_callback,
-        .saLckResourceUnlockCallback = lck_unlock_callback
-};
-
-/* We only call Clm to get our node id */
-SaClmCallbacksT clm_callbacks;
-
 struct node_info
 {
 	enum {NODE_UNKNOWN, NODE_DOWN, NODE_UP, NODE_CLVMD} state;
@@ -112,13 +98,6 @@ struct lock_info
 	SaLckResourceHandleT res_handle;
 	SaLckLockIdT         lock_id;
 	SaNameT              lock_name;
-};
-
-struct lock_wait
-{
-	pthread_cond_t cond;
-	pthread_mutex_t mutex;
-	int status;
 };
 
 /* Set errno to something approximating the right value and return 0 or -1 */
@@ -259,12 +238,13 @@ static void cpg_deliver_callback (cpg_handle_t handle,
 
 	memcpy(&target_nodeid, msg, OPENAIS_CSID_LEN);
 
-	DEBUGLOG("Got message from nodeid %d for %d. len %d\n",
-		 nodeid, target_nodeid, msg_len-4);
+	DEBUGLOG("%u got message from nodeid %d for %d. len %d\n",
+		 our_nodeid, nodeid, target_nodeid, msg_len-4);
 
-	if (target_nodeid == our_nodeid)
-		process_message(cluster_client, (char *)msg+OPENAIS_CSID_LEN,
-				msg_len-OPENAIS_CSID_LEN, (char*)&nodeid);
+	if (nodeid != our_nodeid)
+		if (target_nodeid == our_nodeid || target_nodeid == 0)
+			process_message(cluster_client, (char *)msg+OPENAIS_CSID_LEN,
+					msg_len-OPENAIS_CSID_LEN, (char*)&nodeid);
 }
 
 static void cpg_confchg_callback(cpg_handle_t handle,
@@ -306,34 +286,27 @@ static void cpg_confchg_callback(cpg_handle_t handle,
 			ninfo->state = NODE_DOWN;
 	}
 
-	num_nodes = joined_list_entries;
-}
+	for (i=0; i<member_list_entries; i++) {
+		if (member_list[i].nodeid == 0) continue;
+		ninfo = dm_hash_lookup_binary(node_hash,
+				(char *)&member_list[i].nodeid,
+				OPENAIS_CSID_LEN);
+		if (!ninfo) {
+			ninfo = malloc(sizeof(struct node_info));
+			if (!ninfo) {
+				break;
+			}
+			else {
+				ninfo->nodeid = member_list[i].nodeid;
+				dm_hash_insert_binary(node_hash,
+						(char *)&ninfo->nodeid,
+						OPENAIS_CSID_LEN, ninfo);
+			}
+		}
+		ninfo->state = NODE_CLVMD;
+	}
 
-static void lck_lock_callback(SaInvocationT invocation,
-			      SaLckLockStatusT lockStatus,
-			      SaAisErrorT error)
-{
-	struct lock_wait *lwait = (struct lock_wait *)(long)invocation;
-
-	DEBUGLOG("lck_lock_callback, error = %d\n", error);
-
-	lwait->status = error;
-	pthread_mutex_lock(&lwait->mutex);
-	pthread_cond_signal(&lwait->cond);
-	pthread_mutex_unlock(&lwait->mutex);
-}
-
-static void lck_unlock_callback(SaInvocationT invocation,
-				SaAisErrorT error)
-{
-	struct lock_wait *lwait = (struct lock_wait *)(long)invocation;
-
-	DEBUGLOG("lck_unlock_callback\n");
-
-	lwait->status = SA_AIS_OK;
-	pthread_mutex_lock(&lwait->mutex);
-	pthread_cond_signal(&lwait->cond);
-	pthread_mutex_unlock(&lwait->mutex);
+	num_nodes = member_list_entries;
 }
 
 static int lck_dispatch(struct local_client *client, char *buf, int len,
@@ -348,9 +321,7 @@ static int _init_cluster(void)
 {
 	SaAisErrorT err;
 	SaVersionT  ver = { 'B', 1, 1 };
-	SaClmHandleT clm_handle;
 	int select_fd;
-	SaClmClusterNodeT cluster_node;
 
 	node_hash = dm_hash_create(100);
 	lock_hash = dm_hash_create(10);
@@ -365,7 +336,7 @@ static int _init_cluster(void)
 	}
 
 	err = saLckInitialize(&lck_handle,
-			      &lck_callbacks,
+					NULL,
 			      &ver);
 	if (err != SA_AIS_OK) {
 		cpg_initialize(&cpg_handle, &cpg_callbacks);
@@ -383,31 +354,18 @@ static int _init_cluster(void)
 		cpg_finalize(cpg_handle);
 		saLckFinalize(lck_handle);
 		syslog(LOG_ERR, "Cannot join clvmd process group");
-		DEBUGLOG("Cannot join clvmd process group\n");
+		DEBUGLOG("Cannot join clvmd process group: %d\n", err);
 		return ais_to_errno(err);
 	}
 
-	/* A brief foray into Clm to get our node id */
-	err = saClmInitialize(&clm_handle, &clm_callbacks, &ver);
-	if (err != SA_AIS_OK) {
-		syslog(LOG_ERR, "Could not initialize OpenAIS membership service %d\n", err);
-		DEBUGLOG("Could not initialize OpenAIS Membership service %d\n", err);
-		return ais_to_errno(err);
-	}
-
-	err = saClmClusterNodeGet(clm_handle,
-				  SA_CLM_LOCAL_NODE_ID,
-				  TIMEOUT,
-				  &cluster_node);
+	err = cpg_local_get(cpg_handle,
+			    &our_nodeid);
 	if (err != SA_AIS_OK) {
 		cpg_finalize(cpg_handle);
 		saLckFinalize(lck_handle);
-		saClmFinalize(clm_handle);
 		syslog(LOG_ERR, "Cannot get local node id\n");
 		return ais_to_errno(err);
 	}
-	saClmFinalize(clm_handle);
-	our_nodeid = cluster_node.nodeId;
 	DEBUGLOG("Our local node id is %d\n", our_nodeid);
 
 	saLckSelectionObjectGet(lck_handle, (SaSelectionObjectT *)&select_fd);
@@ -424,7 +382,7 @@ static void _cluster_closedown(void)
 	unlock_all();
 
 	saLckFinalize(lck_handle);
-	cpg_inalize(cpg_handle);
+	cpg_finalize(cpg_handle);
 }
 
 static void _get_our_csid(char *csid)
@@ -494,6 +452,7 @@ static int _cluster_do_node_callback(struct local_client *master_client,
 {
 	struct dm_hash_node *hn;
 	struct node_info *ninfo;
+	int somedown = 0;
 
 	dm_hash_iterate(hn, node_hash)
 	{
@@ -507,22 +466,20 @@ static int _cluster_do_node_callback(struct local_client *master_client,
 
 		if (ninfo->state != NODE_DOWN)
 			callback(master_client, csid, ninfo->state == NODE_CLVMD);
+		if (ninfo->state != NODE_CLVMD)
+			somedown = -1;
 	}
-	return 0;
+	return somedown;
 }
 
 /* Real locking */
 static int _lock_resource(char *resource, int mode, int flags, int *lockid)
 {
-	struct lock_wait lwait;
 	struct lock_info *linfo;
 	SaLckResourceHandleT res_handle;
 	SaAisErrorT err;
 	SaLckLockIdT lock_id;
-
-	pthread_cond_init(&lwait.cond, NULL);
-	pthread_mutex_init(&lwait.mutex, NULL);
-	pthread_mutex_lock(&lwait.mutex);
+	SaLckLockStatusT lockStatus;
 
 	/* This needs to be converted from DLM/LVM2 value for OpenAIS LCK */
 	if (flags & LCK_NONBLOCK) flags = SA_LCK_LOCK_NO_QUEUE;
@@ -545,24 +502,24 @@ static int _lock_resource(char *resource, int mode, int flags, int *lockid)
 		return ais_to_errno(err);
 	}
 
-	err = saLckResourceLockAsync(res_handle,
-				     (SaInvocationT)(long)&lwait,
-				     &lock_id,
-				     mode,
-				     flags,
-				     0);
-	if (err != SA_AIS_OK)
+	err = saLckResourceLock(
+			res_handle,
+			&lock_id,
+			mode,
+			flags,
+			0,
+			SA_TIME_END,
+			&lockStatus);
+	if (err != SA_AIS_OK && lockStatus != SA_LCK_LOCK_GRANTED)
 	{
 		free(linfo);
 		saLckResourceClose(res_handle);
 		return ais_to_errno(err);
 	}
-
+			
 	/* Wait for it to complete */
-	pthread_cond_wait(&lwait.cond, &lwait.mutex);
-	pthread_mutex_unlock(&lwait.mutex);
 
-	DEBUGLOG("lock_resource returning %d, lock_id=%llx\n", lwait.status,
+	DEBUGLOG("lock_resource returning %d, lock_id=%llx\n", err,
 		 lock_id);
 
 	linfo->lock_id = lock_id;
@@ -570,19 +527,14 @@ static int _lock_resource(char *resource, int mode, int flags, int *lockid)
 
 	dm_hash_insert(lock_hash, resource, linfo);
 
-	return ais_to_errno(lwait.status);
+	return ais_to_errno(err);
 }
 
 
 static int _unlock_resource(char *resource, int lockid)
 {
-	struct lock_wait lwait;
 	SaAisErrorT err;
 	struct lock_info *linfo;
-
-	pthread_cond_init(&lwait.cond, NULL);
-	pthread_mutex_init(&lwait.mutex, NULL);
-	pthread_mutex_lock(&lwait.mutex);
 
 	DEBUGLOG("unlock_resource %s\n", resource);
 	linfo = dm_hash_lookup(lock_hash, resource);
@@ -590,23 +542,19 @@ static int _unlock_resource(char *resource, int lockid)
 		return 0;
 
 	DEBUGLOG("unlock_resource: lockid: %llx\n", linfo->lock_id);
-	err = saLckResourceUnlockAsync((SaInvocationT)(long)&lwait, linfo->lock_id);
+	err = saLckResourceUnlock(linfo->lock_id, SA_TIME_END);
 	if (err != SA_AIS_OK)
 	{
 		DEBUGLOG("Unlock returned %d\n", err);
 		return ais_to_errno(err);
 	}
 
-	/* Wait for it to complete */
-	pthread_cond_wait(&lwait.cond, &lwait.mutex);
-	pthread_mutex_unlock(&lwait.mutex);
-
 	/* Release the resource */
 	dm_hash_remove(lock_hash, resource);
 	saLckResourceClose(linfo->res_handle);
 	free(linfo);
 
-	return ais_to_errno(lwait.status);
+	return ais_to_errno(err);
 }
 
 static int _sync_lock(const char *resource, int mode, int flags, int *lockid)

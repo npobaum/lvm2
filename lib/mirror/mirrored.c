@@ -1,14 +1,14 @@
 /*
- * Copyright (C) 2003-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2003-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -33,6 +33,7 @@
 #endif
 
 static int _block_on_error_available = 0;
+static unsigned _mirror_attributes = 0;
 
 enum {
 	MIRR_DISABLED,
@@ -110,19 +111,19 @@ static int _mirrored_text_import(struct lv_segment *seg, const struct config_nod
 		}
 	}
 
-        if ((cn = find_config_node(sn, "mirror_log"))) {
-                if (!cn->v || !cn->v->v.str) {
-                        log_error("Mirror log type must be a string.");
-                        return 0;
-                }
-                logname = cn->v->v.str;
+	if ((cn = find_config_node(sn, "mirror_log"))) {
+		if (!cn->v || !cn->v->v.str) {
+			log_error("Mirror log type must be a string.");
+			return 0;
+		}
+		logname = cn->v->v.str;
 		if (!(seg->log_lv = find_lv(seg->lv->vg, logname))) {
 			log_error("Unrecognised mirror log in segment %s.",
 				  sn->key);
 			return 0;
 		}
 		seg->log_lv->status |= MIRROR_LOG;
-        }
+	}
 
 	if (logname && !seg->region_size) {
 		log_error("Missing region size for mirror log for segment "
@@ -232,11 +233,11 @@ static int _add_log(struct dev_manager *dm, struct lv_segment *seg,
 	uint32_t log_flags = 0;
 
 	/*
-	 * Use clustered mirror log for non-exclusive activation 
+	 * Use clustered mirror log for non-exclusive activation
 	 * in clustered VG.
 	 */
 	if ((!(seg->lv->status & ACTIVATE_EXCL) &&
-	      (seg->lv->vg->status & CLUSTERED)))
+	      (vg_is_clustered(seg->lv->vg))))
 		clustered = 1;
 
 	if (seg->log_lv) {
@@ -266,10 +267,10 @@ static int _add_log(struct dev_manager *dm, struct lv_segment *seg,
 }
 
 static int _mirrored_add_target_line(struct dev_manager *dm, struct dm_pool *mem,
-                                struct cmd_context *cmd, void **target_state,
-                                struct lv_segment *seg,
-                                struct dm_tree_node *node, uint64_t len,
-                                uint32_t *pvmove_mirror_count)
+				struct cmd_context *cmd, void **target_state,
+				struct lv_segment *seg,
+				struct dm_tree_node *node, uint64_t len,
+				uint32_t *pvmove_mirror_count)
 {
 	struct mirror_state *mirr_state;
 	uint32_t area_count = seg->area_count;
@@ -282,6 +283,13 @@ static int _mirrored_add_target_line(struct dev_manager *dm, struct dm_pool *mem
 		*target_state = _mirrored_init_target(mem, cmd);
 
 	mirr_state = *target_state;
+
+	/*
+	 * Mirror segment could have only 1 area temporarily
+	 * if the segment is under conversion.
+	 */
+ 	if (seg->area_count == 1)
+		mirror_status = MIRR_DISABLED;
 
 	/*
 	 * For pvmove, only have one mirror segment RUNNING at once.
@@ -336,32 +344,42 @@ static int _mirrored_add_target_line(struct dev_manager *dm, struct dm_pool *mem
 	return add_areas_line(dm, seg, node, start_area, area_count);
 }
 
-static int _mirrored_target_present(const struct lv_segment *seg __attribute((unused)))
+static int _mirrored_target_present(const struct lv_segment *seg __attribute((unused)),
+				    unsigned *attributes)
 {
 	static int _mirrored_checked = 0;
 	static int _mirrored_present = 0;
 	uint32_t maj, min, patchlevel;
 	unsigned maj2, min2, patchlevel2;
-        char vsn[80];
+	char vsn[80];
 
 	if (!_mirrored_checked) {
 		_mirrored_present = target_present("mirror", 1);
 
 		/*
-		 * block_on_error available with mirror target >= 1.1
+		 * block_on_error available with mirror target >= 1.1 and <= 1.11
 		 * or with 1.0 in RHEL4U3 driver >= 4.5
 		 */
 		/* FIXME Move this into libdevmapper */
 
 		if (target_version("mirror", &maj, &min, &patchlevel) &&
-		    maj == 1 && 
-		    (min >= 1 || 
+		    maj == 1 &&
+		    ((min >= 1 && min <= 11) ||
 		     (min == 0 && driver_version(vsn, sizeof(vsn)) &&
 		      sscanf(vsn, "%u.%u.%u", &maj2, &min2, &patchlevel2) == 3 &&
 		      maj2 == 4 && min2 == 5 && patchlevel2 == 0)))	/* RHEL4U3 */
 			_block_on_error_available = 1;
 	}
 
+	/*
+	 * Check only for modules if atttributes requested and no previous check.
+	 * FIXME: Fails incorrectly if cmirror was built into kernel.
+	 */
+	if (attributes) {
+		if (!_mirror_attributes && module_present("cmirror"))
+			_mirror_attributes |= MIRROR_LOG_CLUSTERED;
+		*attributes = _mirror_attributes;
+	}
 	_mirrored_checked = 1;
 
 	return _mirrored_present;
@@ -449,7 +467,8 @@ static int _target_monitored(struct lv_segment *seg, int *pending)
 }
 
 /* FIXME This gets run while suspended and performs banned operations. */
-static int _target_set_events(struct lv_segment *seg, int evmask, int set)
+static int _target_set_events(struct lv_segment *seg,
+			      int evmask __attribute((unused)), int set)
 {
 	char *dso, *name;
 	struct logical_volume *lv;
@@ -500,7 +519,7 @@ static int _mirrored_modules_needed(struct dm_pool *mem,
 	    !list_segment_modules(mem, first_seg(seg->log_lv), modules))
 		return_0;
 
-	if ((seg->lv->vg->status & CLUSTERED) &&
+	if (vg_is_clustered(seg->lv->vg) &&
 	    !str_list_add(mem, modules, "clog")) {
 		log_error("cluster log string list allocation failed");
 		return 0;
@@ -548,10 +567,8 @@ struct segment_type *init_segtype(struct cmd_context *cmd)
 {
 	struct segment_type *segtype = dm_malloc(sizeof(*segtype));
 
-	if (!segtype) {
-		stack;
-		return NULL;
-	}
+	if (!segtype)
+		return_NULL;
 
 	segtype->cmd = cmd;
 	segtype->ops = &_mirrored_ops;

@@ -1,14 +1,14 @@
 /*
- * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved. 
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -28,8 +28,7 @@ static int vgdisplay_single(struct cmd_context *cmd, const char *vg_name,
 	if (!consistent)
 		log_error("WARNING: Volume group \"%s\" inconsistent", vg_name);
 
-	if (vg->status & EXPORTED_VG)
-		log_print("WARNING: volume group \"%s\" is exported", vg_name);
+	vg_check_status(vg, EXPORTED_VG);
 
 	if (arg_count(cmd, colon_ARG)) {
 		vgdisplay_colons(vg);
@@ -47,10 +46,11 @@ static int vgdisplay_single(struct cmd_context *cmd, const char *vg_name,
 		vgdisplay_extents(vg);
 
 		process_each_lv_in_vg(cmd, vg, NULL, NULL, NULL,
-				      &lvdisplay_full);
+				      (process_single_lv_fn_t)lvdisplay_full);
 
 		log_print("--- Physical volumes ---");
-		process_each_pv_in_vg(cmd, vg, NULL, NULL, &pvdisplay_short);
+		process_each_pv_in_vg(cmd, vg, NULL, NULL,
+				      (process_single_pv_fn_t)pvdisplay_short);
 	}
 
 	check_current_backup(vg);
@@ -89,8 +89,8 @@ int vgdisplay(struct cmd_context *cmd, int argc, char **argv)
 
 	/* FIXME -D disk_ARG is now redundant */
 
-/********* FIXME: Do without this - or else 2(+) passes! 
-	   Figure out longest volume group name 
+/********* FIXME: Do without this - or else 2(+) passes!
+	   Figure out longest volume group name
 	for (c = opt; opt < argc; opt++) {
 		len = strlen(argv[opt]);
 		if (len > max_len)
@@ -99,10 +99,10 @@ int vgdisplay(struct cmd_context *cmd, int argc, char **argv)
 **********/
 
 	process_each_vg(cmd, argc, argv, LCK_VG_READ, 0, NULL,
-			&vgdisplay_single);
+			vgdisplay_single);
 
-/******** FIXME Need to count number processed 
-	  Add this to process_each_vg if arg_count(cmd,activevolumegroups_ARG) ? 
+/******** FIXME Need to count number processed
+	  Add this to process_each_vg if arg_count(cmd,activevolumegroups_ARG) ?
 
 	if (opt == argc) {
 		log_print("no ");
@@ -113,5 +113,5 @@ int vgdisplay(struct cmd_context *cmd, int argc, char **argv)
 	}
 ************/
 
-	return 0;
+	return ECMD_PROCESSED;
 }

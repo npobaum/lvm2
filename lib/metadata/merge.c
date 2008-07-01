@@ -1,14 +1,14 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -24,7 +24,7 @@
 /*
  * Attempt to merge two adjacent segments.
  * Currently only supports striped segments on AREA_PV.
- * Returns success if successful, in which case 'first' 
+ * Returns success if successful, in which case 'first'
  * gets adjusted to contain both areas.
  */
 static int _merge(struct lv_segment *first, struct lv_segment *second)
@@ -62,9 +62,10 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 {
 	struct lv_segment *seg, *seg2;
 	uint32_t le = 0;
-	unsigned seg_count = 0;
+	unsigned seg_count = 0, seg_found;
 	int r = 1;
 	uint32_t area_multiplier, s;
+	struct seg_list *sl;
 
 	list_iterate_items(seg, &lv->segments) {
 		seg_count++;
@@ -75,7 +76,7 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 			r = 0;
 		}
 
-		area_multiplier = segtype_is_striped(seg->segtype) ? 
+		area_multiplier = segtype_is_striped(seg->segtype) ?
 					seg->area_count : 1;
 
 		if (seg->area_len * area_multiplier != seg->len) {
@@ -101,7 +102,7 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 			}
 
 			if (!(seg2 = first_seg(seg->log_lv)) ||
-			    seg2->mirror_seg != seg) {
+			    find_mirror_seg(seg2) != seg) {
 				log_error("LV %s: segment %u log LV does not "
 					  "point back to mirror segment",
 					   lv->name, seg_count);
@@ -110,11 +111,20 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 		}
 
 		if (complete_vg && seg->status & MIRROR_IMAGE) {
-			if (!seg->mirror_seg ||
-			    !seg_is_mirrored(seg->mirror_seg)) {
+			if (!find_mirror_seg(seg) ||
+			    !seg_is_mirrored(find_mirror_seg(seg))) {
 				log_error("LV %s: segment %u mirror image "
 					  "is not mirrored",
 					  lv->name, seg_count);
+				r = 0;
+			}
+		}
+
+		if (seg_is_snapshot(seg)) {
+			if (seg->cow && seg->cow == seg->origin) {
+				log_error("LV %s: segment %u has same LV %s for "
+					  "both origin and snapshot",
+					  lv->name, seg_count, seg->cow->name);
 				r = 0;
 			}
 		}
@@ -146,9 +156,9 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 
 				if (complete_vg && seg_lv(seg, s) &&
 				    (seg_lv(seg, s)->status & MIRROR_IMAGE) &&
-				    (find_seg_by_le(seg_lv(seg, s),
-						    seg_le(seg, s))->mirror_seg
-							!= seg)) {
+				    (!(seg2 = find_seg_by_le(seg_lv(seg, s),
+							    seg_le(seg, s))) ||
+				     find_mirror_seg(seg2) != seg)) {
 					log_error("LV %s: segment %u mirror "
 						  "image %u missing mirror ptr",
 						  lv->name, seg_count, s);
@@ -164,10 +174,70 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 					r = 0;
 				}
  */
+				seg_found = 0;
+				list_iterate_items(sl, &seg_lv(seg, s)->segs_using_this_lv)
+					if (sl->seg == seg)
+						seg_found++;
+				if (!seg_found) {
+					log_error("LV %s segment %d uses LV %s,"
+						  " but missing ptr from %s to %s",
+						  lv->name, seg_count,
+						  seg_lv(seg, s)->name,
+						  seg_lv(seg, s)->name, lv->name);
+					r = 0;
+				} else if (seg_found > 1) {
+					log_error("LV %s has duplicated links "
+						  "to LV %s segment %d",
+						  seg_lv(seg, s)->name,
+						  lv->name, seg_count);
+					r = 0;
+				}
 			}
 		}
 
 		le += seg->len;
+	}
+
+	list_iterate_items(sl, &lv->segs_using_this_lv) {
+		seg = sl->seg;
+		seg_found = 0;
+		for (s = 0; s < seg->area_count; s++) {
+			if (seg_type(seg, s) != AREA_LV)
+				continue;
+			if (lv == seg_lv(seg, s))
+				seg_found++;
+		}
+		if (seg->log_lv == lv)
+			seg_found++;
+		if (!seg_found) {
+			log_error("LV %s is used by LV %s:%" PRIu32 "-%" PRIu32
+				  ", but missing ptr from %s to %s",
+				  lv->name, seg->lv->name, seg->le,
+				  seg->le + seg->len - 1,
+				  seg->lv->name, lv->name);
+			r = 0;
+		} else if (seg_found != sl->count) {
+			log_error("Reference count mismatch: LV %s has %d "
+				  "links to LV %s:%" PRIu32 "-%" PRIu32
+				  ", which has %d links",
+				  lv->name, sl->count, seg->lv->name, seg->le,
+				  seg->le + seg->len - 1, seg_found);
+			r = 0;
+		}
+
+		seg_found = 0;
+		list_iterate_items(seg2, &seg->lv->segments)
+			if (sl->seg == seg2) {
+				seg_found++;
+				break;
+			}
+		if (!seg_found) {
+			log_error("LV segment %s:%" PRIu32 "-%" PRIu32
+				  "is incorrectly listed as being used by LV %s",
+				  seg->lv->name, seg->le, seg->le + seg->len - 1,
+				  lv->name);
+			r = 0;
+		}
 	}
 
 	if (le != lv->le_count) {
@@ -234,9 +304,9 @@ static int _lv_split_segment(struct logical_volume *lv, struct lv_segment *seg,
 		/* Split area at the offset */
 		switch (seg_type(seg, s)) {
 		case AREA_LV:
-			seg_lv(split_seg, s) = seg_lv(seg, s);
-			seg_le(split_seg, s) =
-			    seg_le(seg, s) + seg->area_len;
+			if (!set_lv_segment_area_lv(split_seg, s, seg_lv(seg, s),
+						    seg_le(seg, s) + seg->area_len, 0))
+				return_0;
 			log_debug("Split %s:%u[%u] at %u: %s LE %u", lv->name,
 				  seg->le, s, le, seg_lv(seg, s)->name,
 				  seg_le(split_seg, s));
@@ -249,10 +319,8 @@ static int _lv_split_segment(struct logical_volume *lv, struct lv_segment *seg,
 						     seg->area_len,
 						 seg_pvseg(seg, s)->len -
 						     seg->area_len,
-						 split_seg, s))) {
-				stack;
-				return 0;
-			}
+						 split_seg, s)))
+				return_0;
 			log_debug("Split %s:%u[%u] at %u: %s PE %u", lv->name,
 				  seg->le, s, le,
 				  dev_name(seg_dev(seg, s)),
@@ -288,15 +356,11 @@ int lv_split_segment(struct logical_volume *lv, uint32_t le)
 	if (le == seg->le)
 		return 1;
 
-	if (!_lv_split_segment(lv, seg, le)) {
-		stack;
-		return 0;
-	}
+	if (!_lv_split_segment(lv, seg, le))
+		return_0;
 
-	if (!vg_validate(lv->vg)) {
-		stack;
-		return 0;
-	}
+	if (!vg_validate(lv->vg))
+		return_0;
 
 	return 1;
 }

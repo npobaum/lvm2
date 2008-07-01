@@ -1,14 +1,14 @@
 /*
- * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -205,11 +205,11 @@ static int _compare_paths(const char *path0, const char *path1)
 			*s1 = '\0';
 		}
 		if (lstat(p0, &stat0)) {
-			log_sys_error("lstat", p0);
+			log_sys_very_verbose("lstat", p0);
 			return 1;
 		}
 		if (lstat(p1, &stat1)) {
-			log_sys_error("lstat", p1);
+			log_sys_very_verbose("lstat", p1);
 			return 0;
 		}
 		if (S_ISLNK(stat0.st_mode) && !S_ISLNK(stat1.st_mode))
@@ -236,10 +236,8 @@ static int _add_alias(struct device *dev, const char *path)
 	const char *oldpath;
 	int prefer_old = 1;
 
-	if (!sl) {
-		stack;
-		return 0;
-	}
+	if (!sl)
+		return_0;
 
 	/* Is name already there? */
 	list_iterate_items(strl, &dev->aliases) {
@@ -249,10 +247,8 @@ static int _add_alias(struct device *dev, const char *path)
 		}
 	}
 
-	if (!(sl->str = dm_pool_strdup(_cache.mem, path))) {
-		stack;
-		return 0;
-	}
+	if (!(sl->str = dm_pool_strdup(_cache.mem, path)))
+		return_0;
 
 	if (!list_empty(&dev->aliases)) {
 		oldpath = list_item(dev->aliases.n, struct str_list)->str;
@@ -294,14 +290,10 @@ static int _insert_dev(const char *path, dev_t d)
 						   (uint32_t) d))) {
 		/* create new device */
 		if (loopfile) {
-			if (!(dev = dev_create_file(path, NULL, NULL, 0))) {
-				stack;
-				return 0;
-			}
-		} else if (!(dev = _dev_create(d))) {
-			stack;
-			return 0;
-		}
+			if (!(dev = dev_create_file(path, NULL, NULL, 0)))
+				return_0;
+		} else if (!(dev = _dev_create(d)))
+			return_0;
 
 		if (!(btree_insert(_cache.devices, (uint32_t) d, dev))) {
 			log_err("Couldn't insert device into binary tree.");
@@ -369,10 +361,8 @@ static int _insert_dir(const char *dir)
 				continue;
 			}
 
-			if (!(path = _join(dir, dirent[n]->d_name))) {
-				stack;
-				return 0;
-			}
+			if (!(path = _join(dir, dirent[n]->d_name)))
+				return_0;
 
 			_collapse_slashes(path);
 			r &= _insert(path, 1);
@@ -400,10 +390,8 @@ static int _insert_file(const char *path)
 		return 0;
 	}
 
-	if (!_insert_dev(path, 0)) {
-		stack;
-		return 0;
-	}
+	if (!_insert_dev(path, 0))
+		return_0;
 
 	return 1;
 }
@@ -439,10 +427,8 @@ static int _insert(const char *path, int rec)
 			return 0;
 		}
 
-		if (!_insert_dev(path, info.st_rdev)) {
-			stack;
-			return 0;
-		}
+		if (!_insert_dev(path, info.st_rdev))
+			return_0;
 
 		r = 1;
 	}
@@ -502,7 +488,7 @@ static int _init_preferred_names(struct cmd_context *cmd)
 		if (v->type != CFG_STRING) {
 			log_error("preferred_names patterns must be enclosed in quotes");
 			return 0;
-		}       
+		}
 
 		count++;
 	}
@@ -543,16 +529,13 @@ int dev_cache_init(struct cmd_context *cmd)
 	_cache.names = NULL;
 	_cache.has_scanned = 0;
 
-	if (!(_cache.mem = dm_pool_create("dev_cache", 10 * 1024))) {
-		stack;
-		return 0;
-	}
+	if (!(_cache.mem = dm_pool_create("dev_cache", 10 * 1024)))
+		return_0;
 
 	if (!(_cache.names = dm_hash_create(128))) {
-		stack;
 		dm_pool_destroy(_cache.mem);
 		_cache.mem = 0;
-		return 0;
+		return_0;
 	}
 
 	if (!(_cache.devices = btree_create(_cache.mem))) {
@@ -704,7 +687,8 @@ const char *dev_name_confirmed(struct device *dev, int quiet)
 			continue;
 		}
 
-		log_error("Aborting - please provide new pathname for what "
+		/* Scanning issues this inappropriately sometimes. */
+		log_debug("Aborting - please provide new pathname for what "
 			  "used to be %s", name);
 		return NULL;
 	}

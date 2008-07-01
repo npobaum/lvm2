@@ -4,7 +4,7 @@ Priority: optional
 Maintainer: Ubuntu Core developers <ubuntu-devel-discuss@lists.ubuntu.com>
 XSBC-Original-Maintainer: Debian LVM Team <pkg-lvm-maintainers@lists.alioth.debian.org>
 Uploaders: Bastian Blank <waldi@debian.org>
-Build-Depends: debhelper (>> 4.2), libdevmapper-dev (>> 2:1.02.20), autotools-dev, libcman-dev (>= 2.20080826-0ubuntu1), libdlm-dev (>= 2.20080826-0ubuntu1), libselinux1-dev, libreadline5-dev
+Build-Depends: debhelper (>> 4.2), libdevmapper-dev (>> 2:1.02.27), autotools-dev, libcman-dev (>= 2.20080826-0ubuntu1), libdlm-dev (>= 2.20080826-0ubuntu1), libselinux1-dev, libreadline5-dev, quilt, autoconf, automake, libtool
 Standards-Version: 3.6.2
 
 Package: lvm2
@@ -37,7 +37,8 @@ Package: clvm
 Section: admin
 Priority: extra
 Architecture: any
-Depends: ${shlibs:Depends}, lvm2 (>> 2.0.23), cman
+Depends: ${shlibs:Depends}, lvm2 (= ${binary:Version})
+Suggests: cman
 Description: Cluster LVM Daemon for lvm2
  This package provides the clustering interface for lvm2, when used with 
  Red Hat's "cman" cluster infrastructure. It allows logical volumes to

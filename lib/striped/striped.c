@@ -1,14 +1,14 @@
 /*
- * Copyright (C) 2003-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2003-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -25,6 +25,7 @@
 #include "lvm-string.h"
 #include "activate.h"
 #include "pv_alloc.h"
+#include "metadata.h"
 
 static const char *_striped_name(const struct lv_segment *seg)
 {
@@ -153,11 +154,11 @@ static int _striped_merge_segments(struct lv_segment *seg1, struct lv_segment *s
 #ifdef DEVMAPPER_SUPPORT
 static int _striped_add_target_line(struct dev_manager *dm,
 				struct dm_pool *mem __attribute((unused)),
-                                struct cmd_context *cmd __attribute((unused)),
+				struct cmd_context *cmd __attribute((unused)),
 				void **target_state __attribute((unused)),
-                                struct lv_segment *seg,
-                                struct dm_tree_node *node, uint64_t len,
-                                uint32_t *pvmove_mirror_count __attribute((unused)))
+				struct lv_segment *seg,
+				struct dm_tree_node *node, uint64_t len,
+				uint32_t *pvmove_mirror_count __attribute((unused)))
 {
 	if (!seg->area_count) {
 		log_error("Internal error: striped add_target_line called "
@@ -174,7 +175,8 @@ static int _striped_add_target_line(struct dev_manager *dm,
 	return add_areas_line(dm, seg, node, 0u, seg->area_count);
 }
 
-static int _striped_target_present(const struct lv_segment *seg __attribute((unused)))
+static int _striped_target_present(const struct lv_segment *seg __attribute((unused)),
+				   unsigned *attributes __attribute((unused)))
 {
 	static int _striped_checked = 0;
 	static int _striped_present = 0;
@@ -212,10 +214,8 @@ struct segment_type *init_striped_segtype(struct cmd_context *cmd)
 {
 	struct segment_type *segtype = dm_malloc(sizeof(*segtype));
 
-	if (!segtype) {
-		stack;
-		return NULL;
-	}
+	if (!segtype)
+		return_NULL;
 
 	segtype->cmd = cmd;
 	segtype->ops = &_striped_ops;

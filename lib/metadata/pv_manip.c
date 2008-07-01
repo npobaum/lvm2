@@ -1,14 +1,14 @@
 /*
  * Copyright (C) 2003 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004 - 2005 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2006 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -17,6 +17,9 @@
 #include "metadata.h"
 #include "pv_alloc.h"
 #include "toolcontext.h"
+#include "archiver.h"
+#include "locking.h"
+#include "lvmcache.h"
 
 static struct pv_segment *_alloc_pv_segment(struct dm_pool *mem,
 					    struct physical_volume *pv,
@@ -50,10 +53,8 @@ int alloc_pv_segment_whole_pv(struct dm_pool *mem, struct physical_volume *pv)
 		return 1;
 
 	/* FIXME Cope with holes in PVs */
-	if (!(peg = _alloc_pv_segment(mem, pv, 0, pv->pe_count, NULL, 0))) {
-		stack;
-		return 0;
-	}
+	if (!(peg = _alloc_pv_segment(mem, pv, 0, pv->pe_count, NULL, 0)))
+		return_0;
 
 	list_add(&pv->segments, &peg->list);
 
@@ -69,10 +70,8 @@ int peg_dup(struct dm_pool *mem, struct list *peg_new, struct list *peg_old)
 	list_iterate_items(pego, peg_old) {
 		if (!(peg = _alloc_pv_segment(mem, pego->pv, pego->pe,
 					      pego->len, pego->lvseg,
-					      pego->lv_area))) {
-			stack;
-			return 0;
-		} 
+					      pego->lv_area)))
+			return_0;
 		list_add(peg_new, &peg->list);
 	}
 
@@ -90,10 +89,8 @@ static int _pv_split_segment(struct physical_volume *pv, struct pv_segment *peg,
 
 	if (!(peg_new = _alloc_pv_segment(pv->fmt->cmd->mem, peg->pv, pe,
 					  peg->len + peg->pe - pe,
-					  NULL, 0))) {
-		stack;
-		return 0;
-	}
+					  NULL, 0)))
+		return_0;
 
 	peg->len = peg->len - peg_new->len;
 
@@ -119,7 +116,7 @@ int pv_split_segment(struct physical_volume *pv, uint32_t pe)
 
 	if (!(peg = find_peg_by_pe(pv, pe))) {
 		log_error("Segment with extent %" PRIu32 " in PV %s not found",
-			  pe, dev_name(pv->dev));
+			  pe, pv_dev_name(pv));
 		return 0;
 	}
 
@@ -127,10 +124,8 @@ int pv_split_segment(struct physical_volume *pv, uint32_t pe)
 	if (pe == peg->pe)
 		return 1;
 
-	if (!_pv_split_segment(pv, peg, pe)) {
-		stack;
-		return 0;
-	}
+	if (!_pv_split_segment(pv, peg, pe))
+		return_0;
 
 	return 1;
 }
@@ -151,15 +146,13 @@ struct pv_segment *assign_peg_to_lvseg(struct physical_volume *pv,
 	if (!pv)
 		return &null_pv_segment;
 
-	if (!pv_split_segment(pv, pe) || 
-	    !pv_split_segment(pv, pe + area_len)) {
-		stack;
-		return NULL;
-	}
+	if (!pv_split_segment(pv, pe) ||
+	    !pv_split_segment(pv, pe + area_len))
+		return_NULL;
 
 	if (!(peg = find_peg_by_pe(pv, pe))) {
 		log_error("Missing PV segment on %s at %u.",
-			  dev_name(pv->dev), pe);
+			  pv_dev_name(pv), pe);
 		return NULL;
 	}
 
@@ -176,7 +169,7 @@ int release_pv_segment(struct pv_segment *peg, uint32_t area_reduction)
 {
 	if (!peg->lvseg) {
 		log_error("release_pv_segment with unallocated segment: "
-			  "%s PE %" PRIu32, dev_name(peg->pv->dev), peg->pe);
+			  "%s PE %" PRIu32, pv_dev_name(peg->pv), peg->pe);
 		return 0;
 	}
 
@@ -193,10 +186,8 @@ int release_pv_segment(struct pv_segment *peg, uint32_t area_reduction)
 	}
 
 	if (!pv_split_segment(peg->pv, peg->pe + peg->lvseg->area_len -
-				       area_reduction)) {
-		stack;
-		return 0;
-	}
+				       area_reduction))
+		return_0;
 
 	return 1;
 }
@@ -209,6 +200,46 @@ void merge_pv_segments(struct pv_segment *peg1, struct pv_segment *peg2)
 	peg1->len += peg2->len;
 
 	list_del(&peg2->list);
+}
+
+/*
+ * Calculate the overlap, in extents, between a struct pv_segment and
+ * a struct pe_range.
+ */
+static uint32_t _overlap_pe(const struct pv_segment *pvseg,
+			    const struct pe_range *per)
+{
+	uint32_t start;
+	uint32_t end;
+
+	start = max(pvseg->pe, per->start);
+	end = min(pvseg->pe + pvseg->len, per->start + per->count);
+	if (end < start)
+		return 0;
+	else
+		return end - start;
+}
+
+/*
+ * Returns: number of free PEs in a struct pv_list
+ */
+uint32_t pv_list_extents_free(const struct list *pvh)
+{
+	struct pv_list *pvl;
+	struct pe_range *per;
+	uint32_t extents = 0;
+	struct pv_segment *pvseg;
+
+	list_iterate_items(pvl, pvh) {
+		list_iterate_items(per, pvl->pe_ranges) {
+			list_iterate_items(pvseg, &pvl->pv->segments) {
+				if (!pvseg_is_allocated(pvseg))
+					extents += _overlap_pe(pvseg, per);
+			}
+		}
+	}
+
+	return extents;
 }
 
 /*
@@ -236,7 +267,7 @@ int check_pv_segments(struct volume_group *vg)
 
 			/* FIXME Remove this next line eventually */
 			log_debug("%s %u: %6u %6u: %s(%u:%u)",
-				  dev_name(pv->dev), segno++, peg->pe, peg->len,
+				  pv_dev_name(pv), segno++, peg->pe, peg->len,
 				  peg->lvseg ? peg->lvseg->lv->name : "NULL",
 				  peg->lvseg ? peg->lvseg->le : 0, s);
 			/* FIXME Add details here on failure instead */
@@ -310,7 +341,7 @@ static int _reduce_pv(struct physical_volume *pv, struct volume_group *vg, uint3
 	if (new_pe_count < pv->pe_alloc_count) {
 		log_error("%s: cannot resize to %" PRIu32 " extents "
 			  "as %" PRIu32 " are allocated.",
-			  dev_name(pv->dev), new_pe_count,
+			  pv_dev_name(pv), new_pe_count,
 			  pv->pe_alloc_count);
 		return 0;
 	}
@@ -323,15 +354,13 @@ static int _reduce_pv(struct physical_volume *pv, struct volume_group *vg, uint3
 		if (peg->lvseg) {
 			log_error("%s: cannot resize to %" PRIu32 " extents as "
 				  "later ones are allocated.",
-				  dev_name(pv->dev), new_pe_count);
+				  pv_dev_name(pv), new_pe_count);
 			return 0;
 		}
 	}
 
-	if (!pv_split_segment(pv, new_pe_count)) {
-		stack;
-		return 0;
-	}
+	if (!pv_split_segment(pv, new_pe_count))
+		return_0;
 
 	list_iterate_items_safe(peg, pegt, &pv->segments) {
  		if (peg->pe + peg->len > new_pe_count)
@@ -354,7 +383,7 @@ static int _extend_pv(struct physical_volume *pv, struct volume_group *vg,
 
 	if ((uint64_t) new_pe_count * pv->pe_size > pv->size ) {
 		log_error("%s: cannot resize to %" PRIu32 " extents as there "
-			  "is only room for %" PRIu64 ".", dev_name(pv->dev),
+			  "is only room for %" PRIu64 ".", pv_dev_name(pv),
 			  new_pe_count, pv->size / pv->pe_size);
 		return 0;
 	}
@@ -383,13 +412,13 @@ int pv_resize(struct physical_volume *pv,
 {
 	if ((new_pe_count == pv->pe_count)) {
 		log_verbose("No change to size of physical volume %s.",
-			    dev_name(pv->dev));
+			    pv_dev_name(pv));
 		return 1;
 	}
 
 	log_verbose("Resizing physical volume %s from %" PRIu32
 		    " to %" PRIu32 " extents.",
-		    dev_name(pv->dev), pv->pe_count, new_pe_count);
+		    pv_dev_name(pv), pv->pe_count, new_pe_count);
 
 	if (new_pe_count > pv->pe_count)
 		return _extend_pv(pv, vg, new_pe_count);

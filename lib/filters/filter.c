@@ -1,14 +1,14 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -76,11 +76,12 @@ static const device_info_t device_info[] = {
 	{"device-mapper", 1},	/* Other mapped devices */
 	{"xvd", 16},		/* Xen virtual block device */
 	{"vdisk", 8},		/* SUN's LDOM virtual block device */
-	{"virtblk", 8},         /* VirtIO disk */
+	{"ps3disk", 16},	/* PlayStation 3 internal disk */
+	{"virtblk", 8},		/* VirtIO disk */
 	{NULL, 0}
 };
 
-static int _passes_lvm_type_device_filter(struct dev_filter *f,
+static int _passes_lvm_type_device_filter(struct dev_filter *f __attribute((unused)),
 					  struct device *dev)
 {
 	const char *name = dev_name(dev);
@@ -277,9 +278,8 @@ struct dev_filter *lvm_type_filter_create(const char *proc,
 	f->private = NULL;
 
 	if (!_scan_proc_dev(proc, cn)) {
-		stack;
 		dm_free(f);
-		return NULL;
+		return_NULL;
 	}
 
 	return f;

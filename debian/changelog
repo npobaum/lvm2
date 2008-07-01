@@ -1,3 +1,50 @@
+lvm2 (2.02.39-0ubuntu1) intrepid; urgency=low
+
+  * New upstream release (LP: #239460).
+  * Merges 2.02.35-1 from Debian.
+  * Increase devmapper dependency to (>> 2:1.02.27) due to new API.
+  * Re-add quilt to Build-Depends.
+  * Add missing Build-Depends on autoconf and libtool.
+
+ -- James Westby <james.westby@canonical.com>  Tue, 01 Jul 2008 16:39:18 +0100
+
+lvm2 (2.02.35-1) unstable; urgency=low
+
+  * New upstream version.
+
+ -- Bastian Blank <waldi@debian.org>  Sun, 20 Apr 2008 20:11:53 +0200
+
+lvm2 (2.02.33-2) unstable; urgency=low
+
+  * Fix LSB header of init script.
+
+ -- Bastian Blank <waldi@debian.org>  Mon, 10 Mar 2008 22:41:13 +0100
+
+lvm2 (2.02.33-1) unstable; urgency=low
+
+  * New upstream version.
+  * Remove loading of additional modules from init script.
+
+ -- Bastian Blank <waldi@debian.org>  Fri, 15 Feb 2008 16:21:44 +0000
+
+lvm2 (2.02.31-1) unstable; urgency=low
+
+  * New upstream version.
+  * Readd clvm.
+  * Add LSB header to lvm2 init script. (closes: #426108)
+
+ -- Bastian Blank <waldi@debian.org>  Tue, 22 Jan 2008 16:45:09 +0000
+
+lvm2 (2.02.29-1) unstable; urgency=low
+
+  * New upstream version.
+  * Load modules.
+  * Don't longer directly link libncurses, libselinux and librt.
+  * Drop lvm1 support in lvm2-udeb.
+  * Force modprobe path to enable module loading.
+
+ -- Bastian Blank <waldi@debian.org>  Thu, 10 Jan 2008 13:36:53 +0000
+
 lvm2 (2.02.26-1ubuntu11) intrepid; urgency=low
 
   * debian/control: build-deps on newer libcman and libdlm to guarantee a

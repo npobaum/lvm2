@@ -1,14 +1,14 @@
 /*
- * Copyright (C) 1997-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 1997-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2006 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -24,6 +24,7 @@
 #include "str_list.h"
 #include "display.h"
 #include "segtype.h"
+#include "toolcontext.h"
 
 /* This file contains only imports at the moment... */
 
@@ -35,6 +36,7 @@ int import_pool_vg(struct volume_group *vg, struct dm_pool *mem, struct list *pl
 		vg->extent_count +=
 		    ((pl->pd.pl_blocks) / POOL_PE_SIZE);
 
+		vg->free_count = vg->extent_count;
 		vg->pv_count++;
 
 		if (vg->name)
@@ -44,7 +46,6 @@ int import_pool_vg(struct volume_group *vg, struct dm_pool *mem, struct list *pl
 		get_pool_vg_uuid(&vg->id, &pl->pd);
 		vg->extent_size = POOL_PE_SIZE;
 		vg->status |= LVM_READ | LVM_WRITE | CLUSTERED | SHARED;
-		vg->free_count = vg->extent_count;
 		vg->max_lv = 1;
 		vg->max_pv = POOL_MAX_DEVICES;
 		vg->alloc = ALLOC_NORMAL;
@@ -77,11 +78,12 @@ int import_pool_lvs(struct volume_group *vg, struct dm_pool *mem, struct list *p
 	lv->size = 0;
 	lv->name = NULL;
 	lv->le_count = 0;
-	lv->read_ahead = 0;
+	lv->read_ahead = vg->cmd->default_settings.read_ahead;
 	lv->snapshot = NULL;
 	list_init(&lv->snapshot_segs);
 	list_init(&lv->segments);
 	list_init(&lv->tags);
+	list_init(&lv->segs_using_this_lv);
 
 	list_iterate_items(pl, pls) {
 		lv->size += pl->pd.pl_blocks;
@@ -89,10 +91,8 @@ int import_pool_lvs(struct volume_group *vg, struct dm_pool *mem, struct list *p
 		if (lv->name)
 			continue;
 
-		if (!(lv->name = dm_pool_strdup(mem, pl->pd.pl_pool_name))) {
-			stack;
-			return 0;
-		}
+		if (!(lv->name = dm_pool_strdup(mem, pl->pd.pl_pool_name)))
+			return_0;
 
 		get_pool_lv_uuid(lv->lvid.id, &pl->pd);
 		log_debug("Calculated lv uuid for lv %s: %s", lv->name,
@@ -165,7 +165,8 @@ int import_pool_pv(const struct format_type *fmt, struct dm_pool *mem,
 		log_error("Unable to duplicate vg_name string");
 		return 0;
 	}
-	memcpy(&pv->vgid, &vg->id, sizeof(vg->id));
+	if (vg != NULL)
+		memcpy(&pv->vgid, &vg->id, sizeof(vg->id));
 	pv->status = 0;
 	pv->size = pd->pl_blocks;
 	pv->pe_size = POOL_PE_SIZE;
@@ -176,10 +177,8 @@ int import_pool_pv(const struct format_type *fmt, struct dm_pool *mem,
 	list_init(&pv->tags);
 	list_init(&pv->segments);
 
-	if (!alloc_pv_segment_whole_pv(mem, pv)) {
-		stack;
-		return 0;
-	}
+	if (!alloc_pv_segment_whole_pv(mem, pv))
+		return_0;
 
 	return 1;
 }
@@ -214,12 +213,10 @@ static int _add_stripe_seg(struct dm_pool *mem,
 	area_len = (usp->devs[0].blocks) / POOL_PE_SIZE;
 
 	if (!(segtype = get_segtype_from_string(lv->vg->cmd,
-						     "striped"))) {
-		stack;
-		return 0;
-	}
+						     "striped")))
+		return_0;
 
-	if (!(seg = alloc_lv_segment(mem, segtype, lv, *le_cur, 
+	if (!(seg = alloc_lv_segment(mem, segtype, lv, *le_cur,
 				     area_len * usp->num_devs, 0,
 				     usp->striping, NULL, usp->num_devs,
 				     area_len, 0, 0, 0))) {
@@ -228,10 +225,8 @@ static int _add_stripe_seg(struct dm_pool *mem,
 	}
 
 	for (j = 0; j < usp->num_devs; j++)
-		if (!set_lv_segment_area_pv(seg, j, usp->devs[j].pv, 0)) {
-			stack;
-			return 0;
-		}
+		if (!set_lv_segment_area_pv(seg, j, usp->devs[j].pv, 0))
+			return_0;
 
 	/* add the subpool type to the segment tag list */
 	str_list_add(mem, &seg->tags, _cvt_sptype(usp->type));
@@ -252,10 +247,8 @@ static int _add_linear_seg(struct dm_pool *mem,
 	unsigned j;
 	uint32_t area_len;
 
-	if (!(segtype = get_segtype_from_string(lv->vg->cmd, "striped"))) {
-		stack;
-		return 0;
-	}
+	if (!(segtype = get_segtype_from_string(lv->vg->cmd, "striped")))
+		return_0;
 
 	for (j = 0; j < usp->num_devs; j++) {
 		area_len = (usp->devs[j].blocks) / POOL_PE_SIZE;
@@ -272,10 +265,8 @@ static int _add_linear_seg(struct dm_pool *mem,
 		/* add the subpool type to the segment tag list */
 		str_list_add(mem, &seg->tags, _cvt_sptype(usp->type));
 
-		if (!set_lv_segment_area_pv(seg, 0, usp->devs[j].pv, 0)) {
-			stack;
-			return 0;
-		}
+		if (!set_lv_segment_area_pv(seg, 0, usp->devs[j].pv, 0))
+			return_0;
 		list_add(&lv->segments, &seg->list);
 
 		*le_cur += seg->len;
@@ -300,15 +291,11 @@ int import_pool_segments(struct list *lvs, struct dm_pool *mem,
 
 		for (i = 0; i < subpools; i++) {
 			if (usp[i].striping) {
-				if (!_add_stripe_seg(mem, &usp[i], lv, &le_cur)) {
-					stack;
-					return 0;
-				}
+				if (!_add_stripe_seg(mem, &usp[i], lv, &le_cur))
+					return_0;
 			} else {
-				if (!_add_linear_seg(mem, &usp[i], lv, &le_cur)) {
-					stack;
-					return 0;
-				}
+				if (!_add_linear_seg(mem, &usp[i], lv, &le_cur))
+					return_0;
 			}
 		}
 	}

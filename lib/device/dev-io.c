@@ -1,14 +1,14 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -170,10 +170,8 @@ static int _aligned_io(struct device_area *where, void *buffer,
 	struct device_area widened;
 
 	if (!(where->dev->flags & DEV_REGULAR) &&
-	    !_get_block_size(where->dev, &block_size)) {
-		stack;
-		return 0;
-	}
+	    !_get_block_size(where->dev, &block_size))
+		return_0;
 
 	if (!block_size)
 		block_size = lvm_getpagesize();
@@ -200,10 +198,8 @@ static int _aligned_io(struct device_area *where, void *buffer,
 
 	/* channel the io through the bounce buffer */
 	if (!_io(&widened, bounce, 0)) {
-		if (!should_write) {
-			stack;
-			return 0;
-		}
+		if (!should_write)
+			return_0;
 		/* FIXME pre-extend the file */
 		memset(bounce, '\n', widened.size);
 	}
@@ -340,7 +336,7 @@ int dev_open_flags(struct device *dev, int flags, int direct, int quiet)
 
 		if (dev->open_count && !need_excl) {
 			/* FIXME Ensure we never get here */
-			log_debug("WARNING: %s already opened read-only", 
+			log_debug("WARNING: %s already opened read-only",
 				  dev_name(dev));
 			dev->open_count++;
 		}
@@ -354,15 +350,18 @@ int dev_open_flags(struct device *dev, int flags, int direct, int quiet)
 
 	if (dev->flags & DEV_REGULAR)
 		name = dev_name(dev);
-	else if (!(name = dev_name_confirmed(dev, quiet))) {
-		stack;
-		return 0;
-	}
+	else if (!(name = dev_name_confirmed(dev, quiet)))
+		return_0;
 
-	if (!(dev->flags & DEV_REGULAR) &&
-	    ((stat(name, &buf) < 0) || (buf.st_rdev != dev->dev))) {
-		log_error("%s: stat failed: Has device name changed?", name);
-		return 0;
+	if (!(dev->flags & DEV_REGULAR)) {
+		if (stat(name, &buf) < 0) {
+			log_sys_error("%s: stat failed", name);
+			return 0;
+		}
+		if (buf.st_rdev != dev->dev) {
+			log_error("%s: device changed", name);
+			return 0;
+		}
 	}
 
 #ifdef O_DIRECT_SUPPORT
@@ -517,8 +516,8 @@ static int _dev_close(struct device *dev, int immediate)
 
 	/* Close unless device is known to belong to a locked VG */
 	if (immediate ||
-	    (dev->open_count < 1 && 
-	     (!(info = info_from_pvid(dev->pvid)) ||
+	    (dev->open_count < 1 &&
+	     (!(info = info_from_pvid(dev->pvid, 0)) ||
 	      !info->vginfo ||
 	      !vgname_is_locked(info->vginfo->vgname))))
 		_close(dev);
@@ -552,10 +551,8 @@ int dev_read(struct device *dev, uint64_t offset, size_t len, void *buffer)
 {
 	struct device_area where;
 
-	if (!dev->open_count) {
-		stack;
-		return 0;
-	}
+	if (!dev->open_count)
+		return_0;
 
 	where.dev = dev;
 	where.start = offset;
@@ -602,10 +599,8 @@ int dev_append(struct device *dev, size_t len, void *buffer)
 {
 	int r;
 
-	if (!dev->open_count) {
-		stack;
-		return 0;
-	}
+	if (!dev->open_count)
+		return_0;
 
 	r = dev_write(dev, dev->end, len, buffer);
 	dev->end += (uint64_t) len;
@@ -620,10 +615,8 @@ int dev_write(struct device *dev, uint64_t offset, size_t len, void *buffer)
 {
 	struct device_area where;
 
-	if (!dev->open_count) {
-		stack;
-		return 0;
-	}
+	if (!dev->open_count)
+		return_0;
 
 	where.dev = dev;
 	where.start = offset;
@@ -639,10 +632,8 @@ int dev_set(struct device *dev, uint64_t offset, size_t len, int value)
 	size_t s;
 	char buffer[4096] __attribute((aligned(8)));
 
-	if (!dev_open(dev)) {
-		stack;
-		return 0;
-	}
+	if (!dev_open(dev))
+		return_0;
 
 	if ((offset % SECTOR_SIZE) || (len % SECTOR_SIZE))
 		log_debug("Wiping %s at %" PRIu64 " length %" PRIsize_t,

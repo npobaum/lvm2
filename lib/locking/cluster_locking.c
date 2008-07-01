@@ -1,14 +1,14 @@
 /*
  * Copyright (C) 2002-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -32,7 +32,7 @@
 #include <sys/param.h>
 
 #ifndef CLUSTER_LOCKING_INTERNAL
-int lock_resource(struct cmd_context *cmd, const char *resource, int flags);
+int lock_resource(struct cmd_context *cmd, const char *resource, uint32_t flags);
 void locking_end(void);
 int locking_init(int type, struct config_tree *cf, uint32_t *flags);
 #endif
@@ -105,8 +105,8 @@ static int _send_request(char *inbuf, int inlen, char **retbuf)
 	/* Send it to CLVMD */
  rewrite:
 	if ( (err = write(_clvmd_sock, inbuf, inlen)) != inlen) {
-	        if (err == -1 && errno == EINTR)
-		        goto rewrite;
+		if (err == -1 && errno == EINTR)
+			goto rewrite;
 		log_error("Error writing data to clvmd: %s", strerror(errno));
 		return 0;
 	}
@@ -114,8 +114,8 @@ static int _send_request(char *inbuf, int inlen, char **retbuf)
 	/* Get the response */
  reread:
 	if ((len = read(_clvmd_sock, outbuf, sizeof(struct clvm_header))) < 0) {
-	        if (errno == EINTR)
-		        goto reread;
+		if (errno == EINTR)
+			goto reread;
 		log_error("Error reading data from clvmd: %s", strerror(errno));
 		return 0;
 	}
@@ -296,7 +296,7 @@ static int _cluster_free_request(lvm_response_t * response, int num)
 	return 1;
 }
 
-static int _lock_for_cluster(unsigned char cmd, unsigned int flags, char *name)
+static int _lock_for_cluster(unsigned char cmd, uint32_t flags, const char *name)
 {
 	int status;
 	int i;
@@ -331,11 +331,14 @@ static int _lock_for_cluster(unsigned char cmd, unsigned int flags, char *name)
 	 * locks are cluster-wide.
 	 * Also, if the lock is exclusive it makes no sense to try to
 	 * acquire it on all nodes, so just do that on the local node too.
+	 * One exception, is that P_ locks /do/ get distributed across
+	 * the cluster because they might have side-effects.
 	 */
-	if (cmd == CLVMD_CMD_LOCK_VG ||
-	    (flags & LCK_TYPE_MASK) == LCK_EXCL ||
-	    (flags & LCK_LOCAL) ||
-	    !(flags & LCK_CLUSTER_VG))
+	if (strncmp(name, "P_", 2) &&
+	    (cmd == CLVMD_CMD_LOCK_VG ||
+	     (flags & LCK_TYPE_MASK) == LCK_EXCL ||
+	     (flags & LCK_LOCAL) ||
+	     !(flags & LCK_CLUSTER_VG)))
 		node = ".";
 
 	status = _cluster_request(cmd, node, args, len,
@@ -369,13 +372,15 @@ static int _lock_for_cluster(unsigned char cmd, unsigned int flags, char *name)
 /* API entry point for LVM */
 #ifdef CLUSTER_LOCKING_INTERNAL
 static int _lock_resource(struct cmd_context *cmd, const char *resource,
-			  int flags)
+			  uint32_t flags)
 #else
-int lock_resource(struct cmd_context *cmd, const char *resource, int flags)
+int lock_resource(struct cmd_context *cmd, const char *resource, uint32_t flags)
 #endif
 {
 	char lockname[PATH_MAX];
 	int cluster_cmd = 0;
+	const char *lock_scope;
+	const char *lock_type = "";
 
 	assert(strlen(resource) < sizeof(lockname));
 	assert(resource);
@@ -383,12 +388,14 @@ int lock_resource(struct cmd_context *cmd, const char *resource, int flags)
 	switch (flags & LCK_SCOPE_MASK) {
 	case LCK_VG:
 		/* If the VG name is empty then lock the unused PVs */
-		if (!*resource)
-			dm_snprintf(lockname, sizeof(lockname), "P_orphans");
+		if (*resource == '#' || (flags & LCK_CACHE))
+			dm_snprintf(lockname, sizeof(lockname), "P_%s",
+				    resource);
 		else
 			dm_snprintf(lockname, sizeof(lockname), "V_%s",
-				     resource);
+				    resource);
 
+		lock_scope = "VG";
 		cluster_cmd = CLVMD_CMD_LOCK_VG;
 		flags &= LCK_TYPE_MASK;
 		break;
@@ -396,6 +403,7 @@ int lock_resource(struct cmd_context *cmd, const char *resource, int flags)
 	case LCK_LV:
 		cluster_cmd = CLVMD_CMD_LOCK_LV;
 		strcpy(lockname, resource);
+		lock_scope = "LV";
 		flags &= 0xffdf;	/* Mask off HOLD flag */
 		break;
 
@@ -405,9 +413,48 @@ int lock_resource(struct cmd_context *cmd, const char *resource, int flags)
 		return 0;
 	}
 
-	/* Send a message to the cluster manager */
-	log_very_verbose("Locking %s at 0x%x", lockname, flags);
+	switch(flags & LCK_TYPE_MASK) {
+	case LCK_UNLOCK:
+		lock_type = "UN";
+		break;
+	case LCK_NULL:
+		lock_type = "NL";
+		break;
+	case LCK_READ:
+		lock_type = "CR";
+		break;
+	case LCK_PREAD:
+		lock_type = "PR";
+		break;
+	case LCK_WRITE:
+		lock_type = "PW";
+		break;
+	case LCK_EXCL:
+		lock_type = "EX";
+		break;
+	default:
+		log_error("Unrecognised lock type: %u",
+			  flags & LCK_TYPE_MASK);
+		return 0;
+	}
 
+	/* If we are unlocking a clustered VG, then trigger remote metadata backups */
+	if (cluster_cmd == CLVMD_CMD_LOCK_VG &&
+	    ((flags & LCK_TYPE_MASK) == LCK_UNLOCK) &&
+	    (flags & LCK_CLUSTER_VG)) {
+		log_very_verbose("Requesing backup of VG metadata for %s", resource);
+		_lock_for_cluster(CLVMD_CMD_VG_BACKUP, LCK_CLUSTER_VG, resource);
+	}
+
+	log_very_verbose("Locking %s %s %s %s%s%s%s (0x%x)", lock_scope, lockname,
+			 lock_type,
+			 flags & LCK_NONBLOCK ? "" : "B",
+			 flags & LCK_HOLD ? "H" : "",
+			 flags & LCK_LOCAL ? "L" : "",
+			 flags & LCK_CLUSTER_VG ? "C" : "",
+			 flags);
+
+	/* Send a message to the cluster manager */
 	return _lock_for_cluster(cluster_cmd, flags, lockname);
 }
 
@@ -434,7 +481,7 @@ void reset_locking(void)
 
 	_clvmd_sock = _open_local_sock();
 	if (_clvmd_sock == -1)
-	        stack;
+		stack;
 }
 
 #ifdef CLUSTER_LOCKING_INTERNAL

@@ -1,14 +1,14 @@
 /*
- * Copyright (C) 2002-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2006 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -162,6 +162,7 @@ int add_mda(const struct format_type *fmt, struct dm_pool *mem, struct list *mda
 	mdac->area.dev = dev;
 	mdac->area.start = start;
 	mdac->area.size = size;
+	mdac->free_sectors = UINT64_C(0);
 	memset(&mdac->rlocn, 0, sizeof(mdac->rlocn));
 
 	list_add(mdas, &mdal->list);
@@ -206,7 +207,9 @@ static int _text_read(struct labeller *l, struct device *dev, void *buf,
 
 	pvhdr = (struct pv_header *) ((void *) buf + xlate32(lh->offset_xl));
 
-	if (!(info = lvmcache_add(l, (char *)pvhdr->pv_uuid, dev, NULL, NULL, 0)))
+	if (!(info = lvmcache_add(l, (char *)pvhdr->pv_uuid, dev,
+				  FMT_TEXT_ORPHAN_VG_NAME,
+				  FMT_TEXT_ORPHAN_VG_NAME, 0)))
 		return_0;
 	*label = info->label;
 
@@ -238,8 +241,9 @@ static int _text_read(struct labeller *l, struct device *dev, void *buf,
 
 	list_iterate_items(mda, &info->mdas) {
 		mdac = (struct mda_context *) mda->metadata_locn;
-		if ((vgname = vgname_from_mda(info->fmt, &mdac->area, 
-					      &vgid, &vgstatus, &creation_host)) &&
+		if ((vgname = vgname_from_mda(info->fmt, &mdac->area,
+					      &vgid, &vgstatus, &creation_host,
+					      &mdac->free_sectors)) &&
 		    !lvmcache_update_vgname_and_id(info, vgname,
 						   (char *) &vgid, vgstatus,
 						   creation_host))
