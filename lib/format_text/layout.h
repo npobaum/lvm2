@@ -1,14 +1,14 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2006 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -36,7 +36,9 @@ struct data_area_list {
 /* Fields with the suffix _xl should be xlate'd wherever they appear */
 /* On disk */
 struct pv_header {
-	uint8_t pv_uuid[ID_LEN];
+	int8_t pv_uuid[ID_LEN];
+
+	/* This size can be overridden if PV belongs to a VG */
 	uint64_t device_size_xl;	/* Bytes */
 
 	/* NULL-terminated list of data areas followed by */
@@ -56,7 +58,7 @@ struct raw_locn {
 /* Structure size limited to one sector */
 struct mda_header {
 	uint32_t checksum_xl;	/* Checksum of rest of mda_header */
-	uint8_t magic[16];	/* To aid scans for metadata */
+	int8_t magic[16];	/* To aid scans for metadata */
 	uint32_t version;
 	uint64_t start;		/* Absolute start byte of mda_header */
 	uint64_t size;		/* Size of metadata area */
@@ -73,6 +75,7 @@ struct mda_lists {
 
 struct mda_context {
 	struct device_area area;
+	uint64_t free_sectors;
 	struct raw_locn rlocn;	/* Store inbetween write and commit */
 };
 
@@ -81,5 +84,6 @@ struct mda_context {
 #define FMTT_VERSION 1
 #define MDA_HEADER_SIZE 512
 #define LVM2_LABEL "LVM2 001"
+#define MDA_SIZE_MIN (8 * (unsigned) lvm_getpagesize())
 
 #endif

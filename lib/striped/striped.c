@@ -1,21 +1,19 @@
 /*
- * Copyright (C) 2003-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2003-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
 #include "lib.h"
-#include "pool.h"
-#include "list.h"
 #include "toolcontext.h"
 #include "segtype.h"
 #include "display.h"
@@ -26,13 +24,15 @@
 #include "targets.h"
 #include "lvm-string.h"
 #include "activate.h"
+#include "pv_alloc.h"
+#include "metadata.h"
 
-static const char *_name(const struct lv_segment *seg)
+static const char *_striped_name(const struct lv_segment *seg)
 {
 	return (seg->area_count == 1) ? "linear" : seg->segtype->name;
 }
 
-static void _display(const struct lv_segment *seg)
+static void _striped_display(const struct lv_segment *seg)
 {
 	uint32_t s;
 
@@ -50,7 +50,7 @@ static void _display(const struct lv_segment *seg)
 	log_print(" ");
 }
 
-static int _text_import_area_count(struct config_node *sn, uint32_t *area_count)
+static int _striped_text_import_area_count(struct config_node *sn, uint32_t *area_count)
 {
 	if (!get_config_uint32(sn, "stripe_count", area_count)) {
 		log_error("Couldn't read 'stripe_count' for "
@@ -61,8 +61,8 @@ static int _text_import_area_count(struct config_node *sn, uint32_t *area_count)
 	return 1;
 }
 
-static int _text_import(struct lv_segment *seg, const struct config_node *sn,
-			struct hash_table *pv_hash)
+static int _striped_text_import(struct lv_segment *seg, const struct config_node *sn,
+			struct dm_hash_table *pv_hash)
 {
 	struct config_node *cn;
 
@@ -81,10 +81,10 @@ static int _text_import(struct lv_segment *seg, const struct config_node *sn,
 
 	seg->area_len /= seg->area_count;
 
-	return text_import_areas(seg, sn, cn, pv_hash);
+	return text_import_areas(seg, sn, cn, pv_hash, 0);
 }
 
-static int _text_export(const struct lv_segment *seg, struct formatter *f)
+static int _striped_text_export(const struct lv_segment *seg, struct formatter *f)
 {
 
 	outf(f, "stripe_count = %u%s", seg->area_count,
@@ -100,26 +100,30 @@ static int _text_export(const struct lv_segment *seg, struct formatter *f)
 /*
  * Test whether two segments could be merged by the current merging code
  */
-static int _segments_compatible(struct lv_segment *first,
+static int _striped_segments_compatible(struct lv_segment *first,
 				struct lv_segment *second)
 {
 	uint32_t width;
 	unsigned s;
 
 	if ((first->area_count != second->area_count) ||
-	    (first->stripe_size != second->stripe_size)) return 0;
+	    (first->stripe_size != second->stripe_size))
+		return 0;
 
 	for (s = 0; s < first->area_count; s++) {
 
 		/* FIXME Relax this to first area type != second area type */
 		/*       plus the additional AREA_LV checks needed */
-		if ((first->area[s].type != AREA_PV) ||
-		    (second->area[s].type != AREA_PV)) return 0;
+		if ((seg_type(first, s) != AREA_PV) ||
+		    (seg_type(second, s) != AREA_PV))
+			return 0;
 
 		width = first->area_len;
 
-		if ((first->area[s].u.pv.pv != second->area[s].u.pv.pv) ||
-		    (first->area[s].u.pv.pe + width != second->area[s].u.pv.pe))
+		if ((seg_pv(first, s) !=
+		     seg_pv(second, s)) ||
+		    (seg_pe(first, s) + width !=
+		     seg_pe(second, s)))
 			return 0;
 	}
 
@@ -129,86 +133,89 @@ static int _segments_compatible(struct lv_segment *first,
 	return 1;
 }
 
-static int _merge_segments(struct lv_segment *seg1, struct lv_segment *seg2)
+static int _striped_merge_segments(struct lv_segment *seg1, struct lv_segment *seg2)
 {
-	if (!_segments_compatible(seg1, seg2))
+	uint32_t s;
+
+	if (!_striped_segments_compatible(seg1, seg2))
 		return 0;
 
 	seg1->len += seg2->len;
 	seg1->area_len += seg2->area_len;
 
+	for (s = 0; s < seg1->area_count; s++)
+		if (seg_type(seg1, s) == AREA_PV)
+			merge_pv_segments(seg_pvseg(seg1, s),
+					  seg_pvseg(seg2, s));
+
 	return 1;
 }
 
 #ifdef DEVMAPPER_SUPPORT
-static int _compose_target_line(struct dev_manager *dm, struct pool *mem,
-				struct config_tree *cft, void **target_state,
-				struct lv_segment *seg, char *params,
-				size_t paramsize, const char **target, int *pos,
-				uint32_t *pvmove_mirror_count)
+static int _striped_add_target_line(struct dev_manager *dm,
+				struct dm_pool *mem __attribute((unused)),
+				struct cmd_context *cmd __attribute((unused)),
+				void **target_state __attribute((unused)),
+				struct lv_segment *seg,
+				struct dm_tree_node *node, uint64_t len,
+				uint32_t *pvmove_mirror_count __attribute((unused)))
 {
-	/*   linear [device offset]+
-	 *   striped #stripes stripe_size [device offset]+   */
-
-	if (seg->area_count == 1)
-		*target = "linear";
-	else if (seg->area_count > 1) {
-		*target = "striped";
-		if ((*pos = lvm_snprintf(params, paramsize, "%u %u ",
-					 seg->area_count,
-					 seg->stripe_size)) < 0) {
-			stack;
-			return -1;
-		}
-	} else {
-		log_error("Internal error: striped target with no stripes");
+	if (!seg->area_count) {
+		log_error("Internal error: striped add_target_line called "
+			  "with no areas for %s.", seg->lv->name);
 		return 0;
 	}
+	if (seg->area_count == 1) {
+		if (!dm_tree_node_add_linear_target(node, len))
+			return_0;
+	} else if (!dm_tree_node_add_striped_target(node, len,
+						  seg->stripe_size))
+		return_0;
 
-	return compose_areas_line(dm, seg, params, paramsize, pos, 0u,
-				  seg->area_count);
+	return add_areas_line(dm, seg, node, 0u, seg->area_count);
 }
 
-static int _target_present(void)
+static int _striped_target_present(const struct lv_segment *seg __attribute((unused)),
+				   unsigned *attributes __attribute((unused)))
 {
-	static int checked = 0;
-	static int present = 0;
+	static int _striped_checked = 0;
+	static int _striped_present = 0;
 
-	if (!checked)
-		present = target_present("linear") && target_present("striped");
+	if (!_striped_checked)
+		_striped_present = target_present("linear", 0) &&
+			  target_present("striped", 0);
 
-	checked = 1;
-	return present;
+	_striped_checked = 1;
+
+	return _striped_present;
 }
 #endif
 
-static void _destroy(const struct segment_type *segtype)
+static void _striped_destroy(const struct segment_type *segtype)
 {
-	dbg_free((void *) segtype);
+	dm_free((void *)segtype);
 }
 
 static struct segtype_handler _striped_ops = {
-	name:_name,
-	display:_display,
-	text_import_area_count:_text_import_area_count,
-	text_import:_text_import,
-	text_export:_text_export,
-	merge_segments:_merge_segments,
+	.name = _striped_name,
+	.display = _striped_display,
+	.text_import_area_count = _striped_text_import_area_count,
+	.text_import = _striped_text_import,
+	.text_export = _striped_text_export,
+	.merge_segments = _striped_merge_segments,
 #ifdef DEVMAPPER_SUPPORT
-	compose_target_line:_compose_target_line,
-	target_present:_target_present,
+	.add_target_line = _striped_add_target_line,
+	.target_present = _striped_target_present,
 #endif
-	destroy:_destroy,
+	.destroy = _striped_destroy,
 };
 
 struct segment_type *init_striped_segtype(struct cmd_context *cmd)
 {
-	struct segment_type *segtype = dbg_malloc(sizeof(*segtype));
+	struct segment_type *segtype = dm_malloc(sizeof(*segtype));
 
-	if (!segtype) {
-		stack;
-		return NULL;
-	}
+	if (!segtype)
+		return_NULL;
 
 	segtype->cmd = cmd;
 	segtype->ops = &_striped_ops;

@@ -24,12 +24,15 @@ extern int do_lock_lv(unsigned char lock_cmd, unsigned char lock_flags,
 		      char *resource);
 extern int post_lock_lv(unsigned char lock_cmd, unsigned char lock_flags,
 			char *resource);
-extern int do_check_lvm1(char *vgname);
-extern int init_lvm(void);
+extern int do_check_lvm1(const char *vgname);
+extern int do_refresh_cache(void);
+extern int init_lvm(int using_gulm);
 extern void init_lvhash(void);
-
+extern void lvm_do_backup(const char *vgname);
 extern int hold_unlock(char *resource);
 extern int hold_lock(char *resource, int mode, int flags);
 extern void unlock_all(void);
+extern char *get_last_lvm_error(void);
+extern void drop_metadata(const char *vgname);
 
 #endif

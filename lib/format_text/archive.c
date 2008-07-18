@@ -1,14 +1,14 @@
 /*
- * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -16,9 +16,7 @@
 #include "lib.h"
 #include "format-text.h"
 
-#include "pool.h"
 #include "config.h"
-#include "hash.h"
 #include "import-export.h"
 #include "lvm-string.h"
 #include "lvm-file.h"
@@ -53,7 +51,7 @@ struct archive_file {
 	struct list list;
 
 	char *path;
-	int index;
+	uint32_t index;
 };
 
 /*
@@ -73,7 +71,7 @@ static int _split_vg(const char *filename, char *vgname, size_t vg_size,
 	if (strcmp(".vg", dot))
 		return 0;
 
-	if (!(underscore = rindex(filename, '_')))
+	if (!(underscore = strrchr(filename, '_')))
 		return 0;
 
 	if (sscanf(underscore + 1, "%u", ix) != 1)
@@ -89,9 +87,8 @@ static int _split_vg(const char *filename, char *vgname, size_t vg_size,
 	return 1;
 }
 
-static void _insert_file(struct list *head, struct archive_file *b)
+static void _insert_archive_file(struct list *head, struct archive_file *b)
 {
-	struct list *bh;
 	struct archive_file *bf = NULL;
 
 	if (list_empty(head)) {
@@ -99,11 +96,9 @@ static void _insert_file(struct list *head, struct archive_file *b)
 		return;
 	}
 
-	/* index increases through list */
-	list_iterate(bh, head) {
-		bf = list_item(bh, struct archive_file);
-
-		if (bf->index > b->index) {
+	/* index reduces through list */
+	list_iterate_items(bf, head) {
+		if (b->index > bf->index) {
 			list_add(&bf->list, &b->list);
 			return;
 		}
@@ -112,48 +107,45 @@ static void _insert_file(struct list *head, struct archive_file *b)
 	list_add_h(&bf->list, &b->list);
 }
 
-static char *_join(struct pool *mem, const char *dir, const char *name)
+static char *_join_file_to_dir(struct dm_pool *mem, const char *dir, const char *name)
 {
-	if (!pool_begin_object(mem, 32) ||
-	    !pool_grow_object(mem, dir, strlen(dir)) ||
-	    !pool_grow_object(mem, "/", 1) ||
-	    !pool_grow_object(mem, name, strlen(name)) ||
-	    !pool_grow_object(mem, "\0", 1)) {
-		stack;
-		return NULL;
-	}
+	if (!dm_pool_begin_object(mem, 32) ||
+	    !dm_pool_grow_object(mem, dir, strlen(dir)) ||
+	    !dm_pool_grow_object(mem, "/", 1) ||
+	    !dm_pool_grow_object(mem, name, strlen(name)) ||
+	    !dm_pool_grow_object(mem, "\0", 1))
+		return_NULL;
 
-	return pool_end_object(mem);
+	return dm_pool_end_object(mem);
 }
 
 /*
  * Returns a list of archive_files.
  */
-static struct list *_scan_archive(struct pool *mem,
+static struct list *_scan_archive(struct dm_pool *mem,
 				  const char *vgname, const char *dir)
 {
-	int i, count, ix;
+	int i, count;
+	uint32_t ix;
 	char vgname_found[64], *path;
 	struct dirent **dirent;
 	struct archive_file *af;
 	struct list *results;
 
-	if (!(results = pool_alloc(mem, sizeof(*results)))) {
-		stack;
-		return NULL;
-	}
+	if (!(results = dm_pool_alloc(mem, sizeof(*results))))
+		return_NULL;
 
 	list_init(results);
 
 	/* Sort fails beyond 5-digit indexes */
 	if ((count = scandir(dir, &dirent, NULL, alphasort)) < 0) {
-		log_err("Couldn't scan archive directory.");
+		log_err("Couldn't scan the archive directory (%s).", dir);
 		return 0;
 	}
 
 	for (i = 0; i < count; i++) {
-		/* ignore dot files */
-		if (dirent[i]->d_name[0] == '.')
+		if (!strcmp(dirent[i]->d_name, ".") ||
+		    !strcmp(dirent[i]->d_name, ".."))
 			continue;
 
 		/* check the name is the correct format */
@@ -165,15 +157,13 @@ static struct list *_scan_archive(struct pool *mem,
 		if (strcmp(vgname, vgname_found))
 			continue;
 
-		if (!(path = _join(mem, dir, dirent[i]->d_name))) {
-			stack;
-			goto out;
-		}
+		if (!(path = _join_file_to_dir(mem, dir, dirent[i]->d_name)))
+			goto_out;
 
 		/*
 		 * Create a new archive_file.
 		 */
-		if (!(af = pool_alloc(mem, sizeof(*af)))) {
+		if (!(af = dm_pool_alloc(mem, sizeof(*af)))) {
 			log_err("Couldn't create new archive file.");
 			results = NULL;
 			goto out;
@@ -185,7 +175,7 @@ static struct list *_scan_archive(struct pool *mem,
 		/*
 		 * Insert it to the correct part of the list.
 		 */
-		_insert_file(results, af);
+		_insert_archive_file(results, af);
 	}
 
       out:
@@ -199,7 +189,6 @@ static struct list *_scan_archive(struct pool *mem,
 static void _remove_expired(struct list *archives, uint32_t archives_size,
 			    uint32_t retain_days, uint32_t min_archive)
 {
-	struct list *bh;
 	struct archive_file *bf;
 	struct stat sb;
 	time_t retain_time;
@@ -212,10 +201,8 @@ static void _remove_expired(struct list *archives, uint32_t archives_size,
 	/* Convert retain_days into the time after which we must retain */
 	retain_time = time(NULL) - (time_t) retain_days *SECS_PER_DAY;
 
-	/* Assume list is ordered oldest first (by index) */
-	list_iterate(bh, archives) {
-		bf = list_item(bh, struct archive_file);
-
+	/* Assume list is ordered newest first (by index) */
+	list_iterate_back_items(bf, archives) {
 		/* Get the mtime of the file and unlink if too old */
 		if (stat(bf->path, &sb)) {
 			log_sys_error("stat", bf->path);
@@ -240,7 +227,7 @@ int archive_vg(struct volume_group *vg,
 	       uint32_t retain_days, uint32_t min_archive)
 {
 	int i, fd, renamed = 0;
-	unsigned int ix = 0;
+	uint32_t ix = 0;
 	struct archive_file *last;
 	FILE *fp = NULL;
 	char temp_file[PATH_MAX], archive_name[PATH_MAX];
@@ -256,36 +243,36 @@ int archive_vg(struct volume_group *vg,
 
 	if (!(fp = fdopen(fd, "w"))) {
 		log_err("Couldn't create FILE object for archive.");
-		close(fd);
+		if (close(fd))
+			log_sys_error("close", temp_file);
 		return 0;
 	}
 
 	if (!text_vg_export_file(vg, desc, fp)) {
-		stack;
-		fclose(fp);
-		return 0;
+		if (fclose(fp))
+			log_sys_error("fclose", temp_file);
+		return_0;
 	}
 
-	fclose(fp);
+	if (lvm_fclose(fp, temp_file))
+		return_0; /* Leave file behind as evidence of failure */
 
 	/*
 	 * Now we want to rename this file to <vg>_index.vg.
 	 */
-	if (!(archives = _scan_archive(vg->cmd->mem, vg->name, dir))) {
-		log_err("Couldn't scan the archive directory (%s).", dir);
-		return 0;
-	}
+	if (!(archives = _scan_archive(vg->cmd->mem, vg->name, dir)))
+		return_0;
 
 	if (list_empty(archives))
 		ix = 0;
 	else {
-		last = list_item(archives->p, struct archive_file);
+		last = list_item(list_first(archives), struct archive_file);
 		ix = last->index + 1;
 	}
 
 	for (i = 0; i < 10; i++) {
-		if (lvm_snprintf(archive_name, sizeof(archive_name),
-				 "%s/%s_%05d.vg", dir, vg->name, ix) < 0) {
+		if (dm_snprintf(archive_name, sizeof(archive_name),
+				 "%s/%s_%05u.vg", dir, vg->name, ix) < 0) {
 			log_error("Archive file name too long.");
 			return 0;
 		}
@@ -318,7 +305,7 @@ static void _display_archive(struct cmd_context *cmd, struct archive_file *af)
 
 	if (!(context = create_text_context(cmd, af->path, NULL)) ||
 	    !(tf = cmd->fmt_backup->ops->create_instance(cmd->fmt_backup, NULL,
-							 context))) {
+							 NULL, context))) {
 		log_error("Couldn't create text instance object.");
 		return;
 	}
@@ -335,33 +322,44 @@ static void _display_archive(struct cmd_context *cmd, struct archive_file *af)
 	}
 
 	log_print("VG name:    \t%s", vg->name);
-	log_print("Description:\t%s", desc ? desc : "<No description>");
+	log_print("Description:\t%s", desc ? : "<No description>");
 	log_print("Backup Time:\t%s", ctime(&when));
 
-	pool_free(cmd->mem, vg);
+	dm_pool_free(cmd->mem, vg);
 	tf->fmt->ops->destroy_instance(tf);
 }
 
 int archive_list(struct cmd_context *cmd, const char *dir, const char *vgname)
 {
-	struct list *archives, *ah;
+	struct list *archives;
 	struct archive_file *af;
 
-	if (!(archives = _scan_archive(cmd->mem, vgname, dir))) {
-		log_err("Couldn't scan the archive directory (%s).", dir);
-		return 0;
-	}
+	if (!(archives = _scan_archive(cmd->mem, vgname, dir)))
+		return_0;
 
 	if (list_empty(archives))
 		log_print("No archives found in %s.", dir);
 
-	list_iterate(ah, archives) {
-		af = list_item(ah, struct archive_file);
-
+	list_iterate_back_items(af, archives)
 		_display_archive(cmd, af);
+
+	dm_pool_free(cmd->mem, archives);
+
+	return 1;
+}
+
+int archive_list_file(struct cmd_context *cmd, const char *file)
+{
+	struct archive_file af;
+
+	af.path = (char *)file;
+
+	if (!path_exists(af.path)) {
+		log_err("Archive file %s not found.", af.path);
+		return 0;
 	}
 
-	pool_free(cmd->mem, archives);
+	_display_archive(cmd, &af);
 
 	return 1;
 }
@@ -370,10 +368,8 @@ int backup_list(struct cmd_context *cmd, const char *dir, const char *vgname)
 {
 	struct archive_file af;
 
-	if (!(af.path = _join(cmd->mem, dir, vgname))) {
-		stack;
-		return 0;
-	}
+	if (!(af.path = _join_file_to_dir(cmd->mem, dir, vgname)))
+		return_0;
 
 	if (path_exists(af.path))
 		_display_archive(cmd, &af);

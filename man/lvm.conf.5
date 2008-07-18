@@ -81,6 +81,14 @@ LVM physical volumes.
 Devices in directories outside this hierarchy will be ignored.
 Defaults to "/dev".
 .IP
+\fBpreferred_names\fP \(em List of patterns compared in turn against
+all the pathnames referencing the same device in in the scanned directories.
+The pathname that matches the earliest pattern in the list is the
+one used in any output.  As an example, if device-mapper multipathing
+is used, the following will select multipath device names:
+.br
+\fBdevices { preferred_names = [ "^/dev/mapper/mpath" ] }\fP
+.IP
 \fBfilter\fP \(em List of patterns to apply to devices found by a scan.
 Patterns are regular expressions delimited by any character and preceded
 by \fBa\fP (for accept) or \fBr\fP (for reject).  The list is traversed
@@ -93,10 +101,11 @@ in /dev), if any name matches any \fBa\fP pattern, the
 device is accepted; otherwise if any name matches any \fBr\fP
 pattern it is rejected; otherwise it is accepted.
 As an example, to ignore /dev/cdrom you could use:
+.br
 \fBdevices { filter=["r|cdrom|"] }\fP 
 .IP
-\fBcache\fP \(em Persistent filter cache file.
-Defaults to "/etc/lvm/.cache".
+\fBcache_dir\fP \(em Persistent filter cache file directory.
+Defaults to "/etc/lvm/cache".
 .IP
 \fBwrite_cache_state\fP \(em Set to 0 to disable the writing out of the 
 persistent filter cache file when \fBlvm\fP exits.
@@ -252,7 +261,7 @@ if \fBlocking_type\fP is set to 1.  The default is \fB/var/lock/lvm\fP.
 .IP
 \fBlocking_library\fP \(em The name of the external locking
 library to load if \fBlocking_type\fP is set to 2.
-The default is \fBlvm2_locking.so\fP.  If you need to write
+The default is \fBliblvm2clusterlock.so\fP.  If you need to write
 such a library, look at the lib/locking source code directory.
 .TP
 \fBtags\fP \(em Host tag settings
@@ -300,6 +309,11 @@ such devices.
 .IP
 \fBmirror_region_size\fP \(em Unit size in KB for copy operations
 when mirroring.
+.IP
+\fBreadahead\fP \(em Used when there is no readahead value stored 
+in the volume group metadata.  Set to \fBnone\fP to disable
+readahead in these circumstances or \fBauto\fP to use the default
+value chosen by the kernel.
 .IP
 \fBreserved_memory\fP, \fBreserved_stack\fP \(em How many KB to reserve 
 for LVM2 to use while logical volumes are suspended.  If insufficient 
@@ -364,9 +378,9 @@ understand how things work: to make changes you should always use
 the tools as normal, or else vgcfgbackup, edit backup, vgcfgrestore.
 .SH FILES
 .I /etc/lvm/lvm.conf
-.I /etc/lvm/.cache
 .I /etc/lvm/archive
 .I /etc/lvm/backup
+.I /etc/lvm/cache/.cache
 .I /var/lock/lvm
 .SH SEE ALSO
 .BR lvm (8),

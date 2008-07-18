@@ -1,40 +1,183 @@
 #!/usr/bin/make -f
 
-include /usr/share/cdbs/1/rules/debhelper.mk
-include /usr/share/cdbs/1/rules/simple-patchsys.mk
-include /usr/share/cdbs/1/class/autotools.mk
+# Uncomment this to turn on verbose mode. 
+#export DH_VERBOSE=1
 
-ifeq ($(DEB_ARCH),mips)
-	DEB_CONFIGURE_EXTRA_FLAGS := --disable-o_direct
+DEB_HOST_ARCH       ?= $(shell dpkg-architecture -qDEB_HOST_ARCH)
+DEB_HOST_GNU_TYPE   ?= $(shell dpkg-architecture -qDEB_HOST_GNU_TYPE)
+DEB_BUILD_GNU_TYPE  ?= $(shell dpkg-architecture -qDEB_BUILD_GNU_TYPE)
+
+SOURCE := $(shell dpkg-parsechangelog | sed -ne 's,^Source: *\(.*\)$$,\1,p')
+VERSION_DEBIAN := $(shell dpkg-parsechangelog | sed -ne 's,^Version: *\(.*\)$$,\1,p')
+VERSION := $(shell echo "$(VERSION_DEBIAN)" | sed -e 's,^[0-9]*:,,' -e 's,-[^-]*$$,,')
+
+BUILD_DIR = debian/build
+STAMPS_DIR = debian/stamps
+
+PACKAGES_DEB = lvm2 clvm
+PACKAGES_UDEB = lvm2-udeb
+
+CFLAGS_UDEB := $(CFLAGS)
+ifeq (,$(findstring noopt,$(DEB_BUILD_OPTIONS)))
+CFLAGS_UDEB = -g -Os
 endif
-ifeq ($(DEB_ARCH),mipsel)
-	DEB_CONFIGURE_EXTRA_FLAGS := --disable-o_direct
-endif
-ifeq ($(DEB_ARCH),hppa)
-	DEB_CONFIGURE_EXTRA_FLAGS := --disable-o_direct
-endif
-ifeq ($(DEB_ARCH),arm)
-        DEB_CONFIGURE_EXTRA_FLAGS := --disable-o_direct
+
+CONFIGURE_FLAGS = --build $(DEB_BUILD_GNU_TYPE)
+ifneq ($(DEB_HOST_GNU_TYPE),$(DEB_BUILD_GNU_TYPE))
+CONFIGURE_FLAGS += --host $(DEB_HOST_GNU_TYPE)
 endif
 
-ifeq (clvm, $(findstring clvm, $(DEB_ARCH_PACKAGES)))
-  DEB_CONFIGURE_EXTRA_FLAGS += --with-clvmd --with-cluster=shared
+CONFIGURE_FLAGS += \
+	--prefix=/usr \
+	--exec-prefix= \
+	--mandir=\$${prefix}/share/man \
+	--infodir=\$${prefix}/share/info \
+	--with-confdir=\$${exec_prefix}/etc
+
+ifneq (,$(findstring $(DEB_HOST_ARCH), arm armeb hppa mips mipsel))
+CONFIGURE_FLAGS += --disable-o_direct
 endif
 
-DEB_CONFIGURE_PREFIX = /
-DEB_CONFIGURE_MANDIR = "\$${prefix}/usr/share/man"
-DEB_CONFIGURE_INFODIR = "\$${prefix}/usr/share/info"
-DEB_CONFIGURE_EXTRA_FLAGS += --with-confdir=/etc/lvm
-DEB_AC_AUX_DIR := $(DEB_SRCDIR)/autoconf
+source: $(BUILD_DIR) $(STAMPS_DIR) $(STAMPS_DIR)/source
 
-DEB_MAKE_INSTALL_TARGET = install prefix=$(DEB_DESTDIR) sbindir=$(DEB_DESTDIR)/lib/lvm-200 confdir=$(DEB_DESTDIR)/etc/lvm
+$(STAMPS_DIR)/source: DIR = $(BUILD_DIR)/source
+$(STAMPS_DIR)/source:
+	rm -rf $(DIR)
+	mkdir -p $(DIR)
+	cp -al $(filter-out debian .svk .svn, $(wildcard .[^]* *)) $(DIR)
+	cp --remove-destination /usr/share/misc/config.sub /usr/share/misc/config.guess $(DIR)/autoconf
+	cd $(DIR); QUILT_PATCHES=$(CURDIR)/debian/patches quilt --quiltrc /dev/null push -a || test $$? = 2
+	cd $(DIR); autoreconf
+	touch $@
 
-install/clvm::
-	install -d debian/clvm/usr/share/doc/clvm
-	install -m0644 debian/README.clvmd debian/clvm/usr/share/doc/clvm
-	install -m0644 scripts/clvmd_fix_conf.sh debian/clvm/usr/share/doc/clvm
+setup: source $(STAMPS_DIR)/setup-deb $(STAMPS_DIR)/setup-udeb
 
-install/lvm2::
-	install -d debian/lvm2/usr/share/doc/lvm2
-	cp -r scripts/lvm2create_initrd debian/lvm2/usr/share/doc/lvm2
+$(STAMPS_DIR)/setup-deb: SOURCE_DIR = $(BUILD_DIR)/source
+$(STAMPS_DIR)/setup-deb: DIR = $(BUILD_DIR)/build-deb
+$(STAMPS_DIR)/setup-deb: $(STAMPS_DIR)/source
+	rm -rf $(DIR)
+	cp -al $(SOURCE_DIR) $(DIR)
+	cd $(DIR); \
+	./configure CFLAGS="$(CFLAGS)" \
+		$(CONFIGURE_FLAGS) \
+		--with-optimisation="" \
+		--with-cluster=shared \
+		--with-clvmd=cman \
+		--enable-readline
+	touch $@
 
+$(STAMPS_DIR)/setup-udeb: SOURCE_DIR = $(BUILD_DIR)/source
+$(STAMPS_DIR)/setup-udeb: DIR = $(BUILD_DIR)/build-udeb
+$(STAMPS_DIR)/setup-udeb: $(STAMPS_DIR)/source
+	rm -rf $(DIR)
+	cp -al $(SOURCE_DIR) $(DIR)
+	cd $(DIR); \
+	./configure CFLAGS="$(CFLAGS_UDEB)" \
+		$(CONFIGURE_FLAGS) \
+		--with-optimisation="" \
+		--with-lvm1=none \
+		--with-pool=none \
+		--disable-readline
+	touch $@
+
+build: setup $(STAMPS_DIR)/build-deb $(STAMPS_DIR)/build-udeb
+
+build-deb: $(STAMPS_DIR)/build-deb
+$(STAMPS_DIR)/build-deb: DIR = $(BUILD_DIR)/build-deb
+$(STAMPS_DIR)/build-deb: $(STAMPS_DIR)/setup-deb
+	dh_testdir
+	$(MAKE) -C $(DIR)
+	touch $@
+
+build-udeb: $(STAMPS_DIR)/build-udeb
+$(STAMPS_DIR)/build-udeb: DIR = $(BUILD_DIR)/build-udeb
+$(STAMPS_DIR)/build-udeb: $(STAMPS_DIR)/setup-udeb
+	dh_testdir
+	$(MAKE) -C $(DIR)
+	touch $@
+
+$(BUILD_DIR) $(STAMPS_DIR):
+	@[ -d $@ ] || mkdir $@
+
+maintainerclean:
+	rm -rf $(filter-out .svn .svk debian, $(wildcard * .[^.]*))
+
+clean:
+	dh_testdir
+	rm -rf $(BUILD_DIR) $(STAMPS_DIR)
+	dh_clean
+
+install: $(addprefix install-, $(PACKAGES_DEB) $(PACKAGES_UDEB))
+
+install-base:
+	dh_installchangelogs WHATS_NEW
+	dh_installdocs
+	dh_strip
+	dh_compress
+	dh_fixperms
+	dh_installdeb
+	dh_shlibdeps
+	dh_gencontrol
+	dh_md5sums
+	dh_builddeb
+
+install-clvm: export DH_OPTIONS = -pclvm
+install-clvm: DIR = $(BUILD_DIR)/build-deb
+install-clvm: INSTALL_DIR = $(BUILD_DIR)/install-deb
+install-clvm: $(STAMPS_DIR)/build-deb
+	dh_testdir
+	dh_testroot
+	dh_clean -k
+	$(MAKE) -C $(DIR) install DESTDIR=$(CURDIR)/$(INSTALL_DIR)
+	dh_install --sourcedir=$(INSTALL_DIR)
+	dh_installexamples
+	$(MAKE) -f debian/rules install-base
+
+install-lvm2: export DH_OPTIONS = -plvm2
+install-lvm2: DIR = $(BUILD_DIR)/build-deb
+install-lvm2: INSTALL_DIR = $(BUILD_DIR)/install-deb
+install-lvm2: $(STAMPS_DIR)/build-deb
+	dh_testdir
+	dh_testroot
+	dh_clean -k
+	$(MAKE) -C $(DIR) install DESTDIR=$(CURDIR)/$(INSTALL_DIR)
+	dh_install --sourcedir=$(INSTALL_DIR)
+	cp -a debian/initramfs-tools debian/lvm2/usr/share
+	chmod +x -R debian/lvm2/usr/share/initramfs-tools
+	dh_installdebconf
+	dh_installexamples
+	dh_installinit --no-start -- start 26 S . start 50 0 6 .
+	$(MAKE) -f debian/rules install-base
+
+install-lvm2-udeb: export DH_OPTIONS = -plvm2-udeb
+install-lvm2-udeb: DIR = $(BUILD_DIR)/build-udeb
+install-lvm2-udeb: INSTALL_DIR = $(BUILD_DIR)/install-udeb
+install-lvm2-udeb: $(STAMPS_DIR)/build-udeb
+	dh_testdir
+	dh_testroot
+	dh_clean -k
+	$(MAKE) -C $(DIR) install DESTDIR=$(CURDIR)/$(INSTALL_DIR)
+	dh_install --sourcedir=$(INSTALL_DIR)
+	$(MAKE) -f debian/rules install-base
+
+binary-indep:
+binary-arch: install
+
+binary: binary-indep binary-arch
+
+DIR_ORIG = ../orig/$(SOURCE)-$(VERSION)
+TAR_ORIG_NAME = $(SOURCE)_$(VERSION).orig.tar.gz
+TAR_ORIG = $(firstword $(wildcard ../$(TAR_ORIG_NAME)) $(wildcard ../orig/$(TAR_ORIG_NAME)))
+
+orig: $(DIR_ORIG)
+	rsync --delete --exclude debian --exclude .svk --exclude .svn --link-dest=$(DIR_ORIG)/ -a $(DIR_ORIG)/ .
+
+$(DIR_ORIG):
+ifeq ($(TAR_ORIG),)
+	$(error Cannot find orig tarball $(TAR_ORIG_NAME))
+else
+	mkdir -p ../orig
+	tar -C ../orig -xzf $(TAR_ORIG)
+endif
+
+.PHONY: build clean binary-indep binary-arch binary install configure

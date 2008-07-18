@@ -1,14 +1,14 @@
 /*
- * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved. 
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -16,22 +16,23 @@
 #include "tools.h"
 #include "lvm-types.h"
 
+
+/*
+ * lvrename command implementation.
+ * Check arguments and call lv_rename() to execute the request.
+ */
 int lvrename(struct cmd_context *cmd, int argc, char **argv)
 {
 	size_t maxlen;
 	char *lv_name_old, *lv_name_new;
 	const char *vg_name, *vg_name_new, *vg_name_old;
 	char *st;
-	int consistent = 1;
 
 	struct volume_group *vg;
-	struct logical_volume *lv;
 	struct lv_list *lvl;
 
 	if (argc == 3) {
-		vg_name = argv[0];
-		if (!strncmp(vg_name, cmd->dev_dir, strlen(cmd->dev_dir)))
-			vg_name += strlen(cmd->dev_dir);
+		vg_name = skip_dev_dir(cmd, argv[0], NULL);
 		lv_name_old = argv[1];
 		lv_name_new = argv[2];
 		if (strchr(lv_name_old, '/') &&
@@ -83,10 +84,8 @@ int lvrename(struct cmd_context *cmd, int argc, char **argv)
 		return ECMD_FAILED;
 	}
 
-	/* FIXME Remove this restriction eventually */
-	if (!strncmp(lv_name_new, "snapshot", 8)) {
-		log_error("Names starting \"snapshot\" are reserved. "
-			  "Please choose a different LV name.");
+	if (!apply_lvname_restrictions(lv_name_new)) {
+		stack;
 		return ECMD_FAILED;
 	}
 
@@ -102,32 +101,10 @@ int lvrename(struct cmd_context *cmd, int argc, char **argv)
 	}
 
 	log_verbose("Checking for existing volume group \"%s\"", vg_name);
-
-	if (!lock_vol(cmd, vg_name, LCK_VG_WRITE)) {
-		log_error("Can't get lock for %s", vg_name);
+	if (!(vg = vg_lock_and_read(cmd, vg_name, NULL, LCK_VG_WRITE,
+				    CLUSTERED | EXPORTED_VG | LVM_WRITE,
+				    CORRECT_INCONSISTENT)))
 		return ECMD_FAILED;
-	}
-
-	if (!(vg = vg_read(cmd, vg_name, &consistent))) {
-		log_error("Volume group \"%s\" doesn't exist", vg_name);
-		goto error;
-	}
-
-	if (vg->status & EXPORTED_VG) {
-		log_error("Volume group \"%s\" is exported", vg->name);
-		goto error;
-	}
-
-	if (!(vg->status & LVM_WRITE)) {
-		log_error("Volume group \"%s\" is read-only", vg_name);
-		goto error;
-	}
-
-	if (find_lv_in_vg(vg, lv_name_new)) {
-		log_error("Logical volume \"%s\" already exists in "
-			  "volume group \"%s\"", lv_name_new, vg_name);
-		goto error;
-	}
 
 	if (!(lvl = find_lv_in_vg(vg, lv_name_old))) {
 		log_error("Existing logical volume \"%s\" not found in "
@@ -135,43 +112,8 @@ int lvrename(struct cmd_context *cmd, int argc, char **argv)
 		goto error;
 	}
 
-	lv = lvl->lv;
-
-	if (lv->status & LOCKED) {
-		log_error("Cannot rename locked LV %s", lv->name);
+	if (!lv_rename(cmd, lvl->lv, lv_name_new))
 		goto error;
-	}
-
-	if (!archive(lv->vg)) {
-		stack;
-		goto error;
-	}
-
-	if (!(lv->name = pool_strdup(cmd->mem, lv_name_new))) {
-		log_error("Failed to allocate space for new name");
-		goto error;
-	}
-
-	log_verbose("Writing out updated volume group");
-	if (!vg_write(vg)) {
-		stack;
-		goto error;
-	}
-
-	backup(lv->vg);
-
-	if (!suspend_lv(cmd, lv->lvid.s)) {
-		stack;
-		goto error;
-	}
-
-	if (!vg_commit(vg)) {
-		stack;
-		resume_lv(cmd, lv->lvid.s);
-		goto error;
-	}
-
-	resume_lv(cmd, lv->lvid.s);
 
 	unlock_vg(cmd, vg_name);
 

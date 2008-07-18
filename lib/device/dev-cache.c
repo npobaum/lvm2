@@ -1,26 +1,25 @@
 /*
- * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
 #include "lib.h"
 #include "dev-cache.h"
-#include "pool.h"
-#include "hash.h"
-#include "list.h"
 #include "lvm-types.h"
 #include "btree.h"
 #include "filter.h"
+#include "filter-persistent.h"
+#include "toolcontext.h"
 
 #include <unistd.h>
 #include <sys/param.h>
@@ -37,45 +36,67 @@ struct dir_list {
 };
 
 static struct {
-	struct pool *mem;
-	struct hash_table *names;
+	struct dm_pool *mem;
+	struct dm_hash_table *names;
 	struct btree *devices;
+	struct dm_regex *preferred_names_matcher;
 
 	int has_scanned;
 	struct list dirs;
+	struct list files;
 
 } _cache;
 
-#define _alloc(x) pool_alloc(_cache.mem, (x))
-#define _free(x) pool_free(_cache.mem, (x))
+#define _alloc(x) dm_pool_zalloc(_cache.mem, (x))
+#define _free(x) dm_pool_free(_cache.mem, (x))
+#define _strdup(x) dm_pool_strdup(_cache.mem, (x))
 
 static int _insert(const char *path, int rec);
 
 struct device *dev_create_file(const char *filename, struct device *dev,
-			       struct str_list *alias)
+			       struct str_list *alias, int use_malloc)
 {
 	int allocate = !dev;
 
-	if (allocate && !(dev = dbg_malloc(sizeof(*dev)))) {
-		log_error("struct device allocation failed");
-		return NULL;
-	}
-	if (allocate && !(alias = dbg_malloc(sizeof(*alias)))) {
-		log_error("struct str_list allocation failed");
-		dbg_free(dev);
-		return NULL;
-	}
-	if (!(alias->str = dbg_strdup(filename))) {
-		log_error("filename strdup failed");
-		if (allocate) {
-			dbg_free(dev);
-			dbg_free(alias);
+	if (allocate) {
+		if (use_malloc) {
+			if (!(dev = dm_malloc(sizeof(*dev)))) {
+				log_error("struct device allocation failed");
+				return NULL;
+			}
+			if (!(alias = dm_malloc(sizeof(*alias)))) {
+				log_error("struct str_list allocation failed");
+				dm_free(dev);
+				return NULL;
+			}
+			if (!(alias->str = dm_strdup(filename))) {
+				log_error("filename strdup failed");
+				dm_free(dev);
+				dm_free(alias);
+				return NULL;
+			}
+			dev->flags = DEV_ALLOCED;
+		} else {
+			if (!(dev = _alloc(sizeof(*dev)))) {
+				log_error("struct device allocation failed");
+				return NULL;
+			}
+			if (!(alias = _alloc(sizeof(*alias)))) {
+				log_error("struct str_list allocation failed");
+				_free(dev);
+				return NULL;
+			}
+			if (!(alias->str = _strdup(filename))) {
+				log_error("filename strdup failed");
+				return NULL;
+			}
 		}
+	} else if (!(alias->str = dm_strdup(filename))) {
+		log_error("filename strdup failed");
 		return NULL;
 	}
-	dev->flags = DEV_REGULAR;
-	if (allocate)
-		dev->flags |= DEV_ALLOCED;
+
+	dev->flags |= DEV_REGULAR;
 	list_init(&dev->aliases);
 	list_add(&dev->aliases, &alias->list);
 	dev->end = UINT64_C(0);
@@ -110,14 +131,51 @@ static struct device *_dev_create(dev_t d)
 	return dev;
 }
 
+void dev_set_preferred_name(struct str_list *sl, struct device *dev)
+{
+	/*
+	 * Don't interfere with ordering specified in config file.
+	 */
+	if (_cache.preferred_names_matcher)
+		return;
+
+	log_debug("%s: New preferred name", sl->str);
+	list_del(&sl->list);
+	list_add_h(&dev->aliases, &sl->list);
+}
+
 /* Return 1 if we prefer path1 else return 0 */
 static int _compare_paths(const char *path0, const char *path1)
 {
 	int slash0 = 0, slash1 = 0;
+	int m0, m1;
 	const char *p;
 	char p0[PATH_MAX], p1[PATH_MAX];
 	char *s0, *s1;
 	struct stat stat0, stat1;
+
+	/*
+	 * FIXME Better to compare patterns one-at-a-time against all names.
+	 */
+	if (_cache.preferred_names_matcher) {
+		m0 = dm_regex_match(_cache.preferred_names_matcher, path0);
+		m1 = dm_regex_match(_cache.preferred_names_matcher, path1);
+
+		if (m0 != m1) {
+			if (m0 < 0)
+				return 1;
+			if (m1 < 0)
+				return 0;
+			if (m0 < m1)
+				return 1;
+			if (m1 < m0)
+				return 0;
+		}
+	}
+
+	/*
+	 * Built-in rules.
+	 */
 
 	/* Return the path with fewer slashes */
 	for (p = path0; p++; p = (const char *) strchr(p, '/'))
@@ -147,11 +205,11 @@ static int _compare_paths(const char *path0, const char *path1)
 			*s1 = '\0';
 		}
 		if (lstat(p0, &stat0)) {
-			log_sys_error("lstat", p0);
+			log_sys_very_verbose("lstat", p0);
 			return 1;
 		}
 		if (lstat(p1, &stat1)) {
-			log_sys_error("lstat", p1);
+			log_sys_very_verbose("lstat", p1);
 			return 0;
 		}
 		if (S_ISLNK(stat0.st_mode) && !S_ISLNK(stat1.st_mode))
@@ -174,27 +232,23 @@ static int _compare_paths(const char *path0, const char *path1)
 static int _add_alias(struct device *dev, const char *path)
 {
 	struct str_list *sl = _alloc(sizeof(*sl));
-	struct list *ah;
+	struct str_list *strl;
 	const char *oldpath;
 	int prefer_old = 1;
 
-	if (!sl) {
-		stack;
-		return 0;
-	}
+	if (!sl)
+		return_0;
 
 	/* Is name already there? */
-	list_iterate(ah, &dev->aliases) {
-		if (!strcmp(list_item(ah, struct str_list)->str, path)) {
-			stack;
+	list_iterate_items(strl, &dev->aliases) {
+		if (!strcmp(strl->str, path)) {
+			log_debug("%s: Already in device cache", path);
 			return 1;
 		}
 	}
 
-	if (!(sl->str = pool_strdup(_cache.mem, path))) {
-		stack;
-		return 0;
-	}
+	if (!(sl->str = dm_pool_strdup(_cache.mem, path)))
+		return_0;
 
 	if (!list_empty(&dev->aliases)) {
 		oldpath = list_item(dev->aliases.n, struct str_list)->str;
@@ -220,15 +274,26 @@ static int _add_alias(struct device *dev, const char *path)
 static int _insert_dev(const char *path, dev_t d)
 {
 	struct device *dev;
+	static dev_t loopfile_count = 0;
+	int loopfile = 0;
+
+	/* Generate pretend device numbers for loopfiles */
+	if (!d) {
+		if (dm_hash_lookup(_cache.names, path))
+			return 1;
+		d = ++loopfile_count;
+		loopfile = 1;
+	}
 
 	/* is this device already registered ? */
 	if (!(dev = (struct device *) btree_lookup(_cache.devices,
 						   (uint32_t) d))) {
 		/* create new device */
-		if (!(dev = _dev_create(d))) {
-			stack;
-			return 0;
-		}
+		if (loopfile) {
+			if (!(dev = dev_create_file(path, NULL, NULL, 0)))
+				return_0;
+		} else if (!(dev = _dev_create(d)))
+			return_0;
 
 		if (!(btree_insert(_cache.devices, (uint32_t) d, dev))) {
 			log_err("Couldn't insert device into binary tree.");
@@ -237,12 +302,12 @@ static int _insert_dev(const char *path, dev_t d)
 		}
 	}
 
-	if (!_add_alias(dev, path)) {
+	if (!loopfile && !_add_alias(dev, path)) {
 		log_err("Couldn't add alias to dev cache.");
 		return 0;
 	}
 
-	if (!hash_insert(_cache.names, path, dev)) {
+	if (!dm_hash_insert(_cache.names, path, dev)) {
 		log_err("Couldn't add name to hash in dev cache.");
 		return 0;
 	}
@@ -253,7 +318,7 @@ static int _insert_dev(const char *path, dev_t d)
 static char *_join(const char *dir, const char *name)
 {
 	size_t len = strlen(dir) + strlen(name) + 2;
-	char *r = dbg_malloc(len);
+	char *r = dm_malloc(len);
 	if (r)
 		snprintf(r, len, "%s/%s", dir, name);
 
@@ -296,14 +361,12 @@ static int _insert_dir(const char *dir)
 				continue;
 			}
 
-			if (!(path = _join(dir, dirent[n]->d_name))) {
-				stack;
-				return 0;
-			}
+			if (!(path = _join(dir, dirent[n]->d_name)))
+				return_0;
 
 			_collapse_slashes(path);
 			r &= _insert(path, 1);
-			dbg_free(path);
+			dm_free(path);
 
 			free(dirent[n]);
 		}
@@ -311,6 +374,26 @@ static int _insert_dir(const char *dir)
 	}
 
 	return r;
+}
+
+static int _insert_file(const char *path)
+{
+	struct stat info;
+
+	if (stat(path, &info) < 0) {
+		log_sys_very_verbose("stat", path);
+		return 0;
+	}
+
+	if (!S_ISREG(info.st_mode)) {
+		log_debug("%s: Not a regular file", path);
+		return 0;
+	}
+
+	if (!_insert_dev(path, 0))
+		return_0;
+
+	return 1;
 }
 
 static int _insert(const char *path, int rec)
@@ -344,10 +427,8 @@ static int _insert(const char *path, int rec)
 			return 0;
 		}
 
-		if (!_insert_dev(path, info.st_rdev)) {
-			stack;
-			return 0;
-		}
+		if (!_insert_dev(path, info.st_rdev))
+			return_0;
 
 		r = 1;
 	}
@@ -355,19 +436,21 @@ static int _insert(const char *path, int rec)
 	return r;
 }
 
-static void _full_scan(void)
+static void _full_scan(int dev_scan)
 {
-	struct list *dh;
+	struct dir_list *dl;
 
-	if (_cache.has_scanned)
+	if (_cache.has_scanned && !dev_scan)
 		return;
 
-	list_iterate(dh, &_cache.dirs) {
-		struct dir_list *dl = list_item(dh, struct dir_list);
+	list_iterate_items(dl, &_cache.dirs)
 		_insert_dir(dl->dir);
-	};
+
+	list_iterate_items(dl, &_cache.files)
+		_insert_file(dl->dir);
 
 	_cache.has_scanned = 1;
+	init_full_scan_done(1);
 }
 
 int dev_cache_has_scanned(void)
@@ -379,26 +462,80 @@ void dev_cache_scan(int do_scan)
 {
 	if (!do_scan)
 		_cache.has_scanned = 1;
-	else {
-		_cache.has_scanned = 0;
-		_full_scan();
-	}
+	else
+		_full_scan(1);
 }
 
-int dev_cache_init(void)
+static int _init_preferred_names(struct cmd_context *cmd)
 {
-	_cache.names = NULL;
+	const struct config_node *cn;
+	struct config_value *v;
+	struct dm_pool *scratch = NULL;
+	char **regex;
+	unsigned count = 0;
+	int i, r = 0;
 
-	if (!(_cache.mem = pool_create("dev_cache", 10 * 1024))) {
-		stack;
-		return 0;
+	_cache.preferred_names_matcher = NULL;
+
+	if (!(cn = find_config_tree_node(cmd, "devices/preferred_names")) ||
+	    cn->v->type == CFG_EMPTY_ARRAY) {
+		log_very_verbose("devices/preferred_names not found in config file: "
+				 "using built-in preferences");
+		return 1;
 	}
 
-	if (!(_cache.names = hash_create(128))) {
-		stack;
-		pool_destroy(_cache.mem);
+	for (v = cn->v; v; v = v->next) {
+		if (v->type != CFG_STRING) {
+			log_error("preferred_names patterns must be enclosed in quotes");
+			return 0;
+		}
+
+		count++;
+	}
+
+	if (!(scratch = dm_pool_create("preferred device name matcher", 1024)))
+		return_0;
+
+	if (!(regex = dm_pool_alloc(scratch, sizeof(*regex) * count))) {
+		log_error("Failed to allocate preferred device name "
+			  "pattern list.");
+		goto out;
+	}
+
+	for (v = cn->v, i = count - 1; v; v = v->next, i--) {
+		if (!(regex[i] = dm_pool_strdup(scratch, v->v.str))) {
+			log_error("Failed to allocate a preferred device name "
+				  "pattern.");
+			goto out;
+		}
+	}
+
+	if (!(_cache.preferred_names_matcher =
+		dm_regex_create(_cache.mem,(const char **) regex, count))) {
+		log_error("Preferred device name pattern matcher creation failed.");
+		goto out;
+	}
+
+	r = 1;
+
+out:
+	dm_pool_destroy(scratch);
+
+	return r;
+}
+
+int dev_cache_init(struct cmd_context *cmd)
+{
+	_cache.names = NULL;
+	_cache.has_scanned = 0;
+
+	if (!(_cache.mem = dm_pool_create("dev_cache", 10 * 1024)))
+		return_0;
+
+	if (!(_cache.names = dm_hash_create(128))) {
+		dm_pool_destroy(_cache.mem);
 		_cache.mem = 0;
-		return 0;
+		return_0;
 	}
 
 	if (!(_cache.devices = btree_create(_cache.mem))) {
@@ -407,6 +544,10 @@ int dev_cache_init(void)
 	}
 
 	list_init(&_cache.dirs);
+	list_init(&_cache.files);
+
+	if (!_init_preferred_names(cmd))
+		goto_bad;
 
 	return 1;
 
@@ -421,9 +562,9 @@ static void _check_closed(struct device *dev)
 		log_err("Device '%s' has been left open.", dev_name(dev));
 }
 
-static inline void _check_for_open_devices(void)
+static void _check_for_open_devices(void)
 {
-	hash_iter(_cache.names, (iterate_fn) _check_closed);
+	dm_hash_iter(_cache.names, (dm_hash_iterate_fn) _check_closed);
 }
 
 void dev_cache_exit(void)
@@ -431,19 +572,23 @@ void dev_cache_exit(void)
 	if (_cache.names)
 		_check_for_open_devices();
 
+	if (_cache.preferred_names_matcher)
+		_cache.preferred_names_matcher = NULL;
+
 	if (_cache.mem) {
-		pool_destroy(_cache.mem);
+		dm_pool_destroy(_cache.mem);
 		_cache.mem = NULL;
 	}
 
 	if (_cache.names) {
-		hash_destroy(_cache.names);
+		dm_hash_destroy(_cache.names);
 		_cache.names = NULL;
 	}
 
 	_cache.devices = NULL;
 	_cache.has_scanned = 0;
 	list_init(&_cache.dirs);
+	list_init(&_cache.files);
 }
 
 int dev_cache_add_dir(const char *path)
@@ -472,6 +617,32 @@ int dev_cache_add_dir(const char *path)
 	return 1;
 }
 
+int dev_cache_add_loopfile(const char *path)
+{
+	struct dir_list *dl;
+	struct stat st;
+
+	if (stat(path, &st)) {
+		log_error("Ignoring %s: %s", path, strerror(errno));
+		/* But don't fail */
+		return 1;
+	}
+
+	if (!S_ISREG(st.st_mode)) {
+		log_error("Ignoring %s: Not a regular file", path);
+		return 1;
+	}
+
+	if (!(dl = _alloc(sizeof(*dl) + strlen(path) + 1))) {
+		log_error("dir_list allocation failed for file");
+		return 0;
+	}
+
+	strcpy(dl->dir, path);
+	list_add(&_cache.files, &dl->list);
+	return 1;
+}
+
 /* Check cached device name is still valid before returning it */
 /* This should be a rare occurrence */
 /* set quiet if the cache is expected to be out-of-date */
@@ -481,6 +652,9 @@ const char *dev_name_confirmed(struct device *dev, int quiet)
 	struct stat buf;
 	const char *name;
 	int r;
+
+	if ((dev->flags & DEV_REGULAR))
+		return dev_name(dev);
 
 	while ((r = stat(name = list_item(dev->aliases.n,
 					  struct str_list)->str, &buf)) ||
@@ -501,7 +675,7 @@ const char *dev_name_confirmed(struct device *dev, int quiet)
 				  (int) MINOR(dev->dev));
 
 		/* Remove the incorrect hash entry */
-		hash_remove(_cache.names, name);
+		dm_hash_remove(_cache.names, name);
 
 		/* Leave list alone if there isn't an alternative name */
 		/* so dev_name will always find something to return. */
@@ -513,7 +687,8 @@ const char *dev_name_confirmed(struct device *dev, int quiet)
 			continue;
 		}
 
-		log_error("Aborting - please provide new pathname for what "
+		/* Scanning issues this inappropriately sometimes. */
+		log_debug("Aborting - please provide new pathname for what "
 			  "used to be %s", name);
 		return NULL;
 	}
@@ -524,32 +699,46 @@ const char *dev_name_confirmed(struct device *dev, int quiet)
 struct device *dev_cache_get(const char *name, struct dev_filter *f)
 {
 	struct stat buf;
-	struct device *d = (struct device *) hash_lookup(_cache.names, name);
+	struct device *d = (struct device *) dm_hash_lookup(_cache.names, name);
+
+	if (d && (d->flags & DEV_REGULAR))
+		return d;
 
 	/* If the entry's wrong, remove it */
 	if (d && (stat(name, &buf) || (buf.st_rdev != d->dev))) {
-		hash_remove(_cache.names, name);
+		dm_hash_remove(_cache.names, name);
 		d = NULL;
 	}
 
 	if (!d) {
 		_insert(name, 0);
-		d = (struct device *) hash_lookup(_cache.names, name);
+		d = (struct device *) dm_hash_lookup(_cache.names, name);
+		if (!d) {
+			_full_scan(0);
+			d = (struct device *) dm_hash_lookup(_cache.names, name);
+		}
 	}
 
-	return (d && (!f || f->passes_filter(f, d))) ? d : NULL;
+	return (d && (!f || (d->flags & DEV_REGULAR) ||
+		      f->passes_filter(f, d))) ? d : NULL;
 }
 
-struct dev_iter *dev_iter_create(struct dev_filter *f)
+struct dev_iter *dev_iter_create(struct dev_filter *f, int dev_scan)
 {
-	struct dev_iter *di = dbg_malloc(sizeof(*di));
+	struct dev_iter *di = dm_malloc(sizeof(*di));
 
 	if (!di) {
 		log_error("dev_iter allocation failed");
 		return NULL;
 	}
 
-	_full_scan();
+	if (dev_scan && !trust_cache()) {
+		/* Flag gets reset between each command */
+		if (!full_scan_done())
+			persistent_filter_wipe(f); /* Calls _full_scan(1) */
+	} else
+		_full_scan(0);
+
 	di->current = btree_first(_cache.devices);
 	di->filter = f;
 
@@ -558,10 +747,10 @@ struct dev_iter *dev_iter_create(struct dev_filter *f)
 
 void dev_iter_destroy(struct dev_iter *iter)
 {
-	dbg_free(iter);
+	dm_free(iter);
 }
 
-static inline struct device *_iter_next(struct dev_iter *iter)
+static struct device *_iter_next(struct dev_iter *iter)
 {
 	struct device *d = btree_get_data(iter->current);
 	iter->current = btree_next(iter->current);
@@ -572,10 +761,21 @@ struct device *dev_iter_get(struct dev_iter *iter)
 {
 	while (iter->current) {
 		struct device *d = _iter_next(iter);
-		if (!iter->filter ||
+		if (!iter->filter || (d->flags & DEV_REGULAR) ||
 		    iter->filter->passes_filter(iter->filter, d))
 			return d;
 	}
 
 	return NULL;
+}
+
+int dev_fd(struct device *dev)
+{
+	return dev->fd;
+}
+
+const char *dev_name(const struct device *dev)
+{
+	return (dev) ? list_item(dev->aliases.n, struct str_list)->str :
+	    "unknown device";
 }

@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2002-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -43,6 +43,7 @@ struct clvm_header {
 /* Flags */
 #define CLVMD_FLAG_LOCAL        1	/* Only do this on the local node */
 #define CLVMD_FLAG_SYSTEMLV     2	/* Data in system LV under my node name */
+#define CLVMD_FLAG_NODEERRS     4       /* Reply has errors in node-specific portion */
 
 /* Name of the local socket to communicate between libclvm and clvmd */
 //static const char CLVMD_SOCKNAME[]="/var/run/clvmd";
@@ -62,4 +63,9 @@ static const char CLVMD_SOCKNAME[] = "\0clvmd";
 #define CLVMD_CMD_LOCK_LV           50
 #define CLVMD_CMD_LOCK_VG           51
 
+/* Misc functions */
+#define CLVMD_CMD_REFRESH	    40
+#define CLVMD_CMD_GET_CLUSTERNAME   41
+#define CLVMD_CMD_SET_DEBUG	    42
+#define CLVMD_CMD_VG_BACKUP	    43
 #endif

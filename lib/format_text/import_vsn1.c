@@ -1,14 +1,14 @@
 /*
- * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -16,22 +16,21 @@
 #include "lib.h"
 #include "metadata.h"
 #include "import-export.h"
-#include "pool.h"
 #include "display.h"
-#include "hash.h"
 #include "toolcontext.h"
 #include "lvmcache.h"
 #include "lv_alloc.h"
+#include "pv_alloc.h"
 #include "segtype.h"
 #include "text_import.h"
 
-typedef int (*section_fn) (struct format_instance * fid, struct pool * mem,
+typedef int (*section_fn) (struct format_instance * fid, struct dm_pool * mem,
 			   struct volume_group * vg, struct config_node * pvn,
 			   struct config_node * vgn,
-			   struct hash_table * pv_hash);
+			   struct dm_hash_table * pv_hash);
 
 #define _read_int32(root, path, result) \
-	get_config_uint32(root, path, result)
+	get_config_uint32(root, path, (uint32_t *) result)
 
 #define _read_uint32(root, path, result) \
 	get_config_uint32(root, path, result)
@@ -87,6 +86,22 @@ static int _check_version(struct config_tree *cft)
 	return 1;
 }
 
+static int _is_converting(struct logical_volume *lv)
+{
+	struct lv_segment *seg;
+
+	if (lv->status & MIRRORED) {
+		seg = first_seg(lv);
+		/* Can't use is_temporary_mirror() because the metadata for
+		 * seg_lv may not be read in and flags may not be set yet. */
+		if (seg_type(seg, 0) == AREA_LV &&
+		    strstr(seg_lv(seg, 0)->name, MIRROR_SYNC_LAYER))
+			return 1;
+	}
+
+	return 0;
+}
+
 static int _read_id(struct id *id, struct config_node *cn, const char *path)
 {
 	struct config_value *cv;
@@ -110,19 +125,19 @@ static int _read_id(struct id *id, struct config_node *cn, const char *path)
 	return 1;
 }
 
-static int _read_pv(struct format_instance *fid, struct pool *mem,
+static int _read_pv(struct format_instance *fid, struct dm_pool *mem,
 		    struct volume_group *vg, struct config_node *pvn,
-		    struct config_node *vgn, struct hash_table *pv_hash)
+		    struct config_node *vgn __attribute((unused)),
+		    struct dm_hash_table *pv_hash)
 {
 	struct physical_volume *pv;
 	struct pv_list *pvl;
 	struct config_node *cn;
+	uint64_t size;
 
-	if (!(pvl = pool_zalloc(mem, sizeof(*pvl))) ||
-	    !(pvl->pv = pool_zalloc(mem, sizeof(*pvl->pv)))) {
-		stack;
-		return 0;
-	}
+	if (!(pvl = dm_pool_zalloc(mem, sizeof(*pvl))) ||
+	    !(pvl->pv = dm_pool_zalloc(mem, sizeof(*pvl->pv))))
+		return_0;
 
 	pv = pvl->pv;
 
@@ -130,10 +145,8 @@ static int _read_pv(struct format_instance *fid, struct pool *mem,
 	 * Add the pv to the pv hash for quick lookup when we read
 	 * the lv segments.
 	 */
-	if (!hash_insert(pv_hash, pvn->key, pv)) {
-		stack;
-		return 0;
-	}
+	if (!dm_hash_insert(pv_hash, pvn->key, pv))
+		return_0;
 
 	if (!(pvn = pvn->child)) {
 		log_error("Empty pv section.");
@@ -149,7 +162,7 @@ static int _read_pv(struct format_instance *fid, struct pool *mem,
 	 * Convert the uuid into a device.
 	 */
 	if (!(pv->dev = device_from_pvid(fid->fmt->cmd, &pv->id))) {
-		char buffer[64];
+		char buffer[64] __attribute((aligned(8)));
 
 		if (!id_write_format(&pv->id, buffer, sizeof(buffer)))
 			log_error("Couldn't find device.");
@@ -163,10 +176,10 @@ static int _read_pv(struct format_instance *fid, struct pool *mem,
 			return 0;
 	}
 
-	if (!(pv->vg_name = pool_strdup(mem, vg->name))) {
-		stack;
-		return 0;
-	}
+	if (!(pv->vg_name = dm_pool_strdup(mem, vg->name)))
+		return_0;
+
+	memcpy(&pv->vgid, &vg->id, sizeof(vg->id));
 
 	if (!(cn = find_config_node(pvn, "status"))) {
 		log_error("Couldn't find status flags for physical volume.");
@@ -177,6 +190,9 @@ static int _read_pv(struct format_instance *fid, struct pool *mem,
 		log_error("Couldn't read status flags for physical volume.");
 		return 0;
 	}
+
+	/* Late addition */
+	_read_int64(pvn, "dev_size", &pv->size);
 
 	if (!_read_int64(pvn, "pe_start", &pv->pe_start)) {
 		log_error("Couldn't read extent size for volume group.");
@@ -190,12 +206,13 @@ static int _read_pv(struct format_instance *fid, struct pool *mem,
 	}
 
 	list_init(&pv->tags);
+	list_init(&pv->segments);
 
 	/* Optional tags */
 	if ((cn = find_config_node(pvn, "tags")) &&
 	    !(read_tags(mem, &pv->tags, cn->v))) {
 		log_error("Couldn't read tags for physical volume %s in %s.",
-			  dev_name(pv->dev), vg->name);
+			  pv_dev_name(pv), vg->name);
 		return 0;
 	}
 
@@ -204,9 +221,31 @@ static int _read_pv(struct format_instance *fid, struct pool *mem,
 	vg->free_count += pv->pe_count;
 
 	pv->pe_size = vg->extent_size;
-	pv->size = vg->extent_size * (uint64_t) pv->pe_count;
+
 	pv->pe_alloc_count = 0;
 	pv->fmt = fid->fmt;
+
+	/* Fix up pv size if missing or impossibly large */
+	if ((!pv->size || pv->size > (1ULL << 62)) && pv->dev) {
+		if (!dev_get_size(pv->dev, &pv->size)) {
+			log_error("%s: Couldn't get size.", pv_dev_name(pv));
+			return 0;
+		}
+		log_verbose("Fixing up missing size (%s) "
+			    "for PV %s", display_size(fid->fmt->cmd, pv->size),
+			    pv_dev_name(pv));
+		if (vg) {
+			size = pv->pe_count * (uint64_t) vg->extent_size +
+			       pv->pe_start;
+			if (size > pv->size)
+				log_error("WARNING: Physical Volume %s is too "
+					  "large for underlying device",
+					  pv_dev_name(pv));
+		}
+	}
+
+	if (!alloc_pv_segment_whole_pv(mem, pv))
+		return_0;
 
 	vg->pv_count++;
 	list_add(&vg->pvs, &pvl->list);
@@ -216,12 +255,9 @@ static int _read_pv(struct format_instance *fid, struct pool *mem,
 
 static void _insert_segment(struct logical_volume *lv, struct lv_segment *seg)
 {
-	struct list *segh;
 	struct lv_segment *comp;
 
-	list_iterate(segh, &lv->segments) {
-		comp = list_item(segh, struct lv_segment);
-
+	list_iterate_items(comp, &lv->segments) {
 		if (comp->le > seg->le) {
 			list_add(&comp->list, &seg->list);
 			return;
@@ -232,9 +268,9 @@ static void _insert_segment(struct logical_volume *lv, struct lv_segment *seg)
 	list_add(&lv->segments, &seg->list);
 }
 
-static int _read_segment(struct pool *mem, struct volume_group *vg,
+static int _read_segment(struct dm_pool *mem, struct volume_group *vg,
 			 struct logical_volume *lv, struct config_node *sn,
-			 struct hash_table *pv_hash)
+			 struct dm_hash_table *pv_hash)
 {
 	uint32_t area_count = 0u;
 	struct lv_segment *seg;
@@ -272,35 +308,23 @@ static int _read_segment(struct pool *mem, struct volume_group *vg,
 		segtype_str = cv->v.str;
 	}
 
-	if (!(segtype = get_segtype_from_string(vg->cmd, segtype_str))) {
-		stack;
-		return 0;
-	}
+	if (!(segtype = get_segtype_from_string(vg->cmd, segtype_str)))
+		return_0;
 
 	if (segtype->ops->text_import_area_count &&
-	    !segtype->ops->text_import_area_count(sn, &area_count)) {
-		stack;
-		return 0;
-	}
+	    !segtype->ops->text_import_area_count(sn, &area_count))
+		return_0;
 
-	if (!(seg = alloc_lv_segment(mem, area_count))) {
+	if (!(seg = alloc_lv_segment(mem, segtype, lv, start_extent,
+				     extent_count, 0, 0, NULL, area_count,
+				     extent_count, 0, 0, 0))) {
 		log_error("Segment allocation failed");
 		return 0;
 	}
 
-	seg->lv = lv;
-	seg->le = start_extent;
-	seg->len = extent_count;
-	seg->area_len = extent_count;
-	seg->status = 0u;
-	seg->segtype = segtype;
-	seg->extents_copied = 0u;
-
 	if (seg->segtype->ops->text_import &&
-	    !seg->segtype->ops->text_import(seg, sn, pv_hash)) {
-		stack;
-		return 0;
-	}
+	    !seg->segtype->ops->text_import(seg, sn, pv_hash))
+		return_0;
 
 	/* Optional tags */
 	if ((cn = find_config_node(sn, "tags")) &&
@@ -315,17 +339,21 @@ static int _read_segment(struct pool *mem, struct volume_group *vg,
 	 */
 	_insert_segment(lv, seg);
 
-	if (seg->segtype->flags & SEG_AREAS_MIRRORED)
+	if (seg_is_mirrored(seg))
 		lv->status |= MIRRORED;
 
-	if (seg->segtype->flags & SEG_VIRTUAL)
+	if (seg_is_virtual(seg))
 		lv->status |= VIRTUAL;
+
+	if (_is_converting(lv))
+		lv->status |= CONVERTING;
 
 	return 1;
 }
 
 int text_import_areas(struct lv_segment *seg, const struct config_node *sn,
-		      const struct config_node *cn, struct hash_table *pv_hash)
+		      const struct config_node *cn, struct dm_hash_table *pv_hash,
+		      uint32_t flags)
 {
 	unsigned int s;
 	struct config_value *cv;
@@ -360,24 +388,18 @@ int text_import_areas(struct lv_segment *seg, const struct config_node *sn,
 		}
 
 		/* FIXME Cope if LV not yet read in */
-		if ((pv = hash_lookup(pv_hash, cv->v.str))) {
-			seg->area[s].type = AREA_PV;
-			seg->area[s].u.pv.pv = pv;
-			seg->area[s].u.pv.pe = cv->next->v.i;
-			/*
-			 * Adjust extent counts in the pv and vg.
-			 */
-			pv->pe_alloc_count += seg->area_len;
-			seg->lv->vg->free_count -= seg->area_len;
-
+		if ((pv = dm_hash_lookup(pv_hash, cv->v.str))) {
+			if (!set_lv_segment_area_pv(seg, s, pv, (uint32_t) cv->next->v.i))
+				return_0;
 		} else if ((lv1 = find_lv(seg->lv->vg, cv->v.str))) {
-			seg->area[s].type = AREA_LV;
-			seg->area[s].u.lv.lv = lv1;
-			seg->area[s].u.lv.le = cv->next->v.i;
+			if (!set_lv_segment_area_lv(seg, s, lv1,
+						    (uint32_t) cv->next->v.i,
+						    flags))
+				return_0;
 		} else {
 			log_error("Couldn't find volume '%s' "
 				  "for segment '%s'.",
-				  cv->v.str ? cv->v.str : "NULL", seg_name);
+				  cv->v.str ? : "NULL", seg_name);
 			return 0;
 		}
 
@@ -396,9 +418,9 @@ int text_import_areas(struct lv_segment *seg, const struct config_node *sn,
 	return 1;
 }
 
-static int _read_segments(struct pool *mem, struct volume_group *vg,
+static int _read_segments(struct dm_pool *mem, struct volume_group *vg,
 			  struct logical_volume *lv, struct config_node *lvn,
-			  struct hash_table *pv_hash)
+			  struct dm_hash_table *pv_hash)
 {
 	struct config_node *sn;
 	int count = 0, seg_count;
@@ -409,10 +431,8 @@ static int _read_segments(struct pool *mem, struct volume_group *vg,
 		 * All sub-sections are assumed to be segments.
 		 */
 		if (!sn->v) {
-			if (!_read_segment(mem, vg, lv, sn, pv_hash)) {
-				stack;
-				return 0;
-			}
+			if (!_read_segment(mem, vg, lv, sn, pv_hash))
+				return_0;
 
 			count++;
 		}
@@ -437,42 +457,36 @@ static int _read_segments(struct pool *mem, struct volume_group *vg,
 	/*
 	 * Check there are no gaps or overlaps in the lv.
 	 */
-	if (!lv_check_segments(lv)) {
-		stack;
-		return 0;
-	}
+	if (!check_lv_segments(lv, 0))
+		return_0;
 
 	/*
 	 * Merge segments in case someones been editing things by hand.
 	 */
-	if (!lv_merge_segments(lv)) {
-		stack;
-		return 0;
-	}
+	if (!lv_merge_segments(lv))
+		return_0;
 
 	return 1;
 }
 
-static int _read_lvnames(struct format_instance *fid, struct pool *mem,
+static int _read_lvnames(struct format_instance *fid __attribute((unused)),
+			 struct dm_pool *mem,
 			 struct volume_group *vg, struct config_node *lvn,
-			 struct config_node *vgn, struct hash_table *pv_hash)
+			 struct config_node *vgn __attribute((unused)),
+			 struct dm_hash_table *pv_hash __attribute((unused)))
 {
 	struct logical_volume *lv;
 	struct lv_list *lvl;
 	struct config_node *cn;
 
-	if (!(lvl = pool_zalloc(mem, sizeof(*lvl))) ||
-	    !(lvl->lv = pool_zalloc(mem, sizeof(*lvl->lv)))) {
-		stack;
-		return 0;
-	}
+	if (!(lvl = dm_pool_zalloc(mem, sizeof(*lvl))) ||
+	    !(lvl->lv = dm_pool_zalloc(mem, sizeof(*lvl->lv))))
+		return_0;
 
 	lv = lvl->lv;
 
-	if (!(lv->name = pool_strdup(mem, lvn->key))) {
-		stack;
-		return 0;
-	}
+	if (!(lv->name = dm_pool_strdup(mem, lvn->key)))
+		return_0;
 
 	if (!(lvn = lvn->child)) {
 		log_error("Empty logical volume section.");
@@ -498,18 +512,31 @@ static int _read_lvnames(struct format_instance *fid, struct pool *mem,
 		}
 
 		lv->alloc = get_alloc_from_string(cv->v.str);
-		if (lv->alloc == ALLOC_INVALID) {
-			stack;
-			return 0;
+		if (lv->alloc == ALLOC_INVALID)
+			return_0;
+	}
+
+	if (!_read_int32(lvn, "read_ahead", &lv->read_ahead))
+		/* If not present, choice of auto or none is configurable */
+		lv->read_ahead = vg->cmd->default_settings.read_ahead;
+	else {
+		switch (lv->read_ahead) {
+		case 0:
+			lv->read_ahead = DM_READ_AHEAD_AUTO;
+			break;
+		case (uint32_t) -1:
+			lv->read_ahead = DM_READ_AHEAD_NONE;
+			break;
+		default:
+			;
 		}
 	}
 
-	/* read_ahead defaults to 0 */
-	if (!_read_int32(lvn, "read_ahead", &lv->read_ahead))
-		lv->read_ahead = 0;
-
+	lv->snapshot = NULL;
+	list_init(&lv->snapshot_segs);
 	list_init(&lv->segments);
 	list_init(&lv->tags);
+	list_init(&lv->segs_using_this_lv);
 
 	/* Optional tags */
 	if ((cn = find_config_node(lvn, "tags")) &&
@@ -526,9 +553,11 @@ static int _read_lvnames(struct format_instance *fid, struct pool *mem,
 	return 1;
 }
 
-static int _read_lvsegs(struct format_instance *fid, struct pool *mem,
+static int _read_lvsegs(struct format_instance *fid __attribute((unused)),
+			struct dm_pool *mem,
 			struct volume_group *vg, struct config_node *lvn,
-			struct config_node *vgn, struct hash_table *pv_hash)
+			struct config_node *vgn __attribute((unused)),
+			struct dm_hash_table *pv_hash)
 {
 	struct logical_volume *lv;
 	struct lv_list *lvl;
@@ -554,31 +583,34 @@ static int _read_lvsegs(struct format_instance *fid, struct pool *mem,
 
 	memcpy(&lv->lvid.id[0], &lv->vg->id, sizeof(lv->lvid.id[0]));
 
-	if (!_read_segments(mem, vg, lv, lvn, pv_hash)) {
-		stack;
-		return 0;
-	}
+	if (!_read_segments(mem, vg, lv, lvn, pv_hash))
+		return_0;
 
 	lv->size = (uint64_t) lv->le_count * (uint64_t) vg->extent_size;
 
-	/* Skip this for now for snapshots */
-	if (!(lv->status & SNAPSHOT)) {
-		lv->minor = -1;
-		if ((lv->status & FIXED_MINOR) &&
-		    !_read_int32(lvn, "minor", &lv->minor)) {
-			log_error("Couldn't read minor number for logical "
-				  "volume %s.", lv->name);
-			return 0;
-		}
-		lv->major = -1;
-		if ((lv->status & FIXED_MINOR) &&
-		    !_read_int32(lvn, "major", &lv->major)) {
-			log_error("Couldn't read major number for logical "
-				  "volume %s.", lv->name);
-		}
-	} else {
+	/*
+	 * FIXME We now have 2 LVs for each snapshot. The real one was
+	 * created by vg_add_snapshot from the segment text_import.
+	 */
+	if (lv->status & SNAPSHOT) {
 		vg->lv_count--;
 		list_del(&lvl->list);
+		return 1;
+	}
+
+	lv->minor = -1;
+	if ((lv->status & FIXED_MINOR) &&
+	    !_read_int32(lvn, "minor", &lv->minor)) {
+		log_error("Couldn't read minor number for logical "
+			  "volume %s.", lv->name);
+		return 0;
+	}
+
+	lv->major = -1;
+	if ((lv->status & FIXED_MINOR) &&
+	    !_read_int32(lvn, "major", &lv->major)) {
+		log_error("Couldn't read major number for logical "
+			  "volume %s.", lv->name);
 	}
 
 	return 1;
@@ -586,9 +618,9 @@ static int _read_lvsegs(struct format_instance *fid, struct pool *mem,
 
 static int _read_sections(struct format_instance *fid,
 			  const char *section, section_fn fn,
-			  struct pool *mem,
+			  struct dm_pool *mem,
 			  struct volume_group *vg, struct config_node *vgn,
-			  struct hash_table *pv_hash, int optional)
+			  struct dm_hash_table *pv_hash, int optional)
 {
 	struct config_node *n;
 
@@ -602,10 +634,8 @@ static int _read_sections(struct format_instance *fid,
 	}
 
 	for (n = n->child; n; n = n->sib) {
-		if (!fn(fid, mem, vg, n, vgn, pv_hash)) {
-			stack;
-			return 0;
-		}
+		if (!fn(fid, mem, vg, n, vgn, pv_hash))
+			return_0;
 	}
 
 	return 1;
@@ -616,8 +646,8 @@ static struct volume_group *_read_vg(struct format_instance *fid,
 {
 	struct config_node *vgn, *cn;
 	struct volume_group *vg;
-	struct hash_table *pv_hash = NULL;
-	struct pool *mem = fid->fmt->cmd->mem;
+	struct dm_hash_table *pv_hash = NULL;
+	struct dm_pool *mem = fid->fmt->cmd->mem;
 
 	/* skip any top-level values */
 	for (vgn = cft->root; (vgn && vgn->v); vgn = vgn->sib) ;
@@ -627,25 +657,19 @@ static struct volume_group *_read_vg(struct format_instance *fid,
 		return NULL;
 	}
 
-	if (!(vg = pool_zalloc(mem, sizeof(*vg)))) {
-		stack;
-		return NULL;
-	}
+	if (!(vg = dm_pool_zalloc(mem, sizeof(*vg))))
+		return_NULL;
 	vg->cmd = fid->fmt->cmd;
 
 	/* FIXME Determine format type from file contents */
 	/* eg Set to instance of fmt1 here if reading a format1 backup? */
 	vg->fid = fid;
 
-	if (!(vg->name = pool_strdup(mem, vgn->key))) {
-		stack;
-		goto bad;
-	}
+	if (!(vg->name = dm_pool_strdup(mem, vgn->key)))
+		goto_bad;
 
-	if (!(vg->system_id = pool_zalloc(mem, NAME_LEN))) {
-		stack;
-		goto bad;
-	}
+	if (!(vg->system_id = dm_pool_zalloc(mem, NAME_LEN)))
+		goto_bad;
 
 	vgn = vgn->child;
 
@@ -712,17 +736,15 @@ static struct volume_group *_read_vg(struct format_instance *fid,
 		}
 
 		vg->alloc = get_alloc_from_string(cv->v.str);
-		if (vg->alloc == ALLOC_INVALID) {
-			stack;
-			return 0;
-		}
+		if (vg->alloc == ALLOC_INVALID)
+			return_0;
 	}
 
 	/*
 	 * The pv hash memoises the pv section names -> pv
 	 * structures.
 	 */
-	if (!(pv_hash = hash_create(32))) {
+	if (!(pv_hash = dm_hash_create(32))) {
 		log_error("Couldn't create hash table.");
 		goto bad;
 	}
@@ -736,7 +758,6 @@ static struct volume_group *_read_vg(struct format_instance *fid,
 	}
 
 	list_init(&vg->lvs);
-	list_init(&vg->snapshots);
 	list_init(&vg->tags);
 
 	/* Optional tags */
@@ -760,7 +781,13 @@ static struct volume_group *_read_vg(struct format_instance *fid,
 		goto bad;
 	}
 
-	hash_destroy(pv_hash);
+	if (!fixup_imported_mirrors(vg)) {
+		log_error("Failed to fixup mirror pointers after import for "
+			  "volume group %s.", vg->name);
+		goto bad;
+	}
+
+	dm_hash_destroy(pv_hash);
 
 	if (vg->status & PARTIAL_VG) {
 		vg->status &= ~LVM_WRITE;
@@ -774,13 +801,13 @@ static struct volume_group *_read_vg(struct format_instance *fid,
 
       bad:
 	if (pv_hash)
-		hash_destroy(pv_hash);
+		dm_hash_destroy(pv_hash);
 
-	pool_free(mem, vg);
+	dm_pool_free(mem, vg);
 	return NULL;
 }
 
-static void _read_desc(struct pool *mem,
+static void _read_desc(struct dm_pool *mem,
 		       struct config_tree *cft, time_t *when, char **desc)
 {
 	const char *d;
@@ -789,19 +816,68 @@ static void _read_desc(struct pool *mem,
 	log_suppress(1);
 	d = find_config_str(cft->root, "description", "");
 	log_suppress(0);
-	*desc = pool_strdup(mem, d);
+	*desc = dm_pool_strdup(mem, d);
 
 	get_config_uint32(cft->root, "creation_time", &u);
 	*when = u;
 }
 
+static const char *_read_vgname(const struct format_type *fmt,
+				struct config_tree *cft, struct id *vgid,
+				uint32_t *vgstatus, char **creation_host)
+{
+	struct config_node *vgn, *cn;
+	struct dm_pool *mem = fmt->cmd->mem;
+	char *vgname;
+	int old_suppress;
+
+	old_suppress = log_suppress(2);
+	*creation_host = dm_pool_strdup(mem,
+					find_config_str(cft->root,
+							"creation_host", ""));
+	log_suppress(old_suppress);
+
+	/* skip any top-level values */
+	for (vgn = cft->root; (vgn && vgn->v); vgn = vgn->sib) ;
+
+	if (!vgn) {
+		log_error("Couldn't find volume group in file.");
+		return 0;
+	}
+
+	if (!(vgname = dm_pool_strdup(mem, vgn->key)))
+		return_0;
+
+	vgn = vgn->child;
+
+	if (!_read_id(vgid, vgn, "id")) {
+		log_error("Couldn't read uuid for volume group %s.", vgname);
+		return 0;
+	}
+
+	if (!(cn = find_config_node(vgn, "status"))) {
+		log_error("Couldn't find status flags for volume group %s.",
+			  vgname);
+		return 0;
+	}
+
+	if (!(read_flags(vgstatus, VG_FLAGS, cn->v))) {
+		log_error("Couldn't read status flags for volume group %s.",
+			  vgname);
+		return 0;
+	}
+
+	return vgname;
+}
+
 static struct text_vg_version_ops _vsn1_ops = {
-	check_version:_check_version,
-	read_vg:_read_vg,
-	read_desc:_read_desc
+	.check_version = _check_version,
+	.read_vg = _read_vg,
+	.read_desc = _read_desc,
+	.read_vgname = _read_vgname,
 };
 
 struct text_vg_version_ops *text_vg_vsn1_init(void)
 {
 	return &_vsn1_ops;
-};
+}

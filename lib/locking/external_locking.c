@@ -1,14 +1,14 @@
 /*
- * Copyright (C) 2002-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2006 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -17,17 +17,18 @@
 #include "locking_types.h"
 #include "defaults.h"
 #include "sharedlib.h"
+#include "toolcontext.h"
 
 static void *_locking_lib = NULL;
 static void (*_reset_fn) (void) = NULL;
 static void (*_end_fn) (void) = NULL;
 static int (*_lock_fn) (struct cmd_context * cmd, const char *resource,
-			int flags) = NULL;
+			uint32_t flags) = NULL;
 static int (*_init_fn) (int type, struct config_tree * cft,
 			uint32_t *flags) = NULL;
 
 static int _lock_resource(struct cmd_context *cmd, const char *resource,
-			  int flags)
+			  uint32_t flags)
 {
 	if (_lock_fn)
 		return _lock_fn(cmd, resource, flags);
@@ -55,7 +56,7 @@ static void _reset_external_locking(void)
 		_reset_fn();
 }
 
-int init_external_locking(struct locking_type *locking, struct config_tree *cft)
+int init_external_locking(struct locking_type *locking, struct cmd_context *cmd)
 {
 	const char *libname;
 
@@ -69,13 +70,11 @@ int init_external_locking(struct locking_type *locking, struct config_tree *cft)
 	locking->reset_locking = _reset_external_locking;
 	locking->flags = 0;
 
-	libname = find_config_str(cft->root, "global/locking_library",
-				  DEFAULT_LOCKING_LIB);
+	libname = find_config_tree_str(cmd, "global/locking_library",
+				       DEFAULT_LOCKING_LIB);
 
-	if (!(_locking_lib = load_shared_library(cft, libname, "locking"))) {
-		stack;
-		return 0;
-	}
+	if (!(_locking_lib = load_shared_library(cmd, libname, "locking", 1)))
+		return_0;
 
 	/* Get the functions we need */
 	if (!(_init_fn = dlsym(_locking_lib, "locking_init")) ||
@@ -90,5 +89,5 @@ int init_external_locking(struct locking_type *locking, struct config_tree *cft)
 	}
 
 	log_verbose("Loaded external locking library %s", libname);
-	return _init_fn(2, cft, &locking->flags);
+	return _init_fn(2, cmd->cft, &locking->flags);
 }

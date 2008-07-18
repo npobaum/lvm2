@@ -1,25 +1,23 @@
 /*
- * Copyright (C) 1997-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 1997-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2006 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
 #include "lib.h"
-#include "pool.h"
 #include "label.h"
 #include "metadata.h"
 #include "lvmcache.h"
 #include "filter.h"
-#include "list.h"
 #include "xlate.h"
 
 #include "disk_rep.h"
@@ -35,10 +33,10 @@
 #define CPOUT_64(x, y) {(y) = xlate64_be((x));}
 
 static int __read_pool_disk(const struct format_type *fmt, struct device *dev,
-			    struct pool *mem, struct pool_list *pl,
-			    const char *vg_name)
+			    struct dm_pool *mem __attribute((unused)), struct pool_list *pl,
+			    const char *vg_name __attribute((unused)))
 {
-	char buf[512];
+	char buf[512] __attribute((aligned(8)));
 
 	/* FIXME: Need to check the cache here first */
 	if (!dev_read(dev, UINT64_C(0), 512, buf)) {
@@ -47,24 +45,19 @@ static int __read_pool_disk(const struct format_type *fmt, struct device *dev,
 		return 0;
 	}
 
-	if (!read_pool_label(pl, fmt->labeller, dev, buf, NULL)) {
-		stack;
-		return 0;
-	}
+	if (!read_pool_label(pl, fmt->labeller, dev, buf, NULL))
+		return_0;
 
 	return 1;
 }
 
 static void _add_pl_to_list(struct list *head, struct pool_list *data)
 {
-	struct list *pvdh;
 	struct pool_list *pl;
 
-	list_iterate(pvdh, head) {
-		pl = list_item(pvdh, struct pool_list);
-
+	list_iterate_items(pl, head) {
 		if (id_equal(&data->pv_uuid, &pl->pv_uuid)) {
-			char uuid[ID_LEN + 7];
+			char uuid[ID_LEN + 7] __attribute((aligned(8)));
 
 			id_write_format(&pl->pv_uuid, uuid, ID_LEN + 7);
 
@@ -76,7 +69,7 @@ static void _add_pl_to_list(struct list *head, struct pool_list *data)
 			}
 			log_very_verbose("Duplicate PV %s - using md %s",
 					 uuid, dev_name(data->dev));
-			list_del(pvdh);
+			list_del(&pl->list);
 			break;
 		}
 	}
@@ -89,7 +82,7 @@ int read_pool_label(struct pool_list *pl, struct labeller *l,
 	struct lvmcache_info *info;
 	struct id pvid;
 	struct id vgid;
-	char uuid[ID_LEN + 7];
+	char uuid[ID_LEN + 7] __attribute((aligned(8)));
 	struct pool_disk *pd = &pl->pd;
 
 	pool_label_in(pd, buf);
@@ -103,10 +96,8 @@ int read_pool_label(struct pool_list *pl, struct labeller *l,
 	log_debug("Calculated uuid %s for %s", uuid, pd->pl_pool_name);
 
 	if (!(info = lvmcache_add(l, (char *) &pvid, dev, pd->pl_pool_name,
-				  (char *) &vgid))) {
-		stack;
-		return 0;
-	}
+				  (char *) &vgid, 0)))
+		return_0;
 	if (label)
 		*label = info->label;
 
@@ -133,7 +124,7 @@ int read_pool_label(struct pool_list *pl, struct labeller *l,
  * be able to interpret ondisk labels correctly.  Always use
  * this function before writing to disk.
  */
-void pool_label_out(struct pool_disk *pl, char *buf)
+void pool_label_out(struct pool_disk *pl, void *buf)
 {
 	struct pool_disk *bufpl = (struct pool_disk *) buf;
 
@@ -168,7 +159,7 @@ void pool_label_out(struct pool_disk *pl, char *buf)
  * correctly.  Always use this function before using labels that
  * were read from disk.
  */
-void pool_label_in(struct pool_disk *pl, char *buf)
+void pool_label_in(struct pool_disk *pl, void *buf)
 {
 	struct pool_disk *bufpl = (struct pool_disk *) buf;
 
@@ -243,44 +234,40 @@ void get_pool_uuid(char *uuid, uint64_t poolid, uint32_t spid, uint32_t devid)
 
 }
 
-static int _read_vg_pds(const struct format_type *fmt, struct pool *mem,
+static int _read_vg_pds(const struct format_type *fmt, struct dm_pool *mem,
 			struct lvmcache_vginfo *vginfo, struct list *head,
 			uint32_t *devcount)
 {
-
-	struct list *vgih = NULL;
-	struct device *dev;
+	struct lvmcache_info *info;
 	struct pool_list *pl = NULL;
-	struct pool *tmpmem = NULL;
+	struct dm_pool *tmpmem;
 
 	uint32_t sp_count = 0;
 	uint32_t *sp_devs = NULL;
-	int i;
+	uint32_t i;
 
 	/* FIXME: maybe should return a different error in memory
 	 * allocation failure */
-	if (!(tmpmem = pool_create("pool read_vg", 512))) {
-		stack;
-		return 0;
-	}
+	if (!(tmpmem = dm_pool_create("pool read_vg", 512)))
+		return_0;
 
-	list_iterate(vgih, &vginfo->infos) {
-		dev = list_item(vgih, struct lvmcache_info)->dev;
-		if (dev &&
-		    !(pl = read_pool_disk(fmt, dev, mem, vginfo->vgname)))
+	list_iterate_items(info, &vginfo->infos) {
+		if (info->dev &&
+		    !(pl = read_pool_disk(fmt, info->dev, mem, vginfo->vgname)))
 			    break;
 		/*
 		 * We need to keep track of the total expected number
 		 * of devices per subpool
 		 */
 		if (!sp_count) {
+			/* FIXME pl left uninitialised if !info->dev */
 			sp_count = pl->pd.pl_subpools;
 			if (!(sp_devs =
-			      pool_zalloc(tmpmem,
+			      dm_pool_zalloc(tmpmem,
 					  sizeof(uint32_t) * sp_count))) {
 				log_error("Unable to allocate %d 32-bit uints",
 					  sp_count);
-				pool_destroy(tmpmem);
+				dm_pool_destroy(tmpmem);
 				return 0;
 			}
 		}
@@ -298,11 +285,10 @@ static int _read_vg_pds(const struct format_type *fmt, struct pool *mem,
 	}
 
 	*devcount = 0;
-	for (i = 0; i < sp_count; i++) {
+	for (i = 0; i < sp_count; i++)
 		*devcount += sp_devs[i];
-	}
 
-	pool_destroy(tmpmem);
+	dm_pool_destroy(tmpmem);
 
 	if (pl && *pl->pd.pl_pool_name)
 		return 1;
@@ -312,7 +298,7 @@ static int _read_vg_pds(const struct format_type *fmt, struct pool *mem,
 }
 
 int read_pool_pds(const struct format_type *fmt, const char *vg_name,
-		  struct pool *mem, struct list *pdhead)
+		  struct dm_pool *mem, struct list *pdhead)
 {
 	struct lvmcache_vginfo *vginfo;
 	uint32_t totaldevs;
@@ -322,7 +308,7 @@ int read_pool_pds(const struct format_type *fmt, const char *vg_name,
 		/*
 		 * If the cache scanning doesn't work, this will never work
 		 */
-		if (vg_name && (vginfo = vginfo_from_vgname(vg_name)) &&
+		if (vg_name && (vginfo = vginfo_from_vgname(vg_name, NULL)) &&
 		    vginfo->infos.n) {
 
 			if (_read_vg_pds(fmt, mem, vginfo, pdhead, &totaldevs)) {
@@ -357,25 +343,21 @@ int read_pool_pds(const struct format_type *fmt, const char *vg_name,
 }
 
 struct pool_list *read_pool_disk(const struct format_type *fmt,
-				 struct device *dev, struct pool *mem,
+				 struct device *dev, struct dm_pool *mem,
 				 const char *vg_name)
 {
 	struct pool_list *pl;
 
-	if (!dev_open(dev)) {
-		stack;
-		return NULL;
-	}
+	if (!dev_open(dev))
+		return_NULL;
 
-	if (!(pl = pool_zalloc(mem, sizeof(*pl)))) {
+	if (!(pl = dm_pool_zalloc(mem, sizeof(*pl)))) {
 		log_error("Unable to allocate pool list structure");
 		return 0;
 	}
 
-	if (!__read_pool_disk(fmt, dev, mem, pl, vg_name)) {
-		stack;
-		return NULL;
-	}
+	if (!__read_pool_disk(fmt, dev, mem, pl, vg_name))
+		return_NULL;
 
 	if (!dev_close(dev))
 		stack;

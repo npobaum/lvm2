@@ -1,14 +1,14 @@
 /*
- * Copyright (C) 2002-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2006 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -19,7 +19,7 @@
 #include "label.h"
 #include "metadata.h"
 #include "xlate.h"
-#include "lvmcache.h"
+#include "format1.h"
 
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -30,7 +30,7 @@ static void _not_supported(const char *op)
 		op);
 }
 
-static int _can_handle(struct labeller *l, char *buf, uint64_t sector)
+static int _lvm1_can_handle(struct labeller *l __attribute((unused)), void *buf, uint64_t sector)
 {
 	struct pv_disk *pvd = (struct pv_disk *) buf;
 	uint32_t version;
@@ -48,24 +48,35 @@ static int _can_handle(struct labeller *l, char *buf, uint64_t sector)
 	return 0;
 }
 
-static int _write(struct label *label, char *buf)
+static int _lvm1_write(struct label *label __attribute((unused)), void *buf __attribute((unused)))
 {
 	_not_supported("write");
 	return 0;
 }
 
-static int _read(struct labeller *l, struct device *dev, char *buf,
+static int _lvm1_read(struct labeller *l, struct device *dev, void *buf,
 		 struct label **label)
 {
 	struct pv_disk *pvd = (struct pv_disk *) buf;
+	struct vg_disk vgd;
 	struct lvmcache_info *info;
+	const char *vgid = FMT_LVM1_ORPHAN_VG_NAME;
+	const char *vgname = FMT_LVM1_ORPHAN_VG_NAME;
+	unsigned exported = 0;
 
 	munge_pvd(dev, pvd);
 
-	if (!(info = lvmcache_add(l, pvd->pv_uuid, dev, pvd->vg_name, NULL))) {
-		stack;
-		return 0;
+	if (*pvd->vg_name) {
+		if (!read_vgd(dev, &vgd, pvd))
+			return_0;
+		vgid = (char *) vgd.vg_uuid;
+		vgname = (char *) pvd->vg_name;
+		exported = pvd->pv_status & VG_EXPORTED;
 	}
+
+	if (!(info = lvmcache_add(l, (char *)pvd->pv_uuid, dev, vgname, vgid,
+				  exported)))
+		return_0;
 	*label = info->label;
 
 	info->device_size = xlate32(pvd->pv_size) << SECTOR_SHIFT;
@@ -76,38 +87,38 @@ static int _read(struct labeller *l, struct device *dev, char *buf,
 	return 1;
 }
 
-static int _initialise_label(struct labeller *l, struct label *label)
+static int _lvm1_initialise_label(struct labeller *l __attribute((unused)), struct label *label)
 {
 	strcpy(label->type, "LVM1");
 
 	return 1;
 }
 
-static void _destroy_label(struct labeller *l, struct label *label)
+static void _lvm1_destroy_label(struct labeller *l __attribute((unused)), struct label *label __attribute((unused)))
 {
 	return;
 }
 
-static void _destroy(struct labeller *l)
+static void _lvm1_destroy(struct labeller *l)
 {
-	dbg_free(l);
+	dm_free(l);
 }
 
 struct label_ops _lvm1_ops = {
-	can_handle:_can_handle,
-	write:_write,
-	read:_read,
-	verify:_can_handle,
-	initialise_label:_initialise_label,
-	destroy_label:_destroy_label,
-	destroy:_destroy
+	.can_handle = _lvm1_can_handle,
+	.write = _lvm1_write,
+	.read = _lvm1_read,
+	.verify = _lvm1_can_handle,
+	.initialise_label = _lvm1_initialise_label,
+	.destroy_label = _lvm1_destroy_label,
+	.destroy = _lvm1_destroy,
 };
 
 struct labeller *lvm1_labeller_create(struct format_type *fmt)
 {
 	struct labeller *l;
 
-	if (!(l = dbg_malloc(sizeof(*l)))) {
+	if (!(l = dm_malloc(sizeof(*l)))) {
 		log_err("Couldn't allocate labeller object.");
 		return NULL;
 	}

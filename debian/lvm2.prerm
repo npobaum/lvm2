@@ -1,0 +1,11 @@
+#!/bin/sh
+
+set -e
+
+if test "$1" = "remove"; then
+	echo -n "Backing up any LVM2 metadata that may exist..."
+	/sbin/vgcfgbackup >/dev/null 2>&1 || true
+	echo "done."
+fi
+
+#DEBHELPER#

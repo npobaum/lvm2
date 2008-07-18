@@ -1,14 +1,14 @@
 /*
- * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2006 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -19,16 +19,18 @@
 /*
  * Only works with powers of 2.
  */
-static inline uint32_t _round_up(uint32_t n, uint32_t size)
+static uint32_t _round_up(uint32_t n, uint32_t size)
 {
 	size--;
 	return (n + size) & ~size;
 }
 
-static inline uint32_t _div_up(uint32_t n, uint32_t size)
+/* Unused.
+static uint32_t _div_up(uint32_t n, uint32_t size)
 {
 	return _round_up(n, size) / size;
 }
+*/
 
 /*
  * Each chunk of metadata should be aligned to
@@ -117,13 +119,11 @@ int calculate_layout(struct disk_list *dl)
 int calculate_extent_count(struct physical_volume *pv, uint32_t extent_size,
 			   uint32_t max_extent_count, uint64_t pe_start)
 {
-	struct pv_disk *pvd = dbg_malloc(sizeof(*pvd));
+	struct pv_disk *pvd = dm_malloc(sizeof(*pvd));
 	uint32_t end;
 
-	if (!pvd) {
-		stack;
-		return 0;
-	}
+	if (!pvd)
+		return_0;
 
 	/*
 	 * Guess how many extents will fit, bearing in mind that
@@ -137,8 +137,8 @@ int calculate_extent_count(struct physical_volume *pv, uint32_t extent_size,
 
 	if (pvd->pe_total < PE_SIZE_PV_SIZE_REL) {
 		log_error("Too few extents on %s.  Try smaller extent size.",
-			  dev_name(pv->dev));
-		dbg_free(pvd);
+			  pv_dev_name(pv));
+		dm_free(pvd);
 		return 0;
 	}
 
@@ -151,22 +151,22 @@ int calculate_extent_count(struct physical_volume *pv, uint32_t extent_size,
 		if (pe_start && end < pe_start)
 			end = pe_start;
 
-		pvd->pe_start = _round_up(end, PE_ALIGN);
+		pvd->pe_start = _round_up(end, LVM1_PE_ALIGN);
 
 	} while ((pvd->pe_start + (pvd->pe_total * extent_size))
 		 > pv->size);
 
 	if (pvd->pe_total > MAX_PE_TOTAL) {
 		log_error("Metadata extent limit (%u) exceeded for %s - "
-			  "%u required", MAX_PE_TOTAL, dev_name(pv->dev),
+			  "%u required", MAX_PE_TOTAL, pv_dev_name(pv),
 			  pvd->pe_total);
-		dbg_free(pvd);
+		dm_free(pvd);
 		return 0;
 	}
 
 	pv->pe_count = pvd->pe_total;
 	pv->pe_start = pvd->pe_start;
 	/* We can't set pe_size here without breaking LVM1 compatibility */
-	dbg_free(pvd);
+	dm_free(pvd);
 	return 1;
 }
