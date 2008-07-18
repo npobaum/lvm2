@@ -1,14 +1,14 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2006 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -19,7 +19,6 @@
 #include "config.h"
 #include "lvm-types.h"
 #include "metadata.h"
-#include "pool.h"
 
 #include <stdio.h>
 
@@ -46,8 +45,12 @@ struct text_vg_version_ops {
 	int (*check_version) (struct config_tree * cf);
 	struct volume_group *(*read_vg) (struct format_instance * fid,
 					 struct config_tree * cf);
-	void (*read_desc) (struct pool * mem, struct config_tree * cf,
+	void (*read_desc) (struct dm_pool * mem, struct config_tree * cf,
 			   time_t *when, char **desc);
+	const char *(*read_vgname) (const struct format_type *fmt,
+				    struct config_tree *cft,
+				    struct id *vgid, uint32_t *vgstatus,
+				    char **creation_host);
 };
 
 struct text_vg_version_ops *text_vg_vsn1_init(void);
@@ -56,11 +59,10 @@ int print_flags(uint32_t status, int type, char *buffer, size_t size);
 int read_flags(uint32_t *status, int type, struct config_value *cv);
 
 int print_tags(struct list *tags, char *buffer, size_t size);
-int read_tags(struct pool *mem, struct list *tags, struct config_value *cv);
+int read_tags(struct dm_pool *mem, struct list *tags, struct config_value *cv);
 
 int text_vg_export_file(struct volume_group *vg, const char *desc, FILE *fp);
-int text_vg_export_raw(struct volume_group *vg, const char *desc, char *buf,
-		       uint32_t size);
+int text_vg_export_raw(struct volume_group *vg, const char *desc, char **buf);
 struct volume_group *text_vg_import_file(struct format_instance *fid,
 					 const char *file,
 					 time_t *when, char **desc);
@@ -72,5 +74,12 @@ struct volume_group *text_vg_import_fd(struct format_instance *fid,
 				       checksum_fn_t checksum_fn,
 				       uint32_t checksum,
 				       time_t *when, char **desc);
+const char *text_vgname_import(const struct format_type *fmt,
+			       struct device *dev,
+                               off_t offset, uint32_t size,
+                               off_t offset2, uint32_t size2,
+                               checksum_fn_t checksum_fn, uint32_t checksum,
+                               struct id *vgid, uint32_t *vgstatus,
+			       char **creation_host);
 
 #endif

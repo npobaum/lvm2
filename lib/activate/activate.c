@@ -1,14 +1,14 @@
 /*
- * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -19,13 +19,15 @@
 #include "memlock.h"
 #include "display.h"
 #include "fs.h"
+#include "lvm-exec.h"
 #include "lvm-file.h"
 #include "lvm-string.h"
-#include "pool.h"
 #include "toolcontext.h"
 #include "dev_manager.h"
 #include "str_list.h"
 #include "config.h"
+#include "filter.h"
+#include "segtype.h"
 
 #include <limits.h>
 #include <fcntl.h>
@@ -37,7 +39,7 @@ int lvm1_present(struct cmd_context *cmd)
 {
 	char path[PATH_MAX];
 
-	if (lvm_snprintf(path, sizeof(path), "%s/lvm/global", cmd->proc_dir)
+	if (dm_snprintf(path, sizeof(path), "%s/lvm/global", cmd->proc_dir)
 	    < 0) {
 		log_error("LVM1 proc global snprintf failed");
 		return 0;
@@ -47,6 +49,66 @@ int lvm1_present(struct cmd_context *cmd)
 		return 1;
 	else
 		return 0;
+}
+
+int list_segment_modules(struct dm_pool *mem, const struct lv_segment *seg,
+			 struct list *modules)
+{
+	unsigned int s;
+	struct lv_segment *seg2, *snap_seg;
+	struct list *snh;
+
+	if (seg->segtype->ops->modules_needed &&
+	    !seg->segtype->ops->modules_needed(mem, seg, modules)) {
+		log_error("module string allocation failed");
+		return 0;
+	}
+
+	if (lv_is_origin(seg->lv))
+		list_iterate(snh, &seg->lv->snapshot_segs)
+			if (!list_lv_modules(mem,
+					     list_struct_base(snh,
+							      struct lv_segment,
+							      origin_list)->cow,
+					     modules))
+				return_0;
+
+	if (lv_is_cow(seg->lv)) {
+		snap_seg = find_cow(seg->lv);
+		if (snap_seg->segtype->ops->modules_needed &&
+		    !snap_seg->segtype->ops->modules_needed(mem, snap_seg,
+							    modules)) {
+			log_error("snap_seg module string allocation failed");
+			return 0;
+		}
+	}
+
+	for (s = 0; s < seg->area_count; s++) {
+		switch (seg_type(seg, s)) {
+		case AREA_LV:
+			seg2 = find_seg_by_le(seg_lv(seg, s), seg_le(seg, s));
+			if (seg2 && !list_segment_modules(mem, seg2, modules))
+				return_0;
+			break;
+		case AREA_PV:
+		case AREA_UNASSIGNED:
+			;
+		}
+	}
+
+	return 1;
+}
+
+int list_lv_modules(struct dm_pool *mem, const struct logical_volume *lv,
+		    struct list *modules)
+{
+	struct lv_segment *seg;
+
+	list_iterate_items(seg, &lv->segments)
+		if (!list_segment_modules(mem, seg, modules))
+			return_0;
+
+	return 1;
 }
 
 #ifndef DEVMAPPER_SUPPORT
@@ -74,29 +136,39 @@ int driver_version(char *version, size_t size)
 {
 	return 0;
 }
-int target_present(const char *target_name)
+int target_version(const char *target_name, uint32_t *maj,
+		   uint32_t *min, uint32_t *patchlevel)
 {
 	return 0;
 }
-int lv_info(const struct logical_volume *lv, struct lvinfo *info)
+int target_present(const char *target_name, int use_modprobe)
+{
+	return 0;
+}
+int lv_info(struct cmd_context *cmd, const struct logical_volume *lv, struct lvinfo *info,
+	    int with_open_count, int with_read_ahead)
 {
 	return 0;
 }
 int lv_info_by_lvid(struct cmd_context *cmd, const char *lvid_s,
-		    struct lvinfo *info)
+		    struct lvinfo *info, int with_open_count, int with_read_ahead)
 {
 	return 0;
 }
-int lv_snapshot_percent(struct logical_volume *lv, float *percent)
+int lv_snapshot_percent(const struct logical_volume *lv, float *percent)
 {
 	return 0;
 }
-int lv_mirror_percent(struct logical_volume *lv, int wait, float *percent,
-		      uint32_t *event_nr)
+int lv_mirror_percent(struct cmd_context *cmd, struct logical_volume *lv,
+		      int wait, float *percent, uint32_t *event_nr)
 {
 	return 0;
 }
 int lvs_in_vg_activated(struct volume_group *vg)
+{
+	return 0;
+}
+int lvs_in_vg_activated_by_uuid_only(struct volume_group *vg)
 {
 	return 0;
 }
@@ -129,11 +201,11 @@ int lv_activation_filter(struct cmd_context *cmd, const char *lvid_s,
 {
 	return 1;
 }
-int lv_activate(struct cmd_context *cmd, const char *lvid_s)
+int lv_activate(struct cmd_context *cmd, const char *lvid_s, int exclusive)
 {
 	return 1;
 }
-int lv_activate_with_filter(struct cmd_context *cmd, const char *lvid_s)
+int lv_activate_with_filter(struct cmd_context *cmd, const char *lvid_s, int exclusive)
 {
 	return 1;
 }
@@ -141,6 +213,17 @@ int lv_activate_with_filter(struct cmd_context *cmd, const char *lvid_s)
 int lv_mknodes(struct cmd_context *cmd, const struct logical_volume *lv)
 {
 	return 1;
+}
+
+int pv_uses_vg(struct physical_volume *pv,
+	       struct volume_group *vg)
+{
+	return 0;
+}
+
+void activation_release(void)
+{
+	return;
 }
 
 void activation_exit(void)
@@ -162,8 +245,8 @@ void set_activation(int act)
 		log_verbose("Activation enabled. Device-mapper kernel "
 			    "driver will be used.");
 	else
-		log_verbose("Activation disabled. No device-mapper "
-			    "interaction will be attempted.");
+		log_warn("WARNING: Activation disabled. No device-mapper "
+			  "interaction will be attempted.");
 }
 
 int activation(void)
@@ -179,7 +262,7 @@ static int _passes_activation_filter(struct cmd_context *cmd,
 	char *str;
 	char path[PATH_MAX];
 
-	if (!(cn = find_config_node(cmd->cft->root, "activation/volume_list"))) {
+	if (!(cn = find_config_tree_node(cmd, "activation/volume_list"))) {
 		/* If no host tags defined, activate */
 		if (list_empty(&cmd->tags))
 			return 1;
@@ -230,7 +313,7 @@ static int _passes_activation_filter(struct cmd_context *cmd,
 			else
 				continue;
 		}
-		if (!index(str, '/')) {
+		if (!strchr(str, '/')) {
 			/* vgname supplied */
 			if (!strcmp(str, lv->vg->name))
 				return 1;
@@ -238,9 +321,9 @@ static int _passes_activation_filter(struct cmd_context *cmd,
 				continue;
 		}
 		/* vgname/lvname */
-		if (lvm_snprintf(path, sizeof(path), "%s/%s", lv->vg->name,
+		if (dm_snprintf(path, sizeof(path), "%s/%s", lv->vg->name,
 				 lv->name) < 0) {
-			log_error("lvm_snprintf error from %s/%s", lv->vg->name,
+			log_error("dm_snprintf error from %s/%s", lv->vg->name,
 				  lv->name);
 			continue;
 		}
@@ -256,53 +339,29 @@ int library_version(char *version, size_t size)
 	if (!activation())
 		return 0;
 
-	if (!dm_get_library_version(version, size))
-		return 0;
-	return 1;
+	return dm_get_library_version(version, size);
 }
 
 int driver_version(char *version, size_t size)
 {
-	int r = 0;
-	struct dm_task *dmt;
-
 	if (!activation())
 		return 0;
 
 	log_very_verbose("Getting driver version");
-	if (!(dmt = dm_task_create(DM_DEVICE_VERSION))) {
-		stack;
-		return 0;
-	}
 
-	if (!dm_task_run(dmt))
-		log_error("Failed to get driver version");
-
-	if (!dm_task_get_driver_version(dmt, version, size))
-		goto out;
-
-	r = 1;
-
-      out:
-	dm_task_destroy(dmt);
-
-	return r;
+	return dm_driver_version(version, size);
 }
 
-int target_present(const char *target_name)
+int target_version(const char *target_name, uint32_t *maj,
+		   uint32_t *min, uint32_t *patchlevel)
 {
 	int r = 0;
 	struct dm_task *dmt;
 	struct dm_versions *target, *last_target;
 
-	if (!activation())
-		return 0;
-
 	log_very_verbose("Getting target version for %s", target_name);
-	if (!(dmt = dm_task_create(DM_DEVICE_LIST_VERSIONS))) {
-		stack;
-		return 0;
-	}
+	if (!(dmt = dm_task_create(DM_DEVICE_LIST_VERSIONS)))
+		return_0;
 
 	if (!dm_task_run(dmt)) {
 		log_debug("Failed to get %s target version", target_name);
@@ -317,6 +376,9 @@ int target_present(const char *target_name)
 
 		if (!strcmp(target_name, target->name)) {
 			r = 1;
+			*maj = target->version[0];
+			*min = target->version[1];
+			*patchlevel = target->version[2];
 			goto out;
 		}
 
@@ -329,26 +391,67 @@ int target_present(const char *target_name)
 	return r;
 }
 
-/*
- * Returns 1 if info structure populated, else 0 on failure.
- */
-static int _lv_info(const struct logical_volume *lv, int mknodes,
-		    struct lvinfo *info)
+int module_present(const char *target_name)
 {
-	int r;
-	struct dev_manager *dm;
-	struct dm_info dminfo;
+	int ret = 0;
+#ifdef MODPROBE_CMD
+	char module[128];
+
+	if (dm_snprintf(module, sizeof(module), "dm-%s", target_name) < 0) {
+		log_error("module_present module name too long: %s",
+			  target_name);
+		return 0;
+	}
+
+	ret = exec_cmd(MODPROBE_CMD, module, "", "");
+#endif
+	return ret;
+}
+
+int target_present(const char *target_name, int use_modprobe)
+{
+	uint32_t maj, min, patchlevel;
 
 	if (!activation())
 		return 0;
 
-	if (!(dm = dev_manager_create(lv->vg->cmd, lv->vg->name))) {
-		stack;
-		return 0;
-	}
+#ifdef MODPROBE_CMD
+	if (use_modprobe) {
+		if (target_version(target_name, &maj, &min, &patchlevel))
+			return 1;
 
-	if (!(r = dev_manager_info(dm, lv, mknodes, &dminfo)))
-		stack;
+		if (!module_present(target_name))
+			return_0;
+	}
+#endif
+
+	return target_version(target_name, &maj, &min, &patchlevel);
+}
+
+/*
+ * Returns 1 if info structure populated, else 0 on failure.
+ */
+static int _lv_info(struct cmd_context *cmd, const struct logical_volume *lv, int with_mknodes,
+		    struct lvinfo *info, int with_open_count, int with_read_ahead, unsigned by_uuid_only)
+{
+	struct dm_info dminfo;
+	char *name = NULL;
+
+	if (!activation())
+		return 0;
+
+	if (!by_uuid_only &&
+	    !(name = build_dm_name(cmd->mem, lv->vg->name, lv->name, NULL)))
+		return_0;
+
+	log_debug("Getting device info for %s", name);
+	if (!dev_manager_info(lv->vg->cmd->mem, name, lv, with_mknodes,
+			      with_open_count, with_read_ahead, &dminfo,
+			      &info->read_ahead)) {
+		if (name)
+			dm_pool_free(cmd->mem, name);
+		return_0;
+	}
 
 	info->exists = dminfo.exists;
 	info->suspended = dminfo.suspended;
@@ -356,31 +459,36 @@ static int _lv_info(const struct logical_volume *lv, int mknodes,
 	info->major = dminfo.major;
 	info->minor = dminfo.minor;
 	info->read_only = dminfo.read_only;
+	info->live_table = dminfo.live_table;
+	info->inactive_table = dminfo.inactive_table;
 
-	dev_manager_destroy(dm);
-	return r;
+	if (name)
+		dm_pool_free(cmd->mem, name);
+
+	return 1;
 }
 
-int lv_info(const struct logical_volume *lv, struct lvinfo *info)
+int lv_info(struct cmd_context *cmd, const struct logical_volume *lv, struct lvinfo *info,
+	    int with_open_count, int with_read_ahead)
 {
-	return _lv_info(lv, 0, info);
+	return _lv_info(cmd, lv, 0, info, with_open_count, with_read_ahead, 0);
 }
 
 int lv_info_by_lvid(struct cmd_context *cmd, const char *lvid_s,
-		    struct lvinfo *info)
+		    struct lvinfo *info, int with_open_count, int with_read_ahead)
 {
 	struct logical_volume *lv;
 
-	if (!(lv = lv_from_lvid(cmd, lvid_s)))
+	if (!(lv = lv_from_lvid(cmd, lvid_s, 0)))
 		return 0;
 
-	return _lv_info(lv, 0, info);
+	return _lv_info(cmd, lv, 0, info, with_open_count, with_read_ahead, 0);
 }
 
 /*
  * Returns 1 if percent set, else 0 on failure.
  */
-int lv_snapshot_percent(struct logical_volume *lv, float *percent)
+int lv_snapshot_percent(const struct logical_volume *lv, float *percent)
 {
 	int r;
 	struct dev_manager *dm;
@@ -388,10 +496,8 @@ int lv_snapshot_percent(struct logical_volume *lv, float *percent)
 	if (!activation())
 		return 0;
 
-	if (!(dm = dev_manager_create(lv->vg->cmd, lv->vg->name))) {
-		stack;
-		return 0;
-	}
+	if (!(dm = dev_manager_create(lv->vg->cmd, lv->vg->name)))
+		return_0;
 
 	if (!(r = dev_manager_snapshot_percent(dm, lv, percent)))
 		stack;
@@ -402,28 +508,31 @@ int lv_snapshot_percent(struct logical_volume *lv, float *percent)
 }
 
 /* FIXME Merge with snapshot_percent */
-int lv_mirror_percent(struct logical_volume *lv, int wait, float *percent,
-		      uint32_t *event_nr)
+int lv_mirror_percent(struct cmd_context *cmd, struct logical_volume *lv,
+		      int wait, float *percent, uint32_t *event_nr)
 {
 	int r;
 	struct dev_manager *dm;
 	struct lvinfo info;
 
+	/* If mirrored LV is temporarily shrinked to 1 area (= linear),
+	 * it should be considered in-sync. */
+	if (list_size(&lv->segments) == 1 && first_seg(lv)->area_count == 1) {
+		*percent = 100.0;
+		return 1;
+	}
+
 	if (!activation())
 		return 0;
 
-	if (!lv_info(lv, &info)) {
-		stack;
-		return 0;
-	}
+	if (!lv_info(cmd, lv, &info, 0, 0))
+		return_0;
 
 	if (!info.exists)
 		return 0;
 
-	if (!(dm = dev_manager_create(lv->vg->cmd, lv->vg->name))) {
-		stack;
-		return 0;
-	}
+	if (!(dm = dev_manager_create(lv->vg->cmd, lv->vg->name)))
+		return_0;
 
 	if (!(r = dev_manager_mirror_percent(dm, lv, wait, percent, event_nr)))
 		stack;
@@ -433,11 +542,12 @@ int lv_mirror_percent(struct logical_volume *lv, int wait, float *percent,
 	return r;
 }
 
-static int _lv_active(struct logical_volume *lv)
+static int _lv_active(struct cmd_context *cmd, struct logical_volume *lv,
+		      unsigned by_uuid_only)
 {
 	struct lvinfo info;
 
-	if (!lv_info(lv, &info)) {
+	if (!_lv_info(cmd, lv, 0, &info, 0, 0, by_uuid_only)) {
 		stack;
 		return -1;
 	}
@@ -445,11 +555,11 @@ static int _lv_active(struct logical_volume *lv)
 	return info.exists;
 }
 
-static int _lv_open_count(struct logical_volume *lv)
+static int _lv_open_count(struct cmd_context *cmd, struct logical_volume *lv)
 {
 	struct lvinfo info;
 
-	if (!lv_info(lv, &info)) {
+	if (!lv_info(cmd, lv, &info, 1, 0)) {
 		stack;
 		return -1;
 	}
@@ -457,18 +567,30 @@ static int _lv_open_count(struct logical_volume *lv)
 	return info.open_count;
 }
 
-/* FIXME Need to detect and handle an lv rename */
 static int _lv_activate_lv(struct logical_volume *lv)
 {
 	int r;
 	struct dev_manager *dm;
 
-	if (!(dm = dev_manager_create(lv->vg->cmd, lv->vg->name))) {
-		stack;
-		return 0;
-	}
+	if (!(dm = dev_manager_create(lv->vg->cmd, lv->vg->name)))
+		return_0;
 
 	if (!(r = dev_manager_activate(dm, lv)))
+		stack;
+
+	dev_manager_destroy(dm);
+	return r;
+}
+
+static int _lv_preload(struct logical_volume *lv)
+{
+	int r;
+	struct dev_manager *dm;
+
+	if (!(dm = dev_manager_create(lv->vg->cmd, lv->vg->name)))
+		return_0;
+
+	if (!(r = dev_manager_preload(dm, lv)))
 		stack;
 
 	dev_manager_destroy(dm);
@@ -480,10 +602,8 @@ static int _lv_deactivate(struct logical_volume *lv)
 	int r;
 	struct dev_manager *dm;
 
-	if (!(dm = dev_manager_create(lv->vg->cmd, lv->vg->name))) {
-		stack;
-		return 0;
-	}
+	if (!(dm = dev_manager_create(lv->vg->cmd, lv->vg->name)))
+		return_0;
 
 	if (!(r = dev_manager_deactivate(dm, lv)))
 		stack;
@@ -492,17 +612,15 @@ static int _lv_deactivate(struct logical_volume *lv)
 	return r;
 }
 
-static int _lv_suspend_lv(struct logical_volume *lv)
+static int _lv_suspend_lv(struct logical_volume *lv, int lockfs)
 {
 	int r;
 	struct dev_manager *dm;
 
-	if (!(dm = dev_manager_create(lv->vg->cmd, lv->vg->name))) {
-		stack;
-		return 0;
-	}
+	if (!(dm = dev_manager_create(lv->vg->cmd, lv->vg->name)))
+		return_0;
 
-	if (!(r = dev_manager_suspend(dm, lv)))
+	if (!(r = dev_manager_suspend(dm, lv, lockfs)))
 		stack;
 
 	dev_manager_destroy(dm);
@@ -513,69 +631,254 @@ static int _lv_suspend_lv(struct logical_volume *lv)
  * These two functions return the number of visible LVs in the state,
  * or -1 on error.
  */
-int lvs_in_vg_activated(struct volume_group *vg)
+static int _lvs_in_vg_activated(struct volume_group *vg, unsigned by_uuid_only)
 {
-	struct list *lvh;
-	struct logical_volume *lv;
+	struct lv_list *lvl;
 	int count = 0;
 
 	if (!activation())
 		return 0;
 
-	list_iterate(lvh, &vg->lvs) {
-		lv = list_item(lvh, struct lv_list)->lv;
-		if (lv->status & VISIBLE_LV)
-			count += (_lv_active(lv) == 1);
+	list_iterate_items(lvl, &vg->lvs) {
+		if (lvl->lv->status & VISIBLE_LV)
+			count += (_lv_active(vg->cmd, lvl->lv, by_uuid_only) == 1);
 	}
 
 	return count;
 }
 
-int lvs_in_vg_opened(struct volume_group *vg)
+int lvs_in_vg_activated_by_uuid_only(struct volume_group *vg)
 {
-	struct list *lvh;
-	struct logical_volume *lv;
+	return _lvs_in_vg_activated(vg, 1);
+}
+
+int lvs_in_vg_activated(struct volume_group *vg)
+{
+	return _lvs_in_vg_activated(vg, 0);
+}
+
+int lvs_in_vg_opened(const struct volume_group *vg)
+{
+	const struct lv_list *lvl;
 	int count = 0;
 
 	if (!activation())
 		return 0;
 
-	list_iterate(lvh, &vg->lvs) {
-		lv = list_item(lvh, struct lv_list)->lv;
-		if (lv->status & VISIBLE_LV)
-			count += (_lv_open_count(lv) > 0);
+	list_iterate_items(lvl, &vg->lvs) {
+		if (lvl->lv->status & VISIBLE_LV)
+			count += (_lv_open_count(vg->cmd, lvl->lv) > 0);
 	}
 
 	return count;
+}
+
+/*
+ * Determine whether an LV is active locally or in a cluster.
+ * Assumes vg lock held.
+ * Returns:
+ * 0 - not active locally or on any node in cluster
+ * 1 - active either locally or some node in the cluster
+ */
+int lv_is_active(struct logical_volume *lv)
+{
+	if (_lv_active(lv->vg->cmd, lv, 0))
+		return 1;
+
+	if (!vg_is_clustered(lv->vg))
+		return 0;
+
+	/*
+	 * FIXME: Cluster does not report per-node LV activation status.
+	 * Currently the best we can do is try exclusive local activation.
+	 * If that succeeds, we know the LV is not active elsewhere in the
+	 * cluster.
+	 */
+	if (activate_lv_excl(lv->vg->cmd, lv)) {
+		deactivate_lv(lv->vg->cmd, lv);
+		return 0;
+	}
+
+	/*
+	 * Exclusive local activation failed so assume it is active elsewhere.
+	 */
+	return 1;
+}
+
+/*
+ * Returns 0 if an attempt to (un)monitor the device failed.
+ * Returns 1 otherwise.
+ */
+int monitor_dev_for_events(struct cmd_context *cmd,
+			    struct logical_volume *lv, int monitor)
+{
+#ifdef DMEVENTD
+	int i, pending = 0, monitored;
+	int r = 1;
+	struct list *tmp, *snh, *snht;
+	struct lv_segment *seg;
+	int (*monitor_fn) (struct lv_segment *s, int e);
+	uint32_t s;
+
+	/* skip dmeventd code altogether */
+	if (dmeventd_monitor_mode() == DMEVENTD_MONITOR_IGNORE)
+		return 1;
+
+	/*
+	 * Nothing to do if dmeventd configured not to be used.
+	 */
+	if (monitor && !dmeventd_monitor_mode())
+		return 1;
+
+	/*
+	 * In case of a snapshot device, we monitor lv->snapshot->lv,
+	 * not the actual LV itself.
+	 */
+	if (lv_is_cow(lv))
+		return monitor_dev_for_events(cmd, lv->snapshot->lv, monitor);
+
+	/*
+	 * In case this LV is a snapshot origin, we instead monitor
+	 * each of its respective snapshots (the origin itself does
+	 * not need to be monitored).
+	 *
+	 * TODO: This may change when snapshots of mirrors are allowed.
+	 */
+	if (lv_is_origin(lv)) {
+		list_iterate_safe(snh, snht, &lv->snapshot_segs)
+			if (!monitor_dev_for_events(cmd, list_struct_base(snh,
+				    struct lv_segment, origin_list)->cow, monitor))
+				r = 0;
+		return r;
+	}
+
+	list_iterate(tmp, &lv->segments) {
+		seg = list_item(tmp, struct lv_segment);
+
+		/* Recurse for AREA_LV */
+		for (s = 0; s < seg->area_count; s++) {
+			if (seg_type(seg, s) != AREA_LV)
+				continue;
+			if (!monitor_dev_for_events(cmd, seg_lv(seg, s),
+						    monitor)) {
+				log_error("Failed to %smonitor %s",
+					  monitor ? "" : "un",
+					  seg_lv(seg, s)->name);
+				r = 0;
+			}
+		}
+
+		if (!seg_monitored(seg) || (seg->status & PVMOVE))
+			continue;
+
+		monitor_fn = NULL;
+
+		/* Check monitoring status */
+		if (seg->segtype->ops->target_monitored)
+			monitored = seg->segtype->ops->target_monitored(seg, &pending);
+		else
+			continue;  /* segtype doesn't support registration */
+
+		/*
+		 * FIXME: We should really try again if pending
+		 */
+		monitored = (pending) ? 0 : monitored;
+
+		if (monitor) {
+			if (monitored)
+				log_verbose("%s/%s already monitored.", lv->vg->name, lv->name);
+			else if (seg->segtype->ops->target_monitor_events)
+				monitor_fn = seg->segtype->ops->target_monitor_events;
+		} else {
+			if (!monitored)
+				log_verbose("%s/%s already not monitored.", lv->vg->name, lv->name);
+			else if (seg->segtype->ops->target_unmonitor_events)
+				monitor_fn = seg->segtype->ops->target_unmonitor_events;
+		}
+
+		/* Do [un]monitor */
+		if (!monitor_fn)
+			continue;
+
+		log_verbose("%sonitoring %s/%s", monitor ? "M" : "Not m", lv->vg->name, lv->name);
+
+		/* FIXME specify events */
+		if (!monitor_fn(seg, 0)) {
+			log_error("%s/%s: %s segment monitoring function failed.",
+				  lv->vg->name, lv->name, seg->segtype->name);
+			return 0;
+		}
+
+		/* Check [un]monitor results */
+		/* Try a couple times if pending, but not forever... */
+		for (i = 0; i < 10; i++) {
+			pending = 0;
+			monitored = seg->segtype->ops->target_monitored(seg, &pending);
+			if (pending ||
+			    (!monitored && monitor) ||
+			    (monitored && !monitor))
+				log_very_verbose("%s/%s %smonitoring still pending: waiting...",
+						 lv->vg->name, lv->name, monitor ? "" : "un");
+			else
+				break;
+			sleep(1);
+		}
+
+		r = (monitored && monitor) || (!monitored && !monitor);
+	}
+
+	return r;
+#else
+	return 1;
+#endif
 }
 
 static int _lv_suspend(struct cmd_context *cmd, const char *lvid_s,
 		       int error_if_not_suspended)
 {
-	struct logical_volume *lv;
+	struct logical_volume *lv, *lv_pre;
 	struct lvinfo info;
+	int lockfs = 0;
 
 	if (!activation())
 		return 1;
 
-	if (!(lv = lv_from_lvid(cmd, lvid_s)))
-		return 0;
+	if (!(lv = lv_from_lvid(cmd, lvid_s, 0)))
+		return_0;
+
+	/* Use precommitted metadata if present */
+	if (!(lv_pre = lv_from_lvid(cmd, lvid_s, 1)))
+		return_0;
 
 	if (test_mode()) {
 		_skip("Suspending '%s'.", lv->name);
 		return 1;
 	}
 
-	if (!lv_info(lv, &info)) {
-		stack;
-		return 0;
-	}
+	if (!lv_info(cmd, lv, &info, 0, 0))
+		return_0;
 
 	if (!info.exists || info.suspended)
 		return error_if_not_suspended ? 0 : 1;
 
+	/* If VG was precommitted, preload devices for the LV */
+	if ((lv_pre->vg->status & PRECOMMITTED)) {
+		if (!_lv_preload(lv_pre)) {
+			/* FIXME Revert preloading */
+			return_0;
+		}
+	}
+
+	if (!monitor_dev_for_events(cmd, lv, 0))
+		/* FIXME Consider aborting here */
+		stack;
+
 	memlock_inc();
-	if (!_lv_suspend_lv(lv)) {
+
+	if (lv_is_origin(lv_pre) || lv_is_cow(lv_pre))
+		lockfs = 1;
+
+	if (!_lv_suspend_lv(lv, lockfs)) {
 		memlock_dec();
 		fs_unlock();
 		return 0;
@@ -604,7 +907,7 @@ static int _lv_resume(struct cmd_context *cmd, const char *lvid_s,
 	if (!activation())
 		return 1;
 
-	if (!(lv = lv_from_lvid(cmd, lvid_s)))
+	if (!(lv = lv_from_lvid(cmd, lvid_s, 0)))
 		return 0;
 
 	if (test_mode()) {
@@ -612,10 +915,8 @@ static int _lv_resume(struct cmd_context *cmd, const char *lvid_s,
 		return 1;
 	}
 
-	if (!lv_info(lv, &info)) {
-		stack;
-		return 0;
-	}
+	if (!lv_info(cmd, lv, &info, 0, 0))
+		return_0;
 
 	if (!info.exists || !info.suspended)
 		return error_if_not_active ? 0 : 1;
@@ -625,6 +926,9 @@ static int _lv_resume(struct cmd_context *cmd, const char *lvid_s,
 
 	memlock_dec();
 	fs_unlock();
+
+	if (!monitor_dev_for_events(cmd, lv, 1))
+		stack;
 
 	return 1;
 }
@@ -649,7 +953,7 @@ int lv_deactivate(struct cmd_context *cmd, const char *lvid_s)
 	if (!activation())
 		return 1;
 
-	if (!(lv = lv_from_lvid(cmd, lvid_s)))
+	if (!(lv = lv_from_lvid(cmd, lvid_s, 0)))
 		return 0;
 
 	if (test_mode()) {
@@ -657,19 +961,20 @@ int lv_deactivate(struct cmd_context *cmd, const char *lvid_s)
 		return 1;
 	}
 
-	if (!lv_info(lv, &info)) {
-		stack;
-		return 0;
-	}
+	if (!lv_info(cmd, lv, &info, 1, 0))
+		return_0;
 
 	if (!info.exists)
 		return 1;
 
 	if (info.open_count && (lv->status & VISIBLE_LV)) {
-		log_error("LV %s/%s in use: not removing", lv->vg->name,
+		log_error("LV %s/%s in use: not deactivating", lv->vg->name,
 			  lv->name);
 		return 0;
 	}
+
+	if (!monitor_dev_for_events(cmd, lv, 0))
+		stack;
 
 	memlock_inc();
 	r = _lv_deactivate(lv);
@@ -688,7 +993,7 @@ int lv_activation_filter(struct cmd_context *cmd, const char *lvid_s,
 	if (!activation())
 		goto activate;
 
-	if (!(lv = lv_from_lvid(cmd, lvid_s)))
+	if (!(lv = lv_from_lvid(cmd, lvid_s, 0)))
 		return 0;
 
 	if (!_passes_activation_filter(cmd, lv)) {
@@ -703,7 +1008,8 @@ int lv_activation_filter(struct cmd_context *cmd, const char *lvid_s,
 	return 1;
 }
 
-static int _lv_activate(struct cmd_context *cmd, const char *lvid_s, int filter)
+static int _lv_activate(struct cmd_context *cmd, const char *lvid_s,
+			int exclusive, int filter)
 {
 	struct logical_volume *lv;
 	struct lvinfo info;
@@ -712,7 +1018,7 @@ static int _lv_activate(struct cmd_context *cmd, const char *lvid_s, int filter)
 	if (!activation())
 		return 1;
 
-	if (!(lv = lv_from_lvid(cmd, lvid_s)))
+	if (!(lv = lv_from_lvid(cmd, lvid_s, 0)))
 		return 0;
 
 	if (filter && !_passes_activation_filter(cmd, lv)) {
@@ -726,32 +1032,36 @@ static int _lv_activate(struct cmd_context *cmd, const char *lvid_s, int filter)
 		return 1;
 	}
 
-	if (!lv_info(lv, &info)) {
-		stack;
-		return 0;
-	}
+	if (!lv_info(cmd, lv, &info, 0, 0))
+		return_0;
 
-	if (info.exists && !info.suspended)
+	if (info.exists && !info.suspended && info.live_table)
 		return 1;
+
+	if (exclusive)
+		lv->status |= ACTIVATE_EXCL;
 
 	memlock_inc();
 	r = _lv_activate_lv(lv);
 	memlock_dec();
 	fs_unlock();
 
+	if (r && !monitor_dev_for_events(cmd, lv, 1))
+		stack;
+
 	return r;
 }
 
 /* Activate LV */
-int lv_activate(struct cmd_context *cmd, const char *lvid_s)
+int lv_activate(struct cmd_context *cmd, const char *lvid_s, int exclusive)
 {
-	return _lv_activate(cmd, lvid_s, 0);
+	return _lv_activate(cmd, lvid_s, exclusive, 0);
 }
 
 /* Activate LV only if it passes filter */
-int lv_activate_with_filter(struct cmd_context *cmd, const char *lvid_s)
+int lv_activate_with_filter(struct cmd_context *cmd, const char *lvid_s, int exclusive)
 {
-	return _lv_activate(cmd, lvid_s, 1);
+	return _lv_activate(cmd, lvid_s, exclusive, 1);
 }
 
 int lv_mknodes(struct cmd_context *cmd, const struct logical_volume *lv)
@@ -760,15 +1070,13 @@ int lv_mknodes(struct cmd_context *cmd, const struct logical_volume *lv)
 	int r = 1;
 
 	if (!lv) {
-		r = dev_manager_mknodes();
+		r = dm_mknodes(NULL);
 		fs_unlock();
 		return r;
 	}
 
-	if (!_lv_info(lv, 1, &info)) {
-		stack;
-		return 0;
-	}
+	if (!_lv_info(cmd, lv, 1, &info, 0, 0, 0))
+		return_0;
 
 	if (info.exists)
 		r = dev_manager_lv_mknodes(lv);
@@ -778,6 +1086,27 @@ int lv_mknodes(struct cmd_context *cmd, const struct logical_volume *lv)
 	fs_unlock();
 
 	return r;
+}
+
+/*
+ * Does PV use VG somewhere in its construction?
+ * Returns 1 on failure.
+ */
+int pv_uses_vg(struct physical_volume *pv,
+	       struct volume_group *vg)
+{
+	if (!activation())
+		return 0;
+
+	if (!dm_is_dm_major(MAJOR(pv->dev->dev)))
+		return 0;
+
+	return dev_manager_device_uses_vg(pv->dev, vg);
+}
+
+void activation_release(void)
+{
+	dev_manager_release();
 }
 
 void activation_exit(void)

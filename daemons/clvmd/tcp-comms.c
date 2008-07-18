@@ -2,6 +2,7 @@
 *******************************************************************************
 **
 **  Copyright (C) Sistina Software, Inc.  2002-2003  All rights reserved.
+**  Copyright (C) 2004-2005 Red Hat, Inc. All rights reserved.
 **
 *******************************************************************************
 ******************************************************************************/
@@ -33,18 +34,18 @@
 #include <syslog.h>
 #include <netdb.h>
 #include <assert.h>
+#include <libdevmapper.h>
 
 #include "clvm.h"
 #include "clvmd-comms.h"
 #include "clvmd.h"
 #include "clvmd-gulm.h"
-#include "hash.h"
 
 #define DEFAULT_TCP_PORT 21064
 
 static int listen_fd = -1;
 static int tcp_port;
-struct hash_table *sock_hash;
+struct dm_hash_table *sock_hash;
 
 static int get_our_ip_address(char *addr, int *family);
 static int read_from_tcpsock(struct local_client *fd, char *buf, int len, char *csid,
@@ -55,8 +56,8 @@ int init_comms(unsigned short port)
 {
     struct sockaddr_in6 addr;
 
-    sock_hash = hash_create(100);
-    tcp_port = port ? port : DEFAULT_TCP_PORT;
+    sock_hash = dm_hash_create(100);
+    tcp_port = port ? : DEFAULT_TCP_PORT;
 
     listen_fd = socket(AF_INET6, SOCK_STREAM, 0);
 
@@ -68,6 +69,7 @@ int init_comms(unsigned short port)
     {
 	int one = 1;
 	setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(int));
+	setsockopt(listen_fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof(int));
     }
 
     memset(&addr, 0, sizeof(addr)); // Bind to INADDR_ANY
@@ -84,40 +86,43 @@ int init_comms(unsigned short port)
 
     listen(listen_fd, 5);
 
+    /* Set Close-on-exec */
+    fcntl(listen_fd, F_SETFD, 1);
+
     return 0;
 }
 
-void tcp_remove_client(char *csid)
- {
+void tcp_remove_client(const char *c_csid)
+{
     struct local_client *client;
+    char csid[GULM_MAX_CSID_LEN];
+    unsigned int i;
+    memcpy(csid, c_csid, sizeof csid);
     DEBUGLOG("tcp_remove_client\n");
 
     /* Don't actually close the socket here - that's the
        job of clvmd.c whch will do the job when it notices the
        other end has gone. We just need to remove the client(s) from
        the hash table so we don't try to use it for sending any more */
-    client = hash_lookup_binary(sock_hash, csid, MAX_CSID_LEN);
-    if (client)
+    for (i = 0; i < 2; i++)
     {
-	hash_remove_binary(sock_hash, csid, MAX_CSID_LEN);
+	client = dm_hash_lookup_binary(sock_hash, csid, GULM_MAX_CSID_LEN);
+	if (client)
+	{
+	    dm_hash_remove_binary(sock_hash, csid, GULM_MAX_CSID_LEN);
+	    client->removeme = 1;
+	    close(client->fd);
+	}
+	/* Look for a mangled one too, on the 2nd iteration. */
+	csid[0] ^= 0x80;
     }
-
-    /* Look for a mangled one too */
-    csid[0] ^= 0x80;
-
-    client = hash_lookup_binary(sock_hash, csid, MAX_CSID_LEN);
-    if (client)
-    {
-	hash_remove_binary(sock_hash, csid, MAX_CSID_LEN);
-    }
-
-    /* Put it back as we found it */
-    csid[0] ^= 0x80;
 }
 
-int alloc_client(int fd, char *csid, struct local_client **new_client)
+int alloc_client(int fd, const char *c_csid, struct local_client **new_client)
 {
     struct local_client *client;
+    char csid[GULM_MAX_CSID_LEN];
+    memcpy(csid, c_csid, sizeof csid);
 
     DEBUGLOG("alloc_client %d csid = %s\n", fd, print_csid(csid));
 
@@ -137,7 +142,7 @@ int alloc_client(int fd, char *csid, struct local_client **new_client)
 	*new_client = client;
 
     /* Add to our list of node sockets */
-    if (hash_lookup_binary(sock_hash, csid, MAX_CSID_LEN))
+    if (dm_hash_lookup_binary(sock_hash, csid, GULM_MAX_CSID_LEN))
     {
 	DEBUGLOG("alloc_client mangling CSID for second connection\n");
 	/* This is a duplicate connection but we can't close it because
@@ -150,7 +155,7 @@ int alloc_client(int fd, char *csid, struct local_client **new_client)
 
         /* If it still exists then kill the connection as we should only
            ever have one incoming connection from each node */
-        if (hash_lookup_binary(sock_hash, csid, MAX_CSID_LEN))
+        if (dm_hash_lookup_binary(sock_hash, csid, GULM_MAX_CSID_LEN))
         {
 	    DEBUGLOG("Multiple incoming connections from node\n");
             syslog(LOG_ERR, " Bogus incoming connection from %d.%d.%d.%d\n", csid[0],csid[1],csid[2],csid[3]);
@@ -160,26 +165,26 @@ int alloc_client(int fd, char *csid, struct local_client **new_client)
             return -1;
         }
     }
-    hash_insert_binary(sock_hash, csid, MAX_CSID_LEN, client);
+    dm_hash_insert_binary(sock_hash, csid, GULM_MAX_CSID_LEN, client);
 
     return 0;
 }
 
-int get_main_cluster_fd()
+int get_main_gulm_cluster_fd()
 {
     return listen_fd;
 }
 
 
 /* Read on main comms (listen) socket, accept it */
-int cluster_fd_callback(struct local_client *fd, char *buf, int len, char *csid,
+int cluster_fd_gulm_callback(struct local_client *fd, char *buf, int len, const char *csid,
 			struct local_client **new_client)
 {
     int newfd;
     struct sockaddr_in6 addr;
     socklen_t addrlen = sizeof(addr);
     int status;
-    char name[MAX_CLUSTER_MEMBER_NAME_LEN];
+    char name[GULM_MAX_CLUSTER_MEMBER_NAME_LEN];
 
     DEBUGLOG("cluster_fd_callback\n");
     *new_client = NULL;
@@ -196,7 +201,7 @@ int cluster_fd_callback(struct local_client *fd, char *buf, int len, char *csid,
     /* Check that the client is a member of the cluster
        and reject if not.
     */
-    if (name_from_csid((char *)&addr.sin6_addr, name) < 0)
+    if (gulm_name_from_csid((char *)&addr.sin6_addr, name) < 0)
     {
 	syslog(LOG_ERR, "Got connect from non-cluster node %s\n",
 	       print_csid((char *)&addr.sin6_addr));
@@ -221,22 +226,62 @@ int cluster_fd_callback(struct local_client *fd, char *buf, int len, char *csid,
     return newfd;
 }
 
+/* Try to get at least 'len' bytes from the socket */
+static int really_read(int fd, char *buf, int len)
+{
+	int got, offset;
+
+	got = offset = 0;
+
+	do {
+		got = read(fd, buf+offset, len-offset);
+		DEBUGLOG("really_read. got %d bytes\n", got);
+		offset += got;
+	} while (got > 0 && offset < len);
+
+	if (got < 0)
+		return got;
+	else
+		return offset;
+}
+
 
 static int read_from_tcpsock(struct local_client *client, char *buf, int len, char *csid,
 			     struct local_client **new_client)
 {
     struct sockaddr_in6 addr;
     socklen_t slen = sizeof(addr);
+    struct clvm_header *header = (struct clvm_header *)buf;
     int status;
+    uint32_t arglen;
 
     DEBUGLOG("read_from_tcpsock fd %d\n", client->fd);
     *new_client = NULL;
 
     /* Get "csid" */
     getpeername(client->fd, (struct sockaddr *)&addr, &slen);
-    memcpy(csid, &addr.sin6_addr, MAX_CSID_LEN);
+    memcpy(csid, &addr.sin6_addr, GULM_MAX_CSID_LEN);
 
-    status = read(client->fd, buf, len);
+    /* Read just the header first, then get the rest if there is any.
+     * Stream sockets, sigh.
+     */
+    status = really_read(client->fd, buf, sizeof(struct clvm_header));
+    if (status > 0)
+    {
+	    int status2;
+
+	    arglen = ntohl(header->arglen);
+
+	    /* Get the rest */
+	    if (arglen && arglen < GULM_MAX_CLUSTER_MESSAGE)
+	    {
+		    status2 = really_read(client->fd, buf+status, arglen);
+		    if (status2 > 0)
+			    status += status2;
+		    else
+			    status = status2;
+	    }
+    }
 
     DEBUGLOG("read_from_tcpsock, status = %d(errno = %d)\n", status, errno);
 
@@ -245,31 +290,33 @@ static int read_from_tcpsock(struct local_client *client, char *buf, int len, ch
     if (status == 0 ||
 	(status < 0 && errno != EAGAIN && errno != EINTR))
     {
-	char remcsid[MAX_CSID_LEN];
+	char remcsid[GULM_MAX_CSID_LEN];
 
-	memcpy(remcsid, csid, MAX_CSID_LEN);
+	memcpy(remcsid, csid, GULM_MAX_CSID_LEN);
 	close(client->fd);
 
 	/* If the csid was mangled, then make sure we remove the right entry */
 	if (client->bits.net.flags)
 	    remcsid[0] ^= 0x80;
-	hash_remove_binary(sock_hash, remcsid, MAX_CSID_LEN);
+	dm_hash_remove_binary(sock_hash, remcsid, GULM_MAX_CSID_LEN);
 
 	/* Tell cluster manager layer */
 	add_down_node(remcsid);
     }
     else {
+	    gulm_add_up_node(csid);
 	    /* Send it back to clvmd */
-	    process_message(client, buf, len, csid);
+	    process_message(client, buf, status, csid);
     }
     return status;
 }
 
-static int connect_csid(char *csid, struct local_client **newclient)
+int gulm_connect_csid(const char *csid, struct local_client **newclient)
 {
     int fd;
     struct sockaddr_in6 addr;
     int status;
+    int one = 1;
 
     DEBUGLOG("Connecting socket\n");
     fd = socket(PF_INET6, SOCK_STREAM, 0);
@@ -281,17 +328,27 @@ static int connect_csid(char *csid, struct local_client **newclient)
     }
 
     addr.sin6_family = AF_INET6;
-    memcpy(&addr.sin6_addr, csid, MAX_CSID_LEN);
+    memcpy(&addr.sin6_addr, csid, GULM_MAX_CSID_LEN);
     addr.sin6_port = htons(tcp_port);
 
     DEBUGLOG("Connecting socket %d\n", fd);
     if (connect(fd, (struct sockaddr *)&addr, sizeof(struct sockaddr_in6)) < 0)
     {
-	syslog(LOG_ERR, "Unable to connect to remote node: %m");
+	/* "Connection refused" is "normal" because clvmd may not yet be running
+	 * on that node.
+	 */
+	if (errno != ECONNREFUSED)
+	{
+	    syslog(LOG_ERR, "Unable to connect to remote node: %m");
+	}
 	DEBUGLOG("Unable to connect to remote node: %s\n", strerror(errno));
 	close(fd);
 	return -1;
     }
+
+    /* Set Close-on-exec */
+    fcntl(fd, F_SETFD, 1);
+    setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof(int));
 
     status = alloc_client(fd, csid, newclient);
     if (status)
@@ -300,30 +357,30 @@ static int connect_csid(char *csid, struct local_client **newclient)
 	add_client(*newclient);
 
     /* If we can connect to it, it must be running a clvmd */
-    add_up_node(csid);
+    gulm_add_up_node(csid);
     return status;
 }
 
 /* Send a message to a known CSID */
-static int tcp_send_message(void *buf, int msglen, unsigned char *csid, const char *errtext)
+static int tcp_send_message(void *buf, int msglen, const char *csid, const char *errtext)
 {
     int status;
     struct local_client *client;
-    char ourcsid[MAX_CSID_LEN];
+    char ourcsid[GULM_MAX_CSID_LEN];
 
     assert(csid);
 
     DEBUGLOG("tcp_send_message, csid = %s, msglen = %d\n", print_csid(csid), msglen);
 
     /* Don't connect to ourself */
-    get_our_csid(ourcsid);
-    if (memcmp(csid, ourcsid, MAX_CSID_LEN) == 0)
+    get_our_gulm_csid(ourcsid);
+    if (memcmp(csid, ourcsid, GULM_MAX_CSID_LEN) == 0)
 	return msglen;
 
-    client = hash_lookup_binary(sock_hash, csid, MAX_CSID_LEN);
+    client = dm_hash_lookup_binary(sock_hash, csid, GULM_MAX_CSID_LEN);
     if (!client)
     {
-	status = connect_csid(csid, &client);
+	status = gulm_connect_csid(csid, &client);
 	if (status)
 	    return -1;
     }
@@ -333,7 +390,7 @@ static int tcp_send_message(void *buf, int msglen, unsigned char *csid, const ch
 }
 
 
-int cluster_send_message(void *buf, int msglen, char *csid, const char *errtext)
+int gulm_cluster_send_message(void *buf, int msglen, const char *csid, const char *errtext)
 {
     int status=0;
 
@@ -343,7 +400,7 @@ int cluster_send_message(void *buf, int msglen, char *csid, const char *errtext)
     if (!csid)
     {
 	void *context = NULL;
-	char loop_csid[MAX_CSID_LEN];
+	char loop_csid[GULM_MAX_CSID_LEN];
 
 	/* Loop round all gulm-known nodes */
 	while (get_next_node_csid(&context, loop_csid))
@@ -377,9 +434,9 @@ static int get_our_ip_address(char *addr, int *family)
 
 /* Public version of above for those that don't care what protocol
    we're using */
-void get_our_csid(char *csid)
+void get_our_gulm_csid(char *csid)
 {
-    static char our_csid[MAX_CSID_LEN];
+    static char our_csid[GULM_MAX_CSID_LEN];
     static int got_csid = 0;
 
     if (!got_csid)
@@ -392,7 +449,7 @@ void get_our_csid(char *csid)
 	    got_csid = 1;
 	}
     }
-    memcpy(csid, our_csid, MAX_CSID_LEN);
+    memcpy(csid, our_csid, GULM_MAX_CSID_LEN);
 }
 
 static void map_v4_to_v6(struct in_addr *ip4, struct in6_addr *ip6)
@@ -404,11 +461,11 @@ static void map_v4_to_v6(struct in_addr *ip4, struct in6_addr *ip6)
 }
 
 /* Get someone else's IP address from DNS */
-int get_ip_address(char *node, char *addr)
+int get_ip_address(const char *node, char *addr)
 {
     struct hostent *he;
 
-    memset(addr, 0, MAX_CSID_LEN);
+    memset(addr, 0, GULM_MAX_CSID_LEN);
 
     // TODO: what do we do about multi-homed hosts ???
     // CCSs ip_interfaces solved this but some bugger removed it.
@@ -432,7 +489,7 @@ int get_ip_address(char *node, char *addr)
     return 0;
 }
 
-char *print_csid(char *csid)
+char *print_csid(const char *csid)
 {
     static char buf[128];
     int *icsid = (int *)csid;

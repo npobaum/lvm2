@@ -1,14 +1,14 @@
 /*
- * Copyright (C) 2003-2004 Sistina Software, Inc. All rights reserved. 
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2003-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -18,7 +18,7 @@
 #include <signal.h>
 #include <sys/wait.h>
 
-static void _sigchld_handler(int sig)
+static void _sigchld_handler(int sig __attribute((unused)))
 {
 	while (wait4(-1, NULL, WNOHANG | WUNTRACED, NULL) > 0) ;
 }
@@ -85,7 +85,7 @@ static int _check_mirror_status(struct cmd_context *cmd,
 		return 0;
 	}
 
-	if (!lv_mirror_percent(lv_mirr, !parms->interval, &segment_percent,
+	if (!lv_mirror_percent(cmd, lv_mirr, !parms->interval, &segment_percent,
 			       &event_nr)) {
 		log_error("ABORTING: Mirror percentage check failed.");
 		return 0;
@@ -93,9 +93,11 @@ static int _check_mirror_status(struct cmd_context *cmd,
 
 	overall_percent = copy_percent(lv_mirr);
 	if (parms->progress_display)
-		log_print("%s: Moved: %.1f%%", name, overall_percent);
+		log_print("%s: %s: %.1f%%", name, parms->progress_title,
+			  overall_percent);
 	else
-		log_verbose("%s: Moved: %.1f%%", name, overall_percent);
+		log_verbose("%s: %s: %.1f%%", name, parms->progress_title,
+			    overall_percent);
 
 	if (segment_percent < 100.0) {
 		/* The only case the caller *should* try again later */
@@ -138,8 +140,11 @@ static int _wait_for_single_mirror(struct cmd_context *cmd, const char *name,
 	while (!finished) {
 		/* FIXME Also needed in vg/lvchange -ay? */
 		/* FIXME Use alarm for regular intervals instead */
-		if (parms->interval && !parms->aborting)
+		if (parms->interval && !parms->aborting) {
 			sleep(parms->interval);
+			/* Devices might have changed while we slept */
+			init_full_scan_done(0);
+		}
 
 		/* Locks the (possibly renamed) VG again */
 		if (!(vg = parms->poll_fns->get_copy_vg(cmd, name))) {
@@ -188,10 +193,8 @@ static int _poll_vg(struct cmd_context *cmd, const char *vgname,
 		return ECMD_FAILED;
 	}
 
-	if (vg->status & EXPORTED_VG) {
-		log_error("Volume group \"%s\" is exported", vg->name);
+	if (!vg_check_status(vg, EXPORTED_VG))
 		return ECMD_FAILED;
-	}
 
 	list_iterate_items(lvl, &vg->lvs) {
 		lv_mirr = lvl->lv;
@@ -199,7 +202,7 @@ static int _poll_vg(struct cmd_context *cmd, const char *vgname,
 			continue;
 		if (!(name = parms->poll_fns->get_copy_name_from_lv(lv_mirr)))
 			continue;
-		/* FIXME Need to do the activation from _set_up_pvmove here 
+		/* FIXME Need to do the activation from _set_up_pvmove here
 		 *       if it's not running and we're not aborting */
 		if (_check_mirror_status(cmd, vg, lv_mirr, name,
 					 parms, &finished) && !finished)
@@ -223,7 +226,8 @@ static void _poll_for_all_vgs(struct cmd_context *cmd,
 }
 
 int poll_daemon(struct cmd_context *cmd, const char *name, unsigned background,
-		uint32_t lv_type, struct poll_functions *poll_fns)
+		uint32_t lv_type, struct poll_functions *poll_fns,
+		const char *progress_title)
 {
 	struct daemon_parms parms;
 
@@ -231,6 +235,7 @@ int poll_daemon(struct cmd_context *cmd, const char *name, unsigned background,
 	parms.background = background;
 	parms.interval = arg_uint_value(cmd, interval_ARG, DEFAULT_INTERVAL);
 	parms.progress_display = 1;
+	parms.progress_title = progress_title;
 	parms.lv_type = lv_type;
 	parms.poll_fns = poll_fns;
 

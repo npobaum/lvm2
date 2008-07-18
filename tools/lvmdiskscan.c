@@ -1,14 +1,14 @@
 /*
  * Copyright (C) 2002-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -21,10 +21,10 @@
 
 #include "tools.h"
 
-int disks_found = 0;
-int parts_found = 0;
-int pv_disks_found = 0;
-int pv_parts_found = 0;
+int disks_found;
+int parts_found;
+int pv_disks_found;
+int pv_parts_found;
 int max_len;
 
 static int _get_max_dev_name_len(struct dev_filter *filter)
@@ -34,7 +34,7 @@ static int _get_max_dev_name_len(struct dev_filter *filter)
 	struct dev_iter *iter;
 	struct device *dev;
 
-	if (!(iter = dev_iter_create(filter))) {
+	if (!(iter = dev_iter_create(filter, 1))) {
 		log_error("dev_iter_create failed");
 		return 0;
 	}
@@ -64,7 +64,7 @@ static void _print(struct cmd_context *cmd, const struct device *dev,
 		   uint64_t size, const char *what)
 {
 	log_print("%-*s [%15s] %s", max_len, dev_name(dev),
-		  display_size(cmd, size, SIZE_SHORT), what ? : "");
+		  display_size(cmd, size), what ? : "");
 }
 
 static int _check_device(struct cmd_context *cmd, struct device *dev)
@@ -91,19 +91,26 @@ static int _check_device(struct cmd_context *cmd, struct device *dev)
 	return 1;
 }
 
-int lvmdiskscan(struct cmd_context *cmd, int argc, char **argv)
+int lvmdiskscan(struct cmd_context *cmd, int argc __attribute((unused)),
+		char **argv __attribute((unused)))
 {
 	uint64_t size;
 	struct dev_iter *iter;
 	struct device *dev;
 	struct label *label;
 
+	/* initialise these here to avoid problems with the lvm shell */
+	disks_found = 0;
+	parts_found = 0;
+	pv_disks_found = 0;
+	pv_parts_found = 0;
+
 	if (arg_count(cmd, lvmpartition_ARG))
-		log_print("WARNING: only considering LVM devices");
+		log_warn("WARNING: only considering LVM devices");
 
 	max_len = _get_max_dev_name_len(cmd->filter);
 
-	if (!(iter = dev_iter_create(cmd->filter))) {
+	if (!(iter = dev_iter_create(cmd->filter, 0))) {
 		log_error("dev_iter_create failed");
 		return ECMD_FAILED;
 	}
@@ -111,7 +118,7 @@ int lvmdiskscan(struct cmd_context *cmd, int argc, char **argv)
 	/* Do scan */
 	for (dev = dev_iter_get(iter); dev; dev = dev_iter_get(iter)) {
 		/* Try if it is a PV first */
-		if ((label_read(dev, &label))) {
+		if ((label_read(dev, &label, UINT64_C(0)))) {
 			if (!dev_get_size(dev, &size)) {
 				log_error("Couldn't get size of \"%s\"",
 					  dev_name(dev));

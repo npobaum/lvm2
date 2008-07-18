@@ -1,14 +1,14 @@
 /*
- * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -35,10 +35,10 @@ int create_temp_name(const char *dir, char *buffer, size_t len, int *fd)
 	pid_t pid;
 	char hostname[255];
 	struct flock lock = {
-		l_type:F_WRLCK,
-		l_whence:0,
-		l_start:0,
-		l_len:0
+		.l_type = F_WRLCK,
+		.l_whence = 0,
+		.l_start = 0,
+		.l_len = 0
 	};
 
 	num = rand();
@@ -50,7 +50,7 @@ int create_temp_name(const char *dir, char *buffer, size_t len, int *fd)
 
 	for (i = 0; i < 20; i++, num++) {
 
-		if (lvm_snprintf(buffer, len, "%s/.lvm_%s_%d_%d",
+		if (dm_snprintf(buffer, len, "%s/.lvm_%s_%d_%d",
 				 dir, hostname, pid, num) == -1) {
 			log_err("Not enough space to build temporary file "
 				"string.");
@@ -66,7 +66,8 @@ int create_temp_name(const char *dir, char *buffer, size_t len, int *fd)
 		if (!fcntl(*fd, F_SETLK, &lock))
 			return 1;
 
-		close(*fd);
+		if (close(*fd))
+			log_sys_error("close", buffer);
 	}
 
 	return 0;
@@ -86,7 +87,11 @@ int lvm_rename(const char *old, const char *new)
 {
 	struct stat buf;
 
-	link(old, new);
+	if (link(old, new)) {
+		log_error("%s: rename to %s failed: %s", old, new,
+			  strerror(errno));
+		return 0;
+	}
 
 	if (stat(old, &buf)) {
 		log_sys_error("stat", old);
@@ -135,54 +140,6 @@ int dir_exists(const char *path)
 	return 1;
 }
 
-static int _create_dir_recursive(const char *dir)
-{
-	char *orig, *s;
-	int rc;
-
-	log_verbose("Creating directory \"%s\"", dir);
-	/* Create parent directories */
-	orig = s = dbg_strdup(dir);
-	while ((s = strchr(s, '/')) != NULL) {
-		*s = '\0';
-		if (*orig) {
-			rc = mkdir(orig, 0777);
-			if (rc < 0 && errno != EEXIST) {
-				log_sys_error("mkdir", orig);
-				dbg_free(orig);
-				return 0;
-			}
-		}
-		*s++ = '/';
-	}
-	dbg_free(orig);
-
-	/* Create final directory */
-	rc = mkdir(dir, 0777);
-	if (rc < 0 && errno != EEXIST) {
-		log_sys_error("mkdir", dir);
-		return 0;
-	}
-	return 1;
-}
-
-int create_dir(const char *dir)
-{
-	struct stat info;
-
-	if (!*dir)
-		return 1;
-
-	if (stat(dir, &info) < 0)
-		return _create_dir_recursive(dir);
-
-	if (S_ISDIR(info.st_mode))
-		return 1;
-
-	log_error("Directory \"%s\" not found", dir);
-	return 0;
-}
-
 int is_empty_dir(const char *dir)
 {
 	struct dirent *dirent;
@@ -209,7 +166,7 @@ void sync_dir(const char *file)
 	int fd;
 	char *dir, *c;
 
-	if (!(dir = dbg_strdup(file))) {
+	if (!(dir = dm_strdup(file))) {
 		log_error("sync_dir failed in strdup");
 		return;
 	}
@@ -230,11 +187,98 @@ void sync_dir(const char *file)
 		goto out;
 	}
 
-	if (fsync(fd) == -1)
+	if (fsync(fd) && (errno != EROFS) && (errno != EINVAL))
 		log_sys_error("fsync", dir);
 
-	close(fd);
+	if (close(fd))
+		log_sys_error("close", dir);
 
       out:
-	dbg_free(dir);
+	dm_free(dir);
+}
+
+/*
+ * Attempt to obtain fcntl lock on a file, if necessary creating file first
+ * or waiting.
+ * Returns file descriptor on success, else -1.
+ * mode is F_WRLCK or F_RDLCK
+ */
+int fcntl_lock_file(const char *file, short lock_type, int warn_if_read_only)
+{
+	int lockfd;
+	char *dir;
+	char *c;
+	struct flock lock = {
+		.l_type = lock_type,
+		.l_whence = 0,
+		.l_start = 0,
+		.l_len = 0
+	};
+
+	if (!(dir = dm_strdup(file))) {
+		log_error("fcntl_lock_file failed in strdup.");
+		return -1;
+	}
+
+	if ((c = strrchr(dir, '/')))
+		*c = '\0';
+
+	if (!dm_create_dir(dir)) {
+		dm_free(dir);
+		return -1;
+	}
+
+	dm_free(dir);
+
+	log_very_verbose("Locking %s (%s, %hd)", file,
+			 (lock_type == F_WRLCK) ? "F_WRLCK" : "F_RDLCK",
+			 lock_type);
+	if ((lockfd = open(file, O_RDWR | O_CREAT, 0777)) < 0) {
+		/* EACCES has been reported on NFS */
+		if (warn_if_read_only || (errno != EROFS && errno != EACCES))
+			log_sys_error("open", file);
+		else
+			stack;
+
+		return -1;
+	}
+
+	if (fcntl(lockfd, F_SETLKW, &lock)) {
+		log_sys_error("fcntl", file);
+		close(lockfd);
+		return -1;
+	}
+
+	return lockfd;
+}
+
+void fcntl_unlock_file(int lockfd)
+{
+	struct flock lock = {
+		.l_type = F_UNLCK,
+		.l_whence = 0,
+		.l_start = 0,
+		.l_len = 0
+	};
+
+	log_very_verbose("Unlocking fd %d", lockfd);
+
+	if (fcntl(lockfd, F_SETLK, &lock) == -1)
+		log_error("fcntl unlock failed on fd %d: %s", lockfd,
+			  strerror(errno));
+
+	if (close(lockfd))
+		log_error("lock file close failed on fd %d: %s", lockfd,
+			  strerror(errno));
+}
+
+int lvm_fclose(FILE *fp, const char *filename)
+{
+	if (!dm_fclose(fp))
+		return 0;
+	if (errno == 0)
+		log_error("%s: write error", filename);
+	else
+		log_sys_error("write error", filename);
+	return EOF;
 }

@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# chkconfig: 345 23 77
+# chkconfig: - 24 76
 # description: Starts and stops clvmd
 #
 #	       
@@ -9,63 +9,44 @@
 ### END INIT INFO
 
 . /etc/init.d/functions
+
+LVDISPLAY="/usr/sbin/lvdisplay"
+VGCHANGE="/usr/sbin/vgchange"
+VGSCAN="/usr/sbin/vgscan"
+VGDISPLAY="/usr/sbin/vgdisplay"
+VGS="/usr/sbin/vgs"
+CLVMDOPTS="-T20"
+
 [ -f /etc/sysconfig/cluster ] && . /etc/sysconfig/cluster
 
 LOCK_FILE="/var/lock/subsys/clvmd"
 
-#
-# FIXME -- the lvm2-cluster rpms put the lvm tools in a different location
-#
-lvdisplay=/usr/sbin/cluster/lvdisplay
-vgchange=/usr/sbin/cluster/vgchange
-
 start()
 {
-	modprobe dlm
 	for rtrn in 0
 	do
 		if ! pidof clvmd > /dev/null 
 		then 
-			echo -n "Starting clvmd:"
-			clvmd > /dev/null 2>&1
+			echo -n "Starting clvmd: "
+			daemon clvmd $CLVMDOPTS
 			rtrn=$?
-			if [ $rtrn -eq 0 ]
+			echo
+			if [ $rtrn -ne 0 ]
 			then
-				success
-				echo
-			else
-				failure
-				echo
 				break
 			fi
-		fi	
+ 		fi	
+		# refresh cache
+		$VGSCAN  > /dev/null 2>&1
 		
 		if [ -n "$LVM_VGS" ]
 		then
 			for vg in $LVM_VGS
 			do
-				echo -n "Activating lvm $vg:"
-				if $vgchange -ayl $vg > /dev/null 2>&1
-				then
-					success
-					echo
-				else
-					rtrn=$?
-					failure
-					echo
-				fi
+				action "Activating VG $vg:" $VGCHANGE -ayl $vg || rtrn=$?
 			done
 		else
-			echo -n "Activating lvms:"
-			if $vgchange -ayl > /dev/null 2>&1
-			then
-				success
-				echo
-			else
-				rtrn=$?
-				failure
-				echo
-			fi
+			action "Activating VGs:" $VGCHANGE -ayl || rtrn=$?
 		fi
 	done
 
@@ -80,53 +61,43 @@ stop()
 		then
 			for vg in $LVM_VGS
 			do
-				echo -n "Deactivating lvm $vg:"
-				if $vgchange -anl $vg > /dev/null 2>&1
-				then
-					success
-					echo
-				else
-					rtrn=$?
-					failure
-					echo
-				fi
+				action "Deactivating VG $vg:" $VGCHANGE -anl $vg || rtrn=$?
 			done
 		else
-			echo -n "Deactivating lvms:"
-			if $vgchange -anl > /dev/null 2>&1
-			then
-				success
-				echo
-			else
-				rtrn=$?
-				failure
-				echo
-			fi
+			# Hack to only deactivate clustered volumes
+			clustervgs=`$VGDISPLAY 2> /dev/null | awk 'BEGIN {RS="VG Name"} {if (/Clustered/) print $1;}'`
+			for vg in $clustervgs; do
+				action "Deactivating VG $vg:" $VGCHANGE -anl $vg || rtrn=$?
+			done
 		fi
 
 		[ $rtrn -ne 0 ] && break
 
 		echo -n "Stopping clvm:"
-		pid=$(pidof clvmd)
-		if [ -n "$pid" ]
-		then
-			while kill $pid > /dev/null 2>&1
-			do
-				sleep 1
-			done
-		fi
-		if [ $rtrn -eq 0 ]
-		then
-			success
-			echo
-		else
-			failure
-			echo
-		fi
+		killproc clvmd -TERM
+		rtrn=$?
+		echo
 	done
-	modprobe -r dlm > /dev/null 2>&1 
 	
 	return $rtrn
+}
+
+wait_for_finish()
+{
+	count=0
+
+	while [ "$count" -le 10 -a -n "`pidof clvmd`" ]
+	do
+		sleep 1
+		count=$((count + 1))
+	done
+	
+	if [ `pidof clvmd` ]
+	then
+		return 1
+	else
+		return 0
+	fi
 }
 
 rtrn=1
@@ -146,16 +117,19 @@ case "$1" in
 	;;
 
   restart)
-	$0 stop
-	$0 start 
+	if stop
+	then
+		wait_for_finish
+		start
+	fi 
 	rtrn=$?
 	;;
 
   status)
 	status clvmd
-	vols=$( $lvdisplay -C --nohead 2> /dev/null | awk '($3 ~ /....a./) {print $1}' )
+	rtrn=$?
+	vols=$( $LVDISPLAY -C --nohead 2> /dev/null | awk '($3 ~ /....a./) {print $1}' )
 	echo active volumes: ${vols:-"(none)"}
-	rtrn=0
 	;;
 
   *)

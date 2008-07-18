@@ -35,6 +35,8 @@ struct node_reply {
 	struct node_reply *next;
 };
 
+typedef enum {DEBUG_OFF, DEBUG_STDERR, DEBUG_SYSLOG} debug_t;
+
 /*
  * These exist for the use of local sockets only when we are
  * collecting responses from all cluster nodes
@@ -76,7 +78,8 @@ struct netsock_bits {
 };
 
 typedef int (*fd_callback_t) (struct local_client * fd, char *buf, int len,
-			      char *csid, struct local_client ** new_client);
+			      const char *csid,
+			      struct local_client ** new_client);
 
 /* One of these for each fd we are listening on */
 struct local_client {
@@ -86,6 +89,7 @@ struct local_client {
 	struct local_client *next;
 	unsigned short xid;
 	fd_callback_t callback;
+	uint8_t removeme;
 
 	union {
 		struct localsock_bits localsock;
@@ -94,11 +98,7 @@ struct local_client {
 	} bits;
 };
 
-#ifdef DEBUG
-#define DEBUGLOG(fmt, args...) fprintf(stderr, "CLVMD[%d]: %ld ", getpid(), time(NULL) ); fprintf(stderr, fmt, ## args)
-#else
-#define DEBUGLOG(fmt, args...)
-#endif
+#define DEBUGLOG(fmt, args...) debuglog(fmt, ## args);
 
 #ifndef max
 #define max(a,b) ((a)>(b)?(a):(b))
@@ -115,5 +115,12 @@ extern void cmd_client_cleanup(struct local_client *client);
 extern int add_client(struct local_client *new_client);
 
 extern void clvmd_cluster_init_completed(void);
-extern void process_message(struct local_client *client, char *buf, int len, char *csid);
+extern void process_message(struct local_client *client, const char *buf,
+			    int len, const char *csid);
+extern void debuglog(const char *fmt, ... )
+  __attribute__ ((format(printf, 1, 2)));
+
+int sync_lock(const char *resource, int mode, int flags, int *lockid);
+int sync_unlock(const char *resource, int lockid);
+
 #endif

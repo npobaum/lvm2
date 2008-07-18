@@ -1,14 +1,14 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -170,13 +170,11 @@ static int _aligned_io(struct device_area *where, void *buffer,
 	struct device_area widened;
 
 	if (!(where->dev->flags & DEV_REGULAR) &&
-	    !_get_block_size(where->dev, &block_size)) {
-		stack;
-		return 0;
-	}
+	    !_get_block_size(where->dev, &block_size))
+		return_0;
 
 	if (!block_size)
-		block_size = getpagesize();
+		block_size = lvm_getpagesize();
 
 	_widen_region(block_size, where, &widened);
 
@@ -200,10 +198,8 @@ static int _aligned_io(struct device_area *where, void *buffer,
 
 	/* channel the io through the bounce buffer */
 	if (!_io(&widened, bounce, 0)) {
-		if (!should_write) {
-			stack;
-			return 0;
-		}
+		if (!should_write)
+			return_0;
 		/* FIXME pre-extend the file */
 		memset(bounce, '\n', widened.size);
 	}
@@ -222,11 +218,25 @@ static int _aligned_io(struct device_area *where, void *buffer,
 	return 1;
 }
 
-/*-----------------------------------------------------------------
- * Public functions
- *---------------------------------------------------------------*/
+static int _dev_get_size_file(const struct device *dev, uint64_t *size)
+{
+	const char *name = dev_name(dev);
+	struct stat info;
 
-int dev_get_size(const struct device *dev, uint64_t *size)
+	if (stat(name, &info)) {
+		log_sys_error("stat", name);
+		return 0;
+	}
+
+	*size = info.st_size;
+	*size >>= SECTOR_SHIFT;	/* Convert to sectors */
+
+	log_very_verbose("%s: size is %" PRIu64 " sectors", name, *size);
+
+	return 1;
+}
+
+static int _dev_get_size_dev(const struct device *dev, uint64_t *size)
 {
 	int fd;
 	const char *name = dev_name(dev);
@@ -252,6 +262,18 @@ int dev_get_size(const struct device *dev, uint64_t *size)
 	return 1;
 }
 
+/*-----------------------------------------------------------------
+ * Public functions
+ *---------------------------------------------------------------*/
+
+int dev_get_size(const struct device *dev, uint64_t *size)
+{
+	if ((dev->flags & DEV_REGULAR))
+		return _dev_get_size_file(dev, size);
+	else
+		return _dev_get_size_dev(dev, size);
+}
+
 /* FIXME Unused
 int dev_get_sectsize(struct device *dev, uint32_t *size)
 {
@@ -266,11 +288,14 @@ int dev_get_sectsize(struct device *dev, uint32_t *size)
 
 	if (ioctl(fd, BLKSSZGET, &s) < 0) {
 		log_sys_error("ioctl BLKSSZGET", name);
-		close(fd);
+		if (close(fd))
+			log_sys_error("close", name);
 		return 0;
 	}
 
-	close(fd);
+	if (close(fd))
+		log_sys_error("close", name);
+
 	*size = (uint32_t) s;
 
 	log_very_verbose("%s: sector size is %" PRIu32 " bytes", name, *size);
@@ -294,17 +319,24 @@ int dev_open_flags(struct device *dev, int flags, int direct, int quiet)
 {
 	struct stat buf;
 	const char *name;
+	int need_excl = 0, need_rw = 0;
+
+	if ((flags & O_ACCMODE) == O_RDWR)
+		need_rw = 1;
+
+	if ((flags & O_EXCL))
+		need_excl = 1;
 
 	if (dev->fd >= 0) {
-		if ((dev->flags & DEV_OPENED_RW) ||
-		    ((flags & O_ACCMODE) != O_RDWR)) {
+		if (((dev->flags & DEV_OPENED_RW) || !need_rw) &&
+		    ((dev->flags & DEV_OPENED_EXCL) || !need_excl)) {
 			dev->open_count++;
 			return 1;
 		}
 
-		if (dev->open_count) {
+		if (dev->open_count && !need_excl) {
 			/* FIXME Ensure we never get here */
-			log_debug("WARNING: %s already opened read-only", 
+			log_debug("WARNING: %s already opened read-only",
 				  dev_name(dev));
 			dev->open_count++;
 		}
@@ -318,20 +350,28 @@ int dev_open_flags(struct device *dev, int flags, int direct, int quiet)
 
 	if (dev->flags & DEV_REGULAR)
 		name = dev_name(dev);
-	else if (!(name = dev_name_confirmed(dev, quiet))) {
-		stack;
-		return 0;
-	}
+	else if (!(name = dev_name_confirmed(dev, quiet)))
+		return_0;
 
-	if (!(dev->flags & DEV_REGULAR) &&
-	    ((stat(name, &buf) < 0) || (buf.st_rdev != dev->dev))) {
-		log_error("%s: stat failed: Has device name changed?", name);
-		return 0;
+	if (!(dev->flags & DEV_REGULAR)) {
+		if (stat(name, &buf) < 0) {
+			log_sys_error("%s: stat failed", name);
+			return 0;
+		}
+		if (buf.st_rdev != dev->dev) {
+			log_error("%s: device changed", name);
+			return 0;
+		}
 	}
 
 #ifdef O_DIRECT_SUPPORT
-	if (direct)
-		flags |= O_DIRECT;
+	if (direct) {
+		if (!(dev->flags & DEV_O_DIRECT_TESTED))
+			dev->flags |= DEV_O_DIRECT;
+
+		if ((dev->flags & DEV_O_DIRECT))
+			flags |= O_DIRECT;
+	}
 #endif
 
 #ifdef O_NOATIME
@@ -341,22 +381,45 @@ int dev_open_flags(struct device *dev, int flags, int direct, int quiet)
 #endif
 
 	if ((dev->fd = open(name, flags, 0777)) < 0) {
-		log_sys_error("open", name);
+#ifdef O_DIRECT_SUPPORT
+		if (direct && !(dev->flags & DEV_O_DIRECT_TESTED)) {
+			flags &= ~O_DIRECT;
+			if ((dev->fd = open(name, flags, 0777)) >= 0) {
+				dev->flags &= ~DEV_O_DIRECT;
+				log_debug("%s: Not using O_DIRECT", name);
+				goto opened;
+			}
+		}
+#endif
+		if (quiet)
+			log_sys_debug("open", name);
+		else
+			log_sys_error("open", name);
 		return 0;
 	}
 
+#ifdef O_DIRECT_SUPPORT
+      opened:
+	if (direct)
+		dev->flags |= DEV_O_DIRECT_TESTED;
+#endif
 	dev->open_count++;
 	dev->flags &= ~DEV_ACCESSED_W;
-	if ((flags & O_ACCMODE) == O_RDWR)
+
+	if (need_rw)
 		dev->flags |= DEV_OPENED_RW;
 	else
 		dev->flags &= ~DEV_OPENED_RW;
+
+	if (need_excl)
+		dev->flags |= DEV_OPENED_EXCL;
+	else
+		dev->flags &= ~DEV_OPENED_EXCL;
 
 	if (!(dev->flags & DEV_REGULAR) &&
 	    ((fstat(dev->fd, &buf) < 0) || (buf.st_rdev != dev->dev))) {
 		log_error("%s: fstat failed: Has device name changed?", name);
 		dev_close_immediate(dev);
-		dev->open_count = 0;
 		return 0;
 	}
 
@@ -370,8 +433,10 @@ int dev_open_flags(struct device *dev, int flags, int direct, int quiet)
 
 	list_add(&_open_devices, &dev->open_list);
 
-	log_debug("Opened %s %s", dev_name(dev),
-		  dev->flags & DEV_OPENED_RW ? "RW" : "RO");
+	log_debug("Opened %s %s%s%s", dev_name(dev),
+		  dev->flags & DEV_OPENED_RW ? "RW" : "RO",
+		  dev->flags & DEV_OPENED_EXCL ? " O_EXCL" : "",
+		  dev->flags & DEV_O_DIRECT ? " O_DIRECT" : "");
 
 	return 1;
 }
@@ -394,6 +459,21 @@ int dev_open(struct device *dev)
 	return dev_open_flags(dev, flags, 1, 0);
 }
 
+int dev_test_excl(struct device *dev)
+{
+	int flags;
+	int r;
+
+	flags = vg_write_lock_held() ? O_RDWR : O_RDONLY;
+	flags |= O_EXCL;
+
+	r = dev_open_flags(dev, flags, 1, 1);
+	if (r)
+		dev_close_immediate(dev);
+
+	return r;
+}
+
 static void _close(struct device *dev)
 {
 	if (close(dev->fd))
@@ -405,15 +485,17 @@ static void _close(struct device *dev)
 	log_debug("Closed %s", dev_name(dev));
 
 	if (dev->flags & DEV_ALLOCED) {
-		dbg_free((void *) list_item(dev->aliases.n, struct str_list)->
+		dm_free((void *) list_item(dev->aliases.n, struct str_list)->
 			 str);
-		dbg_free(dev->aliases.n);
-		dbg_free(dev);
+		dm_free(dev->aliases.n);
+		dm_free(dev);
 	}
 }
 
 static int _dev_close(struct device *dev, int immediate)
 {
+	struct lvmcache_info *info;
+
 	if (dev->fd < 0) {
 		log_error("Attempt to close device '%s' "
 			  "which is not open.", dev_name(dev));
@@ -428,8 +510,16 @@ static int _dev_close(struct device *dev, int immediate)
 	if (dev->open_count > 0)
 		dev->open_count--;
 
-	/* FIXME lookup device in cache to get vgname and see if it's locked? */
-	if (immediate || (dev->open_count < 1 && !vgs_locked()))
+	if (immediate && dev->open_count)
+		log_debug("%s: Immediate close attempt while still referenced",
+			  dev_name(dev));
+
+	/* Close unless device is known to belong to a locked VG */
+	if (immediate ||
+	    (dev->open_count < 1 &&
+	     (!(info = info_from_pvid(dev->pvid, 0)) ||
+	      !info->vginfo ||
+	      !vgname_is_locked(info->vginfo->vgname))))
 		_close(dev);
 
 	return 1;
@@ -461,16 +551,43 @@ int dev_read(struct device *dev, uint64_t offset, size_t len, void *buffer)
 {
 	struct device_area where;
 
-	if (!dev->open_count) {
-		stack;
-		return 0;
-	}
+	if (!dev->open_count)
+		return_0;
 
 	where.dev = dev;
 	where.start = offset;
 	where.size = len;
 
 	return _aligned_io(&where, buffer, 0);
+}
+
+/*
+ * Read from 'dev' into 'buf', possibly in 2 distinct regions, denoted
+ * by (offset,len) and (offset2,len2).  Thus, the total size of
+ * 'buf' should be len+len2.
+ */
+int dev_read_circular(struct device *dev, uint64_t offset, size_t len,
+		      uint64_t offset2, size_t len2, void *buf)
+{
+	if (!dev_read(dev, offset, len, buf)) {
+		log_error("Read from %s failed", dev_name(dev));
+		return 0;
+	}
+
+	/*
+	 * The second region is optional, and allows for
+	 * a circular buffer on the device.
+	 */
+	if (!len2)
+		return 1;
+
+	if (!dev_read(dev, offset2, len2, buf + len)) {
+		log_error("Circular read from %s failed",
+			  dev_name(dev));
+		return 0;
+	}
+
+	return 1;
 }
 
 /* FIXME If O_DIRECT can't extend file, dev_extend first; dev_truncate after.
@@ -482,10 +599,8 @@ int dev_append(struct device *dev, size_t len, void *buffer)
 {
 	int r;
 
-	if (!dev->open_count) {
-		stack;
-		return 0;
-	}
+	if (!dev->open_count)
+		return_0;
 
 	r = dev_write(dev, dev->end, len, buffer);
 	dev->end += (uint64_t) len;
@@ -500,10 +615,8 @@ int dev_write(struct device *dev, uint64_t offset, size_t len, void *buffer)
 {
 	struct device_area where;
 
-	if (!dev->open_count) {
-		stack;
-		return 0;
-	}
+	if (!dev->open_count)
+		return_0;
 
 	where.dev = dev;
 	where.start = offset;
@@ -514,15 +627,13 @@ int dev_write(struct device *dev, uint64_t offset, size_t len, void *buffer)
 	return _aligned_io(&where, buffer, 1);
 }
 
-int dev_zero(struct device *dev, uint64_t offset, size_t len)
+int dev_set(struct device *dev, uint64_t offset, size_t len, int value)
 {
 	size_t s;
-	char buffer[4096];
+	char buffer[4096] __attribute((aligned(8)));
 
-	if (!dev_open(dev)) {
-		stack;
-		return 0;
-	}
+	if (!dev_open(dev))
+		return_0;
 
 	if ((offset % SECTOR_SIZE) || (len % SECTOR_SIZE))
 		log_debug("Wiping %s at %" PRIu64 " length %" PRIsize_t,
@@ -532,7 +643,7 @@ int dev_zero(struct device *dev, uint64_t offset, size_t len)
 			  " sectors", dev_name(dev), offset >> SECTOR_SHIFT,
 			  len >> SECTOR_SHIFT);
 
-	memset(buffer, 0, sizeof(buffer));
+	memset(buffer, value, sizeof(buffer));
 	while (1) {
 		s = len > sizeof(buffer) ? sizeof(buffer) : len;
 		if (!dev_write(dev, offset, s, buffer))

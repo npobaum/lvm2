@@ -1,25 +1,22 @@
 /*
- * Copyright (C) 1997-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 1997-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2006 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
 #include "lib.h"
-#include "pool.h"
 #include "label.h"
 #include "metadata.h"
-#include "hash.h"
 #include "limits.h"
-#include "list.h"
 #include "display.h"
 #include "toolcontext.h"
 #include "lvmcache.h"
@@ -27,14 +24,10 @@
 #include "format_pool.h"
 #include "pool_label.h"
 
-#define FMT_POOL_NAME "pool"
-
 /* Must be called after pvs are imported */
-static struct user_subpool *_build_usp(struct list *pls, struct pool *mem,
+static struct user_subpool *_build_usp(struct list *pls, struct dm_pool *mem,
 				       int *sps)
 {
-
-	struct list *plhs;
 	struct pool_list *pl;
 	struct user_subpool *usp = NULL, *cur_sp = NULL;
 	struct user_device *cur_dev = NULL;
@@ -43,11 +36,9 @@ static struct user_subpool *_build_usp(struct list *pls, struct pool *mem,
 	 * FIXME: Need to do some checks here - I'm tempted to add a
 	 * user_pool structure and build the entire thing to check against.
 	 */
-	list_iterate(plhs, pls) {
-		pl = list_item(plhs, struct pool_list);
-
+	list_iterate_items(pl, pls) {
 		*sps = pl->pd.pl_subpools;
-		if (!usp && (!(usp = pool_zalloc(mem, sizeof(*usp) * (*sps))))) {
+		if (!usp && (!(usp = dm_pool_zalloc(mem, sizeof(*usp) * (*sps))))) {
 			log_error("Unable to allocate %d subpool structures",
 				  *sps);
 			return 0;
@@ -65,20 +56,20 @@ static struct user_subpool *_build_usp(struct list *pls, struct pool *mem,
 
 		if (!cur_sp->devs &&
 		    (!(cur_sp->devs =
-		       pool_zalloc(mem,
+		       dm_pool_zalloc(mem,
 				   sizeof(*usp->devs) * pl->pd.pl_sp_devs)))) {
 
 			log_error("Unable to allocate %d pool_device "
 				  "structures", pl->pd.pl_sp_devs);
 			return 0;
 		}
+
 		cur_dev = &cur_sp->devs[pl->pd.pl_sp_devid];
 		cur_dev->sp_id = cur_sp->id;
 		cur_dev->devid = pl->pd.pl_sp_id;
 		cur_dev->blocks = pl->pd.pl_blocks;
 		cur_dev->pv = pl->pv;
 		cur_dev->initialized = 1;
-
 	}
 
 	return usp;
@@ -86,7 +77,8 @@ static struct user_subpool *_build_usp(struct list *pls, struct pool *mem,
 
 static int _check_usp(char *vgname, struct user_subpool *usp, int sp_count)
 {
-	int i, j;
+	int i;
+	unsigned j;
 
 	for (i = 0; i < sp_count; i++) {
 		if (!usp[i].initialized) {
@@ -95,7 +87,7 @@ static int _check_usp(char *vgname, struct user_subpool *usp, int sp_count)
 		}
 		for (j = 0; j < usp[i].num_devs; j++) {
 			if (!usp[i].devs[j].initialized) {
-				log_error("Missing device %d for subpool %d"
+				log_error("Missing device %u for subpool %d"
 					  " in pool %s", j, i, vgname);
 				return 0;
 			}
@@ -107,15 +99,15 @@ static int _check_usp(char *vgname, struct user_subpool *usp, int sp_count)
 }
 
 static struct volume_group *_build_vg_from_pds(struct format_instance
-					       *fid, struct pool *mem,
+					       *fid, struct dm_pool *mem,
 					       struct list *pds)
 {
-	struct pool *smem = fid->fmt->cmd->mem;
+	struct dm_pool *smem = fid->fmt->cmd->mem;
 	struct volume_group *vg = NULL;
 	struct user_subpool *usp = NULL;
 	int sp_count;
 
-	if (!(vg = pool_zalloc(smem, sizeof(*vg)))) {
+	if (!(vg = dm_pool_zalloc(smem, sizeof(*vg)))) {
 		log_error("Unable to allocate volume group structure");
 		return NULL;
 	}
@@ -132,56 +124,43 @@ static struct volume_group *_build_vg_from_pds(struct format_instance
 	vg->system_id = NULL;
 	list_init(&vg->pvs);
 	list_init(&vg->lvs);
-	list_init(&vg->snapshots);
 	list_init(&vg->tags);
 
-	if (!import_pool_vg(vg, smem, pds)) {
-		stack;
-		return NULL;
-	}
+	if (!import_pool_vg(vg, smem, pds))
+		return_NULL;
 
-	if (!import_pool_pvs(fid->fmt, vg, &vg->pvs, smem, pds)) {
-		stack;
-		return NULL;
-	}
+	if (!import_pool_pvs(fid->fmt, vg, &vg->pvs, smem, pds))
+		return_NULL;
 
-	if (!import_pool_lvs(vg, smem, pds)) {
-		stack;
-		return NULL;
-	}
+	if (!import_pool_lvs(vg, smem, pds))
+		return_NULL;
 
 	/*
 	 * I need an intermediate subpool structure that contains all the
 	 * relevant info for this.  Then i can iterate through the subpool
 	 * structures for checking, and create the segments
 	 */
-	if (!(usp = _build_usp(pds, mem, &sp_count))) {
-		stack;
-		return NULL;
-	}
+	if (!(usp = _build_usp(pds, mem, &sp_count)))
+		return_NULL;
 
 	/*
 	 * check the subpool structures - we can't handle partial VGs in
 	 * the pool format, so this will error out if we're missing PVs
 	 */
-	if (!_check_usp(vg->name, usp, sp_count)) {
-		stack;
-		return NULL;
-	}
+	if (!_check_usp(vg->name, usp, sp_count))
+		return_NULL;
 
-	if (!import_pool_segments(&vg->lvs, smem, usp, sp_count)) {
-		stack;
-		return NULL;
-	}
+	if (!import_pool_segments(&vg->lvs, smem, usp, sp_count))
+		return_NULL;
 
 	return vg;
 }
 
-static struct volume_group *_vg_read(struct format_instance *fid,
+static struct volume_group *_pool_vg_read(struct format_instance *fid,
 				     const char *vg_name,
-				     struct metadata_area *mda)
+				     struct metadata_area *mda __attribute((unused)))
 {
-	struct pool *mem = pool_create("pool vg_read", 1024);
+	struct dm_pool *mem = dm_pool_create("pool vg_read", 1024);
 	struct list pds;
 	struct volume_group *vg = NULL;
 
@@ -189,99 +168,90 @@ static struct volume_group *_vg_read(struct format_instance *fid,
 
 	/* We can safely ignore the mda passed in */
 
-	if (!mem) {
-		stack;
-		return NULL;
-	}
+	if (!mem)
+		return_NULL;
 
 	/* Strip dev_dir if present */
 	vg_name = strip_dir(vg_name, fid->fmt->cmd->dev_dir);
 
 	/* Read all the pvs in the vg */
-	if (!read_pool_pds(fid->fmt, vg_name, mem, &pds)) {
-		stack;
-		goto out;
-	}
+	if (!read_pool_pds(fid->fmt, vg_name, mem, &pds))
+		goto_out;
 
 	/* Do the rest of the vg stuff */
-	if (!(vg = _build_vg_from_pds(fid, mem, &pds))) {
-		stack;
-		goto out;
-	}
+	if (!(vg = _build_vg_from_pds(fid, mem, &pds)))
+		goto_out;
 
       out:
-	pool_destroy(mem);
+	dm_pool_destroy(mem);
 	return vg;
 }
 
-static int _pv_setup(const struct format_type *fmt,
-		     uint64_t pe_start, uint32_t extent_count,
-		     uint32_t extent_size,
-		     int pvmetadatacopies,
-		     uint64_t pvmetadatasize, struct list *mdas,
-		     struct physical_volume *pv, struct volume_group *vg)
+static int _pool_pv_setup(const struct format_type *fmt __attribute((unused)),
+			  uint64_t pe_start __attribute((unused)),
+			  uint32_t extent_count __attribute((unused)),
+			  uint32_t extent_size __attribute((unused)),
+			  int pvmetadatacopies __attribute((unused)),
+			  uint64_t pvmetadatasize __attribute((unused)),
+			  struct list *mdas __attribute((unused)),
+			  struct physical_volume *pv __attribute((unused)),
+			  struct volume_group *vg __attribute((unused)))
 {
 	return 1;
 }
 
-static int _pv_read(const struct format_type *fmt, const char *pv_name,
-		    struct physical_volume *pv, struct list *mdas)
+static int _pool_pv_read(const struct format_type *fmt, const char *pv_name,
+			 struct physical_volume *pv,
+			 struct list *mdas __attribute((unused)))
 {
-	struct pool *mem = pool_create("pool pv_read", 1024);
+	struct dm_pool *mem = dm_pool_create("pool pv_read", 1024);
 	struct pool_list *pl;
 	struct device *dev;
 	int r = 0;
 
 	log_very_verbose("Reading physical volume data %s from disk", pv_name);
 
-	if (!mem) {
-		stack;
-		return 0;
-	}
+	if (!mem)
+		return_0;
 
-	if (!(dev = dev_cache_get(pv_name, fmt->cmd->filter))) {
-		stack;
-		goto out;
-	}
+	if (!(dev = dev_cache_get(pv_name, fmt->cmd->filter)))
+		goto_out;
 
 	/*
 	 * I need to read the disk and populate a pv structure here
 	 * I'll probably need to abstract some of this later for the
 	 * vg_read code
 	 */
-	if (!(pl = read_pool_disk(fmt, dev, mem, NULL))) {
-		stack;
-		goto out;
-	}
+	if (!(pl = read_pool_disk(fmt, dev, mem, NULL)))
+		goto_out;
 
-	if (!import_pool_pv(fmt, fmt->cmd->mem, NULL, pv, pl)) {
-		stack;
-		goto out;
-	}
+	if (!import_pool_pv(fmt, fmt->cmd->mem, NULL, pv, pl))
+		goto_out;
 
 	pv->fmt = fmt;
 
 	r = 1;
 
       out:
-	pool_destroy(mem);
+	dm_pool_destroy(mem);
 	return r;
 }
 
 /* *INDENT-OFF* */
 static struct metadata_area_ops _metadata_format_pool_ops = {
-	vg_read:_vg_read,
+	.vg_read = _pool_vg_read,
 };
 /* *INDENT-ON* */
 
-static struct format_instance *_create_instance(const struct format_type *fmt,
-						const char *vgname,
-						void *private)
+static struct format_instance *_pool_create_instance(const struct format_type *fmt,
+						const char *vgname __attribute((unused)),
+						const char *vgid __attribute((unused)),
+						void *private __attribute((unused)))
 {
 	struct format_instance *fid;
 	struct metadata_area *mda;
 
-	if (!(fid = pool_zalloc(fmt->cmd->mem, sizeof(*fid)))) {
+	if (!(fid = dm_pool_zalloc(fmt->cmd->mem, sizeof(*fid)))) {
 		log_error("Unable to allocate format instance structure for "
 			  "pool format");
 		return NULL;
@@ -291,10 +261,10 @@ static struct format_instance *_create_instance(const struct format_type *fmt,
 	list_init(&fid->metadata_areas);
 
 	/* Define a NULL metadata area */
-	if (!(mda = pool_zalloc(fmt->cmd->mem, sizeof(*mda)))) {
+	if (!(mda = dm_pool_zalloc(fmt->cmd->mem, sizeof(*mda)))) {
 		log_error("Unable to allocate metadata area structure "
 			  "for pool format");
-		pool_free(fmt->cmd->mem, fid);
+		dm_pool_free(fmt->cmd->mem, fid);
 		return NULL;
 	}
 
@@ -305,23 +275,23 @@ static struct format_instance *_create_instance(const struct format_type *fmt,
 	return fid;
 }
 
-static void _destroy_instance(struct format_instance *fid)
+static void _pool_destroy_instance(struct format_instance *fid __attribute((unused)))
 {
 	return;
 }
 
-static void _destroy(const struct format_type *fmt)
+static void _pool_destroy(const struct format_type *fmt)
 {
-	dbg_free((void *) fmt);
+	dm_free((void *) fmt);
 }
 
 /* *INDENT-OFF* */
 static struct format_handler _format_pool_ops = {
-	pv_read:_pv_read,
-	pv_setup:_pv_setup,
-	create_instance:_create_instance,
-	destroy_instance:_destroy_instance,
-	destroy:_destroy,
+	.pv_read = _pool_pv_read,
+	.pv_setup = _pool_pv_setup,
+	.create_instance = _pool_create_instance,
+	.destroy_instance = _pool_destroy_instance,
+	.destroy = _pool_destroy,
 };
 /* *INDENT-ON */
 
@@ -332,7 +302,7 @@ struct format_type *init_format(struct cmd_context *cmd);
 struct format_type *init_format(struct cmd_context *cmd)
 #endif
 {
-	struct format_type *fmt = dbg_malloc(sizeof(*fmt));
+	struct format_type *fmt = dm_malloc(sizeof(*fmt));
 
 	if (!fmt) {
 		log_error("Unable to allocate format type structure for pool "
@@ -344,6 +314,7 @@ struct format_type *init_format(struct cmd_context *cmd)
 	fmt->ops = &_format_pool_ops;
 	fmt->name = FMT_POOL_NAME;
 	fmt->alias = NULL;
+	fmt->orphan_vg_name = FMT_POOL_ORPHAN_VG_NAME;
 	fmt->features = 0;
 	fmt->private = NULL;
 

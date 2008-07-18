@@ -1,14 +1,14 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2006 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -17,8 +17,6 @@
 #define _LVM_PV_MAP_H
 
 #include "metadata.h"
-#include "bitset.h"
-#include "pool.h"
 
 /*
  * The in core rep. only stores a mapping from
@@ -33,20 +31,25 @@ struct pv_area {
 	uint32_t start;
 	uint32_t count;
 
-	struct list list;
+	struct list list;		/* pv_map.areas */
 };
 
 struct pv_map {
-	struct pv_list *pvl;
-	bitset_t allocated_extents;
-	struct list areas;
+	struct physical_volume *pv;
+	struct list areas;		/* struct pv_areas */
+	uint32_t pe_count;		/* Total number of PEs */
 
 	struct list list;
 };
 
-struct list *create_pv_maps(struct pool *mem,
-			    struct volume_group *vg, struct list *pvs);
+/*
+ * Find intersection between available_pvs and free space in VG
+ */
+struct list *create_pv_maps(struct dm_pool *mem, struct volume_group *vg,
+			    struct list *allocatable_pvs);
 
 void consume_pv_area(struct pv_area *area, uint32_t to_go);
+
+uint32_t pv_maps_size(struct list *pvms);
 
 #endif

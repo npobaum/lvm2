@@ -1,14 +1,14 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2006 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -20,16 +20,16 @@
 #define ID_LEN_S "32"
 
 struct id {
-	uint8_t uuid[ID_LEN];
+	int8_t uuid[ID_LEN];
 };
 
 /*
  * Unique logical volume identifier
- * With format1 this is VG uuid + LV uuid + '\0'
+ * With format1 this is VG uuid + LV uuid + '\0' + padding
  */
 union lvid {
 	struct id id[2];
-	char s[2 * sizeof(struct id) + 1];
+	char s[2 * sizeof(struct id) + 1 + 7];
 };
 
 int lvid_from_lvnum(union lvid *lvid, struct id *vgid, uint32_t lv_num);

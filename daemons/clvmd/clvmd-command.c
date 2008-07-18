@@ -64,16 +64,19 @@
 #include <stddef.h>
 #include <unistd.h>
 #include <errno.h>
+#include <libdevmapper.h>
+#include <libdlm.h>
 
 #include "list.h"
-#include "hash.h"
 #include "locking.h"
 #include "log.h"
 #include "lvm-functions.h"
 #include "clvmd-comms.h"
 #include "clvm.h"
 #include "clvmd.h"
-#include "libdlm.h"
+
+extern debug_t debug;
+extern struct cluster_ops *clops;
 
 /* This is where all the real work happens:
    NOTE: client will be NULL when this is executed on a remote node */
@@ -93,33 +96,67 @@ int do_command(struct local_client *client, struct clvm_header *msg, int msglen,
 		/* Just a test message */
 	case CLVMD_CMD_TEST:
 		if (arglen > buflen) {
+			char *new_buf;
 			buflen = arglen + 200;
-			*buf = realloc(*buf, buflen);
+			new_buf = realloc(*buf, buflen);
+			if (new_buf == NULL) {
+				status = errno;
+				free (*buf);
+			}
+			*buf = new_buf;
 		}
-		uname(&nodeinfo);
-		*retlen = 1 + snprintf(*buf, buflen, "TEST from %s: %s v%s",
-				       nodeinfo.nodename, args,
-				       nodeinfo.release);
+		if (*buf) {
+			uname(&nodeinfo);
+			*retlen = 1 + snprintf(*buf, buflen,
+					       "TEST from %s: %s v%s",
+					       nodeinfo.nodename, args,
+					       nodeinfo.release);
+		}
 		break;
 
 	case CLVMD_CMD_LOCK_VG:
+		lockname = &args[2];
 		/* Check to see if the VG is in use by LVM1 */
-		status = do_check_lvm1(&args[2]);
+		status = do_check_lvm1(lockname);
+		/* P_#global causes a full cache refresh */
+		if (!strcmp(lockname, "P_" VG_GLOBAL))
+			do_refresh_cache();
+		else
+			drop_metadata(lockname + 2);
+
 		break;
 
 	case CLVMD_CMD_LOCK_LV:
 		/* This is the biggie */
-		lock_cmd = args[0];
+		lock_cmd = args[0] & 0x3F;
 		lock_flags = args[1];
 		lockname = &args[2];
 		status = do_lock_lv(lock_cmd, lock_flags, lockname);
 		/* Replace EIO with something less scary */
 		if (status == EIO) {
 			*retlen =
-			    1 + snprintf(*buf, buflen,
-					 "Internal lvm error, check syslog");
+			    1 + snprintf(*buf, buflen, "%s",
+					 get_last_lvm_error());
 			return EIO;
 		}
+		break;
+
+	case CLVMD_CMD_REFRESH:
+		do_refresh_cache();
+		break;
+
+	case CLVMD_CMD_SET_DEBUG:
+		debug = args[0];
+		break;
+
+	case CLVMD_CMD_GET_CLUSTERNAME:
+		status = clops->get_cluster_name(*buf, buflen);
+		if (!status)
+			*retlen = strlen(*buf)+1;
+		break;
+
+	case CLVMD_CMD_VG_BACKUP:
+		lvm_do_backup(&args[2]);
 		break;
 
 	default:
@@ -129,7 +166,7 @@ int do_command(struct local_client *client, struct clvm_header *msg, int msglen,
 
 	/* Check the status of the command and return the error text */
 	if (status) {
-		*retlen = 1 + snprintf(*buf, buflen, strerror(status));
+		*retlen = 1 + snprintf(*buf, buflen, "%s", strerror(status));
 	}
 
 	return status;
@@ -138,7 +175,7 @@ int do_command(struct local_client *client, struct clvm_header *msg, int msglen,
 
 static int lock_vg(struct local_client *client)
 {
-    struct hash_table *lock_hash;
+    struct dm_hash_table *lock_hash;
     struct clvm_header *header =
 	(struct clvm_header *) client->bits.localsock.cmd;
     unsigned char lock_cmd;
@@ -152,23 +189,23 @@ static int lock_vg(struct local_client *client)
        practice there should only ever be more than two VGs locked
        if a user tries to merge lots of them at once */
     if (client->bits.localsock.private) {
-	lock_hash = (struct hash_table *)client->bits.localsock.private;
+	lock_hash = (struct dm_hash_table *)client->bits.localsock.private;
     }
     else {
-	lock_hash = hash_create(3);
+	lock_hash = dm_hash_create(3);
 	if (!lock_hash)
 	    return ENOMEM;
 	client->bits.localsock.private = (void *)lock_hash;
     }
 
-    lock_cmd = args[0];
+    lock_cmd = args[0] & 0x3F;
     lock_flags = args[1];
     lockname = &args[2];
     DEBUGLOG("doing PRE command LOCK_VG '%s' at %x (client=%p)\n", lockname, lock_cmd, client);
 
     if (lock_cmd == LCK_UNLOCK) {
 
-	lkid = (int)(long)hash_lookup(lock_hash, lockname);
+	lkid = (int)(long)dm_hash_lookup(lock_hash, lockname);
 	if (lkid == 0)
 	    return EINVAL;
 
@@ -176,15 +213,19 @@ static int lock_vg(struct local_client *client)
 	if (status)
 	    status = errno;
 	else
-	    hash_remove(lock_hash, lockname);
+	    dm_hash_remove(lock_hash, lockname);
     }
     else {
-
-	status = sync_lock(lockname, (int)lock_cmd, (int)lock_flags, &lkid);
+	/* Read locks need to be PR; other modes get passed through */
+	if ((lock_cmd & LCK_TYPE_MASK) == LCK_READ) {
+	    lock_cmd &= ~LCK_TYPE_MASK;
+	    lock_cmd |= LCK_PREAD;
+	}
+	status = sync_lock(lockname, (int)lock_cmd, (lock_flags & LCK_NONBLOCK) ? LKF_NOQUEUE : 0, &lkid);
 	if (status)
 	    status = errno;
 	else
-	    hash_insert(lock_hash, lockname, (void *)lkid);
+	    dm_hash_insert(lock_hash, lockname, (void *)(long)lkid);
     }
 
     return status;
@@ -208,11 +249,15 @@ int do_pre_command(struct local_client *client)
 	switch (header->cmd) {
 	case CLVMD_CMD_TEST:
 		status = sync_lock("CLVMD_TEST", LKM_EXMODE, 0, &lockid);
-		client->bits.localsock.private = (void *) lockid;
+		client->bits.localsock.private = (void *)(long)lockid;
 		break;
 
 	case CLVMD_CMD_LOCK_VG:
-       	        status = lock_vg(client);
+		lockname = &args[2];
+		/* We take out a real lock unless LCK_CACHE was set */
+		if (!strncmp(lockname, "V_", 2) ||
+		    !strncmp(lockname, "P_#", 3))
+			status = lock_vg(client);
 		break;
 
 	case CLVMD_CMD_LOCK_LV:
@@ -220,6 +265,12 @@ int do_pre_command(struct local_client *client)
 		lock_flags = args[1];
 		lockname = &args[2];
 		status = pre_lock_lv(lock_cmd, lock_flags, lockname);
+		break;
+
+	case CLVMD_CMD_REFRESH:
+	case CLVMD_CMD_GET_CLUSTERNAME:
+	case CLVMD_CMD_SET_DEBUG:
+	case CLVMD_CMD_VG_BACKUP:
 		break;
 
 	default:
@@ -249,6 +300,7 @@ int do_post_command(struct local_client *client)
 		break;
 
 	case CLVMD_CMD_LOCK_VG:
+	case CLVMD_CMD_VG_BACKUP:
 		/* Nothing to do here */
 		break;
 
@@ -268,18 +320,19 @@ void cmd_client_cleanup(struct local_client *client)
 {
     if (client->bits.localsock.private) {
 
-	struct hash_node *v;
-	struct hash_table *lock_hash =
-	    (struct hash_table *)client->bits.localsock.private;
+	struct dm_hash_node *v;
+	struct dm_hash_table *lock_hash =
+	    (struct dm_hash_table *)client->bits.localsock.private;
 
-	hash_iterate(v, lock_hash) {
-		int lkid = (int)(long)hash_get_data(lock_hash, v);
+	dm_hash_iterate(v, lock_hash) {
+		int lkid = (int)(long)dm_hash_get_data(lock_hash, v);
+		char *lockname = dm_hash_get_key(lock_hash, v);
 
-		DEBUGLOG("cleanup: Unlocking lkid %x\n", lkid);
-		sync_unlock("DUMMY", lkid);
+		DEBUGLOG("cleanup: Unlocking lock %s %x\n", lockname, lkid);
+		sync_unlock(lockname, lkid);
 	}
 
-	hash_destroy(lock_hash);
+	dm_hash_destroy(lock_hash);
 	client->bits.localsock.private = 0;
     }
 }

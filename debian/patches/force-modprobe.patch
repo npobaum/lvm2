@@ -1,0 +1,15 @@
+--- a/configure.in
++++ b/configure.in
+@@ -517,11 +517,7 @@
+ AC_CHECK_HEADERS(libdevmapper.h,,AC_MSG_ERROR(bailing out))
+ 
+ ################################################################################
+-AC_PATH_PROG(MODPROBE_CMD, modprobe)
+-
+-if test x$MODPROBE_CMD != x; then
+-	AC_DEFINE_UNQUOTED([MODPROBE_CMD], ["$MODPROBE_CMD"], [The path to 'modprobe', if available.])
+-fi
++AC_DEFINE_UNQUOTED([MODPROBE_CMD], ["/sbin/modprobe"], [The path to 'modprobe', if available.])
+ 
+ ################################################################################
+ LVM_VERSION="\"`cat VERSION 2>/dev/null || echo Unknown`\""

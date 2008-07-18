@@ -1,14 +1,14 @@
 /*
  * Copyright (C) 1997-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2006 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -18,7 +18,8 @@
 
 #include "label.h"
 #include "metadata.h"
-#include "pool.h"
+
+#define MINOR_OFFSET 65536
 
 /* From NSP.cf */
 #define NSPMajorVersion	4
@@ -65,29 +66,6 @@ struct pool_disk;
 struct pool_list;
 struct user_subpool;
 struct user_device;
-
-/* This must be kept up to date with sistina/pool/module/pool_sptypes.h */
-
-/*  Generic Labels  */
-#define SPTYPE_DATA                (0x00000000)
-
-/*  GFS specific labels  */
-#define SPTYPE_GFS_DATA            (0x68011670)
-#define SPTYPE_GFS_JOURNAL         (0x69011670)
-
-struct sptype_name {
-	const char *name;
-	uint32_t label;
-};
-
-static const struct sptype_name sptype_names[] = {
-	{"data",	SPTYPE_DATA},
-
-	{"gfs_data",	SPTYPE_GFS_DATA},
-	{"gfs_journal",	SPTYPE_GFS_JOURNAL},
-
-	{"", 0x0}		/*  This must be the last flag.  */
-};
 
 struct pool_disk {
 	uint64_t pl_magic;	/* Pool magic number */
@@ -156,23 +134,23 @@ struct user_device {
 
 int read_pool_label(struct pool_list *pl, struct labeller *l,
 		    struct device *dev, char *buf, struct label **label);
-void pool_label_out(struct pool_disk *pl, char *buf);
-void pool_label_in(struct pool_disk *pl, char *buf);
+void pool_label_out(struct pool_disk *pl, void *buf);
+void pool_label_in(struct pool_disk *pl, void *buf);
 void get_pool_uuid(char *uuid, uint64_t poolid, uint32_t spid, uint32_t devid);
-int import_pool_vg(struct volume_group *vg, struct pool *mem, struct list *pls);
-int import_pool_lvs(struct volume_group *vg, struct pool *mem,
+int import_pool_vg(struct volume_group *vg, struct dm_pool *mem, struct list *pls);
+int import_pool_lvs(struct volume_group *vg, struct dm_pool *mem,
 		    struct list *pls);
 int import_pool_pvs(const struct format_type *fmt, struct volume_group *vg,
-		    struct list *pvs, struct pool *mem, struct list *pls);
-int import_pool_pv(const struct format_type *fmt, struct pool *mem,
+		    struct list *pvs, struct dm_pool *mem, struct list *pls);
+int import_pool_pv(const struct format_type *fmt, struct dm_pool *mem,
 		   struct volume_group *vg, struct physical_volume *pv,
 		   struct pool_list *pl);
-int import_pool_segments(struct list *lvs, struct pool *mem,
+int import_pool_segments(struct list *lvs, struct dm_pool *mem,
 			 struct user_subpool *usp, int sp_count);
 int read_pool_pds(const struct format_type *fmt, const char *vgname,
-		  struct pool *mem, struct list *head);
+		  struct dm_pool *mem, struct list *head);
 struct pool_list *read_pool_disk(const struct format_type *fmt,
-				 struct device *dev, struct pool *mem,
+				 struct device *dev, struct dm_pool *mem,
 				 const char *vg_name);
 
 #endif				/* DISK_REP_POOL_FORMAT_H */

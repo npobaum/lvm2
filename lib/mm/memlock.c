@@ -1,21 +1,20 @@
 /*
- * Copyright (C) 2003-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2003-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2006 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
 #include "lib.h"
 #include "memlock.h"
-#include "pool.h"
 #include "defaults.h"
 #include "config.h"
 #include "toolcontext.h"
@@ -59,7 +58,7 @@ static int _default_priority;
 
 static void _touch_memory(void *mem, size_t size)
 {
-	size_t pagesize = getpagesize();
+	size_t pagesize = lvm_getpagesize();
 	void *pos = mem;
 	void *end = mem + size - sizeof(long);
 
@@ -91,7 +90,7 @@ static void _release_memory(void)
 }
 
 /* Stop memory getting swapped out */
-static void _lock_memory(void)
+static void _lock_mem(void)
 {
 #ifdef MCL_CURRENT
 	if (mlockall(MCL_CURRENT | MCL_FUTURE))
@@ -106,11 +105,11 @@ static void _lock_memory(void)
 		log_sys_error("getpriority", "");
 	else
 		if (setpriority(PRIO_PROCESS, 0, _default_priority))
-			log_error("setpriority %u failed: %s",
+			log_error("setpriority %d failed: %s",
 				  _default_priority, strerror(errno));
 }
 
-static void _unlock_memory(void)
+static void _unlock_mem(void)
 {
 #ifdef MCL_CURRENT
 	if (munlockall())
@@ -127,14 +126,14 @@ static void _unlock_memory(void)
 void memlock_inc(void)
 {
 	if (!_memlock_count++)
-		_lock_memory();
+		_lock_mem();
 	log_debug("memlock_count inc to %d", _memlock_count);
 }
 
 void memlock_dec(void)
 {
 	if (_memlock_count && (!--_memlock_count))
-		_unlock_memory();
+		_unlock_mem();
 	log_debug("memlock_count dec to %d", _memlock_count);
 }
 
@@ -145,15 +144,15 @@ int memlock(void)
 
 void memlock_init(struct cmd_context *cmd)
 {
-	_size_stack = find_config_int(cmd->cft->root,
+	_size_stack = find_config_tree_int(cmd,
 				      "activation/reserved_stack",
 				      DEFAULT_RESERVED_STACK) * 1024;
-	_size_malloc_tmp = find_config_int(cmd->cft->root,
+	_size_malloc_tmp = find_config_tree_int(cmd,
 					   "activation/reserved_memory",
 					   DEFAULT_RESERVED_MEMORY) * 1024;
-	_default_priority = find_config_int(cmd->cft->root,
-				            "activation/process_priority",
-				            DEFAULT_PROCESS_PRIORITY);
+	_default_priority = find_config_tree_int(cmd,
+					    "activation/process_priority",
+					    DEFAULT_PROCESS_PRIORITY);
 }
 
 #endif

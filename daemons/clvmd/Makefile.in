@@ -1,7 +1,7 @@
 #
 # Copyright (C) 2004 Red Hat, Inc. All rights reserved.
 #
-# This file is part of the LVM2.
+# This file is part of LVM2.
 #
 # This copyrighted material is made available to anyone wishing to use,
 # modify, copy, or redistribute it subject to the terms and conditions
@@ -18,34 +18,73 @@ VPATH = @srcdir@
 SOURCES = \
 	clvmd-command.c  \
 	clvmd.c          \
-	libclvm.c        \
 	lvm-functions.c  \
-	system-lv.c
+	refresh_clvmd.c
 
 ifeq ("@CLVMD@", "gulm")
-	SOURCES += clvmd-gulm.c tcp-comms.c
-	LMLIBS += -lccs -lgulm
-	CFLAGS += -DUSE_GULM
+	GULM = yes
 endif
 
 ifeq ("@CLVMD@", "cman")
+	CMAN = yes
+endif
+
+ifeq ("@CLVMD@", "openais")
+	OPENAIS = yes
+	GULM = no
+	CMAN = no
+endif
+
+ifeq ("@CLVMD@", "all")
+	GULM = yes
+	CMAN = yes
+	OPENAIS = no
+endif
+
+ifeq ("@DEBUG@", "yes")
+	DEFS += -DDEBUG
+endif
+
+ifeq ("$(GULM)", "yes")
+	SOURCES += clvmd-gulm.c tcp-comms.c
+	LMLIBS += -lccs -lgulm
+	DEFS += -DUSE_GULM
+endif
+
+ifeq ("$(CMAN)", "yes")
 	SOURCES += clvmd-cman.c
-	LMLIBS += -ldlm
+	LMLIBS += -ldlm -lcman
+	DEFS += -DUSE_CMAN
+endif
+
+ifeq ("$(OPENAIS)", "yes")
+	SOURCES += clvmd-openais.c
+	LMLIBS += -lSaLck -lcpg
+	DEFS += -DUSE_OPENAIS
 endif
 
 TARGETS = \
 	clvmd
 
-include $(top_srcdir)/make.tmpl
+LVMLIBS = -llvm -lpthread
 
-CFLAGS += -D_REENTRANT -fno-strict-aliasing
-LIBS += -ldevmapper -llvm -lpthread
+ifeq ("@DMEVENTD@", "yes")
+	LVMLIBS += -ldevmapper-event
+endif
+ 
+LVMLIBS += -ldevmapper
+
+DEFS += -D_REENTRANT
+CFLAGS += -fno-strict-aliasing
+
+include $(top_srcdir)/make.tmpl
 
 INSTALL_TARGETS = \
 	install_clvmd
 
 clvmd: $(OBJECTS) $(top_srcdir)/lib/liblvm.a
-	$(CC) -o clvmd $(OBJECTS) $(LDFLAGS) $(LVMLIBS) $(LMLIBS) $(LIBS)
+	$(CC) -o clvmd $(OBJECTS) $(CFLAGS) $(LDFLAGS) \
+		$(LVMLIBS) $(LMLIBS) $(LIBS)
 
 .PHONY: install_clvmd
 

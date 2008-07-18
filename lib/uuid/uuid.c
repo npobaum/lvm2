@@ -1,14 +1,14 @@
 /*
- * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2006 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -20,18 +20,16 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-static unsigned char _c[] =
+static char _c[] =
     "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!#";
 
 static int _built_inverse;
-static unsigned char _inverse_c[256];
+static char _inverse_c[256];
 
 int lvid_create(union lvid *lvid, struct id *vgid)
 {
 	memcpy(lvid->id, vgid, sizeof(*lvid->id));
-	id_create(&lvid->id[1]);
-
-	return 1;
+	return id_create(&lvid->id[1]);
 }
 
 void uuid_from_num(char *uuid, uint32_t num)
@@ -42,8 +40,6 @@ void uuid_from_num(char *uuid, uint32_t num)
 		uuid[i - 1] = _c[num % (sizeof(_c) - 1)];
 		num /= sizeof(_c) - 1;
 	}
-
-	uuid[ID_LEN] = '\0';
 }
 
 int lvid_from_lvnum(union lvid *lvid, struct id *vgid, uint32_t lv_num)
@@ -65,7 +61,7 @@ int lvid_from_lvnum(union lvid *lvid, struct id *vgid, uint32_t lv_num)
 int lvnum_from_lvid(union lvid *lvid)
 {
 	int i, lv_num = 0;
-	unsigned char *c;
+	char *c;
 
 	for (i = 0; i < ID_LEN; i++) {
 		lv_num *= sizeof(_c) - 1;
@@ -78,26 +74,29 @@ int lvnum_from_lvid(union lvid *lvid)
 
 int id_create(struct id *id)
 {
-	int randomfile, i;
+	int randomfile;
+	unsigned i;
 	size_t len = sizeof(id->uuid);
 
 	memset(id->uuid, 0, len);
 	if ((randomfile = open("/dev/urandom", O_RDONLY)) < 0) {
-		log_sys_error("open", "id_create");
+		log_sys_error("open", "id_create: /dev/urandom");
 		return 0;
 	}
 
-	if (read(randomfile, id->uuid, len) != len) {
-		log_sys_error("read", "id_create");
-		close(randomfile);
+	if (read(randomfile, id->uuid, len) != (ssize_t) len) {
+		log_sys_error("read", "id_create: /dev/urandom");
+		if (close(randomfile))
+			stack;
 		return 0;
 	}
-	close(randomfile);
+	if (close(randomfile))
+		stack;
 
-        /*
-         * Skip out the last 2 chars in randomized creation for LVM1
-         * backwards compatibility.
-         */
+	/*
+	 * Skip out the last 2 chars in randomized creation for LVM1
+	 * backwards compatibility.
+	 */
 	for (i = 0; i < len; i++)
 		id->uuid[i] = _c[id->uuid[i] % (sizeof(_c) - 3)];
 

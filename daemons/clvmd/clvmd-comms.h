@@ -22,33 +22,75 @@
 
 struct local_client;
 
-extern int cluster_send_message(void *buf, int msglen, char *csid,
-				const char *errtext);
-extern int name_from_csid(char *csid, char *name);
-extern int csid_from_name(char *csid, char *name);
-extern int get_num_nodes(void);
-extern int cluster_fd_callback(struct local_client *fd, char *buf, int len,
-			       char *csid, struct local_client **new_client);
-extern int init_cluster(void);
-extern int get_main_cluster_fd(void);	/* gets accept FD or cman cluster socket */
-extern int cluster_do_node_callback(struct local_client *client,
-				    void (*callback) (struct local_client *,
-						      char *csid, int node_up));
-extern int is_quorate(void);
+struct cluster_ops {
+	void (*cluster_init_completed) (void);
 
-extern void get_our_csid(char *csid);
-extern void add_up_node(char *csid);
-extern void cluster_closedown(void);
+	int (*cluster_send_message) (const void *buf, int msglen,
+				     const char *csid,
+				     const char *errtext);
+	int (*name_from_csid) (const char *csid, char *name);
+	int (*csid_from_name) (char *csid, const char *name);
+	int (*get_num_nodes) (void);
+	int (*cluster_fd_callback) (struct local_client *fd, char *buf, int len,
+				    const char *csid,
+				    struct local_client **new_client);
+	int (*get_main_cluster_fd) (void);	/* gets accept FD or cman cluster socket */
+	int (*cluster_do_node_callback) (struct local_client *client,
+					 void (*callback) (struct local_client *,
+							   const char *csid,
+							   int node_up));
+	int (*is_quorate) (void);
 
-extern int sync_lock(const char *resource, int mode, int flags, int *lockid);
-extern int sync_unlock(const char *resource, int lockid);
+	void (*get_our_csid) (char *csid);
+	void (*add_up_node) (const char *csid);
+	void (*reread_config) (void);
+	void (*cluster_closedown) (void);
+
+	int (*get_cluster_name)(char *buf, int buflen);
+
+	int (*sync_lock) (const char *resource, int mode,
+			  int flags, int *lockid);
+	int (*sync_unlock) (const char *resource, int lockid);
+
+};
 
 #ifdef USE_GULM
-#include "tcp-comms.h"
-#else
-/* cman */
-#include "cnxman-socket.h"
-#define MAX_CSID_LEN 4
+#  include "tcp-comms.h"
+struct cluster_ops *init_gulm_cluster(void);
+#define MAX_CSID_LEN 			GULM_MAX_CSID_LEN
+#define MAX_CLUSTER_MEMBER_NAME_LEN	GULM_MAX_CLUSTER_MEMBER_NAME_LEN
+#endif
+
+#ifdef USE_CMAN
+#  include <netinet/in.h>
+#  include "libcman.h"
+#  define CMAN_MAX_CSID_LEN 4
+#  ifndef MAX_CSID_LEN
+#    define MAX_CSID_LEN CMAN_MAX_CSID_LEN
+#  endif
+#  undef MAX_CLUSTER_MEMBER_NAME_LEN
+#  define MAX_CLUSTER_MEMBER_NAME_LEN   CMAN_MAX_NODENAME_LEN
+#  define CMAN_MAX_CLUSTER_MESSAGE 1500
+#  define CLUSTER_PORT_CLVMD 11
+struct cluster_ops *init_cman_cluster(void);
+#endif
+
+#ifdef USE_OPENAIS
+#  include <openais/saAis.h>
+#  include <openais/totem/totem.h>
+#  define OPENAIS_CSID_LEN (sizeof(int))
+#  define OPENAIS_MAX_CLUSTER_MESSAGE         MESSAGE_SIZE_MAX
+#  define OPENAIS_MAX_CLUSTER_MEMBER_NAME_LEN SA_MAX_NAME_LENGTH
+#  ifndef MAX_CLUSTER_MEMBER_NAME_LEN
+#    define MAX_CLUSTER_MEMBER_NAME_LEN       SA_MAX_NAME_LENGTH
+#  endif
+#  ifndef CMAN_MAX_CLUSTER_MESSAGE
+#    define CMAN_MAX_CLUSTER_MESSAGE          MESSAGE_SIZE_MAX
+#  endif
+#  ifndef MAX_CSID_LEN
+#    define MAX_CSID_LEN sizeof(int)
+#  endif
+struct cluster_ops *init_openais_cluster(void);
 #endif
 
 

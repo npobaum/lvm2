@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2004 Luca Berra
+ * Copyright (C) 2004-2006 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -18,15 +19,8 @@
 
 #ifdef linux
 
-/* Lifted from <linux/raid/md_p.h> because of difficulty including it */
-
-#define MD_SB_MAGIC 0xa92b4efc
-#define MD_RESERVED_BYTES (64 * 1024)
-#define MD_RESERVED_SECTORS (MD_RESERVED_BYTES / 512)
-#define MD_NEW_SIZE_SECTORS(x) ((x & ~(MD_RESERVED_SECTORS - 1)) \
-				- MD_RESERVED_SECTORS)
-
-static int _ignore_md(struct dev_filter *f, struct device *dev)
+static int _ignore_md(struct dev_filter *f __attribute((unused)),
+		      struct device *dev)
 {
 	int ret;
 	
@@ -51,14 +45,14 @@ static int _ignore_md(struct dev_filter *f, struct device *dev)
 
 static void _destroy(struct dev_filter *f)
 {
-	dbg_free(f);
+	dm_free(f);
 }
 
 struct dev_filter *md_filter_create(void)
 {
 	struct dev_filter *f;
 
-	if (!(f = dbg_malloc(sizeof(*f)))) {
+	if (!(f = dm_malloc(sizeof(*f)))) {
 		log_error("md filter allocation failed");
 		return NULL;
 	}

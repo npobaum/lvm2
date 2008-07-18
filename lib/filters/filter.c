@@ -1,14 +1,14 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -19,6 +19,7 @@
 #include "lvm-string.h"
 #include "config.h"
 #include "metadata.h"
+#include "activate.h"
 
 #include <dirent.h>
 #include <unistd.h>
@@ -28,7 +29,6 @@
 
 #define NUMBER_OF_MAJORS 4096
 
-/* FIXME Make this sparse */
 /* 0 means LVM won't use this major number. */
 static int _max_partitions_by_major[NUMBER_OF_MAJORS];
 
@@ -38,6 +38,7 @@ typedef struct {
 } device_info_t;
 
 static int _md_major = -1;
+static int _device_mapper_major = -1;
 
 int md_major(void)
 {
@@ -69,10 +70,18 @@ static const device_info_t device_info[] = {
 	{"power2", 16},		/* EMC Powerpath */
 	{"i2o_block", 16},	/* i2o Block Disk */
 	{"iseries/vd", 8},	/* iSeries disks */
+	{"gnbd", 1},		/* Network block device */
+	{"ramdisk", 1},		/* RAM disk */
+	{"aoe", 16},		/* ATA over Ethernet */
+	{"device-mapper", 1},	/* Other mapped devices */
+	{"xvd", 16},		/* Xen virtual block device */
+	{"vdisk", 8},		/* SUN's LDOM virtual block device */
+	{"ps3disk", 16},	/* PlayStation 3 internal disk */
+	{"virtblk", 8},		/* VirtIO disk */
 	{NULL, 0}
 };
 
-static int _passes_lvm_type_device_filter(struct dev_filter *f,
+static int _passes_lvm_type_device_filter(struct dev_filter *f __attribute((unused)),
 					  struct device *dev)
 {
 	const char *name = dev_name(dev);
@@ -86,8 +95,15 @@ static int _passes_lvm_type_device_filter(struct dev_filter *f,
 		return 0;
 	}
 
+	/* Skip suspended devices */
+	if (MAJOR(dev->dev) == _device_mapper_major &&
+	    ignore_suspended_devices() && !device_is_usable(dev->dev)) {
+		log_debug("%s: Skipping: Suspended dm device", name);
+		return 0;
+	}
+
 	/* Check it's accessible */
-	if (!dev_open_flags(dev, O_RDONLY, 0, 0)) {
+	if (!dev_open_flags(dev, O_RDONLY, 0, 1)) {
 		log_debug("%s: Skipping: open failed", name);
 		return 0;
 	}
@@ -141,7 +157,7 @@ static int _scan_proc_dev(const char *proc, const struct config_node *cn)
 	/* All types unrecognised initially */
 	memset(_max_partitions_by_major, 0, sizeof(int) * NUMBER_OF_MAJORS);
 
-	if (lvm_snprintf(proc_devices, sizeof(proc_devices),
+	if (dm_snprintf(proc_devices, sizeof(proc_devices),
 			 "%s/devices", proc) < 0) {
 		log_error("Failed to create /proc/devices string");
 		return 0;
@@ -178,10 +194,14 @@ static int _scan_proc_dev(const char *proc, const struct config_node *cn)
 		if (!strncmp("md", line + i, 2) && isspace(*(line + i + 2)))
 			_md_major = line_maj;
 
+		/* Look for device-mapper device */
+		/* FIXME Cope with multiple majors */
+		if (!strncmp("device-mapper", line + i, 13) && isspace(*(line + i + 13)))
+			_device_mapper_major = line_maj;
+
 		/* Go through the valid device names and if there is a
 		   match store max number of partitions */
 		for (j = 0; device_info[j].name != NULL; j++) {
-
 			dev_len = strlen(device_info[j].name);
 			if (dev_len <= strlen(line + i) &&
 			    !strncmp(device_info[j].name, line + i, dev_len) &&
@@ -200,6 +220,8 @@ static int _scan_proc_dev(const char *proc, const struct config_node *cn)
 			if (cv->type != CFG_STRING) {
 				log_error("Expecting string in devices/types "
 					  "in config file");
+				if (fclose(pd))
+					log_sys_error("fclose", proc_devices);
 				return 0;
 			}
 			dev_len = strlen(cv->v.str);
@@ -209,12 +231,16 @@ static int _scan_proc_dev(const char *proc, const struct config_node *cn)
 				log_error("Max partition count missing for %s "
 					  "in devices/types in config file",
 					  name);
+				if (fclose(pd))
+					log_sys_error("fclose", proc_devices);
 				return 0;
 			}
 			if (!cv->v.i) {
 				log_error("Zero partition count invalid for "
 					  "%s in devices/types in config file",
 					  name);
+				if (fclose(pd))
+					log_sys_error("fclose", proc_devices);
 				return 0;
 			}
 			if (dev_len <= strlen(line + i) &&
@@ -225,7 +251,10 @@ static int _scan_proc_dev(const char *proc, const struct config_node *cn)
 			}
 		}
 	}
-	fclose(pd);
+
+	if (fclose(pd))
+		log_sys_error("fclose", proc_devices);
+
 	return 1;
 }
 
@@ -239,7 +268,7 @@ struct dev_filter *lvm_type_filter_create(const char *proc,
 {
 	struct dev_filter *f;
 
-	if (!(f = dbg_malloc(sizeof(struct dev_filter)))) {
+	if (!(f = dm_malloc(sizeof(struct dev_filter)))) {
 		log_error("LVM type filter allocation failed");
 		return NULL;
 	}
@@ -249,8 +278,8 @@ struct dev_filter *lvm_type_filter_create(const char *proc,
 	f->private = NULL;
 
 	if (!_scan_proc_dev(proc, cn)) {
-		stack;
-		return NULL;
+		dm_free(f);
+		return_NULL;
 	}
 
 	return f;
@@ -258,6 +287,6 @@ struct dev_filter *lvm_type_filter_create(const char *proc,
 
 void lvm_type_filter_destroy(struct dev_filter *f)
 {
-	dbg_free(f);
+	dm_free(f);
 	return;
 }

@@ -1,14 +1,14 @@
 /*
- * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2006 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -36,6 +36,7 @@ static struct flag _vg_flags[] = {
 	{LVM_WRITE, "WRITE"},
 	{CLUSTERED, "CLUSTERED"},
 	{SHARED, "SHARED"},
+	{PRECOMMITTED, NULL},
 	{0, NULL}
 };
 
@@ -52,8 +53,14 @@ static struct flag _lv_flags[] = {
 	{VISIBLE_LV, "VISIBLE"},
 	{PVMOVE, "PVMOVE"},
 	{LOCKED, "LOCKED"},
+	{MIRROR_NOTSYNCED, "NOTSYNCED"},
+	{MIRROR_IMAGE, NULL},
+	{MIRROR_LOG, NULL},
 	{MIRRORED, NULL},
 	{VIRTUAL, NULL},
+	{SNAPSHOT, NULL},
+	{ACTIVATE_EXCL, NULL},
+	{CONVERTING, NULL},
 	{0, NULL}
 };
 
@@ -84,10 +91,8 @@ int print_flags(uint32_t status, int type, char *buffer, size_t size)
 	int f, first = 1;
 	struct flag *flags;
 
-	if (!(flags = _get_flags(type))) {
-		stack;
-		return 0;
-	}
+	if (!(flags = _get_flags(type)))
+		return_0;
 
 	if (!emit_to_buffer(&buffer, &size, "["))
 		return 0;
@@ -128,10 +133,8 @@ int read_flags(uint32_t *status, int type, struct config_value *cv)
 	uint32_t s = 0;
 	struct flag *flags;
 
-	if (!(flags = _get_flags(type))) {
-		stack;
-		return 0;
-	}
+	if (!(flags = _get_flags(type)))
+		return_0;
 
 	if (cv->type == CFG_EMPTY_ARRAY)
 		goto out;

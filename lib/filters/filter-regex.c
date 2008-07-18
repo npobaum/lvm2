@@ -1,34 +1,30 @@
 /*
- * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
 #include "lib.h"
-#include "pool.h"
 #include "filter-regex.h"
-#include "matcher.h"
 #include "device.h"
-#include "bitset.h"
-#include "list.h"
 
 struct rfilter {
-	struct pool *mem;
-	bitset_t accept;
-	struct matcher *engine;
+	struct dm_pool *mem;
+	dm_bitset_t accept;
+	struct dm_regex *engine;
 };
 
-static int _extract_pattern(struct pool *mem, const char *pat,
-			    char **regex, bitset_t accept, int ix)
+static int _extract_pattern(struct dm_pool *mem, const char *pat,
+			    char **regex, dm_bitset_t accept, int ix)
 {
 	char sep, *r, *ptr;
 
@@ -37,11 +33,11 @@ static int _extract_pattern(struct pool *mem, const char *pat,
 	 */
 	switch (*pat) {
 	case 'a':
-		bit_set(accept, ix);
+		dm_bit_set(accept, ix);
 		break;
 
 	case 'r':
-		bit_clear(accept, ix);
+		dm_bit_clear(accept, ix);
 		break;
 
 	default:
@@ -74,10 +70,8 @@ static int _extract_pattern(struct pool *mem, const char *pat,
 	/*
 	 * copy the regex
 	 */
-	if (!(r = pool_strdup(mem, pat))) {
-		stack;
-		return 0;
-	}
+	if (!(r = dm_pool_strdup(mem, pat)))
+		return_0;
 
 	/*
 	 * trim the trailing character, having checked it's sep.
@@ -95,24 +89,21 @@ static int _extract_pattern(struct pool *mem, const char *pat,
 
 static int _build_matcher(struct rfilter *rf, struct config_value *val)
 {
-	struct pool *scratch;
+	struct dm_pool *scratch;
 	struct config_value *v;
 	char **regex;
 	unsigned count = 0;
 	int i, r = 0;
 
-	if (!(scratch = pool_create("filter matcher", 1024))) {
-		stack;
-		return 0;
-	}
+	if (!(scratch = dm_pool_create("filter dm_regex", 1024)))
+		return_0;
 
 	/*
 	 * count how many patterns we have.
 	 */
 	for (v = val; v; v = v->next) {
-
 		if (v->type != CFG_STRING) {
-			log_info("filter patterns must be enclosed in quotes");
+			log_error("filter patterns must be enclosed in quotes");
 			goto out;
 		}
 
@@ -122,15 +113,13 @@ static int _build_matcher(struct rfilter *rf, struct config_value *val)
 	/*
 	 * allocate space for them
 	 */
-	if (!(regex = pool_alloc(scratch, sizeof(*regex) * count))) {
-		stack;
-		goto out;
-	}
+	if (!(regex = dm_pool_alloc(scratch, sizeof(*regex) * count)))
+		goto_out;
 
 	/*
 	 * create the accept/reject bitset
 	 */
-	rf->accept = bitset_create(rf->mem, count);
+	rf->accept = dm_bitset_create(rf->mem, count);
 
 	/*
 	 * fill the array back to front because we
@@ -139,43 +128,36 @@ static int _build_matcher(struct rfilter *rf, struct config_value *val)
 	 */
 	for (v = val, i = count - 1; v; v = v->next, i--)
 		if (!_extract_pattern(scratch, v->v.str, regex, rf->accept, i)) {
-			log_info("invalid filter pattern");
+			log_error("invalid filter pattern");
 			goto out;
 		}
 
 	/*
 	 * build the matcher.
 	 */
-	if (!(rf->engine = matcher_create(rf->mem, (const char **) regex,
-					  count)))
+	if (!(rf->engine = dm_regex_create(rf->mem, (const char **) regex,
+					   count)))
 		stack;
 	r = 1;
 
       out:
-	pool_destroy(scratch);
+	dm_pool_destroy(scratch);
 	return r;
 }
 
 static int _accept_p(struct dev_filter *f, struct device *dev)
 {
-	struct list *ah;
 	int m, first = 1, rejected = 0;
 	struct rfilter *rf = (struct rfilter *) f->private;
 	struct str_list *sl;
 
-	list_iterate(ah, &dev->aliases) {
-		sl = list_item(ah, struct str_list);
-		m = matcher_run(rf->engine, sl->str);
+	list_iterate_items(sl, &dev->aliases) {
+		m = dm_regex_match(rf->engine, sl->str);
 
 		if (m >= 0) {
-			if (bit(rf->accept, m)) {
-
-				if (!first) {
-					log_debug("%s: New preferred name",
-						  sl->str);
-					list_del(&sl->list);
-					list_add_h(&dev->aliases, &sl->list);
-				}
+			if (dm_bit(rf->accept, m)) {
+				if (!first)
+					dev_set_preferred_name(sl, dev);
 
 				return 1;
 			}
@@ -196,46 +178,38 @@ static int _accept_p(struct dev_filter *f, struct device *dev)
 	return !rejected;
 }
 
-static void _destroy(struct dev_filter *f)
+static void _regex_destroy(struct dev_filter *f)
 {
 	struct rfilter *rf = (struct rfilter *) f->private;
-	pool_destroy(rf->mem);
+	dm_pool_destroy(rf->mem);
 }
 
 struct dev_filter *regex_filter_create(struct config_value *patterns)
 {
-	struct pool *mem = pool_create("filter regex", 10 * 1024);
+	struct dm_pool *mem = dm_pool_create("filter regex", 10 * 1024);
 	struct rfilter *rf;
 	struct dev_filter *f;
 
-	if (!mem) {
-		stack;
-		return NULL;
-	}
+	if (!mem)
+		return_NULL;
 
-	if (!(rf = pool_alloc(mem, sizeof(*rf)))) {
-		stack;
-		goto bad;
-	}
+	if (!(rf = dm_pool_alloc(mem, sizeof(*rf))))
+		goto_bad;
 
 	rf->mem = mem;
 
-	if (!_build_matcher(rf, patterns)) {
-		stack;
-		goto bad;
-	}
+	if (!_build_matcher(rf, patterns))
+		goto_bad;
 
-	if (!(f = pool_zalloc(mem, sizeof(*f)))) {
-		stack;
-		goto bad;
-	}
+	if (!(f = dm_pool_zalloc(mem, sizeof(*f))))
+		goto_bad;
 
 	f->passes_filter = _accept_p;
-	f->destroy = _destroy;
+	f->destroy = _regex_destroy;
 	f->private = rf;
 	return f;
 
       bad:
-	pool_destroy(mem);
+	dm_pool_destroy(mem);
 	return NULL;
 }
