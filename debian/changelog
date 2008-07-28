@@ -1,3 +1,13 @@
+lvm2 (2.02.26-1ubuntu10) intrepid; urgency=low
+
+  * debian/initramfs-tools/scripts/init-premount/lvm2:
+    - use new named mountroot-fail hook ordering
+    - silently detect array failures
+  * lib/locking/cluster_locking.c, daemons/clvmd/{refresh_,}clvmd.c:
+    add include for sys/param.h to catch limits, where PIPE_BUF went to live.
+
+ -- Kees Cook <kees@ubuntu.com>  Mon, 28 Jul 2008 12:22:26 -0700
+
 lvm2 (2.02.26-1ubuntu9) hardy; urgency=low
 
   * Include virtio block type in the filters. (LP: #218574)
