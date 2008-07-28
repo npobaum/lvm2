@@ -38,6 +38,7 @@
 #include <syslog.h>
 #include <errno.h>
 #include <libdlm.h>
+#include <sys/param.h>
 
 #include "clvmd-comms.h"
 #include "lvm-functions.h"

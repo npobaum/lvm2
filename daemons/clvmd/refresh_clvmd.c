@@ -26,6 +26,7 @@
 #include <libdevmapper.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <sys/param.h>
 
 #include "clvm.h"
 #include "refresh_clvmd.h"
