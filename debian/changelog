@@ -1,3 +1,10 @@
+lvm2 (2.02.26-1ubuntu11) intrepid; urgency=low
+
+  * debian/control: build-deps on newer libcman and libdlm to guarantee a
+    build against new libcman3 and libdlm3 soname.
+
+ -- Fabio M. Di Nitto <fabbione@ubuntu.com>  Tue, 26 Aug 2008 14:18:13 +0200
+
 lvm2 (2.02.26-1ubuntu10) intrepid; urgency=low
 
   * debian/initramfs-tools/scripts/init-premount/lvm2:
