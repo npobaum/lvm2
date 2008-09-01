@@ -1,3 +1,10 @@
+lvm2 (2.02.39-0ubuntu2) intrepid; urgency=low
+
+  * Backport from Debian unstable (Bastian Blank):
+    - Disable readline support in udeb. (closes: #491203, LP: #263558)
+
+ -- Colin Watson <cjwatson@ubuntu.com>  Mon, 01 Sep 2008 16:47:50 +0100
+
 lvm2 (2.02.39-0ubuntu1) intrepid; urgency=low
 
   * New upstream release (LP: #239460).

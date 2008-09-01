@@ -73,7 +73,8 @@ $(STAMPS_DIR)/setup-udeb:
 		$(CONFIGURE_FLAGS) \
 		--with-optimisation="-Os" \
 		--with-lvm1=none \
-		--with-pool=none
+		--with-pool=none \
+		--disable-readline
 	touch $@
 
 build: $(STAMPS_DIR)/build
