@@ -38,10 +38,11 @@ ifneq (,$(findstring $(DEB_HOST_ARCH), arm armeb hppa mips mipsel))
 CONFIGURE_FLAGS += --disable-o_direct
 endif
 
-source: $(BUILD_DIR) $(STAMPS_DIR) $(STAMPS_DIR)/source
+source: $(STAMPS_DIR)/source
 
 $(STAMPS_DIR)/source: DIR = $(BUILD_DIR)/source
 $(STAMPS_DIR)/source:
+	@mkdir -p $(STAMPS_DIR)
 	rm -rf $(DIR)
 	mkdir -p $(DIR)
 	cp -al $(filter-out debian .svk .svn, $(wildcard .[^]* *)) $(DIR)
@@ -50,7 +51,7 @@ $(STAMPS_DIR)/source:
 	cd $(DIR); autoreconf
 	touch $@
 
-setup: source $(STAMPS_DIR)/setup-deb $(STAMPS_DIR)/setup-udeb
+setup: $(STAMPS_DIR)/setup-deb $(STAMPS_DIR)/setup-udeb
 
 $(STAMPS_DIR)/setup-deb: SOURCE_DIR = $(BUILD_DIR)/source
 $(STAMPS_DIR)/setup-deb: DIR = $(BUILD_DIR)/build-deb
@@ -80,9 +81,10 @@ $(STAMPS_DIR)/setup-udeb: $(STAMPS_DIR)/source
 		--disable-readline
 	touch $@
 
-build: setup $(STAMPS_DIR)/build-deb $(STAMPS_DIR)/build-udeb
+build: $(STAMPS_DIR)/build-deb $(STAMPS_DIR)/build-udeb
 
 build-deb: $(STAMPS_DIR)/build-deb
+.NOTPARALLEL: $(STAMPS_DIR)/build-deb
 $(STAMPS_DIR)/build-deb: DIR = $(BUILD_DIR)/build-deb
 $(STAMPS_DIR)/build-deb: $(STAMPS_DIR)/setup-deb
 	dh_testdir
@@ -90,6 +92,7 @@ $(STAMPS_DIR)/build-deb: $(STAMPS_DIR)/setup-deb
 	touch $@
 
 build-udeb: $(STAMPS_DIR)/build-udeb
+.NOTPARALLEL: $(STAMPS_DIR)/build-udeb
 $(STAMPS_DIR)/build-udeb: DIR = $(BUILD_DIR)/build-udeb
 $(STAMPS_DIR)/build-udeb: $(STAMPS_DIR)/setup-udeb
 	dh_testdir
@@ -123,7 +126,7 @@ install-base:
 
 install-clvm: export DH_OPTIONS = -pclvm
 install-clvm: DIR = $(BUILD_DIR)/build-deb
-install-clvm: INSTALL_DIR = $(BUILD_DIR)/install-deb
+install-clvm: INSTALL_DIR = $(BUILD_DIR)/install-clvm
 install-clvm: $(STAMPS_DIR)/build-deb
 	dh_testdir
 	dh_testroot
@@ -131,11 +134,12 @@ install-clvm: $(STAMPS_DIR)/build-deb
 	$(MAKE) -C $(DIR) install DESTDIR=$(CURDIR)/$(INSTALL_DIR)
 	dh_install --sourcedir=$(INSTALL_DIR)
 	dh_installexamples
+	dh_installinit --no-start -- start 63 S . start 51 0 6 .
 	$(MAKE) -f debian/rules install-base
 
 install-lvm2: export DH_OPTIONS = -plvm2
 install-lvm2: DIR = $(BUILD_DIR)/build-deb
-install-lvm2: INSTALL_DIR = $(BUILD_DIR)/install-deb
+install-lvm2: INSTALL_DIR = $(BUILD_DIR)/install-lvm2
 install-lvm2: $(STAMPS_DIR)/build-deb
 	dh_testdir
 	dh_testroot
@@ -151,7 +155,7 @@ install-lvm2: $(STAMPS_DIR)/build-deb
 
 install-lvm2-udeb: export DH_OPTIONS = -plvm2-udeb
 install-lvm2-udeb: DIR = $(BUILD_DIR)/build-udeb
-install-lvm2-udeb: INSTALL_DIR = $(BUILD_DIR)/install-udeb
+install-lvm2-udeb: INSTALL_DIR = $(BUILD_DIR)/install-lvm2-udeb
 install-lvm2-udeb: $(STAMPS_DIR)/build-udeb
 	dh_testdir
 	dh_testroot

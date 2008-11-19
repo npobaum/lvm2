@@ -8,7 +8,7 @@ Standards-Version: 3.7.3
 
 Package: lvm2
 Architecture: any
-Depends: ${shlibs:Depends}
+Depends: ${shlibs:Depends}, lsb-base
 Conflicts: lvm-common
 Replaces: lvm-common
 Suggests: dmsetup
@@ -37,8 +37,7 @@ Package: clvm
 Section: admin
 Priority: extra
 Architecture: any
-Depends: ${shlibs:Depends}, lvm2 (= ${binary:Version})
-Suggests: cman
+Depends: ${shlibs:Depends}, lvm2 (= ${binary:Version}), lsb-base, cman
 Description: Cluster LVM Daemon for lvm2
  This package provides the clustering interface for lvm2, when used with 
  Red Hat's "cman" cluster infrastructure. It allows logical volumes to

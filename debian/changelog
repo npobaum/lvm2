@@ -1,3 +1,14 @@
+lvm2 (2.02.39-3) unstable; urgency=low
+
+  * Depend against lsb-base.
+  * Make clvm depend against cman.
+  * Don't ignore locking failures in lvm2 init script.
+  * Only activate vgs local.
+  * Add clvm initscript. (closes: #336258)
+  * Try to activate anything in the lvm2 postinst. (closes: #506105)
+
+ -- Bastian Blank <waldi@debian.org>  Wed, 19 Nov 2008 11:59:06 +0100
+
 lvm2 (2.02.39-2) unstable; urgency=low
 
   * Disable readline support in udeb. (closes: #491203)
