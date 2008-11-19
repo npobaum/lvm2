@@ -20,13 +20,13 @@ SCRIPTNAME=/etc/init.d/lvm2
 do_start()
 {
 	modprobe dm-mod 2> /dev/null || :
-	/sbin/vgscan --ignorelockingfailure --mknodes || :
-	/sbin/vgchange -a y --ignorelockingfailure || return 2
+	/sbin/vgscan --mknodes || :
+	/sbin/vgchange -aly || return 2
 }
 
 do_stop()
 {
-	/sbin/vgchange -a n --ignorelockingfailure || return 2
+	/sbin/vgchange -aln || return 2
 }
 
 case "$1" in
