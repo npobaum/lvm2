@@ -1,3 +1,9 @@
+lvm2 (2.02.39-0ubuntu3) jaunty; urgency=low
+
+  * Rebuild for armel.
+
+ -- Matthias Klose <doko@ubuntu.com>  Thu, 20 Nov 2008 10:51:16 +0000
+
 lvm2 (2.02.39-0ubuntu2) intrepid; urgency=low
 
   * Backport from Debian unstable (Bastian Blank):
