@@ -11,7 +11,7 @@ Architecture: any
 Depends: ${shlibs:Depends}, lsb-base
 Conflicts: lvm-common
 Replaces: lvm-common
-Suggests: dmsetup
+Recommends: dmsetup
 Description: The Linux Logical Volume Manager
  This is LVM2, the rewrite of The Linux Logical Volume Manager.  LVM
  supports enterprise level volume management of disk and disk subsystems

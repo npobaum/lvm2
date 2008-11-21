@@ -14,11 +14,16 @@ prereqs)
 	;;
 esac
 
-if [ ! -x /sbin/vgchange ]; then
+if [ ! -x /sbin/lvm ]; then
 	exit 0
 fi
 
 . /usr/share/initramfs-tools/hook-functions
+
+if [ -e /etc/lvm/lvm.conf ]; then
+	mkdir -p ${DESTDIR}/etc/lvm
+	cp /etc/lvm/lvm.conf ${DESTDIR}/etc/lvm/
+fi
 
 copy_exec /sbin/lvm /sbin
 

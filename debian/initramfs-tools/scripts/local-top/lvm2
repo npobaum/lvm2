@@ -27,12 +27,12 @@ activate_vg()
 	# Take care of lilo boot arg, risky activating of all vg
 	case $vg in
 	fe[0-9]*)
-		lvm vgchange -ay
+		lvm vgchange -aly --ignorelockingfailure
 		exit 0
 		;;
 	# FIXME: check major
 	/dev/root)
-		lvm vgchange -ay
+		lvm vgchange -aly --ignorelockingfailure
 		exit 0
 		;;
 	esac
@@ -53,7 +53,7 @@ activate_vg()
 	# Reduce padded --'s to -'s
 	vg=$(echo ${vg} | sed -e 's#--#-#g')
 
-	lvm vgchange -ay ${vg}
+	lvm vgchange -aly --ignorelockingfailure ${vg}
 }
 
 if [ ! -e /sbin/lvm ]; then

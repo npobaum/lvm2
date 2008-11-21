@@ -9,7 +9,7 @@
 # Short-Description: start and stop the lvm cluster locking daemon
 ### END INIT INFO
 #
-# Author: Frederik Schüler <fs@debian.org>
+# Author: Frederik SchÃ¼ler <fs@debian.org>
 # based on the old clvm init script from etch
 # and the clvmd init script from RHEL5
 

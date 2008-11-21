@@ -4,7 +4,8 @@ set -e
 
 case "$1" in
     remove)
-        vgcfgbackup >/dev/null 2>&1 || :
+        rm -rf /etc/lvm/cache || :
+        rm -rf /var/lock/lvm || :
     ;;
 esac
 
