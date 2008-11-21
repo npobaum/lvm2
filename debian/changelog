@@ -1,3 +1,13 @@
+lvm2 (2.02.39-4) unstable; urgency=low
+
+  * Revert locking change, it breaks too much. (closes: #506354)
+  * Disable cluster support in udeb.
+  * Install the binary as lvm in the initramfs. (closes: #503627)
+  * Build cluster locking internal.
+  * Adjust clvm documentation for the locking change.
+
+ -- Bastian Blank <waldi@debian.org>  Fri, 21 Nov 2008 16:23:22 +0100
+
 lvm2 (2.02.39-3) unstable; urgency=low
 
   * Depend against lsb-base.

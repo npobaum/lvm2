@@ -16,16 +16,7 @@ In order to make normal lvm2 cluster-aware it is necessary to edit the
 configuration file /etc/lvm/lvm.conf as follows:
 
 in the global{} section:
-  locking_type = 2
-  locking_library = "liblvm2clusterlock.so"
-  library_dir = "/lib/lvm2"
-
-The script clvmd_fix_conf.sh can be run to add these entries to your
-configuration file.
-
-This package does not currently provide a startup script for clvmd - I will
-add one when the cluster infrastruction and its packages stabilise a bit
-more.
+  locking_type = 3
 
 
 Patrick Caulfield <patrick@debian.org>
