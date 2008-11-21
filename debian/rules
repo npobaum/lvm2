@@ -62,7 +62,6 @@ $(STAMPS_DIR)/setup-deb: $(STAMPS_DIR)/source
 	./configure CFLAGS="$(CFLAGS)" \
 		$(CONFIGURE_FLAGS) \
 		--with-optimisation="" \
-		--with-cluster=shared \
 		--with-clvmd=cman \
 		--enable-readline
 	touch $@
@@ -76,6 +75,7 @@ $(STAMPS_DIR)/setup-udeb: $(STAMPS_DIR)/source
 	./configure CFLAGS="$(CFLAGS_UDEB)" \
 		$(CONFIGURE_FLAGS) \
 		--with-optimisation="" \
+		--with-cluster=none \
 		--with-lvm1=none \
 		--with-pool=none \
 		--disable-readline

@@ -27,12 +27,12 @@ activate_vg()
 	# Take care of lilo boot arg, risky activating of all vg
 	case $vg in
 	fe[0-9]*)
-		vgchange -ay
+		lvm vgchange -ay
 		exit 0
 		;;
 	# FIXME: check major
 	/dev/root)
-		vgchange -ay
+		lvm vgchange -ay
 		exit 0
 		;;
 	esac
@@ -53,10 +53,10 @@ activate_vg()
 	# Reduce padded --'s to -'s
 	vg=$(echo ${vg} | sed -e 's#--#-#g')
 
-	vgchange -ay ${vg}
+	lvm vgchange -ay ${vg}
 }
 
-if [ ! -e /sbin/vgchange ]; then
+if [ ! -e /sbin/lvm ]; then
 	exit 0
 fi
 
