@@ -1,3 +1,14 @@
+lvm2 (2.02.39-5) unstable; urgency=low
+
+  * Install lvm.conf into initramfs. (closes: #439761)
+  * Also ignore locking in initramfs.
+  * Make piuparts-clean. (closes: 455115)
+    - Cleanup old files on upgrade. /lib/lvm-default, /etc/lvm/.cache.
+    - Cleanup dirs on remove. /etc/lvm/cache, /var/lock/lvm.
+  * Recommend dmsetup.
+
+ -- Bastian Blank <waldi@debian.org>  Fri, 21 Nov 2008 22:15:18 +0100
+
 lvm2 (2.02.39-4) unstable; urgency=low
 
   * Revert locking change, it breaks too much. (closes: #506354)
