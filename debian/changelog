@@ -1,3 +1,10 @@
+lvm2 (2.02.39-6) unstable; urgency=low
+
+  * Readd a vgchange binary into the initramfs. At least cryptsetup depends on
+    this.
+
+ -- Bastian Blank <waldi@debian.org>  Sat, 22 Nov 2008 16:16:57 +0100
+
 lvm2 (2.02.39-5) unstable; urgency=low
 
   * Install lvm.conf into initramfs. (closes: #439761)
