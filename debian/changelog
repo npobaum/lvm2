@@ -1,3 +1,9 @@
+lvm2 (2.02.39-0ubuntu4) jaunty; urgency=low
+
+  * Change dependency on udev to one on watershed.
+
+ -- Scott James Remnant <scott@ubuntu.com>  Mon, 05 Jan 2009 16:54:00 +0000
+
 lvm2 (2.02.39-0ubuntu3) jaunty; urgency=low
 
   * Rebuild for armel.
