@@ -1,3 +1,9 @@
+lvm2 (2.02.39-0ubuntu6) jaunty; urgency=low
+
+  * Bump build-dependency on debhelper to ensure we get the right one.
+
+ -- Scott James Remnant <scott@ubuntu.com>  Fri, 09 Jan 2009 14:09:31 +0000
+
 lvm2 (2.02.39-0ubuntu5) jaunty; urgency=low
 
   * Update udev rules.d path to /lib/udev/rules.d, (LP #314879) and add
