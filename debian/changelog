@@ -1,3 +1,14 @@
+lvm2 (2.02.39-0ubuntu5) jaunty; urgency=low
+
+  * Update udev rules.d path to /lib/udev/rules.d, (LP #314879) and add
+    versioned dependency on udev accordingly.
+  * Add versioned breaks on udev to make sure we do the upgrade
+    in the correct order.
+  * Add versioned dependency on watershed version that installs
+    into initramfs.
+
+ -- Soren Hansen <soren@ubuntu.com>  Fri, 09 Jan 2009 13:46:10 +0100
+
 lvm2 (2.02.39-0ubuntu4) jaunty; urgency=low
 
   * Change dependency on udev to one on watershed.
