@@ -3,3 +3,4 @@ libs-cleanup.patch
 drop-realtime.patch
 config.patch
 force-modprobe.patch
+open-readonly.patch
