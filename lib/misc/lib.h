@@ -25,12 +25,24 @@
 #define _GNU_SOURCE
 #define _FILE_OFFSET_BITS 64
 
-#include "log.h"
 #include "intl.h"
-#include "lvm-types.h"
+#include "libdevmapper.h"
+#include "lvm-globals.h"
 #include "lvm-wrappers.h"
+#include "lvm-types.h"
 #include "util.h"
 
-#include <libdevmapper.h>
+#ifdef DM
+#  include "dm-logging.h"
+#else
+#  include "lvm-logging.h"
+#endif
+
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/stat.h>
 
 #endif

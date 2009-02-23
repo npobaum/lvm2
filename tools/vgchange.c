@@ -24,7 +24,7 @@ static int _monitor_lvs_in_vg(struct cmd_context *cmd,
 	int lv_active;
 	int count = 0;
 
-	list_iterate_items(lvl, &vg->lvs) {
+	dm_list_iterate_items(lvl, &vg->lvs) {
 		lv = lvl->lv;
 
 		if (!lv_info(cmd, lv, &info, 0, 0))
@@ -59,7 +59,7 @@ static int _activate_lvs_in_vg(struct cmd_context *cmd,
 	const char *pvname;
 	int count = 0;
 
-	list_iterate_items(lvl, &vg->lvs) {
+	dm_list_iterate_items(lvl, &vg->lvs) {
 		lv = lvl->lv;
 
 		/* Only request activation of snapshot origin devices */
@@ -260,7 +260,7 @@ static int _vgchange_clustered(struct cmd_context *cmd,
 	}
 
 	if (clustered) {
-		list_iterate_items(lvl, &vg->lvs) {
+		dm_list_iterate_items(lvl, &vg->lvs) {
 			if (lv_is_origin(lvl->lv) || lv_is_cow(lvl->lv)) {
 				log_error("Volume group %s contains snapshots "
 					  "that are not yet supported.",
@@ -496,7 +496,7 @@ static int _vgchange_uuid(struct cmd_context *cmd __attribute((unused)),
 		return ECMD_FAILED;
 	}
 
-	list_iterate_items(lvl, &vg->lvs) {
+	dm_list_iterate_items(lvl, &vg->lvs) {
 		memcpy(&lvl->lv->lvid, &vg->id, sizeof(vg->id));
 	}
 
@@ -507,6 +507,16 @@ static int _vgchange_uuid(struct cmd_context *cmd __attribute((unused)),
 
 	log_print("Volume group \"%s\" successfully changed", vg->name);
 
+	return ECMD_PROCESSED;
+}
+
+static int _vgchange_refresh(struct cmd_context *cmd, struct volume_group *vg)
+{
+	log_verbose("Refreshing volume group \"%s\"", vg->name);
+
+	if (!vg_refresh_visible(cmd, vg))
+		return ECMD_FAILED;
+	
 	return ECMD_PROCESSED;
 }
 
@@ -540,7 +550,7 @@ static int vgchange_single(struct cmd_context *cmd, const char *vg_name,
 	}
 
 	init_dmeventd_monitor(arg_int_value(cmd, monitor_ARG,
-					    (cmd->is_static || arg_count(cmd, ignoremonitoring_ARG)) ?
+					    (is_static() || arg_count(cmd, ignoremonitoring_ARG)) ?
 					    DMEVENTD_MONITOR_IGNORE : DEFAULT_DMEVENTD_MONITOR));
 
 	if (arg_count(cmd, available_ARG))
@@ -576,6 +586,9 @@ static int vgchange_single(struct cmd_context *cmd, const char *vg_name,
 	else if (arg_count(cmd, clustered_ARG))
 		r = _vgchange_clustered(cmd, vg);
 
+	else if (arg_count(cmd, refresh_ARG))
+		r = _vgchange_refresh(cmd, vg);
+
 	return r;
 }
 
@@ -588,9 +601,9 @@ int vgchange(struct cmd_context *cmd, int argc, char **argv)
 	     arg_count(cmd, addtag_ARG) + arg_count(cmd, uuid_ARG) +
 	     arg_count(cmd, physicalextentsize_ARG) +
 	     arg_count(cmd, clustered_ARG) + arg_count(cmd, alloc_ARG) +
-	     arg_count(cmd, monitor_ARG))) {
-		log_error("One of -a, -c, -l, -p, -s, -x, --uuid, --alloc, "
-			  "--addtag or --deltag required");
+	     arg_count(cmd, monitor_ARG) + arg_count(cmd, refresh_ARG))) {
+		log_error("One of -a, -c, -l, -p, -s, -x, --refresh, "
+				"--uuid, --alloc, --addtag or --deltag required");
 		return EINVALID_CMD_LINE;
 	}
 

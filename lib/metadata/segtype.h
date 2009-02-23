@@ -47,7 +47,7 @@ struct dev_manager;
 #define segtype_is_virtual(segtype)	((segtype)->flags & SEG_VIRTUAL ? 1 : 0)
 
 struct segment_type {
-	struct list list;
+	struct dm_list list;
 	struct cmd_context *cmd;
 	uint32_t flags;
 	struct segtype_handler *ops;
@@ -77,12 +77,12 @@ struct segtype_handler {
 			       struct cmd_context *cmd,
 			       struct lv_segment *seg, char *params,
 			       uint64_t *total_numerator,
-			       uint64_t *total_denominator, float *percent);
+			       uint64_t *total_denominator);
 	int (*target_present) (const struct lv_segment *seg,
 			       unsigned *attributes);
 	int (*modules_needed) (struct dm_pool *mem,
 			       const struct lv_segment *seg,
-			       struct list *modules);
+			       struct dm_list *modules);
 	void (*destroy) (const struct segment_type * segtype);
 	int (*target_monitored) (struct lv_segment *seg, int *pending);
 	int (*target_monitor_events) (struct lv_segment *seg, int events);

@@ -13,6 +13,10 @@
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
+#define _GNU_SOURCE
+#define _FILE_OFFSET_BITS 64
+
+#include <configure.h>
 #include <pthread.h>
 #include <sys/types.h>
 #include <sys/utsname.h>
@@ -33,7 +37,6 @@
 #include <libdevmapper.h>
 #include <libdlm.h>
 
-#include "list.h"
 #include "lvm-types.h"
 #include "clvm.h"
 #include "clvmd-comms.h"
@@ -43,7 +46,8 @@
 /* LVM2 headers */
 #include "toolcontext.h"
 #include "lvmcache.h"
-#include "log.h"
+#include "lvm-logging.h"
+#include "lvm-globals.h"
 #include "activate.h"
 #include "locking.h"
 #include "archiver.h"
@@ -141,8 +145,7 @@ static const char *decode_flags(unsigned char flags)
 {
 	static char buf[128];
 
-	sprintf(buf, "0x%x (%s%s%s)", flags,
-		flags & LCK_PARTIAL_MODE	  ? "PARTIAL " : "",
+	sprintf(buf, "0x%x (%s%s)", flags,
 		flags & LCK_MIRROR_NOSYNC_MODE	  ? "MIRROR_NOSYNC " : "",
 		flags & LCK_DMEVENTD_MONITOR_MODE ? "DMEVENTD_MONITOR " : "");
 
@@ -413,9 +416,6 @@ int do_lock_lv(unsigned char command, unsigned char lock_flags, char *resource)
 		}
 	}
 
-	if (lock_flags & LCK_PARTIAL_MODE)
-		init_partial(1);
-
 	if (lock_flags & LCK_MIRROR_NOSYNC_MODE)
 		init_mirror_in_sync(1);
 
@@ -453,9 +453,6 @@ int do_lock_lv(unsigned char command, unsigned char lock_flags, char *resource)
 		status = EINVAL;
 		break;
 	}
-
-	if (lock_flags & LCK_PARTIAL_MODE)
-		init_partial(0);
 
 	if (lock_flags & LCK_MIRROR_NOSYNC_MODE)
 		init_mirror_in_sync(0);
@@ -727,7 +724,7 @@ void lvm_do_backup(const char *vgname)
 /* Called to initialise the LVM context of the daemon */
 int init_lvm(int using_gulm)
 {
-	if (!(cmd = create_toolcontext(NULL, 0, 1))) {
+	if (!(cmd = create_toolcontext(1))) {
 		log_error("Failed to allocate command context");
 		return 0;
 	}
@@ -735,11 +732,6 @@ int init_lvm(int using_gulm)
 	/* Use LOG_DAEMON for syslog messages instead of LOG_USER */
 	init_syslog(LOG_DAEMON);
 	openlog("clvmd", LOG_PID, LOG_DAEMON);
-	init_debug(cmd->current_settings.debug);
-	init_verbose(cmd->current_settings.verbose + VERBOSE_BASE_LEVEL);
-	set_activation(cmd->current_settings.activation);
-	archive_enable(cmd, cmd->current_settings.archive);
-	backup_enable(cmd, cmd->current_settings.backup);
 	cmd->cmd_line = (char *)"clvmd";
 
 	/* Check lvm.conf is setup for cluster-LVM */

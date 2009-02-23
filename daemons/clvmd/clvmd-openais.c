@@ -11,6 +11,10 @@
  *
  */
 
+#define _GNU_SOURCE
+#define _FILE_OFFSET_BITS 64
+
+#include <configure.h>
 #include <pthread.h>
 #include <sys/types.h>
 #include <sys/utsname.h>
@@ -39,9 +43,8 @@
 #include <openais/saLck.h>
 #include <openais/cpg.h>
 
-#include "list.h"
 #include "locking.h"
-#include "log.h"
+#include "lvm-logging.h"
 #include "clvm.h"
 #include "clvmd-comms.h"
 #include "lvm-functions.h"

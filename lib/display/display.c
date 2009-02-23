@@ -24,9 +24,9 @@
 
 typedef enum { SIZE_LONG = 0, SIZE_SHORT = 1, SIZE_UNIT = 2 } size_len_t;
 
-static struct {
+static const struct {
 	alloc_policy_t alloc;
-	const char *str;
+	const char str[12]; /* must be changed when size extends 11 chars */
 } _policies[] = {
 	{
 	ALLOC_CONTIGUOUS, "contiguous"}, {
@@ -36,7 +36,7 @@ static struct {
 	ALLOC_INHERIT, "inherit"}
 };
 
-static int _num_policies = sizeof(_policies) / sizeof(*_policies);
+static const int _num_policies = sizeof(_policies) / sizeof(*_policies);
 
 uint64_t units_to_bytes(const char *units, char *unit_type)
 {
@@ -155,7 +155,7 @@ static const char *_display_size(const struct cmd_context *cmd,
 	uint64_t byte = UINT64_C(0);
 	uint64_t units = UINT64_C(1024);
 	char *size_buf = NULL;
-	const char *size_str[][3] = {
+	const char * const size_str[][3] = {
 		{" Exabyte", " EB", "E"},
 		{" Petabyte", " PB", "P"},
 		{" Terabyte", " TB", "T"},
@@ -266,7 +266,7 @@ void pvdisplay_segments(const struct physical_volume *pv)
 	if (pv->pe_size)
 		log_print("--- Physical Segments ---");
 
-	list_iterate_items(pvseg, &pv->segments) {
+	dm_list_iterate_items(pvseg, &pv->segments) {
 		log_print("Physical extent %u to %u:",
 			  pvseg->pe, pvseg->pe + pvseg->len - 1);
 
@@ -425,7 +425,7 @@ int lvdisplay_full(struct cmd_context *cmd,
 	if (lv_is_origin(lv)) {
 		log_print("LV snapshot status     source of");
 
-		list_iterate_items_gen(snap_seg, &lv->snapshot_segs,
+		dm_list_iterate_items_gen(snap_seg, &lv->snapshot_segs,
 				       origin_list) {
 			if (inkernel &&
 			    (snap_active = lv_snapshot_percent(snap_seg->cow,
@@ -483,7 +483,7 @@ int lvdisplay_full(struct cmd_context *cmd,
 			  display_size(cmd, (uint64_t) snap_seg->chunk_size));
 	}
 
-	log_print("Segments               %u", list_size(&lv->segments));
+	log_print("Segments               %u", dm_list_size(&lv->segments));
 
 /********* FIXME Stripes & stripesize for each segment
 	log_print("Stripe size (KByte)    %u", lv->stripesize / 2);
@@ -551,7 +551,7 @@ int lvdisplay_segments(const struct logical_volume *lv)
 
 	log_print("--- Segments ---");
 
-	list_iterate_items(seg, &lv->segments) {
+	dm_list_iterate_items(seg, &lv->segments) {
 		log_print("Logical extent %u to %u:",
 			  seg->le, seg->le + seg->len - 1);
 
@@ -572,16 +572,11 @@ void vgdisplay_extents(const struct volume_group *vg __attribute((unused)))
 
 void vgdisplay_full(const struct volume_group *vg)
 {
-	uint32_t access;
+	uint32_t access_str;
 	uint32_t active_pvs;
-	uint32_t lv_count = 0;
-	struct lv_list *lvl;
 	char uuid[64] __attribute((aligned(8)));
 
-	if (vg->status & PARTIAL_VG)
-		active_pvs = list_size(&vg->pvs);
-	else
-		active_pvs = vg->pv_count;
+	active_pvs = vg->pv_count - vg_missing_pv_count(vg);
 
 	log_print("--- Volume group ---");
 	log_print("VG Name               %s", vg->name);
@@ -589,15 +584,15 @@ void vgdisplay_full(const struct volume_group *vg)
 	log_print("Format                %s", vg->fid->fmt->name);
 	if (vg->fid->fmt->features & FMT_MDAS) {
 		log_print("Metadata Areas        %d",
-			  list_size(&vg->fid->metadata_areas));
+			  dm_list_size(&vg->fid->metadata_areas));
 		log_print("Metadata Sequence No  %d", vg->seqno);
 	}
-	access = vg->status & (LVM_READ | LVM_WRITE);
+	access_str = vg->status & (LVM_READ | LVM_WRITE);
 	log_print("VG Access             %s%s%s%s",
-		  access == (LVM_READ | LVM_WRITE) ? "read/write" : "",
-		  access == LVM_READ ? "read" : "",
-		  access == LVM_WRITE ? "write" : "",
-		  access == 0 ? "error" : "");
+		  access_str == (LVM_READ | LVM_WRITE) ? "read/write" : "",
+		  access_str == LVM_READ ? "read" : "",
+		  access_str == LVM_WRITE ? "write" : "",
+		  access_str == 0 ? "error" : "");
 	log_print("VG Status             %s%sresizable",
 		  vg->status & EXPORTED_VG ? "exported/" : "",
 		  vg->status & RESIZEABLE_VG ? "" : "NOT ");
@@ -610,12 +605,8 @@ void vgdisplay_full(const struct volume_group *vg)
 			  vg->status & SHARED ? "yes" : "no");
 	}
 
-	list_iterate_items(lvl, &vg->lvs)
-		if (lv_is_visible(lvl->lv) && !(lvl->lv->status & SNAPSHOT))
-			lv_count++;
-
 	log_print("MAX LV                %u", vg->max_lv);
-	log_print("Cur LV                %u", lv_count);
+	log_print("Cur LV                %u", displayable_lvs_in_vg(vg));
 	log_print("Open LV               %u", lvs_in_vg_opened(vg));
 /****** FIXME Max LV Size
       log_print ( "MAX LV Size           %s",
@@ -659,32 +650,23 @@ void vgdisplay_full(const struct volume_group *vg)
 void vgdisplay_colons(const struct volume_group *vg)
 {
 	uint32_t active_pvs;
-	uint32_t lv_count;
-	struct lv_list *lvl;
-	const char *access;
+	const char *access_str;
 	char uuid[64] __attribute((aligned(8)));
 
-	if (vg->status & PARTIAL_VG)
-		active_pvs = list_size(&vg->pvs);
-	else
-		active_pvs = vg->pv_count;
-
-	list_iterate_items(lvl, &vg->lvs)
-		if (lv_is_visible(lvl->lv) && !(lvl->lv->status & SNAPSHOT))
-			lv_count++;
+	active_pvs = vg->pv_count - vg_missing_pv_count(vg);
 
 	switch (vg->status & (LVM_READ | LVM_WRITE)) {
 		case LVM_READ | LVM_WRITE:
-			access = "r/w";
+			access_str = "r/w";
 			break;
 		case LVM_READ:
-			access = "r";
+			access_str = "r";
 			break;
 		case LVM_WRITE:
-			access = "w";
+			access_str = "w";
 			break;
 		default:
-			access = "";
+			access_str = "";
 	}
 
 	if (!id_write_format(&vg->id, uuid, sizeof(uuid))) {
@@ -695,11 +677,11 @@ void vgdisplay_colons(const struct volume_group *vg)
 	log_print("%s:%s:%d:-1:%u:%u:%u:-1:%u:%u:%u:%" PRIu64 ":%" PRIu32
 		  ":%u:%u:%u:%s",
 		vg->name,
-		access,
+		access_str,
 		vg->status,
 		/* internal volume group number; obsolete */
 		vg->max_lv,
-		vg->lv_count,
+		displayable_lvs_in_vg(vg),
 		lvs_in_vg_opened(vg),
 		/* FIXME: maximum logical volume size */
 		vg->max_pv,
@@ -732,7 +714,7 @@ void display_formats(const struct cmd_context *cmd)
 {
 	const struct format_type *fmt;
 
-	list_iterate_items(fmt, &cmd->formats) {
+	dm_list_iterate_items(fmt, &cmd->formats) {
 		log_print("%s", fmt->name);
 	}
 }
@@ -741,7 +723,7 @@ void display_segtypes(const struct cmd_context *cmd)
 {
 	const struct segment_type *segtype;
 
-	list_iterate_items(segtype, &cmd->segtypes) {
+	dm_list_iterate_items(segtype, &cmd->segtypes) {
 		log_print("%s", segtype->name);
 	}
 }

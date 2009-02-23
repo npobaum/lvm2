@@ -36,9 +36,11 @@
  * common code for reading and writing them.
  */
 enum {
+	COMPATIBLE_FLAG = 0x0,
 	VG_FLAGS,
 	PV_FLAGS,
-	LV_FLAGS
+	LV_FLAGS,
+	STATUS_FLAG = 0x8,
 };
 
 struct text_vg_version_ops {
@@ -58,8 +60,8 @@ struct text_vg_version_ops *text_vg_vsn1_init(void);
 int print_flags(uint32_t status, int type, char *buffer, size_t size);
 int read_flags(uint32_t *status, int type, struct config_value *cv);
 
-int print_tags(struct list *tags, char *buffer, size_t size);
-int read_tags(struct dm_pool *mem, struct list *tags, struct config_value *cv);
+int print_tags(struct dm_list *tags, char *buffer, size_t size);
+int read_tags(struct dm_pool *mem, struct dm_list *tags, struct config_value *cv);
 
 int text_vg_export_file(struct volume_group *vg, const char *desc, FILE *fp);
 int text_vg_export_raw(struct volume_group *vg, const char *desc, char **buf);

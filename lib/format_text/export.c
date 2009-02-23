@@ -321,6 +321,20 @@ static int _print_header(struct formatter *f,
 	return 1;
 }
 
+static int _print_flag_config(struct formatter *f, int status, int type)
+{
+	char buffer[4096];
+	if (!print_flags(status, type | STATUS_FLAG, buffer, sizeof(buffer)))
+		return_0;
+	outf(f, "status = %s", buffer);
+
+	if (!print_flags(status, type, buffer, sizeof(buffer)))
+		return_0;
+	outf(f, "flags = %s", buffer);
+
+	return 1;
+}
+
 static int _print_vg(struct formatter *f, struct volume_group *vg)
 {
 	char buffer[4096];
@@ -332,11 +346,10 @@ static int _print_vg(struct formatter *f, struct volume_group *vg)
 
 	outf(f, "seqno = %u", vg->seqno);
 
-	if (!print_flags(vg->status, VG_FLAGS, buffer, sizeof(buffer)))
+	if (!_print_flag_config(f, vg->status, VG_FLAGS))
 		return_0;
-	outf(f, "status = %s", buffer);
 
-	if (!list_empty(&vg->tags)) {
+	if (!dm_list_empty(&vg->tags)) {
 		if (!print_tags(&vg->tags, buffer, sizeof(buffer)))
 			return_0;
 		outf(f, "tags = %s", buffer);
@@ -382,7 +395,7 @@ static int _print_pvs(struct formatter *f, struct volume_group *vg)
 	outf(f, "physical_volumes {");
 	_inc_indent(f);
 
-	list_iterate_items(pvl, &vg->pvs) {
+	dm_list_iterate_items(pvl, &vg->pvs) {
 		pv = pvl->pv;
 
 		if (!(name = _get_pv_name(f, pv)))
@@ -408,11 +421,10 @@ static int _print_pvs(struct formatter *f, struct volume_group *vg)
 			return_0;
 		outnl(f);
 
-		if (!print_flags(pv->status, PV_FLAGS, buffer, sizeof(buffer)))
+		if (!_print_flag_config(f, pv->status, PV_FLAGS))
 			return_0;
-		outf(f, "status = %s", buffer);
 
-		if (!list_empty(&pv->tags)) {
+		if (!dm_list_empty(&pv->tags)) {
 			if (!print_tags(&pv->tags, buffer, sizeof(buffer)))
 				return_0;
 			outf(f, "tags = %s", buffer);
@@ -451,7 +463,7 @@ static int _print_segment(struct formatter *f, struct volume_group *vg,
 	outnl(f);
 	outf(f, "type = \"%s\"", seg->segtype->name);
 
-	if (!list_empty(&seg->tags)) {
+	if (!dm_list_empty(&seg->tags)) {
 		if (!print_tags(&seg->tags, buffer, sizeof(buffer)))
 			return_0;
 		outf(f, "tags = %s", buffer);
@@ -520,11 +532,10 @@ static int _print_lv(struct formatter *f, struct logical_volume *lv)
 
 	outf(f, "id = \"%s\"", buffer);
 
-	if (!print_flags(lv->status, LV_FLAGS, buffer, sizeof(buffer)))
+	if (!_print_flag_config(f, lv->status, LV_FLAGS))
 		return_0;
-	outf(f, "status = %s", buffer);
 
-	if (!list_empty(&lv->tags)) {
+	if (!dm_list_empty(&lv->tags)) {
 		if (!print_tags(&lv->tags, buffer, sizeof(buffer)))
 			return_0;
 		outf(f, "tags = %s", buffer);
@@ -549,11 +560,11 @@ static int _print_lv(struct formatter *f, struct logical_volume *lv)
 		outf(f, "major = %d", lv->major);
 	if (lv->minor >= 0)
 		outf(f, "minor = %d", lv->minor);
-	outf(f, "segment_count = %u", list_size(&lv->segments));
+	outf(f, "segment_count = %u", dm_list_size(&lv->segments));
 	outnl(f);
 
 	seg_count = 1;
-	list_iterate_items(seg, &lv->segments) {
+	dm_list_iterate_items(seg, &lv->segments) {
 		if (!_print_segment(f, lv->vg, seg_count++, seg))
 			return_0;
 	}
@@ -571,7 +582,7 @@ static int _print_lvs(struct formatter *f, struct volume_group *vg)
 	/*
 	 * Don't bother with an lv section if there are no lvs.
 	 */
-	if (list_empty(&vg->lvs))
+	if (dm_list_empty(&vg->lvs))
 		return 1;
 
 	outf(f, "logical_volumes {");
@@ -580,15 +591,15 @@ static int _print_lvs(struct formatter *f, struct volume_group *vg)
 	/*
 	 * Write visible LVs first
 	 */
-	list_iterate_items(lvl, &vg->lvs) {
-		if (!(lvl->lv->status & VISIBLE_LV))
+	dm_list_iterate_items(lvl, &vg->lvs) {
+		if (!(lv_is_displayable(lvl->lv)))
 			continue;
 		if (!_print_lv(f, lvl->lv))
 			return_0;
 	}
 
-	list_iterate_items(lvl, &vg->lvs) {
-		if ((lvl->lv->status & VISIBLE_LV))
+	dm_list_iterate_items(lvl, &vg->lvs) {
+		if ((lv_is_displayable(lvl->lv)))
 			continue;
 		if (!_print_lv(f, lvl->lv))
 			return_0;
@@ -618,7 +629,7 @@ static int _build_pv_names(struct formatter *f, struct volume_group *vg)
 	if (!(f->pv_names = dm_hash_create(128)))
 		return_0;
 
-	list_iterate_items(pvl, &vg->pvs) {
+	dm_list_iterate_items(pvl, &vg->pvs) {
 		pv = pvl->pv;
 
 		/* FIXME But skip if there's already an LV called pv%d ! */

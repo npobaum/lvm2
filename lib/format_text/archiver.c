@@ -36,7 +36,8 @@ struct backup_params {
 };
 
 int archive_init(struct cmd_context *cmd, const char *dir,
-		 unsigned int keep_days, unsigned int keep_min)
+		 unsigned int keep_days, unsigned int keep_min,
+		 int enabled)
 {
 	if (!(cmd->archive_params = dm_pool_zalloc(cmd->libmem,
 						sizeof(*cmd->archive_params)))) {
@@ -56,7 +57,7 @@ int archive_init(struct cmd_context *cmd, const char *dir,
 
 	cmd->archive_params->keep_days = keep_days;
 	cmd->archive_params->keep_number = keep_min;
-	cmd->archive_params->enabled = 1;
+	archive_enable(cmd, enabled);
 
 	return 1;
 }
@@ -134,10 +135,8 @@ int archive_display(struct cmd_context *cmd, const char *vg_name)
 {
 	int r1, r2;
 
-	init_partial(1);
 	r1 = archive_list(cmd, cmd->archive_params->dir, vg_name);
 	r2 = backup_list(cmd, cmd->backup_params->dir, vg_name);
-	init_partial(0);
 
 	return r1 && r2;
 }
@@ -146,14 +145,13 @@ int archive_display_file(struct cmd_context *cmd, const char *file)
 {
 	int r;
 
-	init_partial(1);
 	r = archive_list_file(cmd, file);
-	init_partial(0);
 
 	return r;
 }
 
-int backup_init(struct cmd_context *cmd, const char *dir)
+int backup_init(struct cmd_context *cmd, const char *dir,
+		int enabled)
 {
 	if (!(cmd->backup_params = dm_pool_zalloc(cmd->libmem,
 					       sizeof(*cmd->archive_params)))) {
@@ -169,6 +167,7 @@ int backup_init(struct cmd_context *cmd, const char *dir)
 		log_error("Couldn't copy backup directory name.");
 		return 0;
 	}
+	backup_enable(cmd, enabled);
 
 	return 1;
 }
@@ -265,7 +264,7 @@ struct volume_group *backup_read_vg(struct cmd_context *cmd,
 		return NULL;
 	}
 
-	list_iterate_items(mda, &tf->metadata_areas) {
+	dm_list_iterate_items(mda, &tf->metadata_areas) {
 		if (!(vg = mda->ops->vg_read(tf, vg_name, mda)))
 			stack;
 		break;
@@ -295,7 +294,7 @@ int backup_restore_vg(struct cmd_context *cmd, struct volume_group *vg)
 	}
 
 	/* Add any metadata areas on the PVs */
-	list_iterate_items(pvl, &vg->pvs) {
+	dm_list_iterate_items(pvl, &vg->pvs) {
 		pv = pvl->pv;
 		if (!(info = info_from_pvid(pv->dev->pvid, 0))) {
 			log_error("PV %s missing from cache",
@@ -370,7 +369,7 @@ int backup_to_file(const char *file, const char *desc, struct volume_group *vg)
 	}
 
 	/* Write and commit the metadata area */
-	list_iterate_items(mda, &tf->metadata_areas) {
+	dm_list_iterate_items(mda, &tf->metadata_areas) {
 		if (!(r = mda->ops->vg_write(tf, vg, mda))) {
 			stack;
 			continue;
@@ -393,7 +392,7 @@ void check_current_backup(struct volume_group *vg)
 	char path[PATH_MAX];
 	struct volume_group *vg_backup;
 
-	if ((vg->status & PARTIAL_VG) || (vg->status & EXPORTED_VG))
+	if (vg->status & EXPORTED_VG)
 		return;
 
 	if (dm_snprintf(path, sizeof(path), "%s/%s",

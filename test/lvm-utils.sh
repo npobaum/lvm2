@@ -64,7 +64,7 @@ if test "$verbose" = "t"
 then
   echo "compare_vg_field_ VG1: $val1 VG2: $val2"
 fi
-  return $(test $val1 == $val2 )
+  test $val1 = $val2
 }
 
 check_vg_field_()
@@ -79,7 +79,7 @@ if test "$verbose" = "t"
 then
   echo "check_vg_field_ VG=$vg, field=$field, actual=$actual, expected=$expected"
 fi
-  return $(test $actual == $expected)
+  test $actual = $expected
 }
 
 check_pv_field_()
@@ -94,7 +94,7 @@ if test "$verbose" = "t"
 then
   echo "check_pv_field_ PV=$pv, field=$field, actual=$actual, expected=$expected"
 fi
-  return $(test $actual == $expected)
+    test $actual = $expected
 }
 
 check_lv_field_()
@@ -109,7 +109,7 @@ if test "$verbose" = "t"
 then
   echo "check_lv_field_ LV=$lv, field=$field, actual=$actual, expected=$expected"
 fi
-  return $(test $actual == $expected)
+  test $actual = $expected
 }
 
 vg_validate_pvlv_counts_()
@@ -148,9 +148,19 @@ init_root_dir_()
   export DM_DEV_DIR=$G_dev_
 
   # Only the first caller does anything.
-  mkdir -p $G_root_/etc $G_dev_ $G_dev_/mapper
+  mkdir -p $G_root_/etc $G_dev_ $G_dev_/mapper $G_root_/lib
   for i in 0 1 2 3 4 5 6 7; do
     mknod $G_root_/dev/loop$i b 7 $i
+  done
+  for i in $abs_top_builddir/dmeventd/mirror/*.so $abs_top_builddir/dmeventd/snapshot/*.so
+  do
+    # NOTE: This check is necessary because the loop above will give us the value
+    # "$abs_top_builddir/dmeventd/mirror/*.so" if no files ending in 'so' exist.
+    # This is the best way I could quickly determine to skip over this bogus value.
+    if [ -f $i ]; then
+      echo Setting up symlink from $i to $G_root_/lib
+      ln -s $i $G_root_/lib
+    fi
   done
   cat > $G_root_/etc/lvm.conf <<-EOF
   devices {
@@ -160,9 +170,19 @@ init_root_dir_()
     cache_dir = "$G_root_/etc"
     sysfs_scan = 0
   }
+  log {
+    verbose = $verboselevel
+    syslog = 0
+    indent = 1
+  }
+  backup {
+    backup = 0
+    archive = 0
+  }
+  global {
+    library_dir = "$G_root_/lib"
+  }
 EOF
 }
 
-if test $(this_test_) != 000-basic; then
-  init_root_dir_
-fi
+init_root_dir_
