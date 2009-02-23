@@ -1,3 +1,13 @@
+lvm2 (2.02.39-0ubuntu7) jaunty; urgency=low
+
+  * debian/patches/open-readonly.patch:
+    - Generally we don't need to write to every single block device we open,
+      in fact if we do that when scanning we'll make udev think they all
+      changed, and it could run "lvm vgscan" again!  When the file descriptor
+      is needed for writing, it will be closed and opened again.  LP: #332270.
+
+ -- Scott James Remnant <scott@ubuntu.com>  Mon, 23 Feb 2009 21:44:51 +0000
+
 lvm2 (2.02.39-0ubuntu6) jaunty; urgency=low
 
   * Bump build-dependency on debhelper to ensure we get the right one.
