@@ -83,7 +83,6 @@ int check_lvm1_vg_inactive(struct cmd_context *cmd, const char *vgname);
 /*
  * Additional lock bits for cluster communication
  */
-#define LCK_PARTIAL_MODE	0x00000001U	/* Running in partial mode */
 #define LCK_MIRROR_NOSYNC_MODE	0x00000002U	/* Mirrors don't require sync */
 #define LCK_DMEVENTD_MONITOR_MODE	0x00000004U	/* Register with dmeventd */
 
@@ -131,9 +130,9 @@ int check_lvm1_vg_inactive(struct cmd_context *cmd, const char *vgname);
 	lock_vol((vg)->cmd, (vg)->name, LCK_VG_DROP_CACHE)
 
 /* Process list of LVs */
-int suspend_lvs(struct cmd_context *cmd, struct list *lvs);
-int resume_lvs(struct cmd_context *cmd, struct list *lvs);
-int activate_lvs(struct cmd_context *cmd, struct list *lvs, unsigned exclusive);
+int suspend_lvs(struct cmd_context *cmd, struct dm_list *lvs);
+int resume_lvs(struct cmd_context *cmd, struct dm_list *lvs);
+int activate_lvs(struct cmd_context *cmd, struct dm_list *lvs, unsigned exclusive);
 
 /* Interrupt handling */
 void sigint_clear(void);

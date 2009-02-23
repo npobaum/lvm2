@@ -173,7 +173,7 @@ static int _tags_disp(struct dm_report *rh __attribute((unused)), struct dm_pool
 		      struct dm_report_field *field,
 		      const void *data, void *private __attribute((unused)))
 {
-	const struct list *tags = (const struct list *) data;
+	const struct dm_list *tags = (const struct dm_list *) data;
 	struct str_list *sl;
 
 	if (!dm_pool_begin_object(mem, 256)) {
@@ -181,7 +181,7 @@ static int _tags_disp(struct dm_report *rh __attribute((unused)), struct dm_pool
 		return 0;
 	}
 
-	list_iterate_items(sl, tags) {
+	dm_list_iterate_items(sl, tags) {
 		if (!dm_pool_grow_object(mem, sl->str, strlen(sl->str)) ||
 		    (sl->list.n != tags && !dm_pool_grow_object(mem, ",", 1))) {
 			log_error("dm_pool_grow_object failed");
@@ -204,7 +204,7 @@ static int _modules_disp(struct dm_report *rh, struct dm_pool *mem,
 			 const void *data, void *private)
 {
 	const struct logical_volume *lv = (const struct logical_volume *) data;
-	struct list *modules;
+	struct dm_list *modules;
 
 	if (!(modules = str_list_create(mem))) {
 		log_error("modules str_list allocation failed");
@@ -439,7 +439,7 @@ static int _vgstatus_disp(struct dm_report *rh __attribute((unused)), struct dm_
 	else
 		repstr[2] = '-';
 
-	if (vg->status & PARTIAL_VG)
+	if (vg_missing_pv_count(vg))
 		repstr[3] = 'p';
 	else
 		repstr[3] = '-';
@@ -492,7 +492,7 @@ static int _loglv_disp(struct dm_report *rh, struct dm_pool *mem __attribute((un
 	const struct logical_volume *lv = (const struct logical_volume *) data;
 	struct lv_segment *seg;
 
-	list_iterate_items(seg, &lv->segments) {
+	dm_list_iterate_items(seg, &lv->segments) {
 		if (!seg_is_mirrored(seg) || !seg->log_lv)
 			continue;
 		return dm_report_field_string(rh, field,
@@ -511,7 +511,7 @@ static int _lvname_disp(struct dm_report *rh, struct dm_pool *mem,
 	char *repstr, *lvname;
 	size_t len;
 
-	if (lv_is_visible(lv)) {
+	if (lv_is_displayable(lv)) {
 		repstr = lv->name;
 		return dm_report_field_string(rh, field, (const char **) &repstr);
 	}
@@ -545,7 +545,7 @@ static int _movepv_disp(struct dm_report *rh, struct dm_pool *mem __attribute((u
 	const char *name;
 	struct lv_segment *seg;
 
-	list_iterate_items(seg, &lv->segments) {
+	dm_list_iterate_items(seg, &lv->segments) {
 		if (!(seg->status & PVMOVE))
 			continue;
 		name = dev_name(seg_dev(seg, 0));
@@ -842,7 +842,7 @@ static int _pvmdas_disp(struct dm_report *rh, struct dm_pool *mem,
 	const char *pvid = (const char *)(&((struct id *) data)->uuid);
 
 	info = info_from_pvid(pvid, 0);
-	count = info ? list_size(&info->mdas) : 0;
+	count = info ? dm_list_size(&info->mdas) : 0;
 
 	return _uint32_disp(rh, mem, field, &count, private);
 }
@@ -854,7 +854,7 @@ static int _vgmdas_disp(struct dm_report *rh, struct dm_pool *mem,
 	const struct volume_group *vg = (const struct volume_group *) data;
 	uint32_t count;
 
-	count = list_size(&vg->fid->metadata_areas);
+	count = dm_list_size(&vg->fid->metadata_areas);
 
 	return _uint32_disp(rh, mem, field, &count, private);
 }
@@ -870,7 +870,7 @@ static int _pvmdafree_disp(struct dm_report *rh, struct dm_pool *mem,
 
 	info = info_from_pvid(pvid, 0);
 
-	list_iterate_items(mda, &info->mdas) {
+	dm_list_iterate_items(mda, &info->mdas) {
 		if (!mda->ops->mda_free_sectors)
 			continue;
 		mda_free = mda->ops->mda_free_sectors(mda);
@@ -884,6 +884,53 @@ static int _pvmdafree_disp(struct dm_report *rh, struct dm_pool *mem,
 	return _size64_disp(rh, mem, field, &freespace, private);
 }
 
+static uint64_t _find_min_mda_size(struct dm_list *mdas)
+{
+	uint64_t min_mda_size = UINT64_MAX, mda_size;
+	struct metadata_area *mda;
+
+	dm_list_iterate_items(mda, mdas) {
+		if (!mda->ops->mda_total_sectors)
+			continue;
+		mda_size = mda->ops->mda_total_sectors(mda);
+		if (mda_size < min_mda_size)
+			min_mda_size = mda_size;
+	}
+
+	if (min_mda_size == UINT64_MAX)
+		min_mda_size = UINT64_C(0);
+
+	return min_mda_size;
+}
+
+static int _pvmdasize_disp(struct dm_report *rh, struct dm_pool *mem,
+			   struct dm_report_field *field,
+			   const void *data, void *private)
+{
+	struct lvmcache_info *info;
+	uint64_t min_mda_size;
+	const char *pvid = (const char *)(&((struct id *) data)->uuid);
+
+	info = info_from_pvid(pvid, 0);
+
+	/* PVs could have 2 mdas of different sizes (rounding effect) */
+	min_mda_size = _find_min_mda_size(&info->mdas);
+
+	return _size64_disp(rh, mem, field, &min_mda_size, private);
+}
+
+static int _vgmdasize_disp(struct dm_report *rh, struct dm_pool *mem,
+			   struct dm_report_field *field,
+			   const void *data, void *private)
+{
+	const struct volume_group *vg = (const struct volume_group *) data;
+	uint64_t min_mda_size;
+
+	min_mda_size = _find_min_mda_size(&vg->fid->metadata_areas);
+
+	return _size64_disp(rh, mem, field, &min_mda_size, private);
+}
+
 static int _vgmdafree_disp(struct dm_report *rh, struct dm_pool *mem,
 			   struct dm_report_field *field,
 			   const void *data, void *private)
@@ -892,7 +939,7 @@ static int _vgmdafree_disp(struct dm_report *rh, struct dm_pool *mem,
 	uint64_t freespace = UINT64_MAX, mda_free;
 	struct metadata_area *mda;
 
-	list_iterate_items(mda, &vg->fid->metadata_areas) {
+	dm_list_iterate_items(mda, &vg->fid->metadata_areas) {
 		if (!mda->ops->mda_free_sectors)
 			continue;
 		mda_free = mda->ops->mda_free_sectors(mda);
@@ -911,12 +958,9 @@ static int _lvcount_disp(struct dm_report *rh, struct dm_pool *mem,
 			 const void *data, void *private)
 {
 	const struct volume_group *vg = (const struct volume_group *) data;
-        struct lv_list *lvl;
-	uint32_t count = 0;
+	uint32_t count;
 
-        list_iterate_items(lvl, &vg->lvs)
-		if (lv_is_visible(lvl->lv) && !(lvl->lv->status & SNAPSHOT))
-			count++;
+	count = displayable_lvs_in_vg(vg);	
 
 	return _uint32_disp(rh, mem, field, &count, private);
 }
@@ -928,7 +972,7 @@ static int _lvsegcount_disp(struct dm_report *rh, struct dm_pool *mem,
 	const struct logical_volume *lv = (const struct logical_volume *) data;
 	uint32_t count;
 
-	count = list_size(&lv->segments);
+	count = dm_list_size(&lv->segments);
 
 	return _uint32_disp(rh, mem, field, &count, private);
 }
@@ -1025,8 +1069,17 @@ static int _copypercent_disp(struct dm_report *rh __attribute((unused)), struct 
 /* Report object types */
 
 /* necessary for displaying something for PVs not belonging to VG */
+static struct format_instance _dummy_fid = {
+	.metadata_areas = { &(_dummy_fid.metadata_areas), &(_dummy_fid.metadata_areas) },
+};
+
 static struct volume_group _dummy_vg = {
+	.fid = &_dummy_fid,
 	.name = (char *) "",
+	.system_id = (char *) "",
+	.pvs = { &(_dummy_vg.pvs), &(_dummy_vg.pvs) },
+	.lvs = { &(_dummy_vg.lvs), &(_dummy_vg.lvs) },
+	.tags = { &(_dummy_vg.tags), &(_dummy_vg.tags) },
 };
 
 static void *_obj_get_vg(void *obj)
@@ -1111,7 +1164,7 @@ void *report_init(struct cmd_context *cmd, const char *format, const char *keys,
 	rh = dm_report_init(report_type, _report_types, _fields, format,
 			    separator, report_flags, keys, cmd);
 
-	if (field_prefixes)
+	if (rh && field_prefixes)
 		dm_report_set_output_field_name_prefix(rh, "lvm2_");
 
 	return rh;
@@ -1125,6 +1178,10 @@ int report_object(void *handle, struct volume_group *vg,
 		  struct lv_segment *seg, struct pv_segment *pvseg)
 {
 	struct lvm_report_object obj;
+
+	/* The two format fields might as well match. */
+	if (!vg && pv)
+		_dummy_fid.fmt = pv->fmt;
 
 	obj.vg = vg;
 	obj.lv = lv;

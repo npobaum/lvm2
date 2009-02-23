@@ -8,14 +8,18 @@ DEB_HOST_GNU_TYPE   ?= $(shell dpkg-architecture -qDEB_HOST_GNU_TYPE)
 DEB_BUILD_GNU_TYPE  ?= $(shell dpkg-architecture -qDEB_BUILD_GNU_TYPE)
 
 SOURCE := $(shell dpkg-parsechangelog | sed -ne 's,^Source: *\(.*\)$$,\1,p')
-VERSION_DEBIAN := $(shell dpkg-parsechangelog | sed -ne 's,^Version: *\(.*\)$$,\1,p')
-VERSION := $(shell echo "$(VERSION_DEBIAN)" | sed -e 's,^[0-9]*:,,' -e 's,-[^-]*$$,,')
+VERSION_COMPLETE := $(shell dpkg-parsechangelog | sed -ne 's,^Version: *\(.*\)$$,\1,p')
+VERSION_UPSTREAM := $(shell echo "$(VERSION_COMPLETE)" | sed -e 's,^[0-9]*:,,' -e 's,-[^-]*$$,,')
+VERSION_DEBIAN := $(shell echo "$(VERSION_COMPLETE)" | sed -e 's,^[^-]*-,,')
+
+DEVMAPPER_ABINAME = 1.02.1
+DEVMAPPER_VERSION_PLAIN = 1.02.30
+DEVMAPPER_VERSION = 2:$(DEVMAPPER_VERSION_PLAIN)
+DEVMAPPER_VERSION_DEBIAN = $(DEVMAPPER_VERSION)-$(VERSION_DEBIAN)
+DEVMAPPER_VERSION_FILE = $(DEVMAPPER_VERSION_PLAIN)-$(VERSION_DEBIAN)
 
 BUILD_DIR = debian/build
 STAMPS_DIR = debian/stamps
-
-PACKAGES_DEB = lvm2 clvm
-PACKAGES_UDEB = lvm2-udeb
 
 CFLAGS_UDEB := $(CFLAGS)
 ifeq (,$(findstring noopt,$(DEB_BUILD_OPTIONS)))
@@ -63,6 +67,7 @@ $(STAMPS_DIR)/setup-deb: $(STAMPS_DIR)/source
 		$(CONFIGURE_FLAGS) \
 		--with-optimisation="" \
 		--with-clvmd=cman \
+		--enable-pkgconfig \
 		--enable-readline
 	touch $@
 
@@ -88,7 +93,7 @@ build-deb: $(STAMPS_DIR)/build-deb
 $(STAMPS_DIR)/build-deb: DIR = $(BUILD_DIR)/build-deb
 $(STAMPS_DIR)/build-deb: $(STAMPS_DIR)/setup-deb
 	dh_testdir
-	$(MAKE) -C $(DIR)
+	$(MAKE) -C $(DIR) LIB_VERSION_DM=$(DEVMAPPER_ABINAME)
 	touch $@
 
 build-udeb: $(STAMPS_DIR)/build-udeb
@@ -96,7 +101,7 @@ build-udeb: $(STAMPS_DIR)/build-udeb
 $(STAMPS_DIR)/build-udeb: DIR = $(BUILD_DIR)/build-udeb
 $(STAMPS_DIR)/build-udeb: $(STAMPS_DIR)/setup-udeb
 	dh_testdir
-	$(MAKE) -C $(DIR)
+	$(MAKE) -C $(DIR) LIB_VERSION_DM=$(DEVMAPPER_ABINAME)
 	touch $@
 
 $(BUILD_DIR) $(STAMPS_DIR):
@@ -110,17 +115,16 @@ clean:
 	rm -rf $(BUILD_DIR) $(STAMPS_DIR)
 	dh_clean
 
-install: $(addprefix install-, $(PACKAGES_DEB) $(PACKAGES_UDEB))
+install: $(addprefix install-,libdevmapper libdevmapper-udeb dmsetup dmsetup-udeb lvm2 lvm2-udeb clvm)
 
 install-base:
-	dh_installchangelogs WHATS_NEW
 	dh_installdocs
 	dh_strip
 	dh_compress
 	dh_fixperms
 	dh_installdeb
 	dh_shlibdeps
-	dh_gencontrol
+	dh_gencontrol -- $(GENCONTROL_ARGS)
 	dh_md5sums
 	dh_builddeb
 
@@ -133,9 +137,97 @@ install-clvm: $(STAMPS_DIR)/build-deb
 	dh_clean -k
 	$(MAKE) -C $(DIR) install DESTDIR=$(CURDIR)/$(INSTALL_DIR)
 	dh_install --sourcedir=$(INSTALL_DIR)
+	dh_installchangelogs WHATS_NEW
 	dh_installexamples
 	dh_installinit --no-start -- start 63 S . start 51 0 6 .
 	$(MAKE) -f debian/rules install-base
+
+install-dmsetup: export DH_OPTIONS = -pdmsetup
+install-dmsetup: DIR = $(BUILD_DIR)/build-deb
+install-dmsetup: INSTALL_DIR = $(BUILD_DIR)/install-dmsetup
+install-dmsetup: $(STAMPS_DIR)/build-deb
+	dh_testdir
+	dh_testroot
+	dh_clean -k
+	$(MAKE) -C $(DIR) install DESTDIR=$(CURDIR)/$(INSTALL_DIR)
+	dh_install --sourcedir=$(INSTALL_DIR)
+	dh_installchangelogs WHATS_NEW_DM
+	dh_installdebconf
+	dh_installexamples
+	dh_installudev --priority=65
+	$(MAKE) -f debian/rules install-base GENCONTROL_ARGS="-v$(DEVMAPPER_VERSION_DEBIAN)"
+
+install-dmsetup-udeb: PACKAGE_NAME = dmsetup-udeb
+install-dmsetup-udeb: export DH_OPTIONS = -p$(PACKAGE_NAME)
+install-dmsetup-udeb: PACKAGE_FILE = $(PACKAGE_NAME)_$(DEVMAPPER_VERSION_FILE)_$(DEB_HOST_ARCH).udeb
+install-dmsetup-udeb: DIR = $(BUILD_DIR)/build-udeb
+install-dmsetup-udeb: INSTALL_DIR = $(BUILD_DIR)/install-dmsetup-udeb
+install-dmsetup-udeb: $(STAMPS_DIR)/build-udeb
+	dh_testdir
+	dh_testroot
+	dh_clean -k
+	$(MAKE) -C $(DIR) install DESTDIR=$(CURDIR)/$(INSTALL_DIR)
+	dh_installchangelogs WHATS_NEW_DM
+	dh_install --sourcedir=$(INSTALL_DIR)
+
+	dh_installdocs
+	dh_strip
+	dh_compress
+	dh_fixperms
+	dh_installdeb
+	dh_shlibdeps
+	dpkg-gencontrol \
+		-p$(PACKAGE_NAME) -ldebian/changelog -n$(PACKAGE_FILE) \
+		-Tdebian/$(PACKAGE_NAME).substvars -Pdebian/$(PACKAGE_NAME) \
+		-v$(DEVMAPPER_VERSION_DEBIAN)
+	dh_md5sums
+	dpkg-deb --build debian/$(PACKAGE_NAME) ../$(PACKAGE_FILE)
+
+
+install-libdevmapper: export DH_OPTIONS = -plibdevmapper-dev -plibdevmapper$(DEVMAPPER_ABINAME)
+install-libdevmapper: DIR = $(BUILD_DIR)/build-deb
+install-libdevmapper: INSTALL_DIR = $(BUILD_DIR)/install-libdevmapper
+install-libdevmapper: $(STAMPS_DIR)/build-deb
+	dh_testdir
+	dh_testroot
+	dh_clean -k
+	$(MAKE) -C $(DIR) install DESTDIR=$(CURDIR)/$(INSTALL_DIR) LIB_VERSION_DM=$(DEVMAPPER_ABINAME)
+	dh_install --sourcedir=$(INSTALL_DIR)
+	dh_installchangelogs WHATS_NEW_DM
+	dh_installexamples
+	dh_link -p libdevmapper-dev lib/libdevmapper.so.$(DEVMAPPER_ABINAME) usr/lib/libdevmapper.so
+	dh_makeshlibs -p 'libdevmapper$(DEVMAPPER_ABINAME)' \
+		--add-udeb 'libdevmapper$(DEVMAPPER_ABINAME)-udeb' \
+	       	"-Vlibdevmapper$(DEVMAPPER_ABINAME) (>= $(DEVMAPPER_VERSION))" \
+		-- "-v$(DEVMAPPER_VERSION_DEBIAN)"
+	$(MAKE) -f debian/rules install-base GENCONTROL_ARGS="-v$(DEVMAPPER_VERSION_DEBIAN)"
+
+install-libdevmapper-udeb: PACKAGE_NAME = libdevmapper$(DEVMAPPER_ABINAME)-udeb
+install-libdevmapper-udeb: export DH_OPTIONS = -p$(PACKAGE_NAME)
+install-libdevmapper-udeb: PACKAGE_FILE = $(PACKAGE_NAME)_$(DEVMAPPER_VERSION_FILE)_$(DEB_HOST_ARCH).udeb
+install-libdevmapper-udeb: DIR = $(BUILD_DIR)/build-udeb
+install-libdevmapper-udeb: INSTALL_DIR = $(BUILD_DIR)/install-libdevmapper-udeb
+install-libdevmapper-udeb: $(STAMPS_DIR)/build-udeb
+	dh_testdir
+	dh_testroot
+	dh_clean -k
+	$(MAKE) -C $(DIR) install DESTDIR=$(CURDIR)/$(INSTALL_DIR) LIB_VERSION_DM=$(DEVMAPPER_ABINAME)
+	dh_install --sourcedir=$(INSTALL_DIR)
+	dh_installchangelogs WHATS_NEW_DM
+	dh_installexamples
+
+	dh_installdocs
+	dh_strip
+	dh_compress
+	dh_fixperms
+	dh_installdeb
+	dh_shlibdeps
+	dpkg-gencontrol \
+		-p$(PACKAGE_NAME) -ldebian/changelog -n$(PACKAGE_FILE) \
+		-Tdebian/$(PACKAGE_NAME).substvars -Pdebian/$(PACKAGE_NAME) \
+		-v$(DEVMAPPER_VERSION_DEBIAN)
+	dh_md5sums
+	dpkg-deb --build debian/$(PACKAGE_NAME) ../$(PACKAGE_FILE)
 
 install-lvm2: export DH_OPTIONS = -plvm2
 install-lvm2: DIR = $(BUILD_DIR)/build-deb
@@ -148,6 +240,7 @@ install-lvm2: $(STAMPS_DIR)/build-deb
 	dh_install --sourcedir=$(INSTALL_DIR)
 	cp -a debian/initramfs-tools debian/lvm2/usr/share
 	chmod +x -R debian/lvm2/usr/share/initramfs-tools
+	dh_installchangelogs WHATS_NEW
 	dh_installdebconf
 	dh_installexamples
 	dh_installinit --no-start -- start 26 S . start 50 0 6 .
@@ -161,6 +254,7 @@ install-lvm2-udeb: $(STAMPS_DIR)/build-udeb
 	dh_testroot
 	dh_clean -k
 	$(MAKE) -C $(DIR) install DESTDIR=$(CURDIR)/$(INSTALL_DIR)
+	dh_installchangelogs WHATS_NEW
 	dh_install --sourcedir=$(INSTALL_DIR)
 	$(MAKE) -f debian/rules install-base
 
@@ -169,8 +263,8 @@ binary-arch: install
 
 binary: binary-indep binary-arch
 
-DIR_ORIG = ../orig/$(SOURCE)-$(VERSION)
-TAR_ORIG_NAME = $(SOURCE)_$(VERSION).orig.tar.gz
+DIR_ORIG = ../orig/$(SOURCE)-$(VERSION_UPSTREAM)
+TAR_ORIG_NAME = $(SOURCE)_$(VERSION_UPSTREAM).orig.tar.gz
 TAR_ORIG = $(firstword $(wildcard ../$(TAR_ORIG_NAME)) $(wildcard ../orig/$(TAR_ORIG_NAME)))
 
 orig: $(DIR_ORIG)

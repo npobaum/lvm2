@@ -15,12 +15,15 @@
 
 #include "lib.h"
 #include "uuid.h"
+#include "lvm-wrappers.h"
 
+#include <assert.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <ctype.h>
 
-static char _c[] =
+static const char _c[] =
     "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!#";
 
 static int _built_inverse;
@@ -67,31 +70,38 @@ int lvnum_from_lvid(union lvid *lvid)
 		lv_num *= sizeof(_c) - 1;
 		if ((c = strchr(_c, lvid->id[1].uuid[i])))
 			lv_num += (int) (c - _c);
+		if (lv_num < 0)
+			lv_num = 0;
 	}
 
 	return lv_num;
 }
 
+int lvid_in_restricted_range(union lvid *lvid)
+{
+	int i;
+
+	for (i = 0; i < ID_LEN - 3; i++)
+		if (lvid->id[1].uuid[i] != '0')
+			return 0;
+
+	for (i = ID_LEN - 3; i < ID_LEN; i++)
+		if (!isdigit(lvid->id[1].uuid[i]))
+			return 0;
+
+	return 1;
+}
+
+
 int id_create(struct id *id)
 {
-	int randomfile;
 	unsigned i;
 	size_t len = sizeof(id->uuid);
 
 	memset(id->uuid, 0, len);
-	if ((randomfile = open("/dev/urandom", O_RDONLY)) < 0) {
-		log_sys_error("open", "id_create: /dev/urandom");
+	if (!read_urandom(&id->uuid, len)) {
 		return 0;
 	}
-
-	if (read(randomfile, id->uuid, len) != (ssize_t) len) {
-		log_sys_error("read", "id_create: /dev/urandom");
-		if (close(randomfile))
-			stack;
-		return 0;
-	}
-	if (close(randomfile))
-		stack;
 
 	/*
 	 * Skip out the last 2 chars in randomized creation for LVM1
@@ -110,7 +120,7 @@ int id_create(struct id *id)
  */
 static void _build_inverse(void)
 {
-	char *ptr;
+	const char *ptr;
 
 	if (_built_inverse)
 		return;

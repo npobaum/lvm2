@@ -197,7 +197,8 @@ myecho "Gathering /dev listing..."
 log "$LS -laR /dev > \"$dir/dev_listing\" 2>> \"$log\""
 
 myecho "Gathering /sys/block listing..."
-log "$LS -laR /sys/block > \"$dir/sysblock_listing\""
+log "$LS -laR /sys/block > \"$dir/sysblock_listing\"  2>> \"$log\""
+log "$LS -laR /sys/devices/virtual/block >> \"$dir/sysblock_listing\"  2>> \"$log\""
 
 if (( $metadata )); then
 	myecho "Gathering LVM metadata from Physical Volumes..."
@@ -206,7 +207,7 @@ if (( $metadata )); then
 
 	pvs="$("$LVM" pvs --separator , --noheadings --units s --nosuffix -o \
 	    name,pe_start 2>> "$log" | $SED -e 's/^ *//')"
-	for line in "$pvs"
+	for line in $pvs
 	do
 		test -z "$line" && continue
 		pv="$(echo $line | $CUT -d, -f1)"

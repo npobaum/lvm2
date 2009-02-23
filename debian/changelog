@@ -1,3 +1,14 @@
+lvm2 (2.02.44-1) unstable; urgency=low
+
+  * New upstream version.
+    - Merge devmapper sources.
+  * Add devmapper binary packages.
+  * Use debhelper compat level 7.
+  * Add new libdevmapper symbols.
+  * Update copyright file.
+
+ -- Bastian Blank <waldi@debian.org>  Mon, 23 Feb 2009 20:51:17 +0100
+
 lvm2 (2.02.39-6) unstable; urgency=low
 
   * Readd a vgchange binary into the initramfs. At least cryptsetup depends on

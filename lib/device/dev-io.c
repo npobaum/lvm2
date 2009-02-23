@@ -51,7 +51,7 @@
 #  endif
 #endif
 
-static LIST_INIT(_open_devices);
+static DM_LIST_INIT(_open_devices);
 
 /*-----------------------------------------------------------------
  * The standard io loop that keeps submitting an io until it's
@@ -268,6 +268,9 @@ static int _dev_get_size_dev(const struct device *dev, uint64_t *size)
 
 int dev_get_size(const struct device *dev, uint64_t *size)
 {
+	if (!dev)
+		return 0;
+
 	if ((dev->flags & DEV_REGULAR))
 		return _dev_get_size_file(dev, size);
 	else
@@ -431,7 +434,7 @@ int dev_open_flags(struct device *dev, int flags, int direct, int quiet)
 	if ((flags & O_CREAT) && !(flags & O_TRUNC))
 		dev->end = lseek(dev->fd, (off_t) 0, SEEK_END);
 
-	list_add(&_open_devices, &dev->open_list);
+	dm_list_add(&_open_devices, &dev->open_list);
 
 	log_debug("Opened %s %s%s%s", dev_name(dev),
 		  dev->flags & DEV_OPENED_RW ? "RW" : "RO",
@@ -480,12 +483,12 @@ static void _close(struct device *dev)
 		log_sys_error("close", dev_name(dev));
 	dev->fd = -1;
 	dev->block_size = -1;
-	list_del(&dev->open_list);
+	dm_list_del(&dev->open_list);
 
 	log_debug("Closed %s", dev_name(dev));
 
 	if (dev->flags & DEV_ALLOCED) {
-		dm_free((void *) list_item(dev->aliases.n, struct str_list)->
+		dm_free((void *) dm_list_item(dev->aliases.n, struct str_list)->
 			 str);
 		dm_free(dev->aliases.n);
 		dm_free(dev);
@@ -537,11 +540,11 @@ int dev_close_immediate(struct device *dev)
 
 void dev_close_all(void)
 {
-	struct list *doh, *doht;
+	struct dm_list *doh, *doht;
 	struct device *dev;
 
-	list_iterate_safe(doh, doht, &_open_devices) {
-		dev = list_struct_base(doh, struct device, open_list);
+	dm_list_iterate_safe(doh, doht, &_open_devices) {
+		dev = dm_list_struct_base(doh, struct device, open_list);
 		if (dev->open_count < 1)
 			_close(dev);
 	}

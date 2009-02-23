@@ -1,0 +1,8 @@
+--- a/libdm/libdevmapper.pc.in
++++ b/libdm/libdevmapper.pc.in
+@@ -8,4 +8,4 @@
+ Version: @DM_LIB_PATCHLEVEL@
+ Cflags: -I${includedir} 
+ Libs: -L${libdir} -ldevmapper
+-Libs.private: -lselinux -lsepol
++Requires.private: libselinux
