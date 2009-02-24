@@ -1,7 +1,7 @@
-Index: lvm2-2.02.39/configure.in
+Index: debian/configure.in
 ===================================================================
---- lvm2-2.02.39.orig/configure.in	2009-02-23 21:34:32.000000000 +0000
-+++ lvm2-2.02.39/configure.in	2009-02-23 21:44:25.000000000 +0000
+--- debian.orig/configure.in	2008-07-01 16:39:09.000000000 +0100
++++ debian/configure.in	2008-07-01 16:51:50.000000000 +0100
 @@ -401,23 +401,6 @@
  fi;
  
@@ -105,3 +105,18 @@ Index: lvm2-2.02.39/configure.in
  
  ################################################################################
  dnl -- First and last lines should not contain files to generate in order to
+Index: debian/lib/activate/fs.c
+===================================================================
+--- debian.orig/lib/activate/fs.c	2008-06-12 12:29:49.000000000 +0100
++++ debian/lib/activate/fs.c	2008-07-01 16:48:37.000000000 +0100
+@@ -174,10 +174,8 @@
+ 		return 0;
+ 	}
+ 
+-#ifdef HAVE_SELINUX
+ 	if (!dm_set_selinux_context(lv_path, S_IFLNK))
+ 		return_0;
+-#endif
+ 
+ 	return 1;
+ }

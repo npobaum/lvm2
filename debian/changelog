@@ -1,3 +1,9 @@
+lvm2 (2.02.39-0ubuntu8) jaunty; urgency=low
+
+  * Revert quilt damage to two other patches. 
+
+ -- Scott James Remnant <scott@ubuntu.com>  Tue, 24 Feb 2009 00:26:56 +0000
+
 lvm2 (2.02.39-0ubuntu7) jaunty; urgency=low
 
   * debian/patches/open-readonly.patch:
