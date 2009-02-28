@@ -1,3 +1,10 @@
+lvm2 (2.02.44-2) unstable; urgency=low
+
+  * Fix implicit pointer conversion. (closes: #516867)
+  * Drop unused ncurses dependency.
+
+ -- Bastian Blank <waldi@debian.org>  Sat, 28 Feb 2009 11:51:01 +0100
+
 lvm2 (2.02.44-1) unstable; urgency=low
 
   * New upstream version.

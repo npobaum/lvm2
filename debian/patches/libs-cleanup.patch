@@ -8,16 +8,32 @@
  		LIB_SUFFIX=so
  		DEVMAPPER=yes
  		ODIRECT=yes
-@@ -482,7 +481,7 @@
- dnl -- Check for termcap (Shamelessly copied from parted 1.4.17)
- if test x$READLINE != xno; then
- 	AC_SEARCH_LIBS([tgetent], [tinfo ncurses curses termcap termlib],
+@@ -479,24 +478,6 @@
+ fi;
+ 
+ ################################################################################
+-dnl -- Check for termcap (Shamelessly copied from parted 1.4.17)
+-if test x$READLINE != xno; then
+-	AC_SEARCH_LIBS([tgetent], [tinfo ncurses curses termcap termlib],
 -	  [tg_found=yes], [tg_found=no])
-+	  [tg_found=yes; LIBS_READLINE="$LIBS"; LIBS=""], [tg_found=no])
- 	test x$READLINE:$tg_found = xyes:no &&
- 	  AC_MSG_ERROR(
- termcap could not be found which is required for the
-@@ -527,34 +526,9 @@
+-	test x$READLINE:$tg_found = xyes:no &&
+-	  AC_MSG_ERROR(
+-termcap could not be found which is required for the
+---enable-readline option (which is enabled by default).  Either disable readline
+-support with --disable-readline or download and install termcap from:
+-	ftp.gnu.org/gnu/termcap
+-Note: if you are using precompiled packages you will also need the development
+-  package as well (which may be called termcap-devel or something similar).
+-Note: (n)curses also seems to work as a substitute for termcap.  This was
+-  not found either - but you could try installing that as well.
+-)
+-fi
+-
+-################################################################################
+ dnl -- Check for dlopen
+ AC_CHECK_LIB(dl, dlopen, HAVE_LIBDL=yes, HAVE_LIBDL=no)
+ 
+@@ -527,34 +508,9 @@
  ################################################################################
  dnl -- Check for selinux
  if test x$SELINUX = xyes; then
@@ -55,7 +71,7 @@
  fi
  
  ################################################################################
-@@ -578,7 +552,7 @@
+@@ -578,7 +534,7 @@
  dnl -- Check for readline (Shamelessly copied from parted 1.4.17)
  if test x$READLINE != xno; then
  	rl_found=yes
@@ -64,7 +80,7 @@
  	test x$READLINE:$rl_found = xyes:no &&
  	  AC_MSG_ERROR(
  GNU Readline could not be found which is required for the
-@@ -755,6 +729,9 @@
+@@ -755,6 +711,9 @@
  AC_SUBST(JOBS)
  AC_SUBST(LDDEPS)
  AC_SUBST(LIBS)
@@ -74,7 +90,7 @@
  AC_SUBST(LIB_SUFFIX)
  AC_SUBST(LOCALEDIR)
  AC_SUBST(LVM1)
-@@ -769,7 +746,6 @@
+@@ -769,7 +728,6 @@
  AC_SUBST(SNAPSHOTS)
  AC_SUBST(STATICDIR)
  AC_SUBST(STATIC_LINK)
