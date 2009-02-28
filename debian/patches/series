@@ -10,3 +10,4 @@ libdm-abi.patch
 libdm-atomic.patch
 dmsetup-export.patch
 rules-subdir.patch
+implicit-pointer.patch
