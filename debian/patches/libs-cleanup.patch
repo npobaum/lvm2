@@ -136,7 +136,7 @@
  lvm: $(OBJECTS) lvm.o $(top_srcdir)/lib/liblvm.a
  	$(CC) -o $@ $(CFLAGS) $(OBJECTS) lvm.o \
 -		$(LDFLAGS) $(LVMLIBS) $(LIBS) -rdynamic
-+		$(LDFLAGS) $(LVMLIBS) $(LDFLAGS_LVM) -rdynamic
++		$(LDFLAGS) $(LVMLIBS) $(LIBS) $(LDFLAGS_LVM) -rdynamic
  
  LIB_PTHREAD = @LIB_PTHREAD@
  lvm.static: $(OBJECTS) lvm-static.o $(top_srcdir)/lib/liblvm.a

@@ -49,7 +49,7 @@ $(STAMPS_DIR)/source:
 	@mkdir -p $(STAMPS_DIR)
 	rm -rf $(DIR)
 	mkdir -p $(DIR)
-	cp -al $(filter-out debian .svk .svn, $(wildcard .[^]* *)) $(DIR)
+	cp -al $(filter-out debian .svk .svn, $(wildcard .[^.]* *)) $(DIR)
 	cp --remove-destination /usr/share/misc/config.sub /usr/share/misc/config.guess $(DIR)/autoconf
 	cd $(DIR); QUILT_PATCHES=$(CURDIR)/debian/patches quilt --quiltrc /dev/null push -a || test $$? = 2
 	cd $(DIR); autoreconf
@@ -67,6 +67,9 @@ $(STAMPS_DIR)/setup-deb: $(STAMPS_DIR)/source
 		$(CONFIGURE_FLAGS) \
 		--with-optimisation="" \
 		--with-clvmd=cman \
+		--with-device-uid=0 \
+		--with-device-gid=6 \
+		--with-device-mode=0660 \
 		--enable-pkgconfig \
 		--enable-readline
 	touch $@
@@ -83,6 +86,7 @@ $(STAMPS_DIR)/setup-udeb: $(STAMPS_DIR)/source
 		--with-cluster=none \
 		--with-lvm1=none \
 		--with-pool=none \
+		--disable-selinux \
 		--disable-readline
 	touch $@
 
