@@ -1,6 +1,6 @@
 #!/bin/sh
 
-PREREQ="mdadm mdrun"
+PREREQ="mdadm mdrun multipath"
 
 prereqs()
 {
