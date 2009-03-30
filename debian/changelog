@@ -1,3 +1,9 @@
+lvm2 (2.02.39-7) stable; urgency=low
+
+  * Add multipath as prereq of initramfs-tools script. (closes: #511903)
+
+ -- Bastian Blank <waldi@debian.org>  Mon, 30 Mar 2009 08:36:50 +0000
+
 lvm2 (2.02.39-6) unstable; urgency=low
 
   * Readd a vgchange binary into the initramfs. At least cryptsetup depends on
