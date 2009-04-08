@@ -4,3 +4,4 @@ drop-realtime.patch
 config.patch
 force-modprobe.patch
 open-readonly.patch
+avoid-dev-block.patch
