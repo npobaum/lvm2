@@ -9,7 +9,7 @@ Standards-Version: 3.6.2
 
 Package: lvm2
 Architecture: any
-Depends: ${shlibs:Depends}, watershed (>= 2), initramfs-tools (>= 0.85eubuntu24), dmsetup, udev (>= 136-1)
+Depends: ${shlibs:Depends}, watershed (>= 2), initramfs-tools (>= 0.85eubuntu24), dmsetup (>= 1.0.27-4ubuntu6), udev (>> 141-2)
 Conflicts: lvm-common
 Replaces: lvm-common
 Breaks: udev (<< 136-1)

@@ -1,3 +1,9 @@
+lvm2 (2.02.39-0ubuntu10) karmic; urgency=low
+
+  * debian/control: Increase dependencies for vol_id->blkid transition. 
+
+ -- Scott James Remnant <scott@ubuntu.com>  Tue, 12 May 2009 10:19:09 +0100
+
 lvm2 (2.02.39-0ubuntu9) jaunty; urgency=low
 
   * debian/patches/avoid-dev-block.patch: Prefer any other device name over
