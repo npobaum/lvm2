@@ -20,6 +20,9 @@ fi
 
 . /usr/share/initramfs-tools/hook-functions
 
+mkdir -p "$DESTDIR/etc/lvm"
+cp -p /etc/lvm/lvm.conf "$DESTDIR/etc/lvm/lvm.conf"
+
 copy_exec /sbin/lvm /sbin
 
 cp -p /lib/udev/rules.d/85-lvm2.rules ${DESTDIR}/lib/udev/rules.d
