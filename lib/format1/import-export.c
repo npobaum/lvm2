@@ -282,7 +282,7 @@ int export_vg(struct vg_disk *vgd, struct volume_group *vg)
 		vgd->vg_status |= VG_EXTENDABLE;
 
 	vgd->lv_max = vg->max_lv;
-	vgd->lv_cur = vg->lv_count + vg->snapshot_count;
+	vgd->lv_cur = vg_visible_lvs(vg) + snapshot_count(vg);
 
 	vgd->pv_max = vg->max_pv;
 	vgd->pv_cur = vg->pv_count;
@@ -294,10 +294,9 @@ int export_vg(struct vg_disk *vgd, struct volume_group *vg)
 	return 1;
 }
 
-int import_lv(struct dm_pool *mem, struct logical_volume *lv, struct lv_disk *lvd)
+int import_lv(struct cmd_context *cmd, struct dm_pool *mem,
+	      struct logical_volume *lv, struct lv_disk *lvd)
 {
-	lvid_from_lvnum(&lv->lvid, &lv->vg->id, lvd->lv_number);
-
 	if (!(lv->name = _create_lv_name(mem, (char *)lvd->lv_name)))
 		return_0;
 
@@ -331,7 +330,7 @@ int import_lv(struct dm_pool *mem, struct logical_volume *lv, struct lv_disk *lv
 		lv->alloc = ALLOC_NORMAL;
 
 	if (!lvd->lv_read_ahead)
-		lv->read_ahead = lv->vg->cmd->default_settings.read_ahead;
+		lv->read_ahead = cmd->default_settings.read_ahead;
 	else
 		lv->read_ahead = lvd->lv_read_ahead;
 
@@ -456,22 +455,23 @@ static struct logical_volume *_add_lv(struct dm_pool *mem,
 				      struct volume_group *vg,
 				      struct lv_disk *lvd)
 {
-	struct lv_list *ll;
 	struct logical_volume *lv;
 
-	if (!(ll = dm_pool_zalloc(mem, sizeof(*ll))) ||
-	    !(ll->lv = dm_pool_zalloc(mem, sizeof(*ll->lv))))
-		return_NULL;
-	lv = ll->lv;
-	lv->vg = vg;
-
-	if (!import_lv(mem, lv, lvd))
+	if (!(lv = dm_pool_zalloc(mem, sizeof(*lv))))
 		return_NULL;
 
-	dm_list_add(&vg->lvs, &ll->list);
-	vg->lv_count++;
+	lvid_from_lvnum(&lv->lvid, &vg->id, lvd->lv_number);
+
+	if (!import_lv(vg->cmd, mem, lv, lvd)) 
+		goto_bad;
+
+	if (!link_lv_to_vg(vg, lv))
+		goto_bad;
 
 	return lv;
+bad:
+	dm_pool_free(mem, lv);
+	return NULL;
 }
 
 int import_lvs(struct dm_pool *mem, struct volume_group *vg, struct dm_list *pvds)
@@ -579,15 +579,15 @@ int import_snapshots(struct dm_pool *mem __attribute((unused)), struct volume_gr
 			lvnum = lvd->lv_number;
 
 			if (lvnum >= MAX_LV) {
-				log_err("Logical volume number "
-					"out of bounds.");
+				log_error("Logical volume number "
+					  "out of bounds.");
 				return 0;
 			}
 
 			if (!lvs[lvnum] &&
 			    !(lvs[lvnum] = find_lv(vg, (char *)lvd->lv_name))) {
-				log_err("Couldn't find logical volume '%s'.",
-					lvd->lv_name);
+				log_error("Couldn't find logical volume '%s'.",
+					  lvd->lv_name);
 				return 0;
 			}
 		}
@@ -606,8 +606,8 @@ int import_snapshots(struct dm_pool *mem __attribute((unused)), struct volume_gr
 			lvnum = lvd->lv_number;
 			cow = lvs[lvnum];
 			if (!(org = lvs[lvd->lv_snapshot_minor])) {
-				log_err("Couldn't find origin logical volume "
-					"for snapshot '%s'.", lvd->lv_name);
+				log_error("Couldn't find origin logical volume "
+					  "for snapshot '%s'.", lvd->lv_name);
 				return 0;
 			}
 
@@ -616,10 +616,10 @@ int import_snapshots(struct dm_pool *mem __attribute((unused)), struct volume_gr
 				continue;
 
 			/* insert the snapshot */
-			if (!vg_add_snapshot(NULL, org, cow, NULL,
+			if (!vg_add_snapshot(org, cow, NULL,
 					     org->le_count,
 					     lvd->lv_chunk_size)) {
-				log_err("Couldn't add snapshot.");
+				log_error("Couldn't add snapshot.");
 				return 0;
 			}
 		}

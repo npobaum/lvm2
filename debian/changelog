@@ -1,3 +1,29 @@
+lvm2 (2.02.51-2) unstable; urgency=low
+
+  * Make mapper/* the real device, dm-* a symlink. (closes: #542422)
+
+ -- Bastian Blank <waldi@debian.org>  Thu, 20 Aug 2009 21:23:14 +0200
+
+lvm2 (2.02.51-1) unstable; urgency=low
+
+  * New upstream version.
+  * Add multipath as prereq of initramfs-tools script. (closes: #511903)
+  * Don't explicitely load special dm modules in initramfs-tools script.
+  * Fix dependencies of init script for mdadm and multipath-tools.
+    (closes: #514665, #532661)
+  * Add new libdevmapper symbols.
+  * Forcible remove old lvm init script.
+  * Update udev rules, but not enable udev sync yet.
+    - Use blkid. (closes: #541885)
+    - Make lvm2 depend on dmsetup.
+    - Make dmsetup depend on new util-linux for blkid.
+    - Make dmsetup depend on udev.
+  * Install fsadm.
+  * Use dmsetup name split support in initramfs-tools script.
+  * Only enable needed LVs in initramfs-tools script.
+
+ -- Bastian Blank <waldi@debian.org>  Mon, 17 Aug 2009 17:29:04 +0000
+
 lvm2 (2.02.44-3) unstable; urgency=low
 
   * Merge remaining settings for devmapper.

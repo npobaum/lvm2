@@ -5,11 +5,11 @@ lvconvert \- convert a logical volume from linear to mirror or snapshot
 .B lvconvert
 \-m|\-\-mirrors Mirrors [\-\-mirrorlog {disk|core}] [\-\-corelog] [\-R|\-\-regionsize MirrorLogRegionSize]
 [\-A|\-\-alloc AllocationPolicy]
-[\-b|\-\-background] [\-i|\-\-interval Seconds]
+[\-b|\-\-background] [\-f|\-\-force] [\-i|\-\-interval Seconds]
 [\-h|\-?|\-\-help]
-[\-v|\-\-verbose]
+[\-\-noudevsync]
+[\-v|\-\-verbose] [\-y|\-\-yes]
 [\-\-version]
-.br
 LogicalVolume[Path] [PhysicalVolume[Path]...]
 .br
 
@@ -17,11 +17,19 @@ LogicalVolume[Path] [PhysicalVolume[Path]...]
 .B lvconvert
 \-s|\-\-snapshot [\-c|\-\-chunksize ChunkSize]
 [\-h|\-?|\-\-help]
+[\-\-noudevsync]
 [\-v|\-\-verbose]
 [\-Z|\-\-zero y|n]
 [\-\-version]
 .br
 OriginalLogicalVolume[Path] SnapshotLogicalVolume[Path]
+
+.B lvconvert
+\-\-repair
+[\-h|\-?|\-\-help]
+[\-v|\-\-verbose]
+[\-\-version]
+LogicalVolume[Path] [PhysicalVolume[Path]...]
 .SH DESCRIPTION
 lvconvert will change a linear logical volume to a mirror
 logical volume or to a snapshot of linear volume and vice versa.
@@ -29,7 +37,7 @@ It is also used to add and remove disk logs from mirror devices.
 .SH OPTIONS
 See \fBlvm\fP for common options.
 .br
-Exactly one of \-\-mirrors or \-\-snapshot arguments required.
+Exactly one of \-\-mirrors, \-\-repair or \-\-snapshot arguments required.
 .br
 .TP
 .I \-m, \-\-mirrors Mirrors
@@ -59,6 +67,23 @@ Run the daemon in the background.
 .TP
 .I \-i, \-\-interval Seconds
 Report progress as a percentage at regular intervals.
+.br
+.TP
+.I \-\-noudevsync
+Disable udev synchronisation. The
+process will not wait for notification from udev.
+It will continue irrespective of any possible udev processing
+in the background.  You should only use this if udev is not running
+or has rules that ignore the devices LVM2 creates.
+.TP
+.I \-\-repair
+Repair a mirror after suffering a disk failure. The mirror will be brought back
+into a consistent state.  By default, the original number of mirrors will be
+restored if possible.  Specify \-y on the command line to skip the prompts.
+Use \-f if you do not want any replacement.  Additionally, you may use
+\-\-use-policies to use the device replacement policy specified in lvm.conf,
+viz. activation/mirror_log_fault_policy or
+activation/mirror_device_fault_policy.
 .br
 .TP
 .I \-s, \-\-snapshot

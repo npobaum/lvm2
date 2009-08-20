@@ -65,6 +65,7 @@ static struct flag _lv_flags[] = {
 	{CONVERTING, NULL, 0},
 	{PARTIAL_LV, NULL, 0},
 	{POSTORDER_FLAG, NULL, 0},
+	{VIRTUAL_ORIGIN, NULL, 0},
 	{0, NULL, 0}
 };
 
@@ -81,7 +82,7 @@ static struct flag *_get_flags(int type)
 		return _lv_flags;
 	}
 
-	log_err("Unknown flag set requested.");
+	log_error("Unknown flag set requested.");
 	return NULL;
 }
 
@@ -148,7 +149,7 @@ int read_flags(uint32_t *status, int type, struct config_value *cv)
 
 	while (cv) {
 		if (cv->type != CFG_STRING) {
-			log_err("Status value is not a string.");
+			log_error("Status value is not a string.");
 			return 0;
 		}
 
@@ -168,7 +169,7 @@ int read_flags(uint32_t *status, int type, struct config_value *cv)
 			 */
 			s |= PARTIAL_VG;
 		} else if (!flags[f].description && (type & STATUS_FLAG)) {
-			log_err("Unknown status flag '%s'.", cv->v.str);
+			log_error("Unknown status flag '%s'.", cv->v.str);
 			return 0;
 		}
 

@@ -62,14 +62,14 @@ uint64_t units_to_bytes(const char *units, char *unit_type)
 		v = UINT64_C(1);
 		*unit_type = *units;
 		break;
-	case 's':
-		v *= SECTOR_SIZE;
-		break;
 	case 'b':
 	case 'B':
 		v *= UINT64_C(1);
 		break;
 #define KILO UINT64_C(1024)
+	case 's':
+		v *= (KILO/2);
+		break;
 	case 'k':
 		v *= KILO;
 		break;
@@ -90,6 +90,9 @@ uint64_t units_to_bytes(const char *units, char *unit_type)
 		break;
 #undef KILO
 #define KILO UINT64_C(1000)
+	case 'S':
+		v *= (KILO/2);
+		break;
 	case 'K':
 		v *= KILO;
 		break;
@@ -606,7 +609,7 @@ void vgdisplay_full(const struct volume_group *vg)
 	}
 
 	log_print("MAX LV                %u", vg->max_lv);
-	log_print("Cur LV                %u", displayable_lvs_in_vg(vg));
+	log_print("Cur LV                %u", vg_visible_lvs(vg));
 	log_print("Open LV               %u", lvs_in_vg_opened(vg));
 /****** FIXME Max LV Size
       log_print ( "MAX LV Size           %s",
@@ -633,8 +636,7 @@ void vgdisplay_full(const struct volume_group *vg)
 			       vg->extent_size));
 
 	log_print("Free  PE / Size       %u / %s", vg->free_count,
-		  display_size(vg->cmd,
-			       (uint64_t) vg->free_count * vg->extent_size));
+		  display_size(vg->cmd, vg_free(vg)));
 
 	if (!id_write_format(&vg->id, uuid, sizeof(uuid))) {
 		stack;
@@ -681,7 +683,7 @@ void vgdisplay_colons(const struct volume_group *vg)
 		vg->status,
 		/* internal volume group number; obsolete */
 		vg->max_lv,
-		displayable_lvs_in_vg(vg),
+		vg_visible_lvs(vg),
 		lvs_in_vg_opened(vg),
 		/* FIXME: maximum logical volume size */
 		vg->max_pv,
@@ -705,8 +707,7 @@ void vgdisplay_short(const struct volume_group *vg)
 		  display_size(vg->cmd,
 			       ((uint64_t) vg->extent_count -
 				vg->free_count) * vg->extent_size),
-		  display_size(vg->cmd,
-			       (uint64_t) vg->free_count * vg->extent_size));
+		  display_size(vg->cmd, vg_free(vg)));
 	return;
 }
 

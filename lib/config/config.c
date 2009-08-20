@@ -186,6 +186,17 @@ struct config_tree *create_config_tree_from_string(struct cmd_context *cmd __att
 	return cft;
 }
 
+int override_config_tree_from_string(struct cmd_context *cmd,
+				     const char *config_settings)
+{
+	if (!(cmd->cft_override = create_config_tree_from_string(cmd,config_settings))) {
+		log_error("Failed to set overridden configuration entries.");
+		return 1;
+	}
+
+	return 0;
+}
+
 int read_config_fd(struct config_tree *cft, struct device *dev,
 		   off_t offset, size_t size, off_t offset2, size_t size2,
 		   checksum_fn_t checksum_fn, uint32_t checksum)
@@ -457,9 +468,9 @@ static int _write_config(struct config_node *n, int only_one,
 			line_append(" {");
 			if (!_line_end(outline))
 				return_0;
+			_write_config(n->child, 0, outline, level + 1);
 			if (!_line_start(outline))
 				return_0;
-			_write_config(n->child, 0, outline, level + 1);
 			line_append("%s}", space);
 		} else {
 			/* it's a value */
@@ -546,6 +557,7 @@ static struct config_node *_file(struct parser *p)
 			root = n;
 		else
 			l->sib = n;
+		n->parent = root;
 		l = n;
 	}
 	return root;
@@ -573,6 +585,7 @@ static struct config_node *_section(struct parser *p)
 				root->child = n;
 			else
 				l->sib = n;
+			n->parent = root;
 			l = n;
 		}
 		match(TOK_SECTION_E);
@@ -1251,6 +1264,10 @@ static unsigned _count_tokens(const char *str, unsigned len, int type)
 	return count_chars(str, len, c);
 }
 
+const char *config_parent_name(const struct config_node *n)
+{
+	return (n->parent ? n->parent->key : "(root)");
+}
 /*
  * Heuristic function to make a quick guess as to whether a text
  * region probably contains a valid config "section".  (Useful for

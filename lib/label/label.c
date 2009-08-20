@@ -72,7 +72,7 @@ void label_exit(void)
 	struct dm_list *c, *n;
 	struct labeller_i *li;
 
-	for (c = _labellers.n; c != &_labellers; c = n) {
+	for (c = _labellers.n; c && c != &_labellers; c = n) {
 		n = c->n;
 		li = dm_list_item(c, struct labeller_i);
 		li->l->ops->destroy(li->l);
@@ -138,7 +138,7 @@ static struct labeller *_find_labeller(struct device *dev, char *buf,
 				log_info("%s: Label for sector %" PRIu64
 					 " found at sector %" PRIu64
 					 " - ignoring", dev_name(dev),
-					 xlate64(lh->sector_xl),
+					 (uint64_t)xlate64(lh->sector_xl),
 					 sector + scan_sector);
 				continue;
 			}
@@ -304,7 +304,7 @@ int label_write(struct device *dev, struct label *label)
 	int r = 1;
 
 	if (!label->labeller->ops->write) {
-		log_err("Label handler does not support label writes");
+		log_error("Label handler does not support label writes");
 		return 0;
 	}
 
@@ -329,8 +329,9 @@ int label_write(struct device *dev, struct label *label)
 	if (!dev_open(dev))
 		return_0;
 
-	log_info("%s: Writing label to sector %" PRIu64, dev_name(dev),
-		 label->sector);
+	log_info("%s: Writing label to sector %" PRIu64 " with stored offset %"
+		 PRIu32 ".", dev_name(dev), label->sector,
+		 xlate32(lh->offset_xl));
 	if (!dev_write(dev, label->sector << SECTOR_SHIFT, LABEL_SIZE, buf)) {
 		log_debug("Failed to write label to %s", dev_name(dev));
 		r = 0;

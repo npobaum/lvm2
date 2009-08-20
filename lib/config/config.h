@@ -40,7 +40,7 @@ struct config_value {
 
 struct config_node {
 	char *key;
-	struct config_node *sib, *child;
+	struct config_node *parent, *sib, *child;
 	struct config_value *v;
 };
 
@@ -56,6 +56,8 @@ struct config_tree_list {
 struct config_tree *create_config_tree(const char *filename, int keep_open);
 struct config_tree *create_config_tree_from_string(struct cmd_context *cmd,
 						   const char *config_settings);
+int override_config_tree_from_string(struct cmd_context *cmd,
+				     const char *config_settings);
 void destroy_config_tree(struct config_tree *cft);
 
 typedef uint32_t (*checksum_fn_t) (uint32_t initial, const void *buf, uint32_t size);
@@ -109,5 +111,7 @@ int get_config_str(const struct config_node *cn, const char *path,
 		   char **result);
 
 unsigned maybe_config_section(const char *str, unsigned len);
+
+const char *config_parent_name(const struct config_node *n);
 
 #endif

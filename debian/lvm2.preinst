@@ -10,6 +10,12 @@ case "$1" in
             fi
             rm -f /etc/lvm/.cache
         fi
+        if dpkg --compare-versions "$2" lt 2.02.51-1; then
+            if [ -e /etc/init.d/lvm ]; then
+                rm -f /etc/init.d/lvm
+            fi
+            update-rc.d lvm remove >/dev/null || :
+        fi
     ;;
 esac
 

@@ -57,6 +57,7 @@ static int _become_daemon(struct cmd_context *cmd)
 	strncpy(*cmd->argv, "(lvm2copyd)", strlen(*cmd->argv));
 
 	reset_locking();
+	lvmcache_init();
 	dev_close_all();
 
 	return 1;
@@ -129,7 +130,7 @@ static int _check_mirror_status(struct cmd_context *cmd,
 	return 1;
 }
 
-static int _wait_for_single_mirror(struct cmd_context *cmd, const char *name,
+static int _wait_for_single_mirror(struct cmd_context *cmd, const char *name, const char *uuid,
 				   struct daemon_parms *parms)
 {
 	struct volume_group *vg;
@@ -147,34 +148,36 @@ static int _wait_for_single_mirror(struct cmd_context *cmd, const char *name,
 		}
 
 		/* Locks the (possibly renamed) VG again */
-		if (!(vg = parms->poll_fns->get_copy_vg(cmd, name))) {
+		vg = parms->poll_fns->get_copy_vg(cmd, name, uuid);
+		if (vg_read_error(vg)) {
+			vg_release(vg);
 			log_error("ABORTING: Can't reread VG for %s", name);
 			/* What more could we do here? */
 			return 0;
 		}
 
-		if (!(lv_mirr = parms->poll_fns->get_copy_lv(cmd, vg, name,
+		if (!(lv_mirr = parms->poll_fns->get_copy_lv(cmd, vg, name, uuid,
 							     parms->lv_type))) {
 			log_error("ABORTING: Can't find mirror LV in %s for %s",
 				  vg->name, name);
-			unlock_vg(cmd, vg->name);
+			unlock_and_release_vg(cmd, vg, vg->name);
 			return 0;
 		}
 
 		if (!_check_mirror_status(cmd, vg, lv_mirr, name, parms,
 					  &finished)) {
-			unlock_vg(cmd, vg->name);
+			unlock_and_release_vg(cmd, vg, vg->name);
 			return 0;
 		}
 
-		unlock_vg(cmd, vg->name);
+		unlock_and_release_vg(cmd, vg, vg->name);
 	}
 
 	return 1;
 }
 
 static int _poll_vg(struct cmd_context *cmd, const char *vgname,
-		    struct volume_group *vg, int consistent, void *handle)
+		    struct volume_group *vg, void *handle)
 {
 	struct daemon_parms *parms = (struct daemon_parms *) handle;
 	struct lv_list *lvl;
@@ -182,18 +185,7 @@ static int _poll_vg(struct cmd_context *cmd, const char *vgname,
 	const char *name;
 	int finished;
 
-	if (!vg) {
-		log_error("Couldn't read volume group %s", vgname);
-		return ECMD_FAILED;
-	}
-
-	if (!consistent) {
-		log_error("Volume Group %s inconsistent - skipping", vgname);
-		/* FIXME Should we silently recover it here or not? */
-		return ECMD_FAILED;
-	}
-
-	if (!vg_check_status(vg, EXPORTED_VG))
+	if (vg_read_error(vg))
 		return ECMD_FAILED;
 
 	dm_list_iterate_items(lvl, &vg->lvs) {
@@ -218,14 +210,15 @@ static void _poll_for_all_vgs(struct cmd_context *cmd,
 {
 	while (1) {
 		parms->outstanding_count = 0;
-		process_each_vg(cmd, 0, NULL, LCK_VG_WRITE, 1, parms, _poll_vg);
+		process_each_vg(cmd, 0, NULL, READ_FOR_UPDATE, parms, _poll_vg);
 		if (!parms->outstanding_count)
 			break;
 		sleep(parms->interval);
 	}
 }
 
-int poll_daemon(struct cmd_context *cmd, const char *name, unsigned background,
+int poll_daemon(struct cmd_context *cmd, const char *name, const char *uuid,
+		unsigned background,
 		uint32_t lv_type, struct poll_functions *poll_fns,
 		const char *progress_title)
 {
@@ -260,7 +253,7 @@ int poll_daemon(struct cmd_context *cmd, const char *name, unsigned background,
 	}
 
 	if (name) {
-		if (!_wait_for_single_mirror(cmd, name, &parms))
+		if (!_wait_for_single_mirror(cmd, name, uuid, &parms))
 			return ECMD_FAILED;
 	} else
 		_poll_for_all_vgs(cmd, &parms);

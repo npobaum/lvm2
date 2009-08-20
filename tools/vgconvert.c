@@ -16,7 +16,7 @@
 #include "tools.h"
 
 static int vgconvert_single(struct cmd_context *cmd, const char *vg_name,
-			    struct volume_group *vg, int consistent,
+			    struct volume_group *vg,
 			    void *handle __attribute((unused)))
 {
 	struct physical_volume *pv, *existing_pv;
@@ -32,18 +32,8 @@ static int vgconvert_single(struct cmd_context *cmd, const char *vg_name,
 	struct lvinfo info;
 	int active = 0;
 
-	if (!vg) {
-		log_error("Unable to find volume group \"%s\"", vg_name);
+	if (vg_read_error(vg))
 		return ECMD_FAILED;
-	}
-
-	if (!consistent) {
-		unlock_vg(cmd, vg_name);
-		dev_close_all();
-		log_error("Volume group \"%s\" inconsistent", vg_name);
-		if (!(vg = recover_vg(cmd, vg_name, LCK_VG_WRITE)))
-			return ECMD_FAILED;
-	}
 
 	if (!vg_check_status(vg, LVM_WRITE | EXPORTED_VG))
 		return ECMD_FAILED;
@@ -133,7 +123,7 @@ static int vgconvert_single(struct cmd_context *cmd, const char *vg_name,
 
 		dm_list_init(&mdas);
 		if (!(pv = pv_create(cmd, pv_dev(existing_pv),
-				     &existing_pv->id, size,
+				     &existing_pv->id, size, 0, 0,
 				     pe_start, pv_pe_count(existing_pv),
 				     pv_pe_size(existing_pv), pvmetadatacopies,
 				     pvmetadatasize, &mdas))) {
@@ -233,6 +223,6 @@ int vgconvert(struct cmd_context *cmd, int argc, char **argv)
 		return EINVALID_CMD_LINE;
 	}
 
-	return process_each_vg(cmd, argc, argv, LCK_VG_WRITE, 0, NULL,
+	return process_each_vg(cmd, argc, argv, READ_FOR_UPDATE, NULL,
 			       &vgconvert_single);
 }

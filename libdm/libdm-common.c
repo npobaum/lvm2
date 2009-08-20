@@ -24,6 +24,12 @@
 #include <sys/ioctl.h>
 #include <fcntl.h>
 
+#ifdef UDEV_SYNC_SUPPORT
+#  include <sys/types.h>
+#  include <sys/ipc.h>
+#  include <sys/sem.h>
+#endif
+
 #ifdef linux
 #  include <linux/fs.h>
 #endif
@@ -38,14 +44,20 @@ static char _dm_dir[PATH_MAX] = DEV_DIR DM_DIR;
 
 static int _verbose = 0;
 
+#ifdef UDEV_SYNC_SUPPORT
+static int _sync_with_udev = 1;
+#endif
+
 /*
  * Library users can provide their own logging
  * function.
  */
-static void _default_log(int level, const char *file __attribute((unused)),
-			 int line __attribute((unused)), const char *f, ...)
+
+static void _default_log_line(int level,
+	    const char *file __attribute((unused)),
+	    int line __attribute((unused)), int dm_errno, 
+	    const char *f, va_list ap)
 {
-	va_list ap;
 	int use_stderr = level & _LOG_STDERR;
 
 	level &= ~_LOG_STDERR;
@@ -53,14 +65,10 @@ static void _default_log(int level, const char *file __attribute((unused)),
 	if (level > _LOG_WARN && !_verbose)
 		return;
 
-	va_start(ap, f);
-
 	if (level < _LOG_WARN)
 		vfprintf(stderr, f, ap);
 	else
 		vfprintf(use_stderr ? stderr : stdout, f, ap);
-
-	va_end(ap);
 
 	if (level < _LOG_WARN)
 		fprintf(stderr, "\n");
@@ -68,7 +76,30 @@ static void _default_log(int level, const char *file __attribute((unused)),
 		fprintf(use_stderr ? stderr : stdout, "\n");
 }
 
+static void _default_log_with_errno(int level,
+	    const char *file __attribute((unused)),
+	    int line __attribute((unused)), int dm_errno, 
+	    const char *f, ...)
+{
+	va_list ap;
+
+	va_start(ap, f);
+	_default_log_line(level, file, line, dm_errno, f, ap);
+	va_end(ap);
+}
+
+static void _default_log(int level, const char *file,
+			 int line, const char *f, ...)
+{
+	va_list ap;
+
+	va_start(ap, f);
+	_default_log_line(level, file, line, 0, f, ap);
+	va_end(ap);
+}
+
 dm_log_fn dm_log = _default_log;
+dm_log_with_errno_fn dm_log_with_errno = _default_log_with_errno;
 
 void dm_log_init(dm_log_fn fn)
 {
@@ -76,6 +107,23 @@ void dm_log_init(dm_log_fn fn)
 		dm_log = fn;
 	else
 		dm_log = _default_log;
+
+	dm_log_with_errno = _default_log_with_errno;
+}
+
+int dm_log_is_non_default(void)
+{
+	return (dm_log == _default_log) ? 0 : 1;
+}
+
+void dm_log_with_errno_init(dm_log_with_errno_fn fn)
+{
+	if (fn)
+		dm_log_with_errno = fn;
+	else
+		dm_log_with_errno = _default_log_with_errno;
+
+	dm_log = _default_log;
 }
 
 void dm_log_init_verbose(int level)
@@ -118,12 +166,14 @@ struct dm_task *dm_task_create(int type)
 	dmt->type = type;
 	dmt->minor = -1;
 	dmt->major = -1;
+	dmt->allow_default_major_fallback = 1;
 	dmt->uid = DM_DEVICE_UID;
 	dmt->gid = DM_DEVICE_GID;
 	dmt->mode = DM_DEVICE_MODE;
 	dmt->no_open_count = 0;
 	dmt->read_ahead = DM_READ_AHEAD_AUTO;
 	dmt->read_ahead_flags = 0;
+	dmt->cookie_set = 0;
 
 	return dmt;
 }
@@ -190,6 +240,7 @@ int dm_task_set_uuid(struct dm_task *dmt, const char *uuid)
 int dm_task_set_major(struct dm_task *dmt, int major)
 {
 	dmt->major = major;
+	dmt->allow_default_major_fallback = 0;
 
 	return 1;
 }
@@ -197,6 +248,16 @@ int dm_task_set_major(struct dm_task *dmt, int major)
 int dm_task_set_minor(struct dm_task *dmt, int minor)
 {
 	dmt->minor = minor;
+
+	return 1;
+}
+
+int dm_task_set_major_minor(struct dm_task *dmt, int major, int minor,
+			    int allow_default_major_fallback)
+{
+	dmt->major = major;
+	dmt->minor = minor;
+	dmt->allow_default_major_fallback = allow_default_major_fallback;
 
 	return 1;
 }
@@ -293,7 +354,9 @@ static int _add_dev_node(const char *dev_name, uint32_t major, uint32_t minor,
 				  dev_name);
 			return 0;
 		}
-	}
+	} else if (dm_udev_get_sync_support())
+		log_warn("%s not set up by udev: Falling back to direct "
+			 "node creation.", path);
 
 	old_mask = umask(0);
 	if (mknod(path, S_IFBLK | mode, dev) < 0) {
@@ -317,6 +380,29 @@ static int _add_dev_node(const char *dev_name, uint32_t major, uint32_t minor,
 	return 1;
 }
 
+static int _rm_dev_node(const char *dev_name)
+{
+	char path[PATH_MAX];
+	struct stat info;
+
+	_build_dev_path(path, sizeof(path), dev_name);
+
+	if (stat(path, &info) < 0)
+		return 1;
+	else if (dm_udev_get_sync_support())
+		log_warn("Node %s was not removed by udev. "
+			 "Falling back to direct node removal.", path);
+
+	if (unlink(path) < 0) {
+		log_error("Unable to unlink device node for '%s'", dev_name);
+		return 0;
+	}
+
+	log_debug("Removed %s", path);
+
+	return 1;
+}
+
 static int _rename_dev_node(const char *old_name, const char *new_name)
 {
 	char oldpath[PATH_MAX];
@@ -332,6 +418,19 @@ static int _rename_dev_node(const char *old_name, const char *new_name)
 				  "is already present", newpath);
 			return 0;
 		}
+		else if (dm_udev_get_sync_support()) {
+			if (stat(oldpath, &info) < 0 &&
+				 errno == ENOENT)
+				/* assume udev already deleted this */
+				return 1;
+			else {
+				log_warn("The node %s should have been renamed to %s "
+					 "by udev but old node is still present. "
+					 "Falling back to direct old node removal.",
+					 oldpath, newpath);
+				return _rm_dev_node(old_name);
+			}
+		}
 
 		if (unlink(newpath) < 0) {
 			if (errno == EPERM) {
@@ -343,6 +442,11 @@ static int _rename_dev_node(const char *old_name, const char *new_name)
 			return 0;
 		}
 	}
+	else if (dm_udev_get_sync_support())
+		log_warn("The node %s should have been renamed to %s "
+			 "by udev but new node is not present. "
+			 "Falling back to direct node rename.",
+			 oldpath, newpath);
 
 	if (rename(oldpath, newpath) < 0) {
 		log_error("Unable to rename device node from '%s' to '%s'",
@@ -351,26 +455,6 @@ static int _rename_dev_node(const char *old_name, const char *new_name)
 	}
 
 	log_debug("Renamed %s to %s", oldpath, newpath);
-
-	return 1;
-}
-
-static int _rm_dev_node(const char *dev_name)
-{
-	char path[PATH_MAX];
-	struct stat info;
-
-	_build_dev_path(path, sizeof(path), dev_name);
-
-	if (stat(path, &info) < 0)
-		return 1;
-
-	if (unlink(path) < 0) {
-		log_error("Unable to unlink device node for '%s'", dev_name);
-		return 0;
-	}
-
-	log_debug("Removed %s", path);
 
 	return 1;
 }
@@ -711,3 +795,314 @@ out:
 	return r;
 }
 
+#ifndef UDEV_SYNC_SUPPORT
+void dm_udev_set_sync_support(int sync_with_udev)
+{
+}
+
+int dm_udev_get_sync_support(void)
+{
+	return 0;
+}
+
+int dm_task_set_cookie(struct dm_task *dmt, uint32_t *cookie)
+{
+	*cookie = 0;
+
+	return 1;
+}
+
+int dm_udev_complete(uint32_t cookie)
+{
+	return 1;
+}
+
+int dm_udev_wait(uint32_t cookie)
+{
+	return 1;
+}
+
+#else		/* UDEV_SYNC_SUPPORT */
+
+void dm_udev_set_sync_support(int sync_with_udev)
+{
+	_sync_with_udev = sync_with_udev;
+}
+
+int dm_udev_get_sync_support(void)
+{
+	return _sync_with_udev;
+}
+
+static int _get_cookie_sem(uint32_t cookie, int *semid)
+{
+	if (cookie >> 16 != DM_COOKIE_MAGIC) {
+		log_error("Could not continue to access notification "
+			  "semaphore identified by cookie value %"
+			  PRIu32 " (0x%x). Incorrect cookie prefix.",
+			  cookie, cookie);
+		return 0;
+	}
+
+	if ((*semid = semget((key_t) cookie, 1, 0)) >= 0)
+		return 1;
+
+	switch (errno) {
+		case ENOENT:
+			log_error("Could not find notification "
+				  "semaphore identified by cookie "
+				  "value %" PRIu32 " (0x%x)",
+				  cookie, cookie);
+			break;
+		case EACCES:
+			log_error("No permission to access "
+				  "notificaton semaphore identified "
+				  "by cookie value %" PRIu32 " (0x%x)",
+				  cookie, cookie);
+			break;
+		default:
+			log_error("Failed to access notification "
+				   "semaphore identified by cookie "
+				   "value %" PRIu32 " (0x%x): %s",
+				  cookie, cookie, strerror(errno));
+			break;
+	}
+
+	return 0;
+}
+
+static int _udev_notify_sem_inc(uint32_t cookie, int semid)
+{
+	struct sembuf sb = {0, 1, 0};
+
+	if (semop(semid, &sb, 1) < 0) {
+		log_error("semid %d: semop failed for cookie 0x%" PRIx32 ": %s",
+			  semid, cookie, strerror(errno));
+		return 0;
+	}
+
+	log_debug("Udev cookie 0x%" PRIx32 " (semid %d) incremented",
+		  cookie, semid);
+
+	return 1;
+}
+
+static int _udev_notify_sem_dec(uint32_t cookie, int semid)
+{
+	struct sembuf sb = {0, -1, IPC_NOWAIT};
+
+	if (semop(semid, &sb, 1) < 0) {
+		switch (errno) {
+			case EAGAIN:
+				log_error("semid %d: semop failed for cookie "
+					  "0x%" PRIx32 ": "
+					  "incorrect semaphore state",
+					  semid, cookie);
+				break;
+			default:
+				log_error("semid %d: semop failed for cookie "
+					  "0x%" PRIx32 ": %s",
+					  semid, cookie, strerror(errno));
+				break;
+		}
+		return 0;
+	}
+
+	log_debug("Udev cookie 0x%" PRIx32 " (semid %d) decremented",
+		  cookie, semid);
+
+	return 1;
+}
+
+static int _udev_notify_sem_destroy(uint32_t cookie, int semid)
+{
+	if (semctl(semid, 0, IPC_RMID, 0) < 0) {
+		log_error("Could not cleanup notification semaphore "
+			  "identified by cookie value %" PRIu32 " (0x%x): %s",
+			  cookie, cookie, strerror(errno));
+		return 0;
+	}
+
+	log_debug("Udev cookie 0x%" PRIx32 " (semid %d) destroyed", cookie,
+		  semid);
+
+	return 1;
+}
+
+static int _udev_notify_sem_create(uint32_t *cookie, int *semid)
+{
+	int fd;
+	int gen_semid;
+	uint16_t base_cookie;
+	uint32_t gen_cookie;
+
+	if ((fd = open("/dev/urandom", O_RDONLY)) < 0) {
+		log_error("Failed to open /dev/urandom "
+			  "to create random cookie value");
+		*cookie = 0;
+		return 0;
+	}
+
+	/* Generate random cookie value. Be sure it is unique and non-zero. */
+	do {
+		/* FIXME Handle non-error returns from read(). Move _io() into libdm? */
+		if (read(fd, &base_cookie, sizeof(base_cookie)) != sizeof(base_cookie)) {
+			log_error("Failed to initialize notification cookie");
+			goto bad;
+		}
+
+		gen_cookie = DM_COOKIE_MAGIC << 16 | base_cookie;
+
+		if (base_cookie && (gen_semid = semget((key_t) gen_cookie,
+				    1, 0600 | IPC_CREAT | IPC_EXCL)) < 0) {
+			switch (errno) {
+				case EEXIST:
+					/* if the semaphore key exists, we
+					 * simply generate another random one */
+					base_cookie = 0;
+					break;
+				case ENOMEM:
+					log_error("Not enough memory to create "
+						  "notification semaphore");
+					goto bad;
+				case ENOSPC:
+					log_error("Limit for the maximum number "
+						  "of semaphores reached. You can "
+						  "check and set the limits in "
+						  "/proc/sys/kernel/sem.");
+					goto bad;
+				default:
+					log_error("Failed to create notification "
+						  "semaphore: %s", strerror(errno));
+					goto bad;
+			}
+		}
+	} while (!base_cookie);
+
+	log_debug("Udev cookie 0x%" PRIx32 " (semid %d) created",
+		  gen_cookie, gen_semid);
+
+	if (semctl(gen_semid, 0, SETVAL, 1) < 0) {
+		log_error("semid %d: semctl failed: %s", gen_semid, strerror(errno));
+		/* We have to destroy just created semaphore
+		 * so it won't stay in the system. */
+		(void) _udev_notify_sem_destroy(gen_cookie, gen_semid);
+		goto bad;
+	}
+
+	log_debug("Udev cookie 0x%" PRIx32 " (semid %d) incremented",
+		  gen_cookie, gen_semid);
+
+	if (close(fd))
+		stack;
+
+	*semid = gen_semid;
+	*cookie = gen_cookie;
+
+	return 1;
+
+bad:
+	if (close(fd))
+		stack;
+
+	*cookie = 0;
+
+	return 0;
+}
+
+int dm_task_set_cookie(struct dm_task *dmt, uint32_t *cookie)
+{
+	int semid;
+
+	if (!dm_udev_get_sync_support() || !dm_cookie_supported()) {
+		dmt->event_nr = *cookie = 0;
+		return 1;
+	}
+
+	if (*cookie) {
+		if (!_get_cookie_sem(*cookie, &semid))
+			goto_bad;
+	} else if (!_udev_notify_sem_create(cookie, &semid))
+		goto_bad;
+
+	if (!_udev_notify_sem_inc(*cookie, semid)) {
+		log_error("Could not set notification semaphore "
+			  "identified by cookie value %" PRIu32 " (0x%x)",
+			  *cookie, *cookie);
+		goto bad;
+	}
+
+	dmt->event_nr = *cookie;
+	dmt->cookie_set = 1;
+
+	log_debug("Udev cookie 0x%" PRIx32 " (semid %d) assigned to dm_task",
+		  dmt->event_nr, semid);
+
+	return 1;
+
+bad:
+	dmt->event_nr = 0;
+	return 0;
+}
+
+int dm_udev_complete(uint32_t cookie)
+{
+	int semid;
+
+	if (!cookie || !dm_udev_get_sync_support() || !dm_cookie_supported())
+		return 1;
+
+	if (!_get_cookie_sem(cookie, &semid))
+		return_0;
+
+	if (!_udev_notify_sem_dec(cookie, semid)) {
+		log_error("Could not signal waiting process using notification "
+			  "semaphore identified by cookie value %" PRIu32 " (0x%x)",
+			  cookie, cookie);
+		return 0;
+	}
+
+	return 1;
+}
+
+int dm_udev_wait(uint32_t cookie)
+{
+	int semid;
+	struct sembuf sb = {0, 0, 0};
+
+	if (!cookie || !dm_udev_get_sync_support() || !dm_cookie_supported())
+		return 1;
+
+	if (!_get_cookie_sem(cookie, &semid))
+		return_0;
+
+	if (!_udev_notify_sem_dec(cookie, semid)) {
+		log_error("Failed to set a proper state for notification "
+			  "semaphore identified by cookie value %" PRIu32 " (0x%x) "
+			  "to initialize waiting for incoming notifications.",
+			  cookie, cookie);
+		(void) _udev_notify_sem_destroy(cookie, semid);
+		return 0;
+	}
+
+	log_debug("Udev cookie 0x%" PRIx32 " (semid %d): Waiting for zero",
+		  cookie, semid);
+
+repeat_wait:
+	if (semop(semid, &sb, 1) < 0) {
+		if (errno == EINTR)
+			goto repeat_wait;
+		else if (errno == EIDRM)
+			return 1;
+
+		log_error("Could not set wait state for notification semaphore "
+			  "identified by cookie value %" PRIu32 " (0x%x): %s",
+			  cookie, cookie, strerror(errno));
+		(void) _udev_notify_sem_destroy(cookie, semid);
+		return 0;
+	}
+
+	return _udev_notify_sem_destroy(cookie, semid);
+}
+
+#endif		/* UDEV_SYNC_SUPPORT */

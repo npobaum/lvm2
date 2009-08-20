@@ -1,22 +1,22 @@
 --- a/tools/Makefile.in
 +++ b/tools/Makefile.in
-@@ -156,21 +156,21 @@
+@@ -160,21 +160,21 @@
  endif
  
  install_cmdlib_dynamic: liblvm2cmd.$(LIB_SUFFIX)
 -	$(INSTALL) -D $(OWNER) $(GROUP) -m 555 $(STRIP) liblvm2cmd.$(LIB_SUFFIX) \
 +	$(INSTALL) -D liblvm2cmd.$(LIB_SUFFIX) \
- 		$(libdir)/liblvm2cmd.$(LIB_SUFFIX).$(LIB_VERSION_LVM)
- 	$(LN_S) -f liblvm2cmd.$(LIB_SUFFIX).$(LIB_VERSION_LVM) $(libdir)/liblvm2cmd.$(LIB_SUFFIX)
+ 		$(libdir)/liblvm2cmd.$(LIB_SUFFIX).$(LIB_VERSION)
+ 	$(LN_S) -f liblvm2cmd.$(LIB_SUFFIX).$(LIB_VERSION) $(libdir)/liblvm2cmd.$(LIB_SUFFIX)
 -	$(INSTALL) -D $(OWNER) $(GROUP) -m 444 lvm2cmd.h \
 +	$(INSTALL_DATA) -D lvm2cmd.h \
  		$(includedir)/lvm2cmd.h
  
  install_cmdlib_static: liblvm2cmd-static.a
 -	$(INSTALL) -D $(OWNER) $(GROUP) -m 555 $(STRIP) liblvm2cmd-static.a \
-+	$(INSTALL) liblvm2cmd-static.a \
- 		$(libdir)/liblvm2cmd.a.$(LIB_VERSION_LVM)
- 	$(LN_S) -f liblvm2cmd.a.$(LIB_VERSION_LVM) $(libdir)/liblvm2cmd.a
++	$(INSTALL) -D liblvm2cmd-static.a \
+ 		$(libdir)/liblvm2cmd.a.$(LIB_VERSION)
+ 	$(LN_S) -f liblvm2cmd.a.$(LIB_VERSION) $(libdir)/liblvm2cmd.a
 -	$(INSTALL) -D $(OWNER) $(GROUP) -m 444 lvm2cmd.h \
 +	$(INSTALL_DATA) -D lvm2cmd.h \
  		$(includedir)/lvm2cmd.h
@@ -27,7 +27,7 @@
  		$(sbindir)/lvm
  	@echo Creating symbolic links for individual commands in $(sbindir)
  	@( \
-@@ -181,14 +181,13 @@
+@@ -185,14 +185,13 @@
  	)
  
  install_tools_static: lvm.static
@@ -47,7 +47,7 @@
  
 --- a/daemons/clvmd/Makefile.in
 +++ b/daemons/clvmd/Makefile.in
-@@ -104,8 +104,8 @@
+@@ -107,8 +107,8 @@
  .PHONY: install_clvmd
  
  install_clvmd: $(TARGETS)
@@ -144,16 +144,18 @@
  	done
  
  install_device-mapper:
-@@ -85,5 +85,5 @@
+@@ -85,7 +85,7 @@
  	@for f in $(MAN8DM); \
  	do \
  	   $(RM) $(MAN8DIR)/$$f; \
 -	   @INSTALL@ -D $(OWNER) $(GROUP) -m 444 $$f $(MAN8DIR)/$$f; \
 +	   $(INSTALL_DATA) -D $$f $(MAN8DIR)/$$f; \
  	done
+ 
+ install: install_lvm2 install_device-mapper
 --- a/libdm/Makefile.in
 +++ b/libdm/Makefile.in
-@@ -55,11 +55,7 @@
+@@ -57,11 +57,7 @@
  	install_ioctl install_ioctl_static \
  	install_pkgconfig
  
@@ -166,7 +168,7 @@
  
  ifeq ("@PKGCONFIG@", "yes")
    INSTALL_TYPE += install_pkgconfig
-@@ -70,7 +66,7 @@
+@@ -72,7 +68,7 @@
  install_device-mapper: install
  
  install_include:
@@ -175,7 +177,7 @@
  		$(includedir)/libdevmapper.h
  
  install_dynamic: install_@interface@
-@@ -78,19 +74,17 @@
+@@ -80,19 +76,17 @@
  		$(libdir)/libdevmapper.$(LIB_SUFFIX)
  
  install_static: install_@interface@_static
@@ -200,8 +202,8 @@
  	rm -f $@
 --- a/daemons/dmeventd/Makefile.in
 +++ b/daemons/dmeventd/Makefile.in
-@@ -64,25 +64,21 @@
- install_device-mapper: install
+@@ -66,25 +66,21 @@
+ install_device-mapper: $(INSTALL_TYPE) install_include install_dmeventd
  
  install_include:
 -	$(INSTALL) -D $(OWNER) $(GROUP) -m 444 libdevmapper-event.h \
@@ -233,28 +235,30 @@
  $(VERSIONED_SHLIB): $(LIB_SHARED)
 --- a/daemons/dmeventd/plugins/mirror/Makefile.in
 +++ b/daemons/dmeventd/plugins/mirror/Makefile.in
-@@ -32,6 +32,6 @@
+@@ -32,7 +32,7 @@
  include $(top_srcdir)/make.tmpl
  
- install: libdevmapper-event-lvm2mirror.$(LIB_SUFFIX)
+ install_lvm2: libdevmapper-event-lvm2mirror.$(LIB_SUFFIX)
 -	$(INSTALL) -D $(OWNER) $(GROUP) -m 555 $(STRIP) $< \
 +	$(INSTALL) -D $< \
  		$(libdir)/$<.$(LIB_VERSION)
  	$(LN_S) -f $<.$(LIB_VERSION) $(libdir)/$<
+ 
 --- a/daemons/dmeventd/plugins/snapshot/Makefile.in
 +++ b/daemons/dmeventd/plugins/snapshot/Makefile.in
-@@ -32,6 +32,6 @@
+@@ -32,7 +32,7 @@
  include $(top_srcdir)/make.tmpl
  
- install: libdevmapper-event-lvm2snapshot.$(LIB_SUFFIX)
+ install_lvm2: libdevmapper-event-lvm2snapshot.$(LIB_SUFFIX)
 -	$(INSTALL) -D $(OWNER) $(GROUP) -m 555 $(STRIP) $< \
 +	$(INSTALL) -D $< \
  		$(libdir)/$<.$(LIB_VERSION)
  	$(LN_S) -f $<.$(LIB_VERSION) $(libdir)/$<
+ 
 --- a/doc/Makefile.in
 +++ b/doc/Makefile.in
 @@ -23,7 +23,7 @@
- install:
+ install_lvm2:
  	@if [ ! -e $(confdir)/$(CONFDEST) ]; then \
  		echo "Installing $(CONFSRC) as $(confdir)/$(CONFDEST)"; \
 -		@INSTALL@ -D $(OWNER) $(GROUP) -m 644 $(CONFSRC) \
@@ -272,7 +276,7 @@
  MKDIR_P = @MKDIR_P@
  MSGFMT = @MSGFMT@
  LCOV = @LCOV@
-@@ -54,11 +55,6 @@
+@@ -56,11 +57,6 @@
  interface = @interface@
  interfacedir = $(top_srcdir)/libdm/$(interface)
  
@@ -284,7 +288,7 @@
  # The number of jobs to run, if blank, defaults to the make standard
  ifndef MAKEFLAGS
  MAKEFLAGS = @JOBS@
-@@ -105,9 +101,6 @@
+@@ -107,9 +103,6 @@
  #CFLAGS += -pg
  #LDFLAGS += -pg
  
@@ -296,15 +300,37 @@
  LIB_VERSION_LVM := $(shell cat $(top_srcdir)/VERSION | \
 --- a/scripts/Makefile.in
 +++ b/scripts/Makefile.in
-@@ -18,9 +18,9 @@
+@@ -18,12 +18,12 @@
  include $(top_srcdir)/make.tmpl
  
  install:
 -	$(INSTALL) -D $(OWNER) $(GROUP) -m 555 $(STRIP) lvm_dump.sh \
 +	$(INSTALL) -D lvm_dump.sh \
  		$(sbindir)/lvmdump
+-	$(INSTALL) -D $(OWNER) $(GROUP) -m 555 $(STRIP) vgimportclone.sh \
++	$(INSTALL) -D vgimportclone.sh \
+ 		$(sbindir)/vgimportclone
  ifeq ("@FSADM@", "yes")
 -	$(INSTALL) -D $(OWNER) $(GROUP) -m 555 $(STRIP) fsadm.sh \
 +	$(INSTALL) -D fsadm.sh \
  		$(sbindir)/fsadm
  endif
+ 
+--- a/po/Makefile.in
++++ b/po/Makefile.in
+@@ -53,13 +53,13 @@
+ 	@echo Installing translation files in $(localedir)
+ 	@( \
+ 		for lang in $(LANGS); do \
+-			$(INSTALL) -D $(OWNER) $(GROUP) -m 444 $$lang.mo \
++			$(INSTALL_DATA) -D $$lang.mo \
+ 			    $(localedir)/$$lang/LC_MESSAGES/lvm2.mo;\
+ 	  done; \
+ 	)
+ 	@( \
+ 		for lang in $(LANGS); do \
+-			$(INSTALL) -D $(OWNER) $(GROUP) -m 444 $$lang.mo \
++			$(INSTALL_DATA) -D $$lang.mo \
+ 			    $(localedir)/$$lang/LC_MESSAGES/device-mapper.mo;\
+ 	  done; \
+ 	)

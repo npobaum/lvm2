@@ -25,7 +25,8 @@ if [ -e /etc/lvm/lvm.conf ]; then
 	cp /etc/lvm/lvm.conf ${DESTDIR}/etc/lvm/
 fi
 
-copy_exec /sbin/lvm /sbin
+copy_exec /sbin/dmsetup
+copy_exec /sbin/lvm
 ln -s lvm ${DESTDIR}/sbin/vgchange
 
 for x in dm_mod dm_snapshot dm_mirror; do

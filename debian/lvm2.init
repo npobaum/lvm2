@@ -1,12 +1,12 @@
 #!/bin/sh
 ### BEGIN INIT INFO
 # Provides:          lvm2 lvm
-# Required-Start:    mountdevsubfs
+# Required-Start:    mountdevsubfs udev
 # Required-Stop:
-# Should-Start:      udev devfsd raid2 mdadm cryptdisks-early
-# Should-Stop:       reboot halt umountroot
+# Should-Start:      mdadm-raid cryptdisks-early multipath-tools-boot
+# Should-Stop:       umountroot mdadm-raid
 # X-Start-Before:    checkfs mountall
-# X-Stop-after:      umountfs
+# X-Stop-After:      umountfs
 # Default-Start:     S
 # Default-Stop:      0 6
 ### END INIT INFO

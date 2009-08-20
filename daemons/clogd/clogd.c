@@ -13,7 +13,7 @@
 #include <linux/types.h>
 #include <sys/socket.h>
 #include <linux/netlink.h>
-#include <linux/dm-clog-tfr.h>
+#include <linux/dm-log-userspace.h>
 #include <linux/dm-ioctl.h>
 
 #include "functions.h"
@@ -31,7 +31,6 @@ static void process_signals(void);
 static void daemonize(void);
 static void init_all(void);
 static void cleanup_all(void);
-static void set_priority(void);
 
 int main(int argc, char *argv[])
 {
@@ -41,8 +40,6 @@ int main(int argc, char *argv[])
 
 	/* Parent can now exit, we're ready to handle requests */
 	kill(getppid(), SIGTERM);
-
-	/* set_priority(); -- let's try to do w/o this */
 
 	LOG_PRINT("Starting clogd:");
 	LOG_PRINT(" Built: "__DATE__" "__TIME__"\n");
@@ -193,13 +190,13 @@ static void daemonize(void)
 			LOG_ERROR("Failed to create lockfile");
 			LOG_ERROR("Process already running?");
 			break;
-		case EXIT_KERNEL_TFR_SOCKET:
+		case EXIT_KERNEL_SOCKET:
 			LOG_ERROR("Unable to create netlink socket");
 			break;
-		case EXIT_KERNEL_TFR_BIND:
+		case EXIT_KERNEL_BIND:
 			LOG_ERROR("Unable to bind to netlink socket");
 			break;
-		case EXIT_KERNEL_TFR_SETSOCKOPT:
+		case EXIT_KERNEL_SETSOCKOPT:
 			LOG_ERROR("Unable to setsockopt on netlink socket");
 			break;
 		case EXIT_CLUSTER_CKPT_INIT:
@@ -265,19 +262,4 @@ static void cleanup_all(void)
 {
 	cleanup_local();
 	cleanup_cluster();
-}
-
-static void set_priority(void)
-{
-        struct sched_param sched_param;
-        int res;
-
-        res = sched_get_priority_max(SCHED_RR);
-        if (res != -1) {
-                sched_param.sched_priority = res;
-                res = sched_setscheduler(0, SCHED_RR, &sched_param);
-	}
-
-	if (res == -1)
-		LOG_ERROR("Unable to set SCHED_RR priority.");
 }

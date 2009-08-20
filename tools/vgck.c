@@ -14,23 +14,20 @@
  */
 
 #include "tools.h"
+#include "metadata.h"
 
 static int vgck_single(struct cmd_context *cmd __attribute((unused)),
 		       const char *vg_name,
-		       struct volume_group *vg, int consistent,
+		       struct volume_group *vg,
 		       void *handle __attribute((unused)))
 {
-	if (!vg) {
-		log_error("Volume group \"%s\" not found", vg_name);
+	if (vg_read_error(vg))
 		return ECMD_FAILED;
-	}
-
-	if (!consistent) {
-		log_error("Volume group \"%s\" inconsistent", vg_name);
-		return ECMD_FAILED;
-	}
 
 	if (!vg_check_status(vg, EXPORTED_VG))
+		return ECMD_FAILED;
+
+	if (!vg_validate(vg))
 		return ECMD_FAILED;
 
 	return ECMD_PROCESSED;
@@ -38,6 +35,6 @@ static int vgck_single(struct cmd_context *cmd __attribute((unused)),
 
 int vgck(struct cmd_context *cmd, int argc, char **argv)
 {
-	return process_each_vg(cmd, argc, argv, LCK_VG_READ, 0, NULL,
+	return process_each_vg(cmd, argc, argv, 0, NULL,
 			       &vgck_single);
 }

@@ -126,6 +126,12 @@ static int _vgchange_available(struct cmd_context *cmd, struct volume_group *vg)
 	int available;
 	int activate = 1;
 
+	/*
+	 * Safe, since we never write out new metadata here. Required for
+	 * partial activation to work.
+	 */
+	cmd->handles_missing_pvs = 1;
+
 	available = arg_uint_value(cmd, available_ARG, 0);
 
 	if ((available == CHANGE_AN) || (available == CHANGE_ALN))
@@ -138,14 +144,8 @@ static int _vgchange_available(struct cmd_context *cmd, struct volume_group *vg)
 		return ECMD_FAILED;
 	}
 
-	if (activate && lockingfailed() && (vg_is_clustered(vg))) {
-		log_error("Locking inactive: ignoring clustered "
-			  "volume group %s", vg->name);
-		return ECMD_FAILED;
-	}
-
 	/* FIXME Move into library where clvmd can use it */
-	if (activate && !lockingfailed())
+	if (activate)
 		check_current_backup(vg);
 
 	if (activate && (active = lvs_in_vg_activated(vg))) {
@@ -179,22 +179,17 @@ static int _vgchange_alloc(struct cmd_context *cmd, struct volume_group *vg)
 
 	alloc = arg_uint_value(cmd, alloc_ARG, ALLOC_NORMAL);
 
-	if (alloc == ALLOC_INHERIT) {
-		log_error("Volume Group allocation policy cannot inherit "
-			  "from anything");
-		return EINVALID_CMD_LINE;
-	}
+	if (!archive(vg))
+		return ECMD_FAILED;
 
+	/* FIXME: make consistent with vg_set_alloc_policy() */
 	if (alloc == vg->alloc) {
 		log_error("Volume group allocation policy is already %s",
 			  get_alloc_string(vg->alloc));
 		return ECMD_FAILED;
 	}
-
-	if (!archive(vg))
+	if (!vg_set_alloc_policy(vg, alloc))
 		return ECMD_FAILED;
-
-	vg->alloc = alloc;
 
 	if (!vg_write(vg) || !vg_commit(vg))
 		return ECMD_FAILED;
@@ -293,32 +288,11 @@ static int _vgchange_logicalvolume(struct cmd_context *cmd,
 {
 	uint32_t max_lv = arg_uint_value(cmd, logicalvolume_ARG, 0);
 
-	if (!(vg_status(vg) & RESIZEABLE_VG)) {
-		log_error("Volume group \"%s\" must be resizeable "
-			  "to change MaxLogicalVolume", vg->name);
-		return ECMD_FAILED;
-	}
-
-	if (!(vg->fid->fmt->features & FMT_UNLIMITED_VOLS)) {
-		if (!max_lv)
-			max_lv = 255;
-		else if (max_lv > 255) {
-			log_error("MaxLogicalVolume limit is 255");
-			return ECMD_FAILED;
-		}
-	}
-
-	if (max_lv && max_lv < vg->lv_count) {
-		log_error("MaxLogicalVolume is less than the current number "
-			  "%d of LVs for \"%s\"", vg->lv_count,
-			  vg->name);
-		return ECMD_FAILED;
-	}
-
 	if (!archive(vg))
 		return ECMD_FAILED;
 
-	vg->max_lv = max_lv;
+	if (!vg_set_max_lv(vg, max_lv))
+		return ECMD_FAILED;
 
 	if (!vg_write(vg) || !vg_commit(vg))
 		return ECMD_FAILED;
@@ -335,37 +309,16 @@ static int _vgchange_physicalvolumes(struct cmd_context *cmd,
 {
 	uint32_t max_pv = arg_uint_value(cmd, maxphysicalvolumes_ARG, 0);
 
-	if (!(vg_status(vg) & RESIZEABLE_VG)) {
-		log_error("Volume group \"%s\" must be resizeable "
-			  "to change MaxPhysicalVolumes", vg->name);
-		return ECMD_FAILED;
-	}
-
 	if (arg_sign_value(cmd, maxphysicalvolumes_ARG, 0) == SIGN_MINUS) {
 		log_error("MaxPhysicalVolumes may not be negative");
 		return EINVALID_CMD_LINE;
 	}
 
-	if (!(vg->fid->fmt->features & FMT_UNLIMITED_VOLS)) {
-		if (!max_pv)
-			max_pv = 255;
-		else if (max_pv > 255) {
-			log_error("MaxPhysicalVolume limit is 255");
-			return ECMD_FAILED;
-		}
-	}
-
-	if (max_pv && max_pv < vg->pv_count) {
-		log_error("MaxPhysicalVolumes is less than the current number "
-			  "%d of PVs for \"%s\"", vg->pv_count,
-			  vg->name);
-		return ECMD_FAILED;
-	}
-
 	if (!archive(vg))
 		return ECMD_FAILED;
 
-	vg->max_pv = max_pv;
+	if (!vg_set_max_pv(vg, max_pv))
+		return ECMD_FAILED;
 
 	if (!vg_write(vg) || !vg_commit(vg))
 		return ECMD_FAILED;
@@ -381,48 +334,25 @@ static int _vgchange_pesize(struct cmd_context *cmd, struct volume_group *vg)
 {
 	uint32_t extent_size;
 
-	if (!(vg_status(vg) & RESIZEABLE_VG)) {
-		log_error("Volume group \"%s\" must be resizeable "
-			  "to change PE size", vg->name);
-		return ECMD_FAILED;
-	}
-
 	if (arg_sign_value(cmd, physicalextentsize_ARG, 0) == SIGN_MINUS) {
 		log_error("Physical extent size may not be negative");
 		return EINVALID_CMD_LINE;
 	}
 
 	extent_size = arg_uint_value(cmd, physicalextentsize_ARG, 0);
-	if (!extent_size) {
-		log_error("Physical extent size may not be zero");
-		return EINVALID_CMD_LINE;
-	}
-
+	/* FIXME: remove check - redundant with vg_change_pesize */
 	if (extent_size == vg->extent_size) {
 		log_error("Physical extent size of VG %s is already %s",
 			  vg->name, display_size(cmd, (uint64_t) extent_size));
 		return ECMD_PROCESSED;
 	}
 
-	if (extent_size & (extent_size - 1)) {
-		log_error("Physical extent size must be a power of 2.");
-		return EINVALID_CMD_LINE;
-	}
-
-	if (extent_size > vg->extent_size) {
-		if ((uint64_t) vg->extent_size * vg->extent_count % extent_size) {
-			/* FIXME Adjust used PV sizes instead */
-			log_error("New extent size is not a perfect fit");
-			return EINVALID_CMD_LINE;
-		}
-	}
-
 	if (!archive(vg))
 		return ECMD_FAILED;
 
-	if (!vg_change_pesize(cmd, vg, extent_size)) {
+	if (!vg_set_extent_size(vg, extent_size)) {
 		stack;
-		return ECMD_FAILED;
+		return EINVALID_CMD_LINE;
 	}
 
 	if (!vg_write(vg) || !vg_commit(vg))
@@ -521,28 +451,13 @@ static int _vgchange_refresh(struct cmd_context *cmd, struct volume_group *vg)
 }
 
 static int vgchange_single(struct cmd_context *cmd, const char *vg_name,
-			   struct volume_group *vg, int consistent,
+			   struct volume_group *vg,
 			   void *handle __attribute((unused)))
 {
 	int r = ECMD_FAILED;
 
-	if (!vg) {
-		log_error("Unable to find volume group \"%s\"", vg_name);
+	if (vg_read_error(vg))
 		return ECMD_FAILED;
-	}
-
-	if (!consistent) {
-		unlock_vg(cmd, vg_name);
-		dev_close_all();
-		log_error("Volume group \"%s\" inconsistent", vg_name);
-		if (!(vg = recover_vg(cmd, vg_name, LCK_VG_WRITE)))
-			return ECMD_FAILED;
-	}
-
-	if (!(vg_status(vg) & LVM_WRITE) && !arg_count(cmd, available_ARG)) {
-		log_error("Volume group \"%s\" is read-only", vg->name);
-		return ECMD_FAILED;
-	}
 
 	if (vg_status(vg) & EXPORTED_VG) {
 		log_error("Volume group \"%s\" is exported", vg_name);
@@ -633,6 +548,7 @@ int vgchange(struct cmd_context *cmd, int argc, char **argv)
 
 	return process_each_vg(cmd, argc, argv,
 			       (arg_count(cmd, available_ARG)) ?
-			       LCK_VG_READ : LCK_VG_WRITE, 0, NULL,
+			       0 : READ_FOR_UPDATE,
+			       NULL,
 			       &vgchange_single);
 }

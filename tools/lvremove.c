@@ -18,6 +18,14 @@
 static int lvremove_single(struct cmd_context *cmd, struct logical_volume *lv,
 			   void *handle __attribute((unused)))
 {
+	struct logical_volume *origin;
+
+	/*
+	 * If this is a sparse device, remove its origin too.
+	 */
+        if (lv_is_cow(lv) && lv_is_virtual_origin(origin = origin_from_cow(lv)))
+                lv = origin;
+
 	if (!lv_remove_with_dependencies(cmd, lv, arg_count(cmd, force_ARG)))
 		return ECMD_FAILED;
 
@@ -33,6 +41,6 @@ int lvremove(struct cmd_context *cmd, int argc, char **argv)
 
 	cmd->handles_missing_pvs = 1;
 
-	return process_each_lv(cmd, argc, argv, LCK_VG_WRITE, NULL,
+	return process_each_lv(cmd, argc, argv, READ_FOR_UPDATE, NULL,
 			       &lvremove_single);
 }

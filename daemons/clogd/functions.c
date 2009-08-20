@@ -11,8 +11,8 @@
 #include <linux/kdev_t.h>
 #define __USE_GNU /* for O_DIRECT */
 #include <fcntl.h>
-#include "linux/dm-clog-tfr.h"
-#include "list.h"
+#include <time.h>
+#include "linux/dm-log-userspace.h"
 #include "functions.h"
 #include "common.h"
 #include "cluster.h"
@@ -30,12 +30,12 @@
 #define LOG_OFFSET 2
 
 #define RESYNC_HISTORY 50
-static char resync_history[RESYNC_HISTORY][128];
-static int idx = 0;
-#define LOG_SPRINT(f, arg...) do {\
-		idx++; \
-		idx = idx % RESYNC_HISTORY; \
-		sprintf(resync_history[idx], f, ## arg); \
+//static char resync_history[RESYNC_HISTORY][128];
+//static int idx = 0;
+#define LOG_SPRINT(_lc, f, arg...) do {					\
+		lc->idx++;						\
+		lc->idx = lc->idx % RESYNC_HISTORY;			\
+		sprintf(lc->resync_history[lc->idx], f, ## arg);	\
 	} while (0)
 
 struct log_header {
@@ -45,11 +45,12 @@ struct log_header {
 };
 
 struct log_c {
-	struct list_head list;
+	struct dm_list list;
 
 	char uuid[DM_UUID_LEN];
-	uint32_t ref_count;
+	uint64_t luid;
 
+	time_t delay; /* limits how fast a resume can happen after suspend */
 	int touched;
 	uint32_t region_size;
 	uint32_t region_count;
@@ -60,6 +61,7 @@ struct log_c {
 	uint32_t *sync_bits;
 	uint32_t recoverer;
 	uint64_t recovering_region; /* -1 means not recovering */
+	uint64_t skip_bit_warning; /* used to warn if region skipped */
 	int sync_search;
 
 	int resume_override;
@@ -73,7 +75,7 @@ struct log_c {
 
 	uint32_t state;         /* current operational state of the log */
 
-	struct list_head mark_list;
+	struct dm_list mark_list;
 
 	uint32_t recovery_halted;
 	struct recovery_request *recovery_request_list;
@@ -83,10 +85,12 @@ struct log_c {
 	uint64_t disk_nr_regions;
 	size_t disk_size;       /* size of disk_buffer in bytes */
 	void *disk_buffer;      /* aligned memory for O_DIRECT */
+	int idx;
+	char resync_history[RESYNC_HISTORY][128];
 };
 
 struct mark_entry {
-	struct list_head list;
+	struct dm_list list;
 	uint32_t nodeid;
 	uint64_t region;
 };
@@ -96,9 +100,8 @@ struct recovery_request {
 	struct recovery_request *next;
 };
 
-static struct list_head log_list = LIST_HEAD_INIT(log_list);
-static struct list_head log_pending_list = LIST_HEAD_INIT(log_pending_list);
-
+static DM_LIST_INIT(log_list);
+static DM_LIST_INIT(log_pending_list);
 
 static int log_test_bit(uint32_t *bs, unsigned bit)
 {
@@ -141,45 +144,37 @@ static uint64_t count_bits32(uint32_t *addr, uint32_t count)
 
 /*
  * get_log
- * @tfr
  *
  * Returns: log if found, NULL otherwise
  */
-static struct log_c *get_log(const char *uuid)
+static struct log_c *get_log(const char *uuid, uint64_t luid)
 {
-	struct list_head *l;
 	struct log_c *lc;
 
-	/* FIXME: Need prefetch to do this right */
-	__list_for_each(l, &log_list) {
-		lc = list_entry(l, struct log_c, list);
-		if (!strcmp(lc->uuid, uuid))
+	dm_list_iterate_items(lc, &log_list)
+		if (!strcmp(lc->uuid, uuid) &&
+		    (!luid || (luid == lc->luid)))
 			return lc;
-	}
 
 	return NULL;
 }
 
 /*
  * get_pending_log
- * @tfr
  *
  * Pending logs are logs that have been 'clog_ctr'ed, but
  * have not joined the CPG (via clog_resume).
  *
  * Returns: log if found, NULL otherwise
  */
-static struct log_c *get_pending_log(const char *uuid)
+static struct log_c *get_pending_log(const char *uuid, uint64_t luid)
 {
-	struct list_head *l;
 	struct log_c *lc;
 
-	/* FIXME: Need prefetch to do this right */
-	__list_for_each(l, &log_pending_list) {
-		lc = list_entry(l, struct log_c, list);
-		if (!strcmp(lc->uuid, uuid))
+	dm_list_iterate_items(lc, &log_pending_list)
+		if (!strcmp(lc->uuid, uuid) &&
+		    (!luid || (luid == lc->luid)))
 			return lc;
-	}
 
 	return NULL;
 }
@@ -297,6 +292,16 @@ static int find_disk_path(char *major_minor_str, char *path_rtn, int *unlink_pat
 	struct stat statbuf;
 	int major, minor;
 
+	if (!strstr(major_minor_str, ":")) {
+		r = stat(major_minor_str, &statbuf);
+		if (r)
+			return -errno;
+		if (!S_ISBLK(statbuf.st_mode))
+			return -EINVAL;
+		sprintf(path_rtn, "%s", major_minor_str);
+		return 0;
+	}
+
 	r = sscanf(major_minor_str, "%d:%d", &major, &minor);
 	if (r != 2)
 		return -EINVAL;
@@ -343,7 +348,8 @@ static int find_disk_path(char *major_minor_str, char *path_rtn, int *unlink_pat
 	return r ? -errno : 0;
 }
 
-static int _clog_ctr(int argc, char **argv, uint64_t device_size)
+static int _clog_ctr(char *uuid, uint64_t luid,
+		     int argc, char **argv, uint64_t device_size)
 {
 	int i;
 	int r = 0;
@@ -366,7 +372,7 @@ static int _clog_ctr(int argc, char **argv, uint64_t device_size)
 	if (!strtoll(argv[0], &p, 0) || *p) {
 		disk_log = 1;
 
-		if ((argc < 3) || (argc > 5)) {
+		if ((argc < 2) || (argc > 4)) {
 			LOG_ERROR("Too %s arguments to clustered_disk log type",
 				  (argc < 3) ? "few" : "many");
 			r = -EINVAL;
@@ -382,7 +388,7 @@ static int _clog_ctr(int argc, char **argv, uint64_t device_size)
 	} else {
 		disk_log = 0;
 
-		if ((argc < 2) || (argc > 4)) {
+		if ((argc < 1) || (argc > 3)) {
 			LOG_ERROR("Too %s arguments to clustered_core log type",
 				  (argc < 2) ? "few" : "many");
 			r = -EINVAL;
@@ -429,21 +435,21 @@ static int _clog_ctr(int argc, char **argv, uint64_t device_size)
 	lc->block_on_error = block_on_error;
 	lc->sync_search = 0;
 	lc->recovering_region = (uint64_t)-1;
+	lc->skip_bit_warning = region_count;
 	lc->disk_fd = -1;
 	lc->log_dev_failed = 0;
-	lc->ref_count = 1;
-	strncpy(lc->uuid, argv[1 + disk_log], DM_UUID_LEN);
+	strncpy(lc->uuid, uuid, DM_UUID_LEN);
+	lc->luid = luid;
 
-	if ((dup = get_log(lc->uuid)) ||
-	    (dup = get_pending_log(lc->uuid))) {
-		LOG_DBG("[%s] Inc reference count on cluster log",
-			  SHORT_UUID(lc->uuid));
+	if ((dup = get_log(lc->uuid, lc->luid)) ||
+	    (dup = get_pending_log(lc->uuid, lc->luid))) {
+		LOG_ERROR("[%s/%llu] Log already exists, unable to create.",
+			  SHORT_UUID(lc->uuid), lc->luid);
 		free(lc);
-		dup->ref_count++;
-		return 0;
+		return -EINVAL;
 	}
 
-	INIT_LIST_HEAD(&lc->mark_list);
+	dm_list_init(&lc->mark_list);
 
 	lc->bitset_uint32_count = region_count / 
 		(sizeof(*lc->clean_bits) << BYTE_SHIFT);
@@ -497,7 +503,7 @@ static int _clog_ctr(int argc, char **argv, uint64_t device_size)
 		LOG_DBG("Disk log ready");
 	}
 
-	list_add(&lc->list, &log_pending_list);
+	dm_list_add(&log_pending_list, &lc->list);
 
 	return 0;
 fail:
@@ -517,47 +523,55 @@ fail:
 
 /*
  * clog_ctr
- * @tfr
+ * @rq
  *
- * tfr->data should contain constructor string as follows:
- *	[disk] <regiion_size> <uuid> [[no]sync] <device_len>
+ * rq->data should contain constructor string as follows:
+ *	<log_type> [disk] <region_size> [[no]sync] <device_len>
  * The kernel is responsible for adding the <dev_len> argument
  * to the end; otherwise, we cannot compute the region_count.
  *
- * FIXME: Currently relies on caller to fill in tfr->error
+ * FIXME: Currently relies on caller to fill in rq->error
  */
-static int clog_dtr(struct clog_tfr *tfr);
-static int clog_ctr(struct clog_tfr *tfr)
+static int clog_dtr(struct dm_ulog_request *rq);
+static int clog_ctr(struct dm_ulog_request *rq)
 {
 	int argc, i, r = 0;
 	char *p, **argv = NULL;
 	uint64_t device_size;
 
 	/* Sanity checks */
-	if (!tfr->data_size) {
+	if (!rq->data_size) {
 		LOG_ERROR("Received constructor request with no data");
 		return -EINVAL;
 	}
 
-	if (strlen(tfr->data) != tfr->data_size) {
+	if (strlen(rq->data) > rq->data_size) {
 		LOG_ERROR("Received constructor request with bad data");
-		LOG_ERROR("strlen(tfr->data)[%d] != tfr->data_size[%d]",
-			  (int)strlen(tfr->data), tfr->data_size);
-		LOG_ERROR("tfr->data = '%s' [%d]",
-			  tfr->data, (int)strlen(tfr->data));
+		LOG_ERROR("strlen(rq->data)[%d] != rq->data_size[%llu]",
+			  (int)strlen(rq->data),
+			  (unsigned long long)rq->data_size);
+		LOG_ERROR("rq->data = '%s' [%d]",
+			  rq->data, (int)strlen(rq->data));
 		return -EINVAL;
 	}
 
 	/* Split up args */
-	for (argc = 1, p = tfr->data; (p = strstr(p, " ")); p++, argc++)
+	for (argc = 1, p = rq->data; (p = strstr(p, " ")); p++, argc++)
 		*p = '\0';
 
 	argv = malloc(argc * sizeof(char *));
 	if (!argv)
 		return -ENOMEM;
 
-	for (i = 0, p = tfr->data; i < argc; i++, p = p + strlen(p) + 1)
+	for (i = 0, p = rq->data; i < argc; i++, p = p + strlen(p) + 1)
 		argv[i] = p;
+
+	if (strcmp(argv[0], "clustered_disk") &&
+	    strcmp(argv[0], "clustered_core")) {
+		LOG_ERROR("Unsupported userspace log type, \"%s\"", argv[0]);
+		free(argv);
+		return -EINVAL;
+	}
 
 	if (!(device_size = strtoll(argv[argc - 1], &p, 0)) || *p) {
 		LOG_ERROR("Invalid device size argument: %s", argv[argc - 1]);
@@ -566,59 +580,51 @@ static int clog_ctr(struct clog_tfr *tfr)
 	}
 
 	argc--;  /* We pass in the device_size separate */
-	r = _clog_ctr(argc, argv, device_size);
+	r = _clog_ctr(rq->uuid, rq->luid, argc - 1, argv + 1, device_size);
 
 	/* We join the CPG when we resume */
 
 	/* No returning data */
-	tfr->data_size = 0;
+	rq->data_size = 0;
 
-	free(argv);
-	if (r)
-		LOG_ERROR("Failed to create cluster log (%s)", tfr->uuid);
+	if (r) {
+		LOG_ERROR("Failed to create cluster log (%s)", rq->uuid);
+		for (i = 0; i < argc; i++)
+			LOG_ERROR("argv[%d] = %s", i, argv[i]);
+	}
 	else
 		LOG_DBG("[%s] Cluster log created",
-			  SHORT_UUID(tfr->uuid));
+			SHORT_UUID(rq->uuid));
 
+	free(argv);
 	return r;
 }
 
 /*
  * clog_dtr
- * @tfr
+ * @rq
  *
  */
-static int clog_dtr(struct clog_tfr *tfr)
+static int clog_dtr(struct dm_ulog_request *rq)
 {
-	struct log_c *lc = get_log(tfr->uuid);
+	struct log_c *lc = get_log(rq->uuid, rq->luid);
 
 	if (lc) {
 		/*
 		 * The log should not be on the official list.  There
 		 * should have been a suspend first.
 		 */
-		lc->ref_count--;
-		if (!lc->ref_count) {
-			LOG_ERROR("[%s] DTR before SUS: leaving CPG",
-				  SHORT_UUID(tfr->uuid));
-			destroy_cluster_cpg(tfr->uuid);
-		}
-	} else if ((lc = get_pending_log(tfr->uuid))) {
-		lc->ref_count--;
-	} else {
+		LOG_ERROR("[%s] DTR before SUS: leaving CPG",
+			  SHORT_UUID(rq->uuid));
+		destroy_cluster_cpg(rq->uuid);
+	} else if (!(lc = get_pending_log(rq->uuid, rq->luid))) {
 		LOG_ERROR("clog_dtr called on log that is not official or pending");
 		return -EINVAL;
 	}
 
-	if (lc->ref_count) {
-		LOG_DBG("[%s] Dec reference count on cluster log",
-			  SHORT_UUID(lc->uuid));
-		return 0;
-	}
-
 	LOG_DBG("[%s] Cluster log removed", SHORT_UUID(lc->uuid));
 
-	list_del_init(&lc->list);
+	dm_list_del(&lc->list);
 	if (lc->disk_fd != -1)
 		close(lc->disk_fd);
 	if (lc->disk_buffer)
@@ -632,12 +638,12 @@ static int clog_dtr(struct clog_tfr *tfr)
 
 /*
  * clog_presuspend
- * @tfr
+ * @rq
  *
  */
-static int clog_presuspend(struct clog_tfr *tfr)
+static int clog_presuspend(struct dm_ulog_request *rq)
 {
-	struct log_c *lc = get_log(tfr->uuid);
+	struct log_c *lc = get_log(rq->uuid, rq->luid);
 
 	if (!lc)
 		return -EINVAL;
@@ -645,7 +651,6 @@ static int clog_presuspend(struct clog_tfr *tfr)
 	if (lc->touched)
 		LOG_DBG("WARNING: log still marked as 'touched' during suspend");
 
-	lc->state = LOG_SUSPENDED;
 	lc->recovery_halted = 1;
 
 	return 0;
@@ -653,33 +658,35 @@ static int clog_presuspend(struct clog_tfr *tfr)
 
 /*
  * clog_postsuspend
- * @tfr
+ * @rq
  *
  */
-static int clog_postsuspend(struct clog_tfr *tfr)
+static int clog_postsuspend(struct dm_ulog_request *rq)
 {
-	struct log_c *lc = get_log(tfr->uuid);
+	struct log_c *lc = get_log(rq->uuid, rq->luid);
 
 	if (!lc)
 		return -EINVAL;
 
 	LOG_DBG("[%s] clog_postsuspend: leaving CPG", SHORT_UUID(lc->uuid));
-	destroy_cluster_cpg(tfr->uuid);
+	destroy_cluster_cpg(rq->uuid);
 
+	lc->state = LOG_SUSPENDED;
 	lc->recovering_region = (uint64_t)-1;
 	lc->recoverer = (uint32_t)-1;
+	lc->delay = time(NULL);
 
 	return 0;
 }
 
 /*
  * cluster_postsuspend
- * @tfr
+ * @rq
  *
  */
-int cluster_postsuspend(char *uuid)
+int cluster_postsuspend(char *uuid, uint64_t luid)
 {
-	struct log_c *lc = get_log(uuid);
+	struct log_c *lc = get_log(uuid, luid);
 
 	if (!lc)
 		return -EINVAL;
@@ -688,23 +695,23 @@ int cluster_postsuspend(char *uuid)
 	lc->resume_override = 0;
 
 	/* move log to pending list */
-	list_del_init(&lc->list);
-	list_add(&lc->list, &log_pending_list);
+	dm_list_del(&lc->list);
+	dm_list_add(&log_pending_list, &lc->list);
 
 	return 0;
 }
 
 /*
  * clog_resume
- * @tfr
+ * @rq
  *
  * Does the main work of resuming.
  */
-static int clog_resume(struct clog_tfr *tfr)
+static int clog_resume(struct dm_ulog_request *rq)
 {
 	uint32_t i;
 	int commit_log = 0;
-	struct log_c *lc = get_log(tfr->uuid);
+	struct log_c *lc = get_log(rq->uuid, rq->luid);
 	size_t size = lc->bitset_uint32_count * sizeof(uint32_t);
 
 	if (!lc)
@@ -713,7 +720,10 @@ static int clog_resume(struct clog_tfr *tfr)
 	switch (lc->resume_override) {
 	case 1000:
 		LOG_ERROR("[%s] Additional resume issued before suspend",
-			  SHORT_UUID(tfr->uuid));
+			  SHORT_UUID(rq->uuid));
+#ifdef DEBUG
+		kill(getpid(), SIGUSR1);
+#endif
 		return 0;
 	case 0:
 		lc->resume_override = 1000;
@@ -739,18 +749,19 @@ static int clog_resume(struct clog_tfr *tfr)
 		lc->resume_override = 1000;
 		goto out;
 	default:
-		LOG_ERROR("Error:: multiple loading of bits (%d)", lc->resume_override);
+		LOG_ERROR("Error:: multiple loading of bits (%d)",
+			  lc->resume_override);
 		return -EINVAL;
 	}
 
 	if (lc->log_dev_failed) {
 		LOG_ERROR("Log device has failed, unable to read bits");
-		tfr->error = 0;  /* We can handle this so far */
+		rq->error = 0;  /* We can handle this so far */
 		lc->disk_nr_regions = 0;
 	} else
-		tfr->error = read_log(lc);
+		rq->error = read_log(lc);
 
-	switch (tfr->error) {
+	switch (rq->error) {
 	case 0:
 		if (lc->disk_nr_regions < lc->region_count)
 			LOG_DBG("[%s] Mirror has grown, updating log bits",
@@ -760,8 +771,8 @@ static int clog_resume(struct clog_tfr *tfr)
 				SHORT_UUID(lc->uuid));
 		break;		
 	case -EINVAL:
-		LOG_PRINT("[%s] (Re)initializing mirror log - resync issued.",
-			  SHORT_UUID(lc->uuid));
+		LOG_DBG("[%s] (Re)initializing mirror log - resync issued.",
+			SHORT_UUID(lc->uuid));
 		lc->disk_nr_regions = 0;
 		break;
 	default:
@@ -787,8 +798,8 @@ no_disk:
 	memcpy(lc->sync_bits, lc->clean_bits, size);
 
 	if (commit_log && (lc->disk_fd >= 0)) {
-		tfr->error = write_log(lc);
-		if (tfr->error)
+		rq->error = write_log(lc);
+		if (rq->error)
 			LOG_ERROR("Failed initial disk log write");
 		else
 			LOG_DBG("Disk log initialized");
@@ -806,46 +817,75 @@ out:
 
 	lc->sync_count = count_bits32(lc->sync_bits, lc->bitset_uint32_count);
 
-	LOG_DBG("[%s] Initial sync_count = %llu",
-		SHORT_UUID(lc->uuid), (unsigned long long)lc->sync_count);
+	LOG_SPRINT(lc, "[%s] Initial sync_count = %llu",
+		   SHORT_UUID(lc->uuid), (unsigned long long)lc->sync_count);
 	lc->sync_search = 0;
 	lc->state = LOG_RESUMED;
 	lc->recovery_halted = 0;
 	
-	return tfr->error;
+	return rq->error;
 }
 
 /*
  * local_resume
- * @tfr
+ * @rq
  *
  * If the log is pending, we must first join the cpg and
  * put the log in the official list.
  *
  */
-int local_resume(struct clog_tfr *tfr)
+int local_resume(struct dm_ulog_request *rq)
 {
 	int r;
-	struct log_c *lc = get_log(tfr->uuid);
+	time_t t;
+	struct log_c *lc = get_log(rq->uuid, rq->luid);
 
 	if (!lc) {
 		/* Is the log in the pending list? */
-		lc = get_pending_log(tfr->uuid);
+		lc = get_pending_log(rq->uuid, rq->luid);
 		if (!lc) {
 			LOG_ERROR("clog_resume called on log that is not official or pending");
 			return -EINVAL;
 		}
 
+		t = time(NULL);
+		t -= lc->delay;
+		/*
+		 * This should be considered a temporary fix.  It addresses
+		 * a problem that exists when nodes suspend/resume in rapid
+		 * succession.  While the problem is very rare, it has been
+		 * seen to happen in real-world-like testing.
+		 *
+		 * The problem:
+		 * - Node A joins cluster
+		 * - Node B joins cluster
+		 * - Node A prepares checkpoint
+		 * - Node A gets ready to write checkpoint
+		 * - Node B leaves
+		 * - Node B joins
+		 * - Node A finishes write of checkpoint
+		 * - Node B receives checkpoint meant for previous session
+		 * -- Node B can now be non-coherent
+		 *
+		 * This timer will solve the problem for now, but could be
+		 * replaced by a generation number sent with the resume
+		 * command from the kernel.  The generation number would
+		 * be included in the name of the checkpoint to prevent
+		 * reading stale data.
+		 */
+		if ((t < 3) && (t >= 0))
+			sleep(3 - t);
+
 		/* Join the CPG */
-		r = create_cluster_cpg(tfr->uuid);
+		r = create_cluster_cpg(rq->uuid, rq->luid);
 		if (r) {
 			LOG_ERROR("clog_resume:  Failed to create cluster CPG");
 			return r;
 		}
 
 		/* move log to official list */
-		list_del_init(&lc->list);
-		list_add(&lc->list, &log_list);
+		dm_list_del(&lc->list);
+		dm_list_add(&log_list, &lc->list);
 	}
 
 	return 0;
@@ -853,7 +893,7 @@ int local_resume(struct clog_tfr *tfr)
 
 /*
  * clog_get_region_size
- * @tfr
+ * @rq
  *
  * Since this value doesn't change, the kernel
  * should not need to talk to server to get this
@@ -861,46 +901,44 @@ int local_resume(struct clog_tfr *tfr)
  *
  * Returns: 0 on success, -EXXX on failure
  */
-static int clog_get_region_size(struct clog_tfr *tfr)
+static int clog_get_region_size(struct dm_ulog_request *rq)
 {
-	uint64_t *rtn = (uint64_t *)tfr->data;
-	struct log_c *lc = get_log(tfr->uuid);
+	uint64_t *rtn = (uint64_t *)rq->data;
+	struct log_c *lc = get_log(rq->uuid, rq->luid);
 
-	LOG_PRINT("WARNING: kernel should not be calling clog_get_region_size");
-	if (!lc)
+	if (!lc && !(lc = get_pending_log(rq->uuid, rq->luid)))
 		return -EINVAL;
 
-	/* FIXME: region_size is 32-bit, while function requires 64-bit */
 	*rtn = lc->region_size;
-	tfr->data_size = sizeof(*rtn);
+	rq->data_size = sizeof(*rtn);
 
 	return 0;
 }
 
 /*
  * clog_is_clean
- * @tfr
+ * @rq
  *
  * Returns: 1 if clean, 0 otherwise
  */
-static int clog_is_clean(struct clog_tfr *tfr)
+static int clog_is_clean(struct dm_ulog_request *rq)
 {
-	int *rtn = (int *)tfr->data;
-	uint64_t region = *((uint64_t *)(tfr->data));
-	struct log_c *lc = get_log(tfr->uuid);
+	int64_t *rtn = (int64_t *)rq->data;
+	uint64_t region = *((uint64_t *)(rq->data));
+	struct log_c *lc = get_log(rq->uuid, rq->luid);
 
 	if (!lc)
 		return -EINVAL;
 
 	*rtn = log_test_bit(lc->clean_bits, region);
-	tfr->data_size = sizeof(*rtn);
+	rq->data_size = sizeof(*rtn);
 
 	return 0;
 }
 
 /*
  * clog_in_sync
- * @tfr
+ * @rq
  *
  * We ignore any request for non-block.  That
  * should be handled elsewhere.  (If the request
@@ -908,11 +946,11 @@ static int clog_is_clean(struct clog_tfr *tfr)
  *
  * Returns: 1 if in-sync, 0 otherwise
  */
-static int clog_in_sync(struct clog_tfr *tfr)
+static int clog_in_sync(struct dm_ulog_request *rq)
 {
-	int *rtn = (int *)tfr->data;
-	uint64_t region = *((uint64_t *)(tfr->data));
-	struct log_c *lc = get_log(tfr->uuid);
+	int64_t *rtn = (int64_t *)rq->data;
+	uint64_t region = *((uint64_t *)(rq->data));
+	struct log_c *lc = get_log(rq->uuid, rq->luid);
 
 	if (!lc)
 		return -EINVAL;
@@ -928,20 +966,20 @@ static int clog_in_sync(struct clog_tfr *tfr)
 		LOG_DBG("[%s] Region is not in-sync: %llu",
 			SHORT_UUID(lc->uuid), (unsigned long long)region);
 
-	tfr->data_size = sizeof(*rtn);
+	rq->data_size = sizeof(*rtn);
 
 	return 0;
 }
 
 /*
  * clog_flush
- * @tfr
+ * @rq
  *
  */
-static int clog_flush(struct clog_tfr *tfr, int server)
+static int clog_flush(struct dm_ulog_request *rq, int server)
 {
 	int r = 0;
-	struct log_c *lc = get_log(tfr->uuid);
+	struct log_c *lc = get_log(rq->uuid, rq->luid);
 	
 	if (!lc)
 		return -EINVAL;
@@ -954,7 +992,7 @@ static int clog_flush(struct clog_tfr *tfr, int server)
 	 * if we are the server.
 	 */
 	if (server && (lc->disk_fd >= 0)) {
-		r = tfr->error = write_log(lc);
+		r = rq->error = write_log(lc);
 		if (r)
 			LOG_ERROR("[%s] Error writing to disk log",
 				  SHORT_UUID(lc->uuid));
@@ -982,17 +1020,13 @@ static int mark_region(struct log_c *lc, uint64_t region, uint32_t who)
 {
 	int found = 0;
 	struct mark_entry *m;
-	struct list_head *p, *n;
 
-	list_for_each_safe(p, n, &lc->mark_list) {
-		/* FIXME: Use proper macros */
-		m = (struct mark_entry *)p;
+	dm_list_iterate_items(m, &lc->mark_list)
 		if (m->region == region) {
 			found = 1;
 			if (m->nodeid == who)
 				return 0;
 		}
-	}
 
 	if (!found)
 		log_clear_bit(lc, lc->clean_bits, region);
@@ -1010,45 +1044,45 @@ static int mark_region(struct log_c *lc, uint64_t region, uint32_t who)
 
 	m->nodeid = who;
 	m->region = region;
-	list_add_tail(&m->list, &lc->mark_list);
+	dm_list_add(&lc->mark_list, &m->list);
 
 	return 0;
 }
 
 /*
  * clog_mark_region
- * @tfr
+ * @rq
  *
- * tfr may contain more than one mark request.  We
+ * rq may contain more than one mark request.  We
  * can determine the number from the 'data_size' field.
  *
  * Returns: 0 on success, -EXXX on failure
  */
-static int clog_mark_region(struct clog_tfr *tfr)
+static int clog_mark_region(struct dm_ulog_request *rq, uint32_t originator)
 {
 	int r;
 	int count;
 	uint64_t *region;
-	struct log_c *lc = get_log(tfr->uuid);
+	struct log_c *lc = get_log(rq->uuid, rq->luid);
 
 	if (!lc)
 		return -EINVAL;
 
-	if (tfr->data_size % sizeof(uint64_t)) {
+	if (rq->data_size % sizeof(uint64_t)) {
 		LOG_ERROR("Bad data size given for mark_region request");
 		return -EINVAL;
 	}
 
-	count = tfr->data_size / sizeof(uint64_t);
-	region = (uint64_t *)&tfr->data;
+	count = rq->data_size / sizeof(uint64_t);
+	region = (uint64_t *)&rq->data;
 
 	for (; count > 0; count--, region++) {
-		r = mark_region(lc, *region, tfr->originator);
+		r = mark_region(lc, *region, originator);
 		if (r)
 			return r;
 	}
 
-	tfr->data_size = 0;
+	rq->data_size = 0;
 
 	return 0;
 }
@@ -1056,20 +1090,16 @@ static int clog_mark_region(struct clog_tfr *tfr)
 static int clear_region(struct log_c *lc, uint64_t region, uint32_t who)
 {
 	int other_matches = 0;
-	struct mark_entry *m;
-	struct list_head *p, *n;
+	struct mark_entry *m, *n;
 
-	list_for_each_safe(p, n, &lc->mark_list) {
-		/* FIXME: Use proper macros */
-		m = (struct mark_entry *)p;
+	dm_list_iterate_items_safe(m, n, &lc->mark_list)
 		if (m->region == region) {
 			if (m->nodeid == who) {
-				list_del_init(&m->list);
+				dm_list_del(&m->list);
 				free(m);
 			} else
 				other_matches = 1;
 		}
-	}			
 
 	/*
 	 * Clear region if:
@@ -1084,56 +1114,59 @@ static int clear_region(struct log_c *lc, uint64_t region, uint32_t who)
 
 /*
  * clog_clear_region
- * @tfr
+ * @rq
  *
- * tfr may contain more than one clear request.  We
+ * rq may contain more than one clear request.  We
  * can determine the number from the 'data_size' field.
  *
  * Returns: 0 on success, -EXXX on failure
  */
-static int clog_clear_region(struct clog_tfr *tfr)
+static int clog_clear_region(struct dm_ulog_request *rq, uint32_t originator)
 {
 	int r;
 	int count;
 	uint64_t *region;
-	struct log_c *lc = get_log(tfr->uuid);
+	struct log_c *lc = get_log(rq->uuid, rq->luid);
 
 	if (!lc)
 		return -EINVAL;
 
-	if (tfr->data_size % sizeof(uint64_t)) {
+	if (rq->data_size % sizeof(uint64_t)) {
 		LOG_ERROR("Bad data size given for clear_region request");
 		return -EINVAL;
 	}
 
-	count = tfr->data_size / sizeof(uint64_t);
-	region = (uint64_t *)&tfr->data;
+	count = rq->data_size / sizeof(uint64_t);
+	region = (uint64_t *)&rq->data;
 
 	for (; count > 0; count--, region++) {
-		r = clear_region(lc, *region, tfr->originator);
+		r = clear_region(lc, *region, originator);
 		if (r)
 			return r;
 	}
 
-	tfr->data_size = 0;
+	rq->data_size = 0;
 
 	return 0;
 }
 
 /*
  * clog_get_resync_work
- * @tfr
+ * @rq
  *
  */
-static int clog_get_resync_work(struct clog_tfr *tfr)
+static int clog_get_resync_work(struct dm_ulog_request *rq, uint32_t originator)
 {
-	struct {int i; uint64_t r; } *pkg = (void *)tfr->data;
-	struct log_c *lc = get_log(tfr->uuid);
+	struct {
+		int64_t i;
+		uint64_t r;
+	} *pkg = (void *)rq->data;
+	struct log_c *lc = get_log(rq->uuid, rq->luid);
 
 	if (!lc)
 		return -EINVAL;
 
-	tfr->data_size = sizeof(*pkg);
+	rq->data_size = sizeof(*pkg);
 	pkg->i = 0;
 
 	if (lc->sync_search >= lc->region_count) {
@@ -1141,24 +1174,25 @@ static int clog_get_resync_work(struct clog_tfr *tfr)
 		 * FIXME: handle intermittent errors during recovery
 		 * by resetting sync_search... but not to many times.
 		 */
-		LOG_SPRINT("GET - SEQ#=%u, UUID=%s, nodeid = %u:: "
+		LOG_SPRINT(lc, "GET - SEQ#=%u, UUID=%s, nodeid = %u:: "
 			   "Recovery finished",
-			   tfr->seq, SHORT_UUID(lc->uuid), tfr->originator);
+			   rq->seq, SHORT_UUID(lc->uuid), originator);
 		return 0;
 	}
 
 	if (lc->recovering_region != (uint64_t)-1) {
-		if (lc->recoverer == tfr->originator) {
-			LOG_SPRINT("GET - SEQ#=%u, UUID=%s, nodeid = %u:: "
+		if (lc->recoverer == originator) {
+			LOG_SPRINT(lc, "GET - SEQ#=%u, UUID=%s, nodeid = %u:: "
 				   "Re-requesting work (%llu)",
-				   tfr->seq, SHORT_UUID(lc->uuid), tfr->originator,
+				   rq->seq, SHORT_UUID(lc->uuid), originator,
 				   (unsigned long long)lc->recovering_region);
 			pkg->r = lc->recovering_region;
 			pkg->i = 1;
+			LOG_COND(log_resend_requests, "***** RE-REQUEST *****");
 		} else {
-			LOG_SPRINT("GET - SEQ#=%u, UUID=%s, nodeid = %u:: "
+			LOG_SPRINT(lc, "GET - SEQ#=%u, UUID=%s, nodeid = %u:: "
 				   "Someone already recovering (%llu)",
-				   tfr->seq, SHORT_UUID(lc->uuid), tfr->originator,
+				   rq->seq, SHORT_UUID(lc->uuid), originator,
 				   (unsigned long long)lc->recovering_region);
 		}
 
@@ -1175,13 +1209,13 @@ static int clog_get_resync_work(struct clog_tfr *tfr)
 		free(del);
 
 		if (!log_test_bit(lc->sync_bits, pkg->r)) {
-			LOG_SPRINT("GET - SEQ#=%u, UUID=%s, nodeid = %u:: "
+			LOG_SPRINT(lc, "GET - SEQ#=%u, UUID=%s, nodeid = %u:: "
 				   "Assigning priority resync work (%llu)",
-				   tfr->seq, SHORT_UUID(lc->uuid), tfr->originator,
+				   rq->seq, SHORT_UUID(lc->uuid), originator,
 				   (unsigned long long)pkg->r);
 			pkg->i = 1;
 			lc->recovering_region = pkg->r;
-			lc->recoverer = tfr->originator;
+			lc->recoverer = originator;
 			return 0;
 		}
 	}
@@ -1191,33 +1225,36 @@ static int clog_get_resync_work(struct clog_tfr *tfr)
 				    lc->sync_search);
 
 	if (pkg->r >= lc->region_count) {
-		LOG_SPRINT("GET - SEQ#=%u, UUID=%s, nodeid = %u:: "
+		LOG_SPRINT(lc, "GET - SEQ#=%u, UUID=%s, nodeid = %u:: "
 			   "Resync work complete.",
-			   tfr->seq, SHORT_UUID(lc->uuid), tfr->originator);
+			   rq->seq, SHORT_UUID(lc->uuid), originator);
 		return 0;
 	}
 
 	lc->sync_search = pkg->r + 1;
 
-	LOG_SPRINT("GET - SEQ#=%u, UUID=%s, nodeid = %u:: "
+	LOG_SPRINT(lc, "GET - SEQ#=%u, UUID=%s, nodeid = %u:: "
 		   "Assigning resync work (%llu)",
-		   tfr->seq, SHORT_UUID(lc->uuid), tfr->originator,
+		   rq->seq, SHORT_UUID(lc->uuid), originator,
 		   (unsigned long long)pkg->r);
 	pkg->i = 1;
 	lc->recovering_region = pkg->r;
-	lc->recoverer = tfr->originator;
+	lc->recoverer = originator;
 
 	return 0;
 }
 
 /*
  * clog_set_region_sync
- * @tfr
+ * @rq
  */
-static int clog_set_region_sync(struct clog_tfr *tfr)
+static int clog_set_region_sync(struct dm_ulog_request *rq, uint32_t originator)
 {
-	struct { uint64_t region; int in_sync; } *pkg = (void *)tfr->data;
-	struct log_c *lc = get_log(tfr->uuid);
+	struct {
+		uint64_t region;
+		int64_t in_sync;
+	} *pkg = (void *)rq->data;
+	struct log_c *lc = get_log(rq->uuid, rq->luid);
 
 	if (!lc)
 		return -EINVAL;
@@ -1226,54 +1263,77 @@ static int clog_set_region_sync(struct clog_tfr *tfr)
 
 	if (pkg->in_sync) {
 		if (log_test_bit(lc->sync_bits, pkg->region)) {
-			LOG_SPRINT("SET - SEQ#=%u, UUID=%s, nodeid = %u:: "
+			LOG_SPRINT(lc, "SET - SEQ#=%u, UUID=%s, nodeid = %u:: "
 				   "Region already set (%llu)",
-				   tfr->seq, SHORT_UUID(lc->uuid), tfr->originator,
+				   rq->seq, SHORT_UUID(lc->uuid), originator,
 				   (unsigned long long)pkg->region);
 		} else {
 			log_set_bit(lc, lc->sync_bits, pkg->region);
 			lc->sync_count++;
-			LOG_SPRINT("SET - SEQ#=%u, UUID=%s, nodeid = %u:: "
+
+			/* The rest of this section is all for debugging */
+			LOG_SPRINT(lc, "SET - SEQ#=%u, UUID=%s, nodeid = %u:: "
 				   "Setting region (%llu)",
-				   tfr->seq, SHORT_UUID(lc->uuid), tfr->originator,
+				   rq->seq, SHORT_UUID(lc->uuid), originator,
 				   (unsigned long long)pkg->region);
+			if (pkg->region == lc->skip_bit_warning)
+				lc->skip_bit_warning = lc->region_count;
+
+			if (pkg->region > (lc->skip_bit_warning + 5)) {
+				LOG_ERROR("*** Region #%llu skipped during recovery ***",
+					  (unsigned long long)lc->skip_bit_warning);
+				lc->skip_bit_warning = lc->region_count;
+#ifdef DEBUG
+				kill(getpid(), SIGUSR1);
+#endif
+			}
+
+			if (!log_test_bit(lc->sync_bits,
+					  (pkg->region) ? pkg->region - 1 : 0)) {
+				LOG_SPRINT(lc, "*** Previous bit not set ***");
+				lc->skip_bit_warning = (pkg->region) ?
+					pkg->region - 1 : 0;
+			}
 		}
 	} else if (log_test_bit(lc->sync_bits, pkg->region)) {
 		lc->sync_count--;
 		log_clear_bit(lc, lc->sync_bits, pkg->region);
-		LOG_SPRINT("SET - SEQ#=%u, UUID=%s, nodeid = %u:: "
+		LOG_SPRINT(lc, "SET - SEQ#=%u, UUID=%s, nodeid = %u:: "
 			   "Unsetting region (%llu)",
-			   tfr->seq, SHORT_UUID(lc->uuid), tfr->originator,
+			   rq->seq, SHORT_UUID(lc->uuid), originator,
 			   (unsigned long long)pkg->region);
 	}
 
 	if (lc->sync_count != count_bits32(lc->sync_bits, lc->bitset_uint32_count)) {
 		unsigned long long reset = count_bits32(lc->sync_bits, lc->bitset_uint32_count);
 
-		LOG_SPRINT("SET - SEQ#=%u, UUID=%s, nodeid = %u:: "
+		LOG_SPRINT(lc, "SET - SEQ#=%u, UUID=%s, nodeid = %u:: "
 			   "sync_count(%llu) != bitmap count(%llu)",
-			   tfr->seq, SHORT_UUID(lc->uuid), tfr->originator,
+			   rq->seq, SHORT_UUID(lc->uuid), originator,
 			   (unsigned long long)lc->sync_count, reset);
+#ifdef DEBUG
+		kill(getpid(), SIGUSR1);
+#endif
 		lc->sync_count = reset;
 	}
 
 	if (lc->sync_count > lc->region_count)
-		LOG_SPRINT("SET - SEQ#=%u, UUID=%s, nodeid = %u:: "
+		LOG_SPRINT(lc, "SET - SEQ#=%u, UUID=%s, nodeid = %u:: "
 			   "(lc->sync_count > lc->region_count) - this is bad",
-			   tfr->seq, SHORT_UUID(lc->uuid), tfr->originator);
+			   rq->seq, SHORT_UUID(lc->uuid), originator);
 
-	tfr->data_size = 0;
+	rq->data_size = 0;
 	return 0;
 }
 
 /*
  * clog_get_sync_count
- * @tfr
+ * @rq
  */
-static int clog_get_sync_count(struct clog_tfr *tfr)
+static int clog_get_sync_count(struct dm_ulog_request *rq, uint32_t originator)
 {
-	uint64_t *sync_count = (uint64_t *)tfr->data;
-	struct log_c *lc = get_log(tfr->uuid);
+	uint64_t *sync_count = (uint64_t *)rq->data;
+	struct log_c *lc = get_log(rq->uuid, rq->luid);
 
 	/*
 	 * FIXME: Mirror requires us to be able to ask for
@@ -1282,137 +1342,149 @@ static int clog_get_sync_count(struct clog_tfr *tfr)
 	 * the stored value may not be accurate.
 	 */
 	if (!lc)
-		lc = get_pending_log(tfr->uuid);
+		lc = get_pending_log(rq->uuid, rq->luid);
 
 	if (!lc)
 		return -EINVAL;
 
 	*sync_count = lc->sync_count;
 
-	tfr->data_size = sizeof(*sync_count);
+	rq->data_size = sizeof(*sync_count);
+
+	if (lc->sync_count != count_bits32(lc->sync_bits, lc->bitset_uint32_count)) {
+		unsigned long long reset = count_bits32(lc->sync_bits, lc->bitset_uint32_count);
+
+		LOG_SPRINT(lc, "get_sync_count - SEQ#=%u, UUID=%s, nodeid = %u:: "
+			   "sync_count(%llu) != bitmap count(%llu)",
+			   rq->seq, SHORT_UUID(lc->uuid), originator,
+			   (unsigned long long)lc->sync_count, reset);
+#ifdef DEBUG
+		kill(getpid(), SIGUSR1);
+#endif
+		lc->sync_count = reset;
+	}
 
 	return 0;
 }
 
-static int core_status_info(struct log_c *lc, struct clog_tfr *tfr)
+static int core_status_info(struct log_c *lc, struct dm_ulog_request *rq)
 {
-	char *data = (char *)tfr->data;
+	char *data = (char *)rq->data;
 
-	tfr->data_size = sprintf(data, "1 clustered_core");
+	rq->data_size = sprintf(data, "1 clustered_core");
 
 	return 0;
 }
 
-static int disk_status_info(struct log_c *lc, struct clog_tfr *tfr)
+static int disk_status_info(struct log_c *lc, struct dm_ulog_request *rq)
 {
-	char *data = (char *)tfr->data;
+	char *data = (char *)rq->data;
 	struct stat statbuf;
 
 	if(fstat(lc->disk_fd, &statbuf)) {
-		tfr->error = -errno;
+		rq->error = -errno;
 		return -errno;
 	}
 
-	tfr->data_size = sprintf(data, "3 clustered_disk %d:%d %c",
-				 major(statbuf.st_rdev), minor(statbuf.st_rdev),
-				 (lc->log_dev_failed) ? 'D' : 'A');
+	rq->data_size = sprintf(data, "3 clustered_disk %d:%d %c",
+				major(statbuf.st_rdev), minor(statbuf.st_rdev),
+				(lc->log_dev_failed) ? 'D' : 'A');
 
 	return 0;
 }
 
 /*
  * clog_status_info
- * @tfr
+ * @rq
  *
  */
-static int clog_status_info(struct clog_tfr *tfr)
+static int clog_status_info(struct dm_ulog_request *rq)
 {
 	int r;
-	struct log_c *lc = get_log(tfr->uuid);
+	struct log_c *lc = get_log(rq->uuid, rq->luid);
 
 	if (!lc)
-		lc = get_pending_log(tfr->uuid);
+		lc = get_pending_log(rq->uuid, rq->luid);
 
 	if (!lc)
 		return -EINVAL;
 
 	if (lc->disk_fd == -1)
-		r = core_status_info(lc, tfr);
+		r = core_status_info(lc, rq);
 	else
-		r = disk_status_info(lc, tfr);
+		r = disk_status_info(lc, rq);
 
 	return r;
 }
 
-static int core_status_table(struct log_c *lc, struct clog_tfr *tfr)
+static int core_status_table(struct log_c *lc, struct dm_ulog_request *rq)
 {
-	int params;
-	char *data = (char *)tfr->data;
+	char *data = (char *)rq->data;
 
-	params = (lc->sync == DEFAULTSYNC) ? 3 : 4;
-	tfr->data_size = sprintf(data, "clustered_core %d %u %s %s%s ",
-				 params, lc->region_size, lc->uuid,
-				 (lc->sync == DEFAULTSYNC) ? "" :
-				 (lc->sync == NOSYNC) ? "nosync " : "sync ",
-				 (lc->block_on_error) ? "block_on_error" : "");
+	rq->data_size = sprintf(data, "clustered_core %u %s%s ",
+				lc->region_size,
+				(lc->sync == DEFAULTSYNC) ? "" :
+				(lc->sync == NOSYNC) ? "nosync " : "sync ",
+				(lc->block_on_error) ? "block_on_error" : "");
 	return 0;
 }
 
-static int disk_status_table(struct log_c *lc, struct clog_tfr *tfr)
+static int disk_status_table(struct log_c *lc, struct dm_ulog_request *rq)
 {
-	int params;
-	char *data = (char *)tfr->data;
+	char *data = (char *)rq->data;
 	struct stat statbuf;
 
 	if(fstat(lc->disk_fd, &statbuf)) {
-		tfr->error = -errno;
+		rq->error = -errno;
 		return -errno;
 	}
 
-	params = (lc->sync == DEFAULTSYNC) ? 4 : 5;
-	tfr->data_size = sprintf(data, "clustered_disk %d %d:%d %u %s %s%s ",
-				 params, major(statbuf.st_rdev), minor(statbuf.st_rdev),
-				 lc->region_size, lc->uuid,
-				 (lc->sync == DEFAULTSYNC) ? "" :
-				 (lc->sync == NOSYNC) ? "nosync " : "sync ",
-				 (lc->block_on_error) ? "block_on_error" : "");
+	rq->data_size = sprintf(data, "clustered_disk %d:%d %u %s%s ",
+				major(statbuf.st_rdev), minor(statbuf.st_rdev),
+				lc->region_size,
+				(lc->sync == DEFAULTSYNC) ? "" :
+				(lc->sync == NOSYNC) ? "nosync " : "sync ",
+				(lc->block_on_error) ? "block_on_error" : "");
 	return 0;
 }
 
 /*
  * clog_status_table
- * @tfr
+ * @rq
  *
  */
-static int clog_status_table(struct clog_tfr *tfr)
+static int clog_status_table(struct dm_ulog_request *rq)
 {
 	int r;
-	struct log_c *lc = get_log(tfr->uuid);
+	struct log_c *lc = get_log(rq->uuid, rq->luid);
 
 	if (!lc)
-		lc = get_pending_log(tfr->uuid);
+		lc = get_pending_log(rq->uuid, rq->luid);
 
 	if (!lc)
 		return -EINVAL;
 
 	if (lc->disk_fd == -1)
-		r = core_status_table(lc, tfr);
+		r = core_status_table(lc, rq);
 	else
-		r = disk_status_table(lc, tfr);
+		r = disk_status_table(lc, rq);
 
 	return r;
 }
 
 /*
  * clog_is_remote_recovering
- * @tfr
+ * @rq
  *
  */
-static int clog_is_remote_recovering(struct clog_tfr *tfr)
+static int clog_is_remote_recovering(struct dm_ulog_request *rq)
 {
-	uint64_t region = *((uint64_t *)(tfr->data));
-	struct { int is_recovering; uint64_t in_sync_hint; } *pkg = (void *)tfr->data;
-	struct log_c *lc = get_log(tfr->uuid);
+	uint64_t region = *((uint64_t *)(rq->data));
+	struct {
+		int64_t is_recovering;
+		uint64_t in_sync_hint;
+	} *pkg = (void *)rq->data;
+	struct log_c *lc = get_log(rq->uuid, rq->luid);
 
 	if (!lc)
 		return -EINVAL;
@@ -1431,9 +1503,9 @@ static int clog_is_remote_recovering(struct clog_tfr *tfr)
 		/*
 		 * Remember, 'lc->sync_search' is 1 plus the region
 		 * currently being recovered.  So, we must take off 1
-		 * to account for that.
+		 * to account for that; but only if 'sync_search > 1'.
 		 */
-		pkg->in_sync_hint = (lc->sync_search - 1);
+		pkg->in_sync_hint = lc->sync_search ? (lc->sync_search - 1) : 0;
 		LOG_DBG("[%s] Region is %s: %llu",
 			SHORT_UUID(lc->uuid),
 			(region == lc->recovering_region) ?
@@ -1465,7 +1537,7 @@ static int clog_is_remote_recovering(struct clog_tfr *tfr)
 
 out:
 
-	tfr->data_size = sizeof(*pkg);
+	rq->data_size = sizeof(*pkg);
 
 	return 0;	
 }
@@ -1473,92 +1545,92 @@ out:
 
 /*
  * do_request
- * @tfr: the request
+ * @rq: the request
  * @server: is this request performed by the server
  *
  * An inability to perform this function will return an error
  * from this function.  However, an inability to successfully
- * perform the request will fill in the 'tfr->error' field.
+ * perform the request will fill in the 'rq->error' field.
  *
  * Returns: 0 on success, -EXXX on error
  */
-int do_request(struct clog_tfr *tfr, int server)
+int do_request(struct clog_request *rq, int server)
 {
 	int r;
 
-	if (!tfr)
+	if (!rq)
 		return 0;
 
-	if (tfr->error)
-		LOG_DBG("Programmer error: tfr struct has error set");
+	if (rq->u_rq.error)
+		LOG_DBG("Programmer error: rq struct has error set");
 
-	switch (tfr->request_type) {
-	case DM_CLOG_CTR:
-		r = clog_ctr(tfr);
+	switch (rq->u_rq.request_type) {
+	case DM_ULOG_CTR:
+		r = clog_ctr(&rq->u_rq);
 		break;
-	case DM_CLOG_DTR:
-		r = clog_dtr(tfr);
+	case DM_ULOG_DTR:
+		r = clog_dtr(&rq->u_rq);
 		break;
-	case DM_CLOG_PRESUSPEND:
-		r = clog_presuspend(tfr);
+	case DM_ULOG_PRESUSPEND:
+		r = clog_presuspend(&rq->u_rq);
 		break;
-	case DM_CLOG_POSTSUSPEND:
-		r = clog_postsuspend(tfr);
+	case DM_ULOG_POSTSUSPEND:
+		r = clog_postsuspend(&rq->u_rq);
 		break;
-	case DM_CLOG_RESUME:
-		r = clog_resume(tfr);
+	case DM_ULOG_RESUME:
+		r = clog_resume(&rq->u_rq);
 		break;
-	case DM_CLOG_GET_REGION_SIZE:
-		r = clog_get_region_size(tfr);
+	case DM_ULOG_GET_REGION_SIZE:
+		r = clog_get_region_size(&rq->u_rq);
 		break;
-	case DM_CLOG_IS_CLEAN:
-		r = clog_is_clean(tfr);
+	case DM_ULOG_IS_CLEAN:
+		r = clog_is_clean(&rq->u_rq);
 		break;
-	case DM_CLOG_IN_SYNC:
-		r = clog_in_sync(tfr);
+	case DM_ULOG_IN_SYNC:
+		r = clog_in_sync(&rq->u_rq);
 		break;
-	case DM_CLOG_FLUSH:
-		r = clog_flush(tfr, server);
+	case DM_ULOG_FLUSH:
+		r = clog_flush(&rq->u_rq, server);
 		break;
-	case DM_CLOG_MARK_REGION:
-		r = clog_mark_region(tfr);
+	case DM_ULOG_MARK_REGION:
+		r = clog_mark_region(&rq->u_rq, rq->originator);
 		break;
-	case DM_CLOG_CLEAR_REGION:
-		r = clog_clear_region(tfr);
+	case DM_ULOG_CLEAR_REGION:
+		r = clog_clear_region(&rq->u_rq, rq->originator);
 		break;
-	case DM_CLOG_GET_RESYNC_WORK:
-		r = clog_get_resync_work(tfr);
+	case DM_ULOG_GET_RESYNC_WORK:
+		r = clog_get_resync_work(&rq->u_rq, rq->originator);
 		break;
-	case DM_CLOG_SET_REGION_SYNC:
-		r = clog_set_region_sync(tfr);
+	case DM_ULOG_SET_REGION_SYNC:
+		r = clog_set_region_sync(&rq->u_rq, rq->originator);
 		break;
-	case DM_CLOG_GET_SYNC_COUNT:
-		r = clog_get_sync_count(tfr);
+	case DM_ULOG_GET_SYNC_COUNT:
+		r = clog_get_sync_count(&rq->u_rq, rq->originator);
 		break;
-	case DM_CLOG_STATUS_INFO:
-		r = clog_status_info(tfr);
+	case DM_ULOG_STATUS_INFO:
+		r = clog_status_info(&rq->u_rq);
 		break;
-	case DM_CLOG_STATUS_TABLE:
-		r = clog_status_table(tfr);
+	case DM_ULOG_STATUS_TABLE:
+		r = clog_status_table(&rq->u_rq);
 		break;
-	case DM_CLOG_IS_REMOTE_RECOVERING:
-		r = clog_is_remote_recovering(tfr);
+	case DM_ULOG_IS_REMOTE_RECOVERING:
+		r = clog_is_remote_recovering(&rq->u_rq);
 		break;
 	default:
 		LOG_ERROR("Unknown request");
-		r = tfr->error = -EINVAL;
+		r = rq->u_rq.error = -EINVAL;
 		break;
 	}
 
-	if (r && !tfr->error)
-		tfr->error = r;
-	else if (r != tfr->error)
-		LOG_DBG("Warning:  error from function != tfr->error");
+	if (r && !rq->u_rq.error)
+		rq->u_rq.error = r;
+	else if (r != rq->u_rq.error)
+		LOG_DBG("Warning:  error from function != rq->u_rq.error");
 
-	if (tfr->error && tfr->data_size) {
+	if (rq->u_rq.error && rq->u_rq.data_size) {
 		/* Make sure I'm handling errors correctly above */
-		LOG_DBG("Programmer error: tfr->error && tfr->data_size");
-		tfr->data_size = 0;
+		LOG_DBG("Programmer error: rq->u_rq.error && rq->u_rq.data_size");
+		rq->u_rq.data_size = 0;
 	}
 
 	return 0;
@@ -1593,7 +1665,8 @@ static void print_bits(char *buf, int size, int print)
 }
 
 /* int store_bits(const char *uuid, const char *which, char **buf)*/
-int push_state(const char *uuid, const char *which, char **buf)
+int push_state(const char *uuid, uint64_t luid,
+	       const char *which, char **buf, uint32_t debug_who)
 {
 	int bitset_size;
 	struct log_c *lc;
@@ -1601,7 +1674,7 @@ int push_state(const char *uuid, const char *which, char **buf)
 	if (*buf)
 		LOG_ERROR("store_bits: *buf != NULL");
 
-	lc = get_log(uuid);
+	lc = get_log(uuid, luid);
 	if (!lc) {
 		LOG_ERROR("store_bits: No log found for %s", uuid);
 		return -EINVAL;
@@ -1614,10 +1687,12 @@ int push_state(const char *uuid, const char *which, char **buf)
 		sprintf(*buf, "%llu %u", (unsigned long long)lc->recovering_region,
 			lc->recoverer);
 
-		LOG_SPRINT("CKPT SEND - SEQ#=X, UUID=%s, nodeid = X:: "
-			   "recovering_region=%llu, recoverer=%u",
-			   SHORT_UUID(lc->uuid),
-			   (unsigned long long)lc->recovering_region, lc->recoverer);
+		LOG_SPRINT(lc, "CKPT SEND - SEQ#=X, UUID=%s, nodeid = %u:: "
+			   "recovering_region=%llu, recoverer=%u, sync_count=%llu",
+			   SHORT_UUID(lc->uuid), debug_who,
+			   (unsigned long long)lc->recovering_region,
+			   lc->recoverer,
+			   (unsigned long long)count_bits32(lc->sync_bits, lc->bitset_uint32_count));
 		return 64;
 	}
 
@@ -1645,7 +1720,8 @@ int push_state(const char *uuid, const char *which, char **buf)
 }
 
 /*int load_bits(const char *uuid, const char *which, char *buf, int size)*/
-int pull_state(const char *uuid, const char *which, char *buf, int size)
+int pull_state(const char *uuid, uint64_t luid,
+	       const char *which, char *buf, int size)
 {
 	int bitset_size;
 	struct log_c *lc;
@@ -1653,7 +1729,7 @@ int pull_state(const char *uuid, const char *which, char *buf, int size)
 	if (!buf)
 		LOG_ERROR("pull_state: buf == NULL");
 
-	lc = get_log(uuid);
+	lc = get_log(uuid, luid);
 	if (!lc) {
 		LOG_ERROR("pull_state: No log found for %s", uuid);
 		return -EINVAL;
@@ -1662,7 +1738,7 @@ int pull_state(const char *uuid, const char *which, char *buf, int size)
 	if (!strncmp(which, "recovering_region", 17)) {
 		sscanf(buf, "%llu %u", (unsigned long long *)&lc->recovering_region,
 		       &lc->recoverer);
-		LOG_SPRINT("CKPT INIT - SEQ#=X, UUID=%s, nodeid = X:: "
+		LOG_SPRINT(lc, "CKPT INIT - SEQ#=X, UUID=%s, nodeid = X:: "
 			   "recovering_region=%llu, recoverer=%u",
 			   SHORT_UUID(lc->uuid),
 			   (unsigned long long)lc->recovering_region, lc->recoverer);
@@ -1693,11 +1769,11 @@ int pull_state(const char *uuid, const char *which, char *buf, int size)
 	return 0;
 }
 
-int log_get_state(struct clog_tfr *tfr)
+int log_get_state(struct dm_ulog_request *rq)
 {
 	struct log_c *lc;
 
-	lc = get_log(tfr->uuid);
+	lc = get_log(rq->uuid, rq->luid);
 	if (!lc)
 		return -EINVAL;
 
@@ -1711,12 +1787,7 @@ int log_get_state(struct clog_tfr *tfr)
  */
 int log_status(void)
 {
-	struct list_head *l;
-
-	__list_for_each(l, &log_list)
-		return 1;
-
-	__list_for_each(l, &log_pending_list)
+	if (!dm_list_empty(&log_list) || !dm_list_empty(&log_pending_list))
 		return 1;
 
 	return 0;
@@ -1724,7 +1795,6 @@ int log_status(void)
 
 void log_debug(void)
 {
-	struct list_head *l;
 	struct log_c *lc;
 	uint64_t r;
 	int i;
@@ -1732,8 +1802,18 @@ void log_debug(void)
 	LOG_ERROR("");
 	LOG_ERROR("LOG COMPONENT DEBUGGING::");
 	LOG_ERROR("Official log list:");
-	__list_for_each(l, &log_list) {
-		lc = list_entry(l, struct log_c, list);
+	LOG_ERROR("Pending log list:");
+	dm_list_iterate_items(lc, &log_pending_list) {
+		LOG_ERROR("%s", lc->uuid);
+		LOG_ERROR("sync_bits:");
+		print_bits((char *)lc->sync_bits,
+			   lc->bitset_uint32_count * sizeof(*lc->sync_bits), 1);
+		LOG_ERROR("clean_bits:");
+		print_bits((char *)lc->clean_bits,
+			   lc->bitset_uint32_count * sizeof(*lc->clean_bits), 1);
+	}
+
+	dm_list_iterate_items(lc, &log_list) {
 		LOG_ERROR("%s", lc->uuid);
 		LOG_ERROR("  recoverer        : %u", lc->recoverer);
 		LOG_ERROR("  recovering_region: %llu",
@@ -1746,22 +1826,7 @@ void log_debug(void)
 		LOG_ERROR("clean_bits:");
 		print_bits((char *)lc->clean_bits,
 			   lc->bitset_uint32_count * sizeof(*lc->clean_bits), 1);
-	}
 
-	LOG_ERROR("Pending log list:");
-	__list_for_each(l, &log_pending_list) {
-		lc = list_entry(l, struct log_c, list);
-		LOG_ERROR("%s", lc->uuid);
-		LOG_ERROR("sync_bits:");
-		print_bits((char *)lc->sync_bits,
-			   lc->bitset_uint32_count * sizeof(*lc->sync_bits), 1);
-		LOG_ERROR("clean_bits:");
-		print_bits((char *)lc->clean_bits,
-			   lc->bitset_uint32_count * sizeof(*lc->clean_bits), 1);
-	}
-
-	__list_for_each(l, &log_list) {
-		lc = list_entry(l, struct log_c, list);
 		LOG_ERROR("Validating %s::", SHORT_UUID(lc->uuid));
 		r = find_next_zero_bit(lc->sync_bits, lc->region_count, 0);
 		LOG_ERROR("  lc->region_count = %llu",
@@ -1775,14 +1840,15 @@ void log_debug(void)
 			LOG_ERROR("ADJUSTING SYNC_COUNT");
 			lc->sync_count = lc->region_count;
 		}
-	}
 
-	LOG_ERROR("Resync request history:");
-	for (i = 0; i < RESYNC_HISTORY; i++) {
-		idx++;
-		idx = idx % RESYNC_HISTORY;
-		if (resync_history[idx][0] == '\0')
-			continue;
-		LOG_ERROR("%d:%d) %s", i, idx, resync_history[idx]);
+		LOG_ERROR("Resync request history:");
+		for (i = 0; i < RESYNC_HISTORY; i++) {
+			lc->idx++;
+			lc->idx = lc->idx % RESYNC_HISTORY;
+			if (lc->resync_history[lc->idx][0] == '\0')
+				continue;
+			LOG_ERROR("%d:%d) %s", i, lc->idx,
+				  lc->resync_history[lc->idx]);
+		}
 	}
 }

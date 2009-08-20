@@ -1,4 +1,5 @@
 etc/lvm/lvm.conf
+sbin/fsadm
 sbin/lv*
 sbin/pv*
 sbin/vg*

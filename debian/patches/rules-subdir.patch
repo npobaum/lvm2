@@ -1,9 +1,9 @@
 --- a/make.tmpl.in
 +++ b/make.tmpl.in
-@@ -123,60 +123,26 @@
+@@ -124,65 +124,27 @@
  
  .PHONY: all install install_cluster pofile distclean clean cflow device-mapper 
- .PHONY: install_device-mapper
+ .PHONY: install_device-mapper install_lvm2
 -.PHONY: $(SUBDIRS) $(SUBDIRS.install) $(SUBDIRS.clean) $(SUBDIRS.distclean)
 -.PHONY: $(SUBDIRS.pofile) $(SUBDIRS.install_cluster) $(SUBDIRS.cflow)
 -.PHONY: $(SUBDIRS.device-mapper) $(SUBDIRS.install-device-mapper)
@@ -12,6 +12,7 @@
 -SUBDIRS.install := $(SUBDIRS:=.install)
 -SUBDIRS.install_cluster := $(SUBDIRS:=.install_cluster)
 -SUBDIRS.install_device-mapper := $(SUBDIRS:=.install_device-mapper)
+-SUBDIRS.install_lvm2 := $(SUBDIRS:=.install_lvm2)
 -SUBDIRS.pofile := $(SUBDIRS:=.pofile)
 -SUBDIRS.cflow := $(SUBDIRS:=.cflow)
 -SUBDIRS.clean := $(SUBDIRS:=.clean)
@@ -25,8 +26,9 @@
 -install: all $(SUBDIRS.install)
 -install_cluster: all $(SUBDIRS.install_cluster)
 -install_device-mapper: $(SUBDIRS.install_device-mapper)
+-install_lvm2: $(SUBDIRS.install_lvm2)
 -
--$(SUBDIRS):
+-$(SUBDIRS): $(SUBDIRS.device-mapper)
 -	$(MAKE) -C $@
 -
 -$(SUBDIRS.device-mapper):
@@ -41,6 +43,9 @@
 -$(SUBDIRS.install_device-mapper): device-mapper
 -	$(MAKE) -C $(@:.install_device-mapper=) install_device-mapper
 -
+-$(SUBDIRS.install_lvm2): $(SUBDIRS)
+-	$(MAKE) -C $(@:.install_lvm2=) install_lvm2
+-
 -$(SUBDIRS.clean):
 -	-$(MAKE) -C $(@:.clean=) clean
 -
@@ -49,6 +54,7 @@
 +install: subdirs-install
 +install_cluster: subdirs-install_cluster
 +install_device-mapper: subdirs-install_device-mapper
++install_lvm2: subdirs-install_lvm2
 +
 +subdirs-%:
 +	+@set -e; for subdir in $(SUBDIRS); do \
@@ -72,7 +78,7 @@
  endif
  
  $(TARGETS): $(OBJECTS)
-@@ -223,12 +189,12 @@
+@@ -229,12 +190,12 @@
  %.mo: %.po
  	$(MSGFMT) -o $@ $<
  
@@ -89,21 +95,22 @@
  	      $(OBJECTS) $(TARGETS) $(CLEAN_TARGETS) $(SOURCES:%.c=%.d) \
 --- a/Makefile.in
 +++ b/Makefile.in
-@@ -22,7 +22,7 @@
+@@ -26,7 +26,7 @@
    SUBDIRS += po
  endif
  
 -SUBDIRS += lib tools daemons libdm
 +SUBDIRS += libdm lib tools daemons
  
- ifeq ($(MAKECMDGOALS),distclean)
-   SUBDIRS += daemons/clvmd \
-@@ -40,36 +40,6 @@
+ ifeq ("@APPLIB@", "yes")
+   SUBDIRS += liblvm
+@@ -50,31 +50,6 @@
  
  include make.tmpl
  
 -libdm: include
 -lib: libdm
+-liblvm: lib
 -daemons: lib tools
 -tools: lib device-mapper
 -po: tools daemons
@@ -126,15 +133,9 @@
 -cflow: tools.cflow
 -endif
 -
--ifneq ("@CSCOPE_CMD@", "")
--cscope.out: tools
--	@CSCOPE_CMD@ -b -R
--all: cscope.out
--endif
--
- check: all
- 	$(MAKE) -C test all
- 
+ ifneq ("@CSCOPE_CMD@", "")
+ cscope.out: tools
+ 	@CSCOPE_CMD@ -b -R
 --- a/man/Makefile.in
 +++ b/man/Makefile.in
 @@ -48,9 +48,7 @@

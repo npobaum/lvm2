@@ -13,7 +13,7 @@ VERSION_UPSTREAM := $(shell echo "$(VERSION_COMPLETE)" | sed -e 's,^[0-9]*:,,' -
 VERSION_DEBIAN := $(shell echo "$(VERSION_COMPLETE)" | sed -e 's,^[^-]*-,,')
 
 DEVMAPPER_ABINAME = 1.02.1
-DEVMAPPER_VERSION_PLAIN = 1.02.30
+DEVMAPPER_VERSION_PLAIN = $(shell awk '{print $$1}' VERSION_DM)
 DEVMAPPER_VERSION = 2:$(DEVMAPPER_VERSION_PLAIN)
 DEVMAPPER_VERSION_DEBIAN = $(DEVMAPPER_VERSION)-$(VERSION_DEBIAN)
 DEVMAPPER_VERSION_FILE = $(DEVMAPPER_VERSION_PLAIN)-$(VERSION_DEBIAN)
@@ -86,8 +86,8 @@ $(STAMPS_DIR)/setup-udeb: $(STAMPS_DIR)/source
 		--with-cluster=none \
 		--with-lvm1=none \
 		--with-pool=none \
-		--disable-selinux \
-		--disable-readline
+		--disable-readline \
+		--disable-selinux
 	touch $@
 
 build: $(STAMPS_DIR)/build-deb $(STAMPS_DIR)/build-udeb
@@ -119,6 +119,22 @@ clean:
 	rm -rf $(BUILD_DIR) $(STAMPS_DIR)
 	dh_clean
 
+$(STAMPS_DIR)/install-deb-%: DIR = $(BUILD_DIR)/install-deb-$*
+$(STAMPS_DIR)/install-deb-%: $(STAMPS_DIR)/build-deb
+	dh_testdir
+	dh_testroot
+	rm -rf $(DIR)
+	$(MAKE) -C $(BUILD_DIR)/build-deb install_$* DESTDIR=$(CURDIR)/$(DIR) LIB_VERSION_DM=$(DEVMAPPER_ABINAME)
+	touch $@
+
+$(STAMPS_DIR)/install-udeb-%: DIR = $(BUILD_DIR)/install-udeb-$*
+$(STAMPS_DIR)/install-udeb-%: $(STAMPS_DIR)/build-udeb
+	dh_testdir
+	dh_testroot
+	rm -rf $(DIR)
+	$(MAKE) -C $(BUILD_DIR)/build-udeb install_$* DESTDIR=$(CURDIR)/$(DIR) LIB_VERSION_DM=$(DEVMAPPER_ABINAME)
+	touch $@
+
 install: $(addprefix install-,libdevmapper libdevmapper-udeb dmsetup dmsetup-udeb lvm2 lvm2-udeb clvm)
 
 install-base:
@@ -133,46 +149,40 @@ install-base:
 	dh_builddeb
 
 install-clvm: export DH_OPTIONS = -pclvm
-install-clvm: DIR = $(BUILD_DIR)/build-deb
-install-clvm: INSTALL_DIR = $(BUILD_DIR)/install-clvm
-install-clvm: $(STAMPS_DIR)/build-deb
+install-clvm: DIR = $(BUILD_DIR)/install-deb-cluster
+install-clvm: $(STAMPS_DIR)/install-deb-cluster
 	dh_testdir
 	dh_testroot
 	dh_clean -k
-	$(MAKE) -C $(DIR) install DESTDIR=$(CURDIR)/$(INSTALL_DIR)
-	dh_install --sourcedir=$(INSTALL_DIR)
+	dh_install --sourcedir=$(DIR)
 	dh_installchangelogs WHATS_NEW
 	dh_installexamples
 	dh_installinit --no-start -- start 63 S . start 51 0 6 .
 	$(MAKE) -f debian/rules install-base
 
 install-dmsetup: export DH_OPTIONS = -pdmsetup
-install-dmsetup: DIR = $(BUILD_DIR)/build-deb
-install-dmsetup: INSTALL_DIR = $(BUILD_DIR)/install-dmsetup
-install-dmsetup: $(STAMPS_DIR)/build-deb
+install-dmsetup: DIR = $(BUILD_DIR)/install-deb-device-mapper
+install-dmsetup: $(STAMPS_DIR)/install-deb-device-mapper
 	dh_testdir
 	dh_testroot
 	dh_clean -k
-	$(MAKE) -C $(DIR) install DESTDIR=$(CURDIR)/$(INSTALL_DIR)
-	dh_install --sourcedir=$(INSTALL_DIR)
+	cp -a debian/contrib/dmsetup debian/dmsetup
+	dh_install --sourcedir=$(DIR)
 	dh_installchangelogs WHATS_NEW_DM
 	dh_installdebconf
 	dh_installexamples
-	dh_installudev --priority=65
 	$(MAKE) -f debian/rules install-base GENCONTROL_ARGS="-v$(DEVMAPPER_VERSION_DEBIAN)"
 
 install-dmsetup-udeb: PACKAGE_NAME = dmsetup-udeb
 install-dmsetup-udeb: export DH_OPTIONS = -p$(PACKAGE_NAME)
 install-dmsetup-udeb: PACKAGE_FILE = $(PACKAGE_NAME)_$(DEVMAPPER_VERSION_FILE)_$(DEB_HOST_ARCH).udeb
-install-dmsetup-udeb: DIR = $(BUILD_DIR)/build-udeb
-install-dmsetup-udeb: INSTALL_DIR = $(BUILD_DIR)/install-dmsetup-udeb
-install-dmsetup-udeb: $(STAMPS_DIR)/build-udeb
+install-dmsetup-udeb: DIR = $(BUILD_DIR)/install-udeb-device-mapper
+install-dmsetup-udeb: $(STAMPS_DIR)/install-udeb-device-mapper
 	dh_testdir
 	dh_testroot
 	dh_clean -k
-	$(MAKE) -C $(DIR) install DESTDIR=$(CURDIR)/$(INSTALL_DIR)
 	dh_installchangelogs WHATS_NEW_DM
-	dh_install --sourcedir=$(INSTALL_DIR)
+	dh_install --sourcedir=$(DIR)
 
 	dh_installdocs
 	dh_strip
@@ -189,14 +199,12 @@ install-dmsetup-udeb: $(STAMPS_DIR)/build-udeb
 
 
 install-libdevmapper: export DH_OPTIONS = -plibdevmapper-dev -plibdevmapper$(DEVMAPPER_ABINAME)
-install-libdevmapper: DIR = $(BUILD_DIR)/build-deb
-install-libdevmapper: INSTALL_DIR = $(BUILD_DIR)/install-libdevmapper
-install-libdevmapper: $(STAMPS_DIR)/build-deb
+install-libdevmapper: DIR = $(BUILD_DIR)/install-deb-device-mapper
+install-libdevmapper: $(STAMPS_DIR)/install-deb-device-mapper
 	dh_testdir
 	dh_testroot
 	dh_clean -k
-	$(MAKE) -C $(DIR) install DESTDIR=$(CURDIR)/$(INSTALL_DIR) LIB_VERSION_DM=$(DEVMAPPER_ABINAME)
-	dh_install --sourcedir=$(INSTALL_DIR)
+	dh_install --sourcedir=$(DIR)
 	dh_installchangelogs WHATS_NEW_DM
 	dh_installexamples
 	dh_link -p libdevmapper-dev lib/libdevmapper.so.$(DEVMAPPER_ABINAME) usr/lib/libdevmapper.so
@@ -209,14 +217,12 @@ install-libdevmapper: $(STAMPS_DIR)/build-deb
 install-libdevmapper-udeb: PACKAGE_NAME = libdevmapper$(DEVMAPPER_ABINAME)-udeb
 install-libdevmapper-udeb: export DH_OPTIONS = -p$(PACKAGE_NAME)
 install-libdevmapper-udeb: PACKAGE_FILE = $(PACKAGE_NAME)_$(DEVMAPPER_VERSION_FILE)_$(DEB_HOST_ARCH).udeb
-install-libdevmapper-udeb: DIR = $(BUILD_DIR)/build-udeb
-install-libdevmapper-udeb: INSTALL_DIR = $(BUILD_DIR)/install-libdevmapper-udeb
-install-libdevmapper-udeb: $(STAMPS_DIR)/build-udeb
+install-libdevmapper-udeb: DIR = $(BUILD_DIR)/install-udeb-device-mapper
+install-libdevmapper-udeb: $(STAMPS_DIR)/install-udeb-device-mapper
 	dh_testdir
 	dh_testroot
 	dh_clean -k
-	$(MAKE) -C $(DIR) install DESTDIR=$(CURDIR)/$(INSTALL_DIR) LIB_VERSION_DM=$(DEVMAPPER_ABINAME)
-	dh_install --sourcedir=$(INSTALL_DIR)
+	dh_install --sourcedir=$(DIR)
 	dh_installchangelogs WHATS_NEW_DM
 	dh_installexamples
 
@@ -234,15 +240,13 @@ install-libdevmapper-udeb: $(STAMPS_DIR)/build-udeb
 	dpkg-deb --build debian/$(PACKAGE_NAME) ../$(PACKAGE_FILE)
 
 install-lvm2: export DH_OPTIONS = -plvm2
-install-lvm2: DIR = $(BUILD_DIR)/build-deb
-install-lvm2: INSTALL_DIR = $(BUILD_DIR)/install-lvm2
-install-lvm2: $(STAMPS_DIR)/build-deb
+install-lvm2: DIR = $(BUILD_DIR)/install-deb-lvm2
+install-lvm2: $(STAMPS_DIR)/install-deb-lvm2
 	dh_testdir
 	dh_testroot
 	dh_clean -k
-	$(MAKE) -C $(DIR) install DESTDIR=$(CURDIR)/$(INSTALL_DIR)
-	dh_install --sourcedir=$(INSTALL_DIR)
-	cp -a debian/initramfs-tools debian/lvm2/usr/share
+	cp -a debian/contrib/lvm2 debian/lvm2
+	dh_install --sourcedir=$(DIR)
 	chmod +x -R debian/lvm2/usr/share/initramfs-tools
 	dh_installchangelogs WHATS_NEW
 	dh_installdebconf
@@ -251,15 +255,13 @@ install-lvm2: $(STAMPS_DIR)/build-deb
 	$(MAKE) -f debian/rules install-base
 
 install-lvm2-udeb: export DH_OPTIONS = -plvm2-udeb
-install-lvm2-udeb: DIR = $(BUILD_DIR)/build-udeb
-install-lvm2-udeb: INSTALL_DIR = $(BUILD_DIR)/install-lvm2-udeb
-install-lvm2-udeb: $(STAMPS_DIR)/build-udeb
+install-lvm2-udeb: DIR = $(BUILD_DIR)/install-udeb-lvm2
+install-lvm2-udeb: $(STAMPS_DIR)/install-udeb-lvm2
 	dh_testdir
 	dh_testroot
 	dh_clean -k
-	$(MAKE) -C $(DIR) install DESTDIR=$(CURDIR)/$(INSTALL_DIR)
 	dh_installchangelogs WHATS_NEW
-	dh_install --sourcedir=$(INSTALL_DIR)
+	dh_install --sourcedir=$(DIR)
 	$(MAKE) -f debian/rules install-base
 
 binary-indep:

@@ -35,6 +35,7 @@ static sigset_t _oldset;
 static int _vg_lock_count = 0;		/* Number of locks held */
 static int _vg_write_lock_held = 0;	/* VG write lock held? */
 static int _signals_blocked = 0;
+static int _blocking_supported = 0;
 
 static volatile sig_atomic_t _sigint_caught = 0;
 static volatile sig_atomic_t _handler_installed;
@@ -189,9 +190,12 @@ void reset_locking(void)
 		_unblock_signals();
 }
 
-static void _update_vg_lock_count(uint32_t flags)
+static void _update_vg_lock_count(const char *resource, uint32_t flags)
 {
-	if ((flags & LCK_SCOPE_MASK) != LCK_VG)
+	/* Ignore locks not associated with updating VG metadata */
+	if ((flags & LCK_SCOPE_MASK) != LCK_VG ||
+	    (flags & LCK_CACHE) ||
+	    !strcmp(resource, VG_GLOBAL))
 		return;
 
 	if ((flags & LCK_TYPE_MASK) == LCK_UNLOCK)
@@ -208,11 +212,16 @@ static void _update_vg_lock_count(uint32_t flags)
 
 /*
  * Select a locking type
+ * type: locking type; if < 0, then read config tree value
  */
 int init_locking(int type, struct cmd_context *cmd)
 {
-	init_lockingfailed(0);
+	if (type < 0)
+		type = find_config_tree_int(cmd, "global/locking_type", 1);
 
+	_blocking_supported = find_config_tree_int(cmd,
+	    "global/wait_for_locks", DEFAULT_WAIT_FOR_LOCKS);
+	
 	switch (type) {
 	case 0:
 		init_no_locking(&_locking, cmd);
@@ -221,7 +230,9 @@ int init_locking(int type, struct cmd_context *cmd)
 		return 1;
 
 	case 1:
-		log_very_verbose("File-based locking selected.");
+		log_very_verbose("%sFile-based locking selected.",
+				 _blocking_supported ? "" : "Non-blocking ");
+
 		if (!init_file_locking(&_locking, cmd))
 			break;
 		return 1;
@@ -271,9 +282,7 @@ int init_locking(int type, struct cmd_context *cmd)
 
 	/* FIXME Ensure only read ops are permitted */
 	log_verbose("Locking disabled - only read operations permitted.");
-
-	init_no_locking(&_locking, cmd);
-	init_lockingfailed(1);
+	init_readonly_locking(&_locking, cmd);
 
 	return 1;
 }
@@ -350,7 +359,7 @@ static int _lock_vol(struct cmd_context *cmd, const char *resource, uint32_t fla
 								== LCK_READ);
 		}
 
-		_update_vg_lock_count(flags);
+		_update_vg_lock_count(resource, flags);
 	}
 
 	_unlock_memory(flags);
@@ -370,19 +379,30 @@ int lock_vol(struct cmd_context *cmd, const char *vol, uint32_t flags)
 
 	switch (flags & LCK_SCOPE_MASK) {
 	case LCK_VG:
+		/*
+		 * Automatically set LCK_NONBLOCK if one or more VGs locked.
+		 * This will enforce correctness and prevent deadlocks rather
+		 * than relying on the caller to set the flag properly.
+		 */
+		if (!_blocking_supported || vgs_locked())
+			flags |= LCK_NONBLOCK;
+
 		/* Lock VG to change on-disk metadata. */
 		/* If LVM1 driver knows about the VG, it can't be accessed. */
 		if (!check_lvm1_vg_inactive(cmd, vol))
 			return 0;
+		break;
 	case LCK_LV:
-		/* Suspend LV if it's active. */
-		strncpy(resource, vol, sizeof(resource));
+		/* All LV locks are non-blocking. */
+		flags |= LCK_NONBLOCK;
 		break;
 	default:
 		log_error("Unrecognised lock scope: %d",
 			  flags & LCK_SCOPE_MASK);
 		return 0;
 	}
+
+	strncpy(resource, vol, sizeof(resource));
 
 	if (!_lock_vol(cmd, resource, flags))
 		return 0;
@@ -468,3 +488,23 @@ int locking_is_clustered(void)
 	return (_locking.flags & LCK_CLUSTERED) ? 1 : 0;
 }
 
+int remote_lock_held(const char *vol)
+{
+	int mode = LCK_NULL;
+
+	if (!locking_is_clustered())
+		return 0;
+
+	if (!_locking.query_resource)
+		return -1;
+
+	/*
+	 * If an error occured, expect that volume is active
+	 */
+	if (!_locking.query_resource(vol, &mode)) {
+		stack;
+		return 1;
+	}
+
+	return mode == LCK_NULL ? 0 : 1;
+}
