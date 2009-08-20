@@ -37,29 +37,28 @@ static int _snap_text_import(struct lv_segment *seg, const struct config_node *s
 	uint32_t chunk_size;
 	const char *org_name, *cow_name;
 	struct logical_volume *org, *cow;
-
-	seg->lv->status |= SNAPSHOT;
+	int old_suppress;
 
 	if (!get_config_uint32(sn, "chunk_size", &chunk_size)) {
 		log_error("Couldn't read chunk size for snapshot.");
 		return 0;
 	}
 
-	log_suppress(1);
+	old_suppress = log_suppress(1);
 
 	if (!(cow_name = find_config_str(sn, "cow_store", NULL))) {
-		log_suppress(0);
+		log_suppress(old_suppress);
 		log_error("Snapshot cow storage not specified.");
 		return 0;
 	}
 
 	if (!(org_name = find_config_str(sn, "origin", NULL))) {
-		log_suppress(0);
+		log_suppress(old_suppress);
 		log_error("Snapshot origin not specified.");
 		return 0;
 	}
 
-	log_suppress(0);
+	log_suppress(old_suppress);
 
 	if (!(cow = find_lv(seg->lv->vg, cow_name))) {
 		log_error("Unknown logical volume specified for "
@@ -73,9 +72,7 @@ static int _snap_text_import(struct lv_segment *seg, const struct config_node *s
 		return 0;
 	}
 
-	if (!vg_add_snapshot(seg->lv->name, org, cow,
-			     &seg->lv->lvid, seg->len, chunk_size))
-		return_0;
+	init_snapshot_seg(seg, org, cow, chunk_size);
 
 	return 1;
 }
@@ -108,15 +105,16 @@ static int _snap_target_percent(void **target_state __attribute((unused)),
 	return 1;
 }
 
-static int _snap_target_present(const struct lv_segment *seg __attribute((unused)),
+static int _snap_target_present(struct cmd_context *cmd,
+				const struct lv_segment *seg __attribute((unused)),
 				unsigned *attributes __attribute((unused)))
 {
 	static int _snap_checked = 0;
 	static int _snap_present = 0;
 
 	if (!_snap_checked)
-		_snap_present = target_present("snapshot", 1) &&
-		    target_present("snapshot-origin", 0);
+		_snap_present = target_present(cmd, "snapshot", 1) &&
+		    target_present(cmd, "snapshot-origin", 0);
 
 	_snap_checked = 1;
 

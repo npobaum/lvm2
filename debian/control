@@ -8,10 +8,9 @@ Standards-Version: 3.7.3
 
 Package: lvm2
 Architecture: any
-Depends: ${shlibs:Depends}, lsb-base
+Depends: ${shlibs:Depends}, lsb-base, dmsetup (>> 2:1.02.36)
 Conflicts: lvm-common
 Replaces: lvm-common
-Recommends: dmsetup
 Description: The Linux Logical Volume Manager
  This is LVM2, the rewrite of The Linux Logical Volume Manager.  LVM
  supports enterprise level volume management of disk and disk subsystems
@@ -92,7 +91,7 @@ Description: The Linux Kernel Device Mapper userspace library
 Package: dmsetup
 Section: admin
 Architecture: any
-Depends: ${shlibs:Depends}
+Depends: ${shlibs:Depends}, util-linux (>> 2.16), udev
 Description: The Linux Kernel Device Mapper userspace library
  The Linux Kernel Device Mapper is the LVM (Linux Logical Volume Management)
  Team's implementation of a minimalistic kernel-space driver that handles

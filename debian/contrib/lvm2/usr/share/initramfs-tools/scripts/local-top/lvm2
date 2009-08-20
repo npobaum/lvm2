@@ -1,6 +1,6 @@
 #!/bin/sh
 
-PREREQ="mdadm mdrun"
+PREREQ="mdadm mdrun multipath"
 
 prereqs()
 {
@@ -17,15 +17,15 @@ esac
 
 activate_vg()
 {
-	local vg="$1"
+	local dev="$1"
 
 	# Make sure that we have a non-empty argument
-	if [ -z "${vg}" ]; then
+	if [ -z "$dev" ]; then
 		return 1
 	fi
 
 	# Take care of lilo boot arg, risky activating of all vg
-	case $vg in
+	case "$dev" in
 	fe[0-9]*)
 		lvm vgchange -aly --ignorelockingfailure
 		exit 0
@@ -38,22 +38,20 @@ activate_vg()
 	esac
 
 	# Make sure that we have a d-m path
-	vg=${vg#/dev/mapper/}
-	if [ "$vg" = "$1" ]; then
+	dev="${dev#/dev/mapper/}"
+	if [ "$dev" = "$1" ]; then
 		return 1
 	fi
 
-	# Make sure that the device includes at least one dash
-	if [ "$(echo -n "$vg" | tr -d -)" = "$vg" ]; then
-		return 1
+	eval $(dmsetup splitname --nameprefixes --noheadings --rows "$dev")
+
+	if [ "$DM_VG_NAME" ] && [ "$DM_LV_NAME" ]; then
+		lvm lvchange -aly --ignorelockingfailure "$DM_VG_NAME/$DM_LV_NAME"
+		rc=$?
+		if [ $rc = 5 ]; then
+			echo "Unable to find LVM volume $DM_VG_NAME/$DM_LV_NAME"
+		fi
 	fi
-
-	# Split volume group from logical volume.
-	vg=$(echo ${vg} | sed -e 's#\(.*\)\([^-]\)-[^-].*#\1\2#')
-	# Reduce padded --'s to -'s
-	vg=$(echo ${vg} | sed -e 's#--#-#g')
-
-	lvm vgchange -aly --ignorelockingfailure ${vg}
 }
 
 if [ ! -e /sbin/lvm ]; then
@@ -61,8 +59,6 @@ if [ ! -e /sbin/lvm ]; then
 fi
 
 modprobe -q dm-mod
-modprobe -q dm-snapshot
-modprobe -q dm-mirror
 
 activate_vg "$ROOT"
 activate_vg "$resume"

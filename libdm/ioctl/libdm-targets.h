@@ -41,6 +41,7 @@ struct dm_task {
 	uint32_t event_nr;
 	int major;
 	int minor;
+	int allow_default_major_fallback;
 	uid_t uid;
 	gid_t gid;
 	mode_t mode;
@@ -59,6 +60,7 @@ struct dm_task {
 	int skip_lockfs;
 	int suppress_identical_reload;
 	uint64_t existing_table_size;
+	int cookie_set;
 
 	char *uuid;
 };

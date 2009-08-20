@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2009 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -18,12 +18,10 @@
 
 static int _vgs_single(struct cmd_context *cmd __attribute((unused)),
 		       const char *vg_name, struct volume_group *vg,
-		       int consistent __attribute((unused)), void *handle)
+		       void *handle)
 {
-	if (!vg) {
-		log_error("Volume group %s not found", vg_name);
+	if (vg_read_error(vg))
 		return ECMD_FAILED;
-	}
 
 	if (!report_object(handle, vg, NULL, NULL, NULL, NULL))
 		return ECMD_FAILED;
@@ -36,7 +34,7 @@ static int _vgs_single(struct cmd_context *cmd __attribute((unused)),
 static int _lvs_single(struct cmd_context *cmd, struct logical_volume *lv,
 		       void *handle)
 {
-	if (!arg_count(cmd, all_ARG) && !lv_is_displayable(lv))
+	if (!arg_count(cmd, all_ARG) && !lv_is_visible(lv))
 		return ECMD_PROCESSED;
 
 	if (!report_object(handle, lv->vg, lv, NULL, NULL, NULL))
@@ -54,15 +52,20 @@ static int _segs_single(struct cmd_context *cmd __attribute((unused)),
 	return ECMD_PROCESSED;
 }
 
-static int _pvsegs_sub_single(struct cmd_context *cmd __attribute((unused)),
+static int _pvsegs_sub_single(struct cmd_context *cmd,
 			      struct volume_group *vg,
 			      struct pv_segment *pvseg, void *handle)
 {
 	int ret = ECMD_PROCESSED;
 	struct lv_segment *seg = pvseg->lvseg;
 
+	struct volume_group _free_vg = {
+		.cmd = cmd,
+		.name = (char *)"",
+	};
+
 	struct logical_volume _free_logical_volume = {
-		.vg = vg,
+		.vg = vg ?: &_free_vg,
 		.name = (char *) "",
 	        .snapshot = NULL,
 		.status = VISIBLE_LV,
@@ -88,6 +91,9 @@ static int _pvsegs_sub_single(struct cmd_context *cmd __attribute((unused)),
 
         _free_lv_segment.segtype = get_segtype_from_string(cmd, "free");
 	_free_lv_segment.len = pvseg->len;
+	dm_list_init(&_free_vg.pvs);
+	dm_list_init(&_free_vg.lvs);
+	dm_list_init(&_free_vg.tags);
 	dm_list_init(&_free_lv_segment.tags);
 	dm_list_init(&_free_lv_segment.origin_list);
 	dm_list_init(&_free_logical_volume.tags);
@@ -105,7 +111,7 @@ static int _pvsegs_sub_single(struct cmd_context *cmd __attribute((unused)),
 static int _lvsegs_single(struct cmd_context *cmd, struct logical_volume *lv,
 			  void *handle)
 {
-	if (!arg_count(cmd, all_ARG) && !lv_is_displayable(lv))
+	if (!arg_count(cmd, all_ARG) && !lv_is_visible(lv))
 		return ECMD_PROCESSED;
 
 	return process_each_segment_in_lv(cmd, lv, handle, _segs_single);
@@ -124,19 +130,20 @@ static int _pvs_single(struct cmd_context *cmd, struct volume_group *vg,
 	struct pv_list *pvl;
 	int ret = ECMD_PROCESSED;
 	const char *vg_name = NULL;
+	struct volume_group *old_vg = vg;
 
 	if (is_pv(pv) && !is_orphan(pv) && !vg) {
 		vg_name = pv_vg_name(pv);
 
-		if (!(vg = vg_lock_and_read(cmd, vg_name, (char *)&pv->vgid,
-					    LCK_VG_READ, CLUSTERED, 0))) {
+		vg = vg_read(cmd, vg_name, (char *)&pv->vgid, 0);
+		if (vg_read_error(vg)) {
 			log_error("Skipping volume group %s", vg_name);
 			return ECMD_FAILED;
 		}
 
 		/*
 		 * Replace possibly incomplete PV structure with new one
-		 * allocated in vg_read() path.
+		 * allocated in vg_read_internal() path.
 		*/
 		if (!(pvl = find_pv_in_vg(vg, pv_dev_name(pv)))) {
 			log_error("Unable to find \"%s\" in volume group \"%s\"",
@@ -155,31 +162,37 @@ out:
 	if (vg_name)
 		unlock_vg(cmd, vg_name);
 
+	if (!old_vg)
+		vg_release(vg);
+
 	return ret;
+}
+
+static int _label_single(struct cmd_context *cmd, struct volume_group *vg,
+		       struct physical_volume *pv, void *handle)
+{
+	if (!report_object(handle, vg, NULL, pv, NULL, NULL))
+		return ECMD_FAILED;
+
+	return ECMD_PROCESSED;
 }
 
 static int _pvs_in_vg(struct cmd_context *cmd, const char *vg_name,
 		      struct volume_group *vg,
-		      int consistent __attribute((unused)),
 		      void *handle)
 {
-	if (!vg) {
-		log_error("Volume group %s not found", vg_name);
+	if (vg_read_error(vg))
 		return ECMD_FAILED;
-	}
 
 	return process_each_pv_in_vg(cmd, vg, NULL, handle, &_pvs_single);
 }
 
 static int _pvsegs_in_vg(struct cmd_context *cmd, const char *vg_name,
 			 struct volume_group *vg,
-			 int consistent __attribute((unused)),
 			 void *handle)
 {
-	if (!vg) {
-		log_error("Volume group %s not found", vg_name);
+	if (vg_read_error(vg))
 		return ECMD_FAILED;
-	}
 
 	return process_each_pv_in_vg(cmd, vg, NULL, handle, &_pvsegs_single);
 }
@@ -211,7 +224,9 @@ static int _report(struct cmd_context *cmd, int argc, char **argv,
 	columns_as_rows = find_config_tree_int(cmd, "report/columns_as_rows",
 					       DEFAULT_REP_COLUMNS_AS_ROWS);
 
-	args_are_pvs = (report_type == PVS || report_type == PVSEGS) ? 1 : 0;
+	args_are_pvs = (report_type == PVS ||
+			report_type == LABEL ||
+			report_type == PVSEGS) ? 1 : 0;
 
 	switch (report_type) {
 	case LVS:
@@ -238,6 +253,7 @@ static int _report(struct cmd_context *cmd, int argc, char **argv,
 						  "report/vgs_cols_verbose",
 						  DEFAULT_VGS_COLS_VERB);
 		break;
+	case LABEL:
 	case PVS:
 		keys = find_config_tree_str(cmd, "report/pvs_sort",
 				       DEFAULT_PVS_SORT);
@@ -333,7 +349,7 @@ static int _report(struct cmd_context *cmd, int argc, char **argv,
 		report_type |= LVS;
 	if (report_type & PVSEGS)
 		report_type |= PVS;
-	if ((report_type & LVS) && (report_type & PVS) && !args_are_pvs) {
+	if ((report_type & LVS) && (report_type & (PVS | LABEL)) && !args_are_pvs) {
 		log_error("Can't report LV and PV fields at the same time");
 		dm_report_free(report_handle);
 		return ECMD_FAILED;
@@ -341,8 +357,10 @@ static int _report(struct cmd_context *cmd, int argc, char **argv,
 
 	/* Change report type if fields specified makes this necessary */
 	if ((report_type & PVSEGS) ||
-	    ((report_type & PVS) && (report_type & LVS)))
+	    ((report_type & (PVS | LABEL)) && (report_type & LVS)))
 		report_type = PVSEGS;
+	else if ((report_type & LABEL) && (report_type & VGS))
+		report_type = PVS;
 	else if (report_type & PVS)
 		report_type = PVS;
 	else if (report_type & SEGS)
@@ -352,31 +370,35 @@ static int _report(struct cmd_context *cmd, int argc, char **argv,
 
 	switch (report_type) {
 	case LVS:
-		r = process_each_lv(cmd, argc, argv, LCK_VG_READ, report_handle,
+		r = process_each_lv(cmd, argc, argv, 0, report_handle,
 				    &_lvs_single);
 		break;
 	case VGS:
-		r = process_each_vg(cmd, argc, argv, LCK_VG_READ, 0,
+		r = process_each_vg(cmd, argc, argv, 0,
 				    report_handle, &_vgs_single);
+		break;
+	case LABEL:
+		r = process_each_pv(cmd, argc, argv, NULL, READ_WITHOUT_LOCK,
+				    1, report_handle, &_label_single);
 		break;
 	case PVS:
 		if (args_are_pvs)
-			r = process_each_pv(cmd, argc, argv, NULL, LCK_VG_READ,
-					    report_handle, &_pvs_single);
+			r = process_each_pv(cmd, argc, argv, NULL, 0,
+					    0, report_handle, &_pvs_single);
 		else
-			r = process_each_vg(cmd, argc, argv, LCK_VG_READ, 0,
+			r = process_each_vg(cmd, argc, argv, 0,
 					    report_handle, &_pvs_in_vg);
 		break;
 	case SEGS:
-		r = process_each_lv(cmd, argc, argv, LCK_VG_READ, report_handle,
+		r = process_each_lv(cmd, argc, argv, 0, report_handle,
 				    &_lvsegs_single);
 		break;
 	case PVSEGS:
 		if (args_are_pvs)
-			r = process_each_pv(cmd, argc, argv, NULL, LCK_VG_READ,
-					    report_handle, &_pvsegs_single);
+			r = process_each_pv(cmd, argc, argv, NULL, 0,
+					    0, report_handle, &_pvsegs_single);
 		else
-			r = process_each_vg(cmd, argc, argv, LCK_VG_READ, 0,
+			r = process_each_vg(cmd, argc, argv, 0,
 					    report_handle, &_pvsegs_in_vg);
 		break;
 	}
@@ -411,7 +433,7 @@ int pvs(struct cmd_context *cmd, int argc, char **argv)
 	if (arg_count(cmd, segments_ARG))
 		type = PVSEGS;
 	else
-		type = PVS;
+		type = LABEL;
 
 	return _report(cmd, argc, argv, type);
 }

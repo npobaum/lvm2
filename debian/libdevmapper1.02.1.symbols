@@ -8,6 +8,7 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_bitset_create@Base 2:1.02.20
  dm_bitset_destroy@Base 2:1.02.20
  dm_bounds_check_debug@Base 2:1.02.20
+ dm_cookie_supported@Base 2:1.02.36
  dm_create_dir@Base 2:1.02.24
  dm_dir@Base 2:1.02.20
  dm_driver_version@Base 2:1.02.20
@@ -51,6 +52,9 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_log@Base 2:1.02.20
  dm_log_init@Base 2:1.02.20
  dm_log_init_verbose@Base 2:1.02.20
+ dm_log_is_non_default@Base 2:1.02.36
+ dm_log_with_errno@Base 2:1.02.36
+ dm_log_with_errno_init@Base 2:1.02.36
  dm_malloc_aux@Base 2:1.02.20
  dm_malloc_aux_debug@Base 2:1.02.20
  dm_mknodes@Base 2:1.02.20
@@ -101,10 +105,12 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_task_no_flush@Base 2:1.02.20
  dm_task_no_open_count@Base 2:1.02.20
  dm_task_run@Base 2:1.02.20
+ dm_task_set_cookie@Base 2:1.02.36
  dm_task_set_event_nr@Base 2:1.02.20
  dm_task_set_geometry@Base 2:1.02.20
  dm_task_set_gid@Base 2:1.02.20
  dm_task_set_major@Base 2:1.02.20
+ dm_task_set_major_minor@Base 2:1.02.36
  dm_task_set_message@Base 2:1.02.20
  dm_task_set_minor@Base 2:1.02.20
  dm_task_set_mode@Base 2:1.02.20
@@ -127,7 +133,9 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_tree_find_node@Base 2:1.02.20
  dm_tree_find_node_by_uuid@Base 2:1.02.20
  dm_tree_free@Base 2:1.02.20
+ dm_tree_get_cookie@Base 2:1.02.36
  dm_tree_next_child@Base 2:1.02.20
+ dm_tree_node_add_crypt_target@Base 2:1.02.36
  dm_tree_node_add_error_target@Base 2:1.02.20
  dm_tree_node_add_linear_target@Base 2:1.02.20
  dm_tree_node_add_mirror_target@Base 2:1.02.20
@@ -143,7 +151,13 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_tree_node_get_uuid@Base 2:1.02.20
  dm_tree_node_num_children@Base 2:1.02.20
  dm_tree_node_set_read_ahead@Base 2:1.02.24
+ dm_tree_node_size_changed@Base 2:1.02.36
  dm_tree_preload_children@Base 2:1.02.20
+ dm_tree_set_cookie@Base 2:1.02.36
  dm_tree_skip_lockfs@Base 2:1.02.20
  dm_tree_suspend_children@Base 2:1.02.20
  dm_tree_use_no_flush_suspend@Base 2:1.02.20
+ dm_udev_complete@Base 2:1.02.36
+ dm_udev_get_sync_support@Base 2:1.02.36
+ dm_udev_set_sync_support@Base 2:1.02.36
+ dm_udev_wait@Base 2:1.02.36

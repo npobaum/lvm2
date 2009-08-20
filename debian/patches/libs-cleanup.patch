@@ -1,6 +1,6 @@
 --- a/configure.in
 +++ b/configure.in
-@@ -33,7 +33,6 @@
+@@ -34,7 +34,6 @@
  		CLDWHOLEARCHIVE="-Wl,-whole-archive"
  		CLDNOWHOLEARCHIVE="-Wl,-no-whole-archive"
  		LDDEPS="$LDDEPS .export.sym"
@@ -8,7 +8,7 @@
  		LIB_SUFFIX=so
  		DEVMAPPER=yes
  		ODIRECT=yes
-@@ -479,24 +478,6 @@
+@@ -522,24 +521,6 @@
  fi;
  
  ################################################################################
@@ -33,7 +33,7 @@
  dnl -- Check for dlopen
  AC_CHECK_LIB(dl, dlopen, HAVE_LIBDL=yes, HAVE_LIBDL=no)
  
-@@ -527,34 +508,9 @@
+@@ -570,34 +551,9 @@
  ################################################################################
  dnl -- Check for selinux
  if test x$SELINUX = xyes; then
@@ -71,7 +71,7 @@
  fi
  
  ################################################################################
-@@ -578,7 +534,7 @@
+@@ -621,7 +577,7 @@
  dnl -- Check for readline (Shamelessly copied from parted 1.4.17)
  if test x$READLINE != xno; then
  	rl_found=yes
@@ -80,7 +80,7 @@
  	test x$READLINE:$rl_found = xyes:no &&
  	  AC_MSG_ERROR(
  GNU Readline could not be found which is required for the
-@@ -755,6 +711,9 @@
+@@ -829,6 +785,9 @@
  AC_SUBST(JOBS)
  AC_SUBST(LDDEPS)
  AC_SUBST(LIBS)
@@ -90,30 +90,17 @@
  AC_SUBST(LIB_SUFFIX)
  AC_SUBST(LOCALEDIR)
  AC_SUBST(LVM1)
-@@ -769,7 +728,6 @@
- AC_SUBST(SNAPSHOTS)
+@@ -851,7 +810,6 @@
  AC_SUBST(STATICDIR)
  AC_SUBST(STATIC_LINK)
+ AC_SUBST(UDEV_RULES)
 -AC_SUBST([LIB_PTHREAD])
  AC_SUBST(interface)
  AC_SUBST(kerneldir)
  AC_SUBST(missingkernel)
---- a/lib/activate/fs.c
-+++ b/lib/activate/fs.c
-@@ -174,10 +174,8 @@
- 		return 0;
- 	}
- 
--#ifdef HAVE_SELINUX
- 	if (!dm_set_selinux_context(lv_path, S_IFLNK))
- 		return_0;
--#endif
- 
- 	return 1;
- }
 --- a/tools/Makefile.in
 +++ b/tools/Makefile.in
-@@ -95,6 +95,9 @@
+@@ -99,6 +99,9 @@
  
  LVMLIBS += -ldevmapper
  
@@ -123,26 +110,26 @@
  DEFS += -DLVM_SHARED_PATH=\"$(exec_prefix)/sbin/lvm\"
  
  include $(top_srcdir)/make.tmpl
-@@ -107,14 +110,13 @@
+@@ -111,14 +114,13 @@
  
  dmsetup.static: dmsetup.o $(interfacedir)/libdevmapper.a
  	$(CC) -o $@ dmsetup.o $(CFLAGS) $(LDFLAGS) -static \
--	      -L$(interfacedir) -L$(DESTDIR)/lib -ldevmapper $(LIBS) \
+-	      -L$(interfacedir) -ldevmapper $(LIBS) \
 -	      $(LIB_PTHREAD)
-+	      -L$(interfacedir) -L$(DESTDIR)/lib -ldevmapper $(LIBS) $(LDFLAGS_DMSETUP_STATIC)
++	      -L$(interfacedir) -ldevmapper $(LIBS) $(LDFLAGS_DMSETUP_STATIC)
  
  all: device-mapper
  
- lvm: $(OBJECTS) lvm.o $(top_srcdir)/lib/liblvm.a
+ lvm: $(OBJECTS) lvm.o $(top_srcdir)/lib/liblvm-internal.a
  	$(CC) -o $@ $(CFLAGS) $(OBJECTS) lvm.o \
 -		$(LDFLAGS) $(LVMLIBS) $(LIBS) -rdynamic
 +		$(LDFLAGS) $(LVMLIBS) $(LIBS) $(LDFLAGS_LVM) -rdynamic
  
  LIB_PTHREAD = @LIB_PTHREAD@
- lvm.static: $(OBJECTS) lvm-static.o $(top_srcdir)/lib/liblvm.a
+ lvm.static: $(OBJECTS) lvm-static.o $(top_srcdir)/lib/liblvm-internal.a  $(interfacedir)/libdevmapper.a
 --- a/daemons/dmeventd/Makefile.in
 +++ b/daemons/dmeventd/Makefile.in
-@@ -44,7 +44,7 @@
+@@ -46,7 +46,7 @@
  
  dmeventd: $(LIB_SHARED) $(VERSIONED_SHLIB) dmeventd.o
  	$(CC) -o $@ dmeventd.o $(CFLAGS) $(LDFLAGS) \
@@ -153,7 +140,17 @@
  	install_pkgconfig install_dmeventd
 --- a/libdm/Makefile.in
 +++ b/libdm/Makefile.in
-@@ -44,6 +44,8 @@
+@@ -34,9 +34,7 @@
+ 
+ INCLUDES = -I$(interface) -I.
+ 
+-ifeq ("@STATIC_LINK@", "yes")
+ LIB_STATIC = $(interface)/libdevmapper.a
+-endif
+ 
+ ifeq ("@LIB_SUFFIX@","dylib")
+   LIB_SHARED = $(interface)/libdevmapper.dylib
+@@ -46,6 +44,8 @@
  VERSIONED_SHLIB = libdevmapper.$(LIB_SUFFIX).$(LIB_VERSION_DM)
  LIB_VERSION = $(LIB_VERSION_DM)
  
@@ -164,7 +161,7 @@
  
 --- a/make.tmpl.in
 +++ b/make.tmpl.in
-@@ -99,7 +99,6 @@
+@@ -101,7 +101,6 @@
  #DEFS += -DBOUNDS_CHECK
  
  #CFLAGS += -pg
@@ -172,7 +169,7 @@
  
  LVM_VERSION := $(shell cat $(top_srcdir)/VERSION)
  
-@@ -195,13 +194,13 @@
+@@ -201,13 +200,13 @@
  ifeq ("@LIB_SUFFIX@","so")
  $(LIB_SHARED): $(OBJECTS) $(LDDEPS)
  	$(CC) -shared -Wl,-soname,$(notdir $@).$(LIB_VERSION) \

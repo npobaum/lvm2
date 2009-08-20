@@ -1,6 +1,6 @@
 --- a/lib/Makefile.in
 +++ b/lib/Makefile.in
-@@ -80,7 +80,6 @@
+@@ -81,7 +81,6 @@
  	misc/lvm-globals.c \
  	misc/lvm-string.c \
  	misc/lvm-wrappers.c \
@@ -179,7 +179,7 @@
 -
 --- a/configure.in
 +++ b/configure.in
-@@ -38,7 +38,6 @@
+@@ -39,7 +39,6 @@
  		ODIRECT=yes
  		DM_IOCTLS=yes
  		SELINUX=yes
@@ -187,7 +187,7 @@
  		CLUSTER=internal
  		FSADM=yes
  		;;
-@@ -53,7 +52,6 @@
+@@ -54,7 +53,6 @@
  		ODIRECT=no
  		DM_IOCTLS=no
  		SELINUX=no
@@ -195,7 +195,7 @@
  		CLUSTER=none
  		FSADM=no
  		;;
-@@ -313,13 +311,6 @@
+@@ -314,13 +312,6 @@
  AC_MSG_RESULT($READLINE)
  
  ################################################################################
@@ -209,7 +209,7 @@
  dnl -- Build cluster LVM daemon
  AC_MSG_CHECKING(whether to build cluster LVM daemon)
  AC_ARG_WITH(clvmd,
-@@ -532,19 +523,6 @@
+@@ -557,19 +548,6 @@
  fi
  
  ################################################################################
@@ -229,7 +229,7 @@
  dnl -- Check for getopt
  AC_CHECK_HEADERS(getopt.h, AC_DEFINE([HAVE_GETOPTLONG], 1, [Define to 1 if getopt_long is available.]))
  
-@@ -722,7 +700,6 @@
+@@ -778,7 +756,6 @@
  AC_SUBST(FSADM)
  AC_SUBST(GROUP)
  AC_SUBST(HAVE_LIBDL)

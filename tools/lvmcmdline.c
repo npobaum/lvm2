@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2009 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -16,7 +16,7 @@
 #include "tools.h"
 #include "lvm2cmdline.h"
 #include "label.h"
-#include "version.h"
+#include "lvm-version.h"
 
 #include "stub.h"
 #include "lvm2cmd.h"
@@ -239,9 +239,10 @@ static int _size_arg(struct cmd_context *cmd __attribute((unused)), struct arg *
 {
 	char *ptr;
 	int i;
-	static const char *suffixes = "kmgtpe";
+	static const char *suffixes = "kmgtpebs";
 	char *val;
 	double v;
+	uint64_t v_tmp, adjustment;
 
 	a->percent = PERCENT_NONE;
 
@@ -272,13 +273,29 @@ static int _size_arg(struct cmd_context *cmd __attribute((unused)), struct arg *
 			if (suffixes[i] == tolower((int) *ptr))
 				break;
 
-		if (i < 0)
+		if (i < 0) {
 			return 0;
-
-		while (i-- > 0)
-			v *= 1024;
-
-		v *= 2;
+		} else if (i == 7) {
+			/* sectors */
+			v = v;
+		} else if (i == 6) {
+			/* bytes */
+			v_tmp = (uint64_t) v;
+			adjustment = v_tmp % 512;
+			if (adjustment) {
+				v_tmp += (512 - adjustment);
+				log_error("Size is not a multiple of 512. "
+					  "Try using %"PRIu64" or %"PRIu64".",
+					  v_tmp - 512, v_tmp);
+				return 0;
+			}
+			v /= 512;
+		} else {
+			/* all other units: kmgtpe */
+			while (i-- > 0)
+				v *= 1024;
+			v *= 2;
+		}
 	} else
 		v *= factor;
 
@@ -813,10 +830,14 @@ static int _get_settings(struct cmd_context *cmd)
 	} else
 		init_trust_cache(0);
 
+	if (arg_count(cmd, noudevsync_ARG))
+		cmd->current_settings.udev_sync = 0;
+
 	/* Handle synonyms */
 	if (!_merge_synonym(cmd, resizable_ARG, resizeable_ARG) ||
 	    !_merge_synonym(cmd, allocation_ARG, allocatable_ARG) ||
-	    !_merge_synonym(cmd, allocation_ARG, resizeable_ARG))
+	    !_merge_synonym(cmd, allocation_ARG, resizeable_ARG) ||
+	    !_merge_synonym(cmd, virtualoriginsize_ARG, virtualsize_ARG))
 		return EINVALID_CMD_LINE;
 
 	/* Zero indicates success */
@@ -869,16 +890,6 @@ int help(struct cmd_context *cmd __attribute((unused)), int argc, char **argv)
 	return ret;
 }
 
-static int _override_settings(struct cmd_context *cmd)
-{
-	if (!(cmd->cft_override = create_config_tree_from_string(cmd, arg_str_value(cmd, config_ARG, "")))) {
-		log_error("Failed to set overridden configuration entries.");
-		return EINVALID_CMD_LINE;
-	}
-
-	return 0;
-}
-
 static void _apply_settings(struct cmd_context *cmd)
 {
 	init_debug(cmd->current_settings.debug);
@@ -900,7 +911,7 @@ static void _apply_settings(struct cmd_context *cmd)
 	cmd->handles_missing_pvs = 0;
 }
 
-static char *_copy_command_line(struct cmd_context *cmd, int argc, char **argv)
+static const char *_copy_command_line(struct cmd_context *cmd, int argc, char **argv)
 {
 	int i, space;
 
@@ -937,7 +948,7 @@ static char *_copy_command_line(struct cmd_context *cmd, int argc, char **argv)
 	return dm_pool_end_object(cmd->mem);
 
       bad:
-	log_err("Couldn't copy command line.");
+	log_error("Couldn't copy command line.");
 	dm_pool_abandon_object(cmd->mem);
 	return NULL;
 }
@@ -968,8 +979,11 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 	set_cmd_name(cmd->command->name);
 
 	if (arg_count(cmd, config_ARG))
-		if ((ret = _override_settings(cmd)))
+		if ((ret = override_config_tree_from_string(cmd,
+			     arg_str_value(cmd, config_ARG, "")))) {
+			ret = EINVALID_CMD_LINE;
 			goto_out;
+		}
 
 	if (arg_count(cmd, config_ARG) || !cmd->config_valid || config_files_changed(cmd)) {
 		/* Reinitialise various settings inc. logging, filters */
@@ -995,8 +1009,7 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 	if (arg_count(cmd, nolocking_ARG))
 		locking_type = 0;
 	else
-		locking_type = find_config_tree_int(cmd,
-					       "global/locking_type", 1);
+		locking_type = -1;
 
 	if (!init_locking(locking_type, cmd)) {
 		log_error("Locking type %d initialisation failed.",
@@ -1027,15 +1040,17 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 	cmd->current_settings = cmd->default_settings;
 	_apply_settings(cmd);
 
+	if (ret == EINVALID_CMD_LINE && !_cmdline.interactive)
+		_short_usage(cmd->command->name);
+
+	log_debug("Completed: %s", cmd->cmd_line);
+
 	/*
 	 * free off any memory the command used.
 	 */
 	dm_pool_empty(cmd->mem);
 
-	if (ret == EINVALID_CMD_LINE && !_cmdline.interactive)
-		_short_usage(cmd->command->name);
-
-	log_debug("Completed: %s", cmd->cmd_line);
+	reset_lvm_errno(1);
 
 	return ret;
 }
@@ -1159,8 +1174,13 @@ struct cmd_context *init_lvm(void)
 
 	_cmdline.the_args = &_the_args[0];
 
-	if (!(cmd = create_toolcontext(0)))
+	if (!(cmd = create_toolcontext(0, NULL)))
 		return_NULL;
+
+	if (stored_errno()) {
+		destroy_toolcontext(cmd);
+		return_NULL;
+	}
 
 	return cmd;
 }

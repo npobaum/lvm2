@@ -425,6 +425,12 @@ static int _start_daemon(struct dm_event_fifos *fifos)
 
       start_server:
 	/* server is not running */
+
+	if (!strncmp(DMEVENTD_PATH, "/", 1) && stat(DMEVENTD_PATH, &statbuf)) {
+		log_error("Unable to find dmeventd.");
+		return_0;
+	}
+
 	pid = fork();
 
 	if (pid < 0)
@@ -432,7 +438,7 @@ static int _start_daemon(struct dm_event_fifos *fifos)
 
 	else if (!pid) {
 		execvp(DMEVENTD_PATH, NULL);
-		exit(EXIT_FAILURE);
+		_exit(EXIT_FAILURE);
 	} else {
 		if (waitpid(pid, &status, 0) < 0)
 			log_error("Unable to start dmeventd: %s",

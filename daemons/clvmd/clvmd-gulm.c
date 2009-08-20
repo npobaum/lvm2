@@ -248,7 +248,7 @@ static void _cluster_closedown(void)
 {
     DEBUGLOG("cluster_closedown\n");
     in_shutdown = 1;
-    unlock_all();
+    destroy_lvhash();
     lg_lock_logout(gulm_if);
     lg_core_logout(gulm_if);
     lg_release(gulm_if);
@@ -950,7 +950,7 @@ static int get_all_cluster_nodes()
 		}
 		else {
 			DEBUGLOG("Cannot resolve host name %s\n", nodename);
-			log_err("Cannot resolve host name %s\n", nodename);
+			log_error("Cannot resolve host name %s\n", nodename);
 		}
 	}
 	free(nodename);

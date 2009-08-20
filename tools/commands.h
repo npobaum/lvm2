@@ -19,7 +19,7 @@ xx(e2fsadm,
    "e2fsadm "
    "[-d|--debug] " "[-h|--help] " "[-n|--nofsck]" "\n"
    "\t{[-l|--extents] [+|-]LogicalExtentsNumber |" "\n"
-   "\t [-L|--size] [+|-]LogicalVolumeSize[kKmMgGtTpPeE]}" "\n"
+   "\t [-L|--size] [+|-]LogicalVolumeSize[bBsSkKmMgGtTpPeE]}" "\n"
    "\t[-t|--test] "  "\n"
    "\t[-v|--verbose] "  "\n"
    "\t[--version] " "\n"
@@ -72,6 +72,7 @@ xx(lvchange,
    "\t[--ignorelockingfailure]\n"
    "\t[--ignoremonitoring]\n"
    "\t[--monitor {y|n}]\n"
+   "\t[--noudevsync]\n"
    "\t[-M|--persistent y|n] [--major major] [--minor minor]\n"
    "\t[-P|--partial] " "\n"
    "\t[-p|--permission r|rw]\n"
@@ -86,21 +87,26 @@ xx(lvchange,
 
    alloc_ARG, autobackup_ARG, available_ARG, contiguous_ARG, force_ARG,
    ignorelockingfailure_ARG, ignoremonitoring_ARG, major_ARG, minor_ARG,
-   monitor_ARG, partial_ARG, permission_ARG, persistent_ARG, readahead_ARG,
-   resync_ARG, refresh_ARG, addtag_ARG, deltag_ARG, test_ARG, yes_ARG)
+   monitor_ARG, noudevsync_ARG, partial_ARG, permission_ARG, persistent_ARG,
+   readahead_ARG, resync_ARG, refresh_ARG, addtag_ARG, deltag_ARG, test_ARG,
+   yes_ARG)
 
 xx(lvconvert,
    "Change logical volume layout",
    0,
    "lvconvert "
    "[-m|--mirrors Mirrors [{--mirrorlog {disk|core}|--corelog}]]\n"
+   "\t[--repair [--use-policies]]\n"
    "\t[-R|--regionsize MirrorLogRegionSize]\n"
    "\t[--alloc AllocationPolicy]\n"
    "\t[-b|--background]\n"
    "\t[-d|--debug]\n"
+   "\t[-f|--force]\n"
    "\t[-h|-?|--help]\n"
    "\t[-i|--interval seconds]\n"
+   "\t[--noudevsync]\n"
    "\t[-v|--verbose]\n"
+   "\t[-y|--yes]\n"
    "\t[--version]" "\n"
    "\tLogicalVolume[Path] [PhysicalVolume[Path]...]\n\n"
 
@@ -109,13 +115,15 @@ xx(lvconvert,
    "\t[-c|--chunksize]\n"
    "\t[-d|--debug]\n"
    "\t[-h|-?|--help]\n"
+   "\t[--noudevsync]\n"
    "\t[-v|--verbose]\n"
    "\t[-Z|--zero {y|n}]\n"
    "\t[--version]" "\n"
    "\tOriginalLogicalVolume[Path] SnapshotLogicalVolume[Path]\n",
 
    alloc_ARG, background_ARG, chunksize_ARG, corelog_ARG, interval_ARG,
-   mirrorlog_ARG, mirrors_ARG, regionsize_ARG, snapshot_ARG, test_ARG, zero_ARG)
+   mirrorlog_ARG, mirrors_ARG, noudevsync_ARG, regionsize_ARG, repair_ARG,
+   snapshot_ARG, test_ARG, use_policies_ARG, yes_ARG, force_ARG, zero_ARG)
 
 xx(lvcreate,
    "Create a logical volume",
@@ -129,10 +137,11 @@ xx(lvcreate,
    "\t[-h|-?|--help]\n"
    "\t[-i|--stripes Stripes [-I|--stripesize StripeSize]]\n"
    "\t{-l|--extents LogicalExtentsNumber |\n"
-   "\t -L|--size LogicalVolumeSize[kKmMgGtTpPeE]}\n"
+   "\t -L|--size LogicalVolumeSize[bBsSkKmMgGtTpPeE]}\n"
    "\t[-M|--persistent {y|n}] [--major major] [--minor minor]\n"
    "\t[-m|--mirrors Mirrors [--nosync] [{--mirrorlog {disk|core}|--corelog}]]\n"
    "\t[-n|--name LogicalVolumeName]\n"
+   "\t[--noudevsync]\n"
    "\t[-p|--permission {r|rw}]\n"
    "\t[-r|--readahead ReadAheadSectors|auto|none]\n"
    "\t[-R|--regionsize MirrorLogRegionSize]\n"
@@ -143,7 +152,9 @@ xx(lvcreate,
    "\t[--version]\n"
    "\tVolumeGroupName [PhysicalVolumePath...]\n\n"
 
-   "lvcreate -s|--snapshot\n"
+   "lvcreate \n"
+   "\t{ {-s|--snapshot} OriginalLogicalVolume[Path] |\n"
+   "\t  [-s|--snapshot] VolumeGroupName[Path] --virtualsize VirtualSize}\n"
    "\t[-c|--chunksize]\n"
    "\t[-A|--autobackup {y|n}]\n"
    "\t[--addtag Tag]\n"
@@ -153,21 +164,24 @@ xx(lvcreate,
    "\t[-h|-?|--help]\n"
    "\t[-i|--stripes Stripes [-I|--stripesize StripeSize]]\n"
    "\t{-l|--extents LogicalExtentsNumber[%{VG|LV|PVS|FREE}] |\n"
-   "\t -L|--size LogicalVolumeSize[kKmMgGtTpPeE]}\n"
+   "\t -L|--size LogicalVolumeSize[bBsSkKmMgGtTpPeE]}\n"
    "\t[-M|--persistent {y|n}] [--major major] [--minor minor]\n"
    "\t[-n|--name LogicalVolumeName]\n"
+   "\t[--noudevsync]\n"
    "\t[-p|--permission {r|rw}]\n"
    "\t[-r|--readahead ReadAheadSectors|auto|none]\n"
    "\t[-t|--test]\n"
    "\t[-v|--verbose]\n"
    "\t[--version]\n"
-   "\tOriginalLogicalVolume[Path] [PhysicalVolumePath...]\n\n",
+
+   "\t[PhysicalVolumePath...]\n\n",
 
    addtag_ARG, alloc_ARG, autobackup_ARG, chunksize_ARG, contiguous_ARG,
    corelog_ARG, extents_ARG, major_ARG, minor_ARG, mirrorlog_ARG, mirrors_ARG,
-   name_ARG, nosync_ARG, permission_ARG, persistent_ARG, readahead_ARG,
-   regionsize_ARG, size_ARG, snapshot_ARG, stripes_ARG, stripesize_ARG,
-   test_ARG, type_ARG, zero_ARG)
+   name_ARG, nosync_ARG, noudevsync_ARG, permission_ARG, persistent_ARG,
+   readahead_ARG, regionsize_ARG, size_ARG, snapshot_ARG, stripes_ARG,
+   stripesize_ARG, test_ARG, type_ARG, virtualoriginsize_ARG, virtualsize_ARG,
+   zero_ARG)
 
 xx(lvdisplay,
    "Display information about a logical volume",
@@ -221,9 +235,10 @@ xx(lvextend,
    "\t[-h|--help]\n"
    "\t[-i|--stripes Stripes [-I|--stripesize StripeSize]]\n"
    "\t{-l|--extents [+]LogicalExtentsNumber[%{VG|PVS|FREE}] |\n"
-   "\t -L|--size [+]LogicalVolumeSize[kKmMgGtTpPeE]}\n"
+   "\t -L|--size [+]LogicalVolumeSize[bBsSkKmMgGtTpPeE]}\n"
    "\t[-m|--mirrors Mirrors]\n"
    "\t[-n|--nofsck]\n"
+   "\t[--noudevsync]\n"
    "\t[-r|--resizefs]\n"
    "\t[-t|--test]\n"
    "\t[--type VolumeType]\n"
@@ -232,8 +247,8 @@ xx(lvextend,
    "\tLogicalVolume[Path] [ PhysicalVolumePath... ]\n",
 
    alloc_ARG, autobackup_ARG, extents_ARG, force_ARG, mirrors_ARG,
-   nofsck_ARG, resizefs_ARG, size_ARG, stripes_ARG, stripesize_ARG,
-   test_ARG, type_ARG)
+   nofsck_ARG, noudevsync_ARG, resizefs_ARG, size_ARG, stripes_ARG,
+   stripesize_ARG, test_ARG, type_ARG)
 
 xx(lvmchange,
    "With the device mapper, this is obsolete and does nothing.",
@@ -291,8 +306,9 @@ xx(lvreduce,
    "\t[-f|--force]\n"
    "\t[-h|--help]\n"
    "\t{-l|--extents [-]LogicalExtentsNumber[%{VG|LV|FREE}] |\n"
-   "\t -L|--size [-]LogicalVolumeSize[kKmMgGtTpPeE]}\n"
+   "\t -L|--size [-]LogicalVolumeSize[bBsSkKmMgGtTpPeE]}\n"
    "\t[-n|--nofsck]\n"
+   "\t[--noudevsync]\n"
    "\t[-r|--resizefs]\n"
    "\t[-t|--test]\n"
    "\t[-v|--verbose]\n"
@@ -300,8 +316,8 @@ xx(lvreduce,
    "\t[--version]" "\n"
    "\tLogicalVolume[Path]\n",
 
-   autobackup_ARG, force_ARG,  extents_ARG, nofsck_ARG, resizefs_ARG,
-   size_ARG, test_ARG, yes_ARG)
+   autobackup_ARG, force_ARG,  extents_ARG, nofsck_ARG, noudevsync_ARG,
+   resizefs_ARG, size_ARG, test_ARG, yes_ARG)
 
 xx(lvremove,
    "Remove logical volume(s) from the system",
@@ -311,12 +327,13 @@ xx(lvremove,
    "\t[-d|--debug]\n"
    "\t[-f|--force]\n"
    "\t[-h|--help]\n"
+   "\t[--noudevsync]\n"
    "\t[-t|--test]\n"
    "\t[-v|--verbose]\n"
    "\t[--version]" "\n"
    "\tLogicalVolume[Path] [LogicalVolume[Path]...]\n",
 
-   autobackup_ARG, force_ARG, test_ARG)
+   autobackup_ARG, force_ARG, noudevsync_ARG, test_ARG)
 
 xx(lvrename,
    "Rename a logical volume",
@@ -325,13 +342,14 @@ xx(lvrename,
    "\t[-A|--autobackup {y|n}] " "\n"
    "\t[-d|--debug] " "\n"
    "\t[-h|-?|--help] " "\n"
+   "\t[--noudevsync]\n"
    "\t[-t|--test] " "\n"
    "\t[-v|--verbose]" "\n"
    "\t[--version] " "\n"
    "\t{ OldLogicalVolumePath NewLogicalVolumePath |" "\n"
    "\t  VolumeGroupName OldLogicalVolumeName NewLogicalVolumeName }\n",
 
-   autobackup_ARG, test_ARG)
+   autobackup_ARG, noudevsync_ARG, test_ARG)
 
 xx(lvresize,
    "Resize a logical volume",
@@ -344,8 +362,9 @@ xx(lvresize,
    "\t[-h|--help]\n"
    "\t[-i|--stripes Stripes [-I|--stripesize StripeSize]]\n"
    "\t{-l|--extents [+|-]LogicalExtentsNumber[%{VG|LV|PVS|FREE}] |\n"
-   "\t -L|--size [+|-]LogicalVolumeSize[kKmMgGtTpPeE]}\n"
+   "\t -L|--size [+|-]LogicalVolumeSize[bBsSkKmMgGtTpPeE]}\n"
    "\t[-n|--nofsck]\n"
+   "\t[--noudevsync]\n"
    "\t[-r|--resizefs]\n"
    "\t[-t|--test]\n"
    "\t[--type VolumeType]\n"
@@ -354,8 +373,8 @@ xx(lvresize,
    "\tLogicalVolume[Path] [ PhysicalVolumePath... ]\n",
 
    alloc_ARG, autobackup_ARG, extents_ARG, force_ARG, nofsck_ARG,
-   resizefs_ARG, size_ARG, stripes_ARG, stripesize_ARG, test_ARG,
-   type_ARG)
+   noudevsync_ARG, resizefs_ARG, size_ARG, stripes_ARG, stripesize_ARG,
+   test_ARG, type_ARG)
 
 xx(lvs,
    "Display information about logical volumes",
@@ -429,7 +448,7 @@ xx(pvresize,
    "pvresize " "\n"
    "\t[-d|--debug]" "\n"
    "\t[-h|-?|--help] " "\n"
-   "\t[--setphysicalvolumesize PhysicalVolumeSize[kKmMgGtTpPeE]" "\n"
+   "\t[--setphysicalvolumesize PhysicalVolumeSize[bBsSkKmMgGtTpPeE]" "\n"
    "\t[-t|--test] " "\n"
    "\t[-v|--verbose] " "\n"
    "\t[--version] " "\n"
@@ -461,8 +480,10 @@ xx(pvcreate,
    "\t[--labelsector sector] " "\n"
    "\t[-M|--metadatatype 1|2]" "\n"
    "\t[--metadatacopies #copies]" "\n"
-   "\t[--metadatasize MetadataSize[kKmMgGtTpPeE]]" "\n"
-   "\t[--setphysicalvolumesize PhysicalVolumeSize[kKmMgGtTpPeE]" "\n"
+   "\t[--metadatasize MetadataSize[bBsSkKmMgGtTpPeE]]" "\n"
+   "\t[--dataalignment Alignment[bBsSkKmMgGtTpPeE]]" "\n"
+   "\t[--dataalignmentoffset AlignmentOffset[bBsSkKmMgGtTpPeE]]" "\n"
+   "\t[--setphysicalvolumesize PhysicalVolumeSize[bBsSkKmMgGtTpPeE]" "\n"
    "\t[-t|--test] " "\n"
    "\t[-u|--uuid uuid] " "\n"
    "\t[-v|--verbose] " "\n"
@@ -471,9 +492,9 @@ xx(pvcreate,
    "\t[--version] " "\n"
    "\tPhysicalVolume [PhysicalVolume...]\n",
 
-   force_ARG, test_ARG, labelsector_ARG, metadatatype_ARG, metadatacopies_ARG,
-   metadatasize_ARG, physicalvolumesize_ARG, restorefile_ARG, uuidstr_ARG,
-   yes_ARG, zero_ARG)
+   dataalignment_ARG, dataalignmentoffset_ARG, force_ARG, test_ARG,
+   labelsector_ARG, metadatatype_ARG, metadatacopies_ARG, metadatasize_ARG,
+   physicalvolumesize_ARG, restorefile_ARG, uuidstr_ARG, yes_ARG, zero_ARG)
 
 xx(pvdata,
    "Display the on-disk metadata for physical volume(s)",
@@ -496,7 +517,7 @@ xx(pvdata,
 
 xx(pvdisplay,
    "Display various attributes of physical volume(s)",
-   0,
+   CACHE_VGMETADATA,
    "pvdisplay\n"
    "\t[-c|--colon]\n"
    "\t[-d|--debug]\n"
@@ -542,6 +563,7 @@ xx(pvmove,
    "\t[-d|--debug]\n "
    "\t[-h|-?|--help]\n"
    "\t[-i|--interval seconds]\n"
+   "\t[--noudevsync]\n"
    "\t[-t|--test]\n "
    "\t[-v|--verbose]\n "
    "\t[--version]\n"
@@ -551,7 +573,7 @@ xx(pvmove,
    "\t[DestinationPhysicalVolume[:PhysicalExtent[-PhysicalExtent]...]...]\n",
 
    abort_ARG, alloc_ARG, autobackup_ARG, background_ARG,
-   interval_ARG, name_ARG, test_ARG)
+   interval_ARG, name_ARG, noudevsync_ARG, test_ARG)
 
 xx(pvremove,
    "Remove LVM label(s) from physical volume(s)",
@@ -570,7 +592,7 @@ xx(pvremove,
 
 xx(pvs,
    "Display information about physical volumes",
-   0,
+   CACHE_VGMETADATA,
    "pvs" "\n"
    "\t[--aligned]\n"
    "\t[-a|--all]\n"
@@ -665,6 +687,7 @@ xx(vgchange,
    "\t[--ignorelockingfailure]\n"
    "\t[--ignoremonitoring]\n"
    "\t[--monitor {y|n}]\n"
+   "\t[--noudevsync]\n"
    "\t[--refresh]\n"
    "\t[-t|--test]" "\n"
    "\t[-u|--uuid] " "\n"
@@ -675,16 +698,16 @@ xx(vgchange,
    "\t -x|--resizeable {y|n} |" "\n"
    "\t -l|--logicalvolume MaxLogicalVolumes |" "\n"
    "\t -p|--maxphysicalvolumes MaxPhysicalVolumes |" "\n"
-   "\t -s|--physicalextentsize PhysicalExtentSize[kKmMgGtTpPeE] |" "\n"
+   "\t -s|--physicalextentsize PhysicalExtentSize[bBsSkKmMgGtTpPeE] |" "\n"
    "\t --addtag Tag |\n"
    "\t --deltag Tag}\n"
    "\t[VolumeGroupName...]\n",
 
    addtag_ARG, alloc_ARG, allocation_ARG, autobackup_ARG, available_ARG,
    clustered_ARG, deltag_ARG, ignorelockingfailure_ARG, ignoremonitoring_ARG,
-   logicalvolume_ARG, maxphysicalvolumes_ARG, monitor_ARG, partial_ARG,
-   physicalextentsize_ARG, refresh_ARG, resizeable_ARG, resizable_ARG,
-   test_ARG, uuid_ARG)
+   logicalvolume_ARG, maxphysicalvolumes_ARG, monitor_ARG, noudevsync_ARG,
+   partial_ARG, physicalextentsize_ARG, refresh_ARG, resizeable_ARG,
+   resizable_ARG, test_ARG, uuid_ARG)
 
 xx(vgck,
    "Check the consistency of volume group(s)",
@@ -705,7 +728,7 @@ xx(vgconvert,
    "\t[--labelsector sector] " "\n"
    "\t[-M|--metadatatype 1|2]" "\n"
    "\t[--metadatacopies #copies]" "\n"
-   "\t[--metadatasize MetadataSize[kKmMgGtTpPeE]]" "\n"
+   "\t[--metadatasize MetadataSize[bBsSkKmMgGtTpPeE]]" "\n"
    "\t[-t|--test] " "\n"
    "\t[-v|--verbose] " "\n"
    "\t[--version] " "\n"
@@ -727,7 +750,7 @@ xx(vgcreate,
    "\t[-l|--maxlogicalvolumes MaxLogicalVolumes]" "\n"
    "\t[-M|--metadatatype 1|2] " "\n"
    "\t[-p|--maxphysicalvolumes MaxPhysicalVolumes] " "\n"
-   "\t[-s|--physicalextentsize PhysicalExtentSize[kKmMgGtTpPeE]] " "\n"
+   "\t[-s|--physicalextentsize PhysicalExtentSize[bBsSkKmMgGtTpPeE]] " "\n"
    "\t[-t|--test] " "\n"
    "\t[-v|--verbose]" "\n"
    "\t[--version] " "\n"
@@ -870,12 +893,13 @@ xx(vgremove,
    "\t[-d|--debug]\n"
    "\t[-f|--force]\n"
    "\t[-h|--help]\n"
+   "\t[--noudevsync]\n"
    "\t[-t|--test]\n"
    "\t[-v|--verbose]\n"
    "\t[--version]" "\n"
    "\tVolumeGroupName [VolumeGroupName...]\n",
 
-   force_ARG, test_ARG)
+   force_ARG, noudevsync_ARG, test_ARG)
 
 xx(vgrename,
    "Rename a volume group",

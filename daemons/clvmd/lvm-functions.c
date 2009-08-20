@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2002-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2008 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2009 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -64,8 +64,6 @@ struct lv_info {
 	int lock_id;
 	int lock_mode;
 };
-
-#define LCK_MASK (LCK_TYPE_MASK | LCK_SCOPE_MASK)
 
 static const char *decode_locking_cmd(unsigned char cmdl)
 {
@@ -145,7 +143,8 @@ static const char *decode_flags(unsigned char flags)
 {
 	static char buf[128];
 
-	sprintf(buf, "0x%x (%s%s)", flags,
+	sprintf(buf, "0x%x (%s%s%s)", flags,
+		flags & LCK_PARTIAL_MODE	  ? "PARTIAL_MODE " : "",
 		flags & LCK_MIRROR_NOSYNC_MODE	  ? "MIRROR_NOSYNC " : "",
 		flags & LCK_DMEVENTD_MONITOR_MODE ? "DMEVENTD_MONITOR " : "");
 
@@ -157,32 +156,79 @@ char *get_last_lvm_error()
 	return last_error;
 }
 
-/* Return the mode a lock is currently held at (or -1 if not held) */
-static int get_current_lock(char *resource)
+/*
+ * Hash lock info helpers
+ */
+static struct lv_info *lookup_info(const char *resource)
 {
 	struct lv_info *lvi;
 
 	pthread_mutex_lock(&lv_hash_lock);
 	lvi = dm_hash_lookup(lv_hash, resource);
 	pthread_mutex_unlock(&lv_hash_lock);
-	if (lvi) {
+
+	return lvi;
+}
+
+static void insert_info(const char *resource, struct lv_info *lvi)
+{
+	pthread_mutex_lock(&lv_hash_lock);
+	dm_hash_insert(lv_hash, resource, lvi);
+	pthread_mutex_unlock(&lv_hash_lock);
+}
+
+static void remove_info(const char *resource)
+{
+	pthread_mutex_lock(&lv_hash_lock);
+	dm_hash_remove(lv_hash, resource);
+	pthread_mutex_unlock(&lv_hash_lock);
+}
+
+/*
+ * Return the mode a lock is currently held at (or -1 if not held)
+ */
+static int get_current_lock(char *resource)
+{
+	struct lv_info *lvi;
+
+	if ((lvi = lookup_info(resource)))
 		return lvi->lock_mode;
-	} else {
-		return -1;
-	}
+
+	return -1;
+}
+
+
+void init_lvhash()
+{
+	/* Create hash table for keeping LV locks & status */
+	lv_hash = dm_hash_create(100);
+	pthread_mutex_init(&lv_hash_lock, NULL);
+	pthread_mutex_init(&lvm_lock, NULL);
 }
 
 /* Called at shutdown to tidy the lockspace */
-void unlock_all()
+void destroy_lvhash()
 {
 	struct dm_hash_node *v;
+	struct lv_info *lvi;
+	char *resource;
+	int status;
 
 	pthread_mutex_lock(&lv_hash_lock);
-	dm_hash_iterate(v, lv_hash) {
-		struct lv_info *lvi = dm_hash_get_data(lv_hash, v);
 
-		sync_unlock(dm_hash_get_key(lv_hash, v), lvi->lock_id);
+	dm_hash_iterate(v, lv_hash) {
+		lvi = dm_hash_get_data(lv_hash, v);
+		resource = dm_hash_get_key(lv_hash, v);
+
+		if ((status = sync_unlock(resource, lvi->lock_id)))
+			DEBUGLOG("unlock_all. unlock failed(%d): %s\n",
+				 status,  strerror(errno));
+		free(lvi);
 	}
+
+	dm_hash_destroy(lv_hash);
+	lv_hash = NULL;
+
 	pthread_mutex_unlock(&lv_hash_lock);
 }
 
@@ -195,10 +241,7 @@ int hold_lock(char *resource, int mode, int flags)
 
 	flags &= LKF_NOQUEUE;	/* Only LKF_NOQUEUE is valid here */
 
-	pthread_mutex_lock(&lv_hash_lock);
-	lvi = dm_hash_lookup(lv_hash, resource);
-	pthread_mutex_unlock(&lv_hash_lock);
-	if (lvi) {
+	if ((lvi = lookup_info(resource))) {
 		/* Already exists - convert it */
 		status =
 		    sync_lock(resource, mode, LKF_CONVERT | flags,
@@ -224,11 +267,9 @@ int hold_lock(char *resource, int mode, int flags)
 			free(lvi);
 			DEBUGLOG("hold_lock. lock at %d failed: %s\n", mode,
 				 strerror(errno));
-		} else {
-		        pthread_mutex_lock(&lv_hash_lock);
-			dm_hash_insert(lv_hash, resource, lvi);
-			pthread_mutex_unlock(&lv_hash_lock);
-		}
+		} else
+			insert_info(resource, lvi);
+
 		errno = saved_errno;
 	}
 	return status;
@@ -241,10 +282,7 @@ int hold_unlock(char *resource)
 	int status;
 	int saved_errno;
 
-	pthread_mutex_lock(&lv_hash_lock);
-	lvi = dm_hash_lookup(lv_hash, resource);
-	pthread_mutex_unlock(&lv_hash_lock);
-	if (!lvi) {
+	if (!(lvi = lookup_info(resource))) {
 		DEBUGLOG("hold_unlock, lock not already held\n");
 		return 0;
 	}
@@ -252,9 +290,7 @@ int hold_unlock(char *resource)
 	status = sync_unlock(resource, lvi->lock_id);
 	saved_errno = errno;
 	if (!status) {
-	    	pthread_mutex_lock(&lv_hash_lock);
-		dm_hash_remove(lv_hash, resource);
-		pthread_mutex_unlock(&lv_hash_lock);
+		remove_info(resource);
 		free(lvi);
 	} else {
 		DEBUGLOG("hold_unlock. unlock failed(%d): %s\n", status,
@@ -397,6 +433,26 @@ static int do_deactivate_lv(char *resource, unsigned char lock_flags)
 	return 0;
 }
 
+const char *do_lock_query(char *resource)
+{
+	int mode;
+	const char *type = NULL;
+
+	mode = get_current_lock(resource);
+	switch (mode) {
+		case LKM_NLMODE: type = "NL"; break;
+		case LKM_CRMODE: type = "CR"; break;
+		case LKM_CWMODE: type = "CW"; break;
+		case LKM_PRMODE: type = "PR"; break;
+		case LKM_PWMODE: type = "PW"; break;
+		case LKM_EXMODE: type = "EX"; break;
+	}
+
+	DEBUGLOG("do_lock_query: resource '%s', mode %i (%s)\n", resource, mode, type ?: "?");
+
+	return type;
+}
+
 /* This is the LOCK_LV part that happens on all nodes in the cluster -
    it is responsible for the interaction with device-mapper and LVM */
 int do_lock_lv(unsigned char command, unsigned char lock_flags, char *resource)
@@ -406,23 +462,24 @@ int do_lock_lv(unsigned char command, unsigned char lock_flags, char *resource)
 	DEBUGLOG("do_lock_lv: resource '%s', cmd = %s, flags = %s\n",
 		 resource, decode_locking_cmd(command), decode_flags(lock_flags));
 
-	pthread_mutex_lock(&lvm_lock);
 	if (!cmd->config_valid || config_files_changed(cmd)) {
 		/* Reinitialise various settings inc. logging, filters */
 		if (do_refresh_cache()) {
 			log_error("Updated config file invalid. Aborting.");
-			pthread_mutex_unlock(&lvm_lock);
 			return EINVAL;
 		}
 	}
 
+	pthread_mutex_lock(&lvm_lock);
 	if (lock_flags & LCK_MIRROR_NOSYNC_MODE)
 		init_mirror_in_sync(1);
 
 	if (!(lock_flags & LCK_DMEVENTD_MONITOR_MODE))
 		init_dmeventd_monitor(0);
 
-	switch (command) {
+	cmd->partial_activation = (lock_flags & LCK_PARTIAL_MODE) ? 1 : 0;
+
+	switch (command & LCK_MASK) {
 	case LCK_LV_EXCLUSIVE:
 		status = do_activate_lv(resource, lock_flags, LKM_EXMODE);
 		break;
@@ -459,6 +516,8 @@ int do_lock_lv(unsigned char command, unsigned char lock_flags, char *resource)
 
 	if (!(lock_flags & LCK_DMEVENTD_MONITOR_MODE))
 		init_dmeventd_monitor(DEFAULT_DMEVENTD_MONITOR);
+
+	cmd->partial_activation = 0;
 
 	/* clean the pool for another command */
 	dm_pool_empty(cmd->mem);
@@ -538,9 +597,14 @@ int do_refresh_cache()
 	DEBUGLOG("Refreshing context\n");
 	log_notice("Refreshing context");
 
+	pthread_mutex_lock(&lvm_lock);
+
 	ret = refresh_toolcontext(cmd);
 	init_full_scan_done(0);
 	lvmcache_label_scan(cmd, 2);
+	dm_pool_empty(cmd->mem);
+
+	pthread_mutex_unlock(&lvm_lock);
 
 	return ret==1?0:-1;
 }
@@ -648,7 +712,7 @@ static void *get_initial_state()
 	return NULL;
 }
 
-static void lvm2_log_fn(int level, const char *file, int line,
+static void lvm2_log_fn(int level, const char *file, int line, int dm_errno,
 			const char *message)
 {
 
@@ -657,7 +721,7 @@ static void lvm2_log_fn(int level, const char *file, int line,
  	   We need to NULL the function ptr otherwise it will just call
 	   back into here! */
 	init_log_fn(NULL);
-	print_log(level, file, line, "%s", message);
+	print_log(level, file, line, dm_errno, "%s", message);
 	init_log_fn(lvm2_log_fn);
 
 	/*
@@ -695,14 +759,6 @@ static void check_config()
 	log_error("locking_type not set correctly in lvm.conf, cluster operations will not work.");
 }
 
-void init_lvhash()
-{
-	/* Create hash table for keeping LV locks & status */
-	lv_hash = dm_hash_create(100);
-	pthread_mutex_init(&lv_hash_lock, NULL);
-	pthread_mutex_init(&lvm_lock, NULL);
-}
-
 /* Backups up the LVM metadata if it's changed */
 void lvm_do_backup(const char *vgname)
 {
@@ -711,28 +767,38 @@ void lvm_do_backup(const char *vgname)
 
 	DEBUGLOG("Triggering backup of VG metadata for %s. suspended=%d\n", vgname, suspended);
 
-	vg = vg_read(cmd, vgname, NULL /*vgid*/, &consistent);
-	if (vg) {
-		if (consistent)
-			check_current_backup(vg);
-	}
-	else {
+	pthread_mutex_lock(&lvm_lock);
+
+	vg = vg_read_internal(cmd, vgname, NULL /*vgid*/, &consistent);
+
+	if (vg && consistent)
+		check_current_backup(vg);
+	else
 		log_error("Error backing up metadata, can't find VG for group %s", vgname);
-	}
+
+	vg_release(vg);
+	dm_pool_empty(cmd->mem);
+
+	pthread_mutex_unlock(&lvm_lock);
 }
 
 /* Called to initialise the LVM context of the daemon */
 int init_lvm(int using_gulm)
 {
-	if (!(cmd = create_toolcontext(1))) {
+	if (!(cmd = create_toolcontext(1, NULL))) {
 		log_error("Failed to allocate command context");
+		return 0;
+	}
+
+	if (stored_errno()) {
+		destroy_toolcontext(cmd);
 		return 0;
 	}
 
 	/* Use LOG_DAEMON for syslog messages instead of LOG_USER */
 	init_syslog(LOG_DAEMON);
 	openlog("clvmd", LOG_PID, LOG_DAEMON);
-	cmd->cmd_line = (char *)"clvmd";
+	cmd->cmd_line = "clvmd";
 
 	/* Check lvm.conf is setup for cluster-LVM */
 	check_config();
@@ -747,4 +813,11 @@ int init_lvm(int using_gulm)
 	init_log_fn(lvm2_log_fn);
 
 	return 1;
+}
+
+void destroy_lvm(void)
+{
+	if (cmd)
+		destroy_toolcontext(cmd);
+	cmd = NULL;
 }

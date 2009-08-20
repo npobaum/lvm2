@@ -35,6 +35,7 @@
 //#define PV_MIN_SIZE ( 512L * 1024L >> SECTOR_SHIFT)	/* 512 KB in sectors */
 //#define MAX_RESTRICTED_LVS 255	/* Used by FMT_RESTRICTED_LVIDS */
 #define MIRROR_LOG_OFFSET	2	/* sectors */
+#define VG_MEMPOOL_CHUNK	10240	/* in bytes, hint only */
 
 /*
  * Ceiling(n / sz)
@@ -79,7 +80,8 @@
 //						   written out in metadata*/
 
 #define POSTORDER_FLAG		0x02000000U /* Not real flags, reserved for  */
-#define POSTORDER_OPEN_FLAG	0x04000000U /* temporary use inside vg_read. */
+#define POSTORDER_OPEN_FLAG	0x04000000U /* temporary use inside vg_read_internal. */
+#define VIRTUAL_ORIGIN		0x08000000U	/* LV - internal use only */
 
 //#define LVM_READ              	0x00000100U	/* LV VG */
 //#define LVM_WRITE             	0x00000200U	/* LV VG */
@@ -201,7 +203,8 @@ struct format_handler {
 	 * Return PV with given path.
 	 */
 	int (*pv_read) (const struct format_type * fmt, const char *pv_name,
-			struct physical_volume * pv, struct dm_list * mdas);
+			struct physical_volume * pv, struct dm_list *mdas,
+			int scan_label_only);
 
 	/*
 	 * Tweak an already filled out a pv ready for importing into a
@@ -209,7 +212,8 @@ struct format_handler {
 	 */
 	int (*pv_setup) (const struct format_type * fmt,
 			 uint64_t pe_start, uint32_t extent_count,
-			 uint32_t extent_size,
+			 uint32_t extent_size, unsigned long data_alignment,
+			 unsigned long data_alignment_offset,
 			 int pvmetadatacopies,
 			 uint64_t pvmetadatasize, struct dm_list * mdas,
 			 struct physical_volume * pv, struct volume_group * vg);
@@ -263,7 +267,9 @@ struct format_handler {
 /*
  * Utility functions
  */
-unsigned long pe_align(struct physical_volume *pv);
+unsigned long set_pe_align(struct physical_volume *pv, unsigned long data_alignment);
+unsigned long set_pe_align_offset(struct physical_volume *pv,
+				  unsigned long data_alignment_offset);
 int vg_validate(struct volume_group *vg);
 
 int pv_write_orphan(struct cmd_context *cmd, struct physical_volume *pv);
@@ -337,9 +343,14 @@ int remove_seg_from_segs_using_this_lv(struct logical_volume *lv, struct lv_segm
 struct lv_segment *get_only_segment_using_this_lv(struct logical_volume *lv);
 
 /*
- * Count LVs that are visible from user's perspective.
+ * Count snapshot LVs.
  */
-unsigned displayable_lvs_in_vg(const struct volume_group *vg);
+unsigned snapshot_count(const struct volume_group *vg);
+
+/*
+ * Calculate readahead from underlying PV devices
+ */
+void lv_calculate_readahead(const struct logical_volume *lv, uint32_t *read_ahead);
 
 /*
  * For internal metadata caching.
@@ -360,11 +371,11 @@ int fixup_imported_mirrors(struct volume_group *vg);
 /*
  * Begin skeleton for external LVM library
  */
-struct id pv_id(const pv_t *pv);
-const struct format_type *pv_format_type(const pv_t *pv);
-struct id pv_vgid(const pv_t *pv);
+struct id pv_id(const struct physical_volume *pv);
+const struct format_type *pv_format_type(const struct physical_volume *pv);
+struct id pv_vgid(const struct physical_volume *pv);
 
-pv_t *pv_by_path(struct cmd_context *cmd, const char *pv_name);
+struct physical_volume *pv_by_path(struct cmd_context *cmd, const char *pv_name);
 int add_pv_to_vg(struct volume_group *vg, const char *pv_name,
 		 struct physical_volume *pv);
 

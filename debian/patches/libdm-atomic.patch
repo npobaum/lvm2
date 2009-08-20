@@ -1,6 +1,6 @@
 --- a/libdm/libdm-common.c
 +++ b/libdm/libdm-common.c
-@@ -270,12 +270,19 @@
+@@ -331,12 +331,19 @@
  static int _add_dev_node(const char *dev_name, uint32_t major, uint32_t minor,
  			 uid_t uid, gid_t gid, mode_t mode)
  {
@@ -21,17 +21,8 @@
  
  	if (stat(path, &info) >= 0) {
  		if (!S_ISBLK(info.st_mode)) {
-@@ -287,32 +294,35 @@
- 		/* If right inode already exists we don't touch uid etc. */
- 		if (info.st_rdev == dev)
- 			return 1;
--
--		if (unlink(path) < 0) {
--			log_error("Unable to unlink device node for '%s'",
--				  dev_name);
--			return 0;
--		}
- 	}
+@@ -359,23 +366,32 @@
+ 			 "node creation.", path);
  
  	old_mask = umask(0);
 -	if (mknod(path, S_IFBLK | mode, dev) < 0) {
@@ -69,4 +60,4 @@
 +	return 0;
  }
  
- static int _rename_dev_node(const char *old_name, const char *new_name)
+ static int _rm_dev_node(const char *dev_name)

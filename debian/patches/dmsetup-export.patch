@@ -1,6 +1,6 @@
 --- a/tools/dmsetup.c
 +++ b/tools/dmsetup.c
-@@ -1075,6 +1075,82 @@
+@@ -1333,6 +1333,82 @@
  	return r;
  }
  
@@ -83,10 +83,10 @@
  /* Show target names and their version numbers */
  static int _targets(int argc __attribute((unused)), char **argv __attribute((unused)), void *data __attribute((unused)))
  {
-@@ -2121,6 +2197,7 @@
- 	{"targets", "", 0, 0, _targets},
+@@ -2434,6 +2510,7 @@
  	{"version", "", 0, 0, _version},
  	{"setgeometry", "<device> <cyl> <head> <sect> <start>", 5, 5, _setgeometry},
+ 	{"splitname", "<device> [<subsystem>]", 1, 2, _splitname},
 +	{"export", "<device> | -j|--major <major> -m|--minor <minor>", 0, 1, _export},
  	{NULL, NULL, 0, 0, NULL}
  };

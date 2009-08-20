@@ -5,9 +5,10 @@ lvextend \- extend the size of a logical volume
 .B lvextend
 [\-\-alloc AllocationPolicy]
 [\-A|\-\-autobackup y|n] [\-d|\-\-debug] [\-h|\-?|\-\-help]
+[\-\-noudevsync]
 [\-i|\-\-stripes Stripes [\-I|\-\-stripesize StripeSize]]
 {\-l|\-\-extents [+]LogicalExtentsNumber[%{VG|LV|PVS|FREE}] |
-\-L|\-\-size [+]LogicalVolumeSize[kKmMgGtT]}
+\-L|\-\-size [+]LogicalVolumeSize[bBsSkKmMgGtTpPeE]}
 [\-t|\-\-test]
 [\-v|\-\-verbose] LogicalVolumePath [PhysicalVolumePath...]
 .SH DESCRIPTION
@@ -21,6 +22,13 @@ volume use
 .SH OPTIONS
 See \fBlvm\fP for common options.
 .TP
+.I \-\-noudevsync
+Disable udev synchronisation. The
+process will not wait for notification from udev.
+It will continue irrespective of any possible udev processing
+in the background.  You should only use this if udev is not running
+or has rules that ignore the devices LVM2 creates.
+.TP
 .I \-l, \-\-extents [+]LogicalExtentsNumber[%{VG|LV|PVS|FREE}]
 Extend or set the logical volume size in units of logical extents.
 With the + sign the value is added to the actual size
@@ -32,7 +40,7 @@ free space for the specified PhysicalVolume(s) with the suffix %PVS,
 or as a percentage of the remaining free space in the Volume Group
 with the suffix %FREE.
 .TP
-.I \-L, \-\-size [+]LogicalVolumeSize[kKmMgGtTpPeE]
+.I \-L, \-\-size [+]LogicalVolumeSize[bBsSkKmMgGtTpPeE]
 Extend or set the logical volume size in units of megabytes.
 A size suffix of M for megabytes,
 G for gigabytes, T for terabytes, P for petabytes 

@@ -48,19 +48,14 @@ static char *_expand_filename(const char *template, const char *vg_name,
 }
 
 static int vg_backup_single(struct cmd_context *cmd, const char *vg_name,
-			    struct volume_group *vg, int consistent,
+			    struct volume_group *vg,
 			    void *handle)
 {
 	char **last_filename = (char **)handle;
 	char *filename;
 
-	if (!vg) {
-		log_error("Volume group \"%s\" not found", vg_name);
+	if (vg_read_error(vg) && (vg_read_error(vg) != FAILED_INCONSISTENT))
 		return ECMD_FAILED;
-	}
-
-	if (!consistent)
-		log_error("WARNING: Volume group \"%s\" inconsistent", vg_name);
 
 	if (arg_count(cmd, file_ARG)) {
 		if (!(filename = _expand_filename(arg_value(cmd, file_ARG),
@@ -72,7 +67,7 @@ static int vg_backup_single(struct cmd_context *cmd, const char *vg_name,
 		if (!backup_to_file(filename, vg->cmd->cmd_line, vg))
 			return ECMD_FAILED;
 	} else {
-		if (!consistent) {
+		if (vg_read_error(vg) == FAILED_INCONSISTENT) {
 			log_error("No backup taken: specify filename with -f "
 				  "to backup an inconsistent VG");
 			stack;
@@ -98,8 +93,8 @@ int vgcfgbackup(struct cmd_context *cmd, int argc, char **argv)
 
 	init_pvmove(1);
 
-	ret = process_each_vg(cmd, argc, argv, LCK_VG_READ, 0, &last_filename,
-			      &vg_backup_single);
+	ret = process_each_vg(cmd, argc, argv, 0,
+			      &last_filename, &vg_backup_single);
 
 	dm_free(last_filename);
 
