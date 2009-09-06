@@ -5,6 +5,9 @@ Maintainer: Debian LVM Team <pkg-lvm-maintainers@lists.alioth.debian.org>
 Uploaders: Bastian Blank <waldi@debian.org>
 Build-Depends: debhelper (>> 4.2), automake, libcman-dev (>> 2), libdlm-dev (>> 2), libreadline5-dev, libselinux1-dev, pkg-config, quilt
 Standards-Version: 3.7.3
+Homepage: http://sources.redhat.com/lvm2/
+Vcs-Svn: svn://svn.debian.org/pkg-lvm/lvm2/trunk/
+Vcs-Browser: http://svn.debian.org/wsvn/pkg-lvm/lvm2/trunk/
 
 Package: lvm2
 Architecture: any

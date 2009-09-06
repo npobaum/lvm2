@@ -11,3 +11,4 @@ libdm-atomic.patch
 dmsetup-export.patch
 rules-subdir.patch
 implicit-pointer.patch
+upstream-pvcreate-partition.patch
