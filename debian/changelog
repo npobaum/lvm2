@@ -1,3 +1,18 @@
+lvm2 (2.02.51-4) unstable; urgency=low
+
+  * Fix version in conffile removal. (closes: #542942)
+  * Add example udev rules file for permission setup. (closes: #450793)
+
+ -- Bastian Blank <waldi@debian.org>  Sun, 06 Sep 2009 13:40:08 +0200
+
+lvm2 (2.02.51-3) unstable; urgency=low
+
+  * Remove obsolete udev rule files. (closes: #542942)
+  * Add Homepage and Vcs-{Browser,Svn} fields. (closes: #486552, #516486)
+  * Apply upstream patch for pvcreate breakage. (closes: #542702)
+
+ -- Bastian Blank <waldi@debian.org>  Sat, 05 Sep 2009 14:02:48 +0200
+
 lvm2 (2.02.51-2) unstable; urgency=low
 
   * Make mapper/* the real device, dm-* a symlink. (closes: #542422)

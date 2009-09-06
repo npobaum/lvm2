@@ -1,0 +1,13 @@
+# Udev rules for permissions of device-mapper devices.
+#
+# These rules set permissions for DM devices. There are some environment
+# variables set that can be used:
+#   DM_NAME - actual DM device's name
+#   DM_UUID - UUID set for DM device (blank if not specified)
+#   DM_SUSPENDED - suspended state of DM device (0 or 1)
+#   DM_VG_NAME - volume group name (only supported for LVM)
+#   DM_LV_NAME - logical volume name (only supported for LVM)
+#   DM_LV_LAYER - logical volume layer (only supported for LVM)
+
+#ENV{DM_NAME}=="my_device", OWNER:="peter", GROUP:="peter", MODE:="660"
+#ENV{DM_VG_NAME}=="my_vg", ENV{DM_LV_NAME}=="my_lv", OWNER:="peter", GROUP:="peter", MODE:="660"

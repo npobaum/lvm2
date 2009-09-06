@@ -166,7 +166,7 @@ install-dmsetup: $(STAMPS_DIR)/install-deb-device-mapper
 	dh_testdir
 	dh_testroot
 	dh_clean -k
-	cp -a debian/contrib/dmsetup debian/dmsetup
+	cp -a debian/tree/dmsetup debian/dmsetup
 	dh_install --sourcedir=$(DIR)
 	dh_installchangelogs WHATS_NEW_DM
 	dh_installdebconf
@@ -245,7 +245,7 @@ install-lvm2: $(STAMPS_DIR)/install-deb-lvm2
 	dh_testdir
 	dh_testroot
 	dh_clean -k
-	cp -a debian/contrib/lvm2 debian/lvm2
+	cp -a debian/tree/lvm2 debian/lvm2
 	dh_install --sourcedir=$(DIR)
 	chmod +x -R debian/lvm2/usr/share/initramfs-tools
 	dh_installchangelogs WHATS_NEW
