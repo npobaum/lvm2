@@ -206,10 +206,10 @@
 -AC_MSG_RESULT($REALTIME)
 -
 -################################################################################
- dnl -- Build cluster LVM daemon
- AC_MSG_CHECKING(whether to build cluster LVM daemon)
- AC_ARG_WITH(clvmd,
-@@ -557,19 +548,6 @@
+ dnl -- Init pkg-config with dummy invokation:
+ dnl -- this is required because PKG_CHECK_MODULES macro is expanded
+ dnl -- to initialize the pkg-config environment only at the first invokation,
+@@ -811,19 +802,6 @@
  fi
  
  ################################################################################
@@ -229,9 +229,9 @@
  dnl -- Check for getopt
  AC_CHECK_HEADERS(getopt.h, AC_DEFINE([HAVE_GETOPTLONG], 1, [Define to 1 if getopt_long is available.]))
  
-@@ -778,7 +756,6 @@
- AC_SUBST(FSADM)
- AC_SUBST(GROUP)
+@@ -1041,7 +1019,6 @@
+ AC_SUBST(GULM_CFLAGS)
+ AC_SUBST(GULM_LIBS)
  AC_SUBST(HAVE_LIBDL)
 -AC_SUBST(HAVE_REALTIME)
  AC_SUBST(HAVE_SELINUX)

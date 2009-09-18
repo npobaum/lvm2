@@ -198,6 +198,73 @@ static int _move_mirrors(struct volume_group *vg_from,
 }
 
 /*
+ * Create or open the destination of the vgsplit operation.
+ * Returns
+ * - non-NULL: VG handle w/VG lock held
+ * - NULL: no VG lock held
+ */
+static struct volume_group *_vgsplit_to(struct cmd_context *cmd,
+					const char *vg_name_to,
+					int *existing_vg)
+{
+	struct volume_group *vg_to = NULL;
+
+	log_verbose("Checking for new volume group \"%s\"", vg_name_to);
+	/*
+	 * First try to create a new VG.  If we cannot create it,
+	 * and we get FAILED_EXIST (we will not be holding a lock),
+	 * a VG must already exist with this name.  We then try to
+	 * read the existing VG - the vgsplit will be into an existing VG.
+	 *
+	 * Otherwise, if the lock was successful, it must be the case that
+	 * we obtained a WRITE lock and could not find the vgname in the
+	 * system.  Thus, the split will be into a new VG.
+	 */
+	vg_to = vg_create(cmd, vg_name_to);
+	if (vg_read_error(vg_to) == FAILED_LOCKING) {
+		log_error("Can't get lock for %s", vg_name_to);
+		vg_release(vg_to);
+		return NULL;
+	}
+	if (vg_read_error(vg_to) == FAILED_EXIST) {
+		*existing_vg = 1;
+		vg_release(vg_to);
+		vg_to = vg_read_for_update(cmd, vg_name_to, NULL, 0);
+
+		if (vg_read_error(vg_to)) {
+			vg_release(vg_to);
+			stack;
+			return NULL;
+		}
+
+	} else if (vg_read_error(vg_to) == SUCCESS) {
+		*existing_vg = 0;
+	}
+	return vg_to;
+}
+
+/*
+ * Open the source of the vgsplit operation.
+ * Returns
+ * - non-NULL: VG handle w/VG lock held
+ * - NULL: no VG lock held
+ */
+static struct volume_group *_vgsplit_from(struct cmd_context *cmd,
+					  const char *vg_name_from)
+{
+	struct volume_group *vg_from;
+
+	log_verbose("Checking for volume group \"%s\"", vg_name_from);
+
+	vg_from = vg_read_for_update(cmd, vg_name_from, NULL, 0);
+	if (vg_read_error(vg_from)) {
+		vg_release(vg_from);
+		return NULL;
+	}
+	return vg_from;
+}
+
+/*
  * Has the user given an option related to a new vg as the split destination?
  */
 static int new_vg_option_specified(struct cmd_context *cmd)
@@ -218,6 +285,7 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 	int existing_vg = 0;
 	int r = ECMD_FAILED;
 	const char *lv_name;
+	int lock_vg_from_first = 1;
 
 	if ((arg_count(cmd, name_ARG) + argc) < 3) {
 		log_error("Existing VG, new VG and either physical volumes "
@@ -246,60 +314,58 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 		return ECMD_FAILED;
 	}
 
-	log_verbose("Checking for volume group \"%s\"", vg_name_from);
+	if (strcmp(vg_name_to, vg_name_from) < 0)
+		lock_vg_from_first = 0;
 
-	vg_from = vg_read_for_update(cmd, vg_name_from, NULL, 0);
-	if (vg_read_error(vg_from)) {
-		vg_release(vg_from);
-		return ECMD_FAILED;
-	}
-
-	/*
-	 * Set metadata format of original VG.
-	 * NOTE: We must set the format before calling vg_create()
-	 * since vg_create() calls the per-format constructor.
-	 */
-	cmd->fmt = vg_from->fid->fmt;
-
-	log_verbose("Checking for new volume group \"%s\"", vg_name_to);
-	/*
-	 * First try to create a new VG.  If we cannot create it,
-	 * and we get FAILED_EXIST (we will not be holding a lock),
-	 * a VG must already exist with this name.  We then try to
-	 * read the existing VG - the vgsplit will be into an existing VG.
-	 *
-	 * Otherwise, if the lock was successful, it must be the case that
-	 * we obtained a WRITE lock and could not find the vgname in the
-	 * system.  Thus, the split will be into a new VG.
-	 */
-	vg_to = vg_create(cmd, vg_name_to);
-	if (vg_read_error(vg_to) == FAILED_LOCKING) {
-		log_error("Can't get lock for %s", vg_name_to);
-		vg_release(vg_to);
-		unlock_and_release_vg(cmd, vg_from, vg_name_from);
-		return ECMD_FAILED;
-	}
-	if (vg_read_error(vg_to) == FAILED_EXIST) {
-		existing_vg = 1;
-		vg_release(vg_to);
-		vg_to = vg_read_for_update(cmd, vg_name_to, NULL, 0);
-
-		if (vg_read_error(vg_to)) {
-			vg_release(vg_to);
+	if (lock_vg_from_first) {
+		vg_from = _vgsplit_from(cmd, vg_name_from);
+		if (!vg_from) {
 			stack;
-			goto bad2;
+			return ECMD_FAILED;
+		}
+		/*
+		 * Set metadata format of original VG.
+		 * NOTE: We must set the format before calling vg_create()
+		 * since vg_create() calls the per-format constructor.
+		 */
+		cmd->fmt = vg_from->fid->fmt;
+
+		vg_to = _vgsplit_to(cmd, vg_name_to, &existing_vg);
+		if (!vg_to) {
+			unlock_and_release_vg(cmd, vg_from, vg_name_from);
+			stack;
+			return ECMD_FAILED;
+		}
+	} else {
+		vg_to = _vgsplit_to(cmd, vg_name_to, &existing_vg);
+		if (!vg_to) {
+			stack;
+			return ECMD_FAILED;
+		}
+		vg_from = _vgsplit_from(cmd, vg_name_from);
+		if (!vg_from) {
+			unlock_and_release_vg(cmd, vg_to, vg_name_to);
+			stack;
+			return ECMD_FAILED;
 		}
 
+		if (cmd->fmt != vg_from->fid->fmt) {
+			/* In this case we don't know the vg_from->fid->fmt */
+			log_error("Unable to set new VG metadata type based on "
+				  "source VG format - use -M option.");
+			goto bad;
+		}
+	}
+
+	if (existing_vg) {
 		if (new_vg_option_specified(cmd)) {
 			log_error("Volume group \"%s\" exists, but new VG "
 				    "option specified", vg_name_to);
-			goto_bad;
+			goto bad;
 		}
 		if (!vgs_are_compatible(cmd, vg_from,vg_to))
 			goto_bad;
-	} else if (vg_read_error(vg_to) == SUCCESS) {
-		existing_vg = 0;
-
+	} else {
 		vp_def.vg_name = NULL;
 		vp_def.extent_size = vg_from->extent_size;
 		vp_def.max_pv = vg_from->max_pv;
@@ -309,12 +375,12 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 
 		if (fill_vg_create_params(cmd, vg_name_to, &vp_new, &vp_def)) {
 			r = EINVALID_CMD_LINE;
-			goto bad;
+			goto_bad;
 		}
 
 		if (validate_vg_create_params(cmd, &vp_new)) {
 			r = EINVALID_CMD_LINE;
-			goto bad;
+			goto_bad;
 		}
 
 		if (!vg_set_extent_size(vg_to, vp_new.extent_size) ||
@@ -356,7 +422,7 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 	/* Split metadata areas and check if both vgs have at least one area */
 	if (!(vg_split_mdas(cmd, vg_from, vg_to)) && vg_from->pv_count) {
 		log_error("Cannot split: Nowhere to store metadata for new Volume Group");
-		goto_bad;
+		goto bad;
 	}
 
 	/* Set proper name for all PVs in new VG */
@@ -405,7 +471,7 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 		if (vg_read_error(vg_to)) {
 			log_error("Volume group \"%s\" became inconsistent: "
 				  "please fix manually", vg_name_to);
-			goto_bad;
+			goto bad;
 		}
 	}
 
@@ -423,8 +489,12 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 	r = ECMD_PROCESSED;
 
 bad:
-	unlock_and_release_vg(cmd, vg_to, vg_name_to);
-bad2:
-	unlock_and_release_vg(cmd, vg_from, vg_name_from);
+	if (lock_vg_from_first) {
+		unlock_and_release_vg(cmd, vg_to, vg_name_to);
+		unlock_and_release_vg(cmd, vg_from, vg_name_from);
+	} else {
+		unlock_and_release_vg(cmd, vg_from, vg_name_from);
+		unlock_and_release_vg(cmd, vg_to, vg_name_to);
+	}
 	return r;
 }

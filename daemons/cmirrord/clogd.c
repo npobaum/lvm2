@@ -1,3 +1,17 @@
+/*
+ * Copyright (C) 2004-2009 Red Hat, Inc. All rights reserved.
+ *
+ * This copyrighted material is made available to anyone wishing to use,
+ * modify, copy, or redistribute it subject to the terms and conditions
+ * of the GNU General Public License v.2.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software Foundation,
+ * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ */
+
+#include "configure.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -13,9 +27,9 @@
 #include <linux/types.h>
 #include <sys/socket.h>
 #include <linux/netlink.h>
-#include <linux/dm-log-userspace.h>
 #include <linux/dm-ioctl.h>
 
+#include "dm-log-userspace.h"
 #include "functions.h"
 #include "local.h"
 #include "cluster.h"
@@ -41,7 +55,7 @@ int main(int argc, char *argv[])
 	/* Parent can now exit, we're ready to handle requests */
 	kill(getppid(), SIGTERM);
 
-	LOG_PRINT("Starting clogd:");
+	LOG_PRINT("Starting cmirrord:");
 	LOG_PRINT(" Built: "__DATE__" "__TIME__"\n");
 	LOG_DBG(" Compiled with debugging.");
 
@@ -222,9 +236,9 @@ static void daemonize(void)
 	open("/dev/null", O_WRONLY); /* reopen stdout */
 	open("/dev/null", O_WRONLY); /* reopen stderr */
 
-	LOG_OPEN("clogd", LOG_PID, LOG_DAEMON);
+	LOG_OPEN("cmirrord", LOG_PID, LOG_DAEMON);
 
-	if (create_lockfile("/var/run/clogd.pid"))
+	if (create_lockfile(CMIRRORD_PIDFILE))
 		exit(EXIT_LOCKFILE);
 
 	signal(SIGINT, &sig_handler);

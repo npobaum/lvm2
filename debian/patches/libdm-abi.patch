@@ -1,6 +1,6 @@
 --- a/libdm/libdm-common.c
 +++ b/libdm/libdm-common.c
-@@ -301,9 +301,9 @@
+@@ -306,9 +306,9 @@
  	return 1;
  }
  
@@ -11,7 +11,7 @@
  	security_context_t scontext;
  
  	if (is_selinux_enabled() <= 0)
-@@ -324,9 +324,9 @@
+@@ -329,9 +329,9 @@
  	}
  
  	freecon(scontext);
@@ -22,7 +22,7 @@
  
  static int _add_dev_node(const char *dev_name, uint32_t major, uint32_t minor,
  			 uid_t uid, gid_t gid, mode_t mode)
-@@ -372,10 +372,8 @@
+@@ -378,10 +378,8 @@
  
  	log_debug("Created %s", path);
  
@@ -35,7 +35,7 @@
  }
 --- a/lib/activate/fs.c
 +++ b/lib/activate/fs.c
-@@ -196,10 +196,8 @@
+@@ -199,10 +199,8 @@
  		return 0;
  	}
  

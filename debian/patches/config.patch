@@ -1,6 +1,6 @@
 --- a/doc/example.conf
 +++ b/doc/example.conf
-@@ -294,7 +294,7 @@
+@@ -305,7 +305,7 @@
      # Full pathnames can be given.
  
      # Search this directory first for shared libraries.

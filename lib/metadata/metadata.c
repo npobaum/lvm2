@@ -45,10 +45,6 @@ static struct physical_volume *_pv_read(struct cmd_context *cmd,
 					uint64_t *label_sector,
 					int warnings, int scan_label_only);
 
-static int _pv_write(struct cmd_context *cmd __attribute((unused)),
-		     struct physical_volume *pv,
-	     	     struct dm_list *mdas, int64_t label_sector);
-
 static struct physical_volume *_find_pv_by_name(struct cmd_context *cmd,
 			 			const char *pv_name);
 
@@ -472,12 +468,10 @@ int remove_lvs_in_vg(struct cmd_context *cmd,
 	return 1;
 }
 
-int vg_remove_single(struct volume_group *vg)
+int vg_remove_check(struct volume_group *vg)
 {
-	struct physical_volume *pv;
-	struct pv_list *pvl;
 	unsigned lv_count;
-	int ret = 1;
+	struct pv_list *pvl, *tpvl;
 
 	if (vg_read_error(vg) || vg_missing_pv_count(vg)) {
 		log_error("Volume group \"%s\" not found, is inconsistent "
@@ -501,19 +495,32 @@ int vg_remove_single(struct volume_group *vg)
 	if (!archive(vg))
 		return 0;
 
+	dm_list_iterate_items_safe(pvl, tpvl, &vg->pvs) {
+		dm_list_del(&pvl->list);
+		dm_list_add(&vg->removed_pvs, &pvl->list);
+	}
+	return 1;
+}
+
+int vg_remove(struct volume_group *vg)
+{
+	struct physical_volume *pv;
+	struct pv_list *pvl;
+	int ret = 1;
+
 	if (!lock_vol(vg->cmd, VG_ORPHANS, LCK_VG_WRITE)) {
 		log_error("Can't get lock for orphan PVs");
 		return 0;
 	}
 
-	if (!vg_remove(vg)) {
-		log_error("vg_remove %s failed", vg->name);
+	if (!vg_remove_mdas(vg)) {
+		log_error("vg_remove_mdas %s failed", vg->name);
 		unlock_vg(vg->cmd, VG_ORPHANS);
 		return 0;
 	}
 
 	/* init physical volumes */
-	dm_list_iterate_items(pvl, &vg->pvs) {
+	dm_list_iterate_items(pvl, &vg->removed_pvs) {
 		pv = pvl->pv;
 		log_verbose("Removing physical volume \"%s\" from "
 			    "volume group \"%s\"", pv_dev_name(pv), vg->name);
@@ -1268,6 +1275,7 @@ struct physical_volume * pvcreate_single(struct cmd_context *cmd, const char *pv
 	struct device *dev;
 	struct dm_list mdas;
 	struct pvcreate_params default_pp;
+	char buffer[64] __attribute((aligned(8)));
 
 	fill_default_pvcreate_params(&default_pp);
 	if (!pp)
@@ -1276,8 +1284,11 @@ struct physical_volume * pvcreate_single(struct cmd_context *cmd, const char *pv
 	if (pp->idp) {
 		if ((dev = device_from_pvid(cmd, pp->idp)) &&
 		    (dev != dev_cache_get(pv_name, cmd->filter))) {
-			log_error("uuid %s already in use on \"%s\"",
-				  pp->idp->uuid, dev_name(dev));
+			if (!id_write_format((const struct id*)&pp->idp->uuid,
+			    buffer, sizeof(buffer)))
+				return_NULL;
+			log_error("uuid %s already in use on \"%s\"", buffer,
+				  dev_name(dev));
 			return NULL;
 		}
 	}
@@ -1676,7 +1687,7 @@ struct pv_segment *find_peg_by_pe(const struct physical_volume *pv, uint32_t pe)
 	return NULL;
 }
 
-int vg_remove(struct volume_group *vg)
+int vg_remove_mdas(struct volume_group *vg)
 {
 	struct metadata_area *mda;
 
@@ -2995,17 +3006,9 @@ int scan_vgs_for_pvs(struct cmd_context *cmd)
 	return _get_pvs(cmd, NULL);
 }
 
-/* FIXME: liblvm todo - make into function that takes handle */
 int pv_write(struct cmd_context *cmd __attribute((unused)),
 	     struct physical_volume *pv,
 	     struct dm_list *mdas, int64_t label_sector)
-{
-	return _pv_write(cmd, pv, mdas, label_sector);
-}
-
-static int _pv_write(struct cmd_context *cmd __attribute((unused)),
-		     struct physical_volume *pv,
-	     	     struct dm_list *mdas, int64_t label_sector)
 {
 	if (!pv->fmt->ops->pv_write) {
 		log_error("Format does not support writing physical volumes");
@@ -3037,7 +3040,7 @@ int pv_write_orphan(struct cmd_context *cmd, struct physical_volume *pv)
 		return 0;
 	}
 
-	if (!_pv_write(cmd, pv, NULL, INT64_C(-1))) {
+	if (!pv_write(cmd, pv, NULL, INT64_C(-1))) {
 		log_error("Failed to clear metadata from physical "
 			  "volume \"%s\" after removal from \"%s\"",
 			  pv_dev_name(pv), old_vg_name);
@@ -3520,6 +3523,16 @@ uint64_t vg_free_count(const struct volume_group *vg)
 uint64_t vg_pv_count(const struct volume_group *vg)
 {
 	return (uint64_t) vg->pv_count;
+}
+
+uint64_t vg_max_pv(const struct volume_group *vg)
+{
+	return (uint64_t) vg->max_pv;
+}
+
+uint64_t vg_max_lv(const struct volume_group *vg)
+{
+	return (uint64_t) vg->max_lv;
 }
 
 uint64_t lv_size(const struct logical_volume *lv)

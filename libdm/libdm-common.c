@@ -28,6 +28,10 @@
 #  include <sys/types.h>
 #  include <sys/ipc.h>
 #  include <sys/sem.h>
+#ifdef HAVE_UDEV_QUEUE_GET_UDEV_IS_ACTIVE
+#  define LIBUDEV_I_KNOW_THE_API_IS_SUBJECT_TO_CHANGE
+#  include <libudev.h>
+#endif
 #endif
 
 #ifdef linux
@@ -45,6 +49,7 @@ static char _dm_dir[PATH_MAX] = DEV_DIR DM_DIR;
 static int _verbose = 0;
 
 #ifdef UDEV_SYNC_SUPPORT
+static int _udev_running = -1;
 static int _sync_with_udev = 1;
 #endif
 
@@ -360,6 +365,7 @@ static int _add_dev_node(const char *dev_name, uint32_t major, uint32_t minor,
 
 	old_mask = umask(0);
 	if (mknod(path, S_IFBLK | mode, dev) < 0) {
+		umask(old_mask);
 		log_error("Unable to make device node for '%s'", dev_name);
 		return 0;
 	}
@@ -824,14 +830,62 @@ int dm_udev_wait(uint32_t cookie)
 
 #else		/* UDEV_SYNC_SUPPORT */
 
+
+static int _check_udev_is_running(void)
+{
+
+#  ifndef HAVE_UDEV_QUEUE_GET_UDEV_IS_ACTIVE
+
+	log_debug("Could not get udev state because libudev library "
+		  "was not found and it was not compiled in. "
+		  "Assuming udev is not running.");
+	return 0;
+
+#  else	/* HAVE_UDEV_QUEUE_GET_UDEV_IS_ACTIVE */
+
+	struct udev *udev;
+	struct udev_queue *udev_queue;
+	int r;
+
+	if (!(udev = udev_new()))
+		goto_bad;
+
+	if (!(udev_queue = udev_queue_new(udev))) {
+		udev_unref(udev);
+		goto_bad;
+	}
+
+	if (!(r = udev_queue_get_udev_is_active(udev_queue)))
+		log_debug("Udev is not running. "
+			  "Not using udev synchronisation code.");
+
+	udev_queue_unref(udev_queue);
+	udev_unref(udev);
+
+	return r;
+
+bad:
+	log_error("Could not get udev state. Assuming udev is not running.");
+	return 0;
+
+#  endif	/* HAVE_UDEV_QUEUE_GET_UDEV_IS_ACTIVE */
+
+}
+
 void dm_udev_set_sync_support(int sync_with_udev)
 {
+	if (_udev_running < 0)
+		_udev_running = _check_udev_is_running();
+
 	_sync_with_udev = sync_with_udev;
 }
 
 int dm_udev_get_sync_support(void)
 {
-	return _sync_with_udev;
+	if (_udev_running < 0)
+		_udev_running = _check_udev_is_running();
+
+	return dm_cookie_supported() && _udev_running && _sync_with_udev;
 }
 
 static int _get_cookie_sem(uint32_t cookie, int *semid)
@@ -1014,7 +1068,7 @@ int dm_task_set_cookie(struct dm_task *dmt, uint32_t *cookie)
 {
 	int semid;
 
-	if (!dm_udev_get_sync_support() || !dm_cookie_supported()) {
+	if (!dm_udev_get_sync_support()) {
 		dmt->event_nr = *cookie = 0;
 		return 1;
 	}
@@ -1049,7 +1103,7 @@ int dm_udev_complete(uint32_t cookie)
 {
 	int semid;
 
-	if (!cookie || !dm_udev_get_sync_support() || !dm_cookie_supported())
+	if (!cookie || !dm_udev_get_sync_support())
 		return 1;
 
 	if (!_get_cookie_sem(cookie, &semid))
@@ -1070,7 +1124,7 @@ int dm_udev_wait(uint32_t cookie)
 	int semid;
 	struct sembuf sb = {0, 0, 0};
 
-	if (!cookie || !dm_udev_get_sync_support() || !dm_cookie_supported())
+	if (!cookie || !dm_udev_get_sync_support())
 		return 1;
 
 	if (!_get_cookie_sem(cookie, &semid))

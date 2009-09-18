@@ -8,7 +8,5 @@ libdm-type-kernel_dev_t.patch
 pkgconfig.patch
 libdm-abi.patch
 libdm-atomic.patch
-dmsetup-export.patch
 rules-subdir.patch
 implicit-pointer.patch
-upstream-pvcreate-partition.patch

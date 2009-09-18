@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2009 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -441,8 +441,9 @@ int pv_analyze(struct cmd_context *cmd, const char *pv_name,
 uint32_t pv_list_extents_free(const struct dm_list *pvh);
 
 struct volume_group *vg_create(struct cmd_context *cmd, const char *vg_name);
+int vg_remove_mdas(struct volume_group *vg);
+int vg_remove_check(struct volume_group *vg);
 int vg_remove(struct volume_group *vg);
-int vg_remove_single(struct volume_group *vg);
 int vg_rename(struct cmd_context *cmd, struct volume_group *vg,
 	      const char *new_name);
 int vg_extend(struct volume_group *vg, int pv_count, char **pv_names);
@@ -716,8 +717,11 @@ uint64_t vg_extent_size(const struct volume_group *vg);
 uint64_t vg_extent_count(const struct volume_group *vg);
 uint64_t vg_free_count(const struct volume_group *vg);
 uint64_t vg_pv_count(const struct volume_group *vg);
+uint64_t vg_max_pv(const struct volume_group *vg);
+uint64_t vg_max_lv(const struct volume_group *vg);
 int vg_check_write_mode(struct volume_group *vg);
 #define vg_is_clustered(vg) (vg_status((vg)) & CLUSTERED)
+#define vg_is_exported(vg) (vg_status((vg)) & EXPORTED_VG)
 
 struct vgcreate_params {
 	char *vg_name;

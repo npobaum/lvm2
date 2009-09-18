@@ -1,3 +1,11 @@
+lvm2 (2.02.52-1) unstable; urgency=low
+
+  * New upstram version.
+  * Fix clvm init script. (closes: #542169)
+  * Remove dmsetup export support, unused.
+
+ -- Bastian Blank <waldi@debian.org>  Fri, 18 Sep 2009 17:44:29 +0000
+
 lvm2 (2.02.51-4) unstable; urgency=low
 
   * Fix version in conffile removal. (closes: #542942)

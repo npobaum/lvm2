@@ -44,7 +44,9 @@
 #include <syslog.h>
 #include <errno.h>
 #include <limits.h>
-#include <libdlm.h>
+#ifdef HAVE_COROSYNC_CONFDB_H
+#include <corosync/confdb.h>
+#endif
 
 #include "clvmd-comms.h"
 #include "lvm-functions.h"
@@ -110,6 +112,8 @@ static int child_pipe[2];
 
 typedef enum {IF_AUTO, IF_CMAN, IF_GULM, IF_OPENAIS, IF_COROSYNC} if_type_t;
 
+typedef void *(lvm_pthread_fn_t)(void*);
+
 /* Prototypes for code further down */
 static void sigusr2_handler(int sig);
 static void sighup_handler(int sig);
@@ -138,7 +142,7 @@ static int check_all_clvmds_running(struct local_client *client);
 static int local_rendezvous_callback(struct local_client *thisfd, char *buf,
 				     int len, const char *csid,
 				     struct local_client **new_client);
-static void *lvm_thread_fn(void *);
+static void lvm_thread_fn(void *) __attribute__ ((noreturn));
 static int add_to_lvmqueue(struct local_client *client, struct clvm_header *msg,
 			   int msglen, const char *csid);
 static int distribute_command(struct local_client *thisfd);
@@ -147,6 +151,7 @@ static void ntoh_clvm(struct clvm_header *hdr);
 static void add_reply_to_list(struct local_client *client, int status,
 			      const char *csid, const char *buf, int len);
 static if_type_t parse_cluster_interface(char *ifname);
+static if_type_t get_cluster_type(void);
 
 static void usage(char *prog, FILE *file)
 {
@@ -390,6 +395,9 @@ int main(int argc, char *argv[])
 	init_lvhash();
 
 	/* Start the cluster interface */
+	if (cluster_iface == IF_AUTO)
+		cluster_iface = get_cluster_type();
+
 #ifdef USE_CMAN
 	if ((cluster_iface == IF_AUTO || cluster_iface == IF_CMAN) && (clops = init_cman_cluster())) {
 		max_csid_len = CMAN_MAX_CSID_LEN;
@@ -461,7 +469,7 @@ int main(int argc, char *argv[])
 
 	/* Don't let anyone else to do work until we are started */
 	pthread_mutex_lock(&lvm_start_mutex);
-	pthread_create(&lvm_thread, NULL, lvm_thread_fn,
+	pthread_create(&lvm_thread, NULL, (lvm_pthread_fn_t*)lvm_thread_fn,
 			(void *)(long)using_gulm);
 
 	/* Tell the rest of the cluster our version number */
@@ -1797,7 +1805,7 @@ static int process_work_item(struct lvm_thread_cmd *cmd)
 /*
  * Routine that runs in the "LVM thread".
  */
-static __attribute__ ((noreturn)) void *lvm_thread_fn(void *arg)
+static void lvm_thread_fn(void *arg)
 {
 	struct dm_list *cmdl, *tmp;
 	sigset_t ss;
@@ -2057,4 +2065,60 @@ static if_type_t parse_cluster_interface(char *ifname)
 		iface = IF_COROSYNC;
 
 	return iface;
+}
+
+/*
+ * Try and find a cluster system in corosync's objdb, if it is running. This is
+ * only called if the command-line option is not present, and if it fails
+ * we still try the interfaces in order.
+ */
+static if_type_t get_cluster_type()
+{
+#ifdef HAVE_COROSYNC_CONFDB_H
+	confdb_handle_t handle;
+	if_type_t type = IF_AUTO;
+	int result;
+	char buf[255];
+	size_t namelen = sizeof(buf);
+	hdb_handle_t cluster_handle;
+	hdb_handle_t clvmd_handle;
+	confdb_callbacks_t callbacks = {
+		.confdb_key_change_notify_fn = NULL,
+		.confdb_object_create_change_notify_fn = NULL,
+		.confdb_object_delete_change_notify_fn = NULL
+	};
+
+	result = confdb_initialize (&handle, &callbacks);
+        if (result != CS_OK)
+		return type;
+
+        result = confdb_object_find_start(handle, OBJECT_PARENT_HANDLE);
+	if (result != CS_OK)
+		goto out;
+
+        result = confdb_object_find(handle, OBJECT_PARENT_HANDLE, (void *)"cluster", strlen("cluster"), &cluster_handle);
+        if (result != CS_OK)
+		goto out;
+
+        result = confdb_object_find_start(handle, cluster_handle);
+	if (result != CS_OK)
+		goto out;
+
+        result = confdb_object_find(handle, cluster_handle, (void *)"clvmd", strlen("clvmd"), &clvmd_handle);
+        if (result != CS_OK)
+		goto out;
+
+        result = confdb_key_get(handle, clvmd_handle, (void *)"interface", strlen("interface"), buf, &namelen);
+        if (result != CS_OK)
+		goto out;
+
+	buf[namelen] = '\0';
+	type = parse_cluster_interface(buf);
+	DEBUGLOG("got interface type '%s' from confdb\n", buf);
+out:
+	confdb_finalize(handle);
+	return type;
+#else
+	return IF_AUTO;
+#endif
 }

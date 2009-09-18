@@ -23,17 +23,14 @@ static int vgexport_single(struct cmd_context *cmd __attribute((unused)),
 	struct pv_list *pvl;
 	struct physical_volume *pv;
 
-	if (vg_read_error(vg))
-		goto error;
-
 	if (lvs_in_vg_activated(vg)) {
 		log_error("Volume group \"%s\" has active logical volumes",
 			  vg_name);
-		goto error;
+		goto bad;
 	}
 
 	if (!archive(vg))
-		goto error;
+		goto_bad;
 
 	vg->status |= EXPORTED_VG;
 
@@ -43,7 +40,7 @@ static int vgexport_single(struct cmd_context *cmd __attribute((unused)),
 	}
 
 	if (!vg_write(vg) || !vg_commit(vg))
-		goto error;
+		goto_bad;
 
 	backup(vg);
 
@@ -51,7 +48,7 @@ static int vgexport_single(struct cmd_context *cmd __attribute((unused)),
 
 	return ECMD_PROCESSED;
 
-      error:
+bad:
 	return ECMD_FAILED;
 }
 

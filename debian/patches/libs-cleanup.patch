@@ -8,7 +8,7 @@
  		LIB_SUFFIX=so
  		DEVMAPPER=yes
  		ODIRECT=yes
-@@ -522,24 +521,6 @@
+@@ -776,24 +775,6 @@
  fi;
  
  ################################################################################
@@ -33,7 +33,7 @@
  dnl -- Check for dlopen
  AC_CHECK_LIB(dl, dlopen, HAVE_LIBDL=yes, HAVE_LIBDL=no)
  
-@@ -570,34 +551,9 @@
+@@ -824,34 +805,9 @@
  ################################################################################
  dnl -- Check for selinux
  if test x$SELINUX = xyes; then
@@ -71,7 +71,7 @@
  fi
  
  ################################################################################
-@@ -621,7 +577,7 @@
+@@ -875,7 +831,7 @@
  dnl -- Check for readline (Shamelessly copied from parted 1.4.17)
  if test x$READLINE != xno; then
  	rl_found=yes
@@ -80,7 +80,7 @@
  	test x$READLINE:$rl_found = xyes:no &&
  	  AC_MSG_ERROR(
  GNU Readline could not be found which is required for the
-@@ -829,6 +785,9 @@
+@@ -1092,6 +1048,9 @@
  AC_SUBST(JOBS)
  AC_SUBST(LDDEPS)
  AC_SUBST(LIBS)
@@ -90,7 +90,7 @@
  AC_SUBST(LIB_SUFFIX)
  AC_SUBST(LOCALEDIR)
  AC_SUBST(LVM1)
-@@ -851,7 +810,6 @@
+@@ -1118,7 +1077,6 @@
  AC_SUBST(STATICDIR)
  AC_SUBST(STATIC_LINK)
  AC_SUBST(UDEV_RULES)
@@ -100,7 +100,7 @@
  AC_SUBST(missingkernel)
 --- a/tools/Makefile.in
 +++ b/tools/Makefile.in
-@@ -99,6 +99,9 @@
+@@ -102,6 +102,9 @@
  
  LVMLIBS += -ldevmapper
  
@@ -110,7 +110,7 @@
  DEFS += -DLVM_SHARED_PATH=\"$(exec_prefix)/sbin/lvm\"
  
  include $(top_srcdir)/make.tmpl
-@@ -111,14 +114,13 @@
+@@ -114,14 +117,13 @@
  
  dmsetup.static: dmsetup.o $(interfacedir)/libdevmapper.a
  	$(CC) -o $@ dmsetup.o $(CFLAGS) $(LDFLAGS) -static \
