@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2009 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -19,11 +19,8 @@ static int vgscan_single(struct cmd_context *cmd, const char *vg_name,
 			 struct volume_group *vg,
 			 void *handle __attribute((unused)))
 {
-	if (vg_read_error(vg))
-		return ECMD_FAILED;
-
 	log_print("Found %svolume group \"%s\" using metadata type %s",
-		  (vg_status(vg) & EXPORTED_VG) ? "exported " : "", vg_name,
+		  vg_is_exported(vg) ? "exported " : "", vg_name,
 		  vg->fid->fmt->name);
 
 	check_current_backup(vg);

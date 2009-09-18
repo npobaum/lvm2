@@ -15,31 +15,60 @@
 
 #include "tools.h"
 
+static struct volume_group *_vgmerge_vg_read(struct cmd_context *cmd,
+					     const char *vg_name)
+{
+	struct volume_group *vg;
+	log_verbose("Checking for volume group \"%s\"", vg_name);
+	vg = vg_read_for_update(cmd, vg_name, NULL, 0);
+	if (vg_read_error(vg)) {
+		vg_release(vg);
+		return NULL;
+	}
+	return vg;
+}
+
 static int _vgmerge_single(struct cmd_context *cmd, const char *vg_name_to,
 			   const char *vg_name_from)
 {
 	struct volume_group *vg_to, *vg_from;
 	struct lv_list *lvl1, *lvl2;
 	int r = ECMD_FAILED;
+	int lock_vg_from_first = 0;
 
 	if (!strcmp(vg_name_to, vg_name_from)) {
 		log_error("Duplicate volume group name \"%s\"", vg_name_from);
 		return ECMD_FAILED;
 	}
 
-	log_verbose("Checking for volume group \"%s\"", vg_name_to);
-	vg_to = vg_read_for_update(cmd, vg_name_to, NULL, 0);
-	if (vg_read_error(vg_to)) {
-		vg_release(vg_to);
-		return ECMD_FAILED;
-	}
+	if (strcmp(vg_name_to, vg_name_from) > 0)
+		lock_vg_from_first = 1;
 
-	log_verbose("Checking for volume group \"%s\"", vg_name_from);
-	vg_from = vg_read_for_update(cmd, vg_name_from, NULL, 0);
-	if (vg_read_error(vg_from)) {
-		vg_release(vg_from);
-		unlock_and_release_vg(cmd, vg_to, vg_name_to);
-		return ECMD_FAILED;
+	if (lock_vg_from_first) {
+		vg_from = _vgmerge_vg_read(cmd, vg_name_from);
+		if (!vg_from) {
+			stack;
+			return ECMD_FAILED;
+		}
+		vg_to = _vgmerge_vg_read(cmd, vg_name_to);
+		if (!vg_to) {
+			stack;
+			unlock_and_release_vg(cmd, vg_from, vg_name_from);
+			return ECMD_FAILED;
+		}
+	} else {
+		vg_to = _vgmerge_vg_read(cmd, vg_name_to);
+		if (!vg_to) {
+			stack;
+			return ECMD_FAILED;
+		}
+
+		vg_from = _vgmerge_vg_read(cmd, vg_name_from);
+		if (!vg_from) {
+			stack;
+			unlock_and_release_vg(cmd, vg_to, vg_name_to);
+			return ECMD_FAILED;
+		}
 	}
 
 	if (!vgs_are_compatible(cmd, vg_from, vg_to))
@@ -116,8 +145,13 @@ static int _vgmerge_single(struct cmd_context *cmd, const char *vg_name_to,
 		  vg_from->name, vg_to->name);
 	r = ECMD_PROCESSED;
 bad:
-	unlock_and_release_vg(cmd, vg_from, vg_name_from);
-	unlock_and_release_vg(cmd, vg_to, vg_name_to);
+	if (lock_vg_from_first) {
+		unlock_and_release_vg(cmd, vg_to, vg_name_to);
+		unlock_and_release_vg(cmd, vg_from, vg_name_from);
+	} else {
+		unlock_and_release_vg(cmd, vg_from, vg_name_from);
+		unlock_and_release_vg(cmd, vg_to, vg_name_to);
+	}
 	return r;
 }
 

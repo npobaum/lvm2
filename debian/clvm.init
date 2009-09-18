@@ -1,11 +1,11 @@
 #!/bin/sh
 #
 ### BEGIN INIT INFO
-# Provides:          lvm cluster locking daemon
-# Required-Start:    lvm2 cman
-# Required-Stop:     lvm2 cman
-# Default-Start:     2 3 4 5
-# Default-Stop:      0 1 6
+# Provides:          clvm
+# Required-Start:    $remote_fs lvm2 cman
+# Required-Stop:     $remote_fs lvm2 cman
+# Default-Start:     S
+# Default-Stop:      0 6
 # Short-Description: start and stop the lvm cluster locking daemon
 ### END INIT INFO
 #

@@ -1,3 +1,13 @@
+Version 1.02.37 - 15th September 2009
+=====================================
+  Add dmsetup manpage entries for udevcomplete_all and udevcookies.
+  Check udev is running when processing cookies and retain state internally.
+  Add y|--yes option to dmsetup for default 'yes' answer to prompts.
+  Fix tools Makefile to process dmsetup sources separately.
+  Restore umask when device node creation fails.
+  Check kernel vsn to use 'block_on_error' or 'handle_errors' in mirror table.
+  Add dm-log-userspace.h to tree for cmirrord builds.
+
 Version 1.02.36 - 6th August 2009
 =================================
   Add udevcookies, udevcomplete, udevcomplete_all and --noudevwait to dmsetup.

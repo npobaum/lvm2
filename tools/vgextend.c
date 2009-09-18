@@ -40,27 +40,22 @@ int vgextend(struct cmd_context *cmd, int argc, char **argv)
 	vg = vg_read_for_update(cmd, vg_name, NULL, 0);
 	if (vg_read_error(vg)) {
 		vg_release(vg);
+		stack;
 		return ECMD_FAILED;
 	}
-
-/********** FIXME
-	log_print("maximum logical volume size is %s",
-		  (dummy = lvm_show_size(LVM_LV_SIZE_MAX(vg) / 2, LONG)));
-	dm_free(dummy);
-	dummy = NULL;
-**********/
-
-	if (!archive(vg))
-		goto error;
 
 	if (!lock_vol(cmd, VG_ORPHANS, LCK_VG_WRITE)) {
 		log_error("Can't get lock for orphan PVs");
+		unlock_and_release_vg(cmd, vg, vg_name);
 		return ECMD_FAILED;
 	}
 
+	if (!archive(vg))
+		goto_bad;
+
 	/* extend vg */
 	if (!vg_extend(vg, argc, argv))
-		goto error;
+		goto_bad;
 
 	/* ret > 0 */
 	log_verbose("Volume group \"%s\" will be extended by %d new "
@@ -68,13 +63,13 @@ int vgextend(struct cmd_context *cmd, int argc, char **argv)
 
 	/* store vg on disk(s) */
 	if (!vg_write(vg) || !vg_commit(vg))
-		goto error;
+		goto_bad;
 
 	backup(vg);
 	log_print("Volume group \"%s\" successfully extended", vg_name);
 	r = ECMD_PROCESSED;
 
-error:
+bad:
 	unlock_vg(cmd, VG_ORPHANS);
 	unlock_and_release_vg(cmd, vg, vg_name);
 	return r;

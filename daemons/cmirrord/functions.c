@@ -1,3 +1,17 @@
+/*
+ * Copyright (C) 2004-2009 Red Hat, Inc. All rights reserved.
+ *
+ * This copyrighted material is made available to anyone wishing to use,
+ * modify, copy, or redistribute it subject to the terms and conditions
+ * of the GNU Lesser General Public License v.2.1.
+ *
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with this program; if not, write to the Free Software Foundation,
+ * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ */
+#define _GNU_SOURCE
+#define _FILE_OFFSET_BITS 64
+
 #include <stdint.h>
 #include <errno.h>
 #include <string.h>
@@ -6,13 +20,12 @@
 #include <dirent.h>
 #include <unistd.h>
 #include <signal.h>
-#include <ext2fs/ext2_fs.h>
-#include <ext2fs/ext2fs.h>
 #include <linux/kdev_t.h>
-#define __USE_GNU /* for O_DIRECT */
+//#define __USE_GNU /* for O_DIRECT */
 #include <fcntl.h>
 #include <time.h>
-#include "linux/dm-log-userspace.h"
+#include "libdevmapper.h"
+#include "dm-log-userspace.h"
 #include "functions.h"
 #include "common.h"
 #include "cluster.h"
@@ -55,10 +68,9 @@ struct log_c {
 	uint32_t region_size;
 	uint32_t region_count;
 	uint64_t sync_count;
-	uint32_t bitset_uint32_count;
 
-	uint32_t *clean_bits;
-	uint32_t *sync_bits;
+	dm_bitset_t clean_bits;
+	dm_bitset_t sync_bits;
 	uint32_t recoverer;
 	uint64_t recovering_region; /* -1 means not recovering */
 	uint64_t skip_bit_warning; /* used to warn if region skipped */
@@ -103,43 +115,41 @@ struct recovery_request {
 static DM_LIST_INIT(log_list);
 static DM_LIST_INIT(log_pending_list);
 
-static int log_test_bit(uint32_t *bs, unsigned bit)
+static int log_test_bit(dm_bitset_t bs, int bit)
 {
-	return ext2fs_test_bit(bit, (unsigned int *) bs) ? 1 : 0;
+	return dm_bit(bs, bit);
 }
 
-static void log_set_bit(struct log_c *lc, uint32_t *bs, unsigned bit)
+static void log_set_bit(struct log_c *lc, dm_bitset_t bs, int bit)
 {
-	ext2fs_set_bit(bit, (unsigned int *) bs);
+	dm_bit_set(bs, bit);
 	lc->touched = 1;
 }
 
-static void log_clear_bit(struct log_c *lc, uint32_t *bs, unsigned bit)
+static void log_clear_bit(struct log_c *lc, dm_bitset_t bs, int bit)
 {
-	ext2fs_clear_bit(bit, (unsigned int *) bs);
+	dm_bit_clear(bs, bit);
 	lc->touched = 1;
 }
 
-/* FIXME: Why aren't count and start the same type? */
-static uint64_t find_next_zero_bit(uint32_t *bits, uint32_t count, int start)
+static int find_next_zero_bit(dm_bitset_t bs, int start)
 {
-	for(; (start < count) && log_test_bit(bits, start); start++);
-	return start;
+	while (dm_bit(bs, start++))
+		if (start >= (int)bs[0])
+			return -1;
+
+	return start - 1;
 }
 
-static uint64_t count_bits32(uint32_t *addr, uint32_t count)
+static uint64_t count_bits32(dm_bitset_t bs)
 {
-	int j;
-	uint32_t i;
-	uint64_t rtn = 0;
+	int i, size = ((int)bs[0]/DM_BITS_PER_INT + 1);
+	unsigned count = 0;
 
-	for (i = 0; i < count; i++) {
-		if (!addr[i])
-			continue;
-		for (j = 0; j < 32; j++)
-			rtn += (addr[i] & (1<<j)) ? 1 : 0;
-	}
-	return rtn;
+	for (i = 1; i <= size; i++)
+		count += hweight32(bs[i]);
+
+	return (uint64_t)count;
 }
 
 /*
@@ -356,9 +366,8 @@ static int _clog_ctr(char *uuid, uint64_t luid,
 	char *p;
 	uint64_t region_size;
 	uint64_t region_count;
-	uint32_t bitset_size;
 	struct log_c *lc = NULL;
-	struct log_c *dup;
+	struct log_c *duplicate;
 	enum sync sync = DEFAULTSYNC;
 	uint32_t block_on_error = 0;
 
@@ -441,8 +450,8 @@ static int _clog_ctr(char *uuid, uint64_t luid,
 	strncpy(lc->uuid, uuid, DM_UUID_LEN);
 	lc->luid = luid;
 
-	if ((dup = get_log(lc->uuid, lc->luid)) ||
-	    (dup = get_pending_log(lc->uuid, lc->luid))) {
+	if ((duplicate = get_log(lc->uuid, lc->luid)) ||
+	    (duplicate = get_pending_log(lc->uuid, lc->luid))) {
 		LOG_ERROR("[%s/%llu] Log already exists, unable to create.",
 			  SHORT_UUID(lc->uuid), lc->luid);
 		free(lc);
@@ -451,33 +460,27 @@ static int _clog_ctr(char *uuid, uint64_t luid,
 
 	dm_list_init(&lc->mark_list);
 
-	lc->bitset_uint32_count = region_count / 
-		(sizeof(*lc->clean_bits) << BYTE_SHIFT);
-	if (region_count % (sizeof(*lc->clean_bits) << BYTE_SHIFT))
-		lc->bitset_uint32_count++;
-
-	bitset_size = lc->bitset_uint32_count * sizeof(*lc->clean_bits);
-
-	lc->clean_bits = malloc(bitset_size);	
+	lc->clean_bits = dm_bitset_create(NULL, region_count);
 	if (!lc->clean_bits) {
 		LOG_ERROR("Unable to allocate clean bitset");
 		r = -ENOMEM;
 		goto fail;
 	}
-	memset(lc->clean_bits, -1, bitset_size);
 
-	lc->sync_bits = malloc(bitset_size);
+	lc->sync_bits = dm_bitset_create(NULL, region_count);
 	if (!lc->sync_bits) {
 		LOG_ERROR("Unable to allocate sync bitset");
 		r = -ENOMEM;
 		goto fail;
 	}
-	memset(lc->sync_bits, (sync == NOSYNC) ? -1 : 0, bitset_size);
+	if (sync == NOSYNC)
+		dm_bit_set_all(lc->sync_bits);
+
 	lc->sync_count = (sync == NOSYNC) ? region_count : 0;
 	if (disk_log) {
 		page_size = sysconf(_SC_PAGESIZE);
-		pages = bitset_size/page_size;
-		pages += bitset_size%page_size ? 1 : 0;
+		pages = ((int)lc->clean_bits[0])/page_size;
+		pages += ((int)lc->clean_bits[0])%page_size ? 1 : 0;
 		pages += 1; /* for header */
 
 		r = open(disk_path, O_RDWR | O_DIRECT);
@@ -537,6 +540,7 @@ static int clog_ctr(struct dm_ulog_request *rq)
 {
 	int argc, i, r = 0;
 	char *p, **argv = NULL;
+	char *dev_size_str;
 	uint64_t device_size;
 
 	/* Sanity checks */
@@ -556,14 +560,16 @@ static int clog_ctr(struct dm_ulog_request *rq)
 	}
 
 	/* Split up args */
-	for (argc = 1, p = rq->data; (p = strstr(p, " ")); p++, argc++)
+	for (argc = 0, p = rq->data; (p = strstr(p, " ")); p++, argc++)
 		*p = '\0';
 
 	argv = malloc(argc * sizeof(char *));
 	if (!argv)
 		return -ENOMEM;
 
-	for (i = 0, p = rq->data; i < argc; i++, p = p + strlen(p) + 1)
+	p = dev_size_str = rq->data;
+	p += strlen(p) + 1;
+	for (i = 0; i < argc; i++, p = p + strlen(p) + 1)
 		argv[i] = p;
 
 	if (strcmp(argv[0], "clustered_disk") &&
@@ -573,13 +579,12 @@ static int clog_ctr(struct dm_ulog_request *rq)
 		return -EINVAL;
 	}
 
-	if (!(device_size = strtoll(argv[argc - 1], &p, 0)) || *p) {
-		LOG_ERROR("Invalid device size argument: %s", argv[argc - 1]);
+	if (!(device_size = strtoll(dev_size_str, &p, 0)) || *p) {
+		LOG_ERROR("Invalid device size argument: %s", dev_size_str);
 		free(argv);
 		return -EINVAL;
 	}
 
-	argc--;  /* We pass in the device_size separate */
 	r = _clog_ctr(rq->uuid, rq->luid, argc - 1, argv + 1, device_size);
 
 	/* We join the CPG when we resume */
@@ -712,7 +717,6 @@ static int clog_resume(struct dm_ulog_request *rq)
 	uint32_t i;
 	int commit_log = 0;
 	struct log_c *lc = get_log(rq->uuid, rq->luid);
-	size_t size = lc->bitset_uint32_count * sizeof(uint32_t);
 
 	if (!lc)
 		return -EINVAL;
@@ -795,7 +799,7 @@ no_disk:
 		log_clear_bit(lc, lc->clean_bits, i);
 
 	/* copy clean across to sync */
-	memcpy(lc->sync_bits, lc->clean_bits, size);
+	dm_bit_copy(lc->sync_bits, lc->clean_bits);
 
 	if (commit_log && (lc->disk_fd >= 0)) {
 		rq->error = write_log(lc);
@@ -815,7 +819,7 @@ out:
 		log_clear_bit(lc, lc->sync_bits, i);
 	}
 
-	lc->sync_count = count_bits32(lc->sync_bits, lc->bitset_uint32_count);
+	lc->sync_count = count_bits32(lc->sync_bits);
 
 	LOG_SPRINT(lc, "[%s] Initial sync_count = %llu",
 		   SHORT_UUID(lc->uuid), (unsigned long long)lc->sync_count);
@@ -1221,7 +1225,6 @@ static int clog_get_resync_work(struct dm_ulog_request *rq, uint32_t originator)
 	}
 
 	pkg->r = find_next_zero_bit(lc->sync_bits,
-				    lc->region_count,
 				    lc->sync_search);
 
 	if (pkg->r >= lc->region_count) {
@@ -1304,8 +1307,8 @@ static int clog_set_region_sync(struct dm_ulog_request *rq, uint32_t originator)
 			   (unsigned long long)pkg->region);
 	}
 
-	if (lc->sync_count != count_bits32(lc->sync_bits, lc->bitset_uint32_count)) {
-		unsigned long long reset = count_bits32(lc->sync_bits, lc->bitset_uint32_count);
+	if (lc->sync_count != count_bits32(lc->sync_bits)) {
+		unsigned long long reset = count_bits32(lc->sync_bits);
 
 		LOG_SPRINT(lc, "SET - SEQ#=%u, UUID=%s, nodeid = %u:: "
 			   "sync_count(%llu) != bitmap count(%llu)",
@@ -1351,8 +1354,8 @@ static int clog_get_sync_count(struct dm_ulog_request *rq, uint32_t originator)
 
 	rq->data_size = sizeof(*sync_count);
 
-	if (lc->sync_count != count_bits32(lc->sync_bits, lc->bitset_uint32_count)) {
-		unsigned long long reset = count_bits32(lc->sync_bits, lc->bitset_uint32_count);
+	if (lc->sync_count != count_bits32(lc->sync_bits)) {
+		unsigned long long reset = count_bits32(lc->sync_bits);
 
 		LOG_SPRINT(lc, "get_sync_count - SEQ#=%u, UUID=%s, nodeid = %u:: "
 			   "sync_count(%llu) != bitmap count(%llu)",
@@ -1692,11 +1695,16 @@ int push_state(const char *uuid, uint64_t luid,
 			   SHORT_UUID(lc->uuid), debug_who,
 			   (unsigned long long)lc->recovering_region,
 			   lc->recoverer,
-			   (unsigned long long)count_bits32(lc->sync_bits, lc->bitset_uint32_count));
+			   (unsigned long long)count_bits32(lc->sync_bits));
 		return 64;
 	}
 
-	bitset_size = lc->bitset_uint32_count * sizeof(*lc->clean_bits);
+	/* Size in 'int's */
+	bitset_size = ((int)lc->clean_bits[0]/DM_BITS_PER_INT) + 1;
+
+	/* Size in bytes */
+	bitset_size *= 4;
+
 	*buf = malloc(bitset_size);
 
 	if (!*buf) {
@@ -1705,13 +1713,13 @@ int push_state(const char *uuid, uint64_t luid,
 	}
 
 	if (!strncmp(which, "sync_bits", 9)) {
-		memcpy(*buf, lc->sync_bits, bitset_size);
+		memcpy(*buf, lc->sync_bits + 1, bitset_size);
 		LOG_DBG("[%s] storing sync_bits (sync_count = %llu):",
 			SHORT_UUID(uuid), (unsigned long long)
-			count_bits32(lc->sync_bits, lc->bitset_uint32_count));
+			count_bits32(lc->sync_bits));
 		print_bits(*buf, bitset_size, 0);
 	} else if (!strncmp(which, "clean_bits", 9)) {
-		memcpy(*buf, lc->clean_bits, bitset_size);
+		memcpy(*buf, lc->clean_bits + 1, bitset_size);
 		LOG_DBG("[%s] storing clean_bits:", SHORT_UUID(lc->uuid));
 		print_bits(*buf, bitset_size, 0);
 	}
@@ -1745,7 +1753,12 @@ int pull_state(const char *uuid, uint64_t luid,
 		return 0;
 	}
 
-	bitset_size = lc->bitset_uint32_count * sizeof(*lc->clean_bits);
+	/* Size in 'int's */
+	bitset_size = ((int)lc->clean_bits[0]/DM_BITS_PER_INT) + 1;
+
+	/* Size in bytes */
+	bitset_size *= 4;
+
 	if (bitset_size != size) {
 		LOG_ERROR("pull_state(%s): bad bitset_size (%d vs %d)",
 			  which, size, bitset_size);
@@ -1754,14 +1767,14 @@ int pull_state(const char *uuid, uint64_t luid,
 
 	if (!strncmp(which, "sync_bits", 9)) {
 		lc->resume_override += 1;
-		memcpy(lc->sync_bits, buf, bitset_size);
+		memcpy(lc->sync_bits + 1, buf, bitset_size);
 		LOG_DBG("[%s] loading sync_bits (sync_count = %llu):",
 			SHORT_UUID(lc->uuid),(unsigned long long)
-			count_bits32(lc->sync_bits, lc->bitset_uint32_count));
+			count_bits32(lc->sync_bits));
 		print_bits((char *)lc->sync_bits, bitset_size, 0);
 	} else if (!strncmp(which, "clean_bits", 9)) {
 		lc->resume_override += 2;
-		memcpy(lc->clean_bits, buf, bitset_size);
+		memcpy(lc->clean_bits + 1, buf, bitset_size);
 		LOG_DBG("[%s] loading clean_bits:", SHORT_UUID(lc->uuid));
 		print_bits((char *)lc->clean_bits, bitset_size, 0);
 	}
@@ -1806,11 +1819,9 @@ void log_debug(void)
 	dm_list_iterate_items(lc, &log_pending_list) {
 		LOG_ERROR("%s", lc->uuid);
 		LOG_ERROR("sync_bits:");
-		print_bits((char *)lc->sync_bits,
-			   lc->bitset_uint32_count * sizeof(*lc->sync_bits), 1);
+		print_bits((char *)lc->sync_bits, (int)lc->sync_bits[0], 1);
 		LOG_ERROR("clean_bits:");
-		print_bits((char *)lc->clean_bits,
-			   lc->bitset_uint32_count * sizeof(*lc->clean_bits), 1);
+		print_bits((char *)lc->clean_bits, (int)lc->sync_bits[0], 1);
 	}
 
 	dm_list_iterate_items(lc, &log_list) {
@@ -1821,14 +1832,12 @@ void log_debug(void)
 		LOG_ERROR("  recovery_halted  : %s", (lc->recovery_halted) ?
 			  "YES" : "NO");
 		LOG_ERROR("sync_bits:");
-		print_bits((char *)lc->sync_bits,
-			   lc->bitset_uint32_count * sizeof(*lc->sync_bits), 1);
+		print_bits((char *)lc->sync_bits, (int)lc->sync_bits[0], 1);
 		LOG_ERROR("clean_bits:");
-		print_bits((char *)lc->clean_bits,
-			   lc->bitset_uint32_count * sizeof(*lc->clean_bits), 1);
+		print_bits((char *)lc->clean_bits, (int)lc->sync_bits[0], 1);
 
 		LOG_ERROR("Validating %s::", SHORT_UUID(lc->uuid));
-		r = find_next_zero_bit(lc->sync_bits, lc->region_count, 0);
+		r = find_next_zero_bit(lc->sync_bits, 0);
 		LOG_ERROR("  lc->region_count = %llu",
 			  (unsigned long long)lc->region_count);
 		LOG_ERROR("  lc->sync_count = %llu",

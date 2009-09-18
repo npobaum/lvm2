@@ -1,6 +1,6 @@
 --- a/tools/Makefile.in
 +++ b/tools/Makefile.in
-@@ -160,21 +160,21 @@
+@@ -163,21 +163,21 @@
  endif
  
  install_cmdlib_dynamic: liblvm2cmd.$(LIB_SUFFIX)
@@ -27,7 +27,7 @@
  		$(sbindir)/lvm
  	@echo Creating symbolic links for individual commands in $(sbindir)
  	@( \
-@@ -185,14 +185,13 @@
+@@ -188,14 +188,13 @@
  	)
  
  install_tools_static: lvm.static
@@ -47,7 +47,7 @@
  
 --- a/daemons/clvmd/Makefile.in
 +++ b/daemons/clvmd/Makefile.in
-@@ -107,8 +107,8 @@
+@@ -97,8 +97,8 @@
  .PHONY: install_clvmd
  
  install_clvmd: $(TARGETS)

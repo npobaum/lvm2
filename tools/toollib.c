@@ -293,7 +293,8 @@ int process_each_lv(struct cmd_context *cmd, int argc, char **argv,
 			if (ret_max < ECMD_FAILED) {
 				log_error("Skipping volume group %s", vgname);
 				ret_max = ECMD_FAILED;
-			}
+			} else
+				stack;
 			continue;
 		}
 
@@ -431,10 +432,12 @@ static int _process_one_vg(struct cmd_context *cmd, const char *vg_name,
 	log_verbose("Finding volume group \"%s\"", vg_name);
 
 	vg = vg_read(cmd, vg_name, vgid, flags);
-	if (vg_read_error(vg) == FAILED_ALLOCATION ||
-	    vg_read_error(vg) == FAILED_NOTFOUND) {
-		vg_release(vg);
-		return ECMD_FAILED;
+	/* Allow FAILED_INCONSISTENT through only for vgcfgrestore */
+	if (vg_read_error(vg) &&
+	    !((vg_read_error(vg) == FAILED_INCONSISTENT) &&
+	      (flags & READ_ALLOW_INCONSISTENT))) {
+		ret_max = ECMD_FAILED;
+		goto_out;
 	}
 
 	if (!dm_list_empty(tags)) {
@@ -445,12 +448,15 @@ static int _process_one_vg(struct cmd_context *cmd, const char *vg_name,
 	}
 
 	if ((ret = process_single(cmd, vg_name, vg,
-				  handle)) > ret_max) {
+				  handle)) > ret_max)
 		ret_max = ret;
-	}
 
 out:
-	unlock_and_release_vg(cmd, vg, vg_name);
+	if ((vg_read_error(vg) == FAILED_ALLOCATION)||
+	    (vg_read_error(vg) == FAILED_LOCKING))
+		vg_release(vg);
+	else
+		unlock_and_release_vg(cmd, vg, vg_name);
 	return ret_max;
 }
 
@@ -643,7 +649,7 @@ int process_each_pv(struct cmd_context *cmd, int argc, char **argv,
 
 	dm_list_init(&tags);
 
-	if (lock_global && !lock_vol(cmd, VG_GLOBAL, LCK_READ)) {
+	if (lock_global && !lock_vol(cmd, VG_GLOBAL, LCK_VG_READ)) {
 		log_error("Unable to obtain global lock.");
 		return ECMD_FAILED;
 	}
@@ -728,6 +734,7 @@ int process_each_pv(struct cmd_context *cmd, int argc, char **argv,
 				if (vg_read_error(vg)) {
 					ret_max = ECMD_FAILED;
 					vg_release(vg);
+					stack;
 					continue;
 				}
 
