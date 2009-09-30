@@ -95,6 +95,7 @@ Package: dmsetup
 Section: admin
 Architecture: any
 Depends: ${shlibs:Depends}, util-linux (>> 2.16), udev
+Conflicts: devicekit-disks
 Description: The Linux Kernel Device Mapper userspace library
  The Linux Kernel Device Mapper is the LVM (Linux Logical Volume Management)
  Team's implementation of a minimalistic kernel-space driver that handles

@@ -1,3 +1,13 @@
+lvm2 (2.02.53-1) unstable; urgency=low
+
+  * New upstream version.
+  * Make dmsetup conflicts against devicekit-disks, it duplicates the udev
+    rules.
+  * Add possibility to hide creation of extra symlinks via udev.
+  * Ignore temporary cryptsetup devices.
+
+ -- Bastian Blank <waldi@debian.org>  Wed, 30 Sep 2009 05:27:35 +0200
+
 lvm2 (2.02.52-1) unstable; urgency=low
 
   * New upstram version.

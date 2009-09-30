@@ -3,7 +3,6 @@ libs-cleanup.patch
 drop-realtime.patch
 config.patch
 force-modprobe.patch
-permissions.patch
 libdm-type-kernel_dev_t.patch
 pkgconfig.patch
 libdm-abi.patch
