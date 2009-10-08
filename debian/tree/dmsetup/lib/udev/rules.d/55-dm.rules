@@ -41,7 +41,7 @@ ENV{DM_SUSPENDED}=="Suspended", ENV{DM_SUSPENDED}="1"
 
 ENV{DM_NAME}=="?*", NAME="mapper/$env{DM_NAME}", SYMLINK+="$kernel"
 
-ENV{DM_UUID}=="CRYPT-TEMP-?*", DM_HIDE=1
-ENV{DM_UUID}!="?*", ENV{DM_NAME}=="temporary-cryptsetup-?*", DM_HIDE=1
+ENV{DM_UUID}=="CRYPT-TEMP-?*", ENV{DM_HIDE}="1"
+ENV{DM_UUID}!="?*", ENV{DM_NAME}=="temporary-cryptsetup-?*", ENV{DM_HIDE}="1"
 
 LABEL="dm_end"
