@@ -1,3 +1,12 @@
+lvm2 (2.02.53-2) unstable; urgency=medium
+
+  * Fix variable assignment in udev rules. (closes: #550100, RC bugfix)
+  * Install udev rules into initramfs.
+  * Add initramfs-tools hook to dmsetup.
+  * Trigger initramfs update.
+
+ -- Bastian Blank <waldi@debian.org>  Thu, 08 Oct 2009 18:17:43 +0200
+
 lvm2 (2.02.53-1) unstable; urgency=low
 
   * New upstream version.

@@ -25,6 +25,15 @@ if [ -e /etc/lvm/lvm.conf ]; then
 	cp /etc/lvm/lvm.conf ${DESTDIR}/etc/lvm/
 fi
 
+mkdir -p $DESTDIR/lib/udev/rules.d/
+for rules in 56-lvm.rules 60-persistent-storage-lvm.rules; do
+	if   [ -e /etc/udev/rules.d/$rules ]; then
+		cp -p /etc/udev/rules.d/$rules $DESTDIR/lib/udev/rules.d/
+	elif [ -e /lib/udev/rules.d/$rules ]; then
+		cp -p /lib/udev/rules.d/$rules $DESTDIR/lib/udev/rules.d/
+	fi
+done
+
 copy_exec /sbin/dmsetup
 copy_exec /sbin/lvm
 ln -s lvm ${DESTDIR}/sbin/vgchange
