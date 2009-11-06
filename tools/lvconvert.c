@@ -315,6 +315,7 @@ out:
 static struct poll_functions _lvconvert_mirror_fns = {
 	.get_copy_vg = _get_lvconvert_vg,
 	.get_copy_lv = _get_lvconvert_lv,
+	.poll_progress = poll_mirror_progress,
 	.update_metadata = _update_lvconvert_mirror,
 	.finish_copy = _finish_lvconvert_mirror,
 };
@@ -531,7 +532,7 @@ static int _lvconvert_mirrors(struct cmd_context *cmd, struct logical_volume *lv
 	const char *mirrorlog;
 	unsigned corelog = 0;
 	int r = 0;
-	struct logical_volume *log_lv;
+	struct logical_volume *log_lv, *layer_lv;
 	int failed_mirrors = 0, failed_log = 0;
 	struct dm_list *old_pvh = NULL, *remove_pvs = NULL;
 
@@ -583,7 +584,7 @@ static int _lvconvert_mirrors(struct cmd_context *cmd, struct logical_volume *lv
 		if ((failed_mirrors = _failed_mirrors_count(lv)) < 0)
 			return_0;
 		lp->mirrors -= failed_mirrors;
-		log_error("Mirror status: %d/%d images failed.",
+		log_error("Mirror status: %d of %d images failed.",
 			  failed_mirrors, existing_mirrors);
 		old_pvh = lp->pvh;
 		if (!(lp->pvh = _failed_pv_list(lv->vg)))
@@ -712,6 +713,20 @@ static int _lvconvert_mirrors(struct cmd_context *cmd, struct logical_volume *lv
 				  "LV: use lvchange --resync first.");
 			return 0;
 		}
+
+		/*
+		 * We allow snapshots of mirrors, but for now, we
+		 * do not allow up converting mirrors that are under
+		 * snapshots.  The layering logic is somewhat complex,
+		 * and preliminary test show that the conversion can't
+		 * seem to get the correct %'age of completion.
+		 */
+		if (lv_is_origin(lv)) {
+			log_error("Can't add additional mirror images to "
+				  "mirrors that are under snapshots");
+			return 0;
+		}
+
 		/*
 		 * Log addition/removal should be done before the layer
 		 * insertion to make the end result consistent with
@@ -732,8 +747,21 @@ static int _lvconvert_mirrors(struct cmd_context *cmd, struct logical_volume *lv
 						lv->le_count,
 						lp->region_size),
 				    0U, lp->pvh, lp->alloc,
-				    MIRROR_BY_LV))
+				    MIRROR_BY_LV)) {
+			layer_lv = seg_lv(first_seg(lv), 0);
+			if (!remove_layer_from_lv(lv, layer_lv) ||
+			    !deactivate_lv(cmd, layer_lv) ||
+			    !lv_remove(layer_lv) || !vg_write(lv->vg) ||
+			    !vg_commit(lv->vg)) {
+				log_error("ABORTING: Failed to remove "
+					  "temporary mirror layer %s.",
+					  layer_lv->name);
+				log_error("Manual cleanup with vgcfgrestore "
+					  "and dmsetup may be required.");
+				return 0;
+			}
 			return_0;
+		}
 		lv->status |= CONVERTING;
 		lp->need_polling = 1;
 	}
@@ -874,12 +902,6 @@ static int lvconvert_single(struct cmd_context *cmd, struct logical_volume *lv,
 
 	if (lv->status & LOCKED) {
 		log_error("Cannot convert locked LV %s", lv->name);
-		return ECMD_FAILED;
-	}
-
-	if (lv_is_origin(lv)) {
-		log_error("Can't convert logical volume \"%s\" under snapshot",
-			  lv->name);
 		return ECMD_FAILED;
 	}
 

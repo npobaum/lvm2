@@ -14,6 +14,7 @@
 
 srcdir = @srcdir@
 top_srcdir = @top_srcdir@
+top_builddir = @top_builddir@
 VPATH = @srcdir@
 
 ifeq ("@LVM1@", "shared")
@@ -46,6 +47,7 @@ SOURCES =\
 	device/device.c \
 	display/display.c \
 	error/errseg.c \
+	unknown/unknown.c \
 	filters/filter-composite.c \
 	filters/filter-persistent.c \
 	filters/filter-regex.c \
@@ -81,13 +83,17 @@ SOURCES =\
 	misc/lvm-globals.c \
 	misc/lvm-string.c \
 	misc/lvm-wrappers.c \
-	misc/timestamp.c \
 	misc/util.c \
 	mm/memlock.c \
 	report/report.c \
 	striped/striped.c \
 	uuid/uuid.c \
 	zero/zero.c
+
+ifeq ("@HAVE_REALTIME@", "yes")
+  SOURCES +=\
+	misc/timestamp.c
+endif
 
 ifeq ("@LVM1@", "internal")
   SOURCES +=\
@@ -137,7 +143,8 @@ ifeq ("@HAVE_LIBDL@", "yes")
 endif
 
 ifeq ("@DMEVENTD@", "yes")
-  CLDFLAGS += -ldevmapper-event
+  CLDFLAGS += -L../daemons/dmeventd
+  LIBS += -ldevmapper-event
 endif
 
 LIB_NAME = liblvm-internal
@@ -145,7 +152,7 @@ LIB_STATIC = $(LIB_NAME).a
 
 CLEAN_TARGETS += $(LIB_NAME).cflow
 
-include $(top_srcdir)/make.tmpl
+include ../make.tmpl
 
 $(SUBDIRS): $(LIB_STATIC)
 

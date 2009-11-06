@@ -167,6 +167,7 @@ install-dmsetup: $(STAMPS_DIR)/install-deb-device-mapper
 	dh_testroot
 	dh_clean -k
 	cp -a debian/tree/dmsetup debian/dmsetup
+	find debian/dmsetup -name .svn | xargs -r rm -r
 	dh_install --sourcedir=$(DIR)
 	dh_installchangelogs WHATS_NEW_DM
 	dh_installdebconf
@@ -211,7 +212,7 @@ install-libdevmapper: $(STAMPS_DIR)/install-deb-device-mapper
 	dh_makeshlibs -p 'libdevmapper$(DEVMAPPER_ABINAME)' \
 		--add-udeb 'libdevmapper$(DEVMAPPER_ABINAME)-udeb' \
 	       	"-Vlibdevmapper$(DEVMAPPER_ABINAME) (>= $(DEVMAPPER_VERSION))" \
-		-- "-v$(DEVMAPPER_VERSION_DEBIAN)"
+		-- "-v$(DEVMAPPER_VERSION_DEBIAN)" -c2
 	$(MAKE) -f debian/rules install-base GENCONTROL_ARGS="-v$(DEVMAPPER_VERSION_DEBIAN)"
 
 install-libdevmapper-udeb: PACKAGE_NAME = libdevmapper$(DEVMAPPER_ABINAME)-udeb
@@ -246,6 +247,7 @@ install-lvm2: $(STAMPS_DIR)/install-deb-lvm2
 	dh_testroot
 	dh_clean -k
 	cp -a debian/tree/lvm2 debian/lvm2
+	find debian/lvm2 -name .svn | xargs -r rm -r
 	dh_install --sourcedir=$(DIR)
 	chmod +x -R debian/lvm2/usr/share/initramfs-tools
 	dh_installchangelogs WHATS_NEW

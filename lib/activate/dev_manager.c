@@ -327,10 +327,26 @@ static int _status(const char *name, const char *uuid,
 	return 0;
 }
 
+static percent_range_t _combine_percent_ranges(percent_range_t a,
+					       percent_range_t b)
+{
+	if (a == PERCENT_INVALID || b == PERCENT_INVALID)
+		return PERCENT_INVALID;
+
+	if (a == PERCENT_100 && b == PERCENT_100)
+		return PERCENT_100;
+
+	if (a == PERCENT_0 && b == PERCENT_0)
+		return PERCENT_0;
+
+	return PERCENT_0_TO_100;
+}
+
 static int _percent_run(struct dev_manager *dm, const char *name,
 			const char *dlid,
 			const char *target_type, int wait,
 			struct logical_volume *lv, float *percent,
+			percent_range_t *overall_percent_range,
 			uint32_t *event_nr)
 {
 	int r = 0;
@@ -343,10 +359,13 @@ static int _percent_run(struct dev_manager *dm, const char *name,
 	struct dm_list *segh = &lv->segments;
 	struct lv_segment *seg = NULL;
 	struct segment_type *segtype;
+	percent_range_t percent_range, combined_percent_range;
+	int first_time = 1;
 
 	uint64_t total_numerator = 0, total_denominator = 0;
 
 	*percent = -1;
+	*overall_percent_range = PERCENT_INVALID;
 
 	if (!(dmt = _setup_task(name, dlid, event_nr,
 				wait ? DM_DEVICE_WAITEVENT : DM_DEVICE_STATUS, 0, 0)))
@@ -383,12 +402,20 @@ static int _percent_run(struct dev_manager *dm, const char *name,
 			continue;
 
 		if (segtype->ops->target_percent &&
-		    !segtype->ops->target_percent(&dm->target_state, dm->mem,
+		    !segtype->ops->target_percent(&dm->target_state,
+						  &percent_range, dm->mem,
 						  dm->cmd, seg, params,
 						  &total_numerator,
 						  &total_denominator))
 			goto_out;
 
+		if (first_time) {
+			combined_percent_range = percent_range;
+			first_time = 0;
+		} else
+			combined_percent_range =
+			    _combine_percent_ranges(combined_percent_range,
+						    percent_range);
 	} while (next);
 
 	if (lv && (segh = dm_list_next(&lv->segments, segh))) {
@@ -397,10 +424,16 @@ static int _percent_run(struct dev_manager *dm, const char *name,
 		goto out;
 	}
 
-	if (total_denominator)
+	if (total_denominator) {
 		*percent = (float) total_numerator *100 / total_denominator;
-	else
+		*overall_percent_range = combined_percent_range;
+	} else {
 		*percent = 100;
+		if (first_time)
+			*overall_percent_range = PERCENT_100;
+		else
+			*overall_percent_range = combined_percent_range;
+	}
 
 	log_debug("LV percent: %f", *percent);
 	r = 1;
@@ -413,20 +446,20 @@ static int _percent_run(struct dev_manager *dm, const char *name,
 static int _percent(struct dev_manager *dm, const char *name, const char *dlid,
 		    const char *target_type, int wait,
 		    struct logical_volume *lv, float *percent,
-		    uint32_t *event_nr)
+		    percent_range_t *overall_percent_range, uint32_t *event_nr)
 {
 	if (dlid && *dlid) {
 		if (_percent_run(dm, NULL, dlid, target_type, wait, lv, percent,
-				 event_nr))
+				 overall_percent_range, event_nr))
 			return 1;
 		else if (_percent_run(dm, NULL, dlid + sizeof(UUID_PREFIX) - 1,
 				      target_type, wait, lv, percent,
-				      event_nr))
+				      overall_percent_range, event_nr))
 			return 1;
 	}
 
 	if (name && _percent_run(dm, name, NULL, target_type, wait, lv, percent,
-				 event_nr))
+				 overall_percent_range, event_nr))
 		return 1;
 
 	return 0;
@@ -481,7 +514,7 @@ void dev_manager_exit(void)
 
 int dev_manager_snapshot_percent(struct dev_manager *dm,
 				 const struct logical_volume *lv,
-				 float *percent)
+				 float *percent, percent_range_t *percent_range)
 {
 	char *name;
 	const char *dlid;
@@ -500,7 +533,7 @@ int dev_manager_snapshot_percent(struct dev_manager *dm,
 	 */
 	log_debug("Getting device status percentage for %s", name);
 	if (!(_percent(dm, name, dlid, "snapshot", 0, NULL, percent,
-		       NULL)))
+		       percent_range, NULL)))
 		return_0;
 
 	/* FIXME dm_pool_free ? */
@@ -513,27 +546,29 @@ int dev_manager_snapshot_percent(struct dev_manager *dm,
 /* FIXME Cope with more than one target */
 int dev_manager_mirror_percent(struct dev_manager *dm,
 			       struct logical_volume *lv, int wait,
-			       float *percent, uint32_t *event_nr)
+			       float *percent, percent_range_t *percent_range,
+			       uint32_t *event_nr)
 {
 	char *name;
 	const char *dlid;
+	const char *suffix = (lv_is_origin(lv)) ? "real" : NULL;
 
 	/*
 	 * Build a name for the top layer.
 	 */
-	if (!(name = build_dm_name(dm->mem, lv->vg->name, lv->name, NULL)))
+	if (!(name = build_dm_name(dm->mem, lv->vg->name, lv->name, suffix)))
 		return_0;
 
 	/* FIXME dm_pool_free ? */
 
-	if (!(dlid = build_dlid(dm, lv->lvid.s, NULL))) {
+	if (!(dlid = build_dlid(dm, lv->lvid.s, suffix))) {
 		log_error("dlid build failed for %s", lv->name);
 		return 0;
 	}
 
 	log_debug("Getting device mirror status percentage for %s", name);
 	if (!(_percent(dm, name, dlid, "mirror", wait, lv, percent,
-		       event_nr)))
+		       percent_range, event_nr)))
 		return_0;
 
 	return 1;
@@ -969,6 +1004,7 @@ static int _add_new_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 	uint32_t max_stripe_size = UINT32_C(0);
 	uint32_t read_ahead = lv->read_ahead;
 	uint32_t read_ahead_flags = UINT32_C(0);
+	uint16_t udev_flags = 0;
 
 	if (!(name = build_dm_name(dm->mem, lv->vg->name, lv->name, layer)))
 		return_0;
@@ -988,18 +1024,27 @@ static int _add_new_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 
 	lvlayer->lv = lv;
 
+	if (layer || !lv_is_visible(lv))
+		udev_flags |= DM_UDEV_DISABLE_SUBSYSTEM_RULES_FLAG |
+			      DM_UDEV_DISABLE_DISK_RULES_FLAG |
+			      DM_UDEV_DISABLE_OTHER_RULES_FLAG;
+
+	if (lv_is_cow(lv))
+		udev_flags |= DM_UDEV_LOW_PRIORITY_FLAG;
+
 	/*
 	 * Add LV to dtree.
 	 * If we're working with precommitted metadata, clear any
 	 * existing inactive table left behind.
 	 * Major/minor settings only apply to the visible layer.
 	 */
-	if (!(dnode = dm_tree_add_new_dev(dtree, name, dlid,
+	if (!(dnode = dm_tree_add_new_dev_with_udev_flags(dtree, name, dlid,
 					     layer ? UINT32_C(0) : (uint32_t) lv->major,
 					     layer ? UINT32_C(0) : (uint32_t) lv->minor,
 					     _read_only_lv(lv),
 					     (lv->vg->status & PRECOMMITTED) ? 1 : 0,
-					     lvlayer)))
+					     lvlayer,
+					     udev_flags)))
 		return_0;
 
 	/* Store existing name so we can do rename later */

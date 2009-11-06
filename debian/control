@@ -11,7 +11,7 @@ Vcs-Browser: http://svn.debian.org/wsvn/pkg-lvm/lvm2/trunk/
 
 Package: lvm2
 Architecture: any
-Depends: ${shlibs:Depends}, lsb-base, dmsetup (>> 2:1.02.36)
+Depends: ${shlibs:Depends}, ${misc:Depends}, lsb-base, dmsetup (>> 2:1.02.36)
 Conflicts: lvm-common
 Replaces: lvm-common
 Description: The Linux Logical Volume Manager
@@ -25,7 +25,7 @@ Package: lvm2-udeb
 XC-Package-Type: udeb
 Section: debian-installer
 Architecture: any
-Depends: ${shlibs:Depends}
+Depends: ${shlibs:Depends}, ${misc:Depends}
 Description: The Linux Logical Volume Manager
  This is a udeb, or a microdeb, for the debian-installer.
  .
@@ -39,7 +39,7 @@ Package: clvm
 Section: admin
 Priority: extra
 Architecture: any
-Depends: ${shlibs:Depends}, lvm2 (= ${binary:Version}), lsb-base, cman
+Depends: ${shlibs:Depends}, ${misc:Depends}, lvm2 (= ${binary:Version}), lsb-base, cman
 Description: Cluster LVM Daemon for lvm2
  This package provides the clustering interface for lvm2, when used with 
  Red Hat's "cman" cluster infrastructure. It allows logical volumes to
@@ -48,7 +48,7 @@ Description: Cluster LVM Daemon for lvm2
 Package: libdevmapper-dev
 Section: libdevel
 Architecture: any
-Depends: libdevmapper1.02.1 (= ${binary:Version})
+Depends: ${misc:Depends}, libdevmapper1.02.1 (= ${binary:Version}), libselinux1-dev
 Description: The Linux Kernel Device Mapper header files
  The Linux Kernel Device Mapper is the LVM (Linux Logical Volume Management)
  Team's implementation of a minimalistic kernel-space driver that handles
@@ -64,7 +64,7 @@ Package: libdevmapper1.02.1
 Section: libs
 Priority: required
 Architecture: any
-Depends: ${shlibs:Depends}
+Depends: ${shlibs:Depends}, ${misc:Depends}
 Provides: libdevmapper
 Description: The Linux Kernel Device Mapper userspace library
  The Linux Kernel Device Mapper is the LVM (Linux Logical Volume Management)
@@ -81,7 +81,7 @@ Package: libdevmapper1.02.1-udeb
 XC-Package-Type: udeb
 Section: debian-installer
 Architecture: any
-Depends: ${shlibs:Depends}
+Depends: ${shlibs:Depends}, ${misc:Depends}
 Description: The Linux Kernel Device Mapper userspace library
  This is a udeb, or a microdeb, for the debian-installer.
  .
@@ -94,8 +94,8 @@ Description: The Linux Kernel Device Mapper userspace library
 Package: dmsetup
 Section: admin
 Architecture: any
-Depends: ${shlibs:Depends}, util-linux (>> 2.16), udev
-Conflicts: devicekit-disks
+Depends: ${shlibs:Depends}, ${misc:Depends}, util-linux (>> 2.16), udev
+Conflicts: devicekit-disks (<< 009)
 Description: The Linux Kernel Device Mapper userspace library
  The Linux Kernel Device Mapper is the LVM (Linux Logical Volume Management)
  Team's implementation of a minimalistic kernel-space driver that handles
@@ -109,7 +109,7 @@ Package: dmsetup-udeb
 XC-Package-Type: udeb
 Section: debian-installer
 Architecture: any
-Depends: ${shlibs:Depends}
+Depends: ${shlibs:Depends}, ${misc:Depends}
 Description: The Linux Kernel Device Mapper userspace library
  The Linux Kernel Device Mapper is the LVM (Linux Logical Volume Management)
  Team's implementation of a minimalistic kernel-space driver that handles

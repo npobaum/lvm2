@@ -1,3 +1,16 @@
+lvm2 (2.02.54-1) unstable; urgency=low
+
+  * New upstream version.
+  * Remove notify rules, unused for now.
+  * Add better documentation about the udev rules.
+  * Update list of to be ignored hidden lvm subvolumes.
+  * Make libdevmapper-dev depend against libselinux1-dev.
+  * Update complete udev ruleset.
+  * Remove conflict against devicekit-disks.
+  * Use bash for new script.
+
+ -- Bastian Blank <waldi@debian.org>  Fri, 06 Nov 2009 18:20:39 +0100
+
 lvm2 (2.02.53-2) unstable; urgency=medium
 
   * Fix variable assignment in udev rules. (closes: #550100, RC bugfix)

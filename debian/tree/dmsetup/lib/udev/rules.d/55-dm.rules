@@ -1,18 +1,17 @@
 # Udev rules for device-mapper devices.
-#
-# These rules create a DM control node in /dev/(DM_DIR) directory.
-# The rules also create nodes named dm-x (x is a number) in /dev
-# directory and symlinks to these nodes with names given by
-# the actual DM names. Some udev environment variables are set
-# for use in later rules:
-#   DM_NAME - actual DM device's name
-#   DM_UUID - UUID set for DM device (blank if not specified)
-#   DM_SUSPENDED - suspended state of DM device (0 or 1)
+# See /usr/share/doc/dmsetup/README.udev for further information.
 
 KERNEL=="device-mapper", NAME="mapper/control"
 
 SUBSYSTEM!="block", GOTO="dm_end"
 KERNEL!="dm-[0-9]*", GOTO="dm_end"
+
+# Decode udev control flags and set environment variables appropriately.
+# These flags are encoded in DM_COOKIE variable that was introduced in
+# kernel version 2.6.31. Therefore, we can use this feature with
+# kernels >= 2.6.31 only.
+ENV{DM_COOKIE}=="?*", IMPORT{program}="/sbin/dmsetup udevflags $env{DM_COOKIE}"
+
 ACTION!="add|change", GOTO="dm_end"
 
 # Normally, we operate on "change" events only. But when
@@ -41,7 +40,16 @@ ENV{DM_SUSPENDED}=="Suspended", ENV{DM_SUSPENDED}="1"
 
 ENV{DM_NAME}=="?*", NAME="mapper/$env{DM_NAME}", SYMLINK+="$kernel"
 
-ENV{DM_UUID}=="CRYPT-TEMP-?*", ENV{DM_HIDE}="1"
-ENV{DM_UUID}!="?*", ENV{DM_NAME}=="temporary-cryptsetup-?*", ENV{DM_HIDE}="1"
+ENV{DM_UDEV_RULES}="1"
+
+# We have to ignore further rule application for inappropriate events
+# and devices. But still send the notification if cookie exists.
+ENV{DM_UUID}=="mpath-?*", ENV{DM_ACTION}=="PATH_FAILED", ENV{DM_UDEV_DISABLE_OTHER_RULES_FLAG}="1"
+ENV{DM_UUID}=="CRYPT-TEMP-?*", ENV{DM_UDEV_DISABLE_OTHER_RULES_FLAG}="1"
+ENV{DM_UUID}!="?*", ENV{DM_NAME}=="temporary-cryptsetup-?*", ENV{DM_UDEV_DISABLE_OTHER_RULES_FLAG}="1"
+
+ENV{DM_SUSPENDED}=="1", ENV{DM_UDEV_DISABLE_DISK_RULES_FLAG}="1"
+
+ENV{DM_UDEV_DISABLE_OTHER_RULES_FLAG}!="", ENV{DM_UDEV_DISABLE_DISK_RULES_FLAG}="1"
 
 LABEL="dm_end"

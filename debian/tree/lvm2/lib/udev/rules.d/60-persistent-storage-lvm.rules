@@ -1,15 +1,10 @@
 # Udev rules for LVM.
-#
-# These rules create symlinks for LVM logical volumes in
-# /dev/VG directory (VG is an actual VG name). Some udev
-# environment variables are set (they can be used in later
-# rules as well):
-#   DM_LV_NAME - logical volume name
-#   DM_VG_NAME - volume group name
-#   DM_LV_LAYER - logical volume layer (blank if not set)
+# See /usr/share/doc/lvm2/README.udev for further information.
 
+ENV{DM_UDEV_RULES}=="", GOTO="persistent_storage_lvm_end"
 ENV{DM_UUID}!="LVM-?*", GOTO="persistent_storage_lvm_end"
-ENV{DM_HIDE}!="", GOTO="persistent_storage_lvm_end"
+ENV{DM_UDEV_DISABLE_SUBSYSTEM_RULES_FLAG}!="", GOTO="persistent_storage_lvm_end"
+ENV{DM_UDEV_DISABLE_DISK_RULES_FLAG}!="", GOTO="persistent_storage_lvm_end"
 
 ENV{DM_VG_NAME}=="?*", ENV{DM_LV_NAME}=="?*", ENV{DM_LV_LAYER}=="", SYMLINK+="$env{DM_VG_NAME}/$env{DM_LV_NAME}"
 
