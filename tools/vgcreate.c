@@ -22,6 +22,8 @@ int vgcreate(struct cmd_context *cmd, int argc, char **argv)
 	struct volume_group *vg;
 	const char *tag;
 	const char *clustered_message = "";
+	char *vg_name;
+	struct pvcreate_params pp;
 
 	if (!argc) {
 		log_error("Please provide volume group name and "
@@ -29,8 +31,17 @@ int vgcreate(struct cmd_context *cmd, int argc, char **argv)
 		return EINVALID_CMD_LINE;
 	}
 
-	if (argc == 1) {
-		log_error("Please enter physical volume name(s)");
+	vg_name = argv[0];
+	argc--;
+	argv++;
+
+	if (arg_count(cmd, metadatacopies_ARG)) {
+		log_error("Invalid option --metadatacopies, "
+			  "use --pvmetadatacopies instead.");
+		return EINVALID_CMD_LINE;
+	}
+	fill_default_pvcreate_params(&pp);
+	if (!pvcreate_validate_params(cmd, argc, argv, &pp)) {
 		return EINVALID_CMD_LINE;
 	}
 
@@ -40,7 +51,7 @@ int vgcreate(struct cmd_context *cmd, int argc, char **argv)
 	vp_def.max_lv = DEFAULT_MAX_LV;
 	vp_def.alloc = DEFAULT_ALLOC_POLICY;
 	vp_def.clustered = DEFAULT_CLUSTERED;
-	if (fill_vg_create_params(cmd, argv[0], &vp_new, &vp_def))
+	if (fill_vg_create_params(cmd, vg_name, &vp_new, &vp_def))
 		return EINVALID_CMD_LINE;
 
 	if (validate_vg_create_params(cmd, &vp_new))
@@ -63,7 +74,7 @@ int vgcreate(struct cmd_context *cmd, int argc, char **argv)
 	}
 
 	/* attach the pv's */
-	if (!vg_extend(vg, argc - 1, argv + 1))
+	if (!vg_extend(vg, argc, argv, &pp))
 		goto_bad;
 
 	if (vp_new.max_lv != vg->max_lv)

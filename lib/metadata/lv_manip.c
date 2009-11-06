@@ -1862,6 +1862,24 @@ int vg_max_lv_reached(struct volume_group *vg)
 	return 1;
 }
 
+struct logical_volume *alloc_lv(struct dm_pool *mem)
+{
+	struct logical_volume *lv;
+
+	if (!(lv = dm_pool_zalloc(mem, sizeof(*lv)))) {
+		log_error("Unable to allocate logical volume structure");
+		return NULL;
+	}
+
+	lv->snapshot = NULL;
+	dm_list_init(&lv->snapshot_segs);
+	dm_list_init(&lv->segments);
+	dm_list_init(&lv->tags);
+	dm_list_init(&lv->segs_using_this_lv);
+
+	return lv;
+}
+
 /*
  * Create a new empty LV.
  */
@@ -1891,7 +1909,7 @@ struct logical_volume *lv_create_empty(const char *name,
 
 	log_verbose("Creating logical volume %s", name);
 
-	if (!(lv = dm_pool_zalloc(vg->vgmem, sizeof(*lv))))
+	if (!(lv = alloc_lv(vg->vgmem)))
 		return_NULL;
 
 	if (!(lv->name = dm_pool_strdup(vg->vgmem, name)))
@@ -1904,11 +1922,6 @@ struct logical_volume *lv_create_empty(const char *name,
 	lv->minor = -1;
 	lv->size = UINT64_C(0);
 	lv->le_count = 0;
-	lv->snapshot = NULL;
-	dm_list_init(&lv->snapshot_segs);
-	dm_list_init(&lv->segments);
-	dm_list_init(&lv->tags);
-	dm_list_init(&lv->segs_using_this_lv);
 
 	if (lvid)
 		lv->lvid = *lvid;
@@ -2923,11 +2936,12 @@ int lv_create_single(struct volume_group *vg,
 					  "supported yet");
 				return 0;
 			}
-			if (org->status & MIRROR_IMAGE ||
-			    org->status & MIRROR_LOG ||
-			    org->status & MIRRORED) {
-				log_error("Snapshots and mirrors may not yet "
-					  "be mixed.");
+			if ((org->status & MIRROR_IMAGE) ||
+			    (org->status & MIRROR_LOG)) {
+				log_error("Snapshots of mirror %ss "
+					  "are not supported",
+					  (org->status & MIRROR_LOG) ?
+					  "log" : "image");
 				return 0;
 			}
 

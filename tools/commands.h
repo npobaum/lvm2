@@ -195,7 +195,7 @@ xx(lvdisplay,
    "\t[-m|--maps]\n"
    "\t[--nosuffix]\n"
    "\t[-P|--partial] " "\n"
-   "\t[--units hsbkmgtHKMGT]\n"
+   "\t[--units hHbBsSkKmMgGtTpPeE]\n"
    "\t[-v|--verbose]\n"
    "\t[--version]" "\n"
    "\t[LogicalVolume[Path] [LogicalVolume[Path]...]]\n"
@@ -214,12 +214,12 @@ xx(lvdisplay,
    "\t[--segments]\n"
    "\t[--separator Separator]\n"
    "\t[--unbuffered]\n"
-   "\t[--units hsbkmgtHKMGT]\n"
+   "\t[--units hHbBsSkKmMgGtTpPeE]\n"
    "\t[-v|--verbose]\n"
    "\t[--version]" "\n"
    "\t[LogicalVolume[Path] [LogicalVolume[Path]...]]\n",
 
-    aligned_ARG, all_ARG, colon_ARG, columns_ARG, disk_ARG,
+    aligned_ARG, all_ARG, colon_ARG, columns_ARG,
     ignorelockingfailure_ARG, maps_ARG, noheadings_ARG, nosuffix_ARG,
     options_ARG, sort_ARG, partial_ARG, segments_ARG, separator_ARG,
     unbuffered_ARG, units_ARG)
@@ -396,7 +396,7 @@ xx(lvs,
    "\t[--separator Separator]\n"
    "\t[--trustcache]\n"
    "\t[--unbuffered]\n"
-   "\t[--units hsbkmgtHKMGT]\n"
+   "\t[--units hHbBsSkKmMgGtTpPeE]\n"
    "\t[--unquoted]\n"
    "\t[-v|--verbose]\n"
    "\t[--version]" "\n"
@@ -420,7 +420,7 @@ xx(lvscan,
    "\t[-v|--verbose] " "\n"
    "\t[--version]\n",
 
-   all_ARG, blockdevice_ARG, disk_ARG, ignorelockingfailure_ARG, partial_ARG)
+   all_ARG, blockdevice_ARG, ignorelockingfailure_ARG, partial_ARG)
 
 xx(pvchange,
    "Change attributes of physical volume(s)",
@@ -479,7 +479,7 @@ xx(pvcreate,
    "\t[-h|-?|--help] " "\n"
    "\t[--labelsector sector] " "\n"
    "\t[-M|--metadatatype 1|2]" "\n"
-   "\t[--metadatacopies #copies]" "\n"
+   "\t[--pvmetadatacopies #copies]" "\n"
    "\t[--metadatasize MetadataSize[bBsSkKmMgGtTpPeE]]" "\n"
    "\t[--dataalignment Alignment[bBsSkKmMgGtTpPeE]]" "\n"
    "\t[--dataalignmentoffset AlignmentOffset[bBsSkKmMgGtTpPeE]]" "\n"
@@ -493,8 +493,9 @@ xx(pvcreate,
    "\tPhysicalVolume [PhysicalVolume...]\n",
 
    dataalignment_ARG, dataalignmentoffset_ARG, force_ARG, test_ARG,
-   labelsector_ARG, metadatatype_ARG, metadatacopies_ARG, metadatasize_ARG,
-   physicalvolumesize_ARG, restorefile_ARG, uuidstr_ARG, yes_ARG, zero_ARG)
+   labelsector_ARG, metadatatype_ARG, metadatacopies_ARG, pvmetadatacopies_ARG,
+   metadatasize_ARG, physicalvolumesize_ARG, restorefile_ARG, uuidstr_ARG,
+   yes_ARG, zero_ARG)
 
 xx(pvdata,
    "Display the on-disk metadata for physical volume(s)",
@@ -526,7 +527,7 @@ xx(pvdisplay,
    "\t[-m|--maps]\n"
    "\t[--nosuffix]\n"
    "\t[-s|--short]\n"
-   "\t[--units hsbkmgtHKMGT]\n"
+   "\t[--units hHbBsSkKmMgGtTpPeE]\n"
    "\t[-v|--verbose]\n"
    "\t[--version]" "\n"
    "\t[PhysicalVolumePath [PhysicalVolumePath...]]\n"
@@ -543,7 +544,7 @@ xx(pvdisplay,
    "\t[-O|--sort [+|-]key1[,[+|-]key2[,...]]]\n"
    "\t[--separator Separator]\n"
    "\t[--unbuffered]\n"
-   "\t[--units hsbkmgtHKMGT]\n"
+   "\t[--units hHbBsSkKmMgGtTpPeE]\n"
    "\t[-v|--verbose]\n"
    "\t[--version]" "\n"
    "\t[PhysicalVolumePath [PhysicalVolumePath...]]\n",
@@ -594,8 +595,8 @@ xx(pvs,
    "Display information about physical volumes",
    CACHE_VGMETADATA,
    "pvs" "\n"
-   "\t[--aligned]\n"
    "\t[-a|--all]\n"
+   "\t[--aligned]\n"
    "\t[-d|--debug]" "\n"
    "\t[-h|-?|--help] " "\n"
    "\t[--ignorelockingfailure]\n"
@@ -610,7 +611,7 @@ xx(pvs,
    "\t[--separator Separator]\n"
    "\t[--trustcache]\n"
    "\t[--unbuffered]\n"
-   "\t[--units hsbkmgtHKMGT]\n"
+   "\t[--units hHbBsSkKmMgGtTpPeE]\n"
    "\t[--unquoted]\n"
    "\t[-v|--verbose]\n"
    "\t[--version]\n"
@@ -727,7 +728,7 @@ xx(vgconvert,
    "\t[-h|--help] " "\n"
    "\t[--labelsector sector] " "\n"
    "\t[-M|--metadatatype 1|2]" "\n"
-   "\t[--metadatacopies #copies]" "\n"
+   "\t[--pvmetadatacopies #copies]" "\n"
    "\t[--metadatasize MetadataSize[bBsSkKmMgGtTpPeE]]" "\n"
    "\t[-t|--test] " "\n"
    "\t[-v|--verbose] " "\n"
@@ -735,7 +736,7 @@ xx(vgconvert,
    "\tVolumeGroupName [VolumeGroupName...]\n",
 
    force_ARG, test_ARG, labelsector_ARG, metadatatype_ARG, metadatacopies_ARG,
-   metadatasize_ARG )
+   pvmetadatacopies_ARG, metadatasize_ARG )
 
 xx(vgcreate,
    "Create a volume group",
@@ -754,23 +755,27 @@ xx(vgcreate,
    "\t[-t|--test] " "\n"
    "\t[-v|--verbose]" "\n"
    "\t[--version] " "\n"
-   "\tVolumeGroupName PhysicalVolume [PhysicalVolume...]\n",
+   "\t[ PHYSICAL DEVICE OPTIONS ] " "\n"
+   "\tVolumeGroupName PhysicalDevicePath [PhysicalDevicePath...]\n",
 
    addtag_ARG, alloc_ARG, autobackup_ARG, clustered_ARG, maxlogicalvolumes_ARG,
-   maxphysicalvolumes_ARG, metadatatype_ARG, physicalextentsize_ARG, test_ARG)
+   maxphysicalvolumes_ARG, metadatatype_ARG, physicalextentsize_ARG, test_ARG,
+   force_ARG, yes_ARG, zero_ARG, labelsector_ARG, metadatasize_ARG,
+   pvmetadatacopies_ARG, metadatacopies_ARG, dataalignment_ARG,
+   dataalignmentoffset_ARG)
 
 xx(vgdisplay,
    "Display volume group information",
    0,
    "vgdisplay " "\n"
+   "\t[-A|--activevolumegroups]" "\n"
    "\t[-c|--colon | -s|--short | -v|--verbose]" "\n"
    "\t[-d|--debug] " "\n"
    "\t[-h|--help] " "\n"
    "\t[--ignorelockingfailure]" "\n"
    "\t[--nosuffix]\n"
    "\t[-P|--partial] " "\n"
-   "\t[--units hsbkmgtHKMGT]\n"
-   "\t[-A|--activevolumegroups | [-D|--disk]" "\n"
+   "\t[--units hHbBsSkKmMgGtTpPeE]\n"
    "\t[--version]" "\n"
    "\t[VolumeGroupName [VolumeGroupName...]]\n"
    "\n"
@@ -786,12 +791,12 @@ xx(vgdisplay,
    "\t[-P|--partial] " "\n"
    "\t[--separator Separator]\n"
    "\t[--unbuffered]\n"
-   "\t[--units hsbkmgtHKMGT]\n"
+   "\t[--units hHbBsSkKmMgGtTpPeE]\n"
    "\t[--verbose]" "\n"
    "\t[--version]" "\n"
    "\t[VolumeGroupName [VolumeGroupName...]]\n",
 
-   activevolumegroups_ARG, aligned_ARG, colon_ARG, columns_ARG, disk_ARG,
+   activevolumegroups_ARG, aligned_ARG, colon_ARG, columns_ARG,
    ignorelockingfailure_ARG, noheadings_ARG, nosuffix_ARG, options_ARG,
    partial_ARG, short_ARG, separator_ARG, sort_ARG, unbuffered_ARG, units_ARG)
 
@@ -818,9 +823,13 @@ xx(vgextend,
    "\t[-t|--test]\n"
    "\t[-v|--verbose]\n"
    "\t[--version]" "\n"
+   "\t[ PHYSICAL DEVICE OPTIONS ] " "\n"
    "\tVolumeGroupName PhysicalDevicePath [PhysicalDevicePath...]\n",
 
-   autobackup_ARG, test_ARG)
+   autobackup_ARG, test_ARG,
+   force_ARG, yes_ARG, zero_ARG, labelsector_ARG, metadatatype_ARG,
+   metadatasize_ARG, pvmetadatacopies_ARG, metadatacopies_ARG,
+   dataalignment_ARG, dataalignmentoffset_ARG)
 
 xx(vgimport,
    "Register exported volume group with system",
@@ -935,7 +944,7 @@ xx(vgs,
    "\t[--separator Separator]\n"
    "\t[--trustcache]\n"
    "\t[--unbuffered]\n"
-   "\t[--units hsbkmgtHKMGT]\n"
+   "\t[--units hHbBsSkKmMgGtTpPeE]\n"
    "\t[--unquoted]\n"
    "\t[-v|--verbose]\n"
    "\t[--version]\n"

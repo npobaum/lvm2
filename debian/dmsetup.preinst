@@ -7,7 +7,7 @@ rm_conffile() {
 
     if [ -e "$1" ]; then
         md5sum="$(md5sum "$1" | awk '{print $1}')"
-        old_md5sum="$(sed -n -e "/^Conffiles:/,/^[^ ]/{\' $1'{p}}" /var/lib/dpkg/status | awk '{print $2}')"
+        old_md5sum="$(dpkg-query -W -f='${Conffiles}' dmsetup | sed -n -e "\' $CONFFILE ' { s/ obsolete$//; s/.* //; p }"))"
         if [ "$md5sum" != "$old_md5sum" ]; then
             echo "Obsolete conffile $CONFFILE has been modified by you."
             echo "Saving as $CONFFILE.dpkg-bak ..."

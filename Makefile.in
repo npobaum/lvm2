@@ -14,6 +14,7 @@
 
 srcdir = @srcdir@
 top_srcdir = @top_srcdir@
+top_builddir = @top_builddir@
 VPATH = @srcdir@
 
 SUBDIRS = doc include man scripts
@@ -34,7 +35,7 @@ endif
 
 ifeq ($(MAKECMDGOALS),distclean)
   SUBDIRS += daemons/clvmd \
-	     daemons/clogd \
+	     daemons/cmirrord \
 	     daemons/dmeventd/plugins \
 	     daemons/dmeventd \
 	     lib/format1 \

@@ -156,12 +156,14 @@ int lv_info_by_lvid(struct cmd_context *cmd, const char *lvid_s,
 {
 	return 0;
 }
-int lv_snapshot_percent(const struct logical_volume *lv, float *percent)
+int lv_snapshot_percent(const struct logical_volume *lv, float *percent,
+			percent_range_t *percent_range)
 {
 	return 0;
 }
 int lv_mirror_percent(struct cmd_context *cmd, struct logical_volume *lv,
-		      int wait, float *percent, uint32_t *event_nr)
+		      int wait, float *percent, percent_range_t *percent_range,
+		      uint32_t *event_nr)
 {
 	return 0;
 }
@@ -495,7 +497,8 @@ int lv_info_by_lvid(struct cmd_context *cmd, const char *lvid_s,
 /*
  * Returns 1 if percent set, else 0 on failure.
  */
-int lv_snapshot_percent(const struct logical_volume *lv, float *percent)
+int lv_snapshot_percent(const struct logical_volume *lv, float *percent,
+			percent_range_t *percent_range)
 {
 	int r;
 	struct dev_manager *dm;
@@ -506,7 +509,7 @@ int lv_snapshot_percent(const struct logical_volume *lv, float *percent)
 	if (!(dm = dev_manager_create(lv->vg->cmd, lv->vg->name)))
 		return_0;
 
-	if (!(r = dev_manager_snapshot_percent(dm, lv, percent)))
+	if (!(r = dev_manager_snapshot_percent(dm, lv, percent, percent_range)))
 		stack;
 
 	dev_manager_destroy(dm);
@@ -516,7 +519,8 @@ int lv_snapshot_percent(const struct logical_volume *lv, float *percent)
 
 /* FIXME Merge with snapshot_percent */
 int lv_mirror_percent(struct cmd_context *cmd, struct logical_volume *lv,
-		      int wait, float *percent, uint32_t *event_nr)
+		      int wait, float *percent, percent_range_t *percent_range,
+		      uint32_t *event_nr)
 {
 	int r;
 	struct dev_manager *dm;
@@ -541,7 +545,8 @@ int lv_mirror_percent(struct cmd_context *cmd, struct logical_volume *lv,
 	if (!(dm = dev_manager_create(lv->vg->cmd, lv->vg->name)))
 		return_0;
 
-	if (!(r = dev_manager_mirror_percent(dm, lv, wait, percent, event_nr)))
+	if (!(r = dev_manager_mirror_percent(dm, lv, wait, percent,
+					     percent_range, event_nr)))
 		stack;
 
 	dev_manager_destroy(dm);
@@ -975,6 +980,29 @@ int lv_resume(struct cmd_context *cmd, const char *lvid_s)
 	return _lv_resume(cmd, lvid_s, 1);
 }
 
+static int _lv_has_open_snapshots(struct logical_volume *lv)
+{
+	struct lv_segment *snap_seg;
+	struct lvinfo info;
+	int r = 0;
+
+	dm_list_iterate_items_gen(snap_seg, &lv->snapshot_segs, origin_list) {
+		if (!lv_info(lv->vg->cmd, snap_seg->cow, &info, 1, 0)) {
+			r = 1;
+			continue;
+		}
+
+		if (info.exists && info.open_count) {
+			log_error("LV %s/%s has open snapshot %s: "
+				  "not deactivating", lv->vg->name, lv->name,
+				  snap_seg->cow->name);
+			r = 1;
+		}
+	}
+
+	return r;
+}
+
 int lv_deactivate(struct cmd_context *cmd, const char *lvid_s)
 {
 	struct logical_volume *lv;
@@ -1001,10 +1029,14 @@ int lv_deactivate(struct cmd_context *cmd, const char *lvid_s)
 		goto out;
 	}
 
-	if (info.open_count && lv_is_visible(lv)) {
-		log_error("LV %s/%s in use: not deactivating", lv->vg->name,
-			  lv->name);
-		goto out;
+	if (lv_is_visible(lv)) {
+		if (info.open_count) {
+			log_error("LV %s/%s in use: not deactivating",
+				  lv->vg->name, lv->name);
+			goto out;
+		}
+		if (lv_is_origin(lv) && _lv_has_open_snapshots(lv))
+			goto_out;
 	}
 
 	lv_calculate_readahead(lv, NULL);
@@ -1017,6 +1049,8 @@ int lv_deactivate(struct cmd_context *cmd, const char *lvid_s)
 	memlock_dec();
 	fs_unlock();
 
+	if (!lv_info(cmd, lv, &info, 1, 0) || info.exists)
+		r = 0;
 out:
 	if (lv)
 		vg_release(lv->vg);
@@ -1075,6 +1109,12 @@ static int _lv_activate(struct cmd_context *cmd, const char *lvid_s,
 	if ((!lv->vg->cmd->partial_activation) && (lv->status & PARTIAL_LV)) {
 		log_error("Refusing activation of partial LV %s. Use --partial to override.",
 			  lv->name);
+		goto_out;
+	}
+
+	if (lv_has_unknown_segments(lv)) {
+		log_error("Refusing activation of LV %s containing "
+			  "an unrecognised segment.", lv->name);
 		goto_out;
 	}
 

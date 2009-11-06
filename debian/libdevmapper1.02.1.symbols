@@ -127,6 +127,7 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_tree_activate_children@Base 2:1.02.20
  dm_tree_add_dev@Base 2:1.02.20
  dm_tree_add_new_dev@Base 2:1.02.20
+ dm_tree_add_new_dev_with_udev_flags@Base 2:1.02.39
  dm_tree_children_use_uuid@Base 2:1.02.20
  dm_tree_create@Base 2:1.02.20
  dm_tree_deactivate_children@Base 2:1.02.20
