@@ -7,4 +7,8 @@ libdm-atomic.patch
 rules-subdir.patch
 implicit-pointer.patch
 libdm-static.patch
+libdm-event-static.patch
 scripts-bash.sh
+open-readonly.patch
+avoid-dev-block.patch
+monitoring-default-off.patch

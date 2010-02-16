@@ -1,5 +1,7 @@
---- a/make.tmpl.in
-+++ b/make.tmpl.in
+Index: merged/make.tmpl.in
+===================================================================
+--- merged.orig/make.tmpl.in	2010-02-11 02:39:16.724020797 -0800
++++ merged/make.tmpl.in	2010-02-11 02:39:16.794019477 -0800
 @@ -128,65 +128,27 @@
  
  .PHONY: all install install_cluster pofile distclean clean cflow device-mapper 
@@ -93,14 +95,16 @@
  	$(RM) -rf $(DISTCLEAN_DIRS)
  	$(RM) $(DISTCLEAN_TARGETS) \
  	      $(OBJECTS) $(TARGETS) $(CLEAN_TARGETS) $(SOURCES:%.c=%.d) \
---- a/Makefile.in
-+++ b/Makefile.in
+Index: merged/Makefile.in
+===================================================================
+--- merged.orig/Makefile.in	2010-02-11 02:37:57.465269848 -0800
++++ merged/Makefile.in	2010-02-11 02:39:16.794019477 -0800
 @@ -27,7 +27,7 @@
    SUBDIRS += po
  endif
  
 -SUBDIRS += lib tools daemons libdm
-+SUBDIRS += libdm lib tools daemons
++SUBDIRS += libdm lib daemons tools
  
  ifeq ("@APPLIB@", "yes")
    SUBDIRS += liblvm
@@ -136,8 +140,10 @@
  ifneq ("@CSCOPE_CMD@", "")
  cscope.out: tools
  	@CSCOPE_CMD@ -b -R
---- a/man/Makefile.in
-+++ b/man/Makefile.in
+Index: merged/man/Makefile.in
+===================================================================
+--- merged.orig/man/Makefile.in	2010-02-11 02:39:16.694020715 -0800
++++ merged/man/Makefile.in	2010-02-11 02:39:16.794019477 -0800
 @@ -49,9 +49,7 @@
  
  .PHONY: man
@@ -149,3 +155,29 @@
  
  $(MAN5) $(MAN8) $(MAN8CLUSTER):	Makefile
  
+Index: merged/daemons/Makefile.in
+===================================================================
+--- merged.orig/daemons/Makefile.in	2010-02-11 02:37:57.485269638 -0800
++++ merged/daemons/Makefile.in	2010-02-11 02:42:19.164019853 -0800
+@@ -18,9 +18,7 @@
+ 
+ .PHONY: dmeventd clvmd cmirrord
+ 
+-ifneq ("@CLVMD@", "none")
+-  SUBDIRS = clvmd
+-endif
++SUBDIRS =
+ 
+ ifeq ("@BUILD_CMIRRORD@", "yes")
+   SUBDIRS += cmirrord
+@@ -30,6 +28,10 @@
+   SUBDIRS += dmeventd
+ endif
+ 
++ifneq ("@CLVMD@", "none")
++  SUBDIRS += clvmd
++endif
++
+ include ../make.tmpl
+ 
+ ifeq ("@BUILD_DMEVENTD@", "yes")

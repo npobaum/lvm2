@@ -8,7 +8,7 @@ ENV{DM_UUID}!="LVM-?*", GOTO="lvm_end"
 IMPORT{program}="/sbin/dmsetup splitname --nameprefixes --noheadings --rows $env{DM_NAME}"
 
 # Do not create symlinks for hidden subdevices.
-ENV{DM_LV_NAME}=="?*_mimage_[0-9]*|pvmove?*|?*_vorigin", ENV{DM_UDEV_DISABLE_DISK_RULES_FLAG}="1"
+ENV{DM_LV_NAME}=="?*_mimage_[0-9]*|pvmove?*|?*_vorigin|?*_mlog", ENV{DM_UDEV_DISABLE_DISK_RULES_FLAG}="1"
 ENV{DM_LV_LAYER}=="?*", ENV{DM_UDEV_DISABLE_DISK_RULES_FLAG}="1"
 
 LABEL="lvm_end"
