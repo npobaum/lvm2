@@ -1,3 +1,5 @@
 usr/include/libdevmapper.h
+usr/include/libdevmapper-event.h
 usr/lib/libdevmapper.a
+usr/lib/libdevmapper-event.a
 usr/lib/pkgconfig

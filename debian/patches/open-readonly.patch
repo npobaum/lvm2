@@ -1,0 +1,121 @@
+Description: Generally we don't need to write to every single block device we
+ open, in fact if we do that when scanning we'll make udev think they all
+ changed, and it could run "lvm vgscan" again!  When the file descriptor
+ is needed for writing, it will be closed and opened again.
+Author: Scott James Remnant <scott@ubuntu.com>
+Bug-Ubuntu: https://bugs.launchpad.net/bugs/332270
+
+Index: merged/lib/device/dev-md.c
+===================================================================
+--- merged.orig/lib/device/dev-md.c	2009-08-19 08:34:43.000000000 -0700
++++ merged/lib/device/dev-md.c	2010-02-10 15:54:15.186520283 -0800
+@@ -94,7 +94,7 @@
+ 	if (size < MD_RESERVED_SECTORS * 2)
+ 		return 0;
+ 
+-	if (!dev_open(dev)) {
++	if (!dev_open_flags(dev, O_RDONLY, 1, 0)) {
+ 		stack;
+ 		return -1;
+ 	}
+Index: merged/lib/device/device.c
+===================================================================
+--- merged.orig/lib/device/device.c	2009-08-01 10:14:52.000000000 -0700
++++ merged/lib/device/device.c	2010-02-10 15:54:15.186520283 -0800
+@@ -62,7 +62,7 @@
+ 	uint16_t *part_magic;
+ 	struct partition *part;
+ 
+-	if (!dev_open(dev)) {
++	if (!dev_open_flags(dev, O_RDONLY, 1, 0)) {
+ 		stack;
+ 		return -1;
+ 	}
+Index: merged/lib/format1/disk-rep.c
+===================================================================
+--- merged.orig/lib/format1/disk-rep.c	2009-07-15 13:02:46.000000000 -0700
++++ merged/lib/format1/disk-rep.c	2010-02-10 15:54:15.186520283 -0800
+@@ -415,7 +415,7 @@
+ {
+ 	struct disk_list *dl;
+ 
+-	if (!dev_open(dev))
++	if (!dev_open_flags(dev, O_RDONLY, 1, 0))
+ 		return_NULL;
+ 
+ 	dl = __read_disk(fmt, dev, mem, vg_name);
+Index: merged/lib/format_pool/disk_rep.c
+===================================================================
+--- merged.orig/lib/format_pool/disk_rep.c	2008-11-04 07:07:44.000000000 -0800
++++ merged/lib/format_pool/disk_rep.c	2010-02-10 15:54:15.186520283 -0800
+@@ -349,7 +349,7 @@
+ {
+ 	struct pool_list *pl;
+ 
+-	if (!dev_open(dev))
++	if (!dev_open_flags(dev, O_RDONLY, 1, 0))
+ 		return_NULL;
+ 
+ 	if (!(pl = dm_pool_zalloc(mem, sizeof(*pl)))) {
+Index: merged/lib/format_text/format-text.c
+===================================================================
+--- merged.orig/lib/format_text/format-text.c	2009-08-01 10:07:37.000000000 -0700
++++ merged/lib/format_text/format-text.c	2010-02-10 15:54:15.186520283 -0800
+@@ -165,7 +165,7 @@
+ 		  PRIu64, mdac->area.start, mdac->area.size);
+ 	area = &mdac->area;
+ 
+-	if (!dev_open(area->dev))
++	if (!dev_open_flags(area->dev, O_RDONLY, 1, 0))
+ 		return_0;
+ 
+ 	if (!(mdah = _raw_read_mda_header(fmt, area)))
+@@ -424,7 +424,7 @@
+ 	int noprecommit = 0;
+ 	struct mda_header *mdah;
+ 
+-	if (!dev_open(dev_area->dev))
++	if (!dev_open_flags(dev_area->dev, O_RDONLY, 1, 0))
+ 		return_0;
+ 
+ 	if (!(mdah = _raw_read_mda_header(fid->fmt, dev_area)))
+@@ -451,7 +451,7 @@
+ 	char *desc;
+ 	uint32_t wrap = 0;
+ 
+-	if (!dev_open(area->dev))
++	if (!dev_open_flags(area->dev, O_RDONLY, 1, 0))
+ 		return_NULL;
+ 
+ 	if (!(mdah = _raw_read_mda_header(fid->fmt, area)))
+@@ -1052,7 +1052,7 @@
+ 	if (mda_free_sectors)
+ 		*mda_free_sectors = ((dev_area->size - MDA_HEADER_SIZE) / 2) >> SECTOR_SHIFT;
+ 
+-	if (!dev_open(dev_area->dev))
++	if (!dev_open_flags(dev_area->dev, O_RDONLY, 1, 0))
+ 		return_NULL;
+ 
+ 	if (!(mdah = _raw_read_mda_header(fmt, dev_area)))
+Index: merged/lib/label/label.c
+===================================================================
+--- merged.orig/lib/label/label.c	2009-07-15 13:02:47.000000000 -0700
++++ merged/lib/label/label.c	2010-02-10 15:54:15.196520340 -0800
+@@ -272,7 +272,7 @@
+ 		return 1;
+ 	}
+ 
+-	if (!dev_open(dev)) {
++	if (!dev_open_flags(dev, O_RDONLY, 1, 0)) {
+ 		stack;
+ 
+ 		if ((info = info_from_pvid(dev->pvid, 0)))
+@@ -352,7 +352,7 @@
+ 	struct lvmcache_info *info;
+ 	int r = 0;
+ 
+-	if (!dev_open(dev)) {
++	if (!dev_open_flags(dev, O_RDONLY, 1, 0)) {
+ 		if ((info = info_from_pvid(dev->pvid, 0)))
+ 			lvmcache_update_vgname_and_id(info, info->fmt->orphan_vg_name,
+ 						      info->fmt->orphan_vg_name,

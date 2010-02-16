@@ -23,6 +23,9 @@ case "$1" in
         if dpkg --compare-versions "$2" lt 2:2.02.51-4; then
             rm_conffile "/etc/udev/rules.d/65_dmsetup.rules"
         fi
+        if dpkg --compare-versions "$2" lt 2.02.54-1ubuntu1; then
+            rm_conffile "/etc/udev/rules.d/65-dmsetup.rules"
+        fi
     ;;
 esac
 

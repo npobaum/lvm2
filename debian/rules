@@ -70,8 +70,11 @@ $(STAMPS_DIR)/setup-deb: $(STAMPS_DIR)/source
 		--with-device-uid=0 \
 		--with-device-gid=6 \
 		--with-device-mode=0660 \
+		--enable-dmeventd \
+		--enable-cmdlib \
 		--enable-pkgconfig \
 		--enable-readline
+	cp po/lvm2.po po/lvm2.pot
 	touch $@
 
 $(STAMPS_DIR)/setup-udeb: SOURCE_DIR = $(BUILD_DIR)/source
@@ -86,6 +89,7 @@ $(STAMPS_DIR)/setup-udeb: $(STAMPS_DIR)/source
 		--with-cluster=none \
 		--with-lvm1=none \
 		--with-pool=none \
+		--disable-dmeventd \
 		--disable-readline \
 		--disable-selinux
 	touch $@
@@ -118,6 +122,7 @@ clean:
 	dh_testdir
 	rm -rf $(BUILD_DIR) $(STAMPS_DIR)
 	dh_clean
+	rm -f po/lvm2.pot
 
 $(STAMPS_DIR)/install-deb-%: DIR = $(BUILD_DIR)/install-deb-$*
 $(STAMPS_DIR)/install-deb-%: $(STAMPS_DIR)/build-deb
@@ -135,7 +140,7 @@ $(STAMPS_DIR)/install-udeb-%: $(STAMPS_DIR)/build-udeb
 	$(MAKE) -C $(BUILD_DIR)/build-udeb install_$* DESTDIR=$(CURDIR)/$(DIR) LIB_VERSION_DM=$(DEVMAPPER_ABINAME)
 	touch $@
 
-install: $(addprefix install-,libdevmapper libdevmapper-udeb dmsetup dmsetup-udeb lvm2 lvm2-udeb clvm)
+install: $(addprefix install-,libdevmapper libdevmapper-udeb dmeventd dmsetup dmsetup-udeb lvm2 lvm2-udeb clvm)
 
 install-base:
 	dh_installdocs
@@ -169,6 +174,7 @@ install-dmsetup: $(STAMPS_DIR)/install-deb-device-mapper
 	cp -a debian/tree/dmsetup debian/dmsetup
 	find debian/dmsetup -name .svn | xargs -r rm -r
 	dh_install --sourcedir=$(DIR)
+	chmod +x -R debian/dmsetup/usr/share/initramfs-tools
 	dh_installchangelogs WHATS_NEW_DM
 	dh_installdebconf
 	dh_installexamples
@@ -183,7 +189,9 @@ install-dmsetup-udeb: $(STAMPS_DIR)/install-udeb-device-mapper
 	dh_testroot
 	dh_clean -k
 	dh_installchangelogs WHATS_NEW_DM
+	cp -a debian/tree/dmsetup debian/dmsetup-udeb
 	dh_install --sourcedir=$(DIR)
+	chmod +x -R debian/dmsetup-udeb/usr/share/initramfs-tools
 
 	dh_installdocs
 	dh_strip
@@ -199,7 +207,7 @@ install-dmsetup-udeb: $(STAMPS_DIR)/install-udeb-device-mapper
 	dpkg-deb --build debian/$(PACKAGE_NAME) ../$(PACKAGE_FILE)
 
 
-install-libdevmapper: export DH_OPTIONS = -plibdevmapper-dev -plibdevmapper$(DEVMAPPER_ABINAME)
+install-libdevmapper: export DH_OPTIONS = -plibdevmapper-dev -plibdevmapper$(DEVMAPPER_ABINAME) -plibdevmapper-event$(DEVMAPPER_ABINAME)
 install-libdevmapper: DIR = $(BUILD_DIR)/install-deb-device-mapper
 install-libdevmapper: $(STAMPS_DIR)/install-deb-device-mapper
 	dh_testdir
@@ -208,10 +216,14 @@ install-libdevmapper: $(STAMPS_DIR)/install-deb-device-mapper
 	dh_install --sourcedir=$(DIR)
 	dh_installchangelogs WHATS_NEW_DM
 	dh_installexamples
-	dh_link -p libdevmapper-dev lib/libdevmapper.so.$(DEVMAPPER_ABINAME) usr/lib/libdevmapper.so
-	dh_makeshlibs -p 'libdevmapper$(DEVMAPPER_ABINAME)' \
+	dh_link -p libdevmapper-dev lib/libdevmapper.so.$(DEVMAPPER_ABINAME) lib/libdevmapper.so
+	DH_OPTIONS= dh_makeshlibs -p 'libdevmapper$(DEVMAPPER_ABINAME)' \
 		--add-udeb 'libdevmapper$(DEVMAPPER_ABINAME)-udeb' \
 	       	"-Vlibdevmapper$(DEVMAPPER_ABINAME) (>= $(DEVMAPPER_VERSION))" \
+		-- "-v$(DEVMAPPER_VERSION_DEBIAN)" -c2
+	dh_link -p libdevmapper-dev lib/libdevmapper-event.so.$(DEVMAPPER_ABINAME) lib/libdevmapper-event.so
+	DH_OPTIONS= dh_makeshlibs -p 'libdevmapper-event$(DEVMAPPER_ABINAME)' \
+	       	"-Vlibdevmapper-event$(DEVMAPPER_ABINAME) (>= $(DEVMAPPER_VERSION))" \
 		-- "-v$(DEVMAPPER_VERSION_DEBIAN)" -c2
 	$(MAKE) -f debian/rules install-base GENCONTROL_ARGS="-v$(DEVMAPPER_VERSION_DEBIAN)"
 
@@ -240,6 +252,29 @@ install-libdevmapper-udeb: $(STAMPS_DIR)/install-udeb-device-mapper
 	dh_md5sums
 	dpkg-deb --build debian/$(PACKAGE_NAME) ../$(PACKAGE_FILE)
 
+install-libdevmapper-event: export DH_OPTIONS = -plibdevmapper-event$(DEVMAPPER_ABINAME)
+install-libdevmapper-event: DIR = $(BUILD_DIR)/install-deb-device-mapper
+install-libdevmapper-event: $(STAMPS_DIR)/install-deb-device-mapper
+	dh_testdir
+	dh_testroot
+	dh_clean -k
+	dh_install --sourcedir=$(DIR)
+	dh_installchangelogs WHATS_NEW_DM
+	dh_installexamples
+	$(MAKE) -f debian/rules install-base GENCONTROL_ARGS="-v$(DEVMAPPER_VERSION_DEBIAN)"
+
+install-dmeventd: export DH_OPTIONS = -pdmeventd
+install-dmeventd: DIR = $(BUILD_DIR)/install-deb-device-mapper
+install-dmeventd: $(STAMPS_DIR)/install-deb-device-mapper
+	dh_testdir
+	dh_testroot
+	dh_clean -k
+	dh_install --sourcedir=$(DIR)
+	dh_installchangelogs WHATS_NEW_DM
+	dh_installdebconf
+	dh_installexamples
+	$(MAKE) -f debian/rules install-base GENCONTROL_ARGS="-v$(DEVMAPPER_VERSION_DEBIAN)"
+
 install-lvm2: export DH_OPTIONS = -plvm2
 install-lvm2: DIR = $(BUILD_DIR)/install-deb-lvm2
 install-lvm2: $(STAMPS_DIR)/install-deb-lvm2
@@ -247,13 +282,13 @@ install-lvm2: $(STAMPS_DIR)/install-deb-lvm2
 	dh_testroot
 	dh_clean -k
 	cp -a debian/tree/lvm2 debian/lvm2
+	rm -rf debian/lvm2/usr/share/initramfs-tools/scripts/local-top
 	find debian/lvm2 -name .svn | xargs -r rm -r
 	dh_install --sourcedir=$(DIR)
 	chmod +x -R debian/lvm2/usr/share/initramfs-tools
 	dh_installchangelogs WHATS_NEW
 	dh_installdebconf
 	dh_installexamples
-	dh_installinit --no-start -- start 26 S . start 50 0 6 .
 	$(MAKE) -f debian/rules install-base
 
 install-lvm2-udeb: export DH_OPTIONS = -plvm2-udeb
@@ -263,7 +298,9 @@ install-lvm2-udeb: $(STAMPS_DIR)/install-udeb-lvm2
 	dh_testroot
 	dh_clean -k
 	dh_installchangelogs WHATS_NEW
+	cp -a debian/tree/lvm2 debian/lvm2-udeb
 	dh_install --sourcedir=$(DIR)
+	chmod +x -R debian/lvm2-udeb/usr/share/initramfs-tools
 	$(MAKE) -f debian/rules install-base
 
 binary-indep:
