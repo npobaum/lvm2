@@ -1,3 +1,10 @@
+lvm2 (2.02.54-1ubuntu2) lucid; urgency=low
+
+  * debian/lvm2.preinst: fix Hardy conf-file removal to check against the
+    correct binary package name.
+
+ -- Kees Cook <kees@ubuntu.com>  Tue, 16 Feb 2010 16:08:43 -0800
+
 lvm2 (2.02.54-1ubuntu1) lucid; urgency=low
 
   * Merge from debian testing.  Remaining changes:
