@@ -1,3 +1,9 @@
+lvm2 (2.02.54-1ubuntu3) lucid; urgency=low
+
+  * lidevmapper-dev: move .so symlinks to /usr/lib where they belong
+
+ -- Steve Langasek <steve.langasek@ubuntu.com>  Thu, 18 Feb 2010 04:38:10 -0800
+
 lvm2 (2.02.54-1ubuntu2) lucid; urgency=low
 
   * debian/lvm2.preinst: fix Hardy conf-file removal to check against the

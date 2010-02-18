@@ -216,12 +216,12 @@ install-libdevmapper: $(STAMPS_DIR)/install-deb-device-mapper
 	dh_install --sourcedir=$(DIR)
 	dh_installchangelogs WHATS_NEW_DM
 	dh_installexamples
-	dh_link -p libdevmapper-dev lib/libdevmapper.so.$(DEVMAPPER_ABINAME) lib/libdevmapper.so
+	dh_link -p libdevmapper-dev lib/libdevmapper.so.$(DEVMAPPER_ABINAME) usr/lib/libdevmapper.so
 	DH_OPTIONS= dh_makeshlibs -p 'libdevmapper$(DEVMAPPER_ABINAME)' \
 		--add-udeb 'libdevmapper$(DEVMAPPER_ABINAME)-udeb' \
 	       	"-Vlibdevmapper$(DEVMAPPER_ABINAME) (>= $(DEVMAPPER_VERSION))" \
 		-- "-v$(DEVMAPPER_VERSION_DEBIAN)" -c2
-	dh_link -p libdevmapper-dev lib/libdevmapper-event.so.$(DEVMAPPER_ABINAME) lib/libdevmapper-event.so
+	dh_link -p libdevmapper-dev lib/libdevmapper-event.so.$(DEVMAPPER_ABINAME) usr/lib/libdevmapper-event.so
 	DH_OPTIONS= dh_makeshlibs -p 'libdevmapper-event$(DEVMAPPER_ABINAME)' \
 	       	"-Vlibdevmapper-event$(DEVMAPPER_ABINAME) (>= $(DEVMAPPER_VERSION))" \
 		-- "-v$(DEVMAPPER_VERSION_DEBIAN)" -c2
