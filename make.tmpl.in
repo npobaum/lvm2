@@ -21,6 +21,7 @@ CC = @CC@
 RANLIB = @RANLIB@
 SHELL = /bin/sh
 INSTALL = @INSTALL@
+INSTALL_DATA = @INSTALL@ -m 644
 MKDIR_P = @MKDIR_P@
 MSGFMT = @MSGFMT@
 LCOV = @LCOV@
@@ -65,11 +66,6 @@ udevdir = $(DESTDIR)@udevdir@
 
 interface = @interface@
 interfacebuilddir = $(top_builddir)/libdm/$(interface)
-
-# setup misc variables
-# define the ownership variables for the binaries and man pages
-OWNER = @OWNER@
-GROUP = @GROUP@
 
 # The number of jobs to run, if blank, defaults to the make standard
 ifndef MAKEFLAGS

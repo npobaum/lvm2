@@ -32,7 +32,7 @@ install_lvm2: $(LVM_RULES)
 	@for f in $(LVM_RULES); \
 	do \
 	   $(RM) $(udevdir)/$$f; \
-	   $(INSTALL) -c -D $(OWNER) $(GROUP) -m 644 $(srcdir)/$$f $(udevdir)/$$f; \
+	   $(INSTALL_DATA) -c -D $(srcdir)/$$f $(udevdir)/$$f; \
 	done
 
 install_device-mapper: $(DM_RULES)
@@ -40,7 +40,7 @@ install_device-mapper: $(DM_RULES)
 	@for f in $(DM_RULES); \
 	do \
 	   $(RM) $(udevdir)/$$f; \
-	   $(INSTALL) -c -D $(OWNER) $(GROUP) -m 644 $(srcdir)/$$f $(udevdir)/$$f; \
+	   $(INSTALL_DATA) -c -D $(srcdir)/$$f $(udevdir)/$$f; \
 	done
 
 install: install_lvm2 install_device-mapper

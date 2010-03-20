@@ -72,14 +72,14 @@ install_lvm2:
 	@for f in $(MAN8); \
 	do \
 	   $(RM) $(MAN8DIR)/$$f; \
-	   @INSTALL@ -D $(OWNER) $(GROUP) -m 444 $$f $(MAN8DIR)/$$f; \
+	   $(INSTALL_DATA) -D $$f $(MAN8DIR)/$$f; \
 	done
 
 	@echo "Installing $(MAN5) in $(MAN5DIR)"
 	@for f in $(MAN5); \
 	do \
 	   $(RM) $(MAN5DIR)/$$f; \
-	   @INSTALL@ -D $(OWNER) $(GROUP) -m 444 $$f $(MAN5DIR)/$$f; \
+	   $(INSTALL_DATA) -D $$f $(MAN5DIR)/$$f; \
 	done
 
 install_cluster:
@@ -87,7 +87,7 @@ install_cluster:
 	@for f in $(MAN8CLUSTER); \
 	do \
 	   $(RM) $(MAN8DIR)/$$f; \
-	   @INSTALL@ -D $(OWNER) $(GROUP) -m 444 $$f $(MAN8DIR)/$$f; \
+	   $(INSTALL_DATA) -D $$f $(MAN8DIR)/$$f; \
 	done
 
 install_device-mapper:
@@ -95,7 +95,7 @@ install_device-mapper:
 	@for f in $(MAN8DM); \
 	do \
 	   $(RM) $(MAN8DIR)/$$f; \
-	   @INSTALL@ -D $(OWNER) $(GROUP) -m 444 $$f $(MAN8DIR)/$$f; \
+	   $(INSTALL_DATA) -D $$f $(MAN8DIR)/$$f; \
 	done
 
 install: install_lvm2 install_device-mapper

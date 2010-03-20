@@ -19,13 +19,10 @@ VPATH = @srcdir@
 include $(top_builddir)/make.tmpl
 
 install:
-	$(INSTALL) -D $(OWNER) $(GROUP) -m 555 $(srcdir)/lvm_dump.sh \
-		$(sbindir)/lvmdump
-	$(INSTALL) -D $(OWNER) $(GROUP) -m 555 $(srcdir)/vgimportclone.sh \
-		$(sbindir)/vgimportclone
+	$(INSTALL) -D $(srcdir)/lvm_dump.sh $(sbindir)/lvmdump
+	$(INSTALL) -D $(srcdir)/vgimportclone.sh $(sbindir)/vgimportclone
 ifeq ("@FSADM@", "yes")
-	$(INSTALL) -D $(OWNER) $(GROUP) -m 555 $(srcdir)/fsadm.sh \
-		$(sbindir)/fsadm
+	$(INSTALL) -D $(srcdir)/fsadm.sh $(sbindir)/fsadm
 endif
 
 install_lvm2: install

@@ -25,8 +25,7 @@ LIB_VERSION = $(LIB_VERSION_LVM)
 include $(top_builddir)/make.tmpl
 
 install install_cluster: liblvm2clusterlock.so
-	$(INSTALL) -D $(OWNER) $(GROUP) -m 555 $(STRIP) $< \
-		$(libdir)/liblvm2clusterlock.so.$(LIB_VERSION)
+	$(INSTALL) -D $< $(libdir)/liblvm2clusterlock.so.$(LIB_VERSION)
 	$(LN_S) -f liblvm2clusterlock.so.$(LIB_VERSION) \
 		$(libdir)/liblvm2clusterlock.so
 
