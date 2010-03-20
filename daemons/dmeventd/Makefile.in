@@ -26,12 +26,12 @@ TARGETS = dmeventd
 INSTALL_DMEVENTD_TARGETS = install_dmeventd_dynamic
 INSTALL_LIB_TARGETS = install_lib_dynamic
 
-ifeq ("@STATIC_LINK@", "yes")
   LIB_STATIC = libdevmapper-event.a
+ifeq ("@STATIC_LINK@", "yes")
   TARGETS += dmeventd.static
   INSTALL_DMEVENTD_TARGETS += install_dmeventd_static
-  INSTALL_LIB_TARGETS += install_lib_static
 endif
+  INSTALL_LIB_TARGETS += install_lib_static
 
 LIB_VERSION = $(LIB_VERSION_DM)
 
@@ -86,8 +86,7 @@ install_lib_dynamic: libdevmapper-event.$(LIB_SUFFIX)
 		$(libdir)/libdevmapper-event.$(LIB_SUFFIX)
 
 install_lib_static: libdevmapper-event.a
-	$(INSTALL) -D $< $(libdir)/libdevmapper-event.a.$(LIB_VERSION)
-	$(LN_S) -f libdevmapper-event.a.$(LIB_VERSION) $(libdir)/libdevmapper-event.a
+	$(INSTALL) -D $< $(usrlibdir)/libdevmapper-event.a
 
 install_lib: $(INSTALL_LIB_TARGETS)
 
