@@ -9,31 +9,21 @@
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
-#include <errno.h>
-#include <string.h>
-#include <sys/types.h>
-#include <unistd.h>
-#include <stdint.h>
-#include <stdlib.h>
-#include <signal.h>
-#include <sys/socket.h> /* These are for OpenAIS CPGs */
-#include <sys/select.h>
-#include <sys/un.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <corosync/corotypes.h>
+#include "logging.h"
+#include "cluster.h"
+#include "common.h"
+#include "compat.h"
+#include "functions.h"
+#include "link_mon.h"
+#include "local.h"
+#include "xlate.h"
+
 #include <corosync/cpg.h>
+#include <errno.h>
 #include <openais/saAis.h>
 #include <openais/saCkpt.h>
-
-#include "dm-log-userspace.h"
-#include "libdevmapper.h"
-#include "functions.h"
-#include "local.h"
-#include "common.h"
-#include "logging.h"
-#include "link_mon.h"
-#include "cluster.h"
+#include <signal.h>
+#include <unistd.h>
 
 /* Open AIS error codes */
 #define str_ais_error(x)						\
@@ -65,10 +55,6 @@
 	((x) == SA_AIS_ERR_TOO_BIG) ? "SA_AIS_ERR_TOO_BIG" :		\
 	((x) == SA_AIS_ERR_NO_SECTIONS) ? "SA_AIS_ERR_NO_SECTIONS" :	\
 	"ais_error_unknown"
-
-#define DM_ULOG_RESPONSE 0x1000 /* in last byte of 32-bit value */
-#define DM_ULOG_CHECKPOINT_READY 21
-#define DM_ULOG_MEMBER_JOIN      22
 
 #define _RQ_TYPE(x)							\
 	((x) == DM_ULOG_CHECKPOINT_READY) ? "DM_ULOG_CHECKPOINT_READY": \
@@ -168,6 +154,14 @@ int cluster_send(struct clog_request *rq)
 	iov.iov_base = rq;
 	iov.iov_len = sizeof(struct clog_request) + rq->u_rq.data_size;
 
+	rq->u.version[0] = xlate64(CLOG_TFR_VERSION);
+	rq->u.version[1] = CLOG_TFR_VERSION;
+
+	r = clog_request_to_network(rq);
+	if (r < 0)
+		/* FIXME: Better error code for byteswap failure? */
+		return -EINVAL;
+
 	if (entry->cpg_state != VALID)
 		return -EINVAL;
 
@@ -211,9 +205,9 @@ static struct clog_request *get_matching_rq(struct clog_request *rq,
 {
 	struct clog_request *match, *n;
 
-	dm_list_iterate_items_safe(match, n, l)
+	dm_list_iterate_items_gen_safe(match, n, l, u.list)
 		if (match->u_rq.seq == rq->u_rq.seq) {
-			dm_list_del(&match->list);
+			dm_list_del(&match->u.list);
 			return match;
 		}
 
@@ -221,7 +215,7 @@ static struct clog_request *get_matching_rq(struct clog_request *rq,
 }
 
 static char rq_buffer[DM_ULOG_REQUEST_SIZE];
-static int handle_cluster_request(struct clog_cpg *entry,
+static int handle_cluster_request(struct clog_cpg *entry __attribute((unused)),
 				  struct clog_request *rq, int server)
 {
 	int r = 0;
@@ -298,7 +292,7 @@ static int handle_cluster_response(struct clog_cpg *entry,
 		if (dm_list_empty(&entry->working_list))
 			LOG_ERROR("   [none]");
 
-		dm_list_iterate_items(orig_rq, &entry->working_list)
+		dm_list_iterate_items_gen(orig_rq, &entry->working_list, u.list)
 			LOG_ERROR("   [%s]  %s:%u",
 				  SHORT_UUID(orig_rq->u_rq.uuid),
 				  _RQ_TYPE(orig_rq->u_rq.request_type),
@@ -442,9 +436,9 @@ static int export_checkpoint(struct checkpoint_data *cp)
 
 	len = snprintf((char *)(name.value), SA_MAX_NAME_LENGTH,
 		       "bitmaps_%s_%u", SHORT_UUID(cp->uuid), cp->requester);
-	name.length = len;
+	name.length = (SaUint16T)len;
 
-	len = strlen(cp->recovering_region) + 1;
+	len = (int)strlen(cp->recovering_region) + 1;
 
 	attr.creationFlags = SA_CKPT_WR_ALL_REPLICAS;
 	attr.checkpointSize = cp->bitmap_size * 2 + len;
@@ -482,7 +476,7 @@ open_retry:
 	/*
 	 * Add section for sync_bits
 	 */
-	section_id.idLen = snprintf(buf, 32, "sync_bits");
+	section_id.idLen = (SaUint16T)snprintf(buf, 32, "sync_bits");
 	section_id.id = (unsigned char *)buf;
 	section_attr.sectionId = &section_id;
 	section_attr.expirationTime = SA_TIME_END;
@@ -578,7 +572,7 @@ rr_create_retry:
 	}
 	memset(rq, 0, sizeof(*rq));
 
-	dm_list_init(&rq->list);
+	dm_list_init(&rq->u.list);
 	rq->u_rq.request_type = DM_ULOG_CHECKPOINT_READY;
 	rq->originator = cp->requester;  /* FIXME: hack to overload meaning of originator */
 	strncpy(rq->u_rq.uuid, cp->uuid, CPG_MAX_NAME_LENGTH);
@@ -611,7 +605,7 @@ static int import_checkpoint(struct clog_cpg *entry, int no_read)
 
 	len = snprintf((char *)(name.value), SA_MAX_NAME_LENGTH, "bitmaps_%s_%u",
 		       SHORT_UUID(entry->name.value), my_cluster_id);
-	name.length = len;
+	name.length = (SaUint16T)len;
 
 open_retry:
 	rv = saCkptCheckpointOpen(ckpt_handle, &name, NULL,
@@ -803,8 +797,8 @@ static int resend_requests(struct clog_cpg *entry)
 
 	entry->resend_requests = 0;
 
-	dm_list_iterate_items_safe(rq, n, &entry->working_list) {
-		dm_list_del(&rq->list);
+	dm_list_iterate_items_gen_safe(rq, n, &entry->working_list, u.list) {
+		dm_list_del(&rq->u.list);
 
 		if (strcmp(entry->name.value, rq->u_rq.uuid)) {
 			LOG_ERROR("[%s]  Stray request from another log (%s)",
@@ -861,12 +855,12 @@ static int resend_requests(struct clog_cpg *entry)
 	return r;
 }
 
-static int do_cluster_work(void *data)
+static int do_cluster_work(void *data __attribute((unused)))
 {
 	int r = SA_AIS_OK;
-	struct clog_cpg *entry;
+	struct clog_cpg *entry, *tmp;
 
-	dm_list_iterate_items(entry, &clog_cpg_list) {
+	dm_list_iterate_items_safe(entry, tmp, &clog_cpg_list) {
 		r = cpg_dispatch(entry->handle, CPG_DISPATCH_ALL);
 		if (r != SA_AIS_OK)
 			LOG_ERROR("cpg_dispatch failed: %s", str_ais_error(r));
@@ -890,8 +884,8 @@ static int flush_startup_list(struct clog_cpg *entry)
 	struct clog_request *rq, *n;
 	struct checkpoint_data *new;
 
-	dm_list_iterate_items_safe(rq, n, &entry->startup_list) {
-		dm_list_del(&rq->list);
+	dm_list_iterate_items_gen_safe(rq, n, &entry->startup_list, u.list) {
+		dm_list_del(&rq->u.list);
 
 		if (rq->u_rq.request_type == DM_ULOG_MEMBER_JOIN) {
 			new = prepare_checkpoint(entry, rq->originator);
@@ -933,8 +927,8 @@ static int flush_startup_list(struct clog_cpg *entry)
 	return 0;
 }
 
-static void cpg_message_callback(cpg_handle_t handle, const struct cpg_name *gname,
-				 uint32_t nodeid, uint32_t pid,
+static void cpg_message_callback(cpg_handle_t handle, const struct cpg_name *gname __attribute((unused)),
+				 uint32_t nodeid, uint32_t pid __attribute((unused)),
 				 void *msg, size_t msg_len)
 {
 	int i;
@@ -944,6 +938,10 @@ static void cpg_message_callback(cpg_handle_t handle, const struct cpg_name *gna
 	struct clog_request *rq = msg;
 	struct clog_request *tmp_rq;
 	struct clog_cpg *match;
+
+	if (clog_request_from_network(rq, msg_len) < 0)
+		/* Error message comes from 'clog_request_from_network' */
+		return;
 
 	match = find_clog_cpg(handle);
 	if (!match) {
@@ -968,8 +966,8 @@ static void cpg_message_callback(cpg_handle_t handle, const struct cpg_name *gna
 			return;
 		}
 		memcpy(tmp_rq, rq, sizeof(*rq) + rq->u_rq.data_size);
-		dm_list_init(&tmp_rq->list);
-		dm_list_add( &match->working_list, &tmp_rq->list);
+		dm_list_init(&tmp_rq->u.list);
+		dm_list_add( &match->working_list, &tmp_rq->u.list);
 	}
 
 	if (rq->u_rq.request_type == DM_ULOG_POSTSUSPEND) {
@@ -990,7 +988,7 @@ static void cpg_message_callback(cpg_handle_t handle, const struct cpg_name *gna
 						 SHORT_UUID(rq->u_rq.uuid), nodeid,
 						 (dm_list_empty(&match->working_list)) ? " -- working_list empty": "");
 
-					dm_list_iterate_items(tmp_rq, &match->working_list)
+					dm_list_iterate_items_gen(tmp_rq, &match->working_list, u.list)
 						LOG_COND(log_resend_requests,
 							 "[%s]                %s/%u",
 							 SHORT_UUID(tmp_rq->u_rq.uuid),
@@ -1075,8 +1073,8 @@ static void cpg_message_callback(cpg_handle_t handle, const struct cpg_name *gna
 
 			memcpy(tmp_rq, rq, sizeof(*rq) + rq->u_rq.data_size);
 			tmp_rq->pit_server = match->lowest_id;
-			dm_list_init(&tmp_rq->list);
-			dm_list_add(&match->startup_list, &tmp_rq->list);
+			dm_list_init(&tmp_rq->u.list);
+			dm_list_add(&match->startup_list, &tmp_rq->u.list);
 			goto out;
 		}
 
@@ -1159,8 +1157,8 @@ static void cpg_join_callback(struct clog_cpg *match,
 			      const struct cpg_address *member_list,
 			      size_t member_list_entries)
 {
-	int i;
-	int my_pid = getpid();
+	unsigned i;
+	uint32_t my_pid = (uint32_t)getpid();
 	uint32_t lowest = match->lowest_id;
 	struct clog_request *rq;
 	char dbuf[32];
@@ -1180,7 +1178,7 @@ static void cpg_join_callback(struct clog_cpg *match,
 		goto out;
 
 	memset(dbuf, 0, sizeof(dbuf));
-	for (i = 0; i < (member_list_entries-1); i++)
+	for (i = 0; i < member_list_entries - 1; i++)
 		sprintf(dbuf+strlen(dbuf), "%u-", member_list[i].nodeid);
 	sprintf(dbuf+strlen(dbuf), "(%u)", joined->nodeid);
 	LOG_COND(log_checkpoint, "[%s] Joining node, %u needs checkpoint [%s]",
@@ -1206,8 +1204,8 @@ static void cpg_join_callback(struct clog_cpg *match,
 	}
 	rq->u_rq.request_type = DM_ULOG_MEMBER_JOIN;
 	rq->originator = joined->nodeid;
-	dm_list_init(&rq->list);
-	dm_list_add(&match->startup_list, &rq->list);
+	dm_list_init(&rq->u.list);
+	dm_list_add(&match->startup_list, &rq->u.list);
 
 out:
 	/* Find the lowest_id, i.e. the server */
@@ -1238,7 +1236,8 @@ static void cpg_leave_callback(struct clog_cpg *match,
 			       const struct cpg_address *member_list,
 			       size_t member_list_entries)
 {
-	int i, j, fd;
+	unsigned i;
+	int j, fd;
 	uint32_t lowest = match->lowest_id;
 	struct clog_request *rq, *n;
 	struct checkpoint_data *p_cp, *c_cp;
@@ -1256,8 +1255,8 @@ static void cpg_leave_callback(struct clog_cpg *match,
 
 		cluster_postsuspend(match->name.value, match->luid);
 
-		dm_list_iterate_items_safe(rq, n, &match->working_list) {
-			dm_list_del(&rq->list);
+		dm_list_iterate_items_gen_safe(rq, n, &match->working_list, u.list) {
+			dm_list_del(&rq->u.list);
 
 			if (rq->u_rq.request_type == DM_ULOG_POSTSUSPEND)
 				kernel_send(&rq->u_rq);
@@ -1286,13 +1285,13 @@ static void cpg_leave_callback(struct clog_cpg *match,
 			 SHORT_UUID(match->name.value), left->nodeid);
 		free_checkpoint(c_cp);
 	}
-	dm_list_iterate_items_safe(rq, n, &match->startup_list) {
+	dm_list_iterate_items_gen_safe(rq, n, &match->startup_list, u.list) {
 		if ((rq->u_rq.request_type == DM_ULOG_MEMBER_JOIN) &&
 		    (rq->originator == left->nodeid)) {
 			LOG_COND(log_checkpoint,
 				 "[%s] Removing pending ckpt from startup list (%u is leaving)",
 				 SHORT_UUID(match->name.value), left->nodeid);
-			dm_list_del(&rq->list);
+			dm_list_del(&rq->u.list);
 			free(rq);
 		}
 	}
@@ -1352,7 +1351,7 @@ static void cpg_leave_callback(struct clog_cpg *match,
 		 */
 
 		i = 1; /* We do not have a DM_ULOG_MEMBER_JOIN entry of our own */
-		dm_list_iterate_items(rq, &match->startup_list)
+		dm_list_iterate_items_gen(rq, &match->startup_list, u.list)
 			if (rq->u_rq.request_type == DM_ULOG_MEMBER_JOIN)
 				i++;
 
@@ -1367,7 +1366,7 @@ static void cpg_leave_callback(struct clog_cpg *match,
 	}
 }
 
-static void cpg_config_callback(cpg_handle_t handle, const struct cpg_name *gname,
+static void cpg_config_callback(cpg_handle_t handle, const struct cpg_name *gname __attribute((unused)),
 				const struct cpg_address *member_list,
 				size_t member_list_entries,
 				const struct cpg_address *left_list,
@@ -1412,7 +1411,7 @@ cpg_callbacks_t cpg_callbacks = {
  *
  * Returns: 1 if checkpoint removed, 0 if no checkpoints, -EXXX on error
  */
-int remove_checkpoint(struct clog_cpg *entry)
+static int remove_checkpoint(struct clog_cpg *entry)
 {
 	int len;
 	SaNameT name;
@@ -1458,7 +1457,7 @@ unlink_retry:
 int create_cluster_cpg(char *uuid, uint64_t luid)
 {
 	int r;
-	int size;
+	size_t size;
 	struct clog_cpg *new = NULL;
 	struct clog_cpg *tmp;
 
@@ -1482,7 +1481,7 @@ int create_cluster_cpg(char *uuid, uint64_t luid)
 	size = ((strlen(uuid) + 1) > CPG_MAX_NAME_LENGTH) ?
 		CPG_MAX_NAME_LENGTH : (strlen(uuid) + 1);
 	strncpy(new->name.value, uuid, size);
-	new->name.length = size;
+	new->name.length = (uint32_t)size;
 	new->luid = luid;
 
 	/*
@@ -1526,8 +1525,8 @@ static void abort_startup(struct clog_cpg *del)
 	LOG_DBG("[%s]  CPG teardown before checkpoint received",
 		SHORT_UUID(del->name.value));
 
-	dm_list_iterate_items_safe(rq, n, &del->startup_list) {
-		dm_list_del(&rq->list);
+	dm_list_iterate_items_gen_safe(rq, n, &del->startup_list, u.list) {
+		dm_list_del(&rq->u.list);
 
 		LOG_DBG("[%s]  Ignoring request from %u: %s",
 			SHORT_UUID(del->name.value), rq->originator,
@@ -1640,12 +1639,12 @@ void cluster_debug(void)
 				break;
 		LOG_ERROR("  CKPTs waiting     : %d", i);
 		LOG_ERROR("  Working list:");
-		dm_list_iterate_items(rq, &entry->working_list)
+		dm_list_iterate_items_gen(rq, &entry->working_list, u.list)
 			LOG_ERROR("  %s/%u", _RQ_TYPE(rq->u_rq.request_type),
 				  rq->u_rq.seq);
 
 		LOG_ERROR("  Startup list:");
-		dm_list_iterate_items(rq, &entry->startup_list)
+		dm_list_iterate_items_gen(rq, &entry->startup_list, u.list)
 			LOG_ERROR("  %s/%u", _RQ_TYPE(rq->u_rq.request_type),
 				  rq->u_rq.seq);
 

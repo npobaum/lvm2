@@ -12,19 +12,16 @@
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
-#include "libdevmapper.h"
-#include "libdevmapper-event.h"
+#include "lib.h"
+
 #include "lvm2cmd.h"
+#include "errors.h"
+#include "libdevmapper-event.h"
+#include "dmeventd_lvm.h"
+
 #include "lvm-string.h"
 
-#include <errno.h>
-#include <signal.h>
-#include <string.h>
-#include <stdio.h>
-#include <stdlib.h>
 #include <pthread.h>
-#include <unistd.h>
-
 #include <syslog.h> /* FIXME Replace syslog with multilog */
 /* FIXME Missing openlog? */
 
@@ -33,42 +30,15 @@
 /* Further warnings at 85%, 90% and 95% fullness. */
 #define WARNING_STEP 5
 
-static pthread_mutex_t _register_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-/*
- * Number of active registrations.
- */
-static int _register_count = 0;
-
-static struct dm_pool *_mem_pool = NULL;
-static void *_lvm_handle = NULL;
-
 struct snap_status {
 	int invalid;
 	int used;
 	int max;
 };
 
-/*
- * Currently only one event can be processed at a time.
- */
-static pthread_mutex_t _event_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-static void _temporary_log_fn(int level,
-			      const char *file __attribute((unused)),
-			      int line __attribute((unused)),
-			      int dm_errno __attribute((unused)),
-			      const char *format)
-{
-	if (!strncmp(format, "WARNING: ", 9) && (level < 5))
-		syslog(LOG_CRIT, "%s", format);
-	else
-		syslog(LOG_DEBUG, "%s", format);
-}
-
 /* FIXME possibly reconcile this with target_percent when we gain
    access to regular LVM library here. */
-static void _parse_snapshot_params(char *params, struct snap_status *stat)
+static void _parse_snapshot_params(char *params, struct snap_status *status)
 {
 	char *p;
 	/*
@@ -76,10 +46,10 @@ static void _parse_snapshot_params(char *params, struct snap_status *stat)
 	 * Invalid	-- snapshot invalidated
 	 * Unknown	-- status unknown
 	 */
-	stat->used = stat->max = 0;
+	status->used = status->max = 0;
 
 	if (!strncmp(params, "Invalid", 7)) {
-		stat->invalid = 1;
+		status->invalid = 1;
 		return;
 	}
 
@@ -96,8 +66,8 @@ static void _parse_snapshot_params(char *params, struct snap_status *stat)
 	*p = '\0';
 	p++;
 
-	stat->used = atoi(params);
-	stat->max = atoi(p);
+	status->used = atoi(params);
+	status->max = atoi(p);
 }
 
 void process_event(struct dm_task *dmt,
@@ -108,7 +78,7 @@ void process_event(struct dm_task *dmt,
 	uint64_t start, length;
 	char *target_type = NULL;
 	char *params;
-	struct snap_status stat = { 0 };
+	struct snap_status status = { 0 };
 	const char *device = dm_task_get_name(dmt);
 	int percent, *percent_warning = (int*)private;
 
@@ -116,34 +86,31 @@ void process_event(struct dm_task *dmt,
 	if (!*percent_warning)
 		return;
 
-	if (pthread_mutex_trylock(&_event_mutex)) {
-		syslog(LOG_NOTICE, "Another thread is handling an event.  Waiting...");
-		pthread_mutex_lock(&_event_mutex);
-	}
+	dmeventd_lvm2_lock();
 
 	dm_get_next_target(dmt, next, &start, &length, &target_type, &params);
 	if (!target_type)
 		goto out;
 
-	_parse_snapshot_params(params, &stat);
+	_parse_snapshot_params(params, &status);
 	/*
 	 * If the snapshot has been invalidated or we failed to parse
 	 * the status string. Report the full status string to syslog.
 	 */
-	if (stat.invalid || !stat.max) {
+	if (status.invalid || !status.max) {
 		syslog(LOG_ERR, "Snapshot %s changed state to: %s\n", device, params);
 		*percent_warning = 0;
 		goto out;
 	}
 
-	percent = 100 * stat.used / stat.max;
+	percent = 100 * status.used / status.max;
 	if (percent >= *percent_warning) {
 		syslog(LOG_WARNING, "Snapshot %s is now %i%% full.\n", device, percent);
 		/* Print warning on the next multiple of WARNING_STEP. */
 		*percent_warning = (percent / WARNING_STEP) * WARNING_STEP + WARNING_STEP;
 	}
 out:
-	pthread_mutex_unlock(&_event_mutex);
+	dmeventd_lvm2_unlock();
 }
 
 int register_device(const char *device,
@@ -152,40 +119,12 @@ int register_device(const char *device,
 		    int minor __attribute((unused)),
 		    void **private)
 {
-	int r = 0;
 	int *percent_warning = (int*)private;
-
-	pthread_mutex_lock(&_register_mutex);
-
-	/*
-	 * Need some space for allocations.  1024 should be more
-	 * than enough for what we need (device mapper name splitting)
-	 */
-	if (!_mem_pool && !(_mem_pool = dm_pool_create("snapshot_dso", 1024)))
-		goto out;
+	int r = dmeventd_lvm2_init();
 
 	*percent_warning = WARNING_THRESH; /* Print warning if snapshot is full */
 
-	if (!_lvm_handle) {
-		lvm2_log_fn(_temporary_log_fn);
-		if (!(_lvm_handle = lvm2_init())) {
-			dm_pool_destroy(_mem_pool);
-			_mem_pool = NULL;
-			goto out;
-		}
-		lvm2_log_level(_lvm_handle, LVM2_LOG_SUPPRESS);
-		/* FIXME Temporary: move to dmeventd core */
-		lvm2_run(_lvm_handle, "_memlock_inc");
-	}
-
 	syslog(LOG_INFO, "Monitoring snapshot %s\n", device);
-
-	_register_count++;
-	r = 1;
-
-out:
-	pthread_mutex_unlock(&_register_mutex);
-
 	return r;
 }
 
@@ -195,20 +134,8 @@ int unregister_device(const char *device,
 		      int minor __attribute((unused)),
 		      void **unused __attribute((unused)))
 {
-	pthread_mutex_lock(&_register_mutex);
-
 	syslog(LOG_INFO, "No longer monitoring snapshot %s\n",
 	       device);
-
-	if (!--_register_count) {
-		dm_pool_destroy(_mem_pool);
-		_mem_pool = NULL;
-		lvm2_run(_lvm_handle, "_memlock_dec");
-		lvm2_exit(_lvm_handle);
-		_lvm_handle = NULL;
-	}
-
-	pthread_mutex_unlock(&_register_mutex);
-
+	dmeventd_lvm2_exit();
 	return 1;
 }

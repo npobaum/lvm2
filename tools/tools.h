@@ -83,7 +83,8 @@ typedef enum {
 	PERCENT_VG,
 	PERCENT_FREE,
 	PERCENT_LV,
-	PERCENT_PVS
+	PERCENT_PVS,
+	PERCENT_ORIGIN
 } percent_t;
 
 enum {
@@ -153,7 +154,8 @@ int alloc_arg(struct cmd_context *cmd, struct arg *a);
 int readahead_arg(struct cmd_context *cmd, struct arg *a);
 
 /* we use the enums to access the switches */
-unsigned int arg_count(const struct cmd_context *cmd, int a);
+unsigned arg_count(const struct cmd_context *cmd, int a);
+unsigned arg_is_set(const struct cmd_context *cmd, int a);
 const char *arg_value(struct cmd_context *cmd, int a);
 const char *arg_str_value(struct cmd_context *cmd, int a, const char *def);
 int32_t arg_int_value(struct cmd_context *cmd, int a, const int32_t def); 

@@ -127,7 +127,7 @@ static int _info_run(const char *name, const char *dlid, struct dm_info *info,
 
 	dmtask = mknodes ? DM_DEVICE_MKNODES : DM_DEVICE_INFO;
 
-	if (!(dmt = _setup_task(name, dlid, 0, dmtask, major, minor)))
+	if (!(dmt = _setup_task(mknodes ? name : NULL, dlid, 0, dmtask, major, minor)))
 		return_0;
 
 	if (!with_open_count)
@@ -205,27 +205,20 @@ int device_is_usable(dev_t dev)
 	return r;
 }
 
-static int _info(const char *name, const char *dlid, int mknodes,
-		 int with_open_count, int with_read_ahead,
+static int _info(const char *dlid, int with_open_count, int with_read_ahead,
 		 struct dm_info *info, uint32_t *read_ahead)
 {
-	if (!mknodes && dlid && *dlid) {
-		if (_info_run(NULL, dlid, info, read_ahead, 0, with_open_count,
-			      with_read_ahead, 0, 0) &&
-	    	    info->exists)
-			return 1;
-		else if (_info_run(NULL, dlid + sizeof(UUID_PREFIX) - 1, info,
-				   read_ahead, 0, with_open_count,
-				   with_read_ahead, 0, 0) &&
-			 info->exists)
-			return 1;
-	}
+	int r = 0;
 
-	if (name)
-		return _info_run(name, NULL, info, read_ahead, mknodes,
-				 with_open_count, with_read_ahead, 0, 0);
+	if ((r = _info_run(NULL, dlid, info, read_ahead, 0, with_open_count,
+			   with_read_ahead, 0, 0)) && info->exists)
+		return 1;
+	else if ((r = _info_run(NULL, dlid + sizeof(UUID_PREFIX) - 1, info,
+				read_ahead, 0, with_open_count,
+				with_read_ahead, 0, 0)) && info->exists)
+		return 1;
 
-	return 0;
+	return r;
 }
 
 static int _info_by_dev(uint32_t major, uint32_t minor, struct dm_info *info)
@@ -233,20 +226,56 @@ static int _info_by_dev(uint32_t major, uint32_t minor, struct dm_info *info)
 	return _info_run(NULL, NULL, info, NULL, 0, 0, 0, major, minor);
 }
 
-int dev_manager_info(struct dm_pool *mem, const char *name,
-		     const struct logical_volume *lv, int with_mknodes,
+int dev_manager_info(struct dm_pool *mem, const struct logical_volume *lv,
 		     int with_open_count, int with_read_ahead,
 		     struct dm_info *info, uint32_t *read_ahead)
 {
-	const char *dlid;
+	const char *dlid, *name;
+	int r;
+
+	if (!(name = build_dm_name(mem, lv->vg->name, lv->name, NULL))) {
+		log_error("name build failed for %s", lv->name);
+		return 0;
+	}
 
 	if (!(dlid = _build_dlid(mem, lv->lvid.s, NULL))) {
 		log_error("dlid build failed for %s", lv->name);
 		return 0;
 	}
 
-	return _info(name, dlid, with_mknodes, with_open_count, with_read_ahead,
-		     info, read_ahead);
+	log_debug("Getting device info for %s [%s]", name, dlid);
+	r = _info(dlid, with_open_count, with_read_ahead, info, read_ahead);
+
+	dm_pool_free(mem, (char*)name);
+	return r;
+}
+
+static const struct dm_info *_cached_info(struct dm_pool *mem,
+					  const struct logical_volume *lv,
+					  struct dm_tree *dtree)
+{
+	const char *dlid;
+	struct dm_tree_node *dnode;
+	const struct dm_info *dinfo;
+
+	if (!(dlid = _build_dlid(mem, lv->lvid.s, NULL))) {
+		log_error("dlid build failed for %s", lv->name);
+		return NULL;
+	}
+
+	/* An activating merging origin won't have a node in the tree yet */
+	if (!(dnode = dm_tree_find_node_by_uuid(dtree, dlid)))
+		return NULL;
+
+	if (!(dinfo = dm_tree_node_get_info(dnode))) {
+		log_error("failed to get info from tree node for %s", lv->name);
+		return NULL;
+	}
+
+	if (!dinfo->exists)
+		return NULL;
+
+	return dinfo;
 }
 
 /* FIXME Interface must cope with multiple targets */
@@ -327,6 +356,52 @@ static int _status(const char *name, const char *uuid,
 	return 0;
 }
 
+static int _lv_has_target_type(struct dev_manager *dm,
+			       struct logical_volume *lv,
+			       const char *layer,
+			       const char *target_type)
+{
+	int r = 0;
+	char *dlid;
+	struct dm_task *dmt;
+	struct dm_info info;
+	void *next = NULL;
+	uint64_t start, length;
+	char *type = NULL;
+	char *params = NULL;
+
+	if (!(dlid = build_dlid(dm, lv->lvid.s, layer)))
+		return_0;
+
+	if (!(dmt = _setup_task(NULL, dlid, 0,
+				DM_DEVICE_STATUS, 0, 0)))
+		return_0;
+
+	if (!dm_task_no_open_count(dmt))
+		log_error("Failed to disable open_count");
+
+	if (!dm_task_run(dmt))
+		goto_out;
+
+	if (!dm_task_get_info(dmt, &info) || !info.exists)
+		goto_out;
+
+	do {
+		next = dm_get_next_target(dmt, next, &start, &length,
+					  &type, &params);
+		if (type && strncmp(type, target_type,
+				    strlen(target_type)) == 0) {
+			if (info.live_table)
+				r = 1;
+			break;
+		}
+	} while (next);
+
+ out:
+	dm_task_destroy(dmt);
+	return r;
+}
+
 static percent_range_t _combine_percent_ranges(percent_range_t a,
 					       percent_range_t b)
 {
@@ -345,9 +420,9 @@ static percent_range_t _combine_percent_ranges(percent_range_t a,
 static int _percent_run(struct dev_manager *dm, const char *name,
 			const char *dlid,
 			const char *target_type, int wait,
-			struct logical_volume *lv, float *percent,
+			const struct logical_volume *lv, float *percent,
 			percent_range_t *overall_percent_range,
-			uint32_t *event_nr)
+			uint32_t *event_nr, int fail_if_percent_unsupported)
 {
 	int r = 0;
 	struct dm_task *dmt;
@@ -356,10 +431,10 @@ static int _percent_run(struct dev_manager *dm, const char *name,
 	uint64_t start, length;
 	char *type = NULL;
 	char *params = NULL;
-	struct dm_list *segh = &lv->segments;
+	const struct dm_list *segh = &lv->segments;
 	struct lv_segment *seg = NULL;
 	struct segment_type *segtype;
-	percent_range_t percent_range, combined_percent_range;
+	percent_range_t percent_range = 0, combined_percent_range = 0;
 	int first_time = 1;
 
 	uint64_t total_numerator = 0, total_denominator = 0;
@@ -395,11 +470,18 @@ static int _percent_run(struct dev_manager *dm, const char *name,
 			seg = dm_list_item(segh, struct lv_segment);
 		}
 
-		if (!type || !params || strcmp(type, target_type))
+		if (!type || !params)
 			continue;
 
-		if (!(segtype = get_segtype_from_string(dm->cmd, type)))
+		if (!(segtype = get_segtype_from_string(dm->cmd, target_type)))
 			continue;
+
+		if (strcmp(type, target_type)) {
+			/* If kernel's type isn't an exact match is it compatible? */
+			if (!segtype->ops->target_status_compatible ||
+			    !segtype->ops->target_status_compatible(type))
+				continue;
+		}
 
 		if (segtype->ops->target_percent &&
 		    !segtype->ops->target_percent(&dm->target_state,
@@ -429,9 +511,13 @@ static int _percent_run(struct dev_manager *dm, const char *name,
 		*overall_percent_range = combined_percent_range;
 	} else {
 		*percent = 100;
-		if (first_time)
+		if (first_time) {
+			/* above ->target_percent() was not executed! */
+			/* FIXME why return PERCENT_100 et. al. in this case? */
 			*overall_percent_range = PERCENT_100;
-		else
+			if (fail_if_percent_unsupported)
+				goto_out;
+		} else
 			*overall_percent_range = combined_percent_range;
 	}
 
@@ -445,21 +531,25 @@ static int _percent_run(struct dev_manager *dm, const char *name,
 
 static int _percent(struct dev_manager *dm, const char *name, const char *dlid,
 		    const char *target_type, int wait,
-		    struct logical_volume *lv, float *percent,
-		    percent_range_t *overall_percent_range, uint32_t *event_nr)
+		    const struct logical_volume *lv, float *percent,
+		    percent_range_t *overall_percent_range, uint32_t *event_nr,
+		    int fail_if_percent_unsupported)
 {
 	if (dlid && *dlid) {
 		if (_percent_run(dm, NULL, dlid, target_type, wait, lv, percent,
-				 overall_percent_range, event_nr))
+				 overall_percent_range, event_nr,
+				 fail_if_percent_unsupported))
 			return 1;
 		else if (_percent_run(dm, NULL, dlid + sizeof(UUID_PREFIX) - 1,
 				      target_type, wait, lv, percent,
-				      overall_percent_range, event_nr))
+				      overall_percent_range, event_nr,
+				      fail_if_percent_unsupported))
 			return 1;
 	}
 
 	if (name && _percent_run(dm, name, NULL, target_type, wait, lv, percent,
-				 overall_percent_range, event_nr))
+				 overall_percent_range, event_nr,
+				 fail_if_percent_unsupported))
 		return 1;
 
 	return 0;
@@ -518,6 +608,22 @@ int dev_manager_snapshot_percent(struct dev_manager *dm,
 {
 	char *name;
 	const char *dlid;
+	int fail_if_percent_unsupported = 0;
+
+	if (lv_is_merging_origin(lv)) {
+		/*
+		 * Set 'fail_if_percent_unsupported', otherwise passing
+		 * unsupported LV types to _percent will lead to a default
+		 * successful return with percent_range as PERCENT_100.
+		 * - For a merging origin, this will result in a polldaemon
+		 *   that runs infinitely (because completion is PERCENT_0)
+		 * - We unfortunately don't yet _know_ if a snapshot-merge
+		 *   target is active (activation is deferred if dev is open);
+		 *   so we can't short-circuit origin devices based purely on
+		 *   existing LVM LV attributes.
+		 */
+		fail_if_percent_unsupported = 1;
+	}
 
 	/*
 	 * Build a name for the top layer.
@@ -533,7 +639,7 @@ int dev_manager_snapshot_percent(struct dev_manager *dm,
 	 */
 	log_debug("Getting device status percentage for %s", name);
 	if (!(_percent(dm, name, dlid, "snapshot", 0, NULL, percent,
-		       percent_range, NULL)))
+		       percent_range, NULL, fail_if_percent_unsupported)))
 		return_0;
 
 	/* FIXME dm_pool_free ? */
@@ -545,7 +651,7 @@ int dev_manager_snapshot_percent(struct dev_manager *dm,
 /* FIXME Merge with snapshot_percent, auto-detecting target type */
 /* FIXME Cope with more than one target */
 int dev_manager_mirror_percent(struct dev_manager *dm,
-			       struct logical_volume *lv, int wait,
+			       const struct logical_volume *lv, int wait,
 			       float *percent, percent_range_t *percent_range,
 			       uint32_t *event_nr)
 {
@@ -568,7 +674,7 @@ int dev_manager_mirror_percent(struct dev_manager *dm,
 
 	log_debug("Getting device mirror status percentage for %s", name);
 	if (!(_percent(dm, name, dlid, "mirror", wait, lv, percent,
-		       percent_range, event_nr)))
+		       percent_range, event_nr, 0)))
 		return_0;
 
 	return 1;
@@ -637,7 +743,7 @@ static int _belong_to_vg(const char *vgname, const char *name)
 /*  NEW CODE STARTS HERE */
 /*************************/
 
-int dev_manager_lv_mknodes(const struct logical_volume *lv)
+static int _dev_manager_lv_mknodes(const struct logical_volume *lv)
 {
 	char *name;
 
@@ -648,9 +754,30 @@ int dev_manager_lv_mknodes(const struct logical_volume *lv)
 	return fs_add_lv(lv, name);
 }
 
-int dev_manager_lv_rmnodes(const struct logical_volume *lv)
+static int _dev_manager_lv_rmnodes(const struct logical_volume *lv)
 {
 	return fs_del_lv(lv);
+}
+
+int dev_manager_mknodes(const struct logical_volume *lv)
+{
+	struct dm_info dminfo;
+	const char *name;
+	int r = 0;
+
+	if (!(name = build_dm_name(lv->vg->cmd->mem, lv->vg->name, lv->name, NULL)))
+		return_0;
+
+	if ((r = _info_run(name, NULL, &dminfo, NULL, 1, 0, 0, 0, 0))) {
+		if (dminfo.exists) {
+			if (lv_is_visible(lv))
+				r = _dev_manager_lv_mknodes(lv);
+		} else
+			r = _dev_manager_lv_rmnodes(lv);
+	}
+
+	dm_pool_free(lv->vg->cmd->mem, (char*)name);
+	return r;
 }
 
 static int _add_dev_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
@@ -658,6 +785,7 @@ static int _add_dev_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 {
 	char *dlid, *name;
 	struct dm_info info, info2;
+	uint16_t udev_flags = 0;
 
 	if (!(name = build_dm_name(dm->mem, lv->vg->name, lv->name, layer)))
 		return_0;
@@ -666,7 +794,7 @@ static int _add_dev_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 		return_0;
 
 	log_debug("Getting device info for %s [%s]", name, dlid);
-	if (!_info(name, dlid, 0, 1, 0, &info, NULL)) {
+	if (!_info(dlid, 1, 0, &info, NULL)) {
 		log_error("Failed to get info for %s [%s].", name, dlid);
 		return 0;
 	}
@@ -695,7 +823,20 @@ static int _add_dev_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 		}
 	}
 
-	if (info.exists && !dm_tree_add_dev(dtree, info.major, info.minor)) {
+	if (layer || !lv_is_visible(lv))
+		udev_flags |= DM_UDEV_DISABLE_SUBSYSTEM_RULES_FLAG |
+			      DM_UDEV_DISABLE_DISK_RULES_FLAG |
+			      DM_UDEV_DISABLE_OTHER_RULES_FLAG;
+
+	if (lv_is_cow(lv))
+		udev_flags |= DM_UDEV_LOW_PRIORITY_FLAG;
+
+	if (!dm->cmd->current_settings.udev_rules)
+		udev_flags |= DM_UDEV_DISABLE_DM_RULES_FLAG |
+			      DM_UDEV_DISABLE_SUBSYSTEM_RULES_FLAG;
+
+	if (info.exists && !dm_tree_add_dev_with_udev_flags(dtree, info.major,
+							    info.minor, udev_flags)) {
 		log_error("Failed to add device (%" PRIu32 ":%" PRIu32") to dtree",
 			  info.major, info.minor);
 		return 0;
@@ -719,7 +860,8 @@ static int _add_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree, struc
 	if (!_add_dev_to_dtree(dm, dtree, lv, "cow"))
 		return_0;
 
-	if (!_add_dev_to_dtree(dm, dtree, lv, "_mlog"))
+	if ((lv->status & MIRRORED) && first_seg(lv)->log_lv &&
+	    !_add_dev_to_dtree(dm, dtree, first_seg(lv)->log_lv, NULL))
 		return_0;
 
 	return 1;
@@ -783,7 +925,7 @@ static char *_add_error_device(struct dev_manager *dm, struct dm_tree *dtree,
 
 	sprintf(errid, "missing_%d_%d", segno, s);
 
-	if (!(id = build_dlid(dm, seg->lv->lvid.s, errid))) 
+	if (!(id = build_dlid(dm, seg->lv->lvid.s, errid)))
 		return_NULL;
 
 	if (!(name = build_dm_name(dm->mem, seg->lv->vg->name,
@@ -852,7 +994,7 @@ int add_areas_line(struct dev_manager *dm, struct lv_segment *seg,
 			dm_tree_node_add_target_area(node, NULL, dlid,
 							extent_size * seg_le(seg, s));
 		} else {
-			log_error("Internal error: Unassigned area found in LV %s.",
+			log_error(INTERNAL_ERROR "Unassigned area found in LV %s.",
 				  seg->lv->name);
 			return 0;
 		}
@@ -871,6 +1013,30 @@ static int _add_origin_target_to_dtree(struct dev_manager *dm,
 		return_0;
 
 	if (!dm_tree_node_add_snapshot_origin_target(dnode, lv->size, real_dlid))
+		return_0;
+
+	return 1;
+}
+
+static int _add_snapshot_merge_target_to_dtree(struct dev_manager *dm,
+					       struct dm_tree_node *dnode,
+					       struct logical_volume *lv)
+{
+	const char *origin_dlid, *cow_dlid, *merge_dlid;
+	struct lv_segment *merging_cow_seg = find_merging_cow(lv);
+
+	if (!(origin_dlid = build_dlid(dm, lv->lvid.s, "real")))
+		return_0;
+
+	if (!(cow_dlid = build_dlid(dm, merging_cow_seg->cow->lvid.s, "cow")))
+		return_0;
+
+	if (!(merge_dlid = build_dlid(dm, merging_cow_seg->cow->lvid.s, NULL)))
+		return_0;
+
+	if (!dm_tree_node_add_snapshot_merge_target(dnode, lv->size, origin_dlid,
+						    cow_dlid, merge_dlid,
+						    merging_cow_seg->chunk_size))
 		return_0;
 
 	return 1;
@@ -898,7 +1064,13 @@ static int _add_snapshot_target_to_dtree(struct dev_manager *dm,
 
 	size = (uint64_t) snap_seg->len * snap_seg->origin->vg->extent_size;
 
-	if (!dm_tree_node_add_snapshot_target(dnode, size, origin_dlid, cow_dlid, 1, snap_seg->chunk_size))
+	if (lv_is_merging_cow(lv)) {
+		/* cow is to be merged so load the error target */
+		if (!dm_tree_node_add_error_target(dnode, size))
+			return_0;
+	}
+	else if (!dm_tree_node_add_snapshot_target(dnode, size, origin_dlid,
+						   cow_dlid, 1, snap_seg->chunk_size))
 		return_0;
 
 	return 1;
@@ -911,7 +1083,7 @@ static int _add_target_to_dtree(struct dev_manager *dm,
 	uint64_t extent_size = seg->lv->vg->extent_size;
 
 	if (!seg->segtype->ops->add_target_line) {
-		log_error("_emit_target: Internal error: Can't handle "
+		log_error(INTERNAL_ERROR "_emit_target cannot handle "
 			  "segment type %s", seg->segtype->name);
 		return 0;
 	}
@@ -957,10 +1129,20 @@ static int _add_segment_to_dtree(struct dev_manager *dm,
 		return_0;
 
 	/* If this is a snapshot origin, add real LV */
+	/* If this is a snapshot origin + merging snapshot, add cow + real LV */
 	if (lv_is_origin(seg->lv) && !layer) {
 		if (vg_is_clustered(seg->lv->vg)) {
 			log_error("Clustered snapshots are not yet supported");
 			return 0;
+		}
+		if (lv_is_merging_origin(seg->lv)) {
+			if (!_add_new_lv_to_dtree(dm, dtree,
+			     find_merging_cow(seg->lv)->cow, "cow"))
+				return_0;
+			/*
+			 * Must also add "real" LV for use when
+			 * snapshot-merge target is added
+			 */
 		}
 		if (!_add_new_lv_to_dtree(dm, dtree, seg->lv, "real"))
 			return_0;
@@ -971,14 +1153,20 @@ static int _add_segment_to_dtree(struct dev_manager *dm,
 		/* Add any LVs used by this segment */
 		for (s = 0; s < seg->area_count; s++)
 			if ((seg_type(seg, s) == AREA_LV) &&
-			    (!_add_new_lv_to_dtree(dm, dtree, seg_lv(seg, s), NULL)))
+			    (!_add_new_lv_to_dtree(dm, dtree, seg_lv(seg, s),
+						   NULL)))
 				return_0;
 	}
 
 	/* Now we've added its dependencies, we can add the target itself */
 	if (lv_is_origin(seg->lv) && !layer) {
-		if (!_add_origin_target_to_dtree(dm, dnode, seg->lv))
-			return_0;
+		if (!lv_is_merging_origin(seg->lv)) {
+			if (!_add_origin_target_to_dtree(dm, dnode, seg->lv))
+				return_0;
+		} else {
+			if (!_add_snapshot_merge_target_to_dtree(dm, dnode, seg->lv))
+				return_0;
+		}
 	} else if (lv_is_cow(seg->lv) && !layer) {
 		if (!_add_snapshot_target_to_dtree(dm, dnode, seg->lv))
 			return_0;
@@ -1000,11 +1188,32 @@ static int _add_new_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 	struct lv_segment *seg;
 	struct lv_layer *lvlayer;
 	struct dm_tree_node *dnode;
+	const struct dm_info *dinfo;
 	char *name, *dlid;
 	uint32_t max_stripe_size = UINT32_C(0);
 	uint32_t read_ahead = lv->read_ahead;
 	uint32_t read_ahead_flags = UINT32_C(0);
 	uint16_t udev_flags = 0;
+
+	/* FIXME Seek a simpler way to lay out the snapshot-merge tree. */
+
+	if (lv_is_origin(lv) && lv_is_merging_origin(lv) && !layer) {
+		/*
+		 * Clear merge attributes if merge isn't currently possible:
+		 * either origin or merging snapshot are open
+		 * - but use "snapshot-merge" if it is already in use
+		 * - open_count is always retrieved (as of dm-ioctl 4.7.0)
+		 *   so just use the tree's existing nodes' info
+		 */
+		if (((dinfo = _cached_info(dm->mem, lv,
+					   dtree)) && dinfo->open_count) ||
+		    ((dinfo = _cached_info(dm->mem, find_merging_cow(lv)->cow,
+					   dtree)) && dinfo->open_count)) {
+			/* FIXME Is there anything simpler to check for instead? */
+			if (!_lv_has_target_type(dm, lv, NULL, "snapshot-merge"))
+				clear_snapshot_merge(lv);
+		}
+	}
 
 	if (!(name = build_dm_name(dm->mem, lv->vg->name, lv->name, layer)))
 		return_0;
@@ -1018,7 +1227,8 @@ static int _add_new_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 		return 1;
 
 	if (!(lvlayer = dm_pool_alloc(dm->mem, sizeof(*lvlayer)))) {
-		log_error("_add_new_lv_to_dtree: pool alloc failed for %s %s.", lv->name, layer);
+		log_error("_add_new_lv_to_dtree: pool alloc failed for %s %s.",
+			  lv->name, layer);
 		return 0;
 	}
 
@@ -1031,6 +1241,10 @@ static int _add_new_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 
 	if (lv_is_cow(lv))
 		udev_flags |= DM_UDEV_LOW_PRIORITY_FLAG;
+
+	if (!dm->cmd->current_settings.udev_rules)
+		udev_flags |= DM_UDEV_DISABLE_DM_RULES_FLAG |
+			      DM_UDEV_DISABLE_SUBSYSTEM_RULES_FLAG;
 
 	/*
 	 * Add LV to dtree.
@@ -1095,7 +1309,7 @@ static int _create_lv_symlinks(struct dev_manager *dm, struct dm_tree_node *root
 	int r = 1;
 
 	while ((child = dm_tree_next_child(&handle, root, 0))) {
-		if (!(lvlayer = (struct lv_layer *) dm_tree_node_get_context(child)))
+		if (!(lvlayer = dm_tree_node_get_context(child)))
 			continue;
 
 		/* Detect rename */
@@ -1115,11 +1329,11 @@ static int _create_lv_symlinks(struct dev_manager *dm, struct dm_tree_node *root
 			continue;
 		}
 		if (lv_is_visible(lvlayer->lv)) {
-			if (!dev_manager_lv_mknodes(lvlayer->lv))
+			if (!_dev_manager_lv_mknodes(lvlayer->lv))
 				r = 0;
 			continue;
 		}
-		if (!dev_manager_lv_rmnodes(lvlayer->lv))
+		if (!_dev_manager_lv_rmnodes(lvlayer->lv))
 			r = 0;
 	}
 
@@ -1149,7 +1363,8 @@ static int _remove_lv_symlinks(struct dev_manager *dm, struct dm_tree_node *root
 		if (*layer)
 			continue;
 
-		fs_del_lv_byname(dm->cmd->dev_dir, vgname, lvname);
+		fs_del_lv_byname(dm->cmd->dev_dir, vgname, lvname,
+				 dm->cmd->current_settings.udev_rules);
 	}
 
 	return r;
@@ -1269,7 +1484,7 @@ static int _tree_action(struct dev_manager *dm, struct logical_volume *lv, actio
 	default:
 		log_error("_tree_action: Action %u not supported.", action);
 		goto out;
-	}	
+	}
 
 	r = 1;
 

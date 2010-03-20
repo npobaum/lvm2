@@ -275,7 +275,7 @@ int process_each_lv(struct cmd_context *cmd, int argc, char **argv,
 
 	if (!argc || !dm_list_empty(&tags)) {
 		log_verbose("Finding all logical volumes");
-		if (!(vgnames = get_vgnames(cmd, 0)) || dm_list_empty(vgnames)) {
+		if (!(vgnames = get_vgnames(cmd, 0, 0)) || dm_list_empty(vgnames)) {
 			log_error("No volume groups found");
 			return ret_max;
 		}
@@ -284,8 +284,6 @@ int process_each_lv(struct cmd_context *cmd, int argc, char **argv,
 	vg = NULL;
 	dm_list_iterate_items(strl, vgnames) {
 		vgname = strl->str;
-		if (is_orphan_vg(vgname))
-			continue;	/* FIXME Unnecessary? */
 		vg = vg_read(cmd, vgname, NULL, flags);
 
 		if (vg_read_error(vg)) {
@@ -315,7 +313,7 @@ int process_each_lv(struct cmd_context *cmd, int argc, char **argv,
 						  dm_pool_strdup(cmd->mem,
 							      lv_name + 1))) {
 					log_error("strlist allocation failed");
-					vg_release(vg);
+					unlock_and_release_vg(cmd, vg, vgname);
 					return ECMD_FAILED;
 				}
 			}
@@ -367,8 +365,8 @@ int process_each_segment_in_pv(struct cmd_context *cmd,
 		if (!(pvl = find_pv_in_vg(vg, pv_dev_name(pv)))) {
 			 log_error("Unable to find %s in volume group %s",
 				   pv_dev_name(pv), vg_name);
-			vg_release(vg);
-			return ECMD_FAILED;
+			 unlock_and_release_vg(cmd, vg, vg_name);
+			 return ECMD_FAILED;
 		}
 
 		pv = pvl->pv;
@@ -452,8 +450,7 @@ static int _process_one_vg(struct cmd_context *cmd, const char *vg_name,
 		ret_max = ret;
 
 out:
-	if ((vg_read_error(vg) == FAILED_ALLOCATION)||
-	    (vg_read_error(vg) == FAILED_LOCKING))
+	if (vg_read_error(vg))
 		vg_release(vg);
 	else
 		unlock_and_release_vg(cmd, vg, vg_name);
@@ -521,14 +518,13 @@ int process_each_vg(struct cmd_context *cmd, int argc, char **argv,
 
 	if (!argc || !dm_list_empty(&tags)) {
 		log_verbose("Finding all volume groups");
-		if (!(vgids = get_vgids(cmd, 0)) || dm_list_empty(vgids)) {
+		if (!(vgids = get_vgids(cmd, 0, 0)) || dm_list_empty(vgids)) {
 			log_error("No volume groups found");
 			return ret_max;
 		}
 		dm_list_iterate_items(sl, vgids) {
 			vgid = sl->str;
-			if (!vgid || !(vg_name = vgname_from_vgid(cmd->mem, vgid)) ||
-			    is_orphan_vg(vg_name))
+			if (!(vgid) || !(vg_name = vgname_from_vgid(cmd->mem, vgid)))
 				continue;
 			ret_max = _process_one_vg(cmd, vg_name, vgid, &tags,
 						  &arg_vgnames,
@@ -727,7 +723,7 @@ int process_each_pv(struct cmd_context *cmd, int argc, char **argv,
 			if (sigint_caught())
 				goto out;
 		}
-		if (!dm_list_empty(&tags) && (vgnames = get_vgnames(cmd, 0)) &&
+		if (!dm_list_empty(&tags) && (vgnames = get_vgnames(cmd, 0, 1)) &&
 			   !dm_list_empty(vgnames)) {
 			dm_list_iterate_items(sll, vgnames) {
 				vg = vg_read(cmd, sll->str, NULL, flags);
@@ -1183,17 +1179,37 @@ int is_reserved_lvname(const char *name)
 	return rc;
 }
 
+void vgcreate_params_set_defaults(struct vgcreate_params *vp_def,
+				  struct volume_group *vg)
+{
+	if (vg) {
+		vp_def->vg_name = NULL;
+		vp_def->extent_size = vg->extent_size;
+		vp_def->max_pv = vg->max_pv;
+		vp_def->max_lv = vg->max_lv;
+		vp_def->alloc = vg->alloc;
+		vp_def->clustered = vg_is_clustered(vg);
+	} else {
+		vp_def->vg_name = NULL;
+		vp_def->extent_size = DEFAULT_EXTENT_SIZE * 2;
+		vp_def->max_pv = DEFAULT_MAX_PV;
+		vp_def->max_lv = DEFAULT_MAX_LV;
+		vp_def->alloc = DEFAULT_ALLOC_POLICY;
+		vp_def->clustered = DEFAULT_CLUSTERED;
+	}
+}
+
 /*
- * Set members of struct vgcreate_params from cmdline.
+ * Set members of struct vgcreate_params from cmdline arguments.
  * Do preliminary validation with arg_*() interface.
  * Further, more generic validation is done in validate_vgcreate_params().
  * This function is to remain in tools directory.
  */
-int fill_vg_create_params(struct cmd_context *cmd,
-			  char *vg_name, struct vgcreate_params *vp_new,
-			  struct vgcreate_params *vp_def)
+int vgcreate_params_set_from_args(struct cmd_context *cmd,
+				  struct vgcreate_params *vp_new,
+				  struct vgcreate_params *vp_def)
 {
-	vp_new->vg_name = skip_dev_dir(cmd, vg_name, NULL);
+	vp_new->vg_name = skip_dev_dir(cmd, vp_def->vg_name, NULL);
 	vp_new->max_lv = arg_uint_value(cmd, maxlogicalvolumes_ARG,
 					vp_def->max_lv);
 	vp_new->max_pv = arg_uint_value(cmd, maxphysicalvolumes_ARG,
@@ -1232,7 +1248,30 @@ int fill_vg_create_params(struct cmd_context *cmd,
 
 int lv_refresh(struct cmd_context *cmd, struct logical_volume *lv)
 {
-	return suspend_lv(cmd, lv) && resume_lv(cmd, lv);
+	int r = 0;
+
+	r = suspend_lv(cmd, lv);
+	if (!r)
+		goto_out;
+
+	r = resume_lv(cmd, lv);
+	if (!r)
+		goto_out;
+
+	/*
+	 * check if snapshot merge should be polled
+	 * - unfortunately: even though the dev_manager will clear
+	 *   the lv's merge attributes if a merge is not possible;
+	 *   it is clearing a different instance of the lv (as
+	 *   retrieved with lv_from_lvid)
+	 * - fortunately: polldaemon will immediately shutdown if the
+	 *   origin doesn't have a status with a snapshot percentage
+	 */
+	if (background_polling() && lv_is_origin(lv) && lv_is_merging_origin(lv))
+		lv_spawn_background_polling(cmd, lv);
+
+out:
+	return r;
 }
 
 int vg_refresh_visible(struct cmd_context *cmd, struct volume_group *vg)
@@ -1265,7 +1304,7 @@ void lv_spawn_background_polling(struct cmd_context *cmd,
 		pvmove_poll(cmd, pvname, 1);
 	}
 
-	if (lv->status & CONVERTING) {
+	if (lv->status & (CONVERTING|MERGING)) {
 		log_verbose("Spawning background lvconvert process for %s",
 			lv->name);
 		lvconvert_poll(cmd, lv, 1);
@@ -1278,7 +1317,7 @@ void lv_spawn_background_polling(struct cmd_context *cmd,
  * Output arguments:
  * pp: structure allocated by caller, fields written / validated here
  */
-int pvcreate_validate_params(struct cmd_context *cmd,
+int pvcreate_params_validate(struct cmd_context *cmd,
 			     int argc, char **argv,
 			     struct pvcreate_params *pp)
 {

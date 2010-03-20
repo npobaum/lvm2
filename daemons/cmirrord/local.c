@@ -9,26 +9,20 @@
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
-#include <unistd.h>
-#include <errno.h>
-#include <string.h>
-#include <stdint.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <sys/poll.h>
-#include <linux/connector.h>
-#include <linux/netlink.h>
-
-#include "dm-log-userspace.h"
-#include "functions.h"
-#include "cluster.h"
-#include "common.h"
 #include "logging.h"
+#include "common.h"
+#include "functions.h"
 #include "link_mon.h"
 #include "local.h"
 
+#include <errno.h>
+#include <sys/socket.h>
+#include <linux/connector.h>
+#include <linux/netlink.h>
+#include <unistd.h>
+
 #ifndef CN_IDX_DM
-#warning Kernel should be at least 2.6.31
+/* Kernel 2.6.31 is required to run this code */
 #define CN_IDX_DM                       0x7     /* Device Mapper */
 #define CN_VAL_DM_USERSPACE_LOG         0x1
 #endif
@@ -88,9 +82,11 @@ static int kernel_ack(uint32_t seq, int error)
 static int kernel_recv(struct clog_request **rq)
 {
 	int r = 0;
-	int len;
+	ssize_t len;
+	char *foo;
 	struct cn_msg *msg;
 	struct dm_ulog_request *u_rq;
+	struct nlmsghdr *nlmsg_h;
 
 	*rq = NULL;
 	memset(recv_buf, 0, sizeof(recv_buf));
@@ -102,16 +98,17 @@ static int kernel_recv(struct clog_request **rq)
 		goto fail;
 	}
 
-	switch (((struct nlmsghdr *)recv_buf)->nlmsg_type) {
+	nlmsg_h = (struct nlmsghdr *)recv_buf;
+	switch (nlmsg_h->nlmsg_type) {
 	case NLMSG_ERROR:
 		LOG_ERROR("Unable to recv message from kernel: NLMSG_ERROR");
 		r = -EBADE;
 		goto fail;
 	case NLMSG_DONE:
 		msg = (struct cn_msg *)NLMSG_DATA((struct nlmsghdr *)recv_buf);
-		len -= sizeof(struct nlmsghdr);
+		len -= (ssize_t)sizeof(struct nlmsghdr);
 
-		if (len < sizeof(struct cn_msg)) {
+		if (len < (ssize_t)sizeof(struct cn_msg)) {
 			LOG_ERROR("Incomplete request from kernel received");
 			r = -EBADE;
 			goto fail;
@@ -127,10 +124,10 @@ static int kernel_recv(struct clog_request **rq)
 		if (!msg->len)
 			LOG_ERROR("Zero length message received");
 
-		len -= sizeof(struct cn_msg);
+		len -= (ssize_t)sizeof(struct cn_msg);
 
 		if (len < msg->len)
-			LOG_ERROR("len = %d, msg->len = %d", len, msg->len);
+			LOG_ERROR("len = %zd, msg->len = %" PRIu16, len, msg->len);
 
 		msg->data[msg->len] = '\0'; /* Cleaner way to ensure this? */
 		u_rq = (struct dm_ulog_request *)msg->data;
@@ -158,13 +155,12 @@ static int kernel_recv(struct clog_request **rq)
 		 * beyond what is available to us, but we need only check it
 		 * once... perhaps at compile time?
 		 */
-//		*rq = container_of(u_rq, struct clog_request, u_rq);
-		*rq = (void *)u_rq -
-			(sizeof(struct clog_request) -
-			 sizeof(struct dm_ulog_request));
+		foo = (char *)u_rq;
+		foo -= (sizeof(struct clog_request) - sizeof(struct dm_ulog_request));
+		*rq = (struct clog_request *) foo;
 
 		/* Clear the wrapper container fields */
-		memset(*rq, 0, (void *)u_rq - (void *)(*rq));
+		memset(*rq, 0, (size_t)((char *)u_rq - (char *)(*rq)));
 		break;
 	default:
 		LOG_ERROR("Unknown nlmsg_type");
@@ -178,7 +174,7 @@ fail:
 	return (r == -EAGAIN) ? 0 : r;
 }
 
-static int kernel_send_helper(void *data, int out_size)
+static int kernel_send_helper(void *data, uint16_t out_size)
 {
 	int r;
 	struct nlmsghdr *nlh;
@@ -218,7 +214,7 @@ static int kernel_send_helper(void *data, int out_size)
  *
  * Returns: 0 on success, -EXXX on failure
  */
-static int do_local_work(void *data)
+static int do_local_work(void *data __attribute((unused)))
 {
 	int r;
 	struct clog_request *rq;
@@ -331,12 +327,12 @@ static int do_local_work(void *data)
 int kernel_send(struct dm_ulog_request *u_rq)
 {
 	int r;
-	int size;
+	uint16_t size;
 
 	if (!u_rq)
 		return -EINVAL;
 
-	size = sizeof(struct dm_ulog_request) + u_rq->data_size;
+	size = (uint16_t)(sizeof(struct dm_ulog_request) + u_rq->data_size);
 
 	if (!u_rq->data_size && !u_rq->error) {
 		/* An ACK is all that is needed */
@@ -372,7 +368,7 @@ int kernel_send(struct dm_ulog_request *u_rq)
 int init_local(void)
 {
 	int r = 0;
-	int opt;
+	unsigned opt;
 	struct sockaddr_nl addr;
 
 	cn_fd = socket(PF_NETLINK, SOCK_DGRAM, NETLINK_CONNECTOR);

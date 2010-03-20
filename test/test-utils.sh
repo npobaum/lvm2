@@ -24,7 +24,20 @@ STACKTRACE() {
 		echo "$i ${FUNC}() called from ${BASH_SOURCE[$i]}:${BASH_LINENO[$i]}"
 		i=$(($i + 1));
 	done
-}	
+}
+
+init_udev_transaction() {
+	if test "$DM_UDEV_SYNCHRONISATION" = 1; then
+		export DM_UDEV_COOKIE=$(dmsetup udevcreatecookie)
+	fi
+}
+
+finish_udev_transaction() {
+	if test "$DM_UDEV_SYNCHRONISATION" = 1; then
+		dmsetup udevreleasecookie
+		unset DM_UDEV_COOKIE
+	fi
+}
 
 teardown() {
 	echo $LOOP
@@ -32,16 +45,26 @@ teardown() {
 
 	test -n "$PREFIX" && {
 		rm -rf $G_root_/dev/$PREFIX*
+
+		init_udev_transaction
 		while dmsetup table | grep -q ^$PREFIX; do
 			for s in `dmsetup table | grep ^$PREFIX| awk '{ print substr($1,1,length($1)-1) }'`; do
-				dmsetup resume $s 2>/dev/null > /dev/null || true
 				dmsetup remove $s 2>/dev/null > /dev/null || true
 			done
 		done
+		finish_udev_transaction
+
 	}
 
-	test -n "$LOOP" && losetup -d $LOOP
-	test -n "$LOOPFILE" && rm -f $LOOPFILE
+	# NOTE: SCSI_DEBUG_DEV test must come before the LOOP test because
+	# prepare_scsi_debug_dev() also sets LOOP to short-circuit prepare_loop()
+	if [ -n "$SCSI_DEBUG_DEV" ] ; then
+		modprobe -r scsi_debug
+	else
+		test -n "$LOOP" && losetup -d $LOOP
+		test -n "$LOOPFILE" && rm -f $LOOPFILE
+	fi
+	unset devs # devs is set in prepare_devs()
 }
 
 teardown_() {
@@ -52,7 +75,6 @@ teardown_() {
 
 make_ioerror() {
 	echo 0 10000000 error | dmsetup create ioerror
-	dmsetup resume ioerror
 	ln -s $G_dev_/mapper/ioerror $G_dev_/ioerror
 }
 
@@ -94,6 +116,68 @@ prepare_loop() {
 	exit 1 # should not happen
 }
 
+get_sd_devs_()
+{
+    # prepare_scsi_debug_dev() requires the ability to lookup
+    # the scsi_debug created SCSI device in /dev/
+    local _devs=$(lvmdiskscan --config 'devices { filter = [ "a|/dev/sd.*|", "r|.*|" ] scan = "/dev/" }' | grep /dev/sd | awk '{ print $1 }')
+    echo $_devs
+}
+
+# A drop-in replacement for prepare_loop() that uses scsi_debug to create
+# a ramdisk-based SCSI device upon which all LVM devices will be created
+# - scripts must take care not to use a DEV_SIZE that will enduce OOM-killer
+prepare_scsi_debug_dev()
+{
+    local DEV_SIZE="$1"
+    shift
+    local SCSI_DEBUG_PARAMS="$@"
+
+    test -n "$SCSI_DEBUG_DEV" && return 0
+    trap 'aux teardown_' EXIT # don't forget to clean up
+    trap 'set +vex; STACKTRACE; set -vex' ERR
+
+    # Skip test if awk isn't available (required for get_sd_devs_)
+    which awk || exit 200
+
+    # Skip test if scsi_debug module is unavailable or is already in use
+    modinfo scsi_debug || exit 200
+    lsmod | grep -q scsi_debug && exit 200
+
+    # Create the scsi_debug device and determine the new scsi device's name
+    local devs_before=`get_sd_devs_`
+    # NOTE: it will _never_ make sense to pass num_tgts param;
+    # last param wins.. so num_tgts=1 is imposed
+    modprobe scsi_debug dev_size_mb=$DEV_SIZE $SCSI_DEBUG_PARAMS num_tgts=1
+    sleep 2 # allow for async Linux SCSI device registration
+
+    local devs_after=`get_sd_devs_`
+    for dev1 in $devs_after; do
+	FOUND=0
+	for dev2 in $devs_before; do
+	    if [ "$dev1" = "$dev2" ]; then
+		FOUND=1
+		break
+	    fi
+	done
+	if [ $FOUND -eq 0 ]; then
+	    # Create symlink to scsi_debug device in $G_dev_
+	    SCSI_DEBUG_DEV=$G_dev_/$(basename $dev1)
+	    # Setting $LOOP provides means for prepare_devs() override
+	    LOOP=$SCSI_DEBUG_DEV
+	    ln -snf $dev1 $SCSI_DEBUG_DEV
+	    return 0
+	fi
+    done
+    exit 1 # should not happen
+}
+
+cleanup_scsi_debug_dev()
+{
+    aux teardown
+    unset SCSI_DEBUG_DEV
+}
+
 prepare_devs() {
 	local n="$1"
 	test -z "$n" && n=3
@@ -112,6 +196,7 @@ prepare_devs() {
 
 	local size=$(($loopsz/$n))
 
+	init_udev_transaction
 	for i in `seq 1 $n`; do
 		local name="${PREFIX}$pvname$i"
 		local dev="$G_dev_/mapper/$name"
@@ -119,8 +204,8 @@ prepare_devs() {
 		devs="$devs $dev"
 		echo 0 $size linear $LOOP $((($i-1)*$size)) > $name.table
 		dmsetup create $name $name.table
-		dmsetup resume $name
 	done
+	finish_udev_transaction
 
     # set up some default names
 	vg=${PREFIX}vg
@@ -134,6 +219,8 @@ prepare_devs() {
 }
 
 disable_dev() {
+
+	init_udev_transaction
 	for dev in "$@"; do
         # first we make the device inaccessible
 		echo 0 10000000 error | dmsetup load $dev
@@ -141,14 +228,19 @@ disable_dev() {
         # now let's try to get rid of it if it's unused
         #dmsetup remove $dev
 	done
+	finish_udev_transaction
+
 }
 
 enable_dev() {
+
+	init_udev_transaction
 	for dev in "$@"; do
 		local name=`echo "$dev" | sed -e 's,.*/,,'`
 		dmsetup create $name $name.table || dmsetup load $name $name.table
 		dmsetup resume $dev
 	done
+	finish_udev_transaction
 }
 
 backup_dev() {
@@ -174,7 +266,7 @@ prepare_pvs() {
 
 prepare_vg() {
 	prepare_pvs "$@"
-	vgcreate $vg $devs
+	vgcreate -c n $vg $devs
 }
 
 prepare_lvmconf() {
@@ -199,12 +291,17 @@ prepare_lvmconf() {
     archive = 0
   }
   global {
+    abort_on_internal_errors = 1
     library_dir = "$G_root_/lib"
-     locking_dir = "$G_root_/var/lock/lvm"
+    locking_dir = "$G_root_/var/lock/lvm"
+  }
+  activation {
+    udev_sync = 1
+    udev_rules = 1
   }
 EOF
 }
 
-set -vexE
+set -vexE -o pipefail
 aux prepare_lvmconf
 

@@ -172,6 +172,7 @@ int dm_task_set_sector(struct dm_task *dmt, uint64_t sector);
 int dm_task_no_flush(struct dm_task *dmt);
 int dm_task_no_open_count(struct dm_task *dmt);
 int dm_task_skip_lockfs(struct dm_task *dmt);
+int dm_task_query_inactive_table(struct dm_task *dmt);
 int dm_task_suppress_identical_reload(struct dm_task *dmt);
 
 /*
@@ -266,6 +267,8 @@ void dm_tree_free(struct dm_tree *tree);
  * Add nodes to the tree for a given device and all the devices it uses.
  */
 int dm_tree_add_dev(struct dm_tree *tree, uint32_t major, uint32_t minor);
+int dm_tree_add_dev_with_udev_flags(struct dm_tree *tree, uint32_t major,
+				    uint32_t minor, uint16_t udev_flags);
 
 /*
  * Add a new node to the tree if it doesn't already exist.
@@ -304,23 +307,23 @@ struct dm_tree_node *dm_tree_find_node_by_uuid(struct dm_tree *tree,
  * Set inverted to use inverted tree.
  */
 struct dm_tree_node *dm_tree_next_child(void **handle,
-					   struct dm_tree_node *parent,
-					   uint32_t inverted);
+					const struct dm_tree_node *parent,
+					uint32_t inverted);
 
 /*
  * Get properties of a node.
  */
-const char *dm_tree_node_get_name(struct dm_tree_node *node);
-const char *dm_tree_node_get_uuid(struct dm_tree_node *node);
-const struct dm_info *dm_tree_node_get_info(struct dm_tree_node *node);
-void *dm_tree_node_get_context(struct dm_tree_node *node);
-int dm_tree_node_size_changed(struct dm_tree_node *dnode);
+const char *dm_tree_node_get_name(const struct dm_tree_node *node);
+const char *dm_tree_node_get_uuid(const struct dm_tree_node *node);
+const struct dm_info *dm_tree_node_get_info(const struct dm_tree_node *node);
+void *dm_tree_node_get_context(const struct dm_tree_node *node);
+int dm_tree_node_size_changed(const struct dm_tree_node *dnode);
 
 /*
  * Returns the number of children of the given node (excluding the root node).
  * Set inverted for the number of parents.
  */
-int dm_tree_node_num_children(struct dm_tree_node *node, uint32_t inverted);
+int dm_tree_node_num_children(const struct dm_tree_node *node, uint32_t inverted);
 
 /*
  * Deactivate a device plus all dependencies.
@@ -391,6 +394,12 @@ int dm_tree_node_add_snapshot_target(struct dm_tree_node *node,
 					const char *cow_uuid,
 					int persistent,
 					uint32_t chunk_size);
+int dm_tree_node_add_snapshot_merge_target(struct dm_tree_node *node,
+					     uint64_t size,
+					     const char *origin_uuid,
+					     const char *cow_uuid,
+					     const char *merge_uuid,
+					     uint32_t chunk_size);
 int dm_tree_node_add_error_target(struct dm_tree_node *node,
 				     uint64_t size);
 int dm_tree_node_add_zero_target(struct dm_tree_node *node,
@@ -745,7 +754,7 @@ struct dm_list *dm_list_next(const struct dm_list *head, const struct dm_list *e
  * contained in a structure of type t, return the containing structure.
  */
 #define dm_list_struct_base(v, t, head) \
-    ((t *)((uintptr_t)(v) - (uintptr_t)&((t *) 0)->head))
+    ((t *)((char*)(v) - (char*)&((t *) 0)->head))
 
 /*
  * Given the address v of an instance of 'struct dm_list list' contained in
@@ -1031,6 +1040,10 @@ void dm_report_field_set_value(struct dm_report_field *field, const void *value,
  * of udev rules we use by decoding the cookie prefix. When doing the
  * notification, we replace the cookie prefix with DM_COOKIE_MAGIC,
  * so we notify the right semaphore.
+ * It is still possible to use cookies for passing the flags to udev
+ * rules even when udev_sync is disabled. The base part of the cookie
+ * will be zero (there's no notification semaphore) and prefix will be
+ * set then. However, having udev_sync enabled is highly recommended.
  */
 #define DM_COOKIE_MAGIC 0x0D4D
 #define DM_UDEV_FLAGS_MASK 0xFFFF0000
@@ -1057,9 +1070,9 @@ void dm_report_field_set_value(struct dm_report_field *field, const void *value,
 /*
  * DM_UDEV_DISABLE_OTHER_RULES_FLAG is set in case we need to disable
  * all the other rules that are not general device-mapper nor subsystem
- * related (the rules belong to other software or packages). Use this
- * flag with care since it will cutoff the rule processing after the
- * last device-mapper/subsytem rule is applied.
+ * related (the rules belong to other software or packages). All foreign
+ * rules should check this flag directly and they should ignore further
+ * rule processing for such event.
  */
 #define DM_UDEV_DISABLE_OTHER_RULES_FLAG 0x0008
 /*
@@ -1071,14 +1084,24 @@ void dm_report_field_set_value(struct dm_report_field *field, const void *value,
  * snapshot devices.
  */
 #define DM_UDEV_LOW_PRIORITY_FLAG 0x0010
+/*
+ * DM_UDEV_DISABLE_LIBRARY_FALLBACK is set in case we need to disable
+ * libdevmapper's node management. We will rely on udev completely
+ * and there will be no fallback action provided by libdevmapper if
+ * udev does something improperly.
+ */
+#define DM_UDEV_DISABLE_LIBRARY_FALLBACK 0x0020
 
 int dm_cookie_supported(void);
 
 /*
- * Udev notification functions.
+ * Udev synchronisation functions.
  */
 void dm_udev_set_sync_support(int sync_with_udev);
 int dm_udev_get_sync_support(void);
+void dm_udev_set_checking(int checking);
+int dm_udev_get_checking(void);
+int dm_udev_create_cookie(uint32_t *cookie);
 int dm_udev_complete(uint32_t cookie);
 int dm_udev_wait(uint32_t cookie);
 

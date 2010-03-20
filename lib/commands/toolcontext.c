@@ -147,7 +147,9 @@ static void _init_logging(struct cmd_context *cmd)
 
 	/* Log message formatting */
 	init_indent(find_config_tree_int(cmd, "log/indent",
-				    DEFAULT_INDENT));
+					 DEFAULT_INDENT));
+	init_abort_on_internal_errors(find_config_tree_int(cmd, "global/abort_on_internal_errors",
+							   DEFAULT_ABORT_ON_INTERNAL_ERRORS));
 
 	cmd->default_settings.msg_prefix = find_config_tree_str(cmd,
 							   "log/prefix",
@@ -199,6 +201,8 @@ static int _process_config(struct cmd_context *cmd)
 	mode_t old_umask;
 	const char *read_ahead;
 	struct stat st;
+	const struct config_node *cn;
+	struct config_value *cv;
 
 	/* umask */
 	cmd->default_settings.umask = find_config_tree_int(cmd,
@@ -265,6 +269,10 @@ static int _process_config(struct cmd_context *cmd)
 		return 0;
 	}
 
+	cmd->default_settings.udev_rules = find_config_tree_int(cmd,
+								"activation/udev_rules",
+								DEFAULT_UDEV_RULES);
+
 	cmd->default_settings.udev_sync = find_config_tree_int(cmd,
 								"activation/udev_sync",
 								DEFAULT_UDEV_SYNC);
@@ -296,6 +304,11 @@ static int _process_config(struct cmd_context *cmd)
 	cmd->si_unit_consistency = find_config_tree_int(cmd,
 						  "global/si_unit_consistency",
 						  DEFAULT_SI_UNIT_CONSISTENCY);
+
+	if ((cn = find_config_tree_node(cmd, "activation/mlock_filter")))
+		for (cv = cn->v; cv; cv = cv->next) 
+			if ((cv->type != CFG_STRING) || !cv->v.str[0]) 
+				log_error("Ignoring invalid activation/mlock_filter entry in config file");
 
 	return 1;
 }
@@ -1223,6 +1236,25 @@ skip_dlclose:
 	}
 }
 
+int refresh_filters(struct cmd_context *cmd)
+{
+	int r, saved_ignore_suspended_devices = ignore_suspended_devices();
+
+	if (cmd->filter) {
+		cmd->filter->destroy(cmd->filter);
+		cmd->filter = NULL;
+	}
+
+	r = _init_filters(cmd, 0);
+
+	/*
+	 * During repair code must not reset suspended flag.
+	 */
+	init_ignore_suspended_devices(saved_ignore_suspended_devices);
+
+	return r;
+}
+
 int refresh_toolcontext(struct cmd_context *cmd)
 {
 	log_verbose("Reloading config files");
@@ -1280,13 +1312,6 @@ int refresh_toolcontext(struct cmd_context *cmd)
 
 	if (!_init_segtypes(cmd))
 		return 0;
-
-	/*
-	 * If we are a long-lived process, write out the updated persistent
-	 * device cache for the benefit of short-lived processes.
-	 */
-	if (cmd->is_long_lived && cmd->dump_filter)
-		persistent_filter_dump(cmd->filter);
 
 	cmd->config_valid = 1;
 

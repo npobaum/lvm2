@@ -35,9 +35,11 @@ static int _security_level = SECURITY_LEVEL;
 static char _cmd_name[30] = "";
 static int _mirror_in_sync = 0;
 static int _dmeventd_monitor = DEFAULT_DMEVENTD_MONITOR;
+static int _background_polling = DEFAULT_BACKGROUND_POLLING;
 static int _ignore_suspended_devices = 0;
 static int _error_message_produced = 0;
 static unsigned _is_static = 0;
+static int _udev_checking = 1;
 
 void init_verbose(int level)
 {
@@ -91,6 +93,11 @@ void init_dmeventd_monitor(int reg)
 	_dmeventd_monitor = reg;
 }
 
+void init_background_polling(int polling)
+{
+	_background_polling = polling;
+}
+
 void init_ignore_suspended_devices(int ignore)
 {
 	_ignore_suspended_devices = ignore;
@@ -104,6 +111,14 @@ void init_cmd_name(int status)
 void init_is_static(unsigned value)
 {
 	_is_static = value;
+}
+
+void init_udev_checking(int checking)
+{
+	if ((_udev_checking = checking))
+		log_debug("LVM udev checking enabled");
+	else
+		log_debug("LVM udev checking disabled");
 }
 
 void set_cmd_name(const char *cmd)
@@ -155,6 +170,11 @@ int trust_cache()
 	return _trust_cache;
 }
 
+int background_polling()
+{
+	return _background_polling;
+}
+
 int ignorelockingfailure()
 {
 	return _ignorelockingfailure;
@@ -198,4 +218,9 @@ int debug_level()
 unsigned is_static(void)
 {
 	return _is_static;
+}
+
+int udev_checking(void)
+{
+	return _udev_checking;
 }

@@ -52,6 +52,7 @@
 #include "locking.h"
 #include "archiver.h"
 #include "defaults.h"
+#include "memlock.h"
 
 static struct cmd_context *cmd = NULL;
 static struct dm_hash_table *lv_hash = NULL;
@@ -73,23 +74,23 @@ static const char *decode_locking_cmd(unsigned char cmdl)
 	const char *command;
 
 	switch (cmdl & LCK_TYPE_MASK) {
-	case LCK_NULL:   
-		type = "NULL";   
+	case LCK_NULL:
+		type = "NULL";
 		break;
-	case LCK_READ:   
-		type = "READ";   
+	case LCK_READ:
+		type = "READ";
 		break;
-	case LCK_PREAD:  
-		type = "PREAD";  
+	case LCK_PREAD:
+		type = "PREAD";
 		break;
-	case LCK_WRITE:  
-		type = "WRITE";  
+	case LCK_WRITE:
+		type = "WRITE";
 		break;
-	case LCK_EXCL:   
-		type = "EXCL";   
+	case LCK_EXCL:
+		type = "EXCL";
 		break;
-	case LCK_UNLOCK: 
-		type = "UNLOCK"; 
+	case LCK_UNLOCK:
+		type = "UNLOCK";
 		break;
 	default:
 		type = "unknown";
@@ -97,34 +98,35 @@ static const char *decode_locking_cmd(unsigned char cmdl)
 	}
 
 	switch (cmdl & LCK_SCOPE_MASK) {
-	case LCK_VG: 
-		scope = "VG"; 
+	case LCK_VG:
+		scope = "VG";
+		command = "LCK_VG";
 		break;
-	case LCK_LV: 
+	case LCK_LV:
 		scope = "LV"; 
+		switch (cmdl & LCK_MASK) {
+		case LCK_LV_EXCLUSIVE & LCK_MASK:
+			command = "LCK_LV_EXCLUSIVE";
+			break;
+		case LCK_LV_SUSPEND & LCK_MASK:
+			command = "LCK_LV_SUSPEND";
+			break;
+		case LCK_LV_RESUME & LCK_MASK:
+			command = "LCK_LV_RESUME";
+			break;
+		case LCK_LV_ACTIVATE & LCK_MASK:
+			command = "LCK_LV_ACTIVATE";
+			break;
+		case LCK_LV_DEACTIVATE & LCK_MASK:
+			command = "LCK_LV_DEACTIVATE";
+			break;
+		default:
+			command = "unknown";
+			break;
+		}
 		break;
 	default:
 		scope = "unknown";
-		break;
-	}
-
-	switch (cmdl & LCK_MASK) {
-	case LCK_LV_EXCLUSIVE & LCK_MASK:
-		command = "LCK_LV_EXCLUSIVE";  
-		break;
-	case LCK_LV_SUSPEND & LCK_MASK:    
-		command = "LCK_LV_SUSPEND";    
-		break;
-	case LCK_LV_RESUME & LCK_MASK:     
-		command = "LCK_LV_RESUME";     
-		break;
-	case LCK_LV_ACTIVATE & LCK_MASK:   
-		command = "LCK_LV_ACTIVATE";   
-		break;
-	case LCK_LV_DEACTIVATE & LCK_MASK: 
-		command = "LCK_LV_DEACTIVATE"; 
-		break;
-	default:
 		command = "unknown";
 		break;
 	}
@@ -245,6 +247,11 @@ int hold_lock(char *resource, int mode, int flags)
 
 	lvi = lookup_info(resource);
 
+	if (lvi && lvi->lock_mode == mode) {
+		DEBUGLOG("hold_lock, lock mode %d already held\n", mode);
+		return 0;
+	}
+
 	/* Only allow explicit conversions */
 	if (lvi && !(flags & LKF_CONVERT)) {
 		errno = EBUSY;
@@ -269,7 +276,7 @@ int hold_lock(char *resource, int mode, int flags)
 			return -1;
 
 		lvi->lock_mode = mode;
-		status = sync_lock(resource, mode, flags, &lvi->lock_id);
+		status = sync_lock(resource, mode, flags & ~LKF_CONVERT, &lvi->lock_id);
 		saved_errno = errno;
 		if (status) {
 			free(lvi);
@@ -326,7 +333,8 @@ static int do_activate_lv(char *resource, unsigned char lock_flags, int mode)
 
 	/* Is it already open ? */
 	oldmode = get_current_lock(resource);
-	if (oldmode == mode) {
+	if (oldmode == mode && (lock_flags & LCK_CLUSTER_VG)) {
+		DEBUGLOG("do_activate_lv, lock already held at %d\n", oldmode);
 		return 0;	/* Nothing to do */
 	}
 
@@ -343,7 +351,11 @@ static int do_activate_lv(char *resource, unsigned char lock_flags, int mode)
 		mode = LKM_EXMODE;
 	}
 
-	/* Try to get the lock if it's a clustered volume group */
+	/*
+	 * Try to get the lock if it's a clustered volume group.
+	 * Use lock conversion only if requested, to prevent implicit conversion
+	 * of exclusive lock to shared one during activation.
+	 */
 	if (lock_flags & LCK_CLUSTER_VG) {
 		status = hold_lock(resource, mode, LKF_NOQUEUE | (lock_flags & LCK_CONVERT?LKF_CONVERT:0));
 		if (status) {
@@ -361,27 +373,32 @@ static int do_activate_lv(char *resource, unsigned char lock_flags, int mode)
 
 	/* If it's suspended then resume it */
 	if (!lv_info_by_lvid(cmd, resource, &lvi, 0, 0))
-		return EIO;
+		goto error;
 
 	if (lvi.suspended)
 		if (!lv_resume(cmd, resource))
-			return EIO;
+			goto error;
 
 	/* Now activate it */
 	if (!lv_activate(cmd, resource, exclusive))
-		return EIO;
+		goto error;
 
 	return 0;
+
+error:
+	if (oldmode == -1 || oldmode != mode)
+		(void)hold_unlock(resource);
+	return EIO;
 }
 
 /* Resume the LV if it was active */
-static int do_resume_lv(char *resource)
+static int do_resume_lv(char *resource, unsigned char lock_flags)
 {
 	int oldmode;
 
 	/* Is it open ? */
 	oldmode = get_current_lock(resource);
-	if (oldmode == -1) {
+	if (oldmode == -1 && (lock_flags & LCK_CLUSTER_VG)) {
 		DEBUGLOG("do_resume_lv, lock not already held\n");
 		return 0;	/* We don't need to do anything */
 	}
@@ -393,15 +410,15 @@ static int do_resume_lv(char *resource)
 }
 
 /* Suspend the device if active */
-static int do_suspend_lv(char *resource)
+static int do_suspend_lv(char *resource, unsigned char lock_flags)
 {
 	int oldmode;
 	struct lvinfo lvi;
 
 	/* Is it open ? */
 	oldmode = get_current_lock(resource);
-	if (oldmode == -1) {
-		DEBUGLOG("do_suspend_lv, lock held at %d\n", oldmode);
+	if (oldmode == -1 && (lock_flags & LCK_CLUSTER_VG)) {
+		DEBUGLOG("do_suspend_lv, lock not already held\n");
 		return 0; /* Not active, so it's OK */
 	}
 
@@ -467,8 +484,8 @@ int do_lock_lv(unsigned char command, unsigned char lock_flags, char *resource)
 {
 	int status = 0;
 
-	DEBUGLOG("do_lock_lv: resource '%s', cmd = %s, flags = %s\n",
-		 resource, decode_locking_cmd(command), decode_flags(lock_flags));
+	DEBUGLOG("do_lock_lv: resource '%s', cmd = %s, flags = %s, memlock = %d\n",
+		 resource, decode_locking_cmd(command), decode_flags(lock_flags), memlock());
 
 	if (!cmd->config_valid || config_files_changed(cmd)) {
 		/* Reinitialise various settings inc. logging, filters */
@@ -487,20 +504,23 @@ int do_lock_lv(unsigned char command, unsigned char lock_flags, char *resource)
 
 	cmd->partial_activation = (lock_flags & LCK_PARTIAL_MODE) ? 1 : 0;
 
+	/* clvmd should never try to read suspended device */
+	init_ignore_suspended_devices(1);
+
 	switch (command & LCK_MASK) {
 	case LCK_LV_EXCLUSIVE:
 		status = do_activate_lv(resource, lock_flags, LKM_EXMODE);
 		break;
 
 	case LCK_LV_SUSPEND:
-		status = do_suspend_lv(resource);
+		status = do_suspend_lv(resource, lock_flags);
 		if (!status)
 			suspended++;
 		break;
 
 	case LCK_UNLOCK:
 	case LCK_LV_RESUME:	/* if active */
-		status = do_resume_lv(resource);
+		status = do_resume_lv(resource, lock_flags);
 		if (!status)
 			suspended--;
 		break;
@@ -531,7 +551,7 @@ int do_lock_lv(unsigned char command, unsigned char lock_flags, char *resource)
 	dm_pool_empty(cmd->mem);
 	pthread_mutex_unlock(&lvm_lock);
 
-	DEBUGLOG("Command return is %d\n", status);
+	DEBUGLOG("Command return is %d, memlock is %d\n", status, memlock());
 	return status;
 }
 
@@ -541,12 +561,14 @@ int pre_lock_lv(unsigned char command, unsigned char lock_flags, char *resource)
 	/* Nearly all the stuff happens cluster-wide. Apart from SUSPEND. Here we get the
 	   lock out on this node (because we are the node modifying the metadata)
 	   before suspending cluster-wide.
+	   LKF_CONVERT is used always, local node is going to modify metadata
 	 */
-	if (command == LCK_LV_SUSPEND) {
+	if ((command & (LCK_SCOPE_MASK | LCK_TYPE_MASK)) == LCK_LV_SUSPEND &&
+	    (lock_flags & LCK_CLUSTER_VG)) {
 		DEBUGLOG("pre_lock_lv: resource '%s', cmd = %s, flags = %s\n",
 			 resource, decode_locking_cmd(command), decode_flags(lock_flags));
 
-		if (hold_lock(resource, LKM_PWMODE, LKF_NOQUEUE| (lock_flags & LCK_CONVERT?LKF_CONVERT:0)))
+		if (hold_lock(resource, LKM_PWMODE, LKF_NOQUEUE | LKF_CONVERT))
 			return errno;
 	}
 	return 0;
@@ -559,7 +581,8 @@ int post_lock_lv(unsigned char command, unsigned char lock_flags,
 	int status;
 
 	/* Opposite of above, done on resume after a metadata update */
-	if (command == LCK_LV_RESUME) {
+	if ((command & (LCK_SCOPE_MASK | LCK_TYPE_MASK)) == LCK_LV_RESUME &&
+	    (lock_flags & LCK_CLUSTER_VG)) {
 		int oldmode;
 
 		DEBUGLOG
@@ -578,7 +601,7 @@ int post_lock_lv(unsigned char command, unsigned char lock_flags,
 				return EIO;
 
 			if (lvi.exists) {
-				if (hold_lock(resource, LKM_CRMODE, lock_flags & LCK_CONVERT?LKF_CONVERT:0))
+				if (hold_lock(resource, LKM_CRMODE, LKF_CONVERT))
 					return errno;
 			} else {
 				if (hold_unlock(resource))
@@ -612,6 +635,7 @@ int do_refresh_cache()
 	}
 
 	init_full_scan_done(0);
+	init_ignore_suspended_devices(1);
 	lvmcache_label_scan(cmd, 2);
 	dm_pool_empty(cmd->mem);
 
@@ -661,13 +685,45 @@ static void drop_vg_locks()
 }
 
 /*
- * Drop lvmcache metadata
+ * Handle VG lock - drop metadata or update lvmcache state
  */
-void drop_metadata(const char *vgname)
+void do_lock_vg(unsigned char command, unsigned char lock_flags, char *resource)
 {
-	DEBUGLOG("Dropping metadata for VG %s\n", vgname);
+	uint32_t lock_cmd = command;
+	char *vgname = resource + 2;
+
+	DEBUGLOG("do_lock_vg: resource '%s', cmd = %s, flags = %s, memlock = %d\n",
+		 resource, decode_locking_cmd(command), decode_flags(lock_flags), memlock());
+
+	/* P_#global causes a full cache refresh */
+	if (!strcmp(resource, "P_" VG_GLOBAL)) {
+		do_refresh_cache();
+		return;
+	}
+
+	lock_cmd &= (LCK_SCOPE_MASK | LCK_TYPE_MASK | LCK_HOLD);
+
+	/*
+	 * Check if LCK_CACHE should be set. All P_ locks except # are cache related.
+	 */
+	if (strncmp(resource, "P_#", 3) && !strncmp(resource, "P_", 2))
+		lock_cmd |= LCK_CACHE;
+
 	pthread_mutex_lock(&lvm_lock);
-	lvmcache_drop_metadata(vgname);
+	switch (lock_cmd) {
+		case LCK_VG_COMMIT:
+			DEBUGLOG("vg_commit notification for VG %s\n", vgname);
+			lvmcache_commit_metadata(vgname);
+			break;
+		case LCK_VG_REVERT:
+			DEBUGLOG("vg_revert notification for VG %s\n", vgname);
+			lvmcache_drop_metadata(vgname, 1);
+			break;
+		case LCK_VG_DROP_CACHE:
+		default:
+			DEBUGLOG("Invalidating cached metadata for VG %s\n", vgname);
+			lvmcache_drop_metadata(vgname, 0);
+	}
 	pthread_mutex_unlock(&lvm_lock);
 }
 
@@ -813,6 +869,7 @@ int init_lvm(int using_gulm)
 
 	/* Check lvm.conf is setup for cluster-LVM */
 	check_config();
+	init_ignore_suspended_devices(1);
 
 	/* Remove any non-LV locks that may have been left around */
 	if (using_gulm)

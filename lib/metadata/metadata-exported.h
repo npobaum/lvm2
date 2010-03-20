@@ -25,6 +25,7 @@
 
 #define MAX_STRIPES 128U
 #define SECTOR_SHIFT 9L
+#define SECTOR_SIZE ( 1L << SECTOR_SHIFT )
 #define STRIPE_SIZE_MIN ( (unsigned) lvm_getpagesize() >> SECTOR_SHIFT)	/* PAGESIZE in sectors */
 #define STRIPE_SIZE_MAX ( 512L * 1024L >> SECTOR_SHIFT)	/* 512 KB in sectors */
 #define STRIPE_SIZE_LIMIT ((UINT_MAX >> 2) + 1)
@@ -68,6 +69,8 @@
 //#define POSTORDER_FLAG	0x02000000U /* Not real flags, reserved for
 //#define POSTORDER_OPEN_FLAG	0x04000000U    temporary use inside vg_read_internal. */
 //#define VIRTUAL_ORIGIN	0x08000000U	/* LV - internal use only */
+
+#define MERGING			0x10000000U	/* LV SEG */
 
 #define LVM_READ              	0x00000100U	/* LV VG */
 #define LVM_WRITE             	0x00000200U	/* LV VG */
@@ -181,7 +184,7 @@ struct physical_volume {
 	const char *vg_name;
 	struct id vgid;
 
-	uint32_t status;
+	uint64_t status;
 	uint64_t size;
 
 	/* physical extents */
@@ -208,12 +211,12 @@ struct volume_group {
 	struct format_instance *fid;
 	uint32_t seqno;		/* Metadata sequence number */
 
+	alloc_policy_t alloc;
+	uint64_t status;
+
 	struct id id;
 	char *name;
 	char *system_id;
-
-	uint32_t status;
-	alloc_policy_t alloc;
 
 	uint32_t extent_size;
 	uint32_t extent_count;
@@ -285,16 +288,16 @@ struct lv_segment {
 	uint32_t le;
 	uint32_t len;
 
-	uint32_t status;
+	uint64_t status;
 
 	/* FIXME Fields depend on segment type */
 	uint32_t stripe_size;
 	uint32_t area_count;
 	uint32_t area_len;
+	uint32_t chunk_size;	/* For snapshots - in sectors */
 	struct logical_volume *origin;
 	struct logical_volume *cow;
 	struct dm_list origin_list;
-	uint32_t chunk_size;	/* For snapshots - in sectors */
 	uint32_t region_size;	/* For mirrors - in sectors */
 	uint32_t extents_copied;
 	struct logical_volume *log_lv;
@@ -315,7 +318,7 @@ struct logical_volume {
 
 	struct volume_group *vg;
 
-	uint32_t status;
+	uint64_t status;
 	alloc_policy_t alloc;
 	uint32_t read_ahead;
 	int32_t major;
@@ -372,7 +375,7 @@ struct pvcreate_params {
 struct physical_volume *pvcreate_single(struct cmd_context *cmd,
 					const char *pv_name,
 					struct pvcreate_params *pp);
-void fill_default_pvcreate_params(struct pvcreate_params *pp);
+void pvcreate_params_set_defaults(struct pvcreate_params *pp);
 
 /*
 * Utility functions
@@ -396,8 +399,10 @@ void lv_set_visible(struct logical_volume *lv);
 void lv_set_hidden(struct logical_volume *lv);
 
 /* Set full_scan to 1 to re-read every (filtered) device label */
-struct dm_list *get_vgnames(struct cmd_context *cmd, int full_scan);
-struct dm_list *get_vgids(struct cmd_context *cmd, int full_scan);
+struct dm_list *get_vgnames(struct cmd_context *cmd, int full_scan,
+			     int include_internal);
+struct dm_list *get_vgids(struct cmd_context *cmd, int full_scan,
+			   int include_internal);
 int scan_vgs_for_pvs(struct cmd_context *cmd);
 
 int pv_write(struct cmd_context *cmd, struct physical_volume *pv,
@@ -458,10 +463,12 @@ int vg_rename(struct cmd_context *cmd, struct volume_group *vg,
 int vg_extend(struct volume_group *vg, int pv_count, char **pv_names,
 	      struct pvcreate_params *pp);
 int vg_reduce(struct volume_group *vg, char *pv_name);
+int vg_change_tag(struct volume_group *vg, const char *tag, int add_tag);
 int vg_set_extent_size(struct volume_group *vg, uint32_t new_extent_size);
 int vg_set_max_lv(struct volume_group *vg, uint32_t max_lv);
 int vg_set_max_pv(struct volume_group *vg, uint32_t max_pv);
 int vg_set_alloc_policy(struct volume_group *vg, alloc_policy_t alloc);
+int vg_set_clustered(struct volume_group *vg, int clustered);
 int vg_split_mdas(struct cmd_context *cmd, struct volume_group *vg_from,
 		  struct volume_group *vg_to);
 
@@ -478,13 +485,15 @@ void vg_release(struct volume_group *vg);
 /* Manipulate LVs */
 struct logical_volume *lv_create_empty(const char *name,
 				       union lvid *lvid,
-				       uint32_t status,
+				       uint64_t status,
 				       alloc_policy_t alloc,
 				       struct volume_group *vg);
 
 /* Write out LV contents */
 int set_lv(struct cmd_context *cmd, struct logical_volume *lv,
            uint64_t sectors, int value);
+
+int lv_change_tag(struct logical_volume *lv, const char *tag, int add_tag);
 
 /* Reduce the size of an LV by extents */
 int lv_reduce(struct logical_volume *lv, uint32_t extents);
@@ -501,7 +510,7 @@ int lv_extend(struct logical_volume *lv,
 	      uint32_t stripes, uint32_t stripe_size,
 	      uint32_t mirrors, uint32_t extents,
 	      struct physical_volume *mirrored_pv, uint32_t mirrored_pe,
-	      uint32_t status, struct dm_list *allocatable_pvs,
+	      uint64_t status, struct dm_list *allocatable_pvs,
 	      alloc_policy_t alloc);
 
 /* lv must be part of lv->vg->lvs */
@@ -526,7 +535,7 @@ struct lvcreate_params {
 	int zero; /* all */
 	int major; /* all */
 	int minor; /* all */
-	int corelog; /* mirror */
+	int log_count; /* mirror */
 	int nosync; /* mirror */
 
 	char *origin; /* snap */
@@ -564,16 +573,16 @@ int lv_create_single(struct volume_group *vg,
 int insert_layer_for_segments_on_pv(struct cmd_context *cmd,
 				    struct logical_volume *lv_where,
 				    struct logical_volume *layer_lv,
-				    uint32_t status,
+				    uint64_t status,
 				    struct pv_list *pv,
 				    struct dm_list *lvs_changed);
 int remove_layers_for_segments(struct cmd_context *cmd,
 			       struct logical_volume *lv,
 			       struct logical_volume *layer_lv,
-			       uint32_t status_mask, struct dm_list *lvs_changed);
+			       uint64_t status_mask, struct dm_list *lvs_changed);
 int remove_layers_for_segments_all(struct cmd_context *cmd,
 				   struct logical_volume *layer_lv,
-				   uint32_t status_mask,
+				   uint64_t status_mask,
 				   struct dm_list *lvs_changed);
 int split_parent_segments_for_layer(struct cmd_context *cmd,
 				    struct logical_volume *layer_lv);
@@ -581,7 +590,7 @@ int remove_layer_from_lv(struct logical_volume *lv,
 			 struct logical_volume *layer_lv);
 struct logical_volume *insert_layer_for_lv(struct cmd_context *cmd,
 					   struct logical_volume *lv_where,
-					   uint32_t status,
+					   uint64_t status,
 					   const char *layer_suffix);
 
 /* Find a PV within a given VG */
@@ -610,11 +619,15 @@ struct lv_segment *first_seg(const struct logical_volume *lv);
 int lv_is_origin(const struct logical_volume *lv);
 int lv_is_virtual_origin(const struct logical_volume *lv);
 int lv_is_cow(const struct logical_volume *lv);
+int lv_is_merging_origin(const struct logical_volume *origin);
+int lv_is_merging_cow(const struct logical_volume *snapshot);
 
 /* Test if given LV is visible from user's perspective */
 int lv_is_visible(const struct logical_volume *lv);
 
 int pv_is_in_vg(struct volume_group *vg, struct physical_volume *pv);
+
+struct lv_segment *find_merging_cow(const struct logical_volume *origin);
 
 /* Given a cow LV, return return the snapshot lv_segment that uses it */
 struct lv_segment *find_cow(const struct logical_volume *lv);
@@ -623,7 +636,11 @@ struct lv_segment *find_cow(const struct logical_volume *lv);
 struct logical_volume *origin_from_cow(const struct logical_volume *lv);
 
 void init_snapshot_seg(struct lv_segment *seg, struct logical_volume *origin,
-		       struct logical_volume *cow, uint32_t chunk_size);
+		       struct logical_volume *cow, uint32_t chunk_size, int merge);
+
+void init_snapshot_merge(struct lv_segment *cow_seg, struct logical_volume *origin);
+
+void clear_snapshot_merge(struct logical_volume *origin);
 
 int vg_add_snapshot(struct logical_volume *origin, struct logical_volume *cow,
 		    union lvid *lvid, uint32_t extent_count,
@@ -631,7 +648,7 @@ int vg_add_snapshot(struct logical_volume *origin, struct logical_volume *cow,
 
 int vg_remove_snapshot(struct logical_volume *cow);
 
-int vg_check_status(const struct volume_group *vg, uint32_t status);
+int vg_check_status(const struct volume_group *vg, uint64_t status);
 
 /*
  * Returns visible LV count - number of LVs from user perspective
@@ -651,9 +668,11 @@ int lv_add_mirrors(struct cmd_context *cmd, struct logical_volume *lv,
 		   uint32_t mirrors, uint32_t stripes,
 		   uint32_t region_size, uint32_t log_count,
 		   struct dm_list *pvs, alloc_policy_t alloc, uint32_t flags);
+int lv_split_mirror_images(struct logical_volume *lv, const char *split_lv_name,
+			   uint32_t split_count, struct dm_list *removable_pvs);
 int lv_remove_mirrors(struct cmd_context *cmd, struct logical_volume *lv,
 		      uint32_t mirrors, uint32_t log_count,
-		      struct dm_list *pvs, uint32_t status_mask);
+		      struct dm_list *pvs, uint64_t status_mask);
 
 int is_temporary_mirror_layer(const struct logical_volume *lv);
 struct logical_volume * find_temporary_mirror(const struct logical_volume *lv);
@@ -661,7 +680,7 @@ uint32_t lv_mirror_count(const struct logical_volume *lv);
 uint32_t adjusted_mirror_region_size(uint32_t extent_size, uint32_t extents,
                                     uint32_t region_size);
 int remove_mirrors_from_segments(struct logical_volume *lv,
-				 uint32_t new_mirrors, uint32_t status_mask);
+				 uint32_t new_mirrors, uint64_t status_mask);
 int add_mirrors_to_segments(struct cmd_context *cmd, struct logical_volume *lv,
 			    uint32_t mirrors, uint32_t region_size,
 			    struct dm_list *allocatable_pvs, alloc_policy_t alloc);
@@ -710,7 +729,10 @@ struct device *pv_dev(const struct physical_volume *pv);
 const char *pv_vg_name(const struct physical_volume *pv);
 const char *pv_dev_name(const struct physical_volume *pv);
 uint64_t pv_size(const struct physical_volume *pv);
-uint32_t pv_status(const struct physical_volume *pv);
+uint64_t pv_size_field(const struct physical_volume *pv);
+uint64_t pv_dev_size(const struct physical_volume *pv);
+uint64_t pv_free(const struct physical_volume *pv);
+uint64_t pv_status(const struct physical_volume *pv);
 uint32_t pv_pe_size(const struct physical_volume *pv);
 uint64_t pv_pe_start(const struct physical_volume *pv);
 uint32_t pv_pe_count(const struct physical_volume *pv);
@@ -721,7 +743,7 @@ uint64_t lv_size(const struct logical_volume *lv);
 
 int vg_missing_pv_count(const struct volume_group *vg);
 uint32_t vg_seqno(const struct volume_group *vg);
-uint32_t vg_status(const struct volume_group *vg);
+uint64_t vg_status(const struct volume_group *vg);
 uint64_t vg_size(const struct volume_group *vg);
 uint64_t vg_free(const struct volume_group *vg);
 uint64_t vg_extent_size(const struct volume_group *vg);
@@ -730,6 +752,7 @@ uint64_t vg_free_count(const struct volume_group *vg);
 uint64_t vg_pv_count(const struct volume_group *vg);
 uint64_t vg_max_pv(const struct volume_group *vg);
 uint64_t vg_max_lv(const struct volume_group *vg);
+uint32_t vg_mda_count(const struct volume_group *vg);
 int vg_check_write_mode(struct volume_group *vg);
 #define vg_is_clustered(vg) (vg_status((vg)) & CLUSTERED)
 #define vg_is_exported(vg) (vg_status((vg)) & EXPORTED_VG)
@@ -747,8 +770,8 @@ struct vgcreate_params {
 	int clustered; /* FIXME: put this into a 'status' variable instead? */
 };
 
-int validate_vg_create_params(struct cmd_context *cmd,
-			      struct vgcreate_params *vp);
+int vgcreate_params_validate(struct cmd_context *cmd,
+			     struct vgcreate_params *vp);
 
 int validate_vg_rename_params(struct cmd_context *cmd,
 			      const char *vg_name_old,

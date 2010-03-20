@@ -40,33 +40,36 @@ int vgcreate(struct cmd_context *cmd, int argc, char **argv)
 			  "use --pvmetadatacopies instead.");
 		return EINVALID_CMD_LINE;
 	}
-	fill_default_pvcreate_params(&pp);
-	if (!pvcreate_validate_params(cmd, argc, argv, &pp)) {
+	pvcreate_params_set_defaults(&pp);
+	if (!pvcreate_params_validate(cmd, argc, argv, &pp)) {
 		return EINVALID_CMD_LINE;
 	}
 
-	vp_def.vg_name = NULL;
-	vp_def.extent_size = DEFAULT_EXTENT_SIZE * 2;
-	vp_def.max_pv = DEFAULT_MAX_PV;
-	vp_def.max_lv = DEFAULT_MAX_LV;
-	vp_def.alloc = DEFAULT_ALLOC_POLICY;
-	vp_def.clustered = DEFAULT_CLUSTERED;
-	if (fill_vg_create_params(cmd, vg_name, &vp_new, &vp_def))
+	vgcreate_params_set_defaults(&vp_def, NULL);
+	vp_def.vg_name = vg_name;
+	if (vgcreate_params_set_from_args(cmd, &vp_new, &vp_def))
 		return EINVALID_CMD_LINE;
 
-	if (validate_vg_create_params(cmd, &vp_new))
+	if (vgcreate_params_validate(cmd, &vp_new))
 	    return EINVALID_CMD_LINE;
 
 	/* Create the new VG */
 	vg = vg_create(cmd, vp_new.vg_name);
-	if (vg_read_error(vg))
-		goto_bad;
+	if (vg_read_error(vg)) {
+		if (vg_read_error(vg) == FAILED_EXIST)
+			log_error("A volume group called %s already exists.", vp_new.vg_name);
+		else
+			log_error("Can't get lock for %s.", vp_new.vg_name);
+		vg_release(vg);
+		return ECMD_FAILED;
+	}
 
 	if (!vg_set_extent_size(vg, vp_new.extent_size) ||
 	    !vg_set_max_lv(vg, vp_new.max_lv) ||
 	    !vg_set_max_pv(vg, vp_new.max_pv) ||
-	    !vg_set_alloc_policy(vg, vp_new.alloc))
-		goto_bad;
+	    !vg_set_alloc_policy(vg, vp_new.alloc) ||
+	    !vg_set_clustered(vg, vp_new.clustered))
+		goto bad_orphan;
 
 	if (!lock_vol(cmd, VG_ORPHANS, LCK_VG_WRITE)) {
 		log_error("Can't get lock for orphan PVs");
@@ -91,24 +94,13 @@ int vgcreate(struct cmd_context *cmd, int argc, char **argv)
 			goto bad;
 		}
 
-		if (!(vg->fid->fmt->features & FMT_TAGS)) {
-			log_error("Volume group format does not support tags");
-			goto bad;
-		}
-
-		if (!str_list_add(cmd->mem, &vg->tags, tag)) {
-			log_error("Failed to add tag %s to volume group %s",
-				  tag, vp_new.vg_name);
-			goto bad;
-		}
+		if (!vg_change_tag(vg, tag, 1))
+			goto_bad;
 	}
 
-	/* FIXME: move this inside vg_create? */
-	if (vp_new.clustered) {
-		vg->status |= CLUSTERED;
+	if (vg_is_clustered(vg)) {
 		clustered_message = "Clustered ";
 	} else {
-		vg->status &= ~CLUSTERED;
 		if (locking_is_clustered())
 			clustered_message = "Non-clustered ";
 	}

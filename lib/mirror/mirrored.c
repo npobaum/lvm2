@@ -149,8 +149,8 @@ static int _mirrored_text_export(const struct lv_segment *seg, struct formatter 
 {
 	outf(f, "mirror_count = %u", seg->area_count);
 	if (seg->status & PVMOVE)
-		out_size(f, (uint64_t) seg->extents_copied * seg->lv->vg->extent_size,
-			 "extents_moved = %" PRIu32, seg->extents_copied);
+		outsize(f, (uint64_t) seg->extents_copied * seg->lv->vg->extent_size,
+			"extents_moved = %" PRIu32, seg->extents_copied);
 	if (seg->log_lv)
 		outf(f, "mirror_log = \"%s\"", seg->log_lv->name);
 	if (seg->region_size)
@@ -290,7 +290,7 @@ static int _mirrored_add_target_line(struct dev_manager *dm, struct dm_pool *mem
 	uint32_t area_count = seg->area_count;
 	unsigned start_area = 0u;
 	int mirror_status = MIRR_RUNNING;
-	uint32_t region_size, region_max;
+	uint32_t region_size;
 	int r;
 
 	if (!*target_state)
@@ -333,18 +333,11 @@ static int _mirrored_add_target_line(struct dev_manager *dm, struct dm_pool *mem
 			return 0;
 		}
 		region_size = seg->region_size;
-	} else {
-		/* Find largest power of 2 region size unit we can use */
-		region_max = (1 << (ffs((int)seg->area_len) - 1)) *
-		      seg->lv->vg->extent_size;
 
-		region_size = mirr_state->default_region_size;
-		if (region_max < region_size) {
-			region_size = region_max;
-			log_verbose("Using reduced mirror region size of %u sectors",
-				    region_size);
-		}
-	}
+	} else
+		region_size = adjusted_mirror_region_size(seg->lv->vg->extent_size,
+							  seg->area_len,
+							  mirr_state->default_region_size);
 
 	if (!dm_tree_node_add_mirror_target(node, len))
 		return_0;

@@ -72,6 +72,7 @@ xx(lvchange,
    "\t[--ignorelockingfailure]\n"
    "\t[--ignoremonitoring]\n"
    "\t[--monitor {y|n}]\n"
+   "\t[--poll {y|n}]\n"
    "\t[--noudevsync]\n"
    "\t[-M|--persistent y|n] [--major major] [--minor minor]\n"
    "\t[-P|--partial] " "\n"
@@ -88,8 +89,8 @@ xx(lvchange,
    alloc_ARG, autobackup_ARG, available_ARG, contiguous_ARG, force_ARG,
    ignorelockingfailure_ARG, ignoremonitoring_ARG, major_ARG, minor_ARG,
    monitor_ARG, noudevsync_ARG, partial_ARG, permission_ARG, persistent_ARG,
-   readahead_ARG, resync_ARG, refresh_ARG, addtag_ARG, deltag_ARG, test_ARG,
-   yes_ARG)
+   poll_ARG, readahead_ARG, resync_ARG, refresh_ARG, addtag_ARG, deltag_ARG,
+   test_ARG, yes_ARG)
 
 xx(lvconvert,
    "Change logical volume layout",
@@ -111,6 +112,10 @@ xx(lvconvert,
    "\tLogicalVolume[Path] [PhysicalVolume[Path]...]\n\n"
 
    "lvconvert "
+   "[--splitmirrors Images --name SplitLogicalVolumeName]\n"
+   "\tLogicalVolume[Path] [SplittablePhysicalVolume[Path]...]\n\n"
+
+   "lvconvert "
    "[-s|--snapshot]\n"
    "\t[-c|--chunksize]\n"
    "\t[-d|--debug]\n"
@@ -119,11 +124,21 @@ xx(lvconvert,
    "\t[-v|--verbose]\n"
    "\t[-Z|--zero {y|n}]\n"
    "\t[--version]" "\n"
-   "\tOriginalLogicalVolume[Path] SnapshotLogicalVolume[Path]\n",
+   "\tOriginalLogicalVolume[Path] SnapshotLogicalVolume[Path]\n\n"
+
+   "lvconvert "
+   "--merge\n"
+   "\t[-b|--background]\n"
+   "\t[-i|--interval seconds]\n"
+   "\t[-d|--debug]\n"
+   "\t[-h|-?|--help]\n"
+   "\t[-v|--verbose]\n"
+   "\tSnapshotLogicalVolume[Path]\n",
 
    alloc_ARG, background_ARG, chunksize_ARG, corelog_ARG, interval_ARG,
-   mirrorlog_ARG, mirrors_ARG, noudevsync_ARG, regionsize_ARG, repair_ARG,
-   snapshot_ARG, test_ARG, use_policies_ARG, yes_ARG, force_ARG, zero_ARG)
+   merge_ARG, mirrorlog_ARG, mirrors_ARG, name_ARG, noudevsync_ARG,
+   regionsize_ARG, repair_ARG, snapshot_ARG, splitmirrors_ARG, test_ARG,
+   use_policies_ARG, yes_ARG, force_ARG, zero_ARG)
 
 xx(lvcreate,
    "Create a logical volume",
@@ -136,7 +151,7 @@ xx(lvcreate,
    "\t[-d|--debug]\n"
    "\t[-h|-?|--help]\n"
    "\t[-i|--stripes Stripes [-I|--stripesize StripeSize]]\n"
-   "\t{-l|--extents LogicalExtentsNumber |\n"
+   "\t{-l|--extents LogicalExtentsNumber[%{VG|PVS|FREE}] |\n"
    "\t -L|--size LogicalVolumeSize[bBsSkKmMgGtTpPeE]}\n"
    "\t[-M|--persistent {y|n}] [--major major] [--minor minor]\n"
    "\t[-m|--mirrors Mirrors [--nosync] [{--mirrorlog {disk|core}|--corelog}]]\n"
@@ -163,7 +178,7 @@ xx(lvcreate,
    "\t[-d|--debug]\n"
    "\t[-h|-?|--help]\n"
    "\t[-i|--stripes Stripes [-I|--stripesize StripeSize]]\n"
-   "\t{-l|--extents LogicalExtentsNumber[%{VG|LV|PVS|FREE}] |\n"
+   "\t{-l|--extents LogicalExtentsNumber[%{VG|FREE|ORIGIN}] |\n"
    "\t -L|--size LogicalVolumeSize[bBsSkKmMgGtTpPeE]}\n"
    "\t[-M|--persistent {y|n}] [--major major] [--minor minor]\n"
    "\t[-n|--name LogicalVolumeName]\n"
@@ -234,7 +249,7 @@ xx(lvextend,
    "\t[-f|--force]\n"
    "\t[-h|--help]\n"
    "\t[-i|--stripes Stripes [-I|--stripesize StripeSize]]\n"
-   "\t{-l|--extents [+]LogicalExtentsNumber[%{VG|PVS|FREE}] |\n"
+   "\t{-l|--extents [+]LogicalExtentsNumber[%{VG|LV|PVS|FREE|ORIGIN}] |\n"
    "\t -L|--size [+]LogicalVolumeSize[bBsSkKmMgGtTpPeE]}\n"
    "\t[-m|--mirrors Mirrors]\n"
    "\t[-n|--nofsck]\n"
@@ -305,7 +320,7 @@ xx(lvreduce,
    "\t[-d|--debug]\n"
    "\t[-f|--force]\n"
    "\t[-h|--help]\n"
-   "\t{-l|--extents [-]LogicalExtentsNumber[%{VG|LV|FREE}] |\n"
+   "\t{-l|--extents [-]LogicalExtentsNumber[%{VG|LV|FREE|ORIGIN}] |\n"
    "\t -L|--size [-]LogicalVolumeSize[bBsSkKmMgGtTpPeE]}\n"
    "\t[-n|--nofsck]\n"
    "\t[--noudevsync]\n"
@@ -361,7 +376,7 @@ xx(lvresize,
    "\t[-f|--force]\n"
    "\t[-h|--help]\n"
    "\t[-i|--stripes Stripes [-I|--stripesize StripeSize]]\n"
-   "\t{-l|--extents [+|-]LogicalExtentsNumber[%{VG|LV|PVS|FREE}] |\n"
+   "\t{-l|--extents [+|-]LogicalExtentsNumber[%{VG|LV|PVS|FREE|ORIGIN}] |\n"
    "\t -L|--size [+|-]LogicalVolumeSize[bBsSkKmMgGtTpPeE]}\n"
    "\t[-n|--nofsck]\n"
    "\t[--noudevsync]\n"
@@ -688,6 +703,7 @@ xx(vgchange,
    "\t[--ignorelockingfailure]\n"
    "\t[--ignoremonitoring]\n"
    "\t[--monitor {y|n}]\n"
+   "\t[--poll {y|n}]\n"
    "\t[--noudevsync]\n"
    "\t[--refresh]\n"
    "\t[-t|--test]" "\n"
@@ -707,7 +723,7 @@ xx(vgchange,
    addtag_ARG, alloc_ARG, allocation_ARG, autobackup_ARG, available_ARG,
    clustered_ARG, deltag_ARG, ignorelockingfailure_ARG, ignoremonitoring_ARG,
    logicalvolume_ARG, maxphysicalvolumes_ARG, monitor_ARG, noudevsync_ARG,
-   partial_ARG, physicalextentsize_ARG, refresh_ARG, resizeable_ARG,
+   partial_ARG, physicalextentsize_ARG, poll_ARG, refresh_ARG, resizeable_ARG,
    resizable_ARG, test_ARG, uuid_ARG)
 
 xx(vgck,

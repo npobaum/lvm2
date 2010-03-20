@@ -9,29 +9,30 @@
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
-#include <stdlib.h>
+#include "logging.h"
+#include "link_mon.h"
+
 #include <errno.h>
 #include <poll.h>
-
-#include "logging.h"
+#include <stdlib.h>
 
 struct link_callback {
 	int fd;
-	char *name;
+	const char *name;
 	void *data;
 	int (*callback)(void *data);
 
 	struct link_callback *next;
 };
 
-static int used_pfds = 0;
-static int free_pfds = 0;
+static unsigned used_pfds = 0;
+static unsigned free_pfds = 0;
 static struct pollfd *pfds = NULL;
 static struct link_callback *callbacks = NULL;
 
-int links_register(int fd, char *name, int (*callback)(void *data), void *data)
+int links_register(int fd, const char *name, int (*callback)(void *data), void *data)
 {
-	int i;
+	unsigned i;
 	struct link_callback *lc;
 
 	for (i = 0; i < used_pfds; i++) {
@@ -71,7 +72,7 @@ int links_register(int fd, char *name, int (*callback)(void *data), void *data)
 	lc->next = callbacks;
 	callbacks = lc;
 	LOG_DBG("Adding %s/%d", lc->name, lc->fd);
-	LOG_DBG(" used_pfds = %d, free_pfds = %d",
+	LOG_DBG(" used_pfds = %u, free_pfds = %u",
 		used_pfds, free_pfds);
 
 	return 0;
@@ -79,7 +80,7 @@ int links_register(int fd, char *name, int (*callback)(void *data), void *data)
 
 int links_unregister(int fd)
 {
-	int i;
+	unsigned i;
 	struct link_callback *p, *c;
 
 	for (i = 0; i < used_pfds; i++)
@@ -93,7 +94,7 @@ int links_unregister(int fd)
 	for (p = NULL, c = callbacks; c; p = c, c = c->next)
 		if (fd == c->fd) {
 			LOG_DBG("Freeing up %s/%d", c->name, c->fd);
-			LOG_DBG(" used_pfds = %d, free_pfds = %d",
+			LOG_DBG(" used_pfds = %u, free_pfds = %u",
 				used_pfds, free_pfds);
 			if (p)
 				p->next = c->next;
@@ -108,7 +109,8 @@ int links_unregister(int fd)
 
 int links_monitor(void)
 {
-	int i, r;
+	unsigned i;
+	int r;
 
 	for (i = 0; i < used_pfds; i++) {
 		pfds[i].revents = 0;
@@ -133,7 +135,7 @@ int links_monitor(void)
 
 int links_issue_callbacks(void)
 {
-	int i;
+	unsigned i;
 	struct link_callback *lc;
 
 	for (i = 0; i < used_pfds; i++)

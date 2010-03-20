@@ -51,15 +51,50 @@ static int _monitor_lvs_in_vg(struct cmd_context *cmd,
 	return count;
 }
 
+static int _poll_lvs_in_vg(struct cmd_context *cmd,
+			   struct volume_group *vg)
+{
+	struct lv_list *lvl;
+	struct logical_volume *lv;
+	struct lvinfo info;
+	int lv_active;
+	int count = 0;
+
+	dm_list_iterate_items(lvl, &vg->lvs) {
+		lv = lvl->lv;
+
+		if (!lv_info(cmd, lv, &info, 0, 0))
+			lv_active = 0;
+		else
+			lv_active = info.exists;
+
+		if (lv_active &&
+		    (lv->status & (PVMOVE|CONVERTING|MERGING))) {
+			lv_spawn_background_polling(cmd, lv);
+			count++;
+		}
+	}
+
+	/*
+	 * returns the number of polled devices
+	 * - there is no way to know if lv is already being polled
+	 */
+
+	return count;
+}
+
 static int _activate_lvs_in_vg(struct cmd_context *cmd,
 			       struct volume_group *vg, int activate)
 {
 	struct lv_list *lvl;
 	struct logical_volume *lv;
-	int count = 0;
+	int count = 0, expected_count = 0;
 
 	dm_list_iterate_items(lvl, &vg->lvs) {
 		lv = lvl->lv;
+
+		if (!lv_is_visible(lv))
+			continue;
 
 		/* Only request activation of snapshot origin devices */
 		if ((lv->status & SNAPSHOT) || lv_is_cow(lv))
@@ -75,29 +110,47 @@ static int _activate_lvs_in_vg(struct cmd_context *cmd,
 		    ((lv->status & PVMOVE) ))
 			continue;
 
-		if (activate == CHANGE_AN) {
-			if (!deactivate_lv(cmd, lv))
-				continue;
-		} else if (activate == CHANGE_ALN) {
-			if (!deactivate_lv_local(cmd, lv))
-				continue;
-		} else if (lv_is_origin(lv) || (activate == CHANGE_AE)) {
-			if (!activate_lv_excl(cmd, lv))
-				continue;
-		} else if (activate == CHANGE_ALY) {
-			if (!activate_lv_local(cmd, lv))
-				continue;
-		} else if (!activate_lv(cmd, lv))
-			continue;
+		expected_count++;
 
-		if (activate != CHANGE_AN && activate != CHANGE_ALN &&
-		    (lv->status & (PVMOVE|CONVERTING)))
+		if (activate == CHANGE_AN) {
+			if (!deactivate_lv(cmd, lv)) {
+				stack;
+				continue;
+			}
+		} else if (activate == CHANGE_ALN) {
+			if (!deactivate_lv_local(cmd, lv)) {
+				stack;
+				continue;
+			}
+		} else if (lv_is_origin(lv) || (activate == CHANGE_AE)) {
+			if (!activate_lv_excl(cmd, lv)) {
+				stack;
+				continue;
+			}
+		} else if (activate == CHANGE_ALY) {
+			if (!activate_lv_local(cmd, lv)) {
+				stack;
+				continue;
+			}
+		} else if (!activate_lv(cmd, lv)) {
+			stack;
+			continue;
+		}
+
+		if (background_polling() &&
+		    activate != CHANGE_AN && activate != CHANGE_ALN &&
+		    (lv->status & (PVMOVE|CONVERTING|MERGING)))
 			lv_spawn_background_polling(cmd, lv);
 
 		count++;
 	}
 
-	return count;
+	if (expected_count)
+		log_verbose("%s %d logical volumes in volume group %s",
+			    (activate == CHANGE_AN || activate == CHANGE_ALN)?
+			    "Deactivated" : "Activated", count, vg->name);
+
+	return (expected_count != count) ? ECMD_FAILED : ECMD_PROCESSED;
 }
 
 static int _vgchange_monitoring(struct cmd_context *cmd, struct volume_group *vg)
@@ -115,10 +168,24 @@ static int _vgchange_monitoring(struct cmd_context *cmd, struct volume_group *vg
 	return ECMD_PROCESSED;
 }
 
+static int _vgchange_background_polling(struct cmd_context *cmd, struct volume_group *vg)
+{
+	int polled;
+
+	if (lvs_in_vg_activated(vg) && background_polling()) {
+	        polled = _poll_lvs_in_vg(cmd, vg);
+		log_print("Background polling started for %d logical volume(s) "
+			  "in volume group \"%s\"",
+			  polled, vg->name);
+	}
+
+	return ECMD_PROCESSED;
+}
+
 static int _vgchange_available(struct cmd_context *cmd, struct volume_group *vg)
 {
 	int lv_open, active, monitored;
-	int available;
+	int available, ret;
 	int activate = 1;
 
 	/*
@@ -155,17 +222,11 @@ static int _vgchange_available(struct cmd_context *cmd, struct volume_group *vg)
 		}
 	}
 
-	if (activate && _activate_lvs_in_vg(cmd, vg, available))
-		log_verbose("Activated logical volumes in "
-			    "volume group \"%s\"", vg->name);
-
-	if (!activate && _activate_lvs_in_vg(cmd, vg, available))
-		log_verbose("Deactivated logical volumes in "
-			    "volume group \"%s\"", vg->name);
+	ret = _activate_lvs_in_vg(cmd, vg, available);
 
 	log_print("%d logical volume(s) in volume group \"%s\" now active",
 		  lvs_in_vg_activated(vg), vg->name);
-	return ECMD_PROCESSED;
+	return ret;
 }
 
 static int _vgchange_alloc(struct cmd_context *cmd, struct volume_group *vg)
@@ -245,7 +306,6 @@ static int _vgchange_clustered(struct cmd_context *cmd,
 			       struct volume_group *vg)
 {
 	int clustered = !strcmp(arg_str_value(cmd, clustered_ARG, "n"), "y");
-	struct lv_list *lvl;
 
 	if (clustered && (vg_is_clustered(vg))) {
 		log_error("Volume group \"%s\" is already clustered",
@@ -259,26 +319,13 @@ static int _vgchange_clustered(struct cmd_context *cmd,
 		return ECMD_FAILED;
 	}
 
-	if (clustered) {
-		dm_list_iterate_items(lvl, &vg->lvs) {
-			if (lv_is_origin(lvl->lv) || lv_is_cow(lvl->lv)) {
-				log_error("Volume group %s contains snapshots "
-					  "that are not yet supported.",
-					  vg->name);
-				return ECMD_FAILED;
-			}
-		}
-	}
-
 	if (!archive(vg)) {
 		stack;
 		return ECMD_FAILED;
 	}
 
-	if (clustered)
-		vg->status |= CLUSTERED;
-	else
-		vg->status &= ~CLUSTERED;
+	if (!vg_set_clustered(vg, clustered))
+		return ECMD_FAILED;
 
 	if (!vg_write(vg) || !vg_commit(vg)) {
 		stack;
@@ -400,28 +447,14 @@ static int _vgchange_tag(struct cmd_context *cmd, struct volume_group *vg,
 		return ECMD_FAILED;
 	}
 
-	if (!(vg->fid->fmt->features & FMT_TAGS)) {
-		log_error("Volume group %s does not support tags", vg->name);
-		return ECMD_FAILED;
-	}
-
 	if (!archive(vg)) {
 		stack;
 		return ECMD_FAILED;
 	}
 
-	if ((arg == addtag_ARG)) {
-		if (!str_list_add(cmd->mem, &vg->tags, tag)) {
-			log_error("Failed to add tag %s to volume group %s",
-				  tag, vg->name);
-			return ECMD_FAILED;
-		}
-	} else {
-		if (!str_list_del(&vg->tags, tag)) {
-			log_error("Failed to remove tag %s from volume group "
-				  "%s", tag, vg->name);
-			return ECMD_FAILED;
-		}
+	if (!vg_change_tag(vg, tag, arg == addtag_ARG)) {
+		stack;
+		return ECMD_FAILED;
 	}
 
 	if (!vg_write(vg) || !vg_commit(vg)) {
@@ -500,11 +533,24 @@ static int vgchange_single(struct cmd_context *cmd, const char *vg_name,
 					    (is_static() || arg_count(cmd, ignoremonitoring_ARG)) ?
 					    DMEVENTD_MONITOR_IGNORE : DEFAULT_DMEVENTD_MONITOR));
 
+	/*
+	 * FIXME: DEFAULT_BACKGROUND_POLLING should be "unspecified".
+	 * If --poll is explicitly provided use it; otherwise polling
+	 * should only be started if the LV is not already active. So:
+	 * 1) change the activation code to say if the LV was actually activated
+	 * 2) make polling of an LV tightly coupled with LV activation
+	 */
+	init_background_polling(arg_int_value(cmd, poll_ARG,
+					      DEFAULT_BACKGROUND_POLLING));
+
 	if (arg_count(cmd, available_ARG))
 		r = _vgchange_available(cmd, vg);
 
 	else if (arg_count(cmd, monitor_ARG))
 		r = _vgchange_monitoring(cmd, vg);
+
+	else if (arg_count(cmd, poll_ARG))
+		r = _vgchange_background_polling(cmd, vg);
 
 	else if (arg_count(cmd, resizeable_ARG))
 		r = _vgchange_resizeable(cmd, vg);
@@ -548,9 +594,11 @@ int vgchange(struct cmd_context *cmd, int argc, char **argv)
 	     arg_count(cmd, addtag_ARG) + arg_count(cmd, uuid_ARG) +
 	     arg_count(cmd, physicalextentsize_ARG) +
 	     arg_count(cmd, clustered_ARG) + arg_count(cmd, alloc_ARG) +
-	     arg_count(cmd, monitor_ARG) + arg_count(cmd, refresh_ARG))) {
-		log_error("One of -a, -c, -l, -p, -s, -x, --refresh, "
-				"--uuid, --alloc, --addtag or --deltag required");
+	     arg_count(cmd, monitor_ARG) + arg_count(cmd, poll_ARG) +
+	     arg_count(cmd, refresh_ARG))) {
+		log_error("Need 1 or more of -a, -c, -l, -p, -s, -x, "
+			  "--refresh, --uuid, --alloc, --addtag, --deltag, "
+			  "--monitor or --poll");
 		return EINVALID_CMD_LINE;
 	}
 

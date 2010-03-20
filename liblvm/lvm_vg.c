@@ -21,9 +21,38 @@
 #include "lvm-string.h"
 #include "lvmcache.h"
 #include "metadata.h"
+#include "lvm_misc.h"
 
 #include <errno.h>
 #include <string.h>
+
+int lvm_vg_add_tag(vg_t vg, const char *tag)
+{
+	if (vg_read_error(vg))
+		return -1;
+
+	if (!vg_check_write_mode(vg))
+		return -1;
+
+	if (!vg_change_tag(vg, tag, 1))
+		return -1;
+	return 0;
+}
+
+
+int lvm_vg_remove_tag(vg_t vg, const char *tag)
+{
+	if (vg_read_error(vg))
+		return -1;
+
+	if (!vg_check_write_mode(vg))
+		return -1;
+
+	if (!vg_change_tag(vg, tag, 0))
+		return -1;
+	return 0;
+}
+
 
 vg_t lvm_vg_create(lvm_t libh, const char *vg_name)
 {
@@ -54,7 +83,7 @@ int lvm_vg_extend(vg_t vg, const char *device)
 		return -1;
 	}
 
-	fill_default_pvcreate_params(&pp);
+	pvcreate_params_set_defaults(&pp);
 	if (!vg_extend(vg, 1, (char **) &device, &pp)) {
 		unlock_vg(vg->cmd, VG_ORPHANS);
 		return -1;
@@ -86,7 +115,7 @@ int lvm_vg_set_extent_size(vg_t vg, uint32_t new_size)
 	if (!vg_check_write_mode(vg))
 		return -1;
 
-	if (!vg_set_extent_size(vg, new_size))
+	if (!vg_set_extent_size(vg, new_size / SECTOR_SIZE))
 		return -1;
 	return 0;
 }
@@ -233,6 +262,11 @@ struct dm_list *lvm_vg_list_lvs(vg_t vg)
 	return list;
 }
 
+struct dm_list *lvm_vg_get_tags(const vg_t vg)
+{
+	return tag_list_copy(vg->vgmem, &vg->tags);
+}
+
 uint64_t lvm_vg_get_seqno(const vg_t vg)
 {
 	return vg_seqno(vg);
@@ -256,17 +290,17 @@ uint64_t lvm_vg_is_partial(const vg_t vg)
 /* FIXME: invalid handle? return INTMAX? */
 uint64_t lvm_vg_get_size(const vg_t vg)
 {
-	return vg_size(vg);
+	return SECTOR_SIZE * vg_size(vg);
 }
 
 uint64_t lvm_vg_get_free_size(const vg_t vg)
 {
-	return vg_free(vg);
+	return SECTOR_SIZE * vg_free(vg);
 }
 
 uint64_t lvm_vg_get_extent_size(const vg_t vg)
 {
-	return vg_extent_size(vg);
+	return SECTOR_SIZE * vg_extent_size(vg);
 }
 
 uint64_t lvm_vg_get_extent_count(const vg_t vg)
@@ -315,19 +349,14 @@ char *lvm_vg_get_name(const vg_t vg)
 	return name;
 }
 
-/*
- * FIXME: These functions currently return hidden VGs.  We should either filter
- * these out and not return them in the list, or export something like
- * is_orphan_vg and tell the caller to filter.
- */
 struct dm_list *lvm_list_vg_names(lvm_t libh)
 {
-	return get_vgnames((struct cmd_context *)libh, 0);
+	return get_vgnames((struct cmd_context *)libh, 0, 0);
 }
 
 struct dm_list *lvm_list_vg_uuids(lvm_t libh)
 {
-	return get_vgids((struct cmd_context *)libh, 0);
+	return get_vgids((struct cmd_context *)libh, 0, 0);
 }
 
 /*

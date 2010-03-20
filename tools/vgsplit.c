@@ -366,19 +366,14 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 		if (!vgs_are_compatible(cmd, vg_from,vg_to))
 			goto_bad;
 	} else {
-		vp_def.vg_name = NULL;
-		vp_def.extent_size = vg_from->extent_size;
-		vp_def.max_pv = vg_from->max_pv;
-		vp_def.max_lv = vg_from->max_lv;
-		vp_def.alloc = vg_from->alloc;
-		vp_def.clustered = DEFAULT_CLUSTERED;
-
-		if (fill_vg_create_params(cmd, vg_name_to, &vp_new, &vp_def)) {
+		vgcreate_params_set_defaults(&vp_def, vg_from);
+		vp_def.vg_name = vg_name_to;
+		if (vgcreate_params_set_from_args(cmd, &vp_new, &vp_def)) {
 			r = EINVALID_CMD_LINE;
 			goto_bad;
 		}
 
-		if (validate_vg_create_params(cmd, &vp_new)) {
+		if (vgcreate_params_validate(cmd, &vp_new)) {
 			r = EINVALID_CMD_LINE;
 			goto_bad;
 		}
@@ -386,11 +381,9 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 		if (!vg_set_extent_size(vg_to, vp_new.extent_size) ||
 		    !vg_set_max_lv(vg_to, vp_new.max_lv) ||
 		    !vg_set_max_pv(vg_to, vp_new.max_pv) ||
-		    !vg_set_alloc_policy(vg_to, vp_new.alloc))
+		    !vg_set_alloc_policy(vg_to, vp_new.alloc) ||
+		    !vg_set_clustered(vg_to, vp_new.clustered))
 			goto_bad;
-
-		if (vg_is_clustered(vg_from))
-			vg_to->status |= CLUSTERED;
 	}
 
 	/* Archive vg_from before changing it */

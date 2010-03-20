@@ -104,6 +104,7 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_task_get_versions@Base 2:1.02.20
  dm_task_no_flush@Base 2:1.02.20
  dm_task_no_open_count@Base 2:1.02.20
+ dm_task_query_inactive_table@Base 2:1.02.44
  dm_task_run@Base 2:1.02.20
  dm_task_set_cookie@Base 2:1.02.36
  dm_task_set_event_nr@Base 2:1.02.20
@@ -126,6 +127,7 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_task_update_nodes@Base 2:1.02.20
  dm_tree_activate_children@Base 2:1.02.20
  dm_tree_add_dev@Base 2:1.02.20
+ dm_tree_add_dev_with_udev_flags@Base 2:1.02.44
  dm_tree_add_new_dev@Base 2:1.02.20
  dm_tree_add_new_dev_with_udev_flags@Base 2:1.02.39
  dm_tree_children_use_uuid@Base 2:1.02.20
@@ -141,6 +143,7 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_tree_node_add_linear_target@Base 2:1.02.20
  dm_tree_node_add_mirror_target@Base 2:1.02.20
  dm_tree_node_add_mirror_target_log@Base 2:1.02.20
+ dm_tree_node_add_snapshot_merge_target@Base 2:1.02.44
  dm_tree_node_add_snapshot_origin_target@Base 2:1.02.20
  dm_tree_node_add_snapshot_target@Base 2:1.02.20
  dm_tree_node_add_striped_target@Base 2:1.02.20
@@ -159,6 +162,8 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_tree_suspend_children@Base 2:1.02.20
  dm_tree_use_no_flush_suspend@Base 2:1.02.20
  dm_udev_complete@Base 2:1.02.36
+ dm_udev_get_checking@Base 2:1.02.44
  dm_udev_get_sync_support@Base 2:1.02.36
+ dm_udev_set_checking@Base 2:1.02.44
  dm_udev_set_sync_support@Base 2:1.02.36
  dm_udev_wait@Base 2:1.02.36

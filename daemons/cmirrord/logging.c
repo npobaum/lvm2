@@ -9,10 +9,9 @@
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
-#include <stdio.h>
-#include <syslog.h>
+#include "logging.h"
 
-char *__rq_types_off_by_one[] = {
+const char *__rq_types_off_by_one[] = {
 	"DM_ULOG_CTR",
 	"DM_ULOG_DTR",
 	"DM_ULOG_PRESUSPEND",

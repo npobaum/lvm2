@@ -9,11 +9,5 @@ rules:
 * DM_SUSPENDED
   Suspended state of DM device (0 or 1)
 
-Some other variables can be set to change the behaviour:
-
-* DM_HIDE
-  Set to 1 to not even try to extract filesystem information and set links in
-  /dev/disk according to that information.
-
 Other device mapper using packages may define there own rules. For example lvm2,
 see /usr/share/doc/lvm2/README.udev for further informations.

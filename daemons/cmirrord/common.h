@@ -9,25 +9,25 @@
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
-#ifndef __CLUSTER_LOG_COMMON_DOT_H__
-#define __CLUSTER_LOG_COMMON_DOT_H__
+#ifndef _LVM_CLOG_COMMON_H
+#define _LVM_CLOG_COMMON_H
 
 /*
-#define EXIT_SUCCESS 0
-#define EXIT_FAILURE 1
-*/
-
+ * If there are problems when forking off to become a daemon,
+ * the child will exist with one of these codes.  This allows
+ * the parent to know the reason for the failure and print it
+ * to the launching terminal.
+ *
+ * #define EXIT_SUCCESS 0 (from stdlib.h)
+ * #define EXIT_FAILURE 1 (from stdlib.h)
+ */
 #define EXIT_LOCKFILE              2
-
 #define EXIT_KERNEL_SOCKET         3 /* Failed netlink socket create */
 #define EXIT_KERNEL_BIND           4
 #define EXIT_KERNEL_SETSOCKOPT     5
-
 #define EXIT_CLUSTER_CKPT_INIT     6 /* Failed to init checkpoint */
-
 #define EXIT_QUEUE_NOMEM           7
-
 
 #define DM_ULOG_REQUEST_SIZE 1024
 
-#endif /* __CLUSTER_LOG_COMMON_DOT_H__ */
+#endif /* _LVM_CLOG_COMMON_H */

@@ -1,3 +1,44 @@
+Version 1.02.45 - 9th March 2010
+================================
+  Add --showkeys parameter description to dmsetup man page.
+  Add --help option as synonym for help command.
+
+Version 1.02.44 - 15th February 2010
+====================================
+  Add DM_UDEV_DISABLE_LIBRARY_FALLBACK udev flag to rely on udev only.
+  Export dm_udev_create_cookie function to create new cookies on demand.
+  Add --udevcookie, udevcreatecookie and udevreleasecookie to dmsetup.
+  Set udev state automatically instead of using DM_UDEV_DISABLE_CHECKING.
+
+Version 1.02.43 - 21st January 2010
+===================================
+  Remove bitset, hash and pool headers superceded by libdevmapper.h.
+  Fix off-by-one error causing bad cluster mirror table construction.
+
+Version 1.02.42 - 14th January 2010
+===================================
+  Add support for the "snapshot-merge" kernel target (2.6.33-rc1).
+  Introduce a third activation_priority level in dm_tree_activate_children.
+
+Version 1.02.41 - 12th January 2010
+===================================
+  If DM_UDEV_DISABLE_CHECKING is set in environment, disable udev warnings.
+  Add dm_tree_add_dev_with_udev_flags to provide wider support for udev flags.
+  Add --noudevrules option for dmsetup to disable /dev node management by udev.
+  Fix 'dmsetup info -c -o all' to show all fields.
+  Return errors if dm_tree_*_children functions fail.
+  Fix coredump and memory leak for 'dmsetup help -c'.
+  Disable udev rules for change events with DISK_RO set.
+
+Version 1.02.40 - 19th November 2009
+====================================
+  Fix install_device-mapper Makefile target to not build dmeventd plugins.
+  Support udev flags even when udev_sync is disabled or not compiled in.
+  Remove 'last_rule' from udev rules: honour DM_UDEV_DISABLE_OTHER_RULES_FLAG.
+  Add dmsetup --inactive support.
+  Add dm_task_query_inactive_table to libdevmapper for kernel driver >= 4.16.
+  Fix hash lookup segfault when keys compared are different lengths.
+
 Version 1.02.39 - 26th October 2009
 ===================================
   Remove strict default permissions for DM devices from 95-dm-notify.rules.

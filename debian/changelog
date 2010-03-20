@@ -1,3 +1,12 @@
+lvm2 (2.02.62-1) unstable; urgency=low
+
+  * New upstream version.
+  * Use 3.0 (quilt) source format.
+    - Fix permission of hook script. (closes: 569286)
+  * Remove DM_HIDE from the documentation. (closes: #573154)
+
+ -- Bastian Blank <waldi@debian.org>  Sat, 20 Mar 2010 18:09:20 +0100
+
 lvm2 (2.02.54-1) unstable; urgency=low
 
   * New upstream version.

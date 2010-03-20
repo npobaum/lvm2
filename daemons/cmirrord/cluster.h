@@ -9,11 +9,15 @@
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
-#ifndef __CLUSTER_LOG_CLUSTER_DOT_H__
-#define __CLUSTER_LOG_CLUSTER_DOT_H__
+#ifndef _LVM_CLOG_CLUSTER_H
+#define _LVM_CLOG_CLUSTER_H
 
-#include "libdevmapper.h"
 #include "dm-log-userspace.h"
+#include "libdevmapper.h"
+
+#define DM_ULOG_RESPONSE 0x1000U /* in last byte of 32-bit value */
+#define DM_ULOG_CHECKPOINT_READY 21
+#define DM_ULOG_MEMBER_JOIN      22
 
 /*
  * There is other information in addition to what can
@@ -23,7 +27,22 @@
  * available.
  */
 struct clog_request {
-	struct dm_list list;
+	/*
+	 * If we don't use a union, the structure size will
+	 * vary between 32-bit and 64-bit machines.  So, we
+	 * pack two 64-bit version numbers in there to force
+	 * the size of the structure to be the same.
+	 *
+	 * The two version numbers also help us with endian
+	 * issues.  The first is always little endian, while
+	 * the second is in native format of the sending
+	 * machine.  If the two are equal, there is no need
+	 * to do endian conversions.
+	 */
+	union {
+		uint64_t version[2]; /* LE version and native version */
+		struct dm_list list;
+	} u;
 
 	/*
 	 * 'originator' is the machine from which the requests
@@ -54,4 +73,4 @@ int destroy_cluster_cpg(char *uuid);
 
 int cluster_send(struct clog_request *rq);
 
-#endif /* __CLUSTER_LOG_CLUSTER_DOT_H__ */
+#endif /* _LVM_CLOG_CLUSTER_H */

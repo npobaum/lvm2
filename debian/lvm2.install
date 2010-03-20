@@ -1,3 +1,4 @@
+../../tree/lvm2/* /
 etc/lvm/lvm.conf
 sbin/fsadm
 sbin/lv*

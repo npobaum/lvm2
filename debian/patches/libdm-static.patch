@@ -10,7 +10,7 @@
  
  ifeq ("@LIB_SUFFIX@","dylib")
    LIB_SHARED = $(interface)/libdevmapper.dylib
-@@ -60,11 +58,7 @@
+@@ -62,11 +60,7 @@
  	install_ioctl install_ioctl_static \
  	install_pkgconfig
  

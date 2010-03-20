@@ -15,6 +15,7 @@
 
 #include "tools.h"
 #include "polldaemon.h"
+#include "lvm2cmdline.h"
 #include <signal.h>
 #include <sys/wait.h>
 
@@ -23,6 +24,12 @@ static void _sigchld_handler(int sig __attribute((unused)))
 	while (wait4(-1, NULL, WNOHANG | WUNTRACED, NULL) > 0) ;
 }
 
+/*
+ * returns:
+ * -1 if the fork failed
+ *  0 if the parent
+ *  1 if the child
+ */
 static int _become_daemon(struct cmd_context *cmd)
 {
 	pid_t pid;
@@ -37,7 +44,7 @@ static int _become_daemon(struct cmd_context *cmd)
 
 	if ((pid = fork()) == -1) {
 		log_error("fork failed: %s", strerror(errno));
-		return 1;
+		return -1;
 	}
 
 	/* Parent */
@@ -54,7 +61,7 @@ static int _become_daemon(struct cmd_context *cmd)
 	close(STDOUT_FILENO);
 	close(STDERR_FILENO);
 
-	strncpy(*cmd->argv, "(lvm2copyd)", strlen(*cmd->argv));
+	strncpy(*cmd->argv, "(lvm2)", strlen(*cmd->argv));
 
 	reset_locking();
 	lvmcache_init();
@@ -137,8 +144,8 @@ static int _check_lv_status(struct cmd_context *cmd,
 		if (!parms->poll_fns->finish_copy(cmd, vg, lv, lvs_changed))
 			return 0;
 	} else {
-		if (!parms->poll_fns->update_metadata(cmd, vg, lv, lvs_changed,
-						      0)) {
+		if (parms->poll_fns->update_metadata &&
+		    !parms->poll_fns->update_metadata(cmd, vg, lv, lvs_changed, 0)) {
 			log_error("ABORTING: Segment progression failed.");
 			parms->poll_fns->finish_copy(cmd, vg, lv, lvs_changed);
 			return 0;
@@ -149,8 +156,18 @@ static int _check_lv_status(struct cmd_context *cmd,
 	return 1;
 }
 
+static void _sleep_and_rescan_devices(struct daemon_parms *parms)
+{
+	/* FIXME Use alarm for regular intervals instead */
+	if (parms->interval && !parms->aborting) {
+		sleep(parms->interval);
+		/* Devices might have changed while we slept */
+		init_full_scan_done(0);
+	}
+}
+
 static int _wait_for_single_lv(struct cmd_context *cmd, const char *name, const char *uuid,
-				   struct daemon_parms *parms)
+			       struct daemon_parms *parms)
 {
 	struct volume_group *vg;
 	struct logical_volume *lv;
@@ -158,13 +175,8 @@ static int _wait_for_single_lv(struct cmd_context *cmd, const char *name, const 
 
 	/* Poll for completion */
 	while (!finished) {
-		/* FIXME Also needed in vg/lvchange -ay? */
-		/* FIXME Use alarm for regular intervals instead */
-		if (parms->interval && !parms->aborting) {
-			sleep(parms->interval);
-			/* Devices might have changed while we slept */
-			init_full_scan_done(0);
-		}
+		if (parms->wait_before_testing)
+			_sleep_and_rescan_devices(parms);
 
 		/* Locks the (possibly renamed) VG again */
 		vg = parms->poll_fns->get_copy_vg(cmd, name, uuid);
@@ -177,7 +189,7 @@ static int _wait_for_single_lv(struct cmd_context *cmd, const char *name, const 
 
 		if (!(lv = parms->poll_fns->get_copy_lv(cmd, vg, name, uuid,
 							parms->lv_type))) {
-			log_error("ABORTING: Can't find mirror LV in %s for %s",
+			log_error("ABORTING: Can't find LV in %s for %s",
 				  vg->name, name);
 			unlock_and_release_vg(cmd, vg, vg->name);
 			return 0;
@@ -189,6 +201,21 @@ static int _wait_for_single_lv(struct cmd_context *cmd, const char *name, const 
 		}
 
 		unlock_and_release_vg(cmd, vg, vg->name);
+
+		/*
+		 * FIXME Sleeping after testing, while preferred, also works around
+		 * unreliable "finished" state checking in _percent_run.  If the
+		 * above _check_lv_status is deferred until after the first sleep it
+		 * may be that a polldaemon will run without ever completing.
+		 *
+		 * This happens when one snapshot-merge polldaemon is racing with
+		 * another (polling the same LV).  The first to see the LV status
+		 * reach the "finished" state will alter the LV that the other
+		 * polldaemon(s) are polling.  These other polldaemon(s) can then
+		 * continue polling an LV that doesn't have a "status".
+		 */
+		if (!parms->wait_before_testing)
+			_sleep_and_rescan_devices(parms);
 	}
 
 	return 1;
@@ -232,23 +259,37 @@ static void _poll_for_all_vgs(struct cmd_context *cmd,
 	}
 }
 
+/*
+ * Only allow *one* return from poll_daemon() (the parent).
+ * If there is a child it must exit (ignoring the memory leak messages).
+ * - 'background' is advisory so a child polldaemon may not be used even
+ *   if it was requested.
+ */
 int poll_daemon(struct cmd_context *cmd, const char *name, const char *uuid,
 		unsigned background,
 		uint32_t lv_type, struct poll_functions *poll_fns,
 		const char *progress_title)
 {
 	struct daemon_parms parms;
+	int daemon_mode = 0;
+	int ret = ECMD_PROCESSED;
+	sign_t interval_sign;
 
-	parms.aborting = arg_count(cmd, abort_ARG) ? 1 : 0;
+	parms.aborting = arg_is_set(cmd, abort_ARG);
 	parms.background = background;
+	interval_sign = arg_sign_value(cmd, interval_ARG, 0);
+	if (interval_sign == SIGN_MINUS)
+		log_error("Argument to --interval cannot be negative");
 	parms.interval = arg_uint_value(cmd, interval_ARG, DEFAULT_INTERVAL);
+	parms.wait_before_testing = (interval_sign == SIGN_PLUS);
 	parms.progress_display = 1;
 	parms.progress_title = progress_title;
 	parms.lv_type = lv_type;
 	parms.poll_fns = poll_fns;
 
 	if (parms.interval && !parms.aborting)
-		log_verbose("Checking progress every %u seconds",
+		log_verbose("Checking progress %s waiting every %u seconds",
+			    (parms.wait_before_testing ? "after" : "before"),
 			    parms.interval);
 
 	if (!parms.interval) {
@@ -260,9 +301,11 @@ int poll_daemon(struct cmd_context *cmd, const char *name, const char *uuid,
 	}
 
 	if (parms.background) {
-		if (!_become_daemon(cmd))
-			return ECMD_PROCESSED;	/* Parent */
-		parms.progress_display = 0;
+		daemon_mode = _become_daemon(cmd);
+		if (daemon_mode == 0)
+			return ECMD_PROCESSED;	    /* Parent */
+		else if (daemon_mode == 1)
+			parms.progress_display = 0; /* Child */
 		/* FIXME Use wait_event (i.e. interval = 0) and */
 		/*       fork one daemon per copy? */
 	}
@@ -273,10 +316,21 @@ int poll_daemon(struct cmd_context *cmd, const char *name, const char *uuid,
 	if (name) {
 		if (!_wait_for_single_lv(cmd, name, uuid, &parms)) {
 			stack;
-			return ECMD_FAILED;
+			ret = ECMD_FAILED;
 		}
 	} else
 		_poll_for_all_vgs(cmd, &parms);
 
-	return ECMD_PROCESSED;
+	if (parms.background && daemon_mode == 1) {
+		/*
+		 * child was successfully forked:
+		 * background polldaemon must not return to the caller
+		 * because it will redundantly continue performing the
+		 * caller's task (that the parent already performed)
+		 */
+		/* FIXME Attempt proper cleanup */
+		_exit(lvm_return_code(ret));
+	}
+
+	return ret;
 }

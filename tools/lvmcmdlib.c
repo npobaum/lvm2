@@ -82,9 +82,9 @@ int lvm2_run(void *handle, const char *cmdline)
 	/* FIXME Temporary - move to libdevmapper */
 	ret = ECMD_PROCESSED;
 	if (!strcmp(cmdline, "_memlock_inc"))
-		memlock_inc();
+		memlock_inc_daemon(cmd);
 	else if (!strcmp(cmdline, "_memlock_dec"))
-		memlock_dec();
+		memlock_dec_daemon(cmd);
 	else
 		ret = lvm_run_command(cmd, argc, argv);
 
@@ -102,8 +102,6 @@ void lvm2_log_level(void *handle, int level)
 	struct cmd_context *cmd = (struct cmd_context *) handle;
 
 	cmd->default_settings.verbose = level - VERBOSE_BASE_LEVEL;
-
-	return;
 }
 
 void lvm2_log_fn(lvm2_log_fn_t log_fn)
