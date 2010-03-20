@@ -25,7 +25,7 @@ DM_POSOURCES = $(top_srcdir)/dmsetup/*.pot $(top_srcdir)/libdm/*.pot \
 
 LVM_POSOURCES = $(top_srcdir)/tools/*.pot $(top_srcdir)/lib/*/*.pot
 
-include ../make.tmpl
+include $(top_builddir)/make.tmpl
 
 lvm2.po: Makefile $(LVM_POSOURCES)
 	@echo Compiling string table
@@ -54,13 +54,13 @@ install: $(TARGETS)
 	@echo Installing translation files in $(localedir)
 	@( \
 		for lang in $(LANGS); do \
-			$(INSTALL) -D $(OWNER) $(GROUP) -m 444 $$lang.mo \
+			$(INSTALL_DATA) -D $$lang.mo \
 			    $(localedir)/$$lang/LC_MESSAGES/lvm2.mo;\
 	  done; \
 	)
 	@( \
 		for lang in $(LANGS); do \
-			$(INSTALL) -D $(OWNER) $(GROUP) -m 444 $$lang.mo \
+			$(INSTALL_DATA) -D $$lang.mo \
 			    $(localedir)/$$lang/LC_MESSAGES/device-mapper.mo;\
 	  done; \
 	)

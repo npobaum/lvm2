@@ -26,6 +26,8 @@
 struct dm_report {
 	struct dm_pool *mem;
 
+	/* To report all available types */
+#define REPORT_TYPES_ALL	UINT32_MAX
 	uint32_t report_types;
 	const char *output_field_name_prefix;
 	const char *field_prefix;
@@ -205,7 +207,7 @@ int dm_report_field_int32(struct dm_report *rh,
 int dm_report_field_uint64(struct dm_report *rh,
 			   struct dm_report_field *field, const uint64_t *data)
 {
-	const int value = *data;
+	const uint64_t value = *data;
 	uint64_t *sortval;
 	char *repstr;
 
@@ -219,12 +221,12 @@ int dm_report_field_uint64(struct dm_report *rh,
 		return 0;
 	}
 
-	if (dm_snprintf(repstr, 21, "%d", value) < 0) {
-		log_error("dm_report_field_uint64: uint64 too big: %d", value);
+	if (dm_snprintf(repstr, 21, "%" PRIu64 , value) < 0) {
+		log_error("dm_report_field_uint64: uint64 too big: %" PRIu64, value);
 		return 0;
 	}
 
-	*sortval = (const uint64_t) value;
+	*sortval = value;
 	field->sort_value = sortval;
 	field->report_string = repstr;
 
@@ -379,7 +381,8 @@ static uint32_t _all_match(struct dm_report *rh, const char *field, size_t flen)
 			       _all_match(rh, prefixed_all,
 					  strlen(prefixed_all));
 		} else
-			return rh->report_types;
+			return (rh->report_types)
+				? rh->report_types : REPORT_TYPES_ALL;
 	}
 
 	for (t = rh->types; t->data_fn; t++) {
@@ -816,8 +819,8 @@ static int _report_headings(struct dm_report *rh)
  */
 static int _row_compare(const void *a, const void *b)
 {
-	const struct row *rowa = *(const struct row **) a;
-	const struct row *rowb = *(const struct row **) b;
+	const struct row *rowa = *(const struct row * const *) a;
+	const struct row *rowb = *(const struct row * const *) b;
 	const struct dm_report_field *sfa, *sfb;
 	uint32_t cnt;
 

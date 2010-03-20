@@ -27,7 +27,7 @@ ifeq ("@INTL@", "yes")
   SUBDIRS += po
 endif
 
-SUBDIRS += lib tools daemons libdm
+SUBDIRS += libdm lib daemons tools
 
 ifeq ("@APPLIB@", "yes")
   SUBDIRS += liblvm
@@ -53,31 +53,6 @@ ifeq ($(MAKECMDGOALS),distclean)
 endif
 
 include make.tmpl
-
-libdm: include
-lib: libdm
-liblvm: lib
-daemons: lib tools
-tools: lib device-mapper
-po: tools daemons
-
-libdm.device-mapper: include.device-mapper
-daemons.device-mapper: libdm.device-mapper
-tools.device-mapper: libdm.device-mapper
-device-mapper: tools.device-mapper daemons.device-mapper man.device-mapper
-
-ifeq ("@INTL@", "yes")
-lib.pofile: include.pofile
-tools.pofile: lib.pofile
-daemons.pofile: lib.pofile
-po.pofile: tools.pofile daemons.pofile
-pofile: po.pofile
-endif
-
-ifneq ("@CFLOW_CMD@", "")
-tools.cflow: lib.cflow
-cflow: tools.cflow
-endif
 
 ifneq ("@CSCOPE_CMD@", "")
 cscope.out: tools

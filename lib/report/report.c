@@ -24,6 +24,8 @@
 #include "str_list.h"
 #include "lvmcache.h"
 
+#include <stddef.h> /* offsetof() */
+
 struct lvm_report_object {
 	struct volume_group *vg;
 	struct logical_volume *lv;
@@ -31,17 +33,6 @@ struct lvm_report_object {
 	struct lv_segment *seg;
 	struct pv_segment *pvseg;
 };
-
-/*
- * For macro use
- */
-static union {
-	struct physical_volume _pv;
-	struct logical_volume _lv;
-	struct volume_group _vg;
-	struct lv_segment _seg;
-	struct pv_segment _pvseg;
-} _dummy;
 
 static char _alloc_policy_char(alloc_policy_t alloc)
 {
@@ -59,7 +50,8 @@ static char _alloc_policy_char(alloc_policy_t alloc)
 	}
 }
 
-static const uint64_t _minusone = UINT64_C(-1);
+static const uint64_t _minusone64 = UINT64_C(-1);
+static const int32_t _minusone32 = INT32_C(-1);
 
 /*
  * Data-munging functions to prepare each data type for display and sorting
@@ -75,7 +67,7 @@ static int _dev_name_disp(struct dm_report *rh, struct dm_pool *mem __attribute(
 			  struct dm_report_field *field,
 			  const void *data, void *private __attribute((unused)))
 {
-	const char *name = dev_name(*(const struct device **) data);
+	const char *name = dev_name(*(const struct device * const *) data);
 
 	return dm_report_field_string(rh, field, &name);
 }
@@ -256,7 +248,7 @@ static int _lvkmaj_disp(struct dm_report *rh, struct dm_pool *mem __attribute((u
 	if (lv_info(lv->vg->cmd, lv, &info, 0, 0) && info.exists)
 		return dm_report_field_int(rh, field, &info.major);
 
-	return dm_report_field_uint64(rh, field, &_minusone);
+	return dm_report_field_int32(rh, field, &_minusone32);
 }
 
 static int _lvkmin_disp(struct dm_report *rh, struct dm_pool *mem __attribute((unused)),
@@ -269,7 +261,7 @@ static int _lvkmin_disp(struct dm_report *rh, struct dm_pool *mem __attribute((u
 	if (lv_info(lv->vg->cmd, lv, &info, 0, 0) && info.exists)
 		return dm_report_field_int(rh, field, &info.minor);
 
-	return dm_report_field_uint64(rh, field, &_minusone);
+	return dm_report_field_int32(rh, field, &_minusone32);
 }
 
 static int _lv_mimage_in_sync(const struct logical_volume *lv)
@@ -314,8 +306,12 @@ static int _lvstatus_disp(struct dm_report *rh __attribute((unused)), struct dm_
 	else if (lv->status & VIRTUAL)
 		repstr[0] = 'v';
 	/* Origin takes precedence over Mirror */
-	else if (lv_is_origin(lv))
-		repstr[0] = 'o';
+	else if (lv_is_origin(lv)) {
+		if (lv_is_merging_origin(lv))
+			repstr[0] = 'O';
+		else
+			repstr[0] = 'o';
+	}
 	else if (lv->status & MIRRORED) {
 		if (lv->status & MIRROR_NOTSYNCED)
 			repstr[0] = 'M';
@@ -328,9 +324,12 @@ static int _lvstatus_disp(struct dm_report *rh __attribute((unused)), struct dm_
 			repstr[0] = 'I';
 	else if (lv->status & MIRROR_LOG)
 		repstr[0] = 'l';
-	else if (lv_is_cow(lv))
-		repstr[0] = 's';
-	else
+	else if (lv_is_cow(lv)) {
+		if (lv_is_merging_cow(lv))
+			repstr[0] = 'S';
+		else
+			repstr[0] = 's';
+	} else
 		repstr[0] = '-';
 
 	if (lv->status & PVMOVE)
@@ -645,7 +644,7 @@ static int _lvreadahead_disp(struct dm_report *rh, struct dm_pool *mem,
 	const struct logical_volume *lv = (const struct logical_volume *) data;
 
 	if (lv->read_ahead == DM_READ_AHEAD_AUTO) {
-		dm_report_field_set_value(field, "auto", &_minusone);
+		dm_report_field_set_value(field, "auto", &_minusone64);
 		return 1;
 	}
 
@@ -661,7 +660,7 @@ static int _lvkreadahead_disp(struct dm_report *rh, struct dm_pool *mem,
 	struct lvinfo info;
 
 	if (!lv_info(lv->vg->cmd, lv, &info, 0, 1) || !info.exists)
-		return dm_report_field_uint64(rh, field, &_minusone);
+		return dm_report_field_int32(rh, field, &_minusone32);
 
 	return _size32_disp(rh, mem, field, &info.read_ahead, private);
 }
@@ -769,10 +768,7 @@ static int _pvfree_disp(struct dm_report *rh, struct dm_pool *mem,
 	    (const struct physical_volume *) data;
 	uint64_t freespace;
 
-	if (!pv->pe_count)
-		freespace = pv->size;
-	else
-		freespace = (uint64_t) (pv->pe_count - pv->pe_alloc_count) * pv->pe_size;
+	freespace = pv_free(pv);
 
 	return _size64_disp(rh, mem, field, &freespace, private);
 }
@@ -785,10 +781,7 @@ static int _pvsize_disp(struct dm_report *rh, struct dm_pool *mem,
 	    (const struct physical_volume *) data;
 	uint64_t size;
 
-	if (!pv->pe_count)
-		size = pv->size;
-	else
-		size = (uint64_t) pv->pe_count * pv->pe_size;
+	size = pv_size_field(pv);
 
 	return _size64_disp(rh, mem, field, &size, private);
 }
@@ -797,11 +790,11 @@ static int _devsize_disp(struct dm_report *rh, struct dm_pool *mem,
 			 struct dm_report_field *field,
 			 const void *data, void *private)
 {
-	const struct device *dev = *(const struct device **) data;
+	const struct physical_volume *pv =
+	    (const struct physical_volume *) data;
 	uint64_t size;
 
-	if (!dev_get_size(dev, &size))
-		size = 0;
+	size = pv_dev_size(pv);
 
 	return _size64_disp(rh, mem, field, &size, private);
 }
@@ -870,7 +863,7 @@ static int _vgmdas_disp(struct dm_report *rh, struct dm_pool *mem,
 	const struct volume_group *vg = (const struct volume_group *) data;
 	uint32_t count;
 
-	count = dm_list_size(&vg->fid->metadata_areas);
+	count = vg_mda_count(vg);
 
 	return _uint32_disp(rh, mem, field, &count, private);
 }
@@ -881,7 +874,7 @@ static int _pvmdafree_disp(struct dm_report *rh, struct dm_pool *mem,
 {
 	struct lvmcache_info *info;
 	uint64_t freespace = UINT64_MAX, mda_free;
-	const char *pvid = (const char *)(&((struct id *) data)->uuid);
+	const char *pvid = (const char *)(&((const struct id *) data)->uuid);
 	struct metadata_area *mda;
 
 	if ((info = info_from_pvid(pvid, 0)))
@@ -924,7 +917,7 @@ static int _pvmdasize_disp(struct dm_report *rh, struct dm_pool *mem,
 {
 	struct lvmcache_info *info;
 	uint64_t min_mda_size = 0;
-	const char *pvid = (const char *)(&((struct id *) data)->uuid);
+	const char *pvid = (const char *)(&((const struct id *) data)->uuid);
 
 	/* PVs could have 2 mdas of different sizes (rounding effect) */
 	if ((info = info_from_pvid(pvid, 0)))
@@ -1025,7 +1018,7 @@ static int _snpercent_disp(struct dm_report *rh __attribute((unused)), struct dm
 		return 0;
 	}
 
-	if (!lv_is_cow(lv) ||
+	if ((!lv_is_cow(lv) && !lv_is_merging_origin(lv)) ||
 	    (lv_info(lv->vg->cmd, lv, &info, 0, 0) && !info.exists)) {
 		*sortval = UINT64_C(0);
 		dm_report_field_set_value(field, "", sortval);
@@ -1034,8 +1027,16 @@ static int _snpercent_disp(struct dm_report *rh __attribute((unused)), struct dm
 
 	if (!lv_snapshot_percent(lv, &snap_percent, &percent_range) ||
 				 (percent_range == PERCENT_INVALID)) {
-		*sortval = UINT64_C(100);
-		dm_report_field_set_value(field, "100.00", sortval);
+		if (!lv_is_merging_origin(lv)) {
+			*sortval = UINT64_C(100);
+			dm_report_field_set_value(field, "100.00", sortval);
+		} else {
+			/* onactivate merge that hasn't started yet would
+			 * otherwise display incorrect snap% in origin
+			 */
+			*sortval = UINT64_C(0);
+			dm_report_field_set_value(field, "", sortval);
+		}
 		return 1;
 	}
 
@@ -1049,7 +1050,7 @@ static int _snpercent_disp(struct dm_report *rh __attribute((unused)), struct dm
 		return 0;
 	}
 
-	*sortval = snap_percent * UINT64_C(1000);
+	*sortval = (uint64_t)(snap_percent * 1000.f);
 	dm_report_field_set_value(field, repstr, sortval);
 
 	return 1;
@@ -1091,7 +1092,7 @@ static int _copypercent_disp(struct dm_report *rh __attribute((unused)),
 		return 0;
 	}
 
-	*sortval = percent * UINT64_C(1000);
+	*sortval = (uint64_t)(percent * 1000.f);
 	dm_report_field_set_value(field, repstr, sortval);
 
 	return 1;
@@ -1156,9 +1157,17 @@ static const struct dm_report_object_type _report_types[] = {
 
 #define STR DM_REPORT_FIELD_TYPE_STRING
 #define NUM DM_REPORT_FIELD_TYPE_NUMBER
-#define FIELD(type, strct, sorttype, head, field, width, func, id, desc) {type, sorttype, (off_t)((uintptr_t)&_dummy._ ## strct.field - (uintptr_t)&_dummy._ ## strct), width, id, head, &_ ## func ## _disp, desc},
+#define FIELD(type, strct, sorttype, head, field, width, func, id, desc) \
+	{type, sorttype, offsetof(type_ ## strct, field), width, \
+	 id, head, &_ ## func ## _disp, desc},
 
-static struct dm_report_field_type _fields[] = {
+typedef struct physical_volume type_pv;
+typedef struct logical_volume type_lv;
+typedef struct volume_group type_vg;
+typedef struct lv_segment type_seg;
+typedef struct pv_segment type_pvseg;
+
+static const struct dm_report_field_type _fields[] = {
 #include "columns.h"
 {0, 0, 0, 0, "", "", NULL, NULL},
 };

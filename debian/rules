@@ -18,6 +18,8 @@ DEVMAPPER_VERSION = 2:$(DEVMAPPER_VERSION_PLAIN)
 DEVMAPPER_VERSION_DEBIAN = $(DEVMAPPER_VERSION)-$(VERSION_DEBIAN)
 DEVMAPPER_VERSION_FILE = $(DEVMAPPER_VERSION_PLAIN)-$(VERSION_DEBIAN)
 
+MAKE_SELF = $(MAKE) -f debian/rules
+
 BUILD_DIR = debian/build
 STAMPS_DIR = debian/stamps
 
@@ -42,26 +44,31 @@ ifneq (,$(findstring $(DEB_HOST_ARCH), arm armeb hppa mips mipsel))
 CONFIGURE_FLAGS += --disable-o_direct
 endif
 
+patch: $(STAMPS_DIR)/patch
+
+$(STAMPS_DIR)/patch:
+	@mkdir -p $(STAMPS_DIR)
+	QUILT_PATCHES=$(CURDIR)/debian/patches quilt --quiltrc /dev/null push -a || test $$? = 2
+	touch $@
+
 source: $(STAMPS_DIR)/source
 
+$(STAMPS_DIR)/source: SOURCE_FILES = $(filter-out debian .svn, $(wildcard * .[^.]*))
 $(STAMPS_DIR)/source: DIR = $(BUILD_DIR)/source
-$(STAMPS_DIR)/source:
-	@mkdir -p $(STAMPS_DIR)
+$(STAMPS_DIR)/source: $(STAMPS_DIR)/patch
 	rm -rf $(DIR)
-	mkdir -p $(DIR)
-	cp -al $(filter-out debian .svk .svn, $(wildcard .[^.]* *)) $(DIR)
-	cp --remove-destination /usr/share/misc/config.sub /usr/share/misc/config.guess $(DIR)/autoconf
-	cd $(DIR); QUILT_PATCHES=$(CURDIR)/debian/patches quilt --quiltrc /dev/null push -a || test $$? = 2
+	mkdir -p '$(DIR)'
+	cp -a $(SOURCE_FILES) '$(DIR)'
 	cd $(DIR); autoreconf
 	touch $@
 
-setup: $(STAMPS_DIR)/setup-deb $(STAMPS_DIR)/setup-udeb
+setup: $(STAMPS_DIR)/setup_deb $(STAMPS_DIR)/setup_udeb
 
-$(STAMPS_DIR)/setup-deb: SOURCE_DIR = $(BUILD_DIR)/source
-$(STAMPS_DIR)/setup-deb: DIR = $(BUILD_DIR)/build-deb
-$(STAMPS_DIR)/setup-deb: $(STAMPS_DIR)/source
+$(STAMPS_DIR)/setup_deb: SOURCE_DIR = $(BUILD_DIR)/source
+$(STAMPS_DIR)/setup_deb: DIR = $(BUILD_DIR)/build_deb
+$(STAMPS_DIR)/setup_deb: $(STAMPS_DIR)/source
 	rm -rf $(DIR)
-	cp -al $(SOURCE_DIR) $(DIR)
+	cp -a '$(SOURCE_DIR)' '$(DIR)'
 	cd $(DIR); \
 	./configure CFLAGS="$(CFLAGS)" \
 		$(CONFIGURE_FLAGS) \
@@ -74,11 +81,11 @@ $(STAMPS_DIR)/setup-deb: $(STAMPS_DIR)/source
 		--enable-readline
 	touch $@
 
-$(STAMPS_DIR)/setup-udeb: SOURCE_DIR = $(BUILD_DIR)/source
-$(STAMPS_DIR)/setup-udeb: DIR = $(BUILD_DIR)/build-udeb
-$(STAMPS_DIR)/setup-udeb: $(STAMPS_DIR)/source
+$(STAMPS_DIR)/setup_udeb: SOURCE_DIR = $(BUILD_DIR)/source
+$(STAMPS_DIR)/setup_udeb: DIR = $(BUILD_DIR)/build_udeb
+$(STAMPS_DIR)/setup_udeb: $(STAMPS_DIR)/patch
 	rm -rf $(DIR)
-	cp -al $(SOURCE_DIR) $(DIR)
+	cp -a '$(SOURCE_DIR)' '$(DIR)'
 	cd $(DIR); \
 	./configure CFLAGS="$(CFLAGS_UDEB)" \
 		$(CONFIGURE_FLAGS) \
@@ -90,20 +97,14 @@ $(STAMPS_DIR)/setup-udeb: $(STAMPS_DIR)/source
 		--disable-selinux
 	touch $@
 
-build: $(STAMPS_DIR)/build-deb $(STAMPS_DIR)/build-udeb
+build: $(STAMPS_DIR)/build_deb $(STAMPS_DIR)/build_udeb
 
-build-deb: $(STAMPS_DIR)/build-deb
-.NOTPARALLEL: $(STAMPS_DIR)/build-deb
-$(STAMPS_DIR)/build-deb: DIR = $(BUILD_DIR)/build-deb
-$(STAMPS_DIR)/build-deb: $(STAMPS_DIR)/setup-deb
-	dh_testdir
-	$(MAKE) -C $(DIR) LIB_VERSION_DM=$(DEVMAPPER_ABINAME)
-	touch $@
+build_deb: $(STAMPS_DIR)/build_deb
+build_udeb: $(STAMPS_DIR)/build_udeb
 
-build-udeb: $(STAMPS_DIR)/build-udeb
-.NOTPARALLEL: $(STAMPS_DIR)/build-udeb
-$(STAMPS_DIR)/build-udeb: DIR = $(BUILD_DIR)/build-udeb
-$(STAMPS_DIR)/build-udeb: $(STAMPS_DIR)/setup-udeb
+.NOTPARALLEL: $(STAMPS_DIR)/build_%
+$(STAMPS_DIR)/build_%: DIR = $(BUILD_DIR)/build_$*
+$(STAMPS_DIR)/build_%: $(STAMPS_DIR)/setup_%
 	dh_testdir
 	$(MAKE) -C $(DIR) LIB_VERSION_DM=$(DEVMAPPER_ABINAME)
 	touch $@
@@ -119,26 +120,26 @@ clean:
 	rm -rf $(BUILD_DIR) $(STAMPS_DIR)
 	dh_clean
 
-$(STAMPS_DIR)/install-deb-%: DIR = $(BUILD_DIR)/install-deb-$*
-$(STAMPS_DIR)/install-deb-%: $(STAMPS_DIR)/build-deb
+$(STAMPS_DIR)/install_%: DIR = $(BUILD_DIR)/build_$*
+$(STAMPS_DIR)/install_%: INSTALL_DIR = $(BUILD_DIR)/install_$*
+$(STAMPS_DIR)/install_%: $(STAMPS_DIR)/build_%
 	dh_testdir
 	dh_testroot
-	rm -rf $(DIR)
-	$(MAKE) -C $(BUILD_DIR)/build-deb install_$* DESTDIR=$(CURDIR)/$(DIR) LIB_VERSION_DM=$(DEVMAPPER_ABINAME)
+	rm -rf $(INSTALL_DIR)
+	$(MAKE) -C $(DIR) install DESTDIR=$(CURDIR)/$(INSTALL_DIR) LIB_VERSION_DM=$(DEVMAPPER_ABINAME)
 	touch $@
 
-$(STAMPS_DIR)/install-udeb-%: DIR = $(BUILD_DIR)/install-udeb-$*
-$(STAMPS_DIR)/install-udeb-%: $(STAMPS_DIR)/build-udeb
+install-base-prep:
 	dh_testdir
 	dh_testroot
-	rm -rf $(DIR)
-	$(MAKE) -C $(BUILD_DIR)/build-udeb install_$* DESTDIR=$(CURDIR)/$(DIR) LIB_VERSION_DM=$(DEVMAPPER_ABINAME)
-	touch $@
-
-install: $(addprefix install-,libdevmapper libdevmapper-udeb dmsetup dmsetup-udeb lvm2 lvm2-udeb clvm)
+	dh_prep
+	dh_install -X .svn --sourcedir=$(INSTALL_DIR)
 
 install-base:
+	dh_installchangelogs $(if $(CHANGELOG),$(CHANGELOG),WHATS_NEW)
+	dh_installdebconf
 	dh_installdocs
+	dh_installexamples
 	dh_strip
 	dh_compress
 	dh_fixperms
@@ -146,128 +147,73 @@ install-base:
 	dh_shlibdeps
 	dh_gencontrol -- $(GENCONTROL_ARGS)
 	dh_md5sums
-	dh_builddeb
+	dh_builddeb $(BUILDDEB_ARGS)
 
-install-clvm: export DH_OPTIONS = -pclvm
-install-clvm: DIR = $(BUILD_DIR)/install-deb-cluster
-install-clvm: $(STAMPS_DIR)/install-deb-cluster
-	dh_testdir
-	dh_testroot
-	dh_clean -k
-	dh_install --sourcedir=$(DIR)
-	dh_installchangelogs WHATS_NEW
-	dh_installexamples
+install_clvm: export DH_OPTIONS = -pclvm
+install_clvm: DIR = $(BUILD_DIR)/install_deb
+install_clvm: $(STAMPS_DIR)/install_deb
+	+$(MAKE_SELF) install-base-prep INSTALL_DIR='$(DIR)'
 	dh_installinit --no-start -- start 63 S . start 51 0 6 .
-	$(MAKE) -f debian/rules install-base
+	+$(MAKE_SELF) install-base
 
-install-dmsetup: export DH_OPTIONS = -pdmsetup
-install-dmsetup: DIR = $(BUILD_DIR)/install-deb-device-mapper
-install-dmsetup: $(STAMPS_DIR)/install-deb-device-mapper
-	dh_testdir
-	dh_testroot
-	dh_clean -k
-	cp -a debian/tree/dmsetup debian/dmsetup
-	find debian/dmsetup -name .svn | xargs -r rm -r
-	dh_install --sourcedir=$(DIR)
-	dh_installchangelogs WHATS_NEW_DM
-	dh_installdebconf
-	dh_installexamples
-	$(MAKE) -f debian/rules install-base GENCONTROL_ARGS="-v$(DEVMAPPER_VERSION_DEBIAN)"
+install_dmsetup: export DH_OPTIONS = -pdmsetup
+install_dmsetup: DIR = $(BUILD_DIR)/install_deb
+install_dmsetup: $(STAMPS_DIR)/install_deb
+	+$(MAKE_SELF) install-base-prep INSTALL_DIR='$(DIR)'
+	+$(MAKE_SELF) install-base CHANGELOG=WHATS_NEW_DM GENCONTROL_ARGS="-v$(DEVMAPPER_VERSION_DEBIAN)"
 
-install-dmsetup-udeb: PACKAGE_NAME = dmsetup-udeb
-install-dmsetup-udeb: export DH_OPTIONS = -p$(PACKAGE_NAME)
-install-dmsetup-udeb: PACKAGE_FILE = $(PACKAGE_NAME)_$(DEVMAPPER_VERSION_FILE)_$(DEB_HOST_ARCH).udeb
-install-dmsetup-udeb: DIR = $(BUILD_DIR)/install-udeb-device-mapper
-install-dmsetup-udeb: $(STAMPS_DIR)/install-udeb-device-mapper
-	dh_testdir
-	dh_testroot
-	dh_clean -k
-	dh_installchangelogs WHATS_NEW_DM
-	dh_install --sourcedir=$(DIR)
+install_dmsetup-udeb: PACKAGE_NAME = dmsetup-udeb
+install_dmsetup-udeb: export DH_OPTIONS = -p$(PACKAGE_NAME)
+install_dmsetup-udeb: PACKAGE_FILE = $(PACKAGE_NAME)_$(DEVMAPPER_VERSION_FILE)_$(DEB_HOST_ARCH).udeb
+install_dmsetup-udeb: DIR = $(BUILD_DIR)/install_udeb
+install_dmsetup-udeb: $(STAMPS_DIR)/install_udeb
+	+$(MAKE_SELF) install-base-prep INSTALL_DIR='$(DIR)'
+	+$(MAKE_SELF) install-base \
+		BUILDDEB_ARGS="--filename=$(PACKAGE_FILE)" \
+		GENCONTROL_ARGS="-v$(DEVMAPPER_VERSION_DEBIAN)"
 
-	dh_installdocs
-	dh_strip
-	dh_compress
-	dh_fixperms
-	dh_installdeb
-	dh_shlibdeps
-	dpkg-gencontrol \
-		-p$(PACKAGE_NAME) -ldebian/changelog -n$(PACKAGE_FILE) \
-		-Tdebian/$(PACKAGE_NAME).substvars -Pdebian/$(PACKAGE_NAME) \
-		-v$(DEVMAPPER_VERSION_DEBIAN)
-	dh_md5sums
-	dpkg-deb --build debian/$(PACKAGE_NAME) ../$(PACKAGE_FILE)
-
-
-install-libdevmapper: export DH_OPTIONS = -plibdevmapper-dev -plibdevmapper$(DEVMAPPER_ABINAME)
-install-libdevmapper: DIR = $(BUILD_DIR)/install-deb-device-mapper
-install-libdevmapper: $(STAMPS_DIR)/install-deb-device-mapper
-	dh_testdir
-	dh_testroot
-	dh_clean -k
-	dh_install --sourcedir=$(DIR)
-	dh_installchangelogs WHATS_NEW_DM
-	dh_installexamples
-	dh_link -p libdevmapper-dev lib/libdevmapper.so.$(DEVMAPPER_ABINAME) usr/lib/libdevmapper.so
-	dh_makeshlibs -p 'libdevmapper$(DEVMAPPER_ABINAME)' \
+install_libdevmapper: export DH_OPTIONS = -plibdevmapper$(DEVMAPPER_ABINAME)
+install_libdevmapper: DIR = $(BUILD_DIR)/install_deb
+install_libdevmapper: $(STAMPS_DIR)/install_deb
+	+$(MAKE_SELF) install-base-prep INSTALL_DIR='$(DIR)'
+	dh_makeshlibs \
 		--add-udeb 'libdevmapper$(DEVMAPPER_ABINAME)-udeb' \
 	       	"-Vlibdevmapper$(DEVMAPPER_ABINAME) (>= $(DEVMAPPER_VERSION))" \
 		-- "-v$(DEVMAPPER_VERSION_DEBIAN)" -c2
-	$(MAKE) -f debian/rules install-base GENCONTROL_ARGS="-v$(DEVMAPPER_VERSION_DEBIAN)"
+	+$(MAKE_SELF) install-base CHANGELOG=WHATS_NEW_DM GENCONTROL_ARGS="-v$(DEVMAPPER_VERSION_DEBIAN)"
 
-install-libdevmapper-udeb: PACKAGE_NAME = libdevmapper$(DEVMAPPER_ABINAME)-udeb
-install-libdevmapper-udeb: export DH_OPTIONS = -p$(PACKAGE_NAME)
-install-libdevmapper-udeb: PACKAGE_FILE = $(PACKAGE_NAME)_$(DEVMAPPER_VERSION_FILE)_$(DEB_HOST_ARCH).udeb
-install-libdevmapper-udeb: DIR = $(BUILD_DIR)/install-udeb-device-mapper
-install-libdevmapper-udeb: $(STAMPS_DIR)/install-udeb-device-mapper
-	dh_testdir
-	dh_testroot
-	dh_clean -k
-	dh_install --sourcedir=$(DIR)
-	dh_installchangelogs WHATS_NEW_DM
-	dh_installexamples
+install_libdevmapper-dev: export DH_OPTIONS = -plibdevmapper-dev
+install_libdevmapper-dev: DIR = $(BUILD_DIR)/install_deb
+install_libdevmapper-dev: $(STAMPS_DIR)/install_deb
+	+$(MAKE_SELF) install-base-prep INSTALL_DIR='$(DIR)'
+	dh_link lib/libdevmapper.so.$(DEVMAPPER_ABINAME) usr/lib/libdevmapper.so
+	+$(MAKE_SELF) install-base CHANGELOG=WHATS_NEW_DM GENCONTROL_ARGS="-v$(DEVMAPPER_VERSION_DEBIAN)"
 
-	dh_installdocs
-	dh_strip
-	dh_compress
-	dh_fixperms
-	dh_installdeb
-	dh_shlibdeps
-	dpkg-gencontrol \
-		-p$(PACKAGE_NAME) -ldebian/changelog -n$(PACKAGE_FILE) \
-		-Tdebian/$(PACKAGE_NAME).substvars -Pdebian/$(PACKAGE_NAME) \
-		-v$(DEVMAPPER_VERSION_DEBIAN)
-	dh_md5sums
-	dpkg-deb --build debian/$(PACKAGE_NAME) ../$(PACKAGE_FILE)
+install_libdevmapper-udeb: PACKAGE_NAME = libdevmapper$(DEVMAPPER_ABINAME)-udeb
+install_libdevmapper-udeb: export DH_OPTIONS = -p$(PACKAGE_NAME)
+install_libdevmapper-udeb: PACKAGE_FILE = $(PACKAGE_NAME)_$(DEVMAPPER_VERSION_FILE)_$(DEB_HOST_ARCH).udeb
+install_libdevmapper-udeb: DIR = $(BUILD_DIR)/install_udeb
+install_libdevmapper-udeb: $(STAMPS_DIR)/install_udeb
+	+$(MAKE_SELF) install-base-prep INSTALL_DIR='$(DIR)'
+	+$(MAKE_SELF) install-base \
+		BUILDDEB_ARGS="--filename=$(PACKAGE_FILE)" \
+		GENCONTROL_ARGS="-v$(DEVMAPPER_VERSION_DEBIAN)"
 
-install-lvm2: export DH_OPTIONS = -plvm2
-install-lvm2: DIR = $(BUILD_DIR)/install-deb-lvm2
-install-lvm2: $(STAMPS_DIR)/install-deb-lvm2
-	dh_testdir
-	dh_testroot
-	dh_clean -k
-	cp -a debian/tree/lvm2 debian/lvm2
-	find debian/lvm2 -name .svn | xargs -r rm -r
-	dh_install --sourcedir=$(DIR)
-	chmod +x -R debian/lvm2/usr/share/initramfs-tools
-	dh_installchangelogs WHATS_NEW
-	dh_installdebconf
-	dh_installexamples
+install_lvm2: export DH_OPTIONS = -plvm2
+install_lvm2: DIR = $(BUILD_DIR)/install_deb
+install_lvm2: $(STAMPS_DIR)/install_deb
+	+$(MAKE_SELF) install-base-prep INSTALL_DIR='$(DIR)'
 	dh_installinit --no-start -- start 26 S . start 50 0 6 .
-	$(MAKE) -f debian/rules install-base
+	+$(MAKE_SELF) install-base
 
-install-lvm2-udeb: export DH_OPTIONS = -plvm2-udeb
-install-lvm2-udeb: DIR = $(BUILD_DIR)/install-udeb-lvm2
-install-lvm2-udeb: $(STAMPS_DIR)/install-udeb-lvm2
-	dh_testdir
-	dh_testroot
-	dh_clean -k
-	dh_installchangelogs WHATS_NEW
-	dh_install --sourcedir=$(DIR)
-	$(MAKE) -f debian/rules install-base
+install_lvm2-udeb: export DH_OPTIONS = -plvm2-udeb
+install_lvm2-udeb: DIR = $(BUILD_DIR)/install_udeb
+install_lvm2-udeb: $(STAMPS_DIR)/install_udeb
+	+$(MAKE_SELF) install-base-prep INSTALL_DIR='$(DIR)'
+	+$(MAKE_SELF) install-base
 
 binary-indep:
-binary-arch: install
+binary-arch: $(addprefix install_,libdevmapper libdevmapper-udeb libdevmapper-dev dmsetup dmsetup-udeb lvm2 lvm2-udeb clvm)
 
 binary: binary-indep binary-arch
 

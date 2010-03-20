@@ -125,7 +125,7 @@ static int _read_id(struct id *id, struct config_node *cn, const char *path)
 	return 1;
 }
 
-static int _read_flag_config(struct config_node *n, uint32_t *status, int type)
+static int _read_flag_config(struct config_node *n, uint64_t *status, int type)
 {
 	struct config_node *cn;
 	*status = 0;
@@ -372,7 +372,7 @@ static int _read_segment(struct dm_pool *mem, struct volume_group *vg,
 
 int text_import_areas(struct lv_segment *seg, const struct config_node *sn,
 		      const struct config_node *cn, struct dm_hash_table *pv_hash,
-		      uint32_t flags)
+		      uint64_t status)
 {
 	unsigned int s;
 	struct config_value *cv;
@@ -410,7 +410,7 @@ int text_import_areas(struct lv_segment *seg, const struct config_node *sn,
 		} else if ((lv1 = find_lv(seg->lv->vg, cv->v.str))) {
 			if (!set_lv_segment_area_lv(seg, s, lv1,
 						    (uint32_t) cv->next->v.i,
-						    flags))
+						    status))
 				return_0;
 		} else {
 			log_error("Couldn't find volume '%s' "
@@ -809,7 +809,7 @@ static void _read_desc(struct dm_pool *mem,
 
 static const char *_read_vgname(const struct format_type *fmt,
 				struct config_tree *cft, struct id *vgid,
-				uint32_t *vgstatus, char **creation_host)
+				uint64_t *vgstatus, char **creation_host)
 {
 	struct config_node *vgn;
 	struct dm_pool *mem = fmt->cmd->mem;

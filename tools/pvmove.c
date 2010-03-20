@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2003-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2010 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -180,6 +180,7 @@ static struct logical_volume *_set_up_pvmove_lv(struct cmd_context *cmd,
 	struct lv_list *lvl;
 	uint32_t log_count = 0;
 	int lv_found = 0;
+	int lv_skipped = 0;
 
 	/* FIXME Cope with non-contiguous => splitting existing segments */
 	if (!(lv_mirr = lv_create_empty("pvmove%d", NULL,
@@ -209,22 +210,27 @@ static struct logical_volume *_set_up_pvmove_lv(struct cmd_context *cmd,
 			lv_found = 1;
 		}
 		if (lv_is_origin(lv) || lv_is_cow(lv)) {
+			lv_skipped = 1;
 			log_print("Skipping snapshot-related LV %s", lv->name);
 			continue;
 		}
 		if (lv->status & MIRRORED) {
+			lv_skipped = 1;
 			log_print("Skipping mirror LV %s", lv->name);
 			continue;
 		}
 		if (lv->status & MIRROR_LOG) {
+			lv_skipped = 1;
 			log_print("Skipping mirror log LV %s", lv->name);
 			continue;
 		}
 		if (lv->status & MIRROR_IMAGE) {
+			lv_skipped = 1;
 			log_print("Skipping mirror image LV %s", lv->name);
 			continue;
 		}
 		if (lv->status & LOCKED) {
+			lv_skipped = 1;
 			log_print("Skipping locked LV %s", lv->name);
 			continue;
 		}
@@ -240,6 +246,10 @@ static struct logical_volume *_set_up_pvmove_lv(struct cmd_context *cmd,
 
 	/* Is temporary mirror empty? */
 	if (!lv_mirr->le_count) {
+		if (lv_skipped)
+			log_error("All data on source PV skipped. "
+				  "It contains locked, hidden or "
+				  "non-top level LVs only.");
 		log_error("No data to move for %s", vg->name);
 		return NULL;
 	}
@@ -261,15 +271,39 @@ static struct logical_volume *_set_up_pvmove_lv(struct cmd_context *cmd,
 static int _activate_lv(struct cmd_context *cmd, struct logical_volume *lv_mirr,
 			unsigned exclusive)
 {
-	if (exclusive)
-		return activate_lv_excl(cmd, lv_mirr);
+	int r = 0;
 
-	return activate_lv(cmd, lv_mirr);
+	if (exclusive)
+		r = activate_lv_excl(cmd, lv_mirr);
+	else
+		r = activate_lv(cmd, lv_mirr);
+
+	if (!r)
+		stack;
+
+	return r;
 }
 
-static int _finish_pvmove(struct cmd_context *cmd, struct volume_group *vg,
-			  struct logical_volume *lv_mirr,
-			  struct dm_list *lvs_changed);
+static int _detach_pvmove_mirror(struct cmd_context *cmd,
+				 struct logical_volume *lv_mirr)
+{
+	struct dm_list lvs_completed;
+	struct lv_list *lvl;
+
+	/* Update metadata to remove mirror segments and break dependencies */
+	dm_list_init(&lvs_completed);
+	if (!lv_remove_mirrors(cmd, lv_mirr, 1, 0, NULL, PVMOVE) ||
+	    !remove_layers_for_segments_all(cmd, lv_mirr, PVMOVE,
+					    &lvs_completed)) {
+		return 0;
+	}
+
+	dm_list_iterate_items(lvl, &lvs_completed)
+		/* FIXME Assumes only one pvmove at a time! */
+		lvl->lv->status &= ~LOCKED;
+
+	return 1;
+}
 
 static int _update_metadata(struct cmd_context *cmd, struct volume_group *vg,
 			    struct logical_volume *lv_mirr,
@@ -286,13 +320,16 @@ static int _update_metadata(struct cmd_context *cmd, struct volume_group *vg,
 	}
 
 	/* Suspend lvs_changed */
-	if (!suspend_lvs(cmd, lvs_changed))
+	if (!suspend_lvs(cmd, lvs_changed)) {
+		vg_revert(vg);
 		goto_out;
+	}
 
 	/* Suspend mirrors on subsequent calls */
 	if (!first_time) {
 		if (!suspend_lv(cmd, lv_mirr)) {
-			resume_lvs(cmd, lvs_changed);
+			if (!resume_lvs(cmd, lvs_changed))
+				stack;
 			vg_revert(vg);
 			goto_out;
 		}
@@ -302,8 +339,11 @@ static int _update_metadata(struct cmd_context *cmd, struct volume_group *vg,
 	if (!vg_commit(vg)) {
 		log_error("ABORTING: Volume group metadata update failed.");
 		if (!first_time)
-			resume_lv(cmd, lv_mirr);
-		resume_lvs(cmd, lvs_changed);
+			if (!resume_lv(cmd, lv_mirr))
+				stack;
+		if (!resume_lvs(cmd, lvs_changed))
+			stack;
+		vg_revert(vg);
 		goto out;
 	}
 
@@ -312,22 +352,40 @@ static int _update_metadata(struct cmd_context *cmd, struct volume_group *vg,
 	/* FIXME: Add option to use a log */
 	if (first_time) {
 		if (!_activate_lv(cmd, lv_mirr, exclusive)) {
-			if (test_mode())
+			if (test_mode()) {
+				r = 1;
 				goto out;
+			}
 
 			/*
+			 * FIXME: review ordering of operations above,
+			 * temporary mirror should be preloaded in suspend.
+			 * Also banned operation here when suspended.
 			 * Nothing changed yet, try to revert pvmove.
 			 */
 			log_error("Temporary pvmove mirror activation failed.");
-			if (!_finish_pvmove(cmd, vg, lv_mirr, lvs_changed))
+
+			/* Ensure that temporary mrror is deactivate even on other nodes. */
+			(void)deactivate_lv(cmd, lv_mirr);
+
+			/* Revert metadata */
+			if (!_detach_pvmove_mirror(cmd, lv_mirr) ||
+			    !lv_remove(lv_mirr) ||
+			    !vg_write(vg) || !vg_commit(vg))
 				log_error("ABORTING: Restoring original configuration "
 					  "before pvmove failed. Run pvmove --abort.");
+
+			/* Unsuspend LVs */
+			if(!resume_lvs(cmd, lvs_changed))
+				stack;
+
 			goto out;
 		}
 	} else if (!resume_lv(cmd, lv_mirr)) {
 		log_error("Unable to reactivate logical volume \"%s\"",
 			  lv_mirr->name);
-		resume_lvs(cmd, lvs_changed);
+		if (!resume_lvs(cmd, lvs_changed))
+			stack;
 		goto out;
 	}
 
@@ -461,21 +519,11 @@ static int _finish_pvmove(struct cmd_context *cmd, struct volume_group *vg,
 			  struct dm_list *lvs_changed)
 {
 	int r = 1;
-	struct dm_list lvs_completed;
-	struct lv_list *lvl;
 
-	/* Update metadata to remove mirror segments and break dependencies */
-	dm_list_init(&lvs_completed);
-	if (!lv_remove_mirrors(cmd, lv_mirr, 1, 0, NULL, PVMOVE) ||
-	    !remove_layers_for_segments_all(cmd, lv_mirr, PVMOVE,
-					    &lvs_completed)) {
+	if (!_detach_pvmove_mirror(cmd, lv_mirr)) {
 		log_error("ABORTING: Removal of temporary mirror failed");
 		return 0;
 	}
-
-	dm_list_iterate_items(lvl, &lvs_completed)
-		/* FIXME Assumes only one pvmove at a time! */
-		lvl->lv->status &= ~LOCKED;
 
 	/* Store metadata without dependencies on mirror segments */
 	if (!vg_write(vg)) {
@@ -501,8 +549,10 @@ static int _finish_pvmove(struct cmd_context *cmd, struct volume_group *vg,
 		log_error("ABORTING: Failed to write new data locations "
 			  "to disk.");
 		vg_revert(vg);
-		resume_lv(cmd, lv_mirr);
-		resume_lvs(cmd, lvs_changed);
+		if (!resume_lv(cmd, lv_mirr))
+			stack;
+		if (!resume_lvs(cmd, lvs_changed))
+			stack;
 		return 0;
 	}
 
@@ -514,7 +564,8 @@ static int _finish_pvmove(struct cmd_context *cmd, struct volume_group *vg,
 	}
 
 	/* Unsuspend LVs */
-	resume_lvs(cmd, lvs_changed);
+	if (!resume_lvs(cmd, lvs_changed))
+		stack;
 
 	/* Deactivate mirror LV */
 	if (!deactivate_lv(cmd, lv_mirr)) {
@@ -544,7 +595,8 @@ static int _finish_pvmove(struct cmd_context *cmd, struct volume_group *vg,
 }
 
 static struct volume_group *_get_move_vg(struct cmd_context *cmd,
-					 const char *name, const char *uuid)
+					 const char *name,
+					 const char *uuid __attribute((unused)))
 {
 	struct physical_volume *pv;
 
@@ -570,6 +622,9 @@ static struct poll_functions _pvmove_fns = {
 int pvmove_poll(struct cmd_context *cmd, const char *pv_name,
 		unsigned background)
 {
+	if (test_mode())
+		return ECMD_PROCESSED;
+
 	return poll_daemon(cmd, pv_name, NULL, background, PVMOVE, &_pvmove_fns,
 			   "Moved");
 }
@@ -608,6 +663,5 @@ int pvmove(struct cmd_context *cmd, int argc, char **argv)
 		}
 	}
 
-	return pvmove_poll(cmd, pv_name,
-			   arg_count(cmd, background_ARG) ? 1U : 0);
+	return pvmove_poll(cmd, pv_name, arg_is_set(cmd, background_ARG));
 }

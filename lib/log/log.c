@@ -19,6 +19,7 @@
 #include "lvm-string.h"
 #include "lvm-file.h"
 #include "defaults.h"
+#include "config.h"
 
 #include <stdarg.h>
 #include <syslog.h>
@@ -35,6 +36,7 @@ static int _indent = 1;
 static int _log_suppress = 0;
 static char _msg_prefix[30] = "  ";
 static int _already_logging = 0;
+static int _abort_on_internal_errors = 0;
 
 static lvm2_log_fn_t _lvm2_log_fn = NULL;
 
@@ -140,6 +142,11 @@ void init_indent(int indent)
 	_indent = indent;
 }
 
+void init_abort_on_internal_errors(int fatal)
+{
+	_abort_on_internal_errors = fatal;
+}
+
 void reset_lvm_errno(int store_errmsg)
 {
 	_lvm_errno = 0;
@@ -172,8 +179,18 @@ void print_log(int level, const char *file, int line, int dm_errno,
 	const char *trformat;		/* Translated format string */
 	char *newbuf;
 	int use_stderr = level & _LOG_STDERR;
+	int fatal_internal_error = 0;
 
 	level &= ~_LOG_STDERR;
+
+	if (_abort_on_internal_errors &&
+	    !strncmp(format, INTERNAL_ERROR,
+		     strlen(INTERNAL_ERROR))) {
+		fatal_internal_error = 1;
+		/* Internal errors triggering abort cannot be suppressed. */
+		_log_suppress = 0;
+		level = _LOG_FATAL;
+	}
 
 	if (_log_suppress == 2)
 		return;
@@ -290,6 +307,9 @@ void print_log(int level, const char *file, int line, int dm_errno,
 		}
 		va_end(ap);
 	}
+
+	if (fatal_internal_error)
+		abort();
 
 	if (level > debug_level())
 		return;

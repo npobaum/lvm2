@@ -171,10 +171,6 @@ int lvs_in_vg_activated(struct volume_group *vg)
 {
 	return 0;
 }
-int lvs_in_vg_activated_by_uuid_only(struct volume_group *vg)
-{
-	return 0;
-}
 int lvs_in_vg_opened(struct volume_group *vg)
 {
 	return 0;
@@ -440,27 +436,17 @@ int target_present(struct cmd_context *cmd, const char *target_name,
 /*
  * Returns 1 if info structure populated, else 0 on failure.
  */
-static int _lv_info(struct cmd_context *cmd, const struct logical_volume *lv, int with_mknodes,
-		    struct lvinfo *info, int with_open_count, int with_read_ahead, unsigned by_uuid_only)
+int lv_info(struct cmd_context *cmd, const struct logical_volume *lv,
+	    struct lvinfo *info, int with_open_count, int with_read_ahead)
 {
 	struct dm_info dminfo;
-	char *name = NULL;
 
 	if (!activation())
 		return 0;
 
-	if (!by_uuid_only &&
-	    !(name = build_dm_name(cmd->mem, lv->vg->name, lv->name, NULL)))
+	if (!dev_manager_info(lv->vg->cmd->mem, lv, with_open_count,
+			      with_read_ahead, &dminfo, &info->read_ahead))
 		return_0;
-
-	log_debug("Getting device info for %s", name);
-	if (!dev_manager_info(lv->vg->cmd->mem, name, lv, with_mknodes,
-			      with_open_count, with_read_ahead, &dminfo,
-			      &info->read_ahead)) {
-		if (name)
-			dm_pool_free(cmd->mem, name);
-		return_0;
-	}
 
 	info->exists = dminfo.exists;
 	info->suspended = dminfo.suspended;
@@ -471,27 +457,22 @@ static int _lv_info(struct cmd_context *cmd, const struct logical_volume *lv, in
 	info->live_table = dminfo.live_table;
 	info->inactive_table = dminfo.inactive_table;
 
-	if (name)
-		dm_pool_free(cmd->mem, name);
-
 	return 1;
-}
-
-int lv_info(struct cmd_context *cmd, const struct logical_volume *lv, struct lvinfo *info,
-	    int with_open_count, int with_read_ahead)
-{
-	return _lv_info(cmd, lv, 0, info, with_open_count, with_read_ahead, 0);
 }
 
 int lv_info_by_lvid(struct cmd_context *cmd, const char *lvid_s,
 		    struct lvinfo *info, int with_open_count, int with_read_ahead)
 {
+	int r;
 	struct logical_volume *lv;
 
 	if (!(lv = lv_from_lvid(cmd, lvid_s, 0)))
 		return 0;
 
-	return _lv_info(cmd, lv, 0, info, with_open_count, with_read_ahead, 0);
+	r = lv_info(cmd, lv, info, with_open_count, with_read_ahead);
+	vg_release(lv->vg);
+
+	return r;
 }
 
 /*
@@ -554,12 +535,11 @@ int lv_mirror_percent(struct cmd_context *cmd, struct logical_volume *lv,
 	return r;
 }
 
-static int _lv_active(struct cmd_context *cmd, struct logical_volume *lv,
-		      unsigned by_uuid_only)
+static int _lv_active(struct cmd_context *cmd, struct logical_volume *lv)
 {
 	struct lvinfo info;
 
-	if (!_lv_info(cmd, lv, 0, &info, 0, 0, by_uuid_only)) {
+	if (!lv_info(cmd, lv, &info, 0, 0)) {
 		stack;
 		return -1;
 	}
@@ -643,7 +623,7 @@ static int _lv_suspend_lv(struct logical_volume *lv, int lockfs, int flush_requi
  * These two functions return the number of visible LVs in the state,
  * or -1 on error.
  */
-static int _lvs_in_vg_activated(struct volume_group *vg, unsigned by_uuid_only)
+int lvs_in_vg_activated(struct volume_group *vg)
 {
 	struct lv_list *lvl;
 	int count = 0;
@@ -653,20 +633,10 @@ static int _lvs_in_vg_activated(struct volume_group *vg, unsigned by_uuid_only)
 
 	dm_list_iterate_items(lvl, &vg->lvs) {
 		if (lv_is_visible(lvl->lv))
-			count += (_lv_active(vg->cmd, lvl->lv, by_uuid_only) == 1);
+			count += (_lv_active(vg->cmd, lvl->lv) == 1);
 	}
 
 	return count;
-}
-
-int lvs_in_vg_activated_by_uuid_only(struct volume_group *vg)
-{
-	return _lvs_in_vg_activated(vg, 1);
-}
-
-int lvs_in_vg_activated(struct volume_group *vg)
-{
-	return _lvs_in_vg_activated(vg, 0);
 }
 
 int lvs_in_vg_opened(const struct volume_group *vg)
@@ -696,7 +666,7 @@ int lv_is_active(struct logical_volume *lv)
 {
 	int ret;
 
-	if (_lv_active(lv->vg->cmd, lv, 0))
+	if (_lv_active(lv->vg->cmd, lv))
 		return 1;
 
 	if (!vg_is_clustered(lv->vg))
@@ -710,7 +680,8 @@ int lv_is_active(struct logical_volume *lv)
 	 * FIXME: check status to not deactivate already activate device
 	 */
 	if (activate_lv_excl(lv->vg->cmd, lv)) {
-		deactivate_lv(lv->vg->cmd, lv);
+		if (!deactivate_lv(lv->vg->cmd, lv))
+			stack;
 		return 0;
 	}
 
@@ -749,7 +720,7 @@ int monitor_dev_for_events(struct cmd_context *cmd,
 	 * In case of a snapshot device, we monitor lv->snapshot->lv,
 	 * not the actual LV itself.
 	 */
-	if (lv_is_cow(lv))
+	if (lv_is_cow(lv) && !lv_is_merging_cow(lv))
 		return monitor_dev_for_events(cmd, lv->snapshot->lv, monitor);
 
 	/*
@@ -875,7 +846,11 @@ static int _lv_suspend(struct cmd_context *cmd, const char *lvid_s,
 		goto_out;
 
 	if (!info.exists || info.suspended) {
-		r = error_if_not_suspended ? 0 : 1;
+		if (!error_if_not_suspended) {
+			r = 1;
+			if (info.suspended)
+				memlock_inc(cmd);
+		}
 		goto out;
 	}
 
@@ -893,13 +868,13 @@ static int _lv_suspend(struct cmd_context *cmd, const char *lvid_s,
 		/* FIXME Consider aborting here */
 		stack;
 
-	memlock_inc();
+	memlock_inc(cmd);
 
 	if (lv_is_origin(lv_pre) || lv_is_cow(lv_pre))
 		lockfs = 1;
 
 	if (!_lv_suspend_lv(lv, lockfs, flush_required)) {
-		memlock_dec();
+		memlock_dec(cmd);
 		fs_unlock();
 		goto out;
 	}
@@ -936,7 +911,7 @@ static int _lv_resume(struct cmd_context *cmd, const char *lvid_s,
 		return 1;
 
 	if (!(lv = lv_from_lvid(cmd, lvid_s, 0)))
-		goto out;
+		goto_out;
 
 	if (test_mode()) {
 		_skip("Resuming '%s'.", lv->name);
@@ -949,13 +924,13 @@ static int _lv_resume(struct cmd_context *cmd, const char *lvid_s,
 
 	if (!info.exists || !info.suspended) {
 		r = error_if_not_active ? 0 : 1;
-		goto out;
+		goto_out;
 	}
 
 	if (!_lv_activate_lv(lv))
-		goto out;
+		goto_out;
 
-	memlock_dec();
+	memlock_dec(cmd);
 	fs_unlock();
 
 	if (!monitor_dev_for_events(cmd, lv, 1))
@@ -1044,9 +1019,9 @@ int lv_deactivate(struct cmd_context *cmd, const char *lvid_s)
 	if (!monitor_dev_for_events(cmd, lv, 0))
 		stack;
 
-	memlock_inc();
+	memlock_inc(cmd);
 	r = _lv_deactivate(lv);
-	memlock_dec();
+	memlock_dec(cmd);
 	fs_unlock();
 
 	if (!lv_info(cmd, lv, &info, 1, 0) || info.exists)
@@ -1137,9 +1112,10 @@ static int _lv_activate(struct cmd_context *cmd, const char *lvid_s,
 	if (exclusive)
 		lv->status |= ACTIVATE_EXCL;
 
-	memlock_inc();
-	r = _lv_activate_lv(lv);
-	memlock_dec();
+	memlock_inc(cmd);
+	if (!(r = _lv_activate_lv(lv)))
+		stack;
+	memlock_dec(cmd);
 	fs_unlock();
 
 	if (r && !monitor_dev_for_events(cmd, lv, 1))
@@ -1155,18 +1131,23 @@ out:
 /* Activate LV */
 int lv_activate(struct cmd_context *cmd, const char *lvid_s, int exclusive)
 {
-	return _lv_activate(cmd, lvid_s, exclusive, 0);
+	if (!_lv_activate(cmd, lvid_s, exclusive, 0))
+		return_0;
+
+	return 1;
 }
 
 /* Activate LV only if it passes filter */
 int lv_activate_with_filter(struct cmd_context *cmd, const char *lvid_s, int exclusive)
 {
-	return _lv_activate(cmd, lvid_s, exclusive, 1);
+	if (!_lv_activate(cmd, lvid_s, exclusive, 1))
+		return_0;
+
+	return 1;
 }
 
 int lv_mknodes(struct cmd_context *cmd, const struct logical_volume *lv)
 {
-	struct lvinfo info;
 	int r = 1;
 
 	if (!lv) {
@@ -1175,14 +1156,10 @@ int lv_mknodes(struct cmd_context *cmd, const struct logical_volume *lv)
 		return r;
 	}
 
-	if (!_lv_info(cmd, lv, 1, &info, 0, 0, 0))
-		return_0;
+	if (!activation())
+		return 1;
 
-	if (info.exists) {
-		if (lv_is_visible(lv))
-			r = dev_manager_lv_mknodes(lv);
-	} else
-		r = dev_manager_lv_rmnodes(lv);
+	r = dev_manager_mknodes(lv);
 
 	fs_unlock();
 

@@ -1,6 +1,6 @@
 --- a/tools/Makefile.in
 +++ b/tools/Makefile.in
-@@ -165,22 +165,17 @@
+@@ -164,22 +164,17 @@
  endif
  
  install_cmdlib_dynamic: liblvm2cmd.$(LIB_SUFFIX)
@@ -28,7 +28,7 @@
  	@echo Creating symbolic links for individual commands in $(sbindir)
  	@( \
  		for v in `cat $(srcdir)/.commands`; do \
-@@ -190,14 +185,13 @@
+@@ -189,14 +184,13 @@
  	)
  
  install_tools_static: lvm.static
@@ -48,7 +48,7 @@
  
 --- a/daemons/clvmd/Makefile.in
 +++ b/daemons/clvmd/Makefile.in
-@@ -98,8 +98,8 @@
+@@ -99,8 +99,8 @@
  .PHONY: install_clvmd
  
  install_clvmd: $(TARGETS)
@@ -62,7 +62,7 @@
 --- a/lib/format1/Makefile.in
 +++ b/lib/format1/Makefile.in
 @@ -32,7 +32,6 @@
- include ../../make.tmpl
+ include $(top_builddir)/make.tmpl
  
  install: liblvm2format1.so
 -	$(INSTALL) -D $(OWNER) $(GROUP) -m 555 $(STRIP) $< \
@@ -73,7 +73,7 @@
 --- a/lib/format_pool/Makefile.in
 +++ b/lib/format_pool/Makefile.in
 @@ -29,8 +29,7 @@
- include ../../make.tmpl
+ include $(top_builddir)/make.tmpl
  
  install: liblvm2formatpool.so
 -	$(INSTALL) -D $(OWNER) $(GROUP) -m 555 $(STRIP) $< \
@@ -85,7 +85,7 @@
 --- a/lib/locking/Makefile.in
 +++ b/lib/locking/Makefile.in
 @@ -25,8 +25,7 @@
- include ../../make.tmpl
+ include $(top_builddir)/make.tmpl
  
  install install_cluster: liblvm2clusterlock.so
 -	$(INSTALL) -D $(OWNER) $(GROUP) -m 555 $(STRIP) $< \
@@ -97,7 +97,7 @@
 --- a/lib/mirror/Makefile.in
 +++ b/lib/mirror/Makefile.in
 @@ -25,7 +25,6 @@
- include ../../make.tmpl
+ include $(top_builddir)/make.tmpl
  
  install: liblvm2mirror.so
 -	$(INSTALL) -D $(OWNER) $(GROUP) -m 555 $(STRIP) $< \
@@ -108,7 +108,7 @@
 --- a/lib/snapshot/Makefile.in
 +++ b/lib/snapshot/Makefile.in
 @@ -25,8 +25,7 @@
- include ../../make.tmpl
+ include $(top_builddir)/make.tmpl
  
  install: liblvm2snapshot.so
 -	$(INSTALL) -D $(OWNER) $(GROUP) -m 555 $(STRIP) $< \
@@ -119,7 +119,7 @@
  
 --- a/man/Makefile.in
 +++ b/man/Makefile.in
-@@ -63,14 +63,14 @@
+@@ -72,14 +72,14 @@
  	@for f in $(MAN8); \
  	do \
  	   $(RM) $(MAN8DIR)/$$f; \
@@ -136,7 +136,7 @@
  	done
  
  install_cluster:
-@@ -78,7 +78,7 @@
+@@ -87,7 +87,7 @@
  	@for f in $(MAN8CLUSTER); \
  	do \
  	   $(RM) $(MAN8DIR)/$$f; \
@@ -145,7 +145,7 @@
  	done
  
  install_device-mapper:
-@@ -86,7 +86,7 @@
+@@ -95,7 +95,7 @@
  	@for f in $(MAN8DM); \
  	do \
  	   $(RM) $(MAN8DIR)/$$f; \
@@ -156,7 +156,7 @@
  install: install_lvm2 install_device-mapper
 --- a/libdm/Makefile.in
 +++ b/libdm/Makefile.in
-@@ -73,7 +69,7 @@
+@@ -75,7 +75,7 @@
  install_device-mapper: install
  
  install_include:
@@ -165,7 +165,7 @@
  		$(includedir)/libdevmapper.h
  
  install_dynamic: install_@interface@
-@@ -81,19 +77,16 @@
+@@ -83,19 +83,16 @@
  		$(libdir)/libdevmapper.$(LIB_SUFFIX)
  
  install_static: install_@interface@_static
@@ -190,7 +190,7 @@
  	rm -f $@
 --- a/daemons/dmeventd/Makefile.in
 +++ b/daemons/dmeventd/Makefile.in
-@@ -73,31 +73,29 @@
+@@ -72,31 +72,29 @@
  endif
  
  install_include:
@@ -230,26 +230,26 @@
  
 --- a/daemons/dmeventd/plugins/mirror/Makefile.in
 +++ b/daemons/dmeventd/plugins/mirror/Makefile.in
-@@ -35,7 +35,7 @@
- LIBS += -ldevmapper @LIB_PTHREAD@ @LVM2CMD_LIB@
+@@ -35,7 +35,6 @@
+ LIBS += @LVM2CMD_LIB@ -ldevmapper-event-lvm2 -ldevmapper $(PTHREAD_LIBS)
  
  install_lvm2: libdevmapper-event-lvm2mirror.$(LIB_SUFFIX)
 -	$(INSTALL) -D $(OWNER) $(GROUP) -m 555 $(STRIP) $< \
-+	$(INSTALL) -D $< \
- 		$(libdir)/$<.$(LIB_VERSION)
- 	$(LN_S) -f $<.$(LIB_VERSION) $(libdir)/$<
+-		$(libdir)/$<
++	$(INSTALL) -D $< $(libdir)/$<
  
+ install: install_lvm2
 --- a/daemons/dmeventd/plugins/snapshot/Makefile.in
 +++ b/daemons/dmeventd/plugins/snapshot/Makefile.in
-@@ -35,7 +35,7 @@
- LIBS += -ldevmapper @LIB_PTHREAD@ @LVM2CMD_LIB@
+@@ -35,7 +35,6 @@
+ LIBS += @LVM2CMD_LIB@ -ldevmapper-event-lvm2 -ldevmapper $(PTHREAD_LIBS)
  
  install_lvm2: libdevmapper-event-lvm2snapshot.$(LIB_SUFFIX)
 -	$(INSTALL) -D $(OWNER) $(GROUP) -m 555 $(STRIP) $< \
-+	$(INSTALL) -D $< \
- 		$(libdir)/$<.$(LIB_VERSION)
- 	$(LN_S) -f $<.$(LIB_VERSION) $(libdir)/$<
+-		$(libdir)/$<
++	$(INSTALL) -D $< $(libdir)/$<
  
+ install: install_lvm2
 --- a/doc/Makefile.in
 +++ b/doc/Makefile.in
 @@ -24,7 +24,7 @@
@@ -271,9 +271,9 @@
  MKDIR_P = @MKDIR_P@
  MSGFMT = @MSGFMT@
  LCOV = @LCOV@
-@@ -56,11 +57,6 @@
+@@ -66,11 +67,6 @@
  interface = @interface@
- interfacedir = $(top_srcdir)/libdm/$(interface)
+ interfacebuilddir = $(top_builddir)/libdm/$(interface)
  
 -# setup misc variables
 -# define the ownership variables for the binaries and man pages
@@ -286,7 +286,7 @@
 --- a/scripts/Makefile.in
 +++ b/scripts/Makefile.in
 @@ -19,13 +19,10 @@
- include ../make.tmpl
+ include $(top_builddir)/make.tmpl
  
  install:
 -	$(INSTALL) -D $(OWNER) $(GROUP) -m 555 $(srcdir)/lvm_dump.sh \
@@ -322,7 +322,7 @@
  	)
 --- a/liblvm/Makefile.in
 +++ b/liblvm/Makefile.in
-@@ -67,22 +67,19 @@
+@@ -68,22 +68,19 @@
  install: $(INSTALL_TYPE) install_include
  
  install_include:
@@ -411,7 +411,7 @@
  fi
  
  ################################################################################
-@@ -1092,7 +1089,6 @@
+@@ -1083,7 +1080,6 @@
  AC_SUBST(DM_LIB_VERSION)
  AC_SUBST(DM_LIB_PATCHLEVEL)
  AC_SUBST(FSADM)
@@ -419,11 +419,11 @@
  AC_SUBST(GULM_CFLAGS)
  AC_SUBST(GULM_LIBS)
  AC_SUBST(HAVE_LIBDL)
-@@ -1116,7 +1112,6 @@
+@@ -1106,7 +1102,6 @@
  AC_SUBST(LVM_RELEASE_DATE)
  AC_SUBST(MIRRORS)
  AC_SUBST(MSGFMT)
 -AC_SUBST(OWNER)
  AC_SUBST(PKGCONFIG)
  AC_SUBST(POOL)
- AC_SUBST(QUORUM_CFLAGS)
+ AC_SUBST(PTHREAD_LIBS)

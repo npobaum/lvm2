@@ -18,6 +18,7 @@ top_builddir = @top_builddir@
 VPATH = @srcdir@
 
 SOURCES =\
+	lvm_misc.c \
 	lvm_base.c \
 	lvm_lv.c \
 	lvm_pv.c \
@@ -39,9 +40,9 @@ endif
 
 CLEAN_TARGETS += liblvm.cflow
 
-include ../make.tmpl
+include $(top_builddir)/make.tmpl
 
-LIBS += -ldevmapper -llvm-internal
+LIBS += $(LVMINTERNAL_LIBS) -ldevmapper
 
 ifeq ("@DMEVENTD@", "yes")
   LIBS += -ldevmapper-event
@@ -67,22 +68,19 @@ endif
 install: $(INSTALL_TYPE) install_include
 
 install_include:
-	$(INSTALL) -D $(OWNER) $(GROUP) -m 444 $(srcdir)/lvm2app.h $(includedir)/lvm2app.h
+	$(INSTALL_DATA) -D $(srcdir)/lvm2app.h $(includedir)/lvm2app.h
 
 install_dynamic: $(LIB_SHARED)
-	$(INSTALL) -D $(OWNER) $(GROUP) -m 555 $(STRIP) $< \
-		$(libdir)/$(LIB_SHARED).$(LIB_VERSION_APP)
+	$(INSTALL) -D $< $(libdir)/$(LIB_SHARED).$(LIB_VERSION_APP)
 	$(LN_S) -f $(LIB_SHARED).$(LIB_VERSION_APP) \
 		$(libdir)/$(LIB_SHARED)
 
 install_static: $(LIB_STATIC)
-	$(INSTALL) -D $(OWNER) $(GROUP) -m 555 $(STRIP) $< \
-		$(libdir)/$(LIB_STATIC).$(LIB_VERSION_APP)
+	$(INSTALL) -D $< $(libdir)/$(LIB_STATIC).$(LIB_VERSION_APP)
 	$(LN_S) -f $(LIB_STATIC).$(LIB_VERSION_APP) $(libdir)/$(LIB_STATIC)
 
 install_pkgconfig:
-	$(INSTALL) -D $(OWNER) $(GROUP) -m 444 $(LIB_NAME).pc \
-		$(usrlibdir)/pkgconfig/lvm2app.pc
+	$(INSTALL_DATA) -D $(LIB_NAME).pc $(usrlibdir)/pkgconfig/lvm2app.pc
 
 liblvm.cflow: $(SOURCES)
 	set -e; (echo -n "SOURCES += "; \

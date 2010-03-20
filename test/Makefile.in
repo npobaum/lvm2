@@ -25,50 +25,55 @@ abs_builddir = @abs_builddir@
 abs_top_builddir = @abs_top_builddir@
 abs_top_srcdir = @abs_top_srcdir@
 
-all: init.sh
-	./bin/harness $(T)
-
-bin/not: .bin-dir-stamp not.c
-	$(CC) -o bin/not not.c
-
-bin/harness: .bin-dir-stamp harness.c
-	$(CC) -o bin/harness harness.c
-
-init.sh: Makefile.in .bin-dir-stamp bin/not bin/harness
-	rm -f $@-t $@
-	echo 'top_srcdir=$(top_srcdir)' >> $@-t
-	echo 'abs_top_builddir=$(abs_top_builddir)' >> $@-t
-	echo 'abs_top_srcdir=$(abs_top_builddir)' >> $@-t
-	echo 'PATH=$(abs_top_builddir)/test/bin:$$PATH' >> $@-t
-	echo 'export LD_LIBRARY_PATH="$(abs_top_builddir)/libdm:$(abs_top_builddir)/liblvm:$(abs_top_builddir)/dmeventd"' >> $@-t
-	echo 'abs_srcdir=$(abs_srcdir)' >> $@-t
-	echo 'abs_builddir=$(abs_builddir)' >> $@-t
-	echo 'export PATH' >> $@-t
-	chmod a-w $@-t
-	mv $@-t $@
-
 # Shell quote;
 SHELL_PATH_SQ = $(subst ','\'',$(SHELL_PATH))
 
-T = $(wildcard t-*.sh)
+T = $(wildcard $(srcdir)/t-*.sh)
+
+ifeq ("@UDEV_SYNC@", "yes")
+dm_udev_synchronisation = 1
+endif
 
 ifeq ("@APPLIB@", "yes")
-T += lvm2app.sh
+T += $(srcdir)/lvm2app.sh
 all: api/vgtest
 api/vgtest:
 	$(MAKE) -C api vgtest
 endif
 
+all: init.sh
+	./bin/harness t-*.sh
+
+bin/not: $(srcdir)/not.c .bin-dir-stamp
+	$(CC) -o bin/not $<
+
+bin/harness: $(srcdir)/harness.c .bin-dir-stamp
+	$(CC) -o bin/harness $<
+
+init.sh: $(srcdir)/Makefile.in $(srcdir)/test-utils.sh .bin-dir-stamp bin/not bin/harness $(T)
+	rm -f $@-t $@
+	echo 'top_srcdir=$(top_srcdir)' >> $@-t
+	echo 'abs_top_builddir=$(abs_top_builddir)' >> $@-t
+	echo 'abs_top_srcdir=$(abs_top_builddir)' >> $@-t
+	echo 'PATH=$(abs_top_builddir)/test/bin:$$PATH' >> $@-t
+	echo 'export LD_LIBRARY_PATH="$(abs_top_builddir)/libdm:$(abs_top_builddir)/liblvm:$(abs_top_builddir)/daemons/dmeventd"' >> $@-t
+	echo 'abs_srcdir=$(abs_srcdir)' >> $@-t
+	echo 'abs_builddir=$(abs_builddir)' >> $@-t
+	echo 'export PATH' >> $@-t
+	echo 'export DM_UDEV_SYNCHRONISATION=$(dm_udev_synchronisation)' >> $@-t
+	chmod a-w $@-t
+	mv $@-t $@
+	if test "$(srcdir)" != "."; then cp $(srcdir)/test-utils.sh \
+	                                    $(srcdir)/test-lib.sh \
+	                                    $(T) .; fi
+
 Makefile: $(srcdir)/Makefile.in $(top_builddir)/config.status
 	cd $(top_builddir) && $(SHELL) ./config.status $(subdir)/$@
-
-$(T): init.sh
-	./bin/harness $@
 
 .bin-dir-stamp: lvm-wrapper
 	rm -rf bin
 	mkdir bin
-	for i in lvm $$(cat $(top_srcdir)/tools/.commands); do \
+	for i in lvm $$(cat ../tools/.commands); do \
 	  ln -s ../lvm-wrapper bin/$$i; \
 	done
 	ln -s "$(abs_top_builddir)/tools/dmsetup" bin/dmsetup
@@ -90,5 +95,5 @@ clean:
 distclean: clean
 	rm -f Makefile
 
-.PHONY: $(T) clean distclean
+.PHONY: clean distclean
 .NOTPARALLEL:

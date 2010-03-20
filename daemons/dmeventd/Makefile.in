@@ -26,12 +26,12 @@ TARGETS = dmeventd
 INSTALL_DMEVENTD_TARGETS = install_dmeventd_dynamic
 INSTALL_LIB_TARGETS = install_lib_dynamic
 
-ifeq ("@STATIC_LINK@", "yes")
   LIB_STATIC = libdevmapper-event.a
+ifeq ("@STATIC_LINK@", "yes")
   TARGETS += dmeventd.static
   INSTALL_DMEVENTD_TARGETS += install_dmeventd_static
-  INSTALL_LIB_TARGETS += install_lib_static
 endif
+  INSTALL_LIB_TARGETS += install_lib_static
 
 LIB_VERSION = $(LIB_VERSION_DM)
 
@@ -48,13 +48,13 @@ ifneq ($(MAKECMDGOALS),device-mapper)
   SUBDIRS+=plugins
 endif
 
-include ../../make.tmpl
+include $(top_builddir)/make.tmpl
 
 all: device-mapper
 device-mapper: $(TARGETS)
 
-LIBS += -ldl
-LVMLIBS += -ldevmapper-event -lpthread -ldevmapper
+CLDFLAGS += -ldevmapper
+LVMLIBS += -ldevmapper-event -ldevmapper $(PTHREAD_LIBS)
 
 $(VERSIONED_SHLIB): $(LIB_SHARED)
 	$(RM) -f $@
@@ -62,48 +62,45 @@ $(VERSIONED_SHLIB): $(LIB_SHARED)
 
 dmeventd: $(LIB_SHARED) $(VERSIONED_SHLIB) dmeventd.o
 	$(CC) $(CFLAGS) $(LDFLAGS) -L. -o $@ dmeventd.o \
-	$(LVMLIBS) $(LIBS) -rdynamic
+	$(DL_LIBS) $(LVMLIBS) $(LIBS)
 
-dmeventd.static: $(LIB_STATIC) dmeventd.o $(interfacedir)/libdevmapper.a
-	$(CC) $(CFLAGS) $(LDFLAGS) -static -L. -L$(interfacedir) -o $@ \
-	dmeventd.o $(LVMLIBS) $(LIBS) -rdynamic
+dmeventd.static: $(LIB_STATIC) dmeventd.o $(interfacebuilddir)/libdevmapper.a
+	$(CC) $(CFLAGS) $(LDFLAGS) -static -L. -L$(interfacebuilddir) -o $@ \
+	dmeventd.o $(DL_LIBS) $(LVMLIBS) $(STATIC_LIBS) $(LIBS)
 
 ifeq ("@PKGCONFIG@", "yes")
   INSTALL_LIB_TARGETS += install_pkgconfig
 endif
 
 install_include:
-	$(INSTALL) -D $(OWNER) $(GROUP) -m 444 $(srcdir)/libdevmapper-event.h \
+	$(INSTALL_DATA) $(srcdir)/libdevmapper-event.h \
 		$(includedir)/libdevmapper-event.h
 
 install_pkgconfig:
-	$(INSTALL) -D $(OWNER) $(GROUP) -m 444 libdevmapper-event.pc \
+	$(INSTALL_DATA) libdevmapper-event.pc \
 		$(usrlibdir)/pkgconfig/devmapper-event.pc
 
 install_lib_dynamic: libdevmapper-event.$(LIB_SUFFIX)
-	$(INSTALL) -D $(OWNER) $(GROUP) -m 555 $(STRIP) $< \
-		$(libdir)/libdevmapper-event.$(LIB_SUFFIX).$(LIB_VERSION)
+	$(INSTALL) -D $< $(libdir)/libdevmapper-event.$(LIB_SUFFIX).$(LIB_VERSION)
 	$(LN_S) -f libdevmapper-event.$(LIB_SUFFIX).$(LIB_VERSION) \
 		$(libdir)/libdevmapper-event.$(LIB_SUFFIX)
 
 install_lib_static: libdevmapper-event.a
-	$(INSTALL) -D $(OWNER) $(GROUP) -m 555 $(STRIP) $< \
-		$(libdir)/libdevmapper-event.a.$(LIB_VERSION)
-	$(LN_S) -f libdevmapper-event.a.$(LIB_VERSION) $(libdir)/libdevmapper-event.a
+	$(INSTALL) -D $< $(usrlibdir)/libdevmapper-event.a
 
 install_lib: $(INSTALL_LIB_TARGETS)
 
 install_dmeventd_dynamic: dmeventd
-	$(INSTALL) -D $(OWNER) $(GROUP) -m 555 $(STRIP) $< $(sbindir)/$<
+	$(INSTALL) -D $< $(sbindir)/$<
 
 install_dmeventd_static: dmeventd.static
-	$(INSTALL) -D $(OWNER) $(GROUP) -m 555 $(STRIP) $< $(sbindir)/$<
+	$(INSTALL) -D $< $(sbindir)/$<
 
 install_dmeventd: $(INSTALL_DMEVENTD_TARGETS)
 
 install: install_include install_lib install_dmeventd
 
-install_device-mapper: install
+install_device-mapper: install_include install_lib install_dmeventd
 
 .PHONY: distclean_lib distclean
 

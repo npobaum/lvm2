@@ -35,6 +35,7 @@ enum {
 	SEG_MIRRORED,
 	SEG_SNAPSHOT,
 	SEG_SNAPSHOT_ORIGIN,
+	SEG_SNAPSHOT_MERGE,
 	SEG_STRIPED,
 	SEG_ZERO,
 };
@@ -51,6 +52,7 @@ struct {
 	{ SEG_MIRRORED, "mirror" },
 	{ SEG_SNAPSHOT, "snapshot" },
 	{ SEG_SNAPSHOT_ORIGIN, "snapshot-origin" },
+	{ SEG_SNAPSHOT_MERGE, "snapshot-merge" },
 	{ SEG_STRIPED, "striped" },
 	{ SEG_ZERO, "zero"},
 };
@@ -81,6 +83,7 @@ struct load_segment {
 	uint32_t chunk_size;		/* Snapshot */
 	struct dm_tree_node *cow;	/* Snapshot */
 	struct dm_tree_node *origin;	/* Snapshot + Snapshot origin */
+	struct dm_tree_node *merge;	/* Snapshot */
 
 	struct dm_tree_node *log;	/* Mirror */
 	uint32_t region_size;		/* Mirror */
@@ -198,8 +201,8 @@ void dm_tree_free(struct dm_tree *dtree)
 	dm_free(dtree);
 }
 
-static int _nodes_are_linked(struct dm_tree_node *parent,
-			     struct dm_tree_node *child)
+static int _nodes_are_linked(const struct dm_tree_node *parent,
+			     const struct dm_tree_node *child)
 {
 	struct dm_tree_link *dlink;
 
@@ -268,7 +271,7 @@ static int _add_to_toplevel(struct dm_tree_node *node)
 
 static void _remove_from_toplevel(struct dm_tree_node *node)
 {
-	return _unlink_nodes(&node->dtree->root, node);
+	_unlink_nodes(&node->dtree->root, node);
 }
 
 static int _add_to_bottomlevel(struct dm_tree_node *node)
@@ -278,7 +281,7 @@ static int _add_to_bottomlevel(struct dm_tree_node *node)
 
 static void _remove_from_bottomlevel(struct dm_tree_node *node)
 {
-	return _unlink_nodes(node, &node->dtree->root);
+	_unlink_nodes(node, &node->dtree->root);
 }
 
 static int _link_tree_nodes(struct dm_tree_node *parent, struct dm_tree_node *child)
@@ -454,7 +457,8 @@ failed:
 
 static struct dm_tree_node *_add_dev(struct dm_tree *dtree,
 				     struct dm_tree_node *parent,
-				     uint32_t major, uint32_t minor)
+				     uint32_t major, uint32_t minor,
+				     uint16_t udev_flags)
 {
 	struct dm_task *dmt = NULL;
 	struct dm_info info;
@@ -471,7 +475,7 @@ static struct dm_tree_node *_add_dev(struct dm_tree *dtree,
 			return_NULL;
 
 		if (!(node = _create_dm_tree_node(dtree, name, uuid, &info,
-						  NULL, 0)))
+						  NULL, udev_flags)))
 			goto_out;
 		new = 1;
 	}
@@ -497,7 +501,7 @@ static struct dm_tree_node *_add_dev(struct dm_tree *dtree,
 	/* Add dependencies to tree */
 	for (i = 0; i < deps->count; i++)
 		if (!_add_dev(dtree, node, MAJOR(deps->device[i]),
-			      MINOR(deps->device[i]))) {
+			      MINOR(deps->device[i]), udev_flags)) {
 			node = NULL;
 			goto_out;
 		}
@@ -645,42 +649,48 @@ struct dm_tree_node *dm_tree_add_new_dev_with_udev_flags(struct dm_tree *dtree,
 void dm_tree_node_set_read_ahead(struct dm_tree_node *dnode,
 				 uint32_t read_ahead,
 				 uint32_t read_ahead_flags)
-{                          
+{
 	dnode->props.read_ahead = read_ahead;
 	dnode->props.read_ahead_flags = read_ahead_flags;
 }
 
 int dm_tree_add_dev(struct dm_tree *dtree, uint32_t major, uint32_t minor)
 {
-	return _add_dev(dtree, &dtree->root, major, minor) ? 1 : 0;
+	return _add_dev(dtree, &dtree->root, major, minor, 0) ? 1 : 0;
 }
 
-const char *dm_tree_node_get_name(struct dm_tree_node *node)
+int dm_tree_add_dev_with_udev_flags(struct dm_tree *dtree, uint32_t major,
+				    uint32_t minor, uint16_t udev_flags)
+{
+	return _add_dev(dtree, &dtree->root, major, minor, udev_flags) ? 1 : 0;
+}
+
+const char *dm_tree_node_get_name(const struct dm_tree_node *node)
 {
 	return node->info.exists ? node->name : "";
 }
 
-const char *dm_tree_node_get_uuid(struct dm_tree_node *node)
+const char *dm_tree_node_get_uuid(const struct dm_tree_node *node)
 {
 	return node->info.exists ? node->uuid : "";
 }
 
-const struct dm_info *dm_tree_node_get_info(struct dm_tree_node *node)
+const struct dm_info *dm_tree_node_get_info(const struct dm_tree_node *node)
 {
 	return &node->info;
 }
 
-void *dm_tree_node_get_context(struct dm_tree_node *node)
+void *dm_tree_node_get_context(const struct dm_tree_node *node)
 {
 	return node->context;
 }
 
-int dm_tree_node_size_changed(struct dm_tree_node *dnode)
+int dm_tree_node_size_changed(const struct dm_tree_node *dnode)
 {
 	return dnode->props.size_changed;
 }
 
-int dm_tree_node_num_children(struct dm_tree_node *node, uint32_t inverted)
+int dm_tree_node_num_children(const struct dm_tree_node *node, uint32_t inverted)
 {
 	if (inverted) {
 		if (_nodes_are_linked(&node->dtree->root, node))
@@ -796,11 +806,11 @@ struct dm_tree_node *dm_tree_find_node_by_uuid(struct dm_tree *dtree,
  * Set inverted to invert the tree.
  */
 struct dm_tree_node *dm_tree_next_child(void **handle,
-					   struct dm_tree_node *parent,
-					   uint32_t inverted)
+					const struct dm_tree_node *parent,
+					uint32_t inverted)
 {
 	struct dm_list **dlink = (struct dm_list **) handle;
-	struct dm_list *use_list;
+	const struct dm_list *use_list;
 
 	if (inverted)
 		use_list = &parent->used_by;
@@ -873,7 +883,8 @@ static int _deactivate_node(const char *name, uint32_t major, uint32_t minor,
 	r = dm_task_run(dmt);
 
 	/* FIXME Until kernel returns actual name so dm-ioctl.c can handle it */
-	rm_dev_node(name, dmt->cookie_set);
+	rm_dev_node(name, dmt->cookie_set &&
+			  !(udev_flags & DM_UDEV_DISABLE_DM_RULES_FLAG));
 
 	/* FIXME Remove node from tree or mark invalid? */
 
@@ -1006,6 +1017,7 @@ int dm_tree_deactivate_children(struct dm_tree_node *dnode,
 				   const char *uuid_prefix,
 				   size_t uuid_prefix_len)
 {
+	int r = 1;
 	void *handle = NULL;
 	struct dm_tree_node *child = dnode;
 	struct dm_info info;
@@ -1039,18 +1051,20 @@ int dm_tree_deactivate_children(struct dm_tree_node *dnode,
 			continue;
 
 		if (!_deactivate_node(name, info.major, info.minor,
-				      &dnode->dtree->cookie, dnode->udev_flags)) {
+				      &child->dtree->cookie, child->udev_flags)) {
 			log_error("Unable to deactivate %s (%" PRIu32
 				  ":%" PRIu32 ")", name, info.major,
 				  info.minor);
+			r = 0;
 			continue;
 		}
 
 		if (dm_tree_node_num_children(child, 0))
-			dm_tree_deactivate_children(child, uuid_prefix, uuid_prefix_len);
+			if (!dm_tree_deactivate_children(child, uuid_prefix, uuid_prefix_len))
+				return_0;
 	}
 
-	return 1;
+	return r;
 }
 
 void dm_tree_skip_lockfs(struct dm_tree_node *dnode)
@@ -1064,9 +1078,10 @@ void dm_tree_use_no_flush_suspend(struct dm_tree_node *dnode)
 }
 
 int dm_tree_suspend_children(struct dm_tree_node *dnode,
-				   const char *uuid_prefix,
-				   size_t uuid_prefix_len)
+			     const char *uuid_prefix,
+			     size_t uuid_prefix_len)
 {
+	int r = 1;
 	void *handle = NULL;
 	struct dm_tree_node *child = dnode;
 	struct dm_info info, newinfo;
@@ -1109,6 +1124,7 @@ int dm_tree_suspend_children(struct dm_tree_node *dnode,
 			log_error("Unable to suspend %s (%" PRIu32
 				  ":%" PRIu32 ")", name, info.major,
 				  info.minor);
+			r = 0;
 			continue;
 		}
 
@@ -1130,16 +1146,18 @@ int dm_tree_suspend_children(struct dm_tree_node *dnode,
 			continue;
 
 		if (dm_tree_node_num_children(child, 0))
-			dm_tree_suspend_children(child, uuid_prefix, uuid_prefix_len);
+			if (!dm_tree_suspend_children(child, uuid_prefix, uuid_prefix_len))
+				return_0;
 	}
 
-	return 1;
+	return r;
 }
 
 int dm_tree_activate_children(struct dm_tree_node *dnode,
 				 const char *uuid_prefix,
 				 size_t uuid_prefix_len)
 {
+	int r = 1;
 	void *handle = NULL;
 	struct dm_tree_node *child = dnode;
 	struct dm_info newinfo;
@@ -1158,12 +1176,13 @@ int dm_tree_activate_children(struct dm_tree_node *dnode,
 			continue;
 
 		if (dm_tree_node_num_children(child, 0))
-			dm_tree_activate_children(child, uuid_prefix, uuid_prefix_len);
+			if (!dm_tree_activate_children(child, uuid_prefix, uuid_prefix_len))
+				return_0;
 	}
 
 	handle = NULL;
 
-	for (priority = 0; priority < 2; priority++) {
+	for (priority = 0; priority < 3; priority++) {
 		while ((child = dm_tree_next_child(&handle, dnode, 0))) {
 			if (!(uuid = dm_tree_node_get_uuid(child))) {
 				stack;
@@ -1204,6 +1223,7 @@ int dm_tree_activate_children(struct dm_tree_node *dnode,
 				log_error("Unable to resume %s (%" PRIu32
 					  ":%" PRIu32 ")", child->name, child->info.major,
 					  child->info.minor);
+				r = 0;
 				continue;
 			}
 
@@ -1214,7 +1234,7 @@ int dm_tree_activate_children(struct dm_tree_node *dnode,
 
 	handle = NULL;
 
-	return 1;
+	return r;
 }
 
 static int _create_node(struct dm_tree_node *dnode)
@@ -1388,6 +1408,9 @@ static int _mirror_emit_segment_line(struct dm_task *dmt, uint32_t major,
 
 		if (!dm_log_userspace)
 			EMIT_PARAMS(pos, "clustered-");
+		else
+			/* For clustered-* type field inserted later */
+			log_parm_count++;
 	}
 
 	if (!seg->log)
@@ -1454,6 +1477,7 @@ static int _emit_segment_line(struct dm_task *dmt, uint32_t major,
 			return_0;
 		break;
 	case SEG_SNAPSHOT:
+	case SEG_SNAPSHOT_MERGE:
 		if (!_build_dev_string(originbuf, sizeof(originbuf), seg->origin))
 			return_0;
 		if (!_build_dev_string(cowbuf, sizeof(cowbuf), seg->cow))
@@ -1482,6 +1506,7 @@ static int _emit_segment_line(struct dm_task *dmt, uint32_t major,
 	case SEG_ERROR:
 	case SEG_SNAPSHOT:
 	case SEG_SNAPSHOT_ORIGIN:
+	case SEG_SNAPSHOT_MERGE:
 	case SEG_ZERO:
 		break;
 	case SEG_CRYPT:
@@ -1605,6 +1630,7 @@ int dm_tree_preload_children(struct dm_tree_node *dnode,
 			     const char *uuid_prefix,
 			     size_t uuid_prefix_len)
 {
+	int r = 1;
 	void *handle = NULL;
 	struct dm_tree_node *child;
 	struct dm_info newinfo;
@@ -1621,7 +1647,8 @@ int dm_tree_preload_children(struct dm_tree_node *dnode,
 			continue;
 
 		if (dm_tree_node_num_children(child, 0))
-			dm_tree_preload_children(child, uuid_prefix, uuid_prefix_len);
+			if (!dm_tree_preload_children(child, uuid_prefix, uuid_prefix_len))
+				return_0;
 
 		/* FIXME Cope if name exists with no uuid? */
 		if (!child->info.exists) {
@@ -1655,6 +1682,7 @@ int dm_tree_preload_children(struct dm_tree_node *dnode,
 			log_error("Unable to resume %s (%" PRIu32
 				  ":%" PRIu32 ")", child->name, child->info.major,
 				  child->info.minor);
+			r = 0;
 			continue;
 		}
 
@@ -1664,7 +1692,7 @@ int dm_tree_preload_children(struct dm_tree_node *dnode,
 
 	handle = NULL;
 
-	return 1;
+	return r;
 }
 
 /*
@@ -1715,6 +1743,7 @@ static struct load_segment *_add_segment(struct dm_tree_node *dnode, unsigned ty
 	seg->chunk_size = 0;
 	seg->cow = NULL;
 	seg->origin = NULL;
+	seg->merge = NULL;
 
 	dm_list_add(&dnode->props.segs, &seg->list);
 	dnode->props.segment_count++;
@@ -1747,17 +1776,21 @@ int dm_tree_node_add_snapshot_origin_target(struct dm_tree_node *dnode,
 	return 1;
 }
 
-int dm_tree_node_add_snapshot_target(struct dm_tree_node *node,
-                                        uint64_t size,
-                                        const char *origin_uuid,
-                                        const char *cow_uuid,
-                                        int persistent,
-                                        uint32_t chunk_size)
+static int _add_snapshot_target(struct dm_tree_node *node,
+				   uint64_t size,
+				   const char *origin_uuid,
+				   const char *cow_uuid,
+				   const char *merge_uuid,
+				   int persistent,
+				   uint32_t chunk_size)
 {
 	struct load_segment *seg;
-	struct dm_tree_node *origin_node, *cow_node;
+	struct dm_tree_node *origin_node, *cow_node, *merge_node;
+	unsigned seg_type;
 
-	if (!(seg = _add_segment(node, SEG_SNAPSHOT, size)))
+	seg_type = !merge_uuid ? SEG_SNAPSHOT : SEG_SNAPSHOT_MERGE;
+
+	if (!(seg = _add_segment(node, seg_type, size)))
 		return_0;
 
 	if (!(origin_node = dm_tree_find_node_by_uuid(node->dtree, origin_uuid))) {
@@ -1770,7 +1803,7 @@ int dm_tree_node_add_snapshot_target(struct dm_tree_node *node,
 		return_0;
 
 	if (!(cow_node = dm_tree_find_node_by_uuid(node->dtree, cow_uuid))) {
-		log_error("Couldn't find snapshot origin uuid %s.", cow_uuid);
+		log_error("Couldn't find snapshot COW device uuid %s.", cow_uuid);
 		return 0;
 	}
 
@@ -1781,7 +1814,47 @@ int dm_tree_node_add_snapshot_target(struct dm_tree_node *node,
 	seg->persistent = persistent ? 1 : 0;
 	seg->chunk_size = chunk_size;
 
+	if (merge_uuid) {
+		if (!(merge_node = dm_tree_find_node_by_uuid(node->dtree, merge_uuid))) {
+			/* not a pure error, merging snapshot may have been deactivated */
+			log_verbose("Couldn't find merging snapshot uuid %s.", merge_uuid);
+		} else {
+			seg->merge = merge_node;
+			/* must not link merging snapshot, would undermine activation_priority below */
+		}
+
+		/* Resume snapshot-merge (acting origin) after other snapshots */
+		node->activation_priority = 1;
+		if (seg->merge) {
+			/* Resume merging snapshot after snapshot-merge */
+			seg->merge->activation_priority = 2;
+		}
+	}
+
 	return 1;
+}
+
+
+int dm_tree_node_add_snapshot_target(struct dm_tree_node *node,
+				     uint64_t size,
+				     const char *origin_uuid,
+				     const char *cow_uuid,
+				     int persistent,
+				     uint32_t chunk_size)
+{
+	return _add_snapshot_target(node, size, origin_uuid, cow_uuid,
+				    NULL, persistent, chunk_size);
+}
+
+int dm_tree_node_add_snapshot_merge_target(struct dm_tree_node *node,
+					   uint64_t size,
+					   const char *origin_uuid,
+					   const char *cow_uuid,
+					   const char *merge_uuid,
+					   uint32_t chunk_size)
+{
+	return _add_snapshot_target(node, size, origin_uuid, cow_uuid,
+				    merge_uuid, 1, chunk_size);
 }
 
 int dm_tree_node_add_error_target(struct dm_tree_node *node,
@@ -1849,7 +1922,7 @@ int dm_tree_node_add_crypt_target(struct dm_tree_node *node,
 
 int dm_tree_node_add_mirror_target_log(struct dm_tree_node *node,
 					  uint32_t region_size,
-					  unsigned clustered, 
+					  unsigned clustered,
 					  const char *log_uuid,
 					  unsigned area_count,
 					  uint32_t flags)
@@ -1951,7 +2024,8 @@ int dm_tree_node_add_target_area(struct dm_tree_node *node,
 		}
 
 		/* FIXME Check correct macro use */
-		if (!(dev_node = _add_dev(node->dtree, node, MAJOR(info.st_rdev), MINOR(info.st_rdev))))
+		if (!(dev_node = _add_dev(node->dtree, node, MAJOR(info.st_rdev),
+					  MINOR(info.st_rdev), 0)))
 			return_0;
 	}
 

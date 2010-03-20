@@ -21,20 +21,30 @@ CC = @CC@
 RANLIB = @RANLIB@
 SHELL = /bin/sh
 INSTALL = @INSTALL@
+INSTALL_DATA = @INSTALL@ -m 644
 MKDIR_P = @MKDIR_P@
 MSGFMT = @MSGFMT@
 LCOV = @LCOV@
 GENHTML = @GENHTML@
 LN_S = @LN_S@
 SED = @SED@
+CFLOW_CMD = @CFLOW_CMD@
 
 LIBS = @LIBS@
+# Extra libraries always linked with static binaries
+STATIC_LIBS = $(SELINUX_LIBS) $(UDEV_LIBS)
 DEFS += @DEFS@
 CFLAGS += @CFLAGS@
 CLDFLAGS += @CLDFLAGS@
 LDDEPS += @LDDEPS@
 LDFLAGS += @LDFLAGS@
 LIB_SUFFIX = @LIB_SUFFIX@
+LVMINTERNAL_LIBS = -llvm-internal $(DL_LIBS)
+DL_LIBS = @DL_LIBS@
+PTHREAD_LIBS = @PTHREAD_LIBS@
+READLINE_LIBS = @READLINE_LIBS@
+SELINUX_LIBS = @SELINUX_LIBS@
+UDEV_LIBS = @UDEV_LIBS@
 
 # Setup directory variables
 prefix = @prefix@
@@ -47,6 +57,7 @@ libdir = $(DESTDIR)@libdir@
 usrlibdir = $(DESTDIR)@usrlibdir@
 sbindir = $(DESTDIR)@sbindir@
 usrsbindir = $(DESTDIR)@usrsbindir@
+datarootdir = $(DESTDIR)@datarootdir@
 infodir = $(DESTDIR)@infodir@
 mandir = $(DESTDIR)@mandir@
 localedir = $(DESTDIR)@LOCALEDIR@
@@ -54,12 +65,7 @@ staticdir = $(DESTDIR)@STATICDIR@
 udevdir = $(DESTDIR)@udevdir@
 
 interface = @interface@
-interfacedir = $(top_srcdir)/libdm/$(interface)
-
-# setup misc variables
-# define the ownership variables for the binaries and man pages
-OWNER = @OWNER@
-GROUP = @GROUP@
+interfacebuilddir = $(top_builddir)/libdm/$(interface)
 
 # The number of jobs to run, if blank, defaults to the make standard
 ifndef MAKEFLAGS
@@ -78,7 +84,10 @@ CFLAGS += @COPTIMISE_FLAG@
 ifeq ("@DEBUG@", "yes")
   CFLAGS += -g -fno-omit-frame-pointer
   DEFS += -DDEBUG
-  DEFS += -DDEBUG_MEM
+  # memory debugging is not thread-safe yet
+  ifneq ("@DMEVENTD@", "yes")
+    DEFS += -DDEBUG_MEM
+  endif
 endif
 
 ifeq ("@INTL@", "yes")
@@ -105,7 +114,6 @@ endif
 #DEFS += -DBOUNDS_CHECK
 
 #CFLAGS += -pg
-#LDFLAGS += -pg
 
 STRIP=
 #STRIP = -s
@@ -133,65 +141,27 @@ POTFILES = $(SOURCES:%.c=%.pot)
 
 .PHONY: all install install_cluster pofile distclean clean cflow device-mapper 
 .PHONY: install_device-mapper install_lvm2
-.PHONY: $(SUBDIRS) $(SUBDIRS.install) $(SUBDIRS.clean) $(SUBDIRS.distclean)
-.PHONY: $(SUBDIRS.pofile) $(SUBDIRS.install_cluster) $(SUBDIRS.cflow)
-.PHONY: $(SUBDIRS.device-mapper) $(SUBDIRS.install-device-mapper)
-
-SUBDIRS.device-mapper := $(SUBDIRS:=.device-mapper)
-SUBDIRS.install := $(SUBDIRS:=.install)
-SUBDIRS.install_cluster := $(SUBDIRS:=.install_cluster)
-SUBDIRS.install_device-mapper := $(SUBDIRS:=.install_device-mapper)
-SUBDIRS.install_lvm2 := $(SUBDIRS:=.install_lvm2)
-SUBDIRS.pofile := $(SUBDIRS:=.pofile)
-SUBDIRS.cflow := $(SUBDIRS:=.cflow)
-SUBDIRS.clean := $(SUBDIRS:=.clean)
-SUBDIRS.distclean := $(SUBDIRS:=.distclean)
 
 TARGETS += $(LIB_SHARED) $(LIB_STATIC) $(VERSIONED_SHLIB)
 
-all: $(SUBDIRS) $(TARGETS)
+all: subdirs-all $(TARGETS)
 
-install: all $(SUBDIRS.install)
-install_cluster: all $(SUBDIRS.install_cluster)
-install_device-mapper: $(SUBDIRS.install_device-mapper)
-install_lvm2: $(SUBDIRS.install_lvm2)
+install: subdirs-install
+install_cluster: subdirs-install_cluster
+install_device-mapper: subdirs-install_device-mapper
+install_lvm2: subdirs-install_lvm2
 
-$(SUBDIRS): $(SUBDIRS.device-mapper)
-	$(MAKE) -C $@
-
-$(SUBDIRS.device-mapper):
-	$(MAKE) -C $(@:.device-mapper=) device-mapper
-
-$(SUBDIRS.install): $(SUBDIRS)
-	$(MAKE) -C $(@:.install=) install
-
-$(SUBDIRS.install_cluster): $(SUBDIRS)
-	$(MAKE) -C $(@:.install_cluster=) install_cluster
-
-$(SUBDIRS.install_device-mapper): device-mapper
-	$(MAKE) -C $(@:.install_device-mapper=) install_device-mapper
-
-$(SUBDIRS.install_lvm2): $(SUBDIRS)
-	$(MAKE) -C $(@:.install_lvm2=) install_lvm2
-
-$(SUBDIRS.clean):
-	-$(MAKE) -C $(@:.clean=) clean
-
-$(SUBDIRS.distclean):
-	-$(MAKE) -C $(@:.distclean=) distclean
+subdirs-%:
+	+@set -e; for subdir in $(SUBDIRS); do \
+		$(MAKE) -C $$subdir $(patsubst subdirs-%,%,$@); \
+	done
 
 ifeq ("@INTL@", "yes")
-pofile: $(SUBDIRS.pofile) $(POTFILES)
-
-$(SUBDIRS.pofile):
-	$(MAKE) -C $(@:.pofile=) pofile
+pofile: subdirs-pofile $(POTFILES)
 endif
 
 ifneq ("@CFLOW_CMD@", "")
-cflow: $(SUBDIRS.cflow)
-
-$(SUBDIRS.cflow):
-	$(MAKE) -C $(@:.cflow=) cflow
+cflow: subdirs-cflow
 endif
 
 $(TARGETS): $(OBJECTS)
@@ -209,13 +179,13 @@ $(TARGETS): $(OBJECTS)
 ifeq ("@LIB_SUFFIX@","so")
 $(LIB_SHARED): $(OBJECTS) $(LDDEPS)
 	$(CC) -shared -Wl,-soname,$(notdir $@).$(LIB_VERSION) \
-	$(CFLAGS) $(CLDFLAGS) $(OBJECTS) $(LIBS) -o $@
+	$(CFLAGS) $(LDFLAGS) $(CLDFLAGS) $(OBJECTS) -o $@
 endif
 
 ifeq ("@LIB_SUFFIX@","dylib")
 $(LIB_SHARED): $(OBJECTS) $(LDDEPS)
 	$(CC) -dynamiclib -dylib_current_version,$(LIB_VERSION) \
-	$(CFLAGS) $(CLDFLAGS) $(OBJECTS) $(LIBS) -o $@
+	$(CFLAGS) $(LDFLAGS) $(CLDFLAGS) $(OBJECTS) -o $@
 endif
 
 %.so: %.a
@@ -239,12 +209,12 @@ $(LIB_STATIC): $(OBJECTS)
 %.mo: %.po
 	$(MSGFMT) -o $@ $<
 
-clean: $(SUBDIRS.clean)
+clean: subdirs-clean
 	$(RM) $(OBJECTS) $(TARGETS) $(CLEAN_TARGETS) $(SOURCES:%.c=%.d) \
 	      $(SOURCES2:%.c=%.d) $(SOURCES:%.c=%.pot) $(SOURCES:%.c=%.gcno) \
 	      $(SOURCES:%.c=%.gcda) $(LDDEPS)
 
-distclean: $(SUBDIRS.distclean)
+distclean: subdir-distclean
 	$(RM) -rf $(DISTCLEAN_DIRS)
 	$(RM) $(DISTCLEAN_TARGETS) \
 	      $(OBJECTS) $(TARGETS) $(CLEAN_TARGETS) $(SOURCES:%.c=%.d) \

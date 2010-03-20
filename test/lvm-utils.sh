@@ -87,6 +87,28 @@ fi
   test $val1 = $val2
 }
 
+
+get_pv_field() {
+	local pv=$1
+	local field=$2
+	local value
+	pvs --noheading -o $field $pv | sed 's/^ *//'
+}
+
+get_vg_field() {
+	local vg=$1
+	local field=$2
+	local value
+	vgs --noheading -o $field $vg | sed 's/^ *//'
+}
+
+get_lv_field() {
+	local lv=$1
+	local field=$2
+	local value
+	lvs --noheading -o $field $lv | sed 's/^ *//'
+}
+
 check_vg_field_()
 {
     local vg=$1;
@@ -201,6 +223,10 @@ init_root_dir_()
   }
   global {
     library_dir = "$G_root_/lib"
+  }
+  activation {
+    udev_sync = 1
+    udev_rules = 1
   }
 EOF
 }

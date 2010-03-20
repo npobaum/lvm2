@@ -120,7 +120,7 @@ static int _request_confirmation(struct cmd_context *cmd,
 	if (!arg_count(cmd, force_ARG)) {
 		if (yes_no_prompt("Do you really want to reduce %s? [y/n]: ",
 				  lp->lv_name) == 'n') {
-			log_print("Logical volume %s NOT reduced", lp->lv_name);
+			log_error("Logical volume %s NOT reduced", lp->lv_name);
 			return 0;
 		}
 		if (sigint_caught())
@@ -240,8 +240,8 @@ static int _lvresize_params(struct cmd_context *cmd, int argc, char **argv,
 		return 0;
 	}
 
-	lp->resizefs = arg_count(cmd, resizefs_ARG) ? 1 : 0;
-	lp->nofsck = arg_count(cmd, nofsck_ARG) ? 1 : 0;
+	lp->resizefs = arg_is_set(cmd, resizefs_ARG);
+	lp->nofsck = arg_is_set(cmd, nofsck_ARG);
 
 	if (!argc) {
 		log_error("Please provide the logical volume name");
@@ -367,8 +367,18 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 			lp->extents = lp->extents * lv->le_count / 100;
 			break;
 		case PERCENT_PVS:
-			pv_extent_count = pv_list_extents_free(pvh);
-			lp->extents = lp->extents * pv_extent_count / 100;
+			if (lp->argc) {
+				pv_extent_count = pv_list_extents_free(pvh);
+				lp->extents = lp->extents * pv_extent_count / 100;
+			} else
+				lp->extents = lp->extents * vg->extent_count / 100;
+			break;
+		case PERCENT_ORIGIN:
+			if (!lv_is_cow(lv)) {
+				log_error("Specified LV does not have an origin LV.");
+				return EINVALID_CMD_LINE;
+			}
+			lp->extents = lp->extents * origin_from_cow(lv)->le_count / 100;
 			break;
 		case PERCENT_NONE:
 			break;
@@ -635,7 +645,8 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 
 	if (!vg_commit(vg)) {
 		stack;
-		resume_lv(cmd, lock_lv);
+		if (!resume_lv(cmd, lock_lv))
+			stack;
 		backup(vg);
 		return ECMD_FAILED;
 	}

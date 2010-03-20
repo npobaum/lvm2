@@ -52,6 +52,7 @@ static int _verbose = 0;
 #ifdef UDEV_SYNC_SUPPORT
 static int _udev_running = -1;
 static int _sync_with_udev = 1;
+static int _udev_checking = 1;
 #endif
 
 /*
@@ -181,6 +182,7 @@ struct dm_task *dm_task_create(int type)
 	dmt->read_ahead_flags = 0;
 	dmt->event_nr = 0;
 	dmt->cookie_set = 0;
+	dmt->query_inactive_table = 0;
 
 	return dmt;
 }
@@ -404,12 +406,19 @@ int dm_set_selinux_context(const char *path, mode_t mode)
 static int _add_dev_node(const char *dev_name, uint32_t major, uint32_t minor,
 			 uid_t uid, gid_t gid, mode_t mode, int check_udev)
 {
-	char path[PATH_MAX];
+	char path[PATH_MAX], tmppath[PATH_MAX];
 	struct stat info;
 	dev_t dev = MKDEV(major, minor);
 	mode_t old_mask;
 
 	_build_dev_path(path, sizeof(path), dev_name);
+	_build_dev_path(tmppath, sizeof(tmppath), ".XXXXXX");
+
+	mktemp(tmppath);
+	if (strlen(tmppath) == 0) {
+		log_error("Unable to create name of temporary file");
+		return 0;
+	}
 
 	if (stat(path, &info) >= 0) {
 		if (!S_ISBLK(info.st_mode)) {
@@ -427,29 +436,39 @@ static int _add_dev_node(const char *dev_name, uint32_t major, uint32_t minor,
 				  dev_name);
 			return 0;
 		}
-	} else if (dm_udev_get_sync_support() && check_udev)
+	} else if (dm_udev_get_sync_support() && dm_udev_get_checking() &&
+		   check_udev)
 		log_warn("%s not set up by udev: Falling back to direct "
 			 "node creation.", path);
 
 	old_mask = umask(0);
-	if (mknod(path, S_IFBLK | mode, dev) < 0) {
+	if (mknod(tmppath, S_IFBLK | mode, dev) < 0) {
 		umask(old_mask);
 		log_error("Unable to make device node for '%s'", dev_name);
-		return 0;
+		goto error;
 	}
 	umask(old_mask);
 
-	if (chown(path, uid, gid) < 0) {
+	if (chown(tmppath, uid, gid) < 0) {
 		log_sys_error("chown", path);
-		return 0;
+		goto error;
+	}
+
+	if (!dm_set_selinux_context(tmppath, S_IFBLK))
+		goto error;
+
+	if (rename(tmppath, path) < 0) {
+		log_error("Unable to replace device node for '%s'", dev_name);
+		goto error;
 	}
 
 	log_debug("Created %s", path);
 
-	if (!dm_set_selinux_context(path, S_IFBLK))
-		return 0;
-
 	return 1;
+
+error:
+	unlink(tmppath);
+	return 0;
 }
 
 static int _rm_dev_node(const char *dev_name, int check_udev)
@@ -461,7 +480,8 @@ static int _rm_dev_node(const char *dev_name, int check_udev)
 
 	if (stat(path, &info) < 0)
 		return 1;
-	else if (dm_udev_get_sync_support() && check_udev)
+	else if (dm_udev_get_sync_support() && dm_udev_get_checking() &&
+		 check_udev)
 		log_warn("Node %s was not removed by udev. "
 			 "Falling back to direct node removal.", path);
 
@@ -491,7 +511,8 @@ static int _rename_dev_node(const char *old_name, const char *new_name,
 				  "is already present", newpath);
 			return 0;
 		}
-		else if (dm_udev_get_sync_support() && check_udev) {
+		else if (dm_udev_get_sync_support() && dm_udev_get_checking() &&
+			 check_udev) {
 			if (stat(oldpath, &info) < 0 &&
 				 errno == ENOENT)
 				/* assume udev already deleted this */
@@ -515,7 +536,8 @@ static int _rename_dev_node(const char *old_name, const char *new_name,
 			return 0;
 		}
 	}
-	else if (dm_udev_get_sync_support() && check_udev)
+	else if (dm_udev_get_sync_support() && dm_udev_get_checking() &&
+		 check_udev)
 		log_warn("The node %s should have been renamed to %s "
 			 "by udev but new node is not present. "
 			 "Falling back to direct node rename.",
@@ -883,8 +905,19 @@ int dm_udev_get_sync_support(void)
 	return 0;
 }
 
+void dm_udev_set_checking(int checking)
+{
+}
+
+int dm_udev_get_checking(void)
+{
+	return 0;
+}
+
 int dm_task_set_cookie(struct dm_task *dmt, uint32_t *cookie, uint16_t flags)
 {
+	if (dm_cookie_supported())
+		dmt->event_nr = flags << DM_UDEV_FLAGS_SHIFT;
 	*cookie = 0;
 
 	return 1;
@@ -958,6 +991,19 @@ int dm_udev_get_sync_support(void)
 		_udev_running = _check_udev_is_running();
 
 	return dm_cookie_supported() && _udev_running && _sync_with_udev;
+}
+
+void dm_udev_set_checking(int checking)
+{
+	if ((_udev_checking = checking))
+		log_debug("DM udev checking enabled");
+	else
+		log_debug("DM udev checking disabled");
+}
+
+int dm_udev_get_checking(void)
+{
+	return _udev_checking;
 }
 
 static int _get_cookie_sem(uint32_t cookie, int *semid)
@@ -1136,12 +1182,25 @@ bad:
 	return 0;
 }
 
+int dm_udev_create_cookie(uint32_t *cookie)
+{
+	int semid;
+
+	if (!dm_udev_get_sync_support())
+		return 1;
+
+	return _udev_notify_sem_create(cookie, &semid);
+}
+
 int dm_task_set_cookie(struct dm_task *dmt, uint32_t *cookie, uint16_t flags)
 {
 	int semid;
 
+	if (dm_cookie_supported())
+		dmt->event_nr = flags << DM_UDEV_FLAGS_SHIFT;
+
 	if (!dm_udev_get_sync_support()) {
-		dmt->event_nr = *cookie = 0;
+		*cookie = 0;
 		return 1;
 	}
 
@@ -1158,8 +1217,7 @@ int dm_task_set_cookie(struct dm_task *dmt, uint32_t *cookie, uint16_t flags)
 		goto bad;
 	}
 
-	dmt->event_nr = (~DM_UDEV_FLAGS_MASK & *cookie) |
-			(flags << DM_UDEV_FLAGS_SHIFT);
+	dmt->event_nr |= ~DM_UDEV_FLAGS_MASK & *cookie;
 	dmt->cookie_set = 1;
 
 	log_debug("Udev cookie 0x%" PRIx32 " (semid %d) assigned to dm_task "

@@ -42,6 +42,11 @@ extern char *optarg;
 #  define OPTIND_INIT 1
 #endif
 
+#ifdef HAVE_UDEV_QUEUE_GET_UDEV_IS_ACTIVE
+#  define LIBUDEV_I_KNOW_THE_API_IS_SUBJECT_TO_CHANGE
+#  include <libudev.h>
+#endif
+
 /*
  * Table of valid switches
  */
@@ -54,10 +59,15 @@ static struct arg _the_args[ARG_COUNT + 1] = {
 static struct cmdline_context _cmdline;
 
 /* Command line args */
-/* FIXME: struct cmd_context * is unnecessary (large # files ) */
+/* FIXME: Move static _the_args into cmd? */
 unsigned arg_count(const struct cmd_context *cmd __attribute((unused)), int a)
 {
 	return _the_args[a].count;
+}
+
+unsigned arg_is_set(const struct cmd_context *cmd, int a)
+{
+	return arg_count(cmd, a) ? 1 : 0;
 }
 
 const char *arg_value(struct cmd_context *cmd __attribute((unused)), int a)
@@ -65,50 +75,42 @@ const char *arg_value(struct cmd_context *cmd __attribute((unused)), int a)
 	return _the_args[a].value;
 }
 
-const char *arg_str_value(struct cmd_context *cmd __attribute((unused)),
-			  int a, const char *def)
+const char *arg_str_value(struct cmd_context *cmd, int a, const char *def)
 {
 	return arg_count(cmd, a) ? _the_args[a].value : def;
 }
 
-int32_t arg_int_value(struct cmd_context *cmd __attribute((unused)),
-		      int a, const int32_t def)
+int32_t arg_int_value(struct cmd_context *cmd, int a, const int32_t def)
 {
 	return arg_count(cmd, a) ? _the_args[a].i_value : def;
 }
 
-uint32_t arg_uint_value(struct cmd_context *cmd __attribute((unused)),
-			int a, const uint32_t def)
+uint32_t arg_uint_value(struct cmd_context *cmd, int a, const uint32_t def)
 {
 	return arg_count(cmd, a) ? _the_args[a].ui_value : def;
 }
 
-int64_t arg_int64_value(struct cmd_context *cmd __attribute((unused)),
-			int a, const int64_t def)
+int64_t arg_int64_value(struct cmd_context *cmd, int a, const int64_t def)
 {
 	return arg_count(cmd, a) ? _the_args[a].i64_value : def;
 }
 
-uint64_t arg_uint64_value(struct cmd_context *cmd __attribute((unused)),
-			  int a, const uint64_t def)
+uint64_t arg_uint64_value(struct cmd_context *cmd, int a, const uint64_t def)
 {
 	return arg_count(cmd, a) ? _the_args[a].ui64_value : def;
 }
 
-const void *arg_ptr_value(struct cmd_context *cmd __attribute((unused)),
-			  int a, const void *def)
+const void *arg_ptr_value(struct cmd_context *cmd, int a, const void *def)
 {
 	return arg_count(cmd, a) ? _the_args[a].ptr : def;
 }
 
-sign_t arg_sign_value(struct cmd_context *cmd __attribute((unused)),
-		      int a, const sign_t def)
+sign_t arg_sign_value(struct cmd_context *cmd, int a, const sign_t def)
 {
 	return arg_count(cmd, a) ? _the_args[a].sign : def;
 }
 
-percent_t arg_percent_value(struct cmd_context *cmd __attribute((unused)),
-			    int a, const percent_t def)
+percent_t arg_percent_value(struct cmd_context *cmd, int a, const percent_t def)
 {
 	return arg_count(cmd, a) ? _the_args[a].percent : def;
 }
@@ -361,6 +363,9 @@ int int_arg_with_sign_and_percent(struct cmd_context *cmd __attribute((unused)),
 	else if (!strcasecmp(ptr, "F") || !strcasecmp(ptr, "FR") ||
 		 !strcasecmp(ptr, "FREE"))
 		a->percent = PERCENT_FREE;
+	else if (!strcasecmp(ptr, "O") || !strcasecmp(ptr, "OR") ||
+		 !strcasecmp(ptr, "ORIGIN"))
+		a->percent = PERCENT_ORIGIN;
 	else
 		return 0;
 
@@ -912,6 +917,47 @@ static void _apply_settings(struct cmd_context *cmd)
 	cmd->handles_missing_pvs = 0;
 }
 
+static int _set_udev_checking(struct cmd_context *cmd)
+{
+#ifdef HAVE_UDEV_QUEUE_GET_UDEV_IS_ACTIVE
+	struct udev *udev;
+	const char *udev_dev_dir;
+	size_t udev_dev_dir_len;
+	int dirs_diff;
+
+	if (!(udev = udev_new()) ||
+	    !(udev_dev_dir = udev_get_dev_path(udev)) ||
+	    !*udev_dev_dir) {
+		log_error("Could not get udev dev path.");
+		return 0;
+	}
+	udev_dev_dir_len = strlen(udev_dev_dir);
+
+	/* There's always a slash at the end of dev_dir. But check udev_dev_dir! */
+	if (udev_dev_dir[udev_dev_dir_len - 1] != '/')
+		dirs_diff = strncmp(cmd->dev_dir, udev_dev_dir,
+				    udev_dev_dir_len);
+	else
+		dirs_diff = strcmp(cmd->dev_dir, udev_dev_dir);
+
+	if (dirs_diff) {
+		log_debug("The path %s used for creating device nodes and "
+			  "symlinks that is set in the configuration differs "
+			  "from the path %s that is used by udev. All warnings "
+			  "about udev not working correctly while processing "
+			  "particular nodes and symlinks will be suppressed. "
+			  "These nodes and symlinks will be managed in each "
+			  "directory separately.",
+			   cmd->dev_dir, udev_dev_dir);
+		dm_udev_set_checking(0);
+		init_udev_checking(0);
+	}
+
+	udev_unref(udev);
+#endif
+	return 1;
+}
+
 static const char *_copy_command_line(struct cmd_context *cmd, int argc, char **argv)
 {
 	int i, space;
@@ -1006,6 +1052,9 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 	log_debug("O_DIRECT will be used");
 #endif
 
+	if (!_set_udev_checking(cmd))
+		goto_out;
+
 	if ((ret = _process_common_commands(cmd)))
 		goto_out;
 
@@ -1015,8 +1064,6 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 		locking_type = -1;
 
 	if (!init_locking(locking_type, cmd)) {
-		log_error("Locking type %d initialisation failed.",
-			  locking_type);
 		ret = ECMD_FAILED;
 		goto out;
 	}
@@ -1056,6 +1103,11 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 	reset_lvm_errno(1);
 
 	return ret;
+}
+
+int lvm_return_code(int ret)
+{
+	return (ret == ECMD_PROCESSED ? 0 : ret);
 }
 
 int lvm_split(char *str, int *argc, char **argv, int max)
@@ -1196,6 +1248,10 @@ static void _fin_commands(void)
 		dm_free(_cmdline.commands[i].valid_args);
 
 	dm_free(_cmdline.commands);
+
+	_cmdline.commands = NULL;
+	_cmdline.num_commands = 0;
+	_cmdline.commands_size = 0;
 }
 
 void lvm_fin(struct cmd_context *cmd)
@@ -1246,7 +1302,7 @@ static int _run_script(struct cmd_context *cmd, int argc, char **argv)
 		ret = lvm_run_command(cmd, argc, argv);
 		if (ret != ECMD_PROCESSED) {
 			if (!error_message_produced()) {
-				log_debug("Internal error: Failed command did not use log_error");
+				log_debug(INTERNAL_ERROR "Failed command did not use log_error");
 				log_error("Command failed with status code %d.", ret);
 			}
 			break;
@@ -1371,13 +1427,11 @@ int lvm2_main(int argc, char **argv)
 		log_error("No such command.  Try 'help'.");
 
 	if ((ret != ECMD_PROCESSED) && !error_message_produced()) {
-		log_debug("Internal error: Failed command did not use log_error");
+		log_debug(INTERNAL_ERROR "Failed command did not use log_error");
 		log_error("Command failed with status code %d.", ret);
 	}
 
       out:
 	lvm_fin(cmd);
-	if (ret == ECMD_PROCESSED)
-		ret = 0;
-	return ret;
+	return lvm_return_code(ret);
 }

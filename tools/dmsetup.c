@@ -45,6 +45,10 @@
 #  include <sys/types.h>
 #  include <sys/ipc.h>
 #  include <sys/sem.h>
+#ifdef HAVE_UDEV_QUEUE_GET_UDEV_IS_ACTIVE
+#  define LIBUDEV_I_KNOW_THE_API_IS_SUBJECT_TO_CHANGE
+#  include <libudev.h>
+#endif
 #endif
 
 /* FIXME Unused so far */
@@ -96,7 +100,10 @@ extern char *optarg;
 #define ARGS_MAX 256
 #define LOOP_TABLE_SIZE (PATH_MAX + 255)
 
-#define DEFAULT_DM_DEV_DIR "/dev"
+#define DEFAULT_DM_DEV_DIR "/dev/"
+
+#define DM_DEV_DIR_ENV_VAR_NAME "DM_DEV_DIR"
+#define DM_UDEV_COOKIE_ENV_VAR_NAME "DM_UDEV_COOKIE"
 
 /* FIXME Should be imported */
 #ifndef DM_MAX_TYPE_NAME
@@ -117,6 +124,8 @@ enum {
 	EXEC_ARG,
 	FORCE_ARG,
 	GID_ARG,
+	HELP_ARG,
+	INACTIVE_ARG,
 	MAJOR_ARG,
 	MINOR_ARG,
 	MODE_ARG,
@@ -126,6 +135,8 @@ enum {
 	NOLOCKFS_ARG,
 	NOOPENCOUNT_ARG,
 	NOTABLE_ARG,
+	UDEVCOOKIE_ARG,
+	NOUDEVRULES_ARG,
 	NOUDEVSYNC_ARG,
 	OPTIONS_ARG,
 	READAHEAD_ARG,
@@ -163,6 +174,8 @@ static char *_table;
 static char *_target;
 static char *_command;
 static uint32_t _read_ahead_flags;
+static uint32_t _udev_cookie;
+static int _udev_only;
 static struct dm_tree *_dtree;
 static struct dm_report *_report;
 static report_type_t _report_type;
@@ -294,6 +307,9 @@ static struct dm_task *_get_deps_task(int major, int minor)
 		goto err;
 
 	if (_switches[NOOPENCOUNT_ARG] && !dm_task_no_open_count(dmt))
+		goto err;
+
+	if (_switches[INACTIVE_ARG] && !dm_task_query_inactive_table(dmt))
 		goto err;
 
 	if (!dm_task_run(dmt))
@@ -530,6 +546,9 @@ static int _load(int argc, char **argv, void *data __attribute((unused)))
 	if (_switches[NOOPENCOUNT_ARG] && !dm_task_no_open_count(dmt))
 		goto out;
 
+	if (_switches[INACTIVE_ARG] && !dm_task_query_inactive_table(dmt))
+		goto out;
+
 	if (!dm_task_run(dmt))
 		goto out;
 
@@ -550,6 +569,7 @@ static int _create(int argc, char **argv, void *data __attribute((unused)))
 	struct dm_task *dmt;
 	const char *file = NULL;
 	uint32_t cookie = 0;
+	uint16_t udev_flags = 0;
 
 	if (argc == 3)
 		file = argv[2];
@@ -587,6 +607,9 @@ static int _create(int argc, char **argv, void *data __attribute((unused)))
 	if (_switches[NOOPENCOUNT_ARG] && !dm_task_no_open_count(dmt))
 		goto out;
 
+	if (_switches[INACTIVE_ARG] && !dm_task_query_inactive_table(dmt))
+		goto out;
+
 	if (_switches[READAHEAD_ARG] &&
 	    !dm_task_set_read_ahead(dmt, _int_args[READAHEAD_ARG],
 				    _read_ahead_flags))
@@ -595,7 +618,17 @@ static int _create(int argc, char **argv, void *data __attribute((unused)))
 	if (_switches[NOTABLE_ARG])
 		dm_udev_set_sync_support(0);
 
-	if (!dm_task_set_cookie(dmt, &cookie, 0) ||
+	if (_switches[NOUDEVRULES_ARG])
+		udev_flags |= DM_UDEV_DISABLE_DM_RULES_FLAG |
+			      DM_UDEV_DISABLE_SUBSYSTEM_RULES_FLAG;
+
+	if (_udev_cookie) {
+		cookie = _udev_cookie;
+		if (_udev_only)
+			udev_flags |= DM_UDEV_DISABLE_LIBRARY_FALLBACK;
+	}
+
+	if (!dm_task_set_cookie(dmt, &cookie, udev_flags) ||
 	    !dm_task_run(dmt))
 		goto out;
 
@@ -605,7 +638,8 @@ static int _create(int argc, char **argv, void *data __attribute((unused)))
 		r = _display_info(dmt);
 
       out:
-	(void) dm_udev_wait(cookie);
+	if (!_udev_cookie)
+		(void) dm_udev_wait(cookie);
 	dm_task_destroy(dmt);
 
 	return r;
@@ -616,6 +650,7 @@ static int _rename(int argc, char **argv, void *data __attribute((unused)))
 	int r = 0;
 	struct dm_task *dmt;
 	uint32_t cookie = 0;
+	uint16_t udev_flags = 0;
 
 	if (!(dmt = dm_task_create(DM_DEVICE_RENAME)))
 		return 0;
@@ -630,14 +665,28 @@ static int _rename(int argc, char **argv, void *data __attribute((unused)))
 	if (_switches[NOOPENCOUNT_ARG] && !dm_task_no_open_count(dmt))
 		goto out;
 
-	if (!dm_task_set_cookie(dmt, &cookie, 0) ||
+	if (_switches[INACTIVE_ARG] && !dm_task_query_inactive_table(dmt))
+		goto out;
+
+	if (_switches[NOUDEVRULES_ARG])
+		udev_flags |= DM_UDEV_DISABLE_DM_RULES_FLAG |
+			      DM_UDEV_DISABLE_SUBSYSTEM_RULES_FLAG;
+
+	if (_udev_cookie) {
+		cookie = _udev_cookie;
+		if (_udev_only)
+			udev_flags |= DM_UDEV_DISABLE_LIBRARY_FALLBACK;
+	}
+
+	if (!dm_task_set_cookie(dmt, &cookie, udev_flags) ||
 	    !dm_task_run(dmt))
 		goto out;
 
 	r = 1;
 
       out:
-	(void) dm_udev_wait(cookie);
+	if (!_udev_cookie)
+		(void) dm_udev_wait(cookie);
 	dm_task_destroy(dmt);
 
 	return r;
@@ -696,6 +745,9 @@ static int _message(int argc, char **argv, void *data __attribute((unused)))
 	if (_switches[NOOPENCOUNT_ARG] && !dm_task_no_open_count(dmt))
 		goto out;
 
+	if (_switches[INACTIVE_ARG] && !dm_task_query_inactive_table(dmt))
+		goto out;
+
 	if (!dm_task_run(dmt))
 		goto out;
 
@@ -728,6 +780,12 @@ static int _setgeometry(int argc, char **argv, void *data __attribute((unused)))
 	if (!dm_task_set_geometry(dmt, argv[1], argv[2], argv[3], argv[4]))
 		goto out;
 
+	if (_switches[NOOPENCOUNT_ARG] && !dm_task_no_open_count(dmt))
+		goto out;
+
+	if (_switches[INACTIVE_ARG] && !dm_task_query_inactive_table(dmt))
+		goto out;
+
 	/* run the task */
 	if (!dm_task_run(dmt))
 		goto out;
@@ -758,7 +816,7 @@ static int _splitname(int argc, char **argv, void *data __attribute((unused)))
 	return r;
 }
 
-static uint32_t _get_cookie_value(char *str_value)
+static uint32_t _get_cookie_value(const char *str_value)
 {
 	unsigned long int value;
 	char *p;
@@ -784,7 +842,8 @@ static int _udevflags(int args, char **argv, void *data __attribute((unused)))
 					      "DISABLE_DISK_RULES",
 					      "DISABLE_OTHER_RULES",
 					      "LOW_PRIORITY",
-					       0, 0, 0};
+					      "DISABLE_LIBRARY_FALLBACK",
+					       0, 0};
 
 	if (!(cookie = _get_cookie_value(argv[1])))
 		return 0;
@@ -821,15 +880,39 @@ static int _udevcomplete(int argc, char **argv, void *data __attribute((unused))
 	if (!(cookie = _get_cookie_value(argv[1])))
 		return 0;
 
-	/* strip flags from the cookie and use cookie magic instead */
-	cookie = (cookie & ~DM_UDEV_FLAGS_MASK) |
-		  (DM_COOKIE_MAGIC << DM_UDEV_FLAGS_SHIFT);
+	/*
+	 * Strip flags from the cookie and use cookie magic instead.
+	 * If the cookie has non-zero prefix and the base is zero then
+	 * this one carries flags to control udev rules only and it is
+	 * not meant to be for notification. Return with success in this
+	 * situation.
+	 */
+	if (!(cookie &= ~DM_UDEV_FLAGS_MASK))
+		return 1;
+
+	cookie |= DM_COOKIE_MAGIC << DM_UDEV_FLAGS_SHIFT;
 
 	return dm_udev_complete(cookie);
 }
 
 #ifndef UDEV_SYNC_SUPPORT
 static const char _cmd_not_supported[] = "Command not supported. Recompile with \"--enable-udev-sync\" to enable.";
+
+static int _udevcreatecookie(int argc, char **argv,
+				  void *data __attribute((unused)))
+{
+	log_error(_cmd_not_supported);
+
+	return 0;
+}
+
+static int _udevreleasecookie(int argc, char **argv,
+				void *data __attribute((unused)))
+{
+	log_error(_cmd_not_supported);
+
+	return 0;
+}
 
 static int _udevcomplete_all(int argc __attribute((unused)), char **argv __attribute((unused)), void *data __attribute((unused)))
 {
@@ -846,6 +929,102 @@ static int _udevcookies(int argc __attribute((unused)), char **argv __attribute(
 }
 
 #else	/* UDEV_SYNC_SUPPORT */
+static int _set_up_udev_support(const char *dev_dir)
+{
+#ifdef HAVE_UDEV_QUEUE_GET_UDEV_IS_ACTIVE
+	struct udev *udev;
+	const char *udev_dev_dir;
+	size_t udev_dev_dir_len;
+	int dirs_diff;
+#endif
+	const char *env;
+
+	if (_switches[NOUDEVSYNC_ARG])
+		dm_udev_set_sync_support(0);
+
+	if (!_udev_cookie) {
+		env = getenv(DM_UDEV_COOKIE_ENV_VAR_NAME);
+		if (env && *env && (_udev_cookie = _get_cookie_value(env)))
+			log_debug("Using udev transaction 0x%08" PRIX32
+				  " defined by %s environment variable.",
+				   _udev_cookie,
+				   DM_UDEV_COOKIE_ENV_VAR_NAME);
+	}
+	else if (_switches[UDEVCOOKIE_ARG])
+		log_debug("Using udev transaction 0x%08" PRIX32
+			  " defined by --udevcookie option.",
+			  _udev_cookie);
+
+#ifdef HAVE_UDEV_QUEUE_GET_UDEV_IS_ACTIVE
+	if (!(udev = udev_new()) ||
+	    !(udev_dev_dir = udev_get_dev_path(udev)) ||
+	    !*udev_dev_dir) {
+		log_error("Could not get udev dev path.");
+		return 0;
+	}
+	udev_dev_dir_len = strlen(udev_dev_dir);
+
+	/*
+	 * Normally, there's always a fallback action by libdevmapper if udev
+	 * has not done its job correctly, e.g. the nodes were not created.
+	 * If using udev transactions by specifying existing cookie value,
+	 * we need to disable node creation by libdevmapper completely,
+	 * disabling any fallback actions, since any synchronisation happens
+	 * at the end of the transaction only. We need to do this to prevent
+	 * races between udev and libdevmapper but only in case udev "dev path"
+	 * is the same as "dev path" used by libdevmapper.
+	 */
+
+	/* There's always a slash at the end of dev_dir. But check udev_dev_dir! */
+	if (udev_dev_dir[udev_dev_dir_len - 1] != '/')
+		dirs_diff = strncmp(dev_dir, udev_dev_dir, udev_dev_dir_len);
+	else
+		dirs_diff = strcmp(dev_dir, udev_dev_dir);
+
+	_udev_only = _udev_cookie && !dirs_diff;
+
+	if (dirs_diff) {
+		log_debug("The path %s used for creating device nodes that is "
+			  "set via DM_DEV_DIR environment variable differs from "
+			  "the path %s that is used by udev. All warnings "
+			  "about udev not working correctly while processing "
+			  "particular nodes will be suppressed. These nodes "
+			  "and symlinks will be managed in each directory "
+			  "separately.", dev_dir, udev_dev_dir);
+		dm_udev_set_checking(0);
+	}
+
+	udev_unref(udev);
+#endif
+	return 1;
+}
+
+static int _udevcreatecookie(int argc, char **argv,
+				  void *data __attribute((unused)))
+{
+	uint32_t cookie;
+
+	if (!dm_udev_create_cookie(&cookie))
+		return 0;
+
+	printf("0x%08" PRIX32 "\n", cookie);
+
+	return 1;
+}
+
+static int _udevreleasecookie(int argc, char **argv,
+				void *data __attribute((unused)))
+{
+	if (argv[1] && !(_udev_cookie = _get_cookie_value(argv[1])))
+		return 0;
+
+	if (!_udev_cookie) {
+		log_error("No udev transaction cookie given.");
+		return 0;
+	}
+
+	return dm_udev_wait(_udev_cookie);
+}
 
 static char _yes_no_prompt(const char *prompt, ...)
 {
@@ -981,6 +1160,7 @@ static int _version(int argc __attribute((unused)), char **argv __attribute((unu
 static int _simple(int task, const char *name, uint32_t event_nr, int display)
 {
 	uint32_t cookie = 0;
+	uint16_t udev_flags = 0;
 	int udev_wait_flag = task == DM_DEVICE_RESUME ||
 			     task == DM_DEVICE_REMOVE;
 	int r = 0;
@@ -1002,6 +1182,9 @@ static int _simple(int task, const char *name, uint32_t event_nr, int display)
 	if (_switches[NOOPENCOUNT_ARG] && !dm_task_no_open_count(dmt))
 		goto out;
 
+	if (_switches[INACTIVE_ARG] && !dm_task_query_inactive_table(dmt))
+		goto out;
+
 	if (_switches[NOLOCKFS_ARG] && !dm_task_skip_lockfs(dmt))
 		goto out;
 
@@ -1010,7 +1193,17 @@ static int _simple(int task, const char *name, uint32_t event_nr, int display)
 				    _read_ahead_flags))
 		goto out;
 
-	if (udev_wait_flag && !dm_task_set_cookie(dmt, &cookie, 0))
+	if (_switches[NOUDEVRULES_ARG])
+		udev_flags |= DM_UDEV_DISABLE_DM_RULES_FLAG |
+			      DM_UDEV_DISABLE_SUBSYSTEM_RULES_FLAG;
+
+	if (_udev_cookie) {
+		cookie = _udev_cookie;
+		if (_udev_only)
+			udev_flags |= DM_UDEV_DISABLE_LIBRARY_FALLBACK;
+	}
+
+	if (udev_wait_flag && !dm_task_set_cookie(dmt, &cookie, udev_flags))
 		goto out;
 
 	r = dm_task_run(dmt);
@@ -1019,7 +1212,7 @@ static int _simple(int task, const char *name, uint32_t event_nr, int display)
 		r = _display_info(dmt);
 
       out:
-	if (udev_wait_flag)
+	if (!_udev_cookie && udev_wait_flag)
 		(void) dm_udev_wait(cookie);
 
 	dm_task_destroy(dmt);
@@ -1115,6 +1308,9 @@ static uint64_t _get_device_size(const char *name)
 	if (_switches[NOOPENCOUNT_ARG] && !dm_task_no_open_count(dmt))
 		goto out;
 
+	if (_switches[INACTIVE_ARG] && !dm_task_query_inactive_table(dmt))
+		goto out;
+
 	if (!dm_task_run(dmt))
 		goto out;
 
@@ -1160,6 +1356,9 @@ static int _error_device(int argc __attribute((unused)), char **argv __attribute
 		goto error;
 
 	if (_switches[NOOPENCOUNT_ARG] && !dm_task_no_open_count(dmt))
+		goto error;
+
+	if (_switches[INACTIVE_ARG] && !dm_task_query_inactive_table(dmt))
 		goto error;
 
 	if (!dm_task_run(dmt))
@@ -1337,6 +1536,9 @@ static int _status(int argc, char **argv, void *data)
 	if (_switches[NOOPENCOUNT_ARG] && !dm_task_no_open_count(dmt))
 		goto out;
 
+	if (_switches[INACTIVE_ARG] && !dm_task_query_inactive_table(dmt))
+		goto out;
+
 	if (!dm_task_run(dmt))
 		goto out;
 
@@ -1458,6 +1660,9 @@ static int _info(int argc, char **argv, void *data)
 	if (_switches[NOOPENCOUNT_ARG] && !dm_task_no_open_count(dmt))
 		goto out;
 
+	if (_switches[INACTIVE_ARG] && !dm_task_query_inactive_table(dmt))
+		goto out;
+
 	if (!dm_task_run(dmt))
 		goto out;
 
@@ -1494,6 +1699,9 @@ static int _deps(int argc, char **argv, void *data)
 		goto out;
 
 	if (_switches[NOOPENCOUNT_ARG] && !dm_task_no_open_count(dmt))
+		goto out;
+
+	if (_switches[INACTIVE_ARG] && !dm_task_query_inactive_table(dmt))
 		goto out;
 
 	if (!dm_task_run(dmt))
@@ -2030,7 +2238,7 @@ static int _dm_info_devno_disp(struct dm_report *rh, struct dm_pool *mem,
 			       void *private)
 {
 	char buf[DM_MAX_TYPE_NAME], *repstr;
-	struct dm_info *info = (struct dm_info *) data;
+	const struct dm_info *info = data;
 
 	if (!dm_pool_begin_object(mem, 8)) {
 		log_error("dm_pool_begin_object failed");
@@ -2061,7 +2269,8 @@ static int _dm_tree_names(struct dm_report *rh, struct dm_pool *mem,
 			  struct dm_report_field *field, const void *data,
 			  void *private, unsigned inverted)
 {
-	struct dm_tree_node *node = (struct dm_tree_node *) data, *parent;
+	const struct dm_tree_node *node = data;
+	struct dm_tree_node *parent;
 	void *t = NULL;
 	const char *name;
 	int first_node = 1;
@@ -2122,7 +2331,8 @@ static int _dm_tree_parents_devs_disp(struct dm_report *rh, struct dm_pool *mem,
 				      struct dm_report_field *field,
 				      const void *data, void *private)
 {
-	struct dm_tree_node *node = (struct dm_tree_node *) data, *parent;
+	const struct dm_tree_node *node = data;
+	struct dm_tree_node *parent;
 	void *t = NULL;
 	const struct dm_info *info;
 	int first_node = 1;
@@ -2173,7 +2383,7 @@ static int _dm_tree_parents_count_disp(struct dm_report *rh,
 				       struct dm_report_field *field,
 				       const void *data, void *private)
 {
-	struct dm_tree_node *node = (struct dm_tree_node *) data;
+	const struct dm_tree_node *node = data;
 	int num_parent = dm_tree_node_num_children(node, 1);
 
 	return dm_report_field_int(rh, field, &num_parent);
@@ -2354,7 +2564,7 @@ static int _report_init(struct command *c)
 	size_t len = 0;
 	int r = 0;
 
-	if (!strcmp(c->name, "splitname"))
+	if (c && !strcmp(c->name, "splitname"))
 		options = (char *) splitname_report_options;
 
 	/* emulate old dmsetup behaviour */
@@ -2493,6 +2703,8 @@ static struct command _commands[] = {
 	{"table", "[<device>] [--target <target_type>] [--showkeys]", 0, 1, _status},
 	{"wait", "<device> [<event_nr>]", 0, 2, _wait},
 	{"mknodes", "[<device>]", 0, 1, _mknodes},
+	{"udevcreatecookie", "", 0, 0, _udevcreatecookie},
+	{"udevreleasecookie", "[<cookie>]", 0, 1, _udevreleasecookie},
 	{"udevflags", "<cookie>", 1, 1, _udevflags},
 	{"udevcomplete", "<cookie>", 1, 1, _udevcomplete},
 	{"udevcomplete_all", "", 0, 0, _udevcomplete_all},
@@ -2509,9 +2721,11 @@ static void _usage(FILE *out)
 	int i;
 
 	fprintf(out, "Usage:\n\n");
-	fprintf(out, "dmsetup [--version] [-v|--verbose [-v|--verbose ...]]\n"
-		"        [-r|--readonly] [--noopencount] [--nolockfs]\n"
-		"        [--noudevsync] [-y|--yes] [--readahead [+]<sectors>|auto|none]\n"
+	fprintf(out, "dmsetup [--version] [-h|--help [-c|-C|--columns]]\n"
+		"        [-v|--verbose [-v|--verbose ...]]\n"
+		"        [-r|--readonly] [--noopencount] [--nolockfs] [--inactive]\n"
+		"        [--udevcookie] [--noudevrules] [--noudevsync] [-y|--yes]\n"
+		"        [--readahead [+]<sectors>|auto|none]\n"
 		"        [-c|-C|--columns] [-o <fields>] [-O|--sort <sort_fields>]\n"
 		"        [--nameprefixes] [--noheadings] [--separator <separator>]\n\n");
 	for (i = 0; _commands[i].name; i++)
@@ -2523,7 +2737,6 @@ static void _usage(FILE *out)
 	fprintf(out, "Tree options are: ascii, utf, vt100; compact, inverted, notrunc;\n"
 		     "                  [no]device, active, open, rw and uuid.\n");
 	fprintf(out, "\n");
-	return;
 }
 
 static void _losetup_usage(FILE *out)
@@ -2543,7 +2756,11 @@ static int _help(int argc __attribute((unused)),
 		_switches[OPTIONS_ARG] = 1;
 		_string_args[OPTIONS_ARG] = (char *) "help";
 		_switches[SORT_ARG] = 0;
-	
+
+		if (_report) {
+			dm_report_free(_report);
+			_report = NULL;
+		}
 		(void) _report_init(NULL);
 	}
 
@@ -2742,6 +2959,8 @@ error:
 	return 0;
 }
 
+
+
 static int _process_losetup_switches(const char *base, int *argc, char ***argv,
 				     const char *dev_dir)
 {
@@ -2866,6 +3085,8 @@ static int _process_switches(int *argc, char ***argv, const char *dev_dir)
 		{"exec", 1, &ind, EXEC_ARG},
 		{"force", 0, &ind, FORCE_ARG},
 		{"gid", 1, &ind, GID_ARG},
+		{"help", 0, &ind, HELP_ARG},
+		{"inactive", 0, &ind, INACTIVE_ARG},
 		{"major", 1, &ind, MAJOR_ARG},
 		{"minor", 1, &ind, MINOR_ARG},
 		{"mode", 1, &ind, MODE_ARG},
@@ -2875,6 +3096,8 @@ static int _process_switches(int *argc, char ***argv, const char *dev_dir)
 		{"nolockfs", 0, &ind, NOLOCKFS_ARG},
 		{"noopencount", 0, &ind, NOOPENCOUNT_ARG},
 		{"notable", 0, &ind, NOTABLE_ARG},
+		{"udevcookie", 1, &ind, UDEVCOOKIE_ARG},
+		{"noudevrules", 0, &ind, NOUDEVRULES_ARG},
 		{"noudevsync", 0, &ind, NOUDEVSYNC_ARG},
 		{"options", 1, &ind, OPTIONS_ARG},
 		{"readahead", 1, &ind, READAHEAD_ARG},
@@ -2947,10 +3170,12 @@ static int _process_switches(int *argc, char ***argv, const char *dev_dir)
 
 	optarg = 0;
 	optind = OPTIND_INIT;
-	while ((ind = -1, c = GETOPTLONG_FN(*argc, *argv, "cCfG:j:m:M:no:O:ru:U:vy",
+	while ((ind = -1, c = GETOPTLONG_FN(*argc, *argv, "cCfG:hj:m:M:no:O:ru:U:vy",
 					    long_options, NULL)) != -1) {
 		if (c == ':' || c == '?')
 			return 0;
+		if (c == 'h' || ind == HELP_ARG)
+			_switches[HELP_ARG]++;
 		if (c == 'c' || c == 'C' || ind == COLS_ARG)
 			_switches[COLS_ARG]++;
 		if (c == 'f' || ind == FORCE_ARG)
@@ -2987,6 +3212,12 @@ static int _process_switches(int *argc, char ***argv, const char *dev_dir)
 		}
 		if (c == 'y' || ind == YES_ARG)
 			_switches[YES_ARG]++;
+		if (ind == UDEVCOOKIE_ARG) {
+			_switches[UDEVCOOKIE_ARG]++;
+			_udev_cookie = _get_cookie_value(optarg);
+		}
+		if (ind == NOUDEVRULES_ARG)
+			_switches[NOUDEVRULES_ARG]++;
 		if (ind == NOUDEVSYNC_ARG)
 			_switches[NOUDEVSYNC_ARG]++;
 		if (c == 'G' || ind == GID_ARG) {
@@ -3010,6 +3241,8 @@ static int _process_switches(int *argc, char ***argv, const char *dev_dir)
 			_switches[TARGET_ARG]++;
 			_target = optarg;
 		}
+		if ((ind == INACTIVE_ARG))
+			_switches[INACTIVE_ARG]++;
 		if ((ind == NAMEPREFIXES_ARG))
 			_switches[NAMEPREFIXES_ARG]++;
 		if ((ind == NOFLUSH_ARG))
@@ -3087,7 +3320,7 @@ int main(int argc, char **argv)
 
 	(void) setlocale(LC_ALL, "");
 
-	dev_dir = getenv ("DM_DEV_DIR");
+	dev_dir = getenv (DM_DEV_DIR_ENV_VAR_NAME);
 	if (dev_dir && *dev_dir) {
 		if (!dm_set_dev_dir(dev_dir)) {
 			fprintf(stderr, "Invalid DM_DEV_DIR environment variable value.\n");
@@ -3099,6 +3332,11 @@ int main(int argc, char **argv)
 	if (!_process_switches(&argc, &argv, dev_dir)) {
 		fprintf(stderr, "Couldn't process command line.\n");
 		goto out;
+	}
+
+	if (_switches[HELP_ARG]) {
+		c = _find_command("help");
+		goto doit;
 	}
 
 	if (_switches[VERSION_ARG]) {
@@ -3130,8 +3368,10 @@ int main(int argc, char **argv)
 	if (_switches[COLS_ARG] && !_report_init(c))
 		goto out;
 
-	if (_switches[NOUDEVSYNC_ARG])
-		dm_udev_set_sync_support(0);
+	#ifdef UDEV_SYNC_SUPPORT
+	if (!_set_up_udev_support(dev_dir))
+		goto out;
+	#endif
 
       doit:
 	if (!c->fn(argc, argv, NULL)) {

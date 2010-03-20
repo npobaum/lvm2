@@ -10,6 +10,7 @@ vgchange \- change attributes of a volume group
 .RB [ \-A | \-\-autobackup " {" y | n }]
 .RB [ \-a | \-\-available " [e|l] {" y | n }]
 .RB [ \-\-monitor " {" y | n }]
+.RB [ \-\-poll " {" y | n }]
 .RB [ \-c | \-\-clustered " {" y | n }]
 .RB [ \-u | \-\-uuid ]
 .RB [ \-d | \-\-debug]
@@ -86,6 +87,14 @@ and
 .BR mirror_log_fault_policy
 set in 
 .BR lvm.conf (5).
+.TP
+.BR \-\-poll " " { y | n }
+Without polling a logical volume's backgrounded transformation process
+will never complete.  If there is an incomplete pvmove or lvconvert (for
+example, on rebooting after a crash), use \fB--poll y\fP to restart the
+process from its last checkpoint.  However, it may not be appropriate to
+immediately poll a logical volume when it is activated, use \fB--poll
+n\fP to defer and then \fB--poll y\fP to restart the process.
 .TP
 .BR \-\-noudevsync
 Disable udev synchronisation. The

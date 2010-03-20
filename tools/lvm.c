@@ -25,9 +25,6 @@ int main(int argc, char **argv)
 
 #  include <readline/readline.h>
 #  include <readline/history.h>
-#  ifndef HAVE_RL_COMPLETION_MATCHES
-#    define rl_completion_matches(a, b) completion_matches((char *)a, b)
-#  endif
 
 static struct cmdline_context *_cmdline;
 
@@ -237,7 +234,7 @@ int lvm_shell(struct cmd_context *cmd, struct cmdline_context *cmdline)
 				  argv[0]);
 
                 if ((ret != ECMD_PROCESSED) && !error_message_produced()) {
-			log_debug("Internal error: Failed command did not use log_error");
+			log_debug(INTERNAL_ERROR "Failed command did not use log_error");
 			log_error("Command failed with status code %d.", ret);
 		}
 		_write_history();

@@ -36,7 +36,6 @@ Description: The Linux Logical Volume Manager
  regular block devices.
 
 Package: clvm
-Section: admin
 Priority: extra
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}, lvm2 (= ${binary:Version}), lsb-base, cman
@@ -92,7 +91,6 @@ Description: The Linux Kernel Device Mapper userspace library
  raid, and other drivers that create "virtual" block devices.
 
 Package: dmsetup
-Section: admin
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}, util-linux (>> 2.16), udev
 Conflicts: devicekit-disks (<< 009)

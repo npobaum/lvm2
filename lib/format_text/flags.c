@@ -23,12 +23,12 @@
  * converted into arrays of strings.
  */
 struct flag {
-	const int mask;
+	const uint64_t mask;
 	const char *description;
 	int kind;
 };
 
-static struct flag _vg_flags[] = {
+static const struct flag _vg_flags[] = {
 	{EXPORTED_VG, "EXPORTED", STATUS_FLAG},
 	{RESIZEABLE_VG, "RESIZEABLE", STATUS_FLAG},
 	{PVMOVE, "PVMOVE", STATUS_FLAG},
@@ -41,14 +41,14 @@ static struct flag _vg_flags[] = {
 	{0, NULL, 0}
 };
 
-static struct flag _pv_flags[] = {
+static const struct flag _pv_flags[] = {
 	{ALLOCATABLE_PV, "ALLOCATABLE", STATUS_FLAG},
 	{EXPORTED_VG, "EXPORTED", STATUS_FLAG},
 	{MISSING_PV, "MISSING", COMPATIBLE_FLAG},
 	{0, NULL, 0}
 };
 
-static struct flag _lv_flags[] = {
+static const struct flag _lv_flags[] = {
 	{LVM_READ, "READ", STATUS_FLAG},
 	{LVM_WRITE, "WRITE", STATUS_FLAG},
 	{FIXED_MINOR, "FIXED_MINOR", STATUS_FLAG},
@@ -61,6 +61,7 @@ static struct flag _lv_flags[] = {
 	{MIRRORED, NULL, 0},
 	{VIRTUAL, NULL, 0},
 	{SNAPSHOT, NULL, 0},
+	{MERGING, NULL, 0},
 	{ACTIVATE_EXCL, NULL, 0},
 	{CONVERTING, NULL, 0},
 	{PARTIAL_LV, NULL, 0},
@@ -69,7 +70,7 @@ static struct flag _lv_flags[] = {
 	{0, NULL, 0}
 };
 
-static struct flag *_get_flags(int type)
+static const struct flag *_get_flags(int type)
 {
 	switch (type & ~STATUS_FLAG) {
 	case VG_FLAGS:
@@ -91,10 +92,10 @@ static struct flag *_get_flags(int type)
  * using one of the tables defined at the top of
  * the file.
  */
-int print_flags(uint32_t status, int type, char *buffer, size_t size)
+int print_flags(uint64_t status, int type, char *buffer, size_t size)
 {
 	int f, first = 1;
-	struct flag *flags;
+	const struct flag *flags;
 
 	if (!(flags = _get_flags(type)))
 		return_0;
@@ -135,11 +136,11 @@ int print_flags(uint32_t status, int type, char *buffer, size_t size)
 	return 1;
 }
 
-int read_flags(uint32_t *status, int type, struct config_value *cv)
+int read_flags(uint64_t *status, int type, struct config_value *cv)
 {
 	int f;
-	uint32_t s = 0;
-	struct flag *flags;
+	uint64_t s = UINT64_C(0);
+	const struct flag *flags;
 
 	if (!(flags = _get_flags(type)))
 		return_0;

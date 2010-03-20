@@ -35,9 +35,7 @@ SOURCES =\
 
 INCLUDES = -I$(srcdir)/$(interface) -I$(srcdir)
 
-ifeq ("@STATIC_LINK@", "yes")
 LIB_STATIC = $(interface)/libdevmapper.a
-endif
 
 ifeq ("@LIB_SUFFIX@","dylib")
   LIB_SHARED = $(interface)/libdevmapper.dylib
@@ -47,10 +45,14 @@ endif
 VERSIONED_SHLIB = libdevmapper.$(LIB_SUFFIX).$(LIB_VERSION_DM)
 LIB_VERSION = $(LIB_VERSION_DM)
 
+include $(top_builddir)/make.tmpl
+
+LDFLAGS += @LIBS_SELINUX@
+
 DEFS += -DDM_DEVICE_UID=@DM_DEVICE_UID@ -DDM_DEVICE_GID=@DM_DEVICE_GID@ \
 	-DDM_DEVICE_MODE=@DM_DEVICE_MODE@
 
-include ../make.tmpl
+LIBS += $(SELINUX_LIBS) $(UDEV_LIBS)
 
 device-mapper: all
 
@@ -58,11 +60,7 @@ device-mapper: all
 	install_ioctl install_ioctl_static \
 	install_pkgconfig
 
-INSTALL_TYPE = install_dynamic
-
-ifeq ("@STATIC_LINK@", "yes")
-  INSTALL_TYPE += install_static
-endif
+INSTALL_TYPE = install_dynamic install_static
 
 ifeq ("@PKGCONFIG@", "yes")
   INSTALL_TYPE += install_pkgconfig
@@ -73,7 +71,7 @@ install: $(INSTALL_TYPE) install_include
 install_device-mapper: install
 
 install_include:
-	$(INSTALL) -D $(OWNER) $(GROUP) -m 444 $(srcdir)/libdevmapper.h \
+	$(INSTALL_DATA) -D $(srcdir)/libdevmapper.h \
 		$(includedir)/libdevmapper.h
 
 install_dynamic: install_@interface@
@@ -81,19 +79,16 @@ install_dynamic: install_@interface@
 		$(libdir)/libdevmapper.$(LIB_SUFFIX)
 
 install_static: install_@interface@_static
-	$(LN_S) -f libdevmapper.a.$(LIB_VERSION_DM) $(libdir)/libdevmapper.a
 
 install_ioctl: ioctl/libdevmapper.$(LIB_SUFFIX)
-	$(INSTALL) -D $(OWNER) $(GROUP) -m 555 $(STRIP) $< \
-		$(libdir)/libdevmapper.$(LIB_SUFFIX).$(LIB_VERSION_DM)
+	$(INSTALL) -D $< $(libdir)/libdevmapper.$(LIB_SUFFIX).$(LIB_VERSION_DM)
 
 install_pkgconfig:
-	$(INSTALL) -D $(OWNER) $(GROUP) -m 444 libdevmapper.pc \
+	$(INSTALL_DATA) -D libdevmapper.pc \
 		$(usrlibdir)/pkgconfig/devmapper.pc
 
 install_ioctl_static: ioctl/libdevmapper.a
-	$(INSTALL) -D $(OWNER) $(GROUP) -m 555 $(STRIP) $< \
-		$(libdir)/libdevmapper.a.$(LIB_VERSION_DM)
+	$(INSTALL) -D $< $(usrlibdir)/libdevmapper.a
 
 $(VERSIONED_SHLIB): %.$(LIB_SUFFIX).$(LIB_VERSION_DM): $(interface)/%.$(LIB_SUFFIX)
 	rm -f $@
