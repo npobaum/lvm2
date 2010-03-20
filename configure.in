@@ -34,7 +34,6 @@ case "$host_os" in
 		CLDWHOLEARCHIVE="-Wl,-whole-archive"
 		CLDNOWHOLEARCHIVE="-Wl,-no-whole-archive"
 		LDDEPS="$LDDEPS .export.sym"
-		LDFLAGS="$LDFLAGS -Wl,--export-dynamic"
 		LIB_SUFFIX=so
 		DEVMAPPER=yes
 		ODIRECT=yes
@@ -820,18 +819,9 @@ AC_MSG_RESULT($SELINUX)
 ################################################################################
 dnl -- Check for selinux
 if test x$SELINUX = xyes; then
-	AC_CHECK_LIB([sepol], [sepol_check_context], [
-		AC_DEFINE([HAVE_SEPOL], 1, [Define to 1 if sepol_check_context is available.])
-		SELINUX_LIBS="-lsepol"])
-
-	AC_CHECK_LIB([selinux], [is_selinux_enabled], [
-		AC_CHECK_HEADERS([selinux/selinux.h],, hard_bailout)
-		AC_DEFINE([HAVE_SELINUX], 1, [Define to 1 to include support for selinux.])
-		SELINUX_LIBS="-lselinux $SELINUX_LIBS"
-		HAVE_SELINUX=yes ], [
-		AC_MSG_WARN(Disabling selinux)
-		SELINUX_LIBS=
-		HAVE_SELINUX=no ])
+	AC_DEFINE([HAVE_SELINUX], 1, [Define to 1 to include support for selinux.])
+	LIBS_SELINUX="$(pkg-config --libs libselinux)"
+	LIBS_SELINUX_STATIC="$(pkg-config --libs --static libselinux)"
 fi
 
 ################################################################################
@@ -850,49 +840,6 @@ fi
 ################################################################################
 dnl -- Check for getopt
 AC_CHECK_HEADERS(getopt.h, AC_DEFINE([HAVE_GETOPTLONG], 1, [Define to 1 if getopt_long is available.]))
-
-################################################################################
-dnl -- Check for readline (Shamelessly copied from parted 1.4.17)
-if test x$READLINE != xno; then
-	lvm_saved_libs=$LIBS
-	AC_SEARCH_LIBS([tgetent], [tinfo ncurses curses termcap termlib],
-		READLINE_LIBS=$ac_cv_search_tgetent, [
-		if test "$READLINE" = yes; then
-			AC_MSG_ERROR(
-[termcap could not be found which is required for the
---enable-readline option (which is enabled by default).  Either disable readline
-support with --disable-readline or download and install termcap from:
-	ftp.gnu.org/gnu/termcap
-Note: if you are using precompiled packages you will also need the development
-  package as well (which may be called termcap-devel or something similar).
-Note: (n)curses also seems to work as a substitute for termcap.  This was
-  not found either - but you could try installing that as well.])
-		fi])
-	dnl -- Old systems may need extra termcap dependency explicitly in LIBS
-	AC_CHECK_LIB([readline], [readline], [
-		AC_DEFINE([READLINE_SUPPORT], 1,
-			[Define to 1 to include the LVM readline shell.])
-		dnl -- Try only with -lreadline and check for different symbol
-		LIBS=$lvm_saved_libs
-		AC_CHECK_LIB([readline], [rl_line_buffer],
-			[ READLINE_LIBS="-lreadline" ], [
-			  AC_MSG_RESULT([linking -lreadline with $READLINE_LIBS needed])
-			  READLINE_LIBS="-lreadline $READLINE_LIBS"
-			]) ], [
-		READLINE_LIBS=
-		if test "$READLINE" = yes; then
-			AC_MSG_ERROR(
-[GNU Readline could not be found which is required for the
---enable-readline option (which is enabled by default).  Either disable readline
-support with --disable-readline or download and install readline from:
-	ftp.gnu.org/gnu/readline
-Note: if you are using precompiled packages you will also need the development
-package as well (which may be called readline-devel or something similar).])
-		fi ])
-	LIBS="$READLINE_LIBS $lvm_saved_libs"
-	AC_CHECK_FUNCS([rl_completion_matches])
-	LIBS=$lvm_saved_libs
-fi
 
 ################################################################################
 dnl -- Internationalisation stuff
@@ -952,7 +899,7 @@ AC_ARG_WITH(udevdir,
 ################################################################################
 dnl -- Ensure additional headers required
 if test x$READLINE = xyes; then
-	AC_CHECK_HEADERS(readline/readline.h readline/history.h,,AC_MSG_ERROR(bailing out))
+	AC_CHECK_LIB([readline], [readline], [LIBS_READLINE="-lreadline"], AC_MSG_ERROR(bailing out))
 fi
 
 if test x$CLVMD != xnone; then
@@ -1089,6 +1036,9 @@ AC_SUBST(INTL_PACKAGE)
 AC_SUBST(JOBS)
 AC_SUBST(LDDEPS)
 AC_SUBST(LIBS)
+AC_SUBST(LIBS_READLINE)
+AC_SUBST(LIBS_SELINUX)
+AC_SUBST(LIBS_SELINUX_STATIC)
 AC_SUBST(LIB_SUFFIX)
 AC_SUBST(LOCALEDIR)
 AC_SUBST(LVM1)

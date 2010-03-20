@@ -114,7 +114,6 @@ endif
 #DEFS += -DBOUNDS_CHECK
 
 #CFLAGS += -pg
-#LDFLAGS += -pg
 
 STRIP=
 #STRIP = -s
@@ -218,13 +217,13 @@ $(TARGETS): $(OBJECTS)
 ifeq ("@LIB_SUFFIX@","so")
 $(LIB_SHARED): $(OBJECTS) $(LDDEPS)
 	$(CC) -shared -Wl,-soname,$(notdir $@).$(LIB_VERSION) \
-	$(CFLAGS) $(CLDFLAGS) $(OBJECTS) $(LIBS) -o $@
+	$(CFLAGS) $(LDFLAGS) $(CLDFLAGS) $(OBJECTS) -o $@
 endif
 
 ifeq ("@LIB_SUFFIX@","dylib")
 $(LIB_SHARED): $(OBJECTS) $(LDDEPS)
 	$(CC) -dynamiclib -dylib_current_version,$(LIB_VERSION) \
-	$(CFLAGS) $(CLDFLAGS) $(OBJECTS) $(LIBS) -o $@
+	$(CFLAGS) $(LDFLAGS) $(CLDFLAGS) $(OBJECTS) -o $@
 endif
 
 %.so: %.a
