@@ -58,9 +58,7 @@ all: man
 
 .PHONY: man
 
-device-mapper: $(MAN8DM)
-
-man: $(MAN5) $(MAN8) $(MAN8CLUSTER)
+man: $(MAN5) $(MAN8) $(MAN8CLUSTER) $(MAN8DM)
 
 $(MAN5) $(MAN8) $(MAN8CLUSTER):	Makefile
 

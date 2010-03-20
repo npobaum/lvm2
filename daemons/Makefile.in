@@ -18,16 +18,16 @@ VPATH = @srcdir@
 
 .PHONY: dmeventd clvmd cmirrord
 
-ifneq ("@CLVMD@", "none")
-  SUBDIRS = clvmd
-endif
-
 ifeq ("@BUILD_CMIRRORD@", "yes")
   SUBDIRS += cmirrord
 endif
 
 ifeq ("@BUILD_DMEVENTD@", "yes")
   SUBDIRS += dmeventd
+endif
+
+ifneq ("@CLVMD@", "none")
+  SUBDIRS += clvmd
 endif
 
 include $(top_builddir)/make.tmpl
