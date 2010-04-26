@@ -1,3 +1,11 @@
+lvm2 (2.02.54-1ubuntu4) lucid; urgency=low
+
+  * Some idiot thought it'd be a good idea if device mapper didn't respond
+    to "add" events, like those during boot.  Take their change out back
+    and shoot it in the head.  LP: #561390.
+
+ -- Scott James Remnant <scott@ubuntu.com>  Sun, 25 Apr 2010 21:36:25 -0700
+
 lvm2 (2.02.54-1ubuntu3) lucid; urgency=low
 
   * lidevmapper-dev: move .so symlinks to /usr/lib where they belong
