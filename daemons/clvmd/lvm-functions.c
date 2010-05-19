@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2002-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2009 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2010 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -103,7 +103,7 @@ static const char *decode_locking_cmd(unsigned char cmdl)
 		command = "LCK_VG";
 		break;
 	case LCK_LV:
-		scope = "LV"; 
+		scope = "LV";
 		switch (cmdl & LCK_MASK) {
 		case LCK_LV_EXCLUSIVE & LCK_MASK:
 			command = "LCK_LV_EXCLUSIVE";
@@ -499,7 +499,9 @@ int do_lock_lv(unsigned char command, unsigned char lock_flags, char *resource)
 	if (lock_flags & LCK_MIRROR_NOSYNC_MODE)
 		init_mirror_in_sync(1);
 
-	if (!(lock_flags & LCK_DMEVENTD_MONITOR_MODE))
+	if (lock_flags & LCK_DMEVENTD_MONITOR_MODE)
+		init_dmeventd_monitor(1);
+	else
 		init_dmeventd_monitor(0);
 
 	cmd->partial_activation = (lock_flags & LCK_PARTIAL_MODE) ? 1 : 0;
@@ -541,9 +543,6 @@ int do_lock_lv(unsigned char command, unsigned char lock_flags, char *resource)
 
 	if (lock_flags & LCK_MIRROR_NOSYNC_MODE)
 		init_mirror_in_sync(0);
-
-	if (!(lock_flags & LCK_DMEVENTD_MONITOR_MODE))
-		init_dmeventd_monitor(DEFAULT_DMEVENTD_MONITOR);
 
 	cmd->partial_activation = 0;
 
@@ -728,12 +727,36 @@ void do_lock_vg(unsigned char command, unsigned char lock_flags, char *resource)
 }
 
 /*
+ * Compare the uuid with the list of exclusive locks that clvmd
+ * held before it was restarted, so we can get the right kind
+ * of lock now we are restarting.
+ */
+static int was_ex_lock(char *uuid, char **argv)
+{
+	int optnum = 0;
+	char *opt = argv[optnum];
+
+	while (opt) {
+		if (strcmp(opt, "-E") == 0) {
+			opt = argv[++optnum];
+			if (opt && (strcmp(opt, uuid) == 0)) {
+				DEBUGLOG("Lock %s is exclusive\n", uuid);
+				return 1;
+			}
+		}
+		opt = argv[++optnum];
+	}
+	return 0;
+}
+
+/*
  * Ideally, clvmd should be started before any LVs are active
  * but this may not be the case...
  * I suppose this also comes in handy if clvmd crashes, not that it would!
  */
-static void *get_initial_state()
+static void *get_initial_state(char **argv)
 {
+	int lock_mode;
 	char lv[64], vg[64], flags[25], vg_flags[25];
 	char uuid[65];
 	char line[255];
@@ -769,8 +792,15 @@ static void *get_initial_state()
 				memcpy(&uuid[58], &lv[32], 6);
 				uuid[64] = '\0';
 
+				lock_mode = LKM_CRMODE;
+
+				/* Look for this lock in the list of EX locks
+				   we were passed on the command-line */
+				if (was_ex_lock(uuid, argv))
+					lock_mode = LKM_EXMODE;
+
 				DEBUGLOG("getting initial lock for %s\n", uuid);
-				hold_lock(uuid, LKM_CRMODE, LKF_NOQUEUE);
+				hold_lock(uuid, lock_mode, LKF_NOQUEUE);
 			}
 		}
 	}
@@ -849,8 +879,31 @@ void lvm_do_backup(const char *vgname)
 	pthread_mutex_unlock(&lvm_lock);
 }
 
+struct dm_hash_node *get_next_excl_lock(struct dm_hash_node *v, char **name)
+{
+	struct lv_info *lvi;
+
+	*name = NULL;
+	if (!v)
+		v = dm_hash_get_first(lv_hash);
+
+	do {
+		if (v) {
+			lvi = dm_hash_get_data(lv_hash, v);
+			DEBUGLOG("Looking for EX locks. found %x mode %d\n", lvi->lock_id, lvi->lock_mode);
+
+			if (lvi->lock_mode == LCK_EXCL) {
+				*name = dm_hash_get_key(lv_hash, v);
+			}
+			v = dm_hash_get_next(lv_hash, v);
+		}
+	} while (v && !*name);
+	DEBUGLOG("returning EXclusive UUID %s\n", *name);
+	return v;
+}
+
 /* Called to initialise the LVM context of the daemon */
-int init_lvm(int using_gulm)
+int init_lvm(int using_gulm, char **argv)
 {
 	if (!(cmd = create_toolcontext(1, NULL))) {
 		log_error("Failed to allocate command context");
@@ -875,17 +928,20 @@ int init_lvm(int using_gulm)
 	if (using_gulm)
 		drop_vg_locks();
 
-	get_initial_state();
+	get_initial_state(argv);
 
 	/* Trap log messages so we can pass them back to the user */
 	init_log_fn(lvm2_log_fn);
+	memlock_inc_daemon(cmd);
 
 	return 1;
 }
 
 void destroy_lvm(void)
 {
-	if (cmd)
+	if (cmd) {
+		memlock_dec_daemon(cmd);
 		destroy_toolcontext(cmd);
+	}
 	cmd = NULL;
 }

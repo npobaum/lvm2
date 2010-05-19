@@ -20,6 +20,7 @@
 #include <stdarg.h>
 
 #define NAME_LEN 128
+#define UUID_PREFIX "LVM-"
 
 struct pool;
 
@@ -28,8 +29,13 @@ int emit_to_buffer(char **buffer, size_t *size, const char *fmt, ...)
 
 char *build_dm_name(struct dm_pool *mem, const char *vg,
                     const char *lv, const char *layer);
+char *build_dm_uuid(struct dm_pool *mem, const char *lvid,
+		    const char *layer);
 
 int validate_name(const char *n);
+
+int apply_lvname_restrictions(const char *name);
+int is_reserved_lvname(const char *name);
 
 /*
  * Returns number of occurrences of c in first len characters of str.

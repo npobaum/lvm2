@@ -4,5 +4,5 @@
  Version: @DM_LIB_PATCHLEVEL@
  Cflags: -I${includedir} 
  Libs: -L${libdir} -ldevmapper
--Libs.private: @SELINUX_LIBS@
+-Libs.private: @SELINUX_LIBS@ @UDEV_LIBS@
 +Requires.private: libselinux

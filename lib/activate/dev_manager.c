@@ -31,7 +31,6 @@
 #include <dirent.h>
 
 #define MAX_TARGET_PARAMSIZE 50000
-#define UUID_PREFIX "LVM-"
 
 typedef enum {
 	PRELOAD,
@@ -58,32 +57,6 @@ struct lv_layer {
 	struct logical_volume *lv;
 	const char *old_name;
 };
-
-static char *_build_dlid(struct dm_pool *mem, const char *lvid, const char *layer)
-{
-	char *dlid;
-	size_t len;
-
-	if (!layer)
-		layer = "";
-
-	len = sizeof(UUID_PREFIX) + sizeof(union lvid) + strlen(layer);
-
-	if (!(dlid = dm_pool_alloc(mem, len))) {
-		log_error("_build_dlid: pool allocation failed for %" PRIsize_t
-			  " %s %s.", len, lvid, layer);
-		return NULL;
-	}
-
-	sprintf(dlid, UUID_PREFIX "%s%s%s", lvid, (*layer) ? "-" : "", layer);
-
-	return dlid;
-}
-
-char *build_dlid(struct dev_manager *dm, const char *lvid, const char *layer)
-{
-	return _build_dlid(dm->mem, lvid, layer);
-}
 
 static int _read_only_lv(struct logical_volume *lv)
 {
@@ -238,7 +211,7 @@ int dev_manager_info(struct dm_pool *mem, const struct logical_volume *lv,
 		return 0;
 	}
 
-	if (!(dlid = _build_dlid(mem, lv->lvid.s, NULL))) {
+	if (!(dlid = build_dm_uuid(mem, lv->lvid.s, NULL))) {
 		log_error("dlid build failed for %s", lv->name);
 		return 0;
 	}
@@ -258,7 +231,7 @@ static const struct dm_info *_cached_info(struct dm_pool *mem,
 	struct dm_tree_node *dnode;
 	const struct dm_info *dinfo;
 
-	if (!(dlid = _build_dlid(mem, lv->lvid.s, NULL))) {
+	if (!(dlid = build_dm_uuid(mem, lv->lvid.s, NULL))) {
 		log_error("dlid build failed for %s", lv->name);
 		return NULL;
 	}
@@ -356,10 +329,8 @@ static int _status(const char *name, const char *uuid,
 	return 0;
 }
 
-static int _lv_has_target_type(struct dev_manager *dm,
-			       struct logical_volume *lv,
-			       const char *layer,
-			       const char *target_type)
+int lv_has_target_type(struct dm_pool *mem, struct logical_volume *lv,
+		       const char *layer, const char *target_type)
 {
 	int r = 0;
 	char *dlid;
@@ -370,7 +341,7 @@ static int _lv_has_target_type(struct dev_manager *dm,
 	char *type = NULL;
 	char *params = NULL;
 
-	if (!(dlid = build_dlid(dm, lv->lvid.s, layer)))
+	if (!(dlid = build_dm_uuid(mem, lv->lvid.s, layer)))
 		return_0;
 
 	if (!(dmt = _setup_task(NULL, dlid, 0,
@@ -631,7 +602,7 @@ int dev_manager_snapshot_percent(struct dev_manager *dm,
 	if (!(name = build_dm_name(dm->mem, lv->vg->name, lv->name, NULL)))
 		return_0;
 
-	if (!(dlid = build_dlid(dm, lv->lvid.s, NULL)))
+	if (!(dlid = build_dm_uuid(dm->mem, lv->lvid.s, NULL)))
 		return_0;
 
 	/*
@@ -667,7 +638,7 @@ int dev_manager_mirror_percent(struct dev_manager *dm,
 
 	/* FIXME dm_pool_free ? */
 
-	if (!(dlid = build_dlid(dm, lv->lvid.s, suffix))) {
+	if (!(dlid = build_dm_uuid(dm->mem, lv->lvid.s, suffix))) {
 		log_error("dlid build failed for %s", lv->name);
 		return 0;
 	}
@@ -780,17 +751,60 @@ int dev_manager_mknodes(const struct logical_volume *lv)
 	return r;
 }
 
+static uint16_t _get_udev_flags(struct dev_manager *dm, struct logical_volume *lv,
+				const char *layer)
+{
+	uint16_t udev_flags = 0;
+
+	/*
+	 * Is this top-level and visible device?
+	 * If not, create just the /dev/mapper content.
+	 */
+	if (layer || !lv_is_visible(lv))
+		udev_flags |= DM_UDEV_DISABLE_SUBSYSTEM_RULES_FLAG |
+			      DM_UDEV_DISABLE_DISK_RULES_FLAG |
+			      DM_UDEV_DISABLE_OTHER_RULES_FLAG;
+	/*
+	 * There's no need for other udev rules to touch special LVs with
+	 * reserved names. We don't need to populate /dev/disk here either.
+	 * Even if they happen to be visible and top-level.
+	 */
+	else if (is_reserved_lvname(lv->name))
+		udev_flags |= DM_UDEV_DISABLE_DISK_RULES_FLAG |
+			      DM_UDEV_DISABLE_OTHER_RULES_FLAG;
+
+	/*
+	 * Snapshots and origins could have the same rule applied that will
+	 * give symlinks exactly the same name (e.g. a name based on
+	 * filesystem UUID). We give preference to origins to make such
+	 * naming deterministic (e.g. symlinks in /dev/disk/by-uuid).
+	 */
+	if (lv_is_cow(lv))
+		udev_flags |= DM_UDEV_LOW_PRIORITY_FLAG;
+
+	/*
+	 * Finally, add flags to disable /dev/mapper and /dev/<vgname> content
+	 * to be created by udev if it is requested by user's configuration.
+	 * This is basically an explicit fallback to old node/symlink creation
+	 * without udev.
+	 */
+	if (!dm->cmd->current_settings.udev_rules)
+		udev_flags |= DM_UDEV_DISABLE_DM_RULES_FLAG |
+			      DM_UDEV_DISABLE_SUBSYSTEM_RULES_FLAG;
+
+	return udev_flags;
+}
+
 static int _add_dev_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 			       struct logical_volume *lv, const char *layer)
 {
 	char *dlid, *name;
 	struct dm_info info, info2;
-	uint16_t udev_flags = 0;
 
 	if (!(name = build_dm_name(dm->mem, lv->vg->name, lv->name, layer)))
 		return_0;
 
-	if (!(dlid = build_dlid(dm, lv->lvid.s, layer)))
+	if (!(dlid = build_dm_uuid(dm->mem, lv->lvid.s, layer)))
 		return_0;
 
 	log_debug("Getting device info for %s [%s]", name, dlid);
@@ -823,20 +837,8 @@ static int _add_dev_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 		}
 	}
 
-	if (layer || !lv_is_visible(lv))
-		udev_flags |= DM_UDEV_DISABLE_SUBSYSTEM_RULES_FLAG |
-			      DM_UDEV_DISABLE_DISK_RULES_FLAG |
-			      DM_UDEV_DISABLE_OTHER_RULES_FLAG;
-
-	if (lv_is_cow(lv))
-		udev_flags |= DM_UDEV_LOW_PRIORITY_FLAG;
-
-	if (!dm->cmd->current_settings.udev_rules)
-		udev_flags |= DM_UDEV_DISABLE_DM_RULES_FLAG |
-			      DM_UDEV_DISABLE_SUBSYSTEM_RULES_FLAG;
-
-	if (info.exists && !dm_tree_add_dev_with_udev_flags(dtree, info.major,
-							    info.minor, udev_flags)) {
+	if (info.exists && !dm_tree_add_dev_with_udev_flags(dtree, info.major, info.minor,
+							_get_udev_flags(dm, lv, layer))) {
 		log_error("Failed to add device (%" PRIu32 ":%" PRIu32") to dtree",
 			  info.major, info.minor);
 		return 0;
@@ -925,7 +927,7 @@ static char *_add_error_device(struct dev_manager *dm, struct dm_tree *dtree,
 
 	sprintf(errid, "missing_%d_%d", segno, s);
 
-	if (!(id = build_dlid(dm, seg->lv->lvid.s, errid)))
+	if (!(id = build_dm_uuid(dm->mem, seg->lv->lvid.s, errid)))
 		return_NULL;
 
 	if (!(name = build_dm_name(dm->mem, seg->lv->vg->name,
@@ -987,9 +989,9 @@ int add_areas_line(struct dev_manager *dm, struct lv_segment *seg,
 							(seg_pv(seg, s)->pe_start +
 							 (extent_size * seg_pe(seg, s))));
 		else if (seg_type(seg, s) == AREA_LV) {
-			if (!(dlid = build_dlid(dm,
-						 seg_lv(seg, s)->lvid.s,
-						 NULL)))
+			if (!(dlid = build_dm_uuid(dm->mem,
+						   seg_lv(seg, s)->lvid.s,
+						   NULL)))
 				return_0;
 			dm_tree_node_add_target_area(node, NULL, dlid,
 							extent_size * seg_le(seg, s));
@@ -1009,7 +1011,7 @@ static int _add_origin_target_to_dtree(struct dev_manager *dm,
 {
 	const char *real_dlid;
 
-	if (!(real_dlid = build_dlid(dm, lv->lvid.s, "real")))
+	if (!(real_dlid = build_dm_uuid(dm->mem, lv->lvid.s, "real")))
 		return_0;
 
 	if (!dm_tree_node_add_snapshot_origin_target(dnode, lv->size, real_dlid))
@@ -1025,13 +1027,13 @@ static int _add_snapshot_merge_target_to_dtree(struct dev_manager *dm,
 	const char *origin_dlid, *cow_dlid, *merge_dlid;
 	struct lv_segment *merging_cow_seg = find_merging_cow(lv);
 
-	if (!(origin_dlid = build_dlid(dm, lv->lvid.s, "real")))
+	if (!(origin_dlid = build_dm_uuid(dm->mem, lv->lvid.s, "real")))
 		return_0;
 
-	if (!(cow_dlid = build_dlid(dm, merging_cow_seg->cow->lvid.s, "cow")))
+	if (!(cow_dlid = build_dm_uuid(dm->mem, merging_cow_seg->cow->lvid.s, "cow")))
 		return_0;
 
-	if (!(merge_dlid = build_dlid(dm, merging_cow_seg->cow->lvid.s, NULL)))
+	if (!(merge_dlid = build_dm_uuid(dm->mem, merging_cow_seg->cow->lvid.s, NULL)))
 		return_0;
 
 	if (!dm_tree_node_add_snapshot_merge_target(dnode, lv->size, origin_dlid,
@@ -1056,10 +1058,10 @@ static int _add_snapshot_target_to_dtree(struct dev_manager *dm,
 		return 0;
 	}
 
-	if (!(origin_dlid = build_dlid(dm, snap_seg->origin->lvid.s, "real")))
+	if (!(origin_dlid = build_dm_uuid(dm->mem, snap_seg->origin->lvid.s, "real")))
 		return_0;
 
-	if (!(cow_dlid = build_dlid(dm, snap_seg->cow->lvid.s, "cow")))
+	if (!(cow_dlid = build_dm_uuid(dm->mem, snap_seg->cow->lvid.s, "cow")))
 		return_0;
 
 	size = (uint64_t) snap_seg->len * snap_seg->origin->vg->extent_size;
@@ -1193,7 +1195,6 @@ static int _add_new_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 	uint32_t max_stripe_size = UINT32_C(0);
 	uint32_t read_ahead = lv->read_ahead;
 	uint32_t read_ahead_flags = UINT32_C(0);
-	uint16_t udev_flags = 0;
 
 	/* FIXME Seek a simpler way to lay out the snapshot-merge tree. */
 
@@ -1210,7 +1211,7 @@ static int _add_new_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 		    ((dinfo = _cached_info(dm->mem, find_merging_cow(lv)->cow,
 					   dtree)) && dinfo->open_count)) {
 			/* FIXME Is there anything simpler to check for instead? */
-			if (!_lv_has_target_type(dm, lv, NULL, "snapshot-merge"))
+			if (!lv_has_target_type(dm->mem, lv, NULL, "snapshot-merge"))
 				clear_snapshot_merge(lv);
 		}
 	}
@@ -1218,7 +1219,7 @@ static int _add_new_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 	if (!(name = build_dm_name(dm->mem, lv->vg->name, lv->name, layer)))
 		return_0;
 
-	if (!(dlid = build_dlid(dm, lv->lvid.s, layer)))
+	if (!(dlid = build_dm_uuid(dm->mem, lv->lvid.s, layer)))
 		return_0;
 
 	/* We've already processed this node if it already has a context ptr */
@@ -1234,18 +1235,6 @@ static int _add_new_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 
 	lvlayer->lv = lv;
 
-	if (layer || !lv_is_visible(lv))
-		udev_flags |= DM_UDEV_DISABLE_SUBSYSTEM_RULES_FLAG |
-			      DM_UDEV_DISABLE_DISK_RULES_FLAG |
-			      DM_UDEV_DISABLE_OTHER_RULES_FLAG;
-
-	if (lv_is_cow(lv))
-		udev_flags |= DM_UDEV_LOW_PRIORITY_FLAG;
-
-	if (!dm->cmd->current_settings.udev_rules)
-		udev_flags |= DM_UDEV_DISABLE_DM_RULES_FLAG |
-			      DM_UDEV_DISABLE_SUBSYSTEM_RULES_FLAG;
-
 	/*
 	 * Add LV to dtree.
 	 * If we're working with precommitted metadata, clear any
@@ -1258,7 +1247,7 @@ static int _add_new_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 					     _read_only_lv(lv),
 					     (lv->vg->status & PRECOMMITTED) ? 1 : 0,
 					     lvlayer,
-					     udev_flags)))
+					     _get_udev_flags(dm, lv, layer))))
 		return_0;
 
 	/* Store existing name so we can do rename later */
@@ -1421,7 +1410,7 @@ static int _tree_action(struct dev_manager *dm, struct logical_volume *lv, actio
 		goto out;
 	}
 
-	if (!(dlid = build_dlid(dm, lv->lvid.s, NULL)))
+	if (!(dlid = build_dm_uuid(dm->mem, lv->lvid.s, NULL)))
 		goto_out;
 
 	/* Only process nodes with uuid of "LVM-" plus VG id. */
@@ -1522,8 +1511,6 @@ int dev_manager_deactivate(struct dev_manager *dm, struct logical_volume *lv)
 	int r;
 
 	r = _tree_action(dm, lv, DEACTIVATE);
-
-	fs_del_lv(lv);
 
 	return r;
 }

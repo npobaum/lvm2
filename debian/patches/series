@@ -6,6 +6,4 @@ pkgconfig.patch
 libdm-atomic.patch
 rules-subdir.patch
 implicit-pointer.patch
-libdm-static.patch
-libdm-event-static.patch
 scripts-bash.sh

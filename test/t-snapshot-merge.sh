@@ -16,7 +16,7 @@ which mkfs.ext3 || exit 200
 
 lvdev_()
 {
-    echo "$G_dev_/$1/$2"
+    echo "$DM_DEV_DIR/$1/$2"
 }
 
 snap_lv_name_() {
@@ -44,30 +44,57 @@ setup_merge() {
 aux prepare_vg 1 100
 
 
-# full merge of a single LV
+# test full merge of a single LV
 setup_merge $vg $lv1
-
 # now that snapshot LV is created: test if snapshot-merge target is available
 $(dmsetup targets | grep -q snapshot-merge) || exit 200
-
 lvs -a
 lvconvert --merge $vg/$(snap_lv_name_ $lv1)
 lvremove -f $vg/$lv1
 
 
-# "onactivate merge" test -- refresh LV while FS is still mounted;
-# verify snapshot-origin target is still being used
+# test that an actively merging snapshot may not be removed
+setup_merge $vg $lv1
+lvconvert -i+100 --merge --background $vg/$(snap_lv_name_ $lv1)
+not lvremove -f $vg/$(snap_lv_name_ $lv1)
+lvremove -f $vg/$lv1
+
+
+# "onactivate merge" test
 setup_merge $vg $lv1
 lvs -a
 mkdir test_mnt
 mount $(lvdev_ $vg $lv1) test_mnt
 lvconvert --merge $vg/$(snap_lv_name_ $lv1)
+# -- refresh LV while FS is still mounted (merge must not start),
+#    verify 'snapshot-origin' target is still being used
 lvchange --refresh $vg/$lv1
 umount test_mnt
 rm -r test_mnt
-# an active merge uses the "snapshot-merge" target
 dmsetup table ${vg}-${lv1} | grep -q " snapshot-origin "
-test $? = 0
+# -- refresh LV to start merge (now that FS is unmounted),
+#    an active merge uses the 'snapshot-merge' target
+lvchange --refresh $vg/$lv1
+dmsetup table ${vg}-${lv1} | grep -q " snapshot-merge "
+# -- don't care if merge is still active; lvremove at this point
+#    may test stopping an active merge
+lvremove -f $vg/$lv1
+
+
+# "onactivate merge" test
+# -- deactivate/remove after disallowed merge attempt, tests
+#    to make sure preload of origin's metadata is _not_ performed
+setup_merge $vg $lv1
+lvs -a
+mkdir test_mnt
+mount $(lvdev_ $vg $lv1) test_mnt
+lvconvert --merge $vg/$(snap_lv_name_ $lv1)
+# -- refresh LV while FS is still mounted (merge must not start),
+#    verify 'snapshot-origin' target is still being used
+lvchange --refresh $vg/$lv1
+umount test_mnt
+rm -r test_mnt
+dmsetup table ${vg}-${lv1} | grep -q " snapshot-origin "
 lvremove -f $vg/$lv1
 
 
@@ -76,6 +103,7 @@ setup_merge $vg $lv1 1
 lvs -a
 lvconvert --merge $vg/$(snap_lv_name_ $lv1)
 lvremove -f $vg/$lv1
+
 
 # test merging multiple snapshots that share the same tag
 setup_merge $vg $lv1

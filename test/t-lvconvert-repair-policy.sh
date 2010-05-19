@@ -13,49 +13,59 @@
 
 prepare_vg 4
 
+# Clean-up and create a 2-way mirror, where the the
+# leg devices are always on $dev[12] and the log
+# is always on $dev3.  ($dev4 behaves as a spare)
 cleanup() {
 	vgreduce --removemissing $vg
 	for d in "$@"; do enable_dev $d; done
 	for d in "$@"; do vgextend $vg $d; done
 	lvremove -ff $vg/mirror
-	lvcreate -m 1 -L 1 -n mirror $vg
+	lvcreate -m 1 --ig -l 2 -n mirror $vg $dev1 $dev2 $dev3:0
 }
 
 repair() {
-	lvconvert -i 1 --repair --use-policies --config "$1" $vg/mirror
+	lvconvert --repair --use-policies --config "$1" $vg/mirror
 }
 
 lvcreate -m 1 -L 1 -n mirror $vg
 lvchange -a n $vg/mirror
 
+# Fail a leg of a mirror.
 disable_dev $dev1
 lvchange --partial -a y $vg/mirror
 repair 'activation { mirror_image_fault_policy = "remove" }'
-lvs | grep -- -wi-a- # non-mirror
+check linear $vg mirror
 cleanup $dev1
 
+# Fail a leg of a mirror.
+# Expected result: Mirror (leg replaced)
 disable_dev $dev1
 repair 'activation { mirror_image_fault_policy = "replace" }'
-lvs | grep -- mwi-a- # mirror
+check mirror $vg mirror
 lvs | grep mirror_mlog
 cleanup $dev1
 
+# Fail a leg of a mirror (use old name for policy specification)
+# Expected result: Mirror (leg replaced)
 disable_dev $dev1
 repair 'activation { mirror_device_fault_policy = "replace" }'
-lvs | grep -- mwi-a- # mirror
+check mirror $vg mirror
 lvs | grep mirror_mlog
 cleanup $dev1
 
+# Fail a leg of a mirror w/ no available spare
+# Expected result: 2-way with corelog
 disable_dev $dev2 $dev4
-# no room for repair, downconversion should happen
 repair 'activation { mirror_image_fault_policy = "replace" }'
-lvs | grep -- -wi-a-
-cleanup $dev2 $dev4
-
-disable_dev $dev2 $dev4
-# no room for new log, corelog conversion should happen
-repair 'activation { mirror_image_fault_policy = "replace" }'
-lvs
-lvs | grep -- mwi-a-
+check mirror $vg mirror
 lvs | not grep mirror_mlog
 cleanup $dev2 $dev4
+
+# Fail the log device of a mirror w/ no available spare
+# Expected result: mirror w/ corelog
+disable_dev $dev3 $dev4
+lvconvert --repair --use-policies --config 'activation { mirror_image_fault_policy = "replace" }' $vg/mirror
+check mirror $vg mirror
+lvs | not grep mirror_mlog
+cleanup $dev3 $dev4

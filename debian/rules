@@ -18,6 +18,9 @@ DEVMAPPER_VERSION = 2:$(DEVMAPPER_VERSION_PLAIN)
 DEVMAPPER_VERSION_DEBIAN = $(DEVMAPPER_VERSION)-$(VERSION_DEBIAN)
 DEVMAPPER_VERSION_FILE = $(DEVMAPPER_VERSION_PLAIN)-$(VERSION_DEBIAN)
 
+LVM2APP_ABINAME = 2.2
+LVM2CMD_ABINAME = 2.02
+
 MAKE_SELF = $(MAKE) -f debian/rules
 
 BUILD_DIR = debian/build
@@ -74,11 +77,15 @@ $(STAMPS_DIR)/setup_deb: $(STAMPS_DIR)/source
 		$(CONFIGURE_FLAGS) \
 		--with-optimisation="" \
 		--with-clvmd=cman \
+		--with-cluster=internal \
 		--with-device-uid=0 \
 		--with-device-gid=6 \
 		--with-device-mode=0660 \
+		--enable-applib \
+		--enable-cmdlib \
 		--enable-pkgconfig \
-		--enable-readline
+		--enable-readline \
+		--enable-udev_sync
 	touch $@
 
 $(STAMPS_DIR)/setup_udeb: SOURCE_DIR = $(BUILD_DIR)/source
@@ -186,7 +193,6 @@ install_libdevmapper-dev: export DH_OPTIONS = -plibdevmapper-dev
 install_libdevmapper-dev: DIR = $(BUILD_DIR)/install_deb
 install_libdevmapper-dev: $(STAMPS_DIR)/install_deb
 	+$(MAKE_SELF) install-base-prep INSTALL_DIR='$(DIR)'
-	dh_link lib/libdevmapper.so.$(DEVMAPPER_ABINAME) usr/lib/libdevmapper.so
 	+$(MAKE_SELF) install-base CHANGELOG=WHATS_NEW_DM GENCONTROL_ARGS="-v$(DEVMAPPER_VERSION_DEBIAN)"
 
 install_libdevmapper-udeb: PACKAGE_NAME = libdevmapper$(DEVMAPPER_ABINAME)-udeb
@@ -198,6 +204,26 @@ install_libdevmapper-udeb: $(STAMPS_DIR)/install_udeb
 	+$(MAKE_SELF) install-base \
 		BUILDDEB_ARGS="--filename=$(PACKAGE_FILE)" \
 		GENCONTROL_ARGS="-v$(DEVMAPPER_VERSION_DEBIAN)"
+
+install_liblvm2app: export DH_OPTIONS = -pliblvm2app$(LVM2APP_ABINAME)
+install_liblvm2app: DIR = $(BUILD_DIR)/install_deb
+install_liblvm2app: $(STAMPS_DIR)/install_deb
+	+$(MAKE_SELF) install-base-prep INSTALL_DIR='$(DIR)'
+	dh_makeshlibs -V -- -c2
+	+$(MAKE_SELF) install-base
+
+install_liblvm2cmd: export DH_OPTIONS = -pliblvm2cmd$(LVM2CMD_ABINAME)
+install_liblvm2cmd: DIR = $(BUILD_DIR)/install_deb
+install_liblvm2cmd: $(STAMPS_DIR)/install_deb
+	+$(MAKE_SELF) install-base-prep INSTALL_DIR='$(DIR)'
+	dh_makeshlibs -V -- -c2
+	+$(MAKE_SELF) install-base
+
+install_liblvm2-dev: export DH_OPTIONS = -pliblvm2-dev
+install_liblvm2-dev: DIR = $(BUILD_DIR)/install_deb
+install_liblvm2-dev: $(STAMPS_DIR)/install_deb
+	+$(MAKE_SELF) install-base-prep INSTALL_DIR='$(DIR)'
+	+$(MAKE_SELF) install-base
 
 install_lvm2: export DH_OPTIONS = -plvm2
 install_lvm2: DIR = $(BUILD_DIR)/install_deb
@@ -213,7 +239,7 @@ install_lvm2-udeb: $(STAMPS_DIR)/install_udeb
 	+$(MAKE_SELF) install-base
 
 binary-indep:
-binary-arch: $(addprefix install_,libdevmapper libdevmapper-udeb libdevmapper-dev dmsetup dmsetup-udeb lvm2 lvm2-udeb clvm)
+binary-arch: $(addprefix install_,libdevmapper libdevmapper-udeb libdevmapper-dev dmsetup dmsetup-udeb liblvm2app liblvm2cmd liblvm2-dev lvm2 lvm2-udeb clvm)
 
 binary: binary-indep binary-arch
 

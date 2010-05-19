@@ -307,6 +307,7 @@ static int _lock_for_cluster(struct cmd_context *cmd, unsigned char clvmd_cmd,
 	char *args;
 	const char *node = "";
 	int len;
+	int dmeventd_mode;
 	int saved_errno = errno;
 	lvm_response_t *response = NULL;
 	int num_responses;
@@ -324,7 +325,12 @@ static int _lock_for_cluster(struct cmd_context *cmd, unsigned char clvmd_cmd,
 	if (mirror_in_sync())
 		args[1] |= LCK_MIRROR_NOSYNC_MODE;
 
-	if (dmeventd_monitor_mode())
+	/*
+	 * Must handle tri-state return from dmeventd_monitor_mode.
+	 * But DMEVENTD_MONITOR_IGNORE is not propagated across the cluster.
+	 */
+	dmeventd_mode = dmeventd_monitor_mode();
+	if (dmeventd_mode != DMEVENTD_MONITOR_IGNORE && dmeventd_mode)
 		args[1] |= LCK_DMEVENTD_MONITOR_MODE;
 
 	if (cmd->partial_activation)
@@ -409,6 +415,13 @@ int lock_resource(struct cmd_context *cmd, const char *resource, uint32_t flags)
 
 		lock_scope = "VG";
 		clvmd_cmd = CLVMD_CMD_LOCK_VG;
+		/*
+		 * Old clvmd does not expect LCK_HOLD which was already processed
+		 * in lock_vol, mask it for compatibility reasons.
+		 */
+		if (flags != LCK_VG_COMMIT && flags != LCK_VG_REVERT)
+			flags &= ~LCK_HOLD;
+
 		break;
 
 	case LCK_LV:

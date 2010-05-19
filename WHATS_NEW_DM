@@ -1,3 +1,21 @@
+Version 1.02.47 - 30th April 2010
+=================================
+  Add support for new IMPORT{db} udev rule.
+  Add DM_UDEV_PRIMARY_SOURCE_FLAG udev flag to recognize proper DM events.
+  Also include udev libs in libdevmapper.pc when udev_sync is enabled.
+  Cache bitset locations to speed up _calc_states.
+  Add a regex optimisation pass for shared prefixes and suffixes.
+  Add dm_bit_and and dm_bitset_equal to libdevmapper.
+  Simplify dm_bitset_create.
+  Speed up dm_bit_get_next with ffs().
+
+Version 1.02.46 - 14th April 2010
+=================================
+  Change dm_tree_deactivate_children to fail if device is open.
+  Wipe memory buffers for dm-ioctl parameters before releasing.
+  Strictly require libudev if udev_sync is used.
+  Add support for ioctl's DM_UEVENT_GENERATED_FLAG.
+
 Version 1.02.45 - 9th March 2010
 ================================
   Add --showkeys parameter description to dmsetup man page.

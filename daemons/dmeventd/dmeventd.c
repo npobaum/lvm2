@@ -243,8 +243,10 @@ static struct thread_status *_alloc_thread_status(struct message_data *data,
 	return ret;
 }
 
+static void _lib_put(struct dso_data *data);
 static void _free_thread_status(struct thread_status *thread)
 {
+	_lib_put(thread->dso_data);
 	if (thread->current_task)
 		dm_task_destroy(thread->current_task);
 	dm_free(thread->device.uuid);
@@ -1481,7 +1483,6 @@ static void _cleanup_unused_threads(void)
 		if (thread->status == DM_THREAD_DONE) {
 			dm_list_del(l);
 			pthread_join(thread->thread, NULL);
-			_lib_put(thread->dso_data);
 			_free_thread_status(thread);
 		}
 	}
@@ -1697,6 +1698,14 @@ int main(int argc, char *argv[])
 		}
 	}
 
+	/*
+	 * Switch to C locale to avoid reading large locale-archive file
+	 * used by some glibc (on some distributions it takes over 100MB).
+	 * Daemon currently needs to use mlockall().
+	 */
+	if (setenv("LANG", "C", 1))
+		perror("Cannot set LANG to C");
+
 	if (!_debug)
 		_daemonize();
 
@@ -1725,16 +1734,12 @@ int main(int argc, char *argv[])
 
 	pthread_mutex_init(&_global_mutex, NULL);
 
-#ifdef MCL_CURRENT
-	if (mlockall(MCL_CURRENT | MCL_FUTURE) == -1)
-		exit(EXIT_FAILURE);
-#endif
-
 	if ((ret = _open_fifos(&fifos)))
 		exit(EXIT_FIFO_FAILURE);
 
 	/* Signal parent, letting them know we are ready to go. */
-	kill(getppid(), SIGTERM);
+	if (!_debug)
+		kill(getppid(), SIGTERM);
 	syslog(LOG_NOTICE, "dmeventd ready for processing.");
 
 	while (!_exit_now) {
@@ -1749,9 +1754,6 @@ int main(int argc, char *argv[])
 
 	_exit_dm_lib();
 
-#ifdef MCL_CURRENT
-	munlockall();
-#endif
 	pthread_mutex_destroy(&_global_mutex);
 
 	syslog(LOG_NOTICE, "dmeventd shutting down.");

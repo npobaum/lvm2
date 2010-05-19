@@ -37,7 +37,6 @@ int import_pool_vg(struct volume_group *vg, struct dm_pool *mem, struct dm_list 
 		    ((pl->pd.pl_blocks) / POOL_PE_SIZE);
 
 		vg->free_count = vg->extent_count;
-		vg->pv_count++;
 
 		if (vg->name)
 			continue;
@@ -100,7 +99,7 @@ int import_pool_lvs(struct volume_group *vg, struct dm_pool *mem, struct dm_list
 }
 
 int import_pool_pvs(const struct format_type *fmt, struct volume_group *vg,
-		    struct dm_list *pvs, struct dm_pool *mem, struct dm_list *pls)
+		    struct dm_pool *mem, struct dm_list *pls)
 {
 	struct pv_list *pvl;
 	struct pool_list *pl;
@@ -120,7 +119,7 @@ int import_pool_pvs(const struct format_type *fmt, struct volume_group *vg,
 		pl->pv = pvl->pv;
 		pvl->mdas = NULL;
 		pvl->pe_ranges = NULL;
-		dm_list_add(pvs, &pvl->list);
+		add_pvl_to_vgs(vg, pvl);
 	}
 
 	return 1;
@@ -197,7 +196,7 @@ static int _add_stripe_seg(struct dm_pool *mem,
 	if (!(seg = alloc_lv_segment(mem, segtype, lv, *le_cur,
 				     area_len * usp->num_devs, 0,
 				     usp->striping, NULL, usp->num_devs,
-				     area_len, 0, 0, 0))) {
+				     area_len, 0, 0, 0, NULL))) {
 		log_error("Unable to allocate striped lv_segment structure");
 		return 0;
 	}
@@ -234,7 +233,7 @@ static int _add_linear_seg(struct dm_pool *mem,
 		if (!(seg = alloc_lv_segment(mem, segtype, lv, *le_cur,
 					     area_len, 0, usp->striping,
 					     NULL, 1, area_len,
-					     POOL_PE_SIZE, 0, 0))) {
+					     POOL_PE_SIZE, 0, 0, NULL))) {
 			log_error("Unable to allocate linear lv_segment "
 				  "structure");
 			return 0;

@@ -181,8 +181,19 @@ struct physical_volume {
 	struct id id;
 	struct device *dev;
 	const struct format_type *fmt;
+
+	/*
+	 * vg_name and vgid are used before the parent VG struct exists.
+	 * FIXME: Investigate removal/substitution with 'vg' fields.
+	 */
 	const char *vg_name;
 	struct id vgid;
+
+	/*
+	 * 'vg' is set and maintained when the PV belongs to a 'pvs'
+	 * list in a parent VG struct.
+	 */
+	struct volume_group *vg;
 
 	uint64_t status;
 	uint64_t size;
@@ -216,6 +227,7 @@ struct volume_group {
 
 	struct id id;
 	char *name;
+	char *old_name;		/* Set during vgrename and vgcfgrestore */
 	char *system_id;
 
 	uint32_t extent_size;
@@ -301,6 +313,7 @@ struct lv_segment {
 	uint32_t region_size;	/* For mirrors - in sectors */
 	uint32_t extents_copied;
 	struct logical_volume *log_lv;
+	struct lv_segment *pvmove_source_seg;
 	void *segtype_private;
 
 	struct dm_list tags;
@@ -398,11 +411,8 @@ int unlink_lv_from_vg(struct logical_volume *lv);
 void lv_set_visible(struct logical_volume *lv);
 void lv_set_hidden(struct logical_volume *lv);
 
-/* Set full_scan to 1 to re-read every (filtered) device label */
-struct dm_list *get_vgnames(struct cmd_context *cmd, int full_scan,
-			     int include_internal);
-struct dm_list *get_vgids(struct cmd_context *cmd, int full_scan,
-			   int include_internal);
+struct dm_list *get_vgnames(struct cmd_context *cmd, int include_internal);
+struct dm_list *get_vgids(struct cmd_context *cmd, int include_internal);
 int scan_vgs_for_pvs(struct cmd_context *cmd);
 
 int pv_write(struct cmd_context *cmd, struct physical_volume *pv,
@@ -415,6 +425,7 @@ int move_pvs_used_by_lv(struct volume_group *vg_from,
 			const char *lv_name);
 int is_orphan_vg(const char *vg_name);
 int is_orphan(const struct physical_volume *pv);
+int is_missing_pv(const struct physical_volume *pv);
 int vgs_are_compatible(struct cmd_context *cmd,
 		       struct volume_group *vg_from,
 		       struct volume_group *vg_to);
@@ -471,6 +482,9 @@ int vg_set_alloc_policy(struct volume_group *vg, alloc_policy_t alloc);
 int vg_set_clustered(struct volume_group *vg, int clustered);
 int vg_split_mdas(struct cmd_context *cmd, struct volume_group *vg_from,
 		  struct volume_group *vg_to);
+/* FIXME: Investigate refactoring these functions to take a pv ISO pv_list */
+void add_pvl_to_vgs(struct volume_group *vg, struct pv_list *pvl);
+void del_pvl_from_vgs(struct volume_group *vg, struct pv_list *pvl);
 
 /* FIXME: refactor / unexport when lvremove liblvm refactoring dones */
 int remove_lvs_in_vg(struct cmd_context *cmd,
@@ -520,7 +534,7 @@ int lv_remove_single(struct cmd_context *cmd, struct logical_volume *lv,
 		     force_t force);
 
 int lv_remove_with_dependencies(struct cmd_context *cmd, struct logical_volume *lv,
-				force_t force);
+				force_t force, unsigned level);
 
 int lv_rename(struct cmd_context *cmd, struct logical_volume *lv,
 	      const char *new_name);
@@ -537,6 +551,7 @@ struct lvcreate_params {
 	int minor; /* all */
 	int log_count; /* mirror */
 	int nosync; /* mirror */
+	int activation_monitoring; /* all */
 
 	char *origin; /* snap */
 	const char *vg_name; /* all */
@@ -596,8 +611,8 @@ struct logical_volume *insert_layer_for_lv(struct cmd_context *cmd,
 /* Find a PV within a given VG */
 struct pv_list *find_pv_in_vg(const struct volume_group *vg,
 			      const char *pv_name);
-struct physical_volume *find_pv_in_vg_by_uuid(const struct volume_group *vg,
-			    const struct id *id);
+struct pv_list *find_pv_in_vg_by_uuid(const struct volume_group *vg,
+				      const struct id *id);
 
 /* Find an LV within a given VG */
 struct lv_list *find_lv_in_vg(const struct volume_group *vg,
@@ -665,7 +680,7 @@ int vg_max_lv_reached(struct volume_group *vg);
 */
 struct lv_segment *find_mirror_seg(struct lv_segment *seg);
 int lv_add_mirrors(struct cmd_context *cmd, struct logical_volume *lv,
-		   uint32_t mirrors, uint32_t stripes,
+		   uint32_t mirrors, uint32_t stripes, uint32_t stripe_size,
 		   uint32_t region_size, uint32_t log_count,
 		   struct dm_list *pvs, alloc_policy_t alloc, uint32_t flags);
 int lv_split_mirror_images(struct logical_volume *lv, const char *split_lv_name,
@@ -688,7 +703,7 @@ int add_mirrors_to_segments(struct cmd_context *cmd, struct logical_volume *lv,
 int remove_mirror_images(struct logical_volume *lv, uint32_t num_mirrors,
 			 struct dm_list *removable_pvs, unsigned remove_log);
 int add_mirror_images(struct cmd_context *cmd, struct logical_volume *lv,
-		      uint32_t mirrors, uint32_t stripes, uint32_t region_size,
+		      uint32_t mirrors, uint32_t stripes, uint32_t stripe_size, uint32_t region_size,
 		      struct dm_list *allocatable_pvs, alloc_policy_t alloc,
 		      uint32_t log_count);
 struct logical_volume *detach_mirror_log(struct lv_segment *seg);

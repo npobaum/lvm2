@@ -1,3 +1,16 @@
+lvm2 (2.02.64-1) unstable; urgency=low
+
+  * New upstream version.
+  * Don't longer build static libraries.
+  * Fix readline support. (closes: #575640)
+  * Built-in cluster locking.
+  * Build liblvm2app and liblvm2cmd. (closes: #564810)
+  * Adopt some upstream udev rule changes.
+  * Enable udev sync, remove explicit udev dependency, bump dmsetup dependency
+    to get it working. (closes: #543163)
+
+ -- Bastian Blank <waldi@debian.org>  Wed, 19 May 2010 13:33:09 +0000
+
 lvm2 (2.02.62-1) unstable; urgency=low
 
   * New upstream version.

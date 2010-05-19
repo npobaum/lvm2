@@ -1013,9 +1013,13 @@ static int _suspend_node(const char *name, uint32_t major, uint32_t minor,
 	return r;
 }
 
-int dm_tree_deactivate_children(struct dm_tree_node *dnode,
-				   const char *uuid_prefix,
-				   size_t uuid_prefix_len)
+/*
+ * FIXME Don't attempt to deactivate known internal dependencies.
+ */
+static int _dm_tree_deactivate_children(struct dm_tree_node *dnode,
+					const char *uuid_prefix,
+					size_t uuid_prefix_len,
+					unsigned level)
 {
 	int r = 1;
 	void *handle = NULL;
@@ -1047,8 +1051,19 @@ int dm_tree_deactivate_children(struct dm_tree_node *dnode,
 
 		/* Refresh open_count */
 		if (!_info_by_dev(dinfo->major, dinfo->minor, 1, &info) ||
-		    !info.exists || info.open_count)
+		    !info.exists)
 			continue;
+
+		if (info.open_count) {
+			/* Only report error from (likely non-internal) dependency at top level */
+			if (!level) {
+				log_error("Unable to deactivate open %s (%" PRIu32
+					  ":%" PRIu32 ")", name, info.major,
+				  	info.minor);
+				r = 0;
+			}
+			continue;
+		}
 
 		if (!_deactivate_node(name, info.major, info.minor,
 				      &child->dtree->cookie, child->udev_flags)) {
@@ -1059,12 +1074,20 @@ int dm_tree_deactivate_children(struct dm_tree_node *dnode,
 			continue;
 		}
 
-		if (dm_tree_node_num_children(child, 0))
-			if (!dm_tree_deactivate_children(child, uuid_prefix, uuid_prefix_len))
+		if (dm_tree_node_num_children(child, 0)) {
+			if (!_dm_tree_deactivate_children(child, uuid_prefix, uuid_prefix_len, level + 1))
 				return_0;
+		}
 	}
 
 	return r;
+}
+
+int dm_tree_deactivate_children(struct dm_tree_node *dnode,
+				   const char *uuid_prefix,
+				   size_t uuid_prefix_len)
+{
+	return _dm_tree_deactivate_children(dnode, uuid_prefix, uuid_prefix_len, 0);
 }
 
 void dm_tree_skip_lockfs(struct dm_tree_node *dnode)
@@ -1931,7 +1954,7 @@ int dm_tree_node_add_mirror_target_log(struct dm_tree_node *node,
 	struct load_segment *seg;
 
 	if (!node->props.segment_count) {
-		log_error("Internal error: Attempt to add target area to missing segment.");
+		log_error(INTERNAL_ERROR "Attempt to add target area to missing segment.");
 		return 0;
 	}
 
@@ -2030,7 +2053,7 @@ int dm_tree_node_add_target_area(struct dm_tree_node *node,
 	}
 
 	if (!node->props.segment_count) {
-		log_error("Internal error: Attempt to add target area to missing segment.");
+		log_error(INTERNAL_ERROR "Attempt to add target area to missing segment.");
 		return 0;
 	}
 

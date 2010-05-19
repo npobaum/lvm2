@@ -16,6 +16,85 @@
 #include "dmlib.h"
 #include "parse_rx.h"
 
+#ifdef DEBUG
+#include <ctype.h>
+
+static void _regex_print(struct rx_node *rx, int depth, unsigned show_nodes)
+{
+	int i, numchars;
+
+	if (rx->left) {
+		if (rx->left->type != CHARSET && (show_nodes || (!((rx->type == CAT || rx->type == OR) && rx->left->type == CAT))))
+			printf("(");
+
+		_regex_print(rx->left, depth + 1, show_nodes);
+
+		if (rx->left->type != CHARSET && (show_nodes || (!((rx->type == CAT || rx->type == OR) && rx->left->type == CAT))))
+			printf(")");
+	}
+
+	/* display info about the node */
+	switch (rx->type) {
+	case CAT:
+		break;
+
+	case OR:
+		printf("|");
+		break;
+
+	case STAR:
+		printf("*");
+		break;
+
+	case PLUS:
+		printf("+");
+		break;
+
+	case QUEST:
+		printf("?");
+		break;
+
+	case CHARSET:
+		numchars = 0;
+		for (i = 0; i < 256; i++)
+			if (dm_bit(rx->charset, i) && (isprint(i) || i == HAT_CHAR || i == DOLLAR_CHAR))
+				numchars++;
+		if (numchars == 97) {
+			printf(".");
+			break;
+		}
+		if (numchars > 1)
+			printf("[");
+		for (i = 0; i < 256; i++)
+			if (dm_bit(rx->charset, i)) {
+				if isprint(i)
+					printf("%c", (char) i);
+				else if (i == HAT_CHAR)
+					printf("^");
+				else if (i == DOLLAR_CHAR)
+					printf("$");
+			}
+		if (numchars > 1)
+			printf("]");
+		break;
+
+	default:
+		fprintf(stderr, "Unknown type");
+	}
+
+	if (rx->right) {
+		if (rx->right->type != CHARSET && (show_nodes || (!(rx->type == CAT && rx->right->type == CAT) && rx->right->right)))
+			printf("(");
+		_regex_print(rx->right, depth + 1, show_nodes);
+		if (rx->right->type != CHARSET && (show_nodes || (!(rx->type == CAT && rx->right->type == CAT) && rx->right->right)))
+			printf(")");
+	}
+
+	if (!depth)
+		printf("\n");
+}
+#endif /* DEBUG */
+
 struct parse_sp {		/* scratch pad for the parsing process */
 	struct dm_pool *mem;
 	int type;		/* token type, 0 indicates a charset */
@@ -329,19 +408,239 @@ static struct rx_node *_or_term(struct parse_sp *ps)
 	return n;
 }
 
+/*----------------------------------------------------------------*/
+
+/* Macros for left and right nodes.  Inverted if 'leftmost' is set. */
+#define LEFT(a) (leftmost ? (a)->left : (a)->right)
+#define RIGHT(a) (leftmost ? (a)->right : (a)->left)
+
+/*
+ * The optimiser spots common prefixes on either side of an 'or' node, and
+ * lifts them outside the 'or' with a 'cat'.
+ */
+static unsigned _depth(struct rx_node *r, unsigned leftmost)
+{
+	int count = 1;
+
+	while (r->type != CHARSET && LEFT(r) && (leftmost || r->type != OR)) {
+		count++;
+		r = LEFT(r);
+	}
+
+	return count;
+}
+
+/*
+ * FIXME: a unique key could be built up as part of the parse, to make the
+ * comparison quick.  Alternatively we could use cons-hashing, and then
+ * this would simply be a pointer comparison.
+ */
+static int _nodes_equal(struct rx_node *l, struct rx_node *r)
+{
+	if (l->type != r->type)
+		return 0;
+
+	switch (l->type) {
+	case CAT:
+	case OR:
+		return _nodes_equal(l->left, r->left) &&
+			_nodes_equal(l->right, r->right);
+
+	case STAR:
+	case PLUS:
+	case QUEST:
+		return _nodes_equal(l->left, r->left);
+
+	case CHARSET:
+		/*
+		 * Never change anything containing TARGET_TRANS
+		 * used by matcher as boundary marker between concatenated
+		 * expressions.
+		 */
+		return (!dm_bit(l->charset, TARGET_TRANS) && dm_bitset_equal(l->charset, r->charset));
+	}
+
+	/* NOTREACHED */
+	return_0;
+}
+
+static int _find_leftmost_common(struct rx_node *or,
+                                 struct rx_node **l,
+                                 struct rx_node **r,
+				 unsigned leftmost)
+{
+	struct rx_node *left = or->left, *right = or->right;
+	unsigned left_depth = _depth(left, leftmost);
+	unsigned right_depth = _depth(right, leftmost);
+
+	while (left_depth > right_depth) {
+		left = LEFT(left);
+		left_depth--;
+	}
+
+	while (right_depth > left_depth) {
+		right = LEFT(right);
+		right_depth--;
+	}
+
+	while (left_depth) {
+		if (left->type == CAT && right->type == CAT) {
+			if (_nodes_equal(LEFT(left), LEFT(right))) {
+				*l = left;
+				*r = right;
+				return 1;
+			}
+		}
+		left = LEFT(left);
+		right = LEFT(right);
+		left_depth--;
+	}
+
+	return 0;
+}
+
+/* If top node is OR, rotate (leftmost example) from ((ab)|((ac)|d)) to (((ab)|(ac))|d) */
+static int _rotate_ors(struct rx_node *r, unsigned leftmost)
+{
+	struct rx_node *old_node;
+
+	if (r->type != OR || RIGHT(r)->type != OR)
+		return 0;
+
+	old_node = RIGHT(r);
+
+	if (leftmost) {
+		r->right = RIGHT(old_node);
+		old_node->right = LEFT(old_node);
+		old_node->left = LEFT(r);
+		r->left = old_node;
+	} else {
+		r->left = RIGHT(old_node);
+		old_node->left = LEFT(old_node);
+		old_node->right = LEFT(r);
+		r->right = old_node;
+	}
+
+	return 1;
+}
+
+static struct rx_node *_exchange_nodes(struct dm_pool *mem, struct rx_node *r,
+				       struct rx_node *left_cat, struct rx_node *right_cat,
+				       unsigned leftmost)
+{
+	struct rx_node *new_r;
+
+	if (leftmost)
+		new_r = _node(mem, CAT, LEFT(left_cat), r);
+	else
+		new_r = _node(mem, CAT, r, LEFT(right_cat));
+
+	if (!new_r)
+		return_NULL;
+
+	memcpy(left_cat, RIGHT(left_cat), sizeof(*left_cat));
+	memcpy(right_cat, RIGHT(right_cat), sizeof(*right_cat));
+
+	return new_r;
+}
+
+static struct rx_node *_pass(struct dm_pool *mem,
+                             struct rx_node *r,
+                             int *changed)
+{
+	struct rx_node *left, *right;
+
+	/*
+	 * walk the tree, optimising every 'or' node.
+	 */
+	switch (r->type) {
+	case CAT:
+		if (!(r->left = _pass(mem, r->left, changed)))
+			return_NULL;
+
+		if (!(r->right = _pass(mem, r->right, changed)))
+			return_NULL;
+
+		break;
+
+	case STAR:
+	case PLUS:
+	case QUEST:
+		if (!(r->left = _pass(mem, r->left, changed)))
+			return_NULL;
+		break;
+
+	case OR:
+		/* It's important we optimise sub nodes first */
+		if (!(r->left = _pass(mem, r->left, changed)))
+			return_NULL;
+
+		if (!(r->right = _pass(mem, r->right, changed)))
+			return_NULL;
+
+		/*
+		 * If rotate_ors changes the tree, left and right are stale,
+		 * so just set 'changed' to repeat the search.
+		 *
+		 * FIXME Check we can't 'bounce' between left and right rotations here.
+		 */
+		if (_find_leftmost_common(r, &left, &right, 1)) {
+			if (!_rotate_ors(r, 1))
+				r = _exchange_nodes(mem, r, left, right, 1);
+			*changed = 1;
+		} else if (_find_leftmost_common(r, &left, &right, 0)) {
+			if (!_rotate_ors(r, 0))
+				r = _exchange_nodes(mem, r, left, right, 0);
+			*changed = 1;
+		}
+		break;
+
+	case CHARSET:
+		break;
+	}
+
+	return r;
+}
+
+static struct rx_node *_optimise(struct dm_pool *mem, struct rx_node *r)
+{
+	/*
+	 * We're looking for (or (... (cat <foo> a)) (... (cat <foo> b)))
+	 * and want to turn it into (cat <foo> (or (... a) (... b)))
+	 *
+	 * (fa)|(fb) becomes f(a|b)
+	 */
+
+	/*
+	 * Initially done as an inefficient multipass algorithm.
+	 */
+	int changed;
+
+	do {
+		changed = 0;
+		r = _pass(mem, r, &changed);
+	} while (r && changed);
+
+	return r;
+}
+
+/*----------------------------------------------------------------*/
+
 struct rx_node *rx_parse_tok(struct dm_pool *mem,
 			     const char *begin, const char *end)
 {
 	struct rx_node *r;
 	struct parse_sp *ps = dm_pool_zalloc(mem, sizeof(*ps));
 
-	if (!ps) {
-		stack;
-		return NULL;
-	}
+	if (!ps)
+		return_NULL;
 
 	ps->mem = mem;
-	ps->charset = dm_bitset_create(mem, 256);
+	if (!(ps->charset = dm_bitset_create(mem, 256))) {
+		log_error("Regex charset allocation failed");
+		dm_pool_free(mem, ps);
+		return NULL;
+	}
 	ps->cursor = begin;
 	ps->rx_end = end;
 	_rx_get_token(ps);		/* load the first token */
@@ -349,6 +648,13 @@ struct rx_node *rx_parse_tok(struct dm_pool *mem,
 	if (!(r = _or_term(ps))) {
 		log_error("Parse error in regex");
 		dm_pool_free(mem, ps);
+		return NULL;
+	}
+
+	if (!(r = _optimise(mem, r))) {
+		log_error("Regex optimisation error");
+		dm_pool_free(mem, ps);
+		return NULL;
 	}
 
 	return r;

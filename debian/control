@@ -3,7 +3,7 @@ Section: admin
 Priority: optional
 Maintainer: Debian LVM Team <pkg-lvm-maintainers@lists.alioth.debian.org>
 Uploaders: Bastian Blank <waldi@debian.org>
-Build-Depends: debhelper (>> 4.2), automake, libcman-dev (>> 2), libdlm-dev (>> 2), libreadline5-dev, libselinux1-dev, pkg-config, quilt
+Build-Depends: debhelper (>> 4.2), automake, libcman-dev (>> 2), libdlm-dev (>> 2), libreadline5-dev, libselinux1-dev, libudev-dev, pkg-config, quilt
 Standards-Version: 3.7.3
 Homepage: http://sources.redhat.com/lvm2/
 Vcs-Svn: svn://svn.debian.org/pkg-lvm/lvm2/trunk/
@@ -11,7 +11,7 @@ Vcs-Browser: http://svn.debian.org/wsvn/pkg-lvm/lvm2/trunk/
 
 Package: lvm2
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, lsb-base, dmsetup (>> 2:1.02.36)
+Depends: ${shlibs:Depends}, ${misc:Depends}, lsb-base, dmsetup (>> 2:1.02.47)
 Conflicts: lvm-common
 Replaces: lvm-common
 Description: The Linux Logical Volume Manager
@@ -92,7 +92,7 @@ Description: The Linux Kernel Device Mapper userspace library
 
 Package: dmsetup
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, util-linux (>> 2.16), udev
+Depends: ${shlibs:Depends}, ${misc:Depends}, util-linux (>> 2.16)
 Conflicts: devicekit-disks (<< 009)
 Description: The Linux Kernel Device Mapper userspace library
  The Linux Kernel Device Mapper is the LVM (Linux Logical Volume Management)
@@ -116,3 +116,27 @@ Description: The Linux Kernel Device Mapper userspace library
  raid, and other drivers that create "virtual" block devices.
  .
  This package contains a utility for modifying device mappings.
+
+Package: liblvm2app2.2
+Section: libs
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: LVM2 application library
+ This package contains the lvm2app shared library. It allows easier access
+ to the basic LVM objects and provides functions to enumerate, create or
+ modify them.
+
+Package: liblvm2cmd2.02
+Section: libs
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: LVM2 command library
+ This package contains the lvm2cmd shared library.
+
+Package: liblvm2-dev
+Section: libdevel
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, liblvm2app2.2 (= ${binary:Version}), liblvm2cmd2.02 (= ${binary:Version}), libdevmapper-dev
+Description: LVM2 libraries - development files
+ This package contains files needed to develop applications that use the
+ lvm2app library.
