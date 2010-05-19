@@ -31,7 +31,7 @@ static struct dm_hash_table *_pvid_hash = NULL;
 static struct dm_hash_table *_vgid_hash = NULL;
 static struct dm_hash_table *_vgname_hash = NULL;
 static struct dm_hash_table *_lock_hash = NULL;
-static struct dm_list _vginfos;
+static DM_LIST_INIT(_vginfos);
 static int _scanning_in_progress = 0;
 static int _has_scanned = 0;
 static int _vgs_locked = 0;
@@ -605,13 +605,12 @@ struct volume_group *lvmcache_get_vg(const char *vgid, unsigned precommitted)
 	    (!precommitted && vginfo->precommitted && !memlock()))
 		return NULL;
 
-	if (!(fid =  vginfo->fmt->ops->create_instance(vginfo->fmt,
-						       vginfo->vgname,
-						       vgid, NULL)))
+	if (!(fid = vginfo->fmt->ops->create_instance(vginfo->fmt,
+						      vginfo->vgname,
+						      vgid, NULL)))
 		return_NULL;
 
-	if (!(vg = import_vg_from_buffer(vginfo->vgmetadata, fid)) ||
-	    !vg_validate(vg)) {
+	if (!(vg = import_vg_from_buffer(vginfo->vgmetadata, fid))) {
 		_free_cached_vgmetadata(vginfo);
 		vg_release(vg);
 		return_NULL;
@@ -623,13 +622,13 @@ struct volume_group *lvmcache_get_vg(const char *vgid, unsigned precommitted)
 	return vg;
 }
 
-struct dm_list *lvmcache_get_vgids(struct cmd_context *cmd, int full_scan,
-				    int include_internal)
+struct dm_list *lvmcache_get_vgids(struct cmd_context *cmd,
+				   int include_internal)
 {
 	struct dm_list *vgids;
 	struct lvmcache_vginfo *vginfo;
 
-	lvmcache_label_scan(cmd, full_scan);
+	lvmcache_label_scan(cmd, 0);
 
 	if (!(vgids = str_list_create(cmd->mem))) {
 		log_error("vgids list allocation failed");
@@ -650,13 +649,13 @@ struct dm_list *lvmcache_get_vgids(struct cmd_context *cmd, int full_scan,
 	return vgids;
 }
 
-struct dm_list *lvmcache_get_vgnames(struct cmd_context *cmd, int full_scan,
-				      int include_internal)
+struct dm_list *lvmcache_get_vgnames(struct cmd_context *cmd,
+				     int include_internal)
 {
 	struct dm_list *vgnames;
 	struct lvmcache_vginfo *vginfo;
 
-	lvmcache_label_scan(cmd, full_scan);
+	lvmcache_label_scan(cmd, 0);
 
 	if (!(vgnames = str_list_create(cmd->mem))) {
 		log_errno(ENOMEM, "vgnames list allocation failed");
@@ -703,7 +702,8 @@ struct dm_list *lvmcache_get_pvids(struct cmd_context *cmd, const char *vgname,
 	return pvids;
 }
 
-struct device *device_from_pvid(struct cmd_context *cmd, struct id *pvid)
+struct device *device_from_pvid(struct cmd_context *cmd, struct id *pvid,
+				unsigned *scan_done_once)
 {
 	struct label *label;
 	struct lvmcache_info *info;
@@ -728,10 +728,12 @@ struct device *device_from_pvid(struct cmd_context *cmd, struct id *pvid)
 		}
 	}
 
-	if (memlock())
+	if (memlock() || (scan_done_once && *scan_done_once))
 		return NULL;
 
 	lvmcache_label_scan(cmd, 2);
+	if (scan_done_once)
+		*scan_done_once = 1;
 
 	/* Try again */
 	if ((info = info_from_pvid((char *) pvid, 0))) {
@@ -901,37 +903,37 @@ static int _insert_vginfo(struct lvmcache_vginfo *new_vginfo, const char *vgid,
 		 */
 		if (!(primary_vginfo->status & EXPORTED_VG) &&
 		    (vgstatus & EXPORTED_VG))
-			log_error("WARNING: Duplicate VG name %s: "
-				  "Existing %s takes precedence over "
-				  "exported %s", new_vginfo->vgname,
-				  uuid_primary, uuid_new);
+			log_warn("WARNING: Duplicate VG name %s: "
+				 "Existing %s takes precedence over "
+				 "exported %s", new_vginfo->vgname,
+				 uuid_primary, uuid_new);
 		else if ((primary_vginfo->status & EXPORTED_VG) &&
 			   !(vgstatus & EXPORTED_VG)) {
-			log_error("WARNING: Duplicate VG name %s: "
-				  "%s takes precedence over exported %s",
-				  new_vginfo->vgname, uuid_new,
-				  uuid_primary);
+			log_warn("WARNING: Duplicate VG name %s: "
+				 "%s takes precedence over exported %s",
+				 new_vginfo->vgname, uuid_new,
+				 uuid_primary);
 			use_new = 1;
 		} else if (primary_vginfo->creation_host &&
 			   !strcmp(primary_vginfo->creation_host,
 				   primary_vginfo->fmt->cmd->hostname))
-			log_error("WARNING: Duplicate VG name %s: "
-				  "Existing %s (created here) takes precedence "
-				  "over %s", new_vginfo->vgname, uuid_primary,
-				  uuid_new);
+			log_warn("WARNING: Duplicate VG name %s: "
+				 "Existing %s (created here) takes precedence "
+				 "over %s", new_vginfo->vgname, uuid_primary,
+				 uuid_new);
 		else if (!primary_vginfo->creation_host && creation_host) {
-			log_error("WARNING: Duplicate VG name %s: "
-				  "%s (with creation_host) takes precedence over %s",
-				  new_vginfo->vgname, uuid_new,
-				  uuid_primary);
+			log_warn("WARNING: Duplicate VG name %s: "
+				 "%s (with creation_host) takes precedence over %s",
+				 new_vginfo->vgname, uuid_new,
+				 uuid_primary);
 			use_new = 1;
 		} else if (creation_host &&
 			   !strcmp(creation_host,
 				   primary_vginfo->fmt->cmd->hostname)) {
-			log_error("WARNING: Duplicate VG name %s: "
-				  "%s (created here) takes precedence over %s",
-				  new_vginfo->vgname, uuid_new,
-				  uuid_primary);
+			log_warn("WARNING: Duplicate VG name %s: "
+				 "%s (created here) takes precedence over %s",
+				 new_vginfo->vgname, uuid_new,
+				 uuid_primary);
 			use_new = 1;
 		}
 

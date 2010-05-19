@@ -13,8 +13,6 @@ test_description="ensure that 'vgreduce --removemissing' works on mirrored LV"
 
 . ./test-utils.sh
 
-dmsetup_has_dm_devdir_support_ || exit 200
-
 lv_is_on_ ()
 {
 	local lv=$vg/$1
@@ -25,6 +23,7 @@ lv_is_on_ ()
 	rm -f out1 out2
 	echo $pvs | sed 's/ /\n/g' | sort | uniq > out1
 
+	lvs -a -o+devices $lv
 	lvs -a -odevices --noheadings $lv | \
 	sed 's/([^)]*)//g; s/[ ,]/\n/g' | sort | uniq > out2
 
@@ -47,6 +46,7 @@ mimages_are_on_ ()
 		sed 's/\[//g; s/\]//g')
 	for i in $mimages; do
 		echo "Checking $vg/$i"
+		lvs -a -o+devices $vg/$i
 		lvs -a -odevices --noheadings $vg/$i | \
 			sed 's/([^)]*)//g; s/ //g; s/,/ /g' | sort | uniq >> out2
 	done
@@ -128,7 +128,7 @@ check_and_cleanup_lvs_
 
 #COMM "basic: fail the 2nd mirror image of 2-way mirrored LV"
 prepare_lvs_
-lvcreate -l2 -m1 -n $lv1 $vg $dev1 $dev2 $dev3:0-1
+lvcreate -l2 -m1 -n $lv1 $vg $dev1 $dev2 $dev3:0
 lvchange -an $vg/$lv1
 aux mimages_are_on_ $lv1 $dev1 $dev2
 mirrorlog_is_on_ $lv1 $dev3
@@ -149,7 +149,7 @@ test_3way_mirror_fail_1_()
 {
 	local index=$1
 
-	lvcreate -l2 -m2 -n $lv1 $vg $dev1 $dev2 $dev3 $dev4:0-1
+	lvcreate -l2 -m2 -n $lv1 $vg $dev1 $dev2 $dev3 $dev4:0
 	lvchange -an $vg/$lv1
 	aux mimages_are_on_ $lv1 $dev1 $dev2 $dev3
 	mirrorlog_is_on_ $lv1 $dev4
@@ -176,7 +176,7 @@ test_3way_mirror_fail_2_()
 {
 	local index=$1
 
-	lvcreate -l2 -m2 -n $lv1 $vg $dev1 $dev2 $dev3 $dev4:0-1
+	lvcreate -l2 -m2 -n $lv1 $vg $dev1 $dev2 $dev3 $dev4:0
 	lvchange -an $vg/$lv1
 	mimages_are_on_ $lv1 $dev1 $dev2 $dev3
 	mirrorlog_is_on_ $lv1 $dev4
@@ -204,7 +204,7 @@ test_3way_mirror_plus_1_fail_1_()
 {
 	local index=$1
 
-	lvcreate -l2 -m2 -n $lv1 $vg $dev1 $dev2 $dev3 $dev5:0-1 
+	lvcreate -l2 -m2 -n $lv1 $vg $dev1 $dev2 $dev3 $dev5:0
 	lvchange -an $vg/$lv1 
 	lvconvert -m+1 $vg/$lv1 $dev4 
 	mimages_are_on_ $lv1 $dev1 $dev2 $dev3 $dev4 
@@ -232,7 +232,7 @@ test_3way_mirror_plus_1_fail_3_()
 {
 	local index=$1
 
-	lvcreate -l2 -m2 -n $lv1 $vg $dev1 $dev2 $dev3 $dev5:0-1 
+	lvcreate -l2 -m2 -n $lv1 $vg $dev1 $dev2 $dev3 $dev5:0
 	lvchange -an $vg/$lv1 
 	lvconvert -m+1 $vg/$lv1 $dev4 
 	mimages_are_on_ $lv1 $dev1 $dev2 $dev3 $dev4 
@@ -261,7 +261,7 @@ test_2way_mirror_plus_2_fail_1_()
 {
 	local index=$1
 
-	lvcreate -l2 -m1 -n $lv1 $vg $dev1 $dev2 $dev5:0-1 
+	lvcreate -l2 -m1 -n $lv1 $vg $dev1 $dev2 $dev5:0
 	lvchange -an $vg/$lv1 
 	lvconvert -m+2 $vg/$lv1 $dev3 $dev4 
 	mimages_are_on_ $lv1 $dev1 $dev2 $dev3 $dev4 
@@ -289,7 +289,7 @@ test_2way_mirror_plus_2_fail_3_()
 {
 	local index=$1
 
-	lvcreate -l2 -m1 -n $lv1 $vg $dev1 $dev2 $dev5:0-1 
+	lvcreate -l2 -m1 -n $lv1 $vg $dev1 $dev2 $dev5:0
 	lvchange -an $vg/$lv1 
 	lvconvert -m+2 $vg/$lv1 $dev3 $dev4 
 	mimages_are_on_ $lv1 $dev1 $dev2 $dev3 $dev4 
@@ -314,7 +314,7 @@ done
 
 #COMM "fail mirror log of 2-way mirrored LV" 
 prepare_lvs_ 
-lvcreate -l2 -m1 -n $lv1 $vg $dev1 $dev2 $dev5:0-1 
+lvcreate -l2 -m1 -n $lv1 $vg $dev1 $dev2 $dev5:0
 lvchange -an $vg/$lv1 
 mimages_are_on_ $lv1 $dev1 $dev2 
 mirrorlog_is_on_ $lv1 $dev5 
@@ -326,7 +326,7 @@ recover_vg_ $dev5
 
 #COMM "fail mirror log of 3-way (1 converting) mirrored LV" 
 prepare_lvs_ 
-lvcreate -l2 -m1 -n $lv1 $vg $dev1 $dev2 $dev5:0-1 
+lvcreate -l2 -m1 -n $lv1 $vg $dev1 $dev2 $dev5:0
 lvchange -an $vg/$lv1 
 lvconvert -m+1 $vg/$lv1 $dev3 
 mimages_are_on_ $lv1 $dev1 $dev2 $dev3 
@@ -342,7 +342,7 @@ recover_vg_ $dev5
 
 #COMM "fail all mirror images of 2-way mirrored LV"
 prepare_lvs_ 
-lvcreate -l2 -m1 -n $lv1 $vg $dev1 $dev2 $dev5:0-1 
+lvcreate -l2 -m1 -n $lv1 $vg $dev1 $dev2 $dev5:0
 lvchange -an $vg/$lv1 
 mimages_are_on_ $lv1 $dev1 $dev2 
 mirrorlog_is_on_ $lv1 $dev5 
@@ -353,7 +353,7 @@ recover_vg_ $dev1 $dev2
 
 #COMM "fail all mirror images of 3-way (1 converting) mirrored LV"
 prepare_lvs_ 
-lvcreate -l2 -m1 -n $lv1 $vg $dev1 $dev2 $dev5:0-1 
+lvcreate -l2 -m1 -n $lv1 $vg $dev1 $dev2 $dev5:0
 lvchange -an $vg/$lv1 
 lvconvert -m+1 $vg/$lv1 $dev3 
 mimages_are_on_ $lv1 $dev1 $dev2 $dev3 
@@ -368,9 +368,9 @@ recover_vg_ $dev1 $dev2 $dev3
 
 #COMM "fail a mirror image of one of mirrored LV"
 prepare_lvs_ 
-lvcreate -l2 -m1 -n $lv1 $vg $dev1 $dev2 $dev5:0-1 
+lvcreate -l2 -m1 -n $lv1 $vg $dev1 $dev2 $dev5:0
 lvchange -an $vg/$lv1 
-lvcreate -l2 -m1 -n $lv2 $vg $dev3 $dev4 $dev5:1-1 
+lvcreate -l2 -m1 -n $lv2 $vg $dev3 $dev4 $dev5:1 
 lvchange -an $vg/$lv2 
 mimages_are_on_ $lv1 $dev1 $dev2 
 mimages_are_on_ $lv2 $dev3 $dev4 
@@ -386,9 +386,9 @@ recover_vg_ $dev2
 
 #COMM "fail mirror images, one for each mirrored LV"
 prepare_lvs_ 
-lvcreate -l2 -m1 -n $lv1 $vg $dev1 $dev2 $dev5:0-1 
+lvcreate -l2 -m1 -n $lv1 $vg $dev1 $dev2 $dev5:0
 lvchange -an $vg/$lv1 
-lvcreate -l2 -m1 -n $lv2 $vg $dev3 $dev4 $dev5:1-1 
+lvcreate -l2 -m1 -n $lv2 $vg $dev3 $dev4 $dev5:1 
 lvchange -an $vg/$lv2 
 mimages_are_on_ $lv1 $dev1 $dev2 
 mimages_are_on_ $lv2 $dev3 $dev4 
@@ -408,7 +408,7 @@ recover_vg_ $dev2 $dev4
 
 #COMM "no failures"
 prepare_lvs_ 
-lvcreate -l2 -m1 -n $lv1 $vg $dev1 $dev2 $dev5:0-1 
+lvcreate -l2 -m1 -n $lv1 $vg $dev1 $dev2 $dev5:0
 lvchange -an $vg/$lv1 
 mimages_are_on_ $lv1 $dev1 $dev2 
 mirrorlog_is_on_ $lv1 $dev5 

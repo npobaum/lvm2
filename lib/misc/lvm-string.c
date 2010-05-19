@@ -170,6 +170,27 @@ char *build_dm_name(struct dm_pool *mem, const char *vgname,
 	return r;
 }
 
+char *build_dm_uuid(struct dm_pool *mem, const char *lvid, const char *layer)
+{
+	char *dmuuid;
+	size_t len;
+
+	if (!layer)
+		layer = "";
+
+	len = sizeof(UUID_PREFIX) + strlen(lvid) + strlen(layer) + 1;
+
+	if (!(dmuuid = dm_pool_alloc(mem, len))) {
+		log_error("build_dm_name: Allocation failed for %" PRIsize_t
+			  " %s %s.", len, lvid, layer);
+		return NULL;
+	}
+
+	sprintf(dmuuid, UUID_PREFIX "%s%s%s", lvid, (*layer) ? "-" : "", layer);
+
+	return dmuuid;
+}
+
 /*
  * Copies a string, quoting double quotes with backslashes.
  */
@@ -220,4 +241,50 @@ int validate_name(const char *n)
 		return 0;
 
 	return 1;
+}
+
+int apply_lvname_restrictions(const char *name)
+{
+	if (!strncmp(name, "snapshot", 8)) {
+		log_error("Names starting \"snapshot\" are reserved. "
+			  "Please choose a different LV name.");
+		return 0;
+	}
+
+	if (!strncmp(name, "pvmove", 6)) {
+		log_error("Names starting \"pvmove\" are reserved. "
+			  "Please choose a different LV name.");
+		return 0;
+	}
+
+	if (strstr(name, "_mlog")) {
+		log_error("Names including \"_mlog\" are reserved. "
+			  "Please choose a different LV name.");
+		return 0;
+	}
+
+	if (strstr(name, "_mimage")) {
+		log_error("Names including \"_mimage\" are reserved. "
+			  "Please choose a different LV name.");
+		return 0;
+	}
+
+	if (strstr(name, "_vorigin")) {
+		log_error("Names including \"_vorigin\" are reserved. "
+			  "Please choose a different LV name.");
+		return 0;
+	}
+
+	return 1;
+}
+
+int is_reserved_lvname(const char *name)
+{
+	int rc, old_suppress;
+
+	old_suppress = log_suppress(2);
+	rc = !apply_lvname_restrictions(name);
+	log_suppress(old_suppress);
+
+	return rc;
 }

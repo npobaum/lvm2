@@ -1,9 +1,9 @@
 --- a/make.tmpl.in
 +++ b/make.tmpl.in
-@@ -141,65 +141,27 @@
- 
- .PHONY: all install install_cluster pofile distclean clean cflow device-mapper 
- .PHONY: install_device-mapper install_lvm2
+@@ -155,63 +155,24 @@
+ .PHONY: all pofile distclean clean cleandir cflow device-mapper
+ .PHONY: install install_cluster install_device-mapper install_lvm2
+ .PHONY: install_lib_shared install_lib_shared_plugin
 -.PHONY: $(SUBDIRS) $(SUBDIRS.install) $(SUBDIRS.clean) $(SUBDIRS.distclean)
 -.PHONY: $(SUBDIRS.pofile) $(SUBDIRS.install_cluster) $(SUBDIRS.cflow)
 -.PHONY: $(SUBDIRS.device-mapper) $(SUBDIRS.install-device-mapper)
@@ -18,7 +18,7 @@
 -SUBDIRS.clean := $(SUBDIRS:=.clean)
 -SUBDIRS.distclean := $(SUBDIRS:=.distclean)
  
- TARGETS += $(LIB_SHARED) $(LIB_STATIC) $(VERSIONED_SHLIB)
+ TARGETS += $(LIB_SHARED) $(LIB_STATIC)
  
 -all: $(SUBDIRS) $(TARGETS)
 +all: subdirs-all $(TARGETS)
@@ -27,13 +27,23 @@
 -install_cluster: all $(SUBDIRS.install_cluster)
 -install_device-mapper: $(SUBDIRS.install_device-mapper)
 -install_lvm2: $(SUBDIRS.install_lvm2)
--
+-cflow: $(SUBDIRS.cflow)
++install: subdirs-install
++install_cluster: subdirs-install_cluster
++install_device-mapper: subdirs-install_device-mapper
++install_lvm2: subdirs-install_lvm2
+ 
 -$(SUBDIRS): $(SUBDIRS.device-mapper)
 -	$(MAKE) -C $@
--
++subdirs-%:
++	+@set -e; for subdir in $(SUBDIRS); do \
++		$(MAKE) -C $$subdir $(patsubst subdirs-%,%,$@); \
++	done
+ 
 -$(SUBDIRS.device-mapper):
 -	$(MAKE) -C $(@:.device-mapper=) device-mapper
--
++pofile: subdirs-pofile $(POTFILES)
+ 
 -$(SUBDIRS.install): $(SUBDIRS)
 -	$(MAKE) -C $(@:.install=) install
 -
@@ -51,51 +61,35 @@
 -
 -$(SUBDIRS.distclean):
 -	-$(MAKE) -C $(@:.distclean=) distclean
-+install: subdirs-install
-+install_cluster: subdirs-install_cluster
-+install_device-mapper: subdirs-install_device-mapper
-+install_lvm2: subdirs-install_lvm2
-+
-+subdirs-%:
-+	+@set -e; for subdir in $(SUBDIRS); do \
-+		$(MAKE) -C $$subdir $(patsubst subdirs-%,%,$@); \
-+	done
- 
- ifeq ("@INTL@", "yes")
+-
+-$(SUBDIRS.cflow):
+-	$(MAKE) -C $(@:.cflow=) cflow
+-
+-ifeq ("@INTL@", "yes")
 -pofile: $(SUBDIRS.pofile) $(POTFILES)
 -
 -$(SUBDIRS.pofile):
 -	$(MAKE) -C $(@:.pofile=) pofile
-+pofile: subdirs-pofile $(POTFILES)
- endif
- 
- ifneq ("@CFLOW_CMD@", "")
--cflow: $(SUBDIRS.cflow)
--
--$(SUBDIRS.cflow):
--	$(MAKE) -C $(@:.cflow=) cflow
+-endif
 +cflow: subdirs-cflow
- endif
  
- $(TARGETS): $(OBJECTS)
-@@ -247,12 +209,12 @@
- %.mo: %.po
- 	$(MSGFMT) -o $@ $<
+ ifneq ("$(CFLOW_LIST_TARGET)", "")
+ CLEAN_CFLOW += $(CFLOW_LIST_TARGET)
+@@ -328,9 +289,9 @@
+ 	  $(POTFILES) $(SOURCES:%.c=%.d) $(SOURCES:%.c=%.gcno) $(SOURCES:%.c=%.gcda) \
+ 	  $(SOURCES2:%.c=%.o) $(SOURCES2:%.c=%.d) $(SOURCES2:%.c=%.gcno) $(SOURCES2:%.c=%.gcda)
  
--clean: $(SUBDIRS.clean)
-+clean: subdirs-clean
- 	$(RM) $(OBJECTS) $(TARGETS) $(CLEAN_TARGETS) $(SOURCES:%.c=%.d) \
- 	      $(SOURCES2:%.c=%.d) $(SOURCES:%.c=%.pot) $(SOURCES:%.c=%.gcno) \
- 	      $(SOURCES:%.c=%.gcda) $(LDDEPS)
+-clean: $(SUBDIRS.clean) cleandir
++clean: subdirs-clean cleandir
  
--distclean: $(SUBDIRS.distclean)
-+distclean: subdir-distclean
- 	$(RM) -rf $(DISTCLEAN_DIRS)
- 	$(RM) $(DISTCLEAN_TARGETS) \
- 	      $(OBJECTS) $(TARGETS) $(CLEAN_TARGETS) $(SOURCES:%.c=%.d) \
+-distclean: cleandir $(SUBDIRS.distclean)
++distclean: cleandir subdirs-distclean
+ 	test -z "$(DISTCLEAN_DIRS)" || $(RM) -r $(DISTCLEAN_DIRS)
+ 	$(RM) $(DISTCLEAN_TARGETS) Makefile core
+ 
 --- a/Makefile.in
 +++ b/Makefile.in
-@@ -27,7 +27,7 @@
+@@ -26,7 +26,7 @@
    SUBDIRS += po
  endif
  
@@ -104,7 +98,7 @@
  
  ifeq ("@APPLIB@", "yes")
    SUBDIRS += liblvm
-@@ -54,31 +54,6 @@
+@@ -42,32 +42,6 @@
  
  include make.tmpl
  
@@ -128,19 +122,20 @@
 -pofile: po.pofile
 -endif
 -
--ifneq ("@CFLOW_CMD@", "")
--tools.cflow: lib.cflow
--cflow: tools.cflow
+-ifneq ("$(CFLOW_CMD)", "")
+-tools.cflow: libdm.cflow lib.cflow
+-daemons.cflow: tools.cflow
+-cflow: include.cflow
 -endif
 -
  ifneq ("@CSCOPE_CMD@", "")
- cscope.out: tools
- 	@CSCOPE_CMD@ -b -R
+ cscope.out:
+ 	@CSCOPE_CMD@ -b -R -s$(top_srcdir)
 --- a/man/Makefile.in
 +++ b/man/Makefile.in
 @@ -58,9 +58,7 @@
  
- .PHONY: man
+ .PHONY: man install_man5 install_man8
  
 -device-mapper: $(MAN8DM)
 -
@@ -151,7 +146,7 @@
  
 --- a/daemons/Makefile.in
 +++ b/daemons/Makefile.in
-@@ -18,10 +18,6 @@
+@@ -17,10 +17,6 @@
  
  .PHONY: dmeventd clvmd cmirrord
  
@@ -162,8 +157,8 @@
  ifeq ("@BUILD_CMIRRORD@", "yes")
    SUBDIRS += cmirrord
  endif
-@@ -30,6 +26,10 @@
-   SUBDIRS += dmeventd
+@@ -36,6 +32,10 @@
+   SUBDIRS = clvmd cmirrord dmeventd
  endif
  
 +ifneq ("@CLVMD@", "none")

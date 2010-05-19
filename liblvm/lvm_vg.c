@@ -328,35 +328,30 @@ uint64_t lvm_vg_get_max_lv(const vg_t vg)
 	return vg_max_lv(vg);
 }
 
-char *lvm_vg_get_uuid(const vg_t vg)
+const char *lvm_vg_get_uuid(const vg_t vg)
 {
 	char uuid[64] __attribute((aligned(8)));
 
 	if (!id_write_format(&vg->id, uuid, sizeof(uuid))) {
-		log_error("Internal error converting uuid");
+		log_error(INTERNAL_ERROR "Unable to convert uuid");
 		return NULL;
 	}
-	return strndup((const char *)uuid, 64);
+	return dm_pool_strndup(vg->vgmem, (const char *)uuid, 64);
 }
 
-char *lvm_vg_get_name(const vg_t vg)
+const char *lvm_vg_get_name(const vg_t vg)
 {
-	char *name;
-
-	name = dm_malloc(NAME_LEN + 1);
-	strncpy(name, (const char *)vg->name, NAME_LEN);
-	name[NAME_LEN] = '\0';
-	return name;
+	return dm_pool_strndup(vg->vgmem, (const char *)vg->name, NAME_LEN+1);
 }
 
 struct dm_list *lvm_list_vg_names(lvm_t libh)
 {
-	return get_vgnames((struct cmd_context *)libh, 0, 0);
+	return get_vgnames((struct cmd_context *)libh, 0);
 }
 
 struct dm_list *lvm_list_vg_uuids(lvm_t libh)
 {
-	return get_vgids((struct cmd_context *)libh, 0, 0);
+	return get_vgids((struct cmd_context *)libh, 0);
 }
 
 /*

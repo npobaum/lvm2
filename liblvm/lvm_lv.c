@@ -39,25 +39,21 @@ uint64_t lvm_lv_get_size(const lv_t lv)
 	return SECTOR_SIZE * lv_size(lv);
 }
 
-char *lvm_lv_get_uuid(const lv_t lv)
+const char *lvm_lv_get_uuid(const lv_t lv)
 {
 	char uuid[64] __attribute((aligned(8)));
 
 	if (!id_write_format(&lv->lvid.id[1], uuid, sizeof(uuid))) {
-		log_error("Internal error converting uuid");
+		log_error(INTERNAL_ERROR "unable to convert uuid");
 		return NULL;
 	}
-	return strndup((const char *)uuid, 64);
+	return dm_pool_strndup(lv->vg->vgmem, (const char *)uuid, 64);
 }
 
-char *lvm_lv_get_name(const lv_t lv)
+const char *lvm_lv_get_name(const lv_t lv)
 {
-	char *name;
-
-	name = dm_malloc(NAME_LEN + 1);
-	strncpy(name, (const char *)lv->name, NAME_LEN);
-	name[NAME_LEN] = '\0';
-	return name;
+	return dm_pool_strndup(lv->vg->vgmem, (const char *)lv->name,
+			       NAME_LEN+1);
 }
 
 uint64_t lvm_lv_is_active(const lv_t lv)
@@ -111,6 +107,7 @@ static void _lv_set_default_params(struct lvcreate_params *lp,
 	lp->zero = 1;
 	lp->major = -1;
 	lp->minor = -1;
+	lp->activation_monitoring = DEFAULT_DMEVENTD_MONITOR;
 	lp->vg_name = vg->name;
 	lp->lv_name = lvname; /* FIXME: check this for safety */
 	lp->pvh = &vg->pvs;

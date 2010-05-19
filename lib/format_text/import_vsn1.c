@@ -27,7 +27,10 @@
 typedef int (*section_fn) (struct format_instance * fid, struct dm_pool * mem,
 			   struct volume_group * vg, struct config_node * pvn,
 			   struct config_node * vgn,
-			   struct dm_hash_table * pv_hash);
+			   struct dm_hash_table * pv_hash,
+			   struct dm_hash_table * lv_hash,
+			   unsigned *scan_done_once,
+			   unsigned report_missing_devices);
 
 #define _read_int32(root, path, result) \
 	get_config_uint32(root, path, (uint32_t *) result)
@@ -153,7 +156,10 @@ static int _read_flag_config(struct config_node *n, uint64_t *status, int type)
 static int _read_pv(struct format_instance *fid, struct dm_pool *mem,
 		    struct volume_group *vg, struct config_node *pvn,
 		    struct config_node *vgn __attribute((unused)),
-		    struct dm_hash_table *pv_hash)
+		    struct dm_hash_table *pv_hash,
+		    struct dm_hash_table *lv_hash __attribute((unused)),
+		    unsigned *scan_done_once,
+		    unsigned report_missing_devices)
 {
 	struct physical_volume *pv;
 	struct pv_list *pvl;
@@ -186,14 +192,15 @@ static int _read_pv(struct format_instance *fid, struct dm_pool *mem,
 	/*
 	 * Convert the uuid into a device.
 	 */
-	if (!(pv->dev = device_from_pvid(fid->fmt->cmd, &pv->id))) {
+	if (!(pv->dev = device_from_pvid(fid->fmt->cmd, &pv->id, scan_done_once))) {
 		char buffer[64] __attribute((aligned(8)));
 
 		if (!id_write_format(&pv->id, buffer, sizeof(buffer)))
-			log_error("Couldn't find device.");
+			buffer[0] = '\0';
+		if (report_missing_devices)
+			log_error("Couldn't find device with uuid %s.", buffer);
 		else
-			log_error("Couldn't find device with uuid '%s'.",
-				  buffer);
+			log_very_verbose("Couldn't find device with uuid %s.", buffer);
 	}
 
 	if (!(pv->vg_name = dm_pool_strdup(mem, vg->name)))
@@ -234,10 +241,6 @@ static int _read_pv(struct format_instance *fid, struct dm_pool *mem,
 		return 0;
 	}
 
-	/* adjust the volume group. */
-	vg->extent_count += pv->pe_count;
-	vg->free_count += pv->pe_count;
-
 	pv->pe_size = vg->extent_size;
 
 	pv->pe_alloc_count = 0;
@@ -257,17 +260,18 @@ static int _read_pv(struct format_instance *fid, struct dm_pool *mem,
 			size = pv->pe_count * (uint64_t) vg->extent_size +
 			       pv->pe_start;
 			if (size > pv->size)
-				log_error("WARNING: Physical Volume %s is too "
-					  "large for underlying device",
-					  pv_dev_name(pv));
+				log_warn("WARNING: Physical Volume %s is too "
+					 "large for underlying device",
+					 pv_dev_name(pv));
 		}
 	}
 
 	if (!alloc_pv_segment_whole_pv(mem, pv))
 		return_0;
 
-	vg->pv_count++;
-	dm_list_add(&vg->pvs, &pvl->list);
+	vg->extent_count += pv->pe_count;
+	vg->free_count += pv->pe_count;
+	add_pvl_to_vgs(vg, pvl);
 
 	return 1;
 }
@@ -336,7 +340,7 @@ static int _read_segment(struct dm_pool *mem, struct volume_group *vg,
 
 	if (!(seg = alloc_lv_segment(mem, segtype, lv, start_extent,
 				     extent_count, 0, 0, NULL, area_count,
-				     extent_count, 0, 0, 0))) {
+				     extent_count, 0, 0, 0, NULL))) {
 		log_error("Segment allocation failed");
 		return 0;
 	}
@@ -490,7 +494,10 @@ static int _read_lvnames(struct format_instance *fid __attribute((unused)),
 			 struct dm_pool *mem,
 			 struct volume_group *vg, struct config_node *lvn,
 			 struct config_node *vgn __attribute((unused)),
-			 struct dm_hash_table *pv_hash __attribute((unused)))
+			 struct dm_hash_table *pv_hash __attribute((unused)),
+			 struct dm_hash_table *lv_hash,
+			 unsigned *scan_done_once __attribute((unused)),
+			 unsigned report_missing_devices __attribute((unused)))
 {
 	struct logical_volume *lv;
 	struct config_node *cn;
@@ -549,6 +556,9 @@ static int _read_lvnames(struct format_instance *fid __attribute((unused)),
 		return 0;
 	}
 
+	if (!dm_hash_insert(lv_hash, lv->name, lv))
+		return_0;
+
 	return link_lv_to_vg(vg, lv);
 }
 
@@ -556,17 +566,17 @@ static int _read_lvsegs(struct format_instance *fid __attribute((unused)),
 			struct dm_pool *mem,
 			struct volume_group *vg, struct config_node *lvn,
 			struct config_node *vgn __attribute((unused)),
-			struct dm_hash_table *pv_hash)
+			struct dm_hash_table *pv_hash,
+			struct dm_hash_table *lv_hash,
+			unsigned *scan_done_once __attribute((unused)),
+			unsigned report_missing_devices __attribute((unused)))
 {
 	struct logical_volume *lv;
-	struct lv_list *lvl;
 
-	if (!(lvl = find_lv_in_vg(vg, lvn->key))) {
+	if (!(lv = dm_hash_lookup(lv_hash, lvn->key))) {
 		log_error("Lost logical volume reference %s", lvn->key);
 		return 0;
 	}
-
-	lv = lvl->lv;
 
 	if (!(lvn = lvn->child)) {
 		log_error("Empty logical volume section.");
@@ -609,9 +619,14 @@ static int _read_sections(struct format_instance *fid,
 			  const char *section, section_fn fn,
 			  struct dm_pool *mem,
 			  struct volume_group *vg, struct config_node *vgn,
-			  struct dm_hash_table *pv_hash, int optional)
+			  struct dm_hash_table *pv_hash,
+			  struct dm_hash_table *lv_hash,
+			  int optional,
+			  unsigned *scan_done_once)
 {
 	struct config_node *n;
+	/* Only report missing devices when doing a scan */
+	unsigned report_missing_devices = scan_done_once ? !*scan_done_once : 1;
 
 	if (!(n = find_config_node(vgn, section))) {
 		if (!optional) {
@@ -623,7 +638,7 @@ static int _read_sections(struct format_instance *fid,
 	}
 
 	for (n = n->child; n; n = n->sib) {
-		if (!fn(fid, mem, vg, n, vgn, pv_hash))
+		if (!fn(fid, mem, vg, n, vgn, pv_hash, lv_hash, scan_done_once, report_missing_devices))
 			return_0;
 	}
 
@@ -631,12 +646,14 @@ static int _read_sections(struct format_instance *fid,
 }
 
 static struct volume_group *_read_vg(struct format_instance *fid,
-				     struct config_tree *cft)
+				     struct config_tree *cft,
+				     unsigned use_cached_pvs)
 {
 	struct config_node *vgn, *cn;
 	struct volume_group *vg;
-	struct dm_hash_table *pv_hash = NULL;
+	struct dm_hash_table *pv_hash = NULL, *lv_hash = NULL;
 	struct dm_pool *mem = dm_pool_create("lvm2 vg_read", VG_MEMPOOL_CHUNK);
+	unsigned scan_done_once = use_cached_pvs;
 
 	if (!mem)
 		return_NULL;
@@ -729,7 +746,7 @@ static struct volume_group *_read_vg(struct format_instance *fid,
 	}
 
 	/*
-	 * The pv hash memoises the pv section names -> pv
+	 * The pv hash memorises the pv section names -> pv
 	 * structures.
 	 */
 	if (!(pv_hash = dm_hash_create(32))) {
@@ -739,7 +756,7 @@ static struct volume_group *_read_vg(struct format_instance *fid,
 
 	dm_list_init(&vg->pvs);
 	if (!_read_sections(fid, "physical_volumes", _read_pv, mem, vg,
-			    vgn, pv_hash, 0)) {
+			    vgn, pv_hash, lv_hash, 0, &scan_done_once)) {
 		log_error("Couldn't find all physical volumes for volume "
 			  "group %s.", vg->name);
 		goto bad;
@@ -756,15 +773,24 @@ static struct volume_group *_read_vg(struct format_instance *fid,
 		goto bad;
 	}
 
+	/*
+	 * The lv hash memorises the lv section names -> lv
+	 * structures.
+	 */
+	if (!(lv_hash = dm_hash_create(32))) {
+		log_error("Couldn't create hash table.");
+		goto bad;
+	}
+
 	if (!_read_sections(fid, "logical_volumes", _read_lvnames, mem, vg,
-			    vgn, pv_hash, 1)) {
+			    vgn, pv_hash, lv_hash, 1, NULL)) {
 		log_error("Couldn't read all logical volume names for volume "
 			  "group %s.", vg->name);
 		goto bad;
 	}
 
 	if (!_read_sections(fid, "logical_volumes", _read_lvsegs, mem, vg,
-			    vgn, pv_hash, 1)) {
+			    vgn, pv_hash, lv_hash, 1, NULL)) {
 		log_error("Couldn't read all logical volumes for "
 			  "volume group %s.", vg->name);
 		goto bad;
@@ -777,6 +803,7 @@ static struct volume_group *_read_vg(struct format_instance *fid,
 	}
 
 	dm_hash_destroy(pv_hash);
+	dm_hash_destroy(lv_hash);
 
 	/*
 	 * Finished.
@@ -786,6 +813,9 @@ static struct volume_group *_read_vg(struct format_instance *fid,
       bad:
 	if (pv_hash)
 		dm_hash_destroy(pv_hash);
+
+	if (lv_hash)
+		dm_hash_destroy(lv_hash);
 
 	dm_pool_destroy(mem);
 	return NULL;

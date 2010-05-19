@@ -45,10 +45,8 @@
 #  include <sys/types.h>
 #  include <sys/ipc.h>
 #  include <sys/sem.h>
-#ifdef HAVE_UDEV_QUEUE_GET_UDEV_IS_ACTIVE
 #  define LIBUDEV_I_KNOW_THE_API_IS_SUBJECT_TO_CHANGE
 #  include <libudev.h>
-#endif
 #endif
 
 /* FIXME Unused so far */
@@ -268,6 +266,7 @@ static int _parse_file(struct dm_task *dmt, const char *file)
 	r = 1;
 
       out:
+	memset(buffer, 0, buffer_size);
 #ifndef HAVE_GETLINE
 	dm_free(buffer);
 #else
@@ -843,7 +842,8 @@ static int _udevflags(int args, char **argv, void *data __attribute((unused)))
 					      "DISABLE_OTHER_RULES",
 					      "LOW_PRIORITY",
 					      "DISABLE_LIBRARY_FALLBACK",
-					       0, 0};
+					      "PRIMARY_SOURCE",
+					       0};
 
 	if (!(cookie = _get_cookie_value(argv[1])))
 		return 0;
@@ -931,12 +931,10 @@ static int _udevcookies(int argc __attribute((unused)), char **argv __attribute(
 #else	/* UDEV_SYNC_SUPPORT */
 static int _set_up_udev_support(const char *dev_dir)
 {
-#ifdef HAVE_UDEV_QUEUE_GET_UDEV_IS_ACTIVE
 	struct udev *udev;
 	const char *udev_dev_dir;
 	size_t udev_dev_dir_len;
 	int dirs_diff;
-#endif
 	const char *env;
 
 	if (_switches[NOUDEVSYNC_ARG])
@@ -955,7 +953,6 @@ static int _set_up_udev_support(const char *dev_dir)
 			  " defined by --udevcookie option.",
 			  _udev_cookie);
 
-#ifdef HAVE_UDEV_QUEUE_GET_UDEV_IS_ACTIVE
 	if (!(udev = udev_new()) ||
 	    !(udev_dev_dir = udev_get_dev_path(udev)) ||
 	    !*udev_dev_dir) {
@@ -995,7 +992,6 @@ static int _set_up_udev_support(const char *dev_dir)
 	}
 
 	udev_unref(udev);
-#endif
 	return 1;
 }
 
@@ -1007,7 +1003,8 @@ static int _udevcreatecookie(int argc, char **argv,
 	if (!dm_udev_create_cookie(&cookie))
 		return 0;
 
-	printf("0x%08" PRIX32 "\n", cookie);
+	if (cookie)
+		printf("0x%08" PRIX32 "\n", cookie);
 
 	return 1;
 }

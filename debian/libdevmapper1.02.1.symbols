@@ -2,11 +2,13 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  Base@Base 2:1.02.20
  dm_asprintf@Base 2:1.02.20
  dm_basename@Base 2:1.02.20
+ dm_bit_and@Base 2:1.02.47
  dm_bit_get_first@Base 2:1.02.20
  dm_bit_get_next@Base 2:1.02.20
  dm_bit_union@Base 2:1.02.20
  dm_bitset_create@Base 2:1.02.20
  dm_bitset_destroy@Base 2:1.02.20
+ dm_bitset_equal@Base 2:1.02.47
  dm_bounds_check_debug@Base 2:1.02.20
  dm_cookie_supported@Base 2:1.02.36
  dm_create_dir@Base 2:1.02.24
@@ -162,6 +164,7 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_tree_suspend_children@Base 2:1.02.20
  dm_tree_use_no_flush_suspend@Base 2:1.02.20
  dm_udev_complete@Base 2:1.02.36
+ dm_udev_create_cookie@Base 2:1.02.47
  dm_udev_get_checking@Base 2:1.02.44
  dm_udev_get_sync_support@Base 2:1.02.36
  dm_udev_set_checking@Base 2:1.02.44

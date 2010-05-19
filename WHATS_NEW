@@ -1,3 +1,97 @@
+Version 2.02.64 - 30th April 2010
+=================================
+  Avoid pointless initialisation when the 'version' command is run directly.
+  Fix memory leak for invalid regex pattern input.
+  Display invalid regex pattern for filter configuration in case of error.
+  Remove no-longer-used arg_ptr_value.
+  Fix -M and --type to use strings, not pointers that change on config refresh.
+  Fix lvconvert error message when existing mirrored LV is not found.
+  Set appropriate udev flags for reserved LVs.
+  Disallow the direct removal of a merging snapshot.
+  Don't preload the origin when removing a snapshot whose merge is pending.
+  Disallow the addition of mirror images while a conversion is happening.
+  Disallow primary mirror image removal when mirror is not in-sync.
+  Remove obsolete --name parameter from vgcfgrestore.
+  Add -S command to clvmd to restart the daemon preserving exclusive locks.
+  Increment lvm2app version from 1 to 2 (memory allocation changes).
+  Change lvm2app memory alloc/free for pv/vg/lv properties.
+  Change daemon lock filename from lvm2_monitor to lvm2-monitor for consistency.
+  Install symbolic .so links with relative paths between usrlibdir and libdir.
+  Add awk script relpath.awk to calculate paths for relative symlinks.
+  Use @AWK@ in makefiles.
+  Fix double DESTDIR usage for infodir and mandir.
+
+Version 2.02.63 - 14th April 2010
+=================================
+  Rename lvm_dump.sh to lvmdump.sh.
+  Allow incomplete mirror restore in lvconvert --repair upon insufficient space.
+  Do not reset position in metadata ring buffer on vgrename and vgcfgrestore.
+  Allow VGs with active LVs to be renamed.
+  Use UUIDs instead of names while processing event handlers.
+  Only pass visible LVs to tools in cmdline VG name/tag expansions without -a.
+  Use typedefs for toollib process_each functions.
+  Use C locales and use_mlockall for clvmd.
+  Refactor code related to vg->pvs list and add pv->vg link.
+  Mask LCK_HOLD flag in cluster VG locks for backwards compatibility.
+  Add activation/polling_interval to lvm.conf as --interval default.
+  Don't ignore error if resuming any LV fails in resume_lvs.
+  Skip closing persistent filter cache file if open failed.
+  Install .a and .so links into $(usrlibdir).
+  Add --enable-write_install options to install user-writable files.
+  Use INSTALL_PROGRAM/DATA/WDATA target.
+  Switch from using VPATH  to vpath in Makefiles.
+  Permit mimage LVs to be striped in lvcreate, lvresize and lvconvert.
+  Fix pvmove allocation to take existing parallel stripes into account.
+  Add pvmove_source_seg to struct lv_segment.
+  Fix incorrect removal of symlinks after LV deactivation fails.
+  Fix is_partitioned_dev not to attempt to reopen device.
+  Fix another thread race in clvmd.
+  Refactor management of vg->pvs list.
+  Fix lcov rules and generate better coverage report.
+  Improve vg_validate to detect some loops in lists.
+  Change most remaining log_error WARNING messages to log_warn.
+  Always use blocking lock for VGs and orphan locks.
+  Allocate all memory for segments from private VG mempool.
+  Return newly allocated PV segment after segment split.
+  Optimise searching PV segments for seeking the most recently-added.
+  Remove vg_validate call when parsing cached metadata.
+  Use hash table of LVs to speed up parsing of text metadata with many LVs.
+  Fix two vg_validate messages, adding whitespace and parentheses.
+  When dmeventd is not forking because of -d flag, don't kill parent process.
+  Fix 'make install' when $(builddir) is different from $(srcdir).
+  Fix dso resource leak in error path of dmeventd.
+  Use C locales and use_mlockall for dmeventd.
+  Fix --alloc contiguous policy only to allocate one set of parallel areas.
+  Do not allow {vg|lv}change --ignoremonitoring if on clustered VG.
+  Improved dependency tracking for dmeventd and liblvm2cmd sources.
+  Improved Makefile rules for distclean and cflow targets.
+  Add ability to create mirrored logs for mirror LVs.
+  Fix clvmd cluster propagation of dmeventd monitoring mode.
+  Allow ALLOC_ANYWHERE to split contiguous areas.
+  Use INTERNAL_ERROR for internal errors throughout tree.
+  Add some assertions to allocation code.
+  Introduce pv_area_used into allocation algorithm and add debug messages.
+  Add activation/monitoring to lvm.conf.
+  Add --monitor and --ignoremonitoring to lvcreate.
+  Allow dynamic extension of array of areas selected as allocation candidates.
+  Export and use only valid cookie value in test suite.
+  Remove const modifier for struct volume_group* from process_each_lv_in_vg().
+  Don't allow resizing of internal logical volumes.
+  Fix libdevmapper-event pkgconfig version string to match libdevmapper.
+  Avoid scanning all pvs in the system if operating on a device with mdas.
+  Add configure --with-clvmd=singlenode to use clvmd w/o cluster infrastructure.
+  Get stacktrace if testsuite test drops core and lvm was built with debugging.
+  Disable long living process flag in lvm2app.
+  Fix pvcreate device md filter check.
+  Suppress repeated errors about the same missing PV uuids.
+  Bypass full device scans when using internally-cached VG metadata.
+  Only do one full device scan during each read of text format metadata.
+  Remove unnecessary full_scan parameter from get_vgids and get_vgnames calls.
+  Look up missing PVs by uuid not dev_name in _pvs_single to avoid invalid stat.
+  Make find_pv_in_vg_by_uuid() return same type as related functions.
+  Introduce is_missing_pv().
+  Fix clvmd Makefile to not overwrite LIBS from template definition.
+
 Version 2.02.62 - 9th March 2010
 ================================
   Add use_mlockall and mlock_filter to activation section of lvm.conf.

@@ -1,6 +1,6 @@
 #
 # Copyright (C) 2002-2004 Sistina Software, Inc. All rights reserved.
-# Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+# Copyright (C) 2004-2010 Red Hat, Inc. All rights reserved.
 #
 # This file is part of LVM2.
 #
@@ -15,17 +15,12 @@
 srcdir = @srcdir@
 top_srcdir = @top_srcdir@
 top_builddir = @top_builddir@
-VPATH = @srcdir@
 
 SOURCES = snapshot.c
 
-LIB_SHARED = liblvm2snapshot.so
+LIB_SHARED = liblvm2snapshot.$(LIB_SUFFIX)
 LIB_VERSION = $(LIB_VERSION_LVM)
 
 include $(top_builddir)/make.tmpl
 
-install: liblvm2snapshot.so
-	$(INSTALL) -D $< $(libdir)/liblvm2snapshot.so.$(LIB_VERSION)
-	$(LN_S) -f liblvm2snapshot.so.$(LIB_VERSION) \
-		$(libdir)/liblvm2snapshot.so
-
+install: install_lib_shared_plugin
