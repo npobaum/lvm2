@@ -1208,14 +1208,32 @@ int vg_set_alloc_policy(struct volume_group *vg, alloc_policy_t alloc)
 int vg_set_clustered(struct volume_group *vg, int clustered)
 {
 	struct lv_list *lvl;
-	if (clustered) {
-		dm_list_iterate_items(lvl, &vg->lvs) {
+
+	/*
+	 * We do not currently support switching the cluster attribute
+	 * on active mirrors or snapshots.
+	 */
+	dm_list_iterate_items(lvl, &vg->lvs) {
+		if (lv_is_mirrored(lvl->lv) && lv_is_active(lvl->lv)) {
+			log_error("Mirror logical volumes must be inactive "
+				  "when changing the cluster attribute.");
+			return 0;
+		}
+
+		if (clustered) {
 			if (lv_is_origin(lvl->lv) || lv_is_cow(lvl->lv)) {
 				log_error("Volume group %s contains snapshots "
 					  "that are not yet supported.",
 					  vg->name);
 				return 0;
 			}
+		}
+
+		if ((lv_is_origin(lvl->lv) || lv_is_cow(lvl->lv)) &&
+		    lv_is_active(lvl->lv)) {
+			log_error("Snapshot logical volumes must be inactive "
+				  "when changing the cluster attribute.");
+			return 0;
 		}
 	}
 
@@ -3092,6 +3110,52 @@ out:
 	return NULL;
 }
 
+
+const char *find_vgname_from_pvid(struct cmd_context *cmd,
+				  const char *pvid)
+{
+	char *vgname;
+	struct lvmcache_info *info;
+
+	vgname = lvmcache_vgname_from_pvid(cmd, pvid);
+
+	if (is_orphan_vg(vgname)) {
+		if (!(info = info_from_pvid(pvid, 0))) {
+			return_NULL;
+		}
+		/*
+		 * If an orphan PV has no MDAs it may appear to be an
+		 * orphan until the metadata is read off another PV in
+		 * the same VG.  Detecting this means checking every VG
+		 * by scanning every PV on the system.
+		 */
+		if (!dm_list_size(&info->mdas)) {
+			if (!scan_vgs_for_pvs(cmd)) {
+				log_error("Rescan for PVs without "
+					  "metadata areas failed.");
+				return NULL;
+			}
+		}
+		/* Ask lvmcache again - we may have a non-orphan name now */
+		vgname = lvmcache_vgname_from_pvid(cmd, pvid);
+	}
+	return vgname;
+}
+
+
+const char *find_vgname_from_pvname(struct cmd_context *cmd,
+				    const char *pvname)
+{
+	const char *pvid;
+
+	pvid = pvid_from_devname(cmd, pvname);
+	if (!pvid)
+		/* Not a PV */
+		return NULL;
+
+	return find_vgname_from_pvid(cmd, pvid);
+}
+
 /**
  * pv_read - read and return a handle to a physical volume
  * @cmd: LVM command initiating the pv_read
@@ -3308,13 +3372,18 @@ int pv_write_orphan(struct cmd_context *cmd, struct physical_volume *pv)
 	return 1;
 }
 
+int is_global_vg(const char *vg_name)
+{
+	return (vg_name && !strcmp(vg_name, VG_GLOBAL)) ? 1 : 0;
+}
+
 /**
  * is_orphan_vg - Determine whether a vg_name is an orphan
  * @vg_name: pointer to the vg_name
  */
 int is_orphan_vg(const char *vg_name)
 {
-	return (vg_name && vg_name[0] == ORPHAN_PREFIX[0]) ? 1 : 0;
+	return (vg_name && !strncmp(vg_name, ORPHAN_PREFIX, sizeof(ORPHAN_PREFIX) - 1)) ? 1 : 0;
 }
 
 /**
@@ -3441,7 +3510,7 @@ int vg_check_status(const struct volume_group *vg, uint64_t status)
 	return !_vg_bad_status_bits(vg, status);
 }
 
-static struct volume_group *_recover_vg(struct cmd_context *cmd, const char *lock_name,
+static struct volume_group *_recover_vg(struct cmd_context *cmd,
 			 const char *vg_name, const char *vgid,
 			 uint32_t lock_flags)
 {
@@ -3451,11 +3520,11 @@ static struct volume_group *_recover_vg(struct cmd_context *cmd, const char *loc
 	lock_flags &= ~LCK_TYPE_MASK;
 	lock_flags |= LCK_WRITE;
 
-	unlock_vg(cmd, lock_name);
+	unlock_vg(cmd, vg_name);
 
 	dev_close_all();
 
-	if (!lock_vol(cmd, lock_name, lock_flags))
+	if (!lock_vol(cmd, vg_name, lock_flags))
 		return_NULL;
 
 	if (!(vg = vg_read_internal(cmd, vg_name, vgid, &consistent)))
@@ -3485,7 +3554,6 @@ static struct volume_group *_vg_lock_and_read(struct cmd_context *cmd, const cha
 			       uint64_t status_flags, uint32_t misc_flags)
 {
 	struct volume_group *vg = NULL;
-	const char *lock_name;
  	int consistent = 1;
 	int consistent_in;
 	uint32_t failure = 0;
@@ -3500,11 +3568,10 @@ static struct volume_group *_vg_lock_and_read(struct cmd_context *cmd, const cha
 		return NULL;
 	}
 
-	lock_name = is_orphan_vg(vg_name) ? VG_ORPHANS : vg_name;
-	already_locked = vgname_is_locked(lock_name);
+	already_locked = vgname_is_locked(vg_name);
 
 	if (!already_locked && !(misc_flags & READ_WITHOUT_LOCK) &&
-	    !lock_vol(cmd, lock_name, lock_flags)) {
+	    !lock_vol(cmd, vg_name, lock_flags)) {
 		log_error("Can't get lock for %s", vg_name);
 		return _vg_make_handle(cmd, vg, FAILED_LOCKING);
 	}
@@ -3537,7 +3604,7 @@ static struct volume_group *_vg_lock_and_read(struct cmd_context *cmd, const cha
 	/* consistent == 0 when VG is not found, but failed == FAILED_NOTFOUND */
 	if (!consistent && !failure) {
 		vg_release(vg);
-		if (!(vg = _recover_vg(cmd, lock_name, vg_name, vgid, lock_flags))) {
+		if (!(vg = _recover_vg(cmd, vg_name, vgid, lock_flags))) {
 			log_error("Recovery of volume group \"%s\" failed.",
 				  vg_name);
 			failure |= FAILED_INCONSISTENT;
@@ -3574,7 +3641,7 @@ static struct volume_group *_vg_lock_and_read(struct cmd_context *cmd, const cha
 
 bad:
 	if (!already_locked && !(misc_flags & READ_WITHOUT_LOCK))
-		unlock_vg(cmd, lock_name);
+		unlock_vg(cmd, vg_name);
 
 	return _vg_make_handle(cmd, vg, failure);
 }

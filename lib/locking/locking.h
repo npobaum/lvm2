@@ -19,7 +19,7 @@
 #include "uuid.h"
 #include "config.h"
 
-int init_locking(int type, struct cmd_context *cmd);
+int init_locking(int type, struct cmd_context *cmd, int suppress_messages);
 void fin_locking(void);
 void reset_locking(void);
 int vg_write_lock_held(void);
@@ -36,7 +36,8 @@ int remote_lock_held(const char *vol);
  *   Set LCK_CACHE flag when manipulating 'vol' metadata in the internal cache.
  *   (Like commit, revert or invalidate metadata.)
  *   If more than one lock needs to be held simultaneously, they must be
- *   acquired in alphabetical order of 'vol' (to avoid deadlocks).
+ *   acquired in alphabetical order of 'vol' (to avoid deadlocks), with
+ *   VG_ORPHANS last.
  *
  * LCK_LV:
  *   Lock/unlock an individual logical volume

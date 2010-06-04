@@ -1,9 +1,8 @@
+upstream-define-union-semun.patch
 install.patch
 libs-cleanup.patch
 config.patch
 force-modprobe.patch
-pkgconfig.patch
 libdm-atomic.patch
 rules-subdir.patch
 implicit-pointer.patch
-scripts-bash.sh

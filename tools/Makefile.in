@@ -144,6 +144,9 @@ liblvm2cmd-static.a: $(top_builddir)/lib/liblvm-internal.a $(OBJECTS) lvmcmdlib.
 
 liblvm2cmd.$(LIB_SUFFIX): LIBS += $(DL_LIBS)
 liblvm2cmd.$(LIB_SUFFIX): liblvm2cmd.a $(LDDEPS)
+	$(CC) -shared -Wl,-soname,$@.$(LIB_VERSION) \
+	$(CFLAGS) $(CLDFLAGS) -o $@ $(LVMLIBS) $(LIBS) \
+		@CLDWHOLEARCHIVE@ liblvm2cmd.a @CLDNOWHOLEARCHIVE@
 
 liblvm2cmd.$(LIB_SUFFIX).$(LIB_VERSION): liblvm2cmd.$(LIB_SUFFIX)
 	$(LN_S) -f $< $@

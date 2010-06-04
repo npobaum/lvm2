@@ -130,10 +130,11 @@ static int _passes_lvm_type_device_filter(struct dev_filter *f __attribute((unus
 		return 0;
 	}
 
+	/* FIXME Always check 'layer' regardless of ignore_suspended_devices */
 	/* Skip suspended devices */
 	if (MAJOR(dev->dev) == _device_mapper_major &&
-	    ignore_suspended_devices() && !device_is_usable(dev->dev)) {
-		log_debug("%s: Skipping: Suspended dm device", name);
+	    ignore_suspended_devices() && !device_is_usable(dev)) {
+		log_debug("%s: Skipping: Suspended or internal dm device", name);
 		return 0;
 	}
 

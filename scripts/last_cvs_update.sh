@@ -1,5 +1,5 @@
-#!/bin/sh
-#$Header: /sourceware/projects/lvm2-home/cvsfiles/LVM2/scripts/last_cvs_update.sh,v 1.1 2001/08/15 16:20:45 lewis Exp $
+#!/bin/bash
+#$Header: /sourceware/projects/lvm2-home/cvsfiles/LVM2/scripts/last_cvs_update.sh,v 1.2 2010/05/14 11:33:21 zkabelac Exp $
 ################################################################################
 ##
 ##    Copyright 2001 Sistina Software, Inc.

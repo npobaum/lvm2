@@ -224,11 +224,21 @@ void lvmcache_drop_metadata(const char *vgname, int drop_precommitted)
 
 /*
  * Ensure vgname2 comes after vgname1 alphabetically.
- * Special VG names beginning with '#' don't count.
+ * Orphan locks come last.
+ * VG_GLOBAL comes first.
  */
 static int _vgname_order_correct(const char *vgname1, const char *vgname2)
 {
-	if ((*vgname1 == '#') || (*vgname2 == '#'))
+	if (is_global_vg(vgname1))
+		return 1;
+
+	if (is_global_vg(vgname2))
+		return 0;
+
+	if (is_orphan_vg(vgname1))
+		return 0;
+
+	if (is_orphan_vg(vgname2))
 		return 1;
 
 	if (strcmp(vgname1, vgname2) < 0)
@@ -290,7 +300,7 @@ int vgname_is_locked(const char *vgname)
 	if (!_lock_hash)
 		return 0;
 
-	return dm_hash_lookup(_lock_hash, vgname) ? 1 : 0;
+	return dm_hash_lookup(_lock_hash, is_orphan_vg(vgname) ? VG_ORPHANS : vgname) ? 1 : 0;
 }
 
 void lvmcache_unlock_vgname(const char *vgname)
@@ -499,6 +509,27 @@ struct lvmcache_info *info_from_pvid(const char *pvid, int valid_only)
 	return info;
 }
 
+char *lvmcache_vgname_from_pvid(struct cmd_context *cmd, const char *pvid)
+{
+	struct lvmcache_info *info;
+	char *vgname;
+
+	if (!device_from_pvid(cmd, (struct id *)pvid, NULL)) {
+		log_error("Couldn't find device with uuid %s.", pvid);
+		return NULL;
+	}
+
+	info = info_from_pvid(pvid, 0);
+	if (!info)
+		return_NULL;
+
+	if (!(vgname = dm_pool_strdup(cmd->mem, info->vginfo->vgname))) {
+		log_errno(ENOMEM, "vgname allocation failed");
+		return NULL;
+	}
+	return vgname;
+}
+
 static void _rescan_entry(struct lvmcache_info *info)
 {
 	struct label *label;
@@ -567,7 +598,7 @@ int lvmcache_label_scan(struct cmd_context *cmd, int full_scan)
 	 * device cache for the benefit of short-lived processes.
 	 */
 	if (full_scan == 2 && cmd->is_long_lived && cmd->dump_filter)
-		persistent_filter_dump(cmd->filter);
+		persistent_filter_dump(cmd->filter, 0);
 
 	r = 1;
 
@@ -746,6 +777,25 @@ struct device *device_from_pvid(struct cmd_context *cmd, struct id *pvid,
 
 	return NULL;
 }
+
+const char *pvid_from_devname(struct cmd_context *cmd,
+			      const char *devname)
+{
+	struct device *dev;
+	struct label *label;
+
+	if (!(dev = dev_cache_get(devname, cmd->filter))) {
+		log_error("%s: Couldn't find device.  Check your filters?",
+			  devname);
+		return NULL;
+	}
+
+	if (!(label_read(dev, &label, UINT64_C(0))))
+		return NULL;
+
+	return dev->pvid;
+}
+
 
 static int _free_vginfo(struct lvmcache_vginfo *vginfo)
 {

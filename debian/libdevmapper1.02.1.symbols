@@ -50,6 +50,7 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_list_next@Base 2:1.02.30
  dm_list_prev@Base 2:1.02.30
  dm_list_size@Base 2:1.02.30
+ dm_list_splice@Base 2:1.02.48
  dm_list_start@Base 2:1.02.30
  dm_log@Base 2:1.02.20
  dm_log_init@Base 2:1.02.20
