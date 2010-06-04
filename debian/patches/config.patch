@@ -1,5 +1,5 @@
---- a/doc/example.conf
-+++ b/doc/example.conf
+--- a/doc/example.conf.in
++++ b/doc/example.conf.in
 @@ -312,7 +312,7 @@
      # Full pathnames can be given.
  

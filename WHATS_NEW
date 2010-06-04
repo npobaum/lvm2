@@ -1,3 +1,41 @@
+Version 2.02.66 - 20th May 2010
+===============================
+  If unable to obtain snapshot percentage leave value blank on reports.
+  Add install_system_dirs and install_initscripts makefile targets.
+  Add configure options for system and locking directories.
+  Generate example.conf so default lvm.conf contents can be configured.
+  Install lvmconf script by default.
+  Remove unnecessary versioned dmeventd plugin symlinks.
+  Add tests for lvm_vgname_from_{pvid|device}.
+  Add lvm2app interfaces to lookup a vgname from a pvid and pvname.
+  Update pvchange to always obtain a vg handle for each pv to process.
+  Add find_vgname_from_{pvname|pvid} functions.
+  Add pvid_from_devname and lvmcache_vgname_from_pvid lvmcache functions.
+  Validate orphan and VG_GLOBAL lock order too.
+  Accept orphan VG names as parameters to lock_vol() and related functions.
+  Use is_orphan_vg in place of hard-coded prefix tests and add is_global_vg.
+
+Version 2.02.65 - 17th May 2010
+===============================
+  Fix clvmd init script never to deactivate non-clustered volume groups.
+  Disallow vgchange --clustered if there are active mirrors or snapshots.
+  Introduce lv_is_mirrored.
+  Use /bin/bash for scripts with bashisms.
+  Skip internal lvm devices in scan if ignore_suspended_devices is set.
+  Do not merge old device cache after we run full scan. (2.02.56)
+  Add pkgconfigdir Makefile variable for make install override.
+  Configure pkgconfig udev and selinux dependencies.
+  Switch Libs.private to Requires.private in devmapper.pc and lvm2app.pc.
+  Use pkgconfig Requires.private for devmapper-event.pc.
+  Add libdevmapper to linked libdevmapper-event.so.
+  Link liblvm2cmd.so with libdevmapper-event and libdevmapper.
+  Fix truncated total size displayed by pvscan.
+  Add new --sysinit compound option to vgchange and lvchange.
+  Drop duplicate errors for read failures and missing devices to verbose level.
+  Use $(libdir)/lvm2 with make install_lvm2_plugin.
+  Use $(libdir)/device-mapper with make install_dm_plugin.
+  Add dm_list_splice() function to join two lists together.
+
 Version 2.02.64 - 30th April 2010
 =================================
   Avoid pointless initialisation when the 'version' command is run directly.

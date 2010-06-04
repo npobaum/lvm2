@@ -17,6 +17,7 @@
 #include "toolcontext.h"
 #include "locking.h"
 #include "lvm-version.h"
+#include "metadata-exported.h"
 
 const char *lvm_library_get_version(void)
 {
@@ -50,7 +51,7 @@ lvm_t lvm_init(const char *system_dir)
 
 	/* FIXME: locking_type config option needed? */
 	/* initialize locking */
-	if (!init_locking(-1, cmd)) {
+	if (!init_locking(-1, cmd, 0)) {
 		/* FIXME: use EAGAIN as error code here */
 		lvm_quit((lvm_t) cmd);
 		return NULL;
@@ -97,4 +98,22 @@ int lvm_errno(lvm_t libh)
 const char *lvm_errmsg(lvm_t libh)
 {
 	return stored_errmsg();
+}
+
+const char *lvm_vgname_from_pvid(lvm_t libh, const char *pvid)
+{
+	struct cmd_context *cmd = (struct cmd_context *)libh;
+	struct id id;
+
+	if (!id_read_format(&id, pvid)) {
+		log_error(INTERNAL_ERROR "Unable to convert uuid");
+		return NULL;
+	}
+	return find_vgname_from_pvid(cmd, (char *)id.uuid);
+}
+
+const char *lvm_vgname_from_device(lvm_t libh, const char *device)
+{
+	struct cmd_context *cmd = (struct cmd_context *)libh;
+	return find_vgname_from_pvname(cmd, device);
 }

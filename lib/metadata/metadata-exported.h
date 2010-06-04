@@ -423,6 +423,7 @@ int move_pv(struct volume_group *vg_from, struct volume_group *vg_to,
 int move_pvs_used_by_lv(struct volume_group *vg_from,
 			struct volume_group *vg_to,
 			const char *lv_name);
+int is_global_vg(const char *vg_name);
 int is_orphan_vg(const char *vg_name);
 int is_orphan(const struct physical_volume *pv);
 int is_missing_pv(const struct physical_volume *pv);
@@ -624,6 +625,10 @@ struct logical_volume *find_lv(const struct volume_group *vg,
 struct physical_volume *find_pv_by_name(struct cmd_context *cmd,
 					const char *pv_name);
 
+const char *find_vgname_from_pvname(struct cmd_context *cmd,
+				    const char *pvname);
+const char *find_vgname_from_pvid(struct cmd_context *cmd,
+				  const char *pvid);
 /* Find LV segment containing given LE */
 struct lv_segment *first_seg(const struct logical_volume *lv);
 
@@ -691,6 +696,7 @@ int lv_remove_mirrors(struct cmd_context *cmd, struct logical_volume *lv,
 
 int is_temporary_mirror_layer(const struct logical_volume *lv);
 struct logical_volume * find_temporary_mirror(const struct logical_volume *lv);
+int lv_is_mirrored(const struct logical_volume *lv);
 uint32_t lv_mirror_count(const struct logical_volume *lv);
 uint32_t adjusted_mirror_region_size(uint32_t extent_size, uint32_t extents,
                                     uint32_t region_size);

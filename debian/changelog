@@ -1,3 +1,12 @@
+lvm2 (2.02.66-1) unstable; urgency=low
+
+  * New upstream version.
+  * Define and use a union for semaphore access as mandated by the standard.
+    (closes: #583677)
+  * Don't longer overwrite names of dm devices.
+
+ -- Bastian Blank <waldi@debian.org>  Fri, 04 Jun 2010 11:47:51 +0200
+
 lvm2 (2.02.64-1) unstable; urgency=low
 
   * New upstream version.

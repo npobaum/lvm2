@@ -1,9 +1,9 @@
 --- a/make.tmpl.in
 +++ b/make.tmpl.in
-@@ -155,63 +155,24 @@
+@@ -166,62 +166,23 @@
  .PHONY: all pofile distclean clean cleandir cflow device-mapper
  .PHONY: install install_cluster install_device-mapper install_lvm2
- .PHONY: install_lib_shared install_lib_shared_plugin
+ .PHONY: install_lib_shared install_dm_plugin install_lvm2_plugin
 -.PHONY: $(SUBDIRS) $(SUBDIRS.install) $(SUBDIRS.clean) $(SUBDIRS.distclean)
 -.PHONY: $(SUBDIRS.pofile) $(SUBDIRS.install_cluster) $(SUBDIRS.cflow)
 -.PHONY: $(SUBDIRS.device-mapper) $(SUBDIRS.install-device-mapper)
@@ -28,22 +28,13 @@
 -install_device-mapper: $(SUBDIRS.install_device-mapper)
 -install_lvm2: $(SUBDIRS.install_lvm2)
 -cflow: $(SUBDIRS.cflow)
-+install: subdirs-install
-+install_cluster: subdirs-install_cluster
-+install_device-mapper: subdirs-install_device-mapper
-+install_lvm2: subdirs-install_lvm2
- 
+-
 -$(SUBDIRS): $(SUBDIRS.device-mapper)
 -	$(MAKE) -C $@
-+subdirs-%:
-+	+@set -e; for subdir in $(SUBDIRS); do \
-+		$(MAKE) -C $$subdir $(patsubst subdirs-%,%,$@); \
-+	done
- 
+-
 -$(SUBDIRS.device-mapper):
 -	$(MAKE) -C $(@:.device-mapper=) device-mapper
-+pofile: subdirs-pofile $(POTFILES)
- 
+-
 -$(SUBDIRS.install): $(SUBDIRS)
 -	$(MAKE) -C $(@:.install=) install
 -
@@ -64,18 +55,26 @@
 -
 -$(SUBDIRS.cflow):
 -	$(MAKE) -C $(@:.cflow=) cflow
--
--ifeq ("@INTL@", "yes")
++install: subdirs-install
++install_cluster: subdirs-install_cluster
++install_device-mapper: subdirs-install_device-mapper
++install_lvm2: subdirs-install_lvm2
++
++subdirs-%:
++	+@set -e; for subdir in $(SUBDIRS); do \
++		$(MAKE) -C $$subdir $(patsubst subdirs-%,%,$@); \
++	done
+ 
+ ifeq ("@INTL@", "yes")
 -pofile: $(SUBDIRS.pofile) $(POTFILES)
 -
 -$(SUBDIRS.pofile):
 -	$(MAKE) -C $(@:.pofile=) pofile
--endif
-+cflow: subdirs-cflow
++pofile: subdirs-pofile $(POTFILES)
+ endif
  
  ifneq ("$(CFLOW_LIST_TARGET)", "")
- CLEAN_CFLOW += $(CFLOW_LIST_TARGET)
-@@ -328,9 +289,9 @@
+@@ -342,9 +303,9 @@
  	  $(POTFILES) $(SOURCES:%.c=%.d) $(SOURCES:%.c=%.gcno) $(SOURCES:%.c=%.gcda) \
  	  $(SOURCES2:%.c=%.o) $(SOURCES2:%.c=%.d) $(SOURCES2:%.c=%.gcno) $(SOURCES2:%.c=%.gcda)
  
