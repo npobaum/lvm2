@@ -4,3 +4,4 @@ drop-realtime.patch
 config.patch
 force-modprobe.patch
 permissions.patch
+CVE-2010-2526.patch
