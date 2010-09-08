@@ -1,3 +1,11 @@
+lvm2 (2.02.54-1ubuntu5) maverick; urgency=low
+
+  * Backport from Debian:
+    - Don't overwrite names of dm devices; use symlinks instead
+      (LP: #621951).
+
+ -- Colin Watson <cjwatson@ubuntu.com>  Wed, 08 Sep 2010 22:50:26 +0100
+
 lvm2 (2.02.54-1ubuntu4) lucid; urgency=low
 
   * Some idiot thought it'd be a good idea if device mapper didn't respond
