@@ -40,7 +40,7 @@ ENV{DM_SUSPENDED}!="?*", IMPORT{program}="/sbin/dmsetup info -j %M -m %m -c --na
 ENV{DM_SUSPENDED}=="Active", ENV{DM_SUSPENDED}="0"
 ENV{DM_SUSPENDED}=="Suspended", ENV{DM_SUSPENDED}="1"
 
-ENV{DM_NAME}=="?*", NAME="mapper/$env{DM_NAME}", SYMLINK+="$kernel"
+ENV{DM_NAME}=="?*", SYMLINK+="mapper/$env{DM_NAME}"
 
 ENV{DM_UDEV_RULES}="1"
 
