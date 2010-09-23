@@ -12,3 +12,4 @@ scripts-bash.sh
 open-readonly.patch
 avoid-dev-block.patch
 monitoring-default-off.patch
+CVE-2010-2526.patch
