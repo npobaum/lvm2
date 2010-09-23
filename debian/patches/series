@@ -5,3 +5,4 @@ config.patch
 force-modprobe.patch
 open-readonly.patch
 avoid-dev-block.patch
+CVE-2010-2526.patch
