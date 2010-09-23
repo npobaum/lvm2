@@ -1,3 +1,12 @@
+lvm2 (2.02.39-0ubuntu9.1) jaunty-security; urgency=low
+
+  * SECURITY UPDATE: unprivileged logical volume manipulation with clvmd
+    - debian/patches/CVE-2010-2526.patch: revert to using a pathname-based
+      socket in order to enforce correct permissions.
+    - CVE-2010-2526
+
+ -- Marc Deslauriers <marc.deslauriers@ubuntu.com>  Thu, 23 Sep 2010 14:30:59 -0400
+
 lvm2 (2.02.39-0ubuntu9) jaunty; urgency=low
 
   * debian/patches/avoid-dev-block.patch: Prefer any other device name over
