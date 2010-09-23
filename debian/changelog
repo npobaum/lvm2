@@ -1,3 +1,13 @@
+lvm2 (2.02.26-1ubuntu9.1) hardy-security; urgency=low
+
+  * SECURITY UPDATE: unprivileged logical volume manipulation with clvmd
+    - daemons/clvmd/{clvm.h,clvmd.c}: revert to using a pathname-based
+      socket in order to enforce correct permissions.
+    - http://patch-tracker.debian.org/patch/series/view/lvm2/2.02.39-8/CVE-2010-2526.patch
+    - CVE-2010-2526
+
+ -- Marc Deslauriers <marc.deslauriers@ubuntu.com>  Thu, 23 Sep 2010 14:42:59 -0400
+
 lvm2 (2.02.26-1ubuntu9) hardy; urgency=low
 
   * Include virtio block type in the filters. (LP: #218574)

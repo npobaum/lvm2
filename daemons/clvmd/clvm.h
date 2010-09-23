@@ -45,9 +45,8 @@ struct clvm_header {
 #define CLVMD_FLAG_SYSTEMLV     2	/* Data in system LV under my node name */
 #define CLVMD_FLAG_NODEERRS     4       /* Reply has errors in node-specific portion */
 
-/* Name of the local socket to communicate between libclvm and clvmd */
-//static const char CLVMD_SOCKNAME[]="/var/run/clvmd";
-static const char CLVMD_SOCKNAME[] = "\0clvmd";
+/* Name of the local socket to communicate between lvm and clvmd */
+static const char CLVMD_SOCKNAME[]= "/var/run/clvmd.sock";
 
 /* Internal commands & replies */
 #define CLVMD_CMD_REPLY    1
