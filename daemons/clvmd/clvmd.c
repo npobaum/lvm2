@@ -121,6 +121,7 @@ static void process_remote_command(struct clvm_header *msg, int msglen, int fd,
 static int process_reply(const struct clvm_header *msg, int msglen,
 			 const char *csid);
 static int open_local_sock(void);
+static void close_local_sock(int local_socket);
 static struct local_client *find_client(int clientid);
 static void main_loop(int local_sock, int cmd_timeout);
 static void be_daemon(int start_timeout);
@@ -178,6 +179,23 @@ void debuglog(const char *fmt, ...)
 	va_end(ap);
 }
 
+/*
+ * clvmd require dm-ioctl capability for operation
+ */
+static void check_permissions()
+{
+	if (getuid() || geteuid()) {
+		log_error("Cannot run as a non-root user.");
+
+		 /*
+		  * Fail cleanly here if not run as root, instead of failing
+		  * later when attempting a root-only operation
+		  * Preferred exit code from an initscript for this.
+		  */
+		exit(4);
+	}
+}
+
 int main(int argc, char *argv[])
 {
 	int local_sock;
@@ -203,6 +221,7 @@ int main(int argc, char *argv[])
 			exit(0);
 
 		case 'R':
+			check_permissions();
 			return refresh_clvmd();
 
 		case 'd':
@@ -236,6 +255,8 @@ int main(int argc, char *argv[])
 
 		}
 	}
+
+	check_permissions();
 
 	/* Fork into the background (unless requested not to) */
 	if (!debug) {
@@ -351,6 +372,8 @@ int main(int argc, char *argv[])
 
 	/* Do some work */
 	main_loop(local_sock, cmd_timeout);
+
+	close_local_sock(local_sock);
 
 	return 0;
 }
@@ -684,7 +707,6 @@ static void main_loop(int local_sock, int cmd_timeout)
 
       closedown:
 	clops->cluster_closedown();
-	close(local_sock);
 }
 
 static __attribute__ ((noreturn)) void wait_for_child(int c_pipe, int timeout)
@@ -1753,19 +1775,30 @@ static int add_to_lvmqueue(struct local_client *client, struct clvm_header *msg,
 	return 0;
 }
 
+static void close_local_sock(int local_socket)
+{
+	if (local_socket != -1 && close(local_socket))
+		stack;
+
+	if (CLVMD_SOCKNAME[0] != '\0' && unlink(CLVMD_SOCKNAME))
+		stack;
+}
+
 /* Open the local socket, that's the one we talk to libclvm down */
 static int open_local_sock()
 {
-	int local_socket;
+	int local_socket = -1;
 	struct sockaddr_un sockaddr;
+	mode_t old_mask;
+
+	close_local_sock(local_socket);
+	old_mask = umask(0077);
 
 	/* Open local socket */
-	if (CLVMD_SOCKNAME[0] != '\0')
-		unlink(CLVMD_SOCKNAME);
 	local_socket = socket(PF_UNIX, SOCK_STREAM, 0);
 	if (local_socket < 0) {
 		log_error("Can't create local socket: %m");
-		return -1;
+		goto error;
 	}
 	/* Set Close-on-exec */
 	fcntl(local_socket, F_SETFD, 1);
@@ -1775,18 +1808,19 @@ static int open_local_sock()
 	sockaddr.sun_family = AF_UNIX;
 	if (bind(local_socket, (struct sockaddr *) &sockaddr, sizeof(sockaddr))) {
 		log_error("can't bind local socket: %m");
-		close(local_socket);
-		return -1;
+		goto error;
 	}
 	if (listen(local_socket, 1) != 0) {
 		log_error("listen local: %m");
-		close(local_socket);
-		return -1;
+		goto error;
 	}
-	if (CLVMD_SOCKNAME[0] != '\0')
-		chmod(CLVMD_SOCKNAME, 0600);
 
+	umask(old_mask);
 	return local_socket;
+error:
+	close_local_sock(local_socket);
+	umask(old_mask);
+	return -1;
 }
 
 void process_message(struct local_client *client, const char *buf, int len,
