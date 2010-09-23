@@ -1,3 +1,13 @@
+lvm2 (2.02.02-1ubuntu1.6) dapper-security; urgency=low
+
+  * SECURITY UPDATE: unprivileged logical volume manipulation with clvmd
+    - daemons/clvmd/{clvm.h,clvmd.c}: revert to using a pathname-based
+      socket in order to enforce correct permissions.
+    - http://patch-tracker.debian.org/patch/series/view/lvm2/2.02.39-8/CVE-2010-2526.patch
+    - CVE-2010-2526
+
+ -- Marc Deslauriers <marc.deslauriers@ubuntu.com>  Thu, 23 Sep 2010 14:48:20 -0400
+
 lvm2 (2.02.02-1ubuntu1.5) dapper-updates; urgency=low
 
   * Backport endian fix for dev_is_md from upstream.
