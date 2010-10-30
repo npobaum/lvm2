@@ -1,3 +1,12 @@
+lvm2 (2.02.66-4) unstable; urgency=low
+
+  * Make libdevmapper break old lvm2, it missuses the udev sync
+    interface. (closes: #599596)
+  * Make lvm2 break old grub-common. (closes: #588026)
+  * Use correct binary name in clvm init script. (closes: #600089)
+
+ -- Bastian Blank <waldi@debian.org>  Sat, 30 Oct 2010 18:04:20 +0200
+
 lvm2 (2.02.66-3) unstable; urgency=high
 
   * Import upstream version 2.02.72:

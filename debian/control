@@ -12,6 +12,7 @@ Vcs-Browser: http://svn.debian.org/wsvn/pkg-lvm/lvm2/trunk/
 Package: lvm2
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}, lsb-base, dmsetup (>> 2:1.02.47)
+Breaks: grub-common (<<1.98+20100527-1)
 Conflicts: lvm-common
 Replaces: lvm-common
 Description: The Linux Logical Volume Manager
@@ -64,6 +65,7 @@ Section: libs
 Priority: required
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}, dmsetup (>= ${binary:Version})
+Breaks: lvm2 (<< 2.02.66)
 Provides: libdevmapper
 Description: The Linux Kernel Device Mapper userspace library
  The Linux Kernel Device Mapper is the LVM (Linux Logical Volume Management)
