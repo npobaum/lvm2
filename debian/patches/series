@@ -5,5 +5,7 @@ libs-cleanup.patch
 config.patch
 force-modprobe.patch
 libdm-atomic.patch
-rules-subdir.patch
 implicit-pointer.patch
+open-readonly.patch
+avoid-dev-block.patch
+monitoring-default-off.patch
