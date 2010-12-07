@@ -58,7 +58,9 @@ all: man
 
 .PHONY: man install_man5 install_man8
 
-man: $(MAN5) $(MAN8) $(MAN8CLUSTER) $(MAN8DM)
+device-mapper: $(MAN8DM)
+
+man: $(MAN5) $(MAN8) $(MAN8CLUSTER)
 
 $(MAN5) $(MAN8) $(MAN8CLUSTER):	Makefile
 

@@ -26,7 +26,7 @@ ifeq ("@INTL@", "yes")
   SUBDIRS += po
 endif
 
-SUBDIRS += libdm lib daemons tools
+SUBDIRS += lib tools daemons libdm
 
 ifeq ("@APPLIB@", "yes")
   SUBDIRS += liblvm
@@ -41,6 +41,32 @@ DISTCLEAN_DIRS += lcov_reports*
 DISTCLEAN_TARGETS += config.cache config.log config.status make.tmpl
 
 include make.tmpl
+
+libdm: include
+lib: libdm
+liblvm: lib
+daemons: lib tools
+tools: lib device-mapper
+po: tools daemons
+
+libdm.device-mapper: include.device-mapper
+daemons.device-mapper: libdm.device-mapper
+tools.device-mapper: libdm.device-mapper
+device-mapper: tools.device-mapper daemons.device-mapper man.device-mapper
+
+ifeq ("@INTL@", "yes")
+lib.pofile: include.pofile
+tools.pofile: lib.pofile
+daemons.pofile: lib.pofile
+po.pofile: tools.pofile daemons.pofile
+pofile: po.pofile
+endif
+
+ifneq ("$(CFLOW_CMD)", "")
+tools.cflow: libdm.cflow lib.cflow
+daemons.cflow: tools.cflow
+cflow: include.cflow
+endif
 
 ifneq ("@CSCOPE_CMD@", "")
 cscope.out:

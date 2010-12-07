@@ -54,7 +54,9 @@ LABEL="dm_flags_done"
 # recognize this and do our actions in this particular
 # situation, too. Also, we don't want the nodes to be
 # created prematurely on "add" events while not coldplugging.
-ACTION=="add", ENV{STARTUP}!="1", NAME="", GOTO="dm_end"
+
+# Disabled, as we need to respond to "add" events during boot
+#ACTION=="add", ENV{STARTUP}!="1", NAME="", GOTO="dm_end"
 
 # "dm" sysfs subdirectory is available in newer versions of DM
 # only (kernels >= 2.6.29). We have to check for its existence

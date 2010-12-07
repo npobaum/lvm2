@@ -350,7 +350,7 @@ struct pool_list *read_pool_disk(const struct format_type *fmt,
 {
 	struct pool_list *pl;
 
-	if (!dev_open(dev))
+	if (!dev_open_flags(dev, O_RDONLY, 1, 0))
 		return_NULL;
 
 	if (!(pl = dm_pool_zalloc(mem, sizeof(*pl)))) {
