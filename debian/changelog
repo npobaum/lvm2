@@ -1,3 +1,12 @@
+lvm2 (2.02.66-4ubuntu2) natty; urgency=low
+
+  * Add support for corosync based clusters. (LP: #525287)
+    - Build clvm with support for corosync, openais and cman
+    - Add and install clvmd resource agent, written by Xinwei Hu,
+      slightly modified by Ante Karamatic to work on Ubuntu
+
+ -- Andres Rodriguez <andreserl@ubuntu.com>  Fri, 14 Jan 2011 15:39:03 -0600
+
 lvm2 (2.02.66-4ubuntu1) natty; urgency=low
 
   * Merge from debian unstable.  Remaining changes:
