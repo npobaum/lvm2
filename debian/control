@@ -66,6 +66,7 @@ Priority: required
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}, dmsetup (>= ${binary:Version})
 Breaks: lvm2 (<< 2.02.66)
+Conflicts: libdevmapper1.02
 Provides: libdevmapper
 Description: The Linux Kernel Device Mapper userspace library
  The Linux Kernel Device Mapper is the LVM (Linux Logical Volume Management)
