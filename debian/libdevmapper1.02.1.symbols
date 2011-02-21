@@ -12,6 +12,8 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_bounds_check_debug@Base 2:1.02.20
  dm_cookie_supported@Base 2:1.02.36
  dm_create_dir@Base 2:1.02.24
+ dm_create_lockfile@Base 2:1.02.63
+ dm_daemon_is_running@Base 2:1.02.63
  dm_dir@Base 2:1.02.20
  dm_driver_version@Base 2:1.02.20
  dm_dump_memory_debug@Base 2:1.02.20
@@ -74,8 +76,10 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_pool_strdup@Base 2:1.02.20
  dm_pool_strndup@Base 2:1.02.20
  dm_pool_zalloc@Base 2:1.02.20
+ dm_prepare_selinux_context@Base 2:1.02.63
  dm_realloc_aux@Base 2:1.02.20
  dm_regex_create@Base 2:1.02.20
+ dm_regex_fingerprint@Base 2:1.02.63
  dm_regex_match@Base 2:1.02.20
  dm_report_field_int32@Base 2:1.02.27
  dm_report_field_int@Base 2:1.02.27
@@ -109,6 +113,8 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_task_no_open_count@Base 2:1.02.20
  dm_task_query_inactive_table@Base 2:1.02.44
  dm_task_run@Base 2:1.02.20
+ dm_task_secure_data@Base 2:1.02.63
+ dm_task_set_add_node@Base 2:1.02.63
  dm_task_set_cookie@Base 2:1.02.36
  dm_task_set_event_nr@Base 2:1.02.20
  dm_task_set_geometry@Base 2:1.02.20
@@ -120,6 +126,7 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_task_set_mode@Base 2:1.02.20
  dm_task_set_name@Base 2:1.02.20
  dm_task_set_newname@Base 2:1.02.20
+ dm_task_set_newuuid@Base 2:1.02.63
  dm_task_set_read_ahead@Base 2:1.02.24
  dm_task_set_ro@Base 2:1.02.20
  dm_task_set_sector@Base 2:1.02.20
@@ -146,6 +153,8 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_tree_node_add_linear_target@Base 2:1.02.20
  dm_tree_node_add_mirror_target@Base 2:1.02.20
  dm_tree_node_add_mirror_target_log@Base 2:1.02.20
+ dm_tree_node_add_replicator_dev_target@Base 2:1.02.63
+ dm_tree_node_add_replicator_target@Base 2:1.02.63
  dm_tree_node_add_snapshot_merge_target@Base 2:1.02.44
  dm_tree_node_add_snapshot_origin_target@Base 2:1.02.20
  dm_tree_node_add_snapshot_target@Base 2:1.02.20
@@ -157,6 +166,7 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_tree_node_get_name@Base 2:1.02.20
  dm_tree_node_get_uuid@Base 2:1.02.20
  dm_tree_node_num_children@Base 2:1.02.20
+ dm_tree_node_set_presuspend_node@Base 2:1.02.63
  dm_tree_node_set_read_ahead@Base 2:1.02.24
  dm_tree_node_size_changed@Base 2:1.02.36
  dm_tree_preload_children@Base 2:1.02.20
@@ -171,3 +181,5 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_udev_set_checking@Base 2:1.02.44
  dm_udev_set_sync_support@Base 2:1.02.36
  dm_udev_wait@Base 2:1.02.36
+ dm_zalloc_aux@Base 2:1.02.63
+ dm_zalloc_aux_debug@Base 2:1.02.63

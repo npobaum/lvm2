@@ -159,7 +159,7 @@ static int _parse_config_file(struct parser *p, struct config_tree *cft)
 	return 1;
 }
 
-struct config_tree *create_config_tree_from_string(struct cmd_context *cmd __attribute((unused)),
+struct config_tree *create_config_tree_from_string(struct cmd_context *cmd __attribute__((unused)),
 						   const char *config_settings)
 {
 	struct cs *c;
@@ -239,8 +239,8 @@ int read_config_fd(struct config_tree *cft, struct device *dev,
 	}
 
 	if (checksum_fn && checksum !=
-	    (checksum_fn(checksum_fn(INITIAL_CRC, p->fb, size),
-			 p->fb + size, size2))) {
+	    (checksum_fn(checksum_fn(INITIAL_CRC, (const uint8_t *)p->fb, size),
+			 (const uint8_t *)(p->fb + size), size2))) {
 		log_error("%s: Checksum error", dev_name(dev));
 		goto out;
 	}
@@ -381,11 +381,12 @@ static int _line_append(struct output_line *outline, const char *fmt, ...)
 
 	va_start(ap, fmt);
 	n = vsnprintf(&buf[0], sizeof buf - 1, fmt, ap);
+	va_end(ap);
+
 	if (n < 0 || n > (int) sizeof buf - 1) {
 		log_error("vsnprintf failed for config line");
 		return 0;
 	}
-	va_end(ap);
 
 	if (!dm_pool_grow_object(outline->mem, &buf[0], strlen(buf))) {
 		log_error("dm_pool_grow_object failed for config line");
@@ -419,7 +420,7 @@ static int _line_end(struct output_line *outline)
 	return 1;
 }
 
-static int _write_value(struct output_line *outline, struct config_value *v)
+static int _write_value(struct output_line *outline, const struct config_value *v)
 {
 	char *buf;
 
@@ -482,7 +483,7 @@ static int _write_config(const struct config_node *n, int only_one,
 			line_append("%s}", space);
 		} else {
 			/* it's a value */
-			struct config_value *v = n->v;
+			const struct config_value *v = n->v;
 			line_append("=");
 			if (v->next) {
 				line_append("[");
@@ -510,7 +511,8 @@ int write_config_node(const struct config_node *cn, putline_fn putline, void *ba
 {
 	struct output_line outline;
 	outline.fp = NULL;
-	outline.mem = dm_pool_create("config_line", 1024);
+	if (!(outline.mem = dm_pool_create("config_line", 1024)))
+		return_0;
 	outline.putline = putline;
 	outline.putline_baton = baton;
 	if (!_write_config(cn, 0, &outline, 0)) {
@@ -524,7 +526,7 @@ int write_config_node(const struct config_node *cn, putline_fn putline, void *ba
 int write_config_file(struct config_tree *cft, const char *file,
 		      int argc, char **argv)
 {
-	struct config_node *cn;
+	const struct config_node *cn;
 	int r = 1;
 	struct output_line outline;
 	outline.fp = NULL;
@@ -537,7 +539,10 @@ int write_config_file(struct config_tree *cft, const char *file,
 		return 0;
 	}
 
-	outline.mem = dm_pool_create("config_line", 1024);
+	if (!(outline.mem = dm_pool_create("config_line", 1024))) {
+		r = 0;
+		goto_out;
+	}
 
 	log_verbose("Dumping configuration to %s", file);
 	if (!argc) {
@@ -558,12 +563,14 @@ int write_config_file(struct config_tree *cft, const char *file,
 		argv++;
 	}
 
+	dm_pool_destroy(outline.mem);
+
+out:
 	if (outline.fp && lvm_fclose(outline.fp, file)) {
 		stack;
 		r = 0;
 	}
 
-	dm_pool_destroy(outline.mem);
 	return r;
 }
 
@@ -662,6 +669,7 @@ static struct config_value *_type(struct parser *p)
 {
 	/* [+-]{0,1}[0-9]+ | [0-9]*\.[0-9]* | ".*" */
 	struct config_value *v = _create_value(p->mem);
+	char *str;
 
 	if (!v)
 		return NULL;
@@ -693,9 +701,10 @@ static struct config_value *_type(struct parser *p)
 		v->type = CFG_STRING;
 
 		p->tb++, p->te--;	/* strip "'s */
-		if (!(v->v.str = _dup_tok(p)))
+		if (!(str = _dup_tok(p)))
 			return_0;
-		unescape_double_quotes(v->v.str);
+		unescape_double_quotes(str);
+		v->v.str = str;
 		p->te++;
 		match(TOK_STRING_ESCAPED);
 		break;
@@ -724,6 +733,8 @@ static void _get_token(struct parser *p, int tok_prev)
 {
 	int values_allowed = 0;
 
+	const char *te;
+
 	p->tb = p->te;
 	_eat_space(p);
 	if (p->tb == p->fe || !*p->tb) {
@@ -738,59 +749,61 @@ static void _get_token(struct parser *p, int tok_prev)
 
 	p->t = TOK_INT;		/* fudge so the fall through for
 				   floats works */
-	switch (*p->te) {
+
+	te = p->te;
+	switch (*te) {
 	case SECTION_B_CHAR:
 		p->t = TOK_SECTION_B;
-		p->te++;
+		te++;
 		break;
 
 	case SECTION_E_CHAR:
 		p->t = TOK_SECTION_E;
-		p->te++;
+		te++;
 		break;
 
 	case '[':
 		p->t = TOK_ARRAY_B;
-		p->te++;
+		te++;
 		break;
 
 	case ']':
 		p->t = TOK_ARRAY_E;
-		p->te++;
+		te++;
 		break;
 
 	case ',':
 		p->t = TOK_COMMA;
-		p->te++;
+		te++;
 		break;
 
 	case '=':
 		p->t = TOK_EQ;
-		p->te++;
+		te++;
 		break;
 
 	case '"':
 		p->t = TOK_STRING_ESCAPED;
-		p->te++;
-		while ((p->te != p->fe) && (*p->te) && (*p->te != '"')) {
-			if ((*p->te == '\\') && (p->te + 1 != p->fe) &&
-			    *(p->te + 1))
-				p->te++;
-			p->te++;
+		te++;
+		while ((te != p->fe) && (*te) && (*te != '"')) {
+			if ((*te == '\\') && (te + 1 != p->fe) &&
+			    *(te + 1))
+				te++;
+			te++;
 		}
 
-		if ((p->te != p->fe) && (*p->te))
-			p->te++;
+		if ((te != p->fe) && (*te))
+			te++;
 		break;
 
 	case '\'':
 		p->t = TOK_STRING;
-		p->te++;
-		while ((p->te != p->fe) && (*p->te) && (*p->te != '\''))
-			p->te++;
+		te++;
+		while ((te != p->fe) && (*te) && (*te != '\''))
+			te++;
 
-		if ((p->te != p->fe) && (*p->te))
-			p->te++;
+		if ((te != p->fe) && (*te))
+			te++;
 		break;
 
 	case '.':
@@ -808,28 +821,30 @@ static void _get_token(struct parser *p, int tok_prev)
 	case '+':
 	case '-':
 		if (values_allowed) {
-			p->te++;
-			while ((p->te != p->fe) && (*p->te)) {
-				if (*p->te == '.') {
+			te++;
+			while ((te != p->fe) && (*te)) {
+				if (*te == '.') {
 					if (p->t == TOK_FLOAT)
 						break;
 					p->t = TOK_FLOAT;
-				} else if (!isdigit((int) *p->te))
+				} else if (!isdigit((int) *te))
 					break;
-				p->te++;
+				te++;
 			}
 			break;
 		}
 
 	default:
 		p->t = TOK_IDENTIFIER;
-		while ((p->te != p->fe) && (*p->te) && !isspace(*p->te) &&
-		       (*p->te != '#') && (*p->te != '=') &&
-		       (*p->te != SECTION_B_CHAR) &&
-		       (*p->te != SECTION_E_CHAR))
-			p->te++;
+		while ((te != p->fe) && (*te) && !isspace(*te) &&
+		       (*te != '#') && (*te != '=') &&
+		       (*te != SECTION_B_CHAR) &&
+		       (*te != SECTION_E_CHAR))
+			te++;
 		break;
 	}
+
+	p->te = te;
 }
 
 static void _eat_space(struct parser *p)
@@ -859,31 +874,23 @@ static void _eat_space(struct parser *p)
  */
 static struct config_value *_create_value(struct dm_pool *mem)
 {
-	struct config_value *v = dm_pool_alloc(mem, sizeof(*v));
-
-	if (v)
-		memset(v, 0, sizeof(*v));
-
-	return v;
+	return dm_pool_zalloc(mem, sizeof(struct config_value));
 }
 
 static struct config_node *_create_node(struct dm_pool *mem)
 {
-	struct config_node *n = dm_pool_alloc(mem, sizeof(*n));
-
-	if (n)
-		memset(n, 0, sizeof(*n));
-
-	return n;
+	return dm_pool_zalloc(mem, sizeof(struct config_node));
 }
 
 static char *_dup_tok(struct parser *p)
 {
 	size_t len = p->te - p->tb;
 	char *str = dm_pool_alloc(p->mem, len + 1);
-	if (!str)
-		return_0;
-	strncpy(str, p->tb, len);
+	if (!str) {
+		log_error("Failed to duplicate token.");
+		return 0;
+	}
+	memcpy(str, p->tb, len);
 	str[len] = '\0';
 	return str;
 }
@@ -891,8 +898,8 @@ static char *_dup_tok(struct parser *p)
 /*
  * utility functions
  */
-static struct config_node *_find_config_node(const struct config_node *cn,
-					     const char *path)
+static const struct config_node *_find_config_node(const struct config_node *cn,
+						   const char *path)
 {
 	const char *e;
 	const struct config_node *cn_found = NULL;
@@ -929,14 +936,14 @@ static struct config_node *_find_config_node(const struct config_node *cn,
 		path = e;
 	}
 
-	return (struct config_node *) cn_found;
+	return cn_found;
 }
 
-static struct config_node *_find_first_config_node(const struct config_node *cn1,
-						   const struct config_node *cn2,
-						   const char *path)
+static const struct config_node *_find_first_config_node(const struct config_node *cn1,
+							 const struct config_node *cn2,
+							 const char *path)
 {
-	struct config_node *cn;
+	const struct config_node *cn;
 
 	if (cn1 && (cn = _find_config_node(cn1, path)))
 		return cn;
@@ -947,8 +954,8 @@ static struct config_node *_find_first_config_node(const struct config_node *cn1
 	return NULL;
 }
 
-struct config_node *find_config_node(const struct config_node *cn,
-				     const char *path)
+const struct config_node *find_config_node(const struct config_node *cn,
+					   const char *path)
 {
 	return _find_config_node(cn, path);
 }
@@ -1023,7 +1030,7 @@ float find_config_float(const struct config_node *cn, const char *path,
 	return _find_config_float(cn, NULL, path, fail);
 }
 
-struct config_node *find_config_tree_node(struct cmd_context *cmd,
+const struct config_node *find_config_tree_node(struct cmd_context *cmd,
 					  const char *path)
 {
 	return _find_first_config_node(cmd->cft_override ? cmd->cft_override->root : NULL, cmd->cft->root, path);
@@ -1078,7 +1085,7 @@ static int _find_config_bool(const struct config_node *cn1,
 			     const char *path, int fail)
 {
 	const struct config_node *n = _find_first_config_node(cn1, cn2, path);
-	struct config_value *v;
+	const struct config_value *v;
 
 	if (!n)
 		return fail;
@@ -1135,7 +1142,7 @@ int get_config_uint64(const struct config_node *cn, const char *path,
 }
 
 int get_config_str(const struct config_node *cn, const char *path,
-		   char **result)
+		   const char **result)
 {
 	const struct config_node *n;
 
@@ -1182,7 +1189,7 @@ static void _merge_section(struct config_node *cn1, struct config_node *cn2)
 			/* Ignore - we don't have any of these yet */
 			continue;
 		/* Not already present? */
-		if (!(oldn = find_config_node(cn1->child, cn->key))) {
+		if (!(oldn = (struct config_node*)find_config_node(cn1->child, cn->key))) {
 			_insert_config_node(&cn1->child, cn);
 			continue;
 		}
@@ -1202,9 +1209,9 @@ static void _merge_section(struct config_node *cn1, struct config_node *cn2)
 	}
 }
 
-static int _match_host_tags(struct dm_list *tags, struct config_node *tn)
+static int _match_host_tags(struct dm_list *tags, const struct config_node *tn)
 {
-	struct config_value *tv;
+	const struct config_value *tv;
 	const char *str;
 
 	for (tv = tn->v; tv; tv = tv->next) {
@@ -1226,8 +1233,9 @@ static int _match_host_tags(struct dm_list *tags, struct config_node *tn)
 int merge_config_tree(struct cmd_context *cmd, struct config_tree *cft,
 		      struct config_tree *newdata)
 {
-	struct config_node *root = cft->root;
-	struct config_node *cn, *nextn, *oldn, *tn, *cn2;
+	const struct config_node *root = cft->root;
+	struct config_node *cn, *nextn, *oldn, *cn2;
+	const struct config_node *tn;
 
 	for (cn = newdata->root; cn; cn = nextn) {
 		nextn = cn->sib;
@@ -1239,7 +1247,7 @@ int merge_config_tree(struct cmd_context *cmd, struct config_tree *cft,
 			if (!_match_host_tags(&cmd->tags, tn))
 				continue;
 		}
-		if (!(oldn = find_config_node(root, cn->key))) {
+		if (!(oldn = (struct config_node *)find_config_node(root, cn->key))) {
 			_insert_config_node(&cft->root, cn);
 			/* Remove any "tags" nodes */
 			for (cn2 = cn->child; cn2; cn2 = cn2->sib) {
@@ -1324,30 +1332,53 @@ unsigned maybe_config_section(const char *str, unsigned len)
 
 static struct config_value *_clone_config_value(struct dm_pool *mem, const struct config_value *v)
 {
+	struct config_value *new_cv;
+
 	if (!v)
 		return NULL;
-	struct config_value *new = _create_value(mem);
-	new->type = v->type;
-	if (v->type == CFG_STRING)
-		new->v.str = dm_pool_strdup(mem, v->v.str);
-	else
-		new->v = v->v;
-	new->next = _clone_config_value(mem, v->next);
-	return new;
+
+	if (!(new_cv = _create_value(mem))) {
+		log_error("Failed to clone config value.");
+		return NULL;
+	}
+
+	new_cv->type = v->type;
+	if (v->type == CFG_STRING) {
+		if (!(new_cv->v.str = dm_pool_strdup(mem, v->v.str))) {
+			log_error("Failed to clone config string value.");
+			return NULL;
+		}
+	} else
+		new_cv->v = v->v;
+
+	if (v->next && !(new_cv->next = _clone_config_value(mem, v->next)))
+		return_NULL;
+
+	return new_cv;
 }
 
 struct config_node *clone_config_node(struct dm_pool *mem, const struct config_node *cn,
 				      int siblings)
 {
+	struct config_node *new_cn;
+
 	if (!cn)
 		return NULL;
-	struct config_node *new = _create_node(mem);
-	new->key = dm_pool_strdup(mem, cn->key);
-	new->child = clone_config_node(mem, cn->child, 1);
-	new->v = _clone_config_value(mem, cn->v);
-	if (siblings)
-		new->sib = clone_config_node(mem, cn->sib, siblings);
-	else
-		new->sib = NULL;
-	return new;
+
+	if (!(new_cn = _create_node(mem))) {
+		log_error("Failed to clone config node.");
+		return NULL;
+	}
+
+	if ((cn->key && !(new_cn->key = dm_pool_strdup(mem, cn->key)))) {
+		log_error("Failed to clone config node key.");
+		return NULL;
+	}
+
+	if ((cn->v && !(new_cn->v = _clone_config_value(mem, cn->v))) ||
+	    (cn->child && !(new_cn->child = clone_config_node(mem, cn->child, 1))) ||
+	    (siblings && cn->sib && !(new_cn->sib = clone_config_node(mem, cn->sib, siblings))))
+		return_NULL; /* 'new_cn' released with mem pool */
+
+	return new_cn;
 }

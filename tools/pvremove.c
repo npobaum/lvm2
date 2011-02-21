@@ -48,7 +48,7 @@ static int pvremove_check(struct cmd_context *cmd, const char *name)
 	 * PV on the system.
 	 */
 	if (is_orphan(pv) && !dm_list_size(&mdas)) {
-		if (!scan_vgs_for_pvs(cmd)) {
+		if (!scan_vgs_for_pvs(cmd, 0)) {
 			log_error("Rescan for PVs without metadata areas "
 				  "failed.");
 			return 0;
@@ -90,7 +90,7 @@ static int pvremove_check(struct cmd_context *cmd, const char *name)
 }
 
 static int pvremove_single(struct cmd_context *cmd, const char *pv_name,
-			   void *handle __attribute((unused)))
+			   void *handle __attribute__((unused)))
 {
 	struct device *dev;
 	int ret = ECMD_FAILED;
@@ -143,12 +143,8 @@ int pvremove(struct cmd_context *cmd, int argc, char **argv)
 		return EINVALID_CMD_LINE;
 	}
 
-	if (arg_count(cmd, yes_ARG) && !arg_count(cmd, force_ARG)) {
-		log_error("Option y can only be given with option f");
-		return EINVALID_CMD_LINE;
-	}
-
 	for (i = 0; i < argc; i++) {
+		unescape_colons_and_at_signs(argv[i], NULL, NULL);
 		r = pvremove_single(cmd, argv[i], NULL);
 		if (r > ret)
 			ret = r;

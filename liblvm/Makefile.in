@@ -34,6 +34,9 @@ LIB_SHARED = $(LIB_NAME).$(LIB_SUFFIX)
 
 CLEAN_TARGETS += liblvm.cflow $(LIB_NAME).a
 
+EXPORTED_HEADER = $(srcdir)/lvm2app.h
+EXPORTED_FN_PREFIX = lvm
+
 include $(top_builddir)/make.tmpl
 
 LIBS += $(LVMINTERNAL_LIBS) -ldevmapper
@@ -75,4 +78,4 @@ liblvm.cflow: $(SOURCES)
 
 cflow: liblvm.cflow
 
-DISTCLEAN_TARGETS += $(LIB_NAME).pc
+DISTCLEAN_TARGETS += $(LIB_NAME).pc .exported_symbols_generated

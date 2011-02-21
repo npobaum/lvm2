@@ -58,7 +58,7 @@ static int _pv_resize_single(struct cmd_context *cmd,
 		vg = vg_read_for_update(cmd, vg_name, NULL, 0);
 
 		if (vg_read_error(vg)) {
-			vg_release(vg);
+			free_vg(vg);
 			log_error("Unable to read volume group \"%s\".",
 				  vg_name);
 			return 0;
@@ -148,7 +148,7 @@ static int _pv_resize_single(struct cmd_context *cmd,
 	if (!is_orphan_vg(vg_name)) {
 		if (!vg_write(vg) || !vg_commit(vg)) {
 			log_error("Failed to store physical volume \"%s\" in "
-				  "volume group \"%s\"", pv_name, vg->name);
+				  "volume group \"%s\"", pv_name, vg_name);
 			goto out;
 		}
 		backup(vg);
@@ -164,7 +164,7 @@ static int _pv_resize_single(struct cmd_context *cmd,
 out:
 	unlock_vg(cmd, vg_name);
 	if (!old_vg)
-		vg_release(vg);
+		free_vg(vg);
 	return r;
 }
 

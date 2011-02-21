@@ -8,6 +8,7 @@ dmsetup \- low level logical volume management
 .br
 .B dmsetup create 
 .I device_name [-u uuid] [--notable | --table <table> | table_file]
+.I [{ --addnodeonresume | --addnodeoncreate }]
 .br
 .B dmsetup remove
 .I [-f|--force] device_name
@@ -32,6 +33,9 @@ dmsetup \- low level logical volume management
 .br
 .B dmsetup rename
 .I device_name new_name
+.br
+.B dmsetup rename
+.I device_name --setuuid uuid
 .br
 .B dmsetup message
 .I device_name sector message
@@ -136,6 +140,12 @@ Tell the kernel not to supply the open reference count for the device.
 .IP \fB--notable
 .br
 When creating a device, don't load any table.
+.IP \fB--addnodeonresume
+.br
+Ensure /dev/mapper node exists after dmsetup resume (default with udev).
+.IP \fB--addnodeoncreate
+.br
+Ensure /dev/mapper node exists after dmsetup create.
 .IP \fB--udevcookie\ \fIcookie
 .br
 Use cookie for udev synchronisation.
@@ -175,6 +185,10 @@ Produce additional output.
 .br
 Display the library and kernel driver version.
 .SH COMMANDS
+.IP \fBclear
+.I device_name
+.br
+Destroys the table in the inactive table slot for device_name.
 .IP \fBcreate
 .I device_name [-u uuid] [--notable | --table <table> | table_file]
 .br
@@ -281,6 +295,11 @@ process to be killed.  This also runs \fBmknodes\fP afterwards.
 .I device_name new_name
 .br
 Renames a device.
+.IP \fBrename
+.I device_name --setuuid uuid
+.br
+Sets the uuid of a device that was created without a uuid.
+After a uuid has been set it cannot be changed.
 .IP \fBresume
 .I device_name
 .br

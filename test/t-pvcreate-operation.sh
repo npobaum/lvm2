@@ -8,7 +8,7 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
-. ./test-utils.sh
+. lib/test
 
 aux prepare_devs 4
 
@@ -95,17 +95,20 @@ uuid2=freddy-fred-fred-fred-fred-fred-fredie
 bogusuuid=fred
 
 # pvcreate rejects uuid option with less than 32 characters
-not pvcreate --uuid $bogusuuid $dev1
+not pvcreate --norestorefile --uuid $bogusuuid $dev1
+
+# pvcreate rejects uuid option without restorefile
+not pvcreate --uuid $uuid1 $dev1
 
 # pvcreate rejects uuid already in use
-pvcreate --uuid $uuid1 $dev1
-not pvcreate --uuid $uuid1 $dev2
+pvcreate --norestorefile --uuid $uuid1 $dev1
+not pvcreate --norestorefile --uuid $uuid1 $dev2
 
 # pvcreate rejects non-existent file given with restorefile
 not pvcreate --uuid $uuid1 --restorefile $backupfile $dev1
 
 # pvcreate rejects restorefile with uuid not found in file
-pvcreate --uuid $uuid1 $dev1
+pvcreate --norestorefile --uuid $uuid1 $dev1
 vgcfgbackup -f $backupfile
 not pvcreate --uuid $uuid2 --restorefile $backupfile $dev2
 

@@ -24,34 +24,27 @@
  * on the cluster nodes. That is done in tcp-comms.c
  */
 
+#include "clvmd-common.h"
+
 #include <pthread.h>
-#include <sys/types.h>
 #include <sys/utsname.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
-#include <sys/stat.h>
 #include <sys/file.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <stdio.h>
-#include <stdlib.h>
 #include <stdint.h>
 #include <signal.h>
 #include <fcntl.h>
-#include <string.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <unistd.h>
-#include <errno.h>
 #include <utmpx.h>
 #include <syslog.h>
 #include <assert.h>
-#include <libdevmapper.h>
 #include <ccs.h>
 #include <libgulm.h>
 
 #include "locking.h"
-#include "lvm-logging.h"
 #include "clvm.h"
 #include "clvmd-comms.h"
 #include "lvm-functions.h"
@@ -738,7 +731,7 @@ static int _lock_resource(char *resource, int mode, int flags, int *lockid)
     pthread_mutex_lock(&lwait.mutex);
 
     /* This needs to be converted from DLM/LVM2 value for GULM */
-    if (flags & LKF_NOQUEUE) flags = lg_lock_flag_Try;
+    if (flags & LCKF_NOQUEUE) flags = lg_lock_flag_Try;
 
     dm_hash_insert(lock_hash, resource, &lwait);
     DEBUGLOG("lock_resource '%s', flags=%d, mode=%d\n", resource, flags, mode);

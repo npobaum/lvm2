@@ -49,9 +49,9 @@ static pthread_mutex_t _event_mutex = PTHREAD_MUTEX_INITIALIZER;
  * configurable and we don't have that option yet
  */
 static void _temporary_log_fn(int level,
-			      const char *file __attribute((unused)),
-			      int line __attribute((unused)),
-			      int dm_errno __attribute((unused)),
+			      const char *file __attribute__((unused)),
+			      int line __attribute__((unused)),
+			      int dm_errno __attribute__((unused)),
 			      const char *message)
 {
 	level &= ~(_LOG_STDERR | _LOG_ONCE);
@@ -131,10 +131,10 @@ void dmeventd_lvm2_exit(void)
 
 	if (!--_register_count) {
 		lvm2_run(_lvm_handle, "_memlock_dec");
-		lvm2_exit(_lvm_handle);
-		_lvm_handle = NULL;
 		dm_pool_destroy(_mem_pool);
 		_mem_pool = NULL;
+		lvm2_exit(_lvm_handle);
+		_lvm_handle = NULL;
 	}
 
 	pthread_mutex_unlock(&_register_mutex);

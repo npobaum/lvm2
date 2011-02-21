@@ -17,22 +17,14 @@
  * Send a command to a running clvmd from the command-line
  */
 
-#define _GNU_SOURCE
-#define _FILE_OFFSET_BITS 64
-
-#include <configure.h>
-#include <stddef.h>
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <errno.h>
-#include <unistd.h>
-#include <libdevmapper.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <limits.h>
+#include "clvmd-common.h"
 
 #include "clvm.h"
 #include "refresh_clvmd.h"
+
+#include <stddef.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 
 typedef struct lvm_response {
 	char node[255];
@@ -293,7 +285,7 @@ int refresh_clvmd(int all_nodes)
 {
 	int num_responses;
 	char args[1]; // No args really.
-	lvm_response_t *response;
+	lvm_response_t *response = NULL;
 	int saved_errno;
 	int status;
 	int i;
@@ -327,8 +319,21 @@ int refresh_clvmd(int all_nodes)
 
 int restart_clvmd(int all_nodes)
 {
-	int dummy;
-	return _cluster_request(CLVMD_CMD_RESTART, all_nodes?"*":".", NULL, 0, NULL, &dummy, 1);
+	int dummy, status;
+
+	status = _cluster_request(CLVMD_CMD_RESTART, all_nodes?"*":".", NULL, 0, NULL, &dummy, 1);
+
+	/*
+	 * FIXME: we cannot receive response, clvmd re-exec before it.
+	 *        but also should not close socket too early (the whole rq is dropped then).
+	 * FIXME: This should be handled this way:
+	 *  - client waits for RESTART ack (and socket close)
+	 *  - server restarts
+	 *  - client checks that server is ready again (VERSION command?)
+	 */
+	usleep(500000);
+
+	return status;
 }
 
 int debug_clvmd(int level, int clusterwide)
@@ -336,7 +341,7 @@ int debug_clvmd(int level, int clusterwide)
 	int num_responses;
 	char args[1];
 	const char *nodes;
-	lvm_response_t *response;
+	lvm_response_t *response = NULL;
 	int saved_errno;
 	int status;
 	int i;

@@ -87,10 +87,10 @@ static int _extract_pattern(struct dm_pool *mem, const char *pat,
 	return 1;
 }
 
-static int _build_matcher(struct rfilter *rf, struct config_value *val)
+static int _build_matcher(struct rfilter *rf, const struct config_value *val)
 {
 	struct dm_pool *scratch;
-	struct config_value *v;
+	const struct config_value *v;
 	char **regex;
 	unsigned count = 0;
 	int i, r = 0;
@@ -137,7 +137,7 @@ static int _build_matcher(struct rfilter *rf, struct config_value *val)
 	 */
 	if (!(rf->engine = dm_regex_create(rf->mem, (const char **) regex,
 					   count)))
-		stack;
+		goto_out;
 	r = 1;
 
       out:
@@ -181,10 +181,14 @@ static int _accept_p(struct dev_filter *f, struct device *dev)
 static void _regex_destroy(struct dev_filter *f)
 {
 	struct rfilter *rf = (struct rfilter *) f->private;
+
+	if (f->use_count)
+		log_error(INTERNAL_ERROR "Destroying regex filter while in use %u times.", f->use_count);
+
 	dm_pool_destroy(rf->mem);
 }
 
-struct dev_filter *regex_filter_create(struct config_value *patterns)
+struct dev_filter *regex_filter_create(const struct config_value *patterns)
 {
 	struct dm_pool *mem = dm_pool_create("filter regex", 10 * 1024);
 	struct rfilter *rf;
@@ -206,6 +210,7 @@ struct dev_filter *regex_filter_create(struct config_value *patterns)
 
 	f->passes_filter = _accept_p;
 	f->destroy = _regex_destroy;
+	f->use_count = 0;
 	f->private = rf;
 	return f;
 

@@ -18,7 +18,7 @@
 
 static int _remove_pv(struct volume_group *vg, struct pv_list *pvl, int silent)
 {
-	char uuid[64] __attribute((aligned(8)));
+	char uuid[64] __attribute__((aligned(8)));
 
 	if (vg->pv_count == 1) {
 		log_error("Volume Groups must always contain at least one PV");
@@ -108,7 +108,7 @@ static int _remove_lv(struct cmd_context *cmd, struct logical_volume *lv,
 	 * the mirrored LV also should be cleaned up.
 	 * Clean-up is currently done by caller (_make_vg_consistent()).
 	 */
-	if ((lv_info(cmd, lv, &info, 0, 0) && info.exists) ||
+	if ((lv_info(cmd, lv, 0, &info, 0, 0) && info.exists) ||
 	    find_mirror_seg(first_seg(lv))) {
 		if (!replace_lv_with_error_segment(lv))
 			return_0;
@@ -376,7 +376,7 @@ static int _make_vg_consistent(struct cmd_context *cmd, struct volume_group *vg)
 /* Or take pv_name instead? */
 static int _vgreduce_single(struct cmd_context *cmd, struct volume_group *vg,
 			    struct physical_volume *pv,
-			    void *handle __attribute((unused)))
+			    void *handle __attribute__((unused)))
 {
 	struct pv_list *pvl;
 	struct volume_group *orphan_vg = NULL;
@@ -450,7 +450,7 @@ static int _vgreduce_single(struct cmd_context *cmd, struct volume_group *vg,
 	log_print("Removed \"%s\" from volume group \"%s\"", name, vg->name);
 	r = ECMD_PROCESSED;
 bad:
-	unlock_and_release_vg(cmd, orphan_vg, VG_ORPHANS);
+	unlock_and_free_vg(cmd, orphan_vg, VG_ORPHANS);
 	return r;
 }
 
@@ -524,7 +524,7 @@ int vgreduce(struct cmd_context *cmd, int argc, char **argv)
 			goto out;
 		}
 
-		vg_release(vg);
+		free_vg(vg);
 		log_verbose("Trying to open VG %s for recovery...", vg_name);
 
 		vg = vg_read_for_update(cmd, vg_name, NULL,
@@ -570,7 +570,7 @@ int vgreduce(struct cmd_context *cmd, int argc, char **argv)
 	}
 out:
 	init_ignore_suspended_devices(saved_ignore_suspended_devices);
-	unlock_and_release_vg(cmd, vg, vg_name);
+	unlock_and_free_vg(cmd, vg, vg_name);
 
 	return ret;
 

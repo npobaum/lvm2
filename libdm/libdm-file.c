@@ -84,3 +84,127 @@ int dm_fclose(FILE *stream)
 
 	return prev_fail || fclose_fail ? EOF : 0;
 }
+
+int dm_create_lockfile(const char *lockfile)
+{
+	int fd, value;
+	size_t bufferlen;
+	ssize_t write_out;
+	struct flock lock;
+	char buffer[50];
+	int retries = 0;
+
+	if((fd = open(lockfile, O_CREAT | O_WRONLY,
+		      (S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH))) < 0) {
+		log_error("Cannot open lockfile [%s], error was [%s]",
+			  lockfile, strerror(errno));
+		return 0;
+	}
+
+	lock.l_type = F_WRLCK;
+	lock.l_start = 0;
+	lock.l_whence = SEEK_SET;
+	lock.l_len = 0;
+retry_fcntl:
+	if (fcntl(fd, F_SETLK, &lock) < 0) {
+		switch (errno) {
+		case EINTR:
+			goto retry_fcntl;
+			break;
+		case EACCES:
+		case EAGAIN:
+			if (retries == 20) {
+				log_error("Cannot lock lockfile [%s], error was [%s]",
+					  lockfile, strerror(errno));
+				break;
+			} else {
+				++ retries;
+				usleep(1000);
+				goto retry_fcntl;
+			}
+		default:
+			log_error("process is already running");
+		}
+
+		goto fail_close;
+	}
+
+	if (ftruncate(fd, 0) < 0) {
+		log_error("Cannot truncate pidfile [%s], error was [%s]",
+			  lockfile, strerror(errno));
+
+		goto fail_close_unlink;
+	}
+
+	memset(buffer, 0, sizeof(buffer));
+	snprintf(buffer, sizeof(buffer)-1, "%u\n", getpid());
+
+	bufferlen = strlen(buffer);
+	write_out = write(fd, buffer, bufferlen);
+
+	if ((write_out < 0) || (write_out == 0 && errno)) {
+		log_error("Cannot write pid to pidfile [%s], error was [%s]",
+			  lockfile, strerror(errno));
+
+		goto fail_close_unlink;
+	}
+
+	if ((write_out == 0) || (write_out < bufferlen)) {
+		log_error("Cannot write pid to pidfile [%s], shortwrite of"
+			  "[%" PRIsize_t "] bytes, expected [%" PRIsize_t "]\n",
+			  lockfile, write_out, bufferlen);
+
+		goto fail_close_unlink;
+	}
+
+	if ((value = fcntl(fd, F_GETFD, 0)) < 0) {
+		log_error("Cannot get close-on-exec flag from pidfile [%s], "
+			  "error was [%s]", lockfile, strerror(errno));
+
+		goto fail_close_unlink;
+	}
+	value |= FD_CLOEXEC;
+	if (fcntl(fd, F_SETFD, value) < 0) {
+		log_error("Cannot set close-on-exec flag from pidfile [%s], "
+			  "error was [%s]", lockfile, strerror(errno));
+
+		goto fail_close_unlink;
+	}
+
+	return 1;
+
+fail_close_unlink:
+	if (unlink(lockfile))
+		stack;
+fail_close:
+	if (close(fd))
+		stack;
+
+	return 0;
+}
+
+int dm_daemon_is_running(const char* lockfile)
+{
+       int fd;
+       struct flock lock;
+
+       if((fd = open(lockfile, O_RDONLY)) < 0)
+               return 0;
+
+       lock.l_type = F_WRLCK;
+       lock.l_start = 0;
+       lock.l_whence = SEEK_SET;
+       lock.l_len = 0;
+       if (fcntl(fd, F_GETLK, &lock) < 0) {
+               log_error("Cannot check lock status of lockfile [%s], error was [%s]",
+                         lockfile, strerror(errno));
+               if (close(fd))
+                       stack;
+               return 0;
+       }
+
+       if (close(fd))
+               stack;
+
+       return (lock.l_type == F_UNLCK) ? 0 : 1;
+}

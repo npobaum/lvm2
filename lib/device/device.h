@@ -39,6 +39,8 @@ struct device {
 	/* private */
 	int fd;
 	int open_count;
+	int error_count;
+	int max_error_count;
 	int block_size;
 	int read_ahead;
 	uint32_t flags;
@@ -96,12 +98,13 @@ const char *dev_name_confirmed(struct device *dev, int quiet);
 /* Does device contain md superblock?  If so, where? */
 int dev_is_md(struct device *dev, uint64_t *sb);
 int dev_is_swap(struct device *dev, uint64_t *signature);
+int dev_is_luks(struct device *dev, uint64_t *signature);
 unsigned long dev_md_stripe_width(const char *sysfs_dir, struct device *dev);
 
 int is_partitioned_dev(struct device *dev);
 
 int get_primary_dev(const char *sysfs_dir,
-		    struct device *dev, dev_t *result);
+		    const struct device *dev, dev_t *result);
 
 unsigned long dev_alignment_offset(const char *sysfs_dir,
 				   struct device *dev);

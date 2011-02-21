@@ -25,7 +25,7 @@ void reset_locking(void);
 int vg_write_lock_held(void);
 int locking_is_clustered(void);
 
-int remote_lock_held(const char *vol);
+int remote_lock_held(const char *vol, int *exclusive);
 
 /*
  * LCK_VG:
@@ -73,6 +73,12 @@ int check_lvm1_vg_inactive(struct cmd_context *cmd, const char *vgname);
 #define LCK_UNLOCK      0x00000006U	/* This is ours */
 
 /*
+ * Lock flags - these numbers are the same as DLM
+ */
+#define LCKF_NOQUEUE	0x00000001U	/* LKF$_NOQUEUE */
+#define LCKF_CONVERT	0x00000004U	/* LKF$_CONVERT */
+
+/*
  * Lock scope
  */
 #define LCK_SCOPE_MASK	0x00000008U
@@ -87,20 +93,23 @@ int check_lvm1_vg_inactive(struct cmd_context *cmd, const char *vgname);
 #define LCK_LOCAL	0x00000040U	/* Don't propagate to other nodes */
 #define LCK_CLUSTER_VG	0x00000080U	/* VG is clustered */
 #define LCK_CACHE	0x00000100U	/* Operation on cache only using P_ lock */
+#define LCK_ORIGIN_ONLY	0x00000200U	/* Operation should bypass any snapshots */
 
 /*
- * Additional lock bits for cluster communication
+ * Additional lock bits for cluster communication via args[1]
  */
-#define LCK_PARTIAL_MODE        0x00000001U	/* Partial activation? */
-#define LCK_MIRROR_NOSYNC_MODE	0x00000002U	/* Mirrors don't require sync */
-#define LCK_DMEVENTD_MONITOR_MODE	0x00000004U	/* Register with dmeventd */
-#define LCK_CONVERT		0x00000008U	/* Convert existing lock */
+#define LCK_PARTIAL_MODE        	0x01	/* Partial activation? */
+#define LCK_MIRROR_NOSYNC_MODE		0x02	/* Mirrors don't require sync */
+#define LCK_DMEVENTD_MONITOR_MODE	0x04	/* Register with dmeventd */
+#define LCK_CONVERT			0x08	/* Convert existing lock */
+#define LCK_ORIGIN_ONLY_MODE		0x20	/* Same as above */
 
 /*
  * Special cases of VG locks.
  */
 #define VG_ORPHANS	"#orphans"
 #define VG_GLOBAL	"#global"
+#define VG_SYNC_NAMES	"#sync_names"
 
 /*
  * Common combinations
@@ -130,17 +139,26 @@ int check_lvm1_vg_inactive(struct cmd_context *cmd, const char *vgname);
 	(vg_is_clustered((lv)->vg) ? LCK_CLUSTER_VG : 0)
 
 #define lock_lv_vol(cmd, lv, flags)	\
-	lock_vol(cmd, (lv)->lvid.s, flags | LCK_LV_CLUSTERED(lv))
+	(find_replicator_vgs((lv)) ? \
+		lock_vol(cmd, (lv)->lvid.s, flags | LCK_LV_CLUSTERED(lv)) : \
+		0)
 
-#define unlock_vg(cmd, vol)	lock_vol(cmd, vol, LCK_VG_UNLOCK)
-#define unlock_and_release_vg(cmd, vg, vol) \
+#define unlock_vg(cmd, vol)	\
+	do { \
+		if (is_real_vg(vol)) \
+			sync_dev_names(cmd); \
+		lock_vol(cmd, vol, LCK_VG_UNLOCK); \
+	} while (0)
+#define unlock_and_free_vg(cmd, vg, vol) \
 	do { \
 		unlock_vg(cmd, vol); \
-		vg_release(vg); \
+		free_vg(vg); \
 	} while (0)
 
 #define resume_lv(cmd, lv)	lock_lv_vol(cmd, lv, LCK_LV_RESUME)
+#define resume_lv_origin(cmd, lv)	lock_lv_vol(cmd, lv, LCK_LV_RESUME | LCK_ORIGIN_ONLY)
 #define suspend_lv(cmd, lv)	lock_lv_vol(cmd, lv, LCK_LV_SUSPEND | LCK_HOLD)
+#define suspend_lv_origin(cmd, lv)	lock_lv_vol(cmd, lv, LCK_LV_SUSPEND | LCK_HOLD | LCK_ORIGIN_ONLY)
 #define deactivate_lv(cmd, lv)	lock_lv_vol(cmd, lv, LCK_LV_DEACTIVATE)
 #define activate_lv(cmd, lv)	lock_lv_vol(cmd, lv, LCK_LV_ACTIVATE | LCK_HOLD)
 #define activate_lv_excl(cmd, lv)	\
@@ -157,6 +175,10 @@ int check_lvm1_vg_inactive(struct cmd_context *cmd, const char *vgname);
 	lock_vol((vg)->cmd, (vg)->name, LCK_VG_REVERT)
 #define remote_backup_metadata(vg)	\
 	lock_vol((vg)->cmd, (vg)->name, LCK_VG_BACKUP)
+#define sync_local_dev_names(cmd)	\
+	lock_vol(cmd, VG_SYNC_NAMES, LCK_NONE | LCK_CACHE | LCK_LOCAL)
+#define sync_dev_names(cmd)	\
+	lock_vol(cmd, VG_SYNC_NAMES, LCK_NONE | LCK_CACHE)
 
 /* Process list of LVs */
 int suspend_lvs(struct cmd_context *cmd, struct dm_list *lvs);

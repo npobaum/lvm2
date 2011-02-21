@@ -22,24 +22,35 @@ ifeq ("@FSADM@", "yes")
 	SCRIPTS += fsadm.sh
 endif
 
+OCF_SCRIPTS =
+ifeq ("@OCF@", "yes")
+        OCF_SCRIPTS += VolumeGroup.ocf
+endif
+
 vpath %.sh $(srcdir)
 
 %_install: %.sh
 	$(INSTALL_PROGRAM) -D $< $(sbindir)/$(basename $(<F))
 
+%_install: %.ocf
+	$(INSTALL_DIR) $(ocf_scriptdir)
+	$(INSTALL_SCRIPT) $< $(ocf_scriptdir)/$(basename $(<F))
+
 install_lvm2: $(SCRIPTS:.sh=_install)
 
-install: install_lvm2
+install_ocf: $(OCF_SCRIPTS:.ocf=_install)
+
+install: install_lvm2 install_ocf
 
 # FIXME Customise for other distributions
 install_initscripts:
-	$(INSTALL_DIR) $(DESTDIR)/etc/rc.d/init.d
-	$(INSTALL_SCRIPT) lvm2_monitoring_init_red_hat $(DESTDIR)/etc/rc.d/init.d/lvm2-monitor
+	$(INSTALL_DIR) $(initdir)
+	$(INSTALL_SCRIPT) lvm2_monitoring_init_red_hat $(initdir)/lvm2-monitor
 ifneq ("@CLVMD@", "none")
-	$(INSTALL_SCRIPT) clvmd_init_red_hat $(DESTDIR)/etc/rc.d/init.d/clvmd
+	$(INSTALL_SCRIPT) clvmd_init_red_hat $(initdir)/clvmd
 endif
 ifeq ("@BUILD_CMIRRORD@", "yes")
-	$(INSTALL_SCRIPT) cmirrord_init_red_hat $(DESTDIR)/etc/rc.d/init.d/cmirrord
+	$(INSTALL_SCRIPT) cmirrord_init_red_hat $(initdir)/cmirrord
 endif
 
 DISTCLEAN_TARGETS += clvmd_init_red_hat cmirrord_init_red_hat lvm2_monitoring_init_red_hat

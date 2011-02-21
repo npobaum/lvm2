@@ -27,6 +27,14 @@ int emit_to_buffer(char **buffer, size_t *size, const char *fmt, ...)
 	n = vsnprintf(*buffer, *size, fmt, ap);
 	va_end(ap);
 
+	/*
+	 * Revert to old glibc behaviour (version <= 2.0.6) where snprintf
+	 * returned -1 if buffer was too small. From glibc 2.1 it returns number
+	 * of chars that would have been written had there been room.
+	 */
+	if (n < 0 || ((unsigned) n + 1 > *size))
+		n = -1;
+
 	if (n < 0 || ((size_t)n == *size))
 		return 0;
 
@@ -100,21 +108,64 @@ static void _quote_characters(char **out, const char *src,
 	}
 }
 
+static void _unquote_one_character(char *src, const char orig_char,
+				   const char quote_char)
+{
+	char *out;
+	char s, n;
+
+	/* Optimise for the common case where no changes are needed. */
+	while ((s = *src++)) {
+		if (s == quote_char &&
+		    ((n = *src) == orig_char || n == quote_char)) {
+			out = src++;
+			*(out - 1) = n;
+
+			while ((s = *src++)) {
+				if (s == quote_char &&
+				    ((n = *src) == orig_char || n == quote_char)) {
+					s = n;
+					src++;
+				}
+				*out = s;
+				out++;
+			}
+
+			*out = '\0';
+			return;
+		}
+	}
+}
+
 /*
- * Unquote orig_char in string.
- * Also unquote quote_char.
+ * Unquote each character given in orig_char array and unquote quote_char
+ * as well. Also save the first occurrence of each character from orig_char
+ * that was found unquoted in arr_substr_first_unquoted array. This way we can
+ * process several characters in one go.
  */
-static void _unquote_characters(char *src, const int orig_char,
-				const int quote_char)
+static void _unquote_characters(char *src, const char *orig_chars,
+				const int num_orig_chars, 
+				const char quote_char,
+				char *arr_substr_first_unquoted[])
 {
 	char *out = src;
+	char c, s, n;
+	unsigned i;
 
-	while (*src) {
-		if (*src == quote_char &&
-		    (*(src + 1) == orig_char || *(src + 1) == quote_char))
-			src++;
-
-		*out++ = *src++;
+	while ((s = *src++)) {
+		for (i = 0; i < num_orig_chars; i++) {
+			c = orig_chars[i];
+			if (s == quote_char &&
+			    ((n = *src) == c || n == quote_char)) {
+				s = n;
+				src++;
+				break;
+			}
+			if (arr_substr_first_unquoted && (s == c) &&
+			    !arr_substr_first_unquoted[i])
+				arr_substr_first_unquoted[i] = out;
+		};
+		*out++ = s;
 	}
 
 	*out = '\0';
@@ -209,7 +260,48 @@ char *escape_double_quotes(char *out, const char *src)
  */
 void unescape_double_quotes(char *src)
 {
-	_unquote_characters(src, '\"', '\\');
+	_unquote_one_character(src, '\"', '\\');
+}
+
+/*
+ * Unescape colons and "at" signs in situ and save the substrings
+ * starting at the position of the first unescaped colon and the
+ * first unescaped "at" sign. This is normally used to unescape
+ * device names used as PVs.
+ */
+void unescape_colons_and_at_signs(char *src,
+				  char **substr_first_unquoted_colon,
+				  char **substr_first_unquoted_at_sign)
+{
+	const char *orig_chars = ":@";
+	char *arr_substr_first_unquoted[] = {NULL, NULL, NULL};
+
+	_unquote_characters(src, orig_chars, 2, '\\', arr_substr_first_unquoted);
+
+	if (substr_first_unquoted_colon)
+		*substr_first_unquoted_colon = arr_substr_first_unquoted[0];
+
+	if (substr_first_unquoted_at_sign)
+		*substr_first_unquoted_at_sign = arr_substr_first_unquoted[1];
+}
+
+/*
+ * A-Za-z0-9._-+/=!:&#
+ */
+int validate_tag(const char *n)
+{
+	register char c;
+	register int len = 0;
+
+	if (!n || !*n)
+		return 0;
+
+	while ((len++, c = *n++))
+		if (!isalnum(c) && c != '.' && c != '_' && c != '-' && c != '+' && c != '/'
+		    && c != '=' && c != '!' && c != ':' && c != '&' && c != '#')
+			return 0;
+
+	return 1;
 }
 
 /*

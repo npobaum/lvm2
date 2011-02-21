@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2008 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2011 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2005-2007 NEC Corporation
  *
  * This file is part of the device-mapper userspace tools.
@@ -140,6 +140,7 @@ enum {
 	READAHEAD_ARG,
 	ROWS_ARG,
 	SEPARATOR_ARG,
+	SETUUID_ARG,
 	SHOWKEYS_ARG,
 	SORT_ARG,
 	TABLE_ARG,
@@ -152,6 +153,8 @@ enum {
 	VERBOSE_ARG,
 	VERSION_ARG,
 	YES_ARG,
+	ADD_NODE_ON_RESUME_ARG,
+	ADD_NODE_ON_CREATE_ARG,
 	NUM_SWITCHES
 };
 
@@ -342,7 +345,9 @@ static char *_extract_uuid_prefix(const char *uuid, const int separator)
 		return NULL;
 	}
 
-	memcpy(uuid_prefix, uuid, len);
+	if (uuid)
+		memcpy(uuid_prefix, uuid, len);
+
 	uuid_prefix[len] = '\0';
 
 	return uuid_prefix;
@@ -502,7 +507,23 @@ static int _set_task_device(struct dm_task *dmt, const char *name, int optional)
 	return 1;
 }
 
-static int _load(int argc, char **argv, void *data __attribute((unused)))
+static int _set_task_add_node(struct dm_task *dmt)
+{
+	if (!dm_task_set_add_node(dmt, DEFAULT_DM_ADD_NODE))
+		return 0;
+
+	if (_switches[ADD_NODE_ON_RESUME_ARG] &&
+	    !dm_task_set_add_node(dmt, DM_ADD_NODE_ON_RESUME))
+		return 0;
+
+	if (_switches[ADD_NODE_ON_CREATE_ARG] &&
+	    !dm_task_set_add_node(dmt, DM_ADD_NODE_ON_CREATE))
+		return 0;
+
+	return 1;
+}
+
+static int _load(int argc, char **argv, void *data __attribute__((unused)))
 {
 	int r = 0;
 	struct dm_task *dmt;
@@ -562,7 +583,7 @@ static int _load(int argc, char **argv, void *data __attribute((unused)))
 	return r;
 }
 
-static int _create(int argc, char **argv, void *data __attribute((unused)))
+static int _create(int argc, char **argv, void *data __attribute__((unused)))
 {
 	int r = 0;
 	struct dm_task *dmt;
@@ -621,6 +642,10 @@ static int _create(int argc, char **argv, void *data __attribute((unused)))
 		udev_flags |= DM_UDEV_DISABLE_DM_RULES_FLAG |
 			      DM_UDEV_DISABLE_SUBSYSTEM_RULES_FLAG;
 
+
+	if (!_set_task_add_node(dmt))
+                goto out;
+
 	if (_udev_cookie) {
 		cookie = _udev_cookie;
 		if (_udev_only)
@@ -633,8 +658,15 @@ static int _create(int argc, char **argv, void *data __attribute((unused)))
 
 	r = 1;
 
+	if (!_udev_cookie)
+		(void) dm_udev_wait(cookie);
+
 	if (_switches[VERBOSE_ARG])
 		r = _display_info(dmt);
+
+	dm_task_destroy(dmt);
+
+	return r;
 
       out:
 	if (!_udev_cookie)
@@ -644,7 +676,7 @@ static int _create(int argc, char **argv, void *data __attribute((unused)))
 	return r;
 }
 
-static int _rename(int argc, char **argv, void *data __attribute((unused)))
+static int _rename(int argc, char **argv, void *data __attribute__((unused)))
 {
 	int r = 0;
 	struct dm_task *dmt;
@@ -658,7 +690,10 @@ static int _rename(int argc, char **argv, void *data __attribute((unused)))
 	if (!_set_task_device(dmt, (argc == 3) ? argv[1] : NULL, 0))
 		goto out;
 
-	if (!dm_task_set_newname(dmt, argv[argc - 1]))
+	if (_switches[SETUUID_ARG]) {
+		if  (!dm_task_set_newuuid(dmt, argv[argc - 1]))
+			goto out;
+	} else if (!dm_task_set_newname(dmt, argv[argc - 1]))
 		goto out;
 
 	if (_switches[NOOPENCOUNT_ARG] && !dm_task_no_open_count(dmt))
@@ -691,7 +726,7 @@ static int _rename(int argc, char **argv, void *data __attribute((unused)))
 	return r;
 }
 
-static int _message(int argc, char **argv, void *data __attribute((unused)))
+static int _message(int argc, char **argv, void *data __attribute__((unused)))
 {
 	int r = 0, i;
 	size_t sz = 1;
@@ -723,12 +758,10 @@ static int _message(int argc, char **argv, void *data __attribute((unused)))
 	for (i = 0; i < argc; i++)
 		sz += strlen(argv[i]) + 1;
 
-	if (!(str = dm_malloc(sz))) {
+	if (!(str = dm_zalloc(sz))) {
 		err("message string allocation failed");
 		goto out;
 	}
-
-	memset(str, 0, sz);
 
 	for (i = 0; i < argc; i++) {
 		if (i)
@@ -758,7 +791,7 @@ static int _message(int argc, char **argv, void *data __attribute((unused)))
 	return r;
 }
 
-static int _setgeometry(int argc, char **argv, void *data __attribute((unused)))
+static int _setgeometry(int argc, char **argv, void *data __attribute__((unused)))
 {
 	int r = 0;
 	struct dm_task *dmt;
@@ -797,7 +830,7 @@ static int _setgeometry(int argc, char **argv, void *data __attribute((unused)))
 	return r;
 }
 
-static int _splitname(int argc, char **argv, void *data __attribute((unused)))
+static int _splitname(int argc, char **argv, void *data __attribute__((unused)))
 {
 	struct dmsetup_report_obj obj;
 	int r = 1;
@@ -831,7 +864,7 @@ static uint32_t _get_cookie_value(const char *str_value)
 		return (uint32_t) value;
 }
 
-static int _udevflags(int args, char **argv, void *data __attribute((unused)))
+static int _udevflags(int args, char **argv, void *data __attribute__((unused)))
 {
 	uint32_t cookie;
 	uint16_t flags;
@@ -873,7 +906,7 @@ static int _udevflags(int args, char **argv, void *data __attribute((unused)))
 	return 1;
 }
 
-static int _udevcomplete(int argc, char **argv, void *data __attribute((unused)))
+static int _udevcomplete(int argc, char **argv, void *data __attribute__((unused)))
 {
 	uint32_t cookie;
 
@@ -899,7 +932,7 @@ static int _udevcomplete(int argc, char **argv, void *data __attribute((unused))
 static const char _cmd_not_supported[] = "Command not supported. Recompile with \"--enable-udev-sync\" to enable.";
 
 static int _udevcreatecookie(int argc, char **argv,
-				  void *data __attribute((unused)))
+				  void *data __attribute__((unused)))
 {
 	log_error(_cmd_not_supported);
 
@@ -907,21 +940,21 @@ static int _udevcreatecookie(int argc, char **argv,
 }
 
 static int _udevreleasecookie(int argc, char **argv,
-				void *data __attribute((unused)))
+				void *data __attribute__((unused)))
 {
 	log_error(_cmd_not_supported);
 
 	return 0;
 }
 
-static int _udevcomplete_all(int argc __attribute((unused)), char **argv __attribute((unused)), void *data __attribute((unused)))
+static int _udevcomplete_all(int argc __attribute__((unused)), char **argv __attribute__((unused)), void *data __attribute__((unused)))
 {
 	log_error(_cmd_not_supported);
 
 	return 0;
 }
 
-static int _udevcookies(int argc __attribute((unused)), char **argv __attribute((unused)), void *data __attribute((unused)))
+static int _udevcookies(int argc __attribute__((unused)), char **argv __attribute__((unused)), void *data __attribute__((unused)))
 {
 	log_error(_cmd_not_supported);
 
@@ -996,7 +1029,7 @@ static int _set_up_udev_support(const char *dev_dir)
 }
 
 static int _udevcreatecookie(int argc, char **argv,
-				  void *data __attribute((unused)))
+				  void *data __attribute__((unused)))
 {
 	uint32_t cookie;
 
@@ -1010,7 +1043,7 @@ static int _udevcreatecookie(int argc, char **argv,
 }
 
 static int _udevreleasecookie(int argc, char **argv,
-				void *data __attribute((unused)))
+				void *data __attribute__((unused)))
 {
 	if (argv[1] && !(_udev_cookie = _get_cookie_value(argv[1])))
 		return 0;
@@ -1051,7 +1084,7 @@ static char _yes_no_prompt(const char *prompt, ...)
 	return ret;
 }
 
-static int _udevcomplete_all(int argc __attribute((unused)), char **argv __attribute((unused)), void *data __attribute((unused)))
+static int _udevcomplete_all(int argc __attribute__((unused)), char **argv __attribute__((unused)), void *data __attribute__((unused)))
 {
 	int max_id, id, sid;
 	struct seminfo sinfo;
@@ -1100,7 +1133,7 @@ static int _udevcomplete_all(int argc __attribute((unused)), char **argv __attri
 	return 1;
 }
 
-static int _udevcookies(int argc __attribute((unused)), char **argv __attribute((unused)), void *data __attribute((unused)))
+static int _udevcookies(int argc __attribute__((unused)), char **argv __attribute__((unused)), void *data __attribute__((unused)))
 {
 	int max_id, id, sid;
 	struct seminfo sinfo;
@@ -1139,7 +1172,7 @@ static int _udevcookies(int argc __attribute((unused)), char **argv __attribute(
 }
 #endif	/* UDEV_SYNC_SUPPORT */
 
-static int _version(int argc __attribute((unused)), char **argv __attribute((unused)), void *data __attribute((unused)))
+static int _version(int argc __attribute__((unused)), char **argv __attribute__((unused)), void *data __attribute__((unused)))
 {
 	char version[80];
 
@@ -1185,6 +1218,10 @@ static int _simple(int task, const char *name, uint32_t event_nr, int display)
 	if (_switches[NOLOCKFS_ARG] && !dm_task_skip_lockfs(dmt))
 		goto out;
 
+	/* FIXME: needs to coperate with udev */
+	if (!_set_task_add_node(dmt))
+                goto out;
+
 	if (_switches[READAHEAD_ARG] &&
 	    !dm_task_set_read_ahead(dmt, _int_args[READAHEAD_ARG],
 				    _read_ahead_flags))
@@ -1216,22 +1253,22 @@ static int _simple(int task, const char *name, uint32_t event_nr, int display)
 	return r;
 }
 
-static int _suspend(int argc, char **argv, void *data __attribute((unused)))
+static int _suspend(int argc, char **argv, void *data __attribute__((unused)))
 {
 	return _simple(DM_DEVICE_SUSPEND, argc > 1 ? argv[1] : NULL, 0, 1);
 }
 
-static int _resume(int argc, char **argv, void *data __attribute((unused)))
+static int _resume(int argc, char **argv, void *data __attribute__((unused)))
 {
 	return _simple(DM_DEVICE_RESUME, argc > 1 ? argv[1] : NULL, 0, 1);
 }
 
-static int _clear(int argc, char **argv, void *data __attribute((unused)))
+static int _clear(int argc, char **argv, void *data __attribute__((unused)))
 {
 	return _simple(DM_DEVICE_CLEAR, argc > 1 ? argv[1] : NULL, 0, 1);
 }
 
-static int _wait(int argc, char **argv, void *data __attribute((unused)))
+static int _wait(int argc, char **argv, void *data __attribute__((unused)))
 {
 	const char *name = NULL;
 
@@ -1277,8 +1314,8 @@ static int _process_all(int argc, char **argv, int silent,
 	}
 
 	do {
-		names = (void *) names + next;
-		if (!fn(argc, argv, (void *) names))
+		names = (struct dm_names *)((char *) names + next);
+		if (!fn(argc, argv, names))
 			r = 0;
 		next = names->next;
 	} while (next);
@@ -1325,7 +1362,7 @@ static uint64_t _get_device_size(const char *name)
 	return size;
 }
 
-static int _error_device(int argc __attribute((unused)), char **argv __attribute((unused)), void *data)
+static int _error_device(int argc __attribute__((unused)), char **argv __attribute__((unused)), void *data)
 {
 	struct dm_names *names = (struct dm_names *) data;
 	struct dm_task *dmt;
@@ -1373,24 +1410,22 @@ error:
 	return r;
 }
 
-static int _remove(int argc, char **argv, void *data __attribute((unused)))
+static int _remove(int argc, char **argv, void *data __attribute__((unused)))
 {
-	int r;
-
 	if (_switches[FORCE_ARG] && argc > 1)
-		r = _error_device(argc, argv, NULL);
+		(void) _error_device(argc, argv, NULL);
 
 	return _simple(DM_DEVICE_REMOVE, argc > 1 ? argv[1] : NULL, 0, 0);
 }
 
-static int _count_devices(int argc __attribute((unused)), char **argv __attribute((unused)), void *data __attribute((unused)))
+static int _count_devices(int argc __attribute__((unused)), char **argv __attribute__((unused)), void *data __attribute__((unused)))
 {
 	_num_devices++;
 
 	return 1;
 }
 
-static int _remove_all(int argc __attribute((unused)), char **argv __attribute((unused)), void *data __attribute((unused)))
+static int _remove_all(int argc __attribute__((unused)), char **argv __attribute__((unused)), void *data __attribute__((unused)))
 {
 	int r;
 
@@ -1428,7 +1463,7 @@ static void _display_dev(struct dm_task *dmt, const char *name)
 		printf("%s\t(%u, %u)\n", name, info.major, info.minor);
 }
 
-static int _mknodes(int argc, char **argv, void *data __attribute((unused)))
+static int _mknodes(int argc, char **argv, void *data __attribute__((unused)))
 {
 	return dm_mknodes(argc > 1 ? argv[1] : NULL);
 }
@@ -1599,7 +1634,7 @@ static int _status(int argc, char **argv, void *data)
 }
 
 /* Show target names and their version numbers */
-static int _targets(int argc __attribute((unused)), char **argv __attribute((unused)), void *data __attribute((unused)))
+static int _targets(int argc __attribute__((unused)), char **argv __attribute__((unused)), void *data __attribute__((unused)))
 {
 	int r = 0;
 	struct dm_task *dmt;
@@ -1621,7 +1656,7 @@ static int _targets(int argc __attribute((unused)), char **argv __attribute((unu
 		printf("%-16s v%d.%d.%d\n", target->name, target->version[0],
 		       target->version[1], target->version[2]);
 
-		target = (void *) target + target->next;
+		target = (struct dm_versions *)((char *) target + target->next);
 	} while (last_target != target);
 
 	r = 1;
@@ -1739,7 +1774,7 @@ static int _deps(int argc, char **argv, void *data)
 	return r;
 }
 
-static int _display_name(int argc __attribute((unused)), char **argv __attribute((unused)), void *data)
+static int _display_name(int argc __attribute__((unused)), char **argv __attribute__((unused)), void *data)
 {
 	struct dm_names *names = (struct dm_names *) data;
 
@@ -1962,7 +1997,7 @@ static void _display_tree_attributes(struct dm_tree_node *node)
 }
 
 static void _display_tree_node(struct dm_tree_node *node, unsigned depth,
-			       unsigned first_child __attribute((unused)),
+			       unsigned first_child __attribute__((unused)),
 			       unsigned last_child, unsigned has_children)
 {
 	int offset;
@@ -2054,7 +2089,7 @@ static void _display_tree_walk_children(struct dm_tree_node *node,
 	}
 }
 
-static int _add_dep(int argc __attribute((unused)), char **argv __attribute((unused)), void *data)
+static int _add_dep(int argc __attribute__((unused)), char **argv __attribute__((unused)), void *data)
 {
 	struct dm_names *names = (struct dm_names *) data;
 
@@ -2081,9 +2116,9 @@ static int _build_whole_deptree(void)
 	return 1;
 }
 
-static int _display_tree(int argc __attribute((unused)),
-			 char **argv __attribute((unused)),
-			 void *data __attribute((unused)))
+static int _display_tree(int argc __attribute__((unused)),
+			 char **argv __attribute__((unused)),
+			 void *data __attribute__((unused)))
 {
 	if (!_build_whole_deptree())
 		return 0;
@@ -2100,9 +2135,9 @@ static int _display_tree(int argc __attribute((unused)),
 /* dm specific display functions */
 
 static int _int32_disp(struct dm_report *rh,
-		       struct dm_pool *mem __attribute((unused)),
+		       struct dm_pool *mem __attribute__((unused)),
 		       struct dm_report_field *field, const void *data,
-		       void *private __attribute((unused)))
+		       void *private __attribute__((unused)))
 {
 	const int32_t value = *(const int32_t *)data;
 
@@ -2110,9 +2145,9 @@ static int _int32_disp(struct dm_report *rh,
 }
 
 static int _uint32_disp(struct dm_report *rh,
-			struct dm_pool *mem __attribute((unused)),
+			struct dm_pool *mem __attribute__((unused)),
 			struct dm_report_field *field, const void *data,
-			void *private __attribute((unused)))
+			void *private __attribute__((unused)))
 {
 	const uint32_t value = *(const int32_t *)data;
 
@@ -2120,9 +2155,9 @@ static int _uint32_disp(struct dm_report *rh,
 }
 
 static int _dm_name_disp(struct dm_report *rh,
-			 struct dm_pool *mem __attribute((unused)),
+			 struct dm_pool *mem __attribute__((unused)),
 			 struct dm_report_field *field, const void *data,
-			 void *private __attribute((unused)))
+			 void *private __attribute__((unused)))
 {
 	const char *name = dm_task_get_name((const struct dm_task *) data);
 
@@ -2130,9 +2165,9 @@ static int _dm_name_disp(struct dm_report *rh,
 }
 
 static int _dm_uuid_disp(struct dm_report *rh,
-			 struct dm_pool *mem __attribute((unused)),
+			 struct dm_pool *mem __attribute__((unused)),
 			 struct dm_report_field *field,
-			 const void *data, void *private __attribute((unused)))
+			 const void *data, void *private __attribute__((unused)))
 {
 	const char *uuid = dm_task_get_uuid((const struct dm_task *) data);
 
@@ -2143,9 +2178,9 @@ static int _dm_uuid_disp(struct dm_report *rh,
 }
 
 static int _dm_read_ahead_disp(struct dm_report *rh,
-			       struct dm_pool *mem __attribute((unused)),
+			       struct dm_pool *mem __attribute__((unused)),
 			       struct dm_report_field *field, const void *data,
-			       void *private __attribute((unused)))
+			       void *private __attribute__((unused)))
 {
 	uint32_t value;
 
@@ -2156,9 +2191,9 @@ static int _dm_read_ahead_disp(struct dm_report *rh,
 }
 
 static int _dm_info_status_disp(struct dm_report *rh,
-				struct dm_pool *mem __attribute((unused)),
+				struct dm_pool *mem __attribute__((unused)),
 				struct dm_report_field *field, const void *data,
-				void *private __attribute((unused)))
+				void *private __attribute__((unused)))
 {
 	char buf[5];
 	const char *s = buf;
@@ -2174,10 +2209,10 @@ static int _dm_info_status_disp(struct dm_report *rh,
 }
 
 static int _dm_info_table_loaded_disp(struct dm_report *rh,
-				      struct dm_pool *mem __attribute((unused)),
+				      struct dm_pool *mem __attribute__((unused)),
 				      struct dm_report_field *field,
 				      const void *data,
-				      void *private __attribute((unused)))
+				      void *private __attribute__((unused)))
 {
 	const struct dm_info *info = data;
 
@@ -2198,10 +2233,10 @@ static int _dm_info_table_loaded_disp(struct dm_report *rh,
 }
 
 static int _dm_info_suspended_disp(struct dm_report *rh,
-				   struct dm_pool *mem __attribute((unused)),
+				   struct dm_pool *mem __attribute__((unused)),
 				   struct dm_report_field *field,
 				   const void *data,
-				   void *private __attribute((unused)))
+				   void *private __attribute__((unused)))
 {
 	const struct dm_info *info = data;
 
@@ -2214,10 +2249,10 @@ static int _dm_info_suspended_disp(struct dm_report *rh,
 }
 
 static int _dm_info_read_only_disp(struct dm_report *rh,
-				   struct dm_pool *mem __attribute((unused)),
+				   struct dm_pool *mem __attribute__((unused)),
 				   struct dm_report_field *field,
 				   const void *data,
-				   void *private __attribute((unused)))
+				   void *private __attribute__((unused)))
 {
 	const struct dm_info *info = data;
 
@@ -2390,7 +2425,7 @@ static int _dm_deps_disp(struct dm_report *rh, struct dm_pool *mem,
 			 struct dm_report_field *field, const void *data,
 			 void *private)
 {
-	struct dm_deps *deps = (struct dm_deps *) data;
+	const struct dm_deps *deps = data;
 	int i;
 	char buf[DM_MAX_TYPE_NAME], *repstr;
 
@@ -2431,35 +2466,35 @@ static int _dm_deps_disp(struct dm_report *rh, struct dm_pool *mem,
 }
 
 static int _dm_subsystem_disp(struct dm_report *rh,
-			       struct dm_pool *mem __attribute((unused)),
+			       struct dm_pool *mem __attribute__((unused)),
 			       struct dm_report_field *field, const void *data,
-			       void *private __attribute((unused)))
+			       void *private __attribute__((unused)))
 {
 	return dm_report_field_string(rh, field, (const char **) data);
 }
 
 static int _dm_vg_name_disp(struct dm_report *rh,
-			     struct dm_pool *mem __attribute((unused)),
+			     struct dm_pool *mem __attribute__((unused)),
 			     struct dm_report_field *field, const void *data,
-			     void *private __attribute((unused)))
+			     void *private __attribute__((unused)))
 {
 
 	return dm_report_field_string(rh, field, (const char **) data);
 }
 
 static int _dm_lv_name_disp(struct dm_report *rh,
-			     struct dm_pool *mem __attribute((unused)),
+			     struct dm_pool *mem __attribute__((unused)),
 			     struct dm_report_field *field, const void *data,
-			     void *private __attribute((unused)))
+			     void *private __attribute__((unused)))
 
 {
 	return dm_report_field_string(rh, field, (const char **) data);
 }
 
 static int _dm_lv_layer_name_disp(struct dm_report *rh,
-				   struct dm_pool *mem __attribute((unused)),
+				   struct dm_pool *mem __attribute__((unused)),
 				   struct dm_report_field *field, const void *data,
-				   void *private __attribute((unused)))
+				   void *private __attribute__((unused)))
 
 {
 	return dm_report_field_string(rh, field, (const char **) data);
@@ -2652,6 +2687,9 @@ static int _report_init(struct command *c)
 	r = 1;
 
 out:
+	if (!strcasecmp(options, "help") || !strcmp(options, "?"))
+		r = 1;
+
 	if (len)
 		dm_free(options);
 
@@ -2681,17 +2719,17 @@ static struct command _commands[] = {
 	{"help", "[-c|-C|--columns]", 0, 0, _help},
 	{"create", "<dev_name> [-j|--major <major> -m|--minor <minor>]\n"
 	  "\t                  [-U|--uid <uid>] [-G|--gid <gid>] [-M|--mode <octal_mode>]\n"
-	  "\t                  [-u|uuid <uuid>]\n"
+	  "\t                  [-u|uuid <uuid>] [{--addnodeonresume|--addnodeoncreate}]\n"
 	  "\t                  [--notable | --table <table> | <table_file>]",
 	 1, 2, _create},
 	{"remove", "[-f|--force] <device>", 0, 1, _remove},
 	{"remove_all", "[-f|--force]", 0, 0, _remove_all},
 	{"suspend", "[--noflush] <device>", 0, 1, _suspend},
-	{"resume", "<device>", 0, 1, _resume},
+	{"resume", "<device> [{--addnodeonresume|--addnodeoncreate}]", 0, 1, _resume},
 	{"load", "<device> [<table_file>]", 0, 2, _load},
 	{"clear", "<device>", 0, 1, _clear},
 	{"reload", "<device> [<table_file>]", 0, 2, _load},
-	{"rename", "<device> <new_name>", 1, 2, _rename},
+	{"rename", "<device> [--setuuid] <new_name_or_uuid>", 1, 2, _rename},
 	{"message", "<device> <sector> <message>", 2, -1, _message},
 	{"ls", "[--target <target_type>] [--exec <command>] [--tree [-o options]]", 0, 0, _ls},
 	{"info", "[<device>]", 0, 1, _info},
@@ -2743,9 +2781,9 @@ static void _losetup_usage(FILE *out)
 		     "[-o offset] [-f|loop_device] [file]\n\n");
 }
 
-static int _help(int argc __attribute((unused)),
-		 char **argv __attribute((unused)),
-		 void *data __attribute((unused)))
+static int _help(int argc __attribute__((unused)),
+		 char **argv __attribute__((unused)),
+		 void *data __attribute__((unused)))
 {
 	_usage(stderr);
 
@@ -2892,6 +2930,7 @@ static char *parse_loop_device_name(const char *dev, const char *dev_dir)
 	return buf;
 
 error:
+	dm_free(buf);
 	return NULL;
 }
 
@@ -2899,7 +2938,7 @@ error:
  *  create a table for a mapped device using the loop target.
  */
 static int _loop_table(char *table, size_t tlen, char *file,
-		       char *dev __attribute((unused)), off_t off)
+		       char *dev __attribute__((unused)), off_t off)
 {
 	struct stat fbuf;
 	off_t size, sectors;
@@ -2942,7 +2981,7 @@ static int _loop_table(char *table, size_t tlen, char *file,
 	close(fd);
 
 	if (dm_snprintf(table, tlen, "%llu %llu loop %s %llu\n", 0ULL,
-			(long long unsigned)sectors, file, off) < 0)
+			(long long unsigned)sectors, file, (long long unsigned)off) < 0)
 		return 0;
 
 	if (_switches[VERBOSE_ARG] > 1)
@@ -2955,8 +2994,6 @@ error:
 		close(fd);
 	return 0;
 }
-
-
 
 static int _process_losetup_switches(const char *base, int *argc, char ***argv,
 				     const char *dev_dir)
@@ -3100,6 +3137,7 @@ static int _process_switches(int *argc, char ***argv, const char *dev_dir)
 		{"readahead", 1, &ind, READAHEAD_ARG},
 		{"rows", 0, &ind, ROWS_ARG},
 		{"separator", 1, &ind, SEPARATOR_ARG},
+		{"setuuid", 0, &ind, SETUUID_ARG},
 		{"showkeys", 0, &ind, SHOWKEYS_ARG},
 		{"sort", 1, &ind, SORT_ARG},
 		{"table", 1, &ind, TABLE_ARG},
@@ -3112,6 +3150,8 @@ static int _process_switches(int *argc, char ***argv, const char *dev_dir)
 		{"verbose", 1, &ind, VERBOSE_ARG},
 		{"version", 0, &ind, VERSION_ARG},
 		{"yes", 0, &ind, YES_ARG},
+		{"addnodeonresume", 0, &ind, ADD_NODE_ON_RESUME_ARG},
+		{"addnodeoncreate", 0, &ind, ADD_NODE_ON_CREATE_ARG},
 		{0, 0, 0, 0}
 	};
 #else
@@ -3209,6 +3249,10 @@ static int _process_switches(int *argc, char ***argv, const char *dev_dir)
 		}
 		if (c == 'y' || ind == YES_ARG)
 			_switches[YES_ARG]++;
+		if (ind == ADD_NODE_ON_RESUME_ARG)
+			_switches[ADD_NODE_ON_RESUME_ARG]++;
+		if (ind == ADD_NODE_ON_CREATE_ARG)
+			_switches[ADD_NODE_ON_CREATE_ARG]++;
 		if (ind == UDEVCOOKIE_ARG) {
 			_switches[UDEVCOOKIE_ARG]++;
 			_udev_cookie = _get_cookie_value(optarg);
@@ -3272,6 +3316,8 @@ static int _process_switches(int *argc, char ***argv, const char *dev_dir)
 		}
 		if ((ind == ROWS_ARG))
 			_switches[ROWS_ARG]++;
+		if ((ind == SETUUID_ARG))
+			_switches[SETUUID_ARG]++;
 		if ((ind == SHOWKEYS_ARG))
 			_switches[SHOWKEYS_ARG]++;
 		if ((ind == TABLE_ARG)) {
@@ -3301,6 +3347,11 @@ static int _process_switches(int *argc, char ***argv, const char *dev_dir)
 
 	if (_switches[TABLE_ARG] && _switches[NOTABLE_ARG]) {
 		fprintf(stderr, "--table and --notable are incompatible.\n");
+		return 0;
+	}
+
+	if (_switches[ADD_NODE_ON_RESUME_ARG] && _switches[ADD_NODE_ON_CREATE_ARG]) {
+		fprintf(stderr, "--addnodeonresume and --addnodeoncreate are incompatible.\n");
 		return 0;
 	}
 
@@ -3362,8 +3413,15 @@ int main(int argc, char **argv)
 	if (!_switches[COLS_ARG] && !strcmp(c->name, "splitname"))
 		_switches[COLS_ARG]++;
 
-	if (_switches[COLS_ARG] && !_report_init(c))
-		goto out;
+	if (_switches[COLS_ARG]) {
+		if (!_report_init(c))
+			goto out;
+		if (!_report) {
+			if (!strcmp(c->name, "info"))
+				r = 0;  /* info -c -o help */
+			goto out;
+		}
+	}
 
 	#ifdef UDEV_SYNC_SUPPORT
 	if (!_set_up_udev_support(dev_dir))

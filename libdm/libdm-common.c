@@ -40,14 +40,34 @@
 #ifdef HAVE_SELINUX
 #  include <selinux/selinux.h>
 #endif
+#ifdef HAVE_SELINUX_LABEL_H
+#  include <selinux/label.h>
+#endif
 
 #define DEV_DIR "/dev/"
+
+#ifdef UDEV_SYNC_SUPPORT
+#ifdef _SEM_SEMUN_UNDEFINED
+union semun
+{
+	int val;			/* value for SETVAL */
+	struct semid_ds *buf;		/* buffer for IPC_STAT & IPC_SET */
+	unsigned short int *array;	/* array for GETALL & SETALL */
+	struct seminfo *__buf;		/* buffer for IPC_INFO */
+};
+#endif
+#endif
 
 static char _dm_dir[PATH_MAX] = DEV_DIR DM_DIR;
 
 static int _verbose = 0;
 
+#ifdef HAVE_SELINUX_LABEL_H
+static struct selabel_handle *_selabel_handle = NULL;
+#endif
+
 #ifdef UDEV_SYNC_SUPPORT
+static int _semaphore_supported = -1;
 static int _udev_running = -1;
 static int _sync_with_udev = 1;
 static int _udev_checking = 1;
@@ -59,8 +79,8 @@ static int _udev_checking = 1;
  */
 
 static void _default_log_line(int level,
-	    const char *file __attribute((unused)),
-	    int line __attribute((unused)), int dm_errno, 
+	    const char *file __attribute__((unused)),
+	    int line __attribute__((unused)), int dm_errno, 
 	    const char *f, va_list ap)
 {
 	int use_stderr = level & _LOG_STDERR;
@@ -82,8 +102,8 @@ static void _default_log_line(int level,
 }
 
 static void _default_log_with_errno(int level,
-	    const char *file __attribute((unused)),
-	    int line __attribute((unused)), int dm_errno, 
+	    const char *file __attribute__((unused)),
+	    int line __attribute__((unused)), int dm_errno, 
 	    const char *f, ...)
 {
 	va_list ap;
@@ -153,7 +173,7 @@ int dm_get_library_version(char *version, size_t size)
 
 struct dm_task *dm_task_create(int type)
 {
-	struct dm_task *dmt = dm_malloc(sizeof(*dmt));
+	struct dm_task *dmt = dm_zalloc(sizeof(*dmt));
 
 	if (!dmt) {
 		log_error("dm_task_create: malloc(%" PRIsize_t ") failed",
@@ -165,8 +185,6 @@ struct dm_task *dm_task_create(int type)
 		dm_free(dmt);
 		return NULL;
 	}
-
-	memset(dmt, 0, sizeof(*dmt));
 
 	dmt->type = type;
 	dmt->minor = -1;
@@ -181,6 +199,8 @@ struct dm_task *dm_task_create(int type)
 	dmt->event_nr = 0;
 	dmt->cookie_set = 0;
 	dmt->query_inactive_table = 0;
+	dmt->new_uuid = 0;
+	dmt->secure_data = 0;
 
 	return dmt;
 }
@@ -238,10 +258,8 @@ int dm_task_set_name(struct dm_task *dmt, const char *name)
 	char path[PATH_MAX];
 	struct stat st1, st2;
 
-	if (dmt->dev_name) {
-		dm_free(dmt->dev_name);
-		dmt->dev_name = NULL;
-	}
+	dm_free(dmt->dev_name);
+	dmt->dev_name = NULL;
 
 	/*
 	 * Path supplied for existing device?
@@ -280,8 +298,7 @@ int dm_task_set_name(struct dm_task *dmt, const char *name)
 
 	if (strlen(name) >= DM_NAME_LEN) {
 		log_error("Name \"%s\" too long", name);
-		if (new_name)
-			dm_free(new_name);
+		dm_free(new_name);
 		return 0;
 	}
 
@@ -297,10 +314,7 @@ int dm_task_set_name(struct dm_task *dmt, const char *name)
 
 int dm_task_set_uuid(struct dm_task *dmt, const char *uuid)
 {
-	if (dmt->uuid) {
-		dm_free(dmt->uuid);
-		dmt->uuid = NULL;
-	}
+	dm_free(dmt->uuid);
 
 	if (!(dmt->uuid = dm_strdup(uuid))) {
 		log_error("dm_task_set_uuid: strdup(%s) failed", uuid);
@@ -374,6 +388,59 @@ int dm_task_add_target(struct dm_task *dmt, uint64_t start, uint64_t size,
 	return 1;
 }
 
+#ifdef HAVE_SELINUX
+static int _selabel_lookup(const char *path, mode_t mode,
+			   security_context_t *scontext)
+{
+#ifdef HAVE_SELINUX_LABEL_H
+	if (!_selabel_handle &&
+	    !(_selabel_handle = selabel_open(SELABEL_CTX_FILE, NULL, 0))) {
+		log_error("selabel_open failed: %s", strerror(errno));
+		return 0;
+	}
+
+	if (selabel_lookup(_selabel_handle, scontext, path, mode)) {
+		log_error("selabel_lookup failed: %s", strerror(errno));
+		return 0;
+	}
+#else
+	if (matchpathcon(path, mode, scontext)) {
+		log_error("matchpathcon failed: %s", strerror(errno));
+		return 0;
+	}
+#endif
+	return 1;
+}
+#endif
+
+int dm_prepare_selinux_context(const char *path, mode_t mode)
+{
+#ifdef HAVE_SELINUX
+	security_context_t scontext = NULL;
+
+	if (is_selinux_enabled() <= 0)
+		return 1;
+
+	if (path) {
+		if (!_selabel_lookup(path, mode, &scontext))
+			return_0;
+
+		log_debug("Preparing SELinux context for %s to %s.", path, scontext);
+	}
+	else
+		log_debug("Resetting SELinux context to default value.");
+
+	if (setfscreatecon(scontext) < 0) {
+		log_sys_error("setfscreatecon", path);
+		freecon(scontext);
+		return 0;
+	}
+
+	freecon(scontext);
+#endif
+	return 1;
+}
+
 int dm_set_selinux_context(const char *path, mode_t mode)
 {
 #ifdef HAVE_SELINUX
@@ -382,11 +449,8 @@ int dm_set_selinux_context(const char *path, mode_t mode)
 	if (is_selinux_enabled() <= 0)
 		return 1;
 
-	if (matchpathcon(path, mode, &scontext) < 0) {
-		log_error("%s: matchpathcon %07o failed: %s", path, mode,
-			  strerror(errno));
-		return 0;
-	}
+	if (!_selabel_lookup(path, mode, &scontext))
+		return_0;
 
 	log_debug("Setting SELinux context for %s to %s.", path, scontext);
 
@@ -399,6 +463,15 @@ int dm_set_selinux_context(const char *path, mode_t mode)
 	freecon(scontext);
 #endif
 	return 1;
+}
+
+void selinux_release(void)
+{
+#ifdef HAVE_SELINUX_LABEL_H
+	if (_selabel_handle)
+		selabel_close(_selabel_handle);
+	_selabel_handle = NULL;
+#endif
 }
 
 static int _add_dev_node(const char *dev_name, uint32_t major, uint32_t minor,
@@ -432,13 +505,16 @@ static int _add_dev_node(const char *dev_name, uint32_t major, uint32_t minor,
 		log_warn("%s not set up by udev: Falling back to direct "
 			 "node creation.", path);
 
+	(void) dm_prepare_selinux_context(path, S_IFBLK);
 	old_mask = umask(0);
 	if (mknod(path, S_IFBLK | mode, dev) < 0) {
+		log_error("%s: mknod for %s failed: %s", path, dev_name, strerror(errno));
 		umask(old_mask);
-		log_error("Unable to make device node for '%s'", dev_name);
+		(void) dm_prepare_selinux_context(NULL, 0);
 		return 0;
 	}
 	umask(old_mask);
+	(void) dm_prepare_selinux_context(NULL, 0);
 
 	if (chown(path, uid, gid) < 0) {
 		log_sys_error("chown", path);
@@ -446,9 +522,6 @@ static int _add_dev_node(const char *dev_name, uint32_t major, uint32_t minor,
 	}
 
 	log_debug("Created %s", path);
-
-	if (!dm_set_selinux_context(path, S_IFBLK))
-		return 0;
 
 	return 1;
 }
@@ -652,7 +725,8 @@ typedef enum {
 	NODE_ADD,
 	NODE_DEL,
 	NODE_RENAME,
-	NODE_READ_AHEAD
+	NODE_READ_AHEAD,
+	NUM_NODES
 } node_op_t;
 
 static int _do_node_op(node_op_t type, const char *dev_name, uint32_t major,
@@ -671,12 +745,15 @@ static int _do_node_op(node_op_t type, const char *dev_name, uint32_t major,
 	case NODE_READ_AHEAD:
 		return _set_dev_node_read_ahead(dev_name, read_ahead,
 						read_ahead_flags);
+	default:
+		; /* NOTREACHED */
 	}
 
 	return 1;
 }
 
 static DM_LIST_INIT(_node_ops);
+static int _count_node_ops[NUM_NODES];
 
 struct node_op_parms {
 	struct dm_list list;
@@ -701,6 +778,31 @@ static void _store_str(char **pos, char **ptr, const char *str)
 	*pos += strlen(*ptr) + 1;
 }
 
+static void _del_node_op(struct node_op_parms *nop)
+{
+	_count_node_ops[nop->type]--;
+	dm_list_del(&nop->list);
+	dm_free(nop);
+
+}
+
+/* Check if there is other the type of node operation stacked */
+static int _other_node_ops(node_op_t type)
+{
+	int i;
+
+	for (i = 0; i < NUM_NODES; i++)
+		if (type != i && _count_node_ops[i])
+			return 1;
+	return 0;
+}
+
+/* Check if udev is supposed to create nodes */
+static int _check_udev(int check_udev)
+{
+    return check_udev && dm_udev_get_sync_support() && dm_udev_get_checking();
+}
+
 static int _stack_node_op(node_op_t type, const char *dev_name, uint32_t major,
 			  uint32_t minor, uid_t uid, gid_t gid, mode_t mode,
 			  const char *old_name, uint32_t read_ahead,
@@ -712,17 +814,47 @@ static int _stack_node_op(node_op_t type, const char *dev_name, uint32_t major,
 	char *pos;
 
 	/*
-	 * Ignore any outstanding operations on the node if deleting it
+	 * Note: check_udev must have valid content
 	 */
-	if (type == NODE_DEL) {
+	if ((type == NODE_DEL) && _other_node_ops(type))
+		/*
+		 * Ignore any outstanding operations on the node if deleting it.
+		 */
 		dm_list_iterate_safe(noph, nopht, &_node_ops) {
 			nop = dm_list_item(noph, struct node_op_parms);
 			if (!strcmp(dev_name, nop->dev_name)) {
-				dm_list_del(&nop->list);
-				dm_free(nop);
+				_del_node_op(nop);
+				if (!_other_node_ops(type))
+					break; /* no other non DEL ops */
 			}
 		}
-	}
+	else if ((type == NODE_ADD) && _count_node_ops[NODE_DEL] && _check_udev(check_udev))
+		/*
+		 * If udev is running ignore previous DEL operation on added node.
+		 * (No other operations for this device then DEL could be stacked here).
+		 */
+		dm_list_iterate_safe(noph, nopht, &_node_ops) {
+			nop = dm_list_item(noph, struct node_op_parms);
+			if ((nop->type == NODE_DEL) &&
+			    !strcmp(dev_name, nop->dev_name)) {
+				_del_node_op(nop);
+				break; /* no other DEL ops */
+			}
+		}
+	else if ((type == NODE_RENAME) && _check_udev(check_udev))
+		/*
+		 * If udev is running ignore any outstanding operations if renaming it.
+		 *
+		 * Currently  RENAME operation happens through 'suspend -> resume'.
+		 * On 'resume' device is added with read_ahead settings, so it is
+		 * safe to remove any stacked ADD, RENAME, READ_AHEAD operation
+		 * There cannot be any DEL operation on the renamed device.
+		 */
+		dm_list_iterate_safe(noph, nopht, &_node_ops) {
+			nop = dm_list_item(noph, struct node_op_parms);
+			if (!strcmp(old_name, nop->dev_name))
+				_del_node_op(nop);
+		}
 
 	if (!(nop = dm_malloc(sizeof(*nop) + len))) {
 		log_error("Insufficient memory to stack mknod operation");
@@ -743,6 +875,7 @@ static int _stack_node_op(node_op_t type, const char *dev_name, uint32_t major,
 	_store_str(&pos, &nop->dev_name, dev_name);
 	_store_str(&pos, &nop->old_name, old_name);
 
+	_count_node_ops[type]++;
 	dm_list_add(&_node_ops, &nop->list);
 
 	return 1;
@@ -759,8 +892,7 @@ static void _pop_node_ops(void)
 			    nop->uid, nop->gid, nop->mode, nop->old_name,
 			    nop->read_ahead, nop->read_ahead_flags,
 			    nop->check_udev);
-		dm_list_del(&nop->list);
-		dm_free(nop);
+		_del_node_op(nop);
 	}
 }
 
@@ -917,6 +1049,23 @@ int dm_udev_wait(uint32_t cookie)
 
 #else		/* UDEV_SYNC_SUPPORT */
 
+static int _check_semaphore_is_supported(void)
+{
+	int maxid;
+	union semun arg;
+	struct seminfo seminfo;
+
+	arg.__buf = &seminfo;
+	maxid = semctl(0, 0, SEM_INFO, arg);
+
+	if (maxid < 0) {
+		log_warn("Kernel not configured for semaphores (System V IPC). "
+			 "Not using udev synchronisation code.");
+		return 0;
+	}
+
+	return 1;
+}
 
 static int _check_udev_is_running(void)
 {
@@ -946,20 +1095,27 @@ bad:
 	return 0;
 }
 
-void dm_udev_set_sync_support(int sync_with_udev)
+static void _check_udev_sync_requirements_once(void)
 {
+	if (_semaphore_supported < 0)
+		_semaphore_supported = _check_semaphore_is_supported();
+
 	if (_udev_running < 0)
 		_udev_running = _check_udev_is_running();
+}
 
+void dm_udev_set_sync_support(int sync_with_udev)
+{
+	_check_udev_sync_requirements_once();
 	_sync_with_udev = sync_with_udev;
 }
 
 int dm_udev_get_sync_support(void)
 {
-	if (_udev_running < 0)
-		_udev_running = _check_udev_is_running();
+	_check_udev_sync_requirements_once();
 
-	return dm_cookie_supported() && _udev_running && _sync_with_udev;
+	return _semaphore_supported && dm_cookie_supported() &&
+		_udev_running && _sync_with_udev;
 }
 
 void dm_udev_set_checking(int checking)
@@ -1076,6 +1232,7 @@ static int _udev_notify_sem_create(uint32_t *cookie, int *semid)
 	int gen_semid;
 	uint16_t base_cookie;
 	uint32_t gen_cookie;
+	union semun sem_arg;
 
 	if ((fd = open("/dev/urandom", O_RDONLY)) < 0) {
 		log_error("Failed to open /dev/urandom "
@@ -1123,7 +1280,9 @@ static int _udev_notify_sem_create(uint32_t *cookie, int *semid)
 	log_debug("Udev cookie 0x%" PRIx32 " (semid %d) created",
 		  gen_cookie, gen_semid);
 
-	if (semctl(gen_semid, 0, SETVAL, 1) < 0) {
+	sem_arg.val = 1;
+
+	if (semctl(gen_semid, 0, SETVAL, sem_arg) < 0) {
 		log_error("semid %d: semctl failed: %s", gen_semid, strerror(errno));
 		/* We have to destroy just created semaphore
 		 * so it won't stay in the system. */

@@ -33,6 +33,7 @@
 struct cmd_context;
 struct format_type;
 struct volume_group;
+struct config_tree;
 
 /* One per VG */
 struct lvmcache_vginfo {
@@ -46,6 +47,8 @@ struct lvmcache_vginfo {
 	struct lvmcache_vginfo *next; /* Another VG with same name? */
 	char *creation_host;
 	char *vgmetadata;	/* Copy of VG metadata as format_text string */
+	struct config_tree *cft; /* Config tree created from vgmetadata */
+				/* Lifetime is directly tied to vgmetadata */
 	unsigned precommitted;	/* Is vgmetadata live or precommitted? */
 };
 
@@ -88,13 +91,13 @@ void lvmcache_unlock_vgname(const char *vgname);
 int lvmcache_verify_lock_order(const char *vgname);
 
 /* Queries */
-const struct format_type *fmt_from_vgname(const char *vgname, const char *vgid);
+const struct format_type *fmt_from_vgname(const char *vgname, const char *vgid, unsigned revalidate_labels);
 struct lvmcache_vginfo *vginfo_from_vgname(const char *vgname,
 					   const char *vgid);
 struct lvmcache_vginfo *vginfo_from_vgid(const char *vgid);
 struct lvmcache_info *info_from_pvid(const char *pvid, int valid_only);
 const char *vgname_from_vgid(struct dm_pool *mem, const char *vgid);
-struct device *device_from_pvid(struct cmd_context *cmd, struct id *pvid,
+struct device *device_from_pvid(struct cmd_context *cmd, const struct id *pvid,
 				unsigned *scan_done_once);
 const char *pvid_from_devname(struct cmd_context *cmd,
 			      const char *dev_name);

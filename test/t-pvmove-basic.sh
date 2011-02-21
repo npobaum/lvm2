@@ -12,7 +12,7 @@
 
 test_description="ensure that pvmove works with basic options"
 
-. ./test-utils.sh
+. lib/test
 
 # ---------------------------------------------------------------------
 # Utilities
@@ -33,8 +33,7 @@ lv_is_on_() {
 }
 
 save_dev_sum_() {
-  mkfs.ext3 $1 > /dev/null &&
-  md5sum $1 > md5.$(basename $1)
+  mkfs.ext3 $1 > /dev/null && md5sum $1 > md5.$(basename $1)
 }
 
 check_dev_sum_() {
@@ -44,30 +43,34 @@ check_dev_sum_() {
 # ---------------------------------------------------------------------
 # Initialize PVs and VGs
 
-aux prepare_vg 5 80
+aux prepare_vg 5 40
 
 # ---------------------------------------------------------------------
 # Common environment setup/cleanup for each sub testcases
+FIRST=""
 
 prepare_lvs_() {
   lvcreate -l2 -n $lv1 $vg $dev1 
-    lv_is_on_ $vg/$lv1 $dev1 
+    test -z "$FIRST" && lv_is_on_ $vg/$lv1 $dev1
   lvcreate -l9 -i3 -n $lv2 $vg $dev2 $dev3 $dev4 
-    lv_is_on_ $vg/$lv2 $dev2 $dev3 $dev4 
+    test -z "$FIRST" && lv_is_on_ $vg/$lv2 $dev2 $dev3 $dev4
   lvextend -l+2 $vg/$lv1 $dev2 
-    lv_is_on_ $vg/$lv1 $dev1 $dev2 
+    test -z "$FIRST" && lv_is_on_ $vg/$lv1 $dev1 $dev2
   lvextend -l+2 $vg/$lv1 $dev3 
-    lv_is_on_ $vg/$lv1 $dev1 $dev2 $dev3 
+    test -z "$FIRST" && lv_is_on_ $vg/$lv1 $dev1 $dev2 $dev3
   lvextend -l+2 $vg/$lv1 $dev1 
-    lv_is_on_ $vg/$lv1 $dev1 $dev2 $dev3 $dev1 
+    test -z "$FIRST" && lv_is_on_ $vg/$lv1 $dev1 $dev2 $dev3 $dev1
   lvcreate -l1 -n $lv3 $vg $dev2 
-    lv_is_on_ $vg/$lv3 $dev2 
+    test -z "$FIRST" && lv_is_on_ $vg/$lv3 $dev2
   save_dev_sum_ $(lvdev_ $vg $lv1) 
   save_dev_sum_ $(lvdev_ $vg $lv2) 
   save_dev_sum_ $(lvdev_ $vg $lv3) 
-  lvs -a -o devices --noheadings $vg/$lv1 > ${lv1}_devs 
-  lvs -a -o devices --noheadings $vg/$lv2 > ${lv2}_devs 
-  lvs -a -o devices --noheadings $vg/$lv3 > ${lv3}_devs
+  if test -z "$FIRST" ; then
+    lvs -a -o devices --noheadings $vg/$lv1 > ${lv1}_devs
+    lvs -a -o devices --noheadings $vg/$lv2 > ${lv2}_devs
+    lvs -a -o devices --noheadings $vg/$lv3 > ${lv3}_devs
+  fi
+  FIRST=done
 }
 
 lv_not_changed_() {
@@ -83,8 +86,8 @@ check_and_cleanup_lvs_() {
   lvs -a -o name $vg > out && ! grep ^pvmove out
   lvremove -ff $vg
 	if ! dmsetup table|not grep $vg; then
-		echo "ERROR: lvremove did leave some some mappings in DM behind!" &&
-		return 1
+		echo "ERROR: lvremove did leave some some mappings in DM behind!" && \
+			return 1
 	fi
 	:
 }
@@ -362,9 +365,9 @@ check_and_cleanup_lvs_
 
 #COMM "pvmove out of --metadatacopies 0 PV (bz252150)"
 vgremove -ff $vg
-pvcreate $devs
+pvcreate $(cat DEVICES)
 pvcreate --metadatacopies 0 $dev1 $dev2
-vgcreate -c n $vg $devs
+vgcreate -c n $vg $(cat DEVICES)
 lvcreate -l4 -n $lv1 $vg $dev1
 pvmove $dev1
 

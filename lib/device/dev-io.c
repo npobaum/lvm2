@@ -164,10 +164,11 @@ static void _widen_region(unsigned int block_size, struct device_area *region,
 static int _aligned_io(struct device_area *where, void *buffer,
 		       int should_write)
 {
-	void *bounce;
+	void *bounce, *bounce_buf;
 	unsigned int block_size = 0;
 	uintptr_t mask;
 	struct device_area widened;
+	int r = 0;
 
 	if (!(where->dev->flags & DEV_REGULAR) &&
 	    !_get_block_size(where->dev, &block_size))
@@ -185,8 +186,8 @@ static int _aligned_io(struct device_area *where, void *buffer,
 		return _io(where, buffer, should_write);
 
 	/* Allocate a bounce buffer with an extra block */
-	if (!(bounce = alloca((size_t) widened.size + block_size))) {
-		log_error("Bounce buffer alloca failed");
+	if (!(bounce_buf = bounce = dm_malloc((size_t) widened.size + block_size))) {
+		log_error("Bounce buffer malloc failed");
 		return 0;
 	}
 
@@ -199,7 +200,7 @@ static int _aligned_io(struct device_area *where, void *buffer,
 	/* channel the io through the bounce buffer */
 	if (!_io(&widened, bounce, 0)) {
 		if (!should_write)
-			return_0;
+			goto_out;
 		/* FIXME pre-extend the file */
 		memset(bounce, '\n', widened.size);
 	}
@@ -209,13 +210,20 @@ static int _aligned_io(struct device_area *where, void *buffer,
 		       (size_t) where->size);
 
 		/* ... then we write */
-		return _io(&widened, bounce, 1);
+		if (!(r = _io(&widened, bounce, 1)))
+			stack;
+			
+		goto out;
 	}
 
 	memcpy(buffer, bounce + (where->start - widened.start),
 	       (size_t) where->size);
 
-	return 1;
+	r = 1;
+
+out:
+	dm_free(bounce_buf);
+	return r;
 }
 
 static int _dev_get_size_file(const struct device *dev, uint64_t *size)
@@ -595,18 +603,40 @@ void dev_close_all(void)
 	}
 }
 
+static inline int _dev_is_valid(struct device *dev)
+{
+	return (dev->max_error_count == NO_DEV_ERROR_COUNT_LIMIT ||
+		dev->error_count < dev->max_error_count);
+}
+
+static void _dev_inc_error_count(struct device *dev)
+{
+	if (++dev->error_count == dev->max_error_count)
+		log_warn("WARNING: Error counts reached a limit of %d. "
+			 "Device %s was disabled",
+			 dev->max_error_count, dev_name(dev));
+}
+
 int dev_read(struct device *dev, uint64_t offset, size_t len, void *buffer)
 {
 	struct device_area where;
+	int ret;
 
 	if (!dev->open_count)
 		return_0;
+
+	if (!_dev_is_valid(dev))
+		return 0;
 
 	where.dev = dev;
 	where.start = offset;
 	where.size = len;
 
-	return _aligned_io(&where, buffer, 0);
+	ret = _aligned_io(&where, buffer, 0);
+	if (!ret)
+		_dev_inc_error_count(dev);
+
+	return ret;
 }
 
 /*
@@ -662,9 +692,13 @@ int dev_append(struct device *dev, size_t len, void *buffer)
 int dev_write(struct device *dev, uint64_t offset, size_t len, void *buffer)
 {
 	struct device_area where;
+	int ret;
 
 	if (!dev->open_count)
 		return_0;
+
+	if (!_dev_is_valid(dev))
+		return 0;
 
 	where.dev = dev;
 	where.start = offset;
@@ -672,13 +706,17 @@ int dev_write(struct device *dev, uint64_t offset, size_t len, void *buffer)
 
 	dev->flags |= DEV_ACCESSED_W;
 
-	return _aligned_io(&where, buffer, 1);
+	ret = _aligned_io(&where, buffer, 1);
+	if (!ret)
+		_dev_inc_error_count(dev);
+
+	return ret;
 }
 
 int dev_set(struct device *dev, uint64_t offset, size_t len, int value)
 {
 	size_t s;
-	char buffer[4096] __attribute((aligned(8)));
+	char buffer[4096] __attribute__((aligned(8)));
 
 	if (!dev_open(dev))
 		return_0;

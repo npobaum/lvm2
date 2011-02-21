@@ -31,7 +31,7 @@ struct lvresize_params {
 	uint32_t extents;
 	uint64_t size;
 	sign_t sign;
-	percent_t percent;
+	percent_type_t percent;
 
 	enum {
 		LV_ANY = 0,
@@ -90,7 +90,7 @@ static int _request_confirmation(struct cmd_context *cmd,
 
 	memset(&info, 0, sizeof(info));
 
-	if (!lv_info(cmd, lv, &info, 1, 0) && driver_version(NULL, 0)) {
+	if (!lv_info(cmd, lv, 0, &info, 1, 0) && driver_version(NULL, 0)) {
 		log_error("lv_info failed: aborting");
 		return 0;
 	}
@@ -129,6 +129,7 @@ static int _request_confirmation(struct cmd_context *cmd,
 enum fsadm_cmd_e { FSADM_CMD_CHECK, FSADM_CMD_RESIZE };
 #define FSADM_CMD "fsadm"
 #define FSADM_CMD_MAX_ARGS 6
+#define FSADM_CHECK_FAILS_FOR_MOUNTED 3 /* shell exist status code */
 
 /*
  * FSADM_CMD --dry-run --verbose --force check lv_path
@@ -137,7 +138,8 @@ enum fsadm_cmd_e { FSADM_CMD_CHECK, FSADM_CMD_RESIZE };
 static int _fsadm_cmd(struct cmd_context *cmd,
 		      const struct volume_group *vg,
 		      const struct lvresize_params *lp,
-		      enum fsadm_cmd_e fcmd)
+		      enum fsadm_cmd_e fcmd,
+		      int *status)
 {
 	char lv_path[PATH_MAX];
 	char size_buf[SIZE_BUF];
@@ -177,7 +179,7 @@ static int _fsadm_cmd(struct cmd_context *cmd,
 
 	argv[i] = NULL;
 
-	return exec_cmd(cmd, argv);
+	return exec_cmd(cmd, argv, status, 1);
 }
 
 static int _lvresize_params(struct cmd_context *cmd, int argc, char **argv,
@@ -186,6 +188,7 @@ static int _lvresize_params(struct cmd_context *cmd, int argc, char **argv,
 	const char *cmd_name;
 	char *st;
 	unsigned dev_dir_found = 0;
+	int use_policy = arg_count(cmd, use_policies_ARG);
 
 	lp->sign = SIGN_NONE;
 	lp->resize = LV_ANY;
@@ -196,34 +199,41 @@ static int _lvresize_params(struct cmd_context *cmd, int argc, char **argv,
 	if (!strcmp(cmd_name, "lvextend"))
 		lp->resize = LV_EXTEND;
 
-	/*
-	 * Allow omission of extents and size if the user has given us
-	 * one or more PVs.  Most likely, the intent was "resize this
-	 * LV the best you can with these PVs"
-	 */
-	if ((arg_count(cmd, extents_ARG) + arg_count(cmd, size_ARG) == 0) &&
-	    (argc >= 2)) {
-		lp->extents = 100;
-		lp->percent = PERCENT_PVS;
+	if (use_policy) {
+		/* do nothing; _lvresize will handle --use-policies itself */
+		lp->extents = 0;
 		lp->sign = SIGN_PLUS;
-	} else if ((arg_count(cmd, extents_ARG) +
-		    arg_count(cmd, size_ARG) != 1)) {
-		log_error("Please specify either size or extents but not "
-			  "both.");
-		return 0;
-	}
+		lp->percent = PERCENT_LV;
+	} else {
+		/*
+		 * Allow omission of extents and size if the user has given us
+		 * one or more PVs.  Most likely, the intent was "resize this
+		 * LV the best you can with these PVs"
+		 */
+		if ((arg_count(cmd, extents_ARG) + arg_count(cmd, size_ARG) == 0) &&
+		    (argc >= 2)) {
+			lp->extents = 100;
+			lp->percent = PERCENT_PVS;
+			lp->sign = SIGN_PLUS;
+		} else if ((arg_count(cmd, extents_ARG) +
+			    arg_count(cmd, size_ARG) != 1)) {
+			log_error("Please specify either size or extents but not "
+				  "both.");
+			return 0;
+		}
 
-	if (arg_count(cmd, extents_ARG)) {
-		lp->extents = arg_uint_value(cmd, extents_ARG, 0);
-		lp->sign = arg_sign_value(cmd, extents_ARG, SIGN_NONE);
-		lp->percent = arg_percent_value(cmd, extents_ARG, PERCENT_NONE);
-	}
+		if (arg_count(cmd, extents_ARG)) {
+			lp->extents = arg_uint_value(cmd, extents_ARG, 0);
+			lp->sign = arg_sign_value(cmd, extents_ARG, SIGN_NONE);
+			lp->percent = arg_percent_value(cmd, extents_ARG, PERCENT_NONE);
+		}
 
-	/* Size returned in kilobyte units; held in sectors */
-	if (arg_count(cmd, size_ARG)) {
-		lp->size = arg_uint64_value(cmd, size_ARG, UINT64_C(0));
-		lp->sign = arg_sign_value(cmd, size_ARG, SIGN_NONE);
-		lp->percent = PERCENT_NONE;
+		/* Size returned in kilobyte units; held in sectors */
+		if (arg_count(cmd, size_ARG)) {
+			lp->size = arg_uint64_value(cmd, size_ARG, 0);
+			lp->sign = arg_sign_value(cmd, size_ARG, SIGN_NONE);
+			lp->percent = PERCENT_NONE;
+		}
 	}
 
 	if (lp->resize == LV_EXTEND && lp->sign == SIGN_MINUS) {
@@ -269,6 +279,32 @@ static int _lvresize_params(struct cmd_context *cmd, int argc, char **argv,
 	return 1;
 }
 
+static int _adjust_policy_params(struct cmd_context *cmd,
+				 struct logical_volume *lv, struct lvresize_params *lp)
+{
+	percent_t percent;
+	int policy_threshold, policy_amount;
+
+	policy_threshold =
+		find_config_tree_int(cmd, "activation/snapshot_autoextend_threshold",
+				     DEFAULT_SNAPSHOT_AUTOEXTEND_THRESHOLD) * PERCENT_1;
+	policy_amount =
+		find_config_tree_int(cmd, "activation/snapshot_autoextend_percent",
+				     DEFAULT_SNAPSHOT_AUTOEXTEND_PERCENT);
+
+	if (policy_threshold >= PERCENT_100)
+		return 1; /* nothing to do */
+
+	if (!lv_snapshot_percent(lv, &percent))
+		return_0;
+
+	if (!(PERCENT_0 < percent && percent < PERCENT_100) || percent <= policy_threshold)
+		return 1; /* nothing to do */
+
+	lp->extents = policy_amount;
+	return 1;
+}
+
 static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 		     struct lvresize_params *lp)
 {
@@ -286,7 +322,9 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 	struct lv_segment *seg, *uninitialized_var(mirr_seg);
 	uint32_t seg_extents;
 	uint32_t sz, str;
+	int status;
 	struct dm_list *pvh = NULL;
+	int use_policy = arg_count(cmd, use_policies_ARG);
 
 	/* does LV exist? */
 	if (!(lvl = find_lv_in_vg(vg, lp->lv_name))) {
@@ -318,6 +356,14 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 		return EINVALID_CMD_LINE;
 
 	lv = lvl->lv;
+
+	if (use_policy) {
+		if (!lv_is_cow(lv)) {
+			log_error("Can't use policy-based resize for non-snapshot volumes.");
+			return ECMD_FAILED;
+		}
+		_adjust_policy_params(cmd, lv, lp);
+	}
 
 	if (!lv_is_visible(lv)) {
 		log_error("Can't resize internal logical volume %s", lv->name);
@@ -404,6 +450,8 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 	}
 
 	if (lp->extents == lv->le_count) {
+		if (use_policy)
+			return ECMD_PROCESSED; /* Nothing to do. */
 		if (!lp->resizefs) {
 			log_error("New size (%d extents) matches existing size "
 				  "(%d extents)", lp->extents, lv->le_count);
@@ -572,7 +620,7 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 
 		memset(&info, 0, sizeof(info));
 
-		if (lv_info(cmd, lv, &info, 0, 0) && info.exists) {
+		if (lv_info(cmd, lv, 0, &info, 0, 0) && info.exists) {
 			log_error("Snapshot origin volumes can be resized "
 				  "only while inactive: try lvchange -an");
 			return ECMD_FAILED;
@@ -591,13 +639,16 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 
 	if (lp->resizefs) {
 		if (!lp->nofsck &&
-		    !_fsadm_cmd(cmd, vg, lp, FSADM_CMD_CHECK)) {
-			stack;
-			return ECMD_FAILED;
+		    !_fsadm_cmd(cmd, vg, lp, FSADM_CMD_CHECK, &status)) {
+			if (status != FSADM_CHECK_FAILS_FOR_MOUNTED) {
+				stack;
+				return ECMD_FAILED;
+			}
+                        /* some filesystems supports online resize */
 		}
 
 		if ((lp->resize == LV_REDUCE) &&
-		    !_fsadm_cmd(cmd, vg, lp, FSADM_CMD_RESIZE)) {
+		    !_fsadm_cmd(cmd, vg, lp, FSADM_CMD_RESIZE, NULL)) {
 			stack;
 			return ECMD_FAILED;
 		}
@@ -665,7 +716,7 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 	log_print("Logical volume %s successfully resized", lp->lv_name);
 
 	if (lp->resizefs && (lp->resize == LV_EXTEND) &&
-	    !_fsadm_cmd(cmd, vg, lp, FSADM_CMD_RESIZE)) {
+	    !_fsadm_cmd(cmd, vg, lp, FSADM_CMD_RESIZE, NULL)) {
 		stack;
 		return ECMD_FAILED;
 	}
@@ -687,7 +738,7 @@ int lvresize(struct cmd_context *cmd, int argc, char **argv)
 	log_verbose("Finding volume group %s", lp.vg_name);
 	vg = vg_read_for_update(cmd, lp.vg_name, NULL, 0);
 	if (vg_read_error(vg)) {
-		vg_release(vg);
+		free_vg(vg);
 		stack;
 		return ECMD_FAILED;
 	}
@@ -695,7 +746,7 @@ int lvresize(struct cmd_context *cmd, int argc, char **argv)
 	if (!(r = _lvresize(cmd, vg, &lp)))
 		stack;
 
-	unlock_and_release_vg(cmd, vg, lp.vg_name);
+	unlock_and_free_vg(cmd, vg, lp.vg_name);
 
 	return r;
 }

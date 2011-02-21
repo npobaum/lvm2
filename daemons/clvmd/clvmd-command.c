@@ -50,35 +50,19 @@
 
 */
 
-#define _GNU_SOURCE
-#define _FILE_OFFSET_BITS 64
+#include "clvmd-common.h"
 
-#include <configure.h>
 #include <pthread.h>
-#include <sys/types.h>
-#include <sys/utsname.h>
-#include <sys/ioctl.h>
-#include <sys/socket.h>
-#include <sys/stat.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <stdint.h>
-#include <fcntl.h>
-#include <string.h>
-#include <stddef.h>
-#include <unistd.h>
-#include <errno.h>
-#include <libdevmapper.h>
-#include <libdlm.h>
 
-#include "locking.h"
-#include "lvm-logging.h"
-#include "lvm-functions.h"
 #include "clvmd-comms.h"
 #include "clvm.h"
 #include "clvmd.h"
+#include "lvm-functions.h"
 
-extern debug_t debug;
+#include "locking.h"
+
+#include <sys/utsname.h>
+
 extern struct cluster_ops *clops;
 static int restart_clvmd(void);
 
@@ -112,10 +96,10 @@ int do_command(struct local_client *client, struct clvm_header *msg, int msglen,
 		}
 		if (*buf) {
 			uname(&nodeinfo);
-			*retlen = 1 + snprintf(*buf, buflen,
-					       "TEST from %s: %s v%s",
-					       nodeinfo.nodename, args,
-					       nodeinfo.release);
+			*retlen = 1 + dm_snprintf(*buf, buflen,
+						  "TEST from %s: %s v%s",
+						  nodeinfo.nodename, args,
+						  nodeinfo.release);
 		}
 		break;
 
@@ -136,9 +120,8 @@ int do_command(struct local_client *client, struct clvm_header *msg, int msglen,
 		status = do_lock_lv(lock_cmd, lock_flags, lockname);
 		/* Replace EIO with something less scary */
 		if (status == EIO) {
-			*retlen =
-			    1 + snprintf(*buf, buflen, "%s",
-					 get_last_lvm_error());
+			*retlen = 1 + dm_snprintf(*buf, buflen, "%s",
+						  get_last_lvm_error());
 			return EIO;
 		}
 		break;
@@ -148,19 +131,23 @@ int do_command(struct local_client *client, struct clvm_header *msg, int msglen,
 		if (buflen < 3)
 			return EIO;
 		if ((locktype = do_lock_query(lockname)))
-			*retlen = 1 + snprintf(*buf, buflen, "%s", locktype);
+			*retlen = 1 + dm_snprintf(*buf, buflen, "%s", locktype);
 		break;
 
 	case CLVMD_CMD_REFRESH:
 		do_refresh_cache();
 		break;
 
+	case CLVMD_CMD_SYNC_NAMES:
+		lvm_do_fs_unlock();
+		break;
+
 	case CLVMD_CMD_SET_DEBUG:
-		debug = args[0];
+		clvmd_set_debug(args[0]);
 		break;
 
 	case CLVMD_CMD_RESTART:
-		restart_clvmd();
+		status = restart_clvmd();
 		break;
 
 	case CLVMD_CMD_GET_CLUSTERNAME:
@@ -184,7 +171,8 @@ int do_command(struct local_client *client, struct clvm_header *msg, int msglen,
 
 	/* Check the status of the command and return the error text */
 	if (status) {
-		*retlen = 1 + snprintf(*buf, buflen, "%s", strerror(status));
+		*retlen = 1 + ((*buf) ? dm_snprintf(*buf, buflen, "%s",
+						    strerror(status)) : -1);
 	}
 
 	return status;
@@ -239,7 +227,7 @@ static int lock_vg(struct local_client *client)
 	/* Read locks need to be PR; other modes get passed through */
 	if (lock_mode == LCK_READ)
 	    lock_mode = LCK_PREAD;
-	status = sync_lock(lockname, lock_mode, (lock_cmd & LCK_NONBLOCK) ? LKF_NOQUEUE : 0, &lkid);
+	status = sync_lock(lockname, lock_mode, (lock_cmd & LCK_NONBLOCK) ? LCKF_NOQUEUE : 0, &lkid);
 	if (status)
 	    status = errno;
 	else
@@ -266,7 +254,7 @@ int do_pre_command(struct local_client *client)
 
 	switch (header->cmd) {
 	case CLVMD_CMD_TEST:
-		status = sync_lock("CLVMD_TEST", LKM_EXMODE, 0, &lockid);
+		status = sync_lock("CLVMD_TEST", LCK_EXCL, 0, &lockid);
 		client->bits.localsock.private = (void *)(long)lockid;
 		break;
 
@@ -289,6 +277,7 @@ int do_pre_command(struct local_client *client)
 	case CLVMD_CMD_GET_CLUSTERNAME:
 	case CLVMD_CMD_SET_DEBUG:
 	case CLVMD_CMD_VG_BACKUP:
+	case CLVMD_CMD_SYNC_NAMES:
 	case CLVMD_CMD_LOCK_QUERY:
 	case CLVMD_CMD_RESTART:
 		break;
@@ -319,17 +308,15 @@ int do_post_command(struct local_client *client)
 		client->bits.localsock.private = 0;
 		break;
 
-	case CLVMD_CMD_LOCK_VG:
-	case CLVMD_CMD_VG_BACKUP:
-	case CLVMD_CMD_LOCK_QUERY:
-		/* Nothing to do here */
-		break;
-
 	case CLVMD_CMD_LOCK_LV:
 		lock_cmd = args[0];
 		lock_flags = args[1];
 		lockname = &args[2];
 		status = post_lock_lv(lock_cmd, lock_flags, lockname);
+		break;
+
+	default:
+		/* Nothing to do here */
 		break;
 	}
 	return status;
@@ -361,33 +348,57 @@ void cmd_client_cleanup(struct local_client *client)
 
 static int restart_clvmd(void)
 {
-	char *argv[1024];
-	int argc = 1;
+	char **argv = NULL;
+	char *debug_arg = NULL, *lv_name;
+	int i, argc = 0, max_locks = 0;
 	struct dm_hash_node *hn = NULL;
-	char *lv_name;
 
 	DEBUGLOG("clvmd restart requested\n");
+
+	/* Count exclusively-open LVs */
+	hn = NULL;
+	do {
+		hn = get_next_excl_lock(hn, &lv_name);
+		if (lv_name)
+			max_locks++;
+	} while (hn && *lv_name);
+
+	/* clvmd + locks (-E uuid) + debug (-d X) + NULL */
+	argv = malloc((max_locks * 2 + 4) * sizeof(*argv));
+	if (!argv)
+		goto_out;
 
 	/*
 	 * Build the command-line
 	 */
-	/* FIXME missing strdup error checks */
-	argv[0] = strdup("clvmd");
+	argv[argc++] = strdup("clvmd");
+	if (!argv[0])
+		goto_out;
 
 	/* Propogate debug options */
-	if (debug) {
-		char debug_level[16];
-
-		sprintf(debug_level, "-d%d", debug);
-		argv[argc++] = strdup(debug_level);
+	if (clvmd_get_debug()) {
+		if (!(debug_arg = malloc(16)) ||
+		    dm_snprintf(debug_arg, 16, "-d%d", (int)clvmd_get_debug()) < 0)
+			goto_out;
+		argv[argc++] = debug_arg;
+		debug_arg = NULL;
 	}
+
+	/*
+	 * FIXME: specify used cluster backend
+	 * argv[argc++] = strdup("-Isinglenode");
+	 */
 
 	/* Now add the exclusively-open LVs */
 	do {
 		hn = get_next_excl_lock(hn, &lv_name);
 		if (lv_name) {
-			argv[argc++] = strdup("-E");
-			argv[argc++] = strdup(lv_name);
+			argv[argc] = strdup("-E");
+			if (!argv[argc++])
+				goto_out;
+			argv[argc] = strdup(lv_name);
+			if (!argv[argc++])
+				goto_out;
 
 			DEBUGLOG("excl lock: %s\n", lv_name);
 			hn = get_next_excl_lock(hn, &lv_name);
@@ -395,13 +406,18 @@ static int restart_clvmd(void)
 	} while (hn && *lv_name);
 	argv[argc++] = NULL;
 
-	/* Tidy up */
-	destroy_lvm();
-
 	/* Exec new clvmd */
+	DEBUGLOG("--- Restarting %s ---\n", CLVMD_PATH);
 	/* NOTE: This will fail when downgrading! */
-	execve("clvmd", argv, NULL);
-
+	execve(CLVMD_PATH, argv, NULL);
+out:
 	/* We failed */
-	return 0;
+	DEBUGLOG("Restart of clvmd failed.\n");
+
+	for (i = 0; i < argc && argv[i]; i++)
+		free(argv[i]);
+	free(argv);
+	free(debug_arg);
+
+	return EIO;
 }

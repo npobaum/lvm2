@@ -8,7 +8,7 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
-. ./test-utils.sh
+. lib/test
 
 lvm version
 
@@ -20,9 +20,9 @@ lvm pvmove --version|sed -n "1s/.*: *\([0-9][^ ]*\) .*/\1/p" > actual
 # ensure they are the same
 diff -u actual expected
 
-mknod $DM_DEV_DIR/null c 1 3 ||
+mknod $DM_DEV_DIR/null c 1 3 || \
   error "Can't create nodes on filesystem"
-echo >$DM_DEV_DIR/null || 
+echo >$DM_DEV_DIR/null || \
   error "Filesystem for tests does not allow using device nodes (check nodev)"
 
 # ensure we can create devices (uses dmsetup, etc)

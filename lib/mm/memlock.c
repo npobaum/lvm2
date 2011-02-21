@@ -76,7 +76,9 @@ static const char * const _blacklist_maps[] = {
 typedef enum { LVM_MLOCK, LVM_MUNLOCK } lvmlock_t;
 
 static unsigned _use_mlockall;
-static FILE *_mapsh;
+static int _maps_fd;
+static size_t _maps_len = 8192; /* Initial buffer size for reading /proc/self/maps */
+static char *_maps_buffer;
 static char _procselfmaps[PATH_MAX] = "";
 #define SELF_MAPS "/self/maps"
 
@@ -85,8 +87,8 @@ static size_t _mstats; /* statistic for maps locking */
 static void _touch_memory(void *mem, size_t size)
 {
 	size_t pagesize = lvm_getpagesize();
-	void *pos = mem;
-	void *end = mem + size - sizeof(long);
+	char *pos = mem;
+	char *end = pos + size - sizeof(long);
 
 	while (pos < end) {
 		*(long *) pos = 1;
@@ -119,11 +121,10 @@ static void _release_memory(void)
  * mlock/munlock memory areas from /proc/self/maps
  * format described in kernel/Documentation/filesystem/proc.txt
  */
-static int _maps_line(struct cmd_context *cmd, lvmlock_t lock,
+static int _maps_line(const struct config_node *cn, lvmlock_t lock,
 		      const char* line, size_t* mstats)
 {
-	const struct config_node *cn;
-	struct config_value *cv;
+	const struct config_value *cv;
 	long from, to;
 	int pos, i;
 	char fr, fw, fx, fp;
@@ -137,7 +138,8 @@ static int _maps_line(struct cmd_context *cmd, lvmlock_t lock,
 
 	/* Select readable maps */
 	if (fr != 'r') {
-		log_debug("mlock area unreadable '%s': Skipping.", line);
+		log_debug("%s area unreadable %s : Skipping.",
+			  (lock == LVM_MLOCK) ? "mlock" : "munlock", line);
 		return 1;
 	}
 
@@ -150,7 +152,7 @@ static int _maps_line(struct cmd_context *cmd, lvmlock_t lock,
 		}
 
 	sz = to - from;
-	if (!(cn = find_config_tree_node(cmd, "activation/mlock_filter"))) {
+	if (!cn) {
 		/* If no blacklist configured, use an internal set */
 		for (i = 0; i < sizeof(_blacklist_maps) / sizeof(_blacklist_maps[0]); ++i)
 			if (strstr(line + pos, _blacklist_maps[i])) {
@@ -171,7 +173,7 @@ static int _maps_line(struct cmd_context *cmd, lvmlock_t lock,
 	}
 
 	*mstats += sz;
-	log_debug("%s %10ldKiB %12lx - %12lx %c%c%c%c %s",
+	log_debug("%s %10ldKiB %12lx - %12lx %c%c%c%c%s",
 		  (lock == LVM_MLOCK) ? "mlock" : "munlock",
 		  ((long)sz + 1023) / 1024, from, to, fr, fw, fx, fp, line + pos);
 
@@ -192,7 +194,8 @@ static int _maps_line(struct cmd_context *cmd, lvmlock_t lock,
 
 static int _memlock_maps(struct cmd_context *cmd, lvmlock_t lock, size_t *mstats)
 {
-	char *line = NULL;
+	const struct config_node *cn;
+	char *line, *line_end;
 	size_t len;
 	ssize_t n;
 	int ret = 1;
@@ -216,17 +219,45 @@ static int _memlock_maps(struct cmd_context *cmd, lvmlock_t lock, size_t *mstats
 #endif
 	}
 
+	/* Force libc.mo load */
+	if (lock == LVM_MLOCK)
+		(void)strerror(0);
 	/* Reset statistic counters */
 	*mstats = 0;
-	rewind(_mapsh);
 
-	while ((n = getline(&line, &len, _mapsh)) != -1) {
-		line[n > 0 ? n - 1 : 0] = '\0'; /* remove \n */
-		if (!_maps_line(cmd, lock, line, mstats))
-                        ret = 0;
+	/* read mapping into a single memory chunk without reallocation
+	 * in the middle of reading maps file */
+	for (len = 0;;) {
+		if (!_maps_buffer || len >= _maps_len) {
+			if (_maps_buffer)
+				_maps_len *= 2;
+			if (!(_maps_buffer = dm_realloc(_maps_buffer, _maps_len))) {
+				log_error("Allocation of maps buffer failed");
+				return 0;
+			}
+		}
+		lseek(_maps_fd, 0, SEEK_SET);
+		for (len = 0 ; len < _maps_len; len += n) {
+			if (!(n = read(_maps_fd, _maps_buffer + len, _maps_len - len))) {
+				_maps_buffer[len] = '\0';
+				break; /* EOF */
+			}
+			if (n == -1)
+				return_0;
+		}
+		if (len < _maps_len)  /* fits in buffer */
+			break;
 	}
 
-	free(line);
+	line = _maps_buffer;
+	cn = find_config_tree_node(cmd, "activation/mlock_filter");
+
+	while ((line_end = strchr(line, '\n'))) {
+		*line_end = '\0'; /* remove \n */
+		if (!_maps_line(cn, lock, line, mstats))
+			ret = 0;
+		line = line_end + 1;
+	}
 
 	log_debug("%socked %ld bytes",
 		  (lock == LVM_MLOCK) ? "L" : "Unl", (long)*mstats);
@@ -256,8 +287,8 @@ static void _lock_mem(struct cmd_context *cmd)
 			return;
 		}
 
-		if (!(_mapsh = fopen(_procselfmaps, "r"))) {
-			log_sys_error("fopen", _procselfmaps);
+		if (!(_maps_fd = open(_procselfmaps, O_RDONLY))) {
+			log_sys_error("open", _procselfmaps);
 			return;
 		}
 	}
@@ -285,9 +316,10 @@ static void _unlock_mem(struct cmd_context *cmd)
 		stack;
 
 	if (!_use_mlockall) {
-		if (fclose(_mapsh))
-			log_sys_error("fclose", _procselfmaps);
-
+		if (close(_maps_fd))
+			log_sys_error("close", _procselfmaps);
+		dm_free(_maps_buffer);
+		_maps_buffer = NULL;
 		if (_mstats < unlock_mstats)
 			log_error(INTERNAL_ERROR "Maps lock %ld < unlock %ld",
 				  (long)_mstats, (long)unlock_mstats);
