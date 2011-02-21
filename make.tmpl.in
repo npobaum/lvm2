@@ -20,6 +20,7 @@ SHELL = /bin/sh
 CC ?= @CC@
 RANLIB = @RANLIB@
 INSTALL = @INSTALL@
+INSTALL_DATA = @INSTALL@ -m 644
 MKDIR_P = @MKDIR_P@
 MSGFMT = @MSGFMT@
 LCOV = @LCOV@
@@ -67,8 +68,7 @@ pkgconfigdir = $(usrlibdir)/pkgconfig
 initdir = $(DESTDIR)@sysconfdir@/rc.d/init.d
 ocf_scriptdir = $(DESTDIR)@OCFDIR@
 
-USRLIB_RELPATH = $(shell echo $(abspath $(usrlibdir) $(libdir)) | \
-  $(AWK) -f $(top_srcdir)/scripts/relpath.awk)
+USRLIB_RELPATH = $(libdir)
 
 DEFAULT_SYS_DIR = @DEFAULT_SYS_DIR@
 DEFAULT_ARCHIVE_DIR = $(DEFAULT_SYS_DIR)/@DEFAULT_ARCHIVE_SUBDIR@
@@ -92,22 +92,14 @@ MAKEFLAGS = @JOBS@
 endif
 
 # Handle installation of files
-ifeq ("@WRITE_INSTALL@", "yes")
-# leaving defaults
-M_INSTALL_SCRIPT =
-M_INSTALL_DATA = -m 644
-else
-M_INSTALL_PROGRAM = -m 555
-M_INSTALL_DATA = -m 444
-endif
-INSTALL_PROGRAM = $(INSTALL) $(M_INSTALL_PROGRAM) $(STRIP)
-INSTALL_DATA = $(INSTALL) -p $(M_INSTALL_DATA)
-INSTALL_WDATA = $(INSTALL) -p -m 644
+INSTALL_PROGRAM = $(INSTALL)
+INSTALL_DATA = $(INSTALL) -m 644
+INSTALL_WDATA = $(INSTALL_DATA)
 
 INSTALL_DIR = $(INSTALL) -m 0755 -d
 INSTALL_ROOT_DIR = $(INSTALL) -m 0700 -d
 INSTALL_ROOT_DATA = $(INSTALL) -m 0600
-INSTALL_SCRIPT = $(INSTALL) -p $(M_INSTALL_PROGRAM)
+INSTALL_SCRIPT = $(INSTALL_PROGRAM)
 
 .SUFFIXES: .c .d .o .so .a .po .pot .mo .dylib
 
