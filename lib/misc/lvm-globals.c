@@ -40,6 +40,8 @@ static int _ignore_suspended_devices = 0;
 static int _error_message_produced = 0;
 static unsigned _is_static = 0;
 static int _udev_checking = 1;
+static char _sysfs_dir_path[PATH_MAX] = "";
+static int _dev_disable_after_error_count = DEFAULT_DISABLE_AFTER_ERROR_COUNT;
 
 void init_verbose(int level)
 {
@@ -49,7 +51,7 @@ void init_verbose(int level)
 void init_test(int level)
 {
 	if (!_test && level)
-		log_print("Test mode: Metadata will NOT be updated.");
+		log_print("Test mode: Metadata will NOT be updated and volumes will not be (de)activated.");
 	_test = level;
 }
 
@@ -121,10 +123,21 @@ void init_udev_checking(int checking)
 		log_debug("LVM udev checking disabled");
 }
 
+void init_dev_disable_after_error_count(int value)
+{
+	_dev_disable_after_error_count = value;
+}
+
 void set_cmd_name(const char *cmd)
 {
 	strncpy(_cmd_name, cmd, sizeof(_cmd_name));
 	_cmd_name[sizeof(_cmd_name) - 1] = '\0';
+}
+
+void set_sysfs_dir_path(const char *path)
+{
+	strncpy(_sysfs_dir_path, path, sizeof(_sysfs_dir_path));
+	_sysfs_dir_path[sizeof(_sysfs_dir_path) - 1] = '\0';
 }
 
 const char *log_command_name()
@@ -223,4 +236,14 @@ unsigned is_static(void)
 int udev_checking(void)
 {
 	return _udev_checking;
+}
+
+const char *sysfs_dir_path()
+{
+	return _sysfs_dir_path;
+}
+
+int dev_disable_after_error_count(void)
+{
+	return _dev_disable_after_error_count;
 }

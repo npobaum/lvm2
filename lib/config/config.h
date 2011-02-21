@@ -33,13 +33,13 @@ struct config_value {
 	union {
 		int64_t i;
 		float r;
-		char *str;
+		const char *str;
 	} v;
 	struct config_value *next;	/* for arrays */
 };
 
 struct config_node {
-	char *key;
+	const char *key;
 	struct config_node *parent, *sib, *child;
 	struct config_value *v;
 };
@@ -60,7 +60,7 @@ int override_config_tree_from_string(struct cmd_context *cmd,
 				     const char *config_settings);
 void destroy_config_tree(struct config_tree *cft);
 
-typedef uint32_t (*checksum_fn_t) (uint32_t initial, const void *buf, uint32_t size);
+typedef uint32_t (*checksum_fn_t) (uint32_t initial, const uint8_t *buf, uint32_t size);
 
 int read_config_fd(struct config_tree *cft, struct device *dev,
 		   off_t offset, size_t size, off_t offset2, size_t size2,
@@ -78,8 +78,8 @@ int config_file_changed(struct config_tree *cft);
 int merge_config_tree(struct cmd_context *cmd, struct config_tree *cft,
 		      struct config_tree *newdata);
 
-struct config_node *find_config_node(const struct config_node *cn,
-				     const char *path);
+const struct config_node *find_config_node(const struct config_node *cn,
+					   const char *path);
 const char *find_config_str(const struct config_node *cn, const char *path,
 			    const char *fail);
 int find_config_int(const struct config_node *cn, const char *path, int fail);
@@ -89,8 +89,8 @@ float find_config_float(const struct config_node *cn, const char *path,
 /*
  * These versions check an override tree, if present, first.
  */
-struct config_node *find_config_tree_node(struct cmd_context *cmd,
-					  const char *path);
+const struct config_node *find_config_tree_node(struct cmd_context *cmd,
+						const char *path);
 const char *find_config_tree_str(struct cmd_context *cmd,
 				 const char *path, const char *fail);
 int find_config_tree_int(struct cmd_context *cmd, const char *path,
@@ -112,7 +112,7 @@ int get_config_uint64(const struct config_node *cn, const char *path,
 		      uint64_t *result);
 
 int get_config_str(const struct config_node *cn, const char *path,
-		   char **result);
+		   const char **result);
 
 unsigned maybe_config_section(const char *str, unsigned len);
 

@@ -78,6 +78,7 @@ int process_each_lv_in_vg(struct cmd_context *cmd,
 			  struct volume_group *vg,
 			  const struct dm_list *arg_lvnames,
 			  const struct dm_list *tags,
+			  struct dm_list *failed_lvnames,
 			  void *handle,
 			  process_single_lv_fn_t process_single_lv);
 
@@ -94,9 +95,6 @@ struct dm_list *create_pv_list(struct dm_pool *mem, struct volume_group *vg, int
 			    char **argv, int allocatable_only);
 
 struct dm_list *clone_pv_list(struct dm_pool *mem, struct dm_list *pvs);
-
-int apply_lvname_restrictions(const char *name);
-int is_reserved_lvname(const char *name);
 
 void vgcreate_params_set_defaults(struct vgcreate_params *vp_def,
 				 struct volume_group *vg);
@@ -116,5 +114,8 @@ int get_activation_monitoring_mode(struct cmd_context *cmd,
 				   int *monitoring_mode);
 int get_stripe_params(struct cmd_context *cmd, uint32_t *stripes,
 		      uint32_t *stripe_size);
+
+int change_tag(struct cmd_context *cmd, struct volume_group *vg,
+	       struct logical_volume *lv, struct physical_volume *pv, int arg);
 
 #endif

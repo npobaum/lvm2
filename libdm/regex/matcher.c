@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.  
+ * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
  * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of the device-mapper userspace tools.
@@ -19,22 +19,28 @@
 #include "assert.h"
 
 struct dfa_state {
+	struct dfa_state *next;
 	int final;
-	struct dfa_state *lookup[256];
-};
-
-struct state_queue {
-	struct dfa_state *s;
 	dm_bitset_t bits;
-	struct state_queue *next;
+	struct dfa_state *lookup[256];
 };
 
 struct dm_regex {		/* Instance variables for the lexer */
 	struct dfa_state *start;
 	unsigned num_nodes;
+        unsigned num_charsets;
 	int nodes_entered;
 	struct rx_node **nodes;
+        int charsets_entered;
+        struct rx_node **charsets;
 	struct dm_pool *scratch, *mem;
+
+        /* stuff for on the fly dfa calculation */
+        dm_bitset_t charmap[256];
+        dm_bitset_t dfa_copy;
+        struct ttree *tt;
+        dm_bitset_t bs;
+        struct dfa_state *h, *t;
 };
 
 static int _count_nodes(struct rx_node *rx)
@@ -50,6 +56,33 @@ static int _count_nodes(struct rx_node *rx)
 	return r;
 }
 
+static unsigned _count_charsets(struct rx_node *rx)
+{
+        if (rx->type == CHARSET)
+                return 1;
+
+        return (rx->left ? _count_charsets(rx->left) : 0) +
+                (rx->right ? _count_charsets(rx->right) : 0);
+}
+
+static void _enumerate_charsets_internal(struct rx_node *rx, unsigned *i)
+{
+        if (rx->type == CHARSET)
+                rx->charset_index = (*i)++;
+        else {
+                if (rx->left)
+                        _enumerate_charsets_internal(rx->left, i);
+                if (rx->right)
+                        _enumerate_charsets_internal(rx->right, i);
+        }
+}
+
+static void _enumerate_charsets(struct rx_node *rx)
+{
+        unsigned i = 0;
+        _enumerate_charsets_internal(rx, &i);
+}
+
 static void _fill_table(struct dm_regex *m, struct rx_node *rx)
 {
 	assert((rx->type != OR) || (rx->left && rx->right));
@@ -61,6 +94,8 @@ static void _fill_table(struct dm_regex *m, struct rx_node *rx)
 		_fill_table(m, rx->right);
 
 	m->nodes[m->nodes_entered++] = rx;
+        if (rx->type == CHARSET)
+                m->charsets[m->charsets_entered++] = rx;
 }
 
 static void _create_bitsets(struct dm_regex *m)
@@ -69,9 +104,9 @@ static void _create_bitsets(struct dm_regex *m)
 
 	for (i = 0; i < m->num_nodes; i++) {
 		struct rx_node *n = m->nodes[i];
-		n->firstpos = dm_bitset_create(m->scratch, m->num_nodes);
-		n->lastpos = dm_bitset_create(m->scratch, m->num_nodes);
-		n->followpos = dm_bitset_create(m->scratch, m->num_nodes);
+		n->firstpos = dm_bitset_create(m->scratch, m->num_charsets);
+		n->lastpos = dm_bitset_create(m->scratch, m->num_charsets);
+		n->followpos = dm_bitset_create(m->scratch, m->num_charsets);
 	}
 }
 
@@ -85,7 +120,7 @@ static void _calc_functions(struct dm_regex *m)
 		c1 = rx->left;
 		c2 = rx->right;
 
-		if (dm_bit(rx->charset, TARGET_TRANS))
+		if (rx->type == CHARSET && dm_bit(rx->charset, TARGET_TRANS))
 			rx->final = final++;
 
 		switch (rx->type) {
@@ -125,8 +160,8 @@ static void _calc_functions(struct dm_regex *m)
 			break;
 
 		case CHARSET:
-			dm_bit_set(rx->firstpos, i);
-			dm_bit_set(rx->lastpos, i);
+			dm_bit_set(rx->firstpos, rx->charset_index);
+			dm_bit_set(rx->lastpos, rx->charset_index);
 			rx->nullable = 0;
 			break;
 
@@ -141,23 +176,21 @@ static void _calc_functions(struct dm_regex *m)
 		 */
 		switch (rx->type) {
 		case CAT:
-			for (j = 0; j < m->num_nodes; j++) {
-				if (dm_bit(c1->lastpos, j)) {
-					struct rx_node *n = m->nodes[j];
+			for (j = 0; j < m->num_charsets; j++) {
+                                struct rx_node *n = m->charsets[j];
+				if (dm_bit(c1->lastpos, j))
 					dm_bit_union(n->followpos,
-						  n->followpos, c2->firstpos);
-				}
+                                                     n->followpos, c2->firstpos);
 			}
 			break;
 
 		case PLUS:
 		case STAR:
-			for (j = 0; j < m->num_nodes; j++) {
-				if (dm_bit(rx->lastpos, j)) {
-					struct rx_node *n = m->nodes[j];
+			for (j = 0; j < m->num_charsets; j++) {
+                                struct rx_node *n = m->charsets[j];
+				if (dm_bit(rx->lastpos, j))
 					dm_bit_union(n->followpos,
-						  n->followpos, rx->firstpos);
-				}
+                                                     n->followpos, rx->firstpos);
 			}
 			break;
 		}
@@ -169,126 +202,126 @@ static struct dfa_state *_create_dfa_state(struct dm_pool *mem)
 	return dm_pool_zalloc(mem, sizeof(struct dfa_state));
 }
 
-static struct state_queue *_create_state_queue(struct dm_pool *mem,
-					       struct dfa_state *dfa,
-					       dm_bitset_t bits)
+static struct dfa_state *_create_state_queue(struct dm_pool *mem,
+                                             struct dfa_state *dfa,
+                                             dm_bitset_t bits)
 {
-	struct state_queue *r = dm_pool_alloc(mem, sizeof(*r));
+	dfa->bits = dm_bitset_create(mem, bits[0]);	/* first element is the size */
+	dm_bit_copy(dfa->bits, bits);
+	dfa->next = 0;
+        dfa->final = -1;
+	return dfa;
+}
 
-	if (!r) {
-		stack;
-		return NULL;
-	}
+static void _calc_state(struct dm_regex *m, struct dfa_state *dfa, int a)
+{
+        int set_bits = 0, i;
+        dm_bitset_t dfa_bits = dfa->bits;
+        dm_bit_and(m->dfa_copy, m->charmap[a], dfa_bits);
 
-	r->s = dfa;
-	r->bits = dm_bitset_create(mem, bits[0]);	/* first element is the size */
-	dm_bit_copy(r->bits, bits);
-	r->next = 0;
-	return r;
+        /* iterate through all the states in firstpos */
+        for (i = dm_bit_get_first(m->dfa_copy); i >= 0; i = dm_bit_get_next(m->dfa_copy, i)) {
+                if (a == TARGET_TRANS)
+                        dfa->final = m->charsets[i]->final;
+
+                dm_bit_union(m->bs, m->bs, m->charsets[i]->followpos);
+                set_bits = 1;
+        }
+
+        if (set_bits) {
+                struct dfa_state *tmp;
+                struct dfa_state *ldfa = ttree_lookup(m->tt, m->bs + 1);
+                if (!ldfa) {
+                        /* push */
+                        ldfa = _create_dfa_state(m->mem);
+                        ttree_insert(m->tt, m->bs + 1, ldfa);
+                        tmp = _create_state_queue(m->scratch, ldfa, m->bs);
+                        if (!m->h)
+                                m->h = m->t = tmp;
+                        else {
+                                m->t->next = tmp;
+                                m->t = tmp;
+                        }
+                }
+
+                dfa->lookup[a] = ldfa;
+                dm_bit_clear_all(m->bs);
+        }
 }
 
 static int _calc_states(struct dm_regex *m, struct rx_node *rx)
 {
-	unsigned iwidth = (m->num_nodes / DM_BITS_PER_INT) + 1;
-	struct ttree *tt = ttree_create(m->scratch, iwidth);
-	struct state_queue *h, *t, *tmp;
-	struct dfa_state *dfa, *ldfa;
-	int i, a, set_bits = 0, count = 0;
-	dm_bitset_t bs, dfa_bits;
+	unsigned iwidth = (m->num_charsets / DM_BITS_PER_INT) + 1;
+	struct dfa_state *dfa;
+	int i, a;
 
-	if (!tt)
+	m->tt = ttree_create(m->scratch, iwidth);
+	if (!m->tt)
 		return_0;
 
-	if (!(bs = dm_bitset_create(m->scratch, m->num_nodes)))
+	if (!(m->bs = dm_bitset_create(m->scratch, m->num_charsets)))
 		return_0;
+
+        /* build some char maps */
+        for (a = 0; a < 256; a++) {
+                m->charmap[a] = dm_bitset_create(m->scratch, m->num_charsets);
+                if (!m->charmap[a])
+                        return_0;
+        }
+
+        for (i = 0; i < m->num_nodes; i++) {
+                struct rx_node *n = m->nodes[i];
+                if (n->type == CHARSET) {
+                        for (a = dm_bit_get_first(n->charset);
+                             a >= 0; a = dm_bit_get_next(n->charset, a))
+                                dm_bit_set(m->charmap[a], n->charset_index);
+                }
+        }
 
 	/* create first state */
 	dfa = _create_dfa_state(m->mem);
 	m->start = dfa;
-	ttree_insert(tt, rx->firstpos + 1, dfa);
+	ttree_insert(m->tt, rx->firstpos + 1, dfa);
 
 	/* prime the queue */
-	h = t = _create_state_queue(m->scratch, dfa, rx->firstpos);
-	while (h) {
-		int elems, j, idx[h->bits[0]];
-
-		/* pop state off front of the queue */
-		dfa = h->s;
-		dfa_bits = h->bits;
-		h = h->next;
-
-		/* iterate through all the inputs for this state */
-		dm_bit_clear_all(bs);
-
-		/* Cache list of locations of bits */
-		elems = 0;
-		for (i = dm_bit_get_first(dfa_bits);
-		     i >= 0; i = dm_bit_get_next(dfa_bits, i))
-			idx[elems++] = i;
-
-		for (a = 0; a < 256; a++) {
-			/* iterate through all the states in firstpos */
-			for (j = 0; j < elems; j++) {
-				i = idx[j];
-				if (dm_bit(m->nodes[i]->charset, a)) {
-					if (a == TARGET_TRANS)
-						dfa->final = m->nodes[i]->final;
-
-					dm_bit_union(bs, bs,
-						  m->nodes[i]->followpos);
-					set_bits = 1;
-				}
-			}
-
-			if (set_bits) {
-				ldfa = ttree_lookup(tt, bs + 1);
-				if (!ldfa) {
-					/* push */
-					ldfa = _create_dfa_state(m->mem);
-					ttree_insert(tt, bs + 1, ldfa);
-					tmp =
-					    _create_state_queue(m->scratch,
-								ldfa, bs);
-					if (!h)
-						h = t = tmp;
-					else {
-						t->next = tmp;
-						t = tmp;
-					}
-
-					count++;
-				}
-
-				dfa->lookup[a] = ldfa;
-				set_bits = 0;
-				dm_bit_clear_all(bs);
-			}
-		}
-	}
-
-	log_debug("Matcher built with %d dfa states", count);
+	m->h = m->t = _create_state_queue(m->scratch, dfa, rx->firstpos);
+        m->dfa_copy = dm_bitset_create(m->scratch, m->num_charsets);
 	return 1;
 }
 
-struct dm_regex *dm_regex_create(struct dm_pool *mem, const char **patterns,
+/*
+ * Forces all the dfa states to be calculated up front, ie. what
+ * _calc_states() used to do before we switched to calculating on demand.
+ */
+static void _force_states(struct dm_regex *m)
+{
+        int a;
+
+        /* keep processing until there's nothing in the queue */
+        struct dfa_state *s;
+        while ((s = m->h)) {
+                /* pop state off front of the queue */
+                m->h = m->h->next;
+
+                /* iterate through all the inputs for this state */
+                dm_bit_clear_all(m->bs);
+                for (a = 0; a < 256; a++)
+                        _calc_state(m, s, a);
+        }
+}
+
+struct dm_regex *dm_regex_create(struct dm_pool *mem, const char * const *patterns,
 				 unsigned num_patterns)
 {
 	char *all, *ptr;
 	int i;
 	size_t len = 0;
 	struct rx_node *rx;
-	struct dm_pool *scratch = dm_pool_create("regex matcher", 10 * 1024);
 	struct dm_regex *m;
+	struct dm_pool *scratch = mem;
 
-	if (!scratch)
+	if (!(m = dm_pool_zalloc(mem, sizeof(*m))))
 		return_NULL;
-
-	if (!(m = dm_pool_alloc(mem, sizeof(*m)))) {
-		dm_pool_destroy(scratch);
-		return_NULL;
-	}
-
-	memset(m, 0, sizeof(*m));
 
 	/* join the regexps together, delimiting with zero */
 	for (i = 0; i < num_patterns; i++)
@@ -314,35 +347,45 @@ struct dm_regex *dm_regex_create(struct dm_pool *mem, const char **patterns,
 	m->mem = mem;
 	m->scratch = scratch;
 	m->num_nodes = _count_nodes(rx);
+        m->num_charsets = _count_charsets(rx);
+        _enumerate_charsets(rx);
 	m->nodes = dm_pool_alloc(scratch, sizeof(*m->nodes) * m->num_nodes);
-
 	if (!m->nodes)
 		goto_bad;
+
+        m->charsets = dm_pool_alloc(scratch, sizeof(*m->charsets) * m->num_charsets);
+        if (!m->charsets)
+                goto_bad;
 
 	_fill_table(m, rx);
 	_create_bitsets(m);
 	_calc_functions(m);
 	_calc_states(m, rx);
-	dm_pool_destroy(scratch);
-	m->scratch = NULL;
-
 	return m;
 
       bad:
-	dm_pool_destroy(scratch);
 	dm_pool_free(mem, m);
 	return NULL;
 }
 
-static struct dfa_state *_step_matcher(int c, struct dfa_state *cs, int *r)
+static struct dfa_state *_step_matcher(struct dm_regex *m, int c, struct dfa_state *cs, int *r)
 {
-	if (!(cs = cs->lookup[(unsigned char) c]))
-		return NULL;
+        struct dfa_state *ns;
 
-	if (cs->final && (cs->final > *r))
-		*r = cs->final;
+	if (!(ns = cs->lookup[(unsigned char) c])) {
+		_calc_state(m, cs, (unsigned char) c);
+		if (!(ns = cs->lookup[(unsigned char) c]))
+			return NULL;
+	}
 
-	return cs;
+        // yuck, we have to special case the target trans
+        if (ns->final == -1)
+                _calc_state(m, ns, TARGET_TRANS);
+
+	if (ns->final && (ns->final > *r))
+		*r = ns->final;
+
+	return ns;
 }
 
 int dm_regex_match(struct dm_regex *regex, const char *s)
@@ -350,16 +393,142 @@ int dm_regex_match(struct dm_regex *regex, const char *s)
 	struct dfa_state *cs = regex->start;
 	int r = 0;
 
-	if (!(cs = _step_matcher(HAT_CHAR, cs, &r)))
+        dm_bit_clear_all(regex->bs);
+	if (!(cs = _step_matcher(regex, HAT_CHAR, cs, &r)))
 		goto out;
 
 	for (; *s; s++)
-		if (!(cs = _step_matcher(*s, cs, &r)))
+		if (!(cs = _step_matcher(regex, *s, cs, &r)))
 			goto out;
 
-	_step_matcher(DOLLAR_CHAR, cs, &r);
+	_step_matcher(regex, DOLLAR_CHAR, cs, &r);
 
       out:
 	/* subtract 1 to get back to zero index */
 	return r - 1;
+}
+
+/*
+ * The next block of code concerns calculating a fingerprint for the dfa.
+ *
+ * We're not calculating a minimal dfa in _calculate_state (maybe a future
+ * improvement).  As such it's possible that two non-isomorphic dfas
+ * recognise the same language.  This can only really happen if you start
+ * with equivalent, but different regexes (for example the simplifier in
+ * parse_rx.c may have changed).
+ *
+ * The code is inefficient; repeatedly searching a singly linked list for
+ * previously seen nodes.  Not worried since this is test code.
+ */
+struct node_list {
+        unsigned node_id;
+        struct dfa_state *node;
+        struct node_list *next;
+};
+
+struct printer {
+        struct dm_pool *mem;
+        struct node_list *pending;
+        struct node_list *processed;
+        unsigned next_index;
+};
+
+static uint32_t randomise_(uint32_t n)
+{
+        /* 2^32 - 5 */
+        uint32_t const prime = (~0) - 4;
+        return n * prime;
+}
+
+static int seen_(struct node_list *n, struct dfa_state *node, uint32_t *i)
+{
+        while (n) {
+                if (n->node == node) {
+                        *i = n->node_id;
+                        return 1;
+                }
+                n = n->next;
+        }
+
+        return 0;
+}
+
+/*
+ * Push node if it's not been seen before, returning a unique index.
+ */
+static uint32_t push_node_(struct printer *p, struct dfa_state *node)
+{
+        uint32_t i;
+        if (seen_(p->pending, node, &i) ||
+            seen_(p->processed, node, &i))
+                return i;
+        else {
+                struct node_list *n = dm_pool_alloc(p->mem, sizeof(*n));
+                assert(n);
+                n->node_id = p->next_index++;
+                n->node = node;
+                n->next = p->pending;
+                p->pending = n;
+                return n->node_id;
+        }
+}
+
+/*
+ * Pop the front node, and fill out it's previously assigned index.
+ */
+static struct dfa_state *pop_node_(struct printer *p)
+{
+        struct dfa_state *node = NULL;
+
+        if (p->pending) {
+                struct node_list *n = p->pending;
+                p->pending = n->next;
+                n->next = p->processed;
+                p->processed = n;
+
+                node = n->node;
+        }
+
+        return node;
+}
+
+static uint32_t combine_(uint32_t n1, uint32_t n2)
+{
+        return ((n1 << 8) | (n1 >> 24)) ^ randomise_(n2);
+}
+
+static uint32_t fingerprint_(struct printer *p)
+{
+        int c;
+        uint32_t result = 0;
+        struct dfa_state *node;
+
+        while ((node = pop_node_(p))) {
+                result = combine_(result, node->final < 0 ? 0 : node->final);
+                for (c = 0; c < 256; c++)
+                        result = combine_(result,
+                                          push_node_(p, node->lookup[c]));
+        }
+
+        return result;
+}
+
+uint32_t dm_regex_fingerprint(struct dm_regex *regex)
+{
+        uint32_t result;
+        struct printer p;
+        struct dm_pool *mem = dm_pool_create("regex fingerprint", 1024);
+
+        _force_states(regex);
+
+        assert(mem);
+        p.mem = mem;
+        p.pending = NULL;
+        p.processed = NULL;
+        p.next_index = 0;
+
+        push_node_(&p, regex->start);
+        result = fingerprint_(&p);
+        dm_pool_destroy(mem);
+        return result;
 }

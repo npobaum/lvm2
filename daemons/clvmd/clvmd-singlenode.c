@@ -12,30 +12,24 @@
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
-#define _GNU_SOURCE
-#define _FILE_OFFSET_BITS 64
-
-#include <netinet/in.h>
-#include <sys/un.h>
-#include <sys/socket.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <configure.h>
-#include <libdevmapper.h>
+#include "clvmd-common.h"
 
 #include <pthread.h>
 
 #include "locking.h"
-#include "lvm-logging.h"
 #include "clvm.h"
 #include "clvmd-comms.h"
 #include "lvm-functions.h"
 #include "clvmd.h"
 
+#include <sys/un.h>
+#include <sys/socket.h>
+#include <fcntl.h>
+
 static const char SINGLENODE_CLVMD_SOCKNAME[] = DEFAULT_RUN_DIR "/clvmd_singlenode.sock";
 static int listen_fd = -1;
 
-static void close_comms()
+static void close_comms(void)
 {
 	if (listen_fd != -1 && close(listen_fd))
 		stack;
@@ -43,12 +37,14 @@ static void close_comms()
 	listen_fd = -1;
 }
 
-static int init_comms()
+static int init_comms(void)
 {
 	struct sockaddr_un addr;
 	mode_t old_mask;
 
 	close_comms();
+
+	(void) dm_prepare_selinux_context(SINGLENODE_CLVMD_SOCKNAME, S_IFSOCK);
 	old_mask = umask(0077);
 
 	listen_fd = socket(PF_UNIX, SOCK_STREAM, 0);
@@ -74,9 +70,11 @@ static int init_comms()
 	}
 
 	umask(old_mask);
+	(void) dm_prepare_selinux_context(NULL, 0);
 	return 0;
 error:
 	umask(old_mask);
+	(void) dm_prepare_selinux_context(NULL, 0);
 	close_comms();
 	return -1;
 }
@@ -114,11 +112,11 @@ static int _csid_from_name(char *csid, const char *name)
 
 static int _name_from_csid(const char *csid, char *name)
 {
-	sprintf(name, "%x", 0xdead);
+	sprintf(name, "SINGLENODE");
 	return 0;
 }
 
-static int _get_num_nodes()
+static int _get_num_nodes(void)
 {
 	return 1;
 }
@@ -161,11 +159,13 @@ static int _lock_resource(const char *resource, int mode, int flags, int *lockid
 		if (!_resources[i])
 			break;
 		if (!strcmp(_resources[i], resource)) {
-			if ((_locks[i] & LCK_WRITE) || (_locks[i] & LCK_EXCL)) {
+			if ((_locks[i] & LCK_TYPE_MASK) == LCK_WRITE ||
+			    (_locks[i] & LCK_TYPE_MASK) == LCK_EXCL) {
 				DEBUGLOG("%s already write/exclusively locked...\n", resource);
 				goto maybe_retry;
 			}
-			if ((mode & LCK_WRITE) || (mode & LCK_EXCL)) {
+			if ((mode & LCK_TYPE_MASK) == LCK_WRITE ||
+			    (mode & LCK_TYPE_MASK) == LCK_EXCL) {
 				DEBUGLOG("%s already locked and WRITE/EXCL lock requested...\n",
 					 resource);
 				goto maybe_retry;
@@ -228,7 +228,7 @@ static int _unlock_resource(const char *resource, int lockid)
 	return 0;
 }
 
-static int _is_quorate()
+static int _is_quorate(void)
 {
 	return 1;
 }

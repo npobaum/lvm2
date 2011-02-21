@@ -33,6 +33,7 @@ char *build_dm_uuid(struct dm_pool *mem, const char *lvid,
 		    const char *layer);
 
 int validate_name(const char *n);
+int validate_tag(const char *n);
 
 int apply_lvname_restrictions(const char *name);
 int is_reserved_lvname(const char *name);
@@ -59,5 +60,14 @@ char *escape_double_quotes(char *out, const char *src);
  * Removes quoting of double quotation marks and backslashes in situ.
  */
 void unescape_double_quotes(char *src);
+
+/*
+ * Unescape colons and at signs in situ and save the substring starting
+ * at the position of the first unescaped colon and the first unescaped
+ * "at" sign.
+ */
+void unescape_colons_and_at_signs(char *src,
+				  char **substr_first_unquoted_colon,
+				  char **substr_first_unquoted_at_sign);
 
 #endif

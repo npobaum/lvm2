@@ -37,7 +37,7 @@ static int lvchange_permission(struct cmd_context *cmd,
 	}
 
 	if ((lv->status & MIRRORED) && (vg_is_clustered(lv->vg)) &&
-	    lv_info(cmd, lv, &info, 0, 0) && info.exists) {
+	    lv_info(cmd, lv, 0, &info, 0, 0) && info.exists) {
 		log_error("Cannot change permissions of mirror \"%s\" "
 			  "while active.", lv->name);
 		return 0;
@@ -86,7 +86,7 @@ static int lvchange_monitoring(struct cmd_context *cmd,
 {
 	struct lvinfo info;
 
-	if (!lv_info(cmd, lv, &info, 0, 0) || !info.exists) {
+	if (!lv_info(cmd, lv, 0, &info, 0, 0) || !info.exists) {
 		log_error("Logical volume, %s, is not active", lv->name);
 		return 0;
 	}
@@ -96,8 +96,8 @@ static int lvchange_monitoring(struct cmd_context *cmd,
 		return 1;
 
 	if ((dmeventd_monitor_mode() != DMEVENTD_MONITOR_IGNORE) &&
-	    !monitor_dev_for_events(cmd, lv, dmeventd_monitor_mode()))
-		stack;
+	    !monitor_dev_for_events(cmd, lv, 0, dmeventd_monitor_mode()))
+		return_0;
 
 	return 1;
 }
@@ -107,7 +107,7 @@ static int lvchange_background_polling(struct cmd_context *cmd,
 {
 	struct lvinfo info;
 
-	if (!lv_info(cmd, lv, &info, 0, 0) || !info.exists) {
+	if (!lv_info(cmd, lv, 0, &info, 0, 0) || !info.exists) {
 		log_error("Logical volume, %s, is not active", lv->name);
 		return 0;
 	}
@@ -162,6 +162,7 @@ static int lvchange_availability(struct cmd_context *cmd,
 static int lvchange_refresh(struct cmd_context *cmd, struct logical_volume *lv)
 {
 	log_verbose("Refreshing logical volume \"%s\" (if active)", lv->name);
+
 	return lv_refresh(cmd, lv);
 }
 
@@ -189,7 +190,7 @@ static int lvchange_resync(struct cmd_context *cmd,
 		return 0;
 	}
 
-	if (lv_info(cmd, lv, &info, 1, 0)) {
+	if (lv_info(cmd, lv, 0, &info, 1, 0)) {
 		if (info.open_count) {
 			log_error("Can't resync open logical volume \"%s\"",
 				  lv->name);
@@ -446,7 +447,7 @@ static int lvchange_persistent(struct cmd_context *cmd,
 			log_error("Major number must be specified with -My");
 			return 0;
 		}
-		if (lv_info(cmd, lv, &info, 0, 0) && info.exists)
+		if (lv_info(cmd, lv, 0, &info, 0, 0) && info.exists)
 			active = 1;
 		if (active && !arg_count(cmd, force_ARG) &&
 		    yes_no_prompt("Logical volume %s will be "
@@ -490,17 +491,9 @@ static int lvchange_persistent(struct cmd_context *cmd,
 	return 1;
 }
 
-static int lvchange_tag(struct cmd_context *cmd, struct logical_volume *lv,
-			int arg)
+static int lvchange_tag(struct cmd_context *cmd, struct logical_volume *lv, int arg)
 {
-	const char *tag;
-
-	if (!(tag = arg_str_value(cmd, arg, NULL))) {
-		log_error("Failed to get tag");
-		return 0;
-	}
-
-	if (!lv_change_tag(lv, tag, arg == addtag_ARG))
+	if (!change_tag(cmd, NULL, lv, NULL, arg))
 		return_0;
 
 	log_very_verbose("Updating logical volume \"%s\" on disk(s)", lv->name);
@@ -515,7 +508,7 @@ static int lvchange_tag(struct cmd_context *cmd, struct logical_volume *lv,
 }
 
 static int lvchange_single(struct cmd_context *cmd, struct logical_volume *lv,
-			   void *handle __attribute((unused)))
+			   void *handle __attribute__((unused)))
 {
 	int doit = 0, docmds = 0;
 	int dmeventd_mode, archived = 0;
@@ -714,32 +707,35 @@ static int lvchange_single(struct cmd_context *cmd, struct logical_volume *lv,
 
 int lvchange(struct cmd_context *cmd, int argc, char **argv)
 {
-	if (!arg_count(cmd, available_ARG) && !arg_count(cmd, contiguous_ARG)
-	    && !arg_count(cmd, permission_ARG) && !arg_count(cmd, readahead_ARG)
-	    && !arg_count(cmd, minor_ARG) && !arg_count(cmd, major_ARG)
-	    && !arg_count(cmd, persistent_ARG) && !arg_count(cmd, addtag_ARG)
-	    && !arg_count(cmd, deltag_ARG) && !arg_count(cmd, refresh_ARG)
-	    && !arg_count(cmd, alloc_ARG) && !arg_count(cmd, monitor_ARG)
-	    && !arg_count(cmd, poll_ARG) && !arg_count(cmd, resync_ARG)) {
+	int update = /* options other than -a, --refresh, --monitor or --poll */
+		arg_count(cmd, contiguous_ARG) || arg_count(cmd, permission_ARG) ||
+		arg_count(cmd, readahead_ARG) || arg_count(cmd, persistent_ARG) ||
+		arg_count(cmd, addtag_ARG) || arg_count(cmd, deltag_ARG) ||
+		arg_count(cmd, resync_ARG) || arg_count(cmd, alloc_ARG);
+
+	if (!update &&
+            !arg_count(cmd, available_ARG) && !arg_count(cmd, refresh_ARG) &&
+            !arg_count(cmd, monitor_ARG) && !arg_count(cmd, poll_ARG) &&
+            /* for persistent_ARG */
+	    !arg_count(cmd, minor_ARG) && !arg_count(cmd, major_ARG)) {
 		log_error("Need 1 or more of -a, -C, -j, -m, -M, -p, -r, "
 			  "--resync, --refresh, --alloc, --addtag, --deltag, "
 			  "--monitor or --poll");
 		return EINVALID_CMD_LINE;
 	}
 
-	int avail_only = /* i.e. only one of -a or --refresh is given */
-	    !(arg_count(cmd, contiguous_ARG) || arg_count(cmd, permission_ARG) ||
-	     arg_count(cmd, readahead_ARG) || arg_count(cmd, persistent_ARG) ||
-	     arg_count(cmd, addtag_ARG) || arg_count(cmd, deltag_ARG) ||
-	     arg_count(cmd, resync_ARG) || arg_count(cmd, alloc_ARG));
+	if (arg_count(cmd, available_ARG) && arg_count(cmd, refresh_ARG)) {
+		log_error("Only one of -a and --refresh permitted.");
+		return EINVALID_CMD_LINE;
+	}
 
 	if ((arg_count(cmd, ignorelockingfailure_ARG) ||
-	     arg_count(cmd, sysinit_ARG)) && !avail_only) {
+	     arg_count(cmd, sysinit_ARG)) && update) {
 		log_error("Only -a permitted with --ignorelockingfailure and --sysinit");
 		return EINVALID_CMD_LINE;
 	}
 
-	if (avail_only)
+	if (!update)
 		cmd->handles_missing_pvs = 1;
 
 	if (!argc) {
@@ -769,6 +765,6 @@ int lvchange(struct cmd_context *cmd, int argc, char **argv)
 	}
 
 	return process_each_lv(cmd, argc, argv,
-			       avail_only ? 0 : READ_FOR_UPDATE, NULL,
+			       update ? READ_FOR_UPDATE : 0, NULL,
 			       &lvchange_single);
 }

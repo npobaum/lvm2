@@ -23,9 +23,9 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 
-static int _text_can_handle(struct labeller *l __attribute((unused)),
+static int _text_can_handle(struct labeller *l __attribute__((unused)),
 			    void *buf,
-			    uint64_t sector __attribute((unused)))
+			    uint64_t sector __attribute__((unused)))
 {
 	struct label_header *lh = (struct label_header *) buf;
 
@@ -44,7 +44,7 @@ static int _text_write(struct label *label, void *buf)
 	struct metadata_area *mda;
 	struct mda_context *mdac;
 	struct data_area_list *da;
-	char buffer[64] __attribute((aligned(8)));
+	char buffer[64] __attribute__((aligned(8)));
 	int da1, mda1, mda2;
 
 	/* FIXME Move to where label is created */
@@ -182,8 +182,9 @@ void del_das(struct dm_list *das)
 	}
 }
 
+/* FIXME: refactor this function with other mda constructor code */
 int add_mda(const struct format_type *fmt, struct dm_pool *mem, struct dm_list *mdas,
-	    struct device *dev, uint64_t start, uint64_t size)
+	    struct device *dev, uint64_t start, uint64_t size, unsigned ignored)
 {
 /* FIXME List size restricted by pv_header SECTOR_SIZE */
 	struct metadata_area *mdal;
@@ -215,12 +216,14 @@ int add_mda(const struct format_type *fmt, struct dm_pool *mem, struct dm_list *
 
 	mdal->ops = mda_lists->raw_ops;
 	mdal->metadata_locn = mdac;
+	mdal->status = 0;
 
 	mdac->area.dev = dev;
 	mdac->area.start = start;
 	mdac->area.size = size;
 	mdac->free_sectors = UINT64_C(0);
 	memset(&mdac->rlocn, 0, sizeof(mdac->rlocn));
+	mda_set_ignored(mdal, ignored);
 
 	dm_list_add(mdas, &mdal->list);
 	return 1;
@@ -239,7 +242,7 @@ void del_mdas(struct dm_list *mdas)
 	}
 }
 
-static int _text_initialise_label(struct labeller *l __attribute((unused)),
+static int _text_initialise_label(struct labeller *l __attribute__((unused)),
 				  struct label *label)
 {
 	strncpy(label->type, LVM2_LABEL, sizeof(label->type));
@@ -261,6 +264,7 @@ static int _text_read(struct labeller *l, struct device *dev, void *buf,
 	const char *vgname;
 	uint64_t vgstatus;
 	char *creation_host;
+	struct mda_header *mdah;
 
 	pvhdr = (struct pv_header *) ((void *) buf + xlate32(lh->offset_xl));
 
@@ -292,19 +296,46 @@ static int _text_read(struct labeller *l, struct device *dev, void *buf,
 	dlocn_xl++;
 	while ((offset = xlate64(dlocn_xl->offset))) {
 		add_mda(info->fmt, NULL, &info->mdas, dev, offset,
-			xlate64(dlocn_xl->size));
+			xlate64(dlocn_xl->size), 0);
 		dlocn_xl++;
 	}
 
 	dm_list_iterate_items(mda, &info->mdas) {
 		mdac = (struct mda_context *) mda->metadata_locn;
-		if ((vgname = vgname_from_mda(info->fmt, &mdac->area,
+		if (!dev_open(mdac->area.dev)) {
+			mda_set_ignored(mda, 1);
+			stack;
+			continue;
+		}
+		if (!(mdah = raw_read_mda_header(info->fmt, &mdac->area))) {
+			stack;
+			goto close_dev;
+		}
+		mda_set_ignored(mda, rlocn_is_ignored(mdah->raw_locns));
+
+		if (mda_is_ignored(mda)) {
+			log_debug("Ignoring mda on device %s at offset %"PRIu64,
+				  dev_name(mdac->area.dev),
+				  mdac->area.start);
+			if (!dev_close(mdac->area.dev))
+				stack;
+			continue;
+		}
+
+		if ((vgname = vgname_from_mda(info->fmt, mdah,
+					      &mdac->area,
 					      &vgid, &vgstatus, &creation_host,
 					      &mdac->free_sectors)) &&
 		    !lvmcache_update_vgname_and_id(info, vgname,
 						   (char *) &vgid, vgstatus,
-						   creation_host))
+						   creation_host)) {
+			if (!dev_close(mdac->area.dev))
+					stack;
 			return_0;
+		}
+	close_dev:
+		if (!dev_close(mdac->area.dev))
+			stack;
 	}
 
 	info->status &= ~CACHE_INVALID;
@@ -312,7 +343,7 @@ static int _text_read(struct labeller *l, struct device *dev, void *buf,
 	return 1;
 }
 
-static void _text_destroy_label(struct labeller *l __attribute((unused)),
+static void _text_destroy_label(struct labeller *l __attribute__((unused)),
 				struct label *label)
 {
 	struct lvmcache_info *info = (struct lvmcache_info *) label->info;

@@ -1,3 +1,10 @@
+lvm2 (2.02.84-1) unstable; urgency=medium
+
+  * New upstream version.
+  * Adopt upstream changes in udev rules. (closes: #603710)
+
+ -- Bastian Blank <waldi@debian.org>  Mon, 21 Feb 2011 22:53:35 +0100
+
 lvm2 (2.02.66-5) unstable; urgency=low
 
   * Remove old libdevmapper1.02 init script on upgrade. (closes: #549316)

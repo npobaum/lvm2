@@ -127,7 +127,7 @@ void sigint_restore(void)
 	sigaction(SIGINT, &_oldhandler, NULL);
 }
 
-static void _block_signals(uint32_t flags __attribute((unused)))
+static void _block_signals(uint32_t flags __attribute__((unused)))
 {
 	sigset_t set;
 
@@ -325,7 +325,7 @@ int check_lvm1_vg_inactive(struct cmd_context *cmd, const char *vgname)
 	char path[PATH_MAX];
 
 	/* We'll allow operations on orphans */
-	if (is_orphan_vg(vgname) || is_global_vg(vgname))
+	if (!is_real_vg(vgname))
 		return 1;
 
 	/* LVM1 is only present in 2.4 kernels. */
@@ -374,6 +374,13 @@ static int _lock_vol(struct cmd_context *cmd, const char *resource,
 		return 0;
 	}
 
+	if (cmd->metadata_read_only &&
+	    ((flags & LCK_TYPE_MASK) == LCK_WRITE) &&
+	    strcmp(resource, VG_GLOBAL)) {
+		log_error("Operation prohibited while global/metadata_read_only is set.");
+		return 0;
+	}
+
 	if ((ret = _locking.lock_resource(cmd, resource, flags))) {
 		if ((flags & LCK_SCOPE_MASK) == LCK_VG &&
 		    !(flags & LCK_CACHE)) {
@@ -382,6 +389,7 @@ static int _lock_vol(struct cmd_context *cmd, const char *resource,
 			else
 				lvmcache_lock_vgname(resource, (flags & LCK_TYPE_MASK)
 								== LCK_READ);
+			dev_reset_error_count(cmd);
 		}
 
 		_update_vg_lock_count(resource, flags);
@@ -396,8 +404,9 @@ static int _lock_vol(struct cmd_context *cmd, const char *resource,
 
 int lock_vol(struct cmd_context *cmd, const char *vol, uint32_t flags)
 {
-	char resource[258] __attribute((aligned(8)));
+	char resource[258] __attribute__((aligned(8)));
 	lv_operation_t lv_op;
+	int lck_type = flags & LCK_TYPE_MASK;
 
 	switch (flags & (LCK_SCOPE_MASK | LCK_TYPE_MASK)) {
 		case LCK_LV_SUSPEND:
@@ -424,15 +433,15 @@ int lock_vol(struct cmd_context *cmd, const char *vol, uint32_t flags)
 		if (is_orphan_vg(vol))
 			vol = VG_ORPHANS;
 		/* VG locks alphabetical, ORPHAN lock last */
-		if (((flags & LCK_TYPE_MASK) != LCK_UNLOCK) &&
-			 !(flags & LCK_CACHE) &&
-			 !lvmcache_verify_lock_order(vol))
-			return 0;
+		if ((lck_type != LCK_UNLOCK) &&
+		    !(flags & LCK_CACHE) &&
+		    !lvmcache_verify_lock_order(vol))
+			return_0;
 
 		/* Lock VG to change on-disk metadata. */
 		/* If LVM1 driver knows about the VG, it can't be accessed. */
 		if (!check_lvm1_vg_inactive(cmd, vol))
-			return 0;
+			return_0;
 		break;
 	case LCK_LV:
 		/* All LV locks are non-blocking. */
@@ -447,18 +456,18 @@ int lock_vol(struct cmd_context *cmd, const char *vol, uint32_t flags)
 	strncpy(resource, vol, sizeof(resource));
 
 	if (!_lock_vol(cmd, resource, flags, lv_op))
-		return 0;
+		return_0;
 
 	/*
 	 * If a real lock was acquired (i.e. not LCK_CACHE),
 	 * perform an immediate unlock unless LCK_HOLD was requested.
 	 */
-	if (!(flags & LCK_CACHE) && !(flags & LCK_HOLD) &&
-	    ((flags & LCK_TYPE_MASK) != LCK_UNLOCK)) {
-		if (!_lock_vol(cmd, resource,
-			       (flags & ~LCK_TYPE_MASK) | LCK_UNLOCK, lv_op))
-			return 0;
-	}
+	if ((lck_type == LCK_NULL) || (lck_type == LCK_UNLOCK) ||
+	    (flags & (LCK_CACHE | LCK_HOLD)))
+		return 1;
+
+	if (!_lock_vol(cmd, resource, (flags & ~LCK_TYPE_MASK) | LCK_UNLOCK, lv_op))
+		return_0;
 
 	return 1;
 }
@@ -536,7 +545,7 @@ int locking_is_clustered(void)
 	return (_locking.flags & LCK_CLUSTERED) ? 1 : 0;
 }
 
-int remote_lock_held(const char *vol)
+int remote_lock_held(const char *vol, int *exclusive)
 {
 	int mode = LCK_NULL;
 
@@ -553,6 +562,9 @@ int remote_lock_held(const char *vol)
 		stack;
 		return 1;
 	}
+
+	if (exclusive)
+		*exclusive = (mode == LCK_EXCL);
 
 	return mode == LCK_NULL ? 0 : 1;
 }

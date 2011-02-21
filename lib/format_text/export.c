@@ -183,7 +183,7 @@ static int _out_with_comment_file(struct formatter *f, const char *comment,
 }
 
 static int _out_with_comment_raw(struct formatter *f,
-				 const char *comment __attribute((unused)),
+				 const char *comment __attribute__((unused)),
 				 const char *fmt, va_list ap)
 {
 	int n;
@@ -363,6 +363,24 @@ static int _print_flag_config(struct formatter *f, uint64_t status, int type)
 	return 1;
 }
 
+
+static int _out_tags(struct formatter *f, struct dm_list *tags)
+{
+	char *tag_buffer;
+
+	if (!dm_list_empty(tags)) {
+		if (!(tag_buffer = alloc_printed_tags(tags)))
+			return_0;
+		if (!out_text(f, "tags = %s", tag_buffer)) {
+			dm_free(tag_buffer);
+			return_0;
+		}
+		dm_free(tag_buffer);
+	}
+
+	return 1;
+}
+
 static int _print_vg(struct formatter *f, struct volume_group *vg)
 {
 	char buffer[4096];
@@ -377,11 +395,8 @@ static int _print_vg(struct formatter *f, struct volume_group *vg)
 	if (!_print_flag_config(f, vg->status, VG_FLAGS))
 		return_0;
 
-	if (!dm_list_empty(&vg->tags)) {
-		if (!print_tags(&vg->tags, buffer, sizeof(buffer)))
-			return_0;
-		outf(f, "tags = %s", buffer);
-	}
+	if (!_out_tags(f, &vg->tags))
+		return_0;
 
 	if (vg->system_id && *vg->system_id)
 		outf(f, "system_id = \"%s\"", vg->system_id);
@@ -397,6 +412,7 @@ static int _print_vg(struct formatter *f, struct volume_group *vg)
 		outf(f, "allocation_policy = \"%s\"",
 		     get_alloc_string(vg->alloc));
 	}
+	outf(f, "metadata_copies = %u", vg->mda_copies);
 
 	return 1;
 }
@@ -412,7 +428,7 @@ static const char *_get_pv_name_from_uuid(struct formatter *f, char *uuid)
 
 static const char *_get_pv_name(struct formatter *f, struct physical_volume *pv)
 {
-	char uuid[64] __attribute((aligned(8)));
+	char uuid[64] __attribute__((aligned(8)));
 
 	if (!pv || !id_write_format(&pv->id, uuid, sizeof(uuid)))
 		return_NULL;
@@ -459,11 +475,8 @@ static int _print_pvs(struct formatter *f, struct volume_group *vg)
 		if (!_print_flag_config(f, pv->status, PV_FLAGS))
 			return_0;
 
-		if (!dm_list_empty(&pv->tags)) {
-			if (!print_tags(&pv->tags, buffer, sizeof(buffer)))
-				return_0;
-			outf(f, "tags = %s", buffer);
-		}
+		if (!_out_tags(f, &pv->tags))
+			return_0;
 
 		outsize(f, pv->size, "dev_size = %" PRIu64, pv->size);
 
@@ -483,8 +496,6 @@ static int _print_pvs(struct formatter *f, struct volume_group *vg)
 static int _print_segment(struct formatter *f, struct volume_group *vg,
 			  int count, struct lv_segment *seg)
 {
-	char buffer[4096];
-
 	outf(f, "segment%u {", count);
 	_inc_indent(f);
 
@@ -495,11 +506,8 @@ static int _print_segment(struct formatter *f, struct volume_group *vg,
 	outnl(f);
 	outf(f, "type = \"%s\"", seg->segtype->name);
 
-	if (!dm_list_empty(&seg->tags)) {
-		if (!print_tags(&seg->tags, buffer, sizeof(buffer)))
-			return_0;
-		outf(f, "tags = %s", buffer);
-	}
+	if (!_out_tags(f, &seg->tags))
+		return_0;
 
 	if (seg->segtype->ops->text_export &&
 	    !seg->segtype->ops->text_export(seg, f))
@@ -567,11 +575,8 @@ static int _print_lv(struct formatter *f, struct logical_volume *lv)
 	if (!_print_flag_config(f, lv->status, LV_FLAGS))
 		return_0;
 
-	if (!dm_list_empty(&lv->tags)) {
-		if (!print_tags(&lv->tags, buffer, sizeof(buffer)))
-			return_0;
-		outf(f, "tags = %s", buffer);
-	}
+	if (!_out_tags(f, &lv->tags))
+		return_0;
 
 	if (lv->alloc != ALLOC_INHERIT)
 		outf(f, "allocation_policy = \"%s\"",
@@ -735,10 +740,9 @@ int text_vg_export_file(struct volume_group *vg, const char *desc, FILE *fp)
 
 	_init();
 
-	if (!(f = dm_malloc(sizeof(*f))))
+	if (!(f = dm_zalloc(sizeof(*f))))
 		return_0;
 
-	memset(f, 0, sizeof(*f));
 	f->data.fp = fp;
 	f->indent = 0;
 	f->header = 1;
@@ -760,10 +764,8 @@ int text_vg_export_raw(struct volume_group *vg, const char *desc, char **buf)
 
 	_init();
 
-	if (!(f = dm_malloc(sizeof(*f))))
+	if (!(f = dm_zalloc(sizeof(*f))))
 		return_0;
-
-	memset(f, 0, sizeof(*f));
 
 	f->data.buf.size = 65536;	/* Initial metadata limit */
 	if (!(f->data.buf.start = dm_malloc(f->data.buf.size))) {

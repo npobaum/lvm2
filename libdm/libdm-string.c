@@ -38,7 +38,7 @@ static int _isword(int c)
  * Returns number of words.
  */
 int dm_split_words(char *buffer, unsigned max,
-		   unsigned ignore_comments __attribute((unused)),
+		   unsigned ignore_comments __attribute__((unused)),
 		   char **argv)
 {
 	unsigned arg;
@@ -123,11 +123,11 @@ int dm_snprintf(char *buf, size_t bufsize, const char *format, ...)
 	return n;
 }
 
-char *dm_basename(const char *path)
+const char *dm_basename(const char *path)
 {
-	char *p = strrchr(path, '/');
+	const char *p = strrchr(path, '/');
 
-	return p ? p + 1 : (char *) path;
+	return p ? p + 1 : path;
 }
 
 int dm_asprintf(char **result, const char *format, ...)
@@ -144,6 +144,8 @@ int dm_asprintf(char **result, const char *format, ...)
 	while (!ok) {
 		va_start(ap, format);
 		n = vsnprintf(buf, size, format, ap);
+		va_end(ap);
+
 		if (0 <= n && n < size)
 			ok = 1;
 		else {
@@ -152,8 +154,7 @@ int dm_asprintf(char **result, const char *format, ...)
 			buf = dm_malloc(size);
 			if (!buf)
 				return -1;
-		};
-		va_end(ap);
+		}
 	}
 
 	*result = dm_strdup(buf);

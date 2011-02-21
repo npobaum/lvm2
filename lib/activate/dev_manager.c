@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2002-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2010 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -75,19 +75,22 @@ static struct dm_task *_setup_task(const char *name, const char *uuid,
 	if (!(dmt = dm_task_create(task)))
 		return_NULL;
 
-	if (name)
-		dm_task_set_name(dmt, name);
+	if (name && !dm_task_set_name(dmt, name))
+		goto_out;
 
-	if (uuid && *uuid)
-		dm_task_set_uuid(dmt, uuid);
+	if (uuid && *uuid && !dm_task_set_uuid(dmt, uuid))
+		goto_out;
 
-	if (event_nr)
-		dm_task_set_event_nr(dmt, *event_nr);
+	if (event_nr && !dm_task_set_event_nr(dmt, *event_nr))
+		goto_out;
 
-	if (major)
-		dm_task_set_major_minor(dmt, major, minor, 1);
+	if (major && !dm_task_set_major_minor(dmt, major, minor, 1))
+		goto_out;
 
 	return dmt;
+      out:
+	dm_task_destroy(dmt);
+	return NULL;
 }
 
 static int _info_run(const char *name, const char *dlid, struct dm_info *info,
@@ -135,10 +138,11 @@ int device_is_usable(struct device *dev)
 	char *target_type = NULL;
 	char *params, *vgname = NULL, *lvname, *layer;
 	void *next = NULL;
+	int only_error_target = 1;
 	int r = 0;
 
 	if (!(dmt = dm_task_create(DM_DEVICE_STATUS))) {
-		log_error("Failed to allocate dm_task struct to check dev status");
+		log_error("Failed to create dm_task struct to check dev status");
 		return 0;
 	}
 
@@ -153,11 +157,21 @@ int device_is_usable(struct device *dev)
 	if (!dm_task_get_info(dmt, &info))
 		goto_out;
 
-	if (!info.exists || info.suspended)
+	if (!info.exists)
 		goto out;
 
 	name = dm_task_get_name(dmt);
 	uuid = dm_task_get_uuid(dmt);
+
+	if (!info.target_count) {
+		log_debug("%s: Empty device %s not usable.", dev_name(dev), name);
+		goto out;
+	}
+
+	if (info.suspended && ignore_suspended_devices()) {
+		log_debug("%s: Suspended device %s not usable.", dev_name(dev), name);
+		goto out;
+	}
 
 	/* FIXME Also check for mirror block_on_error and mpath no paths */
 	/* For now, we exclude all mirrors */
@@ -166,11 +180,37 @@ int device_is_usable(struct device *dev)
 		next = dm_get_next_target(dmt, next, &start, &length,
 					  &target_type, &params);
 		/* Skip if target type doesn't match */
-		if (target_type && !strcmp(target_type, "mirror")) {
-			log_debug("%s: Mirror device not usable.", dev_name(dev));
+		if (target_type && !strcmp(target_type, "mirror") && ignore_suspended_devices()) {
+			log_debug("%s: Mirror device %s not usable.", dev_name(dev), name);
 			goto out;
 		}
+
+		/*
+		 * Snapshot origin could be sitting on top of a mirror which
+		 * could be blocking I/O.  Skip snapshot origins entirely for
+		 * now.
+		 *
+		 * FIXME: rather than skipping origin, check if mirror is
+		 * underneath and if the mirror is blocking I/O.
+		 */
+		if (target_type && !strcmp(target_type, "snapshot-origin") &&
+		    ignore_suspended_devices()) {
+			log_debug("%s: Snapshot-origin device %s not usable.",
+				  dev_name(dev), name);
+			goto out;
+		}
+
+		if (target_type && strcmp(target_type, "error"))
+			only_error_target = 0;
 	} while (next);
+
+	/* Skip devices consisting entirely of error targets. */
+	/* FIXME Deal with device stacked above error targets? */
+	if (only_error_target) {
+		log_debug("%s: Error device %s not usable.",
+			  dev_name(dev), name);
+		goto out;
+	}
 
 	/* FIXME Also check dependencies? */
 
@@ -217,26 +257,27 @@ static int _info_by_dev(uint32_t major, uint32_t minor, struct dm_info *info)
 }
 
 int dev_manager_info(struct dm_pool *mem, const struct logical_volume *lv,
+		     const char *layer,
 		     int with_open_count, int with_read_ahead,
 		     struct dm_info *info, uint32_t *read_ahead)
 {
-	const char *dlid, *name;
+	char *dlid, *name;
 	int r;
 
-	if (!(name = build_dm_name(mem, lv->vg->name, lv->name, NULL))) {
+	if (!(name = build_dm_name(mem, lv->vg->name, lv->name, layer))) {
 		log_error("name build failed for %s", lv->name);
 		return 0;
 	}
 
-	if (!(dlid = build_dm_uuid(mem, lv->lvid.s, NULL))) {
-		log_error("dlid build failed for %s", lv->name);
+	if (!(dlid = build_dm_uuid(mem, lv->lvid.s, layer))) {
+		log_error("dlid build failed for %s", name);
 		return 0;
 	}
 
 	log_debug("Getting device info for %s [%s]", name, dlid);
 	r = _info(dlid, with_open_count, with_read_ahead, info, read_ahead);
 
-	dm_pool_free(mem, (char*)name);
+	dm_pool_free(mem, name);
 	return r;
 }
 
@@ -268,6 +309,7 @@ static const struct dm_info *_cached_info(struct dm_pool *mem,
 	return dinfo;
 }
 
+#if 0
 /* FIXME Interface must cope with multiple targets */
 static int _status_run(const char *name, const char *uuid,
 		       unsigned long long *s, unsigned long long *l,
@@ -345,6 +387,7 @@ static int _status(const char *name, const char *uuid,
 
 	return 0;
 }
+#endif
 
 int lv_has_target_type(struct dm_pool *mem, struct logical_volume *lv,
 		       const char *layer, const char *target_type)
@@ -390,8 +433,8 @@ int lv_has_target_type(struct dm_pool *mem, struct logical_volume *lv,
 	return r;
 }
 
-static percent_range_t _combine_percent_ranges(percent_range_t a,
-					       percent_range_t b)
+static percent_range_t _combine_percent(percent_t a, percent_t b,
+                                        uint32_t numerator, uint32_t denominator)
 {
 	if (a == PERCENT_INVALID || b == PERCENT_INVALID)
 		return PERCENT_INVALID;
@@ -402,14 +445,13 @@ static percent_range_t _combine_percent_ranges(percent_range_t a,
 	if (a == PERCENT_0 && b == PERCENT_0)
 		return PERCENT_0;
 
-	return PERCENT_0_TO_100;
+	return make_percent(numerator, denominator);
 }
 
 static int _percent_run(struct dev_manager *dm, const char *name,
 			const char *dlid,
 			const char *target_type, int wait,
-			const struct logical_volume *lv, float *percent,
-			percent_range_t *overall_percent_range,
+			const struct logical_volume *lv, percent_t *overall_percent,
 			uint32_t *event_nr, int fail_if_percent_unsupported)
 {
 	int r = 0;
@@ -422,13 +464,12 @@ static int _percent_run(struct dev_manager *dm, const char *name,
 	const struct dm_list *segh = &lv->segments;
 	struct lv_segment *seg = NULL;
 	struct segment_type *segtype;
-	percent_range_t percent_range = 0, combined_percent_range = 0;
 	int first_time = 1;
+	percent_t percent;
 
 	uint64_t total_numerator = 0, total_denominator = 0;
 
-	*percent = -1;
-	*overall_percent_range = PERCENT_INVALID;
+	*overall_percent = PERCENT_INVALID;
 
 	if (!(dmt = _setup_task(name, dlid, event_nr,
 				wait ? DM_DEVICE_WAITEVENT : DM_DEVICE_STATUS, 0, 0)))
@@ -471,45 +512,40 @@ static int _percent_run(struct dev_manager *dm, const char *name,
 				continue;
 		}
 
-		if (segtype->ops->target_percent &&
-		    !segtype->ops->target_percent(&dm->target_state,
-						  &percent_range, dm->mem,
+		if (!segtype->ops->target_percent)
+			continue;
+
+		if (!segtype->ops->target_percent(&dm->target_state,
+						  &percent, dm->mem,
 						  dm->cmd, seg, params,
 						  &total_numerator,
 						  &total_denominator))
 			goto_out;
 
 		if (first_time) {
-			combined_percent_range = percent_range;
+			*overall_percent = percent;
 			first_time = 0;
 		} else
-			combined_percent_range =
-			    _combine_percent_ranges(combined_percent_range,
-						    percent_range);
+			*overall_percent =
+				_combine_percent(*overall_percent, percent,
+						 total_numerator, total_denominator);
 	} while (next);
 
-	if (lv && (segh = dm_list_next(&lv->segments, segh))) {
+	if (lv && dm_list_next(&lv->segments, segh)) {
 		log_error("Number of segments in active LV %s does not "
 			  "match metadata", lv->name);
 		goto out;
 	}
 
-	if (total_denominator) {
-		*percent = (float) total_numerator *100 / total_denominator;
-		*overall_percent_range = combined_percent_range;
-	} else {
-		*percent = 100;
-		if (first_time) {
-			/* above ->target_percent() was not executed! */
-			/* FIXME why return PERCENT_100 et. al. in this case? */
-			*overall_percent_range = PERCENT_100;
-			if (fail_if_percent_unsupported)
-				goto_out;
-		} else
-			*overall_percent_range = combined_percent_range;
+	if (first_time) {
+		/* above ->target_percent() was not executed! */
+		/* FIXME why return PERCENT_100 et. al. in this case? */
+		*overall_percent = PERCENT_100;
+		if (fail_if_percent_unsupported)
+			goto_out;
 	}
 
-	log_debug("LV percent: %f", *percent);
+	log_debug("LV percent: %f", percent_to_float(*overall_percent));
 	r = 1;
 
       out:
@@ -519,28 +555,87 @@ static int _percent_run(struct dev_manager *dm, const char *name,
 
 static int _percent(struct dev_manager *dm, const char *name, const char *dlid,
 		    const char *target_type, int wait,
-		    const struct logical_volume *lv, float *percent,
-		    percent_range_t *overall_percent_range, uint32_t *event_nr,
-		    int fail_if_percent_unsupported)
+		    const struct logical_volume *lv, percent_t *percent,
+		    uint32_t *event_nr, int fail_if_percent_unsupported)
 {
 	if (dlid && *dlid) {
 		if (_percent_run(dm, NULL, dlid, target_type, wait, lv, percent,
-				 overall_percent_range, event_nr,
-				 fail_if_percent_unsupported))
+				 event_nr, fail_if_percent_unsupported))
 			return 1;
 		else if (_percent_run(dm, NULL, dlid + sizeof(UUID_PREFIX) - 1,
 				      target_type, wait, lv, percent,
-				      overall_percent_range, event_nr,
-				      fail_if_percent_unsupported))
+				      event_nr, fail_if_percent_unsupported))
 			return 1;
 	}
 
 	if (name && _percent_run(dm, name, NULL, target_type, wait, lv, percent,
-				 overall_percent_range, event_nr,
-				 fail_if_percent_unsupported))
+				 event_nr, fail_if_percent_unsupported))
 		return 1;
 
 	return 0;
+}
+
+/* FIXME Merge with the percent function */
+int dev_manager_transient(struct dev_manager *dm, struct logical_volume *lv)
+{
+	int r = 0;
+	struct dm_task *dmt;
+	struct dm_info info;
+	void *next = NULL;
+	uint64_t start, length;
+	char *type = NULL;
+	char *params = NULL;
+	char *dlid = NULL;
+	const char *layer = lv_is_origin(lv) ? "real" : NULL;
+	const struct dm_list *segh = &lv->segments;
+	struct lv_segment *seg = NULL;
+
+	if (!(dlid = build_dm_uuid(dm->mem, lv->lvid.s, layer)))
+		return_0;
+
+	if (!(dmt = _setup_task(0, dlid, NULL, DM_DEVICE_STATUS, 0, 0)))
+		return_0;
+
+	if (!dm_task_no_open_count(dmt))
+		log_error("Failed to disable open_count");
+
+	if (!dm_task_run(dmt))
+		goto_out;
+
+	if (!dm_task_get_info(dmt, &info) || !info.exists)
+		goto_out;
+
+	do {
+		next = dm_get_next_target(dmt, next, &start, &length, &type,
+					  &params);
+
+		if (!(segh = dm_list_next(&lv->segments, segh))) {
+		    log_error("Number of segments in active LV %s "
+			      "does not match metadata", lv->name);
+		    goto out;
+		}
+		seg = dm_list_item(segh, struct lv_segment);
+
+		if (!type || !params)
+			continue;
+
+		if (seg->segtype->ops->check_transient_status &&
+		    !seg->segtype->ops->check_transient_status(seg, params))
+			goto_out;
+
+	} while (next);
+
+	if (dm_list_next(&lv->segments, segh)) {
+		log_error("Number of segments in active LV %s does not "
+			  "match metadata", lv->name);
+		goto out;
+	}
+
+	r = 1;
+
+      out:
+	dm_task_destroy(dmt);
+	return r;
 }
 
 /*
@@ -592,7 +687,7 @@ void dev_manager_exit(void)
 
 int dev_manager_snapshot_percent(struct dev_manager *dm,
 				 const struct logical_volume *lv,
-				 float *percent, percent_range_t *percent_range)
+				 percent_t *percent)
 {
 	char *name;
 	const char *dlid;
@@ -627,7 +722,7 @@ int dev_manager_snapshot_percent(struct dev_manager *dm,
 	 */
 	log_debug("Getting device status percentage for %s", name);
 	if (!(_percent(dm, name, dlid, "snapshot", 0, NULL, percent,
-		       percent_range, NULL, fail_if_percent_unsupported)))
+		       NULL, fail_if_percent_unsupported)))
 		return_0;
 
 	/* FIXME dm_pool_free ? */
@@ -640,29 +735,28 @@ int dev_manager_snapshot_percent(struct dev_manager *dm,
 /* FIXME Cope with more than one target */
 int dev_manager_mirror_percent(struct dev_manager *dm,
 			       const struct logical_volume *lv, int wait,
-			       float *percent, percent_range_t *percent_range,
-			       uint32_t *event_nr)
+			       percent_t *percent, uint32_t *event_nr)
 {
 	char *name;
 	const char *dlid;
-	const char *suffix = (lv_is_origin(lv)) ? "real" : NULL;
+	const char *layer = (lv_is_origin(lv)) ? "real" : NULL;
 
 	/*
 	 * Build a name for the top layer.
 	 */
-	if (!(name = build_dm_name(dm->mem, lv->vg->name, lv->name, suffix)))
+	if (!(name = build_dm_name(dm->mem, lv->vg->name, lv->name, layer)))
 		return_0;
 
 	/* FIXME dm_pool_free ? */
 
-	if (!(dlid = build_dm_uuid(dm->mem, lv->lvid.s, suffix))) {
+	if (!(dlid = build_dm_uuid(dm->mem, lv->lvid.s, layer))) {
 		log_error("dlid build failed for %s", lv->name);
 		return 0;
 	}
 
 	log_debug("Getting device mirror status percentage for %s", name);
 	if (!(_percent(dm, name, dlid, "mirror", wait, lv, percent,
-		       percent_range, event_nr, 0)))
+		       event_nr, 0)))
 		return_0;
 
 	return 1;
@@ -750,7 +844,7 @@ static int _dev_manager_lv_rmnodes(const struct logical_volume *lv)
 int dev_manager_mknodes(const struct logical_volume *lv)
 {
 	struct dm_info dminfo;
-	const char *name;
+	char *name;
 	int r = 0;
 
 	if (!(name = build_dm_name(lv->vg->cmd->mem, lv->vg->name, lv->name, NULL)))
@@ -764,7 +858,7 @@ int dev_manager_mknodes(const struct logical_volume *lv)
 			r = _dev_manager_lv_rmnodes(lv);
 	}
 
-	dm_pool_free(lv->vg->cmd->mem, (char*)name);
+	dm_pool_free(lv->vg->cmd->mem, name);
 	return r;
 }
 
@@ -865,28 +959,111 @@ static int _add_dev_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 }
 
 /*
+ * Add replicator devices
+ *
+ * Using _add_dev_to_dtree() directly instead of _add_lv_to_dtree()
+ * to avoid extra checks with extensions.
+ */
+static int _add_partial_replicator_to_dtree(struct dev_manager *dm,
+					    struct dm_tree *dtree,
+					    struct logical_volume *lv)
+{
+	struct logical_volume *rlv = first_seg(lv)->replicator;
+	struct replicator_device *rdev;
+	struct replicator_site *rsite;
+	struct dm_tree_node *rep_node, *rdev_node;
+	const char *uuid;
+
+	if (!lv_is_active_replicator_dev(lv)) {
+		if (!_add_dev_to_dtree(dm, dtree, lv->rdevice->lv,
+				      NULL))
+			return_0;
+		return 1;
+	}
+
+	/* Add _rlog and replicator device */
+	if (!_add_dev_to_dtree(dm, dtree, first_seg(rlv)->rlog_lv, NULL))
+		return_0;
+
+	if (!_add_dev_to_dtree(dm, dtree, rlv, NULL))
+		return_0;
+
+	if (!(uuid = build_dm_uuid(dm->mem, rlv->lvid.s, NULL)))
+		return_0;
+
+	rep_node = dm_tree_find_node_by_uuid(dtree, uuid);
+
+	/* Add all related devices for replicator */
+	dm_list_iterate_items(rsite, &rlv->rsites)
+		dm_list_iterate_items(rdev, &rsite->rdevices) {
+			if (rsite->state == REPLICATOR_STATE_ACTIVE) {
+				/* Add _rimage LV */
+				if (!_add_dev_to_dtree(dm, dtree, rdev->lv, NULL))
+					return_0;
+
+				/* Add replicator-dev LV, except of the already added one */
+				if ((lv != rdev->replicator_dev->lv) &&
+				    !_add_dev_to_dtree(dm, dtree,
+						       rdev->replicator_dev->lv, NULL))
+					return_0;
+
+				/* If replicator exists - try connect existing heads */
+				if (rep_node) {
+					uuid = build_dm_uuid(dm->mem,
+							     rdev->replicator_dev->lv->lvid.s,
+							     NULL);
+					if (!uuid)
+						return_0;
+
+					rdev_node = dm_tree_find_node_by_uuid(dtree, uuid);
+					if (rdev_node)
+						dm_tree_node_set_presuspend_node(rdev_node,
+										 rep_node);
+				}
+			}
+
+			if (!rdev->rsite->vg_name)
+				continue;
+
+			if (!_add_dev_to_dtree(dm, dtree, rdev->lv, NULL))
+				return_0;
+
+			if (rdev->slog &&
+			    !_add_dev_to_dtree(dm, dtree, rdev->slog, NULL))
+				return_0;
+		}
+
+	return 1;
+}
+
+/*
  * Add LV and any known dependencies
  */
-static int _add_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree, struct logical_volume *lv)
+static int _add_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree, struct logical_volume *lv, unsigned origin_only)
 {
-	if (!_add_dev_to_dtree(dm, dtree, lv, NULL))
+	if (!origin_only && !_add_dev_to_dtree(dm, dtree, lv, NULL))
 		return_0;
 
 	/* FIXME Can we avoid doing this every time? */
 	if (!_add_dev_to_dtree(dm, dtree, lv, "real"))
 		return_0;
 
-	if (!_add_dev_to_dtree(dm, dtree, lv, "cow"))
+	if (!origin_only && !_add_dev_to_dtree(dm, dtree, lv, "cow"))
 		return_0;
 
 	if ((lv->status & MIRRORED) && first_seg(lv)->log_lv &&
 	    !_add_dev_to_dtree(dm, dtree, first_seg(lv)->log_lv, NULL))
 		return_0;
 
+	/* Adding LV head of replicator adds all other related devs */
+	if (lv_is_replicator_dev(lv) &&
+	    !_add_partial_replicator_to_dtree(dm, dtree, lv))
+		return_0;
+
 	return 1;
 }
 
-static struct dm_tree *_create_partial_dtree(struct dev_manager *dm, struct logical_volume *lv)
+static struct dm_tree *_create_partial_dtree(struct dev_manager *dm, struct logical_volume *lv, unsigned origin_only)
 {
 	struct dm_tree *dtree;
 	struct dm_list *snh, *snht;
@@ -898,19 +1075,20 @@ static struct dm_tree *_create_partial_dtree(struct dev_manager *dm, struct logi
 		return NULL;
 	}
 
-	if (!_add_lv_to_dtree(dm, dtree, lv))
+	if (!_add_lv_to_dtree(dm, dtree, lv, origin_only))
 		goto_bad;
 
 	/* Add any snapshots of this LV */
-	dm_list_iterate_safe(snh, snht, &lv->snapshot_segs)
-		if (!_add_lv_to_dtree(dm, dtree, dm_list_struct_base(snh, struct lv_segment, origin_list)->cow))
-			goto_bad;
+	if (!origin_only)
+		dm_list_iterate_safe(snh, snht, &lv->snapshot_segs)
+			if (!_add_lv_to_dtree(dm, dtree, dm_list_struct_base(snh, struct lv_segment, origin_list)->cow, 0))
+				goto_bad;
 
 	/* Add any LVs used by segments in this LV */
 	dm_list_iterate_items(seg, &lv->segments)
 		for (s = 0; s < seg->area_count; s++)
 			if (seg_type(seg, s) == AREA_LV && seg_lv(seg, s)) {
-				if (!_add_lv_to_dtree(dm, dtree, seg_lv(seg, s)))
+				if (!_add_lv_to_dtree(dm, dtree, seg_lv(seg, s), 0))
 					goto_bad;
 			}
 
@@ -1117,6 +1295,61 @@ static int _add_target_to_dtree(struct dev_manager *dm,
 static int _add_new_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 				  struct logical_volume *lv, const char *layer);
 
+/* Add all replicators' LVs */
+static int _add_replicator_dev_target_to_dtree(struct dev_manager *dm,
+					       struct dm_tree *dtree,
+					       struct lv_segment *seg)
+{
+	struct replicator_device *rdev;
+	struct replicator_site *rsite;
+
+	/* For inactive replicator add linear mapping */
+	if (!lv_is_active_replicator_dev(seg->lv)) {
+		if (!_add_new_lv_to_dtree(dm, dtree, seg->lv->rdevice->lv, NULL))
+			return_0;
+		return 1;
+	}
+
+	/* Add rlog and replicator nodes */
+	if (!seg->replicator ||
+            !first_seg(seg->replicator)->rlog_lv ||
+	    !_add_new_lv_to_dtree(dm, dtree,
+				  first_seg(seg->replicator)->rlog_lv, NULL) ||
+	    !_add_new_lv_to_dtree(dm, dtree, seg->replicator, NULL))
+	    return_0;
+
+	/* Activation of one replicator_dev node activates all other nodes */
+	dm_list_iterate_items(rsite, &seg->replicator->rsites) {
+		dm_list_iterate_items(rdev, &rsite->rdevices) {
+			if (rdev->lv &&
+			    !_add_new_lv_to_dtree(dm, dtree, rdev->lv, NULL))
+				return_0;
+
+			if (rdev->slog &&
+			    !_add_new_lv_to_dtree(dm, dtree,
+						  rdev->slog, NULL))
+				return_0;
+		}
+	}
+	/* Add remaining replicator-dev nodes in the second loop
+	 * to avoid multiple retries for inserting all elements */
+	dm_list_iterate_items(rsite, &seg->replicator->rsites) {
+		if (rsite->state != REPLICATOR_STATE_ACTIVE)
+			continue;
+		dm_list_iterate_items(rdev, &rsite->rdevices) {
+			if (rdev->replicator_dev->lv == seg->lv)
+				continue;
+			if (!rdev->replicator_dev->lv ||
+			    !_add_new_lv_to_dtree(dm, dtree,
+						  rdev->replicator_dev->lv,
+						  NULL))
+				return_0;
+		}
+	}
+
+	return 1;
+}
+
 static int _add_segment_to_dtree(struct dev_manager *dm,
 				   struct dm_tree *dtree,
 				   struct dm_tree_node *dnode,
@@ -1126,19 +1359,23 @@ static int _add_segment_to_dtree(struct dev_manager *dm,
 	uint32_t s;
 	struct dm_list *snh;
 	struct lv_segment *seg_present;
+	const char *target_name;
 
 	/* Ensure required device-mapper targets are loaded */
 	seg_present = find_cow(seg->lv) ? : seg;
+	target_name = (seg_present->segtype->ops->target_name ?
+		       seg_present->segtype->ops->target_name(seg_present) :
+		       seg_present->segtype->name);
 
 	log_debug("Checking kernel supports %s segment type for %s%s%s",
-		  seg_present->segtype->name, seg->lv->name,
+		  target_name, seg->lv->name,
 		  layer ? "-" : "", layer ? : "");
 
 	if (seg_present->segtype->ops->target_present &&
 	    !seg_present->segtype->ops->target_present(seg_present->lv->vg->cmd,
 						       seg_present, NULL)) {
-		log_error("Can't expand LV %s: %s target support missing "
-			  "from kernel?", seg->lv->name, seg_present->segtype->name);
+		log_error("Can't process LV %s: %s target support missing "
+			  "from kernel?", seg->lv->name, target_name);
 		return 0;
 	}
 
@@ -1147,13 +1384,12 @@ static int _add_segment_to_dtree(struct dev_manager *dm,
 	    !_add_new_lv_to_dtree(dm, dtree, seg->log_lv, NULL))
 		return_0;
 
+	if (seg_is_replicator_dev(seg)) {
+		if (!_add_replicator_dev_target_to_dtree(dm, dtree, seg))
+			return_0;
 	/* If this is a snapshot origin, add real LV */
 	/* If this is a snapshot origin + merging snapshot, add cow + real LV */
-	if (lv_is_origin(seg->lv) && !layer) {
-		if (vg_is_clustered(seg->lv->vg)) {
-			log_error("Clustered snapshots are not yet supported");
-			return 0;
-		}
+	} else if (lv_is_origin(seg->lv) && !layer) {
 		if (lv_is_merging_origin(seg->lv)) {
 			if (!_add_new_lv_to_dtree(dm, dtree,
 			     find_merging_cow(seg->lv)->cow, "cow"))
@@ -1376,13 +1612,12 @@ static int _remove_lv_symlinks(struct dev_manager *dm, struct dm_tree_node *root
 	return r;
 }
 
-static int _clean_tree(struct dev_manager *dm, struct dm_tree_node *root)
+static int _clean_tree(struct dev_manager *dm, struct dm_tree_node *root, char *non_toplevel_tree_dlid)
 {
 	void *handle = NULL;
 	struct dm_tree_node *child;
 	char *vgname, *lvname, *layer;
 	const char *name, *uuid;
-	int r;
 
 	while ((child = dm_tree_next_child(&handle, root, 0))) {
 		if (!(name = dm_tree_node_get_name(child)))
@@ -1400,49 +1635,49 @@ static int _clean_tree(struct dev_manager *dm, struct dm_tree_node *root)
 		if (!*layer)
 			continue;
 
-		dm_tree_set_cookie(root, 0);
-		r = dm_tree_deactivate_children(root, uuid, strlen(uuid));
-		if (!dm_udev_wait(dm_tree_get_cookie(root)))
-			stack;
+		/* If operation was performed on a partial tree, don't remove it */
+		if (non_toplevel_tree_dlid && !strcmp(non_toplevel_tree_dlid, uuid))
+			continue;
 
-		if (!r)
+		if (!dm_tree_deactivate_children(root, uuid, strlen(uuid)))
 			return_0;
 	}
 
 	return 1;
 }
 
-static int _tree_action(struct dev_manager *dm, struct logical_volume *lv, action_t action)
+static int _tree_action(struct dev_manager *dm, struct logical_volume *lv,
+			unsigned origin_only, action_t action)
 {
 	struct dm_tree *dtree;
 	struct dm_tree_node *root;
 	char *dlid;
 	int r = 0;
 
-	if (!(dtree = _create_partial_dtree(dm, lv)))
+	if (!(dtree = _create_partial_dtree(dm, lv, origin_only)))
 		return_0;
 
 	if (!(root = dm_tree_find_node(dtree, 0, 0))) {
 		log_error("Lost dependency tree root node");
-		goto out;
+		goto out_no_root;
 	}
 
-	if (!(dlid = build_dm_uuid(dm->mem, lv->lvid.s, NULL)))
+	/* Restore fs cookie */
+	dm_tree_set_cookie(root, fs_get_cookie());
+
+	if (!(dlid = build_dm_uuid(dm->mem, lv->lvid.s, origin_only ? "real" : NULL)))
 		goto_out;
 
 	/* Only process nodes with uuid of "LVM-" plus VG id. */
 	switch(action) {
 	case CLEAN:
 		/* Deactivate any unused non-toplevel nodes */
-		if (!_clean_tree(dm, root))
+		if (!_clean_tree(dm, root, origin_only ? dlid : NULL))
 			goto_out;
 		break;
 	case DEACTIVATE:
  		/* Deactivate LV and all devices it references that nothing else has open. */
-		dm_tree_set_cookie(root, 0);
 		r = dm_tree_deactivate_children(root, dlid, ID_LEN + sizeof(UUID_PREFIX) - 1);
-		if (!dm_udev_wait(dm_tree_get_cookie(root)))
-			stack;
 		if (!r)
 			goto_out;
 		if (!_remove_lv_symlinks(dm, root))
@@ -1459,14 +1694,11 @@ static int _tree_action(struct dev_manager *dm, struct logical_volume *lv, actio
 	case PRELOAD:
 	case ACTIVATE:
 		/* Add all required new devices to tree */
-		if (!_add_new_lv_to_dtree(dm, dtree, lv, NULL))
+		if (!_add_new_lv_to_dtree(dm, dtree, lv, origin_only ? "real" : NULL))
 			goto_out;
 
 		/* Preload any devices required before any suspensions */
-		dm_tree_set_cookie(root, 0);
 		r = dm_tree_preload_children(root, dlid, ID_LEN + sizeof(UUID_PREFIX) - 1);
-		if (!dm_udev_wait(dm_tree_get_cookie(root)))
-			stack;
 		if (!r)
 			goto_out;
 
@@ -1474,10 +1706,7 @@ static int _tree_action(struct dev_manager *dm, struct logical_volume *lv, actio
 			dm->flush_required = 1;
 
 		if (action == ACTIVATE) {
-			dm_tree_set_cookie(root, 0);
 			r = dm_tree_activate_children(root, dlid, ID_LEN + sizeof(UUID_PREFIX) - 1);
-			if (!dm_udev_wait(dm_tree_get_cookie(root)))
-				stack;
 			if (!r)
 				goto_out;
 			if (!_create_lv_symlinks(dm, root)) {
@@ -1495,27 +1724,32 @@ static int _tree_action(struct dev_manager *dm, struct logical_volume *lv, actio
 	r = 1;
 
 out:
+	/* Save fs cookie for udev settle, do not wait here */
+	fs_set_cookie(dm_tree_get_cookie(root));
+out_no_root:
 	dm_tree_free(dtree);
 
 	return r;
 }
 
-int dev_manager_activate(struct dev_manager *dm, struct logical_volume *lv)
+/* origin_only may only be set if we are resuming (not activating) an origin LV */
+int dev_manager_activate(struct dev_manager *dm, struct logical_volume *lv, unsigned origin_only)
 {
-	if (!_tree_action(dm, lv, ACTIVATE))
+	if (!_tree_action(dm, lv, origin_only, ACTIVATE))
 		return_0;
 
-	return _tree_action(dm, lv, CLEAN);
+	return _tree_action(dm, lv, origin_only, CLEAN);
 }
 
+/* origin_only may only be set if we are resuming (not activating) an origin LV */
 int dev_manager_preload(struct dev_manager *dm, struct logical_volume *lv,
-			int *flush_required)
+			unsigned origin_only, int *flush_required)
 {
 	/* FIXME Update the pvmove implementation! */
 	if ((lv->status & PVMOVE) || (lv->status & LOCKED))
 		return 1;
 
-	if (!_tree_action(dm, lv, PRELOAD))
+	if (!_tree_action(dm, lv, origin_only, PRELOAD))
 		return 0;
 
 	*flush_required = dm->flush_required;
@@ -1527,17 +1761,17 @@ int dev_manager_deactivate(struct dev_manager *dm, struct logical_volume *lv)
 {
 	int r;
 
-	r = _tree_action(dm, lv, DEACTIVATE);
+	r = _tree_action(dm, lv, 0, DEACTIVATE);
 
 	return r;
 }
 
 int dev_manager_suspend(struct dev_manager *dm, struct logical_volume *lv,
-			int lockfs, int flush_required)
+			unsigned origin_only, int lockfs, int flush_required)
 {
 	dm->flush_required = flush_required;
 
-	return _tree_action(dm, lv, lockfs ? SUSPEND_WITH_LOCKFS : SUSPEND);
+	return _tree_action(dm, lv, origin_only, lockfs ? SUSPEND_WITH_LOCKFS : SUSPEND);
 }
 
 /*
@@ -1549,7 +1783,7 @@ int dev_manager_device_uses_vg(struct device *dev,
 {
 	struct dm_tree *dtree;
 	struct dm_tree_node *root;
-	char dlid[sizeof(UUID_PREFIX) + sizeof(struct id) - 1] __attribute((aligned(8)));
+	char dlid[sizeof(UUID_PREFIX) + sizeof(struct id) - 1] __attribute__((aligned(8)));
 	int r = 1;
 
 	if (!(dtree = dm_tree_create())) {

@@ -90,14 +90,10 @@ struct dm_hash_table *dm_hash_create(unsigned size_hint)
 {
 	size_t len;
 	unsigned new_size = 16u;
-	struct dm_hash_table *hc = dm_malloc(sizeof(*hc));
+	struct dm_hash_table *hc = dm_zalloc(sizeof(*hc));
 
-	if (!hc) {
-		stack;
-		return 0;
-	}
-
-	memset(hc, 0, sizeof(*hc));
+	if (!hc)
+		return_0;
 
 	/* round size hint up to a power of two */
 	while (new_size < size_hint)
@@ -236,13 +232,13 @@ void dm_hash_wipe(struct dm_hash_table *t)
 	t->num_nodes = 0u;
 }
 
-char *dm_hash_get_key(struct dm_hash_table *t __attribute((unused)),
+char *dm_hash_get_key(struct dm_hash_table *t __attribute__((unused)),
 		      struct dm_hash_node *n)
 {
 	return n->key;
 }
 
-void *dm_hash_get_data(struct dm_hash_table *t __attribute((unused)),
+void *dm_hash_get_data(struct dm_hash_table *t __attribute__((unused)),
 		       struct dm_hash_node *n)
 {
 	return n->data;

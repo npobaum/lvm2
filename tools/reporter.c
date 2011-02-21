@@ -16,7 +16,7 @@
 #include "tools.h"
 #include "report.h"
 
-static int _vgs_single(struct cmd_context *cmd __attribute((unused)),
+static int _vgs_single(struct cmd_context *cmd __attribute__((unused)),
 		       const char *vg_name, struct volume_group *vg,
 		       void *handle)
 {
@@ -41,7 +41,7 @@ static int _lvs_single(struct cmd_context *cmd, struct logical_volume *lv,
 	return ECMD_PROCESSED;
 }
 
-static int _segs_single(struct cmd_context *cmd __attribute((unused)),
+static int _segs_single(struct cmd_context *cmd __attribute__((unused)),
 			struct lv_segment *seg, void *handle)
 {
 	if (!report_object(handle, seg->lv->vg, seg->lv, NULL, seg, NULL)) {
@@ -63,6 +63,9 @@ static int _pvsegs_sub_single(struct cmd_context *cmd,
 		.cmd = cmd,
 		.name = (char *)"",
 	};
+
+        if (!(_free_vg.vgmem = dm_pool_create("_free_vg", 10240)))
+		return ECMD_FAILED;
 
 	struct logical_volume _free_logical_volume = {
 		.vg = vg ?: &_free_vg,
@@ -103,10 +106,11 @@ static int _pvsegs_sub_single(struct cmd_context *cmd,
 
 	if (!report_object(handle, vg, seg ? seg->lv : &_free_logical_volume, pvseg->pv,
 			   seg ? : &_free_lv_segment, pvseg)) {
-		stack;
 		ret = ECMD_FAILED;
+                goto_out;
 	}
-
+ out:
+	free_vg(&_free_vg);
 	return ret;
 }
 
@@ -133,7 +137,7 @@ static int _pvs_single(struct cmd_context *cmd, struct volume_group *vg,
 	int ret = ECMD_PROCESSED;
 	const char *vg_name = NULL;
 	struct volume_group *old_vg = vg;
-	char uuid[64] __attribute((aligned(8)));
+	char uuid[64] __attribute__((aligned(8)));
 
 	if (is_pv(pv) && !is_orphan(pv) && !vg) {
 		vg_name = pv_vg_name(pv);
@@ -141,7 +145,7 @@ static int _pvs_single(struct cmd_context *cmd, struct volume_group *vg,
 		vg = vg_read(cmd, vg_name, (char *)&pv->vgid, 0);
 		if (vg_read_error(vg)) {
 			log_error("Skipping volume group %s", vg_name);
-			vg_release(vg);
+			free_vg(vg);
 			return ECMD_FAILED;
 		}
 
@@ -181,7 +185,7 @@ out:
 		unlock_vg(cmd, vg_name);
 
 	if (!old_vg)
-		vg_release(vg);
+		free_vg(vg);
 
 	return ret;
 }
@@ -362,6 +366,8 @@ static int _report(struct cmd_context *cmd, int argc, char **argv,
 					  separator, aligned, buffered,
 					  headings, field_prefixes, quoted,
 					  columns_as_rows))) {
+		if (!strcasecmp(options, "help") || !strcmp(options, "?"))
+			return r;
 		stack;
 		return ECMD_FAILED;
 	}

@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2010 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -76,6 +76,7 @@
 //#define CONVERTING		0x00400000U	/* LV */
 
 //#define MISSING_PV		0x00800000U	/* PV */
+#define INCONSISTENT_VG		0x00800000U	/* VG - internal use only */
 //#define PARTIAL_LV		0x01000000U	/* LV - derived flag, not
 //						   written out in metadata*/
 
@@ -99,6 +100,7 @@
 //#define FMT_RESIZE_PV		0x00000080U	/* Supports pvresize? */
 //#define FMT_UNLIMITED_STRIPESIZE 0x00000100U	/* Unlimited stripe size? */
 
+struct config_tree;
 struct metadata_area;
 
 /* Per-format per-metadata area operations */
@@ -136,6 +138,17 @@ struct metadata_area_ops {
 			  struct metadata_area * mda);
 
 	/*
+	 * Per location copy constructor.
+	 */
+	void *(*mda_metadata_locn_copy) (struct dm_pool *mem, void *metadata_locn);
+
+	/*
+	 * Per location description for logging.
+	 */
+	const char *(*mda_metadata_locn_name) (void *metadata_locn);
+	uint64_t (*mda_metadata_locn_offset) (void *metadata_locn);
+
+	/*
 	 * Returns number of free sectors in given metadata area.
 	 */
 	uint64_t (*mda_free_sectors) (struct metadata_area *mda);
@@ -156,13 +169,31 @@ struct metadata_area_ops {
 	int (*pv_analyze_mda) (const struct format_type * fmt,
 			       struct metadata_area *mda);
 
+	/*
+	 * Do these two metadata_area structures match with respect to
+	 * their underlying location?
+	 */
+	unsigned (*mda_locns_match)(struct metadata_area *mda1,
+				    struct metadata_area *mda2);
 };
+
+#define MDA_IGNORED 0x00000001
 
 struct metadata_area {
 	struct dm_list list;
 	struct metadata_area_ops *ops;
 	void *metadata_locn;
+	uint32_t status;
 };
+struct metadata_area *mda_copy(struct dm_pool *mem,
+			       struct metadata_area *mda);
+
+unsigned mda_is_ignored(struct metadata_area *mda);
+void mda_set_ignored(struct metadata_area *mda, unsigned ignored);
+unsigned mda_locns_match(struct metadata_area *mda1, struct metadata_area *mda2);
+void fid_add_mda(struct format_instance *fid, struct metadata_area *mda);
+int fid_add_mdas(struct format_instance *fid, struct dm_list *mdas);
+int mdas_empty_or_ignored(struct dm_list *mdas);
 
 #define seg_pvseg(seg, s)	(seg)->areas[(s)].u.pv.pvseg
 #define seg_dev(seg, s)		(seg)->areas[(s)].u.pv.pvseg->pv->dev
@@ -197,7 +228,7 @@ struct format_handler {
 	/*
 	 * Scan any metadata areas that aren't referenced in PV labels
 	 */
-	int (*scan) (const struct format_type * fmt);
+	int (*scan) (const struct format_type * fmt, const char *vgname);
 
 	/*
 	 * Return PV with given path.
@@ -214,8 +245,8 @@ struct format_handler {
 			 uint64_t pe_start, uint32_t extent_count,
 			 uint32_t extent_size, unsigned long data_alignment,
 			 unsigned long data_alignment_offset,
-			 int pvmetadatacopies,
-			 uint64_t pvmetadatasize, struct dm_list * mdas,
+			 int pvmetadatacopies, uint64_t pvmetadatasize,
+			 unsigned metadataignore, struct dm_list * mdas,
 			 struct physical_volume * pv, struct volume_group * vg);
 
 	/*
@@ -261,7 +292,7 @@ struct format_handler {
 	/*
 	 * Destructor for format type
 	 */
-	void (*destroy) (const struct format_type * fmt);
+	void (*destroy) (struct format_type * fmt);
 };
 
 /*
@@ -321,6 +352,12 @@ struct logical_volume *alloc_lv(struct dm_pool *mem);
  */
 int check_lv_segments(struct logical_volume *lv, int complete_vg);
 
+
+/*
+ * Checks that a replicator segment is correct.
+ */
+int check_replicator_segment(const struct lv_segment *replicator_seg);
+
 /*
  * Sometimes (eg, after an lvextend), it is possible to merge two
  * adjacent segments into a single segment.  This function trys
@@ -342,11 +379,6 @@ int remove_seg_from_segs_using_this_lv(struct logical_volume *lv, struct lv_segm
 struct lv_segment *get_only_segment_using_this_lv(struct logical_volume *lv);
 
 /*
- * Count snapshot LVs.
- */
-unsigned snapshot_count(const struct volume_group *vg);
-
-/*
  * Calculate readahead from underlying PV devices
  */
 void lv_calculate_readahead(const struct logical_volume *lv, uint32_t *read_ahead);
@@ -355,8 +387,10 @@ void lv_calculate_readahead(const struct logical_volume *lv, uint32_t *read_ahea
  * For internal metadata caching.
  */
 int export_vg_to_buffer(struct volume_group *vg, char **buf);
-struct volume_group *import_vg_from_buffer(char *buf,
+struct volume_group *import_vg_from_buffer(const char *buf,
 					   struct format_instance *fid);
+struct volume_group *import_vg_from_config_tree(const struct config_tree *cft,
+						struct format_instance *fid);
 
 /*
  * Mirroring functions
@@ -377,5 +411,10 @@ struct id pv_vgid(const struct physical_volume *pv);
 struct physical_volume *pv_by_path(struct cmd_context *cmd, const char *pv_name);
 int add_pv_to_vg(struct volume_group *vg, const char *pv_name,
 		 struct physical_volume *pv);
+int vg_mark_partial_lvs(struct volume_group *vg);
+int is_mirror_image_removable(struct logical_volume *mimage_lv, void *baton);
+
+uint64_t find_min_mda_size(struct dm_list *mdas);
+char *tags_format_and_copy(struct dm_pool *mem, const struct dm_list *tags);
 
 #endif

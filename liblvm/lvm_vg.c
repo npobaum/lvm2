@@ -13,18 +13,13 @@
  */
 
 #include "lib.h"
-#include "lvm2app.h"
 #include "toolcontext.h"
-#include "metadata-exported.h"
+#include "metadata.h"
 #include "archiver.h"
 #include "locking.h"
-#include "lvm-string.h"
 #include "lvmcache.h"
-#include "metadata.h"
 #include "lvm_misc.h"
-
-#include <errno.h>
-#include <string.h>
+#include "lvm2app.h"
 
 int lvm_vg_add_tag(vg_t vg, const char *tag)
 {
@@ -61,7 +56,7 @@ vg_t lvm_vg_create(lvm_t libh, const char *vg_name)
 	vg = vg_create((struct cmd_context *)libh, vg_name);
 	/* FIXME: error handling is still TBD */
 	if (vg_read_error(vg)) {
-		vg_release(vg);
+		free_vg(vg);
 		return NULL;
 	}
 	vg->open_mode = 'w';
@@ -164,9 +159,9 @@ int lvm_vg_write(vg_t vg)
 int lvm_vg_close(vg_t vg)
 {
 	if (vg_read_error(vg) == FAILED_LOCKING)
-		vg_release(vg);
+		free_vg(vg);
 	else
-		unlock_and_release_vg(vg->cmd, vg, vg->name);
+		unlock_and_free_vg(vg->cmd, vg, vg->name);
 	return 0;
 }
 
@@ -179,6 +174,8 @@ int lvm_vg_remove(vg_t vg)
 
 	if (!vg_remove_check(vg))
 		return -1;
+
+	vg_remove_pvs(vg);
 
 	return 0;
 }
@@ -199,7 +196,7 @@ vg_t lvm_vg_open(lvm_t libh, const char *vgname, const char *mode,
 	vg = vg_read((struct cmd_context *)libh, vgname, NULL, internal_flags);
 	if (vg_read_error(vg)) {
 		/* FIXME: use log_errno either here in inside vg_read */
-		vg_release(vg);
+		free_vg(vg);
 		return NULL;
 	}
 	/* FIXME: combine this with locking ? */
@@ -330,18 +327,24 @@ uint64_t lvm_vg_get_max_lv(const vg_t vg)
 
 const char *lvm_vg_get_uuid(const vg_t vg)
 {
-	char uuid[64] __attribute((aligned(8)));
-
-	if (!id_write_format(&vg->id, uuid, sizeof(uuid))) {
-		log_error(INTERNAL_ERROR "Unable to convert uuid");
-		return NULL;
-	}
-	return dm_pool_strndup(vg->vgmem, (const char *)uuid, 64);
+	return vg_uuid_dup(vg);
 }
 
 const char *lvm_vg_get_name(const vg_t vg)
 {
 	return dm_pool_strndup(vg->vgmem, (const char *)vg->name, NAME_LEN+1);
+}
+
+
+struct lvm_property_value lvm_vg_get_property(const vg_t vg, const char *name)
+{
+	return get_property(NULL, vg, NULL, NULL, NULL, name);
+}
+
+int lvm_vg_set_property(const vg_t vg, const char *name,
+			struct lvm_property_value *value)
+{
+	return set_property(NULL, vg, NULL, name, value);
 }
 
 struct dm_list *lvm_list_vg_names(lvm_t libh)

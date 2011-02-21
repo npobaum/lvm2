@@ -195,6 +195,7 @@ static void _init_logging(struct cmd_context *cmd)
 	dm_log_with_errno_init(print_log);
 #endif
 	reset_log_duplicated();
+	reset_lvm_errno(1);
 }
 
 static int _process_config(struct cmd_context *cmd)
@@ -203,7 +204,7 @@ static int _process_config(struct cmd_context *cmd)
 	const char *read_ahead;
 	struct stat st;
 	const struct config_node *cn;
-	struct config_value *cv;
+	const struct config_value *cv;
 
 	/* umask */
 	cmd->default_settings.umask = find_config_tree_int(cmd,
@@ -212,7 +213,8 @@ static int _process_config(struct cmd_context *cmd)
 
 	if ((old_umask = umask((mode_t) cmd->default_settings.umask)) !=
 	    (mode_t) cmd->default_settings.umask)
-		log_verbose("Set umask to %04o", cmd->default_settings.umask);
+		log_verbose("Set umask from %04o to %04o",
+                            old_umask, cmd->default_settings.umask);
 
 	/* dev dir */
 	if (dm_snprintf(cmd->dev_dir, sizeof(cmd->dev_dir), "%s/",
@@ -239,7 +241,9 @@ static int _process_config(struct cmd_context *cmd)
 		cmd->proc_dir[0] = '\0';
 	}
 
+	/* FIXME Use global value of sysfs_dir everywhere instead cmd->sysfs_dir. */
 	_get_sysfs_dir(cmd);
+	set_sysfs_dir_path(cmd->sysfs_dir);
 
 	/* activation? */
 	cmd->default_settings.activation = find_config_tree_int(cmd,
@@ -311,6 +315,9 @@ static int _process_config(struct cmd_context *cmd)
 			if ((cv->type != CFG_STRING) || !cv->v.str[0]) 
 				log_error("Ignoring invalid activation/mlock_filter entry in config file");
 
+	cmd->metadata_read_only = find_config_tree_int(cmd, "global/metadata_read_only",
+						       DEFAULT_METADATA_READ_ONLY);
+
 	return 1;
 }
 
@@ -326,11 +333,11 @@ static int _set_tag(struct cmd_context *cmd, const char *tag)
 	return 1;
 }
 
-static int _check_host_filters(struct cmd_context *cmd, struct config_node *hn,
+static int _check_host_filters(struct cmd_context *cmd, const struct config_node *hn,
 			       int *passes)
 {
-	struct config_node *cn;
-	struct config_value *cv;
+	const struct config_node *cn;
+	const struct config_value *cv;
 
 	*passes = 1;
 
@@ -555,7 +562,11 @@ static void _destroy_tag_configs(struct cmd_context *cmd)
 static int _init_dev_cache(struct cmd_context *cmd)
 {
 	const struct config_node *cn;
-	struct config_value *cv;
+	const struct config_value *cv;
+
+	init_dev_disable_after_error_count(
+		find_config_tree_int(cmd, "devices/disable_after_error_count",
+				     DEFAULT_DISABLE_AFTER_ERROR_COUNT));
 
 	if (!dev_cache_init(cmd))
 		return_0;
@@ -697,6 +708,7 @@ static int _init_filters(struct cmd_context *cmd, unsigned load_persistent_cache
 		    cache_dir ? : DEFAULT_CACHE_SUBDIR,
 		    cache_file_prefix ? : DEFAULT_CACHE_FILE_PREFIX) < 0) {
 			log_error("Persistent cache filename too long.");
+			f3->destroy(f3);
 			return 0;
 		}
 	} else if (!(dev_cache = find_config_tree_str(cmd, "devices/cache", NULL)) &&
@@ -705,6 +717,7 @@ static int _init_filters(struct cmd_context *cmd, unsigned load_persistent_cache
 				cmd->system_dir, DEFAULT_CACHE_SUBDIR,
 				DEFAULT_CACHE_FILE_PREFIX) < 0)) {
 		log_error("Persistent cache filename too long.");
+		f3->destroy(f3);
 		return 0;
 	}
 
@@ -712,8 +725,9 @@ static int _init_filters(struct cmd_context *cmd, unsigned load_persistent_cache
 		dev_cache = cache_file;
 
 	if (!(f4 = persistent_filter_create(f3, dev_cache))) {
-		log_error("Failed to create persistent device filter");
-		return 0;
+		log_verbose("Failed to create persistent device filter.");
+		f3->destroy(f3);
+		return_0;
 	}
 
 	/* Should we ever dump persistent filter state? */
@@ -783,7 +797,7 @@ static int _init_formats(struct cmd_context *cmd)
 	if (!is_static() &&
 	    (cn = find_config_tree_node(cmd, "global/format_libraries"))) {
 
-		struct config_value *cv;
+		const struct config_value *cv;
 		struct format_type *(*init_format_fn) (struct cmd_context *);
 		void *lib;
 
@@ -804,8 +818,11 @@ static int _init_formats(struct cmd_context *cmd)
 				return 0;
 			}
 
-			if (!(fmt = init_format_fn(cmd)))
-				return 0;
+			if (!(fmt = init_format_fn(cmd))) {
+				dlclose(lib);
+				return_0;
+			}
+
 			fmt->library = lib;
 			dm_list_add(&cmd->formats, &fmt->list);
 		}
@@ -936,12 +953,17 @@ static int _init_segtypes(struct cmd_context *cmd)
 	dm_list_add(&cmd->segtypes, &segtype->list);
 #endif
 
+#ifdef REPLICATOR_INTERNAL
+	if (!init_replicator_segtype(&seglib))
+		return 0;
+#endif
+
 #ifdef HAVE_LIBDL
 	/* Load any formats in shared libs unless static */
 	if (!is_static() &&
 	    (cn = find_config_tree_node(cmd, "global/segment_libraries"))) {
 
-		struct config_value *cv;
+		const struct config_value *cv;
 		int (*init_multiple_segtypes_fn) (struct cmd_context *,
 						  struct segtype_library *);
 
@@ -1018,7 +1040,7 @@ static int _init_backup(struct cmd_context *cmd)
 	char default_dir[PATH_MAX];
 	const char *dir;
 
-	if (!cmd->system_dir) {
+	if (!cmd->system_dir[0]) {
 		log_warn("WARNING: Metadata changes will NOT be backed up");
 		backup_init(cmd, "", 0);
 		archive_init(cmd, "", 0, 0, 0);
@@ -1078,10 +1100,13 @@ static int _init_backup(struct cmd_context *cmd)
 
 static void _init_rand(struct cmd_context *cmd)
 {
-	if (read_urandom(&cmd->rand_seed, sizeof(cmd->rand_seed)))
+	if (read_urandom(&cmd->rand_seed, sizeof(cmd->rand_seed))) {
+		reset_lvm_errno(1);
 		return;
+	}
 
 	cmd->rand_seed = (unsigned) time(NULL) + (unsigned) getpid();
+	reset_lvm_errno(1);
 }
 
 static void _init_globals(struct cmd_context *cmd)
@@ -1110,15 +1135,16 @@ struct cmd_context *create_toolcontext(unsigned is_long_lived,
 
 	init_syslog(DEFAULT_LOG_FACILITY);
 
-	if (!(cmd = dm_malloc(sizeof(*cmd)))) {
+	if (!(cmd = dm_zalloc(sizeof(*cmd)))) {
 		log_error("Failed to allocate command context");
 		return NULL;
 	}
-	memset(cmd, 0, sizeof(*cmd));
 	cmd->is_long_lived = is_long_lived;
 	cmd->handles_missing_pvs = 0;
 	cmd->handles_unknown_segments = 0;
+	cmd->independent_metadata_areas = 0;
 	cmd->hosttags = 0;
+	dm_list_init(&cmd->arg_value_groups);
 	dm_list_init(&cmd->formats);
 	dm_list_init(&cmd->segtypes);
 	dm_list_init(&cmd->tags);
@@ -1225,6 +1251,8 @@ static void _destroy_formats(struct cmd_context *cmd, struct dm_list *formats)
 			dlclose(lib);
 #endif
 	}
+
+	cmd->independent_metadata_areas = 0;
 }
 
 static void _destroy_segtypes(struct dm_list *segtypes)
@@ -1330,6 +1358,9 @@ int refresh_toolcontext(struct cmd_context *cmd)
 		return 0;
 
 	if (!_init_segtypes(cmd))
+		return 0;
+
+	if (!_init_backup(cmd))
 		return 0;
 
 	cmd->config_valid = 1;

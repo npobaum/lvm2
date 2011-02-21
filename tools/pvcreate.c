@@ -36,6 +36,16 @@ static int pvcreate_restore_params_validate(struct cmd_context *cmd,
 		return 0;
 	}
 
+	if (!arg_count(cmd, restorefile_ARG) && arg_count(cmd, uuidstr_ARG)) {
+		if (!arg_count(cmd, norestorefile_ARG) &&
+		    find_config_tree_bool(cmd,
+					  "devices/require_restorefile_with_uuid",
+					  DEFAULT_REQUIRE_RESTOREFILE_WITH_UUID)) {
+			log_error("--restorefile is required with --uuid");
+			return 0;
+		}
+	}
+
 	if (arg_count(cmd, uuidstr_ARG) && argc != 1) {
 		log_error("Can only set uuid on one volume at once");
 		return 0;
@@ -64,7 +74,7 @@ static int pvcreate_restore_params_validate(struct cmd_context *cmd,
 		pp->pe_start = pv_pe_start(existing_pvl->pv);
 		pp->extent_size = pv_pe_size(existing_pvl->pv);
 		pp->extent_count = pv_pe_count(existing_pvl->pv);
-		vg_release(vg);
+		free_vg(vg);
 	}
 
 	if (arg_sign_value(cmd, physicalvolumesize_ARG, 0) == SIGN_MINUS) {
@@ -98,6 +108,8 @@ int pvcreate(struct cmd_context *cmd, int argc, char **argv)
 			log_error("Can't get lock for orphan PVs");
 			return ECMD_FAILED;
 		}
+
+		unescape_colons_and_at_signs(argv[i], NULL, NULL);
 
 		if (!pvcreate_single(cmd, argv[i], &pp)) {
 			stack;

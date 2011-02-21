@@ -40,6 +40,7 @@ static struct {
 	struct dm_hash_table *names;
 	struct btree *devices;
 	struct dm_regex *preferred_names_matcher;
+	const char *dev_dir;
 
 	int has_scanned;
 	struct dm_list dirs;
@@ -103,6 +104,8 @@ struct device *dev_create_file(const char *filename, struct device *dev,
 	dev->dev = 0;
 	dev->fd = -1;
 	dev->open_count = 0;
+	dev->error_count = 0;
+	dev->max_error_count = NO_DEV_ERROR_COUNT_LIMIT;
 	dev->block_size = -1;
 	dev->read_ahead = -1;
 	memset(dev->pvid, 0, sizeof(dev->pvid));
@@ -124,6 +127,7 @@ static struct device *_dev_create(dev_t d)
 	dev->dev = d;
 	dev->fd = -1;
 	dev->open_count = 0;
+	dev->max_error_count = dev_disable_after_error_count();
 	dev->block_size = -1;
 	dev->read_ahead = -1;
 	dev->end = UINT64_C(0);
@@ -146,6 +150,71 @@ void dev_set_preferred_name(struct str_list *sl, struct device *dev)
 	dm_list_add_h(&dev->aliases, &sl->list);
 }
 
+/*
+ * Check whether path0 or path1 contains the subpath. The path that
+ * *does not* contain the subpath wins (return 0 or 1). If both paths
+ * contain the subpath, return -1. If none of them contains the subpath,
+ * return -2.
+ */
+static int _builtin_preference(const char *path0, const char *path1,
+			       size_t skip_prefix_count, const char *subpath)
+{
+	size_t subpath_len;
+	int r0, r1;
+
+	subpath_len = strlen(subpath);
+
+	r0 = !strncmp(path0 + skip_prefix_count, subpath, subpath_len);
+	r1 = !strncmp(path1 + skip_prefix_count, subpath, subpath_len);
+
+	if (!r0 && r1)
+		/* path0 does not have the subpath - it wins */
+		return 0;
+	else if (r0 && !r1)
+		/* path1 does not have the subpath - it wins */
+		return 1;
+	else if (r0 && r1)
+		/* both of them have the subpath */
+		return -1;
+
+	/* no path has the subpath */
+	return -2;
+}
+
+static int _apply_builtin_path_preference_rules(const char *path0, const char *path1)
+{
+	size_t devdir_len;
+	int r;
+
+	devdir_len = strlen(_cache.dev_dir);
+
+	if (!strncmp(path0, _cache.dev_dir, devdir_len) &&
+	    !strncmp(path1, _cache.dev_dir, devdir_len)) {
+		/*
+		 * We're trying to achieve the ordering:
+		 *	/dev/block/ < /dev/dm-* < /dev/disk/ < /dev/mapper/ < anything else
+		 */
+
+		/* Prefer any other path over /dev/block/ path. */
+		if ((r = _builtin_preference(path0, path1, devdir_len, "block/")) >= -1)
+			return r;
+
+		/* Prefer any other path over /dev/dm-* path. */
+		if ((r = _builtin_preference(path0, path1, devdir_len, "dm-")) >= -1)
+			return r;
+
+		/* Prefer any other path over /dev/disk/ path. */
+		if ((r = _builtin_preference(path0, path1, devdir_len, "disk/")) >= -1)
+			return r;
+
+		/* Prefer any other path over /dev/mapper/ path. */
+		if ((r = _builtin_preference(path0, path1, 0, dm_dir())) >= -1)
+			return r;
+	}
+
+	return -1;
+}
+
 /* Return 1 if we prefer path1 else return 0 */
 static int _compare_paths(const char *path0, const char *path1)
 {
@@ -155,6 +224,7 @@ static int _compare_paths(const char *path0, const char *path1)
 	char p0[PATH_MAX], p1[PATH_MAX];
 	char *s0, *s1;
 	struct stat stat0, stat1;
+	int r;
 
 	/*
 	 * FIXME Better to compare patterns one-at-a-time against all names.
@@ -175,9 +245,9 @@ static int _compare_paths(const char *path0, const char *path1)
 		}
 	}
 
-	/*
-	 * Built-in rules.
-	 */
+	/* Apply built-in preference rules first. */
+	if ((r = _apply_builtin_path_preference_rules(path0, path1)) >= 0)
+		return r;
 
 	/* Return the path with fewer slashes */
 	for (p = path0; p++; p = (const char *) strchr(p, '/'))
@@ -471,9 +541,9 @@ void dev_cache_scan(int do_scan)
 static int _init_preferred_names(struct cmd_context *cmd)
 {
 	const struct config_node *cn;
-	struct config_value *v;
+	const struct config_value *v;
 	struct dm_pool *scratch = NULL;
-	char **regex;
+	const char **regex;
 	unsigned count = 0;
 	int i, r = 0;
 
@@ -513,7 +583,7 @@ static int _init_preferred_names(struct cmd_context *cmd)
 	}
 
 	if (!(_cache.preferred_names_matcher =
-		dm_regex_create(_cache.mem,(const char **) regex, count))) {
+		dm_regex_create(_cache.mem, regex, count))) {
 		log_error("Preferred device name pattern matcher creation failed.");
 		goto out;
 	}
@@ -542,6 +612,11 @@ int dev_cache_init(struct cmd_context *cmd)
 
 	if (!(_cache.devices = btree_create(_cache.mem))) {
 		log_error("Couldn't create binary tree for dev-cache.");
+		goto bad;
+	}
+
+	if (!(_cache.dev_dir = _strdup(cmd->dev_dir))) {
+		log_error("strdup dev_dir failed.");
 		goto bad;
 	}
 
@@ -743,12 +818,14 @@ struct dev_iter *dev_iter_create(struct dev_filter *f, int dev_scan)
 
 	di->current = btree_first(_cache.devices);
 	di->filter = f;
+	di->filter->use_count++;
 
 	return di;
 }
 
 void dev_iter_destroy(struct dev_iter *iter)
 {
+	iter->filter->use_count--;
 	dm_free(iter);
 }
 
@@ -769,6 +846,18 @@ struct device *dev_iter_get(struct dev_iter *iter)
 	}
 
 	return NULL;
+}
+
+void dev_reset_error_count(struct cmd_context *cmd)
+{
+	struct dev_iter iter;
+
+	if (!_cache.devices)
+		return;
+
+	iter.current = btree_first(_cache.devices);
+	while (iter.current)
+		_iter_next(&iter)->error_count = 0;
 }
 
 int dev_fd(struct device *dev)

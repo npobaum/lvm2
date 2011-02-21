@@ -44,7 +44,7 @@ int module_present(struct cmd_context *cmd, const char *target_name);
 int target_present(struct cmd_context *cmd, const char *target_name,
 		   int use_modprobe);
 int target_version(const char *target_name, uint32_t *maj,
-                   uint32_t *min, uint32_t *patchlevel);
+		   uint32_t *min, uint32_t *patchlevel);
 int list_segment_modules(struct dm_pool *mem, const struct lv_segment *seg,
 			 struct dm_list *modules);
 int list_lv_modules(struct dm_pool *mem, const struct logical_volume *lv,
@@ -53,10 +53,10 @@ int list_lv_modules(struct dm_pool *mem, const struct logical_volume *lv,
 void activation_release(void);
 void activation_exit(void);
 
-int lv_suspend(struct cmd_context *cmd, const char *lvid_s);
-int lv_suspend_if_active(struct cmd_context *cmd, const char *lvid_s);
-int lv_resume(struct cmd_context *cmd, const char *lvid_s);
-int lv_resume_if_active(struct cmd_context *cmd, const char *lvid_s);
+/* int lv_suspend(struct cmd_context *cmd, const char *lvid_s); */
+int lv_suspend_if_active(struct cmd_context *cmd, const char *lvid_s, unsigned origin_only);
+int lv_resume(struct cmd_context *cmd, const char *lvid_s, unsigned origin_only);
+int lv_resume_if_active(struct cmd_context *cmd, const char *lvid_s, unsigned origin_only);
 int lv_activate(struct cmd_context *cmd, const char *lvid_s, int exclusive);
 int lv_activate_with_filter(struct cmd_context *cmd, const char *lvid_s,
 			    int exclusive);
@@ -67,9 +67,10 @@ int lv_mknodes(struct cmd_context *cmd, const struct logical_volume *lv);
 /*
  * Returns 1 if info structure has been populated, else 0.
  */
-int lv_info(struct cmd_context *cmd, const struct logical_volume *lv, struct lvinfo *info,
+int lv_info(struct cmd_context *cmd, const struct logical_volume *lv,
+	    unsigned origin_only, struct lvinfo *info,
 	    int with_open_count, int with_read_ahead);
-int lv_info_by_lvid(struct cmd_context *cmd, const char *lvid_s,
+int lv_info_by_lvid(struct cmd_context *cmd, const char *lvid_s, unsigned origin_only,
 		    struct lvinfo *info, int with_open_count, int with_read_ahead);
 
 /*
@@ -78,14 +79,13 @@ int lv_info_by_lvid(struct cmd_context *cmd, const char *lvid_s,
 int lv_activation_filter(struct cmd_context *cmd, const char *lvid_s,
 			 int *activate_lv);
 
+int lv_check_transient(struct logical_volume *lv);
 /*
  * Returns 1 if percent has been set, else 0.
  */
-int lv_snapshot_percent(const struct logical_volume *lv, float *percent,
-			percent_range_t *percent_range);
+int lv_snapshot_percent(const struct logical_volume *lv, percent_t *percent);
 int lv_mirror_percent(struct cmd_context *cmd, struct logical_volume *lv,
-		      int wait, float *percent, percent_range_t *percent_range,
-		      uint32_t *event_nr);
+		      int wait, percent_t *percent, uint32_t *event_nr);
 
 /*
  * Return number of LVs in the VG that are active.
@@ -94,12 +94,23 @@ int lvs_in_vg_activated(struct volume_group *vg);
 int lvs_in_vg_opened(const struct volume_group *vg);
 
 int lv_is_active(struct logical_volume *lv);
+int lv_is_active_exclusive_locally(struct logical_volume *lv);
+int lv_is_active_exclusive_remotely(struct logical_volume *lv);
 
 int lv_has_target_type(struct dm_pool *mem, struct logical_volume *lv,
 		       const char *layer, const char *target_type);
 
-int monitor_dev_for_events(struct cmd_context *cmd,
-			    struct logical_volume *lv, int do_reg);
+int monitor_dev_for_events(struct cmd_context *cmd, struct logical_volume *lv,
+			   unsigned origin_only, int do_reg);
+
+#ifdef DMEVENTD
+#  include "libdevmapper-event.h"
+char *get_monitor_dso_path(struct cmd_context *cmd, const char *libpath);
+int target_registered_with_dmeventd(struct cmd_context *cmd, const char *libpath,
+				    struct logical_volume *lv, int *pending);
+int target_register_events(struct cmd_context *cmd, const char *dso, struct logical_volume *lv,
+			    int evmask __attribute__((unused)), int set, int timeout);
+#endif
 
 /*
  * Returns 1 if PV has a dependency tree that uses anything in VG.
@@ -111,5 +122,10 @@ int pv_uses_vg(struct physical_volume *pv,
  * Returns 1 if mapped device is not suspended.
  */
 int device_is_usable(struct device *dev);
+
+/*
+ * Declaration moved here from fs.h to keep header fs.h hidden
+ */
+void fs_unlock(void);
 
 #endif

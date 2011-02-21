@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2011 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -42,6 +42,11 @@ static int _blkext_major = -1;
 static int _drbd_major = -1;
 static int _device_mapper_major = -1;
 
+int dm_major(void)
+{
+	return _device_mapper_major;
+}
+
 int md_major(void)
 {
 	return _md_major;
@@ -54,6 +59,8 @@ int blkext_major(void)
 
 int dev_subsystem_part_major(const struct device *dev)
 {
+	dev_t primary_dev;
+
 	if (MAJOR(dev->dev) == -1)
 		return 0;
 
@@ -61,6 +68,11 @@ int dev_subsystem_part_major(const struct device *dev)
 		return 1;
 
 	if (MAJOR(dev->dev) == _drbd_major)
+		return 1;
+
+	if ((MAJOR(dev->dev) == _blkext_major) &&
+	    (get_primary_dev(sysfs_dir_path(), dev, &primary_dev)) &&
+	    (MAJOR(primary_dev) == _md_major))
 		return 1;
 
 	return 0;
@@ -73,6 +85,9 @@ const char *dev_subsystem_name(const struct device *dev)
 
 	if (MAJOR(dev->dev) == _drbd_major)
 		return "DRBD";
+
+	if (MAJOR(dev->dev) == _blkext_major)
+		return "BLKEXT";
 
 	return "";
 }
@@ -113,10 +128,11 @@ static const device_info_t device_info[] = {
 	{"virtblk", 8},		/* VirtIO disk */
 	{"mmc", 16},		/* MMC block device */
 	{"blkext", 1},		/* Extended device partitions */
+	{"fio", 16},		/* Fusion */
 	{NULL, 0}
 };
 
-static int _passes_lvm_type_device_filter(struct dev_filter *f __attribute((unused)),
+static int _passes_lvm_type_device_filter(struct dev_filter *f __attribute__((unused)),
 					  struct device *dev)
 {
 	const char *name = dev_name(dev);
@@ -130,16 +146,8 @@ static int _passes_lvm_type_device_filter(struct dev_filter *f __attribute((unus
 		return 0;
 	}
 
-	/* FIXME Always check 'layer' regardless of ignore_suspended_devices */
-	/* Skip suspended devices */
-	if (MAJOR(dev->dev) == _device_mapper_major &&
-	    ignore_suspended_devices() && !device_is_usable(dev)) {
-		log_debug("%s: Skipping: Suspended or internal dm device", name);
-		return 0;
-	}
-
 	/* Check it's accessible */
-	if (!dev_open_flags(dev, O_RDONLY, 0, 1)) {
+	if (!dev_open_flags(dev, O_RDONLY, 1, 1)) {
 		log_debug("%s: Skipping: open failed", name);
 		return 0;
 	}
@@ -178,8 +186,8 @@ static int _scan_proc_dev(const char *proc, const struct config_node *cn)
 	int line_maj = 0;
 	int blocksection = 0;
 	size_t dev_len = 0;
-	struct config_value *cv;
-	char *name;
+	const struct config_value *cv;
+	const char *name;
 
 
 	if (!*proc) {
@@ -319,6 +327,7 @@ struct dev_filter *lvm_type_filter_create(const char *proc,
 
 	f->passes_filter = _passes_lvm_type_device_filter;
 	f->destroy = lvm_type_filter_destroy;
+	f->use_count = 0;
 	f->private = NULL;
 
 	if (!_scan_proc_dev(proc, cn)) {
@@ -331,5 +340,8 @@ struct dev_filter *lvm_type_filter_create(const char *proc,
 
 void lvm_type_filter_destroy(struct dev_filter *f)
 {
+	if (f->use_count)
+		log_error(INTERNAL_ERROR "Destroying lvm_type filter while in use %u times.", f->use_count);
+
 	dm_free(f);
 }

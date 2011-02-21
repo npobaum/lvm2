@@ -18,9 +18,9 @@ which cut || exit 200
 test -f /proc/mdstat && grep -q raid0 /proc/mdstat || \
 modprobe raid0 || exit 200
 
-. ./test-utils.sh
+. lib/test
 
-prepare_lvmconf '[ "a|/dev/md.*|", "a/dev\/mapper\/.*$/", "r/.*/" ]'
+aux lvmconf 'devices/filter = [ "a|/dev/md.*|", "a/dev\/mapper\/.*$/", "r/.*/" ]'
 aux prepare_devs 2
 
 # Have MD use a non-standard name to avoid colliding with an existing MD device
@@ -34,35 +34,41 @@ mdadm_maj=$(mdadm --version 2>&1 | perl -pi -e 's|.* v(\d+).*|\1|')
 cleanup_md() {
     # sleeps offer hack to defeat: 'md: md127 still in use'
     # see: https://bugzilla.redhat.com/show_bug.cgi?id=509908#c25
-    sleep 2
-    mdadm --stop $mddev
+    aux udev_wait
+    mdadm --stop $mddev || true
+    aux udev_wait
     if [ -b "$mddev" ]; then
         # mdadm doesn't always cleanup the device node
 	sleep 2
 	rm -f $mddev
     fi
-    teardown
+}
+
+cleanup_md_and_teardown() {
+    cleanup_md
+    aux teardown
 }
 
 # create 2 disk MD raid0 array (stripe_width=128K)
-[ -b "$mddev" ] && exit 200
-mdadm --create $mddev --auto=md --level 0 --raid-devices=2 --chunk 64 $dev1 $dev2
-trap 'aux cleanup_md' EXIT # cleanup this MD device at the end of the test
+test -b "$mddev" && exit 200
+mdadm --create --metadata=1.0 $mddev --auto=md --level 0 --raid-devices=2 --chunk 64 $dev1 $dev2
+trap 'cleanup_md_and_teardown' EXIT # cleanup this MD device at the end of the test
+test -b "$mddev" || exit 200
 
 # Test alignment of PV on MD without any MD-aware or topology-aware detection
 # - should treat $mddev just like any other block device
-pv_align="192.00k"
+pv_align="1.00m"
 pvcreate --metadatasize 128k \
     --config 'devices {md_chunk_alignment=0 data_alignment_detection=0 data_alignment_offset_detection=0}' \
     $mddev
-check_pv_field_ $mddev pe_start $pv_align
+check pv_field $mddev pe_start $pv_align
 
 # Test md_chunk_alignment independent of topology-aware detection
-pv_align="256.00k"
+pv_align="1.00m"
 pvcreate --metadatasize 128k \
     --config 'devices {data_alignment_detection=0 data_alignment_offset_detection=0}' \
     $mddev
-check_pv_field_ $mddev pe_start $pv_align
+check pv_field $mddev pe_start $pv_align
 
 # Get linux minor version
 linux_minor=$(echo `uname -r` | cut -d'.' -f3 | cut -d'-' -f1)
@@ -70,10 +76,11 @@ linux_minor=$(echo `uname -r` | cut -d'.' -f3 | cut -d'-' -f1)
 # Test newer topology-aware alignment detection
 # - first added to 2.6.31 but not "reliable" until 2.6.33
 if [ $linux_minor -ge 33 ]; then
-    pv_align="256.00k"
+    pv_align="1.00m"
+    # optimal_io_size=131072, minimum_io_size=65536
     pvcreate --metadatasize 128k \
 	--config 'devices { md_chunk_alignment=0 }' $mddev
-    check_pv_field_ $mddev pe_start $pv_align
+    check pv_field $mddev pe_start $pv_align
 fi
 
 # partition MD array directly, depends on blkext in Linux >= 2.6.28
@@ -96,21 +103,47 @@ EOF
     base_mddev_p=`basename $mddev_p_sysfs_name`
     mddev_p=/dev/${base_mddev_p}
 
+    # in case the system is running without devtmpfs /dev
+    # wait here for created device node on tmpfs
+    aux udev_wait $mddev_p
+    test -b $mddev_p || exit 200
+
     # Checking for 'alignment_offset' in sysfs implies Linux >= 2.6.31
+    # but reliable alignment_offset support requires kernel.org Linux >= 2.6.33
     sysfs_alignment_offset=/sys/dev/block/${mddev_maj_min}/${base_mddev_p}/alignment_offset
     [ -f $sysfs_alignment_offset -a $linux_minor -ge 33 ] && \
 	alignment_offset=`cat $sysfs_alignment_offset` || \
 	alignment_offset=0
 
-    if [ "$alignment_offset" = "512" ]; then
-	pv_align="256.50k"
+    if [ $alignment_offset -gt 0 ]; then    
+        # default alignment is 1M, add alignment_offset
+	pv_align=$((1048576+$alignment_offset))B
 	pvcreate --metadatasize 128k $mddev_p
-	check_pv_field_ $mddev_p pe_start $pv_align
-	pvremove $mddev_p
-    elif [ "$alignment_offset" = "2048" ]; then
-	pv_align="258.00k"
-	pvcreate --metadatasize 128k $mddev_p
-	check_pv_field_ $mddev_p pe_start $pv_align
+	check pv_field $mddev_p pe_start $pv_align "--units b"
 	pvremove $mddev_p
     fi
+fi
+
+# Test newer topology-aware alignment detection w/ --dataalignment override
+if [ $linux_minor -ge 33 ]; then
+    cleanup_md
+    pvcreate -f $dev1
+    pvcreate -f $dev2
+
+    # create 2 disk MD raid0 array (stripe_width=2M)
+    test -b "$mddev" && exit 200
+    mdadm --create --metadata=1.0 $mddev --auto=md --level 0 --raid-devices=2 --chunk 1024 $dev1 $dev2
+    test -b "$mddev" || exit 200
+
+    # optimal_io_size=2097152, minimum_io_size=1048576
+    pv_align="2.00m"
+    pvcreate --metadatasize 128k \
+	--config 'devices { md_chunk_alignment=0 }' $mddev
+    check pv_field $mddev pe_start $pv_align
+
+    # now verify pe_start alignment override using --dataalignment
+    pv_align="192.00k"
+    pvcreate --dataalignment 64k --metadatasize 128k \
+	--config 'devices { md_chunk_alignment=0 }' $mddev
+    check pv_field $mddev pe_start $pv_align
 fi

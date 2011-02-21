@@ -104,6 +104,11 @@ ifeq ("@DMEVENTD@", "yes")
 	LVMLIBS += -ldevmapper-event
 endif
 
+LVMLIBS += -ldevmapper
+
+EXPORTED_HEADER = $(srcdir)/lvm2cmd.h
+EXPORTED_FN_PREFIX = lvm2
+
 DEFS += -DLVM_SHARED_PATH=\"$(exec_prefix)/sbin/lvm\"
 
 CFLOW_LIST = lvmcmdlib.c lvm2cmd.c
@@ -112,17 +117,17 @@ CFLOW_TARGET = lvm
 
 include $(top_builddir)/make.tmpl
 
-LIBS += -ldevmapper $(UDEV_LIBS)
+LIBS += $(UDEV_LIBS)
 
 device-mapper: $(TARGETS_DM)
 
 dmsetup: dmsetup.o $(top_builddir)/libdm/libdevmapper.$(LIB_SUFFIX)
 	$(CC) $(CFLAGS) $(LDFLAGS) -L$(top_builddir)/libdm \
-	      -o $@ dmsetup.o $(LIBS)
+	      -o $@ dmsetup.o -ldevmapper $(LIBS)
 
 dmsetup.static: dmsetup.o $(interfacebuilddir)/libdevmapper.a
 	$(CC) $(CFLAGS) $(LDFLAGS) -static -L$(interfacebuilddir) \
-	      -o $@ dmsetup.o $(STATIC_LIBS) $(LIBS)
+	      -o $@ dmsetup.o -ldevmapper $(STATIC_LIBS) $(LIBS)
 
 all: device-mapper
 
@@ -142,11 +147,11 @@ liblvm2cmd-static.a: $(top_builddir)/lib/liblvm-internal.a $(OBJECTS) lvmcmdlib.
 	cat $(top_builddir)/lib/liblvm-internal.a > $@
 	$(AR) rs $@ $(OBJECTS) lvmcmdlib.o lvm2cmd-static.o
 
-liblvm2cmd.$(LIB_SUFFIX): LIBS += $(DL_LIBS)
 liblvm2cmd.$(LIB_SUFFIX): liblvm2cmd.a $(LDDEPS)
 	$(CC) -shared -Wl,-soname,$@.$(LIB_VERSION) \
-	$(CFLAGS) $(CLDFLAGS) -o $@ $(LVMLIBS) $(LIBS) \
-		@CLDWHOLEARCHIVE@ liblvm2cmd.a @CLDNOWHOLEARCHIVE@
+		$(CFLAGS) $(CLDFLAGS) -o $@ \
+		@CLDWHOLEARCHIVE@ liblvm2cmd.a @CLDNOWHOLEARCHIVE@ \
+		$(LVMLIBS) $(LIBS)
 
 liblvm2cmd.$(LIB_SUFFIX).$(LIB_VERSION): liblvm2cmd.$(LIB_SUFFIX)
 	$(LN_S) -f $< $@
@@ -170,7 +175,7 @@ install_cmdlib_include: $(srcdir)/lvm2cmd.h
 
 install_cmdlib_dynamic: liblvm2cmd.$(LIB_SUFFIX)
 	$(INSTALL_PROGRAM) -D $< $(libdir)/$(<F).$(LIB_VERSION)
-	$(INSTALL) -d $(usrlibdir)
+	$(INSTALL_DIR) $(usrlibdir)
 	$(LN_S) -f $(USRLIB_RELPATH)$(<F).$(LIB_VERSION) $(usrlibdir)/$(<F)
 
 install_cmdlib_static: liblvm2cmd-static.a
@@ -198,3 +203,5 @@ install_device-mapper: $(INSTALL_DMSETUP_TARGETS)
 install_lvm2: $(INSTALL_LVM_TARGETS)
 
 install: install_lvm2 install_device-mapper
+
+DISTCLEAN_TARGETS += .exported_symbols_generated

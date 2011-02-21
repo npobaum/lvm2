@@ -119,6 +119,16 @@ void *dm_malloc_aux_debug(size_t s, const char *file, int line)
 	return nb + 1;
 }
 
+void *dm_zalloc_aux_debug(size_t s, const char *file, int line)
+{
+	void *ptr = dm_malloc_aux_debug(s, file, line);
+
+	if (ptr)
+		memset(ptr, 0, s);
+
+	return ptr;
+}
+
 void dm_free_aux(void *p)
 {
 	char *ptr;
@@ -193,17 +203,25 @@ int dm_dump_memory_debug(void)
 		log_very_verbose("You have a memory leak:");
 
 	for (mb = _head; mb; mb = mb->next) {
+#ifdef VALGRIND_POOL
+		/*
+		 * We can't look at the memory in case it has had
+		 * VALGRIND_MAKE_MEM_NOACCESS called on it.
+		 */
+		str[0] = '\0';
+#else
 		for (c = 0; c < sizeof(str) - 1; c++) {
 			if (c >= mb->length)
 				str[c] = ' ';
-			else if (*(char *)(mb->magic + c) == '\0')
+			else if (((char *)mb->magic)[c] == '\0')
 				str[c] = '\0';
-			else if (*(char *)(mb->magic + c) < ' ')
+			else if (((char *)mb->magic)[c] < ' ')
 				str[c] = '?';
 			else
-				str[c] = *(char *)(mb->magic + c);
+				str[c] = ((char *)mb->magic)[c];
 		}
 		str[sizeof(str) - 1] = '\0';
+#endif
 
 		LOG_MESG(_LOG_INFO, mb->file, mb->line, 0,
 			 "block %d at %p, size %" PRIsize_t "\t [%s]",
@@ -231,8 +249,8 @@ void dm_bounds_check_debug(void)
 	}
 }
 
-void *dm_malloc_aux(size_t s, const char *file __attribute((unused)),
-		    int line __attribute((unused)))
+void *dm_malloc_aux(size_t s, const char *file __attribute__((unused)),
+		    int line __attribute__((unused)))
 {
 	if (s > 50000000) {
 		log_error("Huge memory allocation (size %" PRIsize_t
@@ -241,4 +259,14 @@ void *dm_malloc_aux(size_t s, const char *file __attribute((unused)),
 	}
 
 	return malloc(s);
+}
+
+void *dm_zalloc_aux(size_t s, const char *file, int line)
+{
+	void *ptr = dm_malloc_aux(s, file, line);
+
+	if (ptr)
+		memset(ptr, 0, s);
+
+	return ptr;
 }

@@ -292,7 +292,7 @@ static int _detach_pvmove_mirror(struct cmd_context *cmd,
 
 	/* Update metadata to remove mirror segments and break dependencies */
 	dm_list_init(&lvs_completed);
-	if (!lv_remove_mirrors(cmd, lv_mirr, 1, 0, NULL, PVMOVE) ||
+	if (!lv_remove_mirrors(cmd, lv_mirr, 1, 0, NULL, NULL, PVMOVE) ||
 	    !remove_layers_for_segments_all(cmd, lv_mirr, PVMOVE,
 					    &lvs_completed)) {
 		return 0;
@@ -445,7 +445,7 @@ static int _set_up_pvmove(struct cmd_context *cmd, const char *pv_name,
 
 	vg = _get_vg(cmd, pv_vg_name(pv));
 	if (vg_read_error(vg)) {
-		vg_release(vg);
+		free_vg(vg);
 		stack;
 		return ECMD_FAILED;
 	}
@@ -510,7 +510,7 @@ static int _set_up_pvmove(struct cmd_context *cmd, const char *pv_name,
 	/* LVs are all in status LOCKED */
 	r = ECMD_PROCESSED;
 out:
-	unlock_and_release_vg(cmd, vg, pv_vg_name(pv));
+	unlock_and_free_vg(cmd, vg, pv_vg_name(pv));
 	return r;
 }
 
@@ -520,7 +520,8 @@ static int _finish_pvmove(struct cmd_context *cmd, struct volume_group *vg,
 {
 	int r = 1;
 
-	if (!_detach_pvmove_mirror(cmd, lv_mirr)) {
+	if (!dm_list_empty(lvs_changed) &&
+	    !_detach_pvmove_mirror(cmd, lv_mirr)) {
 		log_error("ABORTING: Removal of temporary mirror failed");
 		return 0;
 	}
@@ -596,7 +597,7 @@ static int _finish_pvmove(struct cmd_context *cmd, struct volume_group *vg,
 
 static struct volume_group *_get_move_vg(struct cmd_context *cmd,
 					 const char *name,
-					 const char *uuid __attribute((unused)))
+					 const char *uuid __attribute__((unused)))
 {
 	struct physical_volume *pv;
 
@@ -643,17 +644,16 @@ int pvmove(struct cmd_context *cmd, int argc, char **argv)
 	}
 
 	if (argc) {
-		pv_name = argv[0];
+		if (!(pv_name = dm_pool_strdup(cmd->mem, argv[0]))) {
+			log_error("Failed to clone PV name");
+			return ECMD_FAILED;
+		}
+
+		unescape_colons_and_at_signs(pv_name, &colon, NULL);
 
 		/* Drop any PE lists from PV name */
-		if ((colon = strchr(pv_name, ':'))) {
-			if (!(pv_name = dm_pool_strndup(cmd->mem, pv_name,
-						     (unsigned) (colon -
-								 pv_name)))) {
-				log_error("Failed to clone PV name");
-				return ECMD_FAILED;
-			}
-		}
+		if (colon)
+			*colon = '\0';
 
 		if (!arg_count(cmd, abort_ARG) &&
 		    (ret = _set_up_pvmove(cmd, pv_name, argc, argv)) !=

@@ -22,7 +22,7 @@ static struct volume_group *_vgmerge_vg_read(struct cmd_context *cmd,
 	log_verbose("Checking for volume group \"%s\"", vg_name);
 	vg = vg_read_for_update(cmd, vg_name, NULL, 0);
 	if (vg_read_error(vg)) {
-		vg_release(vg);
+		free_vg(vg);
 		return NULL;
 	}
 	return vg;
@@ -54,7 +54,7 @@ static int _vgmerge_single(struct cmd_context *cmd, const char *vg_name_to,
 		vg_to = _vgmerge_vg_read(cmd, vg_name_to);
 		if (!vg_to) {
 			stack;
-			unlock_and_release_vg(cmd, vg_from, vg_name_from);
+			unlock_and_free_vg(cmd, vg_from, vg_name_from);
 			return ECMD_FAILED;
 		}
 	} else {
@@ -67,7 +67,7 @@ static int _vgmerge_single(struct cmd_context *cmd, const char *vg_name_to,
 		vg_from = _vgmerge_vg_read(cmd, vg_name_from);
 		if (!vg_from) {
 			stack;
-			unlock_and_release_vg(cmd, vg_to, vg_name_to);
+			unlock_and_free_vg(cmd, vg_to, vg_name_to);
 			return ECMD_FAILED;
 		}
 	}
@@ -92,7 +92,7 @@ static int _vgmerge_single(struct cmd_context *cmd, const char *vg_name_to,
 	/* Fix up LVIDs */
 	dm_list_iterate_items(lvl1, &vg_to->lvs) {
 		union lvid *lvid1 = &lvl1->lv->lvid;
-		char uuid[64] __attribute((aligned(8)));
+		char uuid[64] __attribute__((aligned(8)));
 
 		dm_list_iterate_items(lvl2, &vg_from->lvs) {
 			union lvid *lvid2 = &lvl2->lv->lvid;
@@ -114,16 +114,26 @@ static int _vgmerge_single(struct cmd_context *cmd, const char *vg_name_to,
 		}
 	}
 
+	dm_list_iterate_items(lvl1, &vg_from->lvs) {
+		lvl1->lv->vg = vg_to;
+	}
+
 	while (!dm_list_empty(&vg_from->lvs)) {
 		struct dm_list *lvh = vg_from->lvs.n;
 
 		dm_list_move(&vg_to->lvs, lvh);
 	}
 
-	while (!dm_list_empty(&vg_from->fid->metadata_areas)) {
-		struct dm_list *mdah = vg_from->fid->metadata_areas.n;
+	while (!dm_list_empty(&vg_from->fid->metadata_areas_in_use)) {
+		struct dm_list *mdah = vg_from->fid->metadata_areas_in_use.n;
 
-		dm_list_move(&vg_to->fid->metadata_areas, mdah);
+		dm_list_move(&vg_to->fid->metadata_areas_in_use, mdah);
+	}
+
+	while (!dm_list_empty(&vg_from->fid->metadata_areas_ignored)) {
+		struct dm_list *mdah = vg_from->fid->metadata_areas_ignored.n;
+
+		dm_list_move(&vg_to->fid->metadata_areas_ignored, mdah);
 	}
 
 	vg_to->extent_count += vg_from->extent_count;
@@ -142,11 +152,11 @@ static int _vgmerge_single(struct cmd_context *cmd, const char *vg_name_to,
 	r = ECMD_PROCESSED;
 bad:
 	if (lock_vg_from_first) {
-		unlock_and_release_vg(cmd, vg_to, vg_name_to);
-		unlock_and_release_vg(cmd, vg_from, vg_name_from);
+		unlock_and_free_vg(cmd, vg_to, vg_name_to);
+		unlock_and_free_vg(cmd, vg_from, vg_name_from);
 	} else {
-		unlock_and_release_vg(cmd, vg_from, vg_name_from);
-		unlock_and_release_vg(cmd, vg_to, vg_name_to);
+		unlock_and_free_vg(cmd, vg_from, vg_name_from);
+		unlock_and_free_vg(cmd, vg_to, vg_name_to);
 	}
 	return r;
 }
