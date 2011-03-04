@@ -14,7 +14,7 @@
  
 -USRLIB_RELPATH = $(shell echo $(abspath $(usrlibdir) $(libdir)) | \
 -  $(AWK) -f $(top_srcdir)/scripts/relpath.awk)
-+USRLIB_RELPATH = $(libdir)
++USRLIB_RELPATH = @libdir@/
  
  DEFAULT_SYS_DIR = @DEFAULT_SYS_DIR@
  DEFAULT_ARCHIVE_DIR = $(DEFAULT_SYS_DIR)/@DEFAULT_ARCHIVE_SUBDIR@
