@@ -229,7 +229,7 @@ install_lvm2: export DH_OPTIONS = -plvm2
 install_lvm2: DIR = $(BUILD_DIR)/install_deb
 install_lvm2: $(STAMPS_DIR)/install_deb
 	+$(MAKE_SELF) install-base-prep INSTALL_DIR='$(DIR)'
-	dh_installinit --no-start -- start 26 S . start 50 0 6 .
+	dh_installinit --no-start -- start 26 S .
 	+$(MAKE_SELF) install-base
 
 install_lvm2-udeb: export DH_OPTIONS = -plvm2-udeb

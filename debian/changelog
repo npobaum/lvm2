@@ -1,3 +1,11 @@
+lvm2 (2.02.84-3) unstable; urgency=low
+
+  * Remove udev dependency from init script. (closes: #543163)
+  * Don't longer create device nodes in init script.
+  * Don't longer try to stop devices on shutdown.
+
+ -- Bastian Blank <waldi@debian.org>  Mon, 28 Mar 2011 14:42:35 +0200
+
 lvm2 (2.02.84-2) unstable; urgency=low
 
   * Fix development library symlinks. (closes: #614838)
