@@ -1,3 +1,11 @@
+lvm2 (2.02.84-3.1) unstable; urgency=low
+
+  * Non-maintainer upload.
+  * Replace libreadline5-dev build dependency with (conservatively)
+    libreadline-gplv2-dev, fixes an FTBFS. (Closes: #553807)
+
+ -- Thorsten Glaser <tg@mirbsd.de>  Mon, 25 Jul 2011 17:39:19 +0000
+
 lvm2 (2.02.84-3) unstable; urgency=low
 
   * Remove udev dependency from init script. (closes: #543163)
