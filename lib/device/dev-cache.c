@@ -179,6 +179,21 @@ static int _compare_paths(const char *path0, const char *path1)
 	 * Built-in rules.
 	 */
 
+	/* Put /dev/block/ names last regardless of path shortness.
+	 * FIXME It would be better if we could do this in the configuration
+	 * file, but the only way to do so with preferred_names is to try to
+	 * enumerate all the possible names we might want to prefer over
+	 * /dev/block/. */
+	m0 = strncmp(path0, "/dev/block/", 11);
+	m1 = strncmp(path1, "/dev/block/", 11);
+
+	if (m0 != m1) {
+		if (m0 == 0)
+			return 1;
+		if (m1 == 0)
+			return 0;
+	}
+
 	/* Return the path with fewer slashes */
 	for (p = path0; p++; p = (const char *) strchr(p, '/'))
 		slash0++;
