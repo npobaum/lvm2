@@ -1,3 +1,10 @@
+lvm2 (2.02.66-4ubuntu3) oneiric; urgency=low
+
+  * Add dependency on libudev-dev to libdevmapper-dev so that the .pc file
+    works.
+
+ -- Steve Langasek <steve.langasek@ubuntu.com>  Tue, 16 Aug 2011 18:30:40 -0700
+
 lvm2 (2.02.66-4ubuntu2) natty; urgency=low
 
   * Add support for corosync based clusters. (LP: #525287)

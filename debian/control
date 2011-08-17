@@ -50,7 +50,7 @@ Description: Cluster LVM Daemon for lvm2
 Package: libdevmapper-dev
 Section: libdevel
 Architecture: any
-Depends: ${misc:Depends}, libdevmapper1.02.1 (= ${binary:Version}), libdevmapper-event1.02.1 (= ${binary:Version}), libselinux1-dev
+Depends: ${misc:Depends}, libdevmapper1.02.1 (= ${binary:Version}), libdevmapper-event1.02.1 (= ${binary:Version}), libselinux1-dev, libudev-dev
 Description: The Linux Kernel Device Mapper header files
  The Linux Kernel Device Mapper is the LVM (Linux Logical Volume Management)
  Team's implementation of a minimalistic kernel-space driver that handles
