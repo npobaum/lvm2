@@ -55,9 +55,15 @@ prepare_dmeventd() {
 
 	dmeventd -f "$@" &
 	echo "$!" > LOCAL_DMEVENTD
+
+	# FIXME wait for pipe in /var/run instead
+	sleep 1
 }
 
 teardown_devs() {
+	# Delete any remaining dm/udev semaphores
+	teardown_udev_cookies
+
 	test -n "$PREFIX" && {
 		rm -rf $TESTDIR/dev/$PREFIX*
 
@@ -65,7 +71,7 @@ teardown_devs() {
 		while dmsetup table | grep -q ^$PREFIX; do
 			for s in `dmsetup info -c -o name --noheading | grep ^$PREFIX`; do
 				umount -fl $DM_DEV_DIR/mapper/$s >& /dev/null || true
-				dmsetup remove $s >& /dev/null || true
+				dmsetup remove -f $s >& /dev/null || true
 			done
 		done
 		finish_udev_transaction
@@ -83,6 +89,48 @@ teardown_devs() {
 	fi
 	rm -f DEVICES # devs is set in prepare_devs()
 	rm -f LOOP
+
+	# Attempt to remove any loop devices that failed to get torn down if earlier tests aborted
+	test -n "$COMMON_PREFIX" && {
+		# Resume any linears to be sure we do not deadlock
+		STRAY_DEVS=$(dmsetup table | sed 's/:.*//' | grep $COMMON_PREFIX | cut -d' '  -f 1)
+		for dm in $STRAY_DEVS ; do
+			# FIXME: only those really suspended
+			echo dmsetup resume $dm
+			dmsetup resume $dm || true
+		done
+
+		STRAY_MOUNTS=`mount | grep $COMMON_PREFIX | cut -d\  -f1`
+		if test -n "$STRAY_MOUNTS"; then
+			echo "Removing stray mounted devices containing $COMMON_PREFIX:"
+			mount | grep $COMMON_PREFIX
+			umount -fl $STRAY_MOUNTS || true
+			sleep 2
+		fi
+
+		init_udev_transaction
+		NUM_REMAINING_DEVS=999
+		while NUM_DEVS=`dmsetup table | grep ^$COMMON_PREFIX | wc -l` && \
+		    test $NUM_DEVS -lt $NUM_REMAINING_DEVS -a $NUM_DEVS -ne 0; do
+			echo "Removing $NUM_DEVS stray mapped devices with names beginning with $COMMON_PREFIX:"
+			STRAY_DEVS=$(dmsetup table | sed 's/:.*//' | grep $COMMON_PREFIX | cut -d' '  -f 1)
+			dmsetup info -c | grep ^$COMMON_PREFIX
+			for dm in $STRAY_DEVS ; do
+				echo dmsetup remove $dm
+				dmsetup remove -f $dm || true
+			done
+			NUM_REMAINING_DEVS=$NUM_DEVS
+		done
+		finish_udev_transaction
+		udev_wait
+
+        	STRAY_LOOPS=`losetup -a | grep $COMMON_PREFIX | cut -d: -f1`
+        	if test -n "$STRAY_LOOPS"; then
+                	echo "Removing stray loop devices containing $COMMON_PREFIX:"
+                	losetup -a | grep $COMMON_PREFIX
+                	losetup -d $STRAY_LOOPS || true
+        	fi
+	}
 }
 
 teardown() {
@@ -113,7 +161,7 @@ teardown() {
 }
 
 make_ioerror() {
-	echo 0 10000000 error | dmsetup create ioerror
+	echo 0 10000000 error | dmsetup create -u TEST-ioerror ioerror
 	ln -s $DM_DEV_DIR/mapper/ioerror $DM_DEV_DIR/ioerror
 }
 
@@ -236,7 +284,7 @@ prepare_devs() {
 		local dev="$DM_DEV_DIR/mapper/$name"
 		devs="$devs $dev"
 		echo 0 $size linear $LOOP $((($i-1)*$size)) > $name.table
-		dmsetup create $name $name.table
+		dmsetup create -u TEST-$name $name $name.table
 	done
 	finish_udev_transaction
 
@@ -257,11 +305,7 @@ disable_dev() {
 
 	init_udev_transaction
 	for dev in "$@"; do
-        # first we make the device inaccessible
-		echo 0 10000000 error | dmsetup load $dev
-		dmsetup resume $dev
-        # now let's try to get rid of it if it's unused
-        #dmsetup remove $dev
+        	dmsetup remove -f $dev || true
 	done
 	finish_udev_transaction
 
@@ -272,7 +316,7 @@ enable_dev() {
 	init_udev_transaction
 	for dev in "$@"; do
 		local name=`echo "$dev" | sed -e 's,.*/,,'`
-		dmsetup create $name $name.table || dmsetup load $name $name.table
+		dmsetup create -u TEST-$name $name $name.table || dmsetup load $name $name.table
 		dmsetup resume $dev
 	done
 	finish_udev_transaction
@@ -310,6 +354,11 @@ prepare_vg() {
 
 lvmconf() {
     if test -z "$LVM_TEST_LOCKING"; then LVM_TEST_LOCKING=1; fi
+    if test "$DM_DEV_DIR" = "/dev"; then
+	VERIFY_UDEV=0;
+    else
+	VERIFY_UDEV=1;
+    fi
     test -f CONFIG_VALUES || {
         cat > CONFIG_VALUES <<-EOF
 devices/dir = "$DM_DEV_DIR"
@@ -332,8 +381,10 @@ global/locking_dir = "$TESTDIR/var/lock/lvm"
 global/locking_type=$LVM_TEST_LOCKING
 global/si_unit_consistency = 1
 global/fallback_to_local_locking = 0
+activation/checks = 1
 activation/udev_sync = 1
 activation/udev_rules = 1
+activation/verify_udev_operations = $VERIFY_UDEV
 activation/polling_interval = 0
 activation/snapshot_autoextend_percent = 50
 activation/snapshot_autoextend_threshold = 50
@@ -370,11 +421,12 @@ api() {
 }
 
 udev_wait() {
-	pgrep udev >/dev/null || return
+	pgrep udev >/dev/null || return 0
+	which udevadm >/dev/null || return 0
 	if test -n "$1" ; then
 		udevadm settle --exit-if-exists=$1
 	else
-		udevadm settle --timeout=5 
+		udevadm settle --timeout=15
 	fi
 }
 

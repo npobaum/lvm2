@@ -300,16 +300,19 @@ static void _display_archive(struct cmd_context *cmd, struct archive_file *af)
 {
 	struct volume_group *vg = NULL;
 	struct format_instance *tf;
+	struct format_instance_ctx fic;
+	struct text_context tc = {.path_live = af->path,
+				  .path_edit = NULL,
+				  .desc = NULL};
 	time_t when;
 	char *desc;
-	void *context;
 
 	log_print(" ");
 	log_print("File:\t\t%s", af->path);
 
-	if (!(context = create_text_context(cmd, af->path, NULL)) ||
-	    !(tf = cmd->fmt_backup->ops->create_instance(cmd->fmt_backup, NULL,
-							 NULL, context))) {
+	fic.type = FMT_INSTANCE_VG | FMT_INSTANCE_PRIVATE_MDAS;
+	fic.context.private = &tc;
+	if (!(tf = cmd->fmt_backup->ops->create_instance(cmd->fmt_backup, &fic))) {
 		log_error("Couldn't create text instance object.");
 		return;
 	}
@@ -330,7 +333,6 @@ static void _display_archive(struct cmd_context *cmd, struct archive_file *af)
 	log_print("Backup Time:\t%s", ctime(&when));
 
 	free_vg(vg);
-	tf->fmt->ops->destroy_instance(tf);
 }
 
 int archive_list(struct cmd_context *cmd, const char *dir, const char *vgname)

@@ -31,10 +31,13 @@ lvm_t lvm_init(const char *system_dir)
 	/* FIXME: logging bound to handle
 	 */
 
+	if (!udev_init_library_context())
+		stack;
+
 	/* create context */
 	/* FIXME: split create_toolcontext */
 	/* FIXME: make all globals configurable */
-	cmd = create_toolcontext(0, system_dir);
+	cmd = create_toolcontext(0, system_dir, 1);
 	if (!cmd)
 		return NULL;
 
@@ -69,6 +72,7 @@ lvm_t lvm_init(const char *system_dir)
 void lvm_quit(lvm_t libh)
 {
 	destroy_toolcontext((struct cmd_context *)libh);
+	udev_fin_library_context();
 }
 
 int lvm_config_reload(lvm_t libh)

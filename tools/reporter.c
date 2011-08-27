@@ -51,7 +51,6 @@ static int _segs_single(struct cmd_context *cmd __attribute__((unused)),
 
 	return ECMD_PROCESSED;
 }
-
 static int _pvsegs_sub_single(struct cmd_context *cmd,
 			      struct volume_group *vg,
 			      struct pv_segment *pvseg, void *handle)
@@ -61,15 +60,13 @@ static int _pvsegs_sub_single(struct cmd_context *cmd,
 
 	struct volume_group _free_vg = {
 		.cmd = cmd,
-		.name = (char *)"",
+		.name = "",
+		.vgmem = NULL,
 	};
-
-        if (!(_free_vg.vgmem = dm_pool_create("_free_vg", 10240)))
-		return ECMD_FAILED;
 
 	struct logical_volume _free_logical_volume = {
 		.vg = vg ?: &_free_vg,
-		.name = (char *) "",
+		.name = "",
 		.snapshot = NULL,
 		.status = VISIBLE_LV,
 		.major = -1,
@@ -109,8 +106,8 @@ static int _pvsegs_sub_single(struct cmd_context *cmd,
 		ret = ECMD_FAILED;
                 goto_out;
 	}
+
  out:
-	free_vg(&_free_vg);
 	return ret;
 }
 

@@ -88,8 +88,7 @@ static int _not_implemented_set(void *obj, struct lvm_property_type *prop)
 
 static percent_t _copy_percent(const struct logical_volume *lv) {
 	percent_t perc;
-	if (!lv_mirror_percent(lv->vg->cmd, (struct logical_volume *) lv,
-			   0, &perc, NULL))
+	if (!lv_mirror_percent(lv->vg->cmd, lv, 0, &perc, NULL))
 		perc = PERCENT_INVALID;
 	return perc;
 }
@@ -226,7 +225,7 @@ GET_VG_NUM_PROPERTY_FN(vg_mda_copies, (vg_mda_copies(vg)))
 SET_VG_NUM_PROPERTY_FN(vg_mda_copies, vg_set_mda_copies)
 
 /* LVSEG */
-GET_LVSEG_STR_PROPERTY_FN(segtype, lvseg_segtype_dup(lvseg))
+GET_LVSEG_STR_PROPERTY_FN(segtype, lvseg_segtype_dup(lvseg->lv->vg->vgmem, lvseg))
 #define _segtype_set _not_implemented_set
 GET_LVSEG_NUM_PROPERTY_FN(stripes, lvseg->area_count)
 #define _stripes_set _not_implemented_set
@@ -250,9 +249,10 @@ GET_LVSEG_NUM_PROPERTY_FN(seg_size, (SECTOR_SIZE * lvseg_size(lvseg)))
 #define _seg_size_set _not_implemented_set
 GET_LVSEG_STR_PROPERTY_FN(seg_tags, lvseg_tags_dup(lvseg))
 #define _seg_tags_set _not_implemented_set
-#define _seg_pe_ranges_get _not_implemented_get
+GET_LVSEG_STR_PROPERTY_FN(seg_pe_ranges,
+			  lvseg_seg_pe_ranges(lvseg->lv->vg->vgmem, lvseg))
 #define _seg_pe_ranges_set _not_implemented_set
-#define _devices_get _not_implemented_get
+GET_LVSEG_STR_PROPERTY_FN(devices, lvseg_devices(lvseg->lv->vg->vgmem, lvseg))
 #define _devices_set _not_implemented_set
 
 

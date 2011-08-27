@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2011 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -295,7 +295,7 @@ int read_config_file(struct config_tree *cft)
 		if (!(c->dev = dev_create_file(c->filename, NULL, NULL, 1)))
 			return_0;
 
-		if (!dev_open_flags(c->dev, O_RDONLY, 0, 0)) {
+		if (!dev_open_readonly_buffered(c->dev)) {
 			c->dev = 0;
 			return_0;
 		}
@@ -808,6 +808,7 @@ static void _get_token(struct parser *p, int tok_prev)
 
 	case '.':
 		p->t = TOK_FLOAT;
+		/* Fall through */
 	case '0':
 	case '1':
 	case '2':
@@ -821,18 +822,20 @@ static void _get_token(struct parser *p, int tok_prev)
 	case '+':
 	case '-':
 		if (values_allowed) {
-			te++;
-			while ((te != p->fe) && (*te)) {
-				if (*te == '.') {
-					if (p->t == TOK_FLOAT)
-						break;
-					p->t = TOK_FLOAT;
-				} else if (!isdigit((int) *te))
+			while (++te != p->fe) {
+				if (!isdigit((int) *te)) {
+					if (*te == '.') {
+						if (p->t != TOK_FLOAT) {
+							p->t = TOK_FLOAT;
+							continue;
+						}
+					}
 					break;
-				te++;
+				}
 			}
 			break;
 		}
+		/* fall through */
 
 	default:
 		p->t = TOK_IDENTIFIER;
@@ -849,21 +852,19 @@ static void _get_token(struct parser *p, int tok_prev)
 
 static void _eat_space(struct parser *p)
 {
-	while ((p->tb != p->fe) && (*p->tb)) {
+	while (p->tb != p->fe) {
 		if (*p->te == '#')
-			while ((p->te != p->fe) && (*p->te) && (*p->te != '\n'))
-				p->te++;
+			while ((p->te != p->fe) && (*p->te != '\n') && (*p->te))
+				++p->te;
 
-		else if (isspace(*p->te)) {
-			while ((p->te != p->fe) && (*p->te) && isspace(*p->te)) {
-				if (*p->te == '\n')
-					p->line++;
-				p->te++;
-			}
+		else if (!isspace(*p->te))
+			break;
+
+		while ((p->te != p->fe) && isspace(*p->te)) {
+			if (*p->te == '\n')
+				++p->line;
+			++p->te;
 		}
-
-		else
-			return;
 
 		p->tb = p->te;
 	}
@@ -1047,6 +1048,12 @@ int find_config_tree_int(struct cmd_context *cmd, const char *path,
 {
 	/* FIXME Add log_error message on overflow */
 	return (int) _find_config_int64(cmd->cft_override ? cmd->cft_override->root : NULL, cmd->cft->root, path, (int64_t) fail);
+}
+
+int64_t find_config_tree_int64(struct cmd_context *cmd, const char *path, int64_t fail)
+{
+	return _find_config_int64(cmd->cft_override ? cmd->cft_override->root : NULL,
+				  cmd->cft->root, path, fail);
 }
 
 float find_config_tree_float(struct cmd_context *cmd, const char *path,

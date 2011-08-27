@@ -12,6 +12,8 @@
 . lib/test
 
 aux prepare_vg 4
+aux lvmconf 'allocation/maximise_cling = 0'
+aux lvmconf 'allocation/mirror_logs_require_separate_pvs = 1'
 
 # Clean-up and create a 2-way mirror, where the the
 # leg devices are always on $dev[12] and the log
@@ -43,7 +45,7 @@ cleanup $dev1
 aux disable_dev $dev1
 repair 'activation { mirror_image_fault_policy = "replace" mirror_log_fault_policy = "remove" }'
 check mirror $vg mirror
-lvs | grep mirror_mlog
+check active $vg mirror_mlog
 cleanup $dev1
 
 # Fail a leg of a mirror.
@@ -51,7 +53,7 @@ cleanup $dev1
 aux disable_dev $dev1
 repair 'activation { mirror_image_fault_policy = "replace" }'
 check mirror $vg mirror
-lvs | grep mirror_mlog
+check active $vg mirror_mlog
 cleanup $dev1
 
 # Fail a leg of a mirror (use old name for policy specification)
@@ -59,7 +61,7 @@ cleanup $dev1
 aux disable_dev $dev1
 repair 'activation { mirror_image_fault_policy = "replace" }'
 check mirror $vg mirror
-lvs | grep mirror_mlog
+check active $vg mirror_mlog
 cleanup $dev1
 
 # Fail a leg of a mirror w/ no available spare
@@ -68,7 +70,7 @@ cleanup $dev1
 aux disable_dev $dev2 $dev4
 repair 'activation { mirror_image_fault_policy = "replace" }'
 check mirror $vg mirror
-lvs | not grep mirror_mlog
+not check lv_exists $vg mirror_mlog
 cleanup $dev2 $dev4
 
 # Fail the log device of a mirror w/ no available spare
@@ -76,7 +78,7 @@ cleanup $dev2 $dev4
 aux disable_dev $dev3 $dev4
 repair 'activation { mirror_image_fault_policy = "replace" }' $vg/mirror
 check mirror $vg mirror
-lvs | not grep mirror_mlog
+not check lv_exists $vg mirror_mlog
 cleanup $dev3 $dev4
 
 # Fail the log device with a remove policy
@@ -85,5 +87,5 @@ lvchange -a y $vg/mirror
 aux disable_dev $dev3 $dev4
 repair 'activation { mirror_log_fault_policy = "remove" }'
 check mirror $vg mirror core
-lvs | not grep mirror_mlog
+not check lv_exists $vg mirror_mlog
 cleanup $dev3 $dev4

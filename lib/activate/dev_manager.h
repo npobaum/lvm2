@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2002-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004-2006 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2011 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -19,6 +19,7 @@
 #include "metadata-exported.h"
 
 struct logical_volume;
+struct lv_activate_opts;
 struct volume_group;
 struct cmd_context;
 struct dev_manager;
@@ -29,7 +30,8 @@ struct device;
  * Constructor and destructor.
  */
 struct dev_manager *dev_manager_create(struct cmd_context *cmd,
-				       const char *vg_name);
+				       const char *vg_name,
+				       unsigned track_pvmove_deps);
 void dev_manager_destroy(struct dev_manager *dm);
 void dev_manager_release(void);
 void dev_manager_exit(void);
@@ -51,10 +53,11 @@ int dev_manager_mirror_percent(struct dev_manager *dm,
 			       const struct logical_volume *lv, int wait,
 			       percent_t *percent, uint32_t *event_nr);
 int dev_manager_suspend(struct dev_manager *dm, struct logical_volume *lv,
-			unsigned origin_only, int lockfs, int flush_required);
-int dev_manager_activate(struct dev_manager *dm, struct logical_volume *lv, unsigned origin_only);
+			struct lv_activate_opts *laopts, int lockfs, int flush_required);
+int dev_manager_activate(struct dev_manager *dm, struct logical_volume *lv,
+			 struct lv_activate_opts *laopts);
 int dev_manager_preload(struct dev_manager *dm, struct logical_volume *lv,
-			unsigned origin_only, int *flush_required);
+			struct lv_activate_opts *laopts, int *flush_required);
 int dev_manager_deactivate(struct dev_manager *dm, struct logical_volume *lv);
 int dev_manager_transient(struct dev_manager *dm, struct logical_volume *lv) __attribute__((nonnull(1, 2)));
 

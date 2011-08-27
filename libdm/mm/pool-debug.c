@@ -48,7 +48,7 @@ struct dm_pool {
 
 struct dm_pool *dm_pool_create(const char *name, size_t chunk_hint)
 {
-	struct dm_pool *mem = dm_malloc(sizeof(*mem));
+	struct dm_pool *mem = dm_zalloc(sizeof(*mem));
 
 	if (!mem) {
 		log_error("Couldn't create memory pool %s (size %"
@@ -57,16 +57,6 @@ struct dm_pool *dm_pool_create(const char *name, size_t chunk_hint)
 	}
 
 	mem->name = name;
-	mem->begun = 0;
-	mem->object = 0;
-	mem->blocks = mem->tail = NULL;
-
-	mem->stats.block_serialno = 0;
-	mem->stats.blocks_allocated = 0;
-	mem->stats.blocks_max = 0;
-	mem->stats.bytes = 0;
-	mem->stats.maxbytes = 0;
-
 	mem->orig_pool = mem;
 
 #ifdef DEBUG_POOL
@@ -146,7 +136,7 @@ static struct block *_new_block(size_t s, unsigned alignment)
 	 * I don't think LVM will use anything but default
 	 * align.
 	 */
-	assert(alignment == DEFAULT_ALIGNMENT);
+	assert(alignment <= DEFAULT_ALIGNMENT);
 
 	if (!b) {
 		log_error("Out of memory");
@@ -248,7 +238,7 @@ int dm_pool_grow_object(struct dm_pool *p, const void *extra, size_t delta)
 	}
 	p->object = new;
 
-	memcpy(new->data + new_size - delta, extra, delta);
+	memcpy((char*)new->data + new_size - delta, extra, delta);
 
 	return 1;
 }

@@ -32,10 +32,10 @@
 //#define STRIPE_SIZE_MIN ( (unsigned) lvm_getpagesize() >> SECTOR_SHIFT)	/* PAGESIZE in sectors */
 //#define STRIPE_SIZE_MAX ( 512L * 1024L >> SECTOR_SHIFT)	/* 512 KB in sectors */
 //#define STRIPE_SIZE_LIMIT ((UINT_MAX >> 2) + 1)
-//#define PV_MIN_SIZE ( 512L * 1024L >> SECTOR_SHIFT)	/* 512 KB in sectors */
 //#define MAX_RESTRICTED_LVS 255	/* Used by FMT_RESTRICTED_LVIDS */
 #define MIRROR_LOG_OFFSET	2	/* sectors */
 #define VG_MEMPOOL_CHUNK	10240	/* in bytes, hint only */
+#define PV_PE_START_CALC	((uint64_t) -1) /* Calculate pe_start value */
 
 /*
  * Ceiling(n / sz)
@@ -71,7 +71,6 @@
 //#define MIRROR_LOG		0x00020000U	/* LV */
 //#define MIRROR_IMAGE		0x00040000U	/* LV */
 //#define MIRROR_NOTSYNCED	0x00080000U	/* LV */
-#define ACTIVATE_EXCL		0x00100000U	/* LV - internal use only */
 #define PRECOMMITTED		0x00200000U	/* VG - internal use only */
 //#define CONVERTING		0x00400000U	/* LV */
 
@@ -175,9 +174,12 @@ struct metadata_area_ops {
 	 */
 	unsigned (*mda_locns_match)(struct metadata_area *mda1,
 				    struct metadata_area *mda2);
+
+	struct device *(*mda_get_device)(struct metadata_area *mda);
 };
 
-#define MDA_IGNORED 0x00000001
+#define MDA_IGNORED      0x00000001
+#define MDA_INCONSISTENT 0x00000002
 
 struct metadata_area {
 	struct dm_list list;
@@ -191,8 +193,40 @@ struct metadata_area *mda_copy(struct dm_pool *mem,
 unsigned mda_is_ignored(struct metadata_area *mda);
 void mda_set_ignored(struct metadata_area *mda, unsigned ignored);
 unsigned mda_locns_match(struct metadata_area *mda1, struct metadata_area *mda2);
-void fid_add_mda(struct format_instance *fid, struct metadata_area *mda);
-int fid_add_mdas(struct format_instance *fid, struct dm_list *mdas);
+struct device *mda_get_device(struct metadata_area *mda);
+
+struct format_instance_ctx {
+	uint32_t type;
+	union {
+		const char *pv_id;
+		struct {
+			const char *vg_name;
+			const char *vg_id;
+		} vg_ref;
+		void *private;
+	} context;
+};
+
+struct format_instance *alloc_fid(const struct format_type *fmt,
+				  const struct format_instance_ctx *fic);
+
+/*
+ * Format instance must always be set using pv_set_fid or vg_set_fid
+ * (NULL value as well), never asign it directly! This is essential
+ * for proper reference counting for the format instance.
+ */
+void pv_set_fid(struct physical_volume *pv, struct format_instance *fid);
+void vg_set_fid(struct volume_group *vg, struct format_instance *fid);
+
+/* FIXME: Add generic interface for mda counts based on given key. */
+int fid_add_mda(struct format_instance *fid, struct metadata_area *mda,
+		const char *key, size_t key_len, const unsigned sub_key);
+int fid_add_mdas(struct format_instance *fid, struct dm_list *mdas,
+		 const char *key, size_t key_len);
+int fid_remove_mda(struct format_instance *fid, struct metadata_area *mda,
+		   const char *key, size_t key_len, const unsigned sub_key);
+struct metadata_area *fid_get_mda_indexed(struct format_instance *fid,
+		const char *key, size_t key_len, const unsigned sub_key);
 int mdas_empty_or_ignored(struct dm_list *mdas);
 
 #define seg_pvseg(seg, s)	(seg)->areas[(s)].u.pv.pvseg
@@ -234,28 +268,59 @@ struct format_handler {
 	 * Return PV with given path.
 	 */
 	int (*pv_read) (const struct format_type * fmt, const char *pv_name,
-			struct physical_volume * pv, struct dm_list *mdas,
-			int scan_label_only);
+			struct physical_volume * pv, int scan_label_only);
+
+	/*
+	 * Initialise a new PV.
+	 */
+	int (*pv_initialise) (const struct format_type * fmt,
+			      int64_t label_sector,
+			      uint64_t pe_start,
+			      uint32_t extent_count,
+			      uint32_t extent_size,
+			      unsigned long data_alignment,
+			      unsigned long data_alignment_offset,
+			      struct physical_volume * pv);
 
 	/*
 	 * Tweak an already filled out a pv ready for importing into a
 	 * vg.  eg. pe_count is format specific.
 	 */
 	int (*pv_setup) (const struct format_type * fmt,
-			 uint64_t pe_start, uint32_t extent_count,
-			 uint32_t extent_size, unsigned long data_alignment,
-			 unsigned long data_alignment_offset,
-			 int pvmetadatacopies, uint64_t pvmetadatasize,
-			 unsigned metadataignore, struct dm_list * mdas,
-			 struct physical_volume * pv, struct volume_group * vg);
+			 struct physical_volume * pv,
+			 struct volume_group * vg);
+
+	/*
+	 * Add metadata area to a PV. Changes will take effect on pv_write.
+	 */
+	int (*pv_add_metadata_area) (const struct format_type * fmt,
+				     struct physical_volume * pv,
+				     int pe_start_locked,
+				     unsigned metadata_index,
+				     uint64_t metadata_size,
+				     unsigned metadata_ignored);
+
+	/*
+	 * Remove metadata area from a PV. Changes will take effect on pv_write.
+	 */
+	int (*pv_remove_metadata_area) (const struct format_type *fmt,
+					struct physical_volume *pv,
+					unsigned metadata_index);
+
+	/*
+	 * Recalculate the PV size taking into account any existing metadata areas.
+	 */
+	int (*pv_resize) (const struct format_type *fmt,
+			  struct physical_volume *pv,
+			  struct volume_group *vg,
+			  uint64_t size);
 
 	/*
 	 * Write a PV structure to disk. Fails if the PV is in a VG ie
 	 * pv->vg_name must be a valid orphan VG name
 	 */
 	int (*pv_write) (const struct format_type * fmt,
-			 struct physical_volume * pv, struct dm_list * mdas,
-			 int64_t label_sector);
+			 struct physical_volume * pv);
 
 	/*
 	 * Tweak an already filled out a lv eg, check there
@@ -279,10 +344,8 @@ struct format_handler {
 	/*
 	 * Create format instance with a particular metadata area
 	 */
-	struct format_instance *(*create_instance) (const struct format_type *
-						    fmt, const char *vgname,
-						    const char *vgid,
-						    void *context);
+	struct format_instance *(*create_instance) (const struct format_type *fmt,
+						    const struct format_instance_ctx *fic);
 
 	/*
 	 * Destructor for format instance
@@ -378,6 +441,11 @@ int add_seg_to_segs_using_this_lv(struct logical_volume *lv, struct lv_segment *
 int remove_seg_from_segs_using_this_lv(struct logical_volume *lv, struct lv_segment *seg);
 struct lv_segment *get_only_segment_using_this_lv(struct logical_volume *lv);
 
+int for_each_sub_lv(struct cmd_context *cmd, struct logical_volume *lv,
+                    int (*fn)(struct cmd_context *cmd,
+                              struct logical_volume *lv, void *data),
+                    void *data);
+
 /*
  * Calculate readahead from underlying PV devices
  */
@@ -410,8 +478,8 @@ struct id pv_vgid(const struct physical_volume *pv);
 
 struct physical_volume *pv_by_path(struct cmd_context *cmd, const char *pv_name);
 int add_pv_to_vg(struct volume_group *vg, const char *pv_name,
-		 struct physical_volume *pv);
-int vg_mark_partial_lvs(struct volume_group *vg);
+		 struct physical_volume *pv, struct pvcreate_params *pp);
+
 int is_mirror_image_removable(struct logical_volume *mimage_lv, void *baton);
 
 uint64_t find_min_mda_size(struct dm_list *mdas);

@@ -156,8 +156,10 @@ static struct labeller *_find_labeller(struct device *dev, char *buf,
 		dm_list_iterate_items(li, &_labellers) {
 			if (li->l->ops->can_handle(li->l, (char *) lh,
 						   sector + scan_sector)) {
-				log_very_verbose("%s: %s label detected",
-						 dev_name(dev), li->name);
+				log_very_verbose("%s: %s label detected at "
+					         "sector %" PRIu64, 
+						 dev_name(dev), li->name,
+						 sector + scan_sector);
 				if (found) {
 					log_error("Ignoring additional label "
 						  "on %s at sector %" PRIu64,
@@ -272,7 +274,7 @@ int label_read(struct device *dev, struct label **result,
 		return 1;
 	}
 
-	if (!dev_open(dev)) {
+	if (!dev_open_readonly(dev)) {
 		stack;
 
 		if ((info = info_from_pvid(dev->pvid, 0)))
@@ -352,7 +354,7 @@ int label_verify(struct device *dev)
 	struct lvmcache_info *info;
 	int r = 0;
 
-	if (!dev_open(dev)) {
+	if (!dev_open_readonly(dev)) {
 		if ((info = info_from_pvid(dev->pvid, 0)))
 			lvmcache_update_vgname_and_id(info, info->fmt->orphan_vg_name,
 						      info->fmt->orphan_vg_name,

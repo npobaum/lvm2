@@ -28,9 +28,10 @@ static const char *_snap_name(const struct lv_segment *seg)
 	return seg->segtype->name;
 }
 
-static const char *_snap_target_name(const struct lv_segment *seg)
+static const char *_snap_target_name(const struct lv_segment *seg,
+				     const struct lv_activate_opts *laopts)
 {
-	if (seg->status & MERGING)
+	if (!laopts->no_merging && (seg->status & MERGING))
 		return "snapshot-merge";
 
 	return _snap_name(seg);
@@ -232,11 +233,11 @@ static struct segtype_handler _snapshot_ops = {
 #ifdef DEVMAPPER_SUPPORT
 	.target_percent = _snap_target_percent,
 	.target_present = _snap_target_present,
-#ifdef DMEVENTD
+#  ifdef DMEVENTD
 	.target_monitored = _target_registered,
 	.target_monitor_events = _target_register_events,
 	.target_unmonitor_events = _target_unregister_events,
-#endif
+#  endif	/* DMEVENTD */
 #endif
 	.modules_needed = _snap_modules_needed,
 	.destroy = _snap_destroy,
@@ -249,7 +250,7 @@ struct segment_type *init_segtype(struct cmd_context *cmd);
 struct segment_type *init_segtype(struct cmd_context *cmd)
 #endif
 {
-	struct segment_type *segtype = dm_malloc(sizeof(*segtype));
+	struct segment_type *segtype = dm_zalloc(sizeof(*segtype));
 
 	if (!segtype)
 		return_NULL;
@@ -260,9 +261,11 @@ struct segment_type *init_segtype(struct cmd_context *cmd)
 	segtype->private = NULL;
 	segtype->flags = SEG_SNAPSHOT;
 
-#ifdef DMEVENTD
+#ifdef DEVMAPPER_SUPPORT
+#  ifdef DMEVENTD
 	if (_get_snapshot_dso_path(cmd))
 		segtype->flags |= SEG_MONITORED;
+#  endif	/* DMEVENTD */
 #endif
 	log_very_verbose("Initialised segtype: %s", segtype->name);
 

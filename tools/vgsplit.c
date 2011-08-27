@@ -281,7 +281,7 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 {
 	struct vgcreate_params vp_new;
 	struct vgcreate_params vp_def;
-	char *vg_name_from, *vg_name_to;
+	const char *vg_name_from, *vg_name_to;
 	struct volume_group *vg_to = NULL, *vg_from = NULL;
 	int opt;
 	int existing_vg = 0;
@@ -487,12 +487,12 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 	r = ECMD_PROCESSED;
 
 bad:
-	if (lock_vg_from_first) {
-		unlock_and_free_vg(cmd, vg_to, vg_name_to);
-		unlock_and_free_vg(cmd, vg_from, vg_name_from);
-	} else {
-		unlock_and_free_vg(cmd, vg_from, vg_name_from);
-		unlock_and_free_vg(cmd, vg_to, vg_name_to);
-	}
+	/*
+	 * vg_to references elements moved from vg_from
+	 * so vg_to has to be freed first.
+	 */
+	unlock_and_free_vg(cmd, vg_to, vg_name_to);
+	unlock_and_free_vg(cmd, vg_from, vg_name_from);
+
 	return r;
 }

@@ -1,3 +1,11 @@
+lvm2 (2.02.86-1) unstable; urgency=low
+
+  * New upstream version.
+  * Remove leading article from short description.
+  * Update udev rules.
+
+ -- Bastian Blank <waldi@debian.org>  Sat, 27 Aug 2011 18:45:21 +0200
+
 lvm2 (2.02.84-3.1) unstable; urgency=low
 
   * Non-maintainer upload.

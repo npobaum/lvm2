@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2011 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -38,6 +38,9 @@ int remote_lock_held(const char *vol, int *exclusive);
  *   If more than one lock needs to be held simultaneously, they must be
  *   acquired in alphabetical order of 'vol' (to avoid deadlocks), with
  *   VG_ORPHANS last.
+ *
+ *   Use VG_SYNC_NAMES to ensure /dev is up-to-date for example, with udev,
+ *   by waiting for any asynchronous events issued to have completed.
  *
  * LCK_LV:
  *   Lock/unlock an individual logical volume
@@ -103,6 +106,7 @@ int check_lvm1_vg_inactive(struct cmd_context *cmd, const char *vgname);
 #define LCK_DMEVENTD_MONITOR_MODE	0x04	/* Register with dmeventd */
 #define LCK_CONVERT			0x08	/* Convert existing lock */
 #define LCK_ORIGIN_ONLY_MODE		0x20	/* Same as above */
+#define LCK_TEST_MODE			0x10    /* Test mode: No activation */
 
 /*
  * Special cases of VG locks.
@@ -126,6 +130,9 @@ int check_lvm1_vg_inactive(struct cmd_context *cmd, const char *vgname);
 #define LCK_VG_REVERT		(LCK_VG | LCK_READ  | LCK_CACHE | LCK_HOLD)
 
 #define LCK_VG_BACKUP		(LCK_VG | LCK_CACHE)
+
+#define LCK_VG_SYNC		(LCK_NONE | LCK_CACHE)
+#define LCK_VG_SYNC_LOCAL	(LCK_NONE | LCK_CACHE | LCK_LOCAL)
 
 #define LCK_LV_EXCLUSIVE	(LCK_LV | LCK_EXCL)
 #define LCK_LV_SUSPEND		(LCK_LV | LCK_WRITE)
@@ -175,10 +182,9 @@ int check_lvm1_vg_inactive(struct cmd_context *cmd, const char *vgname);
 	lock_vol((vg)->cmd, (vg)->name, LCK_VG_REVERT)
 #define remote_backup_metadata(vg)	\
 	lock_vol((vg)->cmd, (vg)->name, LCK_VG_BACKUP)
-#define sync_local_dev_names(cmd)	\
-	lock_vol(cmd, VG_SYNC_NAMES, LCK_NONE | LCK_CACHE | LCK_LOCAL)
-#define sync_dev_names(cmd)	\
-	lock_vol(cmd, VG_SYNC_NAMES, LCK_NONE | LCK_CACHE)
+
+int sync_local_dev_names(struct cmd_context* cmd);
+int sync_dev_names(struct cmd_context* cmd);
 
 /* Process list of LVs */
 int suspend_lvs(struct cmd_context *cmd, struct dm_list *lvs);

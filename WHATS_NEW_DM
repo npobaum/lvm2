@@ -1,3 +1,44 @@
+Version 1.02.65 - 8th July 2011
+===============================
+  Remove dev name prefix from dmsetup line output if exactly one dev requested.
+  Report internal error if suspending a device using an already-suspended dev.
+  Report error if a table load requiring target parameters has none supplied.
+  Add dmsetup --checks and dm_task_enable_checks framework to validate ioctls.
+  Add age_in_minutes parameter to dmsetup udevcomplete_all.
+  Return immediately from dm_lib_exit() if called more than once.
+  Disable udev fallback by default and add --verifyudev option to dmsetup.
+  Report internal error if any table is loaded while any dev is known suspended.
+  Add dm_get_suspended_counter() for number of devs in suspended state by lib.
+  Fix "all" report field prefix matching to include label fields with pv_all.
+  Delay resuming new preloaded mirror devices with core logs in deptree code.
+  Accept new kernel version 3 uname formats in initialisation.
+
+Version 1.02.64 - 29th April 2011
+==================================
+  Require libudev >= 143 when compiling with udev support.
+  Use word alignment for dm_pool_strdup() and dm_pool_strndup().
+  Use dm_snprintf() to fix signedness warning in dm_set_dev_dir().
+  Use unsigned loop counter to fix signedness warning in _other_node_ops().
+  Fix const cast in dmsetup calls of dm_report_field_string().
+  Streamline /dev/mapper/control node code for common cases.
+  Use hard-coded dm control node device number for 2.6.36 kernels and above.
+  Improve stack debug reporting in dm_task_create().
+  Fallback to control node creation only if node doesn't exist yet.
+  Change dm_hash binary functions to take void *key instead of char *.
+  Fix uninitialised memory use with empty params in _reload_with_suppression_v4.
+  Lower severity of selabel_lookup and matchpathcon failure to log_debug.
+  Add test for failed allocation from dm_task_set_uuid() in dmeventd.
+  Add dm_event_get_version to dmeventd for use with -R.
+  Avoid dmeventd core dumps when handling request with unknown command ID.
+  Have dmeventd -R start up even when no existing copy is running.
+  Accept multiple mapped device names on many dmsetup command lines.
+  Fix dm_udev_wait calls in dmsetup to occur before readahead display not after.
+  Include an implicit dm_task_update_nodes() within dm_udev_wait().
+  Fix _create_and_load_v4 not to lose the --addnodeoncreate setting (1.02.62).
+  Add inactive table query support for kernel driver >= 4.11.6 (RHEL 5.7).
+  Log debug open_count in _node_has_closed_parents().
+  Add a const to dm_report_field_string() data parameter.
+
 Version 1.02.63 - 9th February 2011
 ===================================
   Reinstate DEBUG_MEM as it's part of the API. (1.02.62)

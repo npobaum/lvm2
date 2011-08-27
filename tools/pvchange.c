@@ -120,6 +120,7 @@ static int _pvchange_single(struct cmd_context *cmd, struct volume_group *vg,
 
 	if (arg_count(cmd, uuid_ARG)) {
 		/* --uuid: Change PV ID randomly */
+		memcpy(&pv->old_id, &pv->id, sizeof(pv->id));
 		if (!id_create(&pv->id)) {
 			log_error("Failed to generate new random UUID for %s.",
 				  pv_name);
@@ -139,7 +140,7 @@ static int _pvchange_single(struct cmd_context *cmd, struct volume_group *vg,
 
 			pv->vg_name = pv->fmt->orphan_vg_name;
 			pv->pe_alloc_count = 0;
-			if (!(pv_write(cmd, pv, NULL, INT64_C(-1)))) {
+			if (!(pv_write(cmd, pv, 0))) {
 				log_error("pv_write with new uuid failed "
 					  "for %s.", pv_name);
 				return 0;
@@ -161,7 +162,7 @@ static int _pvchange_single(struct cmd_context *cmd, struct volume_group *vg,
 			return 0;
 		}
 		backup(vg);
-	} else if (!(pv_write(cmd, pv, NULL, INT64_C(-1)))) {
+	} else if (!(pv_write(cmd, pv, 0))) {
 		log_error("Failed to store physical volume \"%s\"",
 			  pv_name);
 		return 0;

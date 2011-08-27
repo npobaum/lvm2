@@ -29,7 +29,6 @@
 #  include <sys/types.h>
 #  include <sys/ipc.h>
 #  include <sys/sem.h>
-#  define LIBUDEV_I_KNOW_THE_API_IS_SUBJECT_TO_CHANGE
 #  include <libudev.h>
 #endif
 
@@ -61,6 +60,7 @@ union semun
 static char _dm_dir[PATH_MAX] = DEV_DIR DM_DIR;
 
 static int _verbose = 0;
+static int _suspended_dev_counter = 0;
 
 #ifdef HAVE_SELINUX_LABEL_H
 static struct selabel_handle *_selabel_handle = NULL;
@@ -78,6 +78,7 @@ static int _udev_checking = 1;
  * function.
  */
 
+__attribute__((format(printf, 5, 0)))
 static void _default_log_line(int level,
 	    const char *file __attribute__((unused)),
 	    int line __attribute__((unused)), int dm_errno, 
@@ -101,6 +102,7 @@ static void _default_log_line(int level,
 		fprintf(use_stderr ? stderr : stdout, "\n");
 }
 
+__attribute__((format(printf, 5, 6)))
 static void _default_log_with_errno(int level,
 	    const char *file __attribute__((unused)),
 	    int line __attribute__((unused)), int dm_errno, 
@@ -113,6 +115,7 @@ static void _default_log_with_errno(int level,
 	va_end(ap);
 }
 
+__attribute__((format(printf, 4, 5)))
 static void _default_log(int level, const char *file,
 			 int line, const char *f, ...)
 {
@@ -171,6 +174,28 @@ int dm_get_library_version(char *version, size_t size)
 	return 1;
 }
 
+void inc_suspended(void)
+{
+	_suspended_dev_counter++;
+	log_debug("Suspended device counter increased to %d", _suspended_dev_counter);
+}
+
+void dec_suspended(void)
+{
+	if (!_suspended_dev_counter) {
+		log_error("Attempted to decrement suspended device counter below zero.");
+		return;
+	}
+
+	_suspended_dev_counter--;
+	log_debug("Suspended device counter reduced to %d", _suspended_dev_counter);
+}
+
+int dm_get_suspended_counter(void)
+{
+	return _suspended_dev_counter;
+}
+
 struct dm_task *dm_task_create(int type)
 {
 	struct dm_task *dmt = dm_zalloc(sizeof(*dmt));
@@ -183,7 +208,7 @@ struct dm_task *dm_task_create(int type)
 
 	if (!dm_check_version()) {
 		dm_free(dmt);
-		return NULL;
+		return_NULL;
 	}
 
 	dmt->type = type;
@@ -370,6 +395,13 @@ int dm_task_set_mode(struct dm_task *dmt, mode_t mode)
 	return 1;
 }
 
+int dm_task_enable_checks(struct dm_task *dmt)
+{
+	dmt->enable_checks = 1;
+
+	return 1;
+}
+
 int dm_task_add_target(struct dm_task *dmt, uint64_t start, uint64_t size,
 		       const char *ttype, const char *params)
 {
@@ -400,12 +432,14 @@ static int _selabel_lookup(const char *path, mode_t mode,
 	}
 
 	if (selabel_lookup(_selabel_handle, scontext, path, mode)) {
-		log_error("selabel_lookup failed: %s", strerror(errno));
+		log_debug("selabel_lookup failed for %s: %s",
+			  path, strerror(errno));
 		return 0;
 	}
 #else
 	if (matchpathcon(path, mode, scontext)) {
-		log_error("matchpathcon failed: %s", strerror(errno));
+		log_debug("matchpathcon failed for %s: %s",
+			  path, strerror(errno));
 		return 0;
 	}
 #endif
@@ -474,8 +508,13 @@ void selinux_release(void)
 #endif
 }
 
+static int _warn_if_op_needed(int warn_if_udev_failed)
+{
+    return warn_if_udev_failed && dm_udev_get_sync_support() && dm_udev_get_checking();
+}
+
 static int _add_dev_node(const char *dev_name, uint32_t major, uint32_t minor,
-			 uid_t uid, gid_t gid, mode_t mode, int check_udev)
+			 uid_t uid, gid_t gid, mode_t mode, int warn_if_udev_failed)
 {
 	char path[PATH_MAX];
 	struct stat info;
@@ -500,8 +539,7 @@ static int _add_dev_node(const char *dev_name, uint32_t major, uint32_t minor,
 				  dev_name);
 			return 0;
 		}
-	} else if (dm_udev_get_sync_support() && dm_udev_get_checking() &&
-		   check_udev)
+	} else if (_warn_if_op_needed(warn_if_udev_failed))
 		log_warn("%s not set up by udev: Falling back to direct "
 			 "node creation.", path);
 
@@ -526,7 +564,7 @@ static int _add_dev_node(const char *dev_name, uint32_t major, uint32_t minor,
 	return 1;
 }
 
-static int _rm_dev_node(const char *dev_name, int check_udev)
+static int _rm_dev_node(const char *dev_name, int warn_if_udev_failed)
 {
 	char path[PATH_MAX];
 	struct stat info;
@@ -535,8 +573,7 @@ static int _rm_dev_node(const char *dev_name, int check_udev)
 
 	if (stat(path, &info) < 0)
 		return 1;
-	else if (dm_udev_get_sync_support() && dm_udev_get_checking() &&
-		 check_udev)
+	else if (_warn_if_op_needed(warn_if_udev_failed))
 		log_warn("Node %s was not removed by udev. "
 			 "Falling back to direct node removal.", path);
 
@@ -551,7 +588,7 @@ static int _rm_dev_node(const char *dev_name, int check_udev)
 }
 
 static int _rename_dev_node(const char *old_name, const char *new_name,
-			    int check_udev)
+			    int warn_if_udev_failed)
 {
 	char oldpath[PATH_MAX];
 	char newpath[PATH_MAX];
@@ -566,8 +603,7 @@ static int _rename_dev_node(const char *old_name, const char *new_name,
 				  "is already present", newpath);
 			return 0;
 		}
-		else if (dm_udev_get_sync_support() && dm_udev_get_checking() &&
-			 check_udev) {
+		else if (_warn_if_op_needed(warn_if_udev_failed)) {
 			if (stat(oldpath, &info) < 0 &&
 				 errno == ENOENT)
 				/* assume udev already deleted this */
@@ -591,8 +627,7 @@ static int _rename_dev_node(const char *old_name, const char *new_name,
 			return 0;
 		}
 	}
-	else if (dm_udev_get_sync_support() && dm_udev_get_checking() &&
-		 check_udev)
+	else if (_warn_if_op_needed(warn_if_udev_failed))
 		log_warn("The node %s should have been renamed to %s "
 			 "by udev but new node is not present. "
 			 "Falling back to direct node rename.",
@@ -732,16 +767,16 @@ typedef enum {
 static int _do_node_op(node_op_t type, const char *dev_name, uint32_t major,
 		       uint32_t minor, uid_t uid, gid_t gid, mode_t mode,
 		       const char *old_name, uint32_t read_ahead,
-		       uint32_t read_ahead_flags, int check_udev)
+		       uint32_t read_ahead_flags, int warn_if_udev_failed)
 {
 	switch (type) {
 	case NODE_ADD:
 		return _add_dev_node(dev_name, major, minor, uid, gid,
-				     mode, check_udev);
+				     mode, warn_if_udev_failed);
 	case NODE_DEL:
-		return _rm_dev_node(dev_name, check_udev);
+		return _rm_dev_node(dev_name, warn_if_udev_failed);
 	case NODE_RENAME:
-		return _rename_dev_node(old_name, dev_name, check_udev);
+		return _rename_dev_node(old_name, dev_name, warn_if_udev_failed);
 	case NODE_READ_AHEAD:
 		return _set_dev_node_read_ahead(dev_name, read_ahead,
 						read_ahead_flags);
@@ -767,7 +802,8 @@ struct node_op_parms {
 	uint32_t read_ahead;
 	uint32_t read_ahead_flags;
 	char *old_name;
-	int check_udev;
+	int warn_if_udev_failed;
+	unsigned rely_on_udev;
 	char names[0];
 };
 
@@ -789,7 +825,7 @@ static void _del_node_op(struct node_op_parms *nop)
 /* Check if there is other the type of node operation stacked */
 static int _other_node_ops(node_op_t type)
 {
-	int i;
+	unsigned i;
 
 	for (i = 0; i < NUM_NODES; i++)
 		if (type != i && _count_node_ops[i])
@@ -797,16 +833,37 @@ static int _other_node_ops(node_op_t type)
 	return 0;
 }
 
-/* Check if udev is supposed to create nodes */
-static int _check_udev(int check_udev)
+static void _log_node_op(const char *action_str, struct node_op_parms *nop)
 {
-    return check_udev && dm_udev_get_sync_support() && dm_udev_get_checking();
+	const char *rely = nop->rely_on_udev ? " [trust_udev]" : "" ;
+	const char *verify = nop->warn_if_udev_failed ? " [verify_udev]" : "";
+
+	switch (nop->type) {
+	case NODE_ADD:
+		log_debug("%s: %s NODE_ADD (%" PRIu32 ",%" PRIu32 ") %u:%u 0%o%s%s",
+			  nop->dev_name, action_str, nop->major, nop->minor, nop->uid, nop->gid, nop->mode,
+			  rely, verify);
+		break;
+	case NODE_DEL:
+		log_debug("%s: %s NODE_DEL%s%s", nop->dev_name, action_str, rely, verify);
+		break;
+	case NODE_RENAME:
+		log_debug("%s: %s NODE_RENAME to %s%s%s", nop->old_name, action_str, nop->dev_name, rely, verify);
+		break;
+	case NODE_READ_AHEAD:
+		log_debug("%s: %s NODE_READ_AHEAD %" PRIu32 " (flags=%" PRIu32 ")%s%s",
+			  nop->dev_name, action_str, nop->read_ahead, nop->read_ahead_flags, rely, verify);
+		break;
+	default:
+		; /* NOTREACHED */
+	}
 }
 
 static int _stack_node_op(node_op_t type, const char *dev_name, uint32_t major,
 			  uint32_t minor, uid_t uid, gid_t gid, mode_t mode,
 			  const char *old_name, uint32_t read_ahead,
-			  uint32_t read_ahead_flags, int check_udev)
+			  uint32_t read_ahead_flags, int warn_if_udev_failed,
+			  unsigned rely_on_udev)
 {
 	struct node_op_parms *nop;
 	struct dm_list *noph, *nopht;
@@ -814,7 +871,7 @@ static int _stack_node_op(node_op_t type, const char *dev_name, uint32_t major,
 	char *pos;
 
 	/*
-	 * Note: check_udev must have valid content
+	 * Note: warn_if_udev_failed must have valid content
 	 */
 	if ((type == NODE_DEL) && _other_node_ops(type))
 		/*
@@ -823,27 +880,29 @@ static int _stack_node_op(node_op_t type, const char *dev_name, uint32_t major,
 		dm_list_iterate_safe(noph, nopht, &_node_ops) {
 			nop = dm_list_item(noph, struct node_op_parms);
 			if (!strcmp(dev_name, nop->dev_name)) {
+				_log_node_op("Unstacking", nop);
 				_del_node_op(nop);
 				if (!_other_node_ops(type))
 					break; /* no other non DEL ops */
 			}
 		}
-	else if ((type == NODE_ADD) && _count_node_ops[NODE_DEL] && _check_udev(check_udev))
+	else if ((type == NODE_ADD) && _count_node_ops[NODE_DEL])
 		/*
-		 * If udev is running ignore previous DEL operation on added node.
+		 * Ignore previous DEL operation on added node.
 		 * (No other operations for this device then DEL could be stacked here).
 		 */
 		dm_list_iterate_safe(noph, nopht, &_node_ops) {
 			nop = dm_list_item(noph, struct node_op_parms);
 			if ((nop->type == NODE_DEL) &&
 			    !strcmp(dev_name, nop->dev_name)) {
+				_log_node_op("Unstacking", nop);
 				_del_node_op(nop);
 				break; /* no other DEL ops */
 			}
 		}
-	else if ((type == NODE_RENAME) && _check_udev(check_udev))
+	else if ((type == NODE_RENAME))
 		/*
-		 * If udev is running ignore any outstanding operations if renaming it.
+		 * Ignore any outstanding operations if renaming it.
 		 *
 		 * Currently  RENAME operation happens through 'suspend -> resume'.
 		 * On 'resume' device is added with read_ahead settings, so it is
@@ -852,9 +911,16 @@ static int _stack_node_op(node_op_t type, const char *dev_name, uint32_t major,
 		 */
 		dm_list_iterate_safe(noph, nopht, &_node_ops) {
 			nop = dm_list_item(noph, struct node_op_parms);
-			if (!strcmp(old_name, nop->dev_name))
+			if (!strcmp(old_name, nop->dev_name)) {
+				_log_node_op("Unstacking", nop);
 				_del_node_op(nop);
+			}
 		}
+	else if (type == NODE_READ_AHEAD) {
+		/* udev doesn't process readahead */
+		rely_on_udev = 0;
+		warn_if_udev_failed = 0;
+	}
 
 	if (!(nop = dm_malloc(sizeof(*nop) + len))) {
 		log_error("Insufficient memory to stack mknod operation");
@@ -870,13 +936,21 @@ static int _stack_node_op(node_op_t type, const char *dev_name, uint32_t major,
 	nop->mode = mode;
 	nop->read_ahead = read_ahead;
 	nop->read_ahead_flags = read_ahead_flags;
-	nop->check_udev = check_udev;
+	nop->rely_on_udev = rely_on_udev;
+
+	/*
+	 * Clear warn_if_udev_failed if rely_on_udev is set.  It doesn't get
+	 * checked in this case - this just removes the flag from log messages.
+	 */
+	nop->warn_if_udev_failed = rely_on_udev ? 0 : warn_if_udev_failed;
 
 	_store_str(&pos, &nop->dev_name, dev_name);
 	_store_str(&pos, &nop->old_name, old_name);
 
 	_count_node_ops[type]++;
 	dm_list_add(&_node_ops, &nop->list);
+
+	_log_node_op("Stacking", nop);
 
 	return 1;
 }
@@ -888,38 +962,35 @@ static void _pop_node_ops(void)
 
 	dm_list_iterate_safe(noph, nopht, &_node_ops) {
 		nop = dm_list_item(noph, struct node_op_parms);
-		_do_node_op(nop->type, nop->dev_name, nop->major, nop->minor,
-			    nop->uid, nop->gid, nop->mode, nop->old_name,
-			    nop->read_ahead, nop->read_ahead_flags,
-			    nop->check_udev);
+		if (!nop->rely_on_udev) {
+			_log_node_op("Processing", nop);
+			_do_node_op(nop->type, nop->dev_name, nop->major, nop->minor,
+				    nop->uid, nop->gid, nop->mode, nop->old_name,
+				    nop->read_ahead, nop->read_ahead_flags,
+				    nop->warn_if_udev_failed);
+		} else
+			_log_node_op("Skipping", nop);
 		_del_node_op(nop);
 	}
 }
 
 int add_dev_node(const char *dev_name, uint32_t major, uint32_t minor,
-		 uid_t uid, gid_t gid, mode_t mode, int check_udev)
+		 uid_t uid, gid_t gid, mode_t mode, int check_udev, unsigned rely_on_udev)
 {
-	log_debug("%s: Stacking NODE_ADD (%" PRIu32 ",%" PRIu32 ") %u:%u 0%o",
-		  dev_name, major, minor, uid, gid, mode);
-
 	return _stack_node_op(NODE_ADD, dev_name, major, minor, uid,
-			      gid, mode, "", 0, 0, check_udev);
+			      gid, mode, "", 0, 0, check_udev, rely_on_udev);
 }
 
-int rename_dev_node(const char *old_name, const char *new_name, int check_udev)
+int rename_dev_node(const char *old_name, const char *new_name, int check_udev, unsigned rely_on_udev)
 {
-	log_debug("%s: Stacking NODE_RENAME to %s", old_name, new_name);
-
 	return _stack_node_op(NODE_RENAME, new_name, 0, 0, 0,
-			      0, 0, old_name, 0, 0, check_udev);
+			      0, 0, old_name, 0, 0, check_udev, rely_on_udev);
 }
 
-int rm_dev_node(const char *dev_name, int check_udev)
+int rm_dev_node(const char *dev_name, int check_udev, unsigned rely_on_udev)
 {
-	log_debug("%s: Stacking NODE_DEL (replaces other stacked ops)", dev_name);
-
 	return _stack_node_op(NODE_DEL, dev_name, 0, 0, 0,
-			      0, 0, "", 0, 0, check_udev);
+			      0, 0, "", 0, 0, check_udev, rely_on_udev);
 }
 
 int set_dev_node_read_ahead(const char *dev_name, uint32_t read_ahead,
@@ -928,11 +999,8 @@ int set_dev_node_read_ahead(const char *dev_name, uint32_t read_ahead,
 	if (read_ahead == DM_READ_AHEAD_AUTO)
 		return 1;
 
-	log_debug("%s: Stacking NODE_READ_AHEAD %" PRIu32 " (flags=%" PRIu32
-		  ")", dev_name, read_ahead, read_ahead_flags);
-
 	return _stack_node_op(NODE_READ_AHEAD, dev_name, 0, 0, 0, 0,
-                              0, "", read_ahead, read_ahead_flags, 0);
+                              0, "", read_ahead, read_ahead_flags, 0, 0);
 }
 
 void update_devs(void)
@@ -953,8 +1021,7 @@ int dm_set_dev_dir(const char *dev_dir)
 	len = strlen(dev_dir);
 	slash = dev_dir[len-1] == '/' ? "" : "/";
 
-	if (snprintf(_dm_dir, sizeof _dm_dir, "%s%s%s", dev_dir, slash, DM_DIR)
-	    >= sizeof _dm_dir) {
+	if (dm_snprintf(_dm_dir, sizeof _dm_dir, "%s%s%s", dev_dir, slash, DM_DIR) < 0) {
 		log_debug("Invalid dev_dir value, %s: name too long.", dev_dir);
 		return 0;
 	}
@@ -1044,6 +1111,8 @@ int dm_udev_complete(uint32_t cookie)
 
 int dm_udev_wait(uint32_t cookie)
 {
+	update_devs();
+
 	return 1;
 }
 
@@ -1171,6 +1240,7 @@ static int _get_cookie_sem(uint32_t cookie, int *semid)
 static int _udev_notify_sem_inc(uint32_t cookie, int semid)
 {
 	struct sembuf sb = {0, 1, 0};
+	int val;
 
 	if (semop(semid, &sb, 1) < 0) {
 		log_error("semid %d: semop failed for cookie 0x%" PRIx32 ": %s",
@@ -1178,8 +1248,15 @@ static int _udev_notify_sem_inc(uint32_t cookie, int semid)
 		return 0;
 	}
 
-	log_debug("Udev cookie 0x%" PRIx32 " (semid %d) incremented",
-		  cookie, semid);
+ 	if ((val = semctl(semid, 0, GETVAL)) < 0) {
+		log_error("semid %d: sem_ctl GETVAL failed for "
+			  "cookie 0x%" PRIx32 ": %s",
+			  semid, cookie, strerror(errno));
+		return 0;		
+	}
+
+	log_debug("Udev cookie 0x%" PRIx32 " (semid %d) incremented to %d",
+		  cookie, semid, val);
 
 	return 1;
 }
@@ -1187,6 +1264,14 @@ static int _udev_notify_sem_inc(uint32_t cookie, int semid)
 static int _udev_notify_sem_dec(uint32_t cookie, int semid)
 {
 	struct sembuf sb = {0, -1, IPC_NOWAIT};
+	int val;
+
+ 	if ((val = semctl(semid, 0, GETVAL)) < 0) {
+		log_error("semid %d: sem_ctl GETVAL failed for "
+			  "cookie 0x%" PRIx32 ": %s",
+			  semid, cookie, strerror(errno));
+		return 0;
+	}
 
 	if (semop(semid, &sb, 1) < 0) {
 		switch (errno) {
@@ -1205,8 +1290,8 @@ static int _udev_notify_sem_dec(uint32_t cookie, int semid)
 		return 0;
 	}
 
-	log_debug("Udev cookie 0x%" PRIx32 " (semid %d) decremented",
-		  cookie, semid);
+	log_debug("Udev cookie 0x%" PRIx32 " (semid %d) decremented to %d",
+		  cookie, semid, val - 1);
 
 	return 1;
 }
@@ -1230,6 +1315,7 @@ static int _udev_notify_sem_create(uint32_t *cookie, int *semid)
 {
 	int fd;
 	int gen_semid;
+	int val;
 	uint16_t base_cookie;
 	uint32_t gen_cookie;
 	union semun sem_arg;
@@ -1290,8 +1376,15 @@ static int _udev_notify_sem_create(uint32_t *cookie, int *semid)
 		goto bad;
 	}
 
-	log_debug("Udev cookie 0x%" PRIx32 " (semid %d) incremented",
-		  gen_cookie, gen_semid);
+ 	if ((val = semctl(gen_semid, 0, GETVAL)) < 0) {
+		log_error("semid %d: sem_ctl GETVAL failed for "
+			  "cookie 0x%" PRIx32 ": %s",
+			  gen_semid, gen_cookie, strerror(errno));
+		return 0;		
+	}
+
+	log_debug("Udev cookie 0x%" PRIx32 " (semid %d) incremented to %d",
+		  gen_cookie, gen_semid, val);
 
 	if (close(fd))
 		stack;
@@ -1322,6 +1415,51 @@ int dm_udev_create_cookie(uint32_t *cookie)
 	return _udev_notify_sem_create(cookie, &semid);
 }
 
+static const char *_task_type_disp(int type)
+{
+	switch(type) {
+	case DM_DEVICE_CREATE:
+		return "CREATE";
+        case DM_DEVICE_RELOAD:
+		return "RELOAD";
+        case DM_DEVICE_REMOVE:
+		return "REMOVE";
+        case DM_DEVICE_REMOVE_ALL:
+		return "REMOVE_ALL";
+        case DM_DEVICE_SUSPEND:
+		return "SUSPEND";
+        case DM_DEVICE_RESUME:
+		return "RESUME";
+        case DM_DEVICE_INFO:
+		return "INFO";
+        case DM_DEVICE_DEPS:
+		return "DEPS";
+        case DM_DEVICE_RENAME:
+		return "RENAME";
+        case DM_DEVICE_VERSION:
+		return "VERSION";
+        case DM_DEVICE_STATUS:
+		return "STATUS";
+        case DM_DEVICE_TABLE:
+		return "TABLE";
+        case DM_DEVICE_WAITEVENT:
+		return "WAITEVENT";
+        case DM_DEVICE_LIST:
+		return "LIST";
+        case DM_DEVICE_CLEAR:
+		return "CLEAR";
+        case DM_DEVICE_MKNODES:
+		return "MKNODES";
+        case DM_DEVICE_LIST_VERSIONS:
+		return "LIST_VERSIONS";
+        case DM_DEVICE_TARGET_MSG:
+		return "TARGET_MSG";
+        case DM_DEVICE_SET_GEOMETRY:
+		return "SET_GEOMETRY";
+	}
+	return "unknown";
+}
+
 int dm_task_set_cookie(struct dm_task *dmt, uint32_t *cookie, uint16_t flags)
 {
 	int semid;
@@ -1350,8 +1488,16 @@ int dm_task_set_cookie(struct dm_task *dmt, uint32_t *cookie, uint16_t flags)
 	dmt->event_nr |= ~DM_UDEV_FLAGS_MASK & *cookie;
 	dmt->cookie_set = 1;
 
-	log_debug("Udev cookie 0x%" PRIx32 " (semid %d) assigned to dm_task "
-		  "type %d with flags 0x%" PRIx16, *cookie, semid, dmt->type, flags);
+	log_debug("Udev cookie 0x%" PRIx32 " (semid %d) assigned to "
+		  "%s task(%d) with flags%s%s%s%s%s%s%s (0x%" PRIx16 ")", *cookie, semid, _task_type_disp(dmt->type), dmt->type, 
+		  (flags & DM_UDEV_DISABLE_DM_RULES_FLAG) ? " DISABLE_DM_RULES" : "",
+		  (flags & DM_UDEV_DISABLE_SUBSYSTEM_RULES_FLAG) ? " DISABLE_SUBSYSTEM_RULES" : "",
+		  (flags & DM_UDEV_DISABLE_DISK_RULES_FLAG) ? " DISABLE_DISK_RULES" : "",
+		  (flags & DM_UDEV_DISABLE_OTHER_RULES_FLAG) ? " DISABLE_OTHER_RULES" : "",
+		  (flags & DM_UDEV_LOW_PRIORITY_FLAG) ? " LOW_PRIORITY" : "",
+		  (flags & DM_UDEV_DISABLE_LIBRARY_FALLBACK) ? " DISABLE_LIBRARY_FALLBACK" : "",
+		  (flags & DM_UDEV_PRIMARY_SOURCE_FLAG) ? " PRIMARY_SOURCE" : "",
+		  flags);
 
 	return 1;
 
@@ -1380,7 +1526,7 @@ int dm_udev_complete(uint32_t cookie)
 	return 1;
 }
 
-int dm_udev_wait(uint32_t cookie)
+static int _udev_wait(uint32_t cookie)
 {
 	int semid;
 	struct sembuf sb = {0, 0, 0};
@@ -1400,7 +1546,7 @@ int dm_udev_wait(uint32_t cookie)
 		return 0;
 	}
 
-	log_debug("Udev cookie 0x%" PRIx32 " (semid %d): Waiting for zero",
+	log_debug("Udev cookie 0x%" PRIx32 " (semid %d) waiting for zero",
 		  cookie, semid);
 
 repeat_wait:
@@ -1418,6 +1564,15 @@ repeat_wait:
 	}
 
 	return _udev_notify_sem_destroy(cookie, semid);
+}
+
+int dm_udev_wait(uint32_t cookie)
+{
+	int r = _udev_wait(cookie);
+
+	update_devs();
+
+	return r;
 }
 
 #endif		/* UDEV_SYNC_SUPPORT */

@@ -28,6 +28,7 @@ struct dm_pool {
 	struct dm_list list;
 	struct chunk *chunk, *spare_chunk;	/* spare_chunk is a one entry free
 						   list to stop 'bobbling' */
+	const char *name;
 	size_t chunk_size;
 	size_t object_len;
 	unsigned object_alignment;
@@ -51,6 +52,7 @@ struct dm_pool *dm_pool_create(const char *name, size_t chunk_hint)
 		return 0;
 	}
 
+	p->name = name;
 	/* round chunk_hint up to the next power of 2 */
 	p->chunk_size = chunk_hint + sizeof(struct chunk);
 	while (new_size < p->chunk_size)
@@ -236,6 +238,9 @@ void *dm_pool_end_object(struct dm_pool *p)
 
 void dm_pool_abandon_object(struct dm_pool *p)
 {
+#ifdef VALGRIND_POOL
+	VALGRIND_MAKE_MEM_NOACCESS(p->chunk, p->object_len);
+#endif
 	p->object_len = 0;
 	p->object_alignment = DEFAULT_ALIGNMENT;
 }
@@ -276,11 +281,5 @@ static struct chunk *_new_chunk(struct dm_pool *p, size_t s)
 
 static void _free_chunk(struct chunk *c)
 {
-	if (c) {
-#ifdef VALGRIND_POOL
-		VALGRIND_MAKE_MEM_UNDEFINED(c, c->end - (char *) c);
-#endif
-
-		dm_free(c);
-	}
+	dm_free(c);
 }
