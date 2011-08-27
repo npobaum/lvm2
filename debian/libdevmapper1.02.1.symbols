@@ -22,6 +22,7 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_free_aux@Base 2:1.02.20
  dm_get_library_version@Base 2:1.02.20
  dm_get_next_target@Base 2:1.02.20
+ dm_get_suspended_counter@Base 2:1.02.65
  dm_hash_create@Base 2:1.02.20
  dm_hash_destroy@Base 2:1.02.20
  dm_hash_get_data@Base 2:1.02.20
@@ -101,6 +102,7 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_task_add_target@Base 2:1.02.20
  dm_task_create@Base 2:1.02.20
  dm_task_destroy@Base 2:1.02.20
+ dm_task_enable_checks@Base 2:1.02.65
  dm_task_get_deps@Base 2:1.02.20
  dm_task_get_driver_version@Base 2:1.02.20
  dm_task_get_info@Base 2:1.02.20

@@ -151,19 +151,19 @@ static int _vgmerge_single(struct cmd_context *cmd, const char *vg_name_to,
 		  vg_from->name, vg_to->name);
 	r = ECMD_PROCESSED;
 bad:
-	if (lock_vg_from_first) {
-		unlock_and_free_vg(cmd, vg_to, vg_name_to);
-		unlock_and_free_vg(cmd, vg_from, vg_name_from);
-	} else {
-		unlock_and_free_vg(cmd, vg_from, vg_name_from);
-		unlock_and_free_vg(cmd, vg_to, vg_name_to);
-	}
+	/*
+	 * Note: as vg_to is referencing moved elements from vg_from
+	 * the order of free_vg calls is mandatory.
+	 */
+	unlock_and_free_vg(cmd, vg_to, vg_name_to);
+	unlock_and_free_vg(cmd, vg_from, vg_name_from);
+
 	return r;
 }
 
 int vgmerge(struct cmd_context *cmd, int argc, char **argv)
 {
-	char *vg_name_to, *vg_name_from;
+	const char *vg_name_to, *vg_name_from;
 	int opt = 0;
 	int ret = 0, ret_max = 0;
 

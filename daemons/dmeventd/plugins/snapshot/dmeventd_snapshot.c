@@ -125,8 +125,8 @@ static int _extend(const char *device)
 		syslog(LOG_ERR, "Unable to determine VG name from %s.", device);
 		return 0;
 	}
-	if (sizeof(cmd_str) <= snprintf(cmd_str, sizeof(cmd_str),
-					"lvextend --use-policies %s/%s", vg, lv)) {
+	if (dm_snprintf(cmd_str, sizeof(cmd_str),
+			"lvextend --use-policies %s/%s", vg, lv) < 0) {
 		syslog(LOG_ERR, "Unable to form LVM command: Device name too long.");
 		return 0;
 	}
@@ -200,7 +200,6 @@ void process_event(struct dm_task *dmt,
 	_parse_snapshot_params(params, &status);
 
 	if (status.invalid) {
-		syslog(LOG_ERR, "Trying to umount invalid snapshot %s...\n", device);
 		struct dm_info info;
 		if (dm_task_get_info(dmt, &info)) {
 			dmeventd_lvm2_unlock();

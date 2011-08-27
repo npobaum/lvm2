@@ -39,7 +39,7 @@ CLDFLAGS += @CLDFLAGS@
 LDDEPS += @LDDEPS@
 LDFLAGS += @LDFLAGS@
 LIB_SUFFIX = @LIB_SUFFIX@
-LVMINTERNAL_LIBS = -llvm-internal $(DL_LIBS)
+LVMINTERNAL_LIBS = -llvm-internal $(UDEV_LIBS) $(DL_LIBS)
 DL_LIBS = @DL_LIBS@
 PTHREAD_LIBS = @PTHREAD_LIBS@
 READLINE_LIBS = @READLINE_LIBS@
@@ -103,9 +103,9 @@ INSTALL_SCRIPT = $(INSTALL_PROGRAM)
 
 .SUFFIXES: .c .d .o .so .a .po .pot .mo .dylib
 
-CFLAGS += -fPIC -Wall -Wundef -Wshadow -Wcast-align -Wwrite-strings -Wmissing-prototypes -Wmissing-declarations -Wnested-externs -Winline -Wmissing-noreturn -Wformat-security -Wredundant-decls
+CFLAGS += -fPIC -Wall -Wundef -Wshadow -Wcast-align -Wwrite-strings -Wmissing-prototypes -Wmissing-declarations -Wnested-externs -Winline -Wmissing-noreturn -Wformat-security -Wredundant-decls -Wpointer-arith
 
-#CFLAGS += -W -Wconversion -Wpointer-arith -Wbad-function-cast -Wcast-qual
+#CFLAGS += -W -Wconversion -Wbad-function-cast -Wcast-qual
 #CFLAGS += -pedantic -std=gnu99
 #CFLAGS += -DDEBUG_CRC32
 

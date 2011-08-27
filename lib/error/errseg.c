@@ -45,6 +45,7 @@ static int _errseg_add_target_line(struct dev_manager *dm __attribute__((unused)
 				struct cmd_context *cmd __attribute__((unused)),
 				void **target_state __attribute__((unused)),
 				struct lv_segment *seg __attribute__((unused)),
+				const struct lv_activate_opts *laopts __attribute__((unused)),
 				struct dm_tree_node *node, uint64_t len,
 				uint32_t *pvmove_mirror_count __attribute__((unused)))
 {
@@ -99,7 +100,7 @@ static struct segtype_handler _error_ops = {
 
 struct segment_type *init_error_segtype(struct cmd_context *cmd)
 {
-	struct segment_type *segtype = dm_malloc(sizeof(*segtype));
+	struct segment_type *segtype = dm_zalloc(sizeof(*segtype));
 
 	if (!segtype)
 		return_NULL;

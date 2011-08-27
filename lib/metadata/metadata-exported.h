@@ -33,8 +33,8 @@
 #define STRIPE_SIZE_MIN ( (unsigned) lvm_getpagesize() >> SECTOR_SHIFT)	/* PAGESIZE in sectors */
 #define STRIPE_SIZE_MAX ( 512L * 1024L >> SECTOR_SHIFT)	/* 512 KB in sectors */
 #define STRIPE_SIZE_LIMIT ((UINT_MAX >> 2) + 1)
-#define PV_MIN_SIZE ( 512L * 1024L >> SECTOR_SHIFT)	/* 512 KB in sectors */
 #define MAX_RESTRICTED_LVS 255	/* Used by FMT_RESTRICTED_LVIDS */
+#define MAX_EXTENT_SIZE ((uint32_t) -1)
 
 /* Layer suffix */
 #define MIRROR_SYNC_LAYER "_mimagetmp"
@@ -61,8 +61,7 @@
 //#define VIRTUAL			0x00010000U	/* LV - internal use only */
 #define MIRROR_LOG		0x00020000U	/* LV */
 #define MIRROR_IMAGE		0x00040000U	/* LV */
-#define MIRROR_NOTSYNCED	0x00080000U	/* LV */
-//#define ACTIVATE_EXCL		0x00100000U	/* LV - internal use only */
+#define LV_NOTSYNCED		0x00080000U	/* LV */
 //#define PRECOMMITTED		0x00200000U	/* VG - internal use only */
 #define CONVERTING		0x00400000U	/* LV */
 
@@ -78,6 +77,7 @@
 
 #define REPLICATOR		0x20000000U	/* LV -internal use only for replicator */
 #define REPLICATOR_LOG		0x40000000U	/* LV -internal use only for replicator-dev */
+#define UNLABELLED_PV           0x80000000U     /* PV -this PV had no label written yet */
 
 #define LVM_READ              	0x00000100U	/* LV VG */
 #define LVM_WRITE             	0x00000200U	/* LV VG */
@@ -171,16 +171,51 @@ struct pv_segment {
 
 #define pvseg_is_allocated(pvseg) ((pvseg)->lvseg)
 
+/*
+ * These flags define the type of the format instance to be created.
+ * There are two basic types: a PV-based and a VG-based format instance.
+ * We can further control the format_instance initialisation and functionality
+ * by using the other flags. Today, the primary role of the format_instance
+ * is to temporarily store metadata area information we are working with. More
+ * flags can be defined to cover even more functionality in the future...
+ */
+
+/* PV-based format instance */
+#define FMT_INSTANCE_PV 		0x00000000U
+
+/* VG-based format instance */
+#define FMT_INSTANCE_VG 		0x00000001U
+
+/* Include any existing PV mdas during format_instance initialisation */
+#define FMT_INSTANCE_MDAS 		0x00000002U
+
+/* Include any auxiliary mdas during format_instance intialisation */
+#define FMT_INSTANCE_AUX_MDAS 		0x00000004U
+
+/* Include any other format-specific mdas during format_instance initialisation */
+#define FMT_INSTANCE_PRIVATE_MDAS 	0x00000008U
+
 struct format_instance {
+	unsigned ref_count;	/* Refs to this fid from VG and PV structs */
+	struct dm_pool *mem;
+
+	uint32_t type;
 	const struct format_type *fmt;
+
 	/*
 	 * Each mda in a vg is on exactly one of the below lists.
 	 * MDAs on the 'in_use' list will be read from / written to
 	 * disk, while MDAs on the 'ignored' list will not be read
 	 * or written to.
 	 */
+	/* FIXME: Try to use the index only. Remove these lists. */
 	struct dm_list metadata_areas_in_use;
 	struct dm_list metadata_areas_ignored;
+	union {
+		struct metadata_area **array;
+		struct dm_hash_table *hash;
+	} metadata_areas_index;
+
 	void *private;
 };
 
@@ -325,7 +360,8 @@ struct pvcreate_params {
 
 struct physical_volume *pvcreate_single(struct cmd_context *cmd,
 					const char *pv_name,
-					struct pvcreate_params *pp);
+					struct pvcreate_params *pp,
+					int write_now);
 void pvcreate_params_set_defaults(struct pvcreate_params *pp);
 
 /*
@@ -337,8 +373,8 @@ int vg_revert(struct volume_group *vg);
 struct volume_group *vg_read_internal(struct cmd_context *cmd, const char *vg_name,
 			     const char *vgid, int warnings, int *consistent);
 struct physical_volume *pv_read(struct cmd_context *cmd, const char *pv_name,
-				struct dm_list *mdas, uint64_t *label_sector,
-				int warnings, int scan_label_only);
+				int warnings,
+				int scan_label_only);
 struct dm_list *get_pvs(struct cmd_context *cmd);
 
 /*
@@ -353,8 +389,7 @@ struct dm_list *get_vgnames(struct cmd_context *cmd, int include_internal);
 struct dm_list *get_vgids(struct cmd_context *cmd, int include_internal);
 int scan_vgs_for_pvs(struct cmd_context *cmd, int warnings);
 
-int pv_write(struct cmd_context *cmd, struct physical_volume *pv,
-	     struct dm_list *mdas, int64_t label_sector);
+int pv_write(struct cmd_context *cmd, struct physical_volume *pv, int allow_non_orphan);
 int move_pv(struct volume_group *vg_from, struct volume_group *vg_to,
 	    const char *pv_name);
 int move_pvs_used_by_lv(struct volume_group *vg_from,
@@ -393,11 +428,12 @@ struct physical_volume *pv_create(const struct cmd_context *cmd,
 				  uint64_t pe_start,
 				  uint32_t existing_extent_count,
 				  uint32_t existing_extent_size,
-				  int pvmetadatacopies, uint64_t pvmetadatasize,
-				  unsigned metadataignore,
-				  struct dm_list *mdas);
+				  uint64_t label_sector,
+				  int pvmetadatacopies,
+				  uint64_t pvmetadatasize,
+				  unsigned metadataignore);
 int pv_resize(struct physical_volume *pv, struct volume_group *vg,
-             uint32_t new_pe_count);
+             uint64_t size);
 int pv_analyze(struct cmd_context *cmd, const char *pv_name,
 	       uint64_t label_sector);
 
@@ -411,9 +447,9 @@ void vg_remove_pvs(struct volume_group *vg);
 int vg_remove(struct volume_group *vg);
 int vg_rename(struct cmd_context *cmd, struct volume_group *vg,
 	      const char *new_name);
-int vg_extend(struct volume_group *vg, int pv_count, char **pv_names,
+int vg_extend(struct volume_group *vg, int pv_count, const char *const *pv_names,
 	      struct pvcreate_params *pp);
-int vg_reduce(struct volume_group *vg, char *pv_name);
+int vg_reduce(struct volume_group *vg, const char *pv_name);
 int vg_change_tag(struct volume_group *vg, const char *tag, int add_tag);
 int vg_split_mdas(struct cmd_context *cmd, struct volume_group *vg_from,
 		  struct volume_group *vg_to);
@@ -425,6 +461,14 @@ void del_pvl_from_vgs(struct volume_group *vg, struct pv_list *pvl);
 int remove_lvs_in_vg(struct cmd_context *cmd,
 		     struct volume_group *vg,
 		     force_t force);
+
+/*
+ * free_pv_fid() must be called on every struct physical_volume allocated
+ * by pv_create, pv_read, find_pv_by_name or pv_by_path to free it when
+ * no longer required.
+ */
+void free_pv_fid(struct physical_volume *pv);
+
 /*
  * free_vg() must be called on every struct volume_group allocated
  * by vg_create() or vg_read_internal() to free it when no longer required.
@@ -457,10 +501,9 @@ int replace_lv_with_error_segment(struct logical_volume *lv);
 int lv_extend(struct logical_volume *lv,
 	      const struct segment_type *segtype,
 	      uint32_t stripes, uint32_t stripe_size,
-	      uint32_t mirrors, uint32_t extents,
-	      struct physical_volume *mirrored_pv, uint32_t mirrored_pe,
-	      uint64_t status, struct dm_list *allocatable_pvs,
-	      alloc_policy_t alloc);
+	      uint32_t mirrors, uint32_t region_size,
+	      uint32_t extents,
+	      struct dm_list *allocatable_pvs, alloc_policy_t alloc);
 
 /* lv must be part of lv->vg->lvs */
 int lv_remove(struct logical_volume *lv);
@@ -477,6 +520,17 @@ int lv_rename(struct cmd_context *cmd, struct logical_volume *lv,
 uint64_t extents_from_size(struct cmd_context *cmd, uint64_t size,
 			   uint32_t extent_size);
 
+/*
+ * Activation options
+ */
+typedef enum {
+	CHANGE_AY = 0,
+	CHANGE_AN = 1,
+	CHANGE_AE = 2,
+	CHANGE_ALY = 3,
+	CHANGE_ALN = 4
+} activation_change_t;
+
 /* FIXME: refactor and reduce the size of this struct! */
 struct lvcreate_params {
 	/* flags */
@@ -487,6 +541,7 @@ struct lvcreate_params {
 	int log_count; /* mirror */
 	int nosync; /* mirror */
 	int activation_monitoring; /* all */
+	activation_change_t activate; /* non-snapshot, non-mirror */
 
 	char *origin; /* snap */
 	const char *vg_name; /* all */
@@ -697,9 +752,10 @@ struct logical_volume *find_pvmove_lv_from_pvname(struct cmd_context *cmd,
 						  const char *name,
 						  const char *uuid,
 						  uint32_t lv_type);
+struct logical_volume *find_pvmove_lv_in_lv(struct logical_volume *lv);
 const char *get_pvmove_pvname_from_lv(struct logical_volume *lv);
 const char *get_pvmove_pvname_from_lv_mirr(struct logical_volume *lv_mirr);
-percent_t copy_percent(struct logical_volume *lv_mirr);
+percent_t copy_percent(const struct logical_volume *lv_mirr);
 struct dm_list *lvs_using_lv(struct cmd_context *cmd, struct volume_group *vg,
 			  struct logical_volume *lv);
 
@@ -721,8 +777,10 @@ int vg_check_write_mode(struct volume_group *vg);
 int lv_has_unknown_segments(const struct logical_volume *lv);
 int vg_has_unknown_segments(const struct volume_group *vg);
 
+int vg_mark_partial_lvs(struct volume_group *vg, int clear);
+
 struct vgcreate_params {
-	char *vg_name;
+	const char *vg_name;
 	uint32_t extent_size;
 	size_t max_pv;
 	size_t max_lv;

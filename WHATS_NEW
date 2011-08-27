@@ -1,3 +1,134 @@
+Version 2.02.86 - 8th July 2011
+===============================
+  Remove unnecessary warning in pvcreate for MD linear devices.
+  Move snapshot removal activation logic into lib/activate.
+  Cope with a PV only discovered missing when creating deptree.
+  Abort operation if dm_tree_node_add_target_area fails.
+  Add activation/checks to lvm.conf to perform additional ioctl validation.
+  Always preload on suspend, even if no metadata changed (lvchange --refresh).
+  When suspending, automatically preload newly-visible existing LVs.
+  Teardown any stray devices with $COMMON_PREFIX during test runs.
+  Reinstate correct permissions when creating mirrors. [2.02.85]
+  Append 'm' attribute to pv_attr for missing PVs.
+  Annotate CLVMD_CMD_SYNC_NAMES in decode_cmd.
+  Remove enforcement of udev verification when using non-standard /dev location.
+  Fix to preserve exclusive activation of mirror while up-converting.
+  Reject allocation if number of extents is not divisible by area count.
+  Fix cluster mirror creation to work with new mirror allocation algorithm.
+  Ignore activation/verify_udev_operations if dm kernel driver vsn < 4.18.
+  Add activation/verify_udev_operations to lvm.conf, disabled by default.
+  Call vg_mark_partial_lvs() before VG structure is returned from the cache.
+  Remove unused internal flag ACTIVATE_EXCL from the code.
+  Remove useless test of ACTIVATE_EXCL in lv_add_mirrors() clustered code path.
+  Add lv_activate_opts structure for activation (replacing activation flags).
+  Ignore inconsistent pre-commit metadata on MISSING_PV devs while activating.
+  Add proper udev library context initialization and finalization to liblvm.
+  Fix last snapshot removal to avoid table reload while a device is suspended.
+  Use dm_get_suspended_counter in replacement critical_section logic.
+  Downgrade critical_section errors to debug level until it is moved to libdm.
+  Fix ignored background polling default in vgchange -ay.
+  Fix pvmove activation sequences to avoid trapped I/O with multiple LVs.
+  Annotate critical section debug messages.
+  Fix reduction of mirrors with striped segments to always align to stripe size.
+  Validate mirror segments size.
+  Include lvmetad development code in tree.
+  Fix extent rounding for striped volumes never to reduce more than requested.
+  Fix create_temp_name to replace any '/' found in the hostname with '?'.
+  Always use append to file in lvmdump. selinux policy may ban file truncation.
+  Propagate test mode to clvmd to skip activation and changes to held locks.
+  Defer writing PV labels until vg_write.
+  Store label_sector only in struct physical_volume.
+  Permit --available with lvcreate so non-snapshot LVs need not be activated.
+  Report sector containing label in verbose message.
+  Clarify error message when unable to convert an LV into a snapshot of an LV.
+  Add and use dev_open_readonly and variations.
+  Do not log a superfluous stack message when the lv is properly processed.
+  Do not issue an error message when unable to remove .cache on read-only fs.
+  Avoid memlock size mismatch by preallocating stdio line buffers.
+  Rewrite vgreduce --removemissing --force to share lvconvert code.
+  Reorganize lvconvert --repair code to allow reuse.
+
+Version 2.02.85 - 29th April 2011
+=================================
+  Add new obtain_device_list_from_udev setting to lvm.conf.
+  Obtain device list from udev by default if LVM2 is compiled with udev support.
+  Add test for vgimportclone and querying of vgnames with duplicate pvs.
+  Avoid use of released memory when duplicate PV is found.
+  Add "devices/issue_discards" to lvm.conf.
+  Issue discards on lvremove and lvreduce etc. if enabled and supported.
+  Add seg_pe_ranges and devices fields to liblvm.
+  Fix incorrect tests for dm_snprintf() failure.
+  Fix some unmatching sign comparation gcc warnings in the code.
+  Support lv_extend() on empty LVs.
+  Avoid regenerating cache content when exported VG buffer is unchanged.
+  Extend the set of memory regions that are not locked to memory.
+  Workaround some problems when compiled for valgrind memcheck.
+  Support controlled quit of the lvm_thread_fn function in clvmd.
+  Fix reading of unallocated memory in lvm1 format import function.
+  Replace several strncmp() calls with id_equal().
+  Fix lvmcache_info transfer to orphan_vginfo in _lvmcache_update_vgname().
+  Fix -Wold-style-definition gcc warnings.
+  Rename MIRROR_NOTSYNCED to LV_NOTSYNCED.
+  Fix _move_lv_segments to handle empty LVs.
+  Fixes for lvconvert (including --repair) of temporary mirror stacks.
+  Avoid potential loop when removing mirror images.
+  Fix mirror removal always to take account of preferences as to which.
+  Fix MIRRORED flag usage.
+  Remove error messages issued by device_is_usable when run as non-root.
+  Add missing \0 for grown debug object in _bitset_with_random_bits().
+  Fix allocation of system_id buffer in volume_group structure.
+  Fix readlink usage inside get_primary_dev().
+  Use format instance mempool where possible and adequate.
+  Call destroy_instance for any PVs found in VG structure during vg_free call.
+  Add new free_pv_fid fn and use it throughout to free all attached fids.
+  Use only vg_set_fid and new pv_set_fid fn to assign the format instance.
+  Make create_text_context fn static and move it inside create_instance fn.
+  Add mem and ref_count fields to struct format_instance for own mempool use.
+  Use new alloc_fid fn for common format instance initialisation.
+  Optimise _get_token() and _eat_space().
+  Add _lv_postorder_vg() to improve efficiency for all LVs in VG.
+  Add gdbinit script for debugging.
+  Use hash tables to speedup string search in vg_validate().
+  Refactor allocation of VG structure adding alloc_vg().
+  Avoid possible endless loop in _free_vginfo when 4 or more VGs have same name.
+  Use empty string instead of /dev// for LV path when there's no VG.
+  Don't allocate unused VG mempool in _pvsegs_sub_single.
+  Do not send uninitialised bytes in local clvmd messages.
+  Support --help option for clvmd and return error for unknown option.
+  Avoid reading freed memory when printing LV segment type.
+  Fix syslog initialisation in clvmd to respect lvm.conf setting.
+  Fix possible overflow in maximum stripe size and physical extent size.
+  Improve pvremove error message when PV belongs to a VG.
+  Extend normal policy to allow mirror logs on same PVs as images if necessary.
+  Improve cling policy to recognise PVs already used during the transaction.
+  Improve normal allocation algorithm to include clinging to existing areas.
+  Add allocation/maximise_cling & mirror_logs_require_separate_pvs to lvm.conf.
+  Adapt metadata balancing code to work with metadata handling changes.
+  Add old_id field to physical_volume and fix pvchange -u for recent changes.
+  Allow pvresize on a PV with two metadata areas.
+  Change pvcreate to use new metadata handling interface.
+  Restructure existing pv_setup and pv_write and add pv_initialise.
+  Add internal interface to support adding and removing metadata areas.
+  Allow internal indexing of metadata areas (PV id + mda order).
+  Generalise internal format_instance infrastrusture for PV and VG use.
+  Handle decimal digits with --units instead of ignoring them silently.
+  Fix remaining warnings and compile with -Wpointer-arith.
+  Fix gcc warnings for unused variables and const casts.
+  Add stack backtraces for error paths in process_each_lv().
+  Temporarily suppress error from calling yes_no_prompt while locks are held.
+  Replace void* with char* arithmetic in _text_write, _text_read & send_message.
+  Fix compilation without DEVMAPPER_SUPPORT.
+  Remove fs_unlock() from lv_suspend error path.
+  Allow memory to stay locked between leaving and re-entering critical sections.
+  Rename memlock to critical_section throughout.
+  Make pv_min_size configurable and increase to 2048KB to exclude floppy drives.
+  Add find_config_tree_int64 to read 64-bit ints from config.
+  Ensure resuming exclusive cluster mirror continues to use local mirror target.
+  Clear temporary postorder LV status flags to allow re-use with same LV struct.
+  Remove invalid snapshot umount mesg which floods syslog from dmeventd plugin.
+  Add extended examples to pvmove man page.
+  Support LVM_TEST_DEVDIR env var for private /dev during testing.
+
 Version 2.02.84 - 9th February 2011
 ===================================
   Fix CRC32 calculation on big endian CPU (2.02.75).
@@ -265,7 +396,7 @@ Version 2.02.73 - 18th August 2010
   Fix const warning in dev_manager_info() and _dev_manager_lv_rmnodes().
   Fix const warning in archive_file structure from archive.c.
   Clean generated files .exported_symbols_generated, example.conf for distclean.
-  Handle failure of all mirrored log devices and all but one mirror leg. 
+  Handle failure of all mirrored log devices and all but one mirror leg.
   Disallow 'mirrored' log type for cluster mirrors.
   Do not use VPATH in include/Makefile.
   Fix exported_symbols generation to use standard compiler arguments.

@@ -80,7 +80,7 @@ static int _send_request(const char *inbuf, int inlen, char **retbuf, int no_res
 	char outbuf[PIPE_BUF];
 	struct clvm_header *outheader = (struct clvm_header *) outbuf;
 	int len;
-	int off;
+	unsigned off;
 	int buflen;
 	int err;
 
@@ -154,6 +154,7 @@ static void _build_header(struct clvm_header *head, int cmd, const char *node,
 	head->cmd = cmd;
 	head->status = 0;
 	head->flags = 0;
+	head->xid = 0;
 	head->clientid = 0;
 	head->arglen = len;
 
@@ -197,11 +198,12 @@ static int _cluster_request(char cmd, const char *node, void *data, int len,
 	if (_clvmd_sock == -1)
 		return 0;
 
-	_build_header(head, cmd, node, len);
+	/* 1 byte is used from struct clvm_header.args[1], so -> len - 1 */
+	_build_header(head, cmd, node, len - 1);
 	memcpy(head->node + strlen(head->node) + 1, data, len);
 
 	status = _send_request(outbuf, sizeof(struct clvm_header) +
-			       strlen(head->node) + len, &retbuf, no_response);
+			       strlen(head->node) + len - 1, &retbuf, no_response);
 	if (!status || no_response)
 		goto out;
 

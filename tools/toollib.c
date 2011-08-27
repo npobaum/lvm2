@@ -28,7 +28,7 @@ const char *command_name(struct cmd_context *cmd)
 /*
  * Strip dev_dir if present
  */
-char *skip_dev_dir(struct cmd_context *cmd, const char *vg_name,
+const char *skip_dev_dir(struct cmd_context *cmd, const char *vg_name,
 		   unsigned *dev_dir_found)
 {
 	const char *dmdir = dm_dir();
@@ -54,7 +54,7 @@ char *skip_dev_dir(struct cmd_context *cmd, const char *vg_name,
 		    *layer) {
 			log_error("skip_dev_dir: Couldn't split up device name %s",
 				  vg_name);
-			return (char *) vg_name;
+			return vg_name;
 		}
 		vglv_sz = strlen(vgname) + strlen(lvname) + 2;
 		if (!(vglv = dm_pool_alloc(cmd->mem, vglv_sz)) ||
@@ -62,7 +62,7 @@ char *skip_dev_dir(struct cmd_context *cmd, const char *vg_name,
 				 *lvname ? "/" : "",
 				 lvname) < 0) {
 			log_error("vg/lv string alloc failed");
-			return (char *) vg_name;
+			return vg_name;
 		}
 		return vglv;
 	}
@@ -76,7 +76,7 @@ char *skip_dev_dir(struct cmd_context *cmd, const char *vg_name,
 	} else if (dev_dir_found)
 		*dev_dir_found = 0;
 
-	return (char *) vg_name;
+	return vg_name;
 }
 
 /*
@@ -169,8 +169,10 @@ int process_each_lv_in_vg(struct cmd_context *cmd,
 		}
 		if (ret > ret_max)
 			ret_max = ret;
-		if (sigint_caught())
+		if (sigint_caught()) {
+			stack;
 			return ret_max;
+		}
 	}
 
 	if (lvargs_supplied && lvargs_matched != dm_list_size(arg_lvnames)) {
@@ -253,8 +255,10 @@ int process_each_lv(struct cmd_context *cmd, int argc, char **argv,
 				while (*lv_name == '/')
 					lv_name++;
 				if (!(vgname = extract_vgname(cmd, vgname))) {
-					if (ret_max < ECMD_FAILED)
+					if (ret_max < ECMD_FAILED) {
+						stack;
 						ret_max = ECMD_FAILED;
+					}
 					continue;
 				}
 			} else if (!dev_dir_found &&
@@ -347,8 +351,12 @@ int process_each_lv(struct cmd_context *cmd, int argc, char **argv,
 			ret = process_each_lv_in_vg(cmd, cvl_vg->vg, &lvnames,
 						    tags_arg, &failed_lvnames,
 						    handle, process_single_lv);
-			if (ret != ECMD_PROCESSED ||
-			    dm_list_empty(&failed_lvnames))
+			if (ret != ECMD_PROCESSED) {
+				stack;
+				break;
+			}
+
+			if (dm_list_empty(&failed_lvnames))
 				break;
 
 			/* Try again with failed LVs in this VG */
@@ -357,6 +365,7 @@ int process_each_lv(struct cmd_context *cmd, int argc, char **argv,
 
 			free_cmd_vgs(&cmd_vgs);
 			if (!cmd_vg_read(cmd, &cmd_vgs)) {
+				stack;
 				ret = ECMD_FAILED; /* break */
 				break;
 			}
@@ -366,8 +375,10 @@ int process_each_lv(struct cmd_context *cmd, int argc, char **argv,
 
 		free_cmd_vgs(&cmd_vgs);
 		/* FIXME: logic for breaking command is not consistent */
-		if (sigint_caught())
+		if (sigint_caught()) {
+			stack;
 			return ECMD_FAILED;
+		}
 	}
 
 	return ret_max;
@@ -640,7 +651,7 @@ static int _process_all_devs(struct cmd_context *cmd, void *handle,
 	}
 
 	while ((dev = dev_iter_get(iter))) {
-		if (!(pv = pv_read(cmd, dev_name(dev), NULL, NULL, 0, 0))) {
+		if (!(pv = pv_read(cmd, dev_name(dev), 0, 0))) {
 			memset(&pv_dummy, 0, sizeof(pv_dummy));
 			dm_list_init(&pv_dummy.tags);
 			dm_list_init(&pv_dummy.segments);
@@ -649,6 +660,9 @@ static int _process_all_devs(struct cmd_context *cmd, void *handle,
 			pv = &pv_dummy;
 		}
 		ret = process_single_pv(cmd, NULL, pv, handle);
+
+		free_pv_fid(pv);
+
 		if (ret > ret_max)
 			ret_max = ret;
 		if (sigint_caught())
@@ -682,7 +696,6 @@ int process_each_pv(struct cmd_context *cmd, int argc, char **argv,
 	struct str_list *sll;
 	char *at_sign, *tagname;
 	int scanned = 0;
-	struct dm_list mdas;
 
 	dm_list_init(&tags);
 
@@ -724,10 +737,8 @@ int process_each_pv(struct cmd_context *cmd, int argc, char **argv,
 				}
 				pv = pvl->pv;
 			} else {
-
-				dm_list_init(&mdas);
-				if (!(pv = pv_read(cmd, argv[opt], &mdas,
-						   NULL, 1, scan_label_only))) {
+				if (!(pv = pv_read(cmd, argv[opt],
+						   1, scan_label_only))) {
 					log_error("Failed to read physical "
 						  "volume \"%s\"", argv[opt]);
 					ret_max = ECMD_FAILED;
@@ -742,7 +753,8 @@ int process_each_pv(struct cmd_context *cmd, int argc, char **argv,
 				 * PV on the system.
 				 */
 				if (!scanned && is_orphan(pv) &&
-				    !dm_list_size(&mdas)) {
+				    !dm_list_size(&pv->fid->metadata_areas_in_use) &&
+				    !dm_list_size(&pv->fid->metadata_areas_ignored)) {
 					if (!scan_label_only &&
 					    !scan_vgs_for_pvs(cmd, 1)) {
 						stack;
@@ -750,8 +762,9 @@ int process_each_pv(struct cmd_context *cmd, int argc, char **argv,
 						continue;
 					}
 					scanned = 1;
+					free_pv_fid(pv);
 					if (!(pv = pv_read(cmd, argv[opt],
-							   NULL, NULL, 1,
+							   1,
 							   scan_label_only))) {
 						log_error("Failed to read "
 							  "physical volume "
@@ -763,6 +776,14 @@ int process_each_pv(struct cmd_context *cmd, int argc, char **argv,
 			}
 
 			ret = process_single_pv(cmd, vg, pv, handle);
+
+			/*
+			 * Free PV only if we called pv_read before,
+			 * otherwise the PV structure is part of the VG.
+			 */
+			if (!vg)
+				free_pv_fid(pv);
+
 			if (ret > ret_max)
 				ret_max = ret;
 			if (sigint_caught())
@@ -816,6 +837,7 @@ int process_each_pv(struct cmd_context *cmd, int argc, char **argv,
 			dm_list_iterate_items(pvl, pvslist) {
 				ret = process_single_pv(cmd, NULL, pvl->pv,
 						     handle);
+				free_pv_fid(pvl->pv);
 				if (ret > ret_max)
 					ret_max = ret;
 				if (sigint_caught())
@@ -898,7 +920,7 @@ const char *extract_vgname(struct cmd_context *cmd, const char *lv_name)
  */
 char *default_vgname(struct cmd_context *cmd)
 {
-	char *vg_path;
+	const char *vg_path;
 
 	/* Take default VG from environment? */
 	vg_path = getenv("LVM_VG_NAME");
@@ -1231,6 +1253,12 @@ int vgcreate_params_set_from_args(struct cmd_context *cmd,
 		return 1;
 	}
 
+	if (arg_uint64_value(cmd, physicalextentsize_ARG, 0) > MAX_EXTENT_SIZE) {
+		log_error("Physical extent size cannot be larger than %s",
+				  display_size(cmd, (uint64_t) MAX_EXTENT_SIZE));
+		return 1;
+	}
+
 	if (arg_sign_value(cmd, maxlogicalvolumes_ARG, 0) == SIGN_MINUS) {
 		log_error("Max Logical Volumes may not be negative");
 		return 1;
@@ -1534,7 +1562,7 @@ int get_stripe_params(struct cmd_context *cmd, uint32_t *stripes, uint32_t *stri
 			return 0;
 		}
 
-		if(*stripe_size > STRIPE_SIZE_LIMIT * 2) {
+		if(arg_uint64_value(cmd, stripesize_ARG, 0) > STRIPE_SIZE_LIMIT * 2) {
 			log_error("Stripe size cannot be larger than %s",
 				  display_size(cmd, (uint64_t) STRIPE_SIZE_LIMIT));
 			return 0;

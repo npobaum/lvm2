@@ -55,7 +55,7 @@ static int _validate_stripesize(struct cmd_context *cmd,
 		return 0;
 	}
 
-	if (arg_uint_value(cmd, stripesize_ARG, 0) > STRIPE_SIZE_LIMIT * 2) {
+	if (arg_uint64_value(cmd, stripesize_ARG, 0) > STRIPE_SIZE_LIMIT * 2) {
 		log_error("Stripe size cannot be larger than %s",
 			  display_size(cmd, (uint64_t) STRIPE_SIZE_LIMIT));
 		return 0;
@@ -305,6 +305,34 @@ static int _adjust_policy_params(struct cmd_context *cmd,
 	return 1;
 }
 
+static uint32_t lvseg_get_stripes(struct lv_segment *seg, uint32_t *stripesize)
+{
+	uint32_t s;
+	struct lv_segment *seg_mirr;
+
+	/* If segment mirrored, check if images are striped */
+	if (seg_is_mirrored(seg))
+		for (s = 0; s < seg->area_count; s++) {
+			if (seg_type(seg, s) != AREA_LV)
+				continue;
+			seg_mirr = first_seg(seg_lv(seg, s));
+
+			if (seg_is_striped(seg_mirr)) {
+				seg = seg_mirr;
+				break;
+			}
+		}
+
+
+	if (seg_is_striped(seg)) {
+		*stripesize = seg->stripe_size;
+		return seg->area_count;
+	}
+
+	*stripesize = 0;
+	return 0;
+}
+
 static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 		     struct lvresize_params *lp)
 {
@@ -548,10 +576,8 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 		dm_list_iterate_items(seg, &lv->segments) {
 			seg_extents = seg->len;
 
-			if (seg_is_striped(seg)) {
-				seg_stripesize = seg->stripe_size;
-				seg_stripes = seg->area_count;
-			}
+			/* Check for underlying stripe sizes */
+			seg_stripes = lvseg_get_stripes(seg, &seg_stripesize);
 
 			if (seg_is_mirrored(seg))
 				seg_mirrors = lv_mirror_count(seg->lv);
@@ -575,11 +601,19 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 		return EINVALID_CMD_LINE;
 	}
 
-	if ((lp->stripes > 1)) {
+	if (lp->stripes > 1) {
 		if (!(stripesize_extents = lp->stripe_size / vg->extent_size))
 			stripesize_extents = 1;
 
-		if ((size_rest = seg_size % (lp->stripes * stripesize_extents))) {
+		size_rest = seg_size % (lp->stripes * stripesize_extents);
+		if (size_rest && lp->resize == LV_REDUCE) {
+			log_print("Rounding size (%d extents) up to stripe "
+				  "boundary size for segment (%d extents)",
+				  lp->extents, lp->extents - size_rest +
+				  (lp->stripes * stripesize_extents));
+			lp->extents = lp->extents - size_rest +
+				      (lp->stripes * stripesize_extents);
+		} else if (size_rest) {
 			log_print("Rounding size (%d extents) down to stripe "
 				  "boundary size for segment (%d extents)",
 				  lp->extents, lp->extents - size_rest);
@@ -670,10 +704,11 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 			return ECMD_FAILED;
 		}
 	} else if ((lp->extents > lv->le_count) && /* Ensure we extend */
-		   !lv_extend(lv, lp->segtype, lp->stripes,
-			      lp->stripe_size, lp->mirrors,
+		   !lv_extend(lv, lp->segtype,
+			      lp->stripes, lp->stripe_size,
+			      lp->mirrors, first_seg(lv)->region_size,
 			      lp->extents - lv->le_count,
-			      NULL, 0u, 0u, pvh, alloc)) {
+			      pvh, alloc)) {
 		stack;
 		return ECMD_FAILED;
 	}

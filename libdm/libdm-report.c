@@ -102,7 +102,7 @@ static const struct dm_report_object_type *_find_type(struct dm_report *rh,
  */
 
 int dm_report_field_string(struct dm_report *rh,
-			   struct dm_report_field *field, const char **data)
+			   struct dm_report_field *field, const char *const *data)
 {
 	char *repstr;
 
@@ -367,33 +367,32 @@ static uint32_t _all_match(struct dm_report *rh, const char *field, size_t flen)
 {
 	size_t prefix_len;
 	const struct dm_report_object_type *t;
-	char prefixed_all[32];
+	uint32_t report_types = 0;
+	unsigned unprefixed_all_matched = 0;
 
 	if (!strncasecmp(field, "all", 3) && flen == 3) {
-		if (strlen(rh->field_prefix)) {
-			strcpy(prefixed_all, rh->field_prefix);
-			strcat(prefixed_all, "all");
-			/*
-			 * Add also prefix to receive all attributes
-			 * (e.g.LABEL/PVS use the same prefix)
-			 */
-			return rh->report_types |
-			       _all_match(rh, prefixed_all,
-					  strlen(prefixed_all));
-		} else
-			return (rh->report_types)
-				? rh->report_types : REPORT_TYPES_ALL;
+		/* If there's no report prefix, match all report types */
+		if (!(flen = strlen(rh->field_prefix)))
+			return rh->report_types ? : REPORT_TYPES_ALL;
+
+		/* otherwise include all fields beginning with the report prefix. */
+		unprefixed_all_matched = 1;
+		field = rh->field_prefix;
+		report_types = rh->report_types;
 	}
 
+	/* Combine all report types that have a matching prefix. */
 	for (t = rh->types; t->data_fn; t++) {
 		prefix_len = strlen(t->prefix);
+
 		if (!strncasecmp(t->prefix, field, prefix_len) &&
-		    !strncasecmp(field + prefix_len, "all", 3) &&
-		    flen == prefix_len + 3)
-			return t->id;
+		    ((unprefixed_all_matched && (flen == prefix_len)) ||
+		     (!strncasecmp(field + prefix_len, "all", 3) &&
+		      (flen == prefix_len + 3))))
+			report_types |= t->id;
 	}
 
-	return 0;
+	return report_types;
 }
 
 /*
@@ -675,15 +674,15 @@ int dm_report_set_output_field_name_prefix(struct dm_report *rh, const char *out
 /*
  * Create a row of data for an object
  */
-static void * _report_get_field_data(struct dm_report *rh,
-			      struct field_properties *fp, void *object)
+static void *_report_get_field_data(struct dm_report *rh,
+				    struct field_properties *fp, void *object)
 {
-	void *ret = fp->type->data_fn(object);
+	char *ret = fp->type->data_fn(object);
 
 	if (!ret)
 		return NULL;
 
-	return ret + rh->fields[fp->field_num].offset;
+	return (void *)(ret + rh->fields[fp->field_num].offset);
 }
 
 int dm_report_object(struct dm_report *rh, void *object)
@@ -734,8 +733,8 @@ int dm_report_object(struct dm_report *rh, void *object)
 			return 0;
 		}
 
-		if ((strlen(field->report_string) > field->props->width))
-			field->props->width = strlen(field->report_string);
+		if (((int) strlen(field->report_string) > field->props->width))
+			field->props->width = (int) strlen(field->report_string);
 
 		if ((rh->flags & RH_SORT_REQUIRED) &&
 		    (field->props->flags & FLD_SORT_KEY)) {
@@ -775,8 +774,8 @@ static int _report_headings(struct dm_report *rh)
 	}
 
 	dm_list_iterate_items(fp, &rh->field_props) {
-		if (buf_size < fp->width)
-			buf_size = fp->width;
+		if ((int) buf_size < fp->width)
+			buf_size = (size_t) fp->width;
 	}
 	/* Including trailing '\0'! */
 	buf_size++;

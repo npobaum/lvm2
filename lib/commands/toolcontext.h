@@ -36,6 +36,7 @@ struct config_info {
 	int read_ahead;		/* DM_READ_AHEAD_NONE or _AUTO */
 	int udev_rules;
 	int udev_sync;
+	int udev_fallback;
 	int cache_vgmetadata;
 	const char *msg_prefix;
 	const char *fmt_name;
@@ -66,6 +67,7 @@ struct cmd_context {
 	const char *kernel_vsn;
 
 	unsigned rand_seed;
+	char *linebuffer;
 	const char *cmd_line;
 	struct command *command;
 	char **argv;
@@ -109,7 +111,8 @@ struct cmd_context {
  * The environment variable LVM_SYSTEM_DIR always takes precedence.
  */
 struct cmd_context *create_toolcontext(unsigned is_long_lived,
-				       const char *system_dir);
+				       const char *system_dir,
+				       unsigned set_buffering);
 void destroy_toolcontext(struct cmd_context *cmd);
 int refresh_toolcontext(struct cmd_context *cmd);
 int refresh_filters(struct cmd_context *cmd);

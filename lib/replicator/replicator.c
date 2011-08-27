@@ -327,6 +327,7 @@ static int _replicator_add_target_line(struct dev_manager *dm,
 				       struct cmd_context *cmd,
 				       void **target_state,
 				       struct lv_segment *seg,
+				       const struct lv_activate_opts *laopts,
 				       struct dm_tree_node *node,
 				       uint64_t len,
 				       uint32_t *pvmove_mirror_count)
@@ -609,6 +610,7 @@ static int _replicator_dev_add_target_line(struct dev_manager *dm,
 					   struct cmd_context *cmd,
 					   void **target_state,
 					   struct lv_segment *seg,
+					   const struct lv_activate_opts *laopts,
 					   struct dm_tree_node *node,
 					   uint64_t len,
 					   uint32_t *pvmove_mirror_count)
@@ -760,7 +762,7 @@ int init_multiple_segtype(struct segtype_library *seglib)
 {
 	struct segment_type *segtype;
 
-	if (!(segtype = dm_malloc(sizeof(*segtype))))
+	if (!(segtype = dm_zalloc(sizeof(*segtype))))
 		return_0;
 
 	segtype->ops = &_replicator_ops;
@@ -773,7 +775,7 @@ int init_multiple_segtype(struct segtype_library *seglib)
 
 	log_very_verbose("Initialised segtype: " REPLICATOR_MODULE);
 
-	if (!(segtype = dm_malloc(sizeof(*segtype))))
+	if (!(segtype = dm_zalloc(sizeof(*segtype))))
 		return_0;
 
 	segtype->ops = &_replicator_dev_ops;

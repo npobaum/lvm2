@@ -387,7 +387,9 @@ static int _fill_device_data(struct thread_status *ts)
 	if (!dmt)
 		return 0;
 
-	dm_task_set_uuid(dmt, ts->device.uuid);
+	if (!dm_task_set_uuid(dmt, ts->device.uuid))
+		goto fail;
+
 	if (!dm_task_run(dmt))
 		goto fail;
 
@@ -565,6 +567,7 @@ static void _unregister_for_timeout(struct thread_status *thread)
 	pthread_mutex_unlock(&_timeout_mutex);
 }
 
+__attribute__((format(printf, 4, 5)))
 static void _no_intr_log(int level, const char *file, int line,
 			const char *f, ...)
 {
@@ -732,7 +735,8 @@ static struct dm_task *_get_device_status(struct thread_status *ts)
 	if (!dmt)
 		return NULL;
 
-	dm_task_set_uuid(dmt, ts->device.uuid);
+	if (!dm_task_set_uuid(dmt, ts->device.uuid))
+                return NULL;
 
 	if (!dm_task_run(dmt)) {
 		dm_task_destroy(dmt);
@@ -1222,6 +1226,7 @@ static void _init_fifos(struct dm_event_fifos *fifos)
 static int _open_fifos(struct dm_event_fifos *fifos)
 {
 	int orig_errno;
+	struct stat st;
 
 	/* Create client fifo. */
 	(void) dm_prepare_selinux_context(fifos->client_path, S_IFIFO);
@@ -1244,8 +1249,6 @@ static int _open_fifos(struct dm_event_fifos *fifos)
 	}
 
 	(void) dm_prepare_selinux_context(NULL, 0);
-
-	struct stat st;
 
 	/* Warn about wrong permissions if applicable */
 	if ((!stat(fifos->client_path, &st)) && (st.st_mode & 0777) != 0600)
@@ -1385,7 +1388,7 @@ static int _client_write(struct dm_event_fifos *fifos,
 static int _handle_request(struct dm_event_daemon_message *msg,
 			  struct message_data *message_data)
 {
-	static struct {
+	static struct request {
 		unsigned int cmd;
 		int (*f)(struct message_data *);
 	} requests[] = {
@@ -1400,7 +1403,7 @@ static int _handle_request(struct dm_event_daemon_message *msg,
 		{ DM_EVENT_CMD_GET_STATUS, _get_status},
 	}, *req;
 
-	for (req = requests; req < requests + sizeof(requests); req++)
+	for (req = requests; req < requests + sizeof(requests) / sizeof(struct request); req++)
 		if (req->cmd == msg->cmd)
 			return req->f(message_data);
 
@@ -1421,8 +1424,9 @@ static int _do_process_request(struct dm_event_daemon_message *msg)
 		ret = 0;
 		answer = msg->data;
 		if (answer) {
-			msg->size = dm_asprintf(&(msg->data), "%s %s", answer,
-						msg->cmd == DM_EVENT_CMD_DIE ? "DYING" : "HELLO");
+			msg->size = dm_asprintf(&(msg->data), "%s %s %d", answer,
+						msg->cmd == DM_EVENT_CMD_DIE ? "DYING" : "HELLO",
+                                                DM_EVENT_PROTOCOL_VERSION);
 			dm_free(answer);
 		} else {
 			msg->size = 0;
@@ -1701,16 +1705,25 @@ static void restart(void)
 	int i, count = 0;
 	char *message;
 	int length;
+	int version;
 
 	/* Get the list of registrations from the running daemon. */
 
 	if (!init_fifos(&fifos)) {
-		fprintf(stderr, "Could not initiate communication with existing dmeventd.\n");
-		exit(EXIT_FAILURE);
+		fprintf(stderr, "WARNING: Could not initiate communication with existing dmeventd.\n");
+		return;
 	}
 
-	if (daemon_talk(&fifos, &msg, DM_EVENT_CMD_HELLO, NULL, NULL, 0, 0)) {
-		fprintf(stderr, "Could not communicate with existing dmeventd.\n");
+	if (!dm_event_get_version(&fifos, &version)) {
+		fprintf(stderr, "WARNING: Could not communicate with existing dmeventd.\n");
+		fini_fifos(&fifos);
+		return;
+	}
+
+	if (version < 1) {
+		fprintf(stderr, "WARNING: The running dmeventd instance is too old.\n"
+			        "Protocol version %d (required: 1). Action cancelled.\n",
+			        version);
 		exit(EXIT_FAILURE);
 	}
 

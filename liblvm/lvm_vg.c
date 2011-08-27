@@ -79,7 +79,7 @@ int lvm_vg_extend(vg_t vg, const char *device)
 	}
 
 	pvcreate_params_set_defaults(&pp);
-	if (!vg_extend(vg, 1, (char **) &device, &pp)) {
+	if (!vg_extend(vg, 1, &device, &pp)) {
 		unlock_vg(vg->cmd, VG_ORPHANS);
 		return -1;
 	}
@@ -98,7 +98,7 @@ int lvm_vg_reduce(vg_t vg, const char *device)
 	if (!vg_check_write_mode(vg))
 		return -1;
 
-	if (!vg_reduce(vg, (char *)device))
+	if (!vg_reduce(vg, device))
 		return -1;
 	return 0;
 }
@@ -147,6 +147,7 @@ int lvm_vg_write(vg_t vg)
 	if (! dm_list_empty(&vg->removed_pvs)) {
 		dm_list_iterate_items(pvl, &vg->removed_pvs) {
 			pv_write_orphan(vg->cmd, pvl->pv);
+			pv_set_fid(pvl->pv, NULL);
 			/* FIXME: do pvremove / label_remove()? */
 		}
 		dm_list_init(&vg->removed_pvs);

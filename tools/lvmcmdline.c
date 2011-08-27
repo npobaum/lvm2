@@ -42,11 +42,6 @@ extern char *optarg;
 #  define OPTIND_INIT 1
 #endif
 
-#ifdef UDEV_SYNC_SUPPORT
-#  define LIBUDEV_I_KNOW_THE_API_IS_SUBJECT_TO_CHANGE
-#  include <libudev.h>
-#endif
-
 /*
  * Table of valid switches
  */
@@ -865,8 +860,10 @@ static int _get_settings(struct cmd_context *cmd)
 	} else
 		init_trust_cache(0);
 
-	if (arg_count(cmd, noudevsync_ARG))
+	if (arg_count(cmd, noudevsync_ARG)) {
 		cmd->current_settings.udev_sync = 0;
+		cmd->current_settings.udev_fallback = 1;
+	}
 
 	/* Handle synonyms */
 	if (!_merge_synonym(cmd, resizable_ARG, resizeable_ARG) ||
@@ -951,47 +948,6 @@ static void _apply_settings(struct cmd_context *cmd)
 				      cmd->current_settings.fmt_name));
 
 	cmd->handles_missing_pvs = 0;
-}
-
-static int _set_udev_checking(struct cmd_context *cmd)
-{
-#ifdef UDEV_SYNC_SUPPORT
-	struct udev *udev;
-	const char *udev_dev_dir;
-	size_t udev_dev_dir_len;
-	int dirs_diff;
-
-	if (!(udev = udev_new()) ||
-	    !(udev_dev_dir = udev_get_dev_path(udev)) ||
-	    !*udev_dev_dir) {
-		log_error("Could not get udev dev path.");
-		return 0;
-	}
-	udev_dev_dir_len = strlen(udev_dev_dir);
-
-	/* There's always a slash at the end of dev_dir. But check udev_dev_dir! */
-	if (udev_dev_dir[udev_dev_dir_len - 1] != '/')
-		dirs_diff = strncmp(cmd->dev_dir, udev_dev_dir,
-				    udev_dev_dir_len);
-	else
-		dirs_diff = strcmp(cmd->dev_dir, udev_dev_dir);
-
-	if (dirs_diff) {
-		log_debug("The path %s used for creating device nodes and "
-			  "symlinks that is set in the configuration differs "
-			  "from the path %s that is used by udev. All warnings "
-			  "about udev not working correctly while processing "
-			  "particular nodes and symlinks will be suppressed. "
-			  "These nodes and symlinks will be managed in each "
-			  "directory separately.",
-			   cmd->dev_dir, udev_dev_dir);
-		dm_udev_set_checking(0);
-		init_udev_checking(0);
-	}
-
-	udev_unref(udev);
-#endif
-	return 1;
 }
 
 static const char *_copy_command_line(struct cmd_context *cmd, int argc, char **argv)
@@ -1091,9 +1047,6 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 #ifdef O_DIRECT_SUPPORT
 	log_debug("O_DIRECT will be used");
 #endif
-
-	if (!_set_udev_checking(cmd))
-		goto_out;
 
 	if ((ret = _process_common_commands(cmd))) {
 		if (ret != ECMD_PROCESSED)
@@ -1274,7 +1227,7 @@ static void _close_stray_fds(const char *command)
 	if (getenv("LVM_SUPPRESS_FD_WARNINGS"))
 		suppress_warnings = 1;
 
-	for (fd = 3; fd < rlim.rlim_cur; fd++)
+	for (fd = 3; fd < (int)rlim.rlim_cur; fd++)
 		_close_descriptor(fd, suppress_warnings, command, ppid,
 				  parent_cmdline);
 }
@@ -1283,7 +1236,10 @@ struct cmd_context *init_lvm(void)
 {
 	struct cmd_context *cmd;
 
-	if (!(cmd = create_toolcontext(0, NULL)))
+	if (!udev_init_library_context())
+		stack;
+
+	if (!(cmd = create_toolcontext(0, NULL, 1)))
 		return_NULL;
 
 	_cmdline.arg_props = &_arg_props[0];
@@ -1314,6 +1270,7 @@ void lvm_fin(struct cmd_context *cmd)
 {
 	_fin_commands();
 	destroy_toolcontext(cmd);
+	udev_fin_library_context();
 }
 
 static int _run_script(struct cmd_context *cmd, int argc, char **argv)

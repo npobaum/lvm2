@@ -30,9 +30,6 @@
 
 #include <sys/utsname.h>
 
-static int _block_on_error_available = 0;
-static unsigned _mirror_attributes = 0;
-
 enum {
 	MIRR_DISABLED,
 	MIRR_RUNNING,
@@ -158,6 +155,9 @@ static int _mirrored_text_export(const struct lv_segment *seg, struct formatter 
 }
 
 #ifdef DEVMAPPER_SUPPORT
+static int _block_on_error_available = 0;
+static unsigned _mirror_attributes = 0;
+
 static struct mirror_state *_mirrored_init_target(struct dm_pool *mem,
 					 struct cmd_context *cmd)
 {
@@ -343,12 +343,13 @@ static int _mirrored_transient_status(struct lv_segment *seg, char *params)
 
 	/* update PARTIAL_LV flags across the VG */
 	if (failed)
-		vg_mark_partial_lvs(lv->vg);
+		vg_mark_partial_lvs(lv->vg, 0);
 
 	return 1;
 }
 
 static int _add_log(struct dm_pool *mem, struct lv_segment *seg,
+		    const struct lv_activate_opts *laopts,
 		    struct dm_tree_node *node, uint32_t area_count, uint32_t region_size)
 {
 	unsigned clustered = 0;
@@ -359,8 +360,7 @@ static int _add_log(struct dm_pool *mem, struct lv_segment *seg,
 	 * Use clustered mirror log for non-exclusive activation
 	 * in clustered VG.
 	 */
-	if ((!(seg->lv->status & ACTIVATE_EXCL) &&
-	      (vg_is_clustered(seg->lv->vg))))
+	if (!laopts->exclusive && vg_is_clustered(seg->lv->vg))
 		clustered = 1;
 
 	if (seg->log_lv) {
@@ -390,10 +390,11 @@ static int _add_log(struct dm_pool *mem, struct lv_segment *seg,
 }
 
 static int _mirrored_add_target_line(struct dev_manager *dm, struct dm_pool *mem,
-				struct cmd_context *cmd, void **target_state,
-				struct lv_segment *seg,
-				struct dm_tree_node *node, uint64_t len,
-				uint32_t *pvmove_mirror_count)
+				     struct cmd_context *cmd, void **target_state,
+				     struct lv_segment *seg,
+				     const struct lv_activate_opts *laopts,
+				     struct dm_tree_node *node, uint64_t len,
+				     uint32_t *pvmove_mirror_count)
 {
 	struct mirror_state *mirr_state;
 	uint32_t area_count = seg->area_count;
@@ -451,7 +452,7 @@ static int _mirrored_add_target_line(struct dev_manager *dm, struct dm_pool *mem
 	if (!dm_tree_node_add_mirror_target(node, len))
 		return_0;
 
-	if ((r = _add_log(mem, seg, node, area_count, region_size)) <= 0) {
+	if ((r = _add_log(mem, seg, laopts, node, area_count, region_size)) <= 0) {
 		stack;
 		return r;
 	}
@@ -613,11 +614,11 @@ static struct segtype_handler _mirrored_ops = {
 	.target_percent = _mirrored_target_percent,
 	.target_present = _mirrored_target_present,
 	.check_transient_status = _mirrored_transient_status,
-#ifdef DMEVENTD
+#  ifdef DMEVENTD
 	.target_monitored = _target_registered,
 	.target_monitor_events = _target_monitor_events,
 	.target_unmonitor_events = _target_unmonitor_events,
-#endif
+#  endif	/* DMEVENTD */
 #endif
 	.modules_needed = _mirrored_modules_needed,
 	.destroy = _mirrored_destroy,
@@ -630,7 +631,7 @@ struct segment_type *init_segtype(struct cmd_context *cmd);
 struct segment_type *init_segtype(struct cmd_context *cmd)
 #endif
 {
-	struct segment_type *segtype = dm_malloc(sizeof(*segtype));
+	struct segment_type *segtype = dm_zalloc(sizeof(*segtype));
 
 	if (!segtype)
 		return_NULL;
@@ -641,9 +642,11 @@ struct segment_type *init_segtype(struct cmd_context *cmd)
 	segtype->private = NULL;
 	segtype->flags = SEG_AREAS_MIRRORED;
 
-#ifdef DMEVENTD
+#ifdef DEVMAPPER_SUPPORT
+#  ifdef DMEVENTD
 	if (_get_mirror_dso_path(cmd))
 		segtype->flags |= SEG_MONITORED;
+#  endif	/* DMEVENTD */
 #endif
 
 	log_very_verbose("Initialised segtype: %s", segtype->name);
