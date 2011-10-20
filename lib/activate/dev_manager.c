@@ -751,6 +751,7 @@ int dev_manager_mirror_percent(struct dev_manager *dm,
 {
 	char *name;
 	const char *dlid;
+	const char *target_type = first_seg(lv)->segtype->name;
 	const char *layer = (lv_is_origin(lv)) ? "real" : NULL;
 
 	/*
@@ -766,8 +767,9 @@ int dev_manager_mirror_percent(struct dev_manager *dm,
 		return 0;
 	}
 
-	log_debug("Getting device mirror status percentage for %s", name);
-	if (!(_percent(dm, name, dlid, "mirror", wait, lv, percent,
+	log_debug("Getting device %s status percentage for %s",
+		  target_type, name);
+	if (!(_percent(dm, name, dlid, target_type, wait, lv, percent,
 		       event_nr, 0)))
 		return_0;
 
@@ -1058,9 +1060,12 @@ static int _add_partial_replicator_to_dtree(struct dev_manager *dm,
 /*
  * Add LV and any known dependencies
  */
-static int _add_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree, struct logical_volume *lv, int origin_only)
+static int _add_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
+			    struct logical_volume *lv, int origin_only)
 {
+	uint32_t s;
 	struct seg_list *sl;
+	struct lv_segment *seg = first_seg(lv);
 
 	if (!origin_only && !_add_dev_to_dtree(dm, dtree, lv, NULL))
 		return_0;
@@ -1072,9 +1077,15 @@ static int _add_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree, struc
 	if (!origin_only && !_add_dev_to_dtree(dm, dtree, lv, "cow"))
 		return_0;
 
-	if ((lv->status & MIRRORED) && first_seg(lv)->log_lv &&
-	    !_add_dev_to_dtree(dm, dtree, first_seg(lv)->log_lv, NULL))
+	if ((lv->status & MIRRORED) && seg->log_lv &&
+	    !_add_dev_to_dtree(dm, dtree, seg->log_lv, NULL))
 		return_0;
+
+	if (lv->status & RAID)
+		for (s = 0; s < seg->area_count; s++)
+			if (!_add_lv_to_dtree(dm, dtree,
+					      seg_metalv(seg, s), origin_only))
+				return_0;
 
 	/* Add any LVs referencing a PVMOVE LV unless told not to. */
 	if (dm->track_pvmove_deps && lv->status & PVMOVE)
@@ -1215,7 +1226,39 @@ int add_areas_line(struct dev_manager *dm, struct lv_segment *seg,
 			if (!dm_tree_node_add_target_area(node, dev_name(seg_dev(seg, s)), NULL,
 				    (seg_pv(seg, s)->pe_start + (extent_size * seg_pe(seg, s)))))
 				return_0;
+		} else if (seg_is_raid(seg)) {
+			/*
+			 * RAID can handle unassigned areas.  It simple puts
+			 * '- -' in for the metadata/data device pair.  This
+			 * is a valid way to indicate to the RAID target that
+			 * the device is missing.
+			 *
+			 * If an image is marked as VISIBLE_LV and !LVM_WRITE,
+			 * it means the device has temporarily been extracted
+			 * from the array.  It may come back at a future date,
+			 * so the bitmap must track differences.  Again, '- -'
+			 * is used in the CTR table.
+			 */
+			if ((seg_type(seg, s) == AREA_UNASSIGNED) ||
+			    ((seg_lv(seg, s)->status & VISIBLE_LV) &&
+			     !(seg_lv(seg, s)->status & LVM_WRITE))) {
+				/* One each for metadata area and data area */
+				if (!dm_tree_node_add_null_area(node, 0) ||
+				    !dm_tree_node_add_null_area(node, 0))
+					return_0;
+				continue;
+			}
+			if (!(dlid = build_dm_uuid(dm->mem, seg_metalv(seg, s)->lvid.s, NULL)))
+				return_0;
+			if (!dm_tree_node_add_target_area(node, NULL, dlid, extent_size * seg_metale(seg, s)))
+				return_0;
+
+			if (!(dlid = build_dm_uuid(dm->mem, seg_lv(seg, s)->lvid.s, NULL)))
+				return_0;
+			if (!dm_tree_node_add_target_area(node, NULL, dlid, extent_size * seg_le(seg, s)))
+				return_0;
 		} else if (seg_type(seg, s) == AREA_LV) {
+
 			if (!(dlid = build_dm_uuid(dm->mem, seg_lv(seg, s)->lvid.s, NULL)))
 				return_0;
 			if (!dm_tree_node_add_target_area(node, NULL, dlid, extent_size * seg_le(seg, s)))
@@ -1444,11 +1487,16 @@ static int _add_segment_to_dtree(struct dev_manager *dm,
 			return_0;
 	} else {
 		/* Add any LVs used by this segment */
-		for (s = 0; s < seg->area_count; s++)
+		for (s = 0; s < seg->area_count; s++) {
 			if ((seg_type(seg, s) == AREA_LV) &&
 			    (!_add_new_lv_to_dtree(dm, dtree, seg_lv(seg, s),
 						   laopts, NULL)))
 				return_0;
+			if (seg_is_raid(seg) &&
+			    !_add_new_lv_to_dtree(dm, dtree, seg_metalv(seg, s),
+						  laopts, NULL))
+				return_0;
+		}
 	}
 
 	/* Now we've added its dependencies, we can add the target itself */

@@ -33,7 +33,7 @@ case "$1" in
 		2) log_end_msg 1 ;;
 	esac
 	;;
-  stop|restart|force-reload)
+  stop|restart|force-reload|status)
 	;;
   *)
 	echo "Usage: $SCRIPTNAME start" >&2

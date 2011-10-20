@@ -467,6 +467,14 @@ int dm_tree_node_add_mirror_target_log(struct dm_tree_node *node,
 					  unsigned area_count,
 					  uint32_t flags);
 
+int dm_tree_node_add_raid_target(struct dm_tree_node *node,
+				 uint64_t size,
+				 const char *raid_type,
+				 uint32_t region_size,
+				 uint32_t stripe_size,
+				 uint64_t rebuilds,
+				 uint64_t reserved2);
+
 /*
  * Replicator operation mode
  * Note: API for Replicator is not yet stable
@@ -508,6 +516,11 @@ int dm_tree_node_add_target_area(struct dm_tree_node *node,
 				    const char *dev_name,
 				    const char *dlid,
 				    uint64_t offset);
+
+/*
+ * Only for temporarily-missing raid devices where changes are tracked.
+ */
+int dm_tree_node_add_null_area(struct dm_tree_node *node, uint64_t offset);
 
 /*
  * Set readahead (in sectors) after loading the node.
@@ -604,6 +617,22 @@ void *dm_pool_alloc(struct dm_pool *p, size_t s);
 void *dm_pool_alloc_aligned(struct dm_pool *p, size_t s, unsigned alignment);
 void dm_pool_empty(struct dm_pool *p);
 void dm_pool_free(struct dm_pool *p, void *ptr);
+
+/*
+ * To aid debugging, a pool can be locked. Any modifications made
+ * to the content of the pool while it is locked can be detected.
+ * Default compilation is using a crc checksum to notice modifications.
+ * The pool locking is using the mprotect with the compilation flag
+ * DEBUG_ENFORCE_POOL_LOCKING to enforce the memory protection.
+ */
+/* query pool lock status */
+int dm_pool_locked(struct dm_pool *p);
+/* mark pool as locked */
+int dm_pool_lock(struct dm_pool *p, int crc)
+	__attribute__((__warn_unused_result__));
+/* mark pool as unlocked */
+int dm_pool_unlock(struct dm_pool *p, int crc)
+	__attribute__((__warn_unused_result__));
 
 /*
  * Object building routines:

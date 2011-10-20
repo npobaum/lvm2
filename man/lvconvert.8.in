@@ -17,7 +17,7 @@ LogicalVolume[Path] [PhysicalVolume[Path][:PE[-PE]]...]
 
 .br
 .B lvconvert
-\-\-splitmirrors Images \-\-name SplitLogicalVolumeName
+\-\-splitmirrors Images [\-\-name SplitLogicalVolumeName] [\-\-trackchanges]
 .br
 MirrorLogicalVolume[Path] [SplittablePhysicalVolume[Path][:PE[-PE]]...]
 .br
@@ -40,7 +40,7 @@ OriginalLogicalVolume[Path] SnapshotLogicalVolume[Path]
 [\-h|\-?|\-\-help]
 [\-v|\-\-verbose]
 [\-\-version]
-SnapshotLogicalVolume[Path]...
+LogicalVolume[Path]...
 .br
 
 .br
@@ -114,7 +114,8 @@ or has rules that ignore the devices LVM2 creates.
 .I \-\-splitmirrors Images
 The number of redundant Images of a mirror to be split off and used
 to form a new logical volume.  A name must be supplied for the
-newly-split-off logical volume using the \-\-name argument.
+newly-split-off logical volume using the \-\-name argument, unless
+the \-\-trackchanges argument is given.
 
 .TP
 .I \-n Name
@@ -122,6 +123,15 @@ The name to apply to a logical volume which has been split off from
 a mirror logical volume.
 .br
 
+.TP
+.I \-\-trackchanges
+Used with \-\-splitmirrors on a raid1 device, this tracks changes so that the
+read-only detached image can be merged efficiently back into the mirror later.
+Only the regions of the detatched device where the data changed get resynchronized.
+
+Please note that this feature is only supported with the new md-based mirror
+implementation and not with the original device-mapper mirror implementation.
+.br
 
 .TP
 .I \-s, \-\-snapshot
@@ -136,8 +146,11 @@ Controls zeroing of the first KB of data in the snapshot.
 If the volume is read-only the snapshot will not be zeroed.
 .TP
 .I \-\-merge
-Merges a snapshot into its origin volume.  To check if your kernel
-supports this feature, look for 'snapshot-merge' in the output
+Merges a snapshot into its origin volume or merges a raid1 image that has
+been split from its mirror with \-\-trackchanges back into its mirror.
+
+To check if your kernel supports the snapshot merge feature, look
+for 'snapshot-merge' in the output
 of 'dmsetup targets'.  If both the origin and snapshot volume are not
 open the merge will start immediately.  Otherwise, the merge will start
 the first time either the origin or snapshot are activated and both are closed.
@@ -150,7 +163,6 @@ merge finishes, the merged snapshot is removed.  Multiple snapshots may
 be specified on the commandline or a @tag may be used to specify
 multiple snapshots be merged to their respective origin.
 .br
-
 
 .TP
 .I \-\-repair
@@ -196,7 +208,7 @@ converts linear logical volume "vg00/lvol1" to a two-way mirror, using physical
 extents /dev/sda:0-15 and /dev/sdb:0-15 for allocation of new extents.
 
 .br
-"lvconvert -m0 vg00/lvmirror1 /dev/sda
+"lvconvert -m0 vg00/lvmirror1 /dev/sda"
 .br
 converts mirror logical volume "vg00/lvmirror1" to linear, freeing physical
 extents from /dev/sda.
@@ -213,6 +225,32 @@ If vg00/lvol1, vg00/lvol2, and vg00/lvol3 are all tagged with "some_tag"
 each snapshot logical volume will be merged serially, e.g.: vg00/lvol1,
 then vg00/lvol2, then vg00/lvol3.  If --background were used it would start
 all snapshot logical volume merges in parallel.
+
+.br
+"lvconvert --splitmirrors 1 --name lv_split vg00/lvmirror1"
+.br
+Extract one image from the mirror, making it a new logical volume named
+"lv_split".  The mirror the image is extracted from is reduced accordingly.
+If it was a 2-way mirror (created with '-m 1'), then the resulting original
+volume will be linear.
+
+.br
+"lvconvert --splitmirrors 1 --trackchanges vg00/lv_raid1"
+.br
+A mirrored logical volume created with --type raid1 can use the '\-\-trackchanges' argument when splitting
+off an image.  
+
+Detach one image from the mirrored logical volume lv_raid1 as a separate
+read-only device and track the changes made to the mirror while it is detached.
+The split-off device has a name of the form lv_raid1_rimage_N, where N is
+a number, and it cannot be renamed.
+
+.br
+"lvconvert --merge vg00/lv_raid1_rimage_1"
+.br
+Merge an image that was detached temporarily from its mirror with 
+the '\-\-trackchanges' argument back into its original mirror and
+bring its contents back up-to-date.
 
 .SH SEE ALSO
 .BR lvm (8),

@@ -74,8 +74,11 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_pool_end_object@Base 2:1.02.20
  dm_pool_free@Base 2:1.02.20
  dm_pool_grow_object@Base 2:1.02.20
+ dm_pool_lock@Base 2:1.02.67
+ dm_pool_locked@Base 2:1.02.67
  dm_pool_strdup@Base 2:1.02.20
  dm_pool_strndup@Base 2:1.02.20
+ dm_pool_unlock@Base 2:1.02.67
  dm_pool_zalloc@Base 2:1.02.20
  dm_prepare_selinux_context@Base 2:1.02.63
  dm_realloc_aux@Base 2:1.02.20
@@ -155,6 +158,8 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_tree_node_add_linear_target@Base 2:1.02.20
  dm_tree_node_add_mirror_target@Base 2:1.02.20
  dm_tree_node_add_mirror_target_log@Base 2:1.02.20
+ dm_tree_node_add_null_area@Base 2:1.02.67
+ dm_tree_node_add_raid_target@Base 2:1.02.67
  dm_tree_node_add_replicator_dev_target@Base 2:1.02.63
  dm_tree_node_add_replicator_target@Base 2:1.02.63
  dm_tree_node_add_snapshot_merge_target@Base 2:1.02.44
