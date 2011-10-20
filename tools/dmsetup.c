@@ -779,10 +779,12 @@ static int _message(CMD_ARGS)
 		strcat(str, argv[i]);
 	}
 
-	if (!dm_task_set_message(dmt, str))
-		goto out;
+	i = dm_task_set_message(dmt, str);
 
 	dm_free(str);
+
+	if (!i)
+		goto out;
 
 	if (_switches[NOOPENCOUNT_ARG] && !dm_task_no_open_count(dmt))
 		goto out;
@@ -3476,7 +3478,8 @@ int main(int argc, char **argv)
 	#endif
 
       doit:
-	multiple_devices = (argc != 2 && cmd->repeatable_cmd);
+	multiple_devices = (cmd->repeatable_cmd && argc != 2 &&
+			    (argc != 1 || (!_switches[UUID_ARG] && !_switches[MAJOR_ARG])));
 	do {
 		if (!cmd->fn(cmd, argc--, argv++, NULL, multiple_devices)) {
 			fprintf(stderr, "Command failed\n");

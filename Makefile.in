@@ -26,16 +26,18 @@ ifeq ("@INTL@", "yes")
   SUBDIRS += po
 endif
 
-SUBDIRS += libdm lib daemons tools
+SUBDIRS += libdm lib tools daemons
 
 ifeq ("@APPLIB@", "yes")
   SUBDIRS += liblvm
 endif
 
+# FIXME Should use intermediate Makefiles here!
 ifeq ($(MAKECMDGOALS),distclean)
   SUBDIRS = doc include man scripts \
     lib tools daemons libdm \
-    udev po liblvm test/api test
+    udev po liblvm test/api test \
+    unit-tests/datastruct unit-tests/mm unit-tests/regex
 endif
 DISTCLEAN_DIRS += lcov_reports*
 DISTCLEAN_TARGETS += config.cache config.log config.status make.tmpl
@@ -63,6 +65,9 @@ install_system_dirs:
 
 install_initscripts: 
 	$(MAKE) -C scripts install_initscripts
+
+install_systemd_units:
+	$(MAKE) -C scripts install_systemd_units
 
 LCOV_TRACES = libdm.info lib.info tools.info \
 	daemons/dmeventd.info daemons/clvmd.info
@@ -110,6 +115,7 @@ RUBY=ruby1.9 -Ireport-generators/lib -Ireport-generators/test
 .PHONEY: unit-test ruby-test test-programs
 
 # FIXME: put dependencies on libdm and liblvm
+# FIXME: Should be handled by Makefiles in subdirs, not here at top level.
 test-programs:
 	cd unit-tests/regex && $(MAKE)
 	cd unit-tests/datastruct && $(MAKE)

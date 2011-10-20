@@ -47,18 +47,12 @@ ifneq (,$(findstring $(DEB_HOST_ARCH), arm armeb hppa mips mipsel))
 CONFIGURE_FLAGS += --disable-o_direct
 endif
 
-patch: $(STAMPS_DIR)/patch
-
-$(STAMPS_DIR)/patch:
-	@mkdir -p $(STAMPS_DIR)
-	QUILT_PATCHES=$(CURDIR)/debian/patches quilt --quiltrc /dev/null push -a || test $$? = 2
-	touch $@
-
 source: $(STAMPS_DIR)/source
 
 $(STAMPS_DIR)/source: SOURCE_FILES = $(filter-out debian .svn, $(wildcard * .[^.]*))
 $(STAMPS_DIR)/source: DIR = $(BUILD_DIR)/source
-$(STAMPS_DIR)/source: $(STAMPS_DIR)/patch
+$(STAMPS_DIR)/source:
+	@mkdir -p $(STAMPS_DIR)
 	rm -rf $(DIR)
 	mkdir -p '$(DIR)'
 	cp -a $(SOURCE_FILES) '$(DIR)'
@@ -81,6 +75,8 @@ $(STAMPS_DIR)/setup_deb: $(STAMPS_DIR)/source
 		--with-device-uid=0 \
 		--with-device-gid=6 \
 		--with-device-mode=0660 \
+		--with-default-run-dir=/run/lvm \
+		--with-default-locking-dir=/run/lock/lvm \
 		--enable-applib \
 		--enable-cmdlib \
 		--enable-pkgconfig \
@@ -90,7 +86,7 @@ $(STAMPS_DIR)/setup_deb: $(STAMPS_DIR)/source
 
 $(STAMPS_DIR)/setup_udeb: SOURCE_DIR = $(BUILD_DIR)/source
 $(STAMPS_DIR)/setup_udeb: DIR = $(BUILD_DIR)/build_udeb
-$(STAMPS_DIR)/setup_udeb: $(STAMPS_DIR)/patch
+$(STAMPS_DIR)/setup_udeb: $(STAMPS_DIR)/source
 	rm -rf $(DIR)
 	cp -a '$(SOURCE_DIR)' '$(DIR)'
 	cd $(DIR); \
@@ -205,24 +201,11 @@ install_libdevmapper-udeb: $(STAMPS_DIR)/install_udeb
 		BUILDDEB_ARGS="--filename=$(PACKAGE_FILE)" \
 		GENCONTROL_ARGS="-v$(DEVMAPPER_VERSION_DEBIAN)"
 
-install_liblvm2app: export DH_OPTIONS = -pliblvm2app$(LVM2APP_ABINAME)
-install_liblvm2app: DIR = $(BUILD_DIR)/install_deb
-install_liblvm2app: $(STAMPS_DIR)/install_deb
+install_liblvm2: export DH_OPTIONS = -pliblvm2app$(LVM2APP_ABINAME) -pliblvm2cmd$(LVM2CMD_ABINAME) -pliblvm2-dev
+install_liblvm2: DIR = $(BUILD_DIR)/install_deb
+install_liblvm2: $(STAMPS_DIR)/install_deb
 	+$(MAKE_SELF) install-base-prep INSTALL_DIR='$(DIR)'
 	dh_makeshlibs -V -- -c2
-	+$(MAKE_SELF) install-base
-
-install_liblvm2cmd: export DH_OPTIONS = -pliblvm2cmd$(LVM2CMD_ABINAME)
-install_liblvm2cmd: DIR = $(BUILD_DIR)/install_deb
-install_liblvm2cmd: $(STAMPS_DIR)/install_deb
-	+$(MAKE_SELF) install-base-prep INSTALL_DIR='$(DIR)'
-	dh_makeshlibs -V -- -c2
-	+$(MAKE_SELF) install-base
-
-install_liblvm2-dev: export DH_OPTIONS = -pliblvm2-dev
-install_liblvm2-dev: DIR = $(BUILD_DIR)/install_deb
-install_liblvm2-dev: $(STAMPS_DIR)/install_deb
-	+$(MAKE_SELF) install-base-prep INSTALL_DIR='$(DIR)'
 	+$(MAKE_SELF) install-base
 
 install_lvm2: export DH_OPTIONS = -plvm2
@@ -239,7 +222,7 @@ install_lvm2-udeb: $(STAMPS_DIR)/install_udeb
 	+$(MAKE_SELF) install-base
 
 binary-indep:
-binary-arch: $(addprefix install_,libdevmapper libdevmapper-udeb libdevmapper-dev dmsetup dmsetup-udeb liblvm2app liblvm2cmd liblvm2-dev lvm2 lvm2-udeb clvm)
+binary-arch: $(addprefix install_,libdevmapper libdevmapper-udeb libdevmapper-dev dmsetup dmsetup-udeb liblvm2 lvm2 lvm2-udeb clvm)
 
 binary: binary-indep binary-arch
 

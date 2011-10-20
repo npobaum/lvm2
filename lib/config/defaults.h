@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2009 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2011 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -49,10 +49,12 @@
 #define DEFAULT_USE_MLOCKALL 0
 #define DEFAULT_METADATA_READ_ONLY 0
 
+#define DEFAULT_MIRROR_SEGTYPE "mirror"
 #define DEFAULT_MIRRORLOG "disk"
 #define DEFAULT_MIRROR_LOG_FAULT_POLICY "allocate"
 #define DEFAULT_MIRROR_IMAGE_FAULT_POLICY "remove"
 #define DEFAULT_MIRROR_MAX_IMAGES 8 /* limited by kernel DM_KCOPYD_MAX_REGIONS */
+#define DEFAULT_DMEVENTD_RAID_LIB "libdevmapper-event-lvm2raid.so"
 #define DEFAULT_DMEVENTD_MIRROR_LIB "libdevmapper-event-lvm2mirror.so"
 #define DEFAULT_DMEVENTD_SNAPSHOT_LIB "libdevmapper-event-lvm2snapshot.so"
 #define DEFAULT_DMEVENTD_MONITOR 1
@@ -77,7 +79,7 @@
 #define DEFAULT_LABELSECTOR UINT64_C(1)
 #define DEFAULT_READ_AHEAD "auto"
 #define DEFAULT_UDEV_RULES 1
-#define DEFAULT_UDEV_SYNC 0
+#define DEFAULT_UDEV_SYNC 1
 #define DEFAULT_VERIFY_UDEV_OPERATIONS 0
 #define DEFAULT_ACTIVATION_CHECKS 0
 #define DEFAULT_EXTENT_SIZE 4096	/* In KB */
@@ -101,6 +103,7 @@
 #define DEFAULT_LOGLEVEL 0
 #define DEFAULT_INDENT 1
 #define DEFAULT_ABORT_ON_INTERNAL_ERRORS 0
+#define DEFAULT_DETECT_INTERNAL_VG_CACHE_CORRUPTION 0
 #define DEFAULT_UNITS "h"
 #define DEFAULT_SUFFIX 1
 #define DEFAULT_HOSTTAGS 0

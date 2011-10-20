@@ -650,46 +650,6 @@ int do_refresh_cache(void)
 	return 0;
 }
 
-
-/* Only called at gulm startup. Drop any leftover VG or P_orphan locks
-   that might be hanging around if we died for any reason
-*/
-static void drop_vg_locks(void)
-{
-	char vg[128];
-	char line[255];
-	FILE *vgs =
-	    popen
-	    (LVM_PATH " pvs  --config 'log{command_names=0 prefix=\"\"}' --nolocking --noheadings -o vg_name", "r");
-
-	sync_unlock("P_" VG_ORPHANS, LCK_EXCL);
-	sync_unlock("P_" VG_GLOBAL, LCK_EXCL);
-
-	if (!vgs)
-		return;
-
-	while (fgets(line, sizeof(line), vgs)) {
-		char *vgend;
-		char *vgstart;
-
-		if (line[strlen(line)-1] == '\n')
-			line[strlen(line)-1] = '\0';
-
-		vgstart = line + strspn(line, " ");
-		vgend = vgstart + strcspn(vgstart, " ");
-		*vgend = '\0';
-
-		if (strncmp(vgstart, "WARNING:", 8) == 0)
-			continue;
-
-		sprintf(vg, "V_%s", vgstart);
-		sync_unlock(vg, LCK_EXCL);
-
-	}
-	if (fclose(vgs))
-		DEBUGLOG("vgs fclose failed: %s\n", strerror(errno));
-}
-
 /*
  * Handle VG lock - drop metadata or update lvmcache state
  */
@@ -761,7 +721,7 @@ static int was_ex_lock(char *uuid, char **argv)
  * but this may not be the case...
  * I suppose this also comes in handy if clvmd crashes, not that it would!
  */
-static void *get_initial_state(char **argv)
+static int get_initial_state(char **argv)
 {
 	int lock_mode;
 	char lv[64], vg[64], flags[25], vg_flags[25];
@@ -773,7 +733,7 @@ static void *get_initial_state(char **argv)
 	     "r");
 
 	if (!lvs)
-		return NULL;
+		return 1;
 
 	while (fgets(line, sizeof(line), lvs)) {
 	        if (sscanf(line, "%s %s %s %s\n", vg, lv, flags, vg_flags) == 4) {
@@ -813,7 +773,7 @@ static void *get_initial_state(char **argv)
 	}
 	if (fclose(lvs))
 		DEBUGLOG("lvs fclose failed: %s\n", strerror(errno));
-	return NULL;
+	return 0;
 }
 
 static void lvm2_log_fn(int level, const char *file, int line, int dm_errno,
@@ -880,7 +840,7 @@ void lvm_do_backup(const char *vgname)
 	else
 		log_error("Error backing up metadata, can't find VG for group %s", vgname);
 
-	free_vg(vg);
+	release_vg(vg);
 	dm_pool_empty(cmd->mem);
 
 	pthread_mutex_unlock(&lvm_lock);
@@ -920,11 +880,15 @@ void lvm_do_fs_unlock(void)
 }
 
 /* Called to initialise the LVM context of the daemon */
-int init_clvm(int using_gulm, char **argv)
+int init_clvm(char **argv)
 {
 	/* Use LOG_DAEMON for syslog messages instead of LOG_USER */
 	init_syslog(LOG_DAEMON);
 	openlog("clvmd", LOG_PID, LOG_DAEMON);
+
+	/* Initialise already held locks */
+	if (get_initial_state(argv))
+		log_error("Cannot load initial lock states.");
 
 	if (!(cmd = create_toolcontext(1, NULL, 0))) {
 		log_error("Failed to allocate command context");
@@ -941,12 +905,6 @@ int init_clvm(int using_gulm, char **argv)
 	/* Check lvm.conf is setup for cluster-LVM */
 	check_config();
 	init_ignore_suspended_devices(1);
-
-	/* Remove any non-LV locks that may have been left around */
-	if (using_gulm)
-		drop_vg_locks();
-
-	get_initial_state(argv);
 
 	/* Trap log messages so we can pass them back to the user */
 	init_log_fn(lvm2_log_fn);

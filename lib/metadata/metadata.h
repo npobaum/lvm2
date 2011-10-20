@@ -75,7 +75,6 @@
 //#define CONVERTING		0x00400000U	/* LV */
 
 //#define MISSING_PV		0x00800000U	/* PV */
-#define INCONSISTENT_VG		0x00800000U	/* VG - internal use only */
 //#define PARTIAL_LV		0x01000000U	/* LV - derived flag, not
 //						   written out in metadata*/
 
@@ -233,6 +232,7 @@ int mdas_empty_or_ignored(struct dm_list *mdas);
 #define seg_dev(seg, s)		(seg)->areas[(s)].u.pv.pvseg->pv->dev
 #define seg_pe(seg, s)		(seg)->areas[(s)].u.pv.pvseg->pe
 #define seg_le(seg, s)		(seg)->areas[(s)].u.lv.le
+#define seg_metale(seg, s)	(seg)->meta_areas[(s)].u.lv.le
 
 struct name_list {
 	struct dm_list list;

@@ -221,7 +221,7 @@ static void _update_vg_lock_count(const char *resource, uint32_t flags)
  */
 int init_locking(int type, struct cmd_context *cmd, int suppress_messages)
 {
-	if (ignorelockingfailure() && getenv("LVM_SUPPRESS_LOCKING_FAILURE_MESSAGES"))
+	if (getenv("LVM_SUPPRESS_LOCKING_FAILURE_MESSAGES"))
 		suppress_messages = 1;
 
 	if (type < 0)
@@ -232,7 +232,7 @@ int init_locking(int type, struct cmd_context *cmd, int suppress_messages)
 
 	switch (type) {
 	case 0:
-		init_no_locking(&_locking, cmd);
+		init_no_locking(&_locking, cmd, suppress_messages);
 		log_warn("WARNING: Locking disabled. Be careful! "
 			  "This could corrupt your metadata.");
 		return 1;
@@ -241,7 +241,7 @@ int init_locking(int type, struct cmd_context *cmd, int suppress_messages)
 		log_very_verbose("%sFile-based locking selected.",
 				 _blocking_supported ? "" : "Non-blocking ");
 
-		if (!init_file_locking(&_locking, cmd)) {
+		if (!init_file_locking(&_locking, cmd, suppress_messages)) {
 			log_error_suppress(suppress_messages,
 					   "File-based locking initialisation failed.");
 			break;
@@ -252,13 +252,13 @@ int init_locking(int type, struct cmd_context *cmd, int suppress_messages)
 	case 2:
 		if (!is_static()) {
 			log_very_verbose("External locking selected.");
-			if (init_external_locking(&_locking, cmd))
+			if (init_external_locking(&_locking, cmd, suppress_messages))
 				return 1;
 		}
 		if (!find_config_tree_int(cmd, "locking/fallback_to_clustered_locking",
 			    find_config_tree_int(cmd, "global/fallback_to_clustered_locking",
 						 DEFAULT_FALLBACK_TO_CLUSTERED_LOCKING))) {
-			log_error("External locking initialisation failed.");
+			log_error_suppress(suppress_messages, "External locking initialisation failed.");
 			break;
 		}
 #endif
@@ -269,7 +269,7 @@ int init_locking(int type, struct cmd_context *cmd, int suppress_messages)
 
 	case 3:
 		log_very_verbose("Cluster locking selected.");
-		if (!init_cluster_locking(&_locking, cmd)) {
+		if (!init_cluster_locking(&_locking, cmd, suppress_messages)) {
 			log_error_suppress(suppress_messages,
 					   "Internal cluster locking initialisation failed.");
 			break;
@@ -280,7 +280,7 @@ int init_locking(int type, struct cmd_context *cmd, int suppress_messages)
 	case 4:
 		log_verbose("Read-only locking selected. "
 			    "Only read operations permitted.");
-		if (!init_readonly_locking(&_locking, cmd))
+		if (!init_readonly_locking(&_locking, cmd, suppress_messages))
 			break;
 		return 1;
 
@@ -297,7 +297,7 @@ int init_locking(int type, struct cmd_context *cmd, int suppress_messages)
 		log_warn_suppress(suppress_messages,
 				  "Volume Groups with the clustered attribute will "
 				  "be inaccessible.");
-		if (init_file_locking(&_locking, cmd))
+		if (init_file_locking(&_locking, cmd, suppress_messages))
 			return 1;
 		else
 			log_error_suppress(suppress_messages,
@@ -308,7 +308,7 @@ int init_locking(int type, struct cmd_context *cmd, int suppress_messages)
 		return 0;
 
 	log_verbose("Locking disabled - only read operations permitted.");
-	init_readonly_locking(&_locking, cmd);
+	init_readonly_locking(&_locking, cmd, suppress_messages);
 
 	return 1;
 }
@@ -359,6 +359,8 @@ int check_lvm1_vg_inactive(struct cmd_context *cmd, const char *vgname)
 static int _lock_vol(struct cmd_context *cmd, const char *resource,
 		     uint32_t flags, lv_operation_t lv_op)
 {
+	uint32_t lck_type = flags & LCK_TYPE_MASK;
+	uint32_t lck_scope = flags & LCK_SCOPE_MASK;
 	int ret = 0;
 
 	_block_signals(flags);
@@ -376,27 +378,29 @@ static int _lock_vol(struct cmd_context *cmd, const char *resource,
 		return 0;
 	}
 
-	if (cmd->metadata_read_only &&
-	    ((flags & LCK_TYPE_MASK) == LCK_WRITE) &&
+	if (cmd->metadata_read_only && lck_type == LCK_WRITE &&
 	    strcmp(resource, VG_GLOBAL)) {
 		log_error("Operation prohibited while global/metadata_read_only is set.");
 		return 0;
 	}
 
 	if ((ret = _locking.lock_resource(cmd, resource, flags))) {
-		if ((flags & LCK_SCOPE_MASK) == LCK_VG &&
-		    !(flags & LCK_CACHE)) {
-			if ((flags & LCK_TYPE_MASK) == LCK_UNLOCK)
-				lvmcache_unlock_vgname(resource);
-			else
-				lvmcache_lock_vgname(resource, (flags & LCK_TYPE_MASK)
-								== LCK_READ);
+		if (lck_scope == LCK_VG && !(flags & LCK_CACHE)) {
+			if (lck_type != LCK_UNLOCK)
+				lvmcache_lock_vgname(resource, lck_type == LCK_READ);
 			dev_reset_error_count(cmd);
 		}
 
 		_update_vg_lock_count(resource, flags);
 	} else
 		stack;
+
+	/* If unlocking, always remove lock from lvmcache even if operation failed. */
+	if (lck_scope == LCK_VG && !(flags & LCK_CACHE) && lck_type == LCK_UNLOCK) {
+		lvmcache_unlock_vgname(resource);
+		if (!ret)
+			_update_vg_lock_count(resource, flags);
+	}
 
 	_unlock_memory(cmd, lv_op);
 	_unblock_signals();

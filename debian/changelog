@@ -1,3 +1,17 @@
+lvm2 (2.02.88-1) unstable; urgency=low
+
+  * New upstream version.
+  * Remove lvm-common conflicts and replaces.
+  * Remove grub-common breakage.
+  * Remove own quilt usage.
+  * Move cache file to /run/lvm. (closes: #562234)
+    - Remove old cache dir.
+  * Move lock files to /run/lock/lvm. (closes: #263148)
+  * Support status action in lvm2 init script. (closes: #643822)
+  * Remove Squeeze upgrade checks.
+
+ -- Bastian Blank <waldi@debian.org>  Thu, 20 Oct 2011 21:37:06 +0200
+
 lvm2 (2.02.86-1) unstable; urgency=low
 
   * New upstream version.

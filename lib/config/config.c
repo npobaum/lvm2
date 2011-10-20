@@ -62,6 +62,7 @@ struct cs {
 	struct config_tree cft;
 	struct dm_pool *mem;
 	time_t timestamp;
+	off_t st_size;
 	char *filename;
 	int exists;
 	int keep_open;
@@ -159,8 +160,7 @@ static int _parse_config_file(struct parser *p, struct config_tree *cft)
 	return 1;
 }
 
-struct config_tree *create_config_tree_from_string(struct cmd_context *cmd __attribute__((unused)),
-						   const char *config_settings)
+struct config_tree *create_config_tree_from_string(const char *config_settings)
 {
 	struct cs *c;
 	struct config_tree *cft;
@@ -191,7 +191,7 @@ struct config_tree *create_config_tree_from_string(struct cmd_context *cmd __att
 int override_config_tree_from_string(struct cmd_context *cmd,
 				     const char *config_settings)
 {
-	if (!(cmd->cft_override = create_config_tree_from_string(cmd,config_settings))) {
+	if (!(cmd->cft_override = create_config_tree_from_string(config_settings))) {
 		log_error("Failed to set overridden configuration entries.");
 		return 1;
 	}
@@ -310,6 +310,7 @@ int read_config_file(struct config_tree *cft)
 	}
 
 	c->timestamp = info.st_ctime;
+	c->st_size = info.st_size;
 
 	return r;
 }
@@ -353,7 +354,7 @@ int config_file_changed(struct config_tree *cft)
 	}
 
 	/* Unchanged? */
-	if (c->timestamp == info.st_ctime)
+	if (c->timestamp == info.st_ctime && c->st_size == info.st_size)
 		return 0;
 
       reload:
@@ -487,11 +488,11 @@ static int _write_config(const struct config_node *n, int only_one,
 			line_append("=");
 			if (v->next) {
 				line_append("[");
-				while (v) {
+				while (v && v->type != CFG_EMPTY_ARRAY) {
 					if (!_write_value(outline, v))
 						return_0;
 					v = v->next;
-					if (v)
+					if (v && v->type != CFG_EMPTY_ARRAY)
 						line_append(", ");
 				}
 				line_append("]");
@@ -1364,8 +1365,8 @@ static struct config_value *_clone_config_value(struct dm_pool *mem, const struc
 	return new_cv;
 }
 
-struct config_node *clone_config_node(struct dm_pool *mem, const struct config_node *cn,
-				      int siblings)
+struct config_node *clone_config_node_with_mem(struct dm_pool *mem, const struct config_node *cn,
+					       int siblings)
 {
 	struct config_node *new_cn;
 
@@ -1383,9 +1384,51 @@ struct config_node *clone_config_node(struct dm_pool *mem, const struct config_n
 	}
 
 	if ((cn->v && !(new_cn->v = _clone_config_value(mem, cn->v))) ||
-	    (cn->child && !(new_cn->child = clone_config_node(mem, cn->child, 1))) ||
-	    (siblings && cn->sib && !(new_cn->sib = clone_config_node(mem, cn->sib, siblings))))
+	    (cn->child && !(new_cn->child = clone_config_node_with_mem(mem, cn->child, 1))) ||
+	    (siblings && cn->sib && !(new_cn->sib = clone_config_node_with_mem(mem, cn->sib, siblings))))
 		return_NULL; /* 'new_cn' released with mem pool */
 
 	return new_cn;
+}
+
+struct config_node *clone_config_node(struct config_tree *cft, const struct config_node *node, int sib)
+{
+	struct cs *c = (struct cs *) cft;
+	return clone_config_node_with_mem(c->mem, node, sib);
+}
+
+struct config_node *create_config_node(struct config_tree *cft, const char *key)
+{
+	struct cs *c = (struct cs *) cft;
+	struct config_node *cn;
+
+	if (!(cn = _create_node(c->mem))) {
+		log_error("Failed to create config node.");
+		return NULL;
+	}
+	if (!(cn->key = dm_pool_strdup(c->mem, key))) {
+		log_error("Failed to create config node's key.");
+		return NULL;
+	}
+	if (!(cn->v = _create_value(c->mem))) {
+		log_error("Failed to create config node's value.");
+		return NULL;
+	}
+	cn->parent = NULL;
+	cn->v->type = CFG_INT;
+	cn->v->v.i = 0;
+	cn->v->next = NULL;
+	return cn;
+}
+
+struct config_value *create_config_value(struct config_tree *cft)
+{
+	struct cs *c = (struct cs *) cft;
+	return _create_value(c->mem);
+}
+
+struct dm_pool *config_tree_memory(struct config_tree *cft)
+{
+	struct cs *c = (struct cs *) cft;
+	return c->mem;
 }

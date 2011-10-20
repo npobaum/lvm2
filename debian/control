@@ -3,7 +3,7 @@ Section: admin
 Priority: optional
 Maintainer: Debian LVM Team <pkg-lvm-maintainers@lists.alioth.debian.org>
 Uploaders: Bastian Blank <waldi@debian.org>
-Build-Depends: debhelper (>> 7), automake, libcman-dev (>> 2), libdlm-dev (>> 2), libreadline-gplv2-dev, libselinux1-dev, libudev-dev, pkg-config, quilt
+Build-Depends: debhelper (>> 7), automake, libcman-dev (>> 2), libdlm-dev (>> 2), libreadline-gplv2-dev, libselinux1-dev, libudev-dev, pkg-config
 Standards-Version: 3.9.1
 Homepage: http://sources.redhat.com/lvm2/
 Vcs-Svn: svn://svn.debian.org/pkg-lvm/lvm2/trunk/
@@ -11,10 +11,8 @@ Vcs-Browser: http://svn.debian.org/wsvn/pkg-lvm/lvm2/trunk/
 
 Package: lvm2
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, lsb-base, dmsetup (>> 2:1.02.47)
-Breaks: grub-common (<<1.98+20100527-1)
-Conflicts: lvm-common
-Replaces: lvm-common
+Depends: ${shlibs:Depends}, ${misc:Depends}, lsb-base, dmsetup (>> 2:1.02.47), initscripts (>= 2.88dsf-13.3)
+Breaks: initramfs-tools (<< 0.99)
 Description: Linux Logical Volume Manager
  This is LVM2, the rewrite of The Linux Logical Volume Manager.  LVM
  supports enterprise level volume management of disk and disk subsystems

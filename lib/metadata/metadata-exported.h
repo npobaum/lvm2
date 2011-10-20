@@ -46,6 +46,14 @@
 #define EXPORTED_VG          	0x00000002U	/* VG PV */
 #define RESIZEABLE_VG        	0x00000004U	/* VG */
 
+/*
+ * Since the RAID flags are LV (and seg) only and the above three
+ * are VG/PV only, these flags are reused.
+ */
+#define RAID                    0x00000001U	/* LV */
+#define RAID_META               0x00000002U	/* LV */
+#define RAID_IMAGE              0x00000004U	/* LV */
+
 /* May any free extents on this PV be used or must they be left free? */
 #define ALLOCATABLE_PV         	0x00000008U	/* PV */
 
@@ -293,7 +301,7 @@ struct lv_segment {
 	uint64_t status;
 
 	/* FIXME Fields depend on segment type */
-	uint32_t stripe_size;
+	uint32_t stripe_size;   /* For stripe and RAID - in sectors */
 	uint32_t area_count;
 	uint32_t area_len;
 	uint32_t chunk_size;	/* For snapshots - in sectors */
@@ -309,6 +317,7 @@ struct lv_segment {
 	struct dm_list tags;
 
 	struct lv_segment_area *areas;
+	struct lv_segment_area *meta_areas; /* For RAID */
 
 	struct logical_volume *replicator;/* For replicator-devs - link to replicator LV */
 	struct logical_volume *rlog_lv;	/* For replicators */
@@ -320,6 +329,8 @@ struct lv_segment {
 #define seg_type(seg, s)	(seg)->areas[(s)].type
 #define seg_pv(seg, s)		(seg)->areas[(s)].u.pv.pvseg->pv
 #define seg_lv(seg, s)		(seg)->areas[(s)].u.lv.lv
+#define seg_metalv(seg, s)	(seg)->meta_areas[(s)].u.lv.lv
+#define seg_metatype(seg, s)	(seg)->meta_areas[(s)].type
 
 struct pe_range {
 	struct dm_list list;
@@ -468,12 +479,6 @@ int remove_lvs_in_vg(struct cmd_context *cmd,
  * no longer required.
  */
 void free_pv_fid(struct physical_volume *pv);
-
-/*
- * free_vg() must be called on every struct volume_group allocated
- * by vg_create() or vg_read_internal() to free it when no longer required.
- */
-void free_vg(struct volume_group *vg);
 
 /* Manipulate LVs */
 struct logical_volume *lv_create_empty(const char *name,
@@ -732,6 +737,19 @@ int lv_is_rlog(const struct logical_volume *lv);
 int lv_is_slog(const struct logical_volume *lv);
 struct logical_volume *first_replicator_dev(const struct logical_volume *lv);
 /* --  metadata/replicator_manip.c */
+
+/* ++  metadata/raid_manip.c */
+uint32_t lv_raid_image_count(const struct logical_volume *lv);
+int lv_raid_change_image_count(struct logical_volume *lv,
+			       uint32_t new_count, struct dm_list *pvs);
+int lv_raid_split(struct logical_volume *lv, const char *split_name,
+		  uint32_t new_count, struct dm_list *splittable_pvs);
+int lv_raid_split_and_track(struct logical_volume *lv,
+			    struct dm_list *splittable_pvs);
+int lv_raid_merge(struct logical_volume *lv);
+
+/* --  metadata/raid_manip.c */
+
 struct cmd_vg *cmd_vg_add(struct dm_pool *mem, struct dm_list *cmd_vgs,
 			  const char *vg_name, const char *vgid,
 			  uint32_t flags);

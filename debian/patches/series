@@ -1,6 +1,6 @@
 install.patch
 libs-cleanup.patch
-config.patch
+dirs.patch
 force-modprobe.patch
 #libdm-atomic.patch
 rules-subdir.patch

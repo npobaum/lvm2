@@ -8,8 +8,8 @@
  MKDIR_P = @MKDIR_P@
  MSGFMT = @MSGFMT@
  LCOV = @LCOV@
-@@ -67,8 +68,7 @@
- initdir = $(DESTDIR)@sysconfdir@/rc.d/init.d
+@@ -68,8 +69,7 @@
+ systemd_dir = $(DESTDIR)/lib/systemd/system
  ocf_scriptdir = $(DESTDIR)@OCFDIR@
  
 -USRLIB_RELPATH = $(shell echo $(abspath $(usrlibdir) $(libdir)) | \
@@ -18,7 +18,7 @@
  
  DEFAULT_SYS_DIR = @DEFAULT_SYS_DIR@
  DEFAULT_ARCHIVE_DIR = $(DEFAULT_SYS_DIR)/@DEFAULT_ARCHIVE_SUBDIR@
-@@ -92,22 +92,14 @@
+@@ -93,22 +93,14 @@
  endif
  
  # Handle installation of files

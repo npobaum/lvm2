@@ -84,7 +84,7 @@ devices {
     # It is safe to delete the contents: the tools regenerate it.
     # (The old setting 'cache' is still respected if neither of
     # these new ones is present.)
-    cache_dir = "@DEFAULT_SYS_DIR@/@DEFAULT_CACHE_SUBDIR@"
+    cache_dir = "/run/lvm"
     cache_file_prefix = ""
 
     # You can turn off writing this cache file by setting this to 0.
@@ -402,12 +402,37 @@ global {
     # encountered the internal error. Please only enable for debugging.
     abort_on_internal_errors = 0
 
+    # Check whether CRC is matching when parsed VG is used multiple times.
+    # This is useful to catch unexpected internal cached volume group
+    # structure modification. Please only enable for debugging.
+    detect_internal_vg_cache_corruption = 0
+
     # If set to 1, no operations that change on-disk metadata will be permitted.
     # Additionally, read-only commands that encounter metadata in need of repair
     # will still be allowed to proceed exactly as if the repair had been 
     # performed (except for the unchanged vg_seqno).
     # Inappropriate use could mess up your system, so seek advice first!
     metadata_read_only = 0
+
+    # 'mirror_segtype_default' defines which segtype will be used when the
+    # shorthand '-m' option is used for mirroring.  The possible options are:
+    #
+    # "mirror" - The original RAID1 implementation provided by LVM2/DM.  It is
+    # 	         characterized by a flexible log solution (core, disk, mirrored)
+    #		 and by the necessity to block I/O while reconfiguring in the
+    #		 event of a failure.  Snapshots of this type of RAID1 can be
+    #		 problematic.
+    #
+    # "raid1"  - This implementation leverages MD's RAID1 personality through
+    # 	       	 device-mapper.  It is characterized by a lack of log options.
+    #		 (A log is always allocated for every device and they are placed
+    #		 on the same device as the image - no separate devices are
+    #		 required.)  This mirror implementation does not require I/O
+    #		 to be blocked in the kernel in the event of a failure.
+    #
+    # Specify the '--type <mirror|raid1>' option to override this default
+    # setting.
+    mirror_segtype_default = "mirror"
 }
 
 activation {
