@@ -1,3 +1,10 @@
+lvm2 (2.02.66-4ubuntu4) precise; urgency=low
+
+  * Make lvm2-udeb depend on watershed-udeb, since it has udev rules that
+    use watershed.
+
+ -- Colin Watson <cjwatson@ubuntu.com>  Mon, 21 Nov 2011 23:47:38 +0000
+
 lvm2 (2.02.66-4ubuntu3) oneiric; urgency=low
 
   * Add dependency on libudev-dev to libdevmapper-dev so that the .pc file
