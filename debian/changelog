@@ -1,3 +1,9 @@
+lvm2 (2.02.66-4ubuntu5) precise; urgency=low
+
+  * Build-depend on openais-dev rather than libopenais-dev.
+
+ -- Colin Watson <cjwatson@ubuntu.com>  Tue, 22 Nov 2011 00:42:29 +0000
+
 lvm2 (2.02.66-4ubuntu4) precise; urgency=low
 
   * Make lvm2-udeb depend on watershed-udeb, since it has udev rules that
