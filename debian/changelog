@@ -1,3 +1,9 @@
+lvm2 (2.02.88-2) unstable; urgency=low
+
+  * Enable corosync and openais support. (closes: #563320)
+
+ -- Bastian Blank <waldi@debian.org>  Sat, 26 Nov 2011 18:51:00 +0100
+
 lvm2 (2.02.88-1) unstable; urgency=low
 
   * New upstream version.
