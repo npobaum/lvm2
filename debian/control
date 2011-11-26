@@ -3,7 +3,7 @@ Section: admin
 Priority: optional
 Maintainer: Debian LVM Team <pkg-lvm-maintainers@lists.alioth.debian.org>
 Uploaders: Bastian Blank <waldi@debian.org>
-Build-Depends: debhelper (>> 7), automake, libcman-dev (>> 2), libdlm-dev (>> 2), libreadline-gplv2-dev, libselinux1-dev, libudev-dev, pkg-config
+Build-Depends: debhelper (>> 7), automake, libcman-dev (>> 2), libcorosync-dev, libdlm-dev (>> 2), libreadline-gplv2-dev, libselinux1-dev, libudev-dev, openais-dev, pkg-config
 Standards-Version: 3.9.1
 Homepage: http://sources.redhat.com/lvm2/
 Vcs-Svn: svn://svn.debian.org/pkg-lvm/lvm2/trunk/
@@ -37,11 +37,12 @@ Description: Linux Logical Volume Manager
 Package: clvm
 Priority: extra
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, lvm2 (= ${binary:Version}), lsb-base, cman
+Depends: ${shlibs:Depends}, ${misc:Depends}, lvm2 (= ${binary:Version}), lsb-base, corosync | cman
 Description: Cluster LVM Daemon for lvm2
- This package provides the clustering interface for lvm2, when used with 
- Red Hat's "cman" cluster infrastructure. It allows logical volumes to
- be created on shared storage devices (eg Fibre Channel, or iSCSI). 
+ This package provides the clustering interface for lvm2, when used with
+ Red Hat's "cman" or corosync based (eg Pacemaker) cluster infrastructure.
+ It allows logical volumes to be created on shared storage devices
+ (eg Fibre Channel, or iSCSI).
 
 Package: libdevmapper-dev
 Section: libdevel
