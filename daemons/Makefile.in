@@ -17,10 +17,6 @@ top_builddir = @top_builddir@
 
 .PHONY: dmeventd clvmd cmirrord
 
-ifneq ("@CLVMD@", "none")
-  SUBDIRS = clvmd
-endif
-
 ifeq ("@BUILD_CMIRRORD@", "yes")
   SUBDIRS += cmirrord
 endif
@@ -36,8 +32,13 @@ ifeq ($(MAKECMDGOALS),distclean)
   SUBDIRS = clvmd cmirrord dmeventd
 endif
 
+ifneq ("@CLVMD@", "none")
+  SUBDIRS += clvmd
+endif
+
 include $(top_builddir)/make.tmpl
 
 ifeq ("@BUILD_DMEVENTD@", "yes")
-device-mapper: dmeventd.device-mapper
+device-mapper:
+	$(MAKE) -C dmeventd device-mapper
 endif

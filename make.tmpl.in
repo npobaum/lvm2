@@ -176,67 +176,23 @@ POTFILES = $(SOURCES:%.c=%.pot)
 .PHONY: install install_cluster install_device-mapper install_lvm2
 .PHONY: install_lib_shared install_dm_plugin install_lvm2_plugin
 .PHONY: install_ocf
-.PHONY: $(SUBDIRS) $(SUBDIRS.install) $(SUBDIRS.clean) $(SUBDIRS.distclean)
-.PHONY: $(SUBDIRS.pofile) $(SUBDIRS.install_cluster) $(SUBDIRS.cflow)
-.PHONY: $(SUBDIRS.device-mapper) $(SUBDIRS.install-device-mapper)
-
-SUBDIRS.device-mapper := $(SUBDIRS:=.device-mapper)
-SUBDIRS.install := $(SUBDIRS:=.install)
-SUBDIRS.install_cluster := $(SUBDIRS:=.install_cluster)
-SUBDIRS.install_device-mapper := $(SUBDIRS:=.install_device-mapper)
-SUBDIRS.install_lvm2 := $(SUBDIRS:=.install_lvm2)
-SUBDIRS.install_ocf := $(SUBDIRS:=.install_ocf)
-SUBDIRS.pofile := $(SUBDIRS:=.pofile)
-SUBDIRS.cflow := $(SUBDIRS:=.cflow)
-SUBDIRS.clean := $(SUBDIRS:=.clean)
-SUBDIRS.distclean := $(SUBDIRS:=.distclean)
 
 TARGETS += $(LIB_SHARED) $(LIB_STATIC)
 
-all: $(SUBDIRS) $(TARGETS)
+all: subdirs-device-mapper subdirs-all $(TARGETS)
 
-install: all $(SUBDIRS.install)
-install_cluster: all $(SUBDIRS.install_cluster)
-install_device-mapper: $(SUBDIRS.install_device-mapper)
-install_lvm2: $(SUBDIRS.install_lvm2)
-install_ocf: $(SUBDIRS.install_ocf)
-cflow: $(SUBDIRS.cflow)
+install: subdirs-install
+install_cluster: subdirs-install_cluster
+install_device-mapper: subdirs-install_device-mapper
+install_lvm2: subdirs-install_lvm2
 
-$(SUBDIRS): $(SUBDIRS.device-mapper)
-	$(MAKE) -C $@
-
-$(SUBDIRS.device-mapper):
-	$(MAKE) -C $(@:.device-mapper=) device-mapper
-
-$(SUBDIRS.install): $(SUBDIRS)
-	$(MAKE) -C $(@:.install=) install
-
-$(SUBDIRS.install_cluster): $(SUBDIRS)
-	$(MAKE) -C $(@:.install_cluster=) install_cluster
-
-$(SUBDIRS.install_device-mapper): device-mapper
-	$(MAKE) -C $(@:.install_device-mapper=) install_device-mapper
-
-$(SUBDIRS.install_lvm2): $(SUBDIRS)
-	$(MAKE) -C $(@:.install_lvm2=) install_lvm2
-
-$(SUBDIRS.install_ocf):
-	$(MAKE) -C $(@:.install_ocf=) install_ocf
-
-$(SUBDIRS.clean):
-	-$(MAKE) -C $(@:.clean=) clean
-
-$(SUBDIRS.distclean):
-	-$(MAKE) -C $(@:.distclean=) distclean
-
-$(SUBDIRS.cflow):
-	$(MAKE) -C $(@:.cflow=) cflow
+subdirs-%:
+	+@set -e; for subdir in $(SUBDIRS); do \
+		$(MAKE) -C $$subdir $(patsubst subdirs-%,%,$@); \
+	done
 
 ifeq ("@INTL@", "yes")
-pofile: $(SUBDIRS.pofile) $(POTFILES)
-
-$(SUBDIRS.pofile):
-	$(MAKE) -C $(@:.pofile=) pofile
+pofile: subdirs-pofile $(POTFILES)
 endif
 
 ifneq ("$(CFLOW_LIST_TARGET)", "")
@@ -358,9 +314,9 @@ cleandir:
 	  $(SOURCES2:%.c=%.o) $(SOURCES2:%.c=%.d) $(SOURCES2:%.c=%.gcno) $(SOURCES2:%.c=%.gcda) \
 	  .exported_symbols_generated core
 
-clean: $(SUBDIRS.clean) cleandir
+clean: subdirs-clean cleandir
 
-distclean: cleandir $(SUBDIRS.distclean)
+distclean: cleandir subdirs-distclean
 	test -z "$(DISTCLEAN_DIRS)" || $(RM) -r $(DISTCLEAN_DIRS)
 	$(RM) $(DISTCLEAN_TARGETS) Makefile 
 
