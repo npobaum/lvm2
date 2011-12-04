@@ -1,3 +1,9 @@
+lvm2 (2.02.66-4ubuntu7) precise; urgency=low
+
+  * Revert the last change.
+
+ -- Matthias Klose <doko@ubuntu.com>  Sun, 04 Dec 2011 17:30:41 +0100
+
 lvm2 (2.02.66-4ubuntu6) precise; urgency=low
 
   * Don't build clvmd on armhf.
