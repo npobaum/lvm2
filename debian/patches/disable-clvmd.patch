@@ -1,0 +1,13 @@
+Index: lvm2-2.02.66/daemons/Makefile.in
+===================================================================
+--- lvm2-2.02.66.orig/daemons/Makefile.in	2010-04-09 21:34:25.000000000 +0000
++++ lvm2-2.02.66/daemons/Makefile.in	2011-12-04 14:59:53.407256379 +0000
+@@ -17,7 +17,7 @@
+ 
+ .PHONY: dmeventd clvmd cmirrord
+ 
+-ifneq ("@CLVMD@", "none")
++ifeq (,$(findstring none,"@CLVMD@"))
+   SUBDIRS = clvmd
+ endif
+ 

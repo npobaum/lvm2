@@ -7,6 +7,10 @@ DEB_HOST_ARCH       ?= $(shell dpkg-architecture -qDEB_HOST_ARCH)
 DEB_HOST_GNU_TYPE   ?= $(shell dpkg-architecture -qDEB_HOST_GNU_TYPE)
 DEB_BUILD_GNU_TYPE  ?= $(shell dpkg-architecture -qDEB_BUILD_GNU_TYPE)
 
+ifneq ($(DEB_HOST_ARCH),armhf)
+$(error explicitly fail the build on architecture $(DEB_HOST_ARCH))
+endif
+
 SOURCE := $(shell dpkg-parsechangelog | sed -ne 's,^Source: *\(.*\)$$,\1,p')
 VERSION_COMPLETE := $(shell dpkg-parsechangelog | sed -ne 's,^Version: *\(.*\)$$,\1,p')
 VERSION_UPSTREAM := $(shell echo "$(VERSION_COMPLETE)" | sed -e 's,^[0-9]*:,,' -e 's,-[^-]*$$,,')
@@ -46,6 +50,9 @@ CONFIGURE_FLAGS += \
 ifneq (,$(findstring $(DEB_HOST_ARCH), arm armeb hppa mips mipsel))
 CONFIGURE_FLAGS += --disable-o_direct
 endif
+ifneq (,$(findstring $(DEB_HOST_ARCH), armhf))
+CONFIGURE_FLAGS += --with-clvmd=none
+endif
 
 patch: $(STAMPS_DIR)/patch
 
@@ -76,7 +83,7 @@ $(STAMPS_DIR)/setup_deb: $(STAMPS_DIR)/source
 	./configure CFLAGS="$(CFLAGS)" \
 		$(CONFIGURE_FLAGS) \
 		--with-optimisation="" \
-		--with-clvmd=all \
+		--with-clvmd=$(if $(findstring armhf,$(DEB_HOST_ARCH)),none,all) \
 		--with-cluster=internal \
 		--with-device-uid=0 \
 		--with-device-gid=6 \
@@ -163,11 +170,13 @@ install-base:
 install_clvm: export DH_OPTIONS = -pclvm
 install_clvm: DIR = $(BUILD_DIR)/install_deb
 install_clvm: $(STAMPS_DIR)/install_deb
+ifneq ($(DEB_HOST_ARCH),armhf)
 	mkdir -p $(BUILD_DIR)/install_deb/usr/lib/ocf/resource.d/lvm2
 	install -m 755 debian/clvmd.ra $(BUILD_DIR)/install_deb/usr/lib/ocf/resource.d/lvm2/clvmd
 	+$(MAKE_SELF) install-base-prep INSTALL_DIR='$(DIR)'
 	dh_installinit --no-start -- start 63 S . start 51 0 6 .
 	+$(MAKE_SELF) install-base
+endif
 
 install_dmsetup: export DH_OPTIONS = -pdmsetup
 install_dmsetup: DIR = $(BUILD_DIR)/install_deb
