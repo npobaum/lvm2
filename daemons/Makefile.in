@@ -17,7 +17,7 @@ top_builddir = @top_builddir@
 
 .PHONY: dmeventd clvmd cmirrord
 
-ifeq (,$(findstring none,"@CLVMD@"))
+ifneq ("@CLVMD@", "none")
   SUBDIRS = clvmd
 endif
 
