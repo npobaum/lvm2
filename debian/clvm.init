@@ -44,6 +44,9 @@ DAEMON_OPTS="-T$CLVMDTIMEOUT"
 
 do_start()
 {
+	if [ ! -d "/var/run/lvm" ]; then
+        	mkdir /var/run/lvm
+	fi
 	start-stop-daemon --start --quiet --exec $DAEMON -- $DAEMON_OPTS || status="$?"
 	# flush cache
 	vgscan > /dev/null 2>&1 
