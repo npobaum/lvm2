@@ -1,3 +1,13 @@
+lvm2 (2.02.66-4ubuntu7.1) precise-proposed; urgency=low
+
+  * debian/clvmd.ra:
+    - create /var/run/lvm if it doesn't exist
+  * debian/clvm.init:
+    - create /var/run/lvm if it doesn't exist
+  * (LP: #959218)
+
+ -- Ante Karamatic <ivoks@ubuntu.com>  Wed, 25 Apr 2012 18:29:58 +0200
+
 lvm2 (2.02.66-4ubuntu7) precise; urgency=low
 
   * Revert the last change.
