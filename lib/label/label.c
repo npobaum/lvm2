@@ -272,7 +272,7 @@ int label_read(struct device *dev, struct label **result,
 		return 1;
 	}
 
-	if (!dev_open(dev)) {
+	if (!dev_open_flags(dev, O_RDONLY, 1, 0)) {
 		stack;
 
 		if ((info = info_from_pvid(dev->pvid, 0)))
@@ -352,7 +352,7 @@ int label_verify(struct device *dev)
 	struct lvmcache_info *info;
 	int r = 0;
 
-	if (!dev_open(dev)) {
+	if (!dev_open_flags(dev, O_RDONLY, 1, 0)) {
 		if ((info = info_from_pvid(dev->pvid, 0)))
 			lvmcache_update_vgname_and_id(info, info->fmt->orphan_vg_name,
 						      info->fmt->orphan_vg_name,
