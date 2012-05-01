@@ -24,6 +24,36 @@
 #include "str_list.h"
 #include "memlock.h"
 
+#define RAID_REGION_SIZE 1024
+
+static int _lv_is_raid_with_tracking(const struct logical_volume *lv,
+				     struct logical_volume **tracking)
+{
+	uint32_t s;
+	struct lv_segment *seg;
+
+	*tracking = NULL;
+	seg = first_seg(lv);
+
+	if (!(lv->status & RAID))
+		return 0;
+
+	for (s = 0; s < seg->area_count; s++)
+		if (lv_is_visible(seg_lv(seg, s)) &&
+		    !(seg_lv(seg, s)->status & LVM_WRITE))
+			*tracking = seg_lv(seg, s);
+
+
+	return *tracking ? 1 : 0;
+}
+
+int lv_is_raid_with_tracking(const struct logical_volume *lv)
+{
+	struct logical_volume *tracking;
+
+	return _lv_is_raid_with_tracking(lv, &tracking);
+}
+
 uint32_t lv_raid_image_count(const struct logical_volume *lv)
 {
 	struct lv_segment *seg = first_seg(lv);
@@ -125,6 +155,55 @@ static int _lv_is_on_pvs(struct logical_volume *lv, struct dm_list *pvs)
 	return 0;
 }
 
+static int _get_pv_list_for_lv(struct logical_volume *lv, struct dm_list *pvs)
+{
+	uint32_t s;
+	struct pv_list *pvl;
+	struct lv_segment *seg = first_seg(lv);
+
+	if (!seg_is_linear(seg)) {
+		log_error(INTERNAL_ERROR
+			  "_get_pv_list_for_lv only handles linear volumes");
+		return 0;
+	}
+
+	log_debug("Getting list of PVs that %s/%s is on:",
+		  lv->vg->name, lv->name);
+
+	dm_list_iterate_items(seg, &lv->segments) {
+		for (s = 0; s < seg->area_count; s++) {
+			if (seg_type(seg, s) != AREA_PV) {
+				log_error(INTERNAL_ERROR
+					  "Linear seg_type should be AREA_PV");
+				return 0;
+			}
+
+			if (!(pvl = dm_pool_zalloc(lv->vg->cmd->mem,
+						   sizeof(*pvl)))) {
+				log_error("Failed to allocate memory");
+				return 0;
+			}
+
+			pvl->pv = seg_pv(seg, s);
+			log_debug("  %s/%s is on %s", lv->vg->name, lv->name,
+				  pv_dev_name(pvl->pv));
+			dm_list_add(pvs, &pvl->list);
+		}
+	}
+
+	return 1;
+}
+
+/*
+ * _raid_in_sync
+ * @lv
+ *
+ * _raid_in_sync works for all types of RAID segtypes, as well
+ * as 'mirror' segtype.  (This is because 'lv_raid_percent' is
+ * simply a wrapper around 'lv_mirror_percent'.
+ *
+ * Returns: 1 if in-sync, 0 otherwise.
+ */
 static int _raid_in_sync(struct logical_volume *lv)
 {
 	percent_t sync_percent;
@@ -358,20 +437,22 @@ static int _shift_and_rename_image_components(struct lv_segment *seg)
  * This function does not make metadata changes.
  */
 static int _alloc_image_component(struct logical_volume *lv,
+				  const char *alt_base_name,
 				  struct alloc_handle *ah, uint32_t first_area,
-				  uint32_t type, struct logical_volume **new_lv)
+				  uint64_t type, struct logical_volume **new_lv)
 {
 	uint64_t status;
 	size_t len = strlen(lv->name) + 32;
 	char img_name[len];
+	const char *base_name = (alt_base_name) ? alt_base_name : lv->name;
 	struct logical_volume *tmp_lv;
 	const struct segment_type *segtype;
 
 	if (type == RAID_META) {
-		if (dm_snprintf(img_name, len, "%s_rmeta_%%d", lv->name) < 0)
+		if (dm_snprintf(img_name, len, "%s_rmeta_%%d", base_name) < 0)
 			return_0;
 	} else if (type == RAID_IMAGE) {
-		if (dm_snprintf(img_name, len, "%s_rimage_%%d", lv->name) < 0)
+		if (dm_snprintf(img_name, len, "%s_rimage_%%d", base_name) < 0)
 			return_0;
 	} else {
 		log_error(INTERNAL_ERROR
@@ -387,7 +468,7 @@ static int _alloc_image_component(struct logical_volume *lv,
 		return 0;
 	}
 
-	status = LVM_READ | LVM_WRITE | LV_NOTSYNCED | type;
+	status = LVM_READ | LVM_WRITE | LV_REBUILD | type;
 	tmp_lv = lv_create_empty(img_name, NULL, status, ALLOC_INHERIT, lv->vg);
 	if (!tmp_lv) {
 		log_error("Failed to allocate new raid component, %s", img_name);
@@ -411,7 +492,10 @@ static int _alloc_image_components(struct logical_volume *lv,
 				   struct dm_list *new_data_lvs)
 {
 	uint32_t s;
+	uint32_t region_size;
+	uint32_t extents;
 	struct lv_segment *seg = first_seg(lv);
+	const struct segment_type *segtype;
 	struct alloc_handle *ah;
 	struct dm_list *parallel_areas;
 	struct logical_volume *tmp_lv;
@@ -425,8 +509,30 @@ static int _alloc_image_components(struct logical_volume *lv,
 	if (!(parallel_areas = build_parallel_areas_from_lv(lv, 0)))
 		return_0;
 
-	if (!(ah = allocate_extents(lv->vg, NULL, seg->segtype, 0, count, count,
-				    seg->region_size, lv->le_count, pvs,
+	if (seg_is_linear(seg))
+		region_size = RAID_REGION_SIZE;
+	else
+		region_size = seg->region_size;
+
+	if (seg_is_raid(seg))
+		segtype = seg->segtype;
+	else if (!(segtype = get_segtype_from_string(lv->vg->cmd, "raid1")))
+		return_0;
+
+	/*
+	 * The number of extents is based on the RAID type.  For RAID1,
+	 * each of the rimages is the same size - 'le_count'.  However
+	 * for RAID 4/5/6, the stripes add together (NOT including the parity
+	 * devices) to equal 'le_count'.  Thus, when we are allocating
+	 * individual devies, we must specify how large the individual device
+	 * is along with the number we want ('count').
+	 */
+	extents = (segtype->parity_devs) ?
+		(lv->le_count / (seg->area_count - segtype->parity_devs)) :
+		lv->le_count;
+
+	if (!(ah = allocate_extents(lv->vg, NULL, segtype, 0, count, count,
+				    region_size, extents, pvs,
 				    lv->alloc, parallel_areas)))
 		return_0;
 
@@ -437,13 +543,14 @@ static int _alloc_image_components(struct logical_volume *lv,
 		 * allocated areas.  Thus, the metadata areas are pulled
 		 * from 's + count'.
 		 */
-		if (!_alloc_image_component(lv, ah, s + count,
+		if (!_alloc_image_component(lv, NULL, ah, s + count,
 					    RAID_META, &tmp_lv))
 			return_0;
 		lvl_array[s + count].lv = tmp_lv;
 		dm_list_add(new_meta_lvs, &(lvl_array[s + count].list));
 
-		if (!_alloc_image_component(lv, ah, s, RAID_IMAGE, &tmp_lv))
+		if (!_alloc_image_component(lv, NULL, ah, s,
+					    RAID_IMAGE, &tmp_lv))
 			return_0;
 		lvl_array[s].lv = tmp_lv;
 		dm_list_add(new_data_lvs, &(lvl_array[s].list));
@@ -452,12 +559,62 @@ static int _alloc_image_components(struct logical_volume *lv,
 	return 1;
 }
 
+/*
+ * _alloc_rmeta_for_lv
+ * @lv
+ *
+ * Allocate a RAID metadata device for the given LV (which is or will
+ * be the associated RAID data device).  The new metadata device must
+ * be allocated from the same PV(s) as the data device.
+ */
+static int _alloc_rmeta_for_lv(struct logical_volume *data_lv,
+			       struct logical_volume **meta_lv)
+{
+	struct dm_list allocatable_pvs;
+	struct alloc_handle *ah;
+	struct lv_segment *seg = first_seg(data_lv);
+	char *p, base_name[strlen(data_lv->name) + 1];
+
+	dm_list_init(&allocatable_pvs);
+
+	if (!seg_is_linear(seg)) {
+		log_error(INTERNAL_ERROR "Unable to allocate RAID metadata "
+			  "area for non-linear LV, %s", data_lv->name);
+		return 0;
+	}
+
+	sprintf(base_name, "%s", data_lv->name);
+	if ((p = strstr(base_name, "_mimage_")))
+		*p = '\0';
+
+	if (!_get_pv_list_for_lv(data_lv, &allocatable_pvs)) {
+		log_error("Failed to build list of PVs for %s/%s",
+			  data_lv->vg->name, data_lv->name);
+		return 0;
+	}
+
+	if (!(ah = allocate_extents(data_lv->vg, NULL, seg->segtype, 0, 1, 0,
+				    seg->region_size,
+				    1 /*RAID_METADATA_AREA_LEN*/,
+				    &allocatable_pvs, data_lv->alloc, NULL)))
+		return_0;
+
+	if (!_alloc_image_component(data_lv, base_name, ah, 0,
+				    RAID_META, meta_lv))
+		return_0;
+
+	alloc_destroy(ah);
+	return 1;
+}
+
 static int _raid_add_images(struct logical_volume *lv,
 			    uint32_t new_count, struct dm_list *pvs)
 {
+	int rebuild_flag_cleared = 0;
 	uint32_t s;
 	uint32_t old_count = lv_raid_image_count(lv);
 	uint32_t count = new_count - old_count;
+	uint64_t status_mask = -1;
 	struct cmd_context *cmd = lv->vg->cmd;
 	struct lv_segment *seg = first_seg(lv);
 	struct dm_list meta_lvs, data_lvs;
@@ -467,7 +624,24 @@ static int _raid_add_images(struct logical_volume *lv,
 	dm_list_init(&meta_lvs); /* For image addition */
 	dm_list_init(&data_lvs); /* For image addition */
 
-	if (!seg_is_raid(seg)) {
+	/*
+	 * If the segtype is linear, then we must allocate a metadata
+	 * LV to accompany it.
+	 */
+	if (seg_is_linear(seg)) {
+		/* A complete resync will be done, no need to mark each sub-lv */
+		status_mask = ~(LV_REBUILD);
+
+		if (!(lvl = dm_pool_alloc(lv->vg->vgmem, sizeof(*lvl)))) {
+			log_error("Memory allocation failed");
+			return 0;
+		}
+
+		if (!_alloc_rmeta_for_lv(lv, &lvl->lv))
+			return_0;
+
+		dm_list_add(&meta_lvs, &lvl->list);
+	} else if (!seg_is_raid(seg)) {
 		log_error("Unable to add RAID images to %s of segment type %s",
 			  lv->name, seg->segtype->name);
 		return 0;
@@ -478,10 +652,55 @@ static int _raid_add_images(struct logical_volume *lv,
 		return 0;
 	}
 
+	/*
+	 * If linear, we must correct data LV names.  They are off-by-one
+	 * because the linear volume hasn't taken its proper name of "_rimage_0"
+	 * yet.  This action must be done before '_clear_lvs' because it
+	 * commits the LVM metadata before clearing the LVs.
+	 */
+	if (seg_is_linear(seg)) {
+		char *name;
+		size_t len;
+		struct dm_list *l;
+		struct lv_list *lvl_tmp;
+
+		dm_list_iterate(l, &data_lvs) {
+			if (l == dm_list_last(&data_lvs)) {
+				lvl = dm_list_item(l, struct lv_list);
+				len = strlen(lv->name) + strlen("_rimage_XXX");
+				if (!(name = dm_pool_alloc(lv->vg->vgmem, len))) {
+					log_error("Failed to allocate rimage name.");
+					return 0;
+				}
+				sprintf(name, "%s_rimage_%u", lv->name, count);
+				lvl->lv->name = name;
+				continue;
+			}
+			lvl = dm_list_item(l, struct lv_list);
+			lvl_tmp = dm_list_item(l->n, struct lv_list);
+			lvl->lv->name = lvl_tmp->lv->name;
+		}
+	}
+
 	/* Metadata LVs must be cleared before being added to the array */
 	if (!_clear_lvs(&meta_lvs))
 		goto fail;
 
+	if (seg_is_linear(seg)) {
+		first_seg(lv)->status |= RAID_IMAGE;
+		if (!insert_layer_for_lv(lv->vg->cmd, lv,
+					 RAID | LVM_READ | LVM_WRITE,
+					 "_rimage_0"))
+			return_0;
+
+		lv->status |= RAID;
+		seg = first_seg(lv);
+		seg_lv(seg, 0)->status |= RAID_IMAGE | LVM_READ | LVM_WRITE;
+		seg->region_size = RAID_REGION_SIZE;
+		seg->segtype = get_segtype_from_string(lv->vg->cmd, "raid1");
+		if (!seg->segtype)
+			return_0;
+	}
 /*
 FIXME: It would be proper to activate the new LVs here, instead of having
 them activated by the suspend.  However, this causes residual device nodes
@@ -499,21 +718,26 @@ to be left for these sub-lvs.
 		goto fail;
 	memcpy(new_areas, seg->areas, seg->area_count * sizeof(*seg->areas));
 	seg->areas = new_areas;
-	seg->area_count = new_count;
 
 	/* Expand meta_areas array */
 	if (!(new_areas = dm_pool_zalloc(lv->vg->cmd->mem,
 					 new_count * sizeof(*new_areas))))
 		goto fail;
-	memcpy(new_areas, seg->meta_areas,
-	       seg->area_count * sizeof(*seg->meta_areas));
+	if (seg->meta_areas)
+		memcpy(new_areas, seg->meta_areas,
+		       seg->area_count * sizeof(*seg->meta_areas));
 	seg->meta_areas = new_areas;
+	seg->area_count = new_count;
+
+	/* Add extra meta area when converting from linear */
+	s = (old_count == 1) ? 0 : old_count;
 
 	/* Set segment areas for metadata sub_lvs */
-	s = old_count;
 	dm_list_iterate_items(lvl, &meta_lvs) {
 		log_debug("Adding %s to %s",
 			  lvl->lv->name, lv->name);
+		lvl->lv->status &= status_mask;
+		first_seg(lvl->lv)->status &= status_mask;
 		if (!set_lv_segment_area_lv(seg, s, lvl->lv, 0,
 					    lvl->lv->status)) {
 			log_error("Failed to add %s to %s",
@@ -523,11 +747,14 @@ to be left for these sub-lvs.
 		s++;
 	}
 
-	/* Set segment areas for data sub_lvs */
 	s = old_count;
+
+	/* Set segment areas for data sub_lvs */
 	dm_list_iterate_items(lvl, &data_lvs) {
 		log_debug("Adding %s to %s",
 			  lvl->lv->name, lv->name);
+		lvl->lv->status &= status_mask;
+		first_seg(lvl->lv)->status &= status_mask;
 		if (!set_lv_segment_area_lv(seg, s, lvl->lv, 0,
 					    lvl->lv->status)) {
 			log_error("Failed to add %s to %s",
@@ -551,7 +778,7 @@ to be left for these sub-lvs.
 		return 0;
 	}
 
-	if (!suspend_lv(cmd, lv)) {
+	if (!suspend_lv_origin(cmd, lv)) {
 		log_error("Failed to suspend %s/%s before committing changes",
 			  lv->vg->name, lv->name);
 		return 0;
@@ -563,8 +790,29 @@ to be left for these sub-lvs.
 		return 0;
 	}
 
-	if (!resume_lv(cmd, lv)) {
+	if (!resume_lv_origin(cmd, lv)) {
 		log_error("Failed to resume %s/%s after committing changes",
+			  lv->vg->name, lv->name);
+		return 0;
+	}
+
+	/*
+	 * Now that the 'REBUILD' has made its way to the kernel, we must
+	 * remove the flag so that the individual devices are not rebuilt
+	 * upon every activation.
+	 */
+	seg = first_seg(lv);
+	for (s = 0; s < seg->area_count; s++) {
+		if ((seg_lv(seg, s)->status & LV_REBUILD) ||
+		    (seg_metalv(seg, s)->status & LV_REBUILD)) {
+			seg_metalv(seg, s)->status &= ~LV_REBUILD;
+			seg_lv(seg, s)->status &= ~LV_REBUILD;
+			rebuild_flag_cleared = 1;
+		}
+	}
+	if (rebuild_flag_cleared &&
+	    (!vg_write(lv->vg) || !vg_commit(lv->vg))) {
+		log_error("Failed to clear REBUILD flag for %s/%s components",
 			  lv->vg->name, lv->name);
 		return 0;
 	}
@@ -810,12 +1058,6 @@ int lv_raid_change_image_count(struct logical_volume *lv,
 			       uint32_t new_count, struct dm_list *pvs)
 {
 	uint32_t old_count = lv_raid_image_count(lv);
-	struct lv_segment *seg = first_seg(lv);
-
-	if (!seg_is_mirrored(seg)) {
-		log_error("Unable to change image count of non-mirrored RAID.");
-		return 0;
-	}
 
 	if (old_count == new_count) {
 		log_error("%s/%s already has image count of %d",
@@ -837,6 +1079,8 @@ int lv_raid_split(struct logical_volume *lv, const char *split_name,
 	struct dm_list removal_list, data_list;
 	struct cmd_context *cmd = lv->vg->cmd;
 	uint32_t old_count = lv_raid_image_count(lv);
+	struct logical_volume *tracking;
+	struct dm_list tracking_pvs;
 
 	dm_list_init(&removal_list);
 	dm_list_init(&data_list);
@@ -863,6 +1107,25 @@ int lv_raid_split(struct logical_volume *lv, const char *split_name,
 		log_error("Unable to split %s/%s while it is not in-sync.",
 			  lv->vg->name, lv->name);
 		return 0;
+	}
+
+	/*
+	 * We only allow a split while there is tracking if it is to
+	 * complete the split of the tracking sub-LV
+	 */
+	if (_lv_is_raid_with_tracking(lv, &tracking)) {
+		if (!_lv_is_on_pvs(tracking, splittable_pvs)) {
+			log_error("Unable to split additional image from %s "
+				  "while tracking changes for %s",
+				  lv->name, tracking->name);
+			return 0;
+		} else {
+			/* Ensure we only split the tracking image */
+			dm_list_init(&tracking_pvs);
+			splittable_pvs = &tracking_pvs;
+			if (!_get_pv_list_for_lv(tracking, splittable_pvs))
+				return_0;
+		}
 	}
 
 	if (!_raid_extract_images(lv, new_count, splittable_pvs, 1,
@@ -964,6 +1227,12 @@ int lv_raid_split_and_track(struct logical_volume *lv,
 	if (!_raid_in_sync(lv)) {
 		log_error("Unable to split image from %s/%s while not in-sync",
 			  lv->vg->name, lv->name);
+		return 0;
+	}
+
+	/* Cannot track two split images at once */
+	if (lv_is_raid_with_tracking(lv)) {
+		log_error("Cannot track more than one split image at a time");
 		return 0;
 	}
 
@@ -1100,5 +1369,368 @@ int lv_raid_merge(struct logical_volume *image_lv)
 	log_print("%s/%s successfully merged back into %s/%s",
 		  vg->name, image_lv->name,
 		  vg->name, lv->name);
+	return 1;
+}
+
+static int _convert_mirror_to_raid1(struct logical_volume *lv,
+				    const struct segment_type *new_segtype)
+{
+	uint32_t s;
+	struct lv_segment *seg = first_seg(lv);
+	struct lv_list lvl_array[seg->area_count], *lvl;
+	struct dm_list meta_lvs;
+	struct lv_segment_area *meta_areas;
+
+	dm_list_init(&meta_lvs);
+
+	if (!_raid_in_sync(lv)) {
+		log_error("Unable to convert %s/%s while it is not in-sync",
+			  lv->vg->name, lv->name);
+		return 0;
+	}
+
+	meta_areas = dm_pool_zalloc(lv->vg->vgmem,
+				    lv_mirror_count(lv) * sizeof(*meta_areas));
+	if (!meta_areas) {
+		log_error("Failed to allocate memory");
+		return 0;
+	}
+
+	for (s = 0; s < seg->area_count; s++) {
+		log_debug("Allocating new metadata LV for %s",
+			  seg_lv(seg, s)->name);
+		if (!_alloc_rmeta_for_lv(seg_lv(seg, s), &(lvl_array[s].lv))) {
+			log_error("Failed to allocate metadata LV for %s in %s",
+				  seg_lv(seg, s)->name, lv->name);
+			return 0;
+		}
+		dm_list_add(&meta_lvs, &(lvl_array[s].list));
+	}
+
+	log_debug("Clearing newly allocated metadata LVs");
+	if (!_clear_lvs(&meta_lvs)) {
+		log_error("Failed to initialize metadata LVs");
+		return 0;
+	}
+
+	if (seg->log_lv) {
+		log_debug("Removing mirror log, %s", seg->log_lv->name);
+		if (!remove_mirror_log(lv->vg->cmd, lv, NULL, 0)) {
+			log_error("Failed to remove mirror log");
+			return 0;
+		}
+	}
+
+	seg->meta_areas = meta_areas;
+	s = 0;
+
+	dm_list_iterate_items(lvl, &meta_lvs) {
+		log_debug("Adding %s to %s", lvl->lv->name, lv->name);
+
+		/* Images are known to be in-sync */
+		lvl->lv->status &= ~LV_REBUILD;
+		first_seg(lvl->lv)->status &= ~LV_REBUILD;
+		lv_set_hidden(lvl->lv);
+
+		if (!set_lv_segment_area_lv(seg, s, lvl->lv, 0,
+					    lvl->lv->status)) {
+			log_error("Failed to add %s to %s",
+				  lvl->lv->name, lv->name);
+			return 0;
+		}
+		s++;
+	}
+
+	for (s = 0; s < seg->area_count; s++) {
+		char *new_name;
+
+		new_name = dm_pool_zalloc(lv->vg->vgmem,
+					  strlen(lv->name) +
+					  strlen("_rimage_XXn"));
+		if (!new_name) {
+			log_error("Failed to rename mirror images");
+			return 0;
+		}
+
+		sprintf(new_name, "%s_rimage_%u", lv->name, s);
+		log_debug("Renaming %s to %s", seg_lv(seg, s)->name, new_name);
+		seg_lv(seg, s)->name = new_name;
+		seg_lv(seg, s)->status &= ~MIRROR_IMAGE;
+		seg_lv(seg, s)->status |= RAID_IMAGE;
+	}
+	init_mirror_in_sync(1);
+
+	log_debug("Setting new segtype for %s", lv->name);
+	seg->segtype = new_segtype;
+	lv->status &= ~MIRRORED;
+	lv->status |= RAID;
+	seg->status |= RAID;
+
+	if (!vg_write(lv->vg)) {
+		log_error("Failed to write changes to %s in %s",
+			  lv->name, lv->vg->name);
+		return 0;
+	}
+
+	if (!suspend_lv(lv->vg->cmd, lv)) {
+		log_error("Failed to suspend %s/%s before committing changes",
+			  lv->vg->name, lv->name);
+		return 0;
+	}
+
+	if (!vg_commit(lv->vg)) {
+		log_error("Failed to commit changes to %s in %s",
+			  lv->name, lv->vg->name);
+		return 0;
+	}
+
+	if (!resume_lv(lv->vg->cmd, lv)) {
+		log_error("Failed to resume %s/%s after committing changes",
+			  lv->vg->name, lv->name);
+		return 0;
+	}
+
+	return 1;
+}
+
+/*
+ * lv_raid_reshape
+ * @lv
+ * @new_segtype
+ *
+ * Convert an LV from one RAID type (or 'mirror' segtype) to another.
+ *
+ * Returns: 1 on success, 0 on failure
+ */
+int lv_raid_reshape(struct logical_volume *lv,
+		    const struct segment_type *new_segtype)
+{
+	struct lv_segment *seg = first_seg(lv);
+
+	if (!new_segtype) {
+		log_error(INTERNAL_ERROR "New segtype not specified");
+		return 0;
+	}
+
+	if (!strcmp(seg->segtype->name, "mirror") &&
+	    (!strcmp(new_segtype->name, "raid1")))
+	    return _convert_mirror_to_raid1(lv, new_segtype);
+
+	log_error("Converting the segment type for %s/%s from %s to %s"
+		  " is not yet supported.", lv->vg->name, lv->name,
+		  seg->segtype->name, new_segtype->name);
+	return 0;
+}
+
+/*
+ * lv_raid_replace
+ * @lv
+ * @replace_pvs
+ * @allocatable_pvs
+ *
+ * Replace the specified PVs.
+ */
+int lv_raid_replace(struct logical_volume *lv,
+		    struct dm_list *remove_pvs,
+		    struct dm_list *allocate_pvs)
+{
+	uint32_t s, sd, match_count = 0;
+	struct dm_list old_meta_lvs, old_data_lvs;
+	struct dm_list new_meta_lvs, new_data_lvs;
+	struct lv_segment *raid_seg = first_seg(lv);
+	struct lv_list *lvl;
+	char *tmp_names[raid_seg->area_count * 2];
+
+	dm_list_init(&old_meta_lvs);
+	dm_list_init(&old_data_lvs);
+	dm_list_init(&new_meta_lvs);
+	dm_list_init(&new_data_lvs);
+
+	/*
+	 * How many sub-LVs are being removed?
+	 */
+	for (s = 0; s < raid_seg->area_count; s++) {
+		if ((seg_type(raid_seg, s) == AREA_UNASSIGNED) ||
+		    (seg_metatype(raid_seg, s) == AREA_UNASSIGNED)) {
+			log_error("Unable to replace RAID images while the "
+				  "array has unassigned areas");
+			return 0;
+		}
+
+		if (_lv_is_on_pvs(seg_lv(raid_seg, s), remove_pvs) ||
+		    _lv_is_on_pvs(seg_metalv(raid_seg, s), remove_pvs))
+			match_count++;
+	}
+
+	if (!match_count) {
+		log_verbose("%s/%s does not contain devices specified"
+			    " for replacement", lv->vg->name, lv->name);
+		return 1;
+	} else if (match_count == raid_seg->area_count) {
+		log_error("Unable to remove all PVs from %s/%s at once.",
+			  lv->vg->name, lv->name);
+		return 0;
+	} else if (raid_seg->segtype->parity_devs &&
+		   (match_count > raid_seg->segtype->parity_devs)) {
+		log_error("Unable to replace more than %u PVs from (%s) %s/%s",
+			  raid_seg->segtype->parity_devs,
+			  raid_seg->segtype->name, lv->vg->name, lv->name);
+		return 0;
+	}
+
+	/*
+	 * Allocate the new image components first
+	 * - This makes it easy to avoid all currently used devs
+	 * - We can immediately tell if there is enough space
+	 *
+	 * - We need to change the LV names when we insert them.
+	 */
+	if (!_alloc_image_components(lv, allocate_pvs, match_count,
+				     &new_meta_lvs, &new_data_lvs)) {
+		log_error("Failed to allocate replacement images for %s/%s",
+			  lv->vg->name, lv->name);
+		return 0;
+	}
+
+	/*
+	 * Remove the old images
+	 * - If we did this before the allocate, we wouldn't have to rename
+	 *   the allocated images, but it'd be much harder to avoid the right
+	 *   PVs during allocation.
+	 */
+	if (!_raid_extract_images(lv, raid_seg->area_count - match_count,
+				  remove_pvs, 0,
+				  &old_meta_lvs, &old_data_lvs)) {
+		log_error("Failed to remove the specified images from %s/%s",
+			  lv->vg->name, lv->name);
+		return 0;
+	}
+
+	/*
+	 * Skip metadata operation normally done to clear the metadata sub-LVs.
+	 *
+	 * The LV_REBUILD flag is set on the new sub-LVs,
+	 * so they will be rebuilt and we don't need to clear the metadata dev.
+	 */
+
+	for (s = 0; s < raid_seg->area_count; s++) {
+		tmp_names[s] = NULL;
+		sd = s + raid_seg->area_count;
+		tmp_names[sd] = NULL;
+
+		if ((seg_type(raid_seg, s) == AREA_UNASSIGNED) &&
+		    (seg_metatype(raid_seg, s) == AREA_UNASSIGNED)) {
+			/* Adjust the new metadata LV name */
+			lvl = dm_list_item(dm_list_first(&new_meta_lvs),
+					   struct lv_list);
+			dm_list_del(&lvl->list);
+			tmp_names[s] = dm_pool_alloc(lv->vg->vgmem,
+						    strlen(lvl->lv->name) + 1);
+			if (!tmp_names[s])
+				return_0;
+			if (dm_snprintf(tmp_names[s], strlen(lvl->lv->name) + 1,
+					"%s_rmeta_%u", lv->name, s) < 0)
+				return_0;
+			if (!set_lv_segment_area_lv(raid_seg, s, lvl->lv, 0,
+						    lvl->lv->status)) {
+				log_error("Failed to add %s to %s",
+					  lvl->lv->name, lv->name);
+				return 0;
+			}
+			lv_set_hidden(lvl->lv);
+
+			/* Adjust the new data LV name */
+			lvl = dm_list_item(dm_list_first(&new_data_lvs),
+					   struct lv_list);
+			dm_list_del(&lvl->list);
+			tmp_names[sd] = dm_pool_alloc(lv->vg->vgmem,
+						     strlen(lvl->lv->name) + 1);
+			if (!tmp_names[sd])
+				return_0;
+			if (dm_snprintf(tmp_names[sd], strlen(lvl->lv->name) + 1,
+					"%s_rimage_%u", lv->name, s) < 0)
+				return_0;
+			if (!set_lv_segment_area_lv(raid_seg, s, lvl->lv, 0,
+						    lvl->lv->status)) {
+				log_error("Failed to add %s to %s",
+					  lvl->lv->name, lv->name);
+				return 0;
+			}
+			lv_set_hidden(lvl->lv);
+		}
+	}
+
+	if (!vg_write(lv->vg)) {
+		log_error("Failed to write changes to %s in %s",
+			  lv->name, lv->vg->name);
+		return 0;
+	}
+
+	if (!suspend_lv(lv->vg->cmd, lv)) {
+		log_error("Failed to suspend %s/%s before committing changes",
+			  lv->vg->name, lv->name);
+		return 0;
+	}
+
+	if (!vg_commit(lv->vg)) {
+		log_error("Failed to commit changes to %s in %s",
+			  lv->name, lv->vg->name);
+		return 0;
+	}
+
+	if (!resume_lv(lv->vg->cmd, lv)) {
+		log_error("Failed to resume %s/%s after committing changes",
+			  lv->vg->name, lv->name);
+		return 0;
+	}
+
+	dm_list_iterate_items(lvl, &old_meta_lvs) {
+		if (!deactivate_lv(lv->vg->cmd, lvl->lv))
+			return_0;
+		if (!lv_remove(lvl->lv))
+			return_0;
+	}
+	dm_list_iterate_items(lvl, &old_data_lvs) {
+		if (!deactivate_lv(lv->vg->cmd, lvl->lv))
+			return_0;
+		if (!lv_remove(lvl->lv))
+			return_0;
+	}
+
+	/* Update new sub-LVs to correct name and clear REBUILD flag */
+	for (s = 0; s < raid_seg->area_count; s++) {
+		sd = s + raid_seg->area_count;
+		if (tmp_names[s] && tmp_names[sd]) {
+			seg_metalv(raid_seg, s)->name = tmp_names[s];
+			seg_lv(raid_seg, s)->name = tmp_names[sd];
+			seg_metalv(raid_seg, s)->status &= ~LV_REBUILD;
+			seg_lv(raid_seg, s)->status &= ~LV_REBUILD;
+		}
+	}
+
+	if (!vg_write(lv->vg)) {
+		log_error("Failed to write changes to %s in %s",
+			  lv->name, lv->vg->name);
+		return 0;
+	}
+
+	if (!suspend_lv(lv->vg->cmd, lv)) {
+		log_error("Failed to suspend %s/%s before committing changes",
+			  lv->vg->name, lv->name);
+		return 0;
+	}
+
+	if (!vg_commit(lv->vg)) {
+		log_error("Failed to commit changes to %s in %s",
+			  lv->name, lv->vg->name);
+		return 0;
+	}
+
+	if (!resume_lv(lv->vg->cmd, lv)) {
+		log_error("Failed to resume %s/%s after committing changes",
+			  lv->vg->name, lv->name);
+		return 0;
+	}
+
 	return 1;
 }

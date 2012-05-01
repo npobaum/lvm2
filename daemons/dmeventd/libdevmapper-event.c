@@ -245,6 +245,10 @@ static int _daemon_read(struct dm_event_fifos *fifos,
 				log_error("Unable to read from event server");
 				return 0;
 			}
+			if ((ret == 0) && i && !bytes) {
+				log_error("No input from event server.");
+				return 0;
+			}
 		}
 		if (ret < 1) {
 			log_error("Unable to read from event server.");
@@ -424,14 +428,12 @@ static int _start_daemon(char *dmeventd_path, struct dm_event_fifos *fifos)
 	fifos->client = open(fifos->client_path, O_WRONLY | O_NONBLOCK);
 	if (fifos->client >= 0) {
 		/* server is running and listening */
-
-		close(fifos->client);
+		if (close(fifos->client))
+			log_sys_error("close", fifos->client_path);
 		return 1;
 	} else if (errno != ENXIO) {
 		/* problem */
-
-		log_error("%s: Can't open client fifo %s: %s",
-			  __func__, fifos->client_path, strerror(errno));
+		log_sys_error("open", fifos->client_path);
 		return 0;
 	}
 
@@ -439,14 +441,14 @@ static int _start_daemon(char *dmeventd_path, struct dm_event_fifos *fifos)
 	/* server is not running */
 
 	if (!strncmp(DMEVENTD_PATH, "/", 1) && stat(DMEVENTD_PATH, &statbuf)) {
-		log_error("Unable to find dmeventd.");
+		log_sys_error("stat", DMEVENTD_PATH);
 		return 0;
 	}
 
 	pid = fork();
 
 	if (pid < 0)
-		log_error("Unable to fork.");
+		log_sys_error("fork", "");
 
 	else if (!pid) {
 		execvp(args[0], args);
@@ -476,23 +478,23 @@ int init_fifos(struct dm_event_fifos *fifos)
 
 	/* Open the fifo used to read from the daemon. */
 	if ((fifos->server = open(fifos->server_path, O_RDWR)) < 0) {
-		log_error("%s: open server fifo %s",
-			  __func__, fifos->server_path);
+		log_sys_error("open", fifos->server_path);
 		return 0;
 	}
 
 	/* Lock out anyone else trying to do communication with the daemon. */
 	if (flock(fifos->server, LOCK_EX) < 0) {
-		log_error("%s: flock %s", __func__, fifos->server_path);
-		close(fifos->server);
+		log_sys_error("flock", fifos->server_path);
+		if (close(fifos->server))
+			log_sys_error("close", fifos->server_path);
 		return 0;
 	}
 
 /*	if ((fifos->client = open(fifos->client_path, O_WRONLY | O_NONBLOCK)) < 0) {*/
 	if ((fifos->client = open(fifos->client_path, O_RDWR | O_NONBLOCK)) < 0) {
-		log_error("%s: Can't open client fifo %s: %s",
-			  __func__, fifos->client_path, strerror(errno));
-		close(fifos->server);
+		log_sys_error("open", fifos->client_path);
+		if (close(fifos->server))
+			log_sys_error("close", fifos->server_path);
 		return 0;
 	}
 
@@ -520,8 +522,10 @@ void fini_fifos(struct dm_event_fifos *fifos)
 	if (flock(fifos->server, LOCK_UN))
 		log_error("flock unlock %s", fifos->server_path);
 
-	close(fifos->client);
-	close(fifos->server);
+	if (close(fifos->client))
+		log_sys_error("close", fifos->client_path);
+	if (close(fifos->server))
+		log_sys_error("close", fifos->server_path);
 }
 
 /* Get uuid of a device */
@@ -727,8 +731,8 @@ int dm_event_get_registered_device(struct dm_event_handler *dmevh, int next)
 	if (_do_event(next ? DM_EVENT_CMD_GET_NEXT_REGISTERED_DEVICE :
 		      DM_EVENT_CMD_GET_REGISTERED_DEVICE, dmevh->dmeventd_path,
 		      &msg, dmevh->dso, uuid, dmevh->mask, 0)) {
+		log_debug("%s: device not registered.", dm_task_get_name(dmt));
 		ret = -ENOENT;
-		stack;
 		goto fail;
 	}
 
@@ -743,6 +747,10 @@ int dm_event_get_registered_device(struct dm_event_handler *dmevh, int next)
 	msg.data = NULL;
 
 	_dm_event_handler_clear_dev_info(dmevh);
+	if (!reply_uuid) {
+		ret = -ENXIO; /* dmeventd probably gave us bogus uuid back */
+		goto fail;
+	}
 	dmevh->uuid = dm_strdup(reply_uuid);
 	if (!dmevh->uuid) {
 		ret = -ENOMEM;
@@ -811,11 +819,11 @@ int dm_event_get_version(struct dm_event_fifos *fifos, int *version) {
 	p = msg.data;
 	*version = 0;
 
-	p = strchr(p, ' ') + 1; /* Message ID */
+	p = strchr(p, ' '); /* Message ID */
         if (!p) return 0;
-	p = strchr(p, ' ') + 1; /* HELLO */
+	p = strchr(p + 1, ' '); /* HELLO */
         if (!p) return 0;
-	p = strchr(p, ' '); /* HELLO, once more */
+	p = strchr(p + 1, ' '); /* HELLO, once more */
 	if (p)
 		*version = atoi(p);
 	return 1;

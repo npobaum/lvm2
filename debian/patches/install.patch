@@ -8,8 +8,8 @@
  MKDIR_P = @MKDIR_P@
  MSGFMT = @MSGFMT@
  LCOV = @LCOV@
-@@ -68,8 +69,7 @@
- systemd_dir = $(DESTDIR)/lib/systemd/system
+@@ -71,8 +72,7 @@
+ tmpfiles_dir = $(DESTDIR)@tmpfilesdir@
  ocf_scriptdir = $(DESTDIR)@OCFDIR@
  
 -USRLIB_RELPATH = $(shell echo $(abspath $(usrlibdir) $(libdir)) | \
@@ -18,7 +18,7 @@
  
  DEFAULT_SYS_DIR = @DEFAULT_SYS_DIR@
  DEFAULT_ARCHIVE_DIR = $(DEFAULT_SYS_DIR)/@DEFAULT_ARCHIVE_SUBDIR@
-@@ -93,22 +93,14 @@
+@@ -96,22 +96,14 @@
  endif
  
  # Handle installation of files
@@ -37,9 +37,9 @@
 +INSTALL_DATA = $(INSTALL) -m 644
 +INSTALL_WDATA = $(INSTALL_DATA)
  
- INSTALL_DIR = $(INSTALL) -m 0755 -d
- INSTALL_ROOT_DIR = $(INSTALL) -m 0700 -d
- INSTALL_ROOT_DATA = $(INSTALL) -m 0600
+ INSTALL_DIR = $(INSTALL) -m 755 -d
+ INSTALL_ROOT_DIR = $(INSTALL) -m 700 -d
+ INSTALL_ROOT_DATA = $(INSTALL) -m 600
 -INSTALL_SCRIPT = $(INSTALL) -p $(M_INSTALL_PROGRAM)
 +INSTALL_SCRIPT = $(INSTALL_PROGRAM)
  

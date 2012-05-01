@@ -1,6 +1,6 @@
 --- a/make.tmpl.in
 +++ b/make.tmpl.in
-@@ -176,67 +176,23 @@
+@@ -189,67 +189,23 @@
  .PHONY: install install_cluster install_device-mapper install_lvm2
  .PHONY: install_lib_shared install_dm_plugin install_lvm2_plugin
  .PHONY: install_ocf
@@ -79,7 +79,7 @@
  endif
  
  ifneq ("$(CFLOW_LIST_TARGET)", "")
-@@ -358,9 +314,9 @@
+@@ -371,9 +327,9 @@
  	  $(SOURCES2:%.c=%.o) $(SOURCES2:%.c=%.d) $(SOURCES2:%.c=%.gcno) $(SOURCES2:%.c=%.gcda) \
  	  .exported_symbols_generated core
  
@@ -102,15 +102,15 @@
  
  ifeq ("@APPLIB@", "yes")
    SUBDIRS += liblvm
-@@ -44,34 +44,6 @@
+@@ -48,34 +48,6 @@
  
  include make.tmpl
  
 -libdm: include
--lib: libdm
+-lib: libdm libdaemon
 -liblvm: lib
--daemons: lib tools
--tools: lib device-mapper
+-daemons: lib libdaemon tools
+-tools: lib libdaemon device-mapper
 -po: tools daemons
 -
 -lib.device-mapper: include.device-mapper
@@ -148,33 +148,5 @@
 -man: $(MAN5) $(MAN8) $(MAN8CLUSTER)
 +man: $(MAN5) $(MAN8) $(MAN8CLUSTER) $(MAN8DM)
  
- $(MAN5) $(MAN8) $(MAN8CLUSTER):	Makefile
+ $(MAN5) $(MAN8) $(MAN8DM) $(MAN8CLUSTER):	Makefile
  
---- a/daemons/Makefile.in
-+++ b/daemons/Makefile.in
-@@ -17,10 +17,6 @@
- 
- .PHONY: dmeventd clvmd cmirrord
- 
--ifneq ("@CLVMD@", "none")
--  SUBDIRS = clvmd
--endif
--
- ifeq ("@BUILD_CMIRRORD@", "yes")
-   SUBDIRS += cmirrord
- endif
-@@ -36,8 +32,13 @@
-   SUBDIRS = clvmd cmirrord dmeventd
- endif
- 
-+ifneq ("@CLVMD@", "none")
-+  SUBDIRS += clvmd
-+endif
-+
- include $(top_builddir)/make.tmpl
- 
- ifeq ("@BUILD_DMEVENTD@", "yes")
--device-mapper: dmeventd.device-mapper
-+device-mapper:
-+	$(MAKE) -C dmeventd device-mapper
- endif

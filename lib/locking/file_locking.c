@@ -161,7 +161,8 @@ static int _do_flock(const char *file, int *fd, int operation, uint32_t nonblock
 		if (r) {
 			errno = old_errno;
 			log_sys_error("flock", file);
-			close(*fd);
+			if (close(*fd))
+				log_sys_error("close", file);
 			return 0;
 		}
 
@@ -257,6 +258,7 @@ static int _file_lock_resource(struct cmd_context *cmd, const char *resource,
 {
 	char lockfile[PATH_MAX];
 	unsigned origin_only = (flags & LCK_ORIGIN_ONLY) ? 1 : 0;
+	unsigned revert = (flags & LCK_REVERT) ? 1 : 0;
 
 	switch (flags & LCK_SCOPE_MASK) {
 	case LCK_VG:
@@ -292,8 +294,8 @@ static int _file_lock_resource(struct cmd_context *cmd, const char *resource,
 	case LCK_LV:
 		switch (flags & LCK_TYPE_MASK) {
 		case LCK_UNLOCK:
-			log_very_verbose("Unlocking LV %s%s", resource, origin_only ? " without snapshots" : "");
-			if (!lv_resume_if_active(cmd, resource, origin_only, 0))
+			log_very_verbose("Unlocking LV %s%s%s", resource, origin_only ? " without snapshots" : "", revert ? " (reverting)" : "");
+			if (!lv_resume_if_active(cmd, resource, origin_only, 0, revert))
 				return 0;
 			break;
 		case LCK_NULL:
@@ -311,7 +313,7 @@ static int _file_lock_resource(struct cmd_context *cmd, const char *resource,
 			break;
 		case LCK_WRITE:
 			log_very_verbose("Locking LV %s (W)%s", resource, origin_only ? " without snapshots" : "");
-			if (!lv_suspend_if_active(cmd, resource, origin_only))
+			if (!lv_suspend_if_active(cmd, resource, origin_only, 0))
 				return 0;
 			break;
 		case LCK_EXCL:
@@ -336,6 +338,7 @@ int init_file_locking(struct locking_type *locking, struct cmd_context *cmd,
 		      int suppress_messages)
 {
 	int r;
+	const char *locking_dir;
 
 	locking->lock_resource = _file_lock_resource;
 	locking->reset_locking = _reset_file_locking;
@@ -343,9 +346,14 @@ int init_file_locking(struct locking_type *locking, struct cmd_context *cmd,
 	locking->flags = 0;
 
 	/* Get lockfile directory from config file */
-	strncpy(_lock_dir, find_config_tree_str(cmd, "global/locking_dir",
-						DEFAULT_LOCK_DIR),
-		sizeof(_lock_dir));
+	locking_dir = find_config_tree_str(cmd, "global/locking_dir",
+					   DEFAULT_LOCK_DIR);
+	if (strlen(locking_dir) >= sizeof(_lock_dir)) {
+		log_error("Path for locking_dir %s is invalid.", locking_dir);
+		return 0;
+	}
+
+	strcpy(_lock_dir, locking_dir);
 
 	_prioritise_write_locks =
 	    find_config_tree_bool(cmd, "global/prioritise_write_locks",
