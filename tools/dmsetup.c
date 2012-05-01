@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2011 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2012 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2005-2007 NEC Corporation
  *
  * This file is part of the device-mapper userspace tools.
@@ -126,6 +126,7 @@ enum {
 	GID_ARG,
 	HELP_ARG,
 	INACTIVE_ARG,
+	MANGLENAME_ARG,
 	MAJOR_ARG,
 	MINOR_ARG,
 	MODE_ARG,
@@ -140,6 +141,7 @@ enum {
 	NOUDEVSYNC_ARG,
 	OPTIONS_ARG,
 	READAHEAD_ARG,
+	RETRY_ARG,
 	ROWS_ARG,
 	SEPARATOR_ARG,
 	SETUUID_ARG,
@@ -167,6 +169,12 @@ typedef enum {
 	DR_NAME = 16
 } report_type_t;
 
+typedef enum {
+	DN_DEVNO,	/* Major and minor number pair */
+	DN_BLK,		/* Block device name (e.g. dm-0) */
+	DN_MAP		/* Map name (for dm devices only, equal to DN_BLK otherwise) */
+} dev_name_t;
+
 static int _switches[NUM_SWITCHES];
 static int _int_args[NUM_SWITCHES];
 static char *_string_args[NUM_SWITCHES];
@@ -181,6 +189,7 @@ static int _udev_only;
 static struct dm_tree *_dtree;
 static struct dm_report *_report;
 static report_type_t _report_type;
+static dev_name_t _dev_name_type;
 
 /*
  * Commands
@@ -371,7 +380,9 @@ static struct dm_split_name *_get_split_name(const char *uuid, const char *name,
 		return NULL;
 	}
 
-	split_name->subsystem = _extract_uuid_prefix(uuid, separator);
+	if (!(split_name->subsystem = _extract_uuid_prefix(uuid, separator)))
+		return_NULL;
+
 	split_name->vg_name = split_name->lv_name =
 	    split_name->lv_layer = (char *) "";
 
@@ -414,16 +425,24 @@ static int _display_info_cols(struct dm_task *dmt, struct dm_info *info)
 	obj.split_name = NULL;
 
 	if (_report_type & DR_TREE)
-		obj.tree_node = dm_tree_find_node(_dtree, info->major, info->minor);
+		if (!(obj.tree_node = dm_tree_find_node(_dtree, info->major, info->minor))) {
+			log_error("Cannot find node %d:%d.", info->major, info->minor);
+			goto out;
+		}
 
 	if (_report_type & DR_DEPS)
-		obj.deps_task = _get_deps_task(info->major, info->minor);
+		if (!(obj.deps_task = _get_deps_task(info->major, info->minor))) {
+			log_error("Cannot get deps for %d:%d.", info->major, info->minor);
+			goto out;
+		}
 
 	if (_report_type & DR_NAME)
-		obj.split_name = _get_split_name(dm_task_get_uuid(dmt), dm_task_get_name(dmt), '-');
+		if (!(obj.split_name = _get_split_name(dm_task_get_uuid(dmt),
+						       dm_task_get_name(dmt), '-')))
+			goto_out;
 
 	if (!dm_report_object(_report, &obj))
-		goto out;
+		goto_out;
 
 	r = 1;
 
@@ -682,8 +701,7 @@ static int _create(CMD_ARGS)
 	return r;
 }
 
-static int _rename(CMD_ARGS)
-{
+static int _do_rename(const char *name, const char *new_name, const char *new_uuid) {
 	int r = 0;
 	struct dm_task *dmt;
 	uint32_t cookie = 0;
@@ -693,13 +711,13 @@ static int _rename(CMD_ARGS)
 		return 0;
 
 	/* FIXME Kernel doesn't support uuid or device number here yet */
-	if (!_set_task_device(dmt, (argc == 3) ? argv[1] : NULL, 0))
+	if (!_set_task_device(dmt, name, 0))
 		goto out;
 
-	if (_switches[SETUUID_ARG]) {
-		if  (!dm_task_set_newuuid(dmt, argv[argc - 1]))
+	if (new_uuid) {
+		if (!dm_task_set_newuuid(dmt, new_uuid))
 			goto out;
-	} else if (!dm_task_set_newname(dmt, argv[argc - 1]))
+	} else if (!dm_task_set_newname(dmt, new_name))
 		goto out;
 
 	if (_switches[NOOPENCOUNT_ARG] && !dm_task_no_open_count(dmt))
@@ -734,6 +752,15 @@ static int _rename(CMD_ARGS)
 	dm_task_destroy(dmt);
 
 	return r;
+}
+
+static int _rename(CMD_ARGS)
+{
+	const char *name = (argc == 3) ? argv[1] : NULL;
+
+	return _switches[SETUUID_ARG] ? _do_rename(name, NULL, argv[argc - 1]) :
+					_do_rename(name, argv[argc - 1], NULL);
+
 }
 
 static int _message(CMD_ARGS)
@@ -857,8 +884,9 @@ static int _splitname(CMD_ARGS)
 	obj.info = NULL;
 	obj.deps_task = NULL;
 	obj.tree_node = NULL;
-	obj.split_name = _get_split_name((argc == 3) ? argv[2] : "LVM",
-					 argv[1], '\0');
+	if (!(obj.split_name = _get_split_name((argc == 3) ? argv[2] : "LVM",
+					       argv[1], '\0')))
+                return_0;
 
 	r = dm_report_object(_report, &obj);
 	_destroy_split_name(obj.split_name);
@@ -1278,6 +1306,9 @@ static int _simple(int task, const char *name, uint32_t event_nr, int display)
 
 	if (udev_wait_flag && !dm_task_set_cookie(dmt, &cookie, udev_flags))
 		goto out;
+
+	if (_switches[RETRY_ARG] && task == DM_DEVICE_REMOVE)
+		dm_task_retry_remove(dmt);
 
 	r = dm_task_run(dmt);
 
@@ -1763,6 +1794,8 @@ static int _deps(CMD_ARGS)
 	struct dm_task *dmt;
 	struct dm_info info;
 	char *name = NULL;
+	char dev_name[PATH_MAX];
+	int major, minor;
 
 	if (names)
 		name = names->name;
@@ -1809,10 +1842,17 @@ static int _deps(CMD_ARGS)
 		printf("%s: ", name);
 	printf("%d dependencies\t:", deps->count);
 
-	for (i = 0; i < deps->count; i++)
-		printf(" (%d, %d)",
-		       (int) MAJOR(deps->device[i]),
-		       (int) MINOR(deps->device[i]));
+	for (i = 0; i < deps->count; i++) {
+		major = (int) MAJOR(deps->device[i]);
+		minor = (int) MINOR(deps->device[i]);
+
+		if ((_dev_name_type == DN_BLK || _dev_name_type == DN_MAP) &&
+		    dm_device_get_name(major, minor, _dev_name_type == DN_BLK,
+				       dev_name, PATH_MAX))
+			printf(" (%s)", dev_name);
+		else
+			printf(" (%d, %d)", major, minor);
+	}
 	printf("\n");
 
 	if (multiple_devices && _switches[VERBOSE_ARG])
@@ -1827,8 +1867,19 @@ static int _deps(CMD_ARGS)
 
 static int _display_name(CMD_ARGS)
 {
-	printf("%s\t(%d, %d)\n", names->name,
-	       (int) MAJOR(names->dev), (int) MINOR(names->dev));
+	char dev_name[PATH_MAX];
+
+	if (!names)
+		return 1;
+
+	if ((_dev_name_type == DN_BLK || _dev_name_type == DN_MAP) &&
+	    dm_device_get_name((int) MAJOR(names->dev), (int) MINOR(names->dev),
+			       _dev_name_type == DN_BLK, dev_name, PATH_MAX))
+		printf("%s\t(%s)\n", names->name, dev_name);
+	else
+		printf("%s\t(%d:%d)\n", names->name,
+					(int) MAJOR(names->dev),
+					(int) MINOR(names->dev));
 
 	return 1;
 }
@@ -1839,6 +1890,7 @@ static int _display_name(CMD_ARGS)
 
 enum {
 	TR_DEVICE=0,	/* display device major:minor number */
+	TR_BLKDEVNAME,	/* display device kernel name */
 	TR_TABLE,
 	TR_STATUS,
 	TR_ACTIVE,
@@ -2045,6 +2097,11 @@ static void _display_tree_attributes(struct dm_tree_node *node)
 		_out_char(']');
 }
 
+/* FIXME Display table or status line. (Disallow both?) */
+static void _display_tree_targets(struct dm_tree_node *node, unsigned depth)
+{
+}
+
 static void _display_tree_node(struct dm_tree_node *node, unsigned depth,
 			       unsigned first_child __attribute__((unused)),
 			       unsigned last_child, unsigned has_children)
@@ -2053,6 +2110,7 @@ static void _display_tree_node(struct dm_tree_node *node, unsigned depth,
 	const char *name;
 	const struct dm_info *info;
 	int first_on_line = 0;
+	char dev_name[PATH_MAX];
 
 	/* Sub-tree for targets has 2 more depth */
 	if (depth + 2 > MAX_DEPTH)
@@ -2060,7 +2118,8 @@ static void _display_tree_node(struct dm_tree_node *node, unsigned depth,
 
 	name = dm_tree_node_get_name(node);
 
-	if ((!name || !*name) && !_tree_switches[TR_DEVICE])
+	if ((!name || !*name) &&
+	    (!_tree_switches[TR_DEVICE] && !_tree_switches[TR_BLKDEVNAME]))
 		return;
 
 	/* Indicate whether there are more nodes at this depth */
@@ -2085,6 +2144,13 @@ static void _display_tree_node(struct dm_tree_node *node, unsigned depth,
 
 	info = dm_tree_node_get_info(node);
 
+	if (_tree_switches[TR_BLKDEVNAME] &&
+	    dm_device_get_name(info->major, info->minor, 1, dev_name, PATH_MAX)) {
+		_out_string(name ? " <" : "<");
+		_out_string(dev_name);
+		_out_char('>');
+	}
+
 	if (_tree_switches[TR_DEVICE]) {
 		_out_string(name ? " (" : "(");
 		(void) _out_int(info->major);
@@ -2105,7 +2171,7 @@ static void _display_tree_node(struct dm_tree_node *node, unsigned depth,
 
 	if (TR_PRINT_TARGETS) {
 		_tree_more[depth + 1] = has_children;
-		// FIXME _display_tree_targets(name, depth + 2);
+		_display_tree_targets(node, depth + 2);
 	}
 }
 
@@ -2140,7 +2206,8 @@ static void _display_tree_walk_children(struct dm_tree_node *node,
 
 static int _add_dep(CMD_ARGS)
 {
-	if (!dm_tree_add_dev(_dtree, (unsigned) MAJOR(names->dev), (unsigned) MINOR(names->dev)))
+	if (names &&
+	    !dm_tree_add_dev(_dtree, (unsigned) MAJOR(names->dev), (unsigned) MINOR(names->dev)))
 		return 0;
 
 	return 1;
@@ -2209,6 +2276,38 @@ static int _dm_name_disp(struct dm_report *rh,
 	return dm_report_field_string(rh, field, &name);
 }
 
+static int _dm_mangled_name_disp(struct dm_report *rh,
+				 struct dm_pool *mem __attribute__((unused)),
+				 struct dm_report_field *field, const void *data,
+				 void *private __attribute__((unused)))
+{
+	char *name;
+	int r = 0;
+
+	if ((name = dm_task_get_name_mangled((const struct dm_task *) data))) {
+		r = dm_report_field_string(rh, field, (const char **) &name);
+		dm_free(name);
+	}
+
+	return r;
+}
+
+static int _dm_unmangled_name_disp(struct dm_report *rh,
+				   struct dm_pool *mem __attribute__((unused)),
+				   struct dm_report_field *field, const void *data,
+				   void *private __attribute__((unused)))
+{
+	char *name;
+	int r = 0;
+
+	if ((name = dm_task_get_name_unmangled((const struct dm_task *) data))) {
+		r = dm_report_field_string(rh, field, (const char **) &name);
+		dm_free(name);
+	}
+
+	return r;
+}
+
 static int _dm_uuid_disp(struct dm_report *rh,
 			 struct dm_pool *mem __attribute__((unused)),
 			 struct dm_report_field *field,
@@ -2233,6 +2332,24 @@ static int _dm_read_ahead_disp(struct dm_report *rh,
 		value = 0;
 
 	return dm_report_field_uint32(rh, field, &value);
+}
+
+static int _dm_blk_name_disp(struct dm_report *rh,
+			     struct dm_pool *mem __attribute__((unused)),
+			     struct dm_report_field *field, const void *data,
+			     void *private __attribute__((unused)))
+{
+	char dev_name[PATH_MAX];
+	const char *s = dev_name;
+	const struct dm_info *info = data;
+
+	if (!dm_device_get_name(info->major, info->minor, 1, dev_name, PATH_MAX)) {
+		log_error("Could not resolve block device name for %d:%d.",
+			  info->major, info->minor);
+		return 0;
+	}
+
+	return dm_report_field_string(rh, field, &s);
 }
 
 static int _dm_info_status_disp(struct dm_report *rh,
@@ -2314,7 +2431,7 @@ static int _dm_info_devno_disp(struct dm_report *rh, struct dm_pool *mem,
 			       struct dm_report_field *field, const void *data,
 			       void *private)
 {
-	char buf[DM_MAX_TYPE_NAME], *repstr;
+	char buf[PATH_MAX], *repstr;
 	const struct dm_info *info = data;
 
 	if (!dm_pool_begin_object(mem, 8)) {
@@ -2322,10 +2439,17 @@ static int _dm_info_devno_disp(struct dm_report *rh, struct dm_pool *mem,
 		return 0;
 	}
 
-	if (dm_snprintf(buf, sizeof(buf), "%d:%d",
-			info->major, info->minor) < 0) {
-		log_error("dm_pool_alloc failed");
-		goto out_abandon;
+	if (private) {
+		if (!dm_device_get_name(info->major, info->minor,
+					1, buf, PATH_MAX))
+			goto out_abandon;
+	}
+	else {
+		if (dm_snprintf(buf, sizeof(buf), "%d:%d",
+				info->major, info->minor) < 0) {
+			log_error("dm_pool_alloc failed");
+			goto out_abandon;
+		}
 	}
 
 	if (!dm_pool_grow_object(mem, buf, strlen(buf) + 1)) {
@@ -2466,13 +2590,14 @@ static int _dm_tree_parents_count_disp(struct dm_report *rh,
 	return dm_report_field_int(rh, field, &num_parent);
 }
 
-static int _dm_deps_disp(struct dm_report *rh, struct dm_pool *mem,
-			 struct dm_report_field *field, const void *data,
-			 void *private)
+static int _dm_deps_disp_common(struct dm_report *rh, struct dm_pool*mem,
+				struct dm_report_field *field, const void *data,
+				void *private, int disp_blk_dev_names)
 {
 	const struct dm_deps *deps = data;
+	char buf[PATH_MAX], *repstr;
+	int major, minor;
 	unsigned i;
-	char buf[DM_MAX_TYPE_NAME], *repstr;
 
 	if (!dm_pool_begin_object(mem, 16)) {
 		log_error("dm_pool_begin_object failed");
@@ -2480,16 +2605,27 @@ static int _dm_deps_disp(struct dm_report *rh, struct dm_pool *mem,
 	}
 
 	for (i = 0; i < deps->count; i++) {
-		if (dm_snprintf(buf, sizeof(buf), "%d:%d",
-		       (int) MAJOR(deps->device[i]),
-		       (int) MINOR(deps->device[i])) < 0) {
+		major = (int) MAJOR(deps->device[i]);
+		minor = (int) MINOR(deps->device[i]);
+
+		if (disp_blk_dev_names) {
+			if (!dm_device_get_name(major, minor, 1, buf, PATH_MAX)) {
+				log_error("Could not resolve block device "
+					  "name for %d:%d.", major, minor);
+				goto out_abandon;
+			}
+		}
+		else if (dm_snprintf(buf, sizeof(buf), "%d:%d",
+				     major, minor) < 0) {
 			log_error("dm_snprintf failed");
 			goto out_abandon;
 		}
+
 		if (!dm_pool_grow_object(mem, buf, 0)) {
 			log_error("dm_pool_grow_object failed");
 			goto out_abandon;
 		}
+
 		if (i + 1 < deps->count && !dm_pool_grow_object(mem, ",", 1)) {
 			log_error("dm_pool_grow_object failed");
 			goto out_abandon;
@@ -2508,6 +2644,20 @@ static int _dm_deps_disp(struct dm_report *rh, struct dm_pool *mem,
       out_abandon:
 	dm_pool_abandon_object(mem);
 	return 0;
+}
+
+static int _dm_deps_disp(struct dm_report *rh, struct dm_pool *mem,
+			 struct dm_report_field *field, const void *data,
+			 void *private)
+{
+	return _dm_deps_disp_common(rh, mem, field, data, private, 0);
+}
+
+static int _dm_deps_blk_names_disp(struct dm_report *rh, struct dm_pool *mem,
+				   struct dm_report_field *field,
+				   const void *data, void *private)
+{
+	return _dm_deps_disp_common(rh, mem, field, data, private, 1);
 }
 
 static int _dm_subsystem_disp(struct dm_report *rh,
@@ -2589,11 +2739,14 @@ static const struct dm_report_object_type _report_types[] = {
 static const struct dm_report_field_type _report_fields[] = {
 /* *INDENT-OFF* */
 FIELD_F(TASK, STR, "Name", 16, dm_name, "name", "Name of mapped device.")
+FIELD_F(TASK, STR, "MangledName", 16, dm_mangled_name, "mangled_name", "Mangled name of mapped device.")
+FIELD_F(TASK, STR, "UnmangledName", 16, dm_unmangled_name, "unmangled_name", "Unmangled name of mapped device.")
 FIELD_F(TASK, STR, "UUID", 32, dm_uuid, "uuid", "Unique (optional) identifier for mapped device.")
 
 /* FIXME Next one should be INFO */
 FIELD_F(TASK, NUM, "RAhead", 6, dm_read_ahead, "read_ahead", "Read ahead in sectors.")
 
+FIELD_F(INFO, STR, "BlkDevName", 16, dm_blk_name, "blkdevname", "Name of block device.")
 FIELD_F(INFO, STR, "Stat", 4, dm_info_status, "attr", "(L)ive, (I)nactive, (s)uspended, (r)ead-only, read-(w)rite.")
 FIELD_F(INFO, STR, "Tables", 6, dm_info_table_loaded, "tables_loaded", "Which of the live and inactive table slots are filled.")
 FIELD_F(INFO, STR, "Suspended", 9, dm_info_suspended, "suspended", "Whether the device is suspended.")
@@ -2608,6 +2761,7 @@ FIELD_O(INFO, dm_info, NUM, "Event", event_nr, 6, uint32, "events", "Number of m
 FIELD_O(DEPS, dm_deps, NUM, "#Devs", count, 5, int32, "device_count", "Number of devices used by this one.")
 FIELD_F(TREE, STR, "DevNames", 8, dm_deps_names, "devs_used", "List of names of mapped devices used by this one.")
 FIELD_F(DEPS, STR, "DevNos", 6, dm_deps, "devnos_used", "List of device numbers of devices used by this one.")
+FIELD_F(DEPS, STR, "BlkDevNames", 16, dm_deps_blk_names, "blkdevs_used", "List of names of block devices used by this one.")
 
 FIELD_F(TREE, NUM, "#Refs", 5, dm_tree_parents_count, "device_ref_count", "Number of mapped devices referencing this one.")
 FIELD_F(TREE, STR, "RefNames", 8, dm_tree_parents_names, "names_using_dev", "List of names of mapped devices using this one.")
@@ -2755,6 +2909,72 @@ static int _ls(CMD_ARGS)
 		return _process_all(cmd, argc, argv, 0, _display_name);
 }
 
+static int _mangle(CMD_ARGS)
+{
+	char *name;
+	char *new_name = NULL;
+	struct dm_task *dmt;
+	struct dm_info info;
+	int r = 0;
+	int target_format;
+
+	if (names)
+		name = names->name;
+	else {
+		if (argc == 1 && !_switches[UUID_ARG] && !_switches[MAJOR_ARG])
+			return _process_all(cmd, argc, argv, 0, _mangle);
+		name = argv[1];
+	}
+
+	if (!(dmt = dm_task_create(DM_DEVICE_STATUS)))
+		return 0;
+
+	if (!(_set_task_device(dmt, name, 0)))
+		goto out;
+
+	if (!_switches[CHECKS_ARG] && !dm_task_enable_checks(dmt))
+		goto out;
+
+	if (!dm_task_run(dmt))
+		goto out;
+
+	if (!dm_task_get_info(dmt, &info) || !info.exists)
+		goto out;
+
+	target_format = _switches[MANGLENAME_ARG] ? _int_args[MANGLENAME_ARG]
+						  : DEFAULT_DM_NAME_MANGLING;
+
+	if (target_format == DM_STRING_MANGLING_AUTO && strstr(name, "\\x5cx")) {
+		log_error("The name \"%s\" seems to be mangled more than once. "
+			  "Manual intervention required to rename the device.", name);
+		goto out;
+	}
+
+	if (target_format == DM_STRING_MANGLING_NONE) {
+		if (!(new_name = dm_task_get_name_unmangled(dmt)))
+			goto out;
+	}
+	else if (!(new_name = dm_task_get_name_mangled(dmt)))
+		goto out;
+
+	/* Nothing to do if the name is in correct form already. */
+	if (!strcmp(name, new_name)) {
+		log_print("%s: name already in correct form", name);
+		r = 1;
+		goto out;
+	}
+	else
+		log_print("%s: renaming to %s", name, new_name);
+
+	/* Rename to correct form of the name. */
+	r = _do_rename(name, new_name, NULL);
+
+out:
+	dm_free(new_name);
+	dm_task_destroy(dmt);
+	return r;
+}
+
 static int _help(CMD_ARGS);
 
 /*
@@ -2774,15 +2994,17 @@ static struct command _commands[] = {
 	{"load", "<device> [<table_file>]", 0, 2, 0, _load},
 	{"clear", "<device>", 0, -1, 1, _clear},
 	{"reload", "<device> [<table_file>]", 0, 2, 0, _load},
+	{"wipe_table", "<device>", 0, -1, 1, _error_device},
 	{"rename", "<device> [--setuuid] <new_name_or_uuid>", 1, 2, 0, _rename},
 	{"message", "<device> <sector> <message>", 2, -1, 0, _message},
-	{"ls", "[--target <target_type>] [--exec <command>] [--tree [-o options]]", 0, 0, 0, _ls},
+	{"ls", "[--target <target_type>] [--exec <command>] [-o options] [--tree]", 0, 0, 0, _ls},
 	{"info", "[<device>]", 0, -1, 1, _info},
-	{"deps", "[<device>]", 0, -1, 1, _deps},
+	{"deps", "[-o options] [<device>]", 0, -1, 1, _deps},
 	{"status", "[<device>] [--target <target_type>]", 0, -1, 1, _status},
 	{"table", "[<device>] [--target <target_type>] [--showkeys]", 0, -1, 1, _status},
 	{"wait", "<device> [<event_nr>]", 0, 2, 0, _wait},
 	{"mknodes", "[<device>]", 0, -1, 1, _mknodes},
+	{"mangle", "[<device>]", 0, -1, 1, _mangle},
 	{"udevcreatecookie", "", 0, 0, 0, _udevcreatecookie},
 	{"udevreleasecookie", "[<cookie>]", 0, 1, 0, _udevreleasecookie},
 	{"udevflags", "<cookie>", 1, 1, 0, _udevflags},
@@ -2802,20 +3024,22 @@ static void _usage(FILE *out)
 
 	fprintf(out, "Usage:\n\n");
 	fprintf(out, "dmsetup [--version] [-h|--help [-c|-C|--columns]]\n"
-		"        [--checks] [-v|--verbose [-v|--verbose ...]]\n"
+		"        [--checks] [--manglename <mangling_mode>] [-v|--verbose [-v|--verbose ...]]\n"
 		"        [-r|--readonly] [--noopencount] [--nolockfs] [--inactive]\n"
 		"        [--udevcookie [cookie]] [--noudevrules] [--noudevsync] [--verifyudev]\n"
-		"        [-y|--yes] [--readahead [+]<sectors>|auto|none]\n"
+		"        [-y|--yes] [--readahead [+]<sectors>|auto|none] [--retry]\n"
 		"        [-c|-C|--columns] [-o <fields>] [-O|--sort <sort_fields>]\n"
 		"        [--nameprefixes] [--noheadings] [--separator <separator>]\n\n");
 	for (i = 0; _commands[i].name; i++)
 		fprintf(out, "\t%s %s\n", _commands[i].name, _commands[i].help);
 	fprintf(out, "\n<device> may be device name or -u <uuid> or "
 		     "-j <major> -m <minor>\n");
+	fprintf(out, "<mangling_mode> is one of 'none', 'auto' and 'hex'.\n");
 	fprintf(out, "<fields> are comma-separated.  Use 'help -c' for list.\n");
 	fprintf(out, "Table_file contents may be supplied on stdin.\n");
-	fprintf(out, "Tree options are: ascii, utf, vt100; compact, inverted, notrunc;\n"
-		     "                  [no]device, active, open, rw and uuid.\n");
+	fprintf(out, "Options are: devno, devname, blkdevname.\n");
+	fprintf(out, "Tree specific options are: ascii, utf, vt100; compact, inverted, notrunc;\n"
+		     "                           blkdevname, [no]device, active, open, rw and uuid.\n");
 	fprintf(out, "\n");
 }
 
@@ -2879,6 +3103,8 @@ static int _process_tree_options(const char *options)
 			;
 		if (!strncmp(s, "device", len))
 			_tree_switches[TR_DEVICE] = 1;
+		else if (!strncmp(s, "blkdevname", len))
+			_tree_switches[TR_BLKDEVNAME] = 1;
 		else if (!strncmp(s, "nodevice", len))
 			_tree_switches[TR_DEVICE] = 0;
 		else if (!strncmp(s, "status", len))
@@ -2934,6 +3160,8 @@ static char *_get_abspath(const char *path)
 	_path = canonicalize_file_name(path);
 #else
 	/* FIXME Provide alternative */
+	log_error(INTERNAL_ERROR "Unimplemented _get_abspath.");
+	_path = NULL;
 #endif
 	return _path;
 }
@@ -2941,7 +3169,7 @@ static char *_get_abspath(const char *path)
 static char *parse_loop_device_name(const char *dev, const char *dev_dir)
 {
 	char *buf;
-	char *device;
+	char *device = NULL;
 
 	if (!(buf = dm_malloc(PATH_MAX)))
 		return NULL;
@@ -2959,7 +3187,8 @@ static char *parse_loop_device_name(const char *dev, const char *dev_dir)
 		    device[strlen(dev_dir)] != '/')
 			goto error;
 
-		strncpy(buf, strrchr(device, '/') + 1, (size_t) PATH_MAX);
+		strncpy(buf, strrchr(device, '/') + 1, PATH_MAX - 1);
+		buf[PATH_MAX - 1] = '\0';
 		dm_free(device);
 
 	} else {
@@ -2973,7 +3202,9 @@ static char *parse_loop_device_name(const char *dev, const char *dev_dir)
 	return buf;
 
 error:
+	dm_free(device);
 	dm_free(buf);
+
 	return NULL;
 }
 
@@ -3021,7 +3252,8 @@ static int _loop_table(char *table, size_t tlen, char *file,
 	blksize = fsbuf.f_frsize;
 #endif
 
-	close(fd);
+	if (close(fd))
+                log_sys_error("close", file);
 
 	if (dm_snprintf(table, tlen, "%llu %llu loop %s %llu\n", 0ULL,
 			(long long unsigned)sectors, file, (long long unsigned)off) < 0)
@@ -3033,8 +3265,9 @@ static int _loop_table(char *table, size_t tlen, char *file,
 	return 1;
 
 error:
-	if (fd > -1)
-		close(fd);
+	if (fd > -1 && close(fd))
+		log_sys_error("close", file);
+
 	return 0;
 }
 
@@ -3133,9 +3366,9 @@ static int _process_losetup_switches(const char *base, int *argc, char ***argv,
 		return 0;
 	}
 
-	/* FIXME Missing free */
 	_table = dm_malloc(LOOP_TABLE_SIZE);
-	if (!_loop_table(_table, (size_t) LOOP_TABLE_SIZE, loop_file, device_name, offset)) {
+	if (!_table ||
+	    !_loop_table(_table, (size_t) LOOP_TABLE_SIZE, loop_file, device_name, offset)) {
 		fprintf(stderr, "Could not build device-mapper table for %s\n", (*argv)[0]);
 		dm_free(device_name);
 		return 0;
@@ -3148,9 +3381,54 @@ static int _process_losetup_switches(const char *base, int *argc, char ***argv,
 	return 1;
 }
 
+static int _process_options(const char *options)
+{
+	const char *s, *end;
+	size_t len;
+
+	/* Tree options are processed separately. */
+	if (_switches[TREE_ARG])
+		return _process_tree_options(_string_args[OPTIONS_ARG]);
+
+	/* Column options are processed separately by _report_init (called later). */
+	if (_switches[COLS_ARG])
+		return 1;
+
+	/* No options specified. */
+	if (!_switches[OPTIONS_ARG])
+		return 1;
+
+	/* Set defaults. */
+	_dev_name_type = DN_DEVNO;
+
+	/* Parse. */
+	for (s = options; s && *s; s++) {
+		len = 0;
+		for (end = s; *end && *end != ','; end++, len++)
+			;
+		if (!strncmp(s, "devno", len))
+			_dev_name_type = DN_DEVNO;
+		else if (!strncmp(s, "blkdevname", len))
+			_dev_name_type = DN_BLK;
+		else if (!strncmp(s, "devname", len))
+			_dev_name_type = DN_MAP;
+		else {
+			fprintf(stderr, "Option not recognised: %s\n", s);
+			return 0;
+		}
+
+		if (!*end)
+			break;
+		s = end;
+	}
+
+	return 1;
+}
+
 static int _process_switches(int *argc, char ***argv, const char *dev_dir)
 {
-	char *base, *namebase, *s;
+	const char *base;
+	char *namebase, *s;
 	static int ind;
 	int c, r;
 
@@ -3164,6 +3442,7 @@ static int _process_switches(int *argc, char ***argv, const char *dev_dir)
 		{"gid", 1, &ind, GID_ARG},
 		{"help", 0, &ind, HELP_ARG},
 		{"inactive", 0, &ind, INACTIVE_ARG},
+		{"manglename", 1, &ind, MANGLENAME_ARG},
 		{"major", 1, &ind, MAJOR_ARG},
 		{"minor", 1, &ind, MINOR_ARG},
 		{"mode", 1, &ind, MODE_ARG},
@@ -3178,6 +3457,7 @@ static int _process_switches(int *argc, char ***argv, const char *dev_dir)
 		{"noudevsync", 0, &ind, NOUDEVSYNC_ARG},
 		{"options", 1, &ind, OPTIONS_ARG},
 		{"readahead", 1, &ind, READAHEAD_ARG},
+		{"retry", 0, &ind, RETRY_ARG},
 		{"rows", 0, &ind, ROWS_ARG},
 		{"separator", 1, &ind, SEPARATOR_ARG},
 		{"setuuid", 0, &ind, SETUUID_ARG},
@@ -3209,8 +3489,11 @@ static int _process_switches(int *argc, char ***argv, const char *dev_dir)
 	memset(&_int_args, 0, sizeof(_int_args));
 	_read_ahead_flags = 0;
 
-	namebase = strdup((*argv)[0]);
-	base = basename(namebase);
+	if (!(namebase = strdup((*argv)[0]))) {
+		fprintf(stderr, "Failed to duplicate name.\n");
+		return 0;
+	}
+	base = dm_basename(namebase);
 
 	if (!strcmp(base, "devmap_name")) {
 		free(namebase);
@@ -3322,32 +3605,46 @@ static int _process_switches(int *argc, char ***argv, const char *dev_dir)
 			/* FIXME Accept modes as per chmod */
 			_int_args[MODE_ARG] = (int) strtol(optarg, NULL, 8);
 		}
-		if ((ind == EXEC_ARG)) {
+		if (ind == EXEC_ARG) {
 			_switches[EXEC_ARG]++;
 			_command = optarg;
 		}
-		if ((ind == TARGET_ARG)) {
+		if (ind == TARGET_ARG) {
 			_switches[TARGET_ARG]++;
 			_target = optarg;
 		}
-		if ((ind == INACTIVE_ARG))
-			_switches[INACTIVE_ARG]++;
-		if ((ind == NAMEPREFIXES_ARG))
+		if (ind == INACTIVE_ARG)
+		       _switches[INACTIVE_ARG]++;
+		if ((ind == MANGLENAME_ARG)) {
+			_switches[MANGLENAME_ARG]++;
+			if (!strcasecmp(optarg, "none"))
+				_int_args[MANGLENAME_ARG] = DM_STRING_MANGLING_NONE;
+			else if (!strcasecmp(optarg, "auto"))
+				_int_args[MANGLENAME_ARG] = DM_STRING_MANGLING_AUTO;
+			else if (!strcasecmp(optarg, "hex"))
+				_int_args[MANGLENAME_ARG] = DM_STRING_MANGLING_HEX;
+			else {
+				log_error("Unknown name mangling mode");
+				return 0;
+			}
+			dm_set_name_mangling_mode((dm_string_mangling_t) _int_args[MANGLENAME_ARG]);
+		}
+		if (ind == NAMEPREFIXES_ARG)
 			_switches[NAMEPREFIXES_ARG]++;
-		if ((ind == NOFLUSH_ARG))
+		if (ind == NOFLUSH_ARG)
 			_switches[NOFLUSH_ARG]++;
-		if ((ind == NOHEADINGS_ARG))
+		if (ind == NOHEADINGS_ARG)
 			_switches[NOHEADINGS_ARG]++;
-		if ((ind == NOLOCKFS_ARG))
+		if (ind == NOLOCKFS_ARG)
 			_switches[NOLOCKFS_ARG]++;
-		if ((ind == NOOPENCOUNT_ARG))
+		if (ind == NOOPENCOUNT_ARG)
 			_switches[NOOPENCOUNT_ARG]++;
-		if ((ind == READAHEAD_ARG)) {
+		if (ind == READAHEAD_ARG) {
 			_switches[READAHEAD_ARG]++;
 			if (!strcasecmp(optarg, "auto"))
 				_int_args[READAHEAD_ARG] = DM_READ_AHEAD_AUTO;
 			else if (!strcasecmp(optarg, "none"))
-                		_int_args[READAHEAD_ARG] = DM_READ_AHEAD_NONE;
+				_int_args[READAHEAD_ARG] = DM_READ_AHEAD_NONE;
 			else {
 				for (s = optarg; isspace(*s); s++)
 					;
@@ -3362,21 +3659,26 @@ static int _process_switches(int *argc, char ***argv, const char *dev_dir)
 				}
 			}
 		}
-		if ((ind == ROWS_ARG))
+		if (ind == RETRY_ARG)
+			_switches[RETRY_ARG]++;
+		if (ind == ROWS_ARG)
 			_switches[ROWS_ARG]++;
-		if ((ind == SETUUID_ARG))
+		if (ind == SETUUID_ARG)
 			_switches[SETUUID_ARG]++;
-		if ((ind == SHOWKEYS_ARG))
+		if (ind == SHOWKEYS_ARG)
 			_switches[SHOWKEYS_ARG]++;
-		if ((ind == TABLE_ARG)) {
+		if (ind == TABLE_ARG) {
 			_switches[TABLE_ARG]++;
-			_table = optarg;
+			if (!(_table = dm_strdup(optarg))) {
+				log_error("Could not allocate memory for table string.");
+				return 0;
+			}
 		}
-		if ((ind == TREE_ARG))
+		if (ind == TREE_ARG)
 			_switches[TREE_ARG]++;
-		if ((ind == UNQUOTED_ARG))
+		if (ind == UNQUOTED_ARG)
 			_switches[UNQUOTED_ARG]++;
-		if ((ind == VERSION_ARG))
+		if (ind == VERSION_ARG)
 			_switches[VERSION_ARG]++;
 	}
 
@@ -3390,7 +3692,7 @@ static int _process_switches(int *argc, char ***argv, const char *dev_dir)
 		return 0;
 	}
 
-	if (_switches[TREE_ARG] && !_process_tree_options(_string_args[OPTIONS_ARG]))
+	if (!_process_options(_string_args[OPTIONS_ARG]))
 		return 0;
 
 	if (_switches[TABLE_ARG] && _switches[NOTABLE_ARG]) {
@@ -3462,6 +3764,9 @@ int main(int argc, char **argv)
 	if (!_switches[COLS_ARG] && !strcmp(cmd->name, "splitname"))
 		_switches[COLS_ARG]++;
 
+	if (!strcmp(cmd->name, "mangle"))
+		dm_set_name_mangling_mode(DM_STRING_MANGLING_NONE);
+
 	if (_switches[COLS_ARG]) {
 		if (!_report_init(cmd))
 			goto out;
@@ -3497,6 +3802,8 @@ out:
 
 	if (_dtree)
 		dm_tree_free(_dtree);
+
+	dm_free(_table);
 
 	return r;
 }

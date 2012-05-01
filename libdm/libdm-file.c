@@ -76,6 +76,26 @@ int dm_create_dir(const char *dir)
 	return 0;
 }
 
+int dm_is_empty_dir(const char *dir)
+{
+	struct dirent *dirent;
+	DIR *d;
+
+	if (!(d = opendir(dir))) {
+		log_sys_error("opendir", dir);
+		return 0;
+	}
+
+	while ((dirent = readdir(d)))
+		if (strcmp(dirent->d_name, ".") && strcmp(dirent->d_name, ".."))
+			break;
+
+	if (closedir(d))
+		log_sys_error("closedir", dir);
+
+	return dirent ? 0 : 1;
+}
+
 int dm_fclose(FILE *stream)
 {
 	int prev_fail = ferror(stream);
@@ -115,7 +135,6 @@ retry_fcntl:
 		switch (errno) {
 		case EINTR:
 			goto retry_fcntl;
-			break;
 		case EACCES:
 		case EAGAIN:
 			if (retries == 20) {

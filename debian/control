@@ -37,7 +37,8 @@ Description: Linux Logical Volume Manager
 Package: clvm
 Priority: extra
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, lvm2 (= ${binary:Version}), lsb-base, corosync | cman
+Depends: ${shlibs:Depends}, ${misc:Depends}, lvm2 (= ${binary:Version}), lsb-base
+Recommends: corosync | openais | cman
 Description: Cluster LVM Daemon for lvm2
  This package provides the clustering interface for lvm2, when used with
  Red Hat's "cman" or corosync based (eg Pacemaker) cluster infrastructure.

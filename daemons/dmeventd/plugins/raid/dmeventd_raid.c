@@ -24,6 +24,29 @@
 /* FIXME Replace most syslogs with log_error() style messages and add complete context. */
 /* FIXME Reformat to 80 char lines. */
 
+/*
+ * run_repair is a close copy to
+ * plugins/mirror/dmeventd_mirror.c:_remove_failed_devices()
+ */
+static int run_repair(const char *device)
+{
+	int r;
+#define CMD_SIZE 256	/* FIXME Use system restriction */
+	char cmd_str[CMD_SIZE];
+
+	if (!dmeventd_lvm2_command(dmeventd_lvm2_pool(), cmd_str, sizeof(cmd_str),
+				  "lvconvert --config devices{ignore_suspended_devices=1} "
+				  "--repair --use-policies", device))
+		return -1;
+
+	r = dmeventd_lvm2_run(cmd_str);
+
+	if (r != ECMD_PROCESSED)
+		syslog(LOG_INFO, "Repair of RAID device %s failed.", device);
+
+	return (r == ECMD_PROCESSED) ? 0 : -1;
+}
+
 static int _process_raid_event(char *params, const char *device)
 {
 	int i, n, failure = 0;
@@ -71,7 +94,7 @@ static int _process_raid_event(char *params, const char *device)
 			break;
 		}
 		if (failure)
-			return 0; /* Don't bother parsing rest of status */
+			return run_repair(device);
 	}
 
 	p = strstr(resync_ratio, "/");
@@ -127,9 +150,12 @@ int register_device(const char *device,
 		    int minor __attribute__((unused)),
 		    void **unused __attribute__((unused)))
 {
-	int r = dmeventd_lvm2_init();
+	if (!dmeventd_lvm2_init())
+		return 0;
+
 	syslog(LOG_INFO, "Monitoring RAID device %s for events.", device);
-	return r;
+
+	return 1;
 }
 
 int unregister_device(const char *device,
@@ -141,5 +167,6 @@ int unregister_device(const char *device,
 	syslog(LOG_INFO, "No longer monitoring RAID device %s for events.",
 	       device);
 	dmeventd_lvm2_exit();
+
 	return 1;
 }

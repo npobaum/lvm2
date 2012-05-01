@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2012 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -29,6 +29,7 @@
 #include "label.h"
 #include "memlock.h"
 #include "lvmcache.h"
+#include "lvmetad.h"
 
 #include <unistd.h>
 #include <sys/file.h>
@@ -223,10 +224,10 @@ static int _pv_analyze_mda_raw (const struct format_type * fmt,
 		 * area->start to area->start+area->size is not used.
 		 * Only ~32KB seems to contain valid metadata records
 		 * (LVM2 format - format_text).  As a result, I end up with
-		 * "maybe_config_section" returning true when there's no valid
+		 * "dm_config_maybe_section" returning true when there's no valid
 		 * metadata in a sector (sectors with all nulls).
 		 */
-		if (!(buf = dm_pool_alloc(fmt->cmd->mem, size + size2)))
+		if (!(buf = dm_malloc(size + size2)))
 			goto_out;
 
 		if (!dev_read_circular(area->dev, offset, size,
@@ -236,7 +237,7 @@ static int _pv_analyze_mda_raw (const struct format_type * fmt,
 		/*
 		 * FIXME: We could add more sophisticated metadata detection
 		 */
-		if (maybe_config_section(buf, size + size2)) {
+		if (dm_config_maybe_section(buf, size + size2)) {
 			/* FIXME: Validate region, pull out timestamp?, etc */
 			/* FIXME: Do something with this region */
 			log_verbose ("Found LVM2 metadata record at "
@@ -261,14 +262,14 @@ static int _pv_analyze_mda_raw (const struct format_type * fmt,
 				size += SECTOR_SIZE;
 			}
 		}
-		dm_pool_free(fmt->cmd->mem, buf);
+		dm_free(buf);
 		buf = NULL;
 	}
 
 	r = 1;
  out:
 	if (buf)
-		dm_pool_free(fmt->cmd->mem, buf);
+		dm_free(buf);
 	if (!dev_close(area->dev))
 		stack;
 	return r;
@@ -432,7 +433,7 @@ static struct raw_locn *_find_vg_rlocn(struct device_area *dev_area,
 			  "not match expected name %s.", vgname);
 
       bad:
-	if ((info = info_from_pvid(dev_area->dev->pvid, 0)))
+	if ((info = lvmcache_info_from_pvid(dev_area->dev->pvid, 0)))
 		lvmcache_update_vgname_and_id(info, FMT_TEXT_ORPHAN_VG_NAME,
 					      FMT_TEXT_ORPHAN_VG_NAME, 0, NULL);
 
@@ -482,7 +483,8 @@ static int _raw_holds_vgname(struct format_instance *fid,
 static struct volume_group *_vg_read_raw_area(struct format_instance *fid,
 					      const char *vgname,
 					      struct device_area *area,
-					      int precommitted)
+					      int precommitted,
+					      int single_device)
 {
 	struct volume_group *vg = NULL;
 	struct raw_locn *rlocn;
@@ -509,7 +511,7 @@ static struct volume_group *_vg_read_raw_area(struct format_instance *fid,
 	}
 
 	/* FIXME 64-bit */
-	if (!(vg = text_vg_import_fd(fid, NULL, area->dev,
+	if (!(vg = text_vg_import_fd(fid, NULL, single_device, area->dev, 
 				     (off_t) (area->start + rlocn->offset),
 				     (uint32_t) (rlocn->size - wrap),
 				     (off_t) (area->start + MDA_HEADER_SIZE),
@@ -530,7 +532,8 @@ static struct volume_group *_vg_read_raw_area(struct format_instance *fid,
 
 static struct volume_group *_vg_read_raw(struct format_instance *fid,
 					 const char *vgname,
-					 struct metadata_area *mda)
+					 struct metadata_area *mda,
+					 int single_device)
 {
 	struct mda_context *mdac = (struct mda_context *) mda->metadata_locn;
 	struct volume_group *vg;
@@ -538,7 +541,7 @@ static struct volume_group *_vg_read_raw(struct format_instance *fid,
 	if (!dev_open_readonly(mdac->area.dev))
 		return_NULL;
 
-	vg = _vg_read_raw_area(fid, vgname, &mdac->area, 0);
+	vg = _vg_read_raw_area(fid, vgname, &mdac->area, 0, single_device);
 
 	if (!dev_close(mdac->area.dev))
 		stack;
@@ -556,7 +559,7 @@ static struct volume_group *_vg_read_precommit_raw(struct format_instance *fid,
 	if (!dev_open_readonly(mdac->area.dev))
 		return_NULL;
 
-	vg = _vg_read_raw_area(fid, vgname, &mdac->area, 1);
+	vg = _vg_read_raw_area(fid, vgname, &mdac->area, 1, 0);
 
 	if (!dev_close(mdac->area.dev))
 		stack;
@@ -738,6 +741,7 @@ static int _vg_commit_raw_rlocn(struct format_instance *fid,
 			  dev_name(mdac->area.dev), mdac->area.start);
 
 	rlocn_set_ignored(mdah->raw_locns, mda_is_ignored(mda));
+
 	if (!_raw_write_mda_header(fid->fmt, mdac->area.dev, mdac->area.start,
 				   mdah)) {
 		dm_pool_free(fid->fmt->cmd->mem, mdah);
@@ -867,7 +871,8 @@ static struct volume_group *_vg_read_file_name(struct format_instance *fid,
 
 static struct volume_group *_vg_read_file(struct format_instance *fid,
 					  const char *vgname,
-					  struct metadata_area *mda)
+					  struct metadata_area *mda,
+					  int single_device __attribute__((unused)))
 {
 	struct text_context *tc = (struct text_context *) mda->metadata_locn;
 
@@ -1084,7 +1089,7 @@ static int _scan_file(const struct format_type *fmt, const char *vgname)
 
 				/* FIXME stat file to see if it's changed */
 				/* FIXME: Check this fid is OK! */
-				fic.type = FMT_INSTANCE_VG | FMT_INSTANCE_PRIVATE_MDAS;
+				fic.type = FMT_INSTANCE_PRIVATE_MDAS;
 				fic.context.private = NULL;
 				fid = _text_create_text_instance(fmt, &fic);
 				if ((vg = _vg_read_file_name(fid, scanned_vgname,
@@ -1233,7 +1238,7 @@ static int _scan_raw(const struct format_type *fmt, const char *vgname __attribu
 		if ((scanned_vgname = vgname_from_mda(fmt, mdah,
 					      &rl->dev_area, &vgid, &vgstatus,
 					      NULL, NULL))) {
-			vg = _vg_read_raw_area(&fid, scanned_vgname, &rl->dev_area, 0);
+			vg = _vg_read_raw_area(&fid, scanned_vgname, &rl->dev_area, 0, 0);
 			if (vg)
 				lvmcache_update_vg(vg, 0);
 
@@ -1251,6 +1256,33 @@ static int _text_scan(const struct format_type *fmt, const char *vgname)
 	return (_scan_file(fmt, vgname) & _scan_raw(fmt, vgname));
 }
 
+struct _write_single_mda_baton {
+	const struct format_type *fmt;
+	struct physical_volume *pv;
+};
+
+static int _write_single_mda(struct metadata_area *mda, void *baton)
+{
+	struct _write_single_mda_baton *p = baton;
+	struct mda_context *mdac;
+
+	char buf[MDA_HEADER_SIZE] __attribute__((aligned(8)));
+	struct mda_header *mdah = (struct mda_header *) buf;
+
+	mdac = mda->metadata_locn;
+	memset(&buf, 0, sizeof(buf));
+	mdah->size = mdac->area.size;
+	rlocn_set_ignored(mdah->raw_locns, mda_is_ignored(mda));
+
+	if (!_raw_write_mda_header(p->fmt, mdac->area.dev,
+				   mdac->area.start, mdah)) {
+		if (!dev_close(p->pv->dev))
+			stack;
+		return_0;
+	}
+	return 1;
+}
+
 /* Only for orphans */
 static int _text_pv_write(const struct format_type *fmt, struct physical_volume *pv)
 {
@@ -1260,27 +1292,21 @@ static int _text_pv_write(const struct format_type *fmt, struct physical_volume 
 	struct lvmcache_info *info;
 	struct mda_context *mdac;
 	struct metadata_area *mda;
+	struct _write_single_mda_baton baton;
 	unsigned mda_index;
-	char buf[MDA_HEADER_SIZE] __attribute__((aligned(8)));
-	struct mda_header *mdah = (struct mda_header *) buf;
-	struct data_area_list *da;
 
 	/* Add a new cache entry with PV info or update existing one. */
 	if (!(info = lvmcache_add(fmt->labeller, (const char *) &pv->id,
 				  pv->dev, pv->vg_name, NULL, 0)))
 		return_0;
 
-	label = info->label;
+	label = lvmcache_get_label(info);
 	label->sector = pv->label_sector;
 
-	info->device_size = pv->size << SECTOR_SHIFT;
-	info->fmt = fmt;
+	lvmcache_update_pv(info, pv, fmt);
 
 	/* Flush all cached metadata areas, we will reenter new/modified ones. */
-	if (info->mdas.n)
-		del_mdas(&info->mdas);
-	else
-		dm_list_init(&info->mdas);
+	lvmcache_del_mdas(info);
 
 	/*
 	 * Add all new or modified metadata areas for this PV stored in
@@ -1299,8 +1325,10 @@ static int _text_pv_write(const struct format_type *fmt, struct physical_volume 
 			  dev_name(mdac->area.dev),
 			  mdac->area.start >> SECTOR_SHIFT,
 			  mdac->area.size >> SECTOR_SHIFT);
-		add_mda(fmt, NULL, &info->mdas, mdac->area.dev,
-			mdac->area.start, mdac->area.size, mda_is_ignored(mda));
+
+		// if fmt is not the same as info->fmt we are in trouble
+		lvmcache_add_mda(info, mdac->area.dev,
+				 mdac->area.start, mdac->area.size, mda_is_ignored(mda));
 	}
 
 	/*
@@ -1318,36 +1346,24 @@ static int _text_pv_write(const struct format_type *fmt, struct physical_volume 
 	 * pvcreate --restorefile. However, we can can have this value in
 	 * metadata which will override the value in the PV header.
 	 */
-	if (info->das.n) {
-		if (!pv->pe_start)
-			dm_list_iterate_items(da, &info->das)
-				pv->pe_start = da->disk_locn.offset >> SECTOR_SHIFT;
-		del_das(&info->das);
-	} else
-		dm_list_init(&info->das);
 
-	if (!add_da(NULL, &info->das, pv->pe_start << SECTOR_SHIFT, UINT64_C(0)))
+	if (!lvmcache_update_das(info, pv))
 		return_0;
 
 	if (!dev_open(pv->dev))
 		return_0;
 
-	dm_list_iterate_items(mda, &info->mdas) {
-		mdac = mda->metadata_locn;
-		memset(&buf, 0, sizeof(buf));
-		mdah->size = mdac->area.size;
-		rlocn_set_ignored(mdah->raw_locns, mda_is_ignored(mda));
-		if (!_raw_write_mda_header(fmt, mdac->area.dev,
-					   mdac->area.start, mdah)) {
-			if (!dev_close(pv->dev))
-				stack;
-			return_0;
-		}
-	}
+	baton.pv = pv;
+	baton.fmt = fmt;
 
-	if (!label_write(pv->dev, info->label)) {
-		dev_close(pv->dev);
+	if (!lvmcache_foreach_mda(info, _write_single_mda, &baton))
 		return_0;
+
+	if (!label_write(pv->dev, label)) {
+		stack;
+		if (!dev_close(pv->dev))
+			stack;
+		return 0;
 	}
 
 	/*
@@ -1380,68 +1396,6 @@ static int _add_raw(struct dm_list *raw_list, struct device_area *dev_area)
 	}
 	memcpy(&rl->dev_area, dev_area, sizeof(*dev_area));
 	dm_list_add(raw_list, &rl->list);
-
-	return 1;
-}
-
-static int _get_pv_if_in_vg(struct lvmcache_info *info,
-			    struct physical_volume *pv)
-{
-	char vgname[NAME_LEN + 1];
-	char vgid[ID_LEN + 1];
-
-	if (info->vginfo && info->vginfo->vgname &&
-	    !is_orphan_vg(info->vginfo->vgname)) {
-		/*
-		 * get_pv_from_vg_by_id() may call
-		 * lvmcache_label_scan() and drop cached
-		 * vginfo so make a local copy of string.
-		 */
-		strcpy(vgname, info->vginfo->vgname);
-		memcpy(vgid, info->vginfo->vgid, sizeof(vgid));
-
-		if (get_pv_from_vg_by_id(info->fmt, vgname, vgid,
-					 info->dev->pvid, pv))
-			return 1;
-	}
-
-	return 0;
-}
-
-static int _populate_pv_fields(struct lvmcache_info *info,
-			       struct physical_volume *pv,
-			       int scan_label_only)
-{
-	struct data_area_list *da;
-
-	/* Have we already cached vgname? */
-	if (!scan_label_only && _get_pv_if_in_vg(info, pv))
-		return 1;
-
-	/* Perform full scan (just the first time) and try again */
-	if (!scan_label_only && !critical_section() && !full_scan_done()) {
-		lvmcache_label_scan(info->fmt->cmd, 2);
-
-		if (_get_pv_if_in_vg(info, pv))
-			return 1;
-	}
-
-	/* Orphan */
-	pv->dev = info->dev;
-	pv->fmt = info->fmt;
-	pv->size = info->device_size >> SECTOR_SHIFT;
-	pv->vg_name = FMT_TEXT_ORPHAN_VG_NAME;
-	memcpy(&pv->id, &info->dev->pvid, sizeof(pv->id));
-
-	/* Currently only support exactly one data area */
-	if (dm_list_size(&info->das) != 1) {
-		log_error("Must be exactly one data area (found %d) on PV %s",
-			  dm_list_size(&info->das), dev_name(info->dev));
-		return 0;
-	}
-
-	dm_list_iterate_items(da, &info->das)
-		pv->pe_start = da->disk_locn.offset >> SECTOR_SHIFT;
 
 	return 1;
 }
@@ -1483,18 +1437,25 @@ static uint64_t _metadata_locn_offset_raw(void *metadata_locn)
 static int _text_pv_read(const struct format_type *fmt, const char *pv_name,
 		    struct physical_volume *pv, int scan_label_only)
 {
-	struct label *label;
-	struct device *dev;
 	struct lvmcache_info *info;
+	struct device *dev;
 
 	if (!(dev = dev_cache_get(pv_name, fmt->cmd->filter)))
 		return_0;
 
-	if (!(label_read(dev, &label, UINT64_C(0))))
-		return_0;
-	info = (struct lvmcache_info *) label->info;
+	if (lvmetad_active()) {
+		info = lvmcache_info_from_pvid(dev->pvid, 0);
+		if (!info && !lvmetad_pv_lookup_by_dev(fmt->cmd, dev, NULL))
+			return 0;
+		info = lvmcache_info_from_pvid(dev->pvid, 0);
+	} else {
+		struct label *label;
+		if (!(label_read(dev, &label, UINT64_C(0))))
+			return_0;
+		info = label->info;
+	}
 
-	if (!_populate_pv_fields(info, pv, scan_label_only))
+	if (!lvmcache_populate_pv_fields(info, pv, scan_label_only))
 		return 0;
 
 	return 1;
@@ -1568,8 +1529,8 @@ static int _text_pv_initialise(const struct format_type *fmt,
 static void _text_destroy_instance(struct format_instance *fid)
 {
 	if (--fid->ref_count <= 1) {
-		if (fid->type & FMT_INSTANCE_VG && fid->metadata_areas_index.hash)
-			dm_hash_destroy(fid->metadata_areas_index.hash);
+		if (fid->metadata_areas_index)
+			dm_hash_destroy(fid->metadata_areas_index);
 		dm_pool_destroy(fid->mem);
 	}
 }
@@ -1596,6 +1557,9 @@ static void _free_raws(struct dm_list *raw_list)
 
 static void _text_destroy(struct format_type *fmt)
 {
+	if (fmt->orphan_vg)
+		free_orphan_vg(fmt->orphan_vg);
+
 	if (fmt->private) {
 		_free_dirs(&((struct mda_lists *) fmt->private)->dirs);
 		_free_raws(&((struct mda_lists *) fmt->private)->raws);
@@ -1620,6 +1584,9 @@ static struct metadata_area_ops _metadata_text_file_backup_ops = {
 	.vg_commit = _vg_commit_file_backup
 };
 
+static char *_mda_export_text_raw(struct metadata_area *mda);
+static int _mda_import_text_raw(struct lvmcache_info *info, const struct dm_config_node *cn);
+
 static struct metadata_area_ops _metadata_text_raw_ops = {
 	.vg_read = _vg_read_raw,
 	.vg_read_precommit = _vg_read_precommit_raw,
@@ -1636,8 +1603,50 @@ static struct metadata_area_ops _metadata_text_raw_ops = {
 	.mda_in_vg = _mda_in_vg_raw,
 	.pv_analyze_mda = _pv_analyze_mda_raw,
 	.mda_locns_match = _mda_locns_match_raw,
-	.mda_get_device = _mda_get_device_raw
+	.mda_get_device = _mda_get_device_raw,
+	.mda_export_text = _mda_export_text_raw,
+	.mda_import_text = _mda_import_text_raw
 };
+
+static char *_mda_export_text_raw(struct metadata_area *mda)
+{
+	struct mda_context *mdc = (struct mda_context *) mda->metadata_locn;
+	char *result;
+
+	dm_asprintf(&result,
+		    "ignore = %d "
+		    "start = %" PRIu64" "
+		    "size = %" PRIu64 " "
+		    "free_sectors = %" PRIu64,
+		    mda_is_ignored(mda), mdc->area.start, mdc->area.size, mdc->free_sectors);
+
+	return result;
+}
+
+static int _mda_import_text_raw(struct lvmcache_info *info, const struct dm_config_node *cn)
+{
+	struct device *device;
+	uint64_t offset;
+	uint64_t size;
+	int ignore;
+
+	if (!cn->child)
+		return 0;
+
+	cn = cn->child;
+	device = lvmcache_device(info);
+	size = dm_config_find_int(cn, "size", 0);
+
+	if (!device || !size)
+		return 0;
+
+	offset = dm_config_find_int(cn, "start", 0);
+	ignore = dm_config_find_int(cn, "ignore", 0);
+
+	lvmcache_add_mda(info, device, offset, size, ignore);
+
+	return 1;
+}
 
 static int _text_pv_setup(const struct format_type *fmt,
 			  struct physical_volume *pv,
@@ -1660,7 +1669,8 @@ static int _text_pv_setup(const struct format_type *fmt,
 
 			/* Be sure it's not already in VG's format instance! */
 			if (!fid_get_mda_indexed(vg->fid, pvid, ID_LEN, mda_index)) {
-				pv_mda_copy = mda_copy(vg->fid->mem, pv_mda);
+				if (!(pv_mda_copy = mda_copy(vg->fid->mem, pv_mda)))
+					return_0;
 				fid_add_mda(vg->fid, pv_mda_copy, pvid, ID_LEN, mda_index);
 			}
 		}
@@ -1670,18 +1680,16 @@ static int _text_pv_setup(const struct format_type *fmt,
 	 * reread PV mda information from the cache and add it to vg->fid.
 	 */
 	else {
-		if (!(info = info_from_pvid(pv->dev->pvid, 0))) {
+		if (!pv->dev ||
+		    !(info = lvmcache_info_from_pvid(pv->dev->pvid, 0))) {
 			log_error("PV %s missing from cache", pv_dev_name(pv));
 			return 0;
 		}
 
-		if (fmt != info->fmt) {
-			log_error("PV %s is a different format (seqno %s)",
-				  pv_dev_name(pv), info->fmt->name);
-			return 0;
-		}
+		if (!lvmcache_check_format(info, fmt))
+			return_0;
 
-		if (!fid_add_mdas(vg->fid, &info->mdas, pvid, ID_LEN))
+		if (!lvmcache_fid_add_mdas_pv(info, fid))
 			return_0;
 	}
 
@@ -1717,27 +1725,6 @@ static int _text_pv_setup(const struct format_type *fmt,
 	/* Unlike LVM1, we don't store this outside a VG */
 	/* FIXME Default from config file? vgextend cmdline flag? */
 	pv->status |= ALLOCATABLE_PV;
-
-	return 1;
-}
-
-static int _create_pv_text_instance(struct format_instance *fid,
-                                    const struct format_instance_ctx *fic)
-{
-	struct lvmcache_info *info;
-
-	fid->private = NULL;
-
-	if (!(fid->metadata_areas_index.array = dm_pool_zalloc(fid->mem,
-					FMT_TEXT_MAX_MDAS_PER_PV *
-					sizeof(struct metadata_area *)))) {
-		log_error("Couldn't allocate format instance metadata index.");
-		return 0;
-	}
-
-	if (fic->type & FMT_INSTANCE_MDAS &&
-	    (info = info_from_pvid(fic->context.pv_id, 0)))
-		fid_add_mdas(fid, &info->mdas, fic->context.pv_id, ID_LEN);
 
 	return 1;
 }
@@ -1791,6 +1778,7 @@ static void *_create_text_context(struct dm_pool *mem, struct text_context *tc)
 static int _create_vg_text_instance(struct format_instance *fid,
                                     const struct format_instance_ctx *fic)
 {
+	static char path[PATH_MAX];
 	uint32_t type = fic->type;
 	struct text_fid_context *fidtc;
 	struct metadata_area *mda;
@@ -1798,10 +1786,8 @@ static int _create_vg_text_instance(struct format_instance *fid,
 	struct dir_list *dl;
 	struct raw_list *rl;
 	struct dm_list *dir_list, *raw_list;
-	char path[PATH_MAX];
 	struct text_context tc;
 	struct lvmcache_vginfo *vginfo;
-	struct lvmcache_info *info;
 	const char *vg_name, *vg_id;
 
 	if (!(fidtc = (struct text_fid_context *)
@@ -1819,13 +1805,13 @@ static int _create_vg_text_instance(struct format_instance *fid,
 		mda->ops = &_metadata_text_file_backup_ops;
 		mda->metadata_locn = _create_text_context(fid->mem, fic->context.private);
 		mda->status = 0;
-		fid->metadata_areas_index.hash = NULL;
+		fid->metadata_areas_index = NULL;
 		fid_add_mda(fid, mda, NULL, 0, 0);
 	} else {
 		vg_name = fic->context.vg_ref.vg_name;
 		vg_id = fic->context.vg_ref.vg_id;
 
-		if (!(fid->metadata_areas_index.hash = dm_hash_create(128))) {
+		if (!(fid->metadata_areas_index = dm_hash_create(128))) {
 			log_error("Couldn't create metadata index for format "
 				  "instance of VG %s.", vg_name);
 			return 0;
@@ -1873,12 +1859,10 @@ static int _create_vg_text_instance(struct format_instance *fid,
 		if (type & FMT_INSTANCE_MDAS) {
 			/* Scan PVs in VG for any further MDAs */
 			lvmcache_label_scan(fid->fmt->cmd, 0);
-			if (!(vginfo = vginfo_from_vgname(vg_name, vg_id)))
+			if (!(vginfo = lvmcache_vginfo_from_vgname(vg_name, vg_id)))
 				goto_out;
-			dm_list_iterate_items(info, &vginfo->infos) {
-				if (!fid_add_mdas(fid, &info->mdas, info->dev->pvid, ID_LEN))
-					return_0;
-			}
+			if (!lvmcache_fid_add_mdas_vg(vginfo, fid))
+				goto_out;
 		}
 
 		/* FIXME Check raw metadata area count - rescan if required */
@@ -1933,6 +1917,10 @@ static int _add_metadata_area_to_pv(struct physical_volume *pv,
 	return 1;
 }
 
+static int _text_pv_remove_metadata_area(const struct format_type *fmt,
+					 struct physical_volume *pv,
+					 unsigned mda_index);
+
 static int _text_pv_add_metadata_area(const struct format_type *fmt,
 				      struct physical_volume *pv,
 				      int pe_start_locked,
@@ -1969,9 +1957,12 @@ static int _text_pv_add_metadata_area(const struct format_type *fmt,
 	mda_size = mda_size << SECTOR_SHIFT;
 
 	if (fid_get_mda_indexed(fid, pvid, ID_LEN, mda_index)) {
-		log_error(INTERNAL_ERROR "metadata area with index %u already "
-			"exists on PV %s.", mda_index, pv_dev_name(pv));
-		return 0;
+		if (!_text_pv_remove_metadata_area(fmt, pv, mda_index)) {
+			log_error(INTERNAL_ERROR "metadata area with index %u already "
+				  "exists on PV %s and removal failed.",
+				  mda_index, pv_dev_name(pv));
+			return 0;
+		}
 	}
 
 	/* First metadata area at the start of the device. */
@@ -2234,8 +2225,7 @@ static struct format_instance *_text_create_text_instance(const struct format_ty
 	if (!(fid = alloc_fid(fmt, fic)))
 		return_NULL;
 
-	if (fid->type & FMT_INSTANCE_VG ? _create_vg_text_instance(fid, fic) :
-					  _create_pv_text_instance(fid, fic))
+	if (_create_vg_text_instance(fid, fic))
 		return fid;
 
 	dm_pool_destroy(fid->mem);
@@ -2277,7 +2267,7 @@ static int _add_dir(const char *dir, struct dm_list *dir_list)
 }
 
 static int _get_config_disk_area(struct cmd_context *cmd,
-				 const struct config_node *cn, struct dm_list *raw_list)
+				 const struct dm_config_node *cn, struct dm_list *raw_list)
 {
 	struct device_area dev_area;
 	const char *id_str;
@@ -2288,21 +2278,21 @@ static int _get_config_disk_area(struct cmd_context *cmd,
 		return 0;
 	}
 
-	if (!get_config_uint64(cn, "start_sector", &dev_area.start)) {
+	if (!dm_config_get_uint64(cn, "start_sector", &dev_area.start)) {
 		log_error("Missing start_sector in metadata disk_area section "
 			  "of config file");
 		return 0;
 	}
 	dev_area.start <<= SECTOR_SHIFT;
 
-	if (!get_config_uint64(cn, "size", &dev_area.size)) {
+	if (!dm_config_get_uint64(cn, "size", &dev_area.size)) {
 		log_error("Missing size in metadata disk_area section "
 			  "of config file");
 		return 0;
 	}
 	dev_area.size <<= SECTOR_SHIFT;
 
-	if (!get_config_str(cn, "id", &id_str)) {
+	if (!dm_config_get_str(cn, "id", &id_str)) {
 		log_error("Missing uuid in metadata disk_area section "
 			  "of config file");
 		return 0;
@@ -2314,7 +2304,7 @@ static int _get_config_disk_area(struct cmd_context *cmd,
 		return 0;
 	}
 
-	if (!(dev_area.dev = device_from_pvid(cmd, &id, NULL, NULL))) {
+	if (!(dev_area.dev = lvmcache_device_from_pvid(cmd, &id, NULL, NULL))) {
 		char buffer[64] __attribute__((aligned(8)));
 
 		if (!id_write_format(&id, buffer, sizeof(buffer)))
@@ -2331,13 +2321,17 @@ static int _get_config_disk_area(struct cmd_context *cmd,
 
 struct format_type *create_text_format(struct cmd_context *cmd)
 {
+	struct format_instance_ctx fic;
+	struct format_instance *fid;
 	struct format_type *fmt;
-	const struct config_node *cn;
-	const struct config_value *cv;
+	const struct dm_config_node *cn;
+	const struct dm_config_value *cv;
 	struct mda_lists *mda_lists;
 
-	if (!(fmt = dm_malloc(sizeof(*fmt))))
-		return_NULL;
+	if (!(fmt = dm_malloc(sizeof(*fmt)))) {
+		log_error("Failed to allocate text format type structure.");
+		return NULL;
+	}
 
 	fmt->cmd = cmd;
 	fmt->ops = &_text_handler;
@@ -2360,30 +2354,32 @@ struct format_type *create_text_format(struct cmd_context *cmd)
 	mda_lists->raw_ops = &_metadata_text_raw_ops;
 	fmt->private = (void *) mda_lists;
 
+	dm_list_init(&fmt->mda_ops);
+	dm_list_add(&fmt->mda_ops, &_metadata_text_raw_ops.list);
+
 	if (!(fmt->labeller = text_labeller_create(fmt))) {
 		log_error("Couldn't create text label handler.");
-		dm_free(fmt);
-		return NULL;
+		goto bad;
 	}
 
 	if (!(label_register_handler(FMT_TEXT_NAME, fmt->labeller))) {
 		log_error("Couldn't register text label handler.");
-		dm_free(fmt);
-		return NULL;
+		fmt->labeller->ops->destroy(fmt->labeller);
+		goto bad;
 	}
 
 	if ((cn = find_config_tree_node(cmd, "metadata/dirs"))) {
 		for (cv = cn->v; cv; cv = cv->next) {
-			if (cv->type != CFG_STRING) {
+			if (cv->type != DM_CFG_STRING) {
 				log_error("Invalid string in config file: "
 					  "metadata/dirs");
-				goto err;
+				goto bad;
 			}
 
 			if (!_add_dir(cv->v.str, &mda_lists->dirs)) {
 				log_error("Failed to add %s to text format "
 					  "metadata directory list ", cv->v.str);
-				goto err;
+				goto bad;
 			}
 			cmd->independent_metadata_areas = 1;
 		}
@@ -2392,18 +2388,27 @@ struct format_type *create_text_format(struct cmd_context *cmd)
 	if ((cn = find_config_tree_node(cmd, "metadata/disk_areas"))) {
 		for (cn = cn->child; cn; cn = cn->sib) {
 			if (!_get_config_disk_area(cmd, cn, &mda_lists->raws))
-				goto err;
+				goto_bad;
 			cmd->independent_metadata_areas = 1;
 		}
 	}
 
+	if (!(fmt->orphan_vg = alloc_vg("text_orphan", cmd, fmt->orphan_vg_name)))
+		goto_bad;
+
+	fic.type = FMT_INSTANCE_AUX_MDAS;
+	fic.context.vg_ref.vg_name = fmt->orphan_vg_name;
+	fic.context.vg_ref.vg_id = NULL;
+	if (!(fid = _text_create_text_instance(fmt, &fic)))
+		goto_bad;
+
+	vg_set_fid(fmt->orphan_vg, fid);
+
 	log_very_verbose("Initialised format: %s", fmt->name);
 
 	return fmt;
+bad:
+	_text_destroy(fmt);
 
-      err:
-	_free_dirs(&mda_lists->dirs);
-
-	dm_free(fmt);
 	return NULL;
 }

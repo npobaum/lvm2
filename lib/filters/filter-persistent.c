@@ -64,13 +64,13 @@ int persistent_filter_wipe(struct dev_filter *f)
 	return 1;
 }
 
-static int _read_array(struct pfilter *pf, struct config_tree *cft,
+static int _read_array(struct pfilter *pf, struct dm_config_tree *cft,
 		       const char *path, void *data)
 {
-	const struct config_node *cn;
-	const struct config_value *cv;
+	const struct dm_config_node *cn;
+	const struct dm_config_value *cv;
 
-	if (!(cn = find_config_node(cft->root, path))) {
+	if (!(cn = dm_config_find_node(cft->root, path))) {
 		log_very_verbose("Couldn't find %s array in '%s'",
 				 path, pf->file);
 		return 0;
@@ -81,7 +81,7 @@ static int _read_array(struct pfilter *pf, struct config_tree *cft,
 	 * devices as we go.
 	 */
 	for (cv = cn->v; cv; cv = cv->next) {
-		if (cv->type != CFG_STRING) {
+		if (cv->type != DM_CFG_STRING) {
 			log_verbose("Devices array contains a value "
 				    "which is not a string ... ignoring");
 			continue;
@@ -96,10 +96,10 @@ static int _read_array(struct pfilter *pf, struct config_tree *cft,
 	return 1;
 }
 
-int persistent_filter_load(struct dev_filter *f, struct config_tree **cft_out)
+int persistent_filter_load(struct dev_filter *f, struct dm_config_tree **cft_out)
 {
 	struct pfilter *pf = (struct pfilter *) f->private;
-	struct config_tree *cft;
+	struct dm_config_tree *cft;
 	struct stat info;
 	int r = 0;
 
@@ -122,10 +122,10 @@ int persistent_filter_load(struct dev_filter *f, struct config_tree **cft_out)
 		return_0;
 	}
 
-	if (!(cft = create_config_tree(pf->file, 1)))
+	if (!(cft = config_file_open(pf->file, 1)))
 		return_0;
 
-	if (!read_config_file(cft))
+	if (!config_file_read(cft))
 		goto_out;
 
 	_read_array(pf, cft, "persistent_filter_cache/valid_devices",
@@ -147,7 +147,7 @@ int persistent_filter_load(struct dev_filter *f, struct config_tree **cft_out)
 	if (r && cft_out)
 		*cft_out = cft;
 	else
-		destroy_config_tree(cft);
+		config_file_destroy(cft);
 	return r;
 }
 
@@ -173,7 +173,7 @@ static void _write_array(struct pfilter *pf, FILE *fp, const char *path,
 			first = 0;
 		}
 
-		escape_double_quotes(buf, dm_hash_get_key(pf->devices, n));
+		dm_escape_double_quotes(buf, dm_hash_get_key(pf->devices, n));
 		fprintf(fp, "\t\t\"%s\"", buf);
 	}
 
@@ -186,7 +186,7 @@ int persistent_filter_dump(struct dev_filter *f, int merge_existing)
 	struct pfilter *pf;
 	char *tmp_file;
 	struct stat info, info2;
-	struct config_tree *cft = NULL;
+	struct dm_config_tree *cft = NULL;
 	FILE *fp;
 	int lockfd;
 	int r = 0;
@@ -271,7 +271,7 @@ out:
 	fcntl_unlock_file(lockfd);
 
 	if (cft)
-		destroy_config_tree(cft);
+		config_file_destroy(cft);
 
 	return r;
 }
@@ -292,7 +292,10 @@ static int _lookup_p(struct dev_filter *f, struct device *dev)
 	if (MAJOR(dev->dev) == dm_major()) {
 		if (!l)
 			dm_list_iterate_items(sl, &dev->aliases)
-				dm_hash_insert(pf->devices, sl->str, PF_GOOD_DEVICE);
+				if (!dm_hash_insert(pf->devices, sl->str, PF_GOOD_DEVICE)) {
+					log_error("Failed to hash device to filter.");
+					return 0;
+				}
 		if (!device_is_usable(dev)) {
 			log_debug("%s: Skipping unusable device", dev_name(dev));
 			return 0;
@@ -305,7 +308,10 @@ static int _lookup_p(struct dev_filter *f, struct device *dev)
 		l = pf->real->passes_filter(pf->real, dev) ?  PF_GOOD_DEVICE : PF_BAD_DEVICE;
 
 		dm_list_iterate_items(sl, &dev->aliases)
-			dm_hash_insert(pf->devices, sl->str, l);
+			if (!dm_hash_insert(pf->devices, sl->str, l)) {
+				log_error("Failed to hash alias to filter.");
+				return 0;
+			}
 	}
 
 	return (l == PF_BAD_DEVICE) ? 0 : 1;

@@ -60,8 +60,8 @@ static int _consolidate_vg(struct cmd_context *cmd, struct volume_group *vg)
 
 	if (!r) {
 		cmd->handles_missing_pvs = 1;
-		log_warn("WARNING: There are still partial LVs in VG %s.", vg->name);
-		log_warn("To remove them unconditionally use: vgreduce --removemissing --force.");
+		log_error("There are still partial LVs in VG %s.", vg->name);
+		log_error("To remove them unconditionally use: vgreduce --removemissing --force.");
 		log_warn("Proceeding to remove empty missing PVs.");
 	}
 
@@ -104,7 +104,7 @@ static int _make_vg_consistent(struct cmd_context *cmd, struct volume_group *vg)
 			if (!lv_is_visible(lv))
 				continue;
 			log_warn("Removing partial LV %s.", lv->name);
-			if (!lv_remove_with_dependencies(cmd, lv, 1, 0))
+			if (!lv_remove_with_dependencies(cmd, lv, DONT_PROMPT, 0))
 				return_0;
 			goto restart;
 		}
@@ -213,7 +213,7 @@ int vgreduce(struct cmd_context *cmd, int argc, char **argv)
 		return EINVALID_CMD_LINE;
 	}
 	
-	if (!argc && repairing) {
+	if (!argc) { /* repairing */
 		log_error("Please give volume group name");
 		return EINVALID_CMD_LINE;
 	}

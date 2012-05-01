@@ -89,6 +89,11 @@ const char *grouped_arg_str_value(const struct arg_values *av, int a, const char
 	return grouped_arg_count(av, a) ? av[a].value : def;
 }
 
+int32_t grouped_arg_int_value(const struct arg_values *av, int a, const int32_t def)
+{
+	return grouped_arg_count(av, a) ? av[a].i_value : def;
+}
+
 int32_t arg_int_value(struct cmd_context *cmd, int a, const int32_t def)
 {
 	return arg_count(cmd, a) ? cmd->arg_values[a].i_value : def;
@@ -641,7 +646,7 @@ static void _add_getopt_arg(int arg, char **ptr, struct option **o)
 		if (a->short_arg)
 			(*o)->val = a->short_arg;
 		else
-			(*o)->val = arg;
+			(*o)->val = arg + 128;
 		(*o)++;
 	}
 #endif
@@ -662,7 +667,7 @@ static int _find_arg(struct command *com, int opt)
 		 * the_args.
 		 */
 		if ((a->short_arg && (opt == a->short_arg)) ||
-		    (!a->short_arg && (opt == arg)))
+		    (!a->short_arg && (opt == (arg + 128))))
 			return arg;
 	}
 
@@ -935,6 +940,7 @@ static void _apply_settings(struct cmd_context *cmd)
 	init_test(cmd->current_settings.test);
 	init_full_scan_done(0);
 	init_mirror_in_sync(0);
+	init_dmeventd_monitor(DEFAULT_DMEVENTD_MONITOR);
 
 	init_msg_prefix(cmd->default_settings.msg_prefix);
 	init_cmd_name(cmd->default_settings.cmd_name);
@@ -996,6 +1002,8 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 {
 	int ret = 0;
 	int locking_type;
+	int monitoring;
+	struct dm_config_tree *old_cft;
 
 	init_error_message_produced(0);
 
@@ -1020,8 +1028,7 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 	set_cmd_name(cmd->command->name);
 
 	if (arg_count(cmd, config_ARG))
-		if (override_config_tree_from_string(cmd,
-		    arg_str_value(cmd, config_ARG, ""))) {
+		if (override_config_tree_from_string(cmd, arg_str_value(cmd, config_ARG, ""))) {
 			ret = EINVALID_CMD_LINE;
 			goto_out;
 		}
@@ -1029,10 +1036,9 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 	if (arg_count(cmd, config_ARG) || !cmd->config_valid || config_files_changed(cmd)) {
 		/* Reinitialise various settings inc. logging, filters */
 		if (!refresh_toolcontext(cmd)) {
-			if (cmd->cft_override) {
-				destroy_config_tree(cmd->cft_override);
-				cmd->cft_override = NULL;
-			}
+			old_cft = remove_overridden_config_tree(cmd);
+			if (old_cft)
+				dm_config_destroy(old_cft);
 			log_error("Updated config file invalid. Aborting.");
 			return ECMD_FAILED;
 		}
@@ -1041,6 +1047,10 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 	if ((ret = _get_settings(cmd)))
 		goto_out;
 	_apply_settings(cmd);
+
+	if (!get_activation_monitoring_mode(cmd, &monitoring))
+		goto_out;
+	init_dmeventd_monitor(monitoring);
 
 	log_debug("Processing: %s", cmd->cmd_line);
 
@@ -1081,9 +1091,8 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 		lvmcache_destroy(cmd, 1);
 	}
 
-	if (cmd->cft_override) {
-		destroy_config_tree(cmd->cft_override);
-		cmd->cft_override = NULL;
+	if ((old_cft = remove_overridden_config_tree(cmd))) {
+		dm_config_destroy(old_cft);
 		/* Move this? */
 		if (!refresh_toolcontext(cmd))
 			stack;
@@ -1151,7 +1160,7 @@ static const char *_get_cmdline(pid_t pid)
 
 	snprintf(buf, sizeof(buf), DEFAULT_PROC_DIR "/%u/cmdline", pid);
 	/* FIXME Use generic read code. */
-	if ((fd = open(buf, O_RDONLY)) > 0) {
+	if ((fd = open(buf, O_RDONLY)) >= 0) {
 		if ((n = read(fd, _proc_cmdline, sizeof(_proc_cmdline) - 1)) < 0) {
 			log_sys_error("read", buf);
 			n = 0;
@@ -1239,7 +1248,7 @@ struct cmd_context *init_lvm(void)
 	if (!udev_init_library_context())
 		stack;
 
-	if (!(cmd = create_toolcontext(0, NULL, 1)))
+	if (!(cmd = create_toolcontext(0, NULL, 1, 0)))
 		return_NULL;
 
 	_cmdline.arg_props = &_arg_props[0];
@@ -1386,9 +1395,12 @@ int lvm2_main(int argc, char **argv)
 	if (is_static() && strcmp(base, "lvm.static") &&
 	    path_exists(LVM_SHARED_PATH) &&
 	    !getenv("LVM_DID_EXEC")) {
-		setenv("LVM_DID_EXEC", base, 1);
-		execvp(LVM_SHARED_PATH, argv);
-		unsetenv("LVM_DID_EXEC");
+		if (setenv("LVM_DID_EXEC", base, 1))
+			log_sys_error("setenv", "LVM_DID_EXEC");
+		if (execvp(LVM_SHARED_PATH, argv) == -1)
+			log_sys_error("execvp", "LVM_SHARED_PATH");
+		if (unsetenv("LVM_DID_EXEC"))
+			log_sys_error("unsetenv", "LVM_DID_EXEC");
 	}
 
 	/* "version" command is simple enough so it doesn't need any complex init */

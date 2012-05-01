@@ -32,6 +32,8 @@ static void _sigchld_handler(int sig __attribute__((unused)))
  */
 static int _become_daemon(struct cmd_context *cmd)
 {
+	static const char devnull[] = "/dev/null";
+	int null_fd;
 	pid_t pid;
 	struct sigaction act = {
 		{_sigchld_handler},
@@ -57,12 +59,27 @@ static int _become_daemon(struct cmd_context *cmd)
 	if (setsid() == -1)
 		log_error("Background process failed to setsid: %s",
 			  strerror(errno));
+
+	/* For poll debugging it's best to disable for compilation */
+#if 1
+	if ((null_fd = open(devnull, O_RDWR)) == -1) {
+		log_sys_error("open", devnull);
+		_exit(ECMD_FAILED);
+	}
+
+	if ((dup2(null_fd, STDIN_FILENO) < 0)  || /* reopen stdin */
+	    (dup2(null_fd, STDOUT_FILENO) < 0) || /* reopen stdout */
+	    (dup2(null_fd, STDERR_FILENO) < 0)) { /* reopen stderr */
+		log_sys_error("dup2", "redirect");
+		(void) close(null_fd);
+		_exit(ECMD_FAILED);
+	}
+
+	if (null_fd > STDERR_FILENO)
+		(void) close(null_fd);
+
 	init_verbose(VERBOSE_BASE_LEVEL);
-
-	close(STDIN_FILENO);
-	close(STDOUT_FILENO);
-	close(STDERR_FILENO);
-
+#endif
 	strncpy(*cmd->argv, "(lvm2)", strlen(*cmd->argv));
 
 	reset_locking();
@@ -283,7 +300,7 @@ static void _poll_for_all_vgs(struct cmd_context *cmd,
  */
 int poll_daemon(struct cmd_context *cmd, const char *name, const char *uuid,
 		unsigned background,
-		uint32_t lv_type, struct poll_functions *poll_fns,
+		uint64_t lv_type, struct poll_functions *poll_fns,
 		const char *progress_title)
 {
 	struct daemon_parms parms;
@@ -293,7 +310,7 @@ int poll_daemon(struct cmd_context *cmd, const char *name, const char *uuid,
 
 	parms.aborting = arg_is_set(cmd, abort_ARG);
 	parms.background = background;
-	interval_sign = arg_sign_value(cmd, interval_ARG, 0);
+	interval_sign = arg_sign_value(cmd, interval_ARG, SIGN_NONE);
 	if (interval_sign == SIGN_MINUS)
 		log_error("Argument to --interval cannot be negative");
 	parms.interval = arg_uint_value(cmd, interval_ARG,

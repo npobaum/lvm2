@@ -83,13 +83,16 @@ static char *_build_desc(struct dm_pool *mem, const char *line, int before)
 	size_t len = strlen(line) + 32;
 	char *buffer;
 
-	if (!(buffer = dm_pool_zalloc(mem, strlen(line) + 32)))
-		return_NULL;
+	if (!(buffer = dm_pool_alloc(mem, len))) {
+		log_error("Failed to allocate desc.");
+		return NULL;
+	}
 
-	if (snprintf(buffer, len,
-		     "Created %s executing '%s'",
-		     before ? "*before*" : "*after*", line) < 0)
-		return_NULL;
+	if (dm_snprintf(buffer, len, "Created %s executing '%s'",
+			before ? "*before*" : "*after*", line) < 0) {
+		log_error("Failed to build desc.");
+		return NULL;
+	}
 
 	return buffer;
 }
@@ -241,7 +244,8 @@ int backup_locally(struct volume_group *vg)
 int backup(struct volume_group *vg)
 {
 	if (vg_is_clustered(vg))
-		remote_backup_metadata(vg);
+		if (!remote_backup_metadata(vg))
+			stack;
 
 	return backup_locally(vg);
 }
@@ -276,7 +280,7 @@ struct volume_group *backup_read_vg(struct cmd_context *cmd,
 				  .desc = cmd->cmd_line};
 	struct metadata_area *mda;
 
-	fic.type = FMT_INSTANCE_VG | FMT_INSTANCE_PRIVATE_MDAS;
+	fic.type = FMT_INSTANCE_PRIVATE_MDAS;
 	fic.context.private = &tc;
 	if (!(tf = cmd->fmt_backup->ops->create_instance(cmd->fmt_backup, &fic))) {
 		log_error("Couldn't create text format object.");
@@ -284,7 +288,7 @@ struct volume_group *backup_read_vg(struct cmd_context *cmd,
 	}
 
 	dm_list_iterate_items(mda, &tf->metadata_areas_in_use) {
-		if (!(vg = mda->ops->vg_read(tf, vg_name, mda)))
+		if (!(vg = mda->ops->vg_read(tf, vg_name, mda, 0)))
 			stack;
 		break;
 	}
@@ -309,7 +313,7 @@ int backup_restore_vg(struct cmd_context *cmd, struct volume_group *vg)
 	 */
 
 	/* Attempt to write out using currently active format */
-	fic.type = FMT_INSTANCE_VG | FMT_INSTANCE_AUX_MDAS;
+	fic.type = FMT_INSTANCE_AUX_MDAS;
 	fic.context.vg_ref.vg_name = vg->name;
 	fic.context.vg_ref.vg_id = NULL;
 	if (!(fid = cmd->fmt->ops->create_instance(cmd->fmt, &fic))) {
@@ -348,12 +352,23 @@ int backup_restore_from_file(struct cmd_context *cmd, const char *vg_name,
 {
 	struct volume_group *vg;
 	int missing_pvs, r = 0;
+	const struct lv_list *lvl;
 
 	/*
 	 * Read in the volume group from the text file.
 	 */
 	if (!(vg = backup_read_vg(cmd, vg_name, file)))
 		return_0;
+
+	/* FIXME: Restore support is missing for now */
+	dm_list_iterate_items(lvl, &vg->lvs)
+		if (lv_is_thin_type(lvl->lv)) {
+			log_error("Cannot restore Volume Group %s with "
+				  "thin logical volumes. "
+				  "(not yet supported).", vg->name);
+			r = 0;
+			goto out;
+		}
 
 	missing_pvs = vg_missing_pv_count(vg);
 	if (missing_pvs == 0)
@@ -362,6 +377,7 @@ int backup_restore_from_file(struct cmd_context *cmd, const char *vg_name,
 		log_error("Cannot restore Volume Group %s with %i PVs "
 			  "marked as missing.", vg->name, missing_pvs);
 
+out:
 	release_vg(vg);
 	return r;
 }
@@ -394,7 +410,7 @@ int backup_to_file(const char *file, const char *desc, struct volume_group *vg)
 
 	log_verbose("Creating volume group backup \"%s\" (seqno %u).", file, vg->seqno);
 
-	fic.type = FMT_INSTANCE_VG | FMT_INSTANCE_PRIVATE_MDAS;
+	fic.type = FMT_INSTANCE_PRIVATE_MDAS;
 	fic.context.private = &tc;
 	if (!(tf = cmd->fmt_backup->ops->create_instance(cmd->fmt_backup, &fic))) {
 		log_error("Couldn't create backup object.");

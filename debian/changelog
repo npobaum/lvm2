@@ -1,3 +1,11 @@
+lvm2 (2.02.95-1) unstable; urgency=low
+
+  * New upstream version. (closes: #670072)
+  * Fix dependencies in clvm init script. (closes: #655970)
+  * Demote cluster manager dependency to recommends.
+
+ -- Bastian Blank <waldi@debian.org>  Tue, 01 May 2012 20:27:50 +0200
+
 lvm2 (2.02.88-2) unstable; urgency=low
 
   * Enable corosync and openais support. (closes: #563320)
