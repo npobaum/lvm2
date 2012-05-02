@@ -84,7 +84,7 @@ devices {
     # It is safe to delete the contents: the tools regenerate it.
     # (The old setting 'cache' is still respected if neither of
     # these new ones is present.)
-    cache_dir = "@DEFAULT_SYS_DIR@/@DEFAULT_CACHE_SUBDIR@"
+    cache_dir = "/run/lvm"
     cache_file_prefix = ""
 
     # You can turn off writing this cache file by setting this to 0.
@@ -393,7 +393,7 @@ global {
     # Full pathnames can be given.
 
     # Search this directory first for shared libraries.
-    #   library_dir = "/lib"
+    #   library_dir = "/lib/lvm2"
 
     # The external locking library to load if locking_type is set to 2.
     #   locking_library = "liblvm2clusterlock.so"
