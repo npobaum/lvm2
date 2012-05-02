@@ -78,10 +78,12 @@ $(STAMPS_DIR)/setup_deb: $(STAMPS_DIR)/source
 		--with-default-run-dir=/run/lvm \
 		--with-default-locking-dir=/run/lock/lvm \
 		--enable-applib \
+		--enable-dmeventd \
 		--enable-cmdlib \
 		--enable-pkgconfig \
 		--enable-readline \
 		--enable-udev_sync
+	cp po/lvm2.po po/lvm2.pot
 	touch $@
 
 $(STAMPS_DIR)/setup_udeb: SOURCE_DIR = $(BUILD_DIR)/source
@@ -96,6 +98,7 @@ $(STAMPS_DIR)/setup_udeb: $(STAMPS_DIR)/source
 		--with-cluster=none \
 		--with-lvm1=none \
 		--with-pool=none \
+		--disable-dmeventd \
 		--disable-readline \
 		--disable-selinux
 	touch $@
@@ -122,6 +125,7 @@ clean:
 	dh_testdir
 	rm -rf $(BUILD_DIR) $(STAMPS_DIR)
 	dh_clean
+	rm -f po/lvm2.pot
 
 $(STAMPS_DIR)/install_%: DIR = $(BUILD_DIR)/build_$*
 $(STAMPS_DIR)/install_%: INSTALL_DIR = $(BUILD_DIR)/install_$*
@@ -143,6 +147,7 @@ install-base:
 	dh_installdebconf
 	dh_installdocs
 	dh_installexamples
+	dh_installman
 	dh_strip
 	dh_compress
 	dh_fixperms
@@ -155,14 +160,16 @@ install-base:
 install_clvm: export DH_OPTIONS = -pclvm
 install_clvm: DIR = $(BUILD_DIR)/install_deb
 install_clvm: $(STAMPS_DIR)/install_deb
+	mkdir -p $(BUILD_DIR)/install_deb/usr/lib/ocf/resource.d/lvm2
+	install -m 755 debian/clvmd.ra $(BUILD_DIR)/install_deb/usr/lib/ocf/resource.d/lvm2/clvmd
 	+$(MAKE_SELF) install-base-prep INSTALL_DIR='$(DIR)'
-	dh_installinit --no-start -- start 63 S . start 51 0 6 .
 	+$(MAKE_SELF) install-base
 
 install_dmsetup: export DH_OPTIONS = -pdmsetup
 install_dmsetup: DIR = $(BUILD_DIR)/install_deb
 install_dmsetup: $(STAMPS_DIR)/install_deb
 	+$(MAKE_SELF) install-base-prep INSTALL_DIR='$(DIR)'
+	chmod +x -R debian/dmsetup/usr/share/initramfs-tools
 	+$(MAKE_SELF) install-base CHANGELOG=WHATS_NEW_DM GENCONTROL_ARGS="-v$(DEVMAPPER_VERSION_DEBIAN)"
 
 install_dmsetup-udeb: PACKAGE_NAME = dmsetup-udeb
@@ -171,6 +178,7 @@ install_dmsetup-udeb: PACKAGE_FILE = $(PACKAGE_NAME)_$(DEVMAPPER_VERSION_FILE)_$
 install_dmsetup-udeb: DIR = $(BUILD_DIR)/install_udeb
 install_dmsetup-udeb: $(STAMPS_DIR)/install_udeb
 	+$(MAKE_SELF) install-base-prep INSTALL_DIR='$(DIR)'
+	chmod +x -R debian/dmsetup-udeb/usr/share/initramfs-tools
 	+$(MAKE_SELF) install-base \
 		BUILDDEB_ARGS="--filename=$(PACKAGE_FILE)" \
 		GENCONTROL_ARGS="-v$(DEVMAPPER_VERSION_DEBIAN)"
@@ -188,6 +196,22 @@ install_libdevmapper: $(STAMPS_DIR)/install_deb
 install_libdevmapper-dev: export DH_OPTIONS = -plibdevmapper-dev
 install_libdevmapper-dev: DIR = $(BUILD_DIR)/install_deb
 install_libdevmapper-dev: $(STAMPS_DIR)/install_deb
+	+$(MAKE_SELF) install-base-prep INSTALL_DIR='$(DIR)'
+	dh_link -p libdevmapper-dev lib/libdevmapper-event.so.$(DEVMAPPER_ABINAME) usr/lib/libdevmapper-event.so
+	+$(MAKE_SELF) install-base CHANGELOG=WHATS_NEW_DM GENCONTROL_ARGS="-v$(DEVMAPPER_VERSION_DEBIAN)"
+
+install_libdevmapper-event: export DH_OPTIONS = -plibdevmapper-event$(DEVMAPPER_ABINAME)
+install_libdevmapper-event: DIR = $(BUILD_DIR)/install_deb
+install_libdevmapper-event: $(STAMPS_DIR)/install_deb
+	+$(MAKE_SELF) install-base-prep INSTALL_DIR='$(DIR)'
+	dh_makeshlibs \
+	       	"-Vlibdevmapper-event$(DEVMAPPER_ABINAME) (>= $(DEVMAPPER_VERSION))" \
+		-- "-v$(DEVMAPPER_VERSION_DEBIAN)" -c2
+	+$(MAKE_SELF) install-base CHANGELOG=WHATS_NEW_DM GENCONTROL_ARGS="-v$(DEVMAPPER_VERSION_DEBIAN)"
+
+install_dmeventd: export DH_OPTIONS = -pdmeventd
+install_dmeventd: DIR = $(BUILD_DIR)/install_deb
+install_dmeventd: $(STAMPS_DIR)/install_deb
 	+$(MAKE_SELF) install-base-prep INSTALL_DIR='$(DIR)'
 	+$(MAKE_SELF) install-base CHANGELOG=WHATS_NEW_DM GENCONTROL_ARGS="-v$(DEVMAPPER_VERSION_DEBIAN)"
 
@@ -212,6 +236,8 @@ install_lvm2: export DH_OPTIONS = -plvm2
 install_lvm2: DIR = $(BUILD_DIR)/install_deb
 install_lvm2: $(STAMPS_DIR)/install_deb
 	+$(MAKE_SELF) install-base-prep INSTALL_DIR='$(DIR)'
+	rm -rf debian/lvm2/usr/share/initramfs-tools/scripts/local-top
+	chmod +x -R debian/lvm2/usr/share/initramfs-tools
 	dh_installinit --no-start -- start 26 S .
 	+$(MAKE_SELF) install-base
 
@@ -219,10 +245,11 @@ install_lvm2-udeb: export DH_OPTIONS = -plvm2-udeb
 install_lvm2-udeb: DIR = $(BUILD_DIR)/install_udeb
 install_lvm2-udeb: $(STAMPS_DIR)/install_udeb
 	+$(MAKE_SELF) install-base-prep INSTALL_DIR='$(DIR)'
+	chmod +x -R debian/lvm2-udeb/usr/share/initramfs-tools
 	+$(MAKE_SELF) install-base
 
 binary-indep:
-binary-arch: $(addprefix install_,libdevmapper libdevmapper-udeb libdevmapper-dev dmsetup dmsetup-udeb liblvm2 lvm2 lvm2-udeb clvm)
+binary-arch: $(addprefix install_,libdevmapper libdevmapper-udeb libdevmapper-dev libdevmapper-event dmeventd dmsetup dmsetup-udeb liblvm2 lvm2 lvm2-udeb clvm)
 
 binary: binary-indep binary-arch
 

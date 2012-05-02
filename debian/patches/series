@@ -3,5 +3,6 @@ libs-cleanup.patch
 dirs.patch
 force-modprobe.patch
 #libdm-atomic.patch
-rules-subdir.patch
 implicit-pointer.patch
+avoid-dev-block.patch
+monitoring-default-off.patch
