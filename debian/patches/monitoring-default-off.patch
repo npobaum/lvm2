@@ -1,0 +1,17 @@
+Description: default to not monitoring so that regular LVM operation does not
+ require dmeventd running.
+Author: Kees Cook <kees@ubuntu.com>
+
+Index: trunk/lib/config/defaults.h
+===================================================================
+--- trunk.orig/lib/config/defaults.h
++++ trunk/lib/config/defaults.h
+@@ -57,7 +57,7 @@
+ #define DEFAULT_DMEVENTD_RAID_LIB "libdevmapper-event-lvm2raid.so"
+ #define DEFAULT_DMEVENTD_MIRROR_LIB "libdevmapper-event-lvm2mirror.so"
+ #define DEFAULT_DMEVENTD_SNAPSHOT_LIB "libdevmapper-event-lvm2snapshot.so"
+-#define DEFAULT_DMEVENTD_MONITOR 1
++#define DEFAULT_DMEVENTD_MONITOR -1
+ #define DEFAULT_BACKGROUND_POLLING 1
+ 
+ #define DEFAULT_UMASK 0077
