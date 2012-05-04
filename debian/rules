@@ -5,7 +5,11 @@
 
 DEB_HOST_ARCH       ?= $(shell dpkg-architecture -qDEB_HOST_ARCH)
 DEB_HOST_GNU_TYPE   ?= $(shell dpkg-architecture -qDEB_HOST_GNU_TYPE)
+DEB_HOST_MULTIARCH  ?= $(shell dpkg-architecture -qDEB_HOST_MULTIARCH)
 DEB_BUILD_GNU_TYPE  ?= $(shell dpkg-architecture -qDEB_BUILD_GNU_TYPE)
+
+DEB_CFLAGS_MAINT_STRIP = -O2
+include /usr/share/dpkg/buildflags.mk
 
 SOURCE := $(shell dpkg-parsechangelog | sed -ne 's,^Source: *\(.*\)$$,\1,p')
 VERSION_COMPLETE := $(shell dpkg-parsechangelog | sed -ne 's,^Version: *\(.*\)$$,\1,p')
@@ -26,9 +30,9 @@ MAKE_SELF = $(MAKE) -f debian/rules
 BUILD_DIR = debian/build
 STAMPS_DIR = debian/stamps
 
-CFLAGS_UDEB := $(CFLAGS)
 ifeq (,$(findstring noopt,$(DEB_BUILD_OPTIONS)))
-CFLAGS_UDEB = -g -Os
+CFLAGS_OPT_DEB = -O2
+CFLAGS_OPT_UDEB = -Os
 endif
 
 CONFIGURE_FLAGS = --build $(DEB_BUILD_GNU_TYPE)
@@ -67,9 +71,10 @@ $(STAMPS_DIR)/setup_deb: $(STAMPS_DIR)/source
 	rm -rf $(DIR)
 	cp -a '$(SOURCE_DIR)' '$(DIR)'
 	cd $(DIR); \
-	./configure CFLAGS="$(CFLAGS)" \
+	./configure CFLAGS="$(CPPFLAGS) $(CFLAGS)" LDFLAGS="$(LDFLAGS)" \
 		$(CONFIGURE_FLAGS) \
-		--with-optimisation="" \
+		--libdir=\$${exec_prefix}/lib/$(DEB_HOST_MULTIARCH) \
+		--with-optimisation="$(CFLAGS_OPT_DEB)" \
 		--with-clvmd=cman,corosync,openais \
 		--with-cluster=internal \
 		--with-device-uid=0 \
@@ -90,9 +95,9 @@ $(STAMPS_DIR)/setup_udeb: $(STAMPS_DIR)/source
 	rm -rf $(DIR)
 	cp -a '$(SOURCE_DIR)' '$(DIR)'
 	cd $(DIR); \
-	./configure CFLAGS="$(CFLAGS_UDEB)" \
+	./configure CFLAGS="$(CPPFLAGS) $(CFLAGS)" LDFLAGS="$(LDFLAGS)" \
 		$(CONFIGURE_FLAGS) \
-		--with-optimisation="" \
+		--with-optimisation="$(CFLAGS_OPT_UDEB)" \
 		--with-cluster=none \
 		--with-lvm1=none \
 		--with-pool=none \
@@ -100,7 +105,9 @@ $(STAMPS_DIR)/setup_udeb: $(STAMPS_DIR)/source
 		--disable-selinux
 	touch $@
 
-build: $(STAMPS_DIR)/build_deb $(STAMPS_DIR)/build_udeb
+build: build-arch build-indep
+build-arch: $(STAMPS_DIR)/build_deb $(STAMPS_DIR)/build_udeb
+build-indep:
 
 build_deb: $(STAMPS_DIR)/build_deb
 build_udeb: $(STAMPS_DIR)/build_udeb
