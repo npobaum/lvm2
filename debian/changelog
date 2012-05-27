@@ -1,3 +1,14 @@
+lvm2 (2.02.95-4) unstable; urgency=low
+
+  * Force building with -j1.
+  * Add dmeventd and libdevmapper-event packages. (closes: #514706)
+    - Disable monitoring by default.
+    - Force dmeventd to look into correct directory for shared libs.
+  * Also link shared libs with correct flags.
+  * Enable support for thin target. (closes: #673000)
+
+ -- Bastian Blank <waldi@debian.org>  Sun, 27 May 2012 19:05:21 +0200
+
 lvm2 (2.02.95-3) unstable; urgency=low
 
   * Fix build-dependency.
