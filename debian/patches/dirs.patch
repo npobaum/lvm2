@@ -1,6 +1,6 @@
 --- a/doc/example.conf.in
 +++ b/doc/example.conf.in
-@@ -84,7 +84,7 @@
+@@ -86,7 +86,7 @@
      # It is safe to delete the contents: the tools regenerate it.
      # (The old setting 'cache' is still respected if neither of
      # these new ones is present.)
@@ -9,7 +9,7 @@
      cache_file_prefix = ""
  
      # You can turn off writing this cache file by setting this to 0.
-@@ -393,7 +393,7 @@
+@@ -405,7 +405,7 @@
      # Full pathnames can be given.
  
      # Search this directory first for shared libraries.
@@ -20,7 +20,7 @@
      #   locking_library = "liblvm2clusterlock.so"
 --- a/lib/commands/toolcontext.c
 +++ b/lib/commands/toolcontext.c
-@@ -782,10 +782,8 @@
+@@ -827,10 +827,8 @@
  
  	if (cache_dir || cache_file_prefix) {
  		if (dm_snprintf(cache_file, sizeof(cache_file),
@@ -33,7 +33,7 @@
  		    cache_file_prefix ? : DEFAULT_CACHE_FILE_PREFIX) < 0) {
  			log_error("Persistent cache filename too long.");
  			f3->destroy(f3);
-@@ -793,8 +791,8 @@
+@@ -838,8 +836,8 @@
  		}
  	} else if (!(dev_cache = find_config_tree_str(cmd, "devices/cache", NULL)) &&
  		   (dm_snprintf(cache_file, sizeof(cache_file),
@@ -44,3 +44,34 @@
  				DEFAULT_CACHE_FILE_PREFIX) < 0)) {
  		log_error("Persistent cache filename too long.");
  		f3->destroy(f3);
+--- a/daemons/dmeventd/dmeventd.c
++++ b/daemons/dmeventd/dmeventd.c
+@@ -912,8 +912,17 @@
+ {
+ 	void *dl;
+ 	struct dso_data *ret = NULL;
++	char dso_name[PATH_MAX];
+ 
+-	if (!(dl = dlopen(data->dso_name, RTLD_NOW))) {
++	if (strchr(data->dso_name, '/') == NULL) {
++		strcpy(dso_name, PLUGIN_PATH);
++		strncat(dso_name, data->dso_name, sizeof(dso_name));
++	} else {
++		strncpy(dso_name, data->dso_name, sizeof(dso_name));
++	}
++	dso_name[sizeof(dso_name) - 1] = 0;
++
++	if (!(dl = dlopen(dso_name, RTLD_NOW))) {
+ 		const char *dlerr = dlerror();
+ 		syslog(LOG_ERR, "dmeventd %s dlopen failed: %s", data->dso_name,
+ 		       dlerr);
+--- a/daemons/dmeventd/Makefile.in
++++ b/daemons/dmeventd/Makefile.in
+@@ -58,6 +58,7 @@
+ 
+ LIBS += -ldevmapper
+ LVMLIBS += -ldevmapper-event $(PTHREAD_LIBS)
++CFLAGS += -DPLUGIN_PATH=\"$(libdir)/device-mapper/\"
+ 
+ dmeventd: $(LIB_SHARED) dmeventd.o
+ 	$(CC) $(CFLAGS) $(LDFLAGS) $(ELDFLAGS) -L. -o $@ dmeventd.o \

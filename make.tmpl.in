@@ -17,7 +17,7 @@ SHELL = /bin/sh
 
 @SET_MAKE@
 
-CC ?= @CC@
+CC = @CC@
 RANLIB = @RANLIB@
 INSTALL = @INSTALL@
 INSTALL_DATA = @INSTALL@ -m 644
@@ -189,23 +189,67 @@ POTFILES = $(SOURCES:%.c=%.pot)
 .PHONY: install install_cluster install_device-mapper install_lvm2
 .PHONY: install_lib_shared install_dm_plugin install_lvm2_plugin
 .PHONY: install_ocf
+.PHONY: $(SUBDIRS) $(SUBDIRS.install) $(SUBDIRS.clean) $(SUBDIRS.distclean)
+.PHONY: $(SUBDIRS.pofile) $(SUBDIRS.install_cluster) $(SUBDIRS.cflow)
+.PHONY: $(SUBDIRS.device-mapper) $(SUBDIRS.install-device-mapper)
+
+SUBDIRS.device-mapper := $(SUBDIRS:=.device-mapper)
+SUBDIRS.install := $(SUBDIRS:=.install)
+SUBDIRS.install_cluster := $(SUBDIRS:=.install_cluster)
+SUBDIRS.install_device-mapper := $(SUBDIRS:=.install_device-mapper)
+SUBDIRS.install_lvm2 := $(SUBDIRS:=.install_lvm2)
+SUBDIRS.install_ocf := $(SUBDIRS:=.install_ocf)
+SUBDIRS.pofile := $(SUBDIRS:=.pofile)
+SUBDIRS.cflow := $(SUBDIRS:=.cflow)
+SUBDIRS.clean := $(SUBDIRS:=.clean)
+SUBDIRS.distclean := $(SUBDIRS:=.distclean)
 
 TARGETS += $(LIB_SHARED) $(LIB_STATIC)
 
-all: subdirs-device-mapper subdirs-all $(TARGETS)
+all: $(SUBDIRS) $(TARGETS)
 
-install: subdirs-install
-install_cluster: subdirs-install_cluster
-install_device-mapper: subdirs-install_device-mapper
-install_lvm2: subdirs-install_lvm2
+install: all $(SUBDIRS.install)
+install_cluster: all $(SUBDIRS.install_cluster)
+install_device-mapper: $(SUBDIRS.install_device-mapper)
+install_lvm2: $(SUBDIRS.install_lvm2)
+install_ocf: $(SUBDIRS.install_ocf)
+cflow: $(SUBDIRS.cflow)
 
-subdirs-%:
-	+@set -e; for subdir in $(SUBDIRS); do \
-		$(MAKE) -C $$subdir $(patsubst subdirs-%,%,$@); \
-	done
+$(SUBDIRS): $(SUBDIRS.device-mapper)
+	$(MAKE) -C $@
+
+$(SUBDIRS.device-mapper):
+	$(MAKE) -C $(@:.device-mapper=) device-mapper
+
+$(SUBDIRS.install): $(SUBDIRS)
+	$(MAKE) -C $(@:.install=) install
+
+$(SUBDIRS.install_cluster): $(SUBDIRS)
+	$(MAKE) -C $(@:.install_cluster=) install_cluster
+
+$(SUBDIRS.install_device-mapper): device-mapper
+	$(MAKE) -C $(@:.install_device-mapper=) install_device-mapper
+
+$(SUBDIRS.install_lvm2): $(SUBDIRS)
+	$(MAKE) -C $(@:.install_lvm2=) install_lvm2
+
+$(SUBDIRS.install_ocf):
+	$(MAKE) -C $(@:.install_ocf=) install_ocf
+
+$(SUBDIRS.clean):
+	-$(MAKE) -C $(@:.clean=) clean
+
+$(SUBDIRS.distclean):
+	-$(MAKE) -C $(@:.distclean=) distclean
+
+$(SUBDIRS.cflow):
+	$(MAKE) -C $(@:.cflow=) cflow
 
 ifeq ("@INTL@", "yes")
-pofile: subdirs-pofile $(POTFILES)
+pofile: $(SUBDIRS.pofile) $(POTFILES)
+
+$(SUBDIRS.pofile):
+	$(MAKE) -C $(@:.pofile=) pofile
 endif
 
 ifneq ("$(CFLOW_LIST_TARGET)", "")
@@ -292,17 +336,14 @@ install_lib_shared: $(LIB_SHARED)
 	$(INSTALL_DIR) $(usrlibdir)
 	$(LN_S) -f $(USRLIB_RELPATH)$(<F).$(LIB_VERSION) $(usrlibdir)/$(<F)
 
-# FIXME: plugins are installed to subdirs 
-#        and for compatibility links in libdir are created
-#        when the code is fixed links could be removed.
+install_dm_lib: $(LIB_SHARED)
+	$(INSTALL_PROGRAM) -D $< $(libdir)/device-mapper/$(<F).$(LIB_VERSION)
+
 install_dm_plugin: $(LIB_SHARED)
 	$(INSTALL_PROGRAM) -D $< $(libdir)/device-mapper/$(<F)
-	$(LN_S) -f device-mapper/$(<F) $(libdir)/$(<F)
 
 install_lvm2_plugin: $(LIB_SHARED)
 	$(INSTALL_PROGRAM) -D $< $(libdir)/lvm2/$(<F)
-	$(LN_S) -f lvm2/$(<F) $(libdir)/$(<F)
-	$(LN_S) -f $(<F) $(libdir)/$(<F).$(LIB_VERSION)
 endif
 
 $(LIB_STATIC): $(OBJECTS)
@@ -327,9 +368,9 @@ cleandir:
 	  $(SOURCES2:%.c=%.o) $(SOURCES2:%.c=%.d) $(SOURCES2:%.c=%.gcno) $(SOURCES2:%.c=%.gcda) \
 	  .exported_symbols_generated core
 
-clean: subdirs-clean cleandir
+clean: $(SUBDIRS.clean) cleandir
 
-distclean: cleandir subdirs-distclean
+distclean: cleandir $(SUBDIRS.distclean)
 	test -z "$(DISTCLEAN_DIRS)" || $(RM) -r $(DISTCLEAN_DIRS)
 	$(RM) $(DISTCLEAN_TARGETS) Makefile 
 

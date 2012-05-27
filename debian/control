@@ -50,7 +50,7 @@ Description: Cluster LVM Daemon for lvm2
 Package: libdevmapper-dev
 Section: libdevel
 Architecture: any
-Depends: ${misc:Depends}, libdevmapper1.02.1 (= ${binary:Version}), libselinux1-dev
+Depends: ${misc:Depends}, libdevmapper1.02.1 (= ${binary:Version}), libdevmapper-event1.02.1 (= ${binary:Version}), libselinux1-dev
 Description: Linux Kernel Device Mapper header files
  The Linux Kernel Device Mapper is the LVM (Linux Logical Volume Management)
  Team's implementation of a minimalistic kernel-space driver that handles
@@ -123,6 +123,35 @@ Description: Linux Kernel Device Mapper userspace library
  raid, and other drivers that create "virtual" block devices.
  .
  This package contains a utility for modifying device mappings.
+
+Package: libdevmapper-event1.02.1
+Section: libs
+Architecture: any
+Pre-Depends: ${misc:Pre-Depends}
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Multi-Arch: same
+Description: Linux Kernel Device Mapper event support library
+ The Linux Kernel Device Mapper is the LVM (Linux Logical Volume Management)
+ Team's implementation of a minimalistic kernel-space driver that handles
+ volume management, while keeping knowledge of the underlying device layout
+ in user-space.  This makes it useful for not only LVM, but EVMS, software
+ raid, and other drivers that create "virtual" block devices.
+ .
+ This package contains the userspace library to help with event monitoring
+ for devmapper devices, in conjunction with the dmevent daemon.
+
+Package: dmeventd
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+# No Multi-Arch: foreign, plugins depend on the current architecture
+Description: Linux Kernel Device Mapper event daemon
+ The Linux Kernel Device Mapper is the LVM (Linux Logical Volume Management)
+ Team's implementation of a minimalistic kernel-space driver that handles
+ volume management, while keeping knowledge of the underlying device layout
+ in user-space.  This makes it useful for not only LVM, but EVMS, software
+ raid, and other drivers that create "virtual" block devices.
+ .
+ This package contains a daemon to monitor events of devmapper devices.
 
 Package: liblvm2app2.2
 Section: libs

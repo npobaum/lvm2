@@ -912,8 +912,17 @@ static struct dso_data *_load_dso(struct message_data *data)
 {
 	void *dl;
 	struct dso_data *ret = NULL;
+	char dso_name[PATH_MAX];
 
-	if (!(dl = dlopen(data->dso_name, RTLD_NOW))) {
+	if (strchr(data->dso_name, '/') == NULL) {
+		strcpy(dso_name, PLUGIN_PATH);
+		strncat(dso_name, data->dso_name, sizeof(dso_name));
+	} else {
+		strncpy(dso_name, data->dso_name, sizeof(dso_name));
+	}
+	dso_name[sizeof(dso_name) - 1] = 0;
+
+	if (!(dl = dlopen(dso_name, RTLD_NOW))) {
 		const char *dlerr = dlerror();
 		syslog(LOG_ERR, "dmeventd %s dlopen failed: %s", data->dso_name,
 		       dlerr);
@@ -1827,14 +1836,14 @@ static void restart(void)
 
 	/* Get the list of registrations from the running daemon. */
 
-	if (!init_fifos(&fifos)) {
+	if (!dm_event_daemon_init_fifos(&fifos)) {
 		fprintf(stderr, "WARNING: Could not initiate communication with existing dmeventd.\n");
 		return;
 	}
 
 	if (!dm_event_get_version(&fifos, &version)) {
 		fprintf(stderr, "WARNING: Could not communicate with existing dmeventd.\n");
-		fini_fifos(&fifos);
+		dm_event_daemon_fini_fifos(&fifos);
 		return;
 	}
 
@@ -1845,7 +1854,7 @@ static void restart(void)
 		exit(EXIT_FAILURE);
 	}
 
-	if (daemon_talk(&fifos, &msg, DM_EVENT_CMD_GET_STATUS, "-", "-", 0, 0)) {
+	if (dm_event_daemon_talk(&fifos, &msg, DM_EVENT_CMD_GET_STATUS, "-", "-", 0, 0)) {
 		exit(EXIT_FAILURE);
 	}
 
@@ -1874,12 +1883,12 @@ static void restart(void)
 	}
 	_initial_registrations[count] = 0;
 
-	if (daemon_talk(&fifos, &msg, DM_EVENT_CMD_DIE, "-", "-", 0, 0)) {
+	if (dm_event_daemon_talk(&fifos, &msg, DM_EVENT_CMD_DIE, "-", "-", 0, 0)) {
 		fprintf(stderr, "Old dmeventd refused to die.\n");
 		exit(EXIT_FAILURE);
 	}
 
-	fini_fifos(&fifos);
+	dm_event_daemon_fini_fifos(&fifos);
 }
 
 static void usage(char *prog, FILE *file)
