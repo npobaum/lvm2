@@ -25,9 +25,6 @@ int main(int argc, char **argv)
 
 #  include <readline/readline.h>
 #  include <readline/history.h>
-#  ifndef HAVE_RL_COMPLETION_MATCHES
-#    define rl_completion_matches(a, b) completion_matches((char *)a, b)
-#  endif
 
 static struct cmdline_context *_cmdline;
 
