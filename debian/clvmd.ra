@@ -50,6 +50,10 @@ bringup_daemon()
 	return $OCF_ERR_INSTALLED
     fi
 
+    if [ ! -d "/var/run/lvm" ]; then
+	mkdir /var/run/lvm
+    fi
+
     "$DAEMON" "$OCF_RESKEY_daemon_options"; rc=$?
     if [ $rc != 0 ]; then
 	ocf_log err "Could not start $DAEMON"

@@ -1,3 +1,14 @@
+lvm2 (2.02.88-2ubuntu2) quantal-proposed; urgency=low
+
+  [ Ante Karamatic ]
+  * debian/{clvmd.ra,clvm.init}:
+    - create /var/run/lvm if it doesn't exist (LP: #959218)
+
+  [ Andres Rodriguez ]
+  * debian/clvm.init: exit 3 if not running on status action. (LP: #988881)
+
+ -- Andres Rodriguez <andreserl@ubuntu.com>  Tue, 05 Jun 2012 16:30:18 -0400
+
 lvm2 (2.02.88-2ubuntu1) quantal; urgency=low
 
   * Merge from Debian unstable (LP: #726677), remaining changes:
