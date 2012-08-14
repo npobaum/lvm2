@@ -2,6 +2,10 @@
 
 set -e
 
+## Was re-introduced in Quantal, can be removed in R.
+dpkg-maintscript-helper rm_conffile /etc/init.d/lvm2 2.02.95-4ubuntu1~ -- "$@"
+#
+
 case "$1" in
     upgrade)
         if dpkg --compare-versions "$2" lt 2.02.88-1; then
