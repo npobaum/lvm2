@@ -46,6 +46,9 @@ DAEMON_OPTS="-T$CLVMDTIMEOUT"
 
 do_start()
 {
+	if [ ! -d "/run/lvm" ]; then
+        	mkdir /run/lvm
+	fi
 	start-stop-daemon --start --quiet --exec $DAEMON -- $DAEMON_OPTS || status="$?"
 	# flush cache
 	vgscan > /dev/null 2>&1 
@@ -131,6 +134,7 @@ case "$1" in
 			log_action_msg "$DESC is running" 
 		else
 			log_action_msg "$DESC is not running"
+			exit 3
 		fi
 		exit 0
 	;;
