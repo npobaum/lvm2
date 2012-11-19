@@ -6,3 +6,7 @@ force-modprobe.patch
 implicit-pointer.patch
 dm-event-api.patch
 monitoring-default-off.patch
+upstream-fix-discard-1.patch
+upstream-fix-discard-2.patch
+upstream-fix-discard-3.patch
+missing-dmeventd.patch
