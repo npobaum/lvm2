@@ -1,3 +1,5 @@
+../../tree/lvm2/lib /   
+../../tree/lvm2/usr/share/initramfs-tools /usr/share
 etc/lvm/lvm.conf
 sbin/lv*
 sbin/pv*
