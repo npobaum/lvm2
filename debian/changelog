@@ -1,3 +1,10 @@
+lvm2 (2.02.95-6) unstable; urgency=low
+
+  * Drop cluster (clvm) support. It never properly worked and is more dead
+    than alive.
+
+ -- Bastian Blank <waldi@debian.org>  Wed, 02 Jan 2013 11:11:41 +0100
+
 lvm2 (2.02.95-5) unstable; urgency=low
 
   * Don't discard pv areas on pvmove commands. (closes: #691271)
