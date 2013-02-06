@@ -132,6 +132,7 @@ case "$1" in
 			log_action_msg "$DESC is running" 
 		else
 			log_action_msg "$DESC is not running"
+			exit 3
 		fi
 		exit 0
 	;;
