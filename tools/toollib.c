@@ -1388,6 +1388,11 @@ int get_activation_monitoring_mode(struct cmd_context *cmd,
 		*monitoring_mode = DMEVENTD_MONITOR_IGNORE;
 
 	if (vg && vg_is_clustered(vg) &&
+	    find_config_tree_bool(cmd, "activation/monitoring",
+				  DEFAULT_DMEVENTD_MONITOR))
+		*monitoring_mode = 1;
+
+	if (vg && vg_is_clustered(vg) &&
 	    *monitoring_mode == DMEVENTD_MONITOR_IGNORE) {
 		log_error("%s is incompatible with clustered Volume Group "
 			  "\"%s\": Skipping.",
