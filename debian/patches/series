@@ -4,9 +4,11 @@ dirs.patch
 force-modprobe.patch
 #libdm-atomic.patch
 implicit-pointer.patch
+avoid-dev-block.patch
 dm-event-api.patch
 monitoring-default-off.patch
 upstream-fix-discard-1.patch
 upstream-fix-discard-2.patch
 upstream-fix-discard-3.patch
 missing-dmeventd.patch
+1075994_move_thin_check_executable_to_proper_section.patch

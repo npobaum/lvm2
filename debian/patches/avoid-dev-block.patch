@@ -1,0 +1,31 @@
+Description: Prefer any other device name over names in /dev/block/.
+Author: Colin Watson <cjwatson@ubuntu.com>
+Bug-Ubuntu: https://bugs.launchpad.net/bugs/341928
+Bug-Debian: http://bugs.debian.org/cgi-bin/bugreport.cgi?bug=569290
+
+Index: quantal/lib/device/dev-cache.c
+===================================================================
+--- quantal.orig/lib/device/dev-cache.c	2012-04-30 15:14:19.698751558 +0100
++++ quantal/lib/device/dev-cache.c	2012-04-30 15:21:40.598758706 +0100
+@@ -249,6 +249,21 @@
+ 	if ((r = _apply_builtin_path_preference_rules(path0, path1)) >= 0)
+ 		return r;
+ 
++	/* Put /dev/block/ names last regardless of path shortness.
++	 * FIXME It would be better if we could do this in the configuration
++	 * file, but the only way to do so with preferred_names is to try to
++	 * enumerate all the possible names we might want to prefer over
++	 * /dev/block/. */
++	m0 = strncmp(path0, "/dev/block/", 11);
++	m1 = strncmp(path1, "/dev/block/", 11);
++
++	if (m0 != m1) {
++		if (m0 == 0)
++			return 1;
++		if (m1 == 0)
++			return 0;
++	}
++
+ 	/* Return the path with fewer slashes */
+ 	for (p = path0; p++; p = (const char *) strchr(p, '/'))
+ 		slash0++;
