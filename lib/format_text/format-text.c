@@ -27,12 +27,10 @@
 #include "crc.h"
 #include "xlate.h"
 #include "label.h"
-#include "memlock.h"
 #include "lvmcache.h"
 #include "lvmetad.h"
 
 #include <unistd.h>
-#include <sys/file.h>
 #include <sys/param.h>
 #include <limits.h>
 #include <dirent.h>
@@ -1266,11 +1264,10 @@ static int _write_single_mda(struct metadata_area *mda, void *baton)
 	struct _write_single_mda_baton *p = baton;
 	struct mda_context *mdac;
 
-	char buf[MDA_HEADER_SIZE] __attribute__((aligned(8)));
+	char buf[MDA_HEADER_SIZE] __attribute__((aligned(8))) = { 0 };
 	struct mda_header *mdah = (struct mda_header *) buf;
 
 	mdac = mda->metadata_locn;
-	memset(&buf, 0, sizeof(buf));
 	mdah->size = mdac->area.size;
 	rlocn_set_ignored(mdah->raw_locns, mda_is_ignored(mda));
 
@@ -1455,6 +1452,9 @@ static int _text_pv_read(const struct format_type *fmt, const char *pv_name,
 		info = label->info;
 	}
 
+	if (!info)
+		return_0;
+
 	if (!lvmcache_populate_pv_fields(info, pv, scan_label_only))
 		return 0;
 
@@ -1584,7 +1584,9 @@ static struct metadata_area_ops _metadata_text_file_backup_ops = {
 	.vg_commit = _vg_commit_file_backup
 };
 
-static char *_mda_export_text_raw(struct metadata_area *mda);
+static int _mda_export_text_raw(struct metadata_area *mda,
+				struct dm_config_tree *cft,
+				struct dm_config_node *parent);
 static int _mda_import_text_raw(struct lvmcache_info *info, const struct dm_config_node *cn);
 
 static struct metadata_area_ops _metadata_text_raw_ops = {
@@ -1608,19 +1610,18 @@ static struct metadata_area_ops _metadata_text_raw_ops = {
 	.mda_import_text = _mda_import_text_raw
 };
 
-static char *_mda_export_text_raw(struct metadata_area *mda)
+static int _mda_export_text_raw(struct metadata_area *mda,
+				struct dm_config_tree *cft,
+				struct dm_config_node *parent)
 {
 	struct mda_context *mdc = (struct mda_context *) mda->metadata_locn;
-	char *result;
 
-	dm_asprintf(&result,
-		    "ignore = %d "
-		    "start = %" PRIu64" "
-		    "size = %" PRIu64 " "
-		    "free_sectors = %" PRIu64,
-		    mda_is_ignored(mda), mdc->area.start, mdc->area.size, mdc->free_sectors);
-
-	return result;
+	return config_make_nodes(cft, parent, NULL,
+				 "ignore = %" PRId64, (int64_t) mda_is_ignored(mda),
+				 "start = %" PRId64, (int64_t) mdc->area.start,
+				 "size = %" PRId64, (int64_t) mdc->area.size,
+				 "free_sectors = %" PRId64, (int64_t) mdc->free_sectors,
+				 NULL) ? 1 : 0;
 }
 
 static int _mda_import_text_raw(struct lvmcache_info *info, const struct dm_config_node *cn)
@@ -1710,7 +1711,7 @@ static int _text_pv_setup(const struct format_type *fmt,
 			   pv->pe_start + size_reduction;
 
 	/* Recalculate number of extents that will fit */
-	if (!pv->pe_count) {
+	if (!pv->pe_count && vg->extent_size) {
 		pe_count = (pv->size - pv->pe_start - size_reduction) /
 			   vg->extent_size;
 		if (pe_count > UINT32_MAX) {

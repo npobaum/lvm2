@@ -197,14 +197,13 @@ static int add_internal_client(int fd, fd_callback_t callback)
 
 	DEBUGLOG("Add_internal_client, fd = %d\n", fd);
 
-	client = malloc(sizeof(struct local_client));
+	client = calloc(1, sizeof(struct local_client));
 	if (!client)
 	{
 		DEBUGLOG("malloc failed\n");
 		return -1;
 	}
 
-	memset(client, 0, sizeof(struct local_client));
 	client->fd = fd;
 	client->type = CLUSTER_INTERNAL;
 	client->callback = callback;
@@ -506,7 +505,7 @@ static int _lock_resource(char *resource, int mode, int flags, int *lockid)
 		saLckResourceClose(res_handle);
 		return ais_to_errno(err);
 	}
-			
+
 	/* Wait for it to complete */
 
 	DEBUGLOG("lock_resource returning %d, lock_id=%" PRIx64 "\n",

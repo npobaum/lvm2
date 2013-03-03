@@ -160,6 +160,10 @@ char *lv_origin_dup(struct dm_pool *mem, const struct logical_volume *lv)
 {
 	if (lv_is_cow(lv))
 		return lv_name_dup(mem, origin_from_cow(lv));
+
+	if (lv_is_thin_volume(lv) && first_seg(lv)->origin)
+		return lv_name_dup(mem, first_seg(lv)->origin);
+
 	return NULL;
 }
 
@@ -377,7 +381,7 @@ char *lv_attr_dup(struct dm_pool *mem, const struct logical_volume *lv)
 	struct lv_segment *seg;
 	char *repstr;
 
-	if (!(repstr = dm_pool_zalloc(mem, 9))) {
+	if (!(repstr = dm_pool_zalloc(mem, 10))) {
 		log_error("dm_pool_alloc failed");
 		return 0;
 	}
@@ -448,7 +452,6 @@ char *lv_attr_dup(struct dm_pool *mem, const struct logical_volume *lv)
 		if (info.live_table && lv_is_cow(lv)) {
 			if (!lv_snapshot_percent(lv, &snap_percent) ||
 			    snap_percent == PERCENT_INVALID) {
-				repstr[0] = toupper(repstr[0]);
 				if (info.suspended)
 					repstr[4] = 'S'; /* Susp Inv snapshot */
 				else
@@ -477,10 +480,10 @@ char *lv_attr_dup(struct dm_pool *mem, const struct logical_volume *lv)
 
 	if (lv_is_thin_type(lv))
 		repstr[6] = 't';
-	else if (lv_is_mirror_type(lv))
-		repstr[6] = 'm';
 	else if (lv_is_raid_type(lv))
 		repstr[6] = 'r';
+	else if (lv_is_mirror_type(lv))
+		repstr[6] = 'm';
 	else if (lv_is_cow(lv) || lv_is_origin(lv))
 		repstr[6] = 's';
 	else if (lv_has_unknown_segments(lv))
@@ -496,6 +499,11 @@ char *lv_attr_dup(struct dm_pool *mem, const struct logical_volume *lv)
 		repstr[7] = 'z';
 	else
 		repstr[7] = '-';
+
+	if (lv->status & PARTIAL_LV)
+		repstr[8] = 'p';
+	else
+		repstr[8] = '-';
 
 out:
 	return repstr;

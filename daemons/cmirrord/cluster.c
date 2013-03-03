@@ -89,7 +89,7 @@ struct checkpoint_data {
 	char *clean_bits;
 	char *recovering_region;
 	struct checkpoint_data *next;
-};	
+};
 
 #define INVALID 0
 #define VALID   1
@@ -910,10 +910,11 @@ static int resend_requests(struct clog_cpg *entry)
 				   rq->u_rq.seq);
 
 			rq->u_rq.data_size = 0;
-			kernel_send(&rq->u_rq);
-				
+			if (kernel_send(&rq->u_rq))
+				LOG_ERROR("Failed to respond to kernel [%s]",
+					  RQ_TYPE(rq->u_rq.request_type));
 			break;
-			
+
 		default:
 			/*
 			 * If an action or a response is required, then
@@ -1231,11 +1232,11 @@ out:
 				   _RQ_TYPE(rq->u_rq.request_type),
 				   rq->originator, (response) ? "YES" : "NO");
 		else
-			LOG_SPRINT(match, "SEQ#=%u, UUID=%s, TYPE=%s, ORIG=%u, RESP=%s, RSPR=%u",
+			LOG_SPRINT(match, "SEQ#=%u, UUID=%s, TYPE=%s, ORIG=%u, RESP=%s, RSPR=%u, error=%d",
 				   rq->u_rq.seq, SHORT_UUID(rq->u_rq.uuid),
 				   _RQ_TYPE(rq->u_rq.request_type),
 				   rq->originator, (response) ? "YES" : "NO",
-				   nodeid);
+				   nodeid, rq->u_rq.error);
 	}
 }
 
@@ -1248,7 +1249,7 @@ static void cpg_join_callback(struct clog_cpg *match,
 	uint32_t my_pid = (uint32_t)getpid();
 	uint32_t lowest = match->lowest_id;
 	struct clog_request *rq;
-	char dbuf[32];
+	char dbuf[32] = { 0 };
 
 	/* Assign my_cluster_id */
 	if ((my_cluster_id == 0xDEAD) && (joined->pid == my_pid))
@@ -1264,7 +1265,6 @@ static void cpg_join_callback(struct clog_cpg *match,
 	if (joined->nodeid == my_cluster_id)
 		goto out;
 
-	memset(dbuf, 0, sizeof(dbuf));
 	for (i = 0; i < member_list_entries - 1; i++)
 		sprintf(dbuf+strlen(dbuf), "%u-", member_list[i].nodeid);
 	sprintf(dbuf+strlen(dbuf), "(%u)", joined->nodeid);
@@ -1346,7 +1346,9 @@ static void cpg_leave_callback(struct clog_cpg *match,
 			dm_list_del(&rq->u.list);
 
 			if (rq->u_rq.request_type == DM_ULOG_POSTSUSPEND)
-				kernel_send(&rq->u_rq);
+				if (kernel_send(&rq->u_rq))
+					LOG_ERROR("Failed to respond to kernel [%s]",
+						  RQ_TYPE(rq->u_rq.request_type));
 			free(rq);
 		}
 
@@ -1355,7 +1357,7 @@ static void cpg_leave_callback(struct clog_cpg *match,
 		match->free_me = 1;
 		match->lowest_id = 0xDEAD;
 		match->state = INVALID;
-	}			
+	}
 
 	/* Remove any pending checkpoints for the leaving node. */
 	for (p_cp = NULL, c_cp = match->checkpoint_list;
@@ -1411,7 +1413,7 @@ static void cpg_leave_callback(struct clog_cpg *match,
 			 left->nodeid);
 		return;
 	}
-		
+
 	match->lowest_id = member_list[0].nodeid;
 	for (i = 0; i < member_list_entries; i++)
 		if (match->lowest_id > member_list[i].nodeid)
@@ -1530,7 +1532,7 @@ unlink_retry:
                 usleep(1000);
                 goto unlink_retry;
         }
-	
+
 	if (rv != SA_AIS_OK) {
                 LOG_ERROR("[%s] Failed to unlink checkpoint: %s",
                           SHORT_UUID(entry->name.value), str_ais_error(rv));
@@ -1633,7 +1635,7 @@ static int _destroy_cluster_cpg(struct clog_cpg *del)
 {
 	int r;
 	int state;
-	
+
 	LOG_COND(log_resend_requests, "[%s] I am leaving.2.....",
 		 SHORT_UUID(del->name.value));
 

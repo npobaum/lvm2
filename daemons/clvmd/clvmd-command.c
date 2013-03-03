@@ -51,9 +51,6 @@
 */
 
 #include "clvmd-common.h"
-
-#include <pthread.h>
-
 #include "clvmd-comms.h"
 #include "clvm.h"
 #include "clvmd.h"
@@ -240,7 +237,8 @@ static int lock_vg(struct local_client *client)
 	if (status)
 	    status = errno;
 	else
-	    dm_hash_insert(lock_hash, lockname, (void *)(long)lkid);
+	    if (!dm_hash_insert(lock_hash, lockname, (void *)(long)lkid))
+                    return ENOMEM;
     }
 
     return status;

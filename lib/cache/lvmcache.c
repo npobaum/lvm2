@@ -109,8 +109,6 @@ int lvmcache_init(void)
 		_vg_global_lock_held = 0;
 	}
 
-	lvmetad_init();
-
 	return 1;
 }
 
@@ -125,8 +123,7 @@ void lvmcache_seed_infos_from_lvmetad(struct cmd_context *cmd)
 	}
 
 	_has_scanned = 1;
-};
-
+}
 
 /* Volume Group metadata cache functions */
 static void _free_cached_vgmetadata(struct lvmcache_vginfo *vginfo)
@@ -1006,12 +1003,14 @@ static int _free_vginfo(struct lvmcache_vginfo *vginfo)
 				  vginfo->vgname);
 			r = 0;
 		}
-	} else do
-		if (vginfo2->next == vginfo) {
-			vginfo2->next = vginfo->next;
-			break;
+	} else
+		while (vginfo2) {
+			if (vginfo2->next == vginfo) {
+				vginfo2->next = vginfo->next;
+				break;
+			}
+			vginfo2 = vginfo2->next;
 		}
- 	while ((vginfo2 = vginfo2->next));
 
 	dm_free(vginfo->vgname);
 	dm_free(vginfo->creation_host);

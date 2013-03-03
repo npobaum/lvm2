@@ -551,7 +551,7 @@ int activate_lv_excl(struct cmd_context *cmd, struct logical_volume *lv)
 	if (!vg_is_clustered(lv->vg))
 		return activate_lv_excl_local(cmd, lv);
 
-	if (lv_is_active_exclusive(lv))
+	if (lv_is_active_exclusive_locally(lv))
 		return 1;
 
 	if (!activate_lv_excl_local(cmd, lv))
@@ -574,7 +574,7 @@ int activate_lvs(struct cmd_context *cmd, struct dm_list *lvs, unsigned exclusiv
 	struct lv_list *lvl;
 
 	dm_list_iterate_items(lvl, lvs) {
-		if (!exclusive) {
+		if (!exclusive && !lv_is_active_exclusive(lvl->lv)) {
 			if (!activate_lv(cmd, lvl->lv)) {
 				log_error("Failed to activate %s", lvl->lv->name);
 				return 0;

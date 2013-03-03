@@ -1,6 +1,5 @@
-#!/bin/bash
-
-# Copyright (C) 2011 Red Hat, Inc. All rights reserved.
+#!/bin/sh
+# Copyright (C) 2011-2012 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
 # modify, copy, or redistribute it subject to the terms and conditions
@@ -12,106 +11,28 @@
 
 . lib/test
 
-# is_in_sync <VG/LV>
-function is_in_sync()
-{
-	local dm_name
-	local a
-	local b
-	local idx
+get_image_pvs() {
+	local d
+	local images
 
-	dm_name=`echo $1 | sed s:-:--: | sed s:/:-:`
-
-	if ! a=(`dmsetup status $dm_name`); then
-		echo "Unable to get sync status of $1"
-		exit 1
-	elif [ ${a[2]} = "snapshot-origin" ]; then
-		if ! a=(`dmsetup status ${dm_name}-real`); then
-			echo "Unable to get sync status of $1"
-			exit 1
-		fi
-	fi
-
-	# 6th argument is the sync ratio for RAID and mirror
-	if [ ${a[2]} = "raid" ]; then
-		# Last argument is the sync ratio for RAID
-		idx=$((${#a[@]} - 1))
-	elif [ ${a[2]} = "mirror" ]; then
-		# 4th Arg tells us how far to the sync ratio
-		idx=$((${a[3]} + 4))
-	else
-		echo "Unable to get sync ratio for target type '${a[2]}'"
-		exit 1
-	fi
-	b=(`echo ${a[$idx]} | sed s:/:' ':`)
-
-	if [ ${b[0]} != ${b[1]} ]; then
-		echo "$dm_name (${a[3]}) is not in-sync"
-		return 1
-	fi
-
-	if [[ ${a[$(($idx - 1))]} =~ a ]]; then
-		echo "$dm_name in-sync, but 'a' characters in health status"
-		exit 1
-	fi
-
-	if [ ${a[2]} = "raid" ]; then
-		echo "$dm_name (${a[3]}) is in-sync"
-	else
-		echo "$dm_name (${a[2]}) is in-sync"
-	fi
-
-	return 0
-}
-
-# wait_for_sync <VG/LV>
-function wait_for_sync()
-{
-	local i=0
-
-	while ! is_in_sync $1; do
-		sleep 2
-		i=$(($i + 1))
-		if [ $i -gt 500 ]; then
-			echo "Sync is taking too long - assume stuck"
-			exit 1
-		fi
-	done
-}
-
-function is_raid_available()
-{
-	local a
-
-	modprobe dm-raid
-	a=(`dmsetup targets | grep raid`)
-	if [ -z $a ]; then
-		echo "RAID target not available"
-		return 1
-	fi
-	if [ ${a[1]} != "v1.1.0" ]; then
-		echo "Bad RAID version"
-		return 1
-	fi
-
-	return 0
+	images=`dmsetup ls | grep ${1}-${2}_.image_.* | cut -f1 | sed -e s:-:/:`
+	lvs --noheadings -a -o devices $images | sed s/\(.\)//
 }
 
 ########################################################
 # MAIN
 ########################################################
-is_raid_available || skip
+aux target_at_least dm-raid 1 1 0 || skip
+aux kernel_at_least 3 2 0 || skip
 
-aux prepare_vg 5 80
+# 9 PVs needed for RAID10 testing (3-stripes/2-mirror - replacing 3 devs)
+aux prepare_pvs 9 80
+vgcreate -c n -s 256k $vg $(cat DEVICES)
 
 ###########################################
 # RAID1 convert tests
 ###########################################
-#
-# FIXME: Snapshots of RAID is available, but there are kernel bugs that
-#        still prevent its use.
-#for under_snap in false true; do
-for under_snap in false; do
+for under_snap in false true; do
 for i in 1 2 3 4; do
 	for j in 1 2 3 4; do
 		if [ $i -eq 1 ]; then
@@ -138,7 +59,7 @@ for i in 1 2 3 4; do
 			lvcreate -l 2 -n $lv1 $vg
 		else
 			lvcreate --type raid1 -m $(($i - 1)) -l 2 -n $lv1 $vg
-			wait_for_sync $vg/$lv1
+			aux wait_for_sync $vg $lv1
 		fi
 
 		if $under_snap; then
@@ -156,6 +77,25 @@ for i in 1 2 3 4; do
 	done
 done
 done
+
+##############################################
+# RAID1 - shouldn't be able to add image
+#         if created '--nosync', but should
+#         be able to after 'lvchange --resync'
+##############################################
+lvcreate --type raid1 -m 1 -l 2 -n $lv1 $vg --nosync
+not lvconvert -m +1 $vg/$lv1
+lvchange --resync -y $vg/$lv1
+aux wait_for_sync $vg $lv1
+lvconvert -m +1 $vg/$lv1
+lvremove -ff $vg
+
+# 3-way to 2-way convert while specifying devices
+lvcreate --type raid1 -m 2 -l 2 -n $lv1 $vg $dev1 $dev2 $dev3
+aux wait_for_sync $vg $lv1
+lvconvert -m1 $vg/$lv1 $dev2
+lvremove -ff $vg
+
 #
 # FIXME: Add tests that specify particular devices to be removed
 #
@@ -165,7 +105,7 @@ done
 ###########################################
 # 3-way to 2-way/linear
 lvcreate --type raid1 -m 2 -l 2 -n $lv1 $vg
-wait_for_sync $vg/$lv1
+aux wait_for_sync $vg $lv1
 lvconvert --splitmirrors 1 -n $lv2 $vg/$lv1
 check lv_exists $vg $lv1
 check linear $vg $lv2
@@ -174,7 +114,7 @@ lvremove -ff $vg
 
 # 2-way to linear/linear
 lvcreate --type raid1 -m 1 -l 2 -n $lv1 $vg
-wait_for_sync $vg/$lv1
+aux wait_for_sync $vg $lv1
 lvconvert --splitmirrors 1 -n $lv2 $vg/$lv1
 check linear $vg $lv1
 check linear $vg $lv2
@@ -183,8 +123,9 @@ lvremove -ff $vg
 
 # 3-way to linear/2-way
 lvcreate --type raid1 -m 2 -l 2 -n $lv1 $vg
-wait_for_sync $vg/$lv1
+aux wait_for_sync $vg $lv1
 # FIXME: Can't split off a RAID1 from a RAID1 yet
+# 'should' results in "warnings"
 should lvconvert --splitmirrors 2 -n $lv2 $vg/$lv1
 #check linear $vg $lv1
 #check lv_exists $vg $lv2
@@ -196,7 +137,7 @@ lvremove -ff $vg
 ###########################################
 # 3-way to 2-way/linear
 lvcreate --type raid1 -m 2 -l 2 -n $lv1 $vg
-wait_for_sync $vg/$lv1
+aux wait_for_sync $vg $lv1
 lvconvert --splitmirrors 1 --trackchanges $vg/$lv1
 check lv_exists $vg $lv1
 check linear $vg ${lv1}_rimage_2
@@ -209,7 +150,74 @@ lvremove -ff $vg
 ###########################################
 for i in 1 2 3 ; do
 	lvcreate --type mirror -m $i -l 2 -n $lv1 $vg
-	wait_for_sync $vg/$lv1
+	aux wait_for_sync $vg $lv1
 	lvconvert --type raid1 $vg/$lv1
+	lvremove -ff $vg
+done
+
+###########################################
+# Device Replacement Testing
+###########################################
+# RAID1: Replace up to n-1 devices - trying different combinations
+# Test for 2-way to 4-way RAID1 LVs
+for i in {1..3}; do
+	lvcreate --type raid1 -m $i -l 2 -n $lv1 $vg
+
+	for j in $(seq $(($i + 1))); do # The number of devs to replace at once
+	for o in $(seq 0 $i); do        # The offset into the device list
+		replace=""
+
+		devices=( $(get_image_pvs $vg $lv1) )
+
+		for k in $(seq $j); do
+			index=$((($k + $o) % ($i + 1)))
+			replace="$replace --replace ${devices[$index]}"
+		done
+		aux wait_for_sync $vg $lv1
+
+		if [ $j -ge $((i + 1)) ]; then
+			# Can't replace all at once.
+			not lvconvert $replace $vg/$lv1
+		else
+			lvconvert $replace $vg/$lv1
+		fi
+	done
+	done
+
+	lvremove -ff $vg
+done
+
+# RAID 4/5/6 (can replace up to 'parity' devices)
+for i in 4 5 6; do
+	lvcreate --type raid$i -i 3 -l 3 -n $lv1 $vg
+
+	if [ $i -eq 6 ]; then
+		dev_cnt=5
+		limit=2
+	else
+		dev_cnt=4
+		limit=1
+	fi
+
+	for j in {1..3}; do
+	for o in $(seq 0 $i); do
+		replace=""
+
+		devices=( $(get_image_pvs $vg $lv1) )
+
+		for k in $(seq $j); do
+			index=$((($k + $o) % $dev_cnt))
+			replace="$replace --replace ${devices[$index]}"
+		done
+		aux wait_for_sync $vg $lv1
+
+		if [ $j -gt $limit ]; then
+			not lvconvert $replace $vg/$lv1
+		else
+			lvconvert $replace $vg/$lv1
+		fi
+	done
+	done
+
 	lvremove -ff $vg
 done

@@ -8,10 +8,10 @@
 +#define DEFAULT_DMEVENTD_MONITOR 0
  #define DEFAULT_BACKGROUND_POLLING 1
  
- #define DEFAULT_THIN_CHECK_EXECUTABLE  "/sbin/thin_check -q"
+ #define DEFAULT_THIN_CHECK_OPTIONS "-q"
 --- a/doc/example.conf.in
 +++ b/doc/example.conf.in
-@@ -677,7 +677,7 @@
+@@ -720,7 +720,7 @@
  
      # Monitoring is enabled by default when activating logical volumes.
      # Set to 0 to disable monitoring or use the --ignoremonitoring option.
@@ -22,7 +22,7 @@
      # synchronising or merging data, they check and report progress
 --- a/tools/toollib.c
 +++ b/tools/toollib.c
-@@ -1505,8 +1505,6 @@
+@@ -1500,8 +1500,6 @@
  int get_activation_monitoring_mode(struct cmd_context *cmd,
  				   int *monitoring_mode)
  {
@@ -31,7 +31,7 @@
  	if (arg_count(cmd, monitor_ARG) &&
  	    (arg_count(cmd, ignoremonitoring_ARG) ||
  	     arg_count(cmd, sysinit_ARG))) {
-@@ -1514,14 +1512,15 @@
+@@ -1509,14 +1507,15 @@
  		return 0;
  	}
  

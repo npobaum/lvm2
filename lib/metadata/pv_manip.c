@@ -17,9 +17,7 @@
 #include "metadata.h"
 #include "pv_alloc.h"
 #include "toolcontext.h"
-#include "archiver.h"
 #include "locking.h"
-#include "lvmcache.h"
 #include "defaults.h"
 
 static struct pv_segment *_alloc_pv_segment(struct dm_pool *mem,
@@ -189,14 +187,14 @@ struct pv_segment *assign_peg_to_lvseg(struct physical_volume *pv,
 	return peg;
 }
 
-int release_pv_segment(struct pv_segment *peg, uint32_t area_reduction)
+int discard_pv_segment(struct pv_segment *peg, uint32_t discard_area_reduction)
 {
 	uint64_t discard_offset_sectors;
 	uint64_t pe_start = peg->pv->pe_start;
-	uint64_t discard_area_reduction = area_reduction;
+	char uuid[64] __attribute__((aligned(8)));
 
 	if (!peg->lvseg) {
-		log_error("release_pv_segment with unallocated segment: "
+		log_error("discard_pv_segment with unallocated segment: "
 			  "%s PE %" PRIu32, pv_dev_name(peg->pv), peg->pe);
 		return 0;
 	}
@@ -205,26 +203,51 @@ int release_pv_segment(struct pv_segment *peg, uint32_t area_reduction)
 	 * Only issue discards if enabled in lvm.conf and both
 	 * the device and kernel (>= 2.6.35) supports discards.
 	 */
-	if (find_config_tree_bool(peg->pv->fmt->cmd,
-				  "devices/issue_discards", DEFAULT_ISSUE_DISCARDS) &&
-	    dev_discard_max_bytes(peg->pv->fmt->cmd->sysfs_dir, peg->pv->dev) &&
-	    dev_discard_granularity(peg->pv->fmt->cmd->sysfs_dir, peg->pv->dev)) {
-		discard_offset_sectors = (peg->pe + peg->lvseg->area_len - area_reduction) *
-			(uint64_t) peg->pv->vg->extent_size + pe_start;
-		if (!discard_offset_sectors) {
-			/*
-			 * pe_start=0 and the PV's first extent contains the label.
-			 * Must skip past the first extent.
-			 */
-			discard_offset_sectors = peg->pv->vg->extent_size;
-			discard_area_reduction--;
-		}
-		log_debug("Discarding %" PRIu64 " extents offset %" PRIu64 " sectors on %s.",
-			  discard_area_reduction, discard_offset_sectors, dev_name(peg->pv->dev));
-		if (discard_area_reduction &&
-		    !dev_discard_blocks(peg->pv->dev, discard_offset_sectors << SECTOR_SHIFT,
-					discard_area_reduction * (uint64_t) peg->pv->vg->extent_size * SECTOR_SIZE))
+	if (!find_config_tree_bool(peg->pv->fmt->cmd,
+				   "devices/issue_discards", DEFAULT_ISSUE_DISCARDS))
+		return 1;
+ 
+	/* Missing PV? */
+	if (is_missing_pv(peg->pv) || !peg->pv->dev) {
+		if (!id_write_format(&peg->pv->id, uuid, sizeof(uuid)))
 			return_0;
+
+		log_verbose("Skipping discard on missing device with uuid %s.", uuid);
+
+		return 1;
+	}
+
+	if (!dev_discard_max_bytes(peg->pv->fmt->cmd->sysfs_dir, peg->pv->dev) ||
+	    !dev_discard_granularity(peg->pv->fmt->cmd->sysfs_dir, peg->pv->dev))
+		return 1;
+
+	discard_offset_sectors = (peg->pe + peg->lvseg->area_len - discard_area_reduction) *
+				 (uint64_t) peg->pv->vg->extent_size + pe_start;
+	if (!discard_offset_sectors) {
+		/*
+		 * pe_start=0 and the PV's first extent contains the label.
+		 * Must skip past the first extent.
+		 */
+		discard_offset_sectors = peg->pv->vg->extent_size;
+		discard_area_reduction--;
+	}
+
+	log_debug("Discarding %" PRIu32 " extents offset %" PRIu64 " sectors on %s.",
+		  discard_area_reduction, discard_offset_sectors, dev_name(peg->pv->dev));
+	if (discard_area_reduction &&
+	    !dev_discard_blocks(peg->pv->dev, discard_offset_sectors << SECTOR_SHIFT,
+				discard_area_reduction * (uint64_t) peg->pv->vg->extent_size * SECTOR_SIZE))
+		return_0;
+
+	return 1;
+}
+
+int release_pv_segment(struct pv_segment *peg, uint32_t area_reduction)
+{
+	if (!peg->lvseg) {
+		log_error("release_pv_segment with unallocated segment: "
+			  "%s PE %" PRIu32, pv_dev_name(peg->pv), peg->pe);
+		return 0;
 	}
 
 	if (peg->lvseg->area_len == area_reduction) {

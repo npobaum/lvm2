@@ -1,15 +1,15 @@
 --- a/doc/example.conf.in
 +++ b/doc/example.conf.in
-@@ -86,7 +86,7 @@
-     # It is safe to delete the contents: the tools regenerate it.
-     # (The old setting 'cache' is still respected if neither of
-     # these new ones is present.)
+@@ -97,7 +97,7 @@
+     # N.B. If obtain_device_list_from_udev is set to 1 the list of
+     # devices is instead obtained from udev and any existing .cache
+     # file is removed.
 -    cache_dir = "@DEFAULT_SYS_DIR@/@DEFAULT_CACHE_SUBDIR@"
 +    cache_dir = "/run/lvm"
      cache_file_prefix = ""
  
      # You can turn off writing this cache file by setting this to 0.
-@@ -405,7 +405,7 @@
+@@ -425,7 +425,7 @@
      # Full pathnames can be given.
  
      # Search this directory first for shared libraries.
@@ -20,7 +20,7 @@
      #   locking_library = "liblvm2clusterlock.so"
 --- a/lib/commands/toolcontext.c
 +++ b/lib/commands/toolcontext.c
-@@ -827,10 +827,8 @@
+@@ -853,18 +853,16 @@
  
  	if (cache_dir || cache_file_prefix) {
  		if (dm_snprintf(cache_file, sizeof(cache_file),
@@ -32,8 +32,7 @@
 +		    cache_dir ? : DEFAULT_RUN_DIR,
  		    cache_file_prefix ? : DEFAULT_CACHE_FILE_PREFIX) < 0) {
  			log_error("Persistent cache filename too long.");
- 			f3->destroy(f3);
-@@ -838,8 +836,8 @@
+ 			goto bad;
  		}
  	} else if (!(dev_cache = find_config_tree_str(cmd, "devices/cache", NULL)) &&
  		   (dm_snprintf(cache_file, sizeof(cache_file),
@@ -43,10 +42,10 @@
 +				DEFAULT_RUN_DIR,
  				DEFAULT_CACHE_FILE_PREFIX) < 0)) {
  		log_error("Persistent cache filename too long.");
- 		f3->destroy(f3);
+ 		goto bad;
 --- a/daemons/dmeventd/dmeventd.c
 +++ b/daemons/dmeventd/dmeventd.c
-@@ -912,8 +912,17 @@
+@@ -911,8 +911,17 @@
  {
  	void *dl;
  	struct dso_data *ret = NULL;

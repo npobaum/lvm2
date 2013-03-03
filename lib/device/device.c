@@ -347,7 +347,7 @@ int get_primary_dev(const char *sysfs_dir,
 			  path, buffer);
 		goto out;
 	}
-	*result = MKDEV(pri_maj, pri_min);
+	*result = MKDEV((dev_t)pri_maj, pri_min);
 	ret = 1;
 
 out:
@@ -361,7 +361,7 @@ static unsigned long _dev_topology_attribute(const char *attribute,
 					     const char *sysfs_dir,
 					     struct device *dev)
 {
-	const char *sysfs_fmt_str = "%s/dev/block/%d:%d/%s";
+	static const char sysfs_fmt_str[] = "%s/dev/block/%d:%d/%s";
 	char path[PATH_MAX+1], buffer[64];
 	FILE *fp;
 	struct stat info;

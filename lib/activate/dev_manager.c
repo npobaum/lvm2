@@ -14,7 +14,6 @@
  */
 
 #include "lib.h"
-#include "str_list.h"
 #include "dev_manager.h"
 #include "lvm-string.h"
 #include "fs.h"
@@ -515,11 +514,11 @@ static int _percent_run(struct dev_manager *dm, const char *name,
 	struct lv_segment *seg = NULL;
 	struct segment_type *segtype;
 	int first_time = 1;
-	percent_t percent;
+	percent_t percent = PERCENT_INVALID;
 
 	uint64_t total_numerator = 0, total_denominator = 0;
 
-	*overall_percent = PERCENT_INVALID;
+	*overall_percent = percent;
 
 	if (!(dmt = _setup_task(name, dlid, event_nr,
 				wait ? DM_DEVICE_WAITEVENT : DM_DEVICE_STATUS, 0, 0)))
@@ -668,6 +667,11 @@ int dev_manager_transient(struct dev_manager *dm, struct logical_volume *lv)
 
 		if (!type || !params)
 			continue;
+
+		if (!seg) {
+			log_error(INTERNAL_ERROR "Segment is not selected.");
+			goto out;
+		}
 
 		if (seg->segtype->ops->check_transient_status &&
 		    !seg->segtype->ops->check_transient_status(seg, params))
@@ -1205,39 +1209,55 @@ static int _thin_pool_callback(struct dm_tree_node *node,
 	int ret, status;
 	const struct thin_cb_data *data = cb_data;
 	const char *dmdir = dm_dir();
+	const struct dm_config_node *cn;
+	const struct dm_config_value *cv;
 	const char *thin_check =
 		find_config_tree_str_allow_empty(data->pool_lv->vg->cmd,
 						 "global/thin_check_executable",
-						 DEFAULT_THIN_CHECK_EXECUTABLE);
+						 THIN_CHECK_CMD);
 	const struct logical_volume *mlv = first_seg(data->pool_lv)->metadata_lv;
-	size_t len = strlen(dmdir) + strlen(mlv->vg->name) + strlen(mlv->name) + 3;
+	size_t len = strlen(dmdir) + 2 * (strlen(mlv->vg->name) + strlen(mlv->name)) + 3;
 	char meta_path[len];
-	int args;
-	char *argv[19]; /* Max supported 15 args */
-	char *split;
+	int args = 0;
+	const char *argv[19]; /* Max supported 15 args */
+	char *split, *dm_name;
 
 	if (!thin_check[0])
 		return 1; /* Checking disabled */
 
-	if (dm_snprintf(meta_path, len, "%s/%s-%s", dmdir,
-			mlv->vg->name, mlv->name) < 0) {
+	if (!(dm_name = dm_build_dm_name(data->dm->mem, mlv->vg->name,
+					 mlv->name, NULL)) ||
+	    (dm_snprintf(meta_path, len, "%s/%s", dmdir, dm_name) < 0)) {
 		log_error("Failed to build thin metadata path.");
 		return 0;
 	}
 
-	if (!(split = dm_pool_strdup(data->dm->mem, thin_check))) {
-		log_error("Failed to duplicate thin check string.");
-		return 0;
+	if ((cn = find_config_tree_node(mlv->vg->cmd, "global/thin_check_options"))) {
+		for (cv = cn->v; cv && args < 16; cv = cv->next) {
+			if (cv->type != DM_CFG_STRING) {
+				log_error("Invalid string in config file: "
+					  "global/thin_check_options");
+				return 0;
+			}
+			argv[++args] = cv->v.str;
+		}
+	} else {
+		/* Use default options (no support for options with spaces) */
+		if (!(split = dm_pool_strdup(data->dm->mem, DEFAULT_THIN_CHECK_OPTIONS))) {
+			log_error("Failed to duplicate thin check string.");
+			return 0;
+		}
+		args = dm_split_words(split, 16, 0, (char**) argv + 1);
 	}
-
-	args = dm_split_words(split, 16, 0, argv);
 
 	if (args == 16) {
 		log_error("Too many options for thin check command.");
 		return 0;
 	}
-	argv[args++] = meta_path;
-	argv[args] = NULL;
+
+	argv[0] = thin_check;
+	argv[++args] = meta_path;
+	argv[++args] = NULL;
 
 	if (!(ret = exec_cmd(data->pool_lv->vg->cmd, (const char * const *)argv,
 			     &status, 0))) {
@@ -1262,7 +1282,7 @@ static int _thin_pool_callback(struct dm_tree_node *node,
 		 */
 	}
 
-	dm_pool_free(data->dm->mem, split);
+	dm_pool_free(data->dm->mem, dm_name);
 
 	return ret;
 }
@@ -1349,7 +1369,7 @@ static int _add_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 		seg = first_seg(lv);
 	}
 
-	if (lv_is_thin_pool(lv)) {
+	if (!origin_only && lv_is_thin_pool(lv)) {
 		if (!_add_lv_to_dtree(dm, dtree, seg->metadata_lv, 0))
 			return_0;
 		/* FIXME code from _create_partial_dtree() should be moved here */
@@ -1407,10 +1427,11 @@ bad:
 static char *_add_error_device(struct dev_manager *dm, struct dm_tree *dtree,
 			       struct lv_segment *seg, int s)
 {
-	char *id, *name;
+	char *dlid, *name;
 	char errid[32];
 	struct dm_tree_node *node;
 	struct lv_segment *seg_i;
+	struct dm_info info;
 	int segno = -1, i = 0;
 	uint64_t size = (uint64_t) seg->len * seg->lv->vg->extent_size;
 
@@ -1427,18 +1448,35 @@ static char *_add_error_device(struct dev_manager *dm, struct dm_tree *dtree,
 
 	sprintf(errid, "missing_%d_%d", segno, s);
 
-	if (!(id = build_dm_uuid(dm->mem, seg->lv->lvid.s, errid)))
+	if (!(dlid = build_dm_uuid(dm->mem, seg->lv->lvid.s, errid)))
 		return_NULL;
 
 	if (!(name = dm_build_dm_name(dm->mem, seg->lv->vg->name,
 				   seg->lv->name, errid)))
 		return_NULL;
-	if (!(node = dm_tree_add_new_dev(dtree, name, id, 0, 0, 0, 0, 0)))
-		return_NULL;
-	if (!dm_tree_node_add_error_target(node, size))
-		return_NULL;
 
-	return id;
+	log_debug("Getting device info for %s [%s]", name, dlid);
+	if (!_info(dlid, 1, 0, &info, NULL)) {
+		log_error("Failed to get info for %s [%s].", name, dlid);
+		return 0;
+	}
+
+	if (!info.exists) {
+		/* Create new node */
+		if (!(node = dm_tree_add_new_dev(dtree, name, dlid, 0, 0, 0, 0, 0)))
+			return_NULL;
+		if (!dm_tree_node_add_error_target(node, size))
+			return_NULL;
+	} else {
+		/* Already exists */
+		if (!dm_tree_add_dev(dtree, info.major, info.minor)) {
+			log_error("Failed to add device (%" PRIu32 ":%" PRIu32") to dtree",
+				  info.major, info.minor);
+			return_NULL;
+		}
+	}
+
+	return dlid;
 }
 
 static int _add_error_area(struct dev_manager *dm, struct dm_tree_node *node,
@@ -1544,22 +1582,6 @@ int add_areas_line(struct dev_manager *dm, struct lv_segment *seg,
 		/* Thins currently do not support partial activation */
 		if (lv_is_thin_type(seg->lv)) {
 			log_error("Cannot activate %s%s: pool incomplete.",
-				  seg->lv->vg->name, seg->lv->name);
-			return 0;
-		}
-
-		/*
-		 * Mirrors activate LVs replaced with error targets and
-		 * RAID can handle non-accessible sub-LVs.
-		 *
-		 * TODO: Can we eventually skip to activate such LVs ?
-		 */
-		if (!num_existing_areas &&
-		    !strstr(seg->lv->name, "_rmeta_") &&
-		    !strstr(seg->lv->name, "_rimage_") &&
-		    !strstr(seg->lv->name, "_mimage_") &&
-		    !((name = strstr(seg->lv->name, "_mlog")) && !name[5])) {
-			log_error("Cannot activate %s/%s: all segments missing.",
 				  seg->lv->vg->name, seg->lv->name);
 			return 0;
 		}
@@ -2162,7 +2184,8 @@ static int _tree_action(struct dev_manager *dm, struct logical_volume *lv,
 		break;
 	case SUSPEND:
 		dm_tree_skip_lockfs(root);
-		if (!dm->flush_required && (lv->status & MIRRORED) && !(lv->status & PVMOVE))
+		if (!dm->flush_required && !seg_is_raid(first_seg(lv)) &&
+		    (lv->status & MIRRORED) && !(lv->status & PVMOVE))
 			dm_tree_use_no_flush_suspend(root);
 		/* Fall through */
 	case SUSPEND_WITH_LOCKFS:

@@ -144,7 +144,7 @@ static int _lv_set_default_linear_params(struct cmd_context *cmd,
  */
 lv_t lvm_vg_create_lv_linear(vg_t vg, const char *name, uint64_t size)
 {
-	struct lvcreate_params lp;
+	struct lvcreate_params lp = { 0 };
 	uint64_t extents;
 	struct lv_list *lvl;
 
@@ -152,16 +152,19 @@ lv_t lvm_vg_create_lv_linear(vg_t vg, const char *name, uint64_t size)
 		return NULL;
 	if (!vg_check_write_mode(vg))
 		return NULL;
-	memset(&lp, 0, sizeof(lp));
-	extents = extents_from_size(vg->cmd, size / SECTOR_SIZE,
-				    vg->extent_size);
+
+	if (!(extents = extents_from_size(vg->cmd, size / SECTOR_SIZE,
+					  vg->extent_size))) {
+		log_error("Unable to create LV without size.");
+		return NULL;
+	}
+
 	_lv_set_default_params(&lp, vg, name, extents);
 	if (!_lv_set_default_linear_params(vg->cmd, &lp))
 		return_NULL;
 	if (!lv_create_single(vg, &lp))
-		return NULL;
-	lvl = find_lv_in_vg(vg, name);
-	if (!lvl)
+		return_NULL;
+	if (!(lvl = find_lv_in_vg(vg, name)))
 		return NULL;
 	return (lv_t) lvl->lv;
 }
@@ -289,6 +292,16 @@ lv_t lvm_lv_from_uuid(vg_t vg, const char *uuid)
 	}
 	return NULL;
 }
+
+int lvm_lv_rename(lv_t lv, const char *new_name)
+{
+	if (!lv_rename(lv->vg->cmd, lv, new_name)) {
+		log_verbose("LV Rename failed.");
+		return -1;
+	}
+	return 0;
+}
+
 int lvm_lv_resize(const lv_t lv, uint64_t new_size)
 {
 	/* FIXME: add lv resize code here */

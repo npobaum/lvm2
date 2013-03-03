@@ -164,6 +164,16 @@ struct dm_versions {
 int dm_get_library_version(char *version, size_t size);
 int dm_task_get_driver_version(struct dm_task *dmt, char *version, size_t size);
 int dm_task_get_info(struct dm_task *dmt, struct dm_info *dmi);
+
+/*
+ * This function returns dm device's UUID based on the value
+ * of the mangling mode set during preceding dm_task_run call:
+ *   - unmangled UUID for DM_STRING_MANGLING_{AUTO, HEX},
+ *   - UUID without any changes for DM_STRING_MANGLING_NONE.
+ *
+ * To get mangled or unmangled form of the UUID directly, use
+ * dm_task_get_uuid_mangled or dm_task_get_uuid_unmangled function.
+ */
 const char *dm_task_get_uuid(const struct dm_task *dmt);
 
 struct dm_deps *dm_task_get_deps(struct dm_task *dmt);
@@ -297,18 +307,20 @@ typedef enum {
 } dm_string_mangling_t;
 
 /*
- * Set/get mangling mode used for device-mapper names.
+ * Set/get mangling mode used for device-mapper names and uuids.
  */
 int dm_set_name_mangling_mode(dm_string_mangling_t name_mangling);
 dm_string_mangling_t dm_get_name_mangling_mode(void);
 
 /*
- * Get mangled/unmangled form of the device-mapper name
+ * Get mangled/unmangled form of the device-mapper name or uuid
  * irrespective of the global setting (set by dm_set_name_mangling_mode).
- * The name returned needs to be freed after use by calling dm_free!
+ * The name or uuid returned needs to be freed after use by calling dm_free!
  */
 char *dm_task_get_name_mangled(const struct dm_task *dmt);
 char *dm_task_get_name_unmangled(const struct dm_task *dmt);
+char *dm_task_get_uuid_mangled(const struct dm_task *dmt);
+char *dm_task_get_uuid_unmangled(const struct dm_task *dmt);
 
 /*
  * Configure the device-mapper directory
@@ -650,11 +662,24 @@ typedef enum {
 	DM_THIN_MESSAGE_CREATE_THIN,		/* device_id */
 	DM_THIN_MESSAGE_DELETE,			/* device_id */
 	DM_THIN_MESSAGE_SET_TRANSACTION_ID,	/* current_id, new_id */
+	DM_THIN_MESSAGE_RESERVE_METADATA_SNAP,	/* target version >= 1.1 */
+	DM_THIN_MESSAGE_RELEASE_METADATA_SNAP,	/* target version >= 1.1 */
 } dm_thin_message_t;
 
 int dm_tree_node_add_thin_pool_message(struct dm_tree_node *node,
 				       dm_thin_message_t type,
 				       uint64_t id1, uint64_t id2);
+
+/*
+ * Set thin pool discard features
+ *   ignore      - Disable support for discards
+ *   no_passdown - Don't pass discards down to underlying data device,
+ *                 just remove the mapping
+ * Feature is available since version 1.1 of the thin target.
+ */
+int dm_tree_node_set_thin_pool_discard(struct dm_tree_node *node,
+				       unsigned ignore,
+				       unsigned no_passdown);
 
 /*
  * FIXME: Defines bellow are based on kernel's dm-thin.c defines
@@ -665,6 +690,9 @@ int dm_tree_node_add_thin_target(struct dm_tree_node *node,
 				 uint64_t size,
 				 const char *pool_uuid,
 				 uint32_t device_id);
+
+int dm_tree_node_set_thin_external_origin(struct dm_tree_node *node,
+					  const char *external_uuid);
 
 void dm_tree_node_set_udev_flags(struct dm_tree_node *node, uint16_t udev_flags);
 
@@ -713,13 +741,19 @@ uint32_t dm_tree_get_cookie(struct dm_tree_node *node);
  * Memory management
  *******************/
 
-void *dm_malloc_aux(size_t s, const char *file, int line);
-void *dm_malloc_aux_debug(size_t s, const char *file, int line);
-void *dm_zalloc_aux(size_t s, const char *file, int line);
-void *dm_zalloc_aux_debug(size_t s, const char *file, int line);
-char *dm_strdup_aux(const char *str, const char *file, int line);
+void *dm_malloc_aux(size_t s, const char *file, int line)
+	__attribute__((malloc)) __attribute__((__warn_unused_result__));
+void *dm_malloc_aux_debug(size_t s, const char *file, int line)
+	__attribute__((__warn_unused_result__));
+void *dm_zalloc_aux(size_t s, const char *file, int line)
+	__attribute__((malloc)) __attribute__((__warn_unused_result__));
+void *dm_zalloc_aux_debug(size_t s, const char *file, int line)
+	__attribute__((__warn_unused_result__));
+char *dm_strdup_aux(const char *str, const char *file, int line)
+	__attribute__((malloc)) __attribute__((__warn_unused_result__));
 void dm_free_aux(void *p);
-void *dm_realloc_aux(void *p, unsigned int s, const char *file, int line);
+void *dm_realloc_aux(void *p, unsigned int s, const char *file, int line)
+	__attribute__((__warn_unused_result__));
 int dm_dump_memory_debug(void);
 void dm_bounds_check_debug(void);
 
@@ -782,12 +816,15 @@ void dm_bounds_check_debug(void);
 struct dm_pool;
 
 /* constructor and destructor */
-struct dm_pool *dm_pool_create(const char *name, size_t chunk_hint);
+struct dm_pool *dm_pool_create(const char *name, size_t chunk_hint)
+	__attribute__((__warn_unused_result__));
 void dm_pool_destroy(struct dm_pool *p);
 
 /* simple allocation/free routines */
-void *dm_pool_alloc(struct dm_pool *p, size_t s);
-void *dm_pool_alloc_aligned(struct dm_pool *p, size_t s, unsigned alignment);
+void *dm_pool_alloc(struct dm_pool *p, size_t s)
+	__attribute__((__warn_unused_result__));
+void *dm_pool_alloc_aligned(struct dm_pool *p, size_t s, unsigned alignment)
+	__attribute__((__warn_unused_result__));
 void dm_pool_empty(struct dm_pool *p);
 void dm_pool_free(struct dm_pool *p, void *ptr);
 
@@ -858,9 +895,12 @@ void *dm_pool_end_object(struct dm_pool *p);
 void dm_pool_abandon_object(struct dm_pool *p);
 
 /* utilities */
-char *dm_pool_strdup(struct dm_pool *p, const char *str);
-char *dm_pool_strndup(struct dm_pool *p, const char *str, size_t n);
-void *dm_pool_zalloc(struct dm_pool *p, size_t s);
+char *dm_pool_strdup(struct dm_pool *p, const char *str)
+	__attribute__((__warn_unused_result__));
+char *dm_pool_strndup(struct dm_pool *p, const char *str, size_t n)
+	__attribute__((__warn_unused_result__));
+void *dm_pool_zalloc(struct dm_pool *p, size_t s)
+	__attribute__((__warn_unused_result__));
 
 /******************
  * bitset functions
@@ -918,7 +958,8 @@ struct dm_hash_node;
 
 typedef void (*dm_hash_iterate_fn) (void *data);
 
-struct dm_hash_table *dm_hash_create(unsigned size_hint);
+struct dm_hash_table *dm_hash_create(unsigned size_hint)
+	__attribute__((__warn_unused_result__));
 void dm_hash_destroy(struct dm_hash_table *t);
 void dm_hash_wipe(struct dm_hash_table *t);
 
@@ -1262,6 +1303,7 @@ int dm_fclose(FILE *stream);
  */
 int dm_asprintf(char **buf, const char *format, ...)
     __attribute__ ((format(printf, 2, 3)));
+int dm_vasprintf(char **buf, const char *format, va_list ap);
 
 /*
  * create lockfile (pidfile) - create and lock a lock file
@@ -1459,7 +1501,10 @@ struct dm_config_tree *dm_config_remove_cascaded_tree(struct dm_config_tree *cft
 void dm_config_destroy(struct dm_config_tree *cft);
 
 typedef int (*dm_putline_fn)(const char *line, void *baton);
+/* Write the node and any subsequent siblings it has. */
 int dm_config_write_node(const struct dm_config_node *cn, dm_putline_fn putline, void *baton);
+/* Write given node only without subsequent siblings. */
+int dm_config_write_one_node(const struct dm_config_node *cn, dm_putline_fn putline, void *baton);
 
 struct dm_config_node *dm_config_find_node(const struct dm_config_node *cn, const char *path);
 int dm_config_has_node(const struct dm_config_node *cn, const char *path);
@@ -1499,6 +1544,9 @@ struct dm_config_value *dm_config_create_value(struct dm_config_tree *cft);
 struct dm_config_node *dm_config_clone_node(struct dm_config_tree *cft, const struct dm_config_node *cn, int siblings);
 
 struct dm_pool *dm_config_memory(struct dm_config_tree *cft);
+
+/* Udev device directory. */
+#define DM_UDEV_DEV_DIR "/dev/"
 
 /* Cookie prefixes.
  *

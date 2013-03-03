@@ -28,13 +28,13 @@ static void _pvscan_display_single(struct cmd_context *cmd,
 	char uuid[64] __attribute__((aligned(8)));
 	unsigned vg_name_len = 0;
 
-	char pv_tmp_name[NAME_LEN] = { 0, };
-	char vg_tmp_name[NAME_LEN] = { 0, };
-	char vg_name_this[NAME_LEN] = { 0, };
+	char pv_tmp_name[NAME_LEN] = { 0 };
+	char vg_tmp_name[NAME_LEN] = { 0 };
+	char vg_name_this[NAME_LEN] = { 0 };
 
 	/* short listing? */
 	if (arg_count(cmd, short_ARG) > 0) {
-		log_print("%s", pv_dev_name(pv));
+		log_print_unless_silent("%s", pv_dev_name(pv));
 		return;
 	}
 
@@ -48,8 +48,6 @@ static void _pvscan_display_single(struct cmd_context *cmd,
 		/* log_print(" "); */
 		/* return; */
 	}
-
-	memset(pv_tmp_name, 0, sizeof(pv_tmp_name));
 
 	vg_name_len = strlen(pv_vg_name(pv)) + 1;
 
@@ -66,63 +64,46 @@ static void _pvscan_display_single(struct cmd_context *cmd,
 	}
 
 	if (is_orphan(pv)) {
-		log_print("PV %-*s    %-*s %s [%s]",
-			  pv_max_name_len, pv_tmp_name,
-			  vg_max_name_len, " ",
-			  pv->fmt ? pv->fmt->name : "    ",
-			  display_size(cmd, pv_size(pv)));
+		log_print_unless_silent("PV %-*s    %-*s %s [%s]",
+					pv_max_name_len, pv_tmp_name,
+					vg_max_name_len, " ",
+					pv->fmt ? pv->fmt->name : "    ",
+					display_size(cmd, pv_size(pv)));
 		return;
 	}
 
 	if (pv_status(pv) & EXPORTED_VG) {
 		strncpy(vg_name_this, pv_vg_name(pv), vg_name_len);
-		log_print("PV %-*s  is in exported VG %s "
-			  "[%s / %s free]",
-			  pv_max_name_len, pv_tmp_name,
-			  vg_name_this,
-			  display_size(cmd, (uint64_t) pv_pe_count(pv) *
-				       pv_pe_size(pv)),
-			  display_size(cmd, (uint64_t) (pv_pe_count(pv) -
-						pv_pe_alloc_count(pv))
-				       * pv_pe_size(pv)));
+		log_print_unless_silent("PV %-*s  is in exported VG %s "
+					"[%s / %s free]",
+					pv_max_name_len, pv_tmp_name,
+					vg_name_this,
+					display_size(cmd, (uint64_t) pv_pe_count(pv) * pv_pe_size(pv)),
+					display_size(cmd, (uint64_t) (pv_pe_count(pv) - pv_pe_alloc_count(pv)) * pv_pe_size(pv)));
 		return;
 	}
 
 	sprintf(vg_tmp_name, "%s", pv_vg_name(pv));
-	log_print("PV %-*s VG %-*s %s [%s / %s free]", pv_max_name_len,
-		  pv_tmp_name, vg_max_name_len, vg_tmp_name,
-		  pv->fmt ? pv->fmt->name : "    ",
-		  display_size(cmd, (uint64_t) pv_pe_count(pv) *
-					       pv_pe_size(pv)),
-		  display_size(cmd, (uint64_t) (pv_pe_count(pv) -
-						pv_pe_alloc_count(pv)) *
-					   pv_pe_size(pv)));
+	log_print_unless_silent("PV %-*s VG %-*s %s [%s / %s free]", pv_max_name_len,
+				pv_tmp_name, vg_max_name_len, vg_tmp_name,
+				pv->fmt ? pv->fmt->name : "    ",
+				display_size(cmd, (uint64_t) pv_pe_count(pv) * pv_pe_size(pv)),
+				display_size(cmd, (uint64_t) (pv_pe_count(pv) - pv_pe_alloc_count(pv)) * pv_pe_size(pv)));
 }
 
-static int _pvscan_lvmetad_all_devs(struct cmd_context *cmd)
+static int _auto_activation_handler(struct volume_group *vg, int partial,
+				    activation_change_t activate)
 {
-	struct dev_iter *iter;
-	struct device *dev;
-	int r = 1;
+	/* TODO: add support for partial and clustered VGs */
+	if (partial || vg_is_clustered(vg))
+		return 1;
 
-	if (!(iter = dev_iter_create(cmd->filter, 1))) {
-		log_error("dev_iter creation failed");
+	if (!vgchange_activate(vg->cmd, vg, activate)) {
+		log_error("%s: autoactivation failed.", vg->name);
 		return 0;
 	}
 
-	while ((dev = dev_iter_get(iter))) {
-		if (!pvscan_lvmetad_single(cmd, dev)) {
-			r = 0;
-			break;
-		}
-
-		if (sigint_caught())
-			break;
-	}
-
-	dev_iter_destroy(iter);
-
-	return r;
+	return 1;
 }
 
 static int _pvscan_lvmetad(struct cmd_context *cmd, int argc, char **argv)
@@ -136,6 +117,15 @@ static int _pvscan_lvmetad(struct cmd_context *cmd, int argc, char **argv)
 	struct arg_value_group_list *current_group;
 	dev_t devno;
 	char *buf;
+	activation_handler handler = NULL;
+
+	if (arg_count(cmd, activate_ARG)) {
+		if (arg_uint_value(cmd, activate_ARG, CHANGE_AAY) != CHANGE_AAY) {
+			log_error("Only --activate ay allowed with pvscan.");
+			return 0;
+		}
+		handler = _auto_activation_handler;
+	}
 
 	if (arg_count(cmd, major_ARG) + arg_count(cmd, minor_ARG))
 		devno_args = 1;
@@ -152,7 +142,7 @@ static int _pvscan_lvmetad(struct cmd_context *cmd, int argc, char **argv)
 
 	/* Scan everything? */
 	if (!argc && !devno_args) {
-		if (!_pvscan_lvmetad_all_devs(cmd))
+		if (!lvmetad_pvscan_all_devs(cmd, handler))
 			ret = ECMD_FAILED;
 		goto out;
 	}
@@ -169,7 +159,7 @@ static int _pvscan_lvmetad(struct cmd_context *cmd, int argc, char **argv)
 			continue;
 		}
 
-		if (!pvscan_lvmetad_single(cmd, dev)) {
+		if (!lvmetad_pvscan_single(cmd, dev, handler)) {
 			ret = ECMD_FAILED;
 			break;
 		}
@@ -188,27 +178,27 @@ static int _pvscan_lvmetad(struct cmd_context *cmd, int argc, char **argv)
 		if (major < 0 || minor < 0)
 			continue;
 
-		devno = MKDEV(major, minor);
+		devno = MKDEV((dev_t)major, minor);
 
 		if (!(dev = dev_cache_get_by_devt(devno, NULL))) {
 			if (!dm_asprintf(&buf, "%" PRIi32 ":%" PRIi32, major, minor))
 				stack;
 			/* FIXME Filters? */
-			if (!lvmetad_pv_gone(devno, buf ? : "")) {
+			if (!lvmetad_pv_gone(devno, buf ? : "", handler)) {
 				ret = ECMD_FAILED;
 				if (buf)
 					dm_free(buf);
 				break;
 			}
 
-			log_print("Device %s not found. "
-				  "Cleared from lvmetad cache.", buf ? : "");
+			log_print_unless_silent("Device %s not found. "
+						"Cleared from lvmetad cache.", buf ? : "");
 			if (buf)
 				dm_free(buf);
 			continue;
 		}
 
-		if (!pvscan_lvmetad_single(cmd, dev)) {
+		if (!lvmetad_pvscan_single(cmd, dev, handler)) {
 			ret = ECMD_FAILED;
 			break;
 		}
@@ -242,6 +232,11 @@ int pvscan(struct cmd_context *cmd, int argc, char **argv)
 	if (arg_count(cmd, cache_ARG))
 		return _pvscan_lvmetad(cmd, argc, argv);
 
+	if (arg_count(cmd, activate_ARG)) {
+		log_error("--activate is only valid with --cache.");
+		return EINVALID_CMD_LINE;
+	}
+
 	if (arg_count(cmd, major_ARG) + arg_count(cmd, minor_ARG)) {
 		log_error("--major and --minor are only valid with --cache.");
 		return EINVALID_CMD_LINE;
@@ -262,7 +257,8 @@ int pvscan(struct cmd_context *cmd, int argc, char **argv)
 		return ECMD_FAILED;
 	}
 
-	persistent_filter_wipe(cmd->filter);
+	if (cmd->filter->wipe)
+		cmd->filter->wipe(cmd->filter);
 	lvmcache_destroy(cmd, 1);
 
 	/* populate lvmcache */
@@ -328,17 +324,17 @@ int pvscan(struct cmd_context *cmd, int argc, char **argv)
 	}
 
 	if (!pvs_found) {
-		log_print("No matching physical volumes found");
+		log_print_unless_silent("No matching physical volumes found");
 		unlock_vg(cmd, VG_GLOBAL);
 		return ECMD_PROCESSED;
 	}
 
-	log_print("Total: %d [%s] / in use: %d [%s] / in no VG: %d [%s]",
-		  pvs_found,
-		  display_size(cmd, size_total),
-		  pvs_found - new_pvs_found,
-		  display_size(cmd, (size_total - size_new)),
-		  new_pvs_found, display_size(cmd, size_new));
+	log_print_unless_silent("Total: %d [%s] / in use: %d [%s] / in no VG: %d [%s]",
+				pvs_found,
+				display_size(cmd, size_total),
+				pvs_found - new_pvs_found,
+				display_size(cmd, (size_total - size_new)),
+				new_pvs_found, display_size(cmd, size_new));
 
 	unlock_vg(cmd, VG_GLOBAL);
 

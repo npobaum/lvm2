@@ -350,7 +350,7 @@ int extend_pool(struct logical_volume *pool_lv, const struct segment_type *segty
 			return 0;
 		}
 	} else {
-		log_warn("WARNING: Pool %s is created without initilization.", pool_lv->name);
+		log_warn("WARNING: Pool %s is created without initialization.", pool_lv->name);
 	}
 
 	if (dm_snprintf(name, len, "%s_tmeta", pool_lv->name) < 0)
@@ -388,6 +388,8 @@ int extend_pool(struct logical_volume *pool_lv, const struct segment_type *segty
 
 int update_pool_lv(struct logical_volume *lv, int activate)
 {
+	int monitored;
+
 	if (!lv_is_thin_pool(lv)) {
 		log_error(INTERNAL_ERROR "Updated LV %s is not pool.", lv->name);
 		return 0;
@@ -399,10 +401,13 @@ int update_pool_lv(struct logical_volume *lv, int activate)
 	if (activate) {
 		/* If the pool is not active, do activate deactivate */
 		if (!lv_is_active(lv)) {
+			monitored = dmeventd_monitor_mode();
+			init_dmeventd_monitor(DMEVENTD_MONITOR_IGNORE);
 			if (!activate_lv_excl(lv->vg->cmd, lv))
 				return_0;
 			if (!deactivate_lv(lv->vg->cmd, lv))
 				return_0;
+			init_dmeventd_monitor(monitored);
 		}
 		/*
 		 * Resume active pool to send thin messages.
@@ -422,4 +427,36 @@ int update_pool_lv(struct logical_volume *lv, int activate)
 	backup(lv->vg);
 
 	return 1;
+}
+
+int get_pool_discards(const char *str, thin_discards_t *discards)
+{
+	if (!strcasecmp(str, "passdown"))
+		*discards = THIN_DISCARDS_PASSDOWN;
+	else if (!strcasecmp(str, "nopassdown"))
+		*discards = THIN_DISCARDS_NO_PASSDOWN;
+	else if (!strcasecmp(str, "ignore"))
+		*discards = THIN_DISCARDS_IGNORE;
+	else {
+		log_error("Thin pool discards type %s is unknown.", str);
+		return 0;
+	}
+
+	return 1;
+}
+
+const char *get_pool_discards_name(thin_discards_t discards)
+{
+	switch (discards) {
+	case THIN_DISCARDS_PASSDOWN:
+                return "passdown";
+	case THIN_DISCARDS_NO_PASSDOWN:
+		return "nopassdown";
+	case THIN_DISCARDS_IGNORE:
+		return "ignore";
+	}
+
+	log_error(INTERNAL_ERROR "Unknown discards type encountered.");
+
+	return "unknown";
 }
