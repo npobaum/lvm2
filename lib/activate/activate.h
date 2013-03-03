@@ -36,12 +36,22 @@ struct lv_activate_opts {
 	int no_merging;
 	int real_pool;
 	int is_activate;
+	int skip_in_use;
 	unsigned revert;
 	unsigned read_only;
 };
 
 /* target attribute flags */
 #define MIRROR_LOG_CLUSTERED	0x00000001U
+
+/* thin target attribute flags */
+enum {
+	/* bitfields - new features from 1.1 version */
+	THIN_FEATURE_DISCARDS			= (1 << 0),
+	THIN_FEATURE_EXTERNAL_ORIGIN		= (1 << 1),
+	THIN_FEATURE_HELD_ROOT			= (1 << 2),
+	THIN_FEATURE_BLOCK_SIZE			= (1 << 3),
+};
 
 void set_activation(int activation);
 int activation(void);
@@ -92,6 +102,11 @@ int lv_check_not_in_use(struct cmd_context *cmd, struct logical_volume *lv,
  */
 int lv_activation_filter(struct cmd_context *cmd, const char *lvid_s,
 			 int *activate_lv);
+/*
+ * Checks against the auto_activation_volume_list and
+ * returns 1 if the LV should be activated, 0 otherwise.
+ */
+int lv_passes_auto_activation_filter(struct cmd_context *cmd, struct logical_volume *lv);
 
 int lv_check_transient(struct logical_volume *lv);
 /*

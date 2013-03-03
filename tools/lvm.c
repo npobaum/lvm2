@@ -196,6 +196,7 @@ int lvm_shell(struct cmd_context *cmd, struct cmdline_context *cmdline)
 
 		/* EOF */
 		if (!input) {
+			/* readline sends prompt to stdout */
 			printf("\n");
 			break;
 		}

@@ -59,14 +59,10 @@ struct dm_event_handler *dm_event_handler_create(void)
 {
 	struct dm_event_handler *dmevh = NULL;
 
-	if (!(dmevh = dm_malloc(sizeof(*dmevh))))
+	if (!(dmevh = dm_zalloc(sizeof(*dmevh)))) {
+		log_error("Failed to allocate event handler.");
 		return NULL;
-
-	dmevh->dmeventd_path = NULL;
-	dmevh->dso = dmevh->dev_name = dmevh->uuid = NULL;
-	dmevh->major = dmevh->minor = 0;
-	dmevh->mask = 0;
-	dmevh->timeout = 0;
+	}
 
 	return dmevh;
 }
@@ -245,7 +241,7 @@ static int _daemon_read(struct dm_event_fifos *fifos,
 				log_error("Unable to read from event server");
 				return 0;
 			}
-			if ((ret == 0) && i && !bytes) {
+			if ((ret == 0) && (i > 4) && !bytes) {
 				log_error("No input from event server.");
 				return 0;
 			}
@@ -440,7 +436,7 @@ static int _start_daemon(char *dmeventd_path, struct dm_event_fifos *fifos)
       start_server:
 	/* server is not running */
 
-	if (!strncmp(DMEVENTD_PATH, "/", 1) && stat(DMEVENTD_PATH, &statbuf)) {
+	if ((args[0][0] == '/') && stat(args[0], &statbuf)) {
 		if (errno != ENOENT)
 			log_error("Unable to find " DMEVENTD_PATH ": %s", strerror(errno));
 		else

@@ -902,10 +902,18 @@ void display_segtypes(const struct cmd_context *cmd)
 	}
 }
 
+/*
+ * Prompt for y or n from stdin.
+ * Defaults to 'no' in silent mode.
+ * All callers should support --yes and/or --force to override this.
+ */
 char yes_no_prompt(const char *prompt, ...)
 {
 	int c = 0, ret = 0;
 	va_list ap;
+
+	if (silent_mode())
+		return 'n';
 
 	sigint_allow();
 	do {
@@ -935,8 +943,7 @@ char yes_no_prompt(const char *prompt, ...)
 	sigint_restore();
 
 	if (c != '\n')
-		printf("\n");
+		fprintf(stderr, "\n");
 
 	return ret;
 }
-

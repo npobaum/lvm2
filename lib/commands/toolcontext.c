@@ -144,6 +144,15 @@ static void _init_logging(struct cmd_context *cmd)
 	    find_config_tree_int(cmd, "log/level", DEFAULT_LOGLEVEL);
 	init_debug(cmd->default_settings.debug);
 
+	/*
+	 * Suppress all non-essential stdout?
+	 * -qq can override the default of 0 to 1 later.
+	 * Once set to 1, there is no facility to change it back to 0.
+	 */
+	cmd->default_settings.silent = silent_mode() ? :
+	    find_config_tree_int(cmd, "log/silent", DEFAULT_SILENT);
+	init_silent(cmd->default_settings.silent);
+
 	/* Verbose level for tty output */
 	cmd->default_settings.verbose =
 	    find_config_tree_int(cmd, "log/verbose", DEFAULT_VERBOSE);
@@ -227,6 +236,7 @@ static int _process_config(struct cmd_context *cmd)
 	const struct dm_config_node *cn;
 	const struct dm_config_value *cv;
 	int64_t pv_min_kb;
+	const char *lvmetad_socket;
 
 	/* umask */
 	cmd->default_settings.umask = find_config_tree_int(cmd,
@@ -387,10 +397,24 @@ static int _process_config(struct cmd_context *cmd)
 	init_pv_min_size((uint64_t)pv_min_kb * (1024 >> SECTOR_SHIFT));
 
 	init_detect_internal_vg_cache_corruption
-		(find_config_tree_int(cmd, "global/detect_internal_vg_cache_corruption()",
+		(find_config_tree_int(cmd, "global/detect_internal_vg_cache_corruption",
 				      DEFAULT_DETECT_INTERNAL_VG_CACHE_CORRUPTION));
 
+	lvmetad_disconnect();
+
+	lvmetad_socket = getenv("LVM_LVMETAD_SOCKET");
+	if (!lvmetad_socket)
+		lvmetad_socket = DEFAULT_RUN_DIR "/lvmetad.socket";
+
+	/* TODO?
+		lvmetad_socket = find_config_tree_str(cmd, "lvmetad/socket_path",
+						      DEFAULT_RUN_DIR "/lvmetad.socket");
+	*/
+	lvmetad_set_socket(lvmetad_socket);
+	cn = find_config_tree_node(cmd, "devices/global_filter");
+	lvmetad_set_token(cn ? cn->v : NULL);
 	lvmetad_set_active(find_config_tree_int(cmd, "global/use_lvmetad", 0));
+	lvmetad_init(cmd);
 
 	return 1;
 }
@@ -650,9 +674,9 @@ static int _init_dev_cache(struct cmd_context *cmd)
 {
 	const struct dm_config_node *cn;
 	const struct dm_config_value *cv;
-	size_t uninitialized_var(udev_dir_len), len;
+	size_t len, udev_dir_len = strlen(DM_UDEV_DEV_DIR);
+	int len_diff;
 	int device_list_from_udev;
-	const char *uninitialized_var(udev_dir);
 
 	init_dev_disable_after_error_count(
 		find_config_tree_int(cmd, "devices/disable_after_error_count",
@@ -661,13 +685,9 @@ static int _init_dev_cache(struct cmd_context *cmd)
 	if (!dev_cache_init(cmd))
 		return_0;
 
-	if ((device_list_from_udev = udev_is_running() ?
+	device_list_from_udev = udev_is_running() ?
 		find_config_tree_bool(cmd, "devices/obtain_device_list_from_udev",
-				      DEFAULT_OBTAIN_DEVICE_LIST_FROM_UDEV) : 0)) {
-		if (!(udev_dir = udev_get_dev_dir()))
-			stack;
-		udev_dir_len = (udev_dir) ? strlen(udev_dir) : 0;
-	}
+				      DEFAULT_OBTAIN_DEVICE_LIST_FROM_UDEV) : 0;
 	init_obtain_device_list_from_udev(device_list_from_udev);
 
 	if (!(cn = find_config_tree_node(cmd, "devices/scan"))) {
@@ -688,11 +708,19 @@ static int _init_dev_cache(struct cmd_context *cmd)
 			return 0;
 		}
 
-		if (device_list_from_udev && udev_dir) {
+		if (device_list_from_udev) {
 			len = strlen(cv->v.str);
-			len = udev_dir_len > len ? len : udev_dir_len;
-			if (strncmp(udev_dir, cv->v.str, len) ||
-			    udev_dir[len] != cv->v.str[len]) {
+
+			/*
+			 * DM_UDEV_DEV_DIR always has '/' at its end.
+			 * If the item in the conf does not have it, be sure
+			 * to make the right comparison without the '/' char!
+			 */
+			len_diff = len && cv->v.str[len - 1] != '/' ?
+					udev_dir_len - 1 != len :
+					udev_dir_len != len;
+
+			if (len_diff || strncmp(DM_UDEV_DEV_DIR, cv->v.str, len)) {
 				device_list_from_udev = 0;
 				init_obtain_device_list_from_udev(0);
 			}
@@ -730,12 +758,10 @@ static int _init_dev_cache(struct cmd_context *cmd)
 
 static struct dev_filter *_init_filter_components(struct cmd_context *cmd)
 {
-	unsigned nr_filt = 0;
+	int nr_filt = 0;
 	const struct dm_config_node *cn;
-	struct dev_filter *filters[MAX_FILTERS];
+	struct dev_filter *filters[MAX_FILTERS] = { 0 };
 	struct dev_filter *composite;
-
-	memset(filters, 0, sizeof(filters));
 
 	/*
 	 * Filters listed in order: top one gets applied first.
@@ -759,17 +785,19 @@ static struct dev_filter *_init_filter_components(struct cmd_context *cmd)
 		log_very_verbose("devices/filter not found in config file: "
 				 "no regex filter installed");
 
-	else if (!(filters[nr_filt++] = regex_filter_create(cn->v))) {
+	else if (!(filters[nr_filt] = regex_filter_create(cn->v))) {
 		log_error("Failed to create regex device filter");
-		goto err;
-	}
+		goto bad;
+	} else
+		nr_filt++;
 
 	/* device type filter. Required. */
 	cn = find_config_tree_node(cmd, "devices/types");
-	if (!(filters[nr_filt++] = lvm_type_filter_create(cmd->proc_dir, cn))) {
+	if (!(filters[nr_filt] = lvm_type_filter_create(cmd->proc_dir, cn))) {
 		log_error("Failed to create lvm type filter");
-		goto err;
+		goto bad;
 	}
+	nr_filt++;
 
 	/* md component filter. Optional, non-critical. */
 	if (find_config_tree_bool(cmd, "devices/md_component_detection",
@@ -790,17 +818,14 @@ static struct dev_filter *_init_filter_components(struct cmd_context *cmd)
 	if (nr_filt == 1)
 		return filters[0];
 
-	if (!(composite = composite_filter_create(nr_filt, filters))) {
-		stack;
-		nr_filt++; /* compensate skip NULL */
-		goto err;
-	}
+	if (!(composite = composite_filter_create(nr_filt, filters)))
+		goto_bad;
 
 	return composite;
-err:
-	nr_filt--; /* skip NULL */
-	while (nr_filt-- > 0)
+bad:
+	while (--nr_filt >= 0)
 		 filters[nr_filt]->destroy(filters[nr_filt]);
+
 	return NULL;
 }
 
@@ -808,13 +833,14 @@ static int _init_filters(struct cmd_context *cmd, unsigned load_persistent_cache
 {
 	static char cache_file[PATH_MAX];
 	const char *dev_cache = NULL, *cache_dir, *cache_file_prefix;
-	struct dev_filter *f3, *f4;
+	struct dev_filter *f3 = NULL, *f4 = NULL, *toplevel_components[2] = { 0 };
 	struct stat st;
+	const struct dm_config_node *cn;
 
 	cmd->dump_filter = 0;
 
 	if (!(f3 = _init_filter_components(cmd)))
-		return_0;
+		goto_bad;
 
 	init_ignore_suspended_devices(find_config_tree_int(cmd,
 	    "devices/ignore_suspended_devices", DEFAULT_IGNORE_SUSPENDED_DEVICES));
@@ -831,8 +857,7 @@ static int _init_filters(struct cmd_context *cmd, unsigned load_persistent_cache
 		    cache_dir ? : DEFAULT_RUN_DIR,
 		    cache_file_prefix ? : DEFAULT_CACHE_FILE_PREFIX) < 0) {
 			log_error("Persistent cache filename too long.");
-			f3->destroy(f3);
-			return 0;
+			goto bad;
 		}
 	} else if (!(dev_cache = find_config_tree_str(cmd, "devices/cache", NULL)) &&
 		   (dm_snprintf(cache_file, sizeof(cache_file),
@@ -840,8 +865,7 @@ static int _init_filters(struct cmd_context *cmd, unsigned load_persistent_cache
 				DEFAULT_RUN_DIR,
 				DEFAULT_CACHE_FILE_PREFIX) < 0)) {
 		log_error("Persistent cache filename too long.");
-		f3->destroy(f3);
-		return 0;
+		goto bad;
 	}
 
 	if (!dev_cache)
@@ -871,9 +895,26 @@ static int _init_filters(struct cmd_context *cmd, unsigned load_persistent_cache
 		log_verbose("Failed to load existing device cache from %s",
 			    dev_cache);
 
-	cmd->filter = f4;
+	if (!(cn = find_config_tree_node(cmd, "devices/global_filter"))) {
+		cmd->filter = f4;
+	} else if (!(cmd->lvmetad_filter = regex_filter_create(cn->v)))
+		goto_bad;
+	else {
+		toplevel_components[0] = cmd->lvmetad_filter;
+		toplevel_components[1] = f4;
+		if (!(cmd->filter = composite_filter_create(2, toplevel_components)))
+			goto_bad;
+	}
 
 	return 1;
+bad:
+	if (f3)
+		f3->destroy(f3);
+	if (f4)
+		f4->destroy(f4);
+	if (toplevel_components[0])
+		toplevel_components[0]->destroy(toplevel_components[0]);
+	return 0;
 }
 
 struct format_type *get_format_by_name(struct cmd_context *cmd, const char *format)
@@ -1233,6 +1274,37 @@ static void _init_globals(struct cmd_context *cmd)
 	init_mirror_in_sync(0);
 }
 
+/*
+ * Close and reopen stream on file descriptor fd.
+ */
+static int _reopen_stream(FILE *stream, int fd, const char *mode, const char *name, FILE **new_stream)
+{
+	int fd_copy, new_fd;
+
+	if ((fd_copy = dup(fd)) < 0) {
+		log_sys_error("dup", name);
+		return 0;
+	}
+
+	if (fclose(stream))
+		log_sys_error("fclose", name);
+
+	if ((new_fd = dup2(fd_copy, fd)) < 0)
+		log_sys_error("dup2", name);
+	else if (new_fd != fd)
+		log_error("dup2(%d, %d) returned %d", fd_copy, fd, new_fd);
+
+	if (close(fd_copy) < 0)
+		log_sys_error("close", name);
+
+	if (!(*new_stream = fdopen(fd, mode))) {
+		log_sys_error("fdopen", name);
+		return 0;
+	}
+
+	return 1;
+}
+
 /* Entry point */
 struct cmd_context *create_toolcontext(unsigned is_long_lived,
 				       const char *system_dir,
@@ -1240,6 +1312,7 @@ struct cmd_context *create_toolcontext(unsigned is_long_lived,
 				       unsigned threaded)
 {
 	struct cmd_context *cmd;
+	FILE *new_stream;
 
 #ifdef M_MMAP_MAX
 	mallopt(M_MMAP_MAX, 0);
@@ -1274,6 +1347,7 @@ struct cmd_context *create_toolcontext(unsigned is_long_lived,
 	/* FIXME Make this configurable? */
 	reset_lvm_errno(1);
 
+#ifndef VALGRIND_POOL
 	/* Set in/out stream buffering before glibc */
 	if (set_buffering) {
 		/* Allocate 2 buffers */
@@ -1281,14 +1355,32 @@ struct cmd_context *create_toolcontext(unsigned is_long_lived,
 			log_error("Failed to allocate line buffer.");
 			goto out;
 		}
-		if ((setvbuf(stdin, cmd->linebuffer, _IOLBF, linebuffer_size) ||
-		     setvbuf(stdout, cmd->linebuffer + linebuffer_size,
-			     _IOLBF, linebuffer_size))) {
-			log_sys_error("setvbuf", "");
-			goto out;
+
+		if (is_valid_fd(STDIN_FILENO)) {
+			if (!_reopen_stream(stdin, STDIN_FILENO, "r", "stdin", &new_stream))
+				goto_out;
+			stdin = new_stream;
+			if (setvbuf(stdin, cmd->linebuffer, _IOLBF, linebuffer_size)) {
+				log_sys_error("setvbuf", "");
+				goto out;
+			}
+		}
+
+		if (is_valid_fd(STDOUT_FILENO)) {
+			if (!_reopen_stream(stdout, STDOUT_FILENO, "w", "stdout", &new_stream))
+				goto_out;
+			stdout = new_stream;
+			if (setvbuf(stdout, cmd->linebuffer + linebuffer_size,
+				     _IOLBF, linebuffer_size)) {
+				log_sys_error("setvbuf", "");
+				goto out;
+			}
 		}
 		/* Buffers are used for lines without '\n' */
-	}
+	} else
+		/* Without buffering, must not use stdin/stdout */
+		init_silent(1);
+#endif
 
 	/*
 	 * Environment variable LVM_SYSTEM_DIR overrides this below.
@@ -1369,6 +1461,11 @@ struct cmd_context *create_toolcontext(unsigned is_long_lived,
 
 	cmd->config_valid = 1;
 out:
+	if (cmd->config_valid != 1) {
+		destroy_toolcontext(cmd);
+		cmd = NULL;
+	}
+
 	return cmd;
 }
 
@@ -1428,6 +1525,8 @@ int refresh_filters(struct cmd_context *cmd)
 		cmd->filter->destroy(cmd->filter);
 		cmd->filter = NULL;
 	}
+
+	cmd->lvmetad_filter = NULL;
 
 	if (!(r = _init_filters(cmd, 0)))
                 stack;
@@ -1527,6 +1626,7 @@ int refresh_toolcontext(struct cmd_context *cmd)
 void destroy_toolcontext(struct cmd_context *cmd)
 {
 	struct dm_config_tree *cft_cmdline;
+	FILE *new_stream;
 
 	if (cmd->dump_filter)
 		persistent_filter_dump(cmd->filter, 1);
@@ -1549,15 +1649,33 @@ void destroy_toolcontext(struct cmd_context *cmd)
 	if (cmd->libmem)
 		dm_pool_destroy(cmd->libmem);
 
+#ifndef VALGRIND_POOL
 	if (cmd->linebuffer) {
 		/* Reset stream buffering to defaults */
-		setlinebuf(stdin);
-		fflush(stdout);
-		setlinebuf(stdout);
+		if (is_valid_fd(STDIN_FILENO)) {
+			if (_reopen_stream(stdin, STDIN_FILENO, "r", "stdin", &new_stream)) {
+				stdin = new_stream;
+				setlinebuf(stdin);
+			} else
+				cmd->linebuffer = NULL;	/* Leave buffer in place (deliberate leak) */
+		}
+
+		if (is_valid_fd(STDOUT_FILENO)) {
+			if (_reopen_stream(stdout, STDOUT_FILENO, "w", "stdout", &new_stream)) {
+				stdout = new_stream;
+				setlinebuf(stdout);
+			} else
+				cmd->linebuffer = NULL;	/* Leave buffer in place (deliberate leak) */
+		}
+
 		dm_free(cmd->linebuffer);
 	}
+#endif
 
 	dm_free(cmd);
+
+	lvmetad_release_token();
+	lvmetad_disconnect();
 
 	release_log_memory();
 	activation_exit();

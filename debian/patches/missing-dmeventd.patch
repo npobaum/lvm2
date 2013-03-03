@@ -3,11 +3,11 @@ Author: Bastian Blank <waldi@debian.org>
 
 --- a/daemons/dmeventd/libdevmapper-event.c
 +++ b/daemons/dmeventd/libdevmapper-event.c
-@@ -441,7 +441,10 @@
+@@ -437,7 +437,10 @@
  	/* server is not running */
  
- 	if (!strncmp(DMEVENTD_PATH, "/", 1) && stat(DMEVENTD_PATH, &statbuf)) {
--		log_sys_error("stat", DMEVENTD_PATH);
+ 	if ((args[0][0] == '/') && stat(args[0], &statbuf)) {
+-		log_sys_error("stat", args[0]);
 +		if (errno != ENOENT)
 +			log_error("Unable to find " DMEVENTD_PATH ": %s", strerror(errno));
 +		else
@@ -15,7 +15,7 @@ Author: Bastian Blank <waldi@debian.org>
  		return 0;
  	}
  
-@@ -627,10 +630,19 @@
+@@ -623,10 +626,19 @@
  
  	if ((err = _do_event(DM_EVENT_CMD_REGISTER_FOR_EVENT, dmevh->dmeventd_path, &msg,
  			     dmevh->dso, uuid, dmevh->mask, dmevh->timeout)) < 0) {
@@ -41,7 +41,7 @@ Author: Bastian Blank <waldi@debian.org>
  	dm_free(msg.data);
 --- a/lib/activate/activate.c
 +++ b/lib/activate/activate.c
-@@ -1197,10 +1197,12 @@
+@@ -1214,10 +1214,12 @@
  
  	if (!r)
  		return_0;
@@ -57,7 +57,7 @@ Author: Bastian Blank <waldi@debian.org>
  }
  
  #endif
-@@ -1214,7 +1216,7 @@
+@@ -1231,7 +1233,7 @@
  {
  #ifdef DMEVENTD
  	int i, pending = 0, monitored;
@@ -66,7 +66,7 @@ Author: Bastian Blank <waldi@debian.org>
  	struct dm_list *tmp, *snh, *snht;
  	struct lv_segment *seg;
  	struct lv_segment *log_seg;
-@@ -1319,25 +1321,30 @@
+@@ -1366,25 +1368,30 @@
  			continue;
  
  		/* FIXME specify events */

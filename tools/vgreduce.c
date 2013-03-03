@@ -14,7 +14,6 @@
  */
 
 #include "tools.h"
-#include "lv_alloc.h"
 
 static int _remove_pv(struct volume_group *vg, struct pv_list *pvl, int silent)
 {
@@ -125,6 +124,11 @@ static int _vgreduce_single(struct cmd_context *cmd, struct volume_group *vg,
 	int r = ECMD_FAILED;
 	const char *name = pv_dev_name(pv);
 
+	if (!vg) {
+		log_error(INTERNAL_ERROR "VG is NULL.");
+		return ECMD_FAILED;
+	}
+
 	if (pv_pe_alloc_count(pv)) {
 		log_error("Physical volume \"%s\" still in use", name);
 		return ECMD_FAILED;
@@ -189,7 +193,7 @@ static int _vgreduce_single(struct cmd_context *cmd, struct volume_group *vg,
 
 	backup(vg);
 
-	log_print("Removed \"%s\" from volume group \"%s\"", name, vg->name);
+	log_print_unless_silent("Removed \"%s\" from volume group \"%s\"", name, vg->name);
 	r = ECMD_PROCESSED;
 bad:
 	if (pvl)
@@ -206,6 +210,7 @@ int vgreduce(struct cmd_context *cmd, int argc, char **argv)
 	int fixed = 1;
 	int repairing = arg_count(cmd, removemissing_ARG);
 	int saved_ignore_suspended_devices = ignore_suspended_devices();
+	int locked = 0;
 
 	if (!argc && !repairing) {
 		log_error("Please give volume group name and "
@@ -260,6 +265,8 @@ int vgreduce(struct cmd_context *cmd, int argc, char **argv)
 	    && !arg_count(cmd, removemissing_ARG))
 		goto_out;
 
+	locked = !vg_read_error(vg);
+
 	if (repairing) {
 		if (!vg_read_error(vg) && !vg_missing_pv_count(vg)) {
 			log_error("Volume group \"%s\" is already consistent",
@@ -275,6 +282,7 @@ int vgreduce(struct cmd_context *cmd, int argc, char **argv)
 					READ_ALLOW_INCONSISTENT
 					| READ_ALLOW_EXPORTED);
 
+		locked |= !vg_read_error(vg);
 		if (vg_read_error(vg) && vg_read_error(vg) != FAILED_READ_ONLY
 		    && vg_read_error(vg) != FAILED_INCONSISTENT)
 			goto_out;
@@ -296,8 +304,8 @@ int vgreduce(struct cmd_context *cmd, int argc, char **argv)
 		backup(vg);
 
 		if (fixed) {
-			log_print("Wrote out consistent volume group %s",
-				  vg_name);
+			log_print_unless_silent("Wrote out consistent volume group %s",
+						vg_name);
 			ret = ECMD_PROCESSED;
 		} else
 			ret = ECMD_FAILED;
@@ -314,7 +322,10 @@ int vgreduce(struct cmd_context *cmd, int argc, char **argv)
 	}
 out:
 	init_ignore_suspended_devices(saved_ignore_suspended_devices);
-	unlock_and_release_vg(cmd, vg, vg_name);
+	if (locked)
+		unlock_vg(cmd, vg_name);
+
+	release_vg(vg);
 
 	return ret;
 

@@ -17,12 +17,9 @@
 #include "toolcontext.h"
 #include "segtype.h"
 #include "display.h"
-#include "archiver.h"
 #include "activate.h"
 #include "lv_alloc.h"
 #include "lvm-string.h"
-#include "str_list.h"
-#include "memlock.h"
 
 #define RAID_REGION_SIZE 1024
 
@@ -62,6 +59,24 @@ uint32_t lv_raid_image_count(const struct logical_volume *lv)
 		return 1;
 
 	return seg->area_count;
+}
+
+/*
+ * Resume sub-LVs first, then top-level LV
+ */
+static int _bottom_up_resume(struct logical_volume *lv)
+{
+	uint32_t s;
+	struct lv_segment *seg = first_seg(lv);
+
+	if (seg_is_raid(seg) && (seg->area_count > 1)) {
+		for (s = 0; s < seg->area_count; s++)
+			if (!resume_lv(lv->vg->cmd, seg_lv(seg, s)) ||
+			    !resume_lv(lv->vg->cmd, seg_metalv(seg, s)))
+				return_0;
+	}
+
+	return resume_lv(lv->vg->cmd, lv);
 }
 
 static int _activate_sublv_preserving_excl(struct logical_volume *top_lv,
@@ -237,7 +252,7 @@ static int _raid_remove_top_layer(struct logical_volume *lv,
 	if (!seg_is_mirrored(seg)) {
 		log_error(INTERNAL_ERROR
 			  "Unable to remove RAID layer from segment type %s",
-			  seg->segtype->name);
+			  seg->segtype->ops->name(seg));
 		return 0;
 	}
 
@@ -288,6 +303,9 @@ static int _raid_remove_top_layer(struct logical_volume *lv,
 static int _clear_lv(struct logical_volume *lv)
 {
 	int was_active = lv_is_active(lv);
+
+	if (test_mode())
+		return 1;
 
 	if (!was_active && !activate_lv(lv->vg->cmd, lv)) {
 		log_error("Failed to activate %s for clearing",
@@ -621,6 +639,18 @@ static int _raid_add_images(struct logical_volume *lv,
 	struct lv_list *lvl;
 	struct lv_segment_area *new_areas;
 
+	if (lv->status & LV_NOTSYNCED) {
+		log_error("Can't add image to out-of-sync RAID LV:"
+			  " use 'lvchange --resync' first.");
+		return 0;
+	}
+
+	if (!_raid_in_sync(lv)) {
+		log_error("Can't add image to RAID LV that"
+			  " is still initializing.");
+		return 0;
+	}
+
 	dm_list_init(&meta_lvs); /* For image addition */
 	dm_list_init(&data_lvs); /* For image addition */
 
@@ -643,7 +673,11 @@ static int _raid_add_images(struct logical_volume *lv,
 		dm_list_add(&meta_lvs, &lvl->list);
 	} else if (!seg_is_raid(seg)) {
 		log_error("Unable to add RAID images to %s of segment type %s",
-			  lv->name, seg->segtype->name);
+			  lv->name, seg->segtype->ops->name(seg));
+		return 0;
+	} else if (!_raid_in_sync(lv)) {
+		log_error("Unable to add RAID images until %s is in-sync",
+			  lv->name);
 		return 0;
 	}
 
@@ -697,6 +731,12 @@ static int _raid_add_images(struct logical_volume *lv,
 		seg = first_seg(lv);
 		seg_lv(seg, 0)->status |= RAID_IMAGE | LVM_READ | LVM_WRITE;
 		seg->region_size = RAID_REGION_SIZE;
+		/* MD's bitmap is limited to tracking 2^21 regions */
+		while (seg->region_size < (lv->size / (1 << 21))) {
+			seg->region_size *= 2;
+			log_very_verbose("Setting RAID1 region_size to %uS",
+					 seg->region_size);
+		}
 		seg->segtype = get_segtype_from_string(lv->vg->cmd, "raid1");
 		if (!seg->segtype)
 			return_0;
@@ -988,9 +1028,13 @@ static int _raid_remove_images(struct logical_volume *lv,
 	}
 
 	/* Convert to linear? */
-	if ((new_count == 1) && !_raid_remove_top_layer(lv, &removal_list)) {
-		log_error("Failed to remove RAID layer after linear conversion");
-		return 0;
+	if (new_count == 1) {
+		if (!_raid_remove_top_layer(lv, &removal_list)) {
+			log_error("Failed to remove RAID layer"
+				  " after linear conversion");
+			return 0;
+		}
+		lv->status &= ~LV_NOTSYNCED;
 	}
 
 	if (!vg_write(lv->vg)) {
@@ -1012,10 +1056,28 @@ static int _raid_remove_images(struct logical_volume *lv,
 	}
 
 	/*
-	 * Resume original LV
-	 * This also resumes all other sub-lvs (including the extracted)
+	 * We resume the extracted sub-LVs first so they are renamed
+	 * and won't conflict with the remaining (possibly shifted)
+	 * sub-LVs.
 	 */
-	if (!resume_lv(lv->vg->cmd, lv)) {
+	dm_list_iterate_items(lvl, &removal_list) {
+		if (!resume_lv(lv->vg->cmd, lvl->lv)) {
+			log_error("Failed to resume extracted LVs");
+			return 0;
+		}
+	}
+
+	/*
+	 * Resume the remaining LVs
+	 * We must start by resuming the sub-LVs first (which would
+	 * otherwise be handled automatically) because the shifting
+	 * of positions could otherwise cause name collisions.  For
+	 * example, if position 0 of a 3-way array is removed, position
+	 * 1 and 2 must be shifted and renamed 0 and 1.  If position 2
+	 * tries to rename first, it will collide with the existing
+	 * position 1.
+	 */
+	if (!_bottom_up_resume(lv)) {
 		log_error("Failed to resume %s/%s after committing changes",
 			  lv->vg->name, lv->name);
 		return 0;
@@ -1074,7 +1136,6 @@ int lv_raid_change_image_count(struct logical_volume *lv,
 int lv_raid_split(struct logical_volume *lv, const char *split_name,
 		  uint32_t new_count, struct dm_list *splittable_pvs)
 {
-	const char *old_name;
 	struct lv_list *lvl;
 	struct dm_list removal_list, data_list;
 	struct cmd_context *cmd = lv->vg->cmd;
@@ -1093,7 +1154,7 @@ int lv_raid_split(struct logical_volume *lv, const char *split_name,
 
 	if (!seg_is_mirrored(first_seg(lv))) {
 		log_error("Unable to split logical volume of segment type, %s",
-			  first_seg(lv)->segtype->name);
+			  first_seg(lv)->segtype->ops->name(first_seg(lv)));
 		return 0;
 	}
 
@@ -1145,7 +1206,6 @@ int lv_raid_split(struct logical_volume *lv, const char *split_name,
 	dm_list_iterate_items(lvl, &data_list)
 		break;
 
-	old_name = lvl->lv->name;
 	lvl->lv->name = split_name;
 
 	if (!vg_write(lv->vg)) {
@@ -1167,19 +1227,30 @@ int lv_raid_split(struct logical_volume *lv, const char *split_name,
 	}
 
 	/*
-	 * Resume original LV
-	 * This also resumes all other sub-lvs (including the extracted)
+	 * First resume the newly split LV and LVs on the removal list.
+	 * This is necessary so that there are no name collisions due to
+	 * the original RAID LV having possibly had sub-LVs that have been
+	 * shifted and renamed.
 	 */
-	if (!resume_lv(cmd, lv)) {
+	if (!resume_lv(cmd, lvl->lv))
+		return_0;
+	dm_list_iterate_items(lvl, &removal_list)
+		if (!resume_lv(cmd, lvl->lv))
+			return_0;
+
+	/*
+	 * Resume the remaining LVs
+	 * We must start by resuming the sub-LVs first (which would
+	 * otherwise be handled automatically) because the shifting
+	 * of positions could otherwise cause name collisions.  For
+	 * example, if position 0 of a 3-way array is split, position
+	 * 1 and 2 must be shifted and renamed 0 and 1.  If position 2
+	 * tries to rename first, it will collide with the existing
+	 * position 1.
+	 */
+	if (!_bottom_up_resume(lv)) {
 		log_error("Failed to resume %s/%s after committing changes",
 			  lv->vg->name, lv->name);
-		return 0;
-	}
-
-	/* Recycle newly split LV so it is properly renamed */
-	if (!suspend_lv(cmd, lvl->lv) || !resume_lv(cmd, lvl->lv)) {
-		log_error("Failed to rename %s to %s after committing changes",
-			  old_name, split_name);
 		return 0;
 	}
 
@@ -1244,7 +1315,7 @@ int lv_raid_split_and_track(struct logical_volume *lv,
 		break;
 	}
 
-	if (s >= seg->area_count) {
+	if (s >= (int) seg->area_count) {
 		log_error("Unable to find image to satisfy request");
 		return 0;
 	}
@@ -1267,8 +1338,8 @@ int lv_raid_split_and_track(struct logical_volume *lv,
 		return 0;
 	}
 
-	log_print("%s split from %s for read-only purposes.",
-		  seg_lv(seg, s)->name, lv->name);
+	log_print_unless_silent("%s split from %s for read-only purposes.",
+				seg_lv(seg, s)->name, lv->name);
 
 	/* Resume original LV */
 	if (!resume_lv(lv->vg->cmd, lv)) {
@@ -1281,8 +1352,8 @@ int lv_raid_split_and_track(struct logical_volume *lv,
 	if (!_activate_sublv_preserving_excl(lv, seg_lv(seg, s)))
 		return 0;
 
-	log_print("Use 'lvconvert --merge %s/%s' to merge back into %s",
-		  lv->vg->name, seg_lv(seg, s)->name, lv->name);
+	log_print_unless_silent("Use 'lvconvert --merge %s/%s' to merge back into %s",
+				lv->vg->name, seg_lv(seg, s)->name, lv->name);
 	return 1;
 }
 
@@ -1366,9 +1437,8 @@ int lv_raid_merge(struct logical_volume *image_lv)
 		return 0;
 	}
 
-	log_print("%s/%s successfully merged back into %s/%s",
-		  vg->name, image_lv->name,
-		  vg->name, lv->name);
+	log_print_unless_silent("%s/%s successfully merged back into %s/%s",
+				vg->name, image_lv->name, vg->name, lv->name);
 	return 1;
 }
 
@@ -1518,7 +1588,7 @@ int lv_raid_reshape(struct logical_volume *lv,
 
 	log_error("Converting the segment type for %s/%s from %s to %s"
 		  " is not yet supported.", lv->vg->name, lv->name,
-		  seg->segtype->name, new_segtype->name);
+		  seg->segtype->ops->name(seg), new_segtype->name);
 	return 0;
 }
 
@@ -1574,8 +1644,27 @@ int lv_raid_replace(struct logical_volume *lv,
 		   (match_count > raid_seg->segtype->parity_devs)) {
 		log_error("Unable to replace more than %u PVs from (%s) %s/%s",
 			  raid_seg->segtype->parity_devs,
-			  raid_seg->segtype->name, lv->vg->name, lv->name);
+			  raid_seg->segtype->ops->name(raid_seg),
+			  lv->vg->name, lv->name);
 		return 0;
+	} else if (!strcmp(raid_seg->segtype->name, "raid10")) {
+		uint32_t i, rebuilds_per_group = 0;
+		/* FIXME: We only support 2-way mirrors in RAID10 currently */
+		uint32_t copies = 2;
+
+		for (i = 0; i < raid_seg->area_count * copies; i++) {
+			s = i % raid_seg->area_count;
+			if (!(i % copies))
+				rebuilds_per_group = 0;
+			if (_lv_is_on_pvs(seg_lv(raid_seg, s), remove_pvs) ||
+			    _lv_is_on_pvs(seg_metalv(raid_seg, s), remove_pvs))
+				rebuilds_per_group++;
+			if (rebuilds_per_group >= copies) {
+				log_error("Unable to replace all the devices "
+					  "in a RAID10 mirror group.");
+				return 0;
+			}
+		}
 	}
 
 	/*
@@ -1585,10 +1674,28 @@ int lv_raid_replace(struct logical_volume *lv,
 	 *
 	 * - We need to change the LV names when we insert them.
 	 */
+try_again:
 	if (!_alloc_image_components(lv, allocate_pvs, match_count,
 				     &new_meta_lvs, &new_data_lvs)) {
 		log_error("Failed to allocate replacement images for %s/%s",
 			  lv->vg->name, lv->name);
+
+		/*
+		 * If this is a repair, then try to
+		 * do better than all-or-nothing
+		 */
+		if (match_count > 1) {
+			log_error("Attempting replacement of %u devices"
+				  " instead of %u", match_count - 1, match_count);
+			match_count--;
+
+			/*
+			 * Since we are replacing some but not all of the bad
+			 * devices, we must set partial_activation
+			 */
+			lv->vg->cmd->partial_activation = 1;
+			goto try_again;
+		}
 		return 0;
 	}
 
@@ -1666,7 +1773,7 @@ int lv_raid_replace(struct logical_volume *lv,
 		return 0;
 	}
 
-	if (!suspend_lv(lv->vg->cmd, lv)) {
+	if (!suspend_lv_origin(lv->vg->cmd, lv)) {
 		log_error("Failed to suspend %s/%s before committing changes",
 			  lv->vg->name, lv->name);
 		return 0;
@@ -1678,7 +1785,7 @@ int lv_raid_replace(struct logical_volume *lv,
 		return 0;
 	}
 
-	if (!resume_lv(lv->vg->cmd, lv)) {
+	if (!resume_lv_origin(lv->vg->cmd, lv)) {
 		log_error("Failed to resume %s/%s after committing changes",
 			  lv->vg->name, lv->name);
 		return 0;
@@ -1714,7 +1821,7 @@ int lv_raid_replace(struct logical_volume *lv,
 		return 0;
 	}
 
-	if (!suspend_lv(lv->vg->cmd, lv)) {
+	if (!suspend_lv_origin(lv->vg->cmd, lv)) {
 		log_error("Failed to suspend %s/%s before committing changes",
 			  lv->vg->name, lv->name);
 		return 0;
@@ -1726,7 +1833,7 @@ int lv_raid_replace(struct logical_volume *lv,
 		return 0;
 	}
 
-	if (!resume_lv(lv->vg->cmd, lv)) {
+	if (!resume_lv_origin(lv->vg->cmd, lv)) {
 		log_error("Failed to resume %s/%s after committing changes",
 			  lv->vg->name, lv->name);
 		return 0;

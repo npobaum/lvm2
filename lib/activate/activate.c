@@ -328,10 +328,8 @@ int activation(void)
 	return _activation;
 }
 
-static int _passes_volumes_filter(struct cmd_context *cmd,
-				  struct logical_volume *lv,
-				  const struct dm_config_node *cn,
-				  const char *config_path)
+static int _lv_passes_volumes_filter(struct cmd_context *cmd, struct logical_volume *lv,
+				     const struct dm_config_node *cn, const char *config_path)
 {
 	const struct dm_config_value *cv;
 	const char *str;
@@ -429,7 +427,7 @@ static int _passes_activation_filter(struct cmd_context *cmd,
 		return 0;
 	}
 
-	return _passes_volumes_filter(cmd, lv, cn, "activation/volume_list");
+	return _lv_passes_volumes_filter(cmd, lv, cn, "activation/volume_list");
 }
 
 static int _passes_readonly_filter(struct cmd_context *cmd,
@@ -440,7 +438,21 @@ static int _passes_readonly_filter(struct cmd_context *cmd,
 	if (!(cn = find_config_tree_node(cmd, "activation/read_only_volume_list")))
 		return 0;
 
-	return _passes_volumes_filter(cmd, lv, cn, "activation/read_only_volume_list");
+	return _lv_passes_volumes_filter(cmd, lv, cn, "activation/read_only_volume_list");
+}
+
+
+int lv_passes_auto_activation_filter(struct cmd_context *cmd, struct logical_volume *lv)
+{
+	const struct dm_config_node *cn;
+
+	if (!(cn = find_config_tree_node(cmd, "activation/auto_activation_volume_list"))) {
+		log_verbose("activation/auto_activation_volume_list configuration setting "
+			    "not defined: All logical volumes will be auto-activated.");
+		return 1;
+	}
+
+	return _lv_passes_volumes_filter(cmd, lv, cn, "activation/auto_activation_volume_list");
 }
 
 int library_version(char *version, size_t size)
@@ -502,6 +514,11 @@ int target_version(const char *target_name, uint32_t *maj,
 	} while (last_target != target);
 
       out:
+	if (r)
+		log_very_verbose("Found %s target "
+				 "v%" PRIu32 ".%" PRIu32 ".%" PRIu32 ".",
+				 target_name, *maj, *min, *patchlevel);
+
 	dm_task_destroy(dmt);
 
 	return r;
@@ -1223,6 +1240,8 @@ int monitor_dev_for_events(struct cmd_context *cmd, struct logical_volume *lv,
 	int (*monitor_fn) (struct lv_segment *s, int e);
 	uint32_t s;
 	static const struct lv_activate_opts zlaopts = { 0 };
+	static const struct lv_activate_opts thinopts = { .skip_in_use = 1 };
+	struct lvinfo info;
 
 	if (!laopts)
 		laopts = &zlaopts;
@@ -1236,6 +1255,19 @@ int monitor_dev_for_events(struct cmd_context *cmd, struct logical_volume *lv,
 	 */
 	if (monitor && !dmeventd_monitor_mode())
 		return 1;
+
+	/*
+	 * Allow to unmonitor thin pool via explicit pool unmonitor
+	 * or unmonitor before the last thin pool user deactivation
+	 * Skip unmonitor, if invoked via unmonitor of thin volume
+	 * and there is another thin pool user (open_count > 1)
+	 */
+	if (laopts->skip_in_use && lv_info(lv->vg->cmd, lv, 1, &info, 1, 0) &&
+	    (info.open_count != 1)) {
+		log_debug("Skipping unmonitor of opened %s (open:%d)",
+			  lv->name, info.open_count);
+		return 1;
+	}
 
 	/*
 	 * In case of a snapshot device, we monitor lv->snapshot->lv,
@@ -1280,6 +1312,21 @@ int monitor_dev_for_events(struct cmd_context *cmd, struct logical_volume *lv,
 				r = 0;
 			}
 		}
+
+		/*
+		 * If requested unmonitoring of thin volume, request test
+		 * if there is no other thin pool user
+		 *
+		 * FIXME: code here looks like _lv_postorder()
+		 */
+		if (seg->pool_lv &&
+		    !monitor_dev_for_events(cmd, seg->pool_lv,
+					    (!monitor) ? &thinopts : NULL, monitor))
+			r = 0;
+
+		if (seg->metadata_lv &&
+		    !monitor_dev_for_events(cmd, seg->metadata_lv, NULL, monitor))
+			r = 0;
 
 		if (!seg_monitored(seg) || (seg->status & PVMOVE))
 			continue;
@@ -1351,6 +1398,9 @@ int monitor_dev_for_events(struct cmd_context *cmd, struct logical_volume *lv,
 			r = (monitored && monitor) || (!monitored && !monitor);
 	}
 
+	if (!r && !error_message_produced())
+		log_error("%sonitoring %s/%s failed.", monitor ? "M" : "Not m",
+			  lv->vg->name, lv->name);
 	return r;
 #else
 	return 1;
@@ -1495,6 +1545,9 @@ static int _lv_suspend(struct cmd_context *cmd, const char *lvid_s,
 	    (lv_is_origin(lv_pre) || lv_is_cow(lv_pre)))
 		lockfs = 1;
 
+	if (laopts->origin_only && lv_is_thin_volume(lv) && lv_is_thin_volume(lv_pre))
+		lockfs = 1;
+
 	/*
 	 * Suspending an LV directly above a PVMOVE LV also
  	 * suspends other LVs using that same PVMOVE LV.
@@ -1574,7 +1627,7 @@ static int _lv_resume(struct cmd_context *cmd, const char *lvid_s,
 	if (lv_is_thin_pool(lv) && laopts->origin_only)
 		messages_only = 1;
 
-	if (!lv_is_origin(lv))
+	if (!lv_is_origin(lv) && !lv_is_thin_volume(lv))
 		laopts->origin_only = 0;
 
 	if (test_mode()) {

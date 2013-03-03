@@ -44,10 +44,16 @@
 /* Define default name mangling behaviour */
 #undef DEFAULT_DM_NAME_MANGLING
 
+/* Default DM run directory. */
+#undef DEFAULT_DM_RUN_DIR
+
 /* Name of default locking directory. */
 #undef DEFAULT_LOCK_DIR
 
-/* Name of default run directory. */
+/* Default directory to keep PID files in. */
+#undef DEFAULT_PID_DIR
+
+/* Default LVM run directory. */
 #undef DEFAULT_RUN_DIR
 
 /* Define to 0 to reinstate the pre-2.02.54 handling of unit suffixes. */
@@ -426,9 +432,6 @@
 /* Define to 1 if you have the <utmpx.h> header file. */
 #undef HAVE_UTMPX_H
 
-/* Define to 1 if you have the <valgrind/memcheck.h> header file. */
-#undef HAVE_VALGRIND_MEMCHECK_H
-
 /* Define to 1 if you have the `vfork' function. */
 #undef HAVE_VFORK
 
@@ -454,6 +457,9 @@
 
 /* Define to 1 to include built-in support for LVM1 metadata. */
 #undef LVM1_INTERNAL
+
+/* Path to lvmetad pidfile. */
+#undef LVMETAD_PIDFILE
 
 /* Define to 1 to include code that uses lvmetad. */
 #undef LVMETAD_SUPPORT
@@ -533,6 +539,9 @@
 
 /* Define to 1 if you have the ANSI C header files. */
 #undef STDC_HEADERS
+
+/* The path to 'thin_check', if available. */
+#undef THIN_CHECK_CMD
 
 /* Define to 1 to include built-in support for thin provisioning. */
 #undef THIN_INTERNAL

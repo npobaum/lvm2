@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2011 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2012 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -27,6 +27,8 @@
 #include <fcntl.h>
 #include <limits.h>
 
+#include "device-types.h"
+
 #define NUMBER_OF_MAJORS 4096
 
 #define PARTITION_SCSI_DEVICE (1 << 0)
@@ -34,11 +36,6 @@ static struct {
 	int max_partitions; /* 0 means LVM won't use this major number. */
 	int flags;
 } _partitions[NUMBER_OF_MAJORS];
-
-typedef struct {
-	const char *name;
-	const int max_partitions;
-} device_info_t;
 
 static int _md_major = -1;
 static int _blkext_major = -1;
@@ -99,46 +96,6 @@ const char *dev_subsystem_name(const struct device *dev)
 	return "";
 }
 
-/*
- * Devices are only checked for partition tables if their minor number
- * is a multiple of the number corresponding to their type below
- * i.e. this gives the granularity of whole-device minor numbers.
- * Use 1 if the device is not partitionable.
- *
- * The list can be supplemented with devices/types in the config file.
- */
-static const device_info_t device_info[] = {
-	{"ide", 64},		/* IDE disk */
-	{"sd", 16},		/* SCSI disk */
-	{"md", 1},		/* Multiple Disk driver (SoftRAID) */
-	{"mdp", 1},		/* Partitionable MD */
-	{"loop", 1},		/* Loop device */
-	{"dasd", 4},		/* DASD disk (IBM S/390, zSeries) */
-	{"dac960", 8},		/* DAC960 */
-	{"nbd", 16},		/* Network Block Device */
-	{"ida", 16},		/* Compaq SMART2 */
-	{"cciss", 16},		/* Compaq CCISS array */
-	{"ubd", 16},		/* User-mode virtual block device */
-	{"ataraid", 16},	/* ATA Raid */
-	{"drbd", 16},		/* Distributed Replicated Block Device */
-	{"emcpower", 16},	/* EMC Powerpath */
-	{"power2", 16},		/* EMC Powerpath */
-	{"i2o_block", 16},	/* i2o Block Disk */
-	{"iseries/vd", 8},	/* iSeries disks */
-	{"gnbd", 1},		/* Network block device */
-	{"ramdisk", 1},		/* RAM disk */
-	{"aoe", 16},		/* ATA over Ethernet */
-	{"device-mapper", 1},	/* Other mapped devices */
-	{"xvd", 16},		/* Xen virtual block device */
-	{"vdisk", 8},		/* SUN's LDOM virtual block device */
-	{"ps3disk", 16},	/* PlayStation 3 internal disk */
-	{"virtblk", 8},		/* VirtIO disk */
-	{"mmc", 16},		/* MMC block device */
-	{"blkext", 1},		/* Extended device partitions */
-	{"fio", 16},		/* Fusion */
-	{NULL, 0}
-};
-
 static int _passes_lvm_type_device_filter(struct dev_filter *f __attribute__((unused)),
 					  struct device *dev)
 {
@@ -196,7 +153,7 @@ static int _scan_proc_dev(const char *proc, const struct dm_config_node *cn)
 	size_t dev_len = 0;
 	const struct dm_config_value *cv;
 	const char *name;
-
+	char *nl;
 
 	if (!*proc) {
 		log_verbose("No proc filesystem found: using all block device "
@@ -220,14 +177,27 @@ static int _scan_proc_dev(const char *proc, const struct dm_config_node *cn)
 		return 0;
 	}
 
-	while (fgets(line, 80, pd) != NULL) {
+	while (fgets(line, sizeof(line), pd) != NULL) {
 		i = 0;
 		while (line[i] == ' ')
 			i++;
 
 		/* If it's not a number it may be name of section */
 		line_maj = atoi(((char *) (line + i)));
-		if ((line_maj <= 0) || (line_maj >= NUMBER_OF_MAJORS)) {
+
+		if (line_maj < 0 || line_maj >= NUMBER_OF_MAJORS) {
+			/*
+			 * Device numbers shown in /proc/devices are actually direct
+			 * numbers passed to registering function, however the kernel
+			 * uses only 12 bits, so use just 12 bits for major.
+			 */
+			if ((nl = strchr(line, '\n'))) *nl = '\0';
+			log_warn("WARNING: /proc/devices line: %s, replacing major with %d.",
+				 line, line_maj & (NUMBER_OF_MAJORS - 1));
+			line_maj &= (NUMBER_OF_MAJORS - 1);
+		}
+
+		if (!line_maj) {
 			blocksection = (line[i] == 'B') ? 1 : 0;
 			continue;
 		}
@@ -269,13 +239,13 @@ static int _scan_proc_dev(const char *proc, const struct dm_config_node *cn)
 
 		/* Go through the valid device names and if there is a
 		   match store max number of partitions */
-		for (j = 0; device_info[j].name != NULL; j++) {
-			dev_len = strlen(device_info[j].name);
+		for (j = 0; _device_info[j].name[0]; j++) {
+			dev_len = strlen(_device_info[j].name);
 			if (dev_len <= strlen(line + i) &&
-			    !strncmp(device_info[j].name, line + i, dev_len) &&
+			    !strncmp(_device_info[j].name, line + i, dev_len) &&
 			    (line_maj < NUMBER_OF_MAJORS)) {
 				_partitions[line_maj].max_partitions =
-				    device_info[j].max_partitions;
+				    _device_info[j].max_partitions;
 				break;
 			}
 		}
@@ -342,18 +312,26 @@ int major_is_scsi_device(int major)
 	return (_partitions[major].flags & PARTITION_SCSI_DEVICE) ? 1 : 0;
 }
 
+static void _lvm_type_filter_destroy(struct dev_filter *f)
+{
+	if (f->use_count)
+		log_error(INTERNAL_ERROR "Destroying lvm_type filter while in use %u times.", f->use_count);
+
+	dm_free(f);
+}
+
 struct dev_filter *lvm_type_filter_create(const char *proc,
 					  const struct dm_config_node *cn)
 {
 	struct dev_filter *f;
 
-	if (!(f = dm_malloc(sizeof(struct dev_filter)))) {
+	if (!(f = dm_zalloc(sizeof(struct dev_filter)))) {
 		log_error("LVM type filter allocation failed");
 		return NULL;
 	}
 
 	f->passes_filter = _passes_lvm_type_device_filter;
-	f->destroy = lvm_type_filter_destroy;
+	f->destroy = _lvm_type_filter_destroy;
 	f->use_count = 0;
 	f->private = NULL;
 
@@ -363,12 +341,4 @@ struct dev_filter *lvm_type_filter_create(const char *proc,
 	}
 
 	return f;
-}
-
-void lvm_type_filter_destroy(struct dev_filter *f)
-{
-	if (f->use_count)
-		log_error(INTERNAL_ERROR "Destroying lvm_type filter while in use %u times.", f->use_count);
-
-	dm_free(f);
 }

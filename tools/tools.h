@@ -138,7 +138,8 @@ void usage(const char *name);
 
 /* the argument verify/normalise functions */
 int yes_no_arg(struct cmd_context *cmd, struct arg_values *av);
-int yes_no_excl_arg(struct cmd_context *cmd, struct arg_values *av);
+int activation_arg(struct cmd_context *cmd, struct arg_values *av);
+int discards_arg(struct cmd_context *cmd, struct arg_values *av);
 int size_kb_arg(struct cmd_context *cmd, struct arg_values *av);
 int size_mb_arg(struct cmd_context *cmd, struct arg_values *av);
 int int_arg(struct cmd_context *cmd, struct arg_values *av);
@@ -155,6 +156,8 @@ int segtype_arg(struct cmd_context *cmd, struct arg_values *av);
 int alloc_arg(struct cmd_context *cmd, struct arg_values *av);
 int readahead_arg(struct cmd_context *cmd, struct arg_values *av);
 int metadatacopies_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_values *av);
+int major_minor_valid(const struct cmd_context * cmd, const struct format_type *fmt,
+		      int32_t major, int32_t minor);
 
 /* we use the enums to access the switches */
 unsigned arg_count(const struct cmd_context *cmd, int a);
@@ -162,6 +165,7 @@ unsigned arg_is_set(const struct cmd_context *cmd, int a);
 const char *arg_value(struct cmd_context *cmd, int a);
 const char *arg_str_value(struct cmd_context *cmd, int a, const char *def);
 int32_t arg_int_value(struct cmd_context *cmd, int a, const int32_t def); 
+int32_t first_grouped_arg_int_value(struct cmd_context *cmd, int a, const int32_t def); 
 uint32_t arg_uint_value(struct cmd_context *cmd, int a, const uint32_t def);
 int64_t arg_int64_value(struct cmd_context *cmd, int a, const int64_t def);
 uint64_t arg_uint64_value(struct cmd_context *cmd, int a, const uint64_t def);
@@ -184,4 +188,7 @@ int mirror_remove_missing(struct cmd_context *cmd,
 			  struct logical_volume *lv, int force);
 
 uint32_t percent_of_extents(uint32_t percents, uint32_t count, int roundup);
+
+int vgchange_activate(struct cmd_context *cmd, struct volume_group *vg,
+		       activation_change_t activate);
 #endif

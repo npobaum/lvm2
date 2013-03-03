@@ -10,8 +10,10 @@
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
-#include "daemon-shared.h"
+#include "daemon-io.h"
+#include "config-util.h"
 #include "daemon-server.h"
+#include "daemon-log.h"
 
 #include <dlfcn.h>
 #include <errno.h>
@@ -26,7 +28,7 @@
 #include <unistd.h>
 #include <signal.h>
 
-#include <syslog.h>
+#include <syslog.h> /* FIXME. For the global closelog(). */
 
 #if 0
 /* Create a device monitoring thread. */
@@ -69,6 +71,7 @@ static void _exit_handler(int sig __attribute__((unused)))
 #  define OOM_SCORE_ADJ_MIN (-1000)
 
 /* Systemd on-demand activation support */
+#  define SD_ACTIVATION_ENV_VAR_NAME "SD_ACTIVATION"
 #  define SD_LISTEN_PID_ENV_VAR_NAME "LISTEN_PID"
 #  define SD_LISTEN_FDS_ENV_VAR_NAME "LISTEN_FDS"
 #  define SD_LISTEN_FDS_START 3
@@ -128,7 +131,7 @@ union sockaddr_union {
 static int _handle_preloaded_socket(int fd, const char *path)
 {
 	struct stat st_fd;
-	union sockaddr_union sockaddr;
+	union sockaddr_union sockaddr = { .sa.sa_family = 0 };
 	int type = 0;
 	socklen_t len = sizeof(type);
 	size_t path_len = strlen(path);
@@ -143,7 +146,6 @@ static int _handle_preloaded_socket(int fd, const char *path)
 	    len != sizeof(type) || type != SOCK_STREAM)
 		return 0;
 
-	memset(&sockaddr, 0, sizeof(sockaddr));
 	len = sizeof(sockaddr);
 	if (getsockname(fd, &sockaddr.sa, &len) < 0 ||
 	    len < sizeof(sa_family_t) ||
@@ -164,6 +166,10 @@ static int _systemd_handover(struct daemon_state *ds)
 	unsigned long env_pid, env_listen_fds;
 	int r = 0;
 
+	/* SD_ACTIVATION must be set! */
+	if (!(e = getenv(SD_ACTIVATION_ENV_VAR_NAME)) || strcmp(e, "1"))
+		goto out;
+
 	/* LISTEN_PID must be equal to our PID! */
 	if (!(e = getenv(SD_LISTEN_PID_ENV_VAR_NAME)))
 		goto out;
@@ -172,7 +178,7 @@ static int _systemd_handover(struct daemon_state *ds)
 	env_pid = strtoul(e, &p, 10);
 	if (errno || !p || *p || env_pid <= 0 ||
 	    getpid() != (pid_t) env_pid)
-		;
+		goto out;
 
 	/* LISTEN_FDS must be 1 and the fd must be a socket! */
 	if (!(e = getenv(SD_LISTEN_FDS_ENV_VAR_NAME)))
@@ -188,6 +194,7 @@ static int _systemd_handover(struct daemon_state *ds)
 		ds->socket_fd = SD_FD_SOCKET_SERVER;
 
 out:
+	unsetenv(SD_ACTIVATION_ENV_VAR_NAME);
 	unsetenv(SD_LISTEN_PID_ENV_VAR_NAME);
 	unsetenv(SD_LISTEN_FDS_ENV_VAR_NAME);
 	return r;
@@ -198,7 +205,7 @@ out:
 static int _open_socket(daemon_state s)
 {
 	int fd = -1;
-	struct sockaddr_un sockaddr;
+	struct sockaddr_un sockaddr = { .sun_family = AF_UNIX };
 	mode_t old_mask;
 
 	(void) dm_prepare_selinux_context(s.socket_path, S_IFSOCK);
@@ -214,12 +221,14 @@ static int _open_socket(daemon_state s)
 	/* Set Close-on-exec & non-blocking */
 	if (fcntl(fd, F_SETFD, 1))
 		fprintf(stderr, "setting CLOEXEC on socket fd %d failed: %s\n", fd, strerror(errno));
-	fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+	if (fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK))
+		fprintf(stderr, "setting O_NONBLOCK on socket fd %d failed: %s\n", fd, strerror(errno));
 
 	fprintf(stderr, "[D] creating %s\n", s.socket_path);
-	memset(&sockaddr, 0, sizeof(sockaddr));
-	strcpy(sockaddr.sun_path, s.socket_path);
-	sockaddr.sun_family = AF_UNIX;
+	if (!dm_strncpy(sockaddr.sun_path, s.socket_path, sizeof(sockaddr.sun_path))) {
+		fprintf(stderr, "%s: daemon socket path too long.\n", s.socket_path);
+		goto error;
+	}
 
 	if (bind(fd, (struct sockaddr *) &sockaddr, sizeof(sockaddr))) {
 		perror("can't bind local socket.");
@@ -324,11 +333,18 @@ response daemon_reply_simple(const char *id, ...)
 
 	va_start(ap, id);
 
-	if (!(res.buffer = format_buffer("response", id, ap)))
+	buffer_init(&res.buffer);
+	if (!buffer_append_f(&res.buffer, "response = %s", id, NULL)) {
 		res.error = ENOMEM;
+		goto end;
+	}
+	if (!buffer_append_vf(&res.buffer, ap)) {
+		res.error = ENOMEM;
+		goto end;
+	}
 
+end:
 	va_end(ap);
-
 	return res;
 }
 
@@ -337,37 +353,17 @@ struct thread_baton {
 	client_handle client;
 };
 
-static int buffer_rewrite(char **buf, const char *format, const char *string) {
-	char *old = *buf;
-	int r = dm_asprintf(buf, format, *buf, string);
-
-	dm_free(old);
-
-	return (r < 0) ? 0 : 1;
-}
-
-static int buffer_line(const char *line, void *baton) {
-	response *r = baton;
-
-	if (r->buffer) {
-		if (!buffer_rewrite(&r->buffer, "%s\n%s", line))
-			return 0;
-	} else if (dm_asprintf(&r->buffer, "%s\n", line) < 0)
-		return 0;
-
-	return 1;
-}
-
 static response builtin_handler(daemon_state s, client_handle h, request r)
 {
 	const char *rq = daemon_request_str(r, "request", "NONE");
+	response res = { .error = EPROTO };
 
 	if (!strcmp(rq, "hello")) {
 		return daemon_reply_simple("OK", "protocol = %s", s.protocol ?: "default",
-					   "version = %d", s.protocol_version, NULL);
+					   "version = %" PRId64, (int64_t) s.protocol_version, NULL);
 	}
 
-	response res = { .buffer = NULL, .error = EPROTO };
+	buffer_init(&res.buffer);
 	return res;
 }
 
@@ -377,39 +373,46 @@ static void *client_thread(void *baton)
 	request req;
 	response res;
 
+	buffer_init(&req.buffer);
+
 	while (1) {
-		if (!read_buffer(b->client.socket_fd, &req.buffer))
+		if (!buffer_read(b->client.socket_fd, &req.buffer))
 			goto fail;
 
-		req.cft = dm_config_from_string(req.buffer);
+		req.cft = dm_config_from_string(req.buffer.mem);
+
 		if (!req.cft)
-			fprintf(stderr, "error parsing request:\n %s\n", req.buffer);
+			fprintf(stderr, "error parsing request:\n %s\n", req.buffer.mem);
+		else
+			daemon_log_cft(b->s.log, DAEMON_LOG_WIRE, "<- ", req.cft->root);
 
 		res = builtin_handler(b->s, b->client, req);
 
 		if (res.error == EPROTO) /* Not a builtin, delegate to the custom handler. */
 			res = b->s.handler(b->s, b->client, req);
 
-		if (!res.buffer) {
-			dm_config_write_node(res.cft->root, buffer_line, &res);
-			if (!buffer_rewrite(&res.buffer, "%s\n\n", NULL))
+		if (!res.buffer.mem) {
+			dm_config_write_node(res.cft->root, buffer_line, &res.buffer);
+			if (!buffer_append(&res.buffer, "\n\n"))
 				goto fail;
 			dm_config_destroy(res.cft);
 		}
 
 		if (req.cft)
 			dm_config_destroy(req.cft);
-		dm_free(req.buffer);
+		buffer_destroy(&req.buffer);
 
-		write_buffer(b->client.socket_fd, res.buffer, strlen(res.buffer));
+		daemon_log_multi(b->s.log, DAEMON_LOG_WIRE, "-> ", res.buffer.mem);
+		buffer_write(b->client.socket_fd, &res.buffer);
 
-		free(res.buffer);
+		buffer_destroy(&res.buffer);
 	}
 fail:
 	/* TODO what should we really do here? */
 	if (close(b->client.socket_fd))
 		perror("close");
-	free(baton);
+	buffer_destroy(&req.buffer);
+	dm_free(baton);
 	return NULL;
 }
 
@@ -441,6 +444,8 @@ static int handle_connect(daemon_state s)
 void daemon_start(daemon_state s)
 {
 	int failed = 0;
+	log_state _log = { { 0 } };
+
 	/*
 	 * Switch to C locale to avoid reading large locale-archive file used by
 	 * some glibc (on some distributions it takes over 100MB). Some daemons
@@ -456,19 +461,25 @@ void daemon_start(daemon_state s)
 	if (!s.foreground)
 		_daemonise();
 
-	/* TODO logging interface should be somewhat more elaborate */
-	openlog(s.name, LOG_PID, LOG_DAEMON);
+	s.log = &_log;
+	s.log->name = s.name;
 
-	(void) dm_prepare_selinux_context(s.pidfile, S_IFREG);
+	/* Log important things to syslog by default. */
+	daemon_log_enable(s.log, DAEMON_LOG_OUTLET_SYSLOG, DAEMON_LOG_FATAL, 1);
+	daemon_log_enable(s.log, DAEMON_LOG_OUTLET_SYSLOG, DAEMON_LOG_ERROR, 1);
 
-	/*
-	 * NB. Take care to not keep stale locks around. Best not exit(...)
-	 * after this point.
-	 */
-	if (dm_create_lockfile(s.pidfile) == 0)
-		exit(1);
+	if (s.pidfile) {
+		(void) dm_prepare_selinux_context(s.pidfile, S_IFREG);
 
-	(void) dm_prepare_selinux_context(NULL, 0);
+		/*
+		 * NB. Take care to not keep stale locks around. Best not exit(...)
+		 * after this point.
+		 */
+		if (dm_create_lockfile(s.pidfile) == 0)
+			exit(1);
+
+		(void) dm_prepare_selinux_context(NULL, 0);
+	}
 
 	/* Set normal exit signals to request shutdown instead of dying. */
 	signal(SIGINT, &_exit_handler);
@@ -481,7 +492,7 @@ void daemon_start(daemon_state s)
 #ifdef linux
 	/* Systemd has adjusted oom killer for us already */
 	if (s.avoid_oom && !_systemd_activation && !_protect_against_oom_killer())
-		syslog(LOG_ERR, "Failed to protect against OOM killer");
+		ERROR(&s, "Failed to protect against OOM killer");
 #endif
 
 	if (!_systemd_activation && s.socket_path) {
@@ -495,7 +506,8 @@ void daemon_start(daemon_state s)
 		kill(getppid(), SIGTERM);
 
 	if (s.daemon_init)
-		s.daemon_init(&s);
+		if (!s.daemon_init(&s))
+			failed = 1;
 
 	while (!_shutdown_requested && !failed) {
 		fd_set in;
@@ -504,20 +516,24 @@ void daemon_start(daemon_state s)
 		if (select(FD_SETSIZE, &in, NULL, NULL, NULL) < 0 && errno != EINTR)
 			perror("select error");
 		if (FD_ISSET(s.socket_fd, &in))
-			if (!handle_connect(s))
-				syslog(LOG_ERR, "Failed to handle a client connection.");
+			if (!_shutdown_requested && !handle_connect(s))
+				ERROR(&s, "Failed to handle a client connection.");
 	}
 
-	if (s.socket_fd >= 0)
+	/* If activated by systemd, do not unlink the socket - systemd takes care of that! */
+	if (!_systemd_activation && s.socket_fd >= 0)
 		if (unlink(s.socket_path))
 			perror("unlink error");
 
 	if (s.daemon_fini)
-		s.daemon_fini(&s);
+		if (!s.daemon_fini(&s))
+			failed = 1;
 
-	syslog(LOG_NOTICE, "%s shutting down", s.name);
-	closelog();
-	remove_lockfile(s.pidfile);
+	INFO(&s, "%s shutting down", s.name);
+
+	closelog(); /* FIXME */
+	if (s.pidfile)
+		remove_lockfile(s.pidfile);
 	if (failed)
 		exit(1);
 }

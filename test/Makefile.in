@@ -1,4 +1,4 @@
-# Copyright (C) 2007-2011 Red Hat, Inc. All rights reserved.
+# Copyright (C) 2007-2012 Red Hat, Inc. All rights reserved.
 #
 # This file is part of LVM2.
 #
@@ -19,10 +19,10 @@ subdir = $(shell pwd|sed 's,.*/,,')
 srcdir = @srcdir@
 top_srcdir = @top_srcdir@
 top_builddir = @top_builddir@
-abs_srcdir = @abs_srcdir@
-abs_builddir = @abs_builddir@
-abs_top_builddir = @abs_top_builddir@
-abs_top_srcdir = @abs_top_srcdir@
+abs_srcdir = "@abs_srcdir@"
+abs_builddir = "@abs_builddir@"
+abs_top_builddir = "@abs_top_builddir@"
+abs_top_srcdir = "@abs_top_srcdir@"
 
 SUBDIRS = api unit
 SOURCES = lib/not.c lib/harness.c
@@ -44,6 +44,27 @@ dm_udev_synchronisation = 1
 endif
 
 all: check
+
+help:
+	@echo -e "\nAvailable targets:"
+	@echo "  all			Default target, run check."
+	@echo "  check			Run all tests."
+	@echo "  check_local		Run tests without clvmd and lvmetad."
+	@echo "  check_cluster		Run tests with cluster daemon."
+	@echo "  check_lvmetad		Run tests with lvmetad daemon."
+	@echo "  clean			Clean dir."
+	@echo "  help			Display callable targets."
+	@echo -e "\nSupported variables:"
+	@echo "  LVM_TEST_DEVDIR	Set to '/dev' to run on real /dev."
+	@echo "  LVM_TEST_DIR		Where to create test files [TMPDIR]."
+	@echo "  LVM_TEST_LOCKING	Normal (1), Cluster (3)."
+	@echo "  LVM_TEST_LVMETAD	Start lvmetad (1)."
+	@echo "  LVM_TEST_NODEBUG	Do not debug lvm commands."
+	@echo "  LVM_TEST_PARALLEL	May skip agresive wipe of LVMTEST resources."
+	@echo "  LVM_VERIFY_UDEV	Default verify state for lvm.conf."
+	@echo "  S			Skip given test (regex)."
+	@echo "  T			Run given test (regex)."
+	@echo "  VERBOSE		Verbose output (1), timing (2)."
 
 check: check_local check_cluster check_lvmetad
 
@@ -77,6 +98,8 @@ lib/paths: $(srcdir)/Makefile.in .lib-dir-stamp
 	echo 'abs_srcdir=$(abs_srcdir)' >> $@-t
 	echo 'abs_builddir=$(abs_builddir)' >> $@-t
 	echo 'export DM_UDEV_SYNCHRONISATION=$(dm_udev_synchronisation)' >> $@-t
+	echo 'export THIN=@THIN@' >> $@-t
+	echo 'export LVMETAD_PIDFILE=@LVMETAD_PIDFILE@' >> $@-t
 	mv $@-t $@
 
 LIB = lib/not lib/should lib/harness \
@@ -98,12 +121,12 @@ CMDS = lvm $(shell cat $(top_builddir)/tools/.commands)
 .lib-dir-stamp:
 	$(MKDIR_P) lib
 	for i in $(CMDS); do ln -fs lvm-wrapper lib/$$i; done
-	ln -fs "$(abs_top_builddir)/tools/dmsetup" lib/dmsetup
-	ln -fs "$(abs_top_builddir)/daemons/clvmd/clvmd" lib/clvmd
-	ln -fs "$(abs_top_builddir)/daemons/dmeventd/dmeventd" lib/dmeventd
-	ln -fs "$(abs_top_builddir)/daemons/lvmetad/lvmetad" lib/lvmetad
-	ln -fs "$(abs_top_srcdir)/scripts/vgimportclone.sh" lib/vgimportclone
-	ln -fs "$(abs_top_srcdir)/scripts/fsadm.sh" lib/fsadm
+	ln -fs $(abs_top_builddir)/tools/dmsetup lib/dmsetup
+	ln -fs $(abs_top_builddir)/daemons/clvmd/clvmd lib/clvmd
+	ln -fs $(abs_top_builddir)/daemons/dmeventd/dmeventd lib/dmeventd
+	ln -fs $(abs_top_builddir)/daemons/lvmetad/lvmetad lib/lvmetad
+	ln -fs $(abs_top_srcdir)/scripts/vgimportclone.sh lib/vgimportclone
+	ln -fs $(abs_top_srcdir)/scripts/fsadm.sh lib/fsadm
 	touch $@
 
 clean:

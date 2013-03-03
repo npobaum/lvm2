@@ -79,6 +79,14 @@ devices {
     # Use anchors if you want to be really specific
     # filter = [ "a|^/dev/hda8$|", "r/.*/" ]
 
+    # Since "filter" is often overriden from command line, it is not suitable
+    # for system-wide device filtering (udev rules, lvmetad). To hide devices
+    # from LVM-specific udev processing and/or from lvmetad, you need to set
+    # global_filter. The syntax is the same as for normal "filter"
+    # above. Devices that fail the global_filter are not even opened by LVM.
+
+    # global_filter = []
+
     # The results of the filtering are cached on disk to avoid
     # rescanning dud devices (which can take a very long time).
     # By default this cache is stored in the @DEFAULT_SYS_DIR@/@DEFAULT_CACHE_SUBDIR@ directory
@@ -86,6 +94,9 @@ devices {
     # It is safe to delete the contents: the tools regenerate it.
     # (The old setting 'cache' is still respected if neither of
     # these new ones is present.)
+    # N.B. If obtain_device_list_from_udev is set to 1 the list of
+    # devices is instead obtained from udev and any existing .cache
+    # file is removed.
     cache_dir = "/run/lvm"
     cache_file_prefix = ""
 
@@ -190,40 +201,38 @@ devices {
 
 # This section allows you to configure the way in which LVM selects
 # free space for its Logical Volumes.
-#allocation {
-#    When searching for free space to extend an LV, the "cling"
-#    allocation policy will choose space on the same PVs as the last
-#    segment of the existing LV.  If there is insufficient space and a
-#    list of tags is defined here, it will check whether any of them are
-#    attached to the PVs concerned and then seek to match those PV tags
-#    between existing extents and new extents.
-#    Use the special tag "@*" as a wildcard to match any PV tag.
-#    
-#    Example: LVs are mirrored between two sites within a single VG.
-#    PVs are tagged with either @site1 or @site2 to indicate where
-#    they are situated.
-#
-#    cling_tag_list = [ "@site1", "@site2" ]
-#    cling_tag_list = [ "@*" ]
-#
-#    Changes made in version 2.02.85 extended the reach of the 'cling'
-#    policies to detect more situations where data can be grouped
-#    onto the same disks.  Set this to 0 to revert to the previous
-#    algorithm.
-#
-#    maximise_cling = 1
-#
-#    Set to 1 to guarantee that mirror logs will always be placed on 
-#    different PVs from the mirror images.  This was the default
-#    until version 2.02.85.
-#
-#    mirror_logs_require_separate_pvs = 0
-#
-#    Set to 1 to guarantee that thin pool metadata will always
-#    be placed on different PVs from the pool data.
-#
-#    thin_pool_metadata_require_separate_pvs = 0
-#}
+allocation {
+
+    # When searching for free space to extend an LV, the "cling"
+    # allocation policy will choose space on the same PVs as the last
+    # segment of the existing LV.  If there is insufficient space and a
+    # list of tags is defined here, it will check whether any of them are
+    # attached to the PVs concerned and then seek to match those PV tags
+    # between existing extents and new extents.
+    # Use the special tag "@*" as a wildcard to match any PV tag.
+ 
+    # Example: LVs are mirrored between two sites within a single VG.
+    # PVs are tagged with either @site1 or @site2 to indicate where
+    # they are situated.
+
+    # cling_tag_list = [ "@site1", "@site2" ]
+    # cling_tag_list = [ "@*" ]
+
+    # Changes made in version 2.02.85 extended the reach of the 'cling'
+    # policies to detect more situations where data can be grouped
+    # onto the same disks.  Set this to 0 to revert to the previous
+    # algorithm.
+    maximise_cling = 1
+
+    # Set to 1 to guarantee that mirror logs will always be placed on 
+    # different PVs from the mirror images.  This was the default
+    # until version 2.02.85.
+    mirror_logs_require_separate_pvs = 0
+
+    # Set to 1 to guarantee that thin pool metadata will always
+    # be placed on different PVs from the pool data.
+    thin_pool_metadata_require_separate_pvs = 0
+}
 
 # This section that allows you to configure the nature of the
 # information that LVM2 reports.
@@ -232,6 +241,17 @@ log {
     # Controls the messages sent to stdout or stderr.
     # There are three levels of verbosity, 3 being the most verbose.
     verbose = 0
+
+    # Set to 1 to suppress all non-essential messages from stdout.
+    # This has the same effect as -qq.
+    # When this is set, the following commands still produce output:
+    # dumpconfig, lvdisplay, lvmdiskscan, lvs, pvck, pvdisplay, 
+    # pvs, version, vgcfgrestore -l, vgdisplay, vgs.
+    # Non-essential messages are shifted from log level 4 to log level 5
+    # for syslog and lvm2_log_fn purposes.
+    # Any 'yes' or 'no' questions not overridden by other arguments
+    # are suppressed and default to 'no'.
+    silent = 0
 
     # Should we send log messages through syslog?
     # 1 is yes; 0 is no.
@@ -432,8 +452,12 @@ global {
     # "mirror" - The original RAID1 implementation provided by LVM2/DM.  It is
     # 	         characterized by a flexible log solution (core, disk, mirrored)
     #		 and by the necessity to block I/O while reconfiguring in the
-    #		 event of a failure.  Snapshots of this type of RAID1 can be
-    #		 problematic.
+    #		 event of a failure.
+    #
+    #		 There is an inherent race in the dmeventd failure handling
+    #		 logic with snapshots of devices using this type of RAID1 that
+    #		 in the worst case could cause a deadlock.
+    #		   Ref: https://bugzilla.redhat.com/show_bug.cgi?id=817130#c10
     #
     # "raid1"  - This implementation leverages MD's RAID1 personality through
     # 	       	 device-mapper.  It is characterized by a lack of log options.
@@ -441,6 +465,8 @@ global {
     #		 on the same device as the image - no separate devices are
     #		 required.)  This mirror implementation does not require I/O
     #		 to be blocked in the kernel in the event of a failure.
+    #		 This mirror implementation is not cluster-aware and cannot be
+    #		 used in a shared (active/active) fashion in a cluster.
     #
     # Specify the '--type <mirror|raid1>' option to override this default
     # setting.
@@ -461,8 +487,26 @@ global {
     # scanning is done by the individual commands. In a setup with lvmetad,
     # lvmetad udev rules *must* be set up for LVM to work correctly. Without
     # proper udev rules, all changes in block device configuration will be
-    # *ignored* until a manual 'vgscan' is performed.
+    # *ignored* until a manual 'pvscan --cache' is performed.
+    #
+    # If lvmetad has been running while use_lvmetad was 0, it MUST be stopped
+    # before changing use_lvmetad to 1 and started again afterwards.
     use_lvmetad = 0
+
+    # Full path of the utility called to check that a thin metadata device
+    # is in a state that allows it to be used.
+    # Each time a thin pool needs to be activated or after it is deactivated
+    # this utility is executed. The activation will only proceed if the utility
+    # has an exit status of 0.
+    # Set to "" to skip this check.  (Not recommended.)
+    # The thin tools are available as part of the device-mapper-persistent-data
+    # package from https://github.com/jthornber/thin-provisioning-tools.
+    #
+    thin_check_executable = "@THIN_CHECK_CMD@"
+
+    # String with options passed with thin_check command. By default,
+    # option '-q' is for quiet output.
+    thin_check_options = [ "-q" ]
 }
 
 activation {
@@ -530,6 +574,15 @@ activation {
     #   "@*" matches if any tag defined on the host is also set in the LV or VG
     #
     # volume_list = [ "vg1", "vg2/lvol1", "@tag1", "@*" ]
+
+    # If auto_activation_volume_list is defined, each LV that is to be
+    # activated is checked against the list while using the autoactivation
+    # option (--activate ay/-a ay), and if it matches, it is activated.
+    #   "vgname" and "vgname/lvname" are matched exactly.
+    #   "@tag" matches any tag set in the LV or VG.
+    #   "@*" matches if any tag defined on the host is also set in the LV or VG
+    #
+    # auto_activation_volume_list = [ "vg1", "vg2/lvol1", "@tag1", "@*" ]
 
     # If read_only_volume_list is defined, each LV that is to be activated 
     # is checked against the list, and if it matches, it as activated
@@ -649,16 +702,6 @@ activation {
 
     thin_pool_autoextend_threshold = 100
     thin_pool_autoextend_percent = 20
-
-    # Full path of the utility called to check that a thin metadata device
-    # is in a state that allows it to be used.
-    # Each time a thin pool needs to be activated, this utility is executed.
-    # The activation will only proceed if the utility has an exit status of 0.
-    # Set to "" to skip this check.  (Not recommended.)
-    # The thin tools are available as part of the device-mapper-persistent-data
-    # package from https://github.com/jthornber/thin-provisioning-tools.
-    #
-    thin_check_executable = "/sbin/thin_check -q"
 
     # While activating devices, I/O to devices being (re)configured is
     # suspended, and as a precaution against deadlocks, LVM2 needs to pin

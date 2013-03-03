@@ -39,8 +39,6 @@
 #include <arpa/inet.h>		/* for htonl, ntohl */
 
 #ifdef linux
-#  include <malloc.h>
-
 /*
  * Kernel version 2.6.36 and higher has
  * new OOM killer adjustment interface.
@@ -56,6 +54,7 @@
 #  define OOM_SCORE_ADJ_MIN (-1000)
 
 /* Systemd on-demand activation support */
+#  define SD_ACTIVATION_ENV_VAR_NAME "SD_ACTIVATION"
 #  define SD_LISTEN_PID_ENV_VAR_NAME "LISTEN_PID"
 #  define SD_LISTEN_FDS_ENV_VAR_NAME "LISTEN_FDS"
 #  define SD_LISTEN_FDS_START 3
@@ -1445,11 +1444,9 @@ static int _do_process_request(struct dm_event_daemon_message *msg)
 {
 	int ret;
 	char *answer;
-	static struct message_data message_data;
+	struct message_data message_data = { .msg =  msg };
 
 	/* Parse the message. */
-	memset(&message_data, 0, sizeof(message_data));
-	message_data.msg = msg;
 	if (msg->cmd == DM_EVENT_CMD_HELLO || msg->cmd == DM_EVENT_CMD_DIE)  {
 		ret = 0;
 		answer = msg->data;
@@ -1481,9 +1478,7 @@ static int _do_process_request(struct dm_event_daemon_message *msg)
 static void _process_request(struct dm_event_fifos *fifos)
 {
 	int die = 0;
-	struct dm_event_daemon_message msg;
-
-	memset(&msg, 0, sizeof(msg));
+	struct dm_event_daemon_message msg = { 0 };
 
 	/*
 	 * Read the request from the client (client_read, client_write
@@ -1588,10 +1583,8 @@ static void _sig_alarm(int signum __attribute__((unused)))
 static void _init_thread_signals(void)
 {
 	sigset_t my_sigset;
-	struct sigaction act;
+	struct sigaction act = { .sa_handler = _sig_alarm };
 
-	memset(&act, 0, sizeof(act));
-	act.sa_handler = _sig_alarm;
 	sigaction(SIGALRM, &act, NULL);
 	sigfillset(&my_sigset);
 
@@ -1707,6 +1700,10 @@ static int _systemd_handover(struct dm_event_fifos *fifos)
 
 	memset(fifos, 0, sizeof(*fifos));
 
+	/* SD_ACTIVATION must be set! */
+	if (!(e = getenv(SD_ACTIVATION_ENV_VAR_NAME)) || strcmp(e, "1"))
+		goto out;
+
 	/* LISTEN_PID must be equal to our PID! */
 	if (!(e = getenv(SD_LISTEN_PID_ENV_VAR_NAME)))
 		goto out;
@@ -1738,16 +1735,25 @@ static int _systemd_handover(struct dm_event_fifos *fifos)
 	}
 
 out:
+	unsetenv(SD_ACTIVATION_ENV_VAR_NAME);
 	unsetenv(SD_LISTEN_PID_ENV_VAR_NAME);
 	unsetenv(SD_LISTEN_FDS_ENV_VAR_NAME);
 	return r;
 }
 #endif
 
-static void remove_lockfile(void)
+static void _remove_files_on_exit(void)
 {
 	if (unlink(DMEVENTD_PIDFILE))
 		perror(DMEVENTD_PIDFILE ": unlink failed");
+
+	if (!_systemd_activation) {
+		if (unlink(DM_EVENT_FIFO_CLIENT))
+			perror(DM_EVENT_FIFO_CLIENT " : unlink failed");
+
+		if (unlink(DM_EVENT_FIFO_SERVER))
+			perror(DM_EVENT_FIFO_SERVER " : unlink failed");
+	}
 }
 
 static void _daemonize(void)
@@ -1838,13 +1844,13 @@ static void restart(void)
 
 	if (!dm_event_daemon_init_fifos(&fifos)) {
 		fprintf(stderr, "WARNING: Could not initiate communication with existing dmeventd.\n");
-		return;
+		exit(EXIT_FAILURE);
 	}
 
 	if (!dm_event_get_version(&fifos, &version)) {
 		fprintf(stderr, "WARNING: Could not communicate with existing dmeventd.\n");
 		dm_event_daemon_fini_fifos(&fifos);
-		return;
+		exit(EXIT_FAILURE);
 	}
 
 	if (version < 1) {
@@ -1886,6 +1892,16 @@ static void restart(void)
 	if (dm_event_daemon_talk(&fifos, &msg, DM_EVENT_CMD_DIE, "-", "-", 0, 0)) {
 		fprintf(stderr, "Old dmeventd refused to die.\n");
 		exit(EXIT_FAILURE);
+	}
+
+	/*
+	 * Wait for daemon to die, detected by sending further DIE messages
+	 * until one fails.
+	 */
+	for (i = 0; i < 10; ++i) {
+		if (dm_event_daemon_talk(&fifos, &msg, DM_EVENT_CMD_DIE, "-", "-", 0, 0))
+			break; /* yep, it's dead probably */
+		usleep(10);
 	}
 
 	dm_event_daemon_fini_fifos(&fifos);
@@ -1958,10 +1974,11 @@ int main(int argc, char *argv[])
 	if (dm_create_lockfile(DMEVENTD_PIDFILE) == 0)
 		exit(EXIT_FAILURE);
 
-	atexit(remove_lockfile);
+	atexit(_remove_files_on_exit);
 	(void) dm_prepare_selinux_context(NULL, 0);
 
 	/* Set the rest of the signals to cause '_exit_now' to be set */
+	signal(SIGTERM, &_exit_handler);
 	signal(SIGINT, &_exit_handler);
 	signal(SIGHUP, &_exit_handler);
 	signal(SIGQUIT, &_exit_handler);

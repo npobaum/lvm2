@@ -29,6 +29,7 @@ LN_S = @LN_S@
 SED = @SED@
 CFLOW_CMD = @CFLOW_CMD@
 AWK = @AWK@
+PYTHON = @PYTHON@
 
 LIBS = @LIBS@
 # Extra libraries always linked with static binaries
@@ -53,6 +54,7 @@ prefix = @prefix@
 exec_prefix = @exec_prefix@
 udev_prefix = @udev_prefix@
 sysconfdir = @sysconfdir@
+rootdir = $(DESTDIR)/
 bindir = $(DESTDIR)@bindir@
 confdir = $(DESTDIR)@CONFDIR@/lvm
 includedir = $(DESTDIR)@includedir@
@@ -68,7 +70,8 @@ staticdir = $(DESTDIR)@STATICDIR@
 udevdir = $(DESTDIR)@udevdir@
 pkgconfigdir = $(usrlibdir)/pkgconfig
 initdir = $(DESTDIR)$(sysconfdir)/rc.d/init.d
-systemd_dir = $(DESTDIR)@systemdsystemunitdir@
+systemd_unit_dir = $(DESTDIR)@systemdsystemunitdir@
+systemd_generator_dir = $(DESTDIR)@systemdutildir@/system-generators
 tmpfiles_dir = $(DESTDIR)@tmpfilesdir@
 ocf_scriptdir = $(DESTDIR)@OCFDIR@
 
@@ -135,11 +138,9 @@ endif
 LDFLAGS += -L$(top_builddir)/libdm -L$(top_builddir)/lib
 CLDFLAGS += -L$(top_builddir)/libdm -L$(top_builddir)/lib
 
-ifeq ("@BUILD_LVMETAD@", "yes")
-  DAEMON_LIBS = -ldaemonclient
-  LDFLAGS += -L$(top_builddir)/libdaemon/client
-  CLDFLAGS += -L$(top_builddir)/libdaemon/client
-endif
+DAEMON_LIBS = -ldaemonclient
+LDFLAGS += -L$(top_builddir)/libdaemon/client
+CLDFLAGS += -L$(top_builddir)/libdaemon/client
 
 ifeq ("@DMEVENTD@", "yes")
   LDFLAGS += -L$(top_builddir)/daemons/dmeventd
@@ -188,7 +189,8 @@ POTFILES = $(SOURCES:%.c=%.pot)
 .PHONY: all pofile distclean clean cleandir cflow device-mapper
 .PHONY: install install_cluster install_device-mapper install_lvm2
 .PHONY: install_lib_shared install_dm_plugin install_lvm2_plugin
-.PHONY: install_ocf
+.PHONY: install_ocf help
+.PHONY: python_bindings install_python_bindings
 .PHONY: $(SUBDIRS) $(SUBDIRS.install) $(SUBDIRS.clean) $(SUBDIRS.distclean)
 .PHONY: $(SUBDIRS.pofile) $(SUBDIRS.install_cluster) $(SUBDIRS.cflow)
 .PHONY: $(SUBDIRS.device-mapper) $(SUBDIRS.install-device-mapper)
@@ -388,7 +390,8 @@ distclean: cleandir $(SUBDIRS.distclean)
 		 sed "s/^/		/;s/$$/;/" < $<; \
 		 echo "	local:"; echo "		*;"; echo "};") > $@
 
-ifeq (,$(findstring $(MAKECMDGOALS),cscope.out cflow clean distclean lcov))
+ifeq (,$(findstring $(MAKECMDGOALS),cscope.out cflow clean distclean lcov \
+ help check check_local check_cluster check_lvmetad))
     ifdef SOURCES
        -include $(SOURCES:.c=.d)
     endif

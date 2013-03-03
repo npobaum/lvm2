@@ -21,14 +21,12 @@
 #include "device.h"
 #include "str_list.h"
 #include "toolcontext.h"
-#include "lvm-string.h"
 #include "lvm-file.h"
 
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <unistd.h>
 #include <fcntl.h>
-#include <ctype.h>
 #include <assert.h>
 
 struct config_file {
@@ -473,7 +471,7 @@ int config_write(struct dm_config_tree *cft, const char *file,
 		}
 	} else while (argc--) {
 		if ((cn = dm_config_find_node(cft->root, *argv))) {
-			if (!dm_config_write_node(cn, _putline_fn, fp)) {
+			if (!dm_config_write_one_node(cn, _putline_fn, fp)) {
 				log_error("Failure while writing to %s", file);
 				r = 0;
 			}
@@ -491,3 +489,4 @@ int config_write(struct dm_config_tree *cft, const char *file,
 
 	return r;
 }
+

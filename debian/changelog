@@ -1,3 +1,9 @@
+lvm2 (2.02.98-1) unstable; urgency=low
+
+  * New upstream version.
+
+ -- Bastian Blank <waldi@debian.org>  Sun, 03 Mar 2013 12:33:47 +0100
+
 lvm2 (2.02.95-6) unstable; urgency=low
 
   * Drop cluster (clvm) support. It never properly worked and is more dead
