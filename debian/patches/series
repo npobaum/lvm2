@@ -7,3 +7,4 @@ implicit-pointer.patch
 avoid-dev-block.patch
 dm-event-api.patch
 monitoring-default-off.patch
+upstream-update-device-types.patch
