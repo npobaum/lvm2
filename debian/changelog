@@ -1,3 +1,9 @@
+lvm2 (2.02.95-6ubuntu3) raring; urgency=low
+
+  * Add Micron PCIe SSD devices filter (LP: #1122445)
+
+ -- Dmitrijs Ledkovs <dmitrij.ledkov@ubuntu.com>  Thu, 14 Mar 2013 12:05:00 +0000
+
 lvm2 (2.02.95-6ubuntu2) raring; urgency=low
 
   * Add upstream-drop-udev_get_dev_path.patch: Remove udev_get_dev_path()

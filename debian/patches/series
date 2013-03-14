@@ -13,3 +13,4 @@ upstream-fix-discard-3.patch
 missing-dmeventd.patch
 1075994_move_thin_check_executable_to_proper_section.patch
 upstream-drop-udev_get_dev_path.patch
+upstream-add-micron-filter.patch
