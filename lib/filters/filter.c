@@ -136,6 +136,7 @@ static const device_info_t device_info[] = {
 	{"mmc", 16},		/* MMC block device */
 	{"blkext", 1},		/* Extended device partitions */
 	{"fio", 16},		/* Fusion */
+	{"mtip32xx", 16},	/* Micron PCIe SSDs */
 	{NULL, 0}
 };
 
