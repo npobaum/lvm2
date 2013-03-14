@@ -10,3 +10,4 @@ open-readonly.patch
 avoid-dev-block.patch
 monitoring-default-off.patch
 monitoring-cluster-on.patch
+upstream-update-device-types.patch
