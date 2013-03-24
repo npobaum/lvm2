@@ -1,3 +1,11 @@
+lvm2 (2.02.95-7) testing; urgency=low
+
+  * Re-enable cluster support. (closes: #697676)
+  * Disable thin support. We lack the thin_check binary and it does not work
+    anyway. (closes: #702163)
+
+ -- Bastian Blank <waldi@debian.org>  Sun, 24 Mar 2013 09:03:10 +0100
+
 lvm2 (2.02.95-6) unstable; urgency=low
 
   * Drop cluster (clvm) support. It never properly worked and is more dead
