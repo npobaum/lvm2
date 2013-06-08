@@ -60,6 +60,7 @@ static struct selabel_handle *_selabel_handle = NULL;
 #endif
 
 #ifdef UDEV_SYNC_SUPPORT
+static struct udev *_udev;
 static int _udev_running = -1;
 static int _sync_with_udev = 1;
 static int _udev_checking = 1;
@@ -1840,17 +1841,30 @@ int dm_udev_wait(uint32_t cookie)
 
 #else		/* UDEV_SYNC_SUPPORT */
 
+static struct udev *_get_udev(void)
+{
+	if (!_udev)
+		_udev = udev_new();
+	if (!_udev)
+		goto_bad;
+
+	return _udev;
+
+bad:
+	log_error("Could not get udev state. Assuming udev is not running.");
+	return 0;
+}
+
 static int _check_udev_is_running(void)
 {
 	struct udev *udev;
 	struct udev_queue *udev_queue;
 	int r;
 
-	if (!(udev = udev_new()))
-		goto_bad;
+	if (!(udev = _get_udev()))
+		return 0;
 
 	if (!(udev_queue = udev_queue_new(udev))) {
-		udev_unref(udev);
 		goto_bad;
 	}
 
@@ -1859,12 +1873,11 @@ static int _check_udev_is_running(void)
 			  "Not using udev synchronisation code.");
 
 	udev_queue_unref(udev_queue);
-	udev_unref(udev);
 
 	return r;
 
 bad:
-	log_error("Could not get udev state. Assuming udev is not running.");
+	log_error("Could not get udev queue state. Assuming udev is not running.");
 	return 0;
 }
 
