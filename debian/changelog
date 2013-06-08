@@ -1,3 +1,10 @@
+lvm2 (2.02.98-2) unstable; urgency=low
+
+  * Use udev monitor for synchronization.
+  * Fix wrong disable in udev rules.
+
+ -- Bastian Blank <waldi@debian.org>  Sat, 08 Jun 2013 12:50:57 +0200
+
 lvm2 (2.02.98-1) unstable; urgency=low
 
   * New upstream version.

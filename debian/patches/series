@@ -7,3 +7,6 @@ implicit-pointer.patch
 dm-event-api.patch
 monitoring-default-off.patch
 missing-dmeventd.patch
+udev-remove-semaphore.patch
+udev-save-state.patch 
+udev-use-monitor.patch
