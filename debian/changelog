@@ -1,3 +1,9 @@
+lvm2 (2.02.98-3) unstable; urgency=low
+
+  * Revert udev rules. (closes: #711740)
+
+ -- Bastian Blank <waldi@debian.org>  Sun, 09 Jun 2013 22:08:02 +0200
+
 lvm2 (2.02.98-2) unstable; urgency=low
 
   * Use udev monitor for synchronization.
