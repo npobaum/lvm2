@@ -64,6 +64,7 @@ $(STAMPS_DIR)/source:
 	mkdir -p '$(DIR)'
 	cp -al $(SOURCE_FILES) '$(DIR)'
 	cd $(DIR); autoreconf
+	cd $(DIR); cp -f /usr/share/misc/config.guess /usr/share/misc/config.sub autoconf/
 	touch $@
 
 setup: $(STAMPS_DIR)/setup_deb $(STAMPS_DIR)/setup_udeb
