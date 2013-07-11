@@ -1,3 +1,9 @@
+lvm2 (2.02.98-1ubuntu2) saucy; urgency=low
+
+  * Update config.guess and config.sub.
+
+ -- Dmitrijs Ledkovs <dmitrij.ledkov@ubuntu.com>  Thu, 11 Jul 2013 20:35:43 +0100
+
 lvm2 (2.02.98-1ubuntu1) saucy; urgency=low
 
   * Merge from Debian unstable, remaining changes:
