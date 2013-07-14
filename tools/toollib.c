@@ -1500,8 +1500,6 @@ int pvcreate_params_validate(struct cmd_context *cmd,
 int get_activation_monitoring_mode(struct cmd_context *cmd,
 				   int *monitoring_mode)
 {
-	*monitoring_mode = DEFAULT_DMEVENTD_MONITOR;
-
 	if (arg_count(cmd, monitor_ARG) &&
 	    (arg_count(cmd, ignoremonitoring_ARG) ||
 	     arg_count(cmd, sysinit_ARG))) {
@@ -1509,14 +1507,15 @@ int get_activation_monitoring_mode(struct cmd_context *cmd,
 		return 0;
 	}
 
-	if (arg_count(cmd, monitor_ARG))
-		*monitoring_mode = arg_int_value(cmd, monitor_ARG,
+	*monitoring_mode = find_config_tree_bool(cmd, "activation/monitoring",
 						 DEFAULT_DMEVENTD_MONITOR);
-	else if (is_static() || arg_count(cmd, ignoremonitoring_ARG) ||
-		 arg_count(cmd, sysinit_ARG) ||
-		 !find_config_tree_bool(cmd, "activation/monitoring",
-					DEFAULT_DMEVENTD_MONITOR))
+
+	if (is_static() || arg_count(cmd, ignoremonitoring_ARG) ||
+		 arg_count(cmd, sysinit_ARG))
 		*monitoring_mode = DMEVENTD_MONITOR_IGNORE;
+        else if (arg_count(cmd, monitor_ARG))
+		*monitoring_mode = arg_int_value(cmd, monitor_ARG,
+						 *monitoring_mode);
 
 	return 1;
 }
