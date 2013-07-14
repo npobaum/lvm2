@@ -1,3 +1,12 @@
+lvm2 (2.02.98-4) unstable; urgency=low
+
+  * Drop still broken udev stuff. (closes: #712049)
+  * Make thin support usable:
+    - Suggest thin-privisioning-tools.
+    - Set correct location for thin_check binary.
+
+ -- Bastian Blank <waldi@debian.org>  Sun, 14 Jul 2013 16:37:56 +0200
+
 lvm2 (2.02.98-3) unstable; urgency=low
 
   * Revert udev rules. (closes: #711740)
@@ -14,8 +23,17 @@ lvm2 (2.02.98-2) unstable; urgency=low
 lvm2 (2.02.98-1) unstable; urgency=low
 
   * New upstream version.
+  * Re-enable thin support.
 
  -- Bastian Blank <waldi@debian.org>  Sun, 03 Mar 2013 12:33:47 +0100
+
+lvm2 (2.02.95-7) testing; urgency=low
+
+  * Re-enable cluster support. (closes: #697676)
+  * Disable thin support. We lack the thin_check binary and it does not work
+    anyway. (closes: #702163)
+
+ -- Bastian Blank <waldi@debian.org>  Sun, 24 Mar 2013 09:03:10 +0100
 
 lvm2 (2.02.95-6) unstable; urgency=low
 

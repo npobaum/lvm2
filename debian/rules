@@ -77,14 +77,15 @@ $(STAMPS_DIR)/setup_deb: $(STAMPS_DIR)/source
 	$(CONFIGURE) \
 		--libdir=\$${exec_prefix}/lib/$(DEB_HOST_MULTIARCH) \
 		--with-optimisation="$(CFLAGS_OPT_DEB)" \
-		--with-cluster=none \
+		--with-clvmd=cman,corosync,openais \
+		--with-cluster=internal \
 		--with-device-uid=0 \
 		--with-device-gid=6 \
 		--with-device-mode=0660 \
 		--with-default-run-dir=/run/lvm \
 		--with-default-locking-dir=/run/lock/lvm \
 		--with-thin=internal \
-		--with-thin-check=/sbin/thin_check \
+		--with-thin-check=/usr/sbin/thin_check \
 		--enable-applib \
 		--enable-cmdlib \
 		--enable-dmeventd \
@@ -160,6 +161,13 @@ install-base:
 	dh_gencontrol -- $(GENCONTROL_ARGS)
 	dh_md5sums
 	dh_builddeb $(BUILDDEB_ARGS)
+
+install_clvm: export DH_OPTIONS = -pclvm
+install_clvm: DIR = $(BUILD_DIR)/install_deb
+install_clvm: $(STAMPS_DIR)/install_deb
+	+$(MAKE_SELF) install-base-prep INSTALL_DIR='$(DIR)'
+	dh_installinit --no-start -- start 63 S . start 51 0 6 .
+	+$(MAKE_SELF) install-base
 
 install_dmeventd: export DH_OPTIONS = -pdmeventd
 install_dmeventd: DIR = $(BUILD_DIR)/install_deb
@@ -239,7 +247,7 @@ install_lvm2-udeb: $(STAMPS_DIR)/install_udeb
 	+$(MAKE_SELF) install-base
 
 binary-indep:
-binary-arch: $(addprefix install_,libdevmapper libdevmapper-udeb libdevmapper-event libdevmapper-dev dmsetup dmsetup-udeb dmeventd liblvm2 lvm2 lvm2-udeb)
+binary-arch: $(addprefix install_,libdevmapper libdevmapper-udeb libdevmapper-event libdevmapper-dev dmsetup dmsetup-udeb dmeventd liblvm2 lvm2 lvm2-udeb clvm)
 
 binary: binary-indep binary-arch
 
