@@ -1,3 +1,16 @@
+lvm2 (2.02.98-1ubuntu3) saucy; urgency=low
+
+  * Disable clvm for the time being, given that redhat-cluster will soon
+    be removed from the archives (provides libdml-dev, libcman-dev), in
+    favor of the new cluster stack (corosync). Once corosync > 2.X is
+    released and a new source package 'dlm' (will provide libdlm-dev)
+    hits the archive, clvm can be reenabled.
+    - debian/control: Drop Build-Depends on libcman-dev, libcorosync-dev,
+      libdlm-dev, openais-dev; Comment out clvm binary package.
+    - debian/rules: Do not build --with-clvmd; comment clvm related rules.
+
+ -- Andres Rodriguez <andreserl@ubuntu.com>  Fri, 26 Jul 2013 12:45:06 -0400
+
 lvm2 (2.02.98-1ubuntu2) saucy; urgency=low
 
   * Update config.guess and config.sub.
