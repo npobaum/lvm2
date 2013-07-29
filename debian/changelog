@@ -1,3 +1,12 @@
+lvm2 (2.02.98-1ubuntu4) saucy; urgency=low
+
+  * hooks/lvm2: add dm_raid to the dm personality modules to be included in
+    the initramfs as this is a valid personality for the root filesystem
+    and such volumes lead to extended boot times and boot failures.
+    (LP: #1206235)
+
+ -- Andy Whitcroft <apw@canonical.com>  Mon, 29 Jul 2013 20:37:28 +0100
+
 lvm2 (2.02.98-1ubuntu3) saucy; urgency=low
 
   * Disable clvm for the time being, given that redhat-cluster will soon
