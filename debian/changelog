@@ -1,3 +1,11 @@
+lvm2 (2.02.98-5) unstable; urgency=low
+
+  * Fix udev rules.
+    - Properly exclude special devices, this part got lost. (closes: #718582)
+    - Always call udev sync.
+
+ -- Bastian Blank <waldi@debian.org>  Wed, 07 Aug 2013 15:10:23 +0200
+
 lvm2 (2.02.98-4) unstable; urgency=low
 
   * Drop still broken udev stuff. (closes: #712049)
