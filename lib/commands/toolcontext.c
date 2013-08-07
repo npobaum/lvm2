@@ -853,18 +853,16 @@ static int _init_filters(struct cmd_context *cmd, unsigned load_persistent_cache
 
 	if (cache_dir || cache_file_prefix) {
 		if (dm_snprintf(cache_file, sizeof(cache_file),
-		    "%s%s%s/%s.cache",
-		    cache_dir ? "" : cmd->system_dir,
-		    cache_dir ? "" : "/",
-		    cache_dir ? : DEFAULT_CACHE_SUBDIR,
+		    "%s/%s.cache",
+		    cache_dir ? : DEFAULT_RUN_DIR,
 		    cache_file_prefix ? : DEFAULT_CACHE_FILE_PREFIX) < 0) {
 			log_error("Persistent cache filename too long.");
 			goto bad;
 		}
 	} else if (!(dev_cache = find_config_tree_str(cmd, "devices/cache", NULL)) &&
 		   (dm_snprintf(cache_file, sizeof(cache_file),
-				"%s/%s/%s.cache",
-				cmd->system_dir, DEFAULT_CACHE_SUBDIR,
+				"%s/%s.cache",
+				DEFAULT_RUN_DIR,
 				DEFAULT_CACHE_FILE_PREFIX) < 0)) {
 		log_error("Persistent cache filename too long.");
 		goto bad;
