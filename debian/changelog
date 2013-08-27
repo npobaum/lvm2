@@ -1,3 +1,13 @@
+lvm2 (2.02.98-6) unstable; urgency=low
+
+  * Update init script:
+    - Use auto-activation.
+    - Drop manual loading of dm-mod.
+  * Fix udev rules:
+    - Re-add another oversight.
+
+ -- Bastian Blank <waldi@debian.org>  Tue, 27 Aug 2013 13:13:17 +0200
+
 lvm2 (2.02.98-5) unstable; urgency=low
 
   * Fix udev rules.
