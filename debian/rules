@@ -78,6 +78,7 @@ $(STAMPS_DIR)/setup_deb: $(STAMPS_DIR)/source
 	$(CONFIGURE) \
 		--libdir=\$${exec_prefix}/lib/$(DEB_HOST_MULTIARCH) \
 		--with-optimisation="$(CFLAGS_OPT_DEB)" \
+		--with-clvmd=corosync \
 		--with-cluster=internal \
 		--with-device-uid=0 \
 		--with-device-gid=6 \
@@ -166,14 +167,14 @@ install-base:
 	dh_md5sums
 	dh_builddeb $(BUILDDEB_ARGS)
 
-#install_clvm: export DH_OPTIONS = -pclvm
-#install_clvm: DIR = $(BUILD_DIR)/install_deb
-#install_clvm: $(STAMPS_DIR)/install_deb
-#	mkdir -p $(BUILD_DIR)/install_deb/usr/lib/ocf/resource.d/lvm2
-#	install -m 755 debian/clvmd.ra $(BUILD_DIR)/install_deb/usr/lib/ocf/resource.d/lvm2/clvmd
-#	+$(MAKE_SELF) install-base-prep INSTALL_DIR='$(DIR)'
-#	dh_installinit --no-start -- start 63 S . start 51 0 6 .
-#	+$(MAKE_SELF) install-base
+install_clvm: export DH_OPTIONS = -pclvm
+install_clvm: DIR = $(BUILD_DIR)/install_deb
+install_clvm: $(STAMPS_DIR)/install_deb
+	mkdir -p $(BUILD_DIR)/install_deb/usr/lib/ocf/resource.d/lvm2
+	install -m 755 debian/clvmd.ra $(BUILD_DIR)/install_deb/usr/lib/ocf/resource.d/lvm2/clvmd
+	+$(MAKE_SELF) install-base-prep INSTALL_DIR='$(DIR)'
+	dh_installinit --no-start -- start 63 S . start 51 0 6 .
+	+$(MAKE_SELF) install-base
 
 install_dmeventd: export DH_OPTIONS = -pdmeventd
 install_dmeventd: DIR = $(BUILD_DIR)/install_deb
@@ -262,8 +263,7 @@ install_lvm2-udeb: $(STAMPS_DIR)/install_udeb
 	+$(MAKE_SELF) install-base
 
 binary-indep:
-#binary-arch: $(addprefix install_,libdevmapper libdevmapper-udeb libdevmapper-event libdevmapper-dev dmsetup dmsetup-udeb dmeventd liblvm2 lvm2 lvm2-udeb clvm)
-binary-arch: $(addprefix install_,libdevmapper libdevmapper-udeb libdevmapper-event libdevmapper-dev dmsetup dmsetup-udeb dmeventd liblvm2 lvm2 lvm2-udeb)
+binary-arch: $(addprefix install_,libdevmapper libdevmapper-udeb libdevmapper-event libdevmapper-dev dmsetup dmsetup-udeb dmeventd liblvm2 lvm2 lvm2-udeb clvm)
 
 binary: binary-indep binary-arch
 
