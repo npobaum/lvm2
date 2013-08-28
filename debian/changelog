@@ -1,3 +1,9 @@
+lvm2 (2.02.98-1ubuntu5) saucy; urgency=low
+
+  * Reenabled clvm
+
+ -- Andres Rodriguez <andreserl@ubuntu.com>  Wed, 28 Aug 2013 10:46:43 +0100
+
 lvm2 (2.02.98-1ubuntu4) saucy; urgency=low
 
   * hooks/lvm2: add dm_raid to the dm personality modules to be included in
