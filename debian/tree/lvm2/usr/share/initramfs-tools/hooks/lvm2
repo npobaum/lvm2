@@ -1,6 +1,6 @@
 #!/bin/sh
 
-PREREQ=""
+PREREQ="udev"
 
 prereqs()
 {
@@ -26,7 +26,7 @@ if [ -e /etc/lvm/lvm.conf ]; then
 fi
 
 mkdir -p $DESTDIR/lib/udev/rules.d/
-for rules in 56-lvm.rules 60-persistent-storage-lvm.rules; do
+for rules in 56-lvm.rules 60-persistent-storage-lvm.rules 85-lvm2.rules; do
 	if   [ -e /etc/udev/rules.d/$rules ]; then
 		cp -p /etc/udev/rules.d/$rules $DESTDIR/lib/udev/rules.d/
 	elif [ -e /lib/udev/rules.d/$rules ]; then
@@ -38,6 +38,6 @@ copy_exec /sbin/dmsetup
 copy_exec /sbin/lvm
 ln -s lvm ${DESTDIR}/sbin/vgchange
 
-for x in dm_mod dm_snapshot dm_mirror; do
+for x in dm_mod dm_snapshot dm_mirror dm_raid; do
 	manual_add_modules ${x}
 done

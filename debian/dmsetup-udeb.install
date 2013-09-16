@@ -1,1 +1,3 @@
+../../tree/dmsetup/lib /
+../../tree/dmsetup/usr/share/initramfs-tools /usr/share
 sbin/dmsetup
