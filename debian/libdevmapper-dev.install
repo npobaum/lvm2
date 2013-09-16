@@ -1,3 +1,2 @@
 usr/include/libdevmapper*
-usr/lib/libdevmapper*.so
-usr/lib/pkgconfig/devmapper*
+usr/lib/*/pkgconfig/devmapper*
