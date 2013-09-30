@@ -1,3 +1,11 @@
+lvm2 (2.02.95-8) stable; urgency=low
+
+  * Fix udev rules.
+    - Properly exclude special devices, this part got lost. (closes: #718582)
+    - Always call udev sync.
+
+ -- Bastian Blank <waldi@debian.org>  Mon, 30 Sep 2013 22:25:35 +0200
+
 lvm2 (2.02.95-7) testing; urgency=low
 
   * Re-enable cluster support. (closes: #697676)
