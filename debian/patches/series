@@ -8,3 +8,4 @@ avoid-dev-block.patch
 dm-event-api.patch
 monitoring-default-off.patch
 missing-dmeventd.patch
+enable-issue-discards.patch

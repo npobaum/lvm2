@@ -1,3 +1,13 @@
+lvm2 (2.02.98-6ubuntu2) trusty; urgency=medium
+
+  * Add enable-issue-discards.patch: Enable "issue_discards" option by default
+    to trim SSDs when changing PVs. This option has no effect if the kernel or
+    the drive does not support trimming, so it's safe to enable by default.
+    [https://blueprints.launchpad.net/ubuntu/+spec/core-1311-ssd-trimming]
+    (Closes: #717313)
+
+ -- Martin Pitt <martin.pitt@ubuntu.com>  Fri, 13 Dec 2013 10:51:54 +0100
+
 lvm2 (2.02.98-6ubuntu1) saucy; urgency=low
 
   * Merge from Debian unstable, remaining changes:
