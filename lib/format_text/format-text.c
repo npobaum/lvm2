@@ -165,7 +165,7 @@ static int _pv_analyze_mda_raw (const struct format_type * fmt,
 		  PRIu64, mdac->area.start, mdac->area.size);
 	area = &mdac->area;
 
-	if (!dev_open(area->dev))
+	if (!dev_open_flags(area->dev, O_RDONLY, 1, 0))
 		return_0;
 
 	if (!(mdah = _raw_read_mda_header(fmt, area)))
@@ -437,7 +437,7 @@ static int _raw_holds_vgname(struct format_instance *fid,
 	int noprecommit = 0;
 	struct mda_header *mdah;
 
-	if (!dev_open(dev_area->dev))
+	if (!dev_open_flags(dev_area->dev, O_RDONLY, 1, 0))
 		return_0;
 
 	if (!(mdah = _raw_read_mda_header(fid->fmt, dev_area)))
@@ -464,7 +464,7 @@ static struct volume_group *_vg_read_raw_area(struct format_instance *fid,
 	char *desc;
 	uint32_t wrap = 0;
 
-	if (!dev_open(area->dev))
+	if (!dev_open_flags(area->dev, O_RDONLY, 1, 0))
 		return_NULL;
 
 	if (!(mdah = _raw_read_mda_header(fid->fmt, area)))
@@ -1068,7 +1068,7 @@ const char *vgname_from_mda(const struct format_type *fmt,
 	if (mda_free_sectors)
 		*mda_free_sectors = ((dev_area->size - MDA_HEADER_SIZE) / 2) >> SECTOR_SHIFT;
 
-	if (!dev_open(dev_area->dev))
+	if (!dev_open_flags(dev_area->dev, O_RDONLY, 1, 0))
 		return_NULL;
 
 	if (!(mdah = _raw_read_mda_header(fmt, dev_area)))
