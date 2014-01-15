@@ -1,0 +1,273 @@
+Description: Do not fsck mounted filesystems on resize
+ If lvextend or lvresize is called on a mounted filesystem, a warning message 
+ is displayed asking if the user would like to continue.  If yes is selected 
+ the filesystem will likely be corrupted.  If no is selected the filesystem 
+ will not be resized.  Instead fsck just should not be run on the filesystem.
+
+Author: Dave Chiluk <chiluk@canonical.com>
+Bug-Ubuntu: https://bugs.launchpad.net/bugs/1122445
+
+---
+Origin: upstream, https://git.fedorahosted.org/cgit/lvm2.git/commit/?id=2955b913
+Origin: upstream, https://git.fedorahosted.org/cgit/lvm2.git/commit/?id=55b94bf3
+Origin: upstream, https://git.fedorahosted.org/cgit/lvm2.git/commit/?id=cd4c26a2
+Origin: upstream, https://git.fedorahosted.org/cgit/lvm2.git/commit/?id=4886fa21
+
+
+Index: lvm2-2.02.66/lib/misc/lvm-exec.h
+===================================================================
+--- lvm2-2.02.66.orig/lib/misc/lvm-exec.h	2014-01-14 14:39:20.000000000 -0600
++++ lvm2-2.02.66/lib/misc/lvm-exec.h	2014-01-14 14:39:20.000000000 -0600
+@@ -1,6 +1,6 @@
+ /*
+  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.  
+- * Copyright (C) 2004-2006 Red Hat, Inc. All rights reserved.
++ * Copyright (C) 2004-2010 Red Hat, Inc. All rights reserved.
+  *
+  * This file is part of LVM2.
+  *
+@@ -19,6 +19,6 @@
+ #include "lib.h"
+ 
+ struct cmd_context;
+-int exec_cmd(struct cmd_context *cmd, const char *const argv[]);
++int exec_cmd(struct cmd_context *cmd, const char *const argv[], int *rstatus);
+ 
+ #endif
+Index: lvm2-2.02.66/lib/misc/lvm-exec.c
+===================================================================
+--- lvm2-2.02.66.orig/lib/misc/lvm-exec.c	2014-01-14 14:39:20.000000000 -0600
++++ lvm2-2.02.66/lib/misc/lvm-exec.c	2014-01-14 14:39:20.000000000 -0600
+@@ -46,7 +46,7 @@
+ /*
+  * Execute and wait for external command
+  */
+-int exec_cmd(struct cmd_context *cmd, const char *const argv[])
++int exec_cmd(struct cmd_context *cmd, const char *const argv[], int *rstatus)
+ {
+ 	pid_t pid;
+ 	int status;
+@@ -71,6 +71,9 @@
+ 		_exit(errno);
+ 	}
+ 
++	if (rstatus)
++		*rstatus = -1;
++
+ 	/* Parent */
+ 	if (wait4(pid, &status, 0, NULL) != pid) {
+ 		log_error("wait4 child process %u failed: %s", pid,
+@@ -84,9 +87,16 @@
+ 	}
+ 
+ 	if (WEXITSTATUS(status)) {
+-		log_error("%s failed: %u", argv[0], WEXITSTATUS(status));
++		if (rstatus) {
++			*rstatus = WEXITSTATUS(status);
++			log_verbose("%s failed: %u", argv[0], *rstatus);
++		} else
++			log_error("%s failed: %u", argv[0], WEXITSTATUS(status));
+ 		return 0;
+ 	}
+ 
++	if (rstatus)
++		*rstatus = 0;
++
+ 	return 1;
+ }
+Index: lvm2-2.02.66/lib/activate/activate.c
+===================================================================
+--- lvm2-2.02.66.orig/lib/activate/activate.c	2014-01-14 14:39:20.000000000 -0600
++++ lvm2-2.02.66/lib/activate/activate.c	2014-01-14 14:39:20.000000000 -0600
+@@ -407,7 +407,7 @@
+ 	argv[1] = module;
+ 	argv[2] = NULL;
+ 
+-	ret = exec_cmd(cmd, argv);
++	ret = exec_cmd(cmd, argv, NULL);
+ #endif
+ 	return ret;
+ }
+Index: lvm2-2.02.66/scripts/fsadm.sh
+===================================================================
+--- lvm2-2.02.66.orig/scripts/fsadm.sh	2014-01-14 14:39:20.000000000 -0600
++++ lvm2-2.02.66/scripts/fsadm.sh	2014-01-14 15:33:33.857755296 -0600
+@@ -23,6 +23,11 @@
+ # reiserfs: resize_reiserfs, reiserfstune
+ # xfs: xfs_growfs, xfs_info
+ #
++# Return values:
++#   0 success
++#   1 error
++#   2 break detected
++#   3 unsupported online filesystem check for given mounted fs
+ 
+ TOOL=fsadm
+ 
+@@ -65,6 +70,7 @@
+ MOUNTPOINT=
+ MOUNTED=
+ REMOUNT=
++PROCMOUNTS="/proc/mounts"
+ 
+ IFS_OLD=$IFS
+ # without bash $'\n'
+@@ -125,6 +131,8 @@
+ 	IFS=$IFS_OLD
+ 	trap 2
+ 
++	test "$1" -eq 2 && verbose "Break detected"
++
+ 	# start LVRESIZE with the filesystem modification flag
+ 	# and allow recursive call of fsadm
+ 	unset FSADM_RUNNING
+@@ -158,10 +166,15 @@
+ # detect filesystem on the given device
+ # dereference device name if it is symbolic link
+ detect_fs() {
+-        VOLUME=${1#/dev/}
++	VOLUME_ORIG=$1
++	VOLUME=${1#/dev/}
+ 	VOLUME=$($READLINK $READLINK_E "/dev/$VOLUME") || error "Cannot get readlink $1"
+-	# strip newline from volume name
+-	VOLUME=${VOLUME%%$NL}
++	RVOLUME=$VOLUME
++	case "$RVOLUME" in
++	  /dev/dm-[0-9]*)
++		read </sys/block/${RVOLUME#/dev/}/dm/name SYSVOLUME 2>&1 && VOLUME="/dev/mapper/$SYSVOLUME"
++		;;
++	esac
+ 	# use /dev/null as cache file to be sure about the result
+ 	# not using option '-o value' to be compatible with older version of blkid
+ 	FSTYPE=$($BLKID -c /dev/null -s TYPE "$VOLUME") || error "Cannot get FSTYPE of \"$VOLUME\""
+@@ -171,11 +184,19 @@
+ }
+ 
+ # check if the given device is already mounted and where
++# FIXME: resolve swap usage and device stacking
+ detect_mounted()  {
+-	$MOUNT >/dev/null || error "Cannot detect mounted device $VOLUME"
+-	MOUNTED=$($MOUNT | $GREP "$VOLUME")
+-	MOUNTED=${MOUNTED##* on }
+-	MOUNTED=${MOUNTED% type *} # allow type in the mount name
++	test -e $PROCMOUNTS || error "Cannot detect mounted device $VOLUME"
++
++	MOUNTED=$($GREP ^"$VOLUME" $PROCMOUNTS)
++
++	# for empty string try again with real volume name
++	test -z "$MOUNTED" && MOUNTED=$($GREP ^"$RVOLUME" $PROCMOUNTS)
++
++	# cut device name prefix and trim everything past mountpoint
++	# echo translates \040 to spaces
++	MOUNTED=${MOUNTED#* }
++	MOUNTED=$(echo -n -e ${MOUNTED%% *})
+ 	test -n "$MOUNTED"
+ }
+ 
+@@ -329,7 +350,6 @@
+ 	# if the size parameter is missing use device size
+ 	#if [ -n "$NEWSIZE" -a $NEWSIZE <
+ 	test -z "$NEWSIZE" && NEWSIZE=${DEVSIZE}b
+-	trap cleanup 2
+ 	IFS=$NL
+ 	case "$FSTYPE" in
+ 	  "ext3"|"ext2"|"ext4") resize_ext $NEWSIZE ;;
+@@ -345,7 +365,10 @@
+ ###################
+ check() {
+ 	detect_fs "$1"
+-	detect_mounted && error "Can not fsck device \"$VOLUME\", filesystem mounted on $MOUNTED"
++	if detect_mounted ; then
++		verbose "Skipping filesystem check for device \"$VOLUME\" as the filesystem is mounted on $MOUNTED";
++		cleanup 3
++	fi
+ 	case "$FSTYPE" in
+ 	  "xfs") dry $XFS_CHECK "$VOLUME" ;;
+ 	  *) dry $FSCK $YES "$VOLUME" ;;
+@@ -356,6 +379,7 @@
+ # start point of this script
+ # - parsing parameters
+ #############################
++trap "cleanup 2" 2
+ 
+ # test if we are not invoked recursively
+ test -n "$FSADM_RUNNING" && exit 0
+Index: lvm2-2.02.66/tools/lvresize.c
+===================================================================
+--- lvm2-2.02.66.orig/tools/lvresize.c	2014-01-14 14:39:20.000000000 -0600
++++ lvm2-2.02.66/tools/lvresize.c	2014-01-14 14:39:20.000000000 -0600
+@@ -129,6 +129,7 @@
+ enum fsadm_cmd_e { FSADM_CMD_CHECK, FSADM_CMD_RESIZE };
+ #define FSADM_CMD "fsadm"
+ #define FSADM_CMD_MAX_ARGS 6
++#define FSADM_CHECK_FAILS_FOR_MOUNTED 3 /* shell exist status code */
+ 
+ /*
+  * FSADM_CMD --dry-run --verbose --force check lv_path
+@@ -137,7 +138,8 @@
+ static int _fsadm_cmd(struct cmd_context *cmd,
+ 		      const struct volume_group *vg,
+ 		      const struct lvresize_params *lp,
+-		      enum fsadm_cmd_e fcmd)
++		      enum fsadm_cmd_e fcmd,
++		      int *status)
+ {
+ 	char lv_path[PATH_MAX];
+ 	char size_buf[SIZE_BUF];
+@@ -157,6 +159,9 @@
+ 
+ 	argv[i++] = (fcmd == FSADM_CMD_RESIZE) ? "resize" : "check";
+ 
++	if (status)
++		*status = -1;
++
+ 	if (dm_snprintf(lv_path, PATH_MAX, "%s%s/%s", cmd->dev_dir, lp->vg_name,
+ 			lp->lv_name) < 0) {
+ 		log_error("Couldn't create LV path for %s", lp->lv_name);
+@@ -177,7 +182,7 @@
+ 
+ 	argv[i] = NULL;
+ 
+-	return exec_cmd(cmd, argv);
++	return exec_cmd(cmd, argv, status);
+ }
+ 
+ static int _lvresize_params(struct cmd_context *cmd, int argc, char **argv,
+@@ -286,6 +291,7 @@
+ 	struct lv_segment *seg, *uninitialized_var(mirr_seg);
+ 	uint32_t seg_extents;
+ 	uint32_t sz, str;
++	int status;
+ 	struct dm_list *pvh = NULL;
+ 
+ 	/* does LV exist? */
+@@ -591,13 +597,16 @@
+ 
+ 	if (lp->resizefs) {
+ 		if (!lp->nofsck &&
+-		    !_fsadm_cmd(cmd, vg, lp, FSADM_CMD_CHECK)) {
+-			stack;
+-			return ECMD_FAILED;
++		    !_fsadm_cmd(cmd, vg, lp, FSADM_CMD_CHECK, &status)) {
++			if (status != FSADM_CHECK_FAILS_FOR_MOUNTED) {
++				stack;
++				return ECMD_FAILED;
++			}
++                        /* some filesystems supports online resize */
+ 		}
+ 
+ 		if ((lp->resize == LV_REDUCE) &&
+-		    !_fsadm_cmd(cmd, vg, lp, FSADM_CMD_RESIZE)) {
++		    !_fsadm_cmd(cmd, vg, lp, FSADM_CMD_RESIZE, NULL)) {
+ 			stack;
+ 			return ECMD_FAILED;
+ 		}
+@@ -665,7 +674,7 @@
+ 	log_print("Logical volume %s successfully resized", lp->lv_name);
+ 
+ 	if (lp->resizefs && (lp->resize == LV_EXTEND) &&
+-	    !_fsadm_cmd(cmd, vg, lp, FSADM_CMD_RESIZE)) {
++	    !_fsadm_cmd(cmd, vg, lp, FSADM_CMD_RESIZE, NULL)) {
+ 		stack;
+ 		return ECMD_FAILED;
+ 	}

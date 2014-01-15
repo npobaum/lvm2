@@ -11,3 +11,4 @@ avoid-dev-block.patch
 monitoring-default-off.patch
 monitoring-cluster-on.patch
 upstream-update-device-types.patch
+skip-fsck-for-mounted-fs.patch
