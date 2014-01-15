@@ -1,3 +1,10 @@
+lvm2 (2.02.66-4ubuntu7.4) precise; urgency=low
+
+  * When calling lvresize or lvextend do not attempt to fsck a mounted 
+    filesystem. (LP: #1269175)
+
+ -- Dave Chiluk <chiluk@canonical.com>  Wed, 15 Jan 2014 13:01:44 -0600
+
 lvm2 (2.02.66-4ubuntu7.3) precise; urgency=low
 
   * Add more supported device-types (Micon PCIe SSD and others).
