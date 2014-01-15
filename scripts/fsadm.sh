@@ -23,6 +23,11 @@
 # reiserfs: resize_reiserfs, reiserfstune
 # xfs: xfs_growfs, xfs_info
 #
+# Return values:
+#   0 success
+#   1 error
+#   2 break detected
+#   3 unsupported online filesystem check for given mounted fs
 
 TOOL=fsadm
 
@@ -65,6 +70,7 @@ BLOCKCOUNT=
 MOUNTPOINT=
 MOUNTED=
 REMOUNT=
+PROCMOUNTS="/proc/mounts"
 
 IFS_OLD=$IFS
 # without bash $'\n'
@@ -125,6 +131,8 @@ cleanup() {
 	IFS=$IFS_OLD
 	trap 2
 
+	test "$1" -eq 2 && verbose "Break detected"
+
 	# start LVRESIZE with the filesystem modification flag
 	# and allow recursive call of fsadm
 	unset FSADM_RUNNING
@@ -158,10 +166,15 @@ decode_size() {
 # detect filesystem on the given device
 # dereference device name if it is symbolic link
 detect_fs() {
-        VOLUME=${1#/dev/}
+	VOLUME_ORIG=$1
+	VOLUME=${1#/dev/}
 	VOLUME=$($READLINK $READLINK_E "/dev/$VOLUME") || error "Cannot get readlink $1"
-	# strip newline from volume name
-	VOLUME=${VOLUME%%$NL}
+	RVOLUME=$VOLUME
+	case "$RVOLUME" in
+	  /dev/dm-[0-9]*)
+		read </sys/block/${RVOLUME#/dev/}/dm/name SYSVOLUME 2>&1 && VOLUME="/dev/mapper/$SYSVOLUME"
+		;;
+	esac
 	# use /dev/null as cache file to be sure about the result
 	# not using option '-o value' to be compatible with older version of blkid
 	FSTYPE=$($BLKID -c /dev/null -s TYPE "$VOLUME") || error "Cannot get FSTYPE of \"$VOLUME\""
@@ -171,11 +184,19 @@ detect_fs() {
 }
 
 # check if the given device is already mounted and where
+# FIXME: resolve swap usage and device stacking
 detect_mounted()  {
-	$MOUNT >/dev/null || error "Cannot detect mounted device $VOLUME"
-	MOUNTED=$($MOUNT | $GREP "$VOLUME")
-	MOUNTED=${MOUNTED##* on }
-	MOUNTED=${MOUNTED% type *} # allow type in the mount name
+	test -e $PROCMOUNTS || error "Cannot detect mounted device $VOLUME"
+
+	MOUNTED=$($GREP ^"$VOLUME" $PROCMOUNTS)
+
+	# for empty string try again with real volume name
+	test -z "$MOUNTED" && MOUNTED=$($GREP ^"$RVOLUME" $PROCMOUNTS)
+
+	# cut device name prefix and trim everything past mountpoint
+	# echo translates \040 to spaces
+	MOUNTED=${MOUNTED#* }
+	MOUNTED=$(echo -n -e ${MOUNTED%% *})
 	test -n "$MOUNTED"
 }
 
@@ -329,7 +350,6 @@ resize() {
 	# if the size parameter is missing use device size
 	#if [ -n "$NEWSIZE" -a $NEWSIZE <
 	test -z "$NEWSIZE" && NEWSIZE=${DEVSIZE}b
-	trap cleanup 2
 	IFS=$NL
 	case "$FSTYPE" in
 	  "ext3"|"ext2"|"ext4") resize_ext $NEWSIZE ;;
@@ -345,7 +365,10 @@ resize() {
 ###################
 check() {
 	detect_fs "$1"
-	detect_mounted && error "Can not fsck device \"$VOLUME\", filesystem mounted on $MOUNTED"
+	if detect_mounted ; then
+		verbose "Skipping filesystem check for device \"$VOLUME\" as the filesystem is mounted on $MOUNTED";
+		cleanup 3
+	fi
 	case "$FSTYPE" in
 	  "xfs") dry $XFS_CHECK "$VOLUME" ;;
 	  *) dry $FSCK $YES "$VOLUME" ;;
@@ -356,6 +379,7 @@ check() {
 # start point of this script
 # - parsing parameters
 #############################
+trap "cleanup 2" 2
 
 # test if we are not invoked recursively
 test -n "$FSADM_RUNNING" && exit 0
