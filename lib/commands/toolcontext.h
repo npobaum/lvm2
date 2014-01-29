@@ -17,6 +17,7 @@
 #define _LVM_TOOLCONTEXT_H
 
 #include "dev-cache.h"
+#include "dev-type.h"
 
 #include <stdio.h>
 #include <limits.h>
@@ -26,6 +27,7 @@
  */
 struct config_info {
 	int debug;
+	int debug_classes;
 	int verbose;
 	int silent;
 	int test;
@@ -49,6 +51,7 @@ struct config_info {
 };
 
 struct dm_config_tree;
+struct profile_params;
 struct archive_params;
 struct backup_params;
 struct arg_values;
@@ -84,20 +87,30 @@ struct cmd_context {
 	unsigned handles_unknown_segments:1;
 	unsigned use_linear_target:1;
 	unsigned partial_activation:1;
+	unsigned auto_set_activation_skip:1;
 	unsigned si_unit_consistency:1;
 	unsigned metadata_read_only:1;
+	unsigned ignore_clustered_vgs:1;
 	unsigned threaded:1;		/* Set if running within a thread e.g. clvmd */
 
 	unsigned independent_metadata_areas:1;	/* Active formats have MDAs outside PVs */
 
+	struct dev_types *dev_types;
 	struct dev_filter *filter;
 	struct dev_filter *lvmetad_filter;
 	int dump_filter;	/* Dump filter when exiting? */
 
-	struct dm_list config_files;
-	int config_valid;
-	struct dm_config_tree *cft;
+	struct dm_list config_files; /* master lvm config + any existing tag configs */
+	struct profile_params *profile_params; /* profile handling params including loaded profile configs */
+	struct dm_config_tree *cft; /* the whole cascade: CONFIG_STRING -> CONFIG_PROFILE -> CONFIG_FILE/CONFIG_MERGED_FILES */
+	int config_initialized; /* used to reinitialize config if previous init was not successful */
+
+	struct dm_hash_table *cft_def_hash; /* config definition hash used for validity check (item type + item recognized) */
+	struct cft_check_handle *cft_check_handle;
+
+	/* selected settings with original default/configured value which can be changed during cmd processing */
 	struct config_info default_settings;
+	/* may contain changed values compared to default_settings */
 	struct config_info current_settings;
 
 	struct archive_params *archive_params;
@@ -111,7 +124,6 @@ struct cmd_context {
 	char system_dir[PATH_MAX];
 	char dev_dir[PATH_MAX];
 	char proc_dir[PATH_MAX];
-	char sysfs_dir[PATH_MAX]; /* FIXME Use global value instead. */
 };
 
 /*

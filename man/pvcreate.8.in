@@ -12,6 +12,8 @@ pvcreate \- initialize a disk or partition for use by LVM
 .RB [ \-\-force ]]
 .RB [ \-y | \-\-yes ]
 .RB [ \-\-labelsector ]
+.RB [ \-\-bootloaderareasize
+.IR size ]
 .RB [ \-M | \-\-metadatatype
 .IR type ]
 .RB [ \-\- [ pv ] metadatacopies
@@ -162,6 +164,17 @@ By default the PV is labelled with an LVM2 identifier in its second
 sector (sector 1).  This lets you use a different sector near the
 start of the disk (between 0 and 3 inclusive - see LABEL_SCAN_SECTORS
 in the source).  Use with care.
+.TP
+.B \-\-bootloaderareasize \fIsize
+Create a separate bootloader area of specified size besides PV's data
+area. The bootloader area is an area of reserved space on the PV from
+which LVM2 will not allocate any extents and it's kept untouched. This is
+primarily aimed for use with bootloaders to embed their own data or metadata.
+The start of the bootloader area is always aligned, see also \fB--dataalignment\fP
+and \fB--dataalignmentoffset\fP. The bootloader area size may eventually
+end up increased due to the alignment, but it's never less than the
+size that is requested. To see the bootloader area start and size of
+an existing Physical Volume use \fBpvs -o +pv_ba_start,pv_ba_size\fP.
 .TP
 .B \-\-setphysicalvolumesize \fIsize
 Overrides the automatically-detected size of the PV.  Use with care.

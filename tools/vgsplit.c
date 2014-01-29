@@ -41,6 +41,12 @@ static int _move_one_lv(struct volume_group *vg_from,
 		return 0;
 	}
 
+	/* Moved pool metadata spare LV */
+	if (vg_from->pool_metadata_spare_lv == lv) {
+		vg_to->pool_metadata_spare_lv = lv;
+		vg_from->pool_metadata_spare_lv = NULL;
+	}
+
 	return 1;
 }
 
@@ -60,6 +66,10 @@ static int _move_lvs(struct volume_group *vg_from, struct volume_group *vg_to)
 			continue;
 
 		if ((lv->status & MIRRORED))
+			continue;
+
+		if (lv_is_thin_pool(lv) ||
+		    lv_is_thin_volume(lv))
 			continue;
 
 		/* Ensure all the PVs used by this LV remain in the same */
@@ -177,7 +187,7 @@ static int _move_mirrors(struct volume_group *vg_from,
 		seg_in = 0;
 		for (s = 0; s < seg->area_count; s++)
 			if (_lv_is_in_vg(vg_to, seg_lv(seg, s)))
-			    seg_in++;
+				seg_in++;
 
 		log_in = !seg->log_lv;
 		if (seg->log_lv) {
@@ -205,6 +215,53 @@ static int _move_mirrors(struct volume_group *vg_from,
 		if (seg_in == seg->area_count && log_in) {
 			if (!_move_one_lv(vg_from, vg_to, lvh))
 				return_0;
+		}
+	}
+
+	return 1;
+}
+
+static int _move_thins(struct volume_group *vg_from,
+		       struct volume_group *vg_to)
+{
+	struct dm_list *lvh, *lvht;
+	struct logical_volume *lv, *data_lv;
+	struct lv_segment *seg;
+
+	dm_list_iterate_safe(lvh, lvht, &vg_from->lvs) {
+		lv = dm_list_item(lvh, struct lv_list)->lv;
+
+		if (lv_is_thin_volume(lv)) {
+			seg = first_seg(lv);
+			data_lv = seg_lv(first_seg(seg->pool_lv), 0);
+			if ((_lv_is_in_vg(vg_to, data_lv) ||
+			     _lv_is_in_vg(vg_to, seg->external_lv))) {
+				if (_lv_is_in_vg(vg_from, seg->external_lv) ||
+				    _lv_is_in_vg(vg_from, data_lv)) {
+					log_error("Can't split external origin %s "
+						  "and pool %s between two Volume Groups.",
+						  seg->external_lv->name,
+						  seg->pool_lv->name);
+					return 0;
+				}
+				if (!_move_one_lv(vg_from, vg_to, lvh))
+					return_0;
+			}
+		} else if (lv_is_thin_pool(lv)) {
+			seg = first_seg(lv);
+			data_lv = seg_lv(seg, 0);
+			if (_lv_is_in_vg(vg_to, data_lv) ||
+			    _lv_is_in_vg(vg_to, seg->metadata_lv)) {
+				if (_lv_is_in_vg(vg_from, seg->metadata_lv) ||
+				    _lv_is_in_vg(vg_from, data_lv)) {
+					log_error("Can't split pool data and metadata %s "
+						  "between two Volume Groups.",
+						  lv->name);
+					return 0;
+				}
+				if (!_move_one_lv(vg_from, vg_to, lvh))
+					return_0;
+			}
 		}
 	}
 
@@ -247,8 +304,7 @@ static struct volume_group *_vgsplit_to(struct cmd_context *cmd,
 
 		if (vg_read_error(vg_to)) {
 			release_vg(vg_to);
-			stack;
-			return NULL;
+			return_NULL;
 		}
 
 	} else if (vg_read_error(vg_to) == SUCCESS) {
@@ -333,11 +389,8 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 		lock_vg_from_first = 0;
 
 	if (lock_vg_from_first) {
-		vg_from = _vgsplit_from(cmd, vg_name_from);
-		if (!vg_from) {
-			stack;
-			return ECMD_FAILED;
-		}
+		if (!(vg_from = _vgsplit_from(cmd, vg_name_from)))
+			return_ECMD_FAILED;
 		/*
 		 * Set metadata format of original VG.
 		 * NOTE: We must set the format before calling vg_create()
@@ -345,23 +398,17 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 		 */
 		cmd->fmt = vg_from->fid->fmt;
 
-		vg_to = _vgsplit_to(cmd, vg_name_to, &existing_vg);
-		if (!vg_to) {
+		if (!(vg_to = _vgsplit_to(cmd, vg_name_to, &existing_vg))) {
 			unlock_and_release_vg(cmd, vg_from, vg_name_from);
-			stack;
-			return ECMD_FAILED;
+			return_ECMD_FAILED;
 		}
 	} else {
-		vg_to = _vgsplit_to(cmd, vg_name_to, &existing_vg);
-		if (!vg_to) {
-			stack;
-			return ECMD_FAILED;
-		}
-		vg_from = _vgsplit_from(cmd, vg_name_from);
-		if (!vg_from) {
+		if (!(vg_to = _vgsplit_to(cmd, vg_name_to, &existing_vg)))
+			return_ECMD_FAILED;
+
+		if (!(vg_from = _vgsplit_from(cmd, vg_name_from))) {
 			unlock_and_release_vg(cmd, vg_to, vg_name_to);
-			stack;
-			return ECMD_FAILED;
+			return_ECMD_FAILED;
 		}
 
 		if (cmd->fmt != vg_from->fid->fmt) {
@@ -383,12 +430,12 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 	} else {
 		vgcreate_params_set_defaults(&vp_def, vg_from);
 		vp_def.vg_name = vg_name_to;
-		if (vgcreate_params_set_from_args(cmd, &vp_new, &vp_def)) {
+		if (!vgcreate_params_set_from_args(cmd, &vp_new, &vp_def)) {
 			r = EINVALID_CMD_LINE;
 			goto_bad;
 		}
 
-		if (vgcreate_params_validate(cmd, &vp_new)) {
+		if (!vgcreate_params_validate(cmd, &vp_new)) {
 			r = EINVALID_CMD_LINE;
 			goto_bad;
 		}
@@ -428,6 +475,10 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 
 	/* Move required snapshots across */
 	if (!(_move_snapshots(vg_from, vg_to)))
+		goto_bad;
+
+	/* Move required pools across */
+	if (!(_move_thins(vg_from, vg_to)))
 		goto_bad;
 
 	/* Split metadata areas and check if both vgs have at least one area */

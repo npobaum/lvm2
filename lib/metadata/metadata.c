@@ -40,15 +40,6 @@ static struct physical_volume *_pv_read(struct cmd_context *cmd,
 					struct format_instance *fid,
 					int warnings, int scan_label_only);
 
-static struct physical_volume *_find_pv_by_name(struct cmd_context *cmd,
-			 			const char *pv_name);
-
-static struct pv_list *_find_pv_in_vg(const struct volume_group *vg,
-				      const char *pv_name);
-
-static struct pv_list *_find_pv_in_vg_by_uuid(const struct volume_group *vg,
-					      const struct id *id);
-
 static uint32_t _vg_bad_status_bits(const struct volume_group *vg,
 				    uint64_t status);
 
@@ -74,9 +65,7 @@ unsigned long set_pe_align(struct physical_volume *pv, unsigned long data_alignm
 		goto out;
 	}
 
-	default_pe_align = find_config_tree_int(pv->fmt->cmd,
-						"devices/default_data_alignment",
-						DEFAULT_DATA_ALIGNMENT);
+	default_pe_align = find_config_tree_int(pv->fmt->cmd, devices_default_data_alignment_CFG, NULL);
 
 	if (default_pe_align)
 		/* align on 1 MiB multiple */
@@ -94,11 +83,10 @@ unsigned long set_pe_align(struct physical_volume *pv, unsigned long data_alignm
 	/*
 	 * Align to stripe-width of underlying md device if present
 	 */
-	if (find_config_tree_bool(pv->fmt->cmd, "devices/md_chunk_alignment",
-				  DEFAULT_MD_CHUNK_ALIGNMENT)) {
-		temp_pe_align = dev_md_stripe_width(pv->fmt->cmd->sysfs_dir, pv->dev);
+	if (find_config_tree_bool(pv->fmt->cmd, devices_md_chunk_alignment_CFG, NULL)) {
+		temp_pe_align = dev_md_stripe_width(pv->fmt->cmd->dev_types, pv->dev);
 		if (_alignment_overrides_default(temp_pe_align, default_pe_align))
-			pv->pe_align = MAX(pv->pe_align, temp_pe_align);
+			pv->pe_align = temp_pe_align;
 	}
 
 	/*
@@ -108,16 +96,14 @@ unsigned long set_pe_align(struct physical_volume *pv, unsigned long data_alignm
 	 * - optimal_io_size - the device's preferred unit of receiving I/O
 	 *   (e.g. MD's stripe width)
 	 */
-	if (find_config_tree_bool(pv->fmt->cmd,
-				  "devices/data_alignment_detection",
-				  DEFAULT_DATA_ALIGNMENT_DETECTION)) {
-		temp_pe_align = dev_minimum_io_size(pv->fmt->cmd->sysfs_dir, pv->dev);
+	if (find_config_tree_bool(pv->fmt->cmd, devices_data_alignment_detection_CFG, NULL)) {
+		temp_pe_align = dev_minimum_io_size(pv->fmt->cmd->dev_types, pv->dev);
 		if (_alignment_overrides_default(temp_pe_align, default_pe_align))
-			pv->pe_align = MAX(pv->pe_align, temp_pe_align);
+			pv->pe_align = temp_pe_align;
 
-		temp_pe_align = dev_optimal_io_size(pv->fmt->cmd->sysfs_dir, pv->dev);
+		temp_pe_align = dev_optimal_io_size(pv->fmt->cmd->dev_types, pv->dev);
 		if (_alignment_overrides_default(temp_pe_align, default_pe_align))
-			pv->pe_align = MAX(pv->pe_align, temp_pe_align);
+			pv->pe_align = temp_pe_align;
 	}
 
 out:
@@ -142,11 +128,8 @@ unsigned long set_pe_align_offset(struct physical_volume *pv,
 	if (!pv->dev)
 		goto out;
 
-	if (find_config_tree_bool(pv->fmt->cmd,
-				  "devices/data_alignment_offset_detection",
-				  DEFAULT_DATA_ALIGNMENT_OFFSET_DETECTION)) {
-		int align_offset = dev_alignment_offset(pv->fmt->cmd->sysfs_dir,
-							pv->dev);
+	if (find_config_tree_bool(pv->fmt->cmd, devices_data_alignment_offset_detection_CFG, NULL)) {
+		int align_offset = dev_alignment_offset(pv->fmt->cmd->dev_types, pv->dev);
 		/* must handle a -1 alignment_offset; means dev is misaligned */
 		if (align_offset < 0)
 			align_offset = 0;
@@ -251,8 +234,8 @@ int add_pv_to_vg(struct volume_group *vg, const char *pv_name,
 		return 0;
 	}
 
-	if (_find_pv_in_vg(vg, pv_name) ||
-	    _find_pv_in_vg_by_uuid(vg, &pv->id)) {
+	if (find_pv_in_vg(vg, pv_name) ||
+	    find_pv_in_vg_by_uuid(vg, &pv->id)) {
 		if (!id_write_format(&pv->id, uuid, sizeof(uuid))) {
 			stack;
 			uuid[0] = '\0';
@@ -450,8 +433,11 @@ static int validate_new_vg_name(struct cmd_context *cmd, const char *vg_name)
 {
 	static char vg_path[PATH_MAX];
 
-	if (!validate_name(vg_name))
-		return_0;
+	if (!validate_name(vg_name)) {
+		log_error("New volume group name \"%s\" is invalid.",
+			  vg_name);
+		return 0;
+	}
 
 	snprintf(vg_path, sizeof(vg_path), "%s%s", cmd->dev_dir, vg_name);
 	if (path_exists(vg_path)) {
@@ -479,11 +465,8 @@ int validate_vg_rename_params(struct cmd_context *cmd,
 		return 0;
 	}
 
-	if (!validate_new_vg_name(cmd, vg_name_new)) {
-		log_error("New volume group name \"%s\" is invalid",
-			  vg_name_new);
-		return 0;
-	}
+	if (!validate_new_vg_name(cmd, vg_name_new))
+		return_0;
 
 	if (!strcmp(vg_name_old, vg_name_new)) {
 		log_error("Old and new volume group names must differ");
@@ -578,7 +561,7 @@ int vg_remove(struct volume_group *vg)
 	struct pv_list *pvl;
 	int ret = 1;
 
-	if (!lock_vol(vg->cmd, VG_ORPHANS, LCK_VG_WRITE)) {
+	if (!lock_vol(vg->cmd, VG_ORPHANS, LCK_VG_WRITE, NULL)) {
 		log_error("Can't get lock for orphan PVs");
 		return 0;
 	}
@@ -645,14 +628,14 @@ static int vg_extend_single_pv(struct volume_group *vg, char *pv_name,
 {
 	struct physical_volume *pv;
 
-	if (!(pv = pv_by_path(vg->fid->fmt->cmd, pv_name)))
+	if (!(pv = find_pv_by_name(vg->cmd, pv_name, 1)))
 		stack;
 	if (!pv && !pp) {
 		log_error("%s not identified as an existing "
 			  "physical volume", pv_name);
 		return 0;
 	} else if (!pv && pp) {
-		if (!(pv = pvcreate_single(vg->cmd, pv_name, pp, 0)))
+		if (!(pv = pvcreate_vol(vg->cmd, pv_name, pp, 0)))
 			return_0;
 	}
 	if (!add_pv_to_vg(vg, pv_name, pv, pp)) {
@@ -819,21 +802,18 @@ const char *strip_dir(const char *vg_name, const char *dev_dir)
 int vgcreate_params_validate(struct cmd_context *cmd,
 			     struct vgcreate_params *vp)
 {
-	if (!validate_new_vg_name(cmd, vp->vg_name)) {
-		log_error("New volume group name \"%s\" is invalid",
-			  vp->vg_name);
-		return 1;
-	}
+	if (!validate_new_vg_name(cmd, vp->vg_name))
+		return_0;
 
 	if (vp->alloc == ALLOC_INHERIT) {
 		log_error("Volume Group allocation policy cannot inherit "
 			  "from anything");
-		return 1;
+		return 0;
 	}
 
 	if (!vp->extent_size) {
 		log_error("Physical extent size may not be zero");
-		return 1;
+		return 0;
 	}
 
 	if (!(cmd->fmt->features & FMT_UNLIMITED_VOLS)) {
@@ -843,11 +823,37 @@ int vgcreate_params_validate(struct cmd_context *cmd,
 			vp->max_pv = 255;
 		if (vp->max_lv > 255 || vp->max_pv > 255) {
 			log_error("Number of volumes may not exceed 255");
-			return 1;
+			return 0;
 		}
 	}
 
-	return 0;
+	return 1;
+}
+
+static int _vg_update_vg_ondisk(struct volume_group *vg)
+{
+	struct dm_config_tree *cft;
+	int pool_locked;
+
+	if (vg->vg_ondisk || is_orphan_vg(vg->name)) /* we already have it */
+		return 1;
+
+	pool_locked = dm_pool_locked(vg->vgmem);
+	if (pool_locked && !dm_pool_unlock(vg->vgmem, 0))
+		return_0;
+
+	cft = export_vg_to_config_tree(vg);
+	if (!cft)
+		return 0;
+
+	vg->vg_ondisk = import_vg_from_config_tree(cft, vg->fid);
+	dm_config_destroy(cft);
+
+	/* recompute the pool crc */
+	if (pool_locked && !dm_pool_lock(vg->vgmem, 1))
+		return_0;
+
+	return vg->vg_ondisk ? 1 : 0;
 }
 
 /*
@@ -858,6 +864,7 @@ static struct volume_group *_vg_make_handle(struct cmd_context *cmd,
 					    struct volume_group *vg,
 					    uint32_t failure)
 {
+
 	/* Never return a cached VG structure for a failure */
 	if (vg && vg->vginfo && failure != SUCCESS) {
 		release_vg(vg);
@@ -869,6 +876,9 @@ static struct volume_group *_vg_make_handle(struct cmd_context *cmd,
 
 	if (vg->read_status != failure)
 		vg->read_status = failure;
+
+	if (vg->fid && !_vg_update_vg_ondisk(vg))
+		vg->read_status |= FAILED_ALLOCATION;
 
 	return vg;
 }
@@ -905,7 +915,10 @@ int vg_has_unknown_segments(const struct volume_group *vg)
 struct volume_group *vg_create(struct cmd_context *cmd, const char *vg_name)
 {
 	struct volume_group *vg;
-	struct format_instance_ctx fic;
+	struct format_instance_ctx fic = {
+		.type = FMT_INSTANCE_MDAS | FMT_INSTANCE_AUX_MDAS,
+		.context.vg_ref.vg_name = vg_name
+	};
 	struct format_instance *fid;
 	int consistent = 0;
 	uint32_t rc;
@@ -947,22 +960,12 @@ struct volume_group *vg_create(struct cmd_context *cmd, const char *vg_name)
 		goto_bad;
 
 	*vg->system_id = '\0';
-
 	vg->extent_size = DEFAULT_EXTENT_SIZE * 2;
-	vg->extent_count = 0;
-	vg->free_count = 0;
-
 	vg->max_lv = DEFAULT_MAX_LV;
 	vg->max_pv = DEFAULT_MAX_PV;
-
 	vg->alloc = DEFAULT_ALLOC_POLICY;
 	vg->mda_copies = DEFAULT_VGMETADATACOPIES;
 
-	vg->pv_count = 0;
-
-	fic.type = FMT_INSTANCE_MDAS | FMT_INSTANCE_AUX_MDAS;
-	fic.context.vg_ref.vg_name = vg_name;
-	fic.context.vg_ref.vg_id = NULL;
 	if (!(fid = cmd->fmt->ops->create_instance(cmd->fmt, &fic))) {
 		log_error("Failed to create format instance");
 		goto bad;
@@ -1081,7 +1084,7 @@ static dm_bitset_t _bitset_with_random_bits(struct dm_pool *mem, uint32_t num_bi
 		return NULL;
 	}
 
-	log_debug("Selected %" PRIu32 " random bits from %" PRIu32 ": %s", num_set_bits, num_bits, (char *) dm_pool_end_object(mem));
+	log_debug_metadata("Selected %" PRIu32 " random bits from %" PRIu32 ": %s", num_set_bits, num_bits, (char *) dm_pool_end_object(mem));
 
 	return bs;
 }
@@ -1093,9 +1096,9 @@ static int _vg_ignore_mdas(struct volume_group *vg, uint32_t num_to_ignore)
 	dm_bitset_t mda_to_ignore_bs;
 	int r = 1;
 
-	log_debug("Adjusting ignored mdas for %s: %" PRIu32 " of %" PRIu32 " mdas in use "
-		  "but %" PRIu32 " required.  Changing %" PRIu32 " mda.",
-		  vg->name, mda_used_count, vg_mda_count(vg), vg_mda_copies(vg), num_to_ignore);
+	log_debug_metadata("Adjusting ignored mdas for %s: %" PRIu32 " of %" PRIu32 " mdas in use "
+			   "but %" PRIu32 " required.  Changing %" PRIu32 " mda.",
+			   vg->name, mda_used_count, vg_mda_count(vg), vg_mda_copies(vg), num_to_ignore);
 
 	if (!num_to_ignore)
 		return 1;
@@ -1134,9 +1137,9 @@ static int _vg_unignore_mdas(struct volume_group *vg, uint32_t num_to_unignore)
 	if (!num_to_unignore)
 		return 1;
 
-	log_debug("Adjusting ignored mdas for %s: %" PRIu32 " of %" PRIu32 " mdas in use "
-		  "but %" PRIu32 " required.  Changing %" PRIu32 " mda.",
-		  vg->name, mda_used_count, mda_count, vg_mda_copies(vg), num_to_unignore);
+	log_debug_metadata("Adjusting ignored mdas for %s: %" PRIu32 " of %" PRIu32 " mdas in use "
+			   "but %" PRIu32 " required.  Changing %" PRIu32 " mda.",
+			   vg->name, mda_used_count, mda_count, vg_mda_copies(vg), num_to_unignore);
 
 	if (!(mda_to_unignore_bs = _bitset_with_random_bits(vg->vgmem, mda_free_count,
 							    num_to_unignore, &vg->cmd->rand_seed)))
@@ -1336,7 +1339,7 @@ static int pvcreate_check(struct cmd_context *cmd, const char *name,
 	 * this means checking every VG by scanning every PV on the
 	 * system.
 	 */
-	if (pv && is_orphan(pv) && !dm_list_size(&pv->fid->metadata_areas_in_use)) {
+	if (pv && is_orphan(pv) && dm_list_empty(&pv->fid->metadata_areas_in_use)) {
 		free_pv_fid(pv);
 		if (!scan_vgs_for_pvs(cmd, 0))
 			return_0;
@@ -1428,14 +1431,16 @@ void pvcreate_params_set_defaults(struct pvcreate_params *pp)
 	pp->pvmetadatacopies = DEFAULT_PVMETADATACOPIES;
 	pp->pvmetadatasize = DEFAULT_PVMETADATASIZE;
 	pp->labelsector = DEFAULT_LABELSECTOR;
-	pp->idp = 0;
-	pp->pe_start = 0;
-	pp->extent_count = 0;
-	pp->extent_size = 0;
-	pp->restorefile = 0;
 	pp->force = PROMPT;
 	pp->yes = 0;
 	pp->metadataignore = DEFAULT_PVMETADATAIGNORE;
+	pp->rp.restorefile = 0;
+	pp->rp.idp = 0;
+	pp->rp.ba_start = 0;
+	pp->rp.ba_size = 0;
+	pp->rp.pe_start = PV_PE_START_CALC;
+	pp->rp.extent_count = 0;
+	pp->rp.extent_size = 0;
 }
 
 
@@ -1482,7 +1487,7 @@ static int _pvcreate_write(struct cmd_context *cmd, struct pv_to_create *pvc)
 }
 
 /*
- * pvcreate_single() - initialize a device with PV label and metadata area
+ * pvcreate_vol() - initialize a device with PV label and metadata area
  *
  * Parameters:
  * - pv_name: device path to initialize
@@ -1492,10 +1497,8 @@ static int _pvcreate_write(struct cmd_context *cmd, struct pv_to_create *pvc)
  * NULL: error
  * struct physical_volume * (non-NULL): handle to physical volume created
  */
-struct physical_volume * pvcreate_single(struct cmd_context *cmd,
-					 const char *pv_name,
-					 struct pvcreate_params *pp,
-					 int write_now)
+struct physical_volume *pvcreate_vol(struct cmd_context *cmd, const char *pv_name,
+				     struct pvcreate_params *pp, int write_now)
 {
 	struct physical_volume *pv = NULL;
 	struct device *dev;
@@ -1507,10 +1510,10 @@ struct physical_volume * pvcreate_single(struct cmd_context *cmd,
 	if (!pp)
 		pp = &default_pp;
 
-	if (pp->idp) {
-		if ((dev = lvmcache_device_from_pvid(cmd, pp->idp, NULL, NULL)) &&
+	if (pp->rp.idp) {
+		if ((dev = lvmcache_device_from_pvid(cmd, pp->rp.idp, NULL, NULL)) &&
 		    (dev != dev_cache_get(pv_name, cmd->filter))) {
-			if (!id_write_format((const struct id*)&pp->idp->uuid,
+			if (!id_write_format((const struct id*)&pp->rp.idp->uuid,
 			    buffer, sizeof(buffer)))
 				goto_bad;
 			log_error("uuid %s already in use on \"%s\"", buffer,
@@ -1533,12 +1536,10 @@ struct physical_volume * pvcreate_single(struct cmd_context *cmd,
 
 	dm_list_init(&mdas);
 
-	if (!(pv = pv_create(cmd, dev, pp->idp, pp->size,
-			     pp->data_alignment, pp->data_alignment_offset,
-			     pp->pe_start ? pp->pe_start : PV_PE_START_CALC,
-			     pp->extent_count, pp->extent_size,
-			     pp->labelsector, pp->pvmetadatacopies,
-			     pp->pvmetadatasize, pp->metadataignore))) {
+	if (!(pv = pv_create(cmd, dev, pp->size, pp->data_alignment,
+			     pp->data_alignment_offset, pp->labelsector,
+			     pp->pvmetadatacopies, pp->pvmetadatasize,
+			     pp->metadataignore, &pp->rp))) {
 		log_error("Failed to setup physical volume \"%s\"", pv_name);
 		goto bad;
 	}
@@ -1546,14 +1547,13 @@ struct physical_volume * pvcreate_single(struct cmd_context *cmd,
 	log_verbose("Set up physical volume for \"%s\" with %" PRIu64
 		    " available sectors", pv_name, pv_size(pv));
 
+	pv->status |= UNLABELLED_PV;
 	if (write_now) {
 		struct pv_to_create pvc;
 		pvc.pp = pp;
 		pvc.pv = pv;
 		if (!_pvcreate_write(cmd, &pvc))
 			goto bad;
-	} else {
-		pv->status |= UNLABELLED_PV;
 	}
 
 	return pv;
@@ -1605,16 +1605,14 @@ static struct physical_volume *_alloc_pv(struct dm_pool *mem, struct device *dev
  */
 struct physical_volume *pv_create(const struct cmd_context *cmd,
 				  struct device *dev,
-				  struct id *id, uint64_t size,
+				  uint64_t size,
 				  unsigned long data_alignment,
 				  unsigned long data_alignment_offset,
-				  uint64_t pe_start,
-				  uint32_t existing_extent_count,
-				  uint32_t existing_extent_size,
 				  uint64_t label_sector,
 				  unsigned pvmetadatacopies,
 				  uint64_t pvmetadatasize,
-				  unsigned metadataignore)
+				  unsigned metadataignore,
+				  struct pvcreate_restorable_params *rp)
 {
 	const struct format_type *fmt = cmd->fmt;
 	struct dm_pool *mem = fmt->orphan_vg->vgmem;
@@ -1625,8 +1623,8 @@ struct physical_volume *pv_create(const struct cmd_context *cmd,
 	if (!pv)
 		return_NULL;
 
-	if (id)
-		memcpy(&pv->id, id, sizeof(*id));
+	if (rp->idp)
+		memcpy(&pv->id, rp->idp, sizeof(*rp->idp));
 	else if (!id_create(&pv->id)) {
 		log_error("Failed to create random uuid for %s.",
 			  dev_name(dev));
@@ -1653,7 +1651,7 @@ struct physical_volume *pv_create(const struct cmd_context *cmd,
 		goto bad;
 	}
 
-	if (pv->size < data_alignment) {
+	if (pv->size < data_alignment + data_alignment_offset) {
 		log_error("%s: Data alignment must not exceed device size.",
 			  pv_dev_name(pv));
 		goto bad;
@@ -1672,9 +1670,8 @@ struct physical_volume *pv_create(const struct cmd_context *cmd,
 	pv->fmt = fmt;
 	pv->vg_name = fmt->orphan_vg_name;
 
-	if (!fmt->ops->pv_initialise(fmt, label_sector, pe_start,
-				     existing_extent_count, existing_extent_size,
-				     data_alignment, data_alignment_offset, pv)) {
+	if (!fmt->ops->pv_initialise(fmt, label_sector, data_alignment,
+				     data_alignment_offset, rp, pv)) {
 		log_error("Format-specific initialisation of physical "
 			  "volume %s failed.", pv_dev_name(pv));
 		goto bad;
@@ -1683,7 +1680,7 @@ struct physical_volume *pv_create(const struct cmd_context *cmd,
 	for (mda_index = 0; mda_index < pvmetadatacopies; mda_index++) {
 		if (pv->fmt->ops->pv_add_metadata_area &&
 		    !pv->fmt->ops->pv_add_metadata_area(pv->fmt, pv,
-					pe_start != PV_PE_START_CALC,
+					rp->pe_start != PV_PE_START_CALC,
 					mda_index, pvmetadatasize,
 					metadataignore)) {
 			log_error("Failed to add metadata area for "
@@ -1703,13 +1700,7 @@ struct physical_volume *pv_create(const struct cmd_context *cmd,
 
 /* FIXME: liblvm todo - make into function that returns handle */
 struct pv_list *find_pv_in_vg(const struct volume_group *vg,
-			      const char *pv_name)
-{
-	return _find_pv_in_vg(vg, pv_name);
-}
-
-static struct pv_list *_find_pv_in_vg(const struct volume_group *vg,
-				      const char *pv_name)
+			       const char *pv_name)
 {
 	struct pv_list *pvl;
 
@@ -1743,18 +1734,6 @@ int pv_is_in_vg(struct volume_group *vg, struct physical_volume *pv)
 	return 0;
 }
 
-static struct pv_list *_find_pv_in_vg_by_uuid(const struct volume_group *vg,
-					      const struct id *id)
-{
-	struct pv_list *pvl;
-
-	dm_list_iterate_items(pvl, &vg->pvs)
-		if (id_equal(&pvl->pv->id, id))
-			return pvl;
-
-	return NULL;
-}
-
 /**
  * find_pv_in_vg_by_uuid - Find PV in VG by PV UUID
  * @vg: volume group to search
@@ -1770,7 +1749,13 @@ static struct pv_list *_find_pv_in_vg_by_uuid(const struct volume_group *vg,
 struct pv_list *find_pv_in_vg_by_uuid(const struct volume_group *vg,
 				      const struct id *id)
 {
-	return _find_pv_in_vg_by_uuid(vg, id);
+	struct pv_list *pvl;
+
+	dm_list_iterate_items(pvl, &vg->pvs)
+		if (id_equal(&pvl->pv->id, id))
+			return pvl;
+
+	return NULL;
 }
 
 struct lv_list *find_lv_in_vg(const struct volume_group *vg,
@@ -1836,14 +1821,8 @@ struct physical_volume *find_pv(struct volume_group *vg, struct device *dev)
 
 /* FIXME: liblvm todo - make into function that returns handle */
 struct physical_volume *find_pv_by_name(struct cmd_context *cmd,
-					const char *pv_name)
-{
-	return _find_pv_by_name(cmd, pv_name);
-}
-
-
-static struct physical_volume *_find_pv_by_name(struct cmd_context *cmd,
-			 			const char *pv_name)
+					const char *pv_name,
+					int allow_orphan)
 {
 	struct physical_volume *pv;
 
@@ -1852,7 +1831,7 @@ static struct physical_volume *_find_pv_by_name(struct cmd_context *cmd,
 		goto bad;
 	}
 
-	if (is_orphan_vg(pv->vg_name) && !dm_list_size(&pv->fid->metadata_areas_in_use)) {
+	if (is_orphan_vg(pv->vg_name) && dm_list_empty(&pv->fid->metadata_areas_in_use)) {
 		/* If a PV has no MDAs - need to search all VGs for it */
 		if (!scan_vgs_for_pvs(cmd, 1))
 			goto_bad;
@@ -1863,7 +1842,7 @@ static struct physical_volume *_find_pv_by_name(struct cmd_context *cmd,
 		}
 	}
 
-	if (is_orphan_vg(pv->vg_name)) {
+	if (!allow_orphan && is_orphan_vg(pv->vg_name)) {
 		log_error("Physical volume %s not in a volume group", pv_name);
 		goto bad;
 	}
@@ -2250,7 +2229,7 @@ void lv_calculate_readahead(const struct logical_volume *lv, uint32_t *read_ahea
 		_lv_postorder((struct logical_volume *)lv, _lv_read_ahead_single, &_read_ahead);
 
 	if (read_ahead) {
-		log_debug("Calculated readahead of LV %s is %u", lv->name, _read_ahead);
+		log_debug_metadata("Calculated readahead of LV %s is %u", lv->name, _read_ahead);
 		*read_ahead = _read_ahead;
 	}
 }
@@ -2311,9 +2290,10 @@ int vg_validate(struct volume_group *vg)
 	struct str_list *sl;
 	char uuid[64] __attribute__((aligned(8)));
 	int r = 1;
-	uint32_t hidden_lv_count = 0, lv_count = 0, lv_visible_count = 0;
-	uint32_t pv_count = 0;
-	uint32_t num_snapshots = 0;
+	unsigned hidden_lv_count = 0, lv_count = 0, lv_visible_count = 0;
+	unsigned pv_count = 0;
+	unsigned num_snapshots = 0;
+	unsigned spare_count = 0;
 	struct validate_hash vhash = { NULL };
 
 	if (vg->alloc == ALLOC_CLING_BY_TAGS) {
@@ -2451,10 +2431,10 @@ int vg_validate(struct volume_group *vg)
 	 * all volumes = visible LVs + snapshot_cows + invisible LVs
 	 */
 	if (lv_count != lv_visible_count + num_snapshots + hidden_lv_count) {
-		log_error(INTERNAL_ERROR "#internal LVs (%u) != #LVs (%"
-			  PRIu32 ") + #snapshots (%" PRIu32 ") + #internal LVs (%u) in VG %s",
-			  lv_count, lv_visible_count,
-			  num_snapshots, hidden_lv_count, vg->name);
+		log_error(INTERNAL_ERROR "#LVs (%u) != #visible LVs (%u) "
+			  "+ #snapshots (%u) + #internal LVs (%u) in VG %s",
+			  lv_count, lv_visible_count, num_snapshots,
+			  hidden_lv_count, vg->name);
 		r = 0;
 	}
 
@@ -2491,6 +2471,19 @@ int vg_validate(struct volume_group *vg)
 				  "%s detected for %s in %s.",
 				  uuid, lvl->lv->name, vg->name);
 			r = 0;
+		}
+
+		if (lv_is_pool_metadata_spare(lvl->lv)) {
+			if (++spare_count > 1) {
+				log_error(INTERNAL_ERROR "LV %s is %u. pool metadata spare (>1).",
+					  lvl->lv->name, spare_count);
+				r = 0;
+			}
+			if (vg->pool_metadata_spare_lv != lvl->lv) {
+				log_error(INTERNAL_ERROR "LV %s is not vg pool metadata spare.",
+					  lvl->lv->name);
+				r = 0;
+			}
 		}
 
 		if (!check_lv_segments(lvl->lv, 1)) {
@@ -2542,6 +2535,13 @@ int vg_validate(struct volume_group *vg)
 	    (!vg->max_lv || !vg->max_pv)) {
 		log_error(INTERNAL_ERROR "Volume group %s has limited PV/LV count"
 			  " but limit is not set.", vg->name);
+		r = 0;
+	}
+
+	if (vg->pool_metadata_spare_lv &&
+	    !lv_is_pool_metadata_spare(vg->pool_metadata_spare_lv)) {
+		log_error(INTERNAL_ERROR "VG references non pool metadata spare LV %s.",
+			  vg->pool_metadata_spare_lv->name);
 		r = 0;
 	}
 
@@ -2612,7 +2612,6 @@ int vg_write(struct volume_group *vg)
         dm_list_iterate_items(pv_to_create, &vg->pvs_to_create) {
 		if (!_pvcreate_write(vg->cmd, pv_to_create))
 			return 0;
-		pv_to_create->pv->status &= ~UNLABELLED_PV;
         }
 
 	/* Write to each copy of the metadata area */
@@ -2662,6 +2661,13 @@ int vg_write(struct volume_group *vg)
 		}
 	}
 
+	/*
+	 * If precommit is not supported, changes take effect immediately.
+	 * FIXME Replace with a more-accurate FMT_COMMIT flag.
+	 */
+	if (!(vg->fid->fmt->features & FMT_PRECOMMIT) && !lvmetad_vg_update(vg))
+		return_0;
+
 	return 1;
 }
 
@@ -2710,8 +2716,9 @@ int vg_commit(struct volume_group *vg)
 		return cache_updated;
 	}
 
-	if (!lvmetad_vg_update(vg))
-		return 0;
+	/* Skip if we already did this in vg_write */
+	if ((vg->fid->fmt->features & FMT_PRECOMMIT) && !lvmetad_vg_update(vg))
+		return_0;
 
 	cache_updated = _vg_commit_mdas(vg);
 
@@ -2724,6 +2731,12 @@ int vg_commit(struct volume_group *vg)
 		 * The volume_group structure could be reused later.
 		 */
 		vg->old_name = NULL;
+
+		/* This *is* the original now that it's commited. */
+		release_vg(vg->vg_ondisk);
+		vg->vg_ondisk = NULL;
+		if (!_vg_update_vg_ondisk(vg)) /* make a new one for future edits */
+			return_0;
 	}
 
 	/* If update failed, remove any cached precommitted metadata. */
@@ -2870,10 +2883,11 @@ int vg_missing_pv_count(const struct volume_group *vg)
 	return ret;
 }
 
-static void check_reappeared_pv(struct volume_group *correct_vg,
-				struct physical_volume *pv)
+static int _check_reappeared_pv(struct volume_group *correct_vg,
+				struct physical_volume *pv, int act)
 {
 	struct pv_list *pvl;
+	int rv = 0;
 
         /*
          * Skip these checks in case the tool is going to deal with missing
@@ -2881,21 +2895,47 @@ static void check_reappeared_pv(struct volume_group *correct_vg,
          * confusing.
          */
         if (correct_vg->cmd->handles_missing_pvs)
-            return;
+            return rv;
 
 	dm_list_iterate_items(pvl, &correct_vg->pvs)
 		if (pv->dev == pvl->pv->dev && is_missing_pv(pvl->pv)) {
-			log_warn("Missing device %s reappeared, updating "
-				 "metadata for VG %s to version %u.",
-				 pv_dev_name(pvl->pv),  pv_vg_name(pvl->pv), 
-				 correct_vg->seqno);
+			if (act)
+				log_warn("Missing device %s reappeared, updating "
+					 "metadata for VG %s to version %u.",
+					 pv_dev_name(pvl->pv),  pv_vg_name(pvl->pv), 
+					 correct_vg->seqno);
 			if (pvl->pv->pe_alloc_count == 0) {
-				pv->status &= ~MISSING_PV;
-				pvl->pv->status &= ~MISSING_PV;
-			} else
+				if (act) {
+					pv->status &= ~MISSING_PV;
+					pvl->pv->status &= ~MISSING_PV;
+				}
+				++ rv;
+			} else if (act)
 				log_warn("Device still marked missing because of allocated data "
 					 "on it, remove volumes and consider vgreduce --removemissing.");
 		}
+	return rv;
+}
+
+static int _repair_inconsistent_vg(struct volume_group *vg)
+{
+	unsigned saved_handles_missing_pvs = vg->cmd->handles_missing_pvs;
+
+	vg->cmd->handles_missing_pvs = 1;
+	if (!vg_write(vg)) {
+		log_error("Automatic metadata correction failed");
+		vg->cmd->handles_missing_pvs = saved_handles_missing_pvs;
+		return 0;
+	}
+
+	vg->cmd->handles_missing_pvs = saved_handles_missing_pvs;
+
+	if (!vg_commit(vg)) {
+		log_error("Automatic metadata correction commit failed");
+		return 0;
+	}
+
+	return 1;
 }
 
 static int _check_mda_in_use(struct metadata_area *mda, void *_in_use)
@@ -2938,12 +2978,12 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 	int inconsistent_mdas = 0;
 	int inconsistent_mda_count = 0;
 	unsigned use_precommitted = precommitted;
-	unsigned saved_handles_missing_pvs = cmd->handles_missing_pvs;
 	struct dm_list *pvids;
 	struct pv_list *pvl, *pvl2;
 	struct dm_list all_pvs;
 	char uuid[64] __attribute__((aligned(8)));
 	unsigned seqno = 0;
+	int reappeared = 0;
 
 	if (is_orphan_vg(vgname)) {
 		if (use_precommitted) {
@@ -2956,8 +2996,16 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 	}
 
 	if (lvmetad_active() && !use_precommitted) {
-		*consistent = 1;
-		return lvmcache_get_vg(cmd, vgname, vgid, precommitted);
+		if ((correct_vg = lvmcache_get_vg(cmd, vgname, vgid, precommitted))) {
+			dm_list_iterate_items(pvl, &correct_vg->pvs)
+				if (pvl->pv->dev)
+					reappeared += _check_reappeared_pv(correct_vg, pvl->pv, *consistent);
+			if (reappeared && *consistent)
+				*consistent = _repair_inconsistent_vg(correct_vg);
+			else
+				*consistent = !reappeared;
+		}
+		return correct_vg;
 	}
 
 	/*
@@ -3099,7 +3147,7 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 						return_NULL;
 					}
 
-					log_debug("Empty mda found for VG %s.", vgname);
+					log_debug_metadata("Empty mda found for VG %s.", vgname);
 
 					if (inconsistent_mdas)
 						continue;
@@ -3115,8 +3163,8 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 
 			/* If the check passed, let's update VG and recalculate pvids */
 			if (!inconsistent_pvs) {
-				log_debug("Updating cache for PVs without mdas "
-					  "in VG %s.", vgname);
+				log_debug_metadata("Updating cache for PVs without mdas "
+						   "in VG %s.", vgname);
 				/*
 				 * If there is no precommitted metadata, committed metadata
 				 * is read and stored in the cache even if use_precommitted is set
@@ -3133,8 +3181,8 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 		fid->ref_count++;
 		if (dm_list_size(&correct_vg->pvs) !=
 		    dm_list_size(pvids) + vg_missing_pv_count(correct_vg)) {
-			log_debug("Cached VG %s had incorrect PV list",
-				  vgname);
+			log_debug_metadata("Cached VG %s had incorrect PV list",
+					   vgname);
 
 			if (critical_section())
 				inconsistent = 1;
@@ -3146,8 +3194,8 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 			if (is_missing_pv(pvl->pv))
 				continue;
 			if (!str_list_match_item(pvids, pvl->pv->dev->pvid)) {
-				log_debug("Cached VG %s had incorrect PV list",
-					  vgname);
+				log_debug_metadata("Cached VG %s had incorrect PV list",
+						   vgname);
 				release_vg(correct_vg);
 				correct_vg = NULL;
 				break;
@@ -3282,7 +3330,7 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 			 */
 			dm_list_iterate_items(mda, &fid->metadata_areas_in_use) {
 				if (mda->status & MDA_INCONSISTENT) {
-					log_debug("Checking inconsistent MDA: %s", dev_name(mda_get_device(mda)));
+					log_debug_metadata("Checking inconsistent MDA: %s", dev_name(mda_get_device(mda)));
 					dm_list_iterate_items(pvl, &correct_vg->pvs) {
 						if (mda_get_device(mda) == pvl->pv->dev &&
 						    (pvl->pv->status & MISSING_PV))
@@ -3326,21 +3374,10 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 		 * update metadata and remove MISSING flag
 		 */
 		dm_list_iterate_items(pvl, &all_pvs)
-			check_reappeared_pv(correct_vg, pvl->pv);
+			_check_reappeared_pv(correct_vg, pvl->pv, 1);
 
-		cmd->handles_missing_pvs = 1;
-		if (!vg_write(correct_vg)) {
-			log_error("Automatic metadata correction failed");
+		if (!_repair_inconsistent_vg(correct_vg)) {
 			_free_pv_list(&all_pvs);
-			release_vg(correct_vg);
-			cmd->handles_missing_pvs = saved_handles_missing_pvs;
-			return NULL;
-		}
-		cmd->handles_missing_pvs = saved_handles_missing_pvs;
-
-		if (!vg_commit(correct_vg)) {
-			log_error("Automatic metadata correction commit "
-				  "failed");
 			release_vg(correct_vg);
 			return NULL;
 		}
@@ -3436,8 +3473,7 @@ void free_pv_fid(struct physical_volume *pv)
 	if (!pv)
 		return;
 
-	if (pv->fid)
-		pv->fid->fmt->ops->destroy_instance(pv->fid);
+	pv_set_fid(pv, NULL);
 }
 
 /* This is only called by lv_from_lvid, which is only called from
@@ -3514,7 +3550,7 @@ struct logical_volume *lv_from_lvid(struct cmd_context *cmd, const char *lvid_s,
 
 	lvid = (const union lvid *) lvid_s;
 
-	log_very_verbose("Finding volume group for uuid %s", lvid_s);
+	log_very_verbose("Finding %svolume group for uuid %s", precommitted ? "precommitted " : "", lvid_s);
 	if (!(vg = _vg_read_by_vgid(cmd, (const char *)lvid->id[0].uuid, precommitted))) {
 		log_error("Volume group for uuid not found: %s", lvid_s);
 		return NULL;
@@ -3535,7 +3571,6 @@ out:
 	release_vg(vg);
 	return NULL;
 }
-
 
 const char *find_vgname_from_pvid(struct cmd_context *cmd,
 				  const char *pvid)
@@ -3636,8 +3671,13 @@ static struct physical_volume *_pv_read(struct cmd_context *cmd,
 						  pv_name);
 				return NULL;
 			}
+			if (!(info = lvmcache_info_from_pvid(dev->pvid, 0))) {
+				if (warnings)
+					log_error("No cache info in lvmetad cache for %s.",
+						  pv_name);
+				return NULL;
+			}
 		}
-		info = lvmcache_info_from_pvid(dev->pvid, 0);
 		label = lvmcache_get_label(info);
 	} else {
 		if (!(label_read(dev, &label, UINT64_C(0)))) {
@@ -3697,27 +3737,20 @@ struct dm_list *get_vgids(struct cmd_context *cmd, int include_internal)
 	return lvmcache_get_vgids(cmd, include_internal);
 }
 
-static int _get_pvs(struct cmd_context *cmd, int warnings, struct dm_list **pvslist)
+static int _get_pvs(struct cmd_context *cmd, int warnings,
+		struct dm_list *pvslist, struct dm_list *vgslist)
 {
 	struct str_list *strl;
-	struct dm_list * uninitialized_var(results);
 	const char *vgname, *vgid;
 	struct pv_list *pvl, *pvl_copy;
 	struct dm_list *vgids;
 	struct volume_group *vg;
 	int consistent = 0;
 	int old_pvmove;
+	struct vg_list *vgl_item = NULL;
+	int have_pv = 0;
 
 	lvmcache_label_scan(cmd, 0);
-
-	if (pvslist) {
-		if (!(results = dm_pool_alloc(cmd->mem, sizeof(*results)))) {
-			log_error("PV list allocation failed");
-			return 0;
-		}
-
-		dm_list_init(results);
-	}
 
 	/* Get list of VGs */
 	if (!(vgids = get_vgids(cmd, 1))) {
@@ -3738,7 +3771,16 @@ static int _get_pvs(struct cmd_context *cmd, int warnings, struct dm_list **pvsl
 			stack;
 			continue;
 		}
-		if (!(vg = vg_read_internal(cmd, vgname, vgid, warnings, &consistent))) {
+
+		/*
+		 * When we are retrieving a list to return toliblvm we need
+		 * that list to contain VGs that are modifiable as we are using
+		 * the vgmem pool in the vg to provide allocation for liblvm.
+		 * This is a hack to prevent the vg from getting cached as the
+		 * vgid will be NULL.
+		 * FIXME Remove this hack.
+		 */
+		if (!(vg = vg_read_internal(cmd, vgname, (!vgslist) ? vgid : NULL, warnings, &consistent))) {
 			stack;
 			continue;
 		}
@@ -3754,33 +3796,89 @@ static int _get_pvs(struct cmd_context *cmd, int warnings, struct dm_list **pvsl
 					release_vg(vg);
 					return 0;
 				}
-				dm_list_add(results, &pvl_copy->list);
+				/* If we are going to release the VG, don't
+				 * store a pointer to it in the PV structure.
+				 */
+				if (!vgslist)
+					pvl_copy->pv->vg = NULL;
+				else
+					/*
+					 * Make sure the vg mode indicates
+					 * writeable.
+					 * FIXME Rework function to take a
+					 * parameter to control this
+					 */
+					pvl_copy->pv->vg->open_mode = 'w';
+				have_pv = 1;
+				dm_list_add(pvslist, &pvl_copy->list);
 			}
-		release_vg(vg);
+
+		/*
+		 * In the case of the library we want to preserve the embedded
+		 * volume group as subsequent calls to retrieve data about the
+		 * PV require it.
+		 */
+		if (!vgslist || !have_pv)
+			release_vg(vg);
+		else {
+			/*
+			 * Add VG to list of VG objects that will be returned
+			 */
+			vgl_item = dm_pool_alloc(cmd->mem, sizeof(*vgl_item));
+			if (!vgl_item) {
+				log_error("VG list element allocation failed");
+				return 0;
+			}
+			vgl_item->vg = vg;
+			vg = NULL;
+			dm_list_add(vgslist, &vgl_item->list);
+		}
+		have_pv = 0;
 	}
 	init_pvmove(old_pvmove);
 
-	if (pvslist)
-		*pvslist = results;
-	else
+	if (!pvslist)
 		dm_pool_free(cmd->mem, vgids);
 
 	return 1;
 }
 
-struct dm_list *get_pvs(struct cmd_context *cmd)
+/*
+ * Retrieve a list of all physical volumes.
+ * @param 	cmd	Command context
+ * @param	pvslist	Set to NULL if you want memory for list created,
+ * 			else valid memory
+ * @param	vgslist	Set to NULL if you need the pv structures to contain
+ * 			valid vg pointer.  This is the list of VGs
+ * @returns NULL on errors, else pvslist which will equal passed-in value if
+ * supplied.
+ */
+struct dm_list *get_pvs_internal(struct cmd_context *cmd,
+				 struct dm_list *pvslist,
+				 struct dm_list *vgslist)
 {
-	struct dm_list *results;
+	struct dm_list *results = pvslist;
 
-	if (!_get_pvs(cmd, 1, &results))
+	if (NULL == results) {
+		if (!(results = dm_pool_alloc(cmd->mem, sizeof(*results)))) {
+			log_error("PV list allocation failed");
+			return 0;
+		}
+
+		dm_list_init(results);
+	}
+
+	if (!_get_pvs(cmd, 1, results, vgslist)) {
+		if (!pvslist)
+			dm_pool_free(cmd->mem, results);
 		return NULL;
-
+	}
 	return results;
 }
 
 int scan_vgs_for_pvs(struct cmd_context *cmd, int warnings)
 {
-	return _get_pvs(cmd, warnings, NULL);
+	return _get_pvs(cmd, warnings, NULL, NULL);
 }
 
 int pv_write(struct cmd_context *cmd __attribute__((unused)),
@@ -3806,6 +3904,8 @@ int pv_write(struct cmd_context *cmd __attribute__((unused)),
 
 	if (!pv->fmt->ops->pv_write(pv->fmt, pv))
 		return_0;
+
+	pv->status &= ~UNLABELLED_PV;
 
 	if (!lvmetad_pv_found(&pv->id, pv->dev, pv->fmt, pv->label_sector,
 			      NULL, NULL))
@@ -3929,7 +4029,10 @@ static uint32_t _vg_bad_status_bits(const struct volume_group *vg,
 
 	if ((status & CLUSTERED) &&
 	    (vg_is_clustered(vg)) && !locking_is_clustered()) {
-		log_error("Skipping clustered volume group %s", vg->name);
+		if (!vg->cmd->ignore_clustered_vgs)
+			log_error("Skipping clustered volume group %s", vg->name);
+		else
+			log_verbose("Skipping clustered volume group %s", vg->name);
 		/* Return because other flags are considered undefined. */
 		return FAILED_CLUSTERED;
 	}
@@ -3975,7 +4078,7 @@ static struct volume_group *_recover_vg(struct cmd_context *cmd,
 
 	dev_close_all();
 
-	if (!lock_vol(cmd, vg_name, LCK_VG_WRITE))
+	if (!lock_vol(cmd, vg_name, LCK_VG_WRITE, NULL))
 		return_NULL;
 
 	if (!(vg = vg_read_internal(cmd, vg_name, vgid, 1, &consistent)))
@@ -4022,7 +4125,7 @@ static struct volume_group *_vg_lock_and_read(struct cmd_context *cmd, const cha
 	already_locked = lvmcache_vgname_is_locked(vg_name);
 
 	if (!already_locked && !(misc_flags & READ_WITHOUT_LOCK) &&
-	    !lock_vol(cmd, vg_name, lock_flags)) {
+	    !lock_vol(cmd, vg_name, lock_flags, NULL)) {
 		log_error("Can't get lock for %s", vg_name);
 		return _vg_make_handle(cmd, vg, FAILED_LOCKING);
 	}
@@ -4037,7 +4140,7 @@ static struct volume_group *_vg_lock_and_read(struct cmd_context *cmd, const cha
 		if (consistent_in && !consistent) {
 			log_error("Volume group \"%s\" inconsistent.", vg_name);
 			failure |= FAILED_INCONSISTENT;
-			goto_bad;
+			goto bad;
 		}
 
 		log_error("Volume group \"%s\" not found", vg_name);
@@ -4047,7 +4150,10 @@ static struct volume_group *_vg_lock_and_read(struct cmd_context *cmd, const cha
 	}
 
 	if (vg_is_clustered(vg) && !locking_is_clustered()) {
-		log_error("Skipping clustered volume group %s", vg->name);
+		if (!cmd->ignore_clustered_vgs)
+			log_error("Skipping clustered volume group %s", vg->name);
+		else
+			log_verbose("Skipping clustered volume group %s", vg->name);
 		failure |= FAILED_CLUSTERED;
 		goto bad;
 	}
@@ -4059,7 +4165,7 @@ static struct volume_group *_vg_lock_and_read(struct cmd_context *cmd, const cha
 			log_error("Recovery of volume group \"%s\" failed.",
 				  vg_name);
 			failure |= FAILED_INCONSISTENT;
-			goto_bad;
+			goto bad;
 		}
 	}
 
@@ -4073,7 +4179,7 @@ static struct volume_group *_vg_lock_and_read(struct cmd_context *cmd, const cha
 		log_error("Cannot change VG %s while PVs are missing.", vg->name);
 		log_error("Consider vgreduce --removemissing.");
 		failure |= FAILED_INCONSISTENT; /* FIXME new failure code here? */
-		goto_bad;
+		goto bad;
 	}
 
 	if (!cmd->handles_unknown_segments && vg_has_unknown_segments(vg) &&
@@ -4081,7 +4187,7 @@ static struct volume_group *_vg_lock_and_read(struct cmd_context *cmd, const cha
 		log_error("Cannot change VG %s with unknown segments in it!",
 			  vg->name);
 		failure |= FAILED_INCONSISTENT; /* FIXME new failure code here? */
-		goto_bad;
+		goto bad;
 	}
 
 	failure |= _vg_bad_status_bits(vg, status_flags);
@@ -4177,7 +4283,7 @@ uint32_t vg_read_error(struct volume_group *vg_handle)
  */
 uint32_t vg_lock_newname(struct cmd_context *cmd, const char *vgname)
 {
-	if (!lock_vol(cmd, vgname, LCK_VG_WRITE)) {
+	if (!lock_vol(cmd, vgname, LCK_VG_WRITE, NULL)) {
 		return FAILED_LOCKING;
 	}
 
@@ -4462,17 +4568,17 @@ void mda_set_ignored(struct metadata_area *mda, unsigned mda_ignored)
 	else
 		return;	/* No change */
 
-	log_debug("%s ignored flag for mda %s at offset %" PRIu64 ".", 
-		  mda_ignored ? "Setting" : "Clearing",
-		  mda->ops->mda_metadata_locn_name ? mda->ops->mda_metadata_locn_name(locn) : "",
-		  mda->ops->mda_metadata_locn_offset ? mda->ops->mda_metadata_locn_offset(locn) : UINT64_C(0));
+	log_debug_metadata("%s ignored flag for mda %s at offset %" PRIu64 ".", 
+			   mda_ignored ? "Setting" : "Clearing",
+			   mda->ops->mda_metadata_locn_name ? mda->ops->mda_metadata_locn_name(locn) : "",
+			   mda->ops->mda_metadata_locn_offset ? mda->ops->mda_metadata_locn_offset(locn) : UINT64_C(0));
 }
 
 int mdas_empty_or_ignored(struct dm_list *mdas)
 {
 	struct metadata_area *mda;
 
-	if (!dm_list_size(mdas))
+	if (dm_list_empty(mdas))
 		return 1;
 	dm_list_iterate_items(mda, mdas) {
 		if (mda_is_ignored(mda))
@@ -4553,18 +4659,24 @@ char *tags_format_and_copy(struct dm_pool *mem, const struct dm_list *tags)
 	return dm_pool_end_object(mem);
 }
 
-/**
- * pv_by_path - Given a device path return a PV handle if it is a PV
- * @cmd - handle to the LVM command instance
- * @pv_name - device path to read for the PV
- *
- * Returns:
- *  NULL - device path does not contain a valid PV
- *  non-NULL - PV handle corresponding to device path
- *
- * FIXME: merge with find_pv_by_name ?
- */
-struct physical_volume *pv_by_path(struct cmd_context *cmd, const char *pv_name)
+struct logical_volume *lv_ondisk(struct logical_volume *lv)
 {
-	return _pv_read(cmd, cmd->mem, pv_name, NULL, 1, 0);
+	struct volume_group *vg;
+	struct lv_list *lvl;
+
+	if (!lv)
+		return NULL;
+
+	vg = lv->vg;
+
+	if (vg->vg_ondisk)
+		vg = vg->vg_ondisk;
+
+	dm_list_iterate_items(lvl, &vg->lvs)
+		if (!strncmp(lvl->lv->lvid.s, lv->lvid.s, sizeof(lv->lvid)))
+			return lvl->lv;
+
+	log_error(INTERNAL_ERROR "LV %s/%s (UUID %s) not found in ondisk metadata.",
+		  lv->vg->name, lv->name, lv->lvid.s);
+	return NULL;
 }

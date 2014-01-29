@@ -13,7 +13,7 @@
 
 aux prepare_devs 2
 
-vgcreate -c n --metadatasize 128k $vg1 "$dev1"
+vgcreate --metadatasize 128k $vg1 "$dev1"
 lvcreate -l100%FREE -n $lv1 $vg1
 
 # Clone the LUN
@@ -21,8 +21,13 @@ dd if="$dev1" of="$dev2" bs=256K count=1
 aux notify_lvmetad "$dev2"
 
 # Verify pvs works on each device to give us vgname
+aux hide_dev $dev2
 check pv_field "$dev1" vg_name $vg1
+aux unhide_dev $dev2
+
+aux hide_dev $dev1
 check pv_field "$dev2" vg_name $vg1
+aux unhide_dev $dev1
 
 # Import the cloned PV to a new VG
 vgimportclone --basevgname $vg2 "$dev2"
@@ -31,6 +36,7 @@ vgimportclone --basevgname $vg2 "$dev2"
 # concerned, can only live on a single device. With the last pvscan, we told it
 # that PV from $dev1 now lives on $dev2, but in fact this is not true anymore,
 # since we wrote a different PV over $dev2.
+rm -f $TESTDIR/etc/.cache
 aux notify_lvmetad "$dev2"
 aux notify_lvmetad "$dev1"
 

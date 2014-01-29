@@ -7,6 +7,7 @@ pvdisplay \- display attributes of a physical volume
 .RB [ \-d | \-\-debug ]
 .RB [ \-h | \-? | \-\-help ]
 .RB [ \-\-ignorelockingfailure ]
+.RB [ \-\-ignoreskippedcluster ]
 .RB [ \-\-maps ]
 .RB [ \-\-nosuffix ]
 .RB [ \-s | \-\-short ]
@@ -89,6 +90,7 @@ Display output in columns, the equivalent of \fBpvs\fP(8).  See
 \fBpvdisplay\fP.
 .SH SEE ALSO
 .BR lvm (8),
+.BR pvs (8),
 .BR pvcreate (8),
 .BR lvcreate (8),
 .BR vgcreate (8)

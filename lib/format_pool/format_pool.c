@@ -122,8 +122,6 @@ static struct volume_group *_pool_vg_read(struct format_instance *fid,
 	if (!read_pool_pds(fid->fmt, vg_name, vg->vgmem, &pds))
 		goto_bad;
 
-	vg_set_fid(vg, fid);
-
 	/* Setting pool seqno to 1 because the code always did this,
 	 * although we don't think it's needed. */
 	vg->seqno = 1;
@@ -155,6 +153,8 @@ static struct volume_group *_pool_vg_read(struct format_instance *fid,
 	if (!import_pool_segments(&vg->lvs, vg->vgmem, usp, sp_count))
 		goto_bad;
 
+	vg_set_fid(vg, fid);
+
 	return vg;
 
 bad:
@@ -165,11 +165,9 @@ bad:
 
 static int _pool_pv_initialise(const struct format_type *fmt __attribute__((unused)),
 			       int64_t label_sector __attribute__((unused)),
-			       uint64_t pe_start __attribute__((unused)),
-			       uint32_t extent_count __attribute__((unused)),
-			       uint32_t extent_size __attribute__((unused)),
 			       unsigned long data_alignment __attribute__((unused)),
 			       unsigned long data_alignment_offset __attribute__((unused)),
+			       struct pvcreate_restorable_params *rp __attribute__((unused)),
 			       struct physical_volume *pv __attribute__((unused)))
 {
 	return 1;

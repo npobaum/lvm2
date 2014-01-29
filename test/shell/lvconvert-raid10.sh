@@ -28,7 +28,7 @@ aux target_at_least dm-raid 1 3 1 || skip
 
 # 9 PVs needed for RAID10 testing (3-stripes/2-mirror - replacing 3 devs)
 aux prepare_pvs 9 80
-vgcreate -c n -s 256k $vg $(cat DEVICES)
+vgcreate -s 256k $vg $(cat DEVICES)
 
 lvcreate --type raid10 -m 1 -i 3 -l 3 -n $lv1 $vg
 aux wait_for_sync $vg $lv1
@@ -54,3 +54,5 @@ for i in 0 1; do
 		 $vg/$lv1
 	aux wait_for_sync $vg $lv1
 done
+
+lvremove -ff $vg

@@ -26,6 +26,9 @@
 #include <stdint.h>
 #include <unistd.h>
 
+#include <math.h>  /* fabs() */
+#include <float.h> /* DBL_EPSILON */
+
 typedef struct {
 	log_state *log; /* convenience */
 	const char *log_config;
@@ -121,19 +124,18 @@ static response reply_unknown(const char *reason)
 static struct dm_config_tree *lock_vg(lvmetad_state *s, const char *id) {
 	pthread_mutex_t *vg;
 	struct dm_config_tree *cft;
+	pthread_mutexattr_t rec;
 
 	pthread_mutex_lock(&s->lock.vg_lock_map);
-	vg = dm_hash_lookup(s->lock.vg, id);
-	if (!vg) {
-		pthread_mutexattr_t rec;
-		pthread_mutexattr_init(&rec);
-		pthread_mutexattr_settype(&rec, PTHREAD_MUTEX_RECURSIVE_NP);
-		if (!(vg = malloc(sizeof(pthread_mutex_t))))
-                        return NULL;
-		pthread_mutex_init(vg, &rec);
+	if (!(vg = dm_hash_lookup(s->lock.vg, id))) {
+		if (!(vg = malloc(sizeof(pthread_mutex_t))) ||
+		    pthread_mutexattr_init(&rec) ||
+		    pthread_mutexattr_settype(&rec, PTHREAD_MUTEX_RECURSIVE_NP) ||
+		    pthread_mutex_init(vg, &rec))
+			goto bad;
 		if (!dm_hash_insert(s->lock.vg, id, vg)) {
-			free(vg);
-			return NULL;
+			pthread_mutex_destroy(vg);
+			goto bad;
 		}
 	}
 	/* We never remove items from s->lock.vg => the pointer remains valid. */
@@ -147,6 +149,11 @@ static struct dm_config_tree *lock_vg(lvmetad_state *s, const char *id) {
 	cft = dm_hash_lookup(s->vgid_to_metadata, id);
 	unlock_vgid_to_metadata(s);
 	return cft;
+bad:
+	pthread_mutex_unlock(&s->lock.vg_lock_map);
+	free(vg);
+	ERROR(s, "Out of memory");
+	return NULL;
 }
 
 static void unlock_vg(lvmetad_state *s, const char *id) {
@@ -288,7 +295,7 @@ static response pv_list(lvmetad_state *s, request r)
 	struct dm_config_node *cn = NULL, *cn_pvs;
 	struct dm_hash_node *n;
 	const char *id;
-	response res;
+	response res = { 0 };
 
 	buffer_init( &res.buffer );
 
@@ -316,7 +323,7 @@ static response pv_lookup(lvmetad_state *s, request r)
 {
 	const char *pvid = daemon_request_str(r, "uuid", NULL);
 	int64_t devt = daemon_request_int(r, "device", 0);
-	response res;
+	response res = { 0 };
 	struct dm_config_node *pv;
 
 	buffer_init( &res.buffer );
@@ -360,7 +367,7 @@ static response vg_list(lvmetad_state *s, request r)
 	struct dm_hash_node *n;
 	const char *id;
 	const char *name;
-	response res;
+	response res = { 0 };
 
 	buffer_init( &res.buffer );
 
@@ -430,7 +437,7 @@ static response vg_lookup(lvmetad_state *s, request r)
 {
 	struct dm_config_tree *cft;
 	struct dm_config_node *metadata, *n;
-	response res;
+	response res = { 0 };
 
 	const char *uuid = daemon_request_str(r, "uuid", NULL);
 	const char *name = daemon_request_str(r, "name", NULL);
@@ -450,7 +457,8 @@ static response vg_lookup(lvmetad_state *s, request r)
 
 	DEBUGLOG(s, "vg_lookup: updated uuid = %s, name = %s", uuid, name);
 
-	if (!uuid)
+	/* Check the name here. */
+	if (!uuid || !name)
 		return reply_unknown("VG not found");
 
 	cft = lock_vg(s, uuid);
@@ -488,7 +496,6 @@ static response vg_lookup(lvmetad_state *s, request r)
 	if (!(n = n->sib = dm_config_clone_node(res.cft, metadata, 1)))
 		goto bad;
 	n->parent = res.cft->root;
-	res.error = 0;
 	unlock_vg(s, uuid);
 
 	update_pv_status(s, res.cft, n, 1); /* FIXME report errors */
@@ -497,6 +504,12 @@ static response vg_lookup(lvmetad_state *s, request r)
 bad:
 	unlock_vg(s, uuid);
 	return reply_fail("out of memory");
+}
+
+/* Test if the doubles are close enough to be considered equal */
+static int close_enough(double d1, double d2)
+{
+	return fabs(d1 - d2) < DBL_EPSILON;
 }
 
 static int compare_value(struct dm_config_value *a, struct dm_config_value *b)
@@ -510,7 +523,7 @@ static int compare_value(struct dm_config_value *a, struct dm_config_value *b)
 
 	switch (a->type) {
 	case DM_CFG_STRING: r = strcmp(a->v.str, b->v.str); break;
-	case DM_CFG_FLOAT: r = (a->v.f == b->v.f) ? 0 : (a->v.f > b->v.f) ? 1 : -1; break;
+	case DM_CFG_FLOAT: r = close_enough(a->v.f, b->v.f) ? 0 : (a->v.f > b->v.f) ? 1 : -1; break;
 	case DM_CFG_INT: r = (a->v.i == b->v.i) ? 0 : (a->v.i > b->v.i) ? 1 : -1; break;
 	case DM_CFG_EMPTY_ARRAY: return 0;
 	}
@@ -547,7 +560,7 @@ static int compare_config(struct dm_config_node *a, struct dm_config_node *b)
 	return result;
 }
 
-static int vg_remove_if_missing(lvmetad_state *s, const char *vgid);
+static int vg_remove_if_missing(lvmetad_state *s, const char *vgid, int update_pvids);
 
 /* You need to be holding the pvid_to_vgid lock already to call this. */
 static int update_pvid_to_vgid(lvmetad_state *s, struct dm_config_tree *vg,
@@ -586,7 +599,7 @@ static int update_pvid_to_vgid(lvmetad_state *s, struct dm_config_tree *vg,
 	     n = dm_hash_get_next(to_check, n)) {
 		check_vgid = dm_hash_get_key(to_check, n);
 		lock_vg(s, check_vgid);
-		vg_remove_if_missing(s, check_vgid);
+		vg_remove_if_missing(s, check_vgid, 0);
 		unlock_vg(s, check_vgid);
 	}
 
@@ -605,25 +618,29 @@ static int remove_metadata(lvmetad_state *s, const char *vgid, int update_pvids)
 	lock_vgid_to_metadata(s);
 	old = dm_hash_lookup(s->vgid_to_metadata, vgid);
 	oldname = dm_hash_lookup(s->vgid_to_vgname, vgid);
-	unlock_vgid_to_metadata(s);
 
-	if (!old)
+	if (!old) {
+		unlock_vgid_to_metadata(s);
 		return 0;
+	}
+
 	assert(oldname);
 
-	if (update_pvids)
-		/* FIXME: What should happen when update fails */
-		update_pvid_to_vgid(s, old, "#orphan", 0);
 	/* need to update what we have since we found a newer version */
 	dm_hash_remove(s->vgid_to_metadata, vgid);
 	dm_hash_remove(s->vgid_to_vgname, vgid);
 	dm_hash_remove(s->vgname_to_vgid, oldname);
+	unlock_vgid_to_metadata(s);
+
+	if (update_pvids)
+		/* FIXME: What should happen when update fails */
+		update_pvid_to_vgid(s, old, "#orphan", 0);
 	dm_config_destroy(old);
 	return 1;
 }
 
 /* The VG must be locked. */
-static int vg_remove_if_missing(lvmetad_state *s, const char *vgid)
+static int vg_remove_if_missing(lvmetad_state *s, const char *vgid, int update_pvids)
 {
 	struct dm_config_tree *vg;
 	struct dm_config_node *pv;
@@ -650,7 +667,7 @@ static int vg_remove_if_missing(lvmetad_state *s, const char *vgid)
 
 	if (missing) {
 		DEBUGLOG(s, "removing empty VG %s", vgid);
-		remove_metadata(s, vgid, 0);
+		remove_metadata(s, vgid, update_pvids);
 	}
 
 	unlock_pvid_to_pvmeta(s);
@@ -675,16 +692,14 @@ static int update_metadata(lvmetad_state *s, const char *name, const char *_vgid
 
 	lock_vgid_to_metadata(s);
 	old = dm_hash_lookup(s->vgid_to_metadata, _vgid);
-	lock_vg(s, _vgid);
+	oldname = dm_hash_lookup(s->vgid_to_vgname, _vgid);
 	unlock_vgid_to_metadata(s);
+	lock_vg(s, _vgid);
 
 	seq = dm_config_find_int(metadata, "metadata/seqno", -1);
 
-	if (old) {
+	if (old)
 		haveseq = dm_config_find_int(old->root, "metadata/seqno", -1);
-		oldname = dm_hash_lookup(s->vgid_to_vgname, _vgid);
-		assert(oldname);
-	}
 
 	if (seq < 0)
 		goto out;
@@ -736,7 +751,7 @@ static int update_metadata(lvmetad_state *s, const char *name, const char *_vgid
 	if (haveseq >= 0 && haveseq < seq) {
 		INFO(s, "Updating metadata for %s at %d to %d", _vgid, haveseq, seq);
 		/* temporarily orphan all of our PVs */
-		remove_metadata(s, vgid, 1);
+		update_pvid_to_vgid(s, old, "#orphan", 0);
 	}
 
 	lock_vgid_to_metadata(s);
@@ -746,14 +761,23 @@ static int update_metadata(lvmetad_state *s, const char *name, const char *_vgid
 		  dm_hash_insert(s->vgid_to_metadata, vgid, cft) &&
 		  dm_hash_insert(s->vgid_to_vgname, vgid, cfgname) &&
 		  dm_hash_insert(s->vgname_to_vgid, name, (void*) vgid)) ? 1 : 0;
+
+	if (retval && oldname && strcmp(name, oldname)) {
+		const char *vgid_prev = dm_hash_lookup(s->vgname_to_vgid, oldname);
+		if (vgid_prev && !strcmp(vgid_prev, vgid))
+			dm_hash_remove(s->vgname_to_vgid, oldname);
+	}
+
+	if (haveseq >= 0 && haveseq < seq)
+		dm_config_destroy(old);
+
 	unlock_vgid_to_metadata(s);
 
 	if (retval)
-		/* FIXME: What should happen when update fails */
 		retval = update_pvid_to_vgid(s, cft, vgid, 1);
 
 	unlock_pvid_to_vgid(s);
-out:
+out: /* FIXME: We should probably abort() on partial failures. */
 	if (!retval && cft)
 		dm_config_destroy(cft);
 	unlock_vg(s, _vgid);
@@ -781,10 +805,23 @@ static response pv_gone(lvmetad_state *s, request r)
 
 	pvmeta = dm_hash_lookup(s->pvid_to_pvmeta, pvid);
 	pvid_old = dm_hash_lookup_binary(s->device_to_pvid, &device, sizeof(device));
+	char *vgid = dm_hash_lookup(s->pvid_to_vgid, pvid);
+
+	if (vgid && !(vgid = dm_strdup(vgid))) {
+		unlock_pvid_to_pvmeta(s);
+		return reply_fail("out of memory");
+	}
+
 	dm_hash_remove_binary(s->device_to_pvid, &device, sizeof(device));
 	dm_hash_remove(s->pvid_to_pvmeta, pvid);
-	vg_remove_if_missing(s, dm_hash_lookup(s->pvid_to_vgid, pvid));
 	unlock_pvid_to_pvmeta(s);
+
+	if (vgid) {
+		lock_vg(s, vgid);
+		vg_remove_if_missing(s, vgid, 1);
+		unlock_vg(s, vgid);
+		dm_free(vgid);
+	}
 
 	if (pvid_old)
 		dm_free(pvid_old);
@@ -801,8 +838,8 @@ static response pv_clear_all(lvmetad_state *s, request r)
 	DEBUGLOG(s, "pv_clear_all");
 
 	lock_pvid_to_pvmeta(s);
-	lock_vgid_to_metadata(s);
 	lock_pvid_to_vgid(s);
+	lock_vgid_to_metadata(s);
 
 	destroy_metadata_hashes(s);
 	create_metadata_hashes(s);
@@ -824,7 +861,7 @@ static response pv_found(lvmetad_state *s, request r)
 	uint64_t device;
 	struct dm_config_tree *cft, *pvmeta_old_dev = NULL, *pvmeta_old_pvid = NULL;
 	char *old;
-	const char *pvid_dup;
+	char *pvid_dup;
 	int complete = 0, orphan = 0;
 	int64_t seqno = -1, seqno_old = -1;
 
@@ -851,13 +888,23 @@ static response pv_found(lvmetad_state *s, request r)
 	if (!(cft = dm_config_create()) ||
 	    !(cft->root = dm_config_clone_node(cft, pvmeta, 0))) {
 		unlock_pvid_to_pvmeta(s);
+		if (cft)
+			dm_config_destroy(cft);
 		return reply_fail("out of memory");
 	}
 
-	pvid_dup = dm_strdup(pvid);
+	if (!(pvid_dup = dm_strdup(pvid))) {
+		unlock_pvid_to_pvmeta(s);
+		dm_config_destroy(cft);
+		return reply_fail("out of memory");
+	}
+
 	if (!dm_hash_insert(s->pvid_to_pvmeta, pvid, cft) ||
 	    !dm_hash_insert_binary(s->device_to_pvid, &device, sizeof(device), (void*)pvid_dup)) {
 		unlock_pvid_to_pvmeta(s);
+		dm_hash_remove(s->pvid_to_pvmeta, pvid);
+		dm_config_destroy(cft);
+		dm_free(pvid_dup);
 		return reply_fail("out of memory");
 	}
 	if (pvmeta_old_pvid)
@@ -950,7 +997,7 @@ static void _dump_cft(struct buffer *buf, struct dm_hash_table *ht, const char *
 		struct dm_config_tree *cft = dm_hash_get_data(ht, n);
 		const char *key_backup = cft->root->key;
 		cft->root->key = dm_config_find_str(cft->root, key_addr, "unknown");
-		dm_config_write_node(cft->root, buffer_line, buf);
+		(void) dm_config_write_node(cft->root, buffer_line, buf);
 		cft->root->key = key_backup;
 		n = dm_hash_get_next(ht, n);
 	}
@@ -969,9 +1016,9 @@ static void _dump_pairs(struct buffer *buf, struct dm_hash_table *ht, const char
 			   *val = dm_hash_get_data(ht, n);
 		buffer_append(buf, "    ");
 		if (int_key)
-			dm_asprintf(&append, "%d = \"%s\"", *(int*)key, val);
+			(void) dm_asprintf(&append, "%d = \"%s\"", *(int*)key, val);
 		else
-			dm_asprintf(&append, "%s = \"%s\"", key, val);
+			(void) dm_asprintf(&append, "%s = \"%s\"", key, val);
 		if (append)
 			buffer_append(buf, append);
 		buffer_append(buf, "\n");
@@ -983,7 +1030,7 @@ static void _dump_pairs(struct buffer *buf, struct dm_hash_table *ht, const char
 
 static response dump(lvmetad_state *s)
 {
-	response res;
+	response res = { 0 };
 	struct buffer *b = &res.buffer;
 
 	buffer_init(b);
@@ -1146,23 +1193,24 @@ static void usage(char *prog, FILE *file)
 int main(int argc, char *argv[])
 {
 	signed char opt;
-	daemon_state s = { .private = NULL };
 	lvmetad_state ls;
 	int _socket_override = 1;
+	daemon_state s = {
+		.daemon_fini = fini,
+		.daemon_init = init,
+		.handler = handler,
+		.name = "lvmetad",
+		.pidfile = LVMETAD_PIDFILE,
+		.private = &ls,
+		.protocol = "lvmetad",
+		.protocol_version = 1,
+		.socket_path = getenv("LVM_LVMETAD_SOCKET"),
+	};
 
-	s.name = "lvmetad";
-	s.private = &ls;
-	s.daemon_init = init;
-	s.daemon_fini = fini;
-	s.handler = handler;
-	s.socket_path = getenv("LVM_LVMETAD_SOCKET");
 	if (!s.socket_path) {
 		_socket_override = 0;
 		s.socket_path = DEFAULT_RUN_DIR "/lvmetad.socket";
 	}
-	s.pidfile = LVMETAD_PIDFILE;
-	s.protocol = "lvmetad";
-	s.protocol_version = 1;
 	ls.log_config = "";
 
 	// use getopt_long
@@ -1194,9 +1242,9 @@ int main(int argc, char *argv[])
 		if (!_socket_override) {
 			fprintf(stderr, "A socket path (-s) is required in foreground mode.");
 			exit(2);
-		} else {
-			s.pidfile = NULL;
 		}
+
+		s.pidfile = NULL;
 	}
 
 	daemon_start(s);

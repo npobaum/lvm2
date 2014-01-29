@@ -66,6 +66,12 @@ lvm_t lvm_init(const char *system_dir)
 	 */
 	cmd->cmd_line = "liblvm";
 
+	/*
+	 * Turn off writing to stdout/stderr.
+	 * FIXME Fix lib/ to support a non-interactive mode instead.
+	 */
+	log_suppress(1);
+
 	return (lvm_t) cmd;
 }
 
@@ -89,14 +95,16 @@ int lvm_config_reload(lvm_t libh)
 int lvm_config_override(lvm_t libh, const char *config_settings)
 {
 	struct cmd_context *cmd = (struct cmd_context *)libh;
-	if (override_config_tree_from_string(cmd, config_settings))
+	if (!override_config_tree_from_string(cmd, config_settings))
 		return -1;
 	return 0;
 }
 
 int lvm_config_find_bool(lvm_t libh, const char *config_path, int fail)
 {
-	return find_config_tree_bool((struct cmd_context *)libh, config_path, fail);
+	struct cmd_context *cmd = (struct cmd_context *)libh;
+
+	return dm_config_tree_find_bool(cmd->cft, config_path, fail);
 }
 
 int lvm_errno(lvm_t libh)

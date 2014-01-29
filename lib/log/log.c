@@ -179,7 +179,7 @@ void reset_log_duplicated(void) {
 	}
 }
 
-void print_log(int level, const char *file, int line, int dm_errno,
+void print_log(int level, const char *file, int line, int dm_errno_or_class,
 	       const char *format, ...)
 {
 	va_list ap;
@@ -196,8 +196,7 @@ void print_log(int level, const char *file, int line, int dm_errno,
 	level &= ~(_LOG_STDERR|_LOG_ONCE);
 
 	if (_abort_on_internal_errors &&
-	    !strncmp(format, INTERNAL_ERROR,
-		     strlen(INTERNAL_ERROR))) {
+	    !strncmp(format, INTERNAL_ERROR, sizeof(INTERNAL_ERROR) - 1)) {
 		fatal_internal_error = 1;
 		/* Internal errors triggering abort cannot be suppressed. */
 		_log_suppress = 0;
@@ -212,8 +211,8 @@ void print_log(int level, const char *file, int line, int dm_errno,
 
 	trformat = _(format);
 
-	if (dm_errno && !_lvm_errno)
-		_lvm_errno = dm_errno;
+	if (level < _LOG_DEBUG && dm_errno_or_class && !_lvm_errno)
+		_lvm_errno = dm_errno_or_class;
 
 	if (_lvm2_log_fn ||
 	    (_store_errmsg && (level <= _LOG_ERR)) ||
@@ -285,14 +284,16 @@ void print_log(int level, const char *file, int line, int dm_errno,
 			if (!strcmp("<backtrace>", format) &&
 			    verbose_level() <= _LOG_DEBUG)
 				break;
-			if (verbose_level() >= _LOG_DEBUG) {
-				fprintf(stderr, "%s%s%s", locn, log_command_name(),
-					_msg_prefix);
-				if (_indent)
-					fprintf(stderr, "      ");
-				vfprintf(stderr, trformat, ap);
-				fputc('\n', stderr);
-			}
+			if (verbose_level() < _LOG_DEBUG)
+				break;
+			if (!debug_class_is_logged(dm_errno_or_class))
+				break;
+			fprintf(stderr, "%s%s%s", locn, log_command_name(),
+				_msg_prefix);
+			if (_indent)
+				fprintf(stderr, "      ");
+			vfprintf(stderr, trformat, ap);
+			fputc('\n', stderr);
 			break;
 
 		case _LOG_INFO:
@@ -344,11 +345,12 @@ void print_log(int level, const char *file, int line, int dm_errno,
 		va_end(ap);
 	}
 
-	if (fatal_internal_error)
-		abort();
-
-	if (level > debug_level())
+	if ((level > debug_level()) ||
+	    (level >= _LOG_DEBUG && !debug_class_is_logged(dm_errno_or_class))) {
+		if (fatal_internal_error)
+			abort();
 		return;
+	}
 
 	if (_log_to_file && (_log_while_suspended || !critical_section())) {
 		fprintf(_log_file, "%s:%d %s%s", file, line, log_command_name(),
@@ -367,6 +369,9 @@ void print_log(int level, const char *file, int line, int dm_errno,
 		vsyslog(level, trformat, ap);
 		va_end(ap);
 	}
+
+	if (fatal_internal_error)
+		abort();
 
 	/* FIXME This code is unfinished - pre-extend & condense. */
 	if (!_already_logging && _log_direct && critical_section()) {

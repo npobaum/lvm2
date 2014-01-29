@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2010 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2013 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -48,11 +48,19 @@
 
 /* May any free extents on this PV be used or must they be left free? */
 #define ALLOCATABLE_PV		UINT64_C(0x00000008)	/* PV */
+#define ARCHIVED_VG		ALLOCATABLE_PV		/* VG, reuse same bit */
 
 //#define SPINDOWN_LV		UINT64_C(0x00000010)	/* LV */
 //#define BADBLOCK_ON		UINT64_C(0x00000020)	/* LV */
 #define VISIBLE_LV		UINT64_C(0x00000040)	/* LV */
 #define FIXED_MINOR		UINT64_C(0x00000080)	/* LV */
+
+#define LVM_READ		UINT64_C(0x00000100)	/* LV, VG */
+#define LVM_WRITE		UINT64_C(0x00000200)	/* LV, VG */
+
+#define CLUSTERED		UINT64_C(0x00000400)	/* VG */
+//#define SHARED		UINT64_C(0x00000800)	/* VG */
+
 /* FIXME Remove when metadata restructuring is completed */
 #define SNAPSHOT		UINT64_C(0x00001000)	/* LV - internal use only */
 #define PVMOVE			UINT64_C(0x00002000)	/* VG LV SEG */
@@ -89,12 +97,17 @@
 #define THIN_POOL		UINT64_C(0x0000002000000000)	/* LV */
 #define THIN_POOL_DATA		UINT64_C(0x0000004000000000)	/* LV */
 #define THIN_POOL_METADATA	UINT64_C(0x0000008000000000)	/* LV */
+#define POOL_METADATA_SPARE	UINT64_C(0x0000010000000000)	/* LV internal */
 
-#define LVM_READ		UINT64_C(0x00000100)	/* LV, VG */
-#define LVM_WRITE		UINT64_C(0x00000200)	/* LV, VG */
+#define LV_WRITEMOSTLY		UINT64_C(0x0000020000000000)	/* LV (RAID1) */
 
-#define CLUSTERED		UINT64_C(0x00000400)	/* VG */
-//#define SHARED		UINT64_C(0x00000800)	/* VG */
+#define LV_ACTIVATION_SKIP	UINT64_C(0x0000040000000000)	/* LV */
+#define LV_NOSCAN		UINT64_C(0x0000080000000000)	/* LV - internal use only - the LV
+									should not be scanned */
+#define LV_TEMPORARY		UINT64_C(0x0000100000000000)	/* LV - internal use only - the LV
+								        is supposed to be created and
+									removed during single LVM
+									command execution. */
 
 /* Format features flags */
 #define FMT_SEGMENTS		0x00000001U	/* Arbitrary segment params? */
@@ -107,6 +120,8 @@
 #define FMT_RESIZE_PV		0x00000080U	/* Supports pvresize? */
 #define FMT_UNLIMITED_STRIPESIZE 0x00000100U	/* Unlimited stripe size? */
 #define FMT_RESTRICTED_READAHEAD 0x00000200U	/* Readahead restricted to 2-120? */
+#define FMT_BAS			0x000000400U	/* Supports bootloader areas? */
+#define FMT_CONFIG_PROFILE	0x000000800U	/* Supports configuration profiles? */
 
 /* Mirror conversion type flags */
 #define MIRROR_BY_SEG		0x00000001U	/* segment-by-segment mirror */
@@ -136,6 +151,9 @@
 #define VGMETADATACOPIES_ALL UINT32_MAX
 #define VGMETADATACOPIES_UNMANAGED 0
 
+#define vg_is_archived(vg)	(((vg)->status & ARCHIVED_VG) ? 1 : 0)
+
+#define lv_is_external_origin(lv)	(((lv)->external_count > 0) ? 1 : 0)
 #define lv_is_thin_volume(lv)	((lv)->status & THIN_VOLUME ? 1 : 0)
 #define lv_is_thin_pool(lv)	((lv)->status & THIN_POOL ? 1 : 0)
 #define lv_is_used_thin_pool(lv)	(lv_is_thin_pool(lv) && !dm_list_empty(&(lv)->segs_using_this_lv))
@@ -146,9 +164,11 @@
 
 #define lv_is_thin_type(lv)	((lv)->status & (THIN_POOL | THIN_VOLUME | THIN_POOL_DATA | THIN_POOL_METADATA) ? 1 : 0)
 #define lv_is_mirror_type(lv)	((lv)->status & (MIRROR_LOG | MIRROR_IMAGE | MIRRORED | PVMOVE) ? 1 : 0)
-#define lv_is_raid_type(lv)	((lv)->status & (RAID | RAID_IMAGE | RAID_META))
+#define lv_is_raid(lv)		(((lv)->status & (RAID)) ? 1 : 0)
+#define lv_is_raid_type(lv)	(((lv)->status & (RAID | RAID_IMAGE | RAID_META)) ? 1 : 0)
 
-#define lv_is_virtual(lv)	((lv)->status & VIRTUAL)
+#define lv_is_virtual(lv)	(((lv)->status & VIRTUAL) ? 1 : 0)
+#define lv_is_pool_metadata_spare(lv)	(((lv)->status & POOL_METADATA_SPARE) ? 1 : 0)
 
 /* Ordered list - see lv_manip.c */
 typedef enum {
@@ -332,6 +352,9 @@ struct lv_segment {
 
 	/* FIXME Fields depend on segment type */
 	uint32_t stripe_size;	/* For stripe and RAID - in sectors */
+	uint32_t writebehind;   /* For RAID (RAID1 only) */
+	uint32_t min_recovery_rate; /* For RAID */
+	uint32_t max_recovery_rate; /* For RAID */
 	uint32_t area_count;
 	uint32_t area_len;
 	uint32_t chunk_size;	/* For snapshots/thin_pool.  In sectors. */
@@ -355,6 +378,7 @@ struct lv_segment {
 	unsigned zero_new_blocks;		/* For thin_pool */
 	thin_discards_t discards;		/* For thin_pool */
 	struct dm_list thin_messages;		/* For thin_pool */
+	struct logical_volume *external_lv;	/* For thin */
 	struct logical_volume *pool_lv;		/* For thin */
 	uint32_t device_id;			/* For thin, 24bit */
 
@@ -389,6 +413,24 @@ struct lv_list {
 	struct logical_volume *lv;
 };
 
+struct vg_list {
+	struct dm_list list;
+	struct volume_group *vg;
+};
+
+#define PV_PE_START_CALC ((uint64_t) -1) /* Calculate pe_start value */
+
+struct pvcreate_restorable_params {
+	const char *restorefile; /* 0 if no --restorefile option */
+	struct id id; /* FIXME: redundant */
+	struct id *idp; /* 0 if no --uuid option */
+	uint64_t ba_start;
+	uint64_t ba_size;
+	uint64_t pe_start;
+	uint32_t extent_count;
+	uint32_t extent_size;
+};
+
 struct pvcreate_params {
 	int zero;
 	uint64_t size;
@@ -397,21 +439,62 @@ struct pvcreate_params {
 	int pvmetadatacopies;
 	uint64_t pvmetadatasize;
 	int64_t labelsector;
-	struct id id; /* FIXME: redundant */
-	struct id *idp; /* 0 if no --uuid option */
-	uint64_t pe_start;
-	uint32_t extent_count;
-	uint32_t extent_size;
-	const char *restorefile; /* 0 if no --restorefile option */
 	force_t force;
 	unsigned yes;
 	unsigned metadataignore;
+	struct pvcreate_restorable_params rp;
 };
 
-struct physical_volume *pvcreate_single(struct cmd_context *cmd,
-					const char *pv_name,
-					struct pvcreate_params *pp,
-					int write_now);
+struct lvresize_params {
+	const char *vg_name;
+	const char *lv_name;
+
+	uint32_t stripes;
+	uint32_t stripe_size;
+	uint32_t mirrors;
+
+	const struct segment_type *segtype;
+
+	/* size */
+	uint32_t extents;
+	uint64_t size;
+	int sizeargs;
+	sign_t sign;
+	uint64_t poolmetadatasize;
+	sign_t poolmetadatasign;
+	uint32_t poolmetadataextents;
+	percent_type_t percent;
+
+	enum {
+		LV_ANY = 0,
+		LV_REDUCE = 1,
+		LV_EXTEND = 2
+	} resize;
+
+	int resizefs;
+	int nofsck;
+
+	int argc;
+	char **argv;
+
+	/* FIXME Deal with meaningless 'ac' */
+	/* Arg counts & values */
+	unsigned ac_policy;
+	unsigned ac_stripes;
+	uint32_t ac_stripes_value;
+	unsigned ac_mirrors;
+	uint32_t ac_mirrors_value;
+	unsigned ac_stripesize;
+	uint64_t ac_stripesize_value;
+	alloc_policy_t ac_alloc;
+	unsigned ac_no_sync;
+	unsigned ac_force;
+
+	const char *ac_type;
+};
+
+int pvcreate_single(struct cmd_context *cmd, const char *pv_name,
+		    struct pvcreate_params *pp);
 void pvcreate_params_set_defaults(struct pvcreate_params *pp);
 
 /*
@@ -425,7 +508,12 @@ struct volume_group *vg_read_internal(struct cmd_context *cmd, const char *vg_na
 struct physical_volume *pv_read(struct cmd_context *cmd, const char *pv_name,
 				int warnings,
 				int scan_label_only);
-struct dm_list *get_pvs(struct cmd_context *cmd);
+
+#define get_pvs( cmd ) get_pvs_internal((cmd), NULL, NULL)
+#define get_pvs_perserve_vg( cmd, pv_list, vg_list ) get_pvs_internal((cmd), (pv_list), (vg_list))
+
+struct dm_list *get_pvs_internal(struct cmd_context *cmd,
+		struct dm_list *pvslist, struct dm_list *vgslist);
 
 /*
  * Add/remove LV to/from volume group
@@ -454,6 +542,11 @@ int vgs_are_compatible(struct cmd_context *cmd,
 		       struct volume_group *vg_to);
 uint32_t vg_lock_newname(struct cmd_context *cmd, const char *vgname);
 
+int lv_resize_prepare(struct cmd_context *cmd, struct logical_volume *lv,
+		      struct lvresize_params *lp, struct dm_list *pvh);
+int lv_resize(struct cmd_context *cmd, struct logical_volume *lv,
+	      struct lvresize_params *lp, struct dm_list *pvh);
+
 /*
  * Return a handle to VG metadata.
  */
@@ -471,25 +564,27 @@ uint32_t vg_read_error(struct volume_group *vg_handle);
 * areas can avoid overlap */
 struct physical_volume *pv_create(const struct cmd_context *cmd,
 				  struct device *dev,
-				  struct id *id,
 				  uint64_t size,
 				  unsigned long data_alignment,
 				  unsigned long data_alignment_offset,
-				  uint64_t pe_start,
-				  uint32_t existing_extent_count,
-				  uint32_t existing_extent_size,
 				  uint64_t label_sector,
 				  unsigned pvmetadatacopies,
 				  uint64_t pvmetadatasize,
-				  unsigned metadataignore);
-int pv_resize(struct physical_volume *pv, struct volume_group *vg,
-	      uint64_t size);
+				  unsigned metadataignore,
+				  struct pvcreate_restorable_params *rp);
+
+int pv_resize_single(struct cmd_context *cmd,
+			     struct volume_group *vg,
+			     struct physical_volume *pv,
+			     const uint64_t new_size);
+
 int pv_analyze(struct cmd_context *cmd, const char *pv_name,
 	       uint64_t label_sector);
 
 /* FIXME: move internal to library */
 uint32_t pv_list_extents_free(const struct dm_list *pvh);
 
+int vg_validate(struct volume_group *vg);
 struct volume_group *vg_create(struct cmd_context *cmd, const char *vg_name);
 int vg_remove_mdas(struct volume_group *vg);
 int vg_remove_check(struct volume_group *vg);
@@ -514,8 +609,7 @@ int remove_lvs_in_vg(struct cmd_context *cmd,
 
 /*
  * free_pv_fid() must be called on every struct physical_volume allocated
- * by pv_create, pv_read, find_pv_by_name or pv_by_path to free it when
- * no longer required.
+ * by pv_create, pv_read, find_pv_by_name or to free it when no longer required.
  */
 void free_pv_fid(struct physical_volume *pv);
 
@@ -566,9 +660,41 @@ int lv_rename_update(struct cmd_context *cmd, struct logical_volume *lv,
 uint64_t extents_from_size(struct cmd_context *cmd, uint64_t size,
 			   uint32_t extent_size);
 
+struct logical_volume *find_pool_lv(struct logical_volume *lv);
+int pool_is_active(const struct logical_volume *pool_lv);
+int pool_can_resize_metadata(const struct logical_volume *pool_lv);
 int update_pool_lv(struct logical_volume *lv, int activate);
+int update_profilable_pool_params(struct cmd_context *cmd, struct profile *profile,
+				  int passed_args, int *chunk_size_calc_method,
+				  uint32_t *chunk_size, thin_discards_t *discards,
+				  int *zero);
+int update_pool_params(struct volume_group *vg, unsigned attr, int passed_args,
+		       uint32_t data_extents, uint32_t extent_size,
+		       int *chunk_size_calc_method, uint32_t *chunk_size,
+		       thin_discards_t *discards,
+		       uint64_t *pool_metadata_size, int *zero);
 int get_pool_discards(const char *str, thin_discards_t *discards);
 const char *get_pool_discards_name(thin_discards_t discards);
+struct logical_volume *alloc_pool_metadata(struct logical_volume *pool_lv,
+					   const char *name, uint32_t read_ahead,
+					   uint32_t stripes, uint32_t stripe_size,
+					   uint64_t size, alloc_policy_t alloc,
+					   struct dm_list *pvh);
+int handle_pool_metadata_spare(struct volume_group *vg, uint32_t extents,
+			       struct dm_list *pvh, int poolmetadataspare);
+int vg_set_pool_metadata_spare(struct logical_volume *lv);
+int vg_remove_pool_metadata_spare(struct volume_group *vg);
+
+int attach_thin_external_origin(struct lv_segment *seg,
+				struct logical_volume *external_lv);
+int detach_thin_external_origin(struct lv_segment *seg);
+int attach_pool_metadata_lv(struct lv_segment *pool_seg,
+                            struct logical_volume *pool_metadata_lv);
+int detach_pool_metadata_lv(struct lv_segment *pool_seg,
+                            struct logical_volume **pool_metadata_lv);
+int attach_pool_data_lv(struct lv_segment *pool_seg,
+                        struct logical_volume *pool_data_lv);
+int is_mirror_image_removable(struct logical_volume *mimage_lv, void *baton);
 
 /*
  * Activation options
@@ -582,6 +708,12 @@ typedef enum activation_change {
 	CHANGE_AAY = 5  /* automatic activation */
 } activation_change_t;
 
+/* Returns true, when change activates device */
+static inline int is_change_activating(activation_change_t change)
+{
+        return ((change != CHANGE_AN) && (change != CHANGE_ALN));
+}
+
 /* FIXME: refactor and reduce the size of this struct! */
 struct lvcreate_params {
 	/* flags */
@@ -593,13 +725,30 @@ struct lvcreate_params {
 	int minor; /* all */
 	int log_count; /* mirror */
 	int nosync; /* mirror */
+	int poolmetadataspare; /* thin pool */
+	int temporary; /* temporary LV */
+#define ACTIVATION_SKIP_SET		0x01 /* request to set LV activation skip flag state */
+#define ACTIVATION_SKIP_SET_ENABLED	0x02 /* set the LV activation skip flag state to 'enabled' */
+#define ACTIVATION_SKIP_IGNORE		0x04 /* request to ignore LV activation skip flag (if any) */
+	int activation_skip; /* activation skip flags */
 	activation_change_t activate; /* non-snapshot, non-mirror */
 	thin_discards_t discards;     /* thin */
+#define THIN_CHUNK_SIZE_CALC_METHOD_GENERIC 0x01
+#define THIN_CHUNK_SIZE_CALC_METHOD_PERFORMANCE 0x02
+	int thin_chunk_size_calc_policy;
 
 	const char *origin; /* snap */
 	const char *pool;   /* thin */
 	const char *vg_name; /* all */
 	const char *lv_name; /* all */
+
+	/* Keep args given by the user on command line */
+	/* FIXME: create some more universal solution here */
+#define PASS_ARG_CHUNK_SIZE		0x01
+#define PASS_ARG_DISCARDS		0x02
+#define PASS_ARG_POOL_METADATA_SIZE	0x04
+#define PASS_ARG_ZERO			0x08
+	int passed_args;
 
 	uint32_t stripes; /* striped */
 	uint32_t stripe_size; /* striped */
@@ -608,7 +757,11 @@ struct lvcreate_params {
 
 	uint32_t mirrors; /* mirror */
 
+	uint32_t min_recovery_rate; /* RAID */
+	uint32_t max_recovery_rate; /* RAID */
+
 	const struct segment_type *segtype; /* all */
+	unsigned target_attr; /* all */
 
 	/* size */
 	uint32_t extents; /* all */
@@ -625,8 +778,19 @@ struct lvcreate_params {
 	struct dm_list tags;	/* all */
 };
 
-int lv_create_single(struct volume_group *vg,
-		     struct lvcreate_params *lp);
+struct logical_volume *lv_create_single(struct volume_group *vg,
+					struct lvcreate_params *lp);
+
+/*
+ * The activation can be skipped for selected LVs. Some LVs are skipped
+ * by default (e.g. thin snapshots), others can be skipped on demand by
+ * overriding the default behaviour. The flag that causes the activation
+ * skip on next activations is stored directly in metadata for each LV
+ * as ACTIVATION_SKIP flag.
+ */
+void lv_set_activation_skip(struct logical_volume *lv, int override_default, int add_skip_flag);
+int lv_activation_skip(struct logical_volume *lv, activation_change_t activate,
+		       int override_lv_skip_flag, int skip);
 
 /*
  * Functions for layer manipulation
@@ -668,12 +832,20 @@ struct lv_list *find_lv_in_vg(const struct volume_group *vg,
 struct logical_volume *find_lv(const struct volume_group *vg,
 			       const char *lv_name);
 struct physical_volume *find_pv_by_name(struct cmd_context *cmd,
-					const char *pv_name);
+					const char *pv_name,
+					int allow_orphan);
 
 const char *find_vgname_from_pvname(struct cmd_context *cmd,
 				    const char *pvname);
 const char *find_vgname_from_pvid(struct cmd_context *cmd,
 				  const char *pvid);
+
+int lv_is_on_pv(struct logical_volume *lv, struct physical_volume *pv);
+int lv_is_on_pvs(struct logical_volume *lv, struct dm_list *pvs);
+int get_pv_list_for_lv(struct dm_pool *mem,
+		       struct logical_volume *lv, struct dm_list *pvs);
+
+
 /* Find LV segment containing given LE */
 struct lv_segment *first_seg(const struct logical_volume *lv);
 struct lv_segment *last_seg(const struct logical_volume *lv);
@@ -687,16 +859,18 @@ int lv_is_virtual_origin(const struct logical_volume *lv);
 int lv_is_cow(const struct logical_volume *lv);
 int lv_is_merging_origin(const struct logical_volume *origin);
 int lv_is_merging_cow(const struct logical_volume *snapshot);
+uint32_t cow_max_extents(const struct logical_volume *origin, uint32_t chunk_size);
+int lv_is_cow_covering_origin(const struct logical_volume *lv);
 
 /* Test if given LV is visible from user's perspective */
 int lv_is_visible(const struct logical_volume *lv);
 
 int pv_is_in_vg(struct volume_group *vg, struct physical_volume *pv);
 
-struct lv_segment *find_merging_cow(const struct logical_volume *origin);
+struct lv_segment *find_merging_snapshot(const struct logical_volume *origin);
 
 /* Given a cow LV, return return the snapshot lv_segment that uses it */
-struct lv_segment *find_cow(const struct logical_volume *lv);
+struct lv_segment *find_snapshot(const struct logical_volume *lv);
 
 /* Given a cow LV, return its origin */
 struct logical_volume *origin_from_cow(const struct logical_volume *lv);
@@ -704,7 +878,7 @@ struct logical_volume *origin_from_cow(const struct logical_volume *lv);
 void init_snapshot_seg(struct lv_segment *seg, struct logical_volume *origin,
 		       struct logical_volume *cow, uint32_t chunk_size, int merge);
 
-void init_snapshot_merge(struct lv_segment *cow_seg, struct logical_volume *origin);
+int init_snapshot_merge(struct lv_segment *snap_seg, struct logical_volume *origin);
 
 void clear_snapshot_merge(struct logical_volume *origin);
 
@@ -725,6 +899,7 @@ int vg_max_lv_reached(struct volume_group *vg);
 /*
 * Mirroring functions
 */
+int get_default_region_size(struct cmd_context *cmd);  /* in lv_manip.c */
 struct lv_segment *find_mirror_seg(struct lv_segment *seg);
 int lv_add_mirrors(struct cmd_context *cmd, struct logical_volume *lv,
 		   uint32_t mirrors, uint32_t stripes, uint32_t stripe_size,
@@ -805,6 +980,7 @@ int lv_raid_reshape(struct logical_volume *lv,
 		    const struct segment_type *new_segtype);
 int lv_raid_replace(struct logical_volume *lv, struct dm_list *remove_pvs,
 		    struct dm_list *allocate_pvs);
+int lv_raid_remove_missing(struct logical_volume *lv);
 
 /* --  metadata/raid_manip.c */
 
@@ -831,11 +1007,11 @@ struct logical_volume *find_pvmove_lv_from_pvname(struct cmd_context *cmd,
 struct logical_volume *find_pvmove_lv_in_lv(struct logical_volume *lv);
 const char *get_pvmove_pvname_from_lv(struct logical_volume *lv);
 const char *get_pvmove_pvname_from_lv_mirr(struct logical_volume *lv_mirr);
-percent_t copy_percent(const struct logical_volume *lv_mirr);
 struct dm_list *lvs_using_lv(struct cmd_context *cmd, struct volume_group *vg,
 			  struct logical_volume *lv);
 
 uint32_t find_free_lvnum(struct logical_volume *lv);
+percent_t copy_percent(const struct logical_volume *lv_mirr);
 char *generate_lv_name(struct volume_group *vg, const char *format,
 		       char *buffer, size_t len);
 

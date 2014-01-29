@@ -15,43 +15,38 @@ aux prepare_pvs 3 22
 
 vgcreate -s 32K $vg "$dev1" "$dev2" "$dev3"
 
-lvcreate -l4 -i3 -I64 $vg
+lvcreate -an -Zn -l4 -i3 -I64 $vg
 
-lvcreate -l8 -i2 -I64 $vg
+lvcreate -an -Zn -l8 -i2 -I64 $vg
 
-lvcreate -l16 $vg
+lvcreate -an -Zn -l16 $vg
 
-lvcreate -l32 -i3 -I64 -n $lv1 $vg
+lvcreate -an -Zn -l32 -i3 -I64 -n $lv1 $vg
 
 lvresize -l+64 -i3 -I64 $vg/$lv1
 
 lvresize -l+64 -i3 -I128 $vg/$lv1
 
 #lvcreate -l100%FREE -i3 -I64 --alloc anywhere $vg
-
-dmsetup table
-
-vgcfgbackup -f /tmp/vg $vg
 vgremove -f $vg
 
 # 15 extents
 aux prepare_vg 3 22
 
 # Block some extents
-lvcreate -l4 -i3 $vg
-lvcreate -l1 $vg
+lvcreate -an -Zn -l4 -i3 $vg
+lvcreate -an -Zn -l1 $vg
 
-lvcreate -l100%FREE -n $lv1 -i3 $vg
+lvcreate -an -Zn -l100%FREE -n $lv1 -i3 $vg
 check vg_field $vg vg_free_count 2
 lvremove -f $vg/$lv1
 
-lvcreate -l1 -n $lv1 -i3 $vg
+lvcreate -an -Zn -l1 -n $lv1 -i3 $vg
 lvextend -l+100%FREE -i3 $vg/$lv1
 check vg_field $vg vg_free_count 2
 
 lvreduce -f -l50%LV $vg/$lv1
 vgremove -f $vg
-
 
 vgcreate -s 4M $vg "$dev1" "$dev2" "$dev3"
 
@@ -59,7 +54,7 @@ vgcreate -s 4M $vg "$dev1" "$dev2" "$dev3"
 check vg_field $vg vg_free_count 15
 
 # Should be rounded to 12 extents
-lvcreate -l10 -n lv -i3 $vg
+lvcreate -an -Zn -l10 -n lv -i3 $vg
 check vg_field $vg vg_free_count 3
 
 # Should want 16 extents

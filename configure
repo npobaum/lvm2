@@ -606,11 +606,14 @@ kernelvsn
 missingkernel
 kerneldir
 interface
+CMIRRORD_PIDFILE
+CLVMD_PIDFILE
 LVMETAD_PIDFILE
 DMEVENTD_PIDFILE
 WRITE_INSTALL
 UDEV_HAS_BUILTIN_BLKID
 UDEV_RULE_EXEC_DETECTION
+UDEV_SYSTEMD_BACKGROUND_JOBS
 UDEV_SYNC
 UDEV_RULES
 UDEV_PC
@@ -669,6 +672,7 @@ DEFAULT_RUN_DIR
 DEFAULT_DM_RUN_DIR
 DEFAULT_LOCK_DIR
 DEFAULT_DATA_ALIGNMENT
+DEFAULT_PROFILE_SUBDIR
 DEFAULT_CACHE_SUBDIR
 DEFAULT_BACKUP_SUBDIR
 DEFAULT_ARCHIVE_SUBDIR
@@ -704,6 +708,8 @@ CUNIT_CFLAGS
 GENPNG
 GENHTML
 LCOV
+HAVE_WCLOBBERED
+HAVE_WJUMP
 SACKPT_LIBS
 SACKPT_CFLAGS
 DLM_LIBS
@@ -727,6 +733,8 @@ PKGCONFIGINIT_CFLAGS
 PKG_CONFIG_LIBDIR
 PKG_CONFIG_PATH
 PKG_CONFIG
+THIN_REPAIR_CMD
+THIN_DUMP_CMD
 THIN_CHECK_CMD
 POW_LIB
 LIBOBJS
@@ -823,6 +831,8 @@ with_raid
 with_replicators
 with_thin
 with_thin_check
+with_thin_dump
+with_thin_repair
 enable_readline
 enable_realtime
 enable_ocf
@@ -842,6 +852,7 @@ enable_valgrind_pool
 enable_devmapper
 enable_lvmetad
 with_lvmetad_pidfile
+enable_udev_systemd_background_jobs
 enable_udev_sync
 enable_udev_rules
 enable_udev_rule_exec_detection
@@ -871,6 +882,7 @@ with_tmpfilesdir
 with_dmeventd_pidfile
 with_dmeventd_path
 with_default_system_dir
+with_default_profile_subdir
 with_default_archive_subdir
 with_default_backup_subdir
 with_default_cache_subdir
@@ -1544,6 +1556,9 @@ Optional Features:
   --enable-valgrind-pool  enable valgrind awareness of pools
   --disable-devmapper     disable LVM2 device-mapper interaction
   --enable-lvmetad        enable the LVM Metadata Daemon
+  --enable-udev-systemd-background-jobs
+                          enable udev-systemd protocol to instantiate a
+                          service for background job
   --enable-udev_sync      enable synchronisation with udev processing
   --enable-udev_rules     install rule files needed for udev synchronisation
   --enable-udev-rule-exec-detection
@@ -1588,13 +1603,14 @@ Optional Packages:
                           [[TYPE=internal]]
   --with-mirrors=TYPE     mirror support: internal/shared/none
                           [[TYPE=internal]]
-  --with-raid=TYPE        mirror support: internal/shared/none
-                          [[TYPE=internal]]
+  --with-raid=TYPE        raid support: internal/shared/none [[TYPE=internal]]
   --with-replicators=TYPE replicator support: internal/shared/none
                           [[TYPE=none]]
   --with-thin=TYPE        thin provisioning support: internal/shared/none
                           [[TYPE=none]]
   --with-thin-check=PATH  thin_check tool: [[autodetect]]
+  --with-thin-dump=PATH   thin_dump tool: [[autodetect]]
+  --with-thin-repair=PATH thin_repair tool: [[autodetect]]
   --with-ocfdir=DIR       install OCF files in DIR
                           [[PREFIX/lib/ocf/resource.d/lvm2]]
   --with-default-pid-dir=PID_DIR
@@ -1637,6 +1653,8 @@ Optional Packages:
                           dmeventd path [[EPREFIX/sbin/dmeventd]]
   --with-default-system-dir=DIR
                           default LVM system directory [[/etc/lvm]]
+  --with-default-profile-subdir=SUBDIR
+                          default configuration profile subdir [[profile]]
   --with-default-archive-subdir=SUBDIR
                           default metadata archive subdir [[archive]]
   --with-default-backup-subdir=SUBDIR
@@ -7103,12 +7121,128 @@ fi
 
 		test -z "$THIN_CHECK_CMD" && as_fn_error $? "thin_check not found in path $PATH" "$LINENO" 5
 	fi
+
+# Check whether --with-thin-dump was given.
+if test "${with_thin_dump+set}" = set; then :
+  withval=$with_thin_dump; THIN_DUMP_CMD=$withval
+else
+  THIN_DUMP_CMD="autodetect"
+fi
+
+	# Empty means a config way to ignore thin checking
+	if test "$THIN_DUMP_CMD" = "autodetect"; then
+		# Extract the first word of "thin_dump", so it can be a program name with args.
+set dummy thin_dump; ac_word=$2
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
+$as_echo_n "checking for $ac_word... " >&6; }
+if test "${ac_cv_path_THIN_DUMP_CMD+set}" = set; then :
+  $as_echo_n "(cached) " >&6
+else
+  case $THIN_DUMP_CMD in
+  [\\/]* | ?:[\\/]*)
+  ac_cv_path_THIN_DUMP_CMD="$THIN_DUMP_CMD" # Let the user override the test with a path.
+  ;;
+  *)
+  as_save_IFS=$IFS; IFS=$PATH_SEPARATOR
+for as_dir in $PATH
+do
+  IFS=$as_save_IFS
+  test -z "$as_dir" && as_dir=.
+    for ac_exec_ext in '' $ac_executable_extensions; do
+  if { test -f "$as_dir/$ac_word$ac_exec_ext" && $as_test_x "$as_dir/$ac_word$ac_exec_ext"; }; then
+    ac_cv_path_THIN_DUMP_CMD="$as_dir/$ac_word$ac_exec_ext"
+    $as_echo "$as_me:${as_lineno-$LINENO}: found $as_dir/$ac_word$ac_exec_ext" >&5
+    break 2
+  fi
+done
+  done
+IFS=$as_save_IFS
+
+  ;;
+esac
+fi
+THIN_DUMP_CMD=$ac_cv_path_THIN_DUMP_CMD
+if test -n "$THIN_DUMP_CMD"; then
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: $THIN_DUMP_CMD" >&5
+$as_echo "$THIN_DUMP_CMD" >&6; }
+else
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+fi
+
+
+		test -z "$THIN_DUMP_CMD" && as_fn_error $? "thin_dump not found in path $PATH" "$LINENO" 5
+	fi
+
+# Check whether --with-thin-repair was given.
+if test "${with_thin_repair+set}" = set; then :
+  withval=$with_thin_repair; THIN_REPAIR_CMD=$withval
+else
+  THIN_REPAIR_CMD="autodetect"
+fi
+
+	# Empty means a config way to ignore thin checking
+	if test "$THIN_REPAIR_CMD" = "autodetect"; then
+		# Extract the first word of "thin_repair", so it can be a program name with args.
+set dummy thin_repair; ac_word=$2
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
+$as_echo_n "checking for $ac_word... " >&6; }
+if test "${ac_cv_path_THIN_REPAIR_CMD+set}" = set; then :
+  $as_echo_n "(cached) " >&6
+else
+  case $THIN_REPAIR_CMD in
+  [\\/]* | ?:[\\/]*)
+  ac_cv_path_THIN_REPAIR_CMD="$THIN_REPAIR_CMD" # Let the user override the test with a path.
+  ;;
+  *)
+  as_save_IFS=$IFS; IFS=$PATH_SEPARATOR
+for as_dir in $PATH
+do
+  IFS=$as_save_IFS
+  test -z "$as_dir" && as_dir=.
+    for ac_exec_ext in '' $ac_executable_extensions; do
+  if { test -f "$as_dir/$ac_word$ac_exec_ext" && $as_test_x "$as_dir/$ac_word$ac_exec_ext"; }; then
+    ac_cv_path_THIN_REPAIR_CMD="$as_dir/$ac_word$ac_exec_ext"
+    $as_echo "$as_me:${as_lineno-$LINENO}: found $as_dir/$ac_word$ac_exec_ext" >&5
+    break 2
+  fi
+done
+  done
+IFS=$as_save_IFS
+
+  ;;
+esac
+fi
+THIN_REPAIR_CMD=$ac_cv_path_THIN_REPAIR_CMD
+if test -n "$THIN_REPAIR_CMD"; then
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: $THIN_REPAIR_CMD" >&5
+$as_echo "$THIN_REPAIR_CMD" >&6; }
+else
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+fi
+
+
+		test -z "$THIN_REPAIR_CMD" && as_fn_error $? "thin_repair not found in path $PATH" "$LINENO" 5
+	fi
 	;;
 esac
 
 
 cat >>confdefs.h <<_ACEOF
 #define THIN_CHECK_CMD "$THIN_CHECK_CMD"
+_ACEOF
+
+
+
+cat >>confdefs.h <<_ACEOF
+#define THIN_DUMP_CMD "$THIN_DUMP_CMD"
+_ACEOF
+
+
+
+cat >>confdefs.h <<_ACEOF
+#define THIN_REPAIR_CMD "$THIN_REPAIR_CMD"
 _ACEOF
 
 
@@ -8545,6 +8679,83 @@ else
 	CSCOPE_CMD=
 fi
 
+
+
+    ac_save_CFLAGS=$CFLAGS
+    CFLAGS=-Wjump-misses-init
+    { $as_echo "$as_me:${as_lineno-$LINENO}: checking whether $CC accepts -Wjump-misses-init flag" >&5
+$as_echo_n "checking whether $CC accepts -Wjump-misses-init flag... " >&6; }
+if test "${ac_cv_flag_HAVE_WJUMP+set}" = set; then :
+  $as_echo_n "(cached) " >&6
+else
+  cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+
+int
+main ()
+{
+
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_compile "$LINENO"; then :
+  ac_cv_flag_HAVE_WJUMP=yes
+else
+  ac_cv_flag_HAVE_WJUMP=no
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
+fi
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_cv_flag_HAVE_WJUMP" >&5
+$as_echo "$ac_cv_flag_HAVE_WJUMP" >&6; }
+    CFLAGS=$ac_save_CFLAGS
+    HAVE_WJUMP=$ac_cv_flag_HAVE_WJUMP
+    if test "HAVE_WJUMP" = yes; then
+        :
+    else
+        :
+    fi
+
+
+
+
+    ac_save_CFLAGS=$CFLAGS
+    CFLAGS=-Wclobbered
+    { $as_echo "$as_me:${as_lineno-$LINENO}: checking whether $CC accepts -Wclobbered flag" >&5
+$as_echo_n "checking whether $CC accepts -Wclobbered flag... " >&6; }
+if test "${ac_cv_flag_HAVE_WCLOBBERED+set}" = set; then :
+  $as_echo_n "(cached) " >&6
+else
+  cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+
+int
+main ()
+{
+
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_compile "$LINENO"; then :
+  ac_cv_flag_HAVE_WCLOBBERED=yes
+else
+  ac_cv_flag_HAVE_WCLOBBERED=no
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
+fi
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_cv_flag_HAVE_WCLOBBERED" >&5
+$as_echo "$ac_cv_flag_HAVE_WCLOBBERED" >&6; }
+    CFLAGS=$ac_save_CFLAGS
+    HAVE_WCLOBBERED=$ac_cv_flag_HAVE_WCLOBBERED
+    if test "HAVE_WCLOBBERED" = yes; then
+        :
+    else
+        :
+    fi
+
+
+
 ################################################################################
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for C optimisation flag" >&5
 $as_echo_n "checking for C optimisation flag... " >&6; }
@@ -8961,6 +9172,19 @@ cat >>confdefs.h <<_ACEOF
 _ACEOF
 
 fi
+
+################################################################################
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking whether to use udev-systemd protocol for jobs in background" >&5
+$as_echo_n "checking whether to use udev-systemd protocol for jobs in background... " >&6; }
+# Check whether --enable-udev-systemd-background-jobs was given.
+if test "${enable_udev_systemd_background_jobs+set}" = set; then :
+  enableval=$enable_udev_systemd_background_jobs; UDEV_SYSTEMD_BACKGROUND_JOBS=$enableval
+else
+  UDEV_SYSTEMD_BACKGROUND_JOBS=no
+fi
+
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $UDEV_SYSTEMD_BACKGROUND_JOBS" >&5
+$as_echo "$UDEV_SYSTEMD_BACKGROUND_JOBS" >&6; }
 
 ################################################################################
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking whether to enable synchronisation with udev processing" >&5
@@ -9541,8 +9765,7 @@ if [ \( "x$LVM1" = xshared -o "x$POOL" = xshared -o "x$CLUSTER" = xshared \
 fi
 
 ################################################################################
-if [ "$DMEVENTD" = yes -o "$CLVMD" != none ] ; then
-	{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for pthread_mutex_lock in -lpthread" >&5
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for pthread_mutex_lock in -lpthread" >&5
 $as_echo_n "checking for pthread_mutex_lock in -lpthread... " >&6; }
 if test "${ac_cv_lib_pthread_pthread_mutex_lock+set}" = set; then :
   $as_echo_n "(cached) " >&6
@@ -9584,7 +9807,6 @@ else
   hard_bailout
 fi
 
-fi
 
 ################################################################################
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking whether to enable selinux support" >&5
@@ -10061,7 +10283,7 @@ fi
 if test "${with_confdir+set}" = set; then :
   withval=$with_confdir; CONFDIR=$withval
 else
-  CONFDIR="/etc"
+  CONFDIR='/etc'
 fi
 
 
@@ -10554,6 +10776,20 @@ _ACEOF
 
 
 
+# Check whether --with-default-profile-subdir was given.
+if test "${with_default_profile_subdir+set}" = set; then :
+  withval=$with_default_profile_subdir; DEFAULT_PROFILE_SUBDIR=$withval
+else
+  DEFAULT_PROFILE_SUBDIR=profile
+fi
+
+
+cat >>confdefs.h <<_ACEOF
+#define DEFAULT_PROFILE_SUBDIR "$DEFAULT_PROFILE_SUBDIR"
+_ACEOF
+
+
+
 # Check whether --with-default-archive-subdir was given.
 if test "${with_default_archive_subdir+set}" = set; then :
   withval=$with_default_archive_subdir; DEFAULT_ARCHIVE_SUBDIR=$withval
@@ -10787,8 +11023,14 @@ LVM_LIBAPI=`echo "$VER" | $AWK -F '[()]' '{print $2}'`
 
 
 
+
+
+
+
+
+
 ################################################################################
-ac_config_files="$ac_config_files Makefile make.tmpl daemons/Makefile daemons/clvmd/Makefile daemons/cmirrord/Makefile daemons/dmeventd/Makefile daemons/dmeventd/libdevmapper-event.pc daemons/dmeventd/plugins/Makefile daemons/dmeventd/plugins/lvm2/Makefile daemons/dmeventd/plugins/raid/Makefile daemons/dmeventd/plugins/mirror/Makefile daemons/dmeventd/plugins/snapshot/Makefile daemons/dmeventd/plugins/thin/Makefile daemons/lvmetad/Makefile doc/Makefile doc/example.conf include/.symlinks include/Makefile lib/Makefile lib/format1/Makefile lib/format_pool/Makefile lib/locking/Makefile lib/mirror/Makefile lib/replicator/Makefile lib/misc/lvm-version.h lib/raid/Makefile lib/snapshot/Makefile lib/thin/Makefile libdaemon/Makefile libdaemon/client/Makefile libdaemon/server/Makefile libdm/Makefile libdm/libdevmapper.pc liblvm/Makefile liblvm/liblvm2app.pc man/Makefile po/Makefile python/Makefile python/setup.py scripts/blkdeactivate.sh scripts/blk_availability_init_red_hat scripts/blk_availability_systemd_red_hat.service scripts/clvmd_init_red_hat scripts/cmirrord_init_red_hat scripts/lvm2_lvmetad_init_red_hat scripts/lvm2_lvmetad_systemd_red_hat.socket scripts/lvm2_lvmetad_systemd_red_hat.service scripts/lvm2_monitoring_init_red_hat scripts/dm_event_systemd_red_hat.socket scripts/dm_event_systemd_red_hat.service scripts/lvm2_monitoring_systemd_red_hat.service scripts/lvm2_tmpfiles_red_hat.conf scripts/Makefile test/Makefile test/api/Makefile test/unit/Makefile tools/Makefile udev/Makefile unit-tests/datastruct/Makefile unit-tests/regex/Makefile unit-tests/mm/Makefile"
+ac_config_files="$ac_config_files Makefile make.tmpl daemons/Makefile daemons/clvmd/Makefile daemons/cmirrord/Makefile daemons/dmeventd/Makefile daemons/dmeventd/libdevmapper-event.pc daemons/dmeventd/plugins/Makefile daemons/dmeventd/plugins/lvm2/Makefile daemons/dmeventd/plugins/raid/Makefile daemons/dmeventd/plugins/mirror/Makefile daemons/dmeventd/plugins/snapshot/Makefile daemons/dmeventd/plugins/thin/Makefile daemons/lvmetad/Makefile conf/Makefile conf/example.conf conf/default.profile include/.symlinks include/Makefile lib/Makefile lib/format1/Makefile lib/format_pool/Makefile lib/locking/Makefile lib/mirror/Makefile lib/replicator/Makefile lib/misc/lvm-version.h lib/raid/Makefile lib/snapshot/Makefile lib/thin/Makefile libdaemon/Makefile libdaemon/client/Makefile libdaemon/server/Makefile libdm/Makefile libdm/libdevmapper.pc liblvm/Makefile liblvm/liblvm2app.pc man/Makefile po/Makefile python/Makefile python/setup.py scripts/blkdeactivate.sh scripts/blk_availability_init_red_hat scripts/blk_availability_systemd_red_hat.service scripts/clvmd_init_red_hat scripts/cmirrord_init_red_hat scripts/lvm2_lvmetad_init_red_hat scripts/lvm2_lvmetad_systemd_red_hat.socket scripts/lvm2_lvmetad_systemd_red_hat.service scripts/lvm2_pvscan_systemd_red_hat@.service scripts/lvm2_monitoring_init_red_hat scripts/dm_event_systemd_red_hat.socket scripts/dm_event_systemd_red_hat.service scripts/lvm2_monitoring_systemd_red_hat.service scripts/lvm2_tmpfiles_red_hat.conf scripts/Makefile test/Makefile test/api/Makefile test/unit/Makefile tools/Makefile udev/Makefile unit-tests/datastruct/Makefile unit-tests/regex/Makefile unit-tests/mm/Makefile"
 
 cat >confcache <<\_ACEOF
 # This file is a shell script that caches the results of configure
@@ -11491,8 +11733,9 @@ do
     "daemons/dmeventd/plugins/snapshot/Makefile") CONFIG_FILES="$CONFIG_FILES daemons/dmeventd/plugins/snapshot/Makefile" ;;
     "daemons/dmeventd/plugins/thin/Makefile") CONFIG_FILES="$CONFIG_FILES daemons/dmeventd/plugins/thin/Makefile" ;;
     "daemons/lvmetad/Makefile") CONFIG_FILES="$CONFIG_FILES daemons/lvmetad/Makefile" ;;
-    "doc/Makefile") CONFIG_FILES="$CONFIG_FILES doc/Makefile" ;;
-    "doc/example.conf") CONFIG_FILES="$CONFIG_FILES doc/example.conf" ;;
+    "conf/Makefile") CONFIG_FILES="$CONFIG_FILES conf/Makefile" ;;
+    "conf/example.conf") CONFIG_FILES="$CONFIG_FILES conf/example.conf" ;;
+    "conf/default.profile") CONFIG_FILES="$CONFIG_FILES conf/default.profile" ;;
     "include/.symlinks") CONFIG_FILES="$CONFIG_FILES include/.symlinks" ;;
     "include/Makefile") CONFIG_FILES="$CONFIG_FILES include/Makefile" ;;
     "lib/Makefile") CONFIG_FILES="$CONFIG_FILES lib/Makefile" ;;
@@ -11524,6 +11767,7 @@ do
     "scripts/lvm2_lvmetad_init_red_hat") CONFIG_FILES="$CONFIG_FILES scripts/lvm2_lvmetad_init_red_hat" ;;
     "scripts/lvm2_lvmetad_systemd_red_hat.socket") CONFIG_FILES="$CONFIG_FILES scripts/lvm2_lvmetad_systemd_red_hat.socket" ;;
     "scripts/lvm2_lvmetad_systemd_red_hat.service") CONFIG_FILES="$CONFIG_FILES scripts/lvm2_lvmetad_systemd_red_hat.service" ;;
+    "scripts/lvm2_pvscan_systemd_red_hat@.service") CONFIG_FILES="$CONFIG_FILES scripts/lvm2_pvscan_systemd_red_hat@.service" ;;
     "scripts/lvm2_monitoring_init_red_hat") CONFIG_FILES="$CONFIG_FILES scripts/lvm2_monitoring_init_red_hat" ;;
     "scripts/dm_event_systemd_red_hat.socket") CONFIG_FILES="$CONFIG_FILES scripts/dm_event_systemd_red_hat.socket" ;;
     "scripts/dm_event_systemd_red_hat.service") CONFIG_FILES="$CONFIG_FILES scripts/dm_event_systemd_red_hat.service" ;;

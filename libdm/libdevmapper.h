@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2011 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2013 Red Hat, Inc. All rights reserved.
  *
  * This file is part of the device-mapper userspace tools.
  *
@@ -21,7 +21,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 
-#ifdef linux
+#ifdef __linux__
 #  include <linux/types.h>
 #endif
 
@@ -33,6 +33,12 @@
 #ifndef __GNUC__
 # define __typeof__ typeof
 #endif
+
+/* Macros to make string defines */
+#define DM_TO_STRING_EXP(A) #A
+#define DM_TO_STRING(A) DM_TO_STRING_EXP(A)
+
+#define DM_ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 
 #ifdef __cplusplus
 extern "C" {
@@ -49,10 +55,13 @@ extern "C" {
  * The library user may wish to register their own
  * logging function.  By default errors go to stderr.
  * Use dm_log_with_errno_init(NULL) to restore the default log fn.
+ * Error messages may have a non-zero errno.
+ * Debug messages may have a non-zero class.
+ * Aborts on internal error when env DM_ABORT_ON_INTERNAL_ERRORS is 1
  */
 
 typedef void (*dm_log_with_errno_fn) (int level, const char *file, int line,
-				      int dm_errno, const char *f, ...)
+				      int dm_errno_or_class, const char *f, ...)
     __attribute__ ((format(printf, 5, 6)));
 
 void dm_log_with_errno_init(dm_log_with_errno_fn fn);
@@ -178,6 +187,7 @@ const char *dm_task_get_uuid(const struct dm_task *dmt);
 
 struct dm_deps *dm_task_get_deps(struct dm_task *dmt);
 struct dm_versions *dm_task_get_versions(struct dm_task *dmt);
+const char *dm_task_get_message_response(struct dm_task *dmt);
 
 /*
  * These functions return device-mapper names based on the value
@@ -258,8 +268,58 @@ void *dm_get_next_target(struct dm_task *dmt,
 			 void *next, uint64_t *start, uint64_t *length,
 			 char **target_type, char **params);
 
-/* Parse params from STATUS call for thin_pool target */
+/*
+ * Parse params from STATUS call for raid target
+ */
 struct dm_pool;
+
+/*
+ * dm_get_status_raid will allocate the dm_status_raid structure and
+ * the necessary character arrays from the mempool provided to the
+ * function.  If the mempool is from a dev_manager struct (dm->mem),
+ * then the caller does not need to free the memory - simply calling
+ * dev_manager_destroy will do.
+ */
+struct dm_status_raid {
+	uint64_t reserved;
+	uint64_t total_regions;
+	uint64_t insync_regions;
+	uint64_t mismatch_count;
+	uint32_t dev_count;
+	char *raid_type;
+	char *dev_health;
+	char *sync_action;
+};
+
+int dm_get_status_raid(struct dm_pool *mem, const char *params,
+		       struct dm_status_raid **status);
+
+
+/*
+ * Snapshot target's format:
+ * <= 1.7.0: <used_sectors>/<total_sectors>
+ * >= 1.8.0: <used_sectors>/<total_sectors> <metadata_sectors>
+ */
+struct dm_status_snapshot {
+	uint64_t used_sectors;          /* in 512b units */
+	uint64_t total_sectors;
+	uint64_t metadata_sectors;
+	unsigned has_metadata_sectors : 1; /* set when metadata_sectors is present */
+	unsigned invalid : 1;		/* set when snapshot is invalidated */
+	unsigned merge_failed : 1;	/* set when snapshot merge failed */
+};
+
+int dm_get_status_snapshot(struct dm_pool *mem, const char *params,
+			   struct dm_status_snapshot **status);
+
+/*
+ * Parse params from STATUS call for thin_pool target
+ */
+typedef enum {
+	DM_THIN_DISCARDS_IGNORE,
+	DM_THIN_DISCARDS_NO_PASSDOWN,
+	DM_THIN_DISCARDS_PASSDOWN
+} dm_thin_discards_t;
 
 struct dm_status_thin_pool {
 	uint64_t transaction_id;
@@ -268,12 +328,16 @@ struct dm_status_thin_pool {
 	uint64_t used_data_blocks;
 	uint64_t total_data_blocks;
 	uint64_t held_metadata_root;
+	uint32_t read_only;
+	dm_thin_discards_t discards;
 };
 
 int dm_get_status_thin_pool(struct dm_pool *mem, const char *params,
 			    struct dm_status_thin_pool **status);
 
-/* Parse params from STATUS call for thin target */
+/*
+ * Parse params from STATUS call for thin target
+ */
 struct dm_status_thin {
 	uint64_t mapped_sectors;
 	uint64_t highest_mapped_sector;
@@ -377,6 +441,19 @@ int dm_device_has_holders(uint32_t major, uint32_t minor);
  */
 int dm_device_has_mounted_fs(uint32_t major, uint32_t minor);
 
+
+/*
+ * Callback is invoked for individal mountinfo lines,
+ * minor, major and mount target are parsed and unmangled.
+ */
+typedef int (*dm_mountinfo_line_callback_fn) (char *line, unsigned maj, unsigned min,
+					      char *target, void *cb_data);
+
+/*
+ * Read all lines from /proc/self/mountinfo,
+ * for each line calls read_fn callback.
+ */
+int dm_mountinfo_read(dm_mountinfo_line_callback_fn read_fn, void *cb_data);
 
 /*
  * Initialise library
@@ -605,6 +682,36 @@ int dm_tree_node_add_raid_target(struct dm_tree_node *node,
 				 uint64_t rebuilds,
 				 uint64_t flags);
 
+struct dm_tree_node_raid_params {
+	const char *raid_type;
+
+	uint32_t stripes;
+	uint32_t mirrors;
+	uint32_t region_size;
+	uint32_t stripe_size;
+
+	/*
+	 * 'rebuilds' and 'writemostly' are bitfields that signify
+	 * which devices in the array are to be rebuilt or marked
+	 * writemostly.  By choosing a 'uint64_t', we limit ourself
+	 * to RAID arrays with 64 devices.
+	 */
+	uint64_t rebuilds;
+	uint64_t writemostly;
+	uint32_t writebehind;       /* I/Os (kernel default COUNTER_MAX / 2) */
+	uint32_t sync_daemon_sleep; /* ms (kernel default = 5sec) */
+	uint32_t max_recovery_rate; /* kB/sec/disk */
+	uint32_t min_recovery_rate; /* kB/sec/disk */
+	uint32_t stripe_cache;      /* sectors */
+
+	uint64_t flags;             /* [no]sync */
+	uint64_t reserved2;
+};
+
+int dm_tree_node_add_raid_target_with_params(struct dm_tree_node *node,
+					     uint64_t size,
+					     struct dm_tree_node_raid_params *p);
+
 /*
  * Replicator operation mode
  * Note: API for Replicator is not yet stable
@@ -646,6 +753,13 @@ int dm_tree_node_add_replicator_dev_target(struct dm_tree_node *node,
  */
 #define DM_THIN_MIN_DATA_BLOCK_SIZE (UINT32_C(128))
 #define DM_THIN_MAX_DATA_BLOCK_SIZE (UINT32_C(2097152))
+/*
+ * Max supported size for thin pool  metadata device (17112760320 bytes)
+ * Limitation is hardcoded into the kernel and bigger device size
+ * is not accepted.
+ * drivers/md/dm-thin-metadata.h THIN_METADATA_MAX_SECTORS
+ */
+#define DM_THIN_MAX_METADATA_SIZE   (UINT64_C(255) * (1 << 14) * (4096 / (1 << 9)) - 256 * 1024)
 
 int dm_tree_node_add_thin_pool_target(struct dm_tree_node *node,
 				      uint64_t size,
@@ -742,15 +856,15 @@ uint32_t dm_tree_get_cookie(struct dm_tree_node *node);
  *******************/
 
 void *dm_malloc_aux(size_t s, const char *file, int line)
-	__attribute__((malloc)) __attribute__((__warn_unused_result__));
+	__attribute__((__malloc__)) __attribute__((__warn_unused_result__));
 void *dm_malloc_aux_debug(size_t s, const char *file, int line)
 	__attribute__((__warn_unused_result__));
 void *dm_zalloc_aux(size_t s, const char *file, int line)
-	__attribute__((malloc)) __attribute__((__warn_unused_result__));
+	__attribute__((__malloc__)) __attribute__((__warn_unused_result__));
 void *dm_zalloc_aux_debug(size_t s, const char *file, int line)
 	__attribute__((__warn_unused_result__));
 char *dm_strdup_aux(const char *str, const char *file, int line)
-	__attribute__((malloc)) __attribute__((__warn_unused_result__));
+	__attribute__((__malloc__)) __attribute__((__warn_unused_result__));
 void dm_free_aux(void *p);
 void *dm_realloc_aux(void *p, unsigned int s, const char *file, int line)
 	__attribute__((__warn_unused_result__));
@@ -1303,7 +1417,8 @@ int dm_fclose(FILE *stream);
  */
 int dm_asprintf(char **buf, const char *format, ...)
     __attribute__ ((format(printf, 2, 3)));
-int dm_vasprintf(char **buf, const char *format, va_list ap);
+int dm_vasprintf(char **buf, const char *format, va_list ap)
+    __attribute__ ((format(printf, 2, 0)));
 
 /*
  * create lockfile (pidfile) - create and lock a lock file
@@ -1471,6 +1586,7 @@ struct dm_config_node {
 	const char *key;
 	struct dm_config_node *parent, *sib, *child;
 	struct dm_config_value *v;
+	int id;
 };
 
 struct dm_config_tree {
@@ -1500,11 +1616,27 @@ struct dm_config_tree *dm_config_remove_cascaded_tree(struct dm_config_tree *cft
 
 void dm_config_destroy(struct dm_config_tree *cft);
 
+/* Simple output line by line. */
 typedef int (*dm_putline_fn)(const char *line, void *baton);
+/* More advaced output with config node reference. */
+typedef int (*dm_config_node_out_fn)(const struct dm_config_node *cn, const char *line, void *baton);
+
+/*
+ * Specification for advanced config node output.
+ */
+struct dm_config_node_out_spec {
+	dm_config_node_out_fn prefix_fn; /* called before processing config node lines */
+	dm_config_node_out_fn line_fn; /* called for each config node line */
+	dm_config_node_out_fn suffix_fn; /* called after processing config node lines */
+};
+
 /* Write the node and any subsequent siblings it has. */
 int dm_config_write_node(const struct dm_config_node *cn, dm_putline_fn putline, void *baton);
+int dm_config_write_node_out(const struct dm_config_node *cn, const struct dm_config_node_out_spec *out_spec, void *baton);
+
 /* Write given node only without subsequent siblings. */
 int dm_config_write_one_node(const struct dm_config_node *cn, dm_putline_fn putline, void *baton);
+int dm_config_write_one_node_out(const struct dm_config_node *cn, const struct dm_config_node_out_spec *out_spec, void *baton);
 
 struct dm_config_node *dm_config_find_node(const struct dm_config_node *cn, const char *path);
 int dm_config_has_node(const struct dm_config_node *cn, const char *path);
@@ -1527,6 +1659,7 @@ int dm_config_tree_find_bool(const struct dm_config_tree *cft, const char *path,
  * off), (true, false).
  */
 int dm_config_find_bool(const struct dm_config_node *cn, const char *path, int fail);
+int dm_config_value_is_bool(const struct dm_config_value *v);
 
 int dm_config_get_uint32(const struct dm_config_node *cn, const char *path, uint32_t *result);
 int dm_config_get_uint64(const struct dm_config_node *cn, const char *path, uint64_t *result);
@@ -1619,6 +1752,18 @@ struct dm_pool *dm_config_memory(struct dm_config_tree *cft);
  * of the "watch" udev rule).
  */
 #define DM_UDEV_PRIMARY_SOURCE_FLAG 0x0040
+
+/*
+ * Udev flags reserved for use by any device-mapper subsystem.
+ */
+#define DM_SUBSYSTEM_UDEV_FLAG0 0x0100
+#define DM_SUBSYSTEM_UDEV_FLAG1 0x0200
+#define DM_SUBSYSTEM_UDEV_FLAG2 0x0400
+#define DM_SUBSYSTEM_UDEV_FLAG3 0x0800
+#define DM_SUBSYSTEM_UDEV_FLAG4 0x1000
+#define DM_SUBSYSTEM_UDEV_FLAG5 0x2000
+#define DM_SUBSYSTEM_UDEV_FLAG6 0x4000
+#define DM_SUBSSYTEM_UDEV_FLAG7 0x8000
 
 int dm_cookie_supported(void);
 

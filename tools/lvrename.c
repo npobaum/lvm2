@@ -16,7 +16,6 @@
 #include "tools.h"
 #include "lvm-types.h"
 
-
 /*
  * lvrename command implementation.
  * Check arguments and call lv_rename() to execute the request.
@@ -27,10 +26,9 @@ int lvrename(struct cmd_context *cmd, int argc, char **argv)
 	char *lv_name_old, *lv_name_new;
 	const char *vg_name, *vg_name_new, *vg_name_old;
 	char *st;
-	int r = ECMD_FAILED;
-
-	struct volume_group *vg = NULL;
+	struct volume_group *vg;
 	struct lv_list *lvl;
+	int r = ECMD_FAILED;
 
 	if (argc == 3) {
 		vg_name = skip_dev_dir(cmd, argv[0], NULL);
@@ -85,14 +83,12 @@ int lvrename(struct cmd_context *cmd, int argc, char **argv)
 		return ECMD_FAILED;
 	}
 
-	if (!apply_lvname_restrictions(lv_name_new)) {
-		stack;
-		return ECMD_FAILED;
-	}
+	if (!apply_lvname_restrictions(lv_name_new))
+		return_ECMD_FAILED;
 
 	if (!validate_name(lv_name_new)) {
 		log_error("New logical volume name \"%s\" is invalid",
-		     lv_name_new);
+			  lv_name_new);
 		return EINVALID_CMD_LINE;
 	}
 
@@ -105,39 +101,36 @@ int lvrename(struct cmd_context *cmd, int argc, char **argv)
 	vg = vg_read_for_update(cmd, vg_name, NULL, 0);
 	if (vg_read_error(vg)) {
 		release_vg(vg);
-		stack;
-		return ECMD_FAILED;
+		return_ECMD_FAILED;
 	}
 
 	if (!(lvl = find_lv_in_vg(vg, lv_name_old))) {
 		log_error("Existing logical volume \"%s\" not found in "
 			  "volume group \"%s\"", lv_name_old, vg_name);
-		goto error;
+		goto bad;
 	}
 
 	if (lvl->lv->status & (RAID_IMAGE | RAID_META)) {
 		log_error("Cannot rename a RAID %s directly",
 			  (lvl->lv->status & RAID_IMAGE) ? "image" :
 			  "metadata area");
-		r = ECMD_FAILED;
-		goto error;
+		goto bad;
 	}
 
 	if (lv_is_raid_with_tracking(lvl->lv)) {
 		log_error("Cannot rename %s while it is tracking a split image",
 			  lvl->lv->name);
-		r = ECMD_FAILED;
-		goto error;
+		goto bad;
 	}
 
 	if (!lv_rename(cmd, lvl->lv, lv_name_new))
-		goto error;
+		goto_bad;
 
 	log_print_unless_silent("Renamed \"%s\" to \"%s\" in volume group \"%s\"",
 				lv_name_old, lv_name_new, vg_name);
 
 	r = ECMD_PROCESSED;
-error:
+bad:
 	unlock_and_release_vg(cmd, vg, vg_name);
 	return r;
 }

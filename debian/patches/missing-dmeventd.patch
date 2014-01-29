@@ -15,7 +15,7 @@ Author: Bastian Blank <waldi@debian.org>
  		return 0;
  	}
  
-@@ -623,10 +626,19 @@
+@@ -621,10 +624,19 @@
  
  	if ((err = _do_event(DM_EVENT_CMD_REGISTER_FOR_EVENT, dmevh->dmeventd_path, &msg,
  			     dmevh->dso, uuid, dmevh->mask, dmevh->timeout)) < 0) {
@@ -41,7 +41,7 @@ Author: Bastian Blank <waldi@debian.org>
  	dm_free(msg.data);
 --- a/lib/activate/activate.c
 +++ b/lib/activate/activate.c
-@@ -1214,10 +1214,12 @@
+@@ -1392,10 +1392,12 @@
  
  	if (!r)
  		return_0;
@@ -57,16 +57,16 @@ Author: Bastian Blank <waldi@debian.org>
  }
  
  #endif
-@@ -1231,7 +1233,7 @@
+@@ -1409,7 +1411,7 @@
  {
  #ifdef DMEVENTD
  	int i, pending = 0, monitored;
 -	int r = 1;
 +	int r = 1, err;
- 	struct dm_list *tmp, *snh, *snht;
+ 	struct dm_list *snh, *snht;
  	struct lv_segment *seg;
  	struct lv_segment *log_seg;
-@@ -1366,25 +1368,30 @@
+@@ -1549,25 +1551,30 @@
  			continue;
  
  		/* FIXME specify events */

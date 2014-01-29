@@ -1,6 +1,6 @@
 --- a/lib/config/defaults.h
 +++ b/lib/config/defaults.h
-@@ -61,7 +61,7 @@
+@@ -62,7 +62,7 @@
  #define DEFAULT_DMEVENTD_MIRROR_LIB "libdevmapper-event-lvm2mirror.so"
  #define DEFAULT_DMEVENTD_SNAPSHOT_LIB "libdevmapper-event-lvm2snapshot.so"
  #define DEFAULT_DMEVENTD_THIN_LIB "libdevmapper-event-lvm2thin.so"
@@ -9,9 +9,9 @@
  #define DEFAULT_BACKGROUND_POLLING 1
  
  #define DEFAULT_THIN_CHECK_OPTIONS "-q"
---- a/doc/example.conf.in
-+++ b/doc/example.conf.in
-@@ -720,7 +720,7 @@
+--- a/conf/example.conf.in
++++ b/conf/example.conf.in
+@@ -834,7 +834,7 @@
  
      # Monitoring is enabled by default when activating logical volumes.
      # Set to 0 to disable monitoring or use the --ignoremonitoring option.
@@ -22,7 +22,7 @@
      # synchronising or merging data, they check and report progress
 --- a/tools/toollib.c
 +++ b/tools/toollib.c
-@@ -1500,8 +1500,6 @@
+@@ -1519,8 +1519,6 @@
  int get_activation_monitoring_mode(struct cmd_context *cmd,
  				   int *monitoring_mode)
  {
@@ -31,23 +31,22 @@
  	if (arg_count(cmd, monitor_ARG) &&
  	    (arg_count(cmd, ignoremonitoring_ARG) ||
  	     arg_count(cmd, sysinit_ARG))) {
-@@ -1509,14 +1507,15 @@
+@@ -1528,13 +1526,15 @@
  		return 0;
  	}
  
 -	if (arg_count(cmd, monitor_ARG))
 -		*monitoring_mode = arg_int_value(cmd, monitor_ARG,
-+	*monitoring_mode = find_config_tree_bool(cmd, "activation/monitoring",
++	*monitoring_mode = find_config_tree_bool(cmd, activation_monitoring_CFG,
  						 DEFAULT_DMEVENTD_MONITOR);
 -	else if (is_static() || arg_count(cmd, ignoremonitoring_ARG) ||
 -		 arg_count(cmd, sysinit_ARG) ||
--		 !find_config_tree_bool(cmd, "activation/monitoring",
--					DEFAULT_DMEVENTD_MONITOR))
+-		 !find_config_tree_bool(cmd, activation_monitoring_CFG, NULL))
 +
 +	if (is_static() || arg_count(cmd, ignoremonitoring_ARG) ||
 +		 arg_count(cmd, sysinit_ARG))
  		*monitoring_mode = DMEVENTD_MONITOR_IGNORE;
-+        else if (arg_count(cmd, monitor_ARG))
++	else if (arg_count(cmd, monitor_ARG))
 +		*monitoring_mode = arg_int_value(cmd, monitor_ARG,
 +						 *monitoring_mode);
  

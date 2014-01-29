@@ -52,7 +52,9 @@ static void _exit_handler(int sig __attribute__((unused)))
 	_shutdown_requested = 1;
 }
 
-#ifdef linux
+#define EXIT_ALREADYRUNNING 13
+
+#ifdef __linux__
 
 #include <stddef.h>
 
@@ -261,7 +263,7 @@ static void remove_lockfile(const char *file)
 		perror("unlink failed");
 }
 
-static void _daemonise(void)
+static void _daemonise(daemon_state s)
 {
 	int child_status;
 	int fd;
@@ -296,8 +298,14 @@ static void _daemonise(void)
 		if (_shutdown_requested) /* Child has signaled it is ok - we can exit now */
 			exit(0);
 
-		/* Problem with child.  Determine what it is by exit code */
-		fprintf(stderr, "Child exited with code %d\n", WEXITSTATUS(child_status));
+		switch (WEXITSTATUS(child_status)) {
+		case EXIT_ALREADYRUNNING:
+			fprintf(stderr, "Failed to acquire lock on %s. Already running?\n", s.pidfile);
+			break;
+		default:
+			/* Problem with child.  Determine what it is by exit code */
+			fprintf(stderr, "Child exited with code %d\n", WEXITSTATUS(child_status));
+		}
 		exit(WEXITSTATUS(child_status));
 	}
 
@@ -310,7 +318,7 @@ static void _daemonise(void)
 		fd = rlim.rlim_cur;
 
 	for (--fd; fd >= 0; fd--) {
-#ifdef linux
+#ifdef __linux__
 		/* Do not close fds preloaded by systemd! */
 		if (_systemd_activation && fd == SD_FD_SOCKET_SERVER)
 			continue;
@@ -373,6 +381,7 @@ static void *client_thread(void *baton)
 	request req;
 	response res;
 
+	b->client.thread_id = pthread_self();
 	buffer_init(&req.buffer);
 
 	while (1) {
@@ -392,7 +401,8 @@ static void *client_thread(void *baton)
 			res = b->s.handler(b->s, b->client, req);
 
 		if (!res.buffer.mem) {
-			dm_config_write_node(res.cft->root, buffer_line, &res.buffer);
+			if (!dm_config_write_node(res.cft->root, buffer_line, &res.buffer))
+				goto fail;
 			if (!buffer_append(&res.buffer, "\n\n"))
 				goto fail;
 			dm_config_destroy(res.cft);
@@ -422,21 +432,26 @@ static int handle_connect(daemon_state s)
 	struct sockaddr_un sockaddr;
 	client_handle client = { .thread_id = 0 };
 	socklen_t sl = sizeof(sockaddr);
+	pthread_t tid;
 
 	client.socket_fd = accept(s.socket_fd, (struct sockaddr *) &sockaddr, &sl);
 	if (client.socket_fd < 0)
 		return 0;
 
-	if (!(baton = malloc(sizeof(struct thread_baton))))
+	if (!(baton = dm_malloc(sizeof(struct thread_baton)))) {
+		if (close(client.socket_fd))
+			perror("close");
+		ERROR(&s, "Failed to allocate thread baton");
 		return 0;
+	}
 
 	baton->s = s;
 	baton->client = client;
 
-	if (pthread_create(&baton->client.thread_id, NULL, client_thread, baton))
+	if (pthread_create(&tid, NULL, client_thread, baton))
 		return 0;
 
-	pthread_detach(baton->client.thread_id);
+	pthread_detach(tid);
 
 	return 1;
 }
@@ -451,15 +466,15 @@ void daemon_start(daemon_state s)
 	 * some glibc (on some distributions it takes over 100MB). Some daemons
 	 * need to use mlockall().
 	 */
-	if (setenv("LANG", "C", 1))
-		perror("Cannot set LANG to C");
+	if (setenv("LC_ALL", "C", 1))
+		perror("Cannot set LC_ALL to C");
 
-#ifdef linux
+#ifdef __linux__
 	_systemd_activation = _systemd_handover(&s);
 #endif
 
 	if (!s.foreground)
-		_daemonise();
+		_daemonise(s);
 
 	s.log = &_log;
 	s.log->name = s.name;
@@ -476,7 +491,7 @@ void daemon_start(daemon_state s)
 		 * after this point.
 		 */
 		if (dm_create_lockfile(s.pidfile) == 0)
-			exit(1);
+			exit(EXIT_ALREADYRUNNING);
 
 		(void) dm_prepare_selinux_context(NULL, 0);
 	}
@@ -489,7 +504,7 @@ void daemon_start(daemon_state s)
 	signal(SIGALRM, &_exit_handler);
 	signal(SIGPIPE, SIG_IGN);
 
-#ifdef linux
+#ifdef __linux__
 	/* Systemd has adjusted oom killer for us already */
 	if (s.avoid_oom && !_systemd_activation && !_protect_against_oom_killer())
 		ERROR(&s, "Failed to protect against OOM killer");

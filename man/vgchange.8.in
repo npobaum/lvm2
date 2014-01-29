@@ -12,6 +12,7 @@ vgchange \- change attributes of a volume group
 .RB [ \-a | \-\-activate
 .RI [ a | e | l ]
 .RI { y | n }]
+.RB [ \-K | \-\-ignoreactivationskip ]
 .RB [ \-\-monitor
 .RI { y | n }]
 .RB [ \-\-poll
@@ -22,9 +23,13 @@ vgchange \- change attributes of a volume group
 .RB [ \-d | \-\-debug ]
 .RB [ \-\-deltag
 .IR Tag ]
+.RB [ \-\-profile
+.IR ProfileName ]
+.RB [ \-\-detachprofile ]
 .RB [ \-h | \-\-help ]
 .RB [ \-\-ignorelockingfailure ]
 .RB [ \-\-ignoremonitoring ]
+.RB [ \-\-ignoreskippedcluster ]
 .RB [ \-\-sysinit ]
 .RB [ \-\-noudevsync ]
 .RB [ \-l | \-\-logicalvolume
@@ -70,8 +75,9 @@ group for input/output.
 In other words, makes the logical volumes known/unknown to the kernel.
 If autoactivation option is used (\-aay), each logical volume in
 the volume group is activated only if it matches an item in the
-activation/auto_activation_volume_list set in lvm.conf.
-Autoactivation is not yet supported for partial or clustered
+activation/auto_activation_volume_list set in lvm.conf. If this
+list is not set, then all volumes are considered for autoactivation.
+The autoactivation is not yet supported for partial or clustered
 volume groups.
 .IP
 If clustered locking is enabled, add 'e' to activate/deactivate
@@ -80,6 +86,9 @@ on the local node.
 Logical volumes with single-host snapshots are always activated
 exclusively because they can only be used on one node at once.
 .TP
+.BR \-K ", " \-\-ignoreactivationskip
+Ignore the flag to skip Logical Volumes during activation.
+.TP
 .BR \-c ", " \-\-clustered " {" \fIy | \fIn }
 If clustered locking is enabled, this indicates whether this
 Volume Group is shared with other nodes in the cluster or whether
@@ -87,6 +96,11 @@ it contains only local disks that are not visible on the other nodes.
 If the cluster infrastructure is unavailable on a particular node at a
 particular time, you may still be able to use Volume Groups that
 are not marked as clustered.
+.TP
+.BR \-\-detachprofile
+Detach any configuration profiles attached to given Volume Groups.
+See also \fBlvm\fP(8) and \fBlvm.conf\fP(5) for more
+information about configuration profiles.
 .TP
 .BR \-u ", " \-\-uuid
 Generate new random UUID for specified Volume Groups.

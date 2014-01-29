@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2011-2012 Red Hat, Inc.
+# Copyright (C) 2011-2013 Red Hat, Inc.
 #
 # This file is part of LVM2.
 #
@@ -27,13 +27,15 @@ liblvm_python.c:
 include $(top_builddir)/make.tmpl
 
 install_python_bindings: python_bindings
-	$(PYTHON) setup.py install --skip-build --root $(rootdir)
+	$(PYTHON) setup.py install --skip-build --prefix $(pyexecdir)
 
 install_lvm2: install_python_bindings
 
 install: install_lvm2
 
+clean:
+	$(RM) -r build
+
 CLEAN_TARGETS += .liblvm_built liblvm_python.c
 
-DISTCLEAN_DIRS += build
 DISTCLEAN_TARGETS += setup.py

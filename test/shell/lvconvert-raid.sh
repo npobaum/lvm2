@@ -22,19 +22,21 @@ get_image_pvs() {
 ########################################################
 # MAIN
 ########################################################
-aux target_at_least dm-raid 1 1 0 || skip
-aux kernel_at_least 3 2 0 || skip
+if ! aux target_at_least dm-raid 1 2 0; then
+	dmsetup targets | grep raid
+	skip
+fi
 
 # 9 PVs needed for RAID10 testing (3-stripes/2-mirror - replacing 3 devs)
 aux prepare_pvs 9 80
-vgcreate -c n -s 256k $vg $(cat DEVICES)
+vgcreate -s 256k $vg $(cat DEVICES)
 
 ###########################################
 # RAID1 convert tests
 ###########################################
 for under_snap in false true; do
-for i in 1 2 3 4; do
-	for j in 1 2 3 4; do
+for i in 1 2 3; do
+	for j in 1 2 3; do
 		if [ $i -eq 1 ]; then
 			from="linear"
 		else
@@ -56,17 +58,17 @@ for i in 1 2 3 4; do
 			# Shouldn't be able to create with just 1 image
 			not lvcreate --type raid1 -m 0 -l 2 -n $lv1 $vg
 
-			lvcreate -l 2 -n $lv1 $vg
+			lvcreate -aey -l 2 -n $lv1 $vg
 		else
 			lvcreate --type raid1 -m $(($i - 1)) -l 2 -n $lv1 $vg
 			aux wait_for_sync $vg $lv1
 		fi
 
 		if $under_snap; then
-			lvcreate -s $vg/$lv1 -n snap -l 2
+			lvcreate -aey -s $vg/$lv1 -n snap -l 2
 		fi
 
-		lvconvert -m $((j - 1))  $vg/$lv1
+		lvconvert -m $((j - 1)) $vg/$lv1
 
 		# FIXME: ensure no residual devices
 
@@ -121,17 +123,6 @@ check linear $vg $lv2
 # FIXME: ensure no residual devices
 lvremove -ff $vg
 
-# 3-way to linear/2-way
-lvcreate --type raid1 -m 2 -l 2 -n $lv1 $vg
-aux wait_for_sync $vg $lv1
-# FIXME: Can't split off a RAID1 from a RAID1 yet
-# 'should' results in "warnings"
-should lvconvert --splitmirrors 2 -n $lv2 $vg/$lv1
-#check linear $vg $lv1
-#check lv_exists $vg $lv2
-# FIXME: ensure no residual devices
-lvremove -ff $vg
-
 ###########################################
 # RAID1 split + trackchanges / merge
 ###########################################
@@ -146,10 +137,38 @@ lvconvert --merge $vg/${lv1}_rimage_2
 lvremove -ff $vg
 
 ###########################################
+# Linear to RAID1 conversion ("raid1" default segtype)
+###########################################
+lvcreate -aey -l 2 -n $lv1 $vg
+lvconvert -m 1 $vg/$lv1 \
+	--config 'global { mirror_segtype_default = "raid1" }'
+lvs --noheadings -o attr $vg/$lv1 | grep '^[[:space:]]*r'
+lvremove -ff $vg
+
+###########################################
+# Linear to RAID1 conversion (override "mirror" default segtype)
+###########################################
+lvcreate -aey -l 2 -n $lv1 $vg
+lvconvert --type raid1 -m 1 $vg/$lv1 \
+	--config 'global { mirror_segtype_default = "mirror" }'
+lvs --noheadings -o attr $vg/$lv1 | grep '^[[:space:]]*r'
+lvremove -ff $vg
+
+###########################################
+# Must not be able to convert non-EX LVs in a cluster
+###########################################
+if [ -e LOCAL_CLVMD ]; then
+	lvcreate -l 2 -n $lv1 $vg
+	not lvconvert --type raid1 -m 1 $vg/$lv1 \
+		--config 'global { mirror_segtype_default = "mirror" }'
+	lvremove -ff $vg
+fi
+
+###########################################
 # Mirror to RAID1 conversion
 ###########################################
 for i in 1 2 3 ; do
-	lvcreate --type mirror -m $i -l 2 -n $lv1 $vg
+	lvcreate -aey --type mirror -m $i -l 2 -n $lv1 $vg
 	aux wait_for_sync $vg $lv1
 	lvconvert --type raid1 $vg/$lv1
 	lvremove -ff $vg
@@ -186,6 +205,8 @@ for i in {1..3}; do
 
 	lvremove -ff $vg
 done
+
+aux skip_if_raid456_replace_broken
 
 # RAID 4/5/6 (can replace up to 'parity' devices)
 for i in 4 5 6; do

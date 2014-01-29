@@ -18,10 +18,10 @@ top_builddir = @top_builddir@
 include $(top_builddir)/make.tmpl
 vpath %.rules $(srcdir)
 
-DM_RULES=10-dm.rules 13-dm-disk.rules 95-dm-notify.rules
-LVM_RULES=11-dm-lvm.rules
+DM_RULES=55-dm.rules 60-persistent-storage-dm.rules
+LVM_RULES=56-lvm.rules
 ifeq ("@BUILD_LVMETAD@", "yes")
-LVM_RULES+=69-dm-lvm-metad.rules
+LVM_RULES+=69-lvm-metad.rules
 endif
 
 DM_DIR=$(shell grep "\#define DM_DIR" $(top_srcdir)/libdm/misc/dm-ioctl.h | awk '{print $$3}')
@@ -46,11 +46,26 @@ else
 BLKID_RULE=IMPORT{program}=\"${SBIN}\/blkid -o udev -p \$$tempnode\"
 endif
 
-%.rules: %.rules.in
-	$(SED) -e "s+(DM_DIR)+$(DM_DIR)+;s+(BLKID_RULE)+$(BLKID_RULE)+;s+(DM_EXEC_RULE)+$(DM_EXEC_RULE)+;s+(DM_EXEC)+$(DM_EXEC)+;s+(LVM_EXEC_RULE)+$(LVM_EXEC_RULE)+;s+(LVM_EXEC)+$(LVM_EXEC)+;" $< >$@
+ifeq ("@UDEV_SYSTEMD_BACKGROUND_JOBS@", "yes")
+PVSCAN_RULE=ENV{SYSTEMD_ALIAS}=\"\/dev\/block\/\$$major:\$$minor\"\nENV{ID_MODEL}=\"LVM PV \$$env{ID_FS_UUID_ENC} on \/dev\/\$$name\"\nENV{SYSTEMD_WANTS}=\"lvm2-pvscan@\$$major:\$$minor.service\"
+else
+PVSCAN_RULE=RUN\+\=\"$(LVM_EXEC)/lvm pvscan --background --cache --activate ay --major \$$major --minor \$$minor\", ENV{LVM_SCANNED}=\"1\"
+endif
 
-%_install: %.rules
-	$(INSTALL_DATA) -D $< $(udevdir)/$(<F)
+%.rules: %.rules.in
+	$(SED) -e "s+(DM_DIR)+$(DM_DIR)+;s+(BLKID_RULE)+$(BLKID_RULE)+;s+(PVSCAN_RULE)+$(PVSCAN_RULE)+;s+(DM_EXEC_RULE)+$(DM_EXEC_RULE)+;s+(DM_EXEC)+$(DM_EXEC)+;s+(LVM_EXEC_RULE)+$(LVM_EXEC_RULE)+;s+(LVM_EXEC)+$(LVM_EXEC)+;" $< >$@
+
+55-dm_install: 10-dm.rules
+	$(INSTALL_DATA) -D $< $(udevdir)/55-dm.rules
+
+56-lvm_install: 11-dm-lvm.rules
+	$(INSTALL_DATA) -D $< $(udevdir)/56-lvm.rules
+
+60-persistent-storage-dm_install: 13-dm-disk.rules
+	$(INSTALL_DATA) -D $< $(udevdir)/60-persistent-storage-dm.rules
+
+69-lvm-metad_install: 69-dm-lvm-metad.rules
+	$(INSTALL_DATA) -D $< $(udevdir)/69-lvm-metad.rules
 
 install_device-mapper: $(DM_RULES:.rules=_install)
 install_lvm2: $(LVM_RULES:.rules=_install)
