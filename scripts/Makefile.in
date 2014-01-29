@@ -96,6 +96,8 @@ endif
 
 install_systemd_units:
 	$(INSTALL_DIR) $(systemd_unit_dir)
+	$(INSTALL_DATA) lvm2-activation_systemd_debian.service $(systemd_unit_dir)/lvm2-activation.service
+	$(INSTALL_DATA) lvm2-activation-early_systemd_debian.service $(systemd_unit_dir)/lvm2-activation-early.service
 ifeq ("@BUILD_DMEVENTD@", "yes")
 	$(INSTALL_DATA) dm_event_systemd_red_hat.socket $(systemd_unit_dir)/dm-event.socket
 	$(INSTALL_DATA) dm_event_systemd_red_hat.service $(systemd_unit_dir)/dm-event.service
