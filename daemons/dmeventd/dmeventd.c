@@ -1847,14 +1847,14 @@ static void restart(void)
 
 	/* Get the list of registrations from the running daemon. */
 
-	if (!init_fifos(&fifos)) {
+	if (!dm_event_daemon_init_fifos(&fifos)) {
 		fprintf(stderr, "WARNING: Could not initiate communication with existing dmeventd.\n");
 		exit(EXIT_FAILURE);
 	}
 
 	if (!dm_event_get_version(&fifos, &version)) {
 		fprintf(stderr, "WARNING: Could not communicate with existing dmeventd.\n");
-		fini_fifos(&fifos);
+		dm_event_daemon_fini_fifos(&fifos);
 		exit(EXIT_FAILURE);
 	}
 
@@ -1865,7 +1865,7 @@ static void restart(void)
 		exit(EXIT_FAILURE);
 	}
 
-	if (daemon_talk(&fifos, &msg, DM_EVENT_CMD_GET_STATUS, "-", "-", 0, 0)) {
+	if (dm_event_daemon_talk(&fifos, &msg, DM_EVENT_CMD_GET_STATUS, "-", "-", 0, 0)) {
 		exit(EXIT_FAILURE);
 	}
 
@@ -1894,7 +1894,7 @@ static void restart(void)
 	}
 	_initial_registrations[count] = 0;
 
-	if (daemon_talk(&fifos, &msg, DM_EVENT_CMD_DIE, "-", "-", 0, 0)) {
+	if (dm_event_daemon_talk(&fifos, &msg, DM_EVENT_CMD_DIE, "-", "-", 0, 0)) {
 		fprintf(stderr, "Old dmeventd refused to die.\n");
 		exit(EXIT_FAILURE);
 	}
@@ -1904,12 +1904,12 @@ static void restart(void)
 	 * until one fails.
 	 */
 	for (i = 0; i < 10; ++i) {
-		if (daemon_talk(&fifos, &msg, DM_EVENT_CMD_DIE, "-", "-", 0, 0))
+		if (dm_event_daemon_talk(&fifos, &msg, DM_EVENT_CMD_DIE, "-", "-", 0, 0))
 			break; /* yep, it's dead probably */
 		usleep(10);
 	}
 
-	fini_fifos(&fifos);
+	dm_event_daemon_fini_fifos(&fifos);
 }
 
 static void usage(char *prog, FILE *file)
