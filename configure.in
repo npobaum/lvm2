@@ -364,7 +364,7 @@ dnl -- raid inclusion type
 AC_MSG_CHECKING(whether to include raid)
 AC_ARG_WITH(raid,
 	    AC_HELP_STRING([--with-raid=TYPE],
-			   [mirror support: internal/shared/none
+			   [raid support: internal/shared/none
 			    [[TYPE=internal]]]),
 	    RAID=$withval, RAID=internal)
 AC_MSG_RESULT($RAID)
@@ -424,11 +424,35 @@ case "$THIN" in
 		AC_PATH_PROG(THIN_CHECK_CMD, thin_check)
 		test -z "$THIN_CHECK_CMD" && AC_MSG_ERROR(thin_check not found in path $PATH)
 	fi
+	AC_ARG_WITH(thin-dump,
+		AC_HELP_STRING([--with-thin-dump=PATH],
+			       [thin_dump tool: [[autodetect]]]),
+			       THIN_DUMP_CMD=$withval, THIN_DUMP_CMD="autodetect")
+	# Empty means a config way to ignore thin checking
+	if test "$THIN_DUMP_CMD" = "autodetect"; then
+		AC_PATH_PROG(THIN_DUMP_CMD, thin_dump)
+		test -z "$THIN_DUMP_CMD" && AC_MSG_ERROR(thin_dump not found in path $PATH)
+	fi
+	AC_ARG_WITH(thin-repair,
+		AC_HELP_STRING([--with-thin-repair=PATH],
+			       [thin_repair tool: [[autodetect]]]),
+			       THIN_REPAIR_CMD=$withval, THIN_REPAIR_CMD="autodetect")
+	# Empty means a config way to ignore thin checking
+	if test "$THIN_REPAIR_CMD" = "autodetect"; then
+		AC_PATH_PROG(THIN_REPAIR_CMD, thin_repair)
+		test -z "$THIN_REPAIR_CMD" && AC_MSG_ERROR(thin_repair not found in path $PATH)
+	fi
 	;;
 esac
 
 AC_DEFINE_UNQUOTED([THIN_CHECK_CMD], ["$THIN_CHECK_CMD"],
 		   [The path to 'thin_check', if available.])
+
+AC_DEFINE_UNQUOTED([THIN_DUMP_CMD], ["$THIN_DUMP_CMD"],
+		   [The path to 'thin_dump', if available.])
+
+AC_DEFINE_UNQUOTED([THIN_REPAIR_CMD], ["$THIN_REPAIR_CMD"],
+		   [The path to 'thin_repair', if available.])
 
 
 ################################################################################
@@ -811,6 +835,12 @@ else
 	CSCOPE_CMD=
 fi
 
+dnl -- Check if compiler supports -Wjump-misses-init
+AC_TRY_CCFLAG([-Wjump-misses-init], [HAVE_WJUMP], [], [])
+AC_SUBST(HAVE_WJUMP)
+AC_TRY_CCFLAG([-Wclobbered], [HAVE_WCLOBBERED], [], [])
+AC_SUBST(HAVE_WCLOBBERED)
+
 ################################################################################
 dnl -- Override optimisation
 AC_MSG_CHECKING(for C optimisation flag)
@@ -914,6 +944,15 @@ if test x$BUILD_LVMETAD = xyes; then
 	AC_DEFINE_UNQUOTED(LVMETAD_PIDFILE, ["$LVMETAD_PIDFILE"],
 			   [Path to lvmetad pidfile.])
 fi
+
+################################################################################
+dnl -- Enable udev-systemd protocol to instantiate a service for background jobs
+AC_MSG_CHECKING(whether to use udev-systemd protocol for jobs in background)
+AC_ARG_ENABLE(udev-systemd-background-jobs,
+	      AC_HELP_STRING([--enable-udev-systemd-background-jobs],
+			     [enable udev-systemd protocol to instantiate a service for background job]),
+	      UDEV_SYSTEMD_BACKGROUND_JOBS=$enableval, UDEV_SYSTEMD_BACKGROUND_JOBS=no)
+AC_MSG_RESULT($UDEV_SYSTEMD_BACKGROUND_JOBS)
 
 ################################################################################
 dnl -- Enable udev synchronisation
@@ -1157,10 +1196,8 @@ Features cannot be 'shared' when building statically
 fi
 
 ################################################################################
-if [[ "$DMEVENTD" = yes -o "$CLVMD" != none ]] ; then
-	AC_CHECK_LIB([pthread], [pthread_mutex_lock],
-		[PTHREAD_LIBS="-lpthread"], hard_bailout)
-fi
+AC_CHECK_LIB([pthread], [pthread_mutex_lock],
+	[PTHREAD_LIBS="-lpthread"], hard_bailout)
 
 ################################################################################
 dnl -- Disable selinux
@@ -1276,10 +1313,11 @@ if test x$INTL = xyes; then
 fi
 
 ################################################################################
+dnl -- FIXME: need to switch to regular option here  --sysconfdir
 AC_ARG_WITH(confdir,
 	    AC_HELP_STRING([--with-confdir=DIR],
 			   [configuration files in DIR [[/etc]]]),
-	    CONFDIR=$withval, CONFDIR="/etc")
+	    CONFDIR=$withval, CONFDIR='/etc')
 
 AC_ARG_WITH(staticdir,
 	    AC_HELP_STRING([--with-staticdir=DIR],
@@ -1414,12 +1452,20 @@ fi
 
 ################################################################################
 dnl -- various defaults
+dnl -- FIXME: need to switch to regular option here  --sysconfdir
 AC_ARG_WITH(default-system-dir,
 	    AC_HELP_STRING([--with-default-system-dir=DIR],
 			   [default LVM system directory [[/etc/lvm]]]),
 	    DEFAULT_SYS_DIR=$withval, DEFAULT_SYS_DIR="/etc/lvm")
 AC_DEFINE_UNQUOTED(DEFAULT_SYS_DIR, ["$DEFAULT_SYS_DIR"],
 		   [Path to LVM system directory.])
+
+AC_ARG_WITH(default-profile-subdir,
+	    AC_HELP_STRING([--with-default-profile-subdir=SUBDIR],
+			   [default configuration profile subdir [[profile]]]),
+	    DEFAULT_PROFILE_SUBDIR=$withval, DEFAULT_PROFILE_SUBDIR=profile)
+AC_DEFINE_UNQUOTED(DEFAULT_PROFILE_SUBDIR, ["$DEFAULT_PROFILE_SUBDIR"],
+		   [Name of default configuration profile subdirectory.])
 
 AC_ARG_WITH(default-archive-subdir,
 	    AC_HELP_STRING([--with-default-archive-subdir=SUBDIR],
@@ -1521,6 +1567,7 @@ AC_SUBST(DEFAULT_SYS_DIR)
 AC_SUBST(DEFAULT_ARCHIVE_SUBDIR)
 AC_SUBST(DEFAULT_BACKUP_SUBDIR)
 AC_SUBST(DEFAULT_CACHE_SUBDIR)
+AC_SUBST(DEFAULT_PROFILE_SUBDIR)
 AC_SUBST(DEFAULT_DATA_ALIGNMENT)
 AC_SUBST(DEFAULT_LOCK_DIR)
 AC_SUBST(DEFAULT_DM_RUN_DIR)
@@ -1588,10 +1635,13 @@ AC_SUBST(STATIC_LINK)
 AC_SUBST(TESTING)
 AC_SUBST(THIN)
 AC_SUBST(THIN_CHECK_CMD)
+AC_SUBST(THIN_DUMP_CMD)
+AC_SUBST(THIN_REPAIR_CMD)
 AC_SUBST(UDEV_LIBS)
 AC_SUBST(UDEV_PC)
 AC_SUBST(UDEV_RULES)
 AC_SUBST(UDEV_SYNC)
+AC_SUBST(UDEV_SYSTEMD_BACKGROUND_JOBS)
 AC_SUBST(UDEV_RULE_EXEC_DETECTION)
 AC_SUBST(UDEV_HAS_BUILTIN_BLKID)
 AC_SUBST(CUNIT_LIBS)
@@ -1599,6 +1649,8 @@ AC_SUBST(CUNIT_CFLAGS)
 AC_SUBST(WRITE_INSTALL)
 AC_SUBST(DMEVENTD_PIDFILE)
 AC_SUBST(LVMETAD_PIDFILE)
+AC_SUBST(CLVMD_PIDFILE)
+AC_SUBST(CMIRRORD_PIDFILE)
 AC_SUBST(interface)
 AC_SUBST(kerneldir)
 AC_SUBST(missingkernel)
@@ -1630,8 +1682,9 @@ daemons/dmeventd/plugins/mirror/Makefile
 daemons/dmeventd/plugins/snapshot/Makefile
 daemons/dmeventd/plugins/thin/Makefile
 daemons/lvmetad/Makefile
-doc/Makefile
-doc/example.conf
+conf/Makefile
+conf/example.conf
+conf/default.profile
 include/.symlinks
 include/Makefile
 lib/Makefile
@@ -1663,6 +1716,7 @@ scripts/cmirrord_init_red_hat
 scripts/lvm2_lvmetad_init_red_hat
 scripts/lvm2_lvmetad_systemd_red_hat.socket
 scripts/lvm2_lvmetad_systemd_red_hat.service
+scripts/lvm2_pvscan_systemd_red_hat@.service
 scripts/lvm2_monitoring_init_red_hat
 scripts/dm_event_systemd_red_hat.socket
 scripts/dm_event_systemd_red_hat.service

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2011-2012 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2011-2013 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -27,7 +27,8 @@
 #endif
 
 /* Dm kernel module name for thin provisiong */
-#define THIN_MODULE "thin-pool"
+static const char _thin_pool_module[] = "thin-pool";
+static const char _thin_module[] = "thin";
 
 /*
  * Macro used as return argument - returns 0.
@@ -37,9 +38,8 @@
 	log_error(t " segment %s of logical volume %s.", ## p, \
 		  dm_config_parent_name(sn), seg->lv->name), 0;
 
-static int _thin_target_present(struct cmd_context *cmd,
-				const struct lv_segment *seg,
-				unsigned *attributes);
+/* TODO: using static field here, maybe should be a part of segment_type */
+static unsigned _feature_mask;
 
 static const char *_thin_pool_name(const struct lv_segment *seg)
 {
@@ -99,11 +99,10 @@ static int _thin_pool_text_import(struct lv_segment *seg,
 	if (!(pool_data_lv = find_lv(seg->lv->vg, lv_name)))
 		return SEG_LOG_ERROR("Unknown pool %s in", lv_name);
 
-	seg->lv->status |= THIN_POOL;
-	if (!attach_pool_metadata_lv(seg, pool_metadata_lv))
+	if (!attach_pool_data_lv(seg, pool_data_lv))
 		return_0;
 
-	if (!attach_pool_data_lv(seg, pool_data_lv))
+	if (!attach_pool_metadata_lv(seg, pool_metadata_lv))
 		return_0;
 
 	if (!dm_config_get_uint64(sn, "transaction_id", &seg->transaction_id))
@@ -221,6 +220,37 @@ static int _thin_pool_text_export(const struct lv_segment *seg, struct formatter
 }
 
 #ifdef DEVMAPPER_SUPPORT
+static int _thin_target_present(struct cmd_context *cmd,
+				const struct lv_segment *seg,
+				unsigned *attributes);
+
+static int _thin_pool_modules_needed(struct dm_pool *mem,
+				     const struct lv_segment *seg __attribute__((unused)),
+				     struct dm_list *modules)
+{
+	if (!str_list_add(mem, modules, _thin_pool_module)) {
+		log_error("String list allocation failed for thin_pool.");
+		return 0;
+	}
+
+	return 1;
+}
+
+static int _thin_modules_needed(struct dm_pool *mem,
+				const struct lv_segment *seg,
+				struct dm_list *modules)
+{
+	if (!_thin_pool_modules_needed(mem, seg, modules))
+		return_0;
+
+	if (!str_list_add(mem, modules, _thin_module)) {
+		log_error("String list allocation failed for thin.");
+		return 0;
+	}
+
+	return 1;
+}
+
 static int _thin_pool_add_target_line(struct dev_manager *dm,
 				      struct dm_pool *mem,
 				      struct cmd_context *cmd,
@@ -241,26 +271,16 @@ static int _thin_pool_add_target_line(struct dev_manager *dm,
 	if (!_thin_target_present(cmd, seg, &attr))
 		return_0;
 
+	if (!seg->metadata_lv) {
+		log_error(INTERNAL_ERROR "Thin pool is missing metadata device.");
+		return 0;
+	}
+
 	if (!(attr & THIN_FEATURE_BLOCK_SIZE) &&
 	    (seg->chunk_size & (seg->chunk_size - 1))) {
 		log_error("Thin pool target does not support %uKiB chunk size "
 			  "(needs kernel >= 3.6).", seg->chunk_size / 2);
 		return 0;
-	}
-
-	if (!laopts->real_pool) {
-		if (!(pool_dlid = build_dm_uuid(mem, seg->lv->lvid.s, "tpool"))) {
-			log_error("Failed to build uuid for thin pool LV %s.", seg->pool_lv->name);
-			return 0;
-		}
-
-		if (!add_linear_area_to_dtree(node, len, seg->lv->vg->extent_size,
-					      cmd->use_linear_target,
-					      seg->lv->vg->name, seg->lv->name) ||
-		    !dm_tree_node_add_target_area(node, NULL, pool_dlid, 0))
-			return_0;
-
-		return 1;
 	}
 
 	if (!(metadata_dlid = build_dm_uuid(mem, seg->metadata_lv->lvid.s, NULL))) {
@@ -282,10 +302,15 @@ static int _thin_pool_add_target_line(struct dev_manager *dm,
 		return_0;
 
 	if (attr & THIN_FEATURE_DISCARDS) {
+		/* Use ignore for discards ignore or non-power-of-2 chunk_size and <1.5 target */
 		/* FIXME: Check whether underlying dev supports discards */
-		if (!dm_tree_node_set_thin_pool_discard(node,
-							seg->discards == THIN_DISCARDS_IGNORE,
-							seg->discards == THIN_DISCARDS_NO_PASSDOWN))
+		if (((!(attr & THIN_FEATURE_DISCARDS_NON_POWER_2) &&
+		      (seg->chunk_size & (seg->chunk_size - 1))) ||
+		     (seg->discards == THIN_DISCARDS_IGNORE))) {
+			if (!dm_tree_node_set_thin_pool_discard(node, 1, 0))
+				return_0;
+		} else if (!dm_tree_node_set_thin_pool_discard(node, 0,
+							       (seg->discards == THIN_DISCARDS_NO_PASSDOWN)))
 			return_0;
 	} else if (seg->discards != THIN_DISCARDS_IGNORE)
 		log_warn_suppress(_no_discards++, "WARNING: Thin pool target does "
@@ -297,7 +322,7 @@ static int _thin_pool_add_target_line(struct dev_manager *dm,
 	 * Also transation_id is checked only when snapshot origin is active.
 	 * (This might change later)
 	 */
-	if (!laopts->is_activate)
+	if (!laopts->send_messages)
 		return 1;
 
 	dm_list_iterate_items(lmsg, &seg->thin_messages) {
@@ -305,7 +330,7 @@ static int _thin_pool_add_target_line(struct dev_manager *dm,
 		case DM_THIN_MESSAGE_CREATE_THIN:
 			origin = first_seg(lmsg->u.lv)->origin;
 			/* Check if the origin is suspended */
-			if (origin && lv_info(cmd, origin, 0, &info, 0, 0) &&
+			if (origin && lv_info(cmd, origin, 1, &info, 0, 0) &&
 			    info.exists && !info.suspended) {
 				/* Origin is not suspended, but the transaction may have been
 				 * already transfered, so test for transaction_id and
@@ -320,7 +345,7 @@ static int _thin_pool_add_target_line(struct dev_manager *dm,
 					return 0;
 				}
 			}
-			log_debug("Thin pool create_%s %s.", (!origin) ? "thin" : "snap", lmsg->u.lv->name);
+			log_debug_activation("Thin pool create_%s %s.", (!origin) ? "thin" : "snap", lmsg->u.lv->name);
 			if (!dm_tree_node_add_thin_pool_message(node,
 								(!origin) ? lmsg->type : DM_THIN_MESSAGE_CREATE_SNAP,
 								first_seg(lmsg->u.lv)->device_id,
@@ -328,7 +353,7 @@ static int _thin_pool_add_target_line(struct dev_manager *dm,
 				return_0;
 			break;
 		case DM_THIN_MESSAGE_DELETE:
-			log_debug("Thin pool delete %u.", lmsg->u.delete_id);
+			log_debug_activation("Thin pool delete %u.", lmsg->u.delete_id);
 			if (!dm_tree_node_add_thin_pool_message(node,
 								lmsg->type,
 								lmsg->u.delete_id, 0))
@@ -342,7 +367,7 @@ static int _thin_pool_add_target_line(struct dev_manager *dm,
 
 	if (!dm_list_empty(&seg->thin_messages)) {
 		/* Messages were passed, modify transaction_id as the last one */
-		log_debug("Thin pool set transaction id %" PRIu64 ".", seg->transaction_id);
+		log_debug_activation("Thin pool set transaction id %" PRIu64 ".", seg->transaction_id);
 		if (!dm_tree_node_add_thin_pool_message(node,
 							DM_THIN_MESSAGE_SET_TRANSACTION_ID,
 							seg->transaction_id - 1,
@@ -386,8 +411,7 @@ static int _thin_pool_target_percent(void **target_state __attribute__((unused))
 #  ifdef DMEVENTD
 static const char *_get_thin_dso_path(struct cmd_context *cmd)
 {
-	return get_monitor_dso_path(cmd, find_config_tree_str(cmd, "dmeventd/thin_library",
-							      DEFAULT_DMEVENTD_THIN_LIB));
+	return get_monitor_dso_path(cmd, find_config_tree_str(cmd, dmeventd_thin_library_CFG, NULL));
 }
 
 /* FIXME Cache this */
@@ -418,6 +442,7 @@ static int _target_unregister_events(struct lv_segment *seg,
 {
 	return _target_set_events(seg, events, 0);
 }
+
 #  endif /* DMEVENTD */
 #endif /* DEVMAPPER_SUPPORT */
 
@@ -431,7 +456,7 @@ static int _thin_text_import(struct lv_segment *seg,
 			     struct dm_hash_table *pv_hash __attribute__((unused)))
 {
 	const char *lv_name;
-	struct logical_volume *pool_lv, *origin = NULL;
+	struct logical_volume *pool_lv, *origin = NULL, *external_lv = NULL;
 
 	if (!dm_config_get_str(sn, "thin_pool", &lv_name))
 		return SEG_LOG_ERROR("Thin pool must be a string in");
@@ -457,7 +482,18 @@ static int _thin_text_import(struct lv_segment *seg,
 		return SEG_LOG_ERROR("Unsupported value %u for device_id",
 				     seg->device_id);
 
+	if (dm_config_has_node(sn, "external_origin")) {
+		if (!dm_config_get_str(sn, "external_origin", &lv_name))
+			return SEG_LOG_ERROR("External origin must be a string in");
+
+		if (!(external_lv = find_lv(seg->lv->vg, lv_name)))
+			return SEG_LOG_ERROR("Unknown external origin %s in", lv_name);
+	}
+
 	if (!attach_pool_lv(seg, pool_lv, origin))
+		return_0;
+
+	if (!attach_thin_external_origin(seg, external_lv))
 		return_0;
 
 	return 1;
@@ -469,6 +505,8 @@ static int _thin_text_export(const struct lv_segment *seg, struct formatter *f)
 	outf(f, "transaction_id = %" PRIu64, seg->transaction_id);
 	outf(f, "device_id = %d", seg->device_id);
 
+	if (seg->external_lv)
+		outf(f, "external_origin = \"%s\"", seg->external_lv->name);
 	if (seg->origin)
 		outf(f, "origin = \"%s\"", seg->origin->name);
 
@@ -485,10 +523,15 @@ static int _thin_add_target_line(struct dev_manager *dm,
 				 struct dm_tree_node *node, uint64_t len,
 				 uint32_t *pvmove_mirror_count __attribute__((unused)))
 {
-	char *pool_dlid;
+	char *pool_dlid, *external_dlid;
 	uint32_t device_id = seg->device_id;
 
-	if (!(pool_dlid = build_dm_uuid(mem, seg->pool_lv->lvid.s, "tpool"))) {
+	if (!seg->pool_lv) {
+		log_error(INTERNAL_ERROR "Segment %s has no pool.",
+			  seg->lv->name);
+		return 0;
+	}
+	if (!(pool_dlid = build_dm_uuid(mem, seg->pool_lv->lvid.s, lv_layer(seg->pool_lv)))) {
 		log_error("Failed to build uuid for pool LV %s.",
 			  seg->pool_lv->name);
 		return 0;
@@ -496,6 +539,18 @@ static int _thin_add_target_line(struct dev_manager *dm,
 
 	if (!dm_tree_node_add_thin_target(node, len, pool_dlid, device_id))
 		return_0;
+
+	/* Add external origin LV */
+	if (seg->external_lv) {
+		if (!(external_dlid = build_dm_uuid(mem, seg->external_lv->lvid.s,
+						    lv_layer(seg->external_lv)))) {
+			log_error("Failed to build uuid for external origin LV %s.",
+				  seg->external_lv->name);
+			return 0;
+		}
+		if (!dm_tree_node_set_thin_external_origin(node, external_dlid))
+			return_0;
+	}
 
 	return 1;
 }
@@ -534,58 +589,84 @@ static int _thin_target_present(struct cmd_context *cmd,
 				const struct lv_segment *seg,
 				unsigned *attributes)
 {
+	/* List of features with their kernel target version */
+	static const struct feature {
+		uint32_t maj;
+		uint32_t min;
+		unsigned thin_feature;
+		const char *feature;
+	} const _features[] = {
+		{ 1, 1, THIN_FEATURE_DISCARDS, "discards" },
+		{ 1, 1, THIN_FEATURE_EXTERNAL_ORIGIN, "external_origin" },
+		{ 1, 4, THIN_FEATURE_BLOCK_SIZE, "block_size" },
+		{ 1, 5, THIN_FEATURE_DISCARDS_NON_POWER_2, "discards_non_power_2" },
+		{ 1, 9, THIN_FEATURE_METADATA_RESIZE, "metadata_resize" },
+	};
+
+	static const char _lvmconf[] = "global/thin_disabled_features";
 	static int _checked = 0;
 	static int _present = 0;
-	static int _attrs = 0;
+	static unsigned _attrs = 0;
 	uint32_t maj, min, patchlevel;
+	unsigned i;
+	const struct dm_config_node *cn;
+	const struct dm_config_value *cv;
+	const char *str;
 
 	if (!_checked) {
-		_present = target_present(cmd, THIN_MODULE, 1);
+		_present = target_present(cmd, _thin_pool_module, 1);
 
-		if (!target_version(THIN_MODULE, &maj, &min, &patchlevel)) {
-			log_error("Cannot read " THIN_MODULE " target version.");
+		if (!target_version(_thin_pool_module, &maj, &min, &patchlevel)) {
+			log_error("Cannot read %s target version.", _thin_pool_module);
 			return 0;
 		}
 
-		if (maj >=1 && min >= 1)
-			_attrs |= THIN_FEATURE_DISCARDS;
-		else
-		/* FIXME Log this as WARNING later only if the user asked for the feature to be used but it's not present */
-			log_debug("Target " THIN_MODULE " does not support discards.");
-
-		if (maj >=1 && min >= 1)
-			_attrs |= THIN_FEATURE_EXTERNAL_ORIGIN;
-		else
-		/* FIXME Log this as WARNING later only if the user asked for the feature to be used but it's not present */
-			log_debug("Target " THIN_MODULE " does not support external origins.");
-
-		if (maj >=1 && min >= 4)
-			_attrs |= THIN_FEATURE_BLOCK_SIZE;
-		else
-		/* FIXME Log this as WARNING later only if the user asked for the feature to be used but it's not present */
-			log_debug("Target " THIN_MODULE " does not support non power of 2 block sizes.");
+		for (i = 0; i < sizeof(_features)/sizeof(*_features); i++)
+			if (maj >= _features[i].maj && min >= _features[i].min)
+				_attrs |= _features[i].thin_feature;
+			else
+				log_very_verbose("Target %s does not support %s.",
+						 _thin_pool_module,
+						 _features[i].feature);
 
 		_checked = 1;
 	}
 
-	if (attributes)
-		*attributes = _attrs;
+	if (attributes) {
+		if (!_feature_mask) {
+			/* Support runtime lvm.conf changes, N.B. avoid 32 feature */
+			if ((cn = find_config_tree_node(cmd, global_thin_disabled_features_CFG, NULL))) {
+				for (cv = cn->v; cv; cv = cv->next) {
+					if (cv->type != DM_CFG_STRING) {
+						log_error("Ignoring invalid string in config file %s.",
+							  _lvmconf);
+						continue;
+					}
+					str = cv->v.str;
+					if (!*str) {
+						log_error("Ignoring empty string in config file %s.",
+							  _lvmconf);
+						continue;
+					}
+					for (i = 0; i < sizeof(_features)/sizeof(*_features); i++)
+						if (strcasecmp(str, _features[i].feature) == 0)
+							_feature_mask |= _features[i].thin_feature;
+				}
+			}
+			_feature_mask = ~_feature_mask;
+			for (i = 0; i < sizeof(_features)/sizeof(*_features); i++)
+				if ((_attrs & _features[i].thin_feature) &&
+				    !(_feature_mask & _features[i].thin_feature))
+					log_very_verbose("Target %s %s support disabled by %s",
+							 _thin_pool_module,
+							 _features[i].feature, _lvmconf);
+		}
+		*attributes = _attrs & _feature_mask;
+	}
 
 	return _present;
 }
 #endif
-
-static int _thin_modules_needed(struct dm_pool *mem,
-				const struct lv_segment *seg __attribute__((unused)),
-				struct dm_list *modules)
-{
-	if (!str_list_add(mem, modules, THIN_MODULE)) {
-		log_error("thin string list allocation failed");
-		return 0;
-	}
-
-	return 1;
-}
 
 static void _thin_destroy(struct segment_type *segtype)
 {
@@ -607,7 +688,9 @@ static struct segtype_handler _thin_pool_ops = {
 	.target_unmonitor_events = _target_unregister_events,
 #  endif /* DMEVENTD */
 #endif
-	.modules_needed = _thin_modules_needed,
+#ifdef DEVMAPPER_SUPPORT
+	.modules_needed = _thin_pool_modules_needed,
+#endif
 	.destroy = _thin_destroy,
 };
 
@@ -619,8 +702,8 @@ static struct segtype_handler _thin_ops = {
 	.add_target_line = _thin_add_target_line,
 	.target_percent = _thin_target_percent,
 	.target_present = _thin_target_present,
-#endif
 	.modules_needed = _thin_modules_needed,
+#endif
 	.destroy = _thin_destroy,
 };
 
@@ -670,6 +753,10 @@ int init_multiple_segtypes(struct cmd_context *cmd, struct segtype_library *segl
 
 		log_very_verbose("Initialised segtype: %s", segtype->name);
 	}
+
+
+	/* Reset mask for recalc */
+	_feature_mask = 0;
 
 	return 1;
 }

@@ -1,3 +1,22 @@
+lvm2 (2.02.104-1) unstable; urgency=medium
+
+  * New upstream version.
+  * Hard-code locations of thin utils.
+  * Move development stuff into multi-arch paths.
+  * Enable lvmetad. (closes: #704759)
+  * Re-use patched upstream udev rules.
+    - Remove own copy.
+    - Rename during installation.
+    - Make compatible.
+  * Re-organize initramfs-tools installation.
+  * Install systemd units:
+    - Add non-generator activation-services.
+    - Alias to mask lvm2 init script.
+    - Build-depend on dh-systemd.
+  * Add tmpfiles info.
+
+ -- Bastian Blank <waldi@debian.org>  Wed, 29 Jan 2014 22:09:35 +0100
+
 lvm2 (2.02.98-6) unstable; urgency=low
 
   * Update init script:

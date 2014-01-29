@@ -8,6 +8,7 @@ lvs \- report information about logical volumes
 .RB [ \-d | \-\-debug ]
 .RB [ \-h | \-? | \-\-help ]
 .RB [ \-\-ignorelockingfailure ]
+.RB [ \-\-ignoreskippedcluster ]
 .RB [ \-\-nameprefixes ]
 .RB [ \-\-noheadings ]
 .RB [ \-\-nosuffix ]
@@ -90,6 +91,7 @@ lv_major,
 lv_minor,
 lv_name,
 lv_path,
+lv_profile,
 lv_read_ahead,
 lv_size,
 lv_tags,
@@ -102,19 +104,27 @@ move_pv,
 origin,
 origin_size,
 pool_lv,
+raid_max_recovery_rate,
+raid_min_recovery_rate,
+raid_mismatch_count,
+raid_sync_action,
+raid_write_behind,
 region_size,
 segtype,
 seg_count,
 seg_pe_ranges,
 seg_size,
+seg_size_pe,
 seg_start,
 seg_start_pe,
 seg_tags,
 snap_percent,
 stripes,
 stripe_size,
+sync_percent,
 thin_count,
 transaction_id,
+writebehind,
 zero.
 .IP
 With \fB\-\-segments\fP, any "seg_" prefixes are optional;
@@ -130,7 +140,7 @@ Volume type: (m)irrored, (M)irrored without initial sync, (o)rigin,
 (s)napshot, merging (S)napshot, (p)vmove, (v)irtual,
 mirror or raid (i)mage, mirror or raid (I)mage out-of-sync, mirror (l)og device,
 under (c)onversion, thin (V)olume, (t)hin pool, (T)hin pool data, raid or
-thin pool m(e)tadata
+thin pool m(e)tadata or pool metadata spare.
 .IP 2 3
 Permissions: (w)riteable, (r)ead-only, (R)ead-only activation of non-read-only
 volume
@@ -158,8 +168,20 @@ snapshots of thin volumes using the new thin provisioning driver appear as (t).
 .IP 8 3
 Newly-allocated data blocks are overwritten with blocks of (z)eroes before use.
 .IP 9 3
-(p)artial: One or more of the Physical Volumes this Logical Volume uses is
-missing from the system.
+Volume Health: (p)artial, (r)efresh needed, (m)ismatches exist, (w)ritemostly.
+(p)artial signifies that one or more of the Physical Volumes this Logical
+Volume uses is missing from the system.  (r)efresh signifies that one or
+more of the Physical Volumes this RAID Logical Volume uses had suffered a
+write error.  The write error could be due to a temporary failure of that
+Physical Volume or an indication that it is failing.  The device should be
+refreshed or replaced.  (m)ismatches signifies that the RAID logical volume
+has portions of the array that are not coherent.  Inconsistencies are
+detected by initiating a "check" on a RAID logical volume.  (The scrubbing
+operations, "check" and "repair", can be performed on a RAID logical
+volume via the 'lvchange' command.)  (w)ritemostly signifies the devices in
+a RAID 1 logical volume that have been marked write-mostly.
+.IP 10 3
+s(k)ip activation: this volume is flagged to be skipped during activation.
 .RE
 .TP
 .BR \-O ", " \-\-sort

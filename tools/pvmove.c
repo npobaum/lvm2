@@ -16,6 +16,7 @@
 #include "tools.h"
 #include "polldaemon.h"
 #include "display.h"
+#include "metadata.h"  /* for 'get_only_segment_using_this_lv' */
 
 #define PVMOVE_FIRST_TIME   0x00000001      /* Called for first time */
 #define PVMOVE_EXCLUSIVE    0x00000002      /* Require exclusive LV */
@@ -135,6 +136,47 @@ static struct dm_list *_get_allocatable_pvs(struct cmd_context *cmd, int argc,
 }
 
 /*
+ * _trim_allocatable_pvs
+ * @alloc_list
+ * @trim_list
+ *
+ * Remove PVs in 'trim_list' from 'alloc_list'.
+ *
+ * Returns: 1 on success, 0 on error
+ */
+static int _trim_allocatable_pvs(struct dm_list *alloc_list,
+				 struct dm_list *trim_list,
+				 alloc_policy_t alloc)
+{
+	struct dm_list *pvht, *pvh, *trim_pvh;
+	struct pv_list *pvl, *trim_pvl;
+
+	if (!alloc_list) {
+		log_error(INTERNAL_ERROR "alloc_list is NULL");
+		return 0;
+	}
+
+	if (!trim_list || dm_list_empty(trim_list))
+		return 1; /* alloc_list stays the same */
+
+	dm_list_iterate_safe(pvh, pvht, alloc_list) {
+		pvl = dm_list_item(pvh, struct pv_list);
+
+		dm_list_iterate(trim_pvh, trim_list) {
+			trim_pvl = dm_list_item(trim_pvh, struct pv_list);
+
+			/* Don't allocate onto a trim PV */
+			if ((alloc != ALLOC_ANYWHERE) &&
+			    (pvl->pv == trim_pvl->pv)) {
+				dm_list_del(&pvl->list);
+				break;  /* goto next in alloc_list */
+			}
+		}
+	}
+	return 1;
+}
+
+/*
  * Replace any LV segments on given PV with temporary mirror.
  * Returns list of LVs changed.
  */
@@ -168,6 +210,29 @@ static int _insert_pvmove_mirrors(struct cmd_context *cmd,
 	return 1;
 }
 
+/*
+ * Is 'lv' a sub_lv of the LV by the name of 'lv_name'?
+ *
+ * Returns: 1 if true, 0 otherwise
+ */
+static int sub_lv_of(struct logical_volume *lv, const char *lv_name)
+{
+	struct lv_segment *seg;
+
+	/* Sub-LVs only ever have one segment using them */
+	if (dm_list_size(&lv->segs_using_this_lv) != 1)
+		return 0;
+
+	if (!(seg = get_only_segment_using_this_lv(lv)))
+		return_0;
+
+	if (!strcmp(seg->lv->name, lv_name))
+		return 1;
+
+	/* Continue up the tree */
+	return sub_lv_of(seg->lv, lv_name);
+}
+
 /* Create new LV with mirror segments for the required copies */
 static struct logical_volume *_set_up_pvmove_lv(struct cmd_context *cmd,
 						struct volume_group *vg,
@@ -179,7 +244,9 @@ static struct logical_volume *_set_up_pvmove_lv(struct cmd_context *cmd,
 						unsigned *exclusive)
 {
 	struct logical_volume *lv_mirr, *lv;
+	struct lv_segment *seg;
 	struct lv_list *lvl;
+	struct dm_list trim_list;
 	uint32_t log_count = 0;
 	int lv_found = 0;
 	int lv_skipped = 0;
@@ -203,36 +270,118 @@ static struct logical_volume *_set_up_pvmove_lv(struct cmd_context *cmd,
 
 	dm_list_init(*lvs_changed);
 
-	/* Find segments to be moved and set up mirrors */
+	/*
+	 * First,
+	 * use top-level RAID and mirror LVs to build a list of PVs
+	 * that must be avoided during allocation.  This is necessary
+	 * to maintain redundancy of those targets, but it is also
+	 * sub-optimal.  Avoiding entire PVs in this way limits our
+	 * ability to find space for other segment types.  In the
+	 * majority of cases, however, this method will suffice and
+	 * in the cases where it does not, the user can issue the
+	 * pvmove on a per-LV basis.
+	 *
+	 * FIXME: Eliminating entire PVs places too many restrictions
+	 *        on allocation.
+	 */
+	dm_list_iterate_items(lvl, &vg->lvs) {
+		lv = lvl->lv;
+		if (lv == lv_mirr)
+			continue;
+
+		if (lv_name && strcmp(lv->name, lv_name))
+			continue;
+
+		/*
+		 * RAID, thin, mirror, and snapshot-related LVs are not
+		 * processed in a cluster, so we don't have to worry about
+		 * avoiding certain PVs in that context.
+		 */
+		if (vg_is_clustered(lv->vg))
+			continue;
+
+		if (!lv_is_on_pvs(lv, source_pvl))
+			continue;
+
+		if (lv->status & (CONVERTING | MERGING)) {
+			log_error("Unable to pvmove when %s volumes are present",
+				  (lv->status & CONVERTING) ?
+				  "converting" : "merging");
+			return NULL;
+		}
+
+		if (seg_is_raid(first_seg(lv)) ||
+		    seg_is_mirrored(first_seg(lv))) {
+			dm_list_init(&trim_list);
+
+			if (!get_pv_list_for_lv(lv->vg->cmd->mem,
+						lv, &trim_list))
+				return_NULL;
+
+			if (!_trim_allocatable_pvs(allocatable_pvs,
+						   &trim_list, alloc))
+				return_NULL;
+		}
+	}
+
+	/*
+	 * Second,
+	 * use bottom-level LVs (like *_mimage_*, *_mlog, *_rmeta_*, etc)
+	 * to find segments to be moved and then set up mirrors.
+	 */
 	dm_list_iterate_items(lvl, &vg->lvs) {
 		lv = lvl->lv;
 		if (lv == lv_mirr)
 			continue;
 		if (lv_name) {
-			if (strcmp(lv->name, lv_name))
+			if (strcmp(lv->name, lv_name) && !sub_lv_of(lv, lv_name))
 				continue;
 			lv_found = 1;
 		}
-		if (lv_is_origin(lv) || lv_is_cow(lv)) {
+
+		if (!lv_is_on_pvs(lv, source_pvl))
+			continue;
+
+		/*
+		 * If the VG is clustered, we are unable to handle
+		 * snapshots, origins, thin types, RAID or mirror
+		 */
+		if (vg_is_clustered(vg) &&
+		    (lv_is_origin(lv) || lv_is_cow(lv) ||
+		     lv_is_thin_type(lv) || lv_is_raid_type(lv) ||
+		     lv_is_mirrored(lv))) {
+			log_print_unless_silent("Skipping %s LV %s",
+						lv_is_origin(lv) ? "origin" :
+						lv_is_cow(lv) ?
+						"snapshot-related" :
+						lv_is_thin_volume(lv) ? "thin" :
+						lv_is_thin_pool(lv) ?
+						"thin-pool" :
+						lv_is_thin_type(lv) ?
+						"thin-related" :
+						seg_is_raid(first_seg(lv)) ?
+						"RAID" :
+						lv_is_raid_type(lv) ?
+						"RAID-related" :
+						lv_is_mirrored(lv) ?
+						"mirror" :
+						lv_is_mirror_type(lv) ?
+						"mirror-related" : "",
+						lv->name);
 			lv_skipped = 1;
-			log_print_unless_silent("Skipping snapshot-related LV %s", lv->name);
 			continue;
 		}
-		if (lv->status & MIRRORED) {
-			lv_skipped = 1;
-			log_print_unless_silent("Skipping mirror LV %s", lv->name);
+
+		seg = first_seg(lv);
+		if (seg_is_raid(seg) || seg_is_mirrored(seg) ||
+		    lv_is_thin_volume(lv) || lv_is_thin_pool(lv)) {
+			/*
+			 * Pass over top-level LVs - they were handled.
+			 * Allow sub-LVs to proceed.
+			 */
 			continue;
 		}
-		if (lv->status & MIRROR_LOG) {
-			lv_skipped = 1;
-			log_print_unless_silent("Skipping mirror log LV %s", lv->name);
-			continue;
-		}
-		if (lv->status & MIRROR_IMAGE) {
-			lv_skipped = 1;
-			log_print_unless_silent("Skipping mirror image LV %s", lv->name);
-			continue;
-		}
+
 		if (lv->status & LOCKED) {
 			lv_skipped = 1;
 			log_print_unless_silent("Skipping locked LV %s", lv->name);
@@ -442,7 +591,7 @@ static int _update_metadata(struct cmd_context *cmd, struct volume_group *vg,
 			 * FIXME Run --abort internally here.
 			 */
 			log_error("ABORTING: Temporary pvmove mirror activation failed. Run pvmove --abort.");
-			goto_out;
+			goto out;
 		}
 	}
 
@@ -479,7 +628,7 @@ static int _set_up_pvmove(struct cmd_context *cmd, const char *pv_name,
 	argv++;
 
 	/* Find PV (in VG) */
-	if (!(pv = find_pv_by_name(cmd, pv_name))) {
+	if (!(pv = find_pv_by_name(cmd, pv_name, 0))) {
 		stack;
 		return EINVALID_CMD_LINE;
 	}
@@ -505,8 +654,7 @@ static int _set_up_pvmove(struct cmd_context *cmd, const char *pv_name,
 	vg = _get_vg(cmd, pv_vg_name(pv));
 	if (vg_read_error(vg)) {
 		release_vg(vg);
-		stack;
-		return ECMD_FAILED;
+		return_ECMD_FAILED;
 	}
 
 	exclusive = _pvmove_is_exclusive(cmd, vg);
@@ -661,7 +809,7 @@ static struct volume_group *_get_move_vg(struct cmd_context *cmd,
 	struct volume_group *vg;
 
 	/* Reread all metadata in case it got changed */
-	if (!(pv = find_pv_by_name(cmd, name))) {
+	if (!(pv = find_pv_by_name(cmd, name, 0))) {
 		log_error("ABORTING: Can't reread PV %s", name);
 		/* What more could we do here? */
 		return NULL;

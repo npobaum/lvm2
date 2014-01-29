@@ -14,23 +14,17 @@
  */
 
 #include "lib.h"
-#include "config.h"
-#include "dev-cache.h"
 #include "filter.h"
-#include "filter-persistent.h"
+#include "config.h"
 #include "lvm-file.h"
-#include "lvm-string.h"
 #include "activate.h"
-
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <unistd.h>
 
 struct pfilter {
 	char *file;
 	struct dm_hash_table *devices;
 	struct dev_filter *real;
 	time_t ctime;
+	struct dev_types *dt;
 };
 
 /*
@@ -103,8 +97,8 @@ int persistent_filter_load(struct dev_filter *f, struct dm_config_tree **cft_out
 
 	if (obtain_device_list_from_udev()) {
 		if (!stat(pf->file, &info)) {
-			log_very_verbose("Obtaining device list from "
-					 "udev. Removing obolete %s.",
+			log_very_verbose("Obtaining device list from udev. "
+					 "Removing obsolete %s.",
 					 pf->file);
 			if (unlink(pf->file) < 0 && errno != EROFS)
 				log_sys_error("unlink", pf->file);
@@ -120,7 +114,7 @@ int persistent_filter_load(struct dev_filter *f, struct dm_config_tree **cft_out
 		return_0;
 	}
 
-	if (!(cft = config_file_open(pf->file, 1)))
+	if (!(cft = config_open(CONFIG_FILE, pf->file, 1)))
 		return_0;
 
 	if (!config_file_read(cft))
@@ -145,7 +139,7 @@ int persistent_filter_load(struct dev_filter *f, struct dm_config_tree **cft_out
 	if (r && cft_out)
 		*cft_out = cft;
 	else
-		config_file_destroy(cft);
+		config_destroy(cft);
 	return r;
 }
 
@@ -179,7 +173,7 @@ static void _write_array(struct pfilter *pf, FILE *fp, const char *path,
 		fprintf(fp, "\n\t]\n");
 }
 
-int persistent_filter_dump(struct dev_filter *f, int merge_existing)
+static int _persistent_filter_dump(struct dev_filter *f, int merge_existing)
 {
 	struct pfilter *pf;
 	char *tmp_file;
@@ -269,7 +263,7 @@ out:
 	fcntl_unlock_file(lockfd);
 
 	if (cft)
-		config_file_destroy(cft);
+		config_destroy(cft);
 
 	return r;
 }
@@ -282,12 +276,12 @@ static int _lookup_p(struct dev_filter *f, struct device *dev)
 
 	/* Cached BAD? */
 	if (l == PF_BAD_DEVICE) {
-		log_debug("%s: Skipping (cached)", dev_name(dev));
+		log_debug_devs("%s: Skipping (cached)", dev_name(dev));
 		return 0;
 	}
 
 	/* Test dm devices every time, so cache them as GOOD. */
-	if (MAJOR(dev->dev) == dm_major()) {
+	if (MAJOR(dev->dev) == pf->dt->device_mapper_major) {
 		if (!l)
 			dm_list_iterate_items(sl, &dev->aliases)
 				if (!dm_hash_insert(pf->devices, sl->str, PF_GOOD_DEVICE)) {
@@ -295,7 +289,7 @@ static int _lookup_p(struct dev_filter *f, struct device *dev)
 					return 0;
 				}
 		if (!device_is_usable(dev)) {
-			log_debug("%s: Skipping unusable device", dev_name(dev));
+			log_debug_devs("%s: Skipping unusable device", dev_name(dev));
 			return 0;
 		}
 		return pf->real->passes_filter(pf->real, dev);
@@ -329,7 +323,8 @@ static void _persistent_destroy(struct dev_filter *f)
 	dm_free(f);
 }
 
-struct dev_filter *persistent_filter_create(struct dev_filter *real,
+struct dev_filter *persistent_filter_create(struct dev_types *dt,
+					    struct dev_filter *real,
 					    const char *file)
 {
 	struct pfilter *pf;
@@ -340,6 +335,8 @@ struct dev_filter *persistent_filter_create(struct dev_filter *real,
 		log_error("Allocation of persistent filter failed.");
 		return NULL;
 	}
+
+	pf->dt = dt;
 
 	if (!(pf->file = dm_strdup(file))) {
 		log_error("Filename duplication for persistent filter failed.");
@@ -367,6 +364,9 @@ struct dev_filter *persistent_filter_create(struct dev_filter *real,
 	f->use_count = 0;
 	f->private = pf;
 	f->wipe = _persistent_filter_wipe;
+	f->dump = _persistent_filter_dump;
+
+	log_debug_devs("Persistent filter initialised.");
 
 	return f;
 

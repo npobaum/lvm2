@@ -13,9 +13,9 @@
  */
 
 #include "lib.h"
-#include "filter-sysfs.h"
+#include "filter.h"
 
-#ifdef linux
+#ifdef __linux__
 
 #include <dirent.h>
 
@@ -274,7 +274,7 @@ static int _accept_p(struct dev_filter *f, struct device *dev)
 		return 1;
 
 	if (!_set_lookup(ds, dev->dev)) {
-		log_debug("%s: Skipping (sysfs)", dev_name(dev));
+		log_debug_devs("%s: Skipping (sysfs)", dev_name(dev));
 		return 0;
 	} else
 		return 1;
@@ -290,8 +290,9 @@ static void _destroy(struct dev_filter *f)
 	dm_pool_destroy(ds->mem);
 }
 
-struct dev_filter *sysfs_filter_create(const char *sysfs_dir)
+struct dev_filter *sysfs_filter_create(void)
 {
+	const char *sysfs_dir = dm_sysfs_dir();
 	char sys_block[PATH_MAX];
 	unsigned sysfs_depth;
 	struct dm_pool *mem;
@@ -323,6 +324,9 @@ struct dev_filter *sysfs_filter_create(const char *sysfs_dir)
 	f->destroy = _destroy;
 	f->use_count = 0;
 	f->private = ds;
+
+	log_debug_devs("Sysfs filter initialised.");
+
 	return f;
 
  bad:

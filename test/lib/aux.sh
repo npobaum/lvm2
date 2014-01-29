@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Copyright (C) 2011-2012 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -98,8 +98,10 @@ teardown_devs_prefixed() {
 	# Resume suspended devices first
 	for dm in $(dm_info suspended,name | grep "^Suspended:.*$prefix"); do
 		echo "dmsetup resume \"${dm#Suspended:}\""
-		dmsetup resume "${dm#Suspended:}" || true
+		dmsetup resume "${dm#Suspended:}" &
 	done
+
+	wait
 
 	local mounts=( $(grep "$prefix" /proc/mounts | cut -d' ' -f1) )
 	if test ${#mounts[@]} -gt 0; then
@@ -160,7 +162,7 @@ teardown_devs() {
 		local stray_loops=( $(losetup -a | grep "$COMMON_PREFIX" | cut -d: -f1) )
 		test ${#stray_loops[@]} -eq 0 || {
 			echo "Removing stray loop devices containing $COMMON_PREFIX: ${stray_loops[@]}"
-			losetup -d "${stray_loops[@]}"
+			for i in "${stray_loops[@]}" ; do losetup -d $i ; done
 		}
 	}
 }
@@ -340,15 +342,45 @@ prepare_devs() {
 	echo "ok"
 }
 
+# Replace linear PV device with its 'delayed' version
+# Could be used to more deterministicaly hit some problems.
+# Parameters: {device path} [read delay ms] [write delay ms]
+# Original device is restored when both delay params are 0 (or missing).
+# i.e.  delay_dev "$dev1" 0 200
+delay_dev() {
+	target_at_least dm-delay 1 2 0 || skip
+	local name=$(echo "$1" | sed -e 's,.*/,,')
+	local read_ms=${2:-0}
+	local write_ms=${3:-0}
+	local pos
+	local size
+	local type
+	local pvdev
+	local offset
+
+	read pos size type pvdev offset < "$name.table"
+
+	init_udev_transaction
+	if test $read_ms -ne 0 -o $write_ms -ne 0 ; then
+		echo "0 $size delay $pvdev $offset $read_ms $pvdev $offset $write_ms" | \
+			dmsetup load "$name"
+	else
+		dmsetup load "$name" "$name.table"
+	fi
+	dmsetup resume "$name"
+	finish_udev_transaction
+}
+
 disable_dev() {
 	local dev
 
+	udev_wait
 	init_udev_transaction
 	for dev in "$@"; do
 		maj=$(($(stat --printf=0x%t "$dev")))
 		min=$(($(stat --printf=0x%T "$dev")))
 		echo "Disabling device $dev ($maj:$min)"
-		dmsetup remove -f "$dev" || true
+		dmsetup remove -f "$dev" 2>/dev/null || true
 		notify_lvmetad --major "$maj" --minor "$min"
 	done
 	finish_udev_transaction
@@ -366,6 +398,53 @@ enable_dev() {
 		dmsetup resume "$name"
 		notify_lvmetad "$dev"
 	done
+	finish_udev_transaction
+}
+
+#
+# Convert device to device with errors
+# Takes the list of pairs of error segment from:len
+# Original device table is replace with multiple lines
+# i.e.  error_dev "$dev1" 8:32 96:8
+error_dev() {
+	local dev=$1
+	local name=$(echo "$dev" | sed -e 's,.*/,,')
+	local fromlen
+	local pos
+	local size
+	local type
+	local pvdev
+	local offset
+
+	read pos size type pvdev offset < $name.table
+
+	shift
+	rm -f $name.errtable
+	for fromlen in "$@"; do
+		from=${fromlen%%:*}
+		len=${fromlen##*:}
+		diff=$(($from - $pos))
+		if test $diff -gt 0 ; then
+			echo "$pos $diff $type $pvdev $(($pos + $offset))" >>$name.errtable
+			pos=$(($pos + $diff))
+		elif test $diff -lt 0 ; then
+			die "Position error"
+		fi
+		echo "$from $len error" >>$name.errtable
+		pos=$(($pos + $len))
+	done
+	diff=$(($size - $pos))
+	test $diff -gt 0 && echo "$pos $diff $type $pvdev $(($pos + $offset))" >>$name.errtable
+
+	init_udev_transaction
+	if dmsetup table $name ; then
+		dmsetup load "$name" "$name.errtable"
+	else
+		dmsetup create -u "TEST-$name" "$name" "$name.errtable"
+	fi
+	# using device name (since device path does not exists yet with udev)
+	dmsetup resume "$name"
+	notify_lvmetad "$dev"
 	finish_udev_transaction
 }
 
@@ -396,21 +475,65 @@ prepare_vg() {
 	teardown_devs
 
 	prepare_pvs "$@"
-	vgcreate -c n $vg $devs
+	vgcreate -s 512K $vg $devs
 }
 
-lvmconf() {
+extend_filter() {
+	filter=$(grep ^devices/global_filter CONFIG_VALUES | tail -n 1)
+	for rx in "$@"; do
+		filter=$(echo $filter | sed -e "s:\[:[ \"$rx\", :")
+	done
+	lvmconf "$filter"
+}
+
+extend_filter_LVMTEST() {
+	extend_filter "a|$DM_DEV_DIR/LVMTEST|"
+}
+
+hide_dev() {
+	filter=$(grep ^devices/global_filter CONFIG_VALUES | tail -n 1)
+	for dev in $@; do
+		filter=$(echo $filter | sed -e "s:\[:[ \"r|$dev|\", :")
+	done
+	lvmconf "$filter"
+}
+
+unhide_dev() {
+	filter=$(grep ^devices/global_filter CONFIG_VALUES | tail -n 1)
+	for dev in $@; do
+		filter=$(echo $filter | sed -e "s:\"r|$dev|\", ::")
+	done
+	lvmconf "$filter"
+}
+
+mkdev_md5sum() {
+	rm -f debug.log
+	mkfs.ext2 "$DM_DEV_DIR/$1/$2" || return 1
+	md5sum "$DM_DEV_DIR/$1/$2" > "md5.$1-$2"
+}
+
+generate_config() {
+	if test -n "$profile_name"; then
+		config_values=PROFILE_VALUES_$profile_name
+		config=PROFILE_$profile_name
+		touch $config_values
+	else
+		config_values=CONFIG_VALUES
+		config=CONFIG
+	fi
+
 	LVM_TEST_LOCKING=${LVM_TEST_LOCKING:-1}
 	if test "$DM_DEV_DIR" = "/dev"; then
 	    LVM_VERIFY_UDEV=${LVM_VERIFY_UDEV:-0}
 	else
 	    LVM_VERIFY_UDEV=${LVM_VERIFY_UDEV:-1}
 	fi
-	test -f CONFIG_VALUES || {
-            cat > CONFIG_VALUES <<-EOF
+	test -f $config_values || {
+            cat > $config_values <<-EOF
 devices/dir = "$DM_DEV_DIR"
 devices/scan = "$DM_DEV_DIR"
-devices/filter = [ "a|$DM_DEV_DIR/mirror|", "a|$DM_DEV_DIR/mapper/.*pv[0-9_]*$|", "r|.*|" ]
+devices/filter = "a|.*|"
+devices/global_filter = [ "a|$DM_DEV_DIR/mirror|", "a|$DM_DEV_DIR/mapper/.*pv[0-9_]*$|", "r|.*|" ]
 devices/cache_dir = "$TESTDIR/etc"
 devices/sysfs_scan = 0
 devices/default_data_alignment = 1
@@ -445,21 +568,34 @@ EOF
 
 	local v
 	for v in "$@"; do
-	    echo "$v" >> CONFIG_VALUES
+	    echo "$v" >> $config_values
 	done
 
-	rm -f CONFIG
+	rm -f $config
 	local s
-	for s in $(cat CONFIG_VALUES | cut -f1 -d/ | sort | uniq); do
-		echo "$s {" >> CONFIG
+	for s in $(cat $config_values | cut -f1 -d/ | sort | uniq); do
+		echo "$s {" >> $config
 		local k
-		for k in $(grep ^"$s"/ CONFIG_VALUES | cut -f1 -d= | sed -e 's, *$,,' | sort | uniq); do
-			grep "^$k" CONFIG_VALUES | tail -n 1 | sed -e "s,^$s/,	  ," >> CONFIG
+		for k in $(grep ^"$s"/ $config_values | cut -f1 -d= | sed -e 's, *$,,' | sort | uniq); do
+			grep "^$k" $config_values | tail -n 1 | sed -e "s,^$s/,	  ," >> $config
 		done
-		echo "}" >> CONFIG
-		echo >> CONFIG
+		echo "}" >> $config
+		echo >> $config
 	done
+}
+
+lvmconf() {
+	unset profile_name
+	generate_config "$@"
 	mv -f CONFIG etc/lvm.conf
+}
+
+profileconf() {
+	profile_name="$1"
+	shift
+	generate_config "$@"
+	test -d etc/profile || mkdir etc/profile
+	mv -f PROFILE_$profile_name etc/profile/$profile_name.profile
 }
 
 apitest() {
@@ -472,6 +608,44 @@ apitest() {
 api() {
 	test -x "$abs_top_builddir/test/api/wrapper" || skip
 	"$abs_top_builddir/test/api/wrapper" "$@" && rm -f debug.log
+}
+
+skip_if_mirror_recovery_broken() {
+        if test `uname -r` = 3.3.4-5.fc17.i686; then skip; fi
+        if test `uname -r` = 3.3.4-5.fc17.x86_64; then skip; fi
+}
+
+skip_if_raid456_replace_broken() {
+# The way kmem_cache aliasing is done in the kernel is broken.
+# It causes RAID 4/5/6 tests to fail.
+#
+# The problem with kmem_cache* is this:
+# *) Assume CONFIG_SLUB is set
+# 1) kmem_cache_create(name="foo-a")
+# - creates new kmem_cache structure
+# 2) kmem_cache_create(name="foo-b")
+# - If identical cache characteristics, it will be merged with the previously
+#   created cache associated with "foo-a".  The cache's refcount will be
+#   incremented and an alias will be created via sysfs_slab_alias().
+# 3) kmem_cache_destroy(<ptr>)
+# - Attempting to destroy cache associated with "foo-a", but instead the
+#   refcount is simply decremented.  I don't even think the sysfs aliases are
+#   ever removed...
+# 4) kmem_cache_create(name="foo-a")
+# - This FAILS because kmem_cache_sanity_check colides with the existing
+#   name ("foo-a") associated with the non-removed cache.
+#
+# This is a problem for RAID (specifically dm-raid) because the name used
+# for the kmem_cache_create is ("raid%d-%p", level, mddev).  If the cache
+# persists for long enough, the memory address of an old mddev will be
+# reused for a new mddev - causing an identical formulation of the cache
+# name.  Even though kmem_cache_destory had long ago been used to delete
+# the old cache, the merging of caches has cause the name and cache of that
+# old instance to be preserved and causes a colision (and thus failure) in
+# kmem_cache_create().  I see this regularly in testing the following
+# kernels:
+        if test `uname -r` = 3.10.11-200.fc19.i686; then skip; fi
+        if test `uname -r` = 3.10.11-200.fc19.x86_64; then skip; fi
 }
 
 udev_wait() {

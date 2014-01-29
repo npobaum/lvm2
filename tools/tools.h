@@ -29,16 +29,13 @@
 #include "archiver.h"
 #include "lvmcache.h"
 #include "lvmetad.h"
+#include "lvm-version.h"
 #include "config.h"
 #include "defaults.h"
 #include "dev-cache.h"
 #include "device.h"
 #include "display.h"
 #include "errors.h"
-#include "filter.h"
-#include "filter-composite.h"
-#include "filter-persistent.h"
-#include "filter-regex.h"
 #include "metadata-exported.h"
 #include "locking.h"
 #include "lvm-exec.h"
@@ -72,21 +69,6 @@ enum {
 #include "args.h"
 #undef arg
 };
-
-typedef enum {
-	SIGN_NONE = 0,
-	SIGN_PLUS = 1,
-	SIGN_MINUS = 2
-} sign_t;
-
-typedef enum {
-	PERCENT_NONE = 0,
-	PERCENT_VG,
-	PERCENT_FREE,
-	PERCENT_LV,
-	PERCENT_PVS,
-	PERCENT_ORIGIN
-} percent_type_t;
 
 #define ARG_COUNTABLE 0x00000001	/* E.g. -vvvv */
 #define ARG_GROUPABLE 0x00000002	/* E.g. --addtag */
@@ -162,6 +144,7 @@ int major_minor_valid(const struct cmd_context * cmd, const struct format_type *
 /* we use the enums to access the switches */
 unsigned arg_count(const struct cmd_context *cmd, int a);
 unsigned arg_is_set(const struct cmd_context *cmd, int a);
+const char *arg_long_option_name(int a);
 const char *arg_value(struct cmd_context *cmd, int a);
 const char *arg_str_value(struct cmd_context *cmd, int a, const char *def);
 int32_t arg_int_value(struct cmd_context *cmd, int a, const int32_t def); 
@@ -187,7 +170,6 @@ int lvconvert_poll(struct cmd_context *cmd, struct logical_volume *lv, unsigned 
 int mirror_remove_missing(struct cmd_context *cmd,
 			  struct logical_volume *lv, int force);
 
-uint32_t percent_of_extents(uint32_t percents, uint32_t count, int roundup);
 
 int vgchange_activate(struct cmd_context *cmd, struct volume_group *vg,
 		       activation_change_t activate);

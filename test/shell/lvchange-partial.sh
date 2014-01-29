@@ -13,7 +13,7 @@
 
 aux target_at_least dm-raid 1 1 0 || skip
 
-aux prepare_vg 2
+aux prepare_vg 4
 
 lvcreate --type raid1 -m 1 -l 2 -n $lv1 $vg
 lvchange -an $vg/$lv1
@@ -64,3 +64,5 @@ not lvchange --zero y $vg/$lv1
 not lvchange --resync -ay $vg/$lv1
 not lvchange --resync --addtag foo $vg/$lv1
 
+aux enable_dev "$dev1"
+lvremove -ff $vg

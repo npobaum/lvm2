@@ -256,7 +256,7 @@ static int hold_lock(char *resource, int mode, int flags)
 		}
 		if ((lvi->lock_mode == LCK_EXCL) && (mode == LCK_WRITE)) {
 			DEBUGLOG("hold_lock, lock already held LCK_EXCL, "
-				 "ignoring LCK_WRITE request");
+				 "ignoring LCK_WRITE request\n");
 			return 0;
 		}
 	}
@@ -356,7 +356,7 @@ static int do_activate_lv(char *resource, unsigned char command, unsigned char l
 	}
 
 	/* Does the config file want us to activate this LV ? */
-	if (!lv_activation_filter(cmd, resource, &activate_lv))
+	if (!lv_activation_filter(cmd, resource, &activate_lv, NULL))
 		return EIO;
 
 	if (!activate_lv)
@@ -394,14 +394,14 @@ static int do_activate_lv(char *resource, unsigned char command, unsigned char l
 
 	if (lvi.suspended) {
 		critical_section_inc(cmd, "resuming");
-		if (!lv_resume(cmd, resource, 0)) {
+		if (!lv_resume(cmd, resource, 0, NULL)) {
 			critical_section_dec(cmd, "resumed");
 			goto error;
 		}
 	}
 
 	/* Now activate it */
-	if (!lv_activate(cmd, resource, exclusive))
+	if (!lv_activate(cmd, resource, exclusive, 0, 0, NULL))
 		goto error;
 
 	return 0;
@@ -427,7 +427,7 @@ static int do_resume_lv(char *resource, unsigned char command, unsigned char loc
 	exclusive = (oldmode == LCK_EXCL) ? 1 : 0;
 	revert = (lock_flags & LCK_REVERT_MODE) ? 1 : 0;
 
-	if (!lv_resume_if_active(cmd, resource, origin_only, exclusive, revert))
+	if (!lv_resume_if_active(cmd, resource, origin_only, exclusive, revert, NULL))
 		return EIO;
 
 	return 0;
@@ -437,7 +437,6 @@ static int do_resume_lv(char *resource, unsigned char command, unsigned char loc
 static int do_suspend_lv(char *resource, unsigned char command, unsigned char lock_flags)
 {
 	int oldmode;
-	struct lvinfo lvi;
 	unsigned origin_only = (lock_flags & LCK_ORIGIN_ONLY_MODE) ? 1 : 0;
 	unsigned exclusive;
 
@@ -450,12 +449,8 @@ static int do_suspend_lv(char *resource, unsigned char command, unsigned char lo
 
 	exclusive = (oldmode == LCK_EXCL) ? 1 : 0;
 
-	/* Only suspend it if it exists */
-	if (!lv_info_by_lvid(cmd, resource, origin_only, &lvi, 0, 0))
-		return EIO;
-
-	if (lvi.exists &&
-	    !lv_suspend_if_active(cmd, resource, origin_only, exclusive))
+	/* Always call lv_suspend to read commited and precommited data */
+	if (!lv_suspend_if_active(cmd, resource, origin_only, exclusive, NULL, NULL))
 		return EIO;
 
 	return 0;
@@ -473,7 +468,7 @@ static int do_deactivate_lv(char *resource, unsigned char command, unsigned char
 		return 0;	/* We don't need to do anything */
 	}
 
-	if (!lv_deactivate(cmd, resource))
+	if (!lv_deactivate(cmd, resource, NULL))
 		return EIO;
 
 	if (command & LCK_CLUSTER_VG) {
@@ -513,7 +508,7 @@ int do_lock_lv(unsigned char command, unsigned char lock_flags, char *resource)
 	DEBUGLOG("do_lock_lv: resource '%s', cmd = %s, flags = %s, critical_section = %d\n",
 		 resource, decode_locking_cmd(command), decode_flags(lock_flags), critical_section());
 
-	if (!cmd->config_valid || config_files_changed(cmd)) {
+	if (!cmd->config_initialized || config_files_changed(cmd)) {
 		/* Reinitialise various settings inc. logging, filters */
 		if (do_refresh_cache()) {
 			log_error("Updated config file invalid. Aborting.");
@@ -772,8 +767,8 @@ static int get_initial_state(struct dm_hash_table *excl_uuid)
 			}
 		}
 	}
-	if (fclose(lvs))
-		DEBUGLOG("lvs fclose failed: %s\n", strerror(errno));
+	if (pclose(lvs))
+		DEBUGLOG("lvs pclose failed: %s\n", strerror(errno));
 
 	dm_free(lvs_cmd);
 
@@ -808,7 +803,7 @@ static void check_config(void)
 {
 	int locking_type;
 
-	locking_type = find_config_tree_int(cmd, "global/locking_type", 1);
+	locking_type = find_config_tree_int(cmd, global_locking_type_CFG, NULL);
 
 	if (locking_type == 3) /* compiled-in cluster support */
 		return;
@@ -816,9 +811,8 @@ static void check_config(void)
 	if (locking_type == 2) { /* External library, check name */
 		const char *libname;
 
-		libname = find_config_tree_str(cmd, "global/locking_library",
-					  "");
-		if (strstr(libname, "liblvm2clusterlock.so"))
+		libname = find_config_tree_str(cmd, global_locking_library_CFG, NULL);
+		if (libname && strstr(libname, "liblvm2clusterlock.so"))
 			return;
 
 		log_error("Incorrect LVM locking library specified in lvm.conf, cluster operations may not work.");

@@ -614,10 +614,8 @@ int dm_event_register_handler(const struct dm_event_handler *dmevh)
 	struct dm_task *dmt;
 	struct dm_event_daemon_message msg = { 0, 0, NULL };
 
-	if (!(dmt = _get_device_info(dmevh))) {
-		stack;
-		return 0;
-	}
+	if (!(dmt = _get_device_info(dmevh)))
+		return_0;
 
 	uuid = dm_task_get_uuid(dmt);
 
@@ -643,10 +641,8 @@ int dm_event_unregister_handler(const struct dm_event_handler *dmevh)
 	struct dm_task *dmt;
 	struct dm_event_daemon_message msg = { 0, 0, NULL };
 
-	if (!(dmt = _get_device_info(dmevh))) {
-		stack;
-		return 0;
-	}
+	if (!(dmt = _get_device_info(dmevh)))
+		return_0;
 
 	uuid = dm_task_get_uuid(dmt);
 
@@ -714,12 +710,15 @@ int dm_event_get_registered_device(struct dm_event_handler *dmevh, int next)
 	char *reply_dso = NULL, *reply_uuid = NULL;
 	enum dm_event_mask reply_mask = 0;
 	struct dm_task *dmt = NULL;
-	struct dm_event_daemon_message msg = { 0, 0, NULL };
+	struct dm_event_daemon_message msg = { 0 };
 	struct dm_info info;
 
 	if (!(dmt = _get_device_info(dmevh))) {
-		stack;
-		return 0;
+		log_debug("Device does not exists (uuid=%s, name=%s, %d:%d).",
+			  dmevh->uuid, dmevh->dev_name,
+			  dmevh->major, dmevh->minor);
+		ret = -ENODEV;
+		goto fail;
 	}
 
 	uuid = dm_task_get_uuid(dmt);
@@ -815,13 +814,13 @@ int dm_event_get_version(struct dm_event_fifos *fifos, int *version) {
 	p = msg.data;
 	*version = 0;
 
-	p = strchr(p, ' '); /* Message ID */
-        if (!p) return 0;
-	p = strchr(p + 1, ' '); /* HELLO */
-        if (!p) return 0;
-	p = strchr(p + 1, ' '); /* HELLO, once more */
-	if (p)
+	if (!p || !(p = strchr(p, ' '))) /* Message ID */
+		return 0;
+	if (!(p = strchr(p + 1, ' '))) /* HELLO */
+		return 0;
+	if ((p = strchr(p + 1, ' '))) /* HELLO, once more */
 		*version = atoi(p);
+
 	return 1;
 }
 

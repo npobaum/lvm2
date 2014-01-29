@@ -73,6 +73,11 @@ unsigned grouped_arg_is_set(const struct arg_values *av, int a)
 	return grouped_arg_count(av, a) ? 1 : 0;
 }
 
+const char *arg_long_option_name(int a)
+{
+	return _cmdline.arg_props[a].long_arg;
+}
+
 const char *arg_value(struct cmd_context *cmd, int a)
 {
 	return cmd->arg_values[a].value;
@@ -236,7 +241,7 @@ int metadatatype_arg(struct cmd_context *cmd, struct arg_values *av)
 static int _get_int_arg(struct arg_values *av, char **ptr)
 {
 	char *val;
-	long v;
+	unsigned long long v;
 
 	av->percent = PERCENT_NONE;
 
@@ -257,9 +262,10 @@ static int _get_int_arg(struct arg_values *av, char **ptr)
 	if (!isdigit(*val))
 		return 0;
 
-	v = strtol(val, ptr, 10);
+	errno = 0;
+	v = strtoull(val, ptr, 10);
 
-	if (*ptr == val)
+	if (*ptr == val || errno)
 		return 0;
 
 	av->i_value = (int32_t) v;
@@ -335,6 +341,10 @@ static int _size_arg(struct cmd_context *cmd __attribute__((unused)), struct arg
 	} else
 		v *= factor;
 
+	if ((uint64_t) v >= (UINT64_MAX >> SECTOR_SHIFT)) {
+		log_error("Size is too big (>=16EiB).");
+		return 0;
+	}
 	av->i_value = (int32_t) v;
 	av->ui_value = (uint32_t) v;
 	av->i64_value = (int64_t) v;
@@ -610,7 +620,9 @@ void lvm_register_commands(void)
 					    driverloaded_ARG, \
 					    debug_ARG, help_ARG, help2_ARG, \
 					    version_ARG, verbose_ARG, \
-					    quiet_ARG, config_ARG, -1);
+					    yes_ARG, \
+					    quiet_ARG, config_ARG, \
+					    profile_ARG, -1);
 #include "commands.h"
 #undef xx
 }
@@ -790,22 +802,10 @@ static int _process_command_line(struct cmd_context *cmd, int *argc,
 	return 1;
 }
 
-static int _merge_synonym(struct cmd_context *cmd, int oldarg, int newarg)
+static void _copy_arg_values(struct arg_values *av, int oldarg, int newarg)
 {
-	const struct arg_values *old;
-	struct arg_values *new;
-
-	if (arg_count(cmd, oldarg) && arg_count(cmd, newarg)) {
-		log_error("%s and %s are synonyms.  Please only supply one.",
-			  _cmdline.arg_props[oldarg].long_arg, _cmdline.arg_props[newarg].long_arg);
-		return 0;
-	}
-
-	if (!arg_count(cmd, oldarg))
-		return 1;
-
-	old = cmd->arg_values + oldarg;
-	new = cmd->arg_values + newarg;
+	const struct arg_values *old = av + oldarg;
+	struct arg_values *new = av + newarg;
 
 	new->count = old->count;
 	new->value = old->value;
@@ -814,6 +814,36 @@ static int _merge_synonym(struct cmd_context *cmd, int oldarg, int newarg)
 	new->i64_value = old->i64_value;
 	new->ui64_value = old->ui64_value;
 	new->sign = old->sign;
+}
+
+static int _merge_synonym(struct cmd_context *cmd, int oldarg, int newarg)
+{
+	struct arg_values *av;
+	struct arg_value_group_list *current_group;
+
+	if (arg_count(cmd, oldarg) && arg_count(cmd, newarg)) {
+		log_error("%s and %s are synonyms.  Please only supply one.",
+			  _cmdline.arg_props[oldarg].long_arg, _cmdline.arg_props[newarg].long_arg);
+		return 0;
+	}
+
+	/* Not groupable? */
+	if (!(_cmdline.arg_props[oldarg].flags & ARG_GROUPABLE)) {
+		if (arg_count(cmd, oldarg))
+			_copy_arg_values(cmd->arg_values, oldarg, newarg);
+		return 1;
+	}
+
+	if (arg_count(cmd, oldarg))
+		cmd->arg_values[newarg].count = cmd->arg_values[oldarg].count;
+
+	/* Groupable */
+	dm_list_iterate_items(current_group, &cmd->arg_value_groups) {
+		av = current_group->arg_values;
+		if (!grouped_arg_count(av, oldarg))
+			continue;
+		_copy_arg_values(av, oldarg, newarg);
+	}
 
 	return 1;
 }
@@ -876,8 +906,10 @@ static int _get_settings(struct cmd_context *cmd)
 	else
 		init_ignorelockingfailure(0);
 
+	cmd->ignore_clustered_vgs = arg_count(cmd, ignoreskippedcluster_ARG) ? 1 : 0;
+
 	if (!arg_count(cmd, sysinit_ARG))
-		lvmetad_warning();
+		lvmetad_connect_or_warn();
 
 	if (arg_count(cmd, nosuffix_ARG))
 		cmd->current_settings.suffix = 0;
@@ -901,17 +933,20 @@ static int _get_settings(struct cmd_context *cmd)
 	} else
 		init_trust_cache(0);
 
-	if (arg_count(cmd, noudevsync_ARG)) {
+	if (arg_count(cmd, noudevsync_ARG))
 		cmd->current_settings.udev_sync = 0;
-		cmd->current_settings.udev_fallback = 1;
-	}
 
 	/* Handle synonyms */
 	if (!_merge_synonym(cmd, resizable_ARG, resizeable_ARG) ||
 	    !_merge_synonym(cmd, allocation_ARG, allocatable_ARG) ||
 	    !_merge_synonym(cmd, allocation_ARG, resizeable_ARG) ||
 	    !_merge_synonym(cmd, virtualoriginsize_ARG, virtualsize_ARG) ||
-	    !_merge_synonym(cmd, available_ARG, activate_ARG))
+	    !_merge_synonym(cmd, available_ARG, activate_ARG) ||
+	    !_merge_synonym(cmd, raidsyncaction_ARG, syncaction_ARG) ||
+	    !_merge_synonym(cmd, raidwritemostly_ARG, writemostly_ARG) ||
+	    !_merge_synonym(cmd, raidminrecoveryrate_ARG, minrecoveryrate_ARG) ||
+	    !_merge_synonym(cmd, raidmaxrecoveryrate_ARG, maxrecoveryrate_ARG) ||
+	    !_merge_synonym(cmd, raidwritebehind_ARG, writebehind_ARG))
 		return EINVALID_CMD_LINE;
 
 	if ((!strncmp(cmd->command->name, "pv", 2) &&
@@ -973,6 +1008,7 @@ int help(struct cmd_context *cmd __attribute__((unused)), int argc, char **argv)
 static void _apply_settings(struct cmd_context *cmd)
 {
 	init_debug(cmd->current_settings.debug);
+	init_debug_classes_logged(cmd->default_settings.debug_classes);
 	init_verbose(cmd->current_settings.verbose + VERBOSE_BASE_LEVEL);
 	init_silent(cmd->current_settings.silent);
 	init_test(cmd->current_settings.test);
@@ -1042,16 +1078,15 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 	int locking_type;
 	int monitoring;
 	struct dm_config_tree *old_cft;
+	struct profile *profile;
 
 	init_error_message_produced(0);
 
 	/* each command should start out with sigint flag cleared */
 	sigint_clear();
 
-	if (!(cmd->cmd_line = _copy_command_line(cmd, argc, argv))) {
-		stack;
-		return ECMD_FAILED;
-	}
+	if (!(cmd->cmd_line = _copy_command_line(cmd, argc, argv)))
+		return_ECMD_FAILED;
 
 	log_debug("Parsing: %s", cmd->cmd_line);
 
@@ -1065,19 +1100,41 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 
 	set_cmd_name(cmd->command->name);
 
+	if (arg_count(cmd, backgroundfork_ARG)) {
+		if (!become_daemon(cmd, 1)) {
+			/* parent - quit immediately */
+			ret = ECMD_PROCESSED;
+			goto out;
+		}
+	}
+
 	if (arg_count(cmd, config_ARG))
-		if (override_config_tree_from_string(cmd, arg_str_value(cmd, config_ARG, ""))) {
+		if (!override_config_tree_from_string(cmd, arg_str_value(cmd, config_ARG, ""))) {
 			ret = EINVALID_CMD_LINE;
 			goto_out;
 		}
 
-	if (arg_count(cmd, config_ARG) || !cmd->config_valid || config_files_changed(cmd)) {
+	if (arg_count(cmd, config_ARG) || !cmd->config_initialized || config_files_changed(cmd)) {
 		/* Reinitialise various settings inc. logging, filters */
 		if (!refresh_toolcontext(cmd)) {
-			old_cft = remove_overridden_config_tree(cmd);
+			old_cft = remove_config_tree_by_source(cmd, CONFIG_STRING);
 			if (old_cft)
 				dm_config_destroy(old_cft);
 			log_error("Updated config file invalid. Aborting.");
+			return ECMD_FAILED;
+		}
+	}
+
+	if (arg_count(cmd, profile_ARG)) {
+		if (!(profile = add_profile(cmd, arg_str_value(cmd, profile_ARG, NULL)))) {
+			log_error("Failed to add configuration profile.");
+			return ECMD_FAILED;
+		}
+		log_debug("Setting global configuration profile \"%s\".", profile->name);
+		/* This profile will override any VG/LV-based profile if present */
+		cmd->profile_params->global_profile = profile;
+		if (!override_config_tree_from_profile(cmd, profile)) {
+			log_error("Failed to apply configuration profile.");
 			return ECMD_FAILED;
 		}
 	}
@@ -1116,7 +1173,7 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 
 	if (!init_locking(locking_type, cmd, arg_count(cmd, sysinit_ARG))) {
 		ret = ECMD_FAILED;
-		goto out;
+		goto_out;
 	}
 
 	ret = cmd->command->fn(cmd, argc, argv);
@@ -1129,21 +1186,20 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 		lvmcache_destroy(cmd, 1);
 	}
 
-	if ((old_cft = remove_overridden_config_tree(cmd))) {
+	if ((old_cft = remove_config_tree_by_source(cmd, CONFIG_STRING))) {
 		dm_config_destroy(old_cft);
 		/* Move this? */
 		if (!refresh_toolcontext(cmd))
 			stack;
 	}
 
-	/* FIXME Move this? */
-	cmd->current_settings = cmd->default_settings;
-	_apply_settings(cmd);
-
 	if (ret == EINVALID_CMD_LINE && !_cmdline.interactive)
 		_short_usage(cmd->command->name);
 
 	log_debug("Completed: %s", cmd->cmd_line);
+
+	cmd->current_settings = cmd->default_settings;
+	_apply_settings(cmd);
 
 	/*
 	 * free off any memory the command used.
@@ -1444,8 +1500,7 @@ static int _lvm1_fallback(struct cmd_context *cmd)
 	char vsn[80];
 	int dm_present;
 
-	if (!find_config_tree_int(cmd, "global/fallback_to_lvm1",
-			     DEFAULT_FALLBACK_TO_LVM1) ||
+	if (!find_config_tree_bool(cmd, global_fallback_to_lvm1_CFG, NULL) ||
 	    strncmp(cmd->kernel_vsn, "2.4.", 4))
 		return 0;
 
@@ -1483,6 +1538,9 @@ int lvm2_main(int argc, char **argv)
 	const char *base;
 	int ret, alias = 0;
 	struct cmd_context *cmd;
+
+	if (!argv)
+		return -1;
 
 	base = last_path_component(argv[0]);
 	if (strcmp(base, "lvm") && strcmp(base, "lvm.static") &&
@@ -1530,7 +1588,7 @@ int lvm2_main(int argc, char **argv)
 		}
 		_exec_lvm1_command(argv);
 		ret = ECMD_FAILED;
-		goto out;
+		goto_out;
 	}
 #ifdef READLINE_SUPPORT
 	if (!alias && argc == 1) {

@@ -16,7 +16,7 @@ srcdir = @srcdir@
 top_srcdir = @top_srcdir@
 top_builddir = @top_builddir@
 
-SUBDIRS = doc include man
+SUBDIRS = conf daemons include lib libdaemon libdm man scripts tools
 
 ifeq ("@UDEV_RULES@", "yes")
   SUBDIRS += udev
@@ -26,8 +26,6 @@ ifeq ("@INTL@", "yes")
   SUBDIRS += po
 endif
 
-SUBDIRS += lib tools daemons libdm libdaemon
-
 ifeq ("@APPLIB@", "yes")
   SUBDIRS += liblvm
 endif
@@ -36,11 +34,12 @@ ifeq ("@PYTHON_BINDINGS@", "yes")
   SUBDIRS += python
 endif
 
-SUBDIRS += scripts
-
+ifeq ($(MAKECMDGOALS),clean)
+  SUBDIRS += test
+endif
 # FIXME Should use intermediate Makefiles here!
 ifeq ($(MAKECMDGOALS),distclean)
-  SUBDIRS = doc include man test scripts \
+  SUBDIRS = conf include man test scripts \
     libdaemon lib tools daemons libdm \
     udev po liblvm python \
     unit-tests/datastruct unit-tests/mm unit-tests/regex
@@ -64,6 +63,7 @@ libdm.device-mapper: include.device-mapper
 liblvm.device-mapper: include.device-mapper
 daemons.device-mapper: libdm.device-mapper
 tools.device-mapper: libdm.device-mapper
+scripts.device-mapper: include.device-mapper
 device-mapper: tools.device-mapper daemons.device-mapper man.device-mapper
 
 ifeq ("@INTL@", "yes")
@@ -91,7 +91,7 @@ all: cscope.out
 endif
 DISTCLEAN_TARGETS += cscope.out
 
-check check_cluster check_local check_lvmetad unit: all
+check check_full check_cluster check_local check_lvmetad unit: all
 	$(MAKE) -C test $(@)
 
 install_system_dirs:

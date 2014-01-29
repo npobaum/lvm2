@@ -26,10 +26,10 @@ lvcreate -s -l 20%FREE -n $lv5 $vg --virtualsize 256T
 #FIXME this should be 1024T
 #check lv_field $vg/$lv size "128.00m"
 
-aux lvmconf 'devices/filter = [ "a/dev\/mapper\/.*$/", "a/dev\/LVMTEST/", "r/.*/" ]'
+aux extend_filter_LVMTEST
 
 pvcreate $DM_DEV_DIR/$vg/$lv[12345]
-vgcreate -c n $vg1 $DM_DEV_DIR/$vg/$lv[12345]
+vgcreate $vg1 $DM_DEV_DIR/$vg/$lv[12345]
 
 # bz837927 START
 
@@ -50,7 +50,7 @@ done
 #
 # Convert large linear to RAID1 (belong in different test script?)
 #
-lvcreate -L 200T -n $lv1 $vg1
+lvcreate -aey -L 200T -n $lv1 $vg1
 # Need to deactivate or the up-convert will start sync'ing
 lvchange -an $vg1/$lv1
 lvconvert --type raid1 -m 1 $vg1/$lv1

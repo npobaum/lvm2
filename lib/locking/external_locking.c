@@ -31,7 +31,7 @@ static int (*_init_fn) (int type, struct dm_config_tree * cft,
 static int (*_lock_query_fn) (const char *resource, int *mode) = NULL;
 
 static int _lock_resource(struct cmd_context *cmd, const char *resource,
-			  uint32_t flags)
+			  uint32_t flags, struct logical_volume *lv __attribute__((unused)))
 {
 	if (!_lock_fn)
 		return 0;
@@ -80,8 +80,8 @@ int init_external_locking(struct locking_type *locking, struct cmd_context *cmd,
 	locking->reset_locking = _reset_external_locking;
 	locking->flags = 0;
 
-	libname = find_config_tree_str(cmd, "global/locking_library",
-				       DEFAULT_LOCKING_LIB);
+	if (!(libname = find_config_tree_str(cmd, global_locking_library_CFG, NULL)))
+		libname = DEFAULT_LOCKING_LIB;
 
 	if (!(_locking_lib = load_shared_library(cmd, libname, "locking", 1)))
 		return_0;

@@ -1,6 +1,6 @@
 --- a/configure.in
 +++ b/configure.in
-@@ -436,7 +436,7 @@
+@@ -460,7 +460,7 @@
  AC_MSG_CHECKING(whether to enable readline)
  AC_ARG_ENABLE([readline],
  	      AC_HELP_STRING([--disable-readline], [disable readline support]),
@@ -9,7 +9,7 @@
  AC_MSG_RESULT($READLINE)
  
  ################################################################################
-@@ -1173,21 +1173,9 @@
+@@ -1197,21 +1197,9 @@
  ################################################################################
  dnl -- Check for selinux
  if test x$SELINUX = xyes; then
@@ -34,7 +34,7 @@
  fi
  
  ################################################################################
-@@ -1208,49 +1196,6 @@
+@@ -1232,49 +1220,6 @@
  AC_CHECK_HEADERS(getopt.h, AC_DEFINE([HAVE_GETOPTLONG], 1, [Define to 1 if getopt_long is available.]))
  
  ################################################################################
@@ -84,7 +84,7 @@
  dnl -- Internationalisation stuff
  AC_MSG_CHECKING(whether to enable internationalisation)
  AC_ARG_ENABLE(nls,
-@@ -1338,7 +1283,8 @@
+@@ -1363,7 +1308,8 @@
  ################################################################################
  dnl -- Ensure additional headers required
  if test x$READLINE = xyes; then
@@ -94,7 +94,7 @@
  fi
  
  if test x$CLVMD != xnone; then
-@@ -1581,6 +1527,7 @@
+@@ -1615,6 +1561,7 @@
  AC_SUBST(SALCK_CFLAGS)
  AC_SUBST(SALCK_LIBS)
  AC_SUBST(SELINUX_LIBS)

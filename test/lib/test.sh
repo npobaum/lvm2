@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Copyright (C) 2011-2012 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -38,6 +38,16 @@ export TESTOLDPWD TESTDIR COMMON_PREFIX PREFIX RUNNING_DMEVENTD
 test -n "$BASH" && trap 'set +vx; STACKTRACE; set -vx' ERR
 trap 'aux teardown' EXIT # don't forget to clean up
 
+cd "$TESTDIR"
+
+if test -n "$LVM_TEST_FLAVOUR"; then
+	touch flavour_overrides
+	env | grep ^$LVM_TEST_FLAVOUR | while read var; do
+		(echo -n "export "; echo $var | sed -e s,^${LVM_TEST_FLAVOUR}_,,) >> flavour_overrides
+	done
+	. flavour_overrides
+fi
+
 DM_DEV_DIR="$TESTDIR/dev"
 LVM_SYSTEM_DIR="$TESTDIR/etc"
 mkdir "$LVM_SYSTEM_DIR" "$TESTDIR/lib" "$DM_DEV_DIR"
@@ -50,9 +60,10 @@ else
 	mkdir "$DM_DEV_DIR/mapper"
 fi
 
-export DM_DEV_DIR LVM_SYSTEM_DIR
+# abort on the internal dm errors in the tests (allowing test user override)
+DM_ABORT_ON_INTERNAL_ERRORS=${DM_ABORT_ON_INTERNAL_ERRORS:-1}
 
-cd "$TESTDIR"
+export DM_DEV_DIR LVM_SYSTEM_DIR DM_ABORT_ON_INTERNAL_ERRORS
 
 echo "$TESTNAME" >TESTNAME
 

@@ -17,6 +17,7 @@
 #define _LVM_CACHE_H
 
 #include "dev-cache.h"
+#include "dev-type.h"
 #include "uuid.h"
 #include "label.h"
 #include "locking.h"
@@ -118,9 +119,11 @@ int lvmcache_populate_pv_fields(struct lvmcache_info *info,
 int lvmcache_check_format(struct lvmcache_info *info, const struct format_type *fmt);
 void lvmcache_del_mdas(struct lvmcache_info *info);
 void lvmcache_del_das(struct lvmcache_info *info);
+void lvmcache_del_bas(struct lvmcache_info *info);
 int lvmcache_add_mda(struct lvmcache_info *info, struct device *dev,
 		     uint64_t start, uint64_t size, unsigned ignored);
 int lvmcache_add_da(struct lvmcache_info *info, uint64_t start, uint64_t size);
+int lvmcache_add_ba(struct lvmcache_info *info, uint64_t start, uint64_t size);
 
 const struct format_type *lvmcache_fmt(struct lvmcache_info *info);
 struct label *lvmcache_get_label(struct lvmcache_info *info);
@@ -128,11 +131,16 @@ struct label *lvmcache_get_label(struct lvmcache_info *info);
 void lvmcache_update_pv(struct lvmcache_info *info, struct physical_volume *pv,
 			const struct format_type *fmt);
 int lvmcache_update_das(struct lvmcache_info *info, struct physical_volume *pv);
+int lvmcache_update_bas(struct lvmcache_info *info, struct physical_volume *pv);
 int lvmcache_foreach_mda(struct lvmcache_info *info,
 			 int (*fun)(struct metadata_area *, void *),
 			 void *baton);
 
 int lvmcache_foreach_da(struct lvmcache_info *info,
+			int (*fun)(struct disk_locn *, void *),
+			void *baton);
+
+int lvmcache_foreach_ba(struct lvmcache_info *info,
 			int (*fun)(struct disk_locn *, void *),
 			void *baton);
 
@@ -145,8 +153,8 @@ struct device *lvmcache_device(struct lvmcache_info *info);
 void lvmcache_make_valid(struct lvmcache_info *info);
 int lvmcache_is_orphan(struct lvmcache_info *info);
 int lvmcache_uncertain_ownership(struct lvmcache_info *info);
-int lvmcache_mda_count(struct lvmcache_info *info);
+unsigned lvmcache_mda_count(struct lvmcache_info *info);
 int lvmcache_vgid_is_cached(const char *vgid);
-int lvmcache_smallest_mda_size(struct lvmcache_info *info);
+uint64_t lvmcache_smallest_mda_size(struct lvmcache_info *info);
 
 #endif

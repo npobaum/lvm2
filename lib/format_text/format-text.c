@@ -427,8 +427,8 @@ static struct raw_locn *_find_vg_rlocn(struct device_area *dev_area,
 	    (isspace(vgnamebuf[len]) || vgnamebuf[len] == '{'))
 		return rlocn;
 	else
-		log_debug("Volume group name found in metadata does "
-			  "not match expected name %s.", vgname);
+		log_debug_metadata("Volume group name found in metadata does "
+				   "not match expected name %s.", vgname);
 
       bad:
 	if ((info = lvmcache_info_from_pvid(dev_area->dev->pvid, 0)))
@@ -495,7 +495,7 @@ static struct volume_group *_vg_read_raw_area(struct format_instance *fid,
 		goto_out;
 
 	if (!(rlocn = _find_vg_rlocn(area, mdah, vgname, &precommitted))) {
-		log_debug("VG %s not found on %s", vgname, dev_name(area->dev));
+		log_debug_metadata("VG %s not found on %s", vgname, dev_name(area->dev));
 		goto out;
 	}
 
@@ -516,10 +516,10 @@ static struct volume_group *_vg_read_raw_area(struct format_instance *fid,
 				     wrap, calc_crc, rlocn->checksum, &when,
 				     &desc)))
 		goto_out;
-	log_debug("Read %s %smetadata (%u) from %s at %" PRIu64 " size %"
-		  PRIu64, vg->name, precommitted ? "pre-commit " : "",
-		  vg->seqno, dev_name(area->dev),
-		  area->start + rlocn->offset, rlocn->size);
+	log_debug_metadata("Read %s %smetadata (%u) from %s at %" PRIu64 " size %"
+			   PRIu64, vg->name, precommitted ? "pre-commit " : "",
+			   vg->seqno, dev_name(area->dev),
+			   area->start + rlocn->offset, rlocn->size);
 
 	if (precommitted)
 		vg->status |= PRECOMMITTED;
@@ -625,9 +625,9 @@ static int _vg_write_raw(struct format_instance *fid, struct volume_group *vg,
 		goto out;
 	}
 
-	log_debug("Writing %s metadata to %s at %" PRIu64 " len %" PRIu64,
-		  vg->name, dev_name(mdac->area.dev), mdac->area.start +
-		  mdac->rlocn.offset, mdac->rlocn.size - new_wrap);
+	log_debug_metadata("Writing %s metadata to %s at %" PRIu64 " len %" PRIu64,
+			    vg->name, dev_name(mdac->area.dev), mdac->area.start +
+			    mdac->rlocn.offset, mdac->rlocn.size - new_wrap);
 
 	/* Write text out, circularly */
 	if (!dev_write(mdac->area.dev, mdac->area.start + mdac->rlocn.offset,
@@ -636,9 +636,9 @@ static int _vg_write_raw(struct format_instance *fid, struct volume_group *vg,
 		goto_out;
 
 	if (new_wrap) {
-               log_debug("Writing metadata to %s at %" PRIu64 " len %" PRIu64,
-			  dev_name(mdac->area.dev), mdac->area.start +
-			  MDA_HEADER_SIZE, new_wrap);
+		log_debug_metadata("Writing metadata to %s at %" PRIu64 " len %" PRIu64,
+				  dev_name(mdac->area.dev), mdac->area.start +
+				  MDA_HEADER_SIZE, new_wrap);
 
 		if (!dev_write(mdac->area.dev,
 			       mdac->area.start + MDA_HEADER_SIZE,
@@ -730,13 +730,13 @@ static int _vg_commit_raw_rlocn(struct format_instance *fid,
 		rlocn->offset = mdac->rlocn.offset;
 		rlocn->size = mdac->rlocn.size;
 		rlocn->checksum = mdac->rlocn.checksum;
-		log_debug("%sCommitting %s metadata (%u) to %s header at %"
+		log_debug_metadata("%sCommitting %s metadata (%u) to %s header at %"
 			  PRIu64, precommit ? "Pre-" : "", vg->name, vg->seqno,
 			  dev_name(mdac->area.dev), mdac->area.start);
 	} else
-		log_debug("Wiping pre-committed %s metadata from %s "
-			  "header at %" PRIu64, vg->name,
-			  dev_name(mdac->area.dev), mdac->area.start);
+		log_debug_metadata("Wiping pre-committed %s metadata from %s "
+				   "header at %" PRIu64, vg->name,
+				   dev_name(mdac->area.dev), mdac->area.start);
 
 	rlocn_set_ignored(mdah->raw_locns, mda_is_ignored(mda));
 
@@ -857,12 +857,13 @@ static struct volume_group *_vg_read_file_name(struct format_instance *fid,
 	 * check that it contains the correct volume group.
 	 */
 	if (vgname && strcmp(vgname, vg->name)) {
+		fid->ref_count++; /* Preserve FID after vg release */
 		release_vg(vg);
 		log_error("'%s' does not contain volume group '%s'.",
 			  read_path, vgname);
 		return NULL;
 	} else
-		log_debug("Read volume group %s from %s", vg->name, read_path);
+		log_debug_metadata("Read volume group %s from %s", vg->name, read_path);
 
 	return vg;
 }
@@ -929,7 +930,7 @@ static int _vg_write_file(struct format_instance *fid __attribute__((unused)),
 		return 0;
 	}
 
-	log_debug("Writing %s metadata to %s", vg->name, temp_file);
+	log_debug_metadata("Writing %s metadata to %s", vg->name, temp_file);
 
 	if (!text_vg_export_file(vg, tc->desc, fp)) {
 		log_error("Failed to write metadata to %s.", temp_file);
@@ -949,7 +950,7 @@ static int _vg_write_file(struct format_instance *fid __attribute__((unused)),
 		return_0;
 
 	if (rename(temp_file, tc->path_edit)) {
-		log_debug("Renaming %s to %s", temp_file, tc->path_edit);
+		log_debug_metadata("Renaming %s to %s", temp_file, tc->path_edit);
 		log_error("%s: rename to %s failed: %s", temp_file,
 			  tc->path_edit, strerror(errno));
 		return 0;
@@ -968,13 +969,13 @@ static int _vg_commit_file_backup(struct format_instance *fid __attribute__((unu
 		log_verbose("Test mode: Skipping committing %s metadata (%u)",
 			    vg->name, vg->seqno);
 		if (unlink(tc->path_edit)) {
-			log_debug("Unlinking %s", tc->path_edit);
+			log_debug_metadata("Unlinking %s", tc->path_edit);
 			log_sys_error("unlink", tc->path_edit);
 			return 0;
 		}
 	} else {
-		log_debug("Committing %s metadata (%u)", vg->name, vg->seqno);
-		log_debug("Renaming %s to %s", tc->path_edit, tc->path_live);
+		log_debug_metadata("Committing %s metadata (%u)", vg->name, vg->seqno);
+		log_debug_metadata("Renaming %s to %s", tc->path_edit, tc->path_live);
 		if (rename(tc->path_edit, tc->path_live)) {
 			log_error("%s: rename to %s failed: %s", tc->path_edit,
 				  tc->path_live, strerror(errno));
@@ -1008,7 +1009,7 @@ static int _vg_commit_file(struct format_instance *fid, struct volume_group *vg,
 		len = slash - tc->path_live;
 		strncpy(new_name, tc->path_live, len);
 		strcpy(new_name + len, vg->name);
-		log_debug("Renaming %s to %s", tc->path_live, new_name);
+		log_debug_metadata("Renaming %s to %s", tc->path_live, new_name);
 		if (test_mode())
 			log_verbose("Test mode: Skipping rename");
 		else {
@@ -1089,7 +1090,10 @@ static int _scan_file(const struct format_type *fmt, const char *vgname)
 				/* FIXME: Check this fid is OK! */
 				fic.type = FMT_INSTANCE_PRIVATE_MDAS;
 				fic.context.private = NULL;
-				fid = _text_create_text_instance(fmt, &fic);
+				if (!(fid = _text_create_text_instance(fmt, &fic))) {
+					stack;
+					break;
+				}
 				if ((vg = _vg_read_file_name(fid, scanned_vgname,
 							     path))) {
 					/* FIXME Store creation host in vg */
@@ -1183,11 +1187,11 @@ const char *vgname_from_mda(const struct format_type *fmt,
 		goto_out;
 	}
 
-	log_debug("%s: Found metadata at %" PRIu64 " size %" PRIu64
-		  " (in area at %" PRIu64 " size %" PRIu64
-		  ") for %s (%s)",
-		  dev_name(dev_area->dev), dev_area->start + rlocn->offset,
-		  rlocn->size, dev_area->start, dev_area->size, vgname, uuid);
+	log_debug_metadata("%s: Found metadata at %" PRIu64 " size %" PRIu64
+			   " (in area at %" PRIu64 " size %" PRIu64
+			   ") for %s (%s)",
+			   dev_name(dev_area->dev), dev_area->start + rlocn->offset,
+			   rlocn->size, dev_area->start, dev_area->size, vgname, uuid);
 
 	if (mda_free_sectors) {
 		current_usage = (rlocn->size + SECTOR_SIZE - UINT64_C(1)) -
@@ -1317,16 +1321,19 @@ static int _text_pv_write(const struct format_type *fmt, struct physical_volume 
 			continue;
 
 		mdac = (struct mda_context *) mda->metadata_locn;
-		log_debug("Creating metadata area on %s at sector %"
-			  PRIu64 " size %" PRIu64 " sectors",
-			  dev_name(mdac->area.dev),
-			  mdac->area.start >> SECTOR_SHIFT,
-			  mdac->area.size >> SECTOR_SHIFT);
+		log_debug_metadata("Creating metadata area on %s at sector %"
+				   PRIu64 " size %" PRIu64 " sectors",
+				   dev_name(mdac->area.dev),
+				   mdac->area.start >> SECTOR_SHIFT,
+				   mdac->area.size >> SECTOR_SHIFT);
 
 		// if fmt is not the same as info->fmt we are in trouble
 		lvmcache_add_mda(info, mdac->area.dev,
 				 mdac->area.start, mdac->area.size, mda_is_ignored(mda));
 	}
+
+	if (!lvmcache_update_bas(info, pv))
+		return_0;
 
 	/*
 	 * FIXME: Allow writing zero offset/size data area to disk.
@@ -1463,24 +1470,15 @@ static int _text_pv_read(const struct format_type *fmt, const char *pv_name,
 
 static int _text_pv_initialise(const struct format_type *fmt,
 			       const int64_t label_sector,
-			       uint64_t pe_start,
-			       uint32_t extent_count,
-			       uint32_t extent_size,
 			       unsigned long data_alignment,
 			       unsigned long data_alignment_offset,
+			       struct pvcreate_restorable_params *rp,
 			       struct physical_volume *pv)
 {
-	/*
-	 * Try to keep the value of PE start set to a firm value if requested.
-	 * This is usefull when restoring existing PE start value (backups etc.).
-	 */
-	if (pe_start != PV_PE_START_CALC)
-		pv->pe_start = pe_start;
+	unsigned long adjustment, final_alignment = 0;
 
 	if (!data_alignment)
-		data_alignment = find_config_tree_int(pv->fmt->cmd,
-					      "devices/data_alignment",
-					      0) * 2;
+		data_alignment = find_config_tree_int(pv->fmt->cmd, devices_data_alignment_CFG, NULL) * 2;
 
 	if (set_pe_align(pv, data_alignment) != data_alignment &&
 	    data_alignment) {
@@ -1505,14 +1503,68 @@ static int _text_pv_initialise(const struct format_type *fmt,
 		return 0;
 	}
 
-	if (pe_start == PV_PE_START_CALC && pv->pe_start < pv->pe_align)
-		pv->pe_start = pv->pe_align;
+	final_alignment = pv->pe_align + pv->pe_align_offset;
 
-	if (extent_size)
-		pv->pe_size = extent_size;
+	if (pv->size < final_alignment) {
+		log_error("%s: Data alignment must not exceed device size.",
+			  pv_dev_name(pv));
+		return 0;
+	}
 
-	if (extent_count)
-		pv->pe_count = extent_count;
+	if (pv->size < final_alignment + rp->ba_size) {
+		log_error("%s: Bootloader area with data-aligned start must "
+			  "not exceed device size.", pv_dev_name(pv));
+		return 0;
+	}
+
+	if (rp->pe_start == PV_PE_START_CALC) {
+		/*
+		 * Calculate new PE start and bootloader area start value.
+		 * Make sure both are properly aligned!
+		 * If PE start can't be aligned because EA is taking
+		 * the whole space, make PE start equal to the PV size
+		 * which effectively disables DA - it will have zero size.
+		 * This needs to be done as we can't have a PV without any DA.
+		 * But we still want to support a PV with EA only!
+		 */
+		if (rp->ba_size) {
+			pv->ba_start = final_alignment;
+			pv->ba_size = rp->ba_size;
+			if ((adjustment = rp->ba_size % pv->pe_align))
+				pv->ba_size += pv->pe_align - adjustment;
+			if (pv->size < pv->ba_start + pv->ba_size)
+				pv->ba_size = pv->size - pv->ba_start;
+			pv->pe_start = pv->ba_start + pv->ba_size;
+		} else
+			pv->pe_start = final_alignment;
+	} else {
+		/*
+		 * Try to keep the value of PE start set to a firm value if
+		 * requested. This is useful when restoring existing PE start
+		 * value (e.g. backups). Also, if creating an EA, try to place
+		 * it in between the final alignment and existing PE start
+		 * if possible.
+		 */
+		pv->pe_start = rp->pe_start;
+		if (rp->ba_size) {
+			if ((rp->ba_start && rp->ba_start + rp->ba_size > rp->pe_start) ||
+			    (rp->pe_start <= final_alignment) ||
+			    (rp->pe_start - final_alignment < rp->ba_size)) {
+				log_error("%s: Bootloader area would overlap "
+					  "data area.", pv_dev_name(pv));
+				return 0;
+			} else {
+				pv->ba_start = rp->ba_start ? : final_alignment;
+				pv->ba_size = rp->ba_size;
+			}
+		}
+	}
+
+	if (rp->extent_size)
+		pv->pe_size = rp->extent_size;
+
+	if (rp->extent_count)
+		pv->pe_count = rp->extent_count;
 
 	if ((pv->pe_start + pv->pe_count * pv->pe_size - 1) > (pv->size << SECTOR_SHIFT)) {
 		log_error("Physical extents end beyond end of device %s.",
@@ -1636,12 +1688,12 @@ static int _mda_import_text_raw(struct lvmcache_info *info, const struct dm_conf
 
 	cn = cn->child;
 	device = lvmcache_device(info);
-	size = dm_config_find_int(cn, "size", 0);
+	size = dm_config_find_int64(cn, "size", 0);
 
 	if (!device || !size)
 		return 0;
 
-	offset = dm_config_find_int(cn, "start", 0);
+	offset = dm_config_find_int64(cn, "start", 0);
 	ignore = dm_config_find_int(cn, "ignore", 0);
 
 	lvmcache_add_mda(info, device, offset, size, ignore);
@@ -1931,7 +1983,7 @@ static int _text_pv_add_metadata_area(const struct format_type *fmt,
 {
 	struct format_instance *fid = pv->fid;
 	const char *pvid = (const char *) (*pv->old_id.uuid ? &pv->old_id : &pv->id);
-	uint64_t pe_start, pe_end;
+	uint64_t ba_size, pe_start, pe_end;
 	uint64_t alignment, alignment_offset;
 	uint64_t disk_size;
 	uint64_t mda_start;
@@ -1952,6 +2004,7 @@ static int _text_pv_add_metadata_area(const struct format_type *fmt,
 	}
 
 	pe_start = pv->pe_start << SECTOR_SHIFT;
+	ba_size = pv->ba_size << SECTOR_SHIFT;
 	alignment = pv->pe_align << SECTOR_SHIFT;
 	alignment_offset = pv->pe_align_offset << SECTOR_SHIFT;
 	disk_size = pv->size << SECTOR_SHIFT;
@@ -1985,6 +2038,12 @@ static int _text_pv_add_metadata_area(const struct format_type *fmt,
 		else {
 			limit = disk_size;
 			limit_name = "disk size";
+		}
+
+		/* Adjust limits for bootloader area if present. */
+		if (ba_size) {
+			limit -= ba_size;
+			limit_name = "ba_start";
 		}
 
 		if (limit > disk_size)
@@ -2046,8 +2105,11 @@ static int _text_pv_add_metadata_area(const struct format_type *fmt,
 		 * start of the area that follows the MDA0 we've just calculated.
 		 */
 		if (!pe_start_locked) {
-			pe_start = mda_start + mda_size;
-			pv->pe_start = pe_start >> SECTOR_SHIFT;
+			if (ba_size) {
+				pv->ba_start = (mda_start + mda_size) >> SECTOR_SHIFT;
+				pv->pe_start = pv->ba_start + pv->ba_size;
+			} else
+				pv->pe_start = (mda_start + mda_size) >> SECTOR_SHIFT;
 		}
 	}
 	/* Second metadata area at the end of the device. */
@@ -2065,15 +2127,22 @@ static int _text_pv_add_metadata_area(const struct format_type *fmt,
 		if (pe_start || pe_start_locked) {
 			limit = pe_end ? pe_end : pe_start;
 			limit_name = pe_end ? "pe_end" : "pe_start";
-		}
-		else if ((mda = fid_get_mda_indexed(fid, pvid, ID_LEN, 0)) &&
-			 (mdac = mda->metadata_locn)) {
-			limit = mdac->area.start + mdac->area.size;
-			limit_name = "MDA0 end";
-		}
-		else {
-			limit = LABEL_SCAN_SIZE;
-			limit_name = "label scan size";
+		} else {
+			if ((mda = fid_get_mda_indexed(fid, pvid, ID_LEN, 0)) &&
+				 (mdac = mda->metadata_locn)) {
+				limit = mdac->area.start + mdac->area.size;
+				limit_name = "MDA0 end";
+			}
+			else {
+				limit = LABEL_SCAN_SIZE;
+				limit_name = "label scan size";
+			}
+
+			/* Adjust limits for bootloader area if present. */
+			if (ba_size) {
+				limit += ba_size;
+				limit_name = "ba_end";
+			}
 		}
 
 		if (limit > disk_size)
@@ -2226,11 +2295,12 @@ static struct format_instance *_text_create_text_instance(const struct format_ty
 	if (!(fid = alloc_fid(fmt, fic)))
 		return_NULL;
 
-	if (_create_vg_text_instance(fid, fic))
-		return fid;
+	if (!_create_vg_text_instance(fid, fic)) {
+		dm_pool_destroy(fid->mem);
+		return_NULL;
+	}
 
-	dm_pool_destroy(fid->mem);
-	return NULL;
+	return fid;
 }
 
 static struct format_handler _text_handler = {
@@ -2341,7 +2411,7 @@ struct format_type *create_text_format(struct cmd_context *cmd)
 	fmt->orphan_vg_name = ORPHAN_VG_NAME(FMT_TEXT_NAME);
 	fmt->features = FMT_SEGMENTS | FMT_MDAS | FMT_TAGS | FMT_PRECOMMIT |
 			FMT_UNLIMITED_VOLS | FMT_RESIZE_PV |
-			FMT_UNLIMITED_STRIPESIZE;
+			FMT_UNLIMITED_STRIPESIZE | FMT_BAS | FMT_CONFIG_PROFILE;
 
 	if (!(mda_lists = dm_malloc(sizeof(struct mda_lists)))) {
 		log_error("Failed to allocate dir_list");
@@ -2369,7 +2439,7 @@ struct format_type *create_text_format(struct cmd_context *cmd)
 		goto bad;
 	}
 
-	if ((cn = find_config_tree_node(cmd, "metadata/dirs"))) {
+	if ((cn = find_config_tree_node(cmd, metadata_dirs_CFG, NULL))) {
 		for (cv = cn->v; cv; cv = cv->next) {
 			if (cv->type != DM_CFG_STRING) {
 				log_error("Invalid string in config file: "
@@ -2386,7 +2456,7 @@ struct format_type *create_text_format(struct cmd_context *cmd)
 		}
 	}
 
-	if ((cn = find_config_tree_node(cmd, "metadata/disk_areas"))) {
+	if ((cn = find_config_tree_node(cmd, metadata_disk_areas_CFG, NULL))) {
 		for (cn = cn->child; cn; cn = cn->sib) {
 			if (!_get_config_disk_area(cmd, cn, &mda_lists->raws))
 				goto_bad;

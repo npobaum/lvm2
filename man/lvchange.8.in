@@ -9,6 +9,8 @@ lvchange \- change attributes of a logical volume
 .RI { y | n }]
 .RB [ \-a | \-\-activate
 .RI [ a | e | l ]{ y | n }]
+.RB [ \-k | \-\-setactivationskip { y | n } ]
+.RB [ \-K | \-\-ignoreactivationskip ]
 .RB [ \-\-alloc
 .IR AllocationPolicy ]
 .RB [ \-C | \-\-contiguous
@@ -16,16 +18,30 @@ lvchange \- change attributes of a logical volume
 .RB [ \-d | \-\-debug ]
 .RB [ \-\-deltag
 .IR Tag ]
+.RB [ \-\-profile
+.IR ProfileName ]
+.RB [ \-\-detachprofile ]
 .RB [ \-\-discards
 .RI { ignore | nopassdown | passdown }]
 .RB [ \-\-resync ]
 .RB [ \-h | \-? | \-\-help ]
 .RB [ \-\-ignorelockingfailure ]
 .RB [ \-\-ignoremonitoring ]
+.RB [ \-\-ignoreskippedcluster ]
 .RB [ \-\-monitor
 .RI { y | n }]
 .RB [ \-\-poll
 .RI { y | n }]
+.RB [ \-\-[raid]maxrecoveryrate
+.IR Rate ]
+.RB [ \-\-[raid]minrecoveryrate
+.IR Rate ]
+.RB [ \-\-[raid]syncaction
+.RI { check | repair }]
+.RB [ \-\-[raid]writebehind
+.IR IOCount ]
+.RB [ \-\-[raid]writemostly
+.IR PhysicalVolume[:{t|n|y}] ]
 .RB [ \-\-sysinit ]
 .RB [ \-\-noudevsync ]
 .RB [ \-M | \-\-persistent
@@ -57,8 +73,9 @@ libdevmapper to activate (\-ay) or deactivate (\-an) the
 logical volumes. If autoactivation option is used (\-aay),
 the logical volume is activated only if it matches an item in
 the activation/auto_activation_volume_list set in lvm.conf.
-Autoactivation is not yet supported for logical volumes that
-are part of partial or clustered volume groups.
+If this list is not set, then all volumes are considered for
+autoactivation. The autoactivation is not yet supported for
+logical volumes that are part of partial or clustered volume groups.
 .IP
 If clustered locking is enabled, -aey will activate exclusively
 on one node and -aly will activate only on the local node.
@@ -66,11 +83,28 @@ To deactivate only on the local node use -aln.
 Logical volumes with single-host snapshots are always activated
 exclusively because they can only be used on one node at once.
 .TP
+.BR \-k ", " \-\-setactivationskip " {" \fIy | \fIn }
+Controls  whether Logical Volumes are persistently flagged to be
+skipped during activation. By default, thin snapshot volumes are
+flagged for activation skip.  To activate such volumes,
+an extra \fB\-K/\-\-ignoreactivationskip\fP option must be used.
+The flag is not applied during deactivation. To see whether
+the flag is attached, use \fBlvs\fP command where the state
+of the flag is reported within \fBlv_attr\fP bits.
+.TP
+.BR \-K ", " \-\-ignoreactivationskip
+Ignore the flag to skip Logical Volumes during activation.
+.TP
 .BR \-C ", " \-\-contiguous " {" \fIy | \fIn }
 Tries to set or reset the contiguous allocation policy for
 logical volumes. It's only possible to change a non-contiguous
 logical volume's allocation policy to contiguous, if all of the
 allocated physical extents are already contiguous.
+.TP
+.BR \-\-detachprofile
+Detach any configuration profiles attached to given Logical Volumes.
+See also \fBlvm\fP(8) and \fBlvm.conf\fP(5) for more
+information about configuration profiles.
 .TP
 .BR \-\-discards " {" \fIignore | \fInopassdown | \fIpassdown }
 Set this to \fIignore\fP to ignore any discards received by a
@@ -106,6 +140,49 @@ example, on rebooting after a crash), use \fB\-\-poll y\fP to restart the
 process from its last checkpoint.  However, it may not be appropriate to
 immediately poll a logical volume when it is activated, use
 \fB\-\-poll n\fP to defer and then \fB\-\-poll y\fP to restart the process.
+.TP
+.IR \fB\-\-[raid]maxrecoveryrate " " \fIRate [ bBsSkKmMgG ]
+Sets the maximum recovery rate for a RAID logical volume.  \fIRate\fP
+is specified as an amount per second for each device in the array.
+If no suffix is given, then kiB/sec/device is assumed.  Setting the
+recovery rate to 0 means it will be unbounded.
+.TP
+.IR \fB\-\-[raid]minrecoveryrate " " \fIRate [ bBsSkKmMgG ]
+Sets the minimum recovery rate for a RAID logical volume.  \fIRate\fP
+is specified as an amount per second for each device in the array.
+If no suffix is given, then kiB/sec/device is assumed.  Setting the
+recovery rate to 0 means it will be unbounded.
+.TP
+.BR \-\-[raid]syncaction " {" \fIcheck | \fIrepair }
+This argument is used to initiate various RAID synchronization operations.
+The \fIcheck\fP and \fIrepair\fP options provide a way to check the
+integrity of a RAID logical volume (often referred to as "scrubbing").
+These options cause the RAID logical volume to
+read all of the data and parity blocks in the array and check for any
+discrepancies (e.g. mismatches between mirrors or incorrect parity values).
+If \fIcheck\fP is used, the discrepancies will be counted but not repaired.
+If \fIrepair\fP is used, the discrepancies will be corrected as they are
+encountered.  The 'lvs' command can be used to show the number of
+discrepancies found or repaired.
+.TP
+.BR \-\-[raid]writebehind " IOCount"
+Specify the maximum number of outstanding writes that are allowed to
+devices in a RAID1 logical volume that are marked as \fIwrite-mostly\fP.
+Once this value is exceeded, writes become synchronous (i.e. all writes
+to the constituent devices must complete before the array signals the
+write has completed).  Setting the value to zero clears the preference
+and allows the system to choose the value arbitrarily.
+.TP
+.BR \-\-[raid]writemostly " PhysicalVolume[:{t|y|n}]"
+Mark a device in a RAID1 logical volume as \fIwrite-mostly\fP.  All reads
+to these drives will be avoided unless absolutely necessary.  This keeps
+the number of I/Os to the drive to a minimum.  The default behavior is to
+set the write-mostly attribute for the specified physical volume in the
+logical volume.  It is possible to also remove the write-mostly flag by
+appending a ":n" to the physical volume or to toggle the value by specifying
+":t".  The \fI--writemostly\fP argument can be specified more than one time
+in a single command; making it possible to toggle the write-mostly attributes
+for all the physical volumes in a logical volume at once.
 .TP
 .B \-\-sysinit
 Indicates that \fBlvchange\fP(8) is being invoked from early system

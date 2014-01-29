@@ -162,10 +162,7 @@ static struct mirror_state *_mirrored_init_target(struct dm_pool *mem,
 		return NULL;
 	}
 
-	mirr_state->default_region_size = 2 *
-	    find_config_tree_int(cmd,
-			    "activation/mirror_region_size",
-			    DEFAULT_MIRROR_REGION_SIZE);
+	mirr_state->default_region_size = get_default_region_size(cmd);
 
 	return mirr_state;
 }
@@ -187,7 +184,7 @@ static int _mirrored_target_percent(void **target_state,
 		*target_state = _mirrored_init_target(mem, cmd);
 
 	/* Status line: <#mirrors> (maj:min)+ <synced>/<total_regions> */
-	log_debug("Mirror status: %s", params);
+	log_debug_activation("Mirror status: %s", params);
 
 	if (sscanf(pos, "%u %n", &mirror_count, &used) != 1) {
 		log_error("Failure parsing mirror status mirror count: %s",
@@ -288,7 +285,7 @@ static int _mirrored_transient_status(struct lv_segment *seg, char *params)
 				  log->name);
 			return 0;
 		}
-		log_debug("Found mirror log at %d:%d", info.major, info.minor);
+		log_debug_activation("Found mirror log at %d:%d", info.major, info.minor);
 		sprintf(buf, "%d:%d", info.major, info.minor);
 		if (strcmp(buf, log_args[1])) {
 			log_error("Mirror log mismatch. Metadata says %s, kernel says %s.",
@@ -312,11 +309,11 @@ static int _mirrored_transient_status(struct lv_segment *seg, char *params)
 				  seg_lv(seg, i)->name);
 			return 0;
 		}
-		log_debug("Found mirror image at %d:%d", info.major, info.minor);
+		log_debug_activation("Found mirror image at %d:%d", info.major, info.minor);
 		sprintf(buf, "%d:%d", info.major, info.minor);
 		for (j = 0; j < num_devs; ++j) {
 			if (!strcmp(buf, args[j])) {
-			    log_debug("Match: metadata image %d matches kernel image %d", i, j);
+			    log_debug_activation("Match: metadata image %d matches kernel image %d", i, j);
 			    images[j] = seg_lv(seg, i);
 			}
 		}
@@ -543,8 +540,7 @@ static int _mirrored_target_present(struct cmd_context *cmd,
 #ifdef DMEVENTD
 static const char *_get_mirror_dso_path(struct cmd_context *cmd)
 {
-	return get_monitor_dso_path(cmd, find_config_tree_str(cmd, "dmeventd/mirror_library",
-							      DEFAULT_DMEVENTD_MIRROR_LIB));
+	return get_monitor_dso_path(cmd, find_config_tree_str(cmd, dmeventd_mirror_library_CFG, NULL));
 }
 
 /* FIXME Cache this */

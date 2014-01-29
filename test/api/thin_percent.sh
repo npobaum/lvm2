@@ -27,10 +27,10 @@ lvcreate -L5M -T $vg/pool
 lvcreate -V1M -T $vg/pool -n thin
 dd if=/dev/urandom of="$DM_DEV_DIR/$vg/thin" count=2 bs=256K
 
-lvcreate -s $vg/thin -n snap
+lvcreate -s $vg/thin -K -n snap
 dd if=/dev/urandom of="$DM_DEV_DIR/$vg/snap" count=3 bs=256K
 
-lvs $vg
+lvs -o+discards $vg
 
 aux apitest thin_percent $vg
 

@@ -76,18 +76,28 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 
 	/* Check LV flags match first segment type */
 	if (complete_vg) {
-		if (lv_is_thin_volume(lv) &&
-		    (!(seg2 = first_seg(lv)) || !seg_is_thin_volume(seg2))) {
-			log_error("LV %s is thin volume without first thin volume segment",
-				  lv->name);
-			inc_error_count;
+		if (lv_is_thin_volume(lv)) {
+			if (dm_list_size(&lv->segments) != 1) {
+				log_error("LV %s is thin volume without exactly one segment.",
+					  lv->name);
+				inc_error_count;
+			} else if (!seg_is_thin_volume(first_seg(lv))) {
+				log_error("LV %s is thin volume without first thin volume segment.",
+					  lv->name);
+				inc_error_count;
+			}
 		}
 
-		if (lv_is_thin_pool(lv) &&
-		    (!(seg2 = first_seg(lv)) || !seg_is_thin_pool(seg2))) {
-			log_error("LV %s is thin pool without first thin pool segment",
-				  lv->name);
-			inc_error_count;
+		if (lv_is_thin_pool(lv)) {
+			if (dm_list_size(&lv->segments) != 1) {
+				log_error("LV %s is thin pool volume without exactly one segment.",
+					  lv->name);
+				inc_error_count;
+			} else if (!seg_is_thin_pool(first_seg(lv))) {
+				log_error("LV %s is thin pool without first thin pool segment.",
+					  lv->name);
+				inc_error_count;
+			}
 		}
 
 		if (lv_is_thin_pool_data(lv) &&
@@ -243,6 +253,11 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 						  lv->name, seg_count, seg->device_id);
 					inc_error_count;
 				}
+				if (seg->external_lv && (seg->external_lv->status & LVM_WRITE)) {
+					log_error("LV %s: external origin %s is writable.",
+						  lv->name, seg->external_lv->name);
+					inc_error_count;
+				}
 			} else {
 				if (seg->pool_lv) {
 					log_error("LV %s: segment %u must not have thin pool LV set",
@@ -372,7 +387,7 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 			seg_found++;
 		if (seg->metadata_lv == lv || seg->pool_lv == lv)
 			seg_found++;
-		if (seg_is_thin_volume(seg) && seg->origin == lv)
+		if (seg_is_thin_volume(seg) && (seg->origin == lv || seg->external_lv == lv))
 			seg_found++;
 		if (!seg_found) {
 			log_error("LV %s is used by LV %s:%" PRIu32 "-%" PRIu32
@@ -474,9 +489,9 @@ static int _lv_split_segment(struct logical_volume *lv, struct lv_segment *seg,
 			if (!set_lv_segment_area_lv(split_seg, s, seg_lv(seg, s),
 						    seg_le(seg, s) + seg->area_len, 0))
 				return_0;
-			log_debug("Split %s:%u[%u] at %u: %s LE %u", lv->name,
-				  seg->le, s, le, seg_lv(seg, s)->name,
-				  seg_le(split_seg, s));
+			log_debug_alloc("Split %s:%u[%u] at %u: %s LE %u", lv->name,
+					seg->le, s, le, seg_lv(seg, s)->name,
+					seg_le(split_seg, s));
 			break;
 
 		case AREA_PV:
@@ -488,10 +503,10 @@ static int _lv_split_segment(struct logical_volume *lv, struct lv_segment *seg,
 						     seg->area_len,
 						 split_seg, s)))
 				return_0;
-			log_debug("Split %s:%u[%u] at %u: %s PE %u", lv->name,
-				  seg->le, s, le,
-				  dev_name(seg_dev(seg, s)),
-				  seg_pe(split_seg, s));
+			log_debug_alloc("Split %s:%u[%u] at %u: %s PE %u", lv->name,
+					seg->le, s, le,
+					dev_name(seg_dev(seg, s)),
+					seg_pe(split_seg, s));
 			break;
 
 		case AREA_UNASSIGNED:

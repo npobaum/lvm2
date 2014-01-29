@@ -78,8 +78,7 @@ int vgextend(struct cmd_context *cmd, int argc, char **argv)
 	vg = vg_read_for_update(cmd, vg_name, NULL, 0);
 	if (vg_read_error(vg)) {
 		release_vg(vg);
-		stack;
-		return ECMD_FAILED;
+		return_ECMD_FAILED;
 	}
 
 	if (!archive(vg))
@@ -92,10 +91,10 @@ int vgextend(struct cmd_context *cmd, int argc, char **argv)
 		}
 		if (!fixed) {
 			log_error("No PV has been restored.");
-			goto_bad;
+			goto bad;
 		}
 	} else { /* no --restore, normal vgextend */
-		if (!lock_vol(cmd, VG_ORPHANS, LCK_VG_WRITE)) {
+		if (!lock_vol(cmd, VG_ORPHANS, LCK_VG_WRITE, NULL)) {
 			log_error("Can't get lock for orphan PVs");
 			unlock_and_release_vg(cmd, vg, vg_name);
 			return ECMD_FAILED;
@@ -108,7 +107,7 @@ int vgextend(struct cmd_context *cmd, int argc, char **argv)
 			  "of VG %s metadata? [y/n]: ",
 				  vg_name) == 'n') {
 			log_error("Volume group %s not changed", vg_name);
-			goto_bad;
+			goto bad;
 		}
 
 		/* extend vg */

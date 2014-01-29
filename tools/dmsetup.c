@@ -84,7 +84,7 @@ extern char *optarg;
        __result; }))
 #endif
 
-#ifdef linux
+#ifdef __linux__
 #  include "kdev_t.h"
 #else
 #  define MAJOR(x) major((x))
@@ -461,7 +461,7 @@ static void _display_info_long(struct dm_task *dmt, struct dm_info *info)
 	uint32_t read_ahead;
 
 	if (!info->exists) {
-		printf("Device does not exist.\n");
+		fprintf(stderr, "Device does not exist.\n");
 		return;
 	}
 
@@ -770,6 +770,9 @@ static int _message(CMD_ARGS)
 	size_t sz = 1;
 	struct dm_task *dmt;
 	char *str;
+	const char *response;
+	uint64_t sector;
+	char *endptr;
 
 	if (!(dmt = dm_task_create(DM_DEVICE_TARGET_MSG)))
 		return 0;
@@ -784,7 +787,12 @@ static int _message(CMD_ARGS)
 		argv++;
 	}
 
-	if (!dm_task_set_sector(dmt, (uint64_t) atoll(argv[1])))
+	sector = strtoull(argv[1], &endptr, 10);
+	if (*endptr || endptr == argv[1]) {
+		err("invalid sector");
+		goto out;
+	}
+	if (!dm_task_set_sector(dmt, sector))
 		goto out;
 
 	argc -= 2;
@@ -825,6 +833,13 @@ static int _message(CMD_ARGS)
 
 	if (!dm_task_run(dmt))
 		goto out;
+
+	if ((response = dm_task_get_message_response(dmt))) {
+		if (!*response || response[strlen(response) - 1] == '\n')
+			fputs(response, stdout);
+		else
+			puts(response);
+	}
 
 	r = 1;
 
@@ -1132,7 +1147,7 @@ static int _udevcomplete_all(CMD_ARGS)
 	unsigned age = 0;
 	time_t t;
 
-	if (argc == 2 && (sscanf(argv[1], "%i", &age) != 1)) {
+	if (argc == 2 && (sscanf(argv[1], "%u", &age) != 1)) {
 		log_error("Failed to read age_in_minutes parameter.");
 		return 0;
 	}
@@ -3244,20 +3259,19 @@ static char *parse_loop_device_name(const char *dev, const char *dev_dir)
 		    device[strlen(dev_dir)] != '/')
 			goto error;
 
-		strncpy(buf, strrchr(device, '/') + 1, PATH_MAX - 1);
-		buf[PATH_MAX - 1] = '\0';
+		if (!dm_strncpy(buf, strrchr(device, '/') + 1, PATH_MAX))
+			goto error;
 		dm_free(device);
-
 	} else {
 		/* check for device number */
-		if (!strncmp(dev, "loop", strlen("loop")))
-			strncpy(buf, dev, (size_t) PATH_MAX);
-		else
+		if (strncmp(dev, "loop", sizeof("loop") - 1))
+			goto error;
+
+		if (!dm_strncpy(buf, dev, PATH_MAX))
 			goto error;
 	}
 
 	return buf;
-
 error:
 	dm_free(device);
 	dm_free(buf);
@@ -3672,7 +3686,7 @@ static int _process_switches(int *argc, char ***argv, const char *dev_dir)
 		}
 		if (ind == INACTIVE_ARG)
 		       _switches[INACTIVE_ARG]++;
-		if ((ind == MANGLENAME_ARG)) {
+		if (ind == MANGLENAME_ARG) {
 			_switches[MANGLENAME_ARG]++;
 			if (!strcasecmp(optarg, "none"))
 				_int_args[MANGLENAME_ARG] = DM_STRING_MANGLING_NONE;
@@ -3749,9 +3763,6 @@ static int _process_switches(int *argc, char ***argv, const char *dev_dir)
 		return 0;
 	}
 
-	if (!_process_options(_string_args[OPTIONS_ARG]))
-		return 0;
-
 	if (_switches[TABLE_ARG] && _switches[NOTABLE_ARG]) {
 		fprintf(stderr, "--table and --notable are incompatible.\n");
 		return 0;
@@ -3823,6 +3834,11 @@ int main(int argc, char **argv)
 
 	if (!strcmp(cmd->name, "mangle"))
 		dm_set_name_mangling_mode(DM_STRING_MANGLING_NONE);
+
+	if (!_process_options(_string_args[OPTIONS_ARG])) {
+		fprintf(stderr, "Couldn't process command line.\n");
+		goto out;
+	}
 
 	if (_switches[COLS_ARG]) {
 		if (!_report_init(cmd))

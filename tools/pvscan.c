@@ -91,17 +91,96 @@ static void _pvscan_display_single(struct cmd_context *cmd,
 				display_size(cmd, (uint64_t) (pv_pe_count(pv) - pv_pe_alloc_count(pv)) * pv_pe_size(pv)));
 }
 
-static int _auto_activation_handler(struct volume_group *vg, int partial,
+#define REFRESH_BEFORE_AUTOACTIVATION_RETRIES 5
+#define REFRESH_BEFORE_AUTOACTIVATION_RETRY_USLEEP_DELAY 100000
+
+static int _auto_activation_handler(struct cmd_context *cmd,
+				    const char *vgid, int partial,
 				    activation_change_t activate)
 {
+	unsigned int refresh_retries = REFRESH_BEFORE_AUTOACTIVATION_RETRIES;
+	int refresh_done = 0;
+	struct volume_group *vg;
+	int consistent = 0;
+	struct id vgid_raw;
+	int r = 0;
+
 	/* TODO: add support for partial and clustered VGs */
-	if (partial || vg_is_clustered(vg))
+	if (partial)
 		return 1;
+
+	if (!id_read_format(&vgid_raw, vgid))
+		return_0;
+
+	/* NB. This is safe because we know lvmetad is running and we won't hit disk. */
+	if (!(vg = vg_read_internal(cmd, NULL, (const char *) &vgid_raw, 0, &consistent)))
+	    return 1;
+
+	if (vg_is_clustered(vg)) {
+		r = 1; goto out;
+	}
+
+	/* FIXME: There's a tiny race when suspending the device which is part
+	 * of the refresh because when suspend ioctl is performed, the dm
+	 * kernel driver executes (do_suspend and dm_suspend kernel fn):
+	 *
+	 *          step 1: a check whether the dev is already suspended and
+	 *                  if yes it returns success immediately as there's
+	 *                  nothing to do
+	 *          step 2: it grabs the suspend lock
+	 *          step 3: another check whether the dev is already suspended
+	 *                  and if found suspended, it exits with -EINVAL now
+	 *
+	 * The race can occur in between step 1 and step 2. To prevent premature
+	 * autoactivation failure, we're using a simple retry logic here before
+	 * we fail completely. For a complete solution, we need to fix the
+	 * locking so there's no possibility for suspend calls to interleave
+	 * each other to cause this kind of race.
+	 *
+	 * Remove this workaround with "refresh_retries" once we have proper locking in!
+	 */
+	while (refresh_retries--) {
+		if (vg_refresh_visible(vg->cmd, vg)) {
+			refresh_done = 1;
+			break;
+		}
+		usleep(REFRESH_BEFORE_AUTOACTIVATION_RETRY_USLEEP_DELAY);
+	}
+
+	if (!refresh_done) {
+		log_error("%s: refresh before autoactivation failed.", vg->name);
+		goto out;
+	}
 
 	if (!vgchange_activate(vg->cmd, vg, activate)) {
 		log_error("%s: autoactivation failed.", vg->name);
+		goto out;
+	}
+
+	r = 1;
+
+out:
+	release_vg(vg);
+	return r;
+}
+
+static int _clear_dev_from_lvmetad_cache(dev_t devno, int32_t major, int32_t minor,
+					 activation_handler handler)
+{
+	char *buf;
+
+	if (!dm_asprintf(&buf, "%" PRIi32 ":%" PRIi32, major, minor))
+		stack;
+	if (!lvmetad_pv_gone(devno, buf ? : "", handler)) {
+		if (buf)
+			dm_free(buf);
 		return 0;
 	}
+
+	log_print_unless_silent("Device %s not found. "
+				"Cleared from lvmetad cache.", buf ? : "");
+	if (buf)
+		dm_free(buf);
 
 	return 1;
 }
@@ -116,8 +195,22 @@ static int _pvscan_lvmetad(struct cmd_context *cmd, int argc, char **argv)
 	int devno_args = 0;
 	struct arg_value_group_list *current_group;
 	dev_t devno;
-	char *buf;
 	activation_handler handler = NULL;
+
+	/*
+	 * Return here immediately if lvmetad is not used.
+	 * Also return if locking_type=3 (clustered) as we
+	 * dont't support cluster + lvmetad yet.
+	 *
+	 * This is to avoid taking the global lock uselessly
+	 * and to prevent hangs in clustered environment.
+	 */
+	/* TODO: Remove this once lvmetad + cluster supported! */
+	if (find_config_tree_int(cmd, global_locking_type_CFG, NULL) == 3 ||
+	    !find_config_tree_bool(cmd, global_use_lvmetad_CFG, NULL)) {
+		log_debug_lvmetad("_pvscan_lvmetad: immediate return");
+		return ret;
+	}
 
 	if (arg_count(cmd, activate_ARG)) {
 		if (arg_uint_value(cmd, activate_ARG, CHANGE_AAY) != CHANGE_AAY) {
@@ -135,7 +228,7 @@ static int _pvscan_lvmetad(struct cmd_context *cmd, int argc, char **argv)
 		return EINVALID_CMD_LINE;
 	}
 	
-	if (!lock_vol(cmd, VG_GLOBAL, LCK_VG_READ)) {
+	if (!lock_vol(cmd, VG_GLOBAL, LCK_VG_READ, NULL)) {
 		log_error("Unable to obtain global lock.");
 		return ECMD_FAILED;
 	}
@@ -152,19 +245,41 @@ static int _pvscan_lvmetad(struct cmd_context *cmd, int argc, char **argv)
 	/* Process any command line PVs first. */
 	while (argc--) {
 		pv_name = *argv++;
-		dev = dev_cache_get(pv_name, NULL);
-		if (!dev) {
-			log_error("Physical Volume %s not found.", pv_name);
-			ret = ECMD_FAILED;
-			continue;
+		if (pv_name[0] == '/') {
+			/* device path */
+			if (!(dev = dev_cache_get(pv_name, cmd->lvmetad_filter))) {
+				log_error("Physical Volume %s not found.", pv_name);
+				ret = ECMD_FAILED;
+				continue;
+			}
 		}
-
+		else {
+			/* device major:minor */
+			if (sscanf(pv_name, "%d:%d", &major, &minor) != 2) {
+				log_error("Failed to parse major:minor from %s", pv_name);
+				ret = ECMD_FAILED;
+				continue;
+			}
+			devno = MKDEV((dev_t)major, minor);
+			if (!(dev = dev_cache_get_by_devt(devno, cmd->lvmetad_filter))) {
+				if (!(_clear_dev_from_lvmetad_cache(devno, major, minor, handler))) {
+					stack;
+					ret = ECMD_FAILED;
+					break;
+				}
+				continue;
+			}
+		}
+		if (sigint_caught()) {
+			ret = ECMD_FAILED;
+			stack;
+			break;
+		}
 		if (!lvmetad_pvscan_single(cmd, dev, handler)) {
 			ret = ECMD_FAILED;
+			stack;
 			break;
 		}
-		if (sigint_caught())
-			break;
 	}
 
 	if (!devno_args)
@@ -180,34 +295,29 @@ static int _pvscan_lvmetad(struct cmd_context *cmd, int argc, char **argv)
 
 		devno = MKDEV((dev_t)major, minor);
 
-		if (!(dev = dev_cache_get_by_devt(devno, NULL))) {
-			if (!dm_asprintf(&buf, "%" PRIi32 ":%" PRIi32, major, minor))
+		if (!(dev = dev_cache_get_by_devt(devno, cmd->lvmetad_filter))) {
+			if (!(_clear_dev_from_lvmetad_cache(devno, major, minor, handler))) {
 				stack;
-			/* FIXME Filters? */
-			if (!lvmetad_pv_gone(devno, buf ? : "", handler)) {
 				ret = ECMD_FAILED;
-				if (buf)
-					dm_free(buf);
 				break;
 			}
-
-			log_print_unless_silent("Device %s not found. "
-						"Cleared from lvmetad cache.", buf ? : "");
-			if (buf)
-				dm_free(buf);
 			continue;
 		}
-
+		if (sigint_caught()) {
+			ret = ECMD_FAILED;
+			stack;
+			break;
+		}
 		if (!lvmetad_pvscan_single(cmd, dev, handler)) {
 			ret = ECMD_FAILED;
+			stack;
 			break;
 		}
 
-		if (sigint_caught())
-			break;
 	}
 
 out:
+	sync_local_dev_names(cmd);
 	unlock_vg(cmd, VG_GLOBAL);
 
 	return ret;
@@ -252,7 +362,7 @@ int pvscan(struct cmd_context *cmd, int argc, char **argv)
 			  arg_count(cmd, exported_ARG) ?
 			  "of exported volume group(s)" : "in no volume group");
 
-	if (!lock_vol(cmd, VG_GLOBAL, LCK_VG_WRITE)) {
+	if (!lock_vol(cmd, VG_GLOBAL, LCK_VG_WRITE, NULL)) {
 		log_error("Unable to obtain global lock.");
 		return ECMD_FAILED;
 	}
@@ -268,8 +378,7 @@ int pvscan(struct cmd_context *cmd, int argc, char **argv)
 	log_verbose("Walking through all physical volumes");
 	if (!(pvslist = get_pvs(cmd))) {
 		unlock_vg(cmd, VG_GLOBAL);
-		stack;
-		return ECMD_FAILED;
+		return_ECMD_FAILED;
 	}
 
 	/* eliminate exported/new if required */

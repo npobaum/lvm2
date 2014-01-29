@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2012 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2013 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -207,12 +207,17 @@ static int _determine_snapshot_type(struct volume_group *vg,
 	}
 
 	if (!arg_count(vg->cmd, extents_ARG) && !arg_count(vg->cmd, size_ARG)) {
+		if (seg_is_thin(lp)) {
+			if (!(lp->segtype = get_segtype_from_string(vg->cmd, "thin")))
+				return_0;
+			return 1;
+		}
+
 		if (!lv_is_thin_volume(lvl->lv)) {
 			log_error("Please specify either size or extents with snapshots.");
 			return 0;
 		}
 
-		lp->thin = 1;
 		if (!(lp->segtype = get_segtype_from_string(vg->cmd, "thin")))
 			return_0;
 
@@ -234,9 +239,9 @@ static int _update_extents_params(struct volume_group *vg,
 {
 	uint32_t pv_extent_count;
 	struct logical_volume *origin = NULL;
-	int changed = 0;
 	uint32_t size_rest;
 	uint32_t stripesize_extents;
+	uint32_t extents;
 
 	if (lcp->size &&
 	    !(lp->extents = extents_from_size(vg->cmd, lcp->size,
@@ -254,7 +259,7 @@ static int _update_extents_params(struct volume_group *vg,
 	 */
 	if (lcp->pv_count) {
 		if (!(lp->pvh = create_pv_list(vg->cmd->mem, vg,
-					   lcp->pv_count, lcp->pvs, 1)))
+					       lcp->pv_count, lcp->pvs, 1)))
 			return_0;
 	} else
 		lp->pvh = &vg->pvs;
@@ -267,12 +272,11 @@ static int _update_extents_params(struct volume_group *vg,
 			lp->extents = percent_of_extents(lp->extents, vg->free_count, 0);
 			break;
 		case PERCENT_PVS:
-			if (!lcp->pv_count)
-				lp->extents = percent_of_extents(lp->extents, vg->extent_count, 0);
-			else {
+			if (lcp->pv_count) {
 				pv_extent_count = pv_list_extents_free(lp->pvh);
 				lp->extents = percent_of_extents(lp->extents, pv_extent_count, 0);
-			}
+			} else
+				lp->extents = percent_of_extents(lp->extents, vg->extent_count, 0);
 			break;
 		case PERCENT_LV:
 			log_error("Please express size as %%VG, %%PVS, or "
@@ -295,6 +299,28 @@ static int _update_extents_params(struct volume_group *vg,
 			break;
 	}
 
+	if (lp->snapshot && lp->origin && lp->extents) {
+		if (!lp->chunk_size) {
+			log_error(INTERNAL_ERROR "Missing snapshot chunk size.");
+			return 0;
+		}
+
+		if (!origin && !(origin = find_lv(vg, lp->origin))) {
+			log_error("Couldn't find origin volume '%s'.",
+				  lp->origin);
+			return 0;
+		}
+
+		extents = cow_max_extents(origin, lp->chunk_size);
+
+		if (extents < lp->extents) {
+			log_print_unless_silent("Reducing COW size %s down to maximum usable size %s.",
+						display_size(vg->cmd, (uint64_t) vg->extent_size * lp->extents),
+						display_size(vg->cmd, (uint64_t) vg->extent_size * extents));
+			lp->extents = extents;
+		}
+	}
+
 	if (!(stripesize_extents = lp->stripe_size / vg->extent_size))
 		stripesize_extents = 1;
 
@@ -308,42 +334,24 @@ static int _update_extents_params(struct volume_group *vg,
 	}
 
 	if (lp->create_thin_pool) {
-		if (!arg_count(vg->cmd, poolmetadatasize_ARG)) {
-			/* Defaults to nr_pool_blocks * 64b */
-			lp->poolmetadatasize =  (uint64_t) lp->extents * vg->extent_size /
-				(uint64_t) (lp->chunk_size * (SECTOR_SIZE / UINT64_C(64)));
-
-			/* Check if we could eventually use bigger chunk size */
-			if (!arg_count(vg->cmd, chunksize_ARG)) {
-				while ((lp->poolmetadatasize >
-					(DEFAULT_THIN_POOL_OPTIMAL_SIZE / SECTOR_SIZE)) &&
-				       (lp->chunk_size < DM_THIN_MAX_DATA_BLOCK_SIZE)) {
-					lp->chunk_size <<= 1;
-					lp->poolmetadatasize >>= 1;
-					changed++;
-				}
-				if (changed)
-					log_verbose("Changed chunksize to %u sectors.",
-						    lp->chunk_size);
-			}
-		}
-
-		if (lp->poolmetadatasize > (2 * DEFAULT_THIN_POOL_MAX_METADATA_SIZE)) {
-			if (arg_count(vg->cmd, poolmetadatasize_ARG))
-				log_warn("WARNING: Maximum supported pool metadata size is 16GB.");
-			lp->poolmetadatasize = 2 * DEFAULT_THIN_POOL_MAX_METADATA_SIZE;
-		} else if (lp->poolmetadatasize < (2 * DEFAULT_THIN_POOL_MIN_METADATA_SIZE)) {
-			if (arg_count(vg->cmd, poolmetadatasize_ARG))
-				log_warn("WARNING: Minimum supported pool metadata size is 2M.");
-			lp->poolmetadatasize = 2 * DEFAULT_THIN_POOL_MIN_METADATA_SIZE;
-		}
-
-		log_verbose("Setting pool metadata size to %" PRIu64 " sectors.",
-			    lp->poolmetadatasize);
+		if (!update_pool_params(vg, lp->target_attr, lp->passed_args,
+					lp->extents, vg->extent_size,
+					&lp->thin_chunk_size_calc_policy,
+					&lp->chunk_size, &lp->discards,
+					&lp->poolmetadatasize, &lp->zero))
+			return_0;
 
 		if (!(lp->poolmetadataextents =
 		      extents_from_size(vg->cmd, lp->poolmetadatasize, vg->extent_size)))
 			return_0;
+		if (lcp->percent == PERCENT_FREE) {
+			if (lp->extents <= (2 * lp->poolmetadataextents)) {
+				log_error("Not enough space for thin pool creation.");
+				return 0;
+			}
+			/* FIXME: persistent hidden space in VG wanted */
+			lp->extents -= (2 * lp->poolmetadataextents);
+		}
 	}
 
 	return 1;
@@ -383,22 +391,14 @@ static int _read_size_params(struct lvcreate_params *lp,
 	}
 
 	/* If size/extents given with thin, then we are creating a thin pool */
-	if (lp->thin && (arg_count(cmd, size_ARG) || arg_count(cmd, extents_ARG)))
+	if (seg_is_thin(lp) && (arg_count(cmd, size_ARG) || arg_count(cmd, extents_ARG)))
 		lp->create_thin_pool = 1;
 
-	if (arg_count(cmd, poolmetadatasize_ARG)) {
-		if (!seg_is_thin(lp)) {
-			log_error("--poolmetadatasize may only be specified when allocating the thin pool.");
-			return 0;
-		}
-		if (arg_sign_value(cmd, poolmetadatasize_ARG, SIGN_NONE) == SIGN_MINUS) {
-			log_error("Negative poolmetadatasize is invalid.");
-			return 0;
-		}
-		lp->poolmetadatasize = arg_uint64_value(cmd, poolmetadatasize_ARG, UINT64_C(0));
+	if (!lp->create_thin_pool && arg_count(cmd, poolmetadatasize_ARG)) {
+		log_error("--poolmetadatasize may only be specified when allocating the thin pool.");
+		return 0;
 	}
 
-	/* Size returned in kilobyte units; held in sectors */
 	if (arg_count(cmd, virtualsize_ARG)) {
 		if (seg_is_thin_pool(lp)) {
 			log_error("Virtual size in incompatible with thin_pool segment type.");
@@ -408,6 +408,7 @@ static int _read_size_params(struct lvcreate_params *lp,
 			log_error("Negative virtual origin size is invalid");
 			return 0;
 		}
+		/* Size returned in kilobyte units; held in sectors */
 		lp->voriginsize = arg_uint64_value(cmd, virtualsize_ARG,
 						   UINT64_C(0));
 		if (!lp->voriginsize) {
@@ -415,8 +416,9 @@ static int _read_size_params(struct lvcreate_params *lp,
 			return 0;
 		}
 	} else {
-		/* No virtual size given, so no thin LV to create. */
-		if (seg_is_thin_volume(lp) && !(lp->segtype = get_segtype_from_string(cmd, "thin-pool")))
+		/* No virtual size given and no snapshot, so no thin LV to create. */
+		if (seg_is_thin_volume(lp) && !lp->snapshot &&
+		    !(lp->segtype = get_segtype_from_string(cmd, "thin-pool")))
 			return_0;
 
 		lp->thin = 0;
@@ -492,9 +494,7 @@ static int _read_mirror_params(struct lvcreate_params *lp,
 		}
 		lp->region_size = arg_uint_value(cmd, regionsize_ARG, 0);
 	} else {
-		region_size = 2 * find_config_tree_int(cmd,
-					"activation/mirror_region_size",
-					DEFAULT_MIRROR_REGION_SIZE);
+		region_size = get_default_region_size(cmd);
 		if (region_size < 0) {
 			log_error("Negative regionsize in configuration file "
 				  "is invalid");
@@ -528,13 +528,22 @@ static int _read_raid_params(struct lvcreate_params *lp,
 	 *   lp->stripes
 	 *   lp->stripe_size
 	 *
-	 * For RAID 4/5/6, these values must be set.
+	 * For RAID 4/5/6/10, these values must be set.
 	 */
 	if (!segtype_is_mirrored(lp->segtype) &&
 	    (lp->stripes <= lp->segtype->parity_devs)) {
 		log_error("Number of stripes must be at least %d for %s",
 			  lp->segtype->parity_devs + 1, lp->segtype->name);
 		return 0;
+	} else if (!strcmp(lp->segtype->name, "raid10") && (lp->stripes < 2)) {
+		if (arg_count(cmd, stripes_ARG)) {
+			/* User supplied the bad argument */
+			log_error("Segment type 'raid10' requires 2 or more stripes.");
+			return 0;
+		}
+		/* No stripe argument was given - default to 2 */
+		lp->stripes = 2;
+		lp->stripe_size = find_config_tree_int(cmd, metadata_stripesize_CFG, NULL) * 2;
 	}
 
 	/*
@@ -572,6 +581,22 @@ static int _read_raid_params(struct lvcreate_params *lp,
 		return 0;
 	}
 
+	if (arg_count(cmd, minrecoveryrate_ARG))
+		lp->min_recovery_rate = arg_uint_value(cmd,
+						       minrecoveryrate_ARG, 0);
+	if (arg_count(cmd, maxrecoveryrate_ARG))
+		lp->max_recovery_rate = arg_uint_value(cmd,
+						       maxrecoveryrate_ARG, 0);
+
+	/* Rates are recorded in kiB/sec/disk, not sectors/sec/disk */
+	lp->min_recovery_rate /= 2;
+	lp->max_recovery_rate /= 2;
+
+	if (lp->max_recovery_rate &&
+	    (lp->max_recovery_rate < lp->min_recovery_rate)) {
+		log_error("Minumum recovery rate cannot be higher than maximum.");
+		return 0;
+	}
 	return 1;
 }
 
@@ -610,7 +635,7 @@ static int _read_activation_params(struct lvcreate_params *lp, struct cmd_contex
 		else
 			lp->read_ahead = (lp->read_ahead / pagesize) * pagesize;
 		log_warn("WARNING: Overriding readahead to %u sectors, a multiple "
-			    "of %uK page size.", lp->read_ahead, pagesize >> 1);
+			 "of %uK page size.", lp->read_ahead, pagesize >> 1);
 	}
 
 	/*
@@ -667,6 +692,23 @@ static int _read_activation_params(struct lvcreate_params *lp, struct cmd_contex
 		return 0;
 	}
 
+	if (arg_count(cmd, setactivationskip_ARG)) {
+		lp->activation_skip |= ACTIVATION_SKIP_SET;
+		if (arg_int_value(cmd, setactivationskip_ARG, 0))
+			lp->activation_skip |= ACTIVATION_SKIP_SET_ENABLED;
+	}
+
+	if (arg_count(cmd, ignoreactivationskip_ARG))
+		lp->activation_skip |= ACTIVATION_SKIP_IGNORE;
+
+	if (lp->zero && (lp->activation_skip & ACTIVATION_SKIP_SET_ENABLED)
+	    && !(lp->activation_skip & ACTIVATION_SKIP_IGNORE)) {
+		log_error("--setactivationskip y requires either --zero n "
+			  "or --ignoreactivationskip");
+		return 0;
+	}
+
+
 	return 1;
 }
 
@@ -679,31 +721,30 @@ static int _lvcreate_params(struct lvcreate_params *lp,
 	struct arg_value_group_list *current_group;
 	const char *segtype_str;
 	const char *tag;
-	unsigned attr = 0;
 
 	memset(lp, 0, sizeof(*lp));
 	memset(lcp, 0, sizeof(*lcp));
 	dm_list_init(&lp->tags);
+	lp->target_attr = ~0;
 
 	/*
 	 * Check selected options are compatible and determine segtype
 	 */
-// FIXME -m0 implies *striped*
 	if ((arg_count(cmd, thin_ARG) || arg_count(cmd, thinpool_ARG)) &&
 	    arg_count(cmd,mirrors_ARG)) {
-		log_error("--thin,--thinpool  and --mirrors are incompatible.");
+		log_error("--thin, --thinpool and --mirrors are incompatible.");
 		return 0;
 	}
 
-// FIXME -m0 implies *striped*
-
-	/* Set default segtype */
-	if (arg_count(cmd, mirrors_ARG))
-		/*
-		 * FIXME: Add default setting for when -i and -m arguments
-		 *        are both given.  We should default to "raid10".
-		 */
-		segtype_str = find_config_tree_str(cmd, "global/mirror_segtype_default", DEFAULT_MIRROR_SEGTYPE);
+	/* Set default segtype - remember, '-m 0' implies stripe. */
+	if (arg_count(cmd, mirrors_ARG) &&
+	    arg_uint_value(cmd, mirrors_ARG, 0))
+		if (arg_uint_value(cmd, arg_count(cmd, stripes_long_ARG) ?
+				   stripes_long_ARG : stripes_ARG, 1) > 1) {
+			segtype_str = find_config_tree_str(cmd, global_raid10_segtype_default_CFG, NULL);;
+		} else {
+			segtype_str = find_config_tree_str(cmd, global_mirror_segtype_default_CFG, NULL);
+		}
 	else if (arg_count(cmd, thin_ARG) || arg_count(cmd, thinpool_ARG))
 		segtype_str = "thin";
 	else
@@ -716,6 +757,12 @@ static int _lvcreate_params(struct lvcreate_params *lp,
 
 	if (seg_unknown(lp)) {
 		log_error("Unable to create LV with unknown segment type %s.", segtype_str);
+		return 0;
+	}
+
+	if ((arg_count(cmd, snapshot_ARG) || seg_is_snapshot(lp)) &&
+	     arg_count(cmd, thin_ARG)) {
+		log_error("--thin and --snapshot are incompatible.");
 		return 0;
 	}
 
@@ -741,7 +788,19 @@ static int _lvcreate_params(struct lvcreate_params *lp,
 		lp->mirrors = 2;
 
 	if (arg_count(cmd, mirrors_ARG)) {
+		if (arg_sign_value(cmd, mirrors_ARG, SIGN_NONE) == SIGN_MINUS) {
+			log_error("Mirrors argument may not be negative");
+			return 0;
+		}
+
 		lp->mirrors = arg_uint_value(cmd, mirrors_ARG, 0) + 1;
+
+		if (lp->mirrors > DEFAULT_MIRROR_MAX_IMAGES) {
+			log_error("Only up to " DM_TO_STRING(DEFAULT_MIRROR_MAX_IMAGES)
+				  " images in mirror supported currently.");
+			return 0;
+		}
+
 		if (lp->mirrors == 1) {
 			if (segtype_is_mirrored(lp->segtype)) {
 				log_error("--mirrors must be at least 1 with segment type %s.", lp->segtype->name);
@@ -758,11 +817,6 @@ static int _lvcreate_params(struct lvcreate_params *lp,
 			 */
 			log_error("RAID10 currently supports "
 				  "only 2-way mirroring (i.e. '-m 1')");
-			return 0;
-		}
-
-		if (arg_sign_value(cmd, mirrors_ARG, SIGN_NONE) == SIGN_MINUS) {
-			log_error("Mirrors argument may not be negative");
 			return 0;
 		}
 	}
@@ -796,7 +850,7 @@ static int _lvcreate_params(struct lvcreate_params *lp,
 	}
 
 	if (activation() && lp->segtype->ops->target_present &&
-	    !lp->segtype->ops->target_present(cmd, NULL, &attr)) {
+	    !lp->segtype->ops->target_present(cmd, NULL, &lp->target_attr)) {
 		log_error("%s: Required device-mapper target(s) not "
 			  "detected in your kernel", lp->segtype->name);
 		return 0;
@@ -812,83 +866,53 @@ static int _lvcreate_params(struct lvcreate_params *lp,
 		}
 	}
 
-	if (!_lvcreate_name_params(lp, cmd, &argc, &argv) ||
-	    !_read_size_params(lp, lcp, cmd) ||
-	    !get_stripe_params(cmd, &lp->stripes, &lp->stripe_size) ||
-	    !_read_mirror_params(lp, cmd) ||
-	    !_read_raid_params(lp, cmd))
-		return_0;
-
-	if (lp->create_thin_pool)
-		lp->discards = (thin_discards_t) arg_uint_value(cmd, discards_ARG, THIN_DISCARDS_PASSDOWN);
-	else if (arg_count(cmd, discards_ARG)) {
-		log_error("--discards is only available for thin pool creation.");
-		return 0;
-	}
-
-	if (lp->snapshot && lp->thin && arg_count(cmd, chunksize_ARG))
-		log_warn("WARNING: Ignoring --chunksize with thin snapshots.");
-	else if (lp->thin && !lp->create_thin_pool) {
-		if (arg_count(cmd, chunksize_ARG))
-			log_warn("WARNING: Ignoring --chunksize when using an existing pool.");
-	} else if (lp->snapshot || lp->create_thin_pool) {
-		if (arg_sign_value(cmd, chunksize_ARG, SIGN_NONE) == SIGN_MINUS) {
-			log_error("Negative chunk size is invalid");
-			return 0;
-		}
-		if (lp->snapshot) {
-			lp->chunk_size = arg_uint_value(cmd, chunksize_ARG, 8);
-			if (lp->chunk_size < 8 || lp->chunk_size > 1024 ||
-			    (lp->chunk_size & (lp->chunk_size - 1))) {
-				log_error("Chunk size must be a power of 2 in the "
-					  "range 4K to 512K");
-				return 0;
-			}
-		} else {
-			lp->chunk_size = arg_uint_value(cmd, chunksize_ARG,
-							DM_THIN_MIN_DATA_BLOCK_SIZE);
-			if ((lp->chunk_size < DM_THIN_MIN_DATA_BLOCK_SIZE) ||
-			    (lp->chunk_size > DM_THIN_MAX_DATA_BLOCK_SIZE)) {
-				log_error("Chunk size must be in the range %uK to %uK",
-					  (DM_THIN_MIN_DATA_BLOCK_SIZE / 2),
-					  (DM_THIN_MAX_DATA_BLOCK_SIZE / 2));
-				return 0;
-			}
-			if (!(attr & THIN_FEATURE_BLOCK_SIZE) &&
-			    (lp->chunk_size & (lp->chunk_size - 1))) {
-				log_error("Chunk size must be a power of 2 for this thin target version.");
-				return 0;
-			} else if (lp->chunk_size & (DM_THIN_MIN_DATA_BLOCK_SIZE - 1)) {
-				log_error("Chunk size must be multiple of %uK.",
-					  DM_THIN_MIN_DATA_BLOCK_SIZE / 2);
-				return 0;
-			} else if ((lp->discards != THIN_DISCARDS_IGNORE) &&
-				   (lp->chunk_size & (lp->chunk_size - 1))) {
-				log_warn("WARNING: Using discards ignore for chunk size non power of 2.");
-				lp->discards = THIN_DISCARDS_IGNORE;
-			}
-		}
-		log_verbose("Setting chunksize to %u sectors.", lp->chunk_size);
-
-		if (!lp->thin && lp->snapshot && !(lp->segtype = get_segtype_from_string(cmd, "snapshot")))
-			return_0;
-	} else if (arg_count(cmd, chunksize_ARG)) {
-		log_error("-c is only available with snapshots and thin pools");
-		return 0;
-	}
-
 	/*
 	 * Should we zero the lv.
 	 */
 	lp->zero = strcmp(arg_str_value(cmd, zero_ARG,
 		(lp->segtype->flags & SEG_CANNOT_BE_ZEROED) ? "n" : "y"), "n");
 
-	if (lp->mirrors > DEFAULT_MIRROR_MAX_IMAGES) {
-		log_error("Only up to %d images in mirror supported currently.",
-			  DEFAULT_MIRROR_MAX_IMAGES);
+	if (!_lvcreate_name_params(lp, cmd, &argc, &argv) ||
+	    !_read_size_params(lp, lcp, cmd) ||
+	    !get_stripe_params(cmd, &lp->stripes, &lp->stripe_size) ||
+	    (lp->create_thin_pool &&
+	     !get_pool_params(cmd, NULL, &lp->passed_args,
+			      &lp->thin_chunk_size_calc_policy,
+			      &lp->chunk_size, &lp->discards,
+			      &lp->poolmetadatasize, &lp->zero)) ||
+	    !_read_mirror_params(lp, cmd) ||
+	    !_read_raid_params(lp, cmd))
+		return_0;
+
+	if (lp->snapshot && (lp->extents || lcp->size)) {
+		if (arg_sign_value(cmd, chunksize_ARG, SIGN_NONE) == SIGN_MINUS) {
+			log_error("Negative chunk size is invalid.");
+			return 0;
+		}
+		lp->chunk_size = arg_uint_value(cmd, chunksize_ARG, 8);
+		if (lp->chunk_size < 8 || lp->chunk_size > 1024 ||
+		    (lp->chunk_size & (lp->chunk_size - 1))) {
+			log_error("Chunk size must be a power of 2 in the "
+				  "range 4K to 512K.");
+			return 0;
+		}
+		log_verbose("Setting chunksize to %s.", display_size(cmd, lp->chunk_size));
+
+		if (!(lp->segtype = get_segtype_from_string(cmd, "snapshot")))
+			return_0;
+	} else if (!lp->create_thin_pool && arg_count(cmd, chunksize_ARG)) {
+		log_error("--chunksize is only available with snapshots and thin pools.");
 		return 0;
 	}
 
+	if (lp->create_thin_pool) {
+		/* TODO: add lvm.conf default y|n */
+		lp->poolmetadataspare = arg_int_value(cmd, poolmetadataspare_ARG,
+						      DEFAULT_POOL_METADATA_SPARE);
+	} else if (arg_count(cmd, poolmetadataspare_ARG)) {
+		log_error("--poolmetadataspare is only available with thin pool creation.");
+		return 0;
+	}
 	/*
 	 * Allocation parameters
 	 */
@@ -928,16 +952,37 @@ static int _check_thin_parameters(struct volume_group *vg, struct lvcreate_param
 				  struct lvcreate_cmdline_params *lcp)
 {
 	struct lv_list *lvl;
+	unsigned i;
 
-	if (!lp->thin && !lp->create_thin_pool) {
+	if (!lp->thin && !lp->create_thin_pool && !lp->snapshot) {
 		log_error("Please specify device size(s).");
 		return 0;
 	}
 
-	if (lp->thin && !lp->create_thin_pool) {
-		if (arg_count(vg->cmd, chunksize_ARG)) {
-			log_error("Only specify --chunksize when originally creating the thin pool.");
-			return 0;
+	if (lp->thin && lp->snapshot) {
+		log_error("Please either create snapshot or thin volume.");
+		return 0;
+	}
+
+	if (!lp->create_thin_pool) {
+		static const int _argname[] = {
+			alloc_ARG,
+			chunksize_ARG,
+			contiguous_ARG,
+			discards_ARG,
+			poolmetadatasize_ARG,
+			poolmetadataspare_ARG,
+			stripes_ARG,
+			stripesize_ARG,
+			zero_ARG
+		};
+
+		for (i = 0; i < sizeof(_argname)/sizeof(_argname[0]); ++i) {
+			if (arg_count(vg->cmd, _argname[i])) {
+				log_error("%s is only available for thin pool creation.",
+					  arg_long_option_name(_argname[i]));
+				return 0;
+			}
 		}
 
 		if (lcp->pv_count) {
@@ -945,62 +990,30 @@ static int _check_thin_parameters(struct volume_group *vg, struct lvcreate_param
 			return 0;
 		}
 
-		if (arg_count(vg->cmd, alloc_ARG)) {
-			log_error("--alloc may only be specified when allocating the thin pool.");
+		if (!lp->pool) {
+			log_error("Please specify name of existing thin pool.");
 			return 0;
 		}
 
-		if (arg_count(vg->cmd, poolmetadatasize_ARG)) {
-			log_error("--poolmetadatasize may only be specified when allocating the thin pool.");
-			return 0;
-		}
-
-		if (arg_count(vg->cmd, stripesize_ARG)) {
-			log_error("--stripesize may only be specified when allocating the thin pool.");
-			return 0;
-		}
-
-		if (arg_count(vg->cmd, stripes_ARG)) {
-			log_error("--stripes may only be specified when allocating the thin pool.");
-			return 0;
-		}
-
-		if (arg_count(vg->cmd, contiguous_ARG)) {
-			log_error("--contiguous may only be specified when allocating the thin pool.");
-			return 0;
-		}
-
-		if (arg_count(vg->cmd, zero_ARG)) {
-			log_error("--zero may only be specified when allocating the thin pool.");
-			return 0;
-		}
-	}
-
-	if (lp->create_thin_pool && lp->pool) {
-		if (find_lv_in_vg(vg, lp->pool)) {
-			log_error("Pool %s already exists in Volume group %s.", lp->pool, vg->name);
-			return 0;
-		}
-	} else if (lp->pool) {
 		if (!(lvl = find_lv_in_vg(vg, lp->pool))) {
-			log_error("Pool %s not found in Volume group %s.", lp->pool, vg->name);
+			log_error("Thin pool %s not found in Volume group %s.", lp->pool, vg->name);
 			return 0;
 		}
+
 		if (!lv_is_thin_pool(lvl->lv)) {
 			log_error("Logical volume %s is not a thin pool.", lp->pool);
 			return 0;
 		}
-	} else if (!lp->create_thin_pool) {
-		log_error("Please specify name of existing pool.");
+	} else if (lp->pool && find_lv_in_vg(vg, lp->pool)) {
+		log_error("Thin pool %s already exists in Volume group %s.", lp->pool, vg->name);
 		return 0;
 	}
 
-	if (!lp->thin && lp->lv_name) {
-		log_error("--name may only be given when creating a new thin Logical volume or snapshot.");
-		return 0;
-	}
-
-	if (!lp->thin) {
+	if (!lp->thin && !lp->snapshot) {
+		if (lp->lv_name) {
+			log_error("--name may only be given when creating a new thin Logical volume or snapshot.");
+			return 0;
+		}
 		if (arg_count(vg->cmd, readahead_ARG)) {
 			log_error("--readhead may only be given when creating a new thin Logical volume or snapshot.");
 			return 0;
@@ -1044,12 +1057,7 @@ static int _validate_internal_thin_processing(const struct lvcreate_params *lp)
 		r = 0;
 	}
 
-	if (lp->snapshot && (lp->create_thin_pool || !lp->thin)) {
-		log_error(INTERNAL_ERROR "Inconsistent thin and snapshot parameters identified.");
-		r = 0;
-	}
-
-	if (!lp->thin && !lp->create_thin_pool) {
+	if (!lp->thin && !lp->create_thin_pool && !lp->snapshot) {
 		log_error(INTERNAL_ERROR "Failed to identify what type of thin target to use.");
 		r = 0;
 	}
@@ -1064,7 +1072,7 @@ static int _validate_internal_thin_processing(const struct lvcreate_params *lp)
 
 int lvcreate(struct cmd_context *cmd, int argc, char **argv)
 {
-	int r = ECMD_PROCESSED;
+	int r = ECMD_FAILED;
 	struct lvcreate_params lp;
 	struct lvcreate_cmdline_params lcp;
 	struct volume_group *vg;
@@ -1076,42 +1084,36 @@ int lvcreate(struct cmd_context *cmd, int argc, char **argv)
 	vg = vg_read_for_update(cmd, lp.vg_name, NULL, 0);
 	if (vg_read_error(vg)) {
 		release_vg(vg);
-		stack;
-		return ECMD_FAILED;
+		return_ECMD_FAILED;
 	}
 
-	if (lp.snapshot && lp.origin && !_determine_snapshot_type(vg, &lp)) {
-		r = ECMD_FAILED;
+	if (lp.snapshot && lp.origin && !_determine_snapshot_type(vg, &lp))
 		goto_out;
-	}
 
-	if (seg_is_thin(&lp) && !_check_thin_parameters(vg, &lp, &lcp)) {
-		r = ECMD_FAILED;
+	if (seg_is_thin(&lp) && !_check_thin_parameters(vg, &lp, &lcp))
 		goto_out;
-	}
 
 	/*
 	 * Check activation parameters to support inactive thin snapshot creation
 	 * FIXME: anything else needs to be moved past _determine_snapshot_type()?
 	 */
-	if (!_read_activation_params(&lp, cmd, vg)) {
-		r = ECMD_FAILED;
+	if (!_read_activation_params(&lp, cmd, vg))
 		goto_out;
-	}
 
-	if (!_update_extents_params(vg, &lp, &lcp)) {
-		r = ECMD_FAILED;
+	if (!_update_extents_params(vg, &lp, &lcp))
 		goto_out;
-	}
 
-	if (seg_is_thin(&lp) && !_validate_internal_thin_processing(&lp)) {
-		r = ECMD_FAILED;
+	if (seg_is_thin(&lp) && !_validate_internal_thin_processing(&lp))
 		goto_out;
-	}
 
-	if (lp.create_thin_pool)
+	if (lp.create_thin_pool) {
+		if (!handle_pool_metadata_spare(vg, lp.poolmetadataextents,
+						lp.pvh, lp.poolmetadataspare))
+			goto_out;
+
 		log_verbose("Making thin pool %s in VG %s using segtype %s",
 			    lp.pool ? : "with generated name", lp.vg_name, lp.segtype->name);
+	}
 
 	if (lp.thin)
 		log_verbose("Making thin LV %s in pool %s in VG %s%s%s using segtype %s",
@@ -1120,10 +1122,10 @@ int lvcreate(struct cmd_context *cmd, int argc, char **argv)
 			    lp.snapshot ? " as snapshot of " : "",
 			    lp.snapshot ? lp.origin : "", lp.segtype->name);
 
-	if (!lv_create_single(vg, &lp)) {
-		stack;
-		r = ECMD_FAILED;
-	}
+	if (!lv_create_single(vg, &lp))
+		goto_out;
+
+	r = ECMD_PROCESSED;
 out:
 	unlock_and_release_vg(cmd, vg, lp.vg_name);
 	return r;
