@@ -46,13 +46,10 @@ endif
 CONFIGURE += \
 	--prefix=/usr \
 	--exec-prefix= \
+	--sbindir=/sbin \
 	--mandir=\$${prefix}/share/man \
 	--infodir=\$${prefix}/share/info \
 	--with-confdir=\$${exec_prefix}/etc
-
-ifneq (,$(findstring $(DEB_HOST_ARCH), arm armeb hppa mips mipsel))
-CONFIGURE_FLAGS += --disable-o_direct
-endif
 
 source: $(STAMPS_DIR)/source
 

@@ -1,8 +1,8 @@
 Author: Bastian Blank <waldi@debian.org>
 ---
---- lvm2-2.02.104.orig/scripts/Makefile.in
-+++ lvm2-2.02.104/scripts/Makefile.in
-@@ -96,6 +96,8 @@ endif
+--- a/scripts/Makefile.in
++++ b/scripts/Makefile.in
+@@ -96,6 +96,8 @@
  
  install_systemd_units:
  	$(INSTALL_DIR) $(systemd_unit_dir)
@@ -12,7 +12,7 @@ Author: Bastian Blank <waldi@debian.org>
  	$(INSTALL_DATA) dm_event_systemd_red_hat.socket $(systemd_unit_dir)/dm-event.socket
  	$(INSTALL_DATA) dm_event_systemd_red_hat.service $(systemd_unit_dir)/dm-event.service
 --- /dev/null
-+++ lvm2-2.02.104/scripts/lvm2-activation-early_systemd_debian.service
++++ b/scripts/lvm2-activation-early_systemd_debian.service
 @@ -0,0 +1,14 @@
 +[Unit]
 +Description=Activation of LVM2 logical volumes
@@ -29,7 +29,7 @@ Author: Bastian Blank <waldi@debian.org>
 +[Install]
 +WantedBy=local-fs.target
 --- /dev/null
-+++ lvm2-2.02.104/scripts/lvm2-activation_systemd_debian.service
++++ b/scripts/lvm2-activation_systemd_debian.service
 @@ -0,0 +1,14 @@
 +[Unit]
 +Description=Activation of LVM2 logical volumes
@@ -45,3 +45,12 @@ Author: Bastian Blank <waldi@debian.org>
 +
 +[Install]
 +WantedBy=local-fs.target
+--- a/scripts/lvm2_lvmetad_systemd_red_hat.service.in
++++ b/scripts/lvm2_lvmetad_systemd_red_hat.service.in
+@@ -14,6 +14,3 @@ ExecReload=@sbindir@/lvmetad -R
+ Environment=SD_ACTIVATION=1
+ Restart=on-abort
+ PIDFile=@LVMETAD_PIDFILE@
+-
+-[Install]
+-WantedBy=sysinit.target
