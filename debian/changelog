@@ -1,3 +1,12 @@
+lvm2 (2.02.104-2) unstable; urgency=medium
+
+  * Don't longer disable O_DIRECT.
+  * Install lvmetad systemd units:
+    - Don't activate it always.
+    - Set sbin dir.
+
+ -- Bastian Blank <waldi@debian.org>  Fri, 14 Feb 2014 19:38:41 +0100
+
 lvm2 (2.02.104-1) unstable; urgency=medium
 
   * New upstream version.
