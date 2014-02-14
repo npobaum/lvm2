@@ -1416,10 +1416,12 @@ int target_register_events(struct cmd_context *cmd, const char *dso, struct logi
 
 	if (!r)
 		return_0;
+	else if (r == 2)
+		log_info("No monitoring daemon available for %s", uuid);
+	else if (r == 1)
+		log_info("%s %s for events", set ? "Monitored" : "Unmonitored", uuid);
 
-	log_info("%s %s for events", set ? "Monitored" : "Unmonitored", uuid);
-
-	return 1;
+	return r;
 }
 
 #endif
@@ -1433,7 +1435,7 @@ int monitor_dev_for_events(struct cmd_context *cmd, struct logical_volume *lv,
 {
 #ifdef DMEVENTD
 	int i, pending = 0, monitored;
-	int r = 1;
+	int r = 1, err;
 	struct dm_list *snh, *snht;
 	struct lv_segment *seg;
 	struct lv_segment *log_seg;
@@ -1568,25 +1570,30 @@ int monitor_dev_for_events(struct cmd_context *cmd, struct logical_volume *lv,
 			continue;
 
 		/* FIXME specify events */
-		if (!monitor_fn(seg, 0)) {
+		err = monitor_fn(seg, 0);
+		if (!err) {
 			log_error("%s/%s: %s segment monitoring function failed.",
 				  lv->vg->name, lv->name, seg->segtype->name);
 			return 0;
 		}
-
-		/* Check [un]monitor results */
-		/* Try a couple times if pending, but not forever... */
-		for (i = 0; i < 10; i++) {
-			pending = 0;
-			monitored = seg->segtype->ops->target_monitored(seg, &pending);
-			if (pending ||
-			    (!monitored && monitor) ||
-			    (monitored && !monitor))
-				log_very_verbose("%s/%s %smonitoring still pending: waiting...",
-						 lv->vg->name, lv->name, monitor ? "" : "un");
-			else
-				break;
-			sleep(1);
+		/* XXX: Ignore monitoring events if no daemon is available. */
+		else if (err == 2)
+			monitored = monitor = 0;
+		else {
+			/* Check [un]monitor results */
+			/* Try a couple times if pending, but not forever... */
+			for (i = 0; i < 10; i++) {
+				pending = 0;
+				monitored = seg->segtype->ops->target_monitored(seg, &pending);
+				if (pending ||
+				    (!monitored && monitor) ||
+				    (monitored && !monitor))
+					log_very_verbose("%s/%s %smonitoring still pending: waiting...",
+							 lv->vg->name, lv->name, monitor ? "" : "un");
+				else
+					break;
+				sleep(1);
+			}
 		}
 
 		if (r)
