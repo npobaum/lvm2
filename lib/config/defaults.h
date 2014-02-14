@@ -63,7 +63,7 @@
 #define DEFAULT_DMEVENTD_MIRROR_LIB "libdevmapper-event-lvm2mirror.so"
 #define DEFAULT_DMEVENTD_SNAPSHOT_LIB "libdevmapper-event-lvm2snapshot.so"
 #define DEFAULT_DMEVENTD_THIN_LIB "libdevmapper-event-lvm2thin.so"
-#define DEFAULT_DMEVENTD_MONITOR 1
+#define DEFAULT_DMEVENTD_MONITOR 0
 #define DEFAULT_BACKGROUND_POLLING 1
 
 #define DEFAULT_THIN_CHECK_OPTIONS "-q"
