@@ -14,6 +14,3 @@ ExecReload=@sbindir@/lvmetad -R
 Environment=SD_ACTIVATION=1
 Restart=on-abort
 PIDFile=@LVMETAD_PIDFILE@
-
-[Install]
-WantedBy=sysinit.target
