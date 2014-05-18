@@ -1885,7 +1885,7 @@ static int _reinstate_registrations(struct dm_event_fifos *fifos)
 	unsigned long mask_value, timeout_value;
 	int i, ret;
 
-	ret = daemon_talk(fifos, &msg, DM_EVENT_CMD_HELLO, NULL, NULL, 0, 0);
+	ret = dm_event_daemon_talk(fifos, &msg, DM_EVENT_CMD_HELLO, NULL, NULL, 0, 0);
 	dm_free(msg.data);
 	msg.data = NULL;
 
@@ -1918,7 +1918,7 @@ static int _reinstate_registrations(struct dm_event_fifos *fifos)
 			continue;
 		}
 
-		if (daemon_talk(fifos, &msg, DM_EVENT_CMD_REGISTER_FOR_EVENT,
+		if (dm_event_daemon_talk(fifos, &msg, DM_EVENT_CMD_REGISTER_FOR_EVENT,
 				dso_name,
 				dev_name,
 				(enum dm_event_mask) mask_value,
@@ -1946,7 +1946,7 @@ static void restart(void)
 	const char *e;
 
 	/* Get the list of registrations from the running daemon. */
-	if (!init_fifos(&fifos)) {
+	if (!dm_event_daemon_init_fifos(&fifos)) {
 		fprintf(stderr, "WARNING: Could not initiate communication with existing dmeventd.\n");
 		exit(EXIT_FAILURE);
 	}
@@ -1963,7 +1963,7 @@ static void restart(void)
 		goto bad;
 	}
 
-	if (daemon_talk(&fifos, &msg, DM_EVENT_CMD_GET_STATUS, "-", "-", 0, 0))
+	if (dm_event_daemon_talk(&fifos, &msg, DM_EVENT_CMD_GET_STATUS, "-", "-", 0, 0))
 		goto bad;
 
 	message = msg.data;
@@ -1992,7 +1992,7 @@ static void restart(void)
 	_initial_registrations[count] = 0;
 
 	if (version >= 2) {
-		if (daemon_talk(&fifos, &msg, DM_EVENT_CMD_GET_PARAMETERS, "-", "-", 0, 0)) {
+		if (dm_event_daemon_talk(&fifos, &msg, DM_EVENT_CMD_GET_PARAMETERS, "-", "-", 0, 0)) {
 			fprintf(stderr, "Failed to acquire parameters from old dmeventd.\n");
 			goto bad;
 		}
@@ -2012,7 +2012,7 @@ static void restart(void)
 	}
 #endif
 
-	if (daemon_talk(&fifos, &msg, DM_EVENT_CMD_DIE, "-", "-", 0, 0)) {
+	if (dm_event_daemon_talk(&fifos, &msg, DM_EVENT_CMD_DIE, "-", "-", 0, 0)) {
 		fprintf(stderr, "Old dmeventd refused to die.\n");
 		goto bad;
 	}
@@ -2028,13 +2028,13 @@ static void restart(void)
 	}
 
 	if (!_systemd_activation) {
-		fini_fifos(&fifos);
+		dm_event_daemon_fini_fifos(&fifos);
 		return;
 	}
 
 	/* Reopen fifos. */
-	fini_fifos(&fifos);
-	if (!init_fifos(&fifos)) {
+	dm_event_daemon_fini_fifos(&fifos);
+	if (!dm_event_daemon_init_fifos(&fifos)) {
 		fprintf(stderr, "Could not initiate communication with new instance of dmeventd.\n");
 		exit(EXIT_FAILURE);
 	}
@@ -2044,10 +2044,10 @@ static void restart(void)
 		goto bad;
 	}
 
-	fini_fifos(&fifos);
+	dm_event_daemon_fini_fifos(&fifos);
 	exit(EXIT_SUCCESS);
 bad:
-	fini_fifos(&fifos);
+	dm_event_daemon_fini_fifos(&fifos);
 	exit(EXIT_FAILURE);
 }
 
