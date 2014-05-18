@@ -19,7 +19,6 @@
 #include "xlate.h"
 #include "lvmcache.h"
 #include "lvmetad.h"
-#include "metadata.h"
 
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -76,11 +75,11 @@ void label_exit(void)
 	dm_list_init(&_labellers);
 }
 
-int label_register_handler(const char *name, struct labeller *handler)
+int label_register_handler(struct labeller *handler)
 {
 	struct labeller_i *li;
 
-	if (!(li = _alloc_li(name, handler)))
+	if (!(li = _alloc_li(handler->fmt->name, handler)))
 		return_0;
 
 	dm_list_add(&_labellers, &li->list);
@@ -280,10 +279,12 @@ int label_read(struct device *dev, struct label **result,
 	}
 
 	if (!(l = _find_labeller(dev, buf, &sector, scan_sector)))
-		goto out;
+		goto_out;
 
-	if ((r = (l->ops->read)(l, dev, buf, result)) && result && *result)
+	if ((r = (l->ops->read)(l, dev, buf, result)) && result && *result) {
+		(*result)->dev = dev;
 		(*result)->sector = sector;
+	}
 
       out:
 	if (!dev_close(dev))

@@ -190,31 +190,53 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 					inc_error_count;
 				}
 
-				if (seg->area_count != 1 || seg_type(seg, 0) != AREA_LV) {
-					log_error("LV %s: thin pool segment %u is missing a pool data LV",
-						  lv->name, seg_count);
+			}
+			if (seg_is_thin_pool(seg) || seg_is_cache_pool(seg)) {
+				if (seg->area_count != 1 ||
+				    seg_type(seg, 0) != AREA_LV) {
+					log_error("LV %s: %spool segment %u is missing a pool data LV",
+						  lv->name,
+						  seg_is_thin_pool(seg) ?
+						  "thin " : "cache",
+						  seg_count);
 					inc_error_count;
 				} else if (!(seg2 = first_seg(seg_lv(seg, 0))) || find_pool_seg(seg2) != seg) {
-					log_error("LV %s: thin pool segment %u data LV does not refer back to pool LV",
-						  lv->name, seg_count);
+					log_error("LV %s: %spool segment %u data LV does not refer back to pool LV",
+						  lv->name,
+						  seg_is_thin_pool(seg) ?
+						  "thin " : "cache",
+						  seg_count);
 					inc_error_count;
 				}
 
 				if (!seg->metadata_lv) {
-					log_error("LV %s: thin pool segment %u is missing a pool metadata LV",
-						  lv->name, seg_count);
+					log_error("LV %s: %spool segment %u is missing a pool metadata LV",
+						  lv->name,
+						  seg_is_thin_pool(seg) ?
+						  "thin " : "cache",
+						  seg_count);
 					inc_error_count;
 				} else if (!(seg2 = first_seg(seg->metadata_lv)) ||
 					   find_pool_seg(seg2) != seg) {
-					log_error("LV %s: thin pool segment %u metadata LV does not refer back to pool LV",
-						  lv->name, seg_count);
+					log_error("LV %s: %spool segment %u metadata LV does not refer back to pool LV",
+						  lv->name,
+						  seg_is_thin_pool(seg) ?
+						  "thin " : "cache",
+						  seg_count);
 					inc_error_count;
 				}
 
-				if (seg->chunk_size < DM_THIN_MIN_DATA_BLOCK_SIZE ||
-				    seg->chunk_size > DM_THIN_MAX_DATA_BLOCK_SIZE) {
-					log_error("LV %s: thin pool segment %u has chunk size %u out of range.",
-						  lv->name, seg_count, seg->chunk_size);
+				if ((seg_is_thin_pool(seg) &&
+				     ((seg->chunk_size < DM_THIN_MIN_DATA_BLOCK_SIZE) ||
+				     (seg->chunk_size > DM_THIN_MAX_DATA_BLOCK_SIZE))) ||
+				    (seg_is_cache_pool(seg) &&
+				     ((seg->chunk_size < DM_CACHE_MIN_DATA_BLOCK_SIZE) ||
+				     (seg->chunk_size > DM_CACHE_MAX_DATA_BLOCK_SIZE)))) {
+					log_error("LV %s: %spool segment %u has chunk size %u out of range.",
+						  lv->name,
+						  seg_is_thin_pool(seg) ?
+						  "thin " : "cache",
+						  seg_count, seg->chunk_size);
 					inc_error_count;
 				}
 			} else {
@@ -256,6 +278,30 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 				if (seg->external_lv && (seg->external_lv->status & LVM_WRITE)) {
 					log_error("LV %s: external origin %s is writable.",
 						  lv->name, seg->external_lv->name);
+					inc_error_count;
+				}
+
+				if (seg->merge_lv) {
+					if (!lv_is_thin_volume(seg->merge_lv)) {
+						log_error("LV %s: thin volume segment %u merging LV %s is not flagged as a thin LV",
+							  lv->name, seg_count, seg->merge_lv->name);
+						inc_error_count;
+					}
+					if (!lv_is_merging_origin(seg->merge_lv)) {
+						log_error("LV %s: merging LV %s is not flagged as merging.",
+							  lv->name, seg->merge_lv->name);
+						inc_error_count;
+					}
+				}
+			} else if (seg_is_cache(seg)) {
+				if (!lv_is_cache(lv)) {
+					log_error("LV %s is missing cache flag for segment %u",
+						  lv->name, seg_count);
+					inc_error_count;
+				}
+				if (!seg->pool_lv) {
+					log_error("LV %s: segment %u is missing cache_pool LV",
+						  lv->name, seg_count);
 					inc_error_count;
 				}
 			} else {

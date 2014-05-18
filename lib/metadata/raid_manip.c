@@ -174,11 +174,13 @@ static int _clear_lv(struct logical_volume *lv)
 	if (test_mode())
 		return 1;
 
-	if (!was_active && !activate_lv_excl_local(lv->vg->cmd, lv)) {
-		log_error("Failed to activate %s for clearing",
+	lv->status |= LV_TEMPORARY;
+	if (!was_active && !activate_lv_local(lv->vg->cmd, lv)) {
+		log_error("Failed to activate localy %s for clearing",
 			  lv->name);
 		return 0;
 	}
+	lv->status &= ~LV_TEMPORARY;
 
 	log_verbose("Clearing metadata area of %s/%s",
 		    lv->vg->name, lv->name);
@@ -187,7 +189,7 @@ static int _clear_lv(struct logical_volume *lv)
 	 * wipe the first sector to remove the superblock of any previous
 	 * RAID devices.  It is much quicker.
 	 */
-	if (!set_lv(lv->vg->cmd, lv, 1, 0)) {
+	if (!wipe_lv(lv, (struct wipe_params) { .do_zero = 1, .zero_sectors = 1 })) {
 		log_error("Failed to zero %s", lv->name);
 		return 0;
 	}
@@ -417,7 +419,7 @@ static int _alloc_image_components(struct logical_volume *lv,
 
 	if (!(ah = allocate_extents(lv->vg, NULL, segtype, 0, count, count,
 				    region_size, extents, pvs,
-				    lv->alloc, parallel_areas)))
+				    lv->alloc, 0, parallel_areas)))
 		return_0;
 
 	for (s = 0; s < count; s++) {
@@ -481,7 +483,7 @@ static int _alloc_rmeta_for_lv(struct logical_volume *data_lv,
 	if (!(ah = allocate_extents(data_lv->vg, NULL, seg->segtype, 0, 1, 0,
 				    seg->region_size,
 				    1 /*RAID_METADATA_AREA_LEN*/,
-				    &allocatable_pvs, data_lv->alloc, NULL)))
+				    &allocatable_pvs, data_lv->alloc, 0, NULL)))
 		return_0;
 
 	if (!_alloc_image_component(data_lv, base_name, ah, 0,
@@ -838,6 +840,12 @@ static int _raid_extract_images(struct logical_volume *lv, uint32_t new_count,
 	log_verbose("Extracting %u %s from %s/%s", extract,
 		    (extract > 1) ? "images" : "image",
 		    lv->vg->name, lv->name);
+	if (dm_list_size(target_pvs) < extract) {
+		log_error("Unable to remove %d images:  Only %d device%s given.",
+			  extract, dm_list_size(target_pvs),
+			  (dm_list_size(target_pvs) == 1) ? "" : "s");
+		return 0;
+	}
 
 	lvl_array = dm_pool_alloc(lv->vg->vgmem,
 				  sizeof(*lvl_array) * extract * 2);

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copyright (C) 2013 Red Hat, Inc. All rights reserved.
+# Copyright (C) 2013-2014 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
 # modify, copy, or redistribute it subject to the terms and conditions
@@ -11,28 +11,35 @@
 
 . lib/test
 
-aux have_thin 1 9 0 || skip
+aux have_thin 1 10 0 || skip
 
-aux prepare_pvs 3
+aux prepare_pvs 3 1256
 
 vgcreate -s 1M $vg $(cat DEVICES)
 
 for deactivate in true false; do
-	lvcreate -l1 -T $vg/pool
-
-	test $deactivate && lvchange -an $vg
-
+# Create some thin volumes
+	lvcreate -L20 -V30 -n $lv1 -T $vg/pool
+	lvcreate -s $vg/$lv1
 # Confirm we have basic 2M metadata
 	check lv_field $vg/pool_tmeta size "2.00m"
 
-	lvresize --poolmetadata +2 $vg/pool
+	test $deactivate && lvchange -an $vg
 
+	lvresize --poolmetadata +2M $vg/pool
 # Test it's been resized to 4M
 	check lv_field $vg/pool_tmeta size "4.00m"
 
-# TODO: Add more tests when kernel is fixed
+	lvresize --poolmetadata +256M $vg/pool
+	check lv_field $vg/pool_tmeta size "260.00m"
 
+	lvresize --poolmetadata +3G $vg/pool
+	check lv_field $vg/pool_tmeta size "3.25g"
 
-# TODO: Make a full metadata device and test dmeventd support
+	vgchange -an $vg
+	vgchange -ay $vg
+
+# TODO: Add more tests
+
 	lvremove -ff $vg
 done

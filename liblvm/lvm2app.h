@@ -84,20 +84,13 @@ const char *lvm_library_get_version(void);
 /******************************** structures ********************************/
 
 /**
- * Opaque structures - do not use directly.  Internal structures may change
- * without notice between releases, whereas this API will be changed much less
- * frequently.  Backwards compatibility will normally be preserved in future
- * releases.  On any occasion when the developers do decide to break backwards
- * compatibility in any significant way, the LVM_LIBAPI number (included in
- * the library's soname) will be incremented.
+ * Opaque C pointers - Internal structures may change without notice between
+ * releases, whereas this API will be changed much less frequently.  Backwards
+ * compatibility will normally be preserved in future releases.  On any occasion
+ * when the developers do decide to break backwards compatibility in any
+ * significant way, the LVM_LIBAPI number (included in the library's soname)
+ * will be incremented.
  */
-struct lvm;
-struct physical_volume;
-struct volume_group;
-struct logical_volume;
-struct lv_segment;
-struct pv_segment;
-struct lvm_lv_create_params;
 
 /**
  * \class lvm_t
@@ -160,6 +153,14 @@ typedef struct pv_segment *pvseg_t;
  * creating a logical volume
  */
 typedef struct lvm_lv_create_params *lv_create_params_t;
+
+/**
+ * \class pv_create_params
+ *
+ * This pv_create_params represents the plethora of available options when
+ * creating a physical volume
+ */
+typedef struct lvm_pv_create_params *pv_create_params_t;
 
 /**
  * Logical Volume object list.
@@ -502,6 +503,21 @@ vg_t lvm_vg_open(lvm_t libh, const char *vgname, const char *mode,
 		  uint32_t flags);
 
 /**
+ * Validate a name to be used for new VG construction.
+ *
+ * This function checks that the name has no invalid characters,
+ * the length doesn't exceed maximum and that the VG name isn't already in use
+ * and that the name adheres to any other limitations.
+ *
+ * \param libh
+ * Valid library handle
+ *
+ * \param name
+ * Name to validate for new VG create.
+ */
+int lvm_vg_name_validate(lvm_t libh, const char *vg_name);
+
+/**
  * Create a VG with default parameters.
  *
  * \memberof lvm_t
@@ -580,6 +596,62 @@ int lvm_list_pvs_free(struct dm_list *pvlist);
  *  0 on success, else -1 with library errno and text set.
  */
 int lvm_pv_create(lvm_t libh, const char *pv_name, uint64_t size);
+
+/**
+ * Create a physical volume parameter object for PV creation.
+ *
+ * \param	libh	Library handle
+ * \param	pv_name	Device name
+ *
+ * \return
+ * NULL on error, else valid parameter object to use.
+ */
+pv_create_params_t lvm_pv_params_create(lvm_t libh, const char *pv_name);
+
+/**
+ * Create a parameter object to use in function lvm_pv_create_adv
+ *
+ * 	\param 	params	The params object to get property value from
+ * 	\param	name	The name of the property to retrieve
+ *
+ * 	Available properties:
+ *
+ * 	size					zero indicates use detected size of device
+ * 							(recommended and default)
+ *	pvmetadatacopies		Number of metadata copies (0,1,2)
+ *	pvmetadatasize			The approx. size to be to be set aside for metadata
+ *	data_alignment			Align the start of the data to a multiple of
+ *							this number
+ *	data_alignment_offset	Shift the start of the data area by this addl.
+ *							offset
+ *	zero					Set to 1 to zero out first 2048 bytes of
+ *							device, 0 to not (default is 1)
+ *
+ * 	\return
+ * 	lvm_property_value
+ */
+struct lvm_property_value lvm_pv_params_get_property(
+						const pv_create_params_t params,
+						const char *name);
+
+/**
+ * Sets a property of a PV parameter create object.
+ *
+ * \param	params		The parameter object
+ * \param	name		The name of the property to set (see get prop list)
+ * \param	prop		The property to set the value on.
+ */
+int lvm_pv_params_set_property(pv_create_params_t params, const char *name,
+								struct lvm_property_value *prop);
+/**
+ * Creates a physical volume using the supplied params object.
+ *
+ * \param	params		The parameters to use for physical volume creation
+ *
+ * \return
+ * -1 on error, 0 on success.
+ */
+int lvm_pv_create_adv(pv_create_params_t params);
 
 /**
  *  Remove a physical volume.
@@ -1488,6 +1560,23 @@ int lvm_lv_resize(const lv_t lv, uint64_t new_size);
  *
  */
 lv_t lvm_lv_snapshot(const lv_t lv, const char *snap_name, uint64_t max_snap_size);
+
+/**
+ * Validate a name to be used for LV creation.
+ *
+ * Validates that the name does not contain any invalid characters, max length
+ * and that the LV name doesn't already exist for this VG.
+ *
+ * Note: You can have the same LV name in different VGs, thus the reason this
+ * function requires that you specify a VG to check against.
+ *
+ * \param lv
+ * Volume group handle.
+ *
+ * \param name
+ * Name to validate
+ */
+int lvm_lv_name_validate(const vg_t vg, const char *lv_name);
 
 /**
  * Thin provisioning discard policies

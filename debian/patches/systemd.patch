@@ -2,7 +2,7 @@ Author: Bastian Blank <waldi@debian.org>
 ---
 --- a/scripts/Makefile.in
 +++ b/scripts/Makefile.in
-@@ -96,6 +96,8 @@
+@@ -98,6 +98,8 @@
  
  install_systemd_units:
  	$(INSTALL_DIR) $(systemd_unit_dir)
@@ -47,7 +47,7 @@ Author: Bastian Blank <waldi@debian.org>
 +WantedBy=local-fs.target
 --- a/scripts/lvm2_lvmetad_systemd_red_hat.service.in
 +++ b/scripts/lvm2_lvmetad_systemd_red_hat.service.in
-@@ -14,6 +14,3 @@ ExecReload=@sbindir@/lvmetad -R
+@@ -13,6 +13,3 @@
  Environment=SD_ACTIVATION=1
  Restart=on-abort
  PIDFile=@LVMETAD_PIDFILE@

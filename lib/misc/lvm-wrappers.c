@@ -18,7 +18,8 @@
 #include <fcntl.h>
 
 #ifdef UDEV_SYNC_SUPPORT
-static const char _no_context_msg[] = "Udev library context not set.";
+#include <libudev.h>
+
 struct udev *_udev;
 
 int udev_init_library_context(void)
@@ -46,7 +47,7 @@ int udev_is_running(void)
 	int r;
 
 	if (!_udev) {
-		log_debug_activation(_no_context_msg);
+		log_debug_activation("Udev library context not set.");
 		goto bad;
 	}
 
@@ -117,3 +118,24 @@ int read_urandom(void *buf, size_t len)
 	return 1;
 }
 
+/*
+ * Return random integer in [0,max) interval
+ *
+ * The loop rejects numbers that come from an "incomplete" slice of the
+ * RAND_MAX space.  Considering the number space [0, RAND_MAX] is divided
+ * into some "max"-sized slices and at most a single smaller slice,
+ * between [n*max, RAND_MAX] for suitable n, numbers from this last slice
+ * are discarded because they could distort the distribution in favour of
+ * smaller numbers.
+ */
+unsigned lvm_even_rand(unsigned *seed, unsigned max)
+{
+	unsigned r, ret;
+
+	do {
+		r = (unsigned) rand_r(seed);
+		ret = r % max;
+	} while (r - ret > RAND_MAX - max);
+
+	return ret;
+}

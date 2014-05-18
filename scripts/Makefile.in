@@ -82,8 +82,10 @@ ifeq ("@BLKDEACTIVATE@", "yes")
 	$(INSTALL_SCRIPT) blk_availability_init_red_hat $(initdir)/blk-availability
 endif
 
+CFLAGS_lvm2_activation_generator_systemd_red_hat.o += $(EXTRA_EXEC_CFLAGS)
+
 lvm2_activation_generator_systemd_red_hat: $(OBJECTS) $(DEPLIBS)
-	$(CC) -o $@ $(OBJECTS) $(LDFLAGS) $(LVMLIBS)
+	$(CC) -o $@ $(OBJECTS) $(LDFLAGS) $(EXTRA_EXEC_LDFLAGS) $(LVMLIBS)
 
 install_systemd_generators:
 	$(INSTALL_DIR) $(systemd_generator_dir)
@@ -111,6 +113,14 @@ ifeq ("@BUILD_LVMETAD@", "yes")
 	$(INSTALL_DATA) lvm2_lvmetad_systemd_red_hat.service $(systemd_unit_dir)/lvm2-lvmetad.service
 	$(INSTALL_DATA) lvm2_pvscan_systemd_red_hat@.service $(systemd_unit_dir)/lvm2-pvscan@.service
 endif
+ifneq ("@CLVMD@", "none")
+	$(INSTALL_DATA) lvm2_clvmd_systemd_red_hat.service $(systemd_unit_dir)/lvm2-clvmd.service
+	$(INSTALL_DATA) lvm2_cluster_activation_systemd_red_hat.service $(systemd_unit_dir)/lvm2-cluster-activation.service
+	$(INSTALL_DATA) lvm2_cluster_activation_red_hat.sh $(systemd_dir)/lvm2-cluster-activation
+endif
+ifeq ("@BUILD_CMIRRORD@", "yes")
+	$(INSTALL_DATA) lvm2_cmirrord_systemd_red_hat.service $(systemd_unit_dir)/lvm2-cmirrord.service
+endif
 
 install_tmpfiles_configuration:
 	$(INSTALL_DIR) $(tmpfiles_dir)
@@ -124,4 +134,7 @@ DISTCLEAN_TARGETS += clvmd_init_red_hat cmirrord_init_red_hat \
 		     lvm2_pvscan_systemd_red_hat@.service \
 		     lvm2_tmpfiles_red_hat.conf blk_availability_init_red_hat \
 		     blk_availability_systemd_red_hat.service \
-		     blkdeactivate.sh
+		     blkdeactivate.sh lvm2_clvmd_systemd_red_hat.service \
+		     lvm2_cmirrord_systemd_red_hat.service \
+		     lvm2_cluster_activation_systemd_red_hat.service \
+		     lvm2_cluster_activation_red_hat.sh

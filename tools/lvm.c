@@ -182,7 +182,7 @@ int lvm_shell(struct cmd_context *cmd, struct cmdline_context *cmdline)
 	char *input = NULL, *args[MAX_ARGS], **argv;
 
 	rl_readline_name = "lvm";
-	rl_attempted_completion_function = (CPPFunction *) _completion;
+	rl_attempted_completion_function = (rl_completion_func_t *) _completion;
 
 	_read_history(cmd);
 

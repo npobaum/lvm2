@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2014 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -37,12 +37,21 @@ struct lock_list {
 };
 
 static struct dm_list _lock_list;
-static char _lock_dir[NAME_LEN];
+static char _lock_dir[PATH_MAX];
 static int _prioritise_write_locks;
 
 static sig_t _oldhandler;
 static sigset_t _fullsigset, _intsigset;
 static volatile sig_atomic_t _handler_installed;
+
+/* Drop lock known to be shared with another file descriptor. */
+static void _drop_shared_flock(const char *file, int fd)
+{
+	log_debug_locking("_drop_shared_flock %s.", file);
+
+	if (close(fd) < 0)
+		log_sys_debug("close", file);
+}
 
 static void _undo_flock(const char *file, int fd)
 {
@@ -54,10 +63,10 @@ static void _undo_flock(const char *file, int fd)
 	    !fstat(fd, &buf2) &&
 	    is_same_inode(buf1, buf2))
 		if (unlink(file))
-			log_sys_error("unlink", file);
+			log_sys_debug("unlink", file);
 
 	if (close(fd) < 0)
-		log_sys_error("close", file);
+		log_sys_debug("close", file);
 }
 
 static int _release_lock(const char *file, int unlock)
@@ -73,10 +82,10 @@ static int _release_lock(const char *file, int unlock)
 			if (unlock) {
 				log_very_verbose("Unlocking %s", ll->res);
 				if (flock(ll->lf, LOCK_NB | LOCK_UN))
-					log_sys_error("flock", ll->res);
-			}
-
-			_undo_flock(ll->res, ll->lf);
+					log_sys_debug("flock", ll->res);
+				_undo_flock(ll->res, ll->lf);
+			} else
+				_drop_shared_flock(ll->res, ll->lf);
 
 			dm_free(ll->res);
 			dm_free(llh);
@@ -141,7 +150,7 @@ static int _do_flock(const char *file, int *fd, int operation, uint32_t nonblock
 			  operation == LOCK_EX ? 'W' : 'R', nonblock ? ' ' : 'B');
 	do {
 		if ((*fd > -1) && close(*fd))
-			log_sys_error("close", file);
+			log_sys_debug("close", file);
 
 		if ((*fd = open(file, O_CREAT | O_APPEND | O_RDWR, 0777)) < 0) {
 			log_sys_error("open", file);
@@ -162,7 +171,8 @@ static int _do_flock(const char *file, int *fd, int operation, uint32_t nonblock
 			errno = old_errno;
 			log_sys_error("flock", file);
 			if (close(*fd))
-				log_sys_error("close", file);
+				log_sys_debug("close", file);
+			*fd = -1;
 			return 0;
 		}
 

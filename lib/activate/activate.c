@@ -45,10 +45,7 @@ int lvm1_present(struct cmd_context *cmd)
 		return 0;
 	}
 
-	if (path_exists(path))
-		return 1;
-	else
-		return 0;
+	return (path_exists(path)) ? 1 : 0;
 }
 
 int list_segment_modules(struct dm_pool *mem, const struct lv_segment *seg,
@@ -282,6 +279,18 @@ int lv_raid_sync_action(const struct logical_volume *lv, char **sync_action)
 	return 0;
 }
 int lv_raid_message(const struct logical_volume *lv, const char *msg)
+{
+	return 0;
+}
+int lv_cache_block_info(const struct logical_volume *lv,
+			uint32_t *chunk_size, uint64_t *dirty_count,
+			uint64_t *used_count, uint64_t *total_count)
+{
+	return 0;
+}
+int lv_cache_policy_info(const struct logical_volume *lv,
+			 char **policy_name, int *policy_argc,
+			 const char *const **policy_argv)
 {
 	return 0;
 }
@@ -969,6 +978,162 @@ out:
 	return r;
 }
 
+int lv_cache_block_info(struct logical_volume *lv,
+			uint32_t *chunk_size, uint64_t *dirty_count,
+			uint64_t *used_count, uint64_t *total_count)
+{
+	struct lv_segment *cache_seg;
+	struct logical_volume *cache_lv;
+	struct dev_manager *dm;
+	struct dm_status_cache *status;
+
+	/* The user is free to choose which args they are interested in */
+	if (chunk_size)
+		*chunk_size = 0;
+	if (dirty_count)
+		*dirty_count = 0;
+	if (used_count)
+		*used_count = 0;
+	if (total_count)
+		*total_count = 0;
+
+	if (lv_is_cache(lv))
+		cache_lv = lv;
+	else if (lv_is_cache_pool(lv)) {
+		if (dm_list_empty(&lv->segs_using_this_lv)) {
+			//FIXME: Ok to return value not sourced from kernel?
+			//       This could be valuable - esp for 'lvs' output
+			log_error(INTERNAL_ERROR "Unable to get block info"
+				  " of unlinked cache_pool, %s", lv->name);
+			//FIXME: ... because we could do this:
+			if (chunk_size)
+				*chunk_size = first_seg(lv)->chunk_size;
+			/* Unlinked cache_pools have 0 dirty & used blocks */
+			if (total_count) {
+				*total_count = lv->size; /* in sectors */
+				*total_count /= first_seg(lv)->chunk_size;
+			}
+
+			return 1;
+		}
+		if (!(cache_seg = get_only_segment_using_this_lv(lv)))
+			return_0;
+		cache_lv = cache_seg->lv;
+	} else {
+		log_error(INTERNAL_ERROR
+			  "Unable to get block info of non-cache LV, %s",
+			  lv->name);
+		return 0;
+	}
+
+	if (!lv_info(cache_lv->vg->cmd, cache_lv, 0, NULL, 0, 0))
+		return_0;
+
+	log_debug_activation("Checking cache block info for LV %s/%s",
+			     cache_lv->vg->name, cache_lv->name);
+
+	if (!(dm = dev_manager_create(cache_lv->vg->cmd, cache_lv->vg->name, 1)))
+		return_0;
+
+	if (!dev_manager_cache_status(dm, cache_lv, &status)) {
+		dev_manager_destroy(dm);
+		return_0;
+	}
+
+	if (chunk_size)
+		*chunk_size = status->block_size;
+	if (dirty_count)
+		*dirty_count = status->dirty_blocks;
+	if (used_count)
+		*used_count = status->used_blocks;
+	if (total_count)
+		*total_count = status->total_blocks;
+
+	dev_manager_destroy(dm);
+
+	return 1;
+}
+
+int lv_cache_policy_info(struct logical_volume *lv,
+			 const char **policy_name, int *policy_argc,
+			 const char ***policy_argv)
+{
+	int i;
+	struct lv_segment *cache_seg;
+	struct logical_volume *cache_lv;
+	struct dev_manager *dm;
+	struct dm_status_cache *status;
+	struct dm_pool *mem = lv->vg->cmd->mem;
+
+	/* The user is free to choose which args they are interested in */
+	if (policy_name)
+		*policy_name = NULL;
+	if (policy_argc)
+		*policy_argc = 0;
+	if (policy_argv)
+		*policy_argv = NULL;
+
+	if (lv_is_cache(lv))
+		cache_lv = lv;
+	else if (lv_is_cache_pool(lv)) {
+		if (dm_list_empty(&lv->segs_using_this_lv)) {
+			//FIXME: Ok to return value not sourced from kernel?
+			log_error(INTERNAL_ERROR "Unable to get policy info"
+				  " of unlinked cache_pool, %s", lv->name);
+			//FIXME: ... because we could do this:
+			if (policy_name)
+				*policy_name = first_seg(lv)->policy_name;
+			if (policy_argc)
+				*policy_argc = first_seg(lv)->policy_argc;
+			if (policy_argv)
+				*policy_argv = first_seg(lv)->policy_argv;
+
+			return 1;
+		}
+		if (!(cache_seg = get_only_segment_using_this_lv(lv)))
+			return_0;
+		cache_lv = cache_seg->lv;
+	} else {
+		log_error(INTERNAL_ERROR
+			  "Unable to get policy info of non-cache LV, %s",
+			  lv->name);
+		return 0;
+	}
+
+	if (!lv_info(cache_lv->vg->cmd, cache_lv, 0, NULL, 0, 0))
+		return_0;
+
+	log_debug_activation("Checking cache policy for LV %s/%s",
+			     cache_lv->vg->name, cache_lv->name);
+
+	if (!(dm = dev_manager_create(cache_lv->vg->cmd, cache_lv->vg->name, 1)))
+		return_0;
+
+	if (!dev_manager_cache_status(dm, cache_lv, &status)) {
+		dev_manager_destroy(dm);
+		return_0;
+	}
+
+	if (policy_name &&
+	    !(*policy_name = dm_pool_strdup(mem, status->policy_name)))
+		return_0;
+	if (policy_argc)
+		*policy_argc = status->policy_argc;
+	if (policy_argv) {
+		if (!(*policy_argv =
+		      dm_pool_zalloc(mem, sizeof(char *) * status->policy_argc)))
+			return_0;
+		for (i = 0; i < status->policy_argc; ++i)
+			if (!((*policy_argv)[i] =
+			      dm_pool_strdup(mem, status->policy_argv[i])))
+				return_0;
+	}
+
+	dev_manager_destroy(dm);
+
+	return 1;
+}
+
 /*
  * Returns data or metadata percent usage, depends on metadata 0/1.
  * Returns 1 if percent set, else 0 on failure.
@@ -1051,6 +1216,28 @@ int lv_thin_pool_transaction_id(const struct logical_volume *lv,
 	return r;
 }
 
+int lv_thin_device_id(const struct logical_volume *lv, uint32_t *device_id)
+{
+	int r;
+	struct dev_manager *dm;
+
+	if (!activation())
+		return 0;
+
+	log_debug_activation("Checking device id for LV %s/%s",
+			     lv->vg->name, lv->name);
+
+	if (!(dm = dev_manager_create(lv->vg->cmd, lv->vg->name, 1)))
+		return_0;
+
+	if (!(r = dev_manager_thin_device_id(dm, lv, device_id)))
+		stack;
+
+	dev_manager_destroy(dm);
+
+	return r;
+}
+
 static int _lv_active(struct cmd_context *cmd, const struct logical_volume *lv)
 {
 	struct lvinfo info;
@@ -1097,10 +1284,10 @@ static int _lv_preload(struct logical_volume *lv, struct lv_activate_opts *laopt
 	struct dev_manager *dm;
 	int old_readonly = laopts->read_only;
 
-	laopts->read_only = _passes_readonly_filter(lv->vg->cmd, lv);
-
 	if (!(dm = dev_manager_create(lv->vg->cmd, lv->vg->name, (lv->status & PVMOVE) ? 0 : 1)))
 		goto_out;
+
+	laopts->read_only = _passes_readonly_filter(lv->vg->cmd, lv);
 
 	if (!(r = dev_manager_preload(dm, lv, laopts, flush_required)))
 		stack;
@@ -1356,7 +1543,7 @@ static char *_build_target_uuid(struct cmd_context *cmd, struct logical_volume *
 	else
 		layer = NULL;
 
-	return build_dm_uuid(cmd->mem, lv->lvid.s, layer);
+	return build_dm_uuid(cmd->mem, lv, layer);
 }
 
 int target_registered_with_dmeventd(struct cmd_context *cmd, const char *dso,
@@ -1615,7 +1802,7 @@ struct detached_lv_data {
 	int *flush_required;
 };
 
-static int _preload_detached_lv(struct cmd_context *cmd, struct logical_volume *lv, void *data)
+static int _preload_detached_lv(struct logical_volume *lv, void *data)
 {
 	struct detached_lv_data *detached = data;
 	struct lv_list *lvl_pre;
@@ -1717,7 +1904,7 @@ static int _lv_suspend(struct cmd_context *cmd, const char *lvid_s,
 		detached.laopts = laopts;
 		detached.flush_required = &flush_required;
 
-		if (!for_each_sub_lv(cmd, ondisk_lv, &_preload_detached_lv, &detached))
+		if (!for_each_sub_lv(ondisk_lv, &_preload_detached_lv, &detached))
 			goto_out;
 
 		/*
@@ -1917,19 +2104,14 @@ static int _lv_has_open_snapshots(struct logical_volume *lv)
 	struct lvinfo info;
 	int r = 0;
 
-	dm_list_iterate_items_gen(snap_seg, &lv->snapshot_segs, origin_list) {
-		if (!lv_info(lv->vg->cmd, snap_seg->cow, 0, &info, 1, 0)) {
-			r = 1;
-			continue;
-		}
+	dm_list_iterate_items_gen(snap_seg, &lv->snapshot_segs, origin_list)
+		if (!lv_info(lv->vg->cmd, snap_seg->cow, 0, &info, 1, 0) ||
+		    !lv_check_not_in_use(lv->vg->cmd, snap_seg->cow, &info))
+			r++;
 
-		if (info.exists && info.open_count) {
-			log_error("LV %s/%s has open snapshot %s: "
-				  "not deactivating", lv->vg->name, lv->name,
-				  snap_seg->cow->name);
-			r = 1;
-		}
-	}
+	if (r)
+		log_error("LV %s/%s has open %d snapshot(s), not deactivating.",
+			  lv->vg->name, lv->name, r);
 
 	return r;
 }
@@ -1963,7 +2145,8 @@ int lv_deactivate(struct cmd_context *cmd, const char *lvid_s, struct logical_vo
 		goto out;
 	}
 
-	if (lv_is_visible(lv) || lv_is_virtual_origin(lv)) {
+	if (lv_is_visible(lv) || lv_is_virtual_origin(lv) ||
+	    lv_is_merging_thin_snapshot(lv)) {
 		if (!lv_check_not_in_use(cmd, lv, &info))
 			goto_out;
 
@@ -2169,11 +2352,16 @@ int pv_uses_vg(struct physical_volume *pv,
 
 void activation_release(void)
 {
-	dev_manager_release();
+	if (critical_section())
+		/* May leak stacked operation */
+		log_error("Releasing activation in critical section.");
+
+	fs_unlock(); /* Implicit dev_manager_release(); */
 }
 
 void activation_exit(void)
 {
+	activation_release();
 	dev_manager_exit();
 }
 #endif

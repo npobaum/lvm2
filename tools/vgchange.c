@@ -98,6 +98,10 @@ static int _activate_lvs_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 		if (!lv_is_visible(lv))
 			continue;
 
+		/* Cache pool cannot be activated */
+		if (lv_is_cache_pool(lv))
+			continue;
+
 		/* If LV is sparse, activate origin instead */
 		if (lv_is_cow(lv) && lv_is_virtual_origin(origin_from_cow(lv)))
 			lv = origin_from_cow(lv);
@@ -117,25 +121,11 @@ static int _activate_lvs_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 
 		/* Can't deactivate a pvmove LV */
 		/* FIXME There needs to be a controlled way of doing this */
-		if (((activate == CHANGE_AN) || (activate == CHANGE_ALN)) &&
-		    ((lv->status & PVMOVE) ))
+		if ((lv->status & PVMOVE) && !is_change_activating(activate))
 			continue;
 
-		/*
-		 * If the LV is active exclusive remotely,
-		 * then ignore it here
-		 */
-		if (lv_is_active_exclusive_remotely(lv)) {
-			log_verbose("%s/%s is exclusively active on"
-				    " a remote node", vg->name, lv->name);
+		if (lv_activation_skip(lv, activate, arg_count(cmd, ignoreactivationskip_ARG)))
 			continue;
-		}
-
-		if (lv_activation_skip(lv, activate, arg_count(cmd, ignoreactivationskip_ARG), 0)) {
-			log_verbose("ACTIVATION_SKIP flag set for LV %s/%s, skipping activation.",
-				    lv->vg->name, lv->name);
-			continue;
-		}
 
 		if ((activate == CHANGE_AAY) &&
 		    !lv_passes_auto_activation_filter(cmd, lv))
@@ -144,7 +134,17 @@ static int _activate_lvs_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 		expected_count++;
 
 		if (!lv_change_activate(cmd, lv, activate)) {
-			stack;
+			if (!lv_is_active_exclusive_remotely(lv))
+				stack;
+			else {
+				/*
+				 * If the LV is active exclusive remotely,
+				 * then ignore it here
+				 */
+				log_verbose("%s/%s is exclusively active on"
+					    " a remote node", vg->name, lv->name);
+				expected_count--; /* not accounted */
+			}
 			continue;
 		}
 
@@ -155,8 +155,8 @@ static int _activate_lvs_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 
 	if (expected_count)
 		log_verbose("%s %d logical volumes in volume group %s",
-			    (activate == CHANGE_AN || activate == CHANGE_ALN)?
-			    "Deactivated" : "Activated", count, vg->name);
+			    is_change_activating(activate) ?
+			    "Activated" : "Deactivated", count, vg->name);
 
 	return (expected_count != count) ? 0 : 1;
 }
@@ -196,12 +196,10 @@ static int _vgchange_background_polling(struct cmd_context *cmd, struct volume_g
 int vgchange_activate(struct cmd_context *cmd, struct volume_group *vg,
 		      activation_change_t activate)
 {
-	int lv_open, active, monitored = 0, r = 1, do_activate = 1;
+	int lv_open, active, monitored = 0, r = 1;
 	const struct lv_list *lvl;
 	struct lvinfo info;
-
-	if ((activate == CHANGE_AN) || (activate == CHANGE_ALN))
-		do_activate = 0;
+	int do_activate = is_change_activating(activate);
 
 	/*
 	 * Safe, since we never write out new metadata here. Required for
@@ -367,6 +365,12 @@ static int _vgchange_pesize(struct cmd_context *cmd, struct volume_group *vg)
 
 	if (!vg_set_extent_size(vg, extent_size))
 		return_0;
+
+	if (!vg_check_pv_dev_block_sizes(vg)) {
+		log_error("Failed to change physical extent size for VG %s.",
+			   vg->name);
+		return 0;
+	}
 
 	return 1;
 }
@@ -586,8 +590,7 @@ int vgchange(struct cmd_context *cmd, int argc, char **argv)
 
 	if (arg_count(cmd, activate_ARG) &&
 	    (arg_count(cmd, monitor_ARG) || arg_count(cmd, poll_ARG))) {
-		int activate = arg_uint_value(cmd, activate_ARG, 0);
-		if (activate == CHANGE_AN || activate == CHANGE_ALN) {
+		if (!is_change_activating(arg_uint_value(cmd, activate_ARG, 0))) {
 			log_error("Only -ay* allowed with --monitor or --poll.");
 			return EINVALID_CMD_LINE;
 		}
@@ -598,8 +601,8 @@ int vgchange(struct cmd_context *cmd, int argc, char **argv)
 		return EINVALID_CMD_LINE;
 	}
 
-	if (arg_count(cmd, activate_ARG) == 1
-	    && arg_count(cmd, autobackup_ARG)) {
+	if ((arg_count(cmd, activate_ARG) == 1) &&
+	    arg_count(cmd, autobackup_ARG)) {
 		log_error("-A option not necessary with -a option");
 		return EINVALID_CMD_LINE;
 	}
@@ -616,11 +619,33 @@ int vgchange(struct cmd_context *cmd, int argc, char **argv)
 		return EINVALID_CMD_LINE;
 	}
 
-	if (arg_count(cmd, sysinit_ARG) && lvmetad_active() &&
+	/*
+	 * If --sysinit -aay is used and at the same time lvmetad is used,
+	 * we want to rely on autoactivation to take place. Also, we
+	 * need to take special care here as lvmetad service does
+	 * not neet to be running at this moment yet - it could be
+	 * just too early during system initialization time.
+	 */
+	if (arg_count(cmd, sysinit_ARG) && lvmetad_used() &&
 	    arg_uint_value(cmd, activate_ARG, 0) == CHANGE_AAY) {
-		log_warn("lvmetad is active while using --sysinit -a ay, "
-			 "skipping manual activation");
-		return ECMD_PROCESSED;
+		if (!lvmetad_socket_present()) {
+			/*
+			 * If lvmetad socket is not present yet,
+			 * the service is just not started. It'll
+			 * be started a bit later so we need to do
+			 * the activation without lvmetad which means
+			 * direct activation instead of autoactivation.
+			 */
+			log_warn("lvmetad is not active yet, using direct activation during sysinit");
+			lvmetad_set_active(0);
+		} else if (lvmetad_active()) {
+			/*
+			 * If lvmetad is active already, we want
+			 * to make use of the autoactivation.
+			 */
+			log_warn("lvmetad is active, skipping direct activation during sysinit");
+			return ECMD_PROCESSED;
+		}
 	}
 
 	if (arg_count(cmd, clustered_ARG) && !argc && !arg_count(cmd, yes_ARG) &&

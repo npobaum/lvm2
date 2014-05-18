@@ -16,6 +16,8 @@
 #ifndef _LVM_LV_ALLOC_H
 #define _LVM_LV_ALLOC_H
 
+#include "metadata-exported.h"
+
 struct lv_segment *alloc_lv_segment(const struct segment_type *segtype,
 				    struct logical_volume *lv,
 				    uint32_t le, uint32_t len,
@@ -52,7 +54,7 @@ struct alloc_handle *allocate_extents(struct volume_group *vg,
                                       uint32_t mirrors, uint32_t log_count,
 				      uint32_t log_region_size, uint32_t extents,
                                       struct dm_list *allocatable_pvs,
-				      alloc_policy_t alloc,
+				      alloc_policy_t alloc, int approx_alloc,
 				      struct dm_list *parallel_areas);
 
 int lv_add_segment(struct alloc_handle *ah,

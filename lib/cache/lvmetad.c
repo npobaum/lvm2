@@ -22,6 +22,9 @@
 #include "format-text.h" // TODO for disk_locn, used as a DA representation
 #include "crc.h"
 
+#define SCAN_TIMEOUT_SECONDS	80
+#define MAX_RESCANS		10	/* Maximum number of times to scan all PVs and retry if the daemon returns a token mismatch error */
+
 static daemon_handle _lvmetad;
 static int _lvmetad_use = 0;
 static int _lvmetad_connected = 0;
@@ -40,7 +43,7 @@ void lvmetad_disconnect(void)
 
 void lvmetad_init(struct cmd_context *cmd)
 {
-	if (!_lvmetad_use && !access(LVMETAD_PIDFILE, F_OK))
+	if (!_lvmetad_use && !access(getenv("LVM_LVMETAD_PIDFILE") ? : LVMETAD_PIDFILE, F_OK))
 		log_warn("WARNING: lvmetad is running but disabled."
 			 " Restart lvmetad before enabling it!");
 	_lvmetad_cmd = cmd;
@@ -72,6 +75,22 @@ void lvmetad_connect_or_warn(void)
 			 strerror(_lvmetad.error));
 }
 
+int lvmetad_used(void)
+{
+	return _lvmetad_use;
+}
+
+int lvmetad_socket_present(void)
+{
+	const char *socket = _lvmetad_socket ?: LVMETAD_SOCKET;
+	int r;
+
+	if ((r = access(socket, F_OK)) && errno != ENOENT)
+		log_sys_error("lvmetad_socket_present", "");
+
+	return !r;
+}
+
 int lvmetad_active(void)
 {
 	if (!_lvmetad_use)
@@ -98,8 +117,7 @@ void lvmetad_set_token(const struct dm_config_value *filter)
 {
 	int ft = 0;
 
-	if (_lvmetad_token)
-		dm_free(_lvmetad_token);
+	dm_free(_lvmetad_token);
 
 	while (filter && filter->type == DM_CFG_STRING) {
 		ft = calc_crc(ft, (const uint8_t *) filter->v.str, strlen(filter->v.str));
@@ -126,7 +144,10 @@ static daemon_reply _lvmetad_send(const char *id, ...)
 	va_list ap;
 	daemon_reply repl;
 	daemon_request req;
-	int try = 0;
+	unsigned num_rescans = 0;
+	unsigned total_usecs_waited = 0;
+	unsigned max_remaining_sleep_times = 1;
+	unsigned wait_usecs;
 
 retry:
 	req = daemon_request_make(id);
@@ -142,13 +163,35 @@ retry:
 
 	daemon_request_destroy(req);
 
+	/*
+	 * If another process is trying to scan, it might have the
+	 * same future token id and it's better to wait and avoid doing
+	 * the work multiple times. For the case where the future token is
+	 * different, the wait is randomized so that multiple waiting
+	 * processes do not start scanning all at once.
+	 *
+	 * If the token is mismatched because of global_filter changes,
+	 * we re-scan immediately, but if we lose the potential race for
+	 * the update, we back off for a short while (0.05-0.5 seconds) and
+	 * try again.
+	 */
 	if (!repl.error && !strcmp(daemon_reply_str(repl, "response", ""), "token_mismatch") &&
-	    try < 2 && !test_mode()) {
-		if (lvmetad_pvscan_all_devs(_lvmetad_cmd, NULL)) {
-			++ try;
-			daemon_reply_destroy(repl);
-			goto retry;
+	    num_rescans < MAX_RESCANS && total_usecs_waited < (SCAN_TIMEOUT_SECONDS * 1000000) && !test_mode()) {
+		if (!strcmp(daemon_reply_str(repl, "expected", ""), "update in progress") ||
+		    max_remaining_sleep_times) {
+			wait_usecs = 50000 + lvm_even_rand(&_lvmetad_cmd->rand_seed, 450000); /* between 0.05s and 0.5s */
+			(void) usleep(wait_usecs);
+			total_usecs_waited += wait_usecs;
+			if (max_remaining_sleep_times)
+				max_remaining_sleep_times--;	/* Sleep once before rescanning the first time, then 5 times each time after that. */
+		} else {
+			/* If the re-scan fails here, we try again later. */
+			(void) lvmetad_pvscan_all_devs(_lvmetad_cmd, NULL);
+			num_rescans++;
+			max_remaining_sleep_times = 5;
 		}
+		daemon_reply_destroy(repl);
+		goto retry;
 	}
 
 	return repl;
@@ -222,8 +265,9 @@ static int _read_mda(struct lvmcache_info *info,
 	return 0;
 }
 
-static struct lvmcache_info *_pv_populate_lvmcache(
-	struct cmd_context *cmd, struct dm_config_node *cn, dev_t fallback)
+static struct lvmcache_info *_pv_populate_lvmcache(struct cmd_context *cmd,
+						   struct dm_config_node *cn,
+						   dev_t fallback)
 {
 	struct device *dev;
 	struct id pvid, vgid;
@@ -277,6 +321,7 @@ static struct lvmcache_info *_pv_populate_lvmcache(
 		return_NULL;
 
 	lvmcache_get_label(info)->sector = label_sector;
+	lvmcache_get_label(info)->dev = dev;
 	lvmcache_set_device_size(info, devsize);
 	lvmcache_del_das(info);
 	lvmcache_del_mdas(info);
@@ -304,7 +349,7 @@ static struct lvmcache_info *_pv_populate_lvmcache(
 
 	i = 0;
 	do {
-		sprintf(da_id, "ea%d", i);
+		sprintf(da_id, "ba%d", i);
 		da = dm_config_find_node(cn->child, da_id);
 		if (da) {
 			if (!dm_config_get_uint64(da->child, "offset", &offset)) return_0;
@@ -323,7 +368,7 @@ struct volume_group *lvmetad_vg_lookup(struct cmd_context *cmd, const char *vgna
 	daemon_reply reply;
 	int found;
 	char uuid[64];
-	struct format_instance *fid;
+	struct format_instance *fid = NULL;
 	struct format_instance_ctx fic;
 	struct dm_config_node *top;
 	const char *name, *diag_name;
@@ -405,6 +450,8 @@ struct volume_group *lvmetad_vg_lookup(struct cmd_context *cmd, const char *vgna
 	}
 
 out:
+	if (!vg && fid)
+		fid->fmt->ops->destroy_instance(fid);
 	daemon_reply_destroy(reply);
 
 	return vg;
@@ -433,7 +480,6 @@ int lvmetad_vg_update(struct volume_group *vg)
 	struct pv_list *pvl;
 	struct lvmcache_info *info;
 	struct _fixup_baton baton;
-	struct dm_config_tree *vgmeta;
 
 	if (!vg)
 		return 0;
@@ -441,13 +487,14 @@ int lvmetad_vg_update(struct volume_group *vg)
 	if (!lvmetad_active() || test_mode())
 		return 1; /* fake it */
 
-	if (!(vgmeta = export_vg_to_config_tree(vg)))
-		return_0;
+	if (!vg->cft_precommitted) {
+		log_error(INTERNAL_ERROR "VG update without precommited");
+		return 0;
+	}
 
 	log_debug_lvmetad("Sending lvmetad updated metadata for VG %s (seqno %" PRIu32 ")", vg->name, vg->seqno);
 	reply = _lvmetad_send("vg_update", "vgname = %s", vg->name,
-			      "metadata = %t", vgmeta, NULL);
-	dm_config_destroy(vgmeta);
+			      "metadata = %t", vg->cft_precommitted, NULL);
 
 	if (!_lvmetad_handle_reply(reply, "update VG", vg->name, NULL)) {
 		daemon_reply_destroy(reply);
@@ -714,7 +761,8 @@ int lvmetad_pv_found(const struct id *pvid, struct device *dev, const struct for
 	daemon_reply reply;
 	struct lvmcache_info *info;
 	struct dm_config_tree *pvmeta, *vgmeta;
-	const char *status, *vgid;
+	const char *status, *vgname, *vgid;
+	int64_t changed;
 	int result;
 
 	if (!lvmetad_active() || test_mode())
@@ -783,11 +831,13 @@ int lvmetad_pv_found(const struct id *pvid, struct device *dev, const struct for
 
 	if (result && handler) {
 		status = daemon_reply_str(reply, "status", "<missing>");
+		vgname = daemon_reply_str(reply, "vgname", "<missing>");
 		vgid = daemon_reply_str(reply, "vgid", "<missing>");
+		changed = daemon_reply_int(reply, "changed", 0);
 		if (!strcmp(status, "partial"))
-			handler(_lvmetad_cmd, vgid, 1, CHANGE_AAY);
+			handler(_lvmetad_cmd, vgname, vgid, 1, changed, CHANGE_AAY);
 		else if (!strcmp(status, "complete"))
-			handler(_lvmetad_cmd, vgid, 0, CHANGE_AAY);
+			handler(_lvmetad_cmd, vgname, vgid, 0, changed, CHANGE_AAY);
 		else if (!strcmp(status, "orphan"))
 			;
 		else
@@ -879,18 +929,28 @@ int lvmetad_pvscan_single(struct cmd_context *cmd, struct device *dev,
 	info = (struct lvmcache_info *) label->info;
 
 	baton.vg = NULL;
-	baton.fid = lvmcache_fmt(info)->ops->create_instance(lvmcache_fmt(info),
-							     &fic);
+	baton.fid = lvmcache_fmt(info)->ops->create_instance(lvmcache_fmt(info), &fic);
 
 	if (!baton.fid)
 		goto_bad;
 
+	if (baton.fid->fmt->features & FMT_OBSOLETE) {
+		log_error("WARNING: Ignoring obsolete format of metadata (%s) on device %s when using lvmetad",
+			  baton.fid->fmt->name, dev_name(dev));
+		lvmcache_fmt(info)->ops->destroy_instance(baton.fid);
+		return 0;
+	}
+
 	lvmcache_foreach_mda(info, _lvmetad_pvscan_single, &baton);
 
-	/* LVM1 VGs have no MDAs. */
-	if (!baton.vg && lvmcache_fmt(info) == get_format_by_name(cmd, "lvm1"))
-		baton.vg = ((struct metadata_area *) dm_list_first(&baton.fid->metadata_areas_in_use))->
-			ops->vg_read(baton.fid, lvmcache_vgname_from_info(info), NULL, 0);
+	/*
+	 * LVM1 VGs have no MDAs and lvmcache_foreach_mda isn't worth fixing
+	 * to use pseudo-mdas for PVs.
+	 * Note that the single_device parameter also gets ignored and this code
+	 * can scan further devices.
+	 */
+	if (!baton.vg && !(baton.fid->fmt->features & FMT_MDAS))
+		baton.vg = ((struct metadata_area *) dm_list_first(&baton.fid->metadata_areas_in_use))->ops->vg_read(baton.fid, lvmcache_vgname_from_info(info), NULL, 1);
 
 	if (!baton.vg)
 		lvmcache_fmt(info)->ops->destroy_instance(baton.fid);

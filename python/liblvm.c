@@ -23,6 +23,7 @@
 
 #include <Python.h>
 #include "lvm2app.h"
+#include "defaults.h"
 
 static lvm_t _libh;
 
@@ -30,11 +31,13 @@ static lvm_t _libh;
 typedef struct {
 	PyObject_HEAD
 	vg_t vg;		/* vg handle */
+	lvm_t libh_copy;
 } vgobject;
 
 typedef struct {
 	PyObject_HEAD
 	struct dm_list *pvslist;
+	lvm_t libh_copy;
 } pvslistobject;
 
 typedef struct {
@@ -71,9 +74,14 @@ static PyTypeObject _LibLVMpvsegType;
 
 static PyObject *_LibLVMError;
 
-#define LVM_VALID() \
+#define LVM_VALID(ptr) \
 	do { \
-		if (!_libh) { \
+		if (ptr && _libh) { \
+			if (ptr != _libh) { \
+				PyErr_SetString(PyExc_UnboundLocalError, "LVM handle reference stale"); \
+				return NULL; \
+			} \
+		} else if (!_libh) { \
 			PyErr_SetString(PyExc_UnboundLocalError, "LVM handle invalid"); \
 			return NULL; \
 		} \
@@ -99,30 +107,58 @@ static vgobject *_create_py_vg(void)
 {
 	vgobject *vgobj = PyObject_New(vgobject, &_LibLVMvgType);
 
-	if (vgobj)
+	if (vgobj) {
 		vgobj->vg = NULL;
+		vgobj->libh_copy = _libh;
+	}
 
 	return vgobj;
+}
+
+static pvslistobject *_create_py_pvlist(void)
+{
+	pvslistobject *pvlistobj = PyObject_New(pvslistobject, &_LibLVMpvlistType);
+
+	if (pvlistobj) {
+		pvlistobj->pvslist = NULL;
+		pvlistobj->libh_copy = _libh;
+	}
+
+	return pvlistobj;
+}
+
+static lvobject *_create_py_lv(vgobject *parent, lv_t lv)
+{
+	lvobject * lvobj = PyObject_New(lvobject, &_LibLVMlvType);
+	if (lvobj) {
+		lvobj->parent_vgobj = parent;
+		Py_INCREF(lvobj->parent_vgobj);
+		lvobj->lv = lv;
+	}
+	return lvobj;
 }
 
 static PyObject *_liblvm_get_last_error(void)
 {
 	PyObject *info;
+	const char *msg = NULL;
 
-	LVM_VALID();
+	LVM_VALID(NULL);
 
 	if (!(info = PyTuple_New(2)))
 		return NULL;
 
 	PyTuple_SetItem(info, 0, PyInt_FromLong((long) lvm_errno(_libh)));
-	PyTuple_SetItem(info, 1, PyString_FromString(lvm_errmsg(_libh)));
+	msg = lvm_errmsg(_libh);
+	PyTuple_SetItem(info, 1, ((msg) ? PyString_FromString(msg) :
+			PyString_FromString("Memory error while retrieving error message")));
 
 	return info;
 }
 
 static PyObject *_liblvm_library_get_version(void)
 {
-	LVM_VALID();
+	LVM_VALID(NULL);
 
 	return Py_BuildValue("s", lvm_library_get_version());
 }
@@ -131,7 +167,7 @@ static const char _gc_doc[] = "Garbage collect the C library";
 
 static PyObject *_liblvm_lvm_gc(void)
 {
-	LVM_VALID();
+	LVM_VALID(NULL);
 
 	lvm_quit(_libh);
 
@@ -152,7 +188,7 @@ static PyObject *_liblvm_lvm_list_vg_names(void)
 	PyObject * pytuple;
 	int i = 0;
 
-	LVM_VALID();
+	LVM_VALID(NULL);
 
 	if (!(vgnames = lvm_list_vg_names(_libh))) {
 		PyErr_SetObject(_LibLVMError, _liblvm_get_last_error());
@@ -177,7 +213,7 @@ static PyObject *_liblvm_lvm_list_vg_uuids(void)
 	PyObject * pytuple;
 	int i = 0;
 
-	LVM_VALID();
+	LVM_VALID(NULL);
 
 	if (!(uuids = lvm_list_vg_uuids(_libh))) {
 		PyErr_SetObject(_LibLVMError, _liblvm_get_last_error());
@@ -261,23 +297,16 @@ static PyObject *_liblvm_pvlist_dealloc(pvslistobject *self)
 
 static PyObject *_liblvm_lvm_list_pvs(void)
 {
-	pvslistobject *pvslistobj;
+	LVM_VALID(NULL);
 
-	LVM_VALID();
-
-	if (!(pvslistobj = PyObject_New(pvslistobject, &_LibLVMpvlistType)))
-		return NULL;
-
-	pvslistobj->pvslist = NULL;
-
-	return (PyObject *)pvslistobj;
+	return (PyObject *)_create_py_pvlist();
 }
 
 static PyObject *_liblvm_lvm_pv_remove(PyObject *self, PyObject *arg)
 {
 	const char *pv_name;
 
-	LVM_VALID();
+	LVM_VALID(NULL);
 
 	if (!PyArg_ParseTuple(arg, "s", &pv_name))
 		return NULL;
@@ -292,24 +321,62 @@ static PyObject *_liblvm_lvm_pv_remove(PyObject *self, PyObject *arg)
 	return Py_None;
 }
 
+static int _set_pv_numeric_prop(pv_create_params_t pv_params, const char *name,
+								unsigned long long value)
+{
+	struct lvm_property_value prop_value;
+	prop_value.is_integer = 1;
+	prop_value.value.integer = value;
+
+	return lvm_pv_params_set_property(pv_params, name, &prop_value);
+}
+
+#define SET_PV_PROP(params, name, value) \
+	do { \
+		if (_set_pv_numeric_prop(params, name, value) == -1) \
+			goto error; \
+	} while(0)\
+
 static PyObject *_liblvm_lvm_pv_create(PyObject *self, PyObject *arg)
 {
 	const char *pv_name;
-	unsigned long long size;
+	unsigned long long size = 0;
+	unsigned long long pvmetadatacopies = DEFAULT_PVMETADATACOPIES;
+	unsigned long long pvmetadatasize = DEFAULT_PVMETADATASIZE;
+	unsigned long long data_alignment = 0;
+	unsigned long long data_alignment_offset = 0;
+	unsigned long long zero = 1;
+	pv_create_params_t pv_params = NULL;
 
-	LVM_VALID();
+	LVM_VALID(NULL);
 
-	if (!PyArg_ParseTuple(arg, "sK", &pv_name, &size))
+	if (!PyArg_ParseTuple(arg, "s|KKKKKK", &pv_name, &size, &pvmetadatacopies,
+							&pvmetadatasize, &data_alignment,
+							&data_alignment_offset, &zero))
 		return NULL;
 
-	if (lvm_pv_create(_libh, pv_name, size) == -1) {
-		PyErr_SetObject(_LibLVMError, _liblvm_get_last_error());
-		return NULL;
+	pv_params = lvm_pv_params_create(_libh, pv_name);
+	if (!pv_params) {
+		goto error;
+	}
+
+	SET_PV_PROP(pv_params, "size", size);
+	SET_PV_PROP(pv_params, "pvmetadatacopies", pvmetadatacopies);
+	SET_PV_PROP(pv_params, "pvmetadatasize", pvmetadatasize);
+	SET_PV_PROP(pv_params, "data_alignment", data_alignment);
+	SET_PV_PROP(pv_params, "data_alignment_offset", data_alignment_offset);
+	SET_PV_PROP(pv_params, "zero", zero);
+
+	if (lvm_pv_create_adv(pv_params)) {
+		goto error;
 	}
 
 	Py_INCREF(Py_None);
-
 	return Py_None;
+
+error:
+	PyErr_SetObject(_LibLVMError, _liblvm_get_last_error());
+	return NULL;
 }
 
 static PyObject *_liblvm_lvm_percent_to_float(PyObject *self, PyObject *arg)
@@ -317,7 +384,7 @@ static PyObject *_liblvm_lvm_percent_to_float(PyObject *self, PyObject *arg)
 	double converted;
 	int percent;
 
-	LVM_VALID();
+	LVM_VALID(NULL);
 
 	if (!PyArg_ParseTuple(arg, "i", &percent))
 		return NULL;
@@ -327,12 +394,31 @@ static PyObject *_liblvm_lvm_percent_to_float(PyObject *self, PyObject *arg)
 	return Py_BuildValue("d", converted);
 }
 
+static PyObject *_liblvm_lvm_vg_name_validate(PyObject *self, PyObject *arg)
+{
+	const char *name;
+
+	LVM_VALID(NULL);
+
+	if (!PyArg_ParseTuple(arg, "s", &name))
+		return NULL;
+
+	if (lvm_vg_name_validate(_libh, name) < 0) {
+		PyErr_SetObject(_LibLVMError, _liblvm_get_last_error());
+		return NULL;
+	}
+
+	Py_INCREF(Py_None);
+
+	return Py_None;
+}
+
 static PyObject *_liblvm_lvm_vgname_from_pvid(PyObject *self, PyObject *arg)
 {
 	const char *pvid;
 	const char *vgname;
 
-	LVM_VALID();
+	LVM_VALID(NULL);
 
 	if (!PyArg_ParseTuple(arg, "s", &pvid))
 		return NULL;
@@ -350,7 +436,7 @@ static PyObject *_liblvm_lvm_vgname_from_device(PyObject *self, PyObject *arg)
 	const char *device;
 	const char *vgname;
 
-	LVM_VALID();
+	LVM_VALID(NULL);
 
 	if (!PyArg_ParseTuple(arg, "s", &device))
 		return NULL;
@@ -370,7 +456,7 @@ static PyObject *_liblvm_lvm_config_find_bool(PyObject *self, PyObject *arg)
 	int rval;
 	PyObject *rc;
 
-	LVM_VALID();
+	LVM_VALID(NULL);
 
 	if (!PyArg_ParseTuple(arg, "s", &config))
 		return NULL;
@@ -390,7 +476,7 @@ static PyObject *_liblvm_lvm_config_find_bool(PyObject *self, PyObject *arg)
 
 static PyObject *_liblvm_lvm_config_reload(void)
 {
-	LVM_VALID();
+	LVM_VALID(NULL);
 
 	if (lvm_config_reload(_libh) == -1) {
 		PyErr_SetObject(_LibLVMError, _liblvm_get_last_error());
@@ -405,7 +491,7 @@ static PyObject *_liblvm_lvm_config_reload(void)
 
 static PyObject *_liblvm_lvm_scan(void)
 {
-	LVM_VALID();
+	LVM_VALID(NULL);
 
 	if (lvm_scan(_libh) == -1) {
 		PyErr_SetObject(_LibLVMError, _liblvm_get_last_error());
@@ -421,7 +507,7 @@ static PyObject *_liblvm_lvm_config_override(PyObject *self, PyObject *arg)
 {
 	const char *config;
 
-	LVM_VALID();
+	LVM_VALID(NULL);
 
 	if (!PyArg_ParseTuple(arg, "s", &config))
 		return NULL;
@@ -447,7 +533,7 @@ static PyObject *_liblvm_lvm_vg_open(PyObject *self, PyObject *args)
 
 	vgobject *vgobj;
 
-	LVM_VALID();
+	LVM_VALID(NULL);
 
 	if (!PyArg_ParseTuple(args, "s|s", &vgname, &mode))
 		return NULL;
@@ -472,7 +558,7 @@ static PyObject *_liblvm_lvm_vg_create(PyObject *self, PyObject *args)
 	const char *vgname;
 	vgobject *vgobj;
 
-	LVM_VALID();
+	LVM_VALID(NULL);
 
 	if (!PyArg_ParseTuple(args, "s", &vgname))
 		return NULL;
@@ -495,6 +581,7 @@ static void liblvm_vg_dealloc(vgobject *self)
 	if (self->vg != NULL) {
 		lvm_vg_close(self->vg);
 		self->vg = NULL;
+		self->libh_copy = NULL;
 	}
 
 	PyObject_Del(self);
@@ -504,20 +591,20 @@ static void liblvm_vg_dealloc(vgobject *self)
 
 #define VG_VALID(vgobject) \
 	do { \
-		LVM_VALID(); \
-		if (!vgobject->vg) { \
+		if (!vgobject || !vgobject->vg) { \
 			PyErr_SetString(PyExc_UnboundLocalError, "VG object invalid"); \
 			return NULL; \
 		} \
+		LVM_VALID(vgobject->libh_copy); \
 	} while (0)
 
 #define PVSLIST_VALID(pvslistobject) \
 	do { \
-		LVM_VALID(); \
-		if (!pvslistobject->pvslist) { \
+		if (!pvslistobject || !pvslistobject->pvslist) { \
 			PyErr_SetString(PyExc_UnboundLocalError, "PVS object invalid"); \
 			return NULL; \
 		} \
+		LVM_VALID(pvslistobject->libh_copy); \
 	} while (0)
 
 static PyObject *_liblvm_lvm_vg_close(vgobject *self)
@@ -526,6 +613,7 @@ static PyObject *_liblvm_lvm_vg_close(vgobject *self)
 	if (self->vg) {
 		lvm_vg_close(self->vg);
 		self->vg = NULL;
+		self->libh_copy = NULL;
 	}
 
 	Py_INCREF(Py_None);
@@ -941,15 +1029,11 @@ static PyObject *_liblvm_lvm_vg_list_lvs(vgobject *self)
 
 	dm_list_iterate_items(lvl, lvs) {
 		/* Create and initialize the object */
-		if (!(lvobj = PyObject_New(lvobject, &_LibLVMlvType))) {
+		if (!(lvobj = _create_py_lv(self, lvl->lv))) {
 			Py_DECREF(pytuple);
 			return NULL;
 		}
 
-		lvobj->parent_vgobj = self;
-		Py_INCREF(lvobj->parent_vgobj);
-
-		lvobj->lv = lvl->lv;
 		PyTuple_SET_ITEM(pytuple, i, (PyObject *) lvobj);
 		i++;
 	}
@@ -959,22 +1043,22 @@ static PyObject *_liblvm_lvm_vg_list_lvs(vgobject *self)
 
 static PyObject *_liblvm_lvm_vg_get_tags(vgobject *self)
 {
-	struct dm_list *tags;
+	struct dm_list *tagsl;
 	struct lvm_str_list *strl;
 	PyObject * pytuple;
 	int i = 0;
 
 	VG_VALID(self);
 
-	if (!(tags = lvm_vg_get_tags(self->vg))) {
+	if (!(tagsl = lvm_vg_get_tags(self->vg))) {
 		PyErr_SetObject(_LibLVMError, _liblvm_get_last_error());
 		return NULL;
 	}
 
-	if (!(pytuple = PyTuple_New(dm_list_size(tags))))
+	if (!(pytuple = PyTuple_New(dm_list_size(tagsl))))
 		return NULL;
 
-	dm_list_iterate_items(strl, tags) {
+	dm_list_iterate_items(strl, tagsl) {
 		PyTuple_SET_ITEM(pytuple, i, PyString_FromString(strl->str));
 		i++;
 	}
@@ -986,29 +1070,19 @@ static PyObject *_liblvm_lvm_vg_create_lv_linear(vgobject *self, PyObject *args)
 {
 	const char *vgname;
 	unsigned long long size;
-	lvobject *lvobj;
+	lv_t lv;
 
 	VG_VALID(self);
 
 	if (!PyArg_ParseTuple(args, "sK", &vgname, &size))
 		return NULL;
 
-	if (!(lvobj = PyObject_New(lvobject, &_LibLVMlvType)))
-		return NULL;
-
-	/* Initialize the parent ptr in case lv create fails and we dealloc lvobj */
-	lvobj->parent_vgobj = NULL;
-
-	if (!(lvobj->lv = lvm_vg_create_lv_linear(self->vg, vgname, size))) {
+	if (!(lv = lvm_vg_create_lv_linear(self->vg, vgname, size))) {
 		PyErr_SetObject(_LibLVMError, _liblvm_get_last_error());
-		Py_DECREF(lvobj);
 		return NULL;
 	}
 
-	lvobj->parent_vgobj = self;
-	Py_INCREF(lvobj->parent_vgobj);
-
-	return (PyObject *)lvobj;
+	return (PyObject *)_create_py_lv(self, lv);
 }
 
 static PyObject *_liblvm_lvm_vg_create_lv_thinpool(vgobject *self, PyObject *args)
@@ -1019,7 +1093,7 @@ static PyObject *_liblvm_lvm_vg_create_lv_thinpool(vgobject *self, PyObject *arg
 	unsigned long chunk_size = 0;
 	int skip_zero = 0;
 	lvm_thin_discards_t discard = LVM_THIN_DISCARDS_PASSDOWN;
-	lvobject *lvobj;
+	lv_t lv;
 	lv_create_params_t lvp = NULL;
 	struct lvm_property_value prop_value;
 
@@ -1029,17 +1103,10 @@ static PyObject *_liblvm_lvm_vg_create_lv_thinpool(vgobject *self, PyObject *arg
 			      &meta_size, &discard, &skip_zero))
 		return NULL;
 
-	if (!(lvobj = PyObject_New(lvobject, &_LibLVMlvType)))
-		return NULL;
-
-	/* Initialize the parent ptr in case lv create fails and we dealloc lvobj */
-	lvobj->parent_vgobj = NULL;
-
 	if (!(lvp = lvm_lv_params_create_thin_pool(self->vg, pool_name, size, chunk_size,
 						   meta_size, discard))) {
 
 		PyErr_SetObject(_LibLVMError, _liblvm_get_last_error());
-		Py_DECREF(lvobj);
 		return NULL;
 	}
 
@@ -1051,23 +1118,20 @@ static PyObject *_liblvm_lvm_vg_create_lv_thinpool(vgobject *self, PyObject *arg
 
 			if (lvm_lv_params_set_property(lvp, "skip_zero",
 						       &prop_value) == -1) {
-				PyErr_SetObject(_LibLVMError, _liblvm_get_last_error());
-				Py_DECREF(lvobj);
-				return NULL;
+				goto error;
 			}
 		}
 	}
 
-	if (!(lvobj->lv = lvm_lv_create(lvp))) {
-		PyErr_SetObject(_LibLVMError, _liblvm_get_last_error());
-		Py_DECREF(lvobj);
-		return NULL;
+	if (!(lv = lvm_lv_create(lvp))) {
+		goto error;
 	}
 
-	lvobj->parent_vgobj = self;
-	Py_INCREF(lvobj->parent_vgobj);
+	return (PyObject *)_create_py_lv(self, lv);
 
-	return (PyObject *)lvobj;
+error:
+	PyErr_SetObject(_LibLVMError, _liblvm_get_last_error());
+	return NULL;
 }
 
 static PyObject *_liblvm_lvm_vg_create_lv_thin(vgobject *self, PyObject *args)
@@ -1075,7 +1139,7 @@ static PyObject *_liblvm_lvm_vg_create_lv_thin(vgobject *self, PyObject *args)
 	const char *pool_name;
 	const char *lv_name;
 	unsigned long long size = 0;
-	lvobject *lvobj;
+	lv_t lv;
 	lv_create_params_t lvp = NULL;
 
 	VG_VALID(self);
@@ -1083,35 +1147,25 @@ static PyObject *_liblvm_lvm_vg_create_lv_thin(vgobject *self, PyObject *args)
 	if (!PyArg_ParseTuple(args, "ssK", &pool_name, &lv_name, &size))
 		return NULL;
 
-	if (!(lvobj = PyObject_New(lvobject, &_LibLVMlvType)))
-		return NULL;
-
-	/* Initialize the parent ptr in case lv create fails and we dealloc lvobj */
-	lvobj->parent_vgobj = NULL;
-
 	if (!(lvp = lvm_lv_params_create_thin(self->vg, pool_name, lv_name,size))) {
 		PyErr_SetObject(_LibLVMError, _liblvm_get_last_error());
-		Py_DECREF(lvobj);
 		return NULL;
 	}
 
-	if (!(lvobj->lv = lvm_lv_create(lvp))) {
+	if (!(lv = lvm_lv_create(lvp))) {
 		PyErr_SetObject(_LibLVMError, _liblvm_get_last_error());
-		Py_DECREF(lvobj);
 		return NULL;
 	}
 
-	lvobj->parent_vgobj = self;
-	Py_INCREF(lvobj->parent_vgobj);
-
-	return (PyObject *)lvobj;
+	return (PyObject *)_create_py_lv(self, lv);
 }
 
 static void liblvm_lv_dealloc(lvobject *self)
 {
 	/* We can dealloc an object that didn't get fully created */
-	if (self->parent_vgobj)
+	if (self->parent_vgobj) {
 		Py_DECREF(self->parent_vgobj);
+	}
 
 	PyObject_Del(self);
 }
@@ -1157,7 +1211,6 @@ typedef pv_t (*pv_fetch_by_N)(vg_t vg, const char *id);
 static PyObject *_liblvm_lvm_lv_from_N(vgobject *self, PyObject *arg, lv_fetch_by_N method)
 {
 	const char *id;
-	lvobject *lvobj;
 	lv_t lv = NULL;
 
 	VG_VALID(self);
@@ -1170,15 +1223,7 @@ static PyObject *_liblvm_lvm_lv_from_N(vgobject *self, PyObject *arg, lv_fetch_b
 		return NULL;
 	}
 
-	if (!(lvobj = PyObject_New(lvobject, &_LibLVMlvType)))
-		return NULL;
-
-	lvobj->parent_vgobj = self;
-	Py_INCREF(lvobj->parent_vgobj);
-
-	lvobj->lv = lv;
-
-	return (PyObject *)lvobj;
+	return (PyObject *)_create_py_lv(self, lv);
 }
 
 static PyObject *_liblvm_lvm_lv_from_name(vgobject *self, PyObject *arg)
@@ -1189,6 +1234,25 @@ static PyObject *_liblvm_lvm_lv_from_name(vgobject *self, PyObject *arg)
 static PyObject *_liblvm_lvm_lv_from_uuid(vgobject *self, PyObject *arg)
 {
 	return _liblvm_lvm_lv_from_N(self, arg, lvm_lv_from_uuid);
+}
+
+static PyObject *_liblvm_lvm_lv_name_validate(vgobject *self, PyObject *args)
+{
+	const char *name;
+
+	VG_VALID(self);
+
+	if (!PyArg_ParseTuple(args, "s", &name))
+		return NULL;
+
+	if (lvm_lv_name_validate(self->vg, name) < 0) {
+		PyErr_SetObject(_LibLVMError, _liblvm_get_last_error());
+		return NULL;
+	}
+
+	Py_INCREF(Py_None);
+
+	return Py_None;
 }
 
 static PyObject *_liblvm_lvm_pv_from_N(vgobject *self, PyObject *arg, pv_fetch_by_N method)
@@ -1228,11 +1292,13 @@ static PyObject *_liblvm_lvm_pv_from_uuid(vgobject *self, PyObject *arg)
 
 static void _liblvm_pv_dealloc(pvobject *self)
 {
-	if (self->parent_vgobj)
+	if (self->parent_vgobj) {
 		Py_DECREF(self->parent_vgobj);
+	}
 
-	if (self->parent_pvslistobj)
+	if (self->parent_pvslistobj) {
 		Py_DECREF(self->parent_pvslistobj);
+	}
 
 	self->parent_vgobj = NULL;
 	self->parent_pvslistobj = NULL;
@@ -1242,12 +1308,12 @@ static void _liblvm_pv_dealloc(pvobject *self)
 /* LV Methods */
 
 #define LV_VALID(lvobject) \
-	do { \
-		VG_VALID(lvobject->parent_vgobj); \
-		if (!lvobject->lv) { \
+	do {					\
+		if (!lvobject || !lvobject->lv) { 	\
 			PyErr_SetString(PyExc_UnboundLocalError, "LV object invalid"); \
-			return NULL; \
-		} \
+			return NULL;	\
+		}\
+		VG_VALID(lvobject->parent_vgobj); \
 	} while (0)
 
 static PyObject *_liblvm_lvm_lv_get_attr(lvobject *self)
@@ -1411,22 +1477,22 @@ static PyObject *_liblvm_lvm_lv_remove_tag(lvobject *self, PyObject *args)
 
 static PyObject *_liblvm_lvm_lv_get_tags(lvobject *self)
 {
-	struct dm_list *tags;
+	struct dm_list *tagsl;
 	struct lvm_str_list *strl;
 	PyObject * pytuple;
 	int i = 0;
 
 	LV_VALID(self);
 
-	if (!(tags = lvm_lv_get_tags(self->lv))) {
+	if (!(tagsl = lvm_lv_get_tags(self->lv))) {
 		PyErr_SetObject(_LibLVMError, _liblvm_get_last_error());
 		return NULL;
 	}
 
-	if (!(pytuple = PyTuple_New(dm_list_size(tags))))
+	if (!(pytuple = PyTuple_New(dm_list_size(tagsl))))
 		return NULL;
 
-	dm_list_iterate_items(strl, tags) {
+	dm_list_iterate_items(strl, tagsl) {
 		PyTuple_SET_ITEM(pytuple, i, PyString_FromString(strl->str));
 		i++;
 	}
@@ -1510,7 +1576,7 @@ static PyObject *_liblvm_lvm_lv_snapshot(lvobject *self, PyObject *args)
 {
 	const char *snap_name;
 	unsigned long long size = 0;
-	lvobject *lvobj;
+	lv_t lv;
 	lv_create_params_t lvp = NULL;
 
 	LV_VALID(self);
@@ -1518,42 +1584,32 @@ static PyObject *_liblvm_lvm_lv_snapshot(lvobject *self, PyObject *args)
 	if (!PyArg_ParseTuple(args, "s|K", &snap_name, &size))
 		return NULL;
 
-	if (!(lvobj = PyObject_New(lvobject, &_LibLVMlvType)))
-		return NULL;
-
-	lvobj->parent_vgobj = NULL;
-
 	if (!(lvp = lvm_lv_params_create_snapshot(self->lv, snap_name, size))) {
 		PyErr_SetObject(_LibLVMError, _liblvm_get_last_error());
-		Py_DECREF(lvobj);
 		return NULL;
 	}
 
-	if (!(lvobj->lv = lvm_lv_create(lvp))) {
+	if (!(lv = lvm_lv_create(lvp))) {
 		PyErr_SetObject(_LibLVMError, _liblvm_get_last_error());
-		Py_DECREF(lvobj);
 		return NULL;
 	}
 
-	lvobj->parent_vgobj = self->parent_vgobj;
-	Py_INCREF(lvobj->parent_vgobj);
-
-	return (PyObject *)lvobj;
+	return (PyObject *)_create_py_lv(self->parent_vgobj, lv);
 }
 
 /* PV Methods */
 
 #define PV_VALID(pvobject) \
 	do { \
+		if (!pvobject || !pvobject->pv) { \
+			PyErr_SetString(PyExc_UnboundLocalError, "PV object invalid"); \
+			return NULL; \
+		} \
 		if (pvobject->parent_vgobj) { \
 			VG_VALID(pvobject->parent_vgobj); \
 		} \
 		if (pvobject->parent_pvslistobj) { \
 			PVSLIST_VALID(pvobject->parent_pvslistobj); \
-		} \
-		if (!pvobject->pv) { \
-			PyErr_SetString(PyExc_UnboundLocalError, "PV object invalid"); \
-			return NULL; \
 		} \
 	} while (0)
 
@@ -1673,7 +1729,14 @@ static PyObject *_liblvm_lvm_pv_list_pvsegs(pvobject *self)
  * No way to close/destroy an lvseg, just need to make sure parents are
  * still good
  */
-#define LVSEG_VALID(lvsegobject) LV_VALID(lvsegobject->parent_lvobj)
+#define LVSEG_VALID(lvsegobject) \
+	do { \
+		if ( !lvsegobject || !lvsegobject->parent_lvobj ) { \
+			PyErr_SetString(PyExc_UnboundLocalError, "LV segment object invalid"); \
+			return NULL; \
+		} \
+		LV_VALID(lvsegobject->parent_lvobj); \
+	} while(0)
 
 static void _liblvm_lvseg_dealloc(lvsegobject *self)
 {
@@ -1702,7 +1765,14 @@ static PyObject *_liblvm_lvm_lvseg_get_property(lvsegobject *self, PyObject *arg
  * No way to close/destroy a pvseg, just need to make sure parents are
  * still good
  */
-#define PVSEG_VALID(pvsegobject) PV_VALID(pvsegobject->parent_pvobj)
+#define PVSEG_VALID(pvsegobject) \
+	do { \
+		if (!pvsegobject || !pvsegobject->parent_pvobj) { \
+			PyErr_SetString(PyExc_UnboundLocalError, "PV segment object invalid"); \
+			return NULL; \
+		} \
+		PV_VALID(pvsegobject->parent_pvobj); \
+	} while(0)
 
 static void _liblvm_pvseg_dealloc(pvsegobject *self)
 {
@@ -1745,6 +1815,7 @@ static PyMethodDef _Liblvm_methods[] = {
 	{ "pvCreate",		(PyCFunction)_liblvm_lvm_pv_create, METH_VARARGS },
 	{ "pvRemove",		(PyCFunction)_liblvm_lvm_pv_remove, METH_VARARGS },
 	{ "percentToFloat",	(PyCFunction)_liblvm_lvm_percent_to_float, METH_VARARGS },
+	{ "vgNameValidate",	(PyCFunction)_liblvm_lvm_vg_name_validate, METH_VARARGS },
 	{ "vgNameFromPvid",	(PyCFunction)_liblvm_lvm_vgname_from_pvid, METH_VARARGS },
 	{ "vgNameFromDevice",	(PyCFunction)_liblvm_lvm_vgname_from_device, METH_VARARGS },
 	{ NULL, NULL }		/* sentinel */
@@ -1779,6 +1850,7 @@ static PyMethodDef _liblvm_vg_methods[] = {
 	{ "listPVs",		(PyCFunction)_liblvm_lvm_vg_list_pvs, METH_NOARGS },
 	{ "lvFromName", 	(PyCFunction)_liblvm_lvm_lv_from_name, METH_VARARGS },
 	{ "lvFromUuid", 	(PyCFunction)_liblvm_lvm_lv_from_uuid, METH_VARARGS },
+	{ "lvNameValidate",	(PyCFunction)_liblvm_lvm_lv_name_validate, METH_VARARGS },
 	{ "pvFromName", 	(PyCFunction)_liblvm_lvm_pv_from_name, METH_VARARGS },
 	{ "pvFromUuid", 	(PyCFunction)_liblvm_lvm_pv_from_uuid, METH_VARARGS },
 	{ "getTags",		(PyCFunction)_liblvm_lvm_vg_get_tags, METH_NOARGS },
@@ -1846,7 +1918,7 @@ static PyMethodDef _liblvm_pvseg_methods[] = {
 
 static PyTypeObject _LibLVMvgType = {
 	PyObject_HEAD_INIT(&PyType_Type)
-	.tp_name = "liblvm.Liblvm_vg",
+	.tp_name = "lvm.Liblvm_vg",
 	.tp_basicsize = sizeof(vgobject),
 	.tp_new = PyType_GenericNew,
 	.tp_dealloc = (destructor)liblvm_vg_dealloc,
@@ -1857,7 +1929,7 @@ static PyTypeObject _LibLVMvgType = {
 
 static PyTypeObject _LibLVMlvType = {
 	PyObject_HEAD_INIT(&PyType_Type)
-	.tp_name = "liblvm.Liblvm_lv",
+	.tp_name = "lvm.Liblvm_lv",
 	.tp_basicsize = sizeof(lvobject),
 	.tp_new = PyType_GenericNew,
 	.tp_dealloc = (destructor)liblvm_lv_dealloc,
@@ -1868,7 +1940,7 @@ static PyTypeObject _LibLVMlvType = {
 
 static PyTypeObject _LibLVMpvlistType = {
 	PyObject_HEAD_INIT(&PyType_Type)
-	.tp_name = "liblvm.Liblvm_pvlist",
+	.tp_name = "lvm.Liblvm_pvlist",
 	.tp_basicsize = sizeof(pvslistobject),
 	.tp_new = PyType_GenericNew,
 	.tp_dealloc = (destructor)_liblvm_pvlist_dealloc,
@@ -1879,7 +1951,7 @@ static PyTypeObject _LibLVMpvlistType = {
 
 static PyTypeObject _LibLVMpvType = {
 	PyObject_HEAD_INIT(&PyType_Type)
-	.tp_name = "liblvm.Liblvm_pv",
+	.tp_name = "lvm.Liblvm_pv",
 	.tp_basicsize = sizeof(pvobject),
 	.tp_new = PyType_GenericNew,
 	.tp_dealloc = (destructor)_liblvm_pv_dealloc,
@@ -1890,7 +1962,7 @@ static PyTypeObject _LibLVMpvType = {
 
 static PyTypeObject _LibLVMlvsegType = {
 	PyObject_HEAD_INIT(&PyType_Type)
-	.tp_name = "liblvm.Liblvm_lvseg",
+	.tp_name = "lvm.Liblvm_lvseg",
 	.tp_basicsize = sizeof(lvsegobject),
 	.tp_new = PyType_GenericNew,
 	.tp_dealloc = (destructor)_liblvm_lvseg_dealloc,
@@ -1901,7 +1973,7 @@ static PyTypeObject _LibLVMlvsegType = {
 
 static PyTypeObject _LibLVMpvsegType = {
 	PyObject_HEAD_INIT(&PyType_Type)
-	.tp_name = "liblvm.Liblvm_pvseg",
+	.tp_name = "lvm.Liblvm_pvseg",
 	.tp_basicsize = sizeof(pvsegobject),
 	.tp_new = PyType_GenericNew,
 	.tp_dealloc = (destructor)_liblvm_pvseg_dealloc,
@@ -1952,7 +2024,7 @@ PyMODINIT_FUNC initlvm(void)
 				    LVM_THIN_DISCARDS_PASSDOWN) < 0)
 		return;
 
-	if ((_LibLVMError = PyErr_NewException("Liblvm._LibLVMError", NULL, NULL))) {
+	if ((_LibLVMError = PyErr_NewException("lvm.LibLVMError", NULL, NULL))) {
 		/* Each call to PyModule_AddObject decrefs it; compensate: */
 		Py_INCREF(_LibLVMError);
 		Py_INCREF(_LibLVMError);

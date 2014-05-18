@@ -1,6 +1,6 @@
 ###############################################################################
 ## Copyright (C) 2000-2004 Sistina Software, Inc. All rights reserved.
-## Copyright (C) 2004-2012 Red Hat, Inc. All rights reserved.
+## Copyright (C) 2004-2013 Red Hat, Inc. All rights reserved.
 ##
 ## This copyrighted material is made available to anyone wishing to use,
 ## modify, copy, or redistribute it subject to the terms and conditions
@@ -157,6 +157,13 @@ AC_ARG_ENABLE(static_link,
 			      statically (default is dynamic linking]),
 	      STATIC_LINK=$enableval, STATIC_LINK=no)
 AC_MSG_RESULT($STATIC_LINK)
+
+################################################################################
+dnl -- Check if compiler/linker supports PIE and RELRO
+AC_TRY_CCFLAG([-pie], [HAVE_PIE], [], [])
+AC_SUBST(HAVE_PIE)
+AC_TRY_LDFLAGS([-Wl,-z,relro,-z,now], [HAVE_FULL_RELRO], [], [])
+AC_SUBST(HAVE_FULL_RELRO)
 
 ################################################################################
 dnl -- Prefix is /usr by default, the exec_prefix default is setup later
@@ -402,8 +409,21 @@ AC_MSG_CHECKING(whether to include thin provisioning)
 AC_ARG_WITH(thin,
 	    AC_HELP_STRING([--with-thin=TYPE],
 			   [thin provisioning support: internal/shared/none
-			    [[TYPE=none]]]),
-	    THIN=$withval, THIN=none)
+			    [[TYPE=internal]]]),
+	    THIN=$withval, THIN=internal)
+AC_ARG_WITH(thin-check,
+	    AC_HELP_STRING([--with-thin-check=PATH],
+			   [thin_check tool: [[autodetect]]]),
+			   THIN_CHECK_CMD=$withval, THIN_CHECK_CMD="autodetect")
+AC_ARG_WITH(thin-dump,
+	    AC_HELP_STRING([--with-thin-dump=PATH],
+			   [thin_dump tool: [[autodetect]]]),
+			   THIN_DUMP_CMD=$withval, THIN_DUMP_CMD="autodetect")
+AC_ARG_WITH(thin-repair,
+	    AC_HELP_STRING([--with-thin-repair=PATH],
+			   [thin_repair tool: [[autodetect]]]),
+			   THIN_REPAIR_CMD=$withval, THIN_REPAIR_CMD="autodetect")
+
 AC_MSG_RESULT($THIN)
 
 case "$THIN" in
@@ -413,15 +433,96 @@ case "$THIN" in
   *) AC_MSG_ERROR([--with-thin parameter invalid ($THIN)]) ;;
 esac
 
-AC_DEFINE_UNQUOTED([THIN_CHECK_CMD], ["/usr/sbin/thin_check"],
+dnl -- thin_check needs-check flag
+AC_MSG_CHECKING(whether thin_check supports the needs-check flag)
+AC_ARG_ENABLE(thin_check_needs_check,
+	      AC_HELP_STRING([--disable-thin_check_needs_check],
+			     [required if thin_check version is < 0.3.0]),
+	      THIN_CHECK_NEEDS_CHECK=$enableval, THIN_CHECK_NEEDS_CHECK=yes)
+AC_MSG_RESULT($THIN_CHECK_NEEDS_CHECK)
+
+if test x$THIN_CHECK_NEEDS_CHECK = xyes; then
+	AC_DEFINE([THIN_CHECK_NEEDS_CHECK], 1, [Define to 1 if the external 'thin_check' tool requires the --clear-needs-check-flag option])
+fi
+
+# Test if necessary thin tools are available
+# if not - use plain defaults and warn user
+case "$THIN" in
+  internal|shared)
+	# Empty means a config way to ignore thin checking
+	if test "$THIN_CHECK_CMD" = "autodetect"; then
+		AC_PATH_TOOL(THIN_CHECK_CMD, thin_check)
+		if test -z "$THIN_CHECK_CMD"; then
+			AC_MSG_WARN([thin_check not found in path $PATH])
+			THIN_CHECK_CMD=/usr/sbin/thin_check
+			THIN_CONFIGURE_WARN=y
+		else
+			if test x$THIN_CHECK_NEEDS_CHECK = xyes; then
+				THIN_CHECK_VSN=`"$THIN_CHECK_CMD" -V 2>/dev/null`
+				THIN_CHECK_VSN_MAJOR=`echo "$THIN_CHECK_VSN" | $AWK -F '.' '{print $1}'`
+				THIN_CHECK_VSN_MINOR=`echo "$THIN_CHECK_VSN" | $AWK -F '.' '{print $2}'`
+
+				if test -z "$THIN_CHECK_VSN_MAJOR" -o -z "$THIN_CHECK_VSN_MINOR" ; then
+					AC_MSG_WARN(Found thin_check version "$THIN_CHECK_VSN")
+					THIN_CHECK_VERSION_WARN=y 
+				else
+					if test "$THIN_CHECK_VSN_MAJOR" -eq 0 -a "$THIN_CHECK_VSN_MINOR" -lt 3 ; then
+						AC_MSG_WARN(Found thin_check version "$THIN_CHECK_VSN")
+						THIN_CHECK_VERSION_WARN=y
+					fi
+				fi
+			fi
+		fi
+	fi
+	# Empty means a config way to ignore thin checking
+	if test "$THIN_DUMP_CMD" = "autodetect"; then
+		AC_PATH_TOOL(THIN_DUMP_CMD, thin_dump)
+		test -z "$THIN_DUMP_CMD" && {
+			AC_MSG_WARN(thin_dump not found in path $PATH)
+			THIN_DUMP_CMD=/usr/sbin/thin_dump
+			THIN_CONFIGURE_WARN=y
+		}
+	fi
+	# Empty means a config way to ignore thin checking
+	if test "$THIN_REPAIR_CMD" = "autodetect"; then
+		AC_PATH_TOOL(THIN_REPAIR_CMD, thin_repair)
+		test -z "$THIN_REPAIR_CMD" && {
+			AC_MSG_WARN(thin_repair not found in path $PATH)
+			THIN_REPAIR_CMD=/usr/sbin/thin_repair
+			THIN_CONFIGURE_WARN=y
+		}
+	fi
+	;;
+esac
+
+AC_DEFINE_UNQUOTED([THIN_CHECK_CMD], ["$THIN_CHECK_CMD"],
 		   [The path to 'thin_check', if available.])
 
-AC_DEFINE_UNQUOTED([THIN_DUMP_CMD], ["/usr/sbin/thin_dump"],
+AC_DEFINE_UNQUOTED([THIN_DUMP_CMD], ["$THIN_DUMP_CMD"],
 		   [The path to 'thin_dump', if available.])
 
-AC_DEFINE_UNQUOTED([THIN_REPAIR_CMD], ["/usr/sbin/thin_repair"],
+AC_DEFINE_UNQUOTED([THIN_REPAIR_CMD], ["$THIN_REPAIR_CMD"],
 		   [The path to 'thin_repair', if available.])
 
+################################################################################
+dnl -- cache inclusion type
+AC_MSG_CHECKING(whether to include cache)
+AC_ARG_WITH(cache,
+	    AC_HELP_STRING([--with-cache=TYPE],
+			   [cache support: internal/shared/none
+			    [[TYPE=none]]]),
+	    CACHE=$withval, CACHE=none)
+AC_MSG_RESULT($CACHE)
+
+if [[ "x$CACHE" != xnone -a "x$CACHE" != xinternal -a "x$CACHE" != xshared ]];
+ then  AC_MSG_ERROR(
+--with-cache parameter invalid
+)
+fi;
+
+if test x$CACHE = xinternal; then
+	AC_DEFINE([CACHE_INTERNAL], 1, [Define to 1 to include built-in support for cache.])
+fi
 
 ################################################################################
 dnl -- Disable readline
@@ -914,6 +1015,36 @@ if test x$BUILD_LVMETAD = xyes; then
 fi
 
 ################################################################################
+dnl -- Enable blkid wiping functionality
+AC_MSG_CHECKING(whether to enable libblkid detection of signatures when wiping)
+AC_ARG_ENABLE(blkid_wiping,
+	      AC_HELP_STRING([--disable-blkid_wiping],
+			     [disable libblkid detection of signatures when wiping and use native code instead]),
+	      BLKID_WIPING=$enableval, BLKID_WIPING=maybe)
+AC_MSG_RESULT($BLKID_WIPING)
+
+if test x$BLKID_WIPING != xno; then
+	dnl -- init pkgconfig if required
+	if test x$PKGCONFIG_INIT != x1; then
+		pkg_config_init
+	fi
+	PKG_CHECK_MODULES(BLKID, blkid >= 2.24,
+				[if test x$BLKID_WIPING = xmaybe; then
+					BLKID_WIPING=yes
+				 fi],
+				[if test x$BLKID_WIPING = xmaybe; then
+					BLKID_WIPING=no
+				 else
+					AC_MSG_ERROR([bailing out... blkid library >= 2.24 is required])
+				 fi
+				])
+	if test x$BLKID_WIPING = xyes; then
+		BLKID_PC="blkid"
+		AC_DEFINE([BLKID_WIPING_SUPPORT], 1, [Define to 1 to use libblkid detection of signatures when wiping.])
+	fi
+fi
+
+################################################################################
 dnl -- Enable udev-systemd protocol to instantiate a service for background jobs
 AC_MSG_CHECKING(whether to use udev-systemd protocol for jobs in background)
 AC_ARG_ENABLE(udev-systemd-background-jobs,
@@ -1157,6 +1288,7 @@ dnl -- Check for shared/static conflicts
 if [[ \( "x$LVM1" = xshared -o "x$POOL" = xshared -o "x$CLUSTER" = xshared \
       -o "x$SNAPSHOTS" = xshared -o "x$MIRRORS" = xshared \
       -o "x$RAID" = xshared \
+      -o "x$CACHE" = xshared \
       \) -a "x$STATIC_LINK" = xyes ]];
  then  AC_MSG_ERROR(
 Features cannot be 'shared' when building statically
@@ -1448,9 +1580,12 @@ LVM_LIBAPI=`echo "$VER" | $AWK -F '[[()]]' '{print $2}'`
 ################################################################################
 AC_SUBST(APPLIB)
 AC_SUBST(AWK)
+AC_SUBST(BLKID_PC)
+AC_SUBST(BLKID_WIPING)
 AC_SUBST(BUILD_CMIRRORD)
 AC_SUBST(BUILD_DMEVENTD)
 AC_SUBST(BUILD_LVMETAD)
+AC_SUBST(CACHE)
 AC_SUBST(CFLAGS)
 AC_SUBST(CFLOW_CMD)
 AC_SUBST(CLDFLAGS)
@@ -1548,15 +1683,12 @@ AC_SUBST(THIN)
 AC_SUBST(THIN_CHECK_CMD)
 AC_SUBST(THIN_DUMP_CMD)
 AC_SUBST(THIN_REPAIR_CMD)
-AC_SUBST(UDEV_LIBS)
 AC_SUBST(UDEV_PC)
 AC_SUBST(UDEV_RULES)
 AC_SUBST(UDEV_SYNC)
 AC_SUBST(UDEV_SYSTEMD_BACKGROUND_JOBS)
 AC_SUBST(UDEV_RULE_EXEC_DETECTION)
 AC_SUBST(UDEV_HAS_BUILTIN_BLKID)
-AC_SUBST(CUNIT_LIBS)
-AC_SUBST(CUNIT_CFLAGS)
 AC_SUBST(WRITE_INSTALL)
 AC_SUBST(DMEVENTD_PIDFILE)
 AC_SUBST(LVMETAD_PIDFILE)
@@ -1608,6 +1740,7 @@ lib/misc/lvm-version.h
 lib/raid/Makefile
 lib/snapshot/Makefile
 lib/thin/Makefile
+lib/cache_segtype/Makefile
 libdaemon/Makefile
 libdaemon/client/Makefile
 libdaemon/server/Makefile
@@ -1622,8 +1755,12 @@ python/setup.py
 scripts/blkdeactivate.sh
 scripts/blk_availability_init_red_hat
 scripts/blk_availability_systemd_red_hat.service
+scripts/lvm2_cluster_activation_red_hat.sh
+scripts/lvm2_cluster_activation_systemd_red_hat.service
 scripts/clvmd_init_red_hat
+scripts/lvm2_clvmd_systemd_red_hat.service
 scripts/cmirrord_init_red_hat
+scripts/lvm2_cmirrord_systemd_red_hat.service
 scripts/lvm2_lvmetad_init_red_hat
 scripts/lvm2_lvmetad_systemd_red_hat.socket
 scripts/lvm2_lvmetad_systemd_red_hat.service
@@ -1645,6 +1782,10 @@ unit-tests/mm/Makefile
 ])
 AC_OUTPUT
 
+test -n "$THIN_CONFIGURE_WARN" && AC_MSG_WARN([Support for thin provisioning is limited since some thin provisioning tools are missing!])
+
+test -n "$THIN_CHECK_VERSION_WARN" && AC_MSG_WARN(You should also install thin_check vsn 0.3.2 (or later) to use lvm2 thin provisioning)
+
 if test x$ODIRECT != xyes; then
-  AC_MSG_WARN(Warning: O_DIRECT disabled: low-memory pvmove may lock up)
+  AC_MSG_WARN(O_DIRECT disabled: low-memory pvmove may lock up)
 fi

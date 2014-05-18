@@ -13,6 +13,9 @@
 
 . lib/test
 
+# FIXME  update test to make something useful on <16T
+aux can_use_16T || skip
+
 aux target_at_least dm-raid 1 1 0 || skip
 
 aux prepare_vg 5
@@ -28,8 +31,8 @@ lvcreate -s -l 20%FREE -n $lv5 $vg --virtualsize 256T
 
 aux extend_filter_LVMTEST
 
-pvcreate $DM_DEV_DIR/$vg/$lv[12345]
-vgcreate $vg1 $DM_DEV_DIR/$vg/$lv[12345]
+pvcreate "$DM_DEV_DIR"/$vg/$lv[12345]
+vgcreate $vg1 "$DM_DEV_DIR"/$vg/$lv[12345]
 
 # bz837927 START
 
@@ -68,4 +71,4 @@ lvremove -ff $vg1
 
 # bz837927 END
 
-lvremove -ff $vg
+vgremove -ff $vg

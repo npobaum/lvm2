@@ -60,12 +60,14 @@ lv_err_list_() {
 }
 
 lv_on_diff_() {
-	declare -a devs=("${!1}") # pass in shell array
+	declare -a xdevs=("${!1}") # pass in shell array
 	local expect=( "${@:4}" ) # make an array starting from 4th args...
 	local diff_e
 
 	# Find diff between 2 shell arrays, print them as stdin files
-	diff_e=$(diff <(printf "%s\n" "${expect[@]}" | sort | uniq ) <(printf "%s\n" "${devs[@]}") ) ||
+	printf "%s\n" "${expect[@]}" | sort | uniq >_lv_on_diff1
+	printf "%s\n" "${xdevs[@]}" >_lv_on_diff2
+	diff_e=$(diff _lv_on_diff1 _lv_on_diff2) ||
 		die "LV $2/$3 $(lv_err_list_ "^>" "${diff_e}" found)$(lv_err_list_ "^<" "${diff_e}" "not found")."
 }
 
@@ -238,7 +240,7 @@ inactive() {
 		die "$lv expected inactive, but lvs says it's not:" \
 			$(lvl $lv -o+devices)
 	not dmsetup info $1-$2 2>/dev/null || \
-		die "$lv expected inactive, lvs thinks it is but there are mappings!" 
+		die "$lv expected inactive, lvs thinks it is but there are mappings!"
 }
 
 # Check for list of LVs from given VG
@@ -249,8 +251,23 @@ lv_exists() {
 		shift
 		lv="$lv $vg/$1"
 	done
+	test -n "$lv" || lv=$vg
 	lvl $lv &>/dev/null || \
 		die "$lv expected to exist but does not"
+}
+
+lv_not_exists() {
+	local vg=$1
+	if test $# -le 1 ; then
+		lvl $vg &>/dev/null || return
+		die "$vg expected to not exist but it does!"
+	else
+		while [ $# -gt 1 ]; do
+			shift
+			lvl $vg/$1 &>/dev/null || continue
+			die "$vg/$1 expected to not exist but it does!"
+		done
+	fi
 }
 
 pv_field() {

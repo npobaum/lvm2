@@ -60,8 +60,10 @@ LIBS += -ldevmapper
 LVMLIBS += -ldevmapper-event $(PTHREAD_LIBS)
 CFLAGS += -DPLUGIN_PATH=\"$(libdir)/device-mapper/\"
 
+CFLAGS_dmeventd.o += $(EXTRA_EXEC_CFLAGS)
+
 dmeventd: $(LIB_SHARED) dmeventd.o
-	$(CC) $(CFLAGS) $(LDFLAGS) $(ELDFLAGS) -L. -o $@ dmeventd.o \
+	$(CC) $(CFLAGS) $(LDFLAGS) $(EXTRA_EXEC_LDFLAGS) $(ELDFLAGS) -L. -o $@ dmeventd.o \
 	$(DL_LIBS) $(LVMLIBS) $(LIBS) -rdynamic
 
 dmeventd.static: $(LIB_STATIC) dmeventd.o $(interfacebuilddir)/libdevmapper.a

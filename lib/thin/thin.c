@@ -62,16 +62,10 @@ static int _thin_pool_add_message(struct lv_segment *seg,
 					     lv_name);
 		/* FIXME: switch to _SNAP later, if the created LV has an origin */
 		type = DM_THIN_MESSAGE_CREATE_THIN;
-	}
-
-	if (!dm_config_get_uint32(sn, "delete", &delete_id)) {
-		if (!lv)
-			return SEG_LOG_ERROR("Unknown message in");
-	} else {
-		if (lv)
-			return SEG_LOG_ERROR("Unsupported message format in");
+	} else if (dm_config_get_uint32(sn, "delete", &delete_id))
 		type = DM_THIN_MESSAGE_DELETE;
-	}
+	else
+		return SEG_LOG_ERROR("Unknown message in");
 
 	if (!attach_pool_message(seg, type, lv, delete_id, 1))
 		return_0;
@@ -221,7 +215,7 @@ static int _thin_pool_text_export(const struct lv_segment *seg, struct formatter
 
 #ifdef DEVMAPPER_SUPPORT
 static int _thin_target_present(struct cmd_context *cmd,
-				const struct lv_segment *seg,
+				const struct lv_segment *seg __attribute__((unused)),
 				unsigned *attributes);
 
 static int _thin_pool_modules_needed(struct dm_pool *mem,
@@ -268,7 +262,7 @@ static int _thin_pool_add_target_line(struct dev_manager *dm,
 	uint64_t transaction_id = 0;
 	unsigned attr;
 
-	if (!_thin_target_present(cmd, seg, &attr))
+	if (!_thin_target_present(cmd, NULL, &attr))
 		return_0;
 
 	if (!seg->metadata_lv) {
@@ -283,13 +277,13 @@ static int _thin_pool_add_target_line(struct dev_manager *dm,
 		return 0;
 	}
 
-	if (!(metadata_dlid = build_dm_uuid(mem, seg->metadata_lv->lvid.s, NULL))) {
+	if (!(metadata_dlid = build_dm_uuid(mem, seg->metadata_lv, NULL))) {
 		log_error("Failed to build uuid for metadata LV %s.",
 			  seg->metadata_lv->name);
 		return 0;
 	}
 
-	if (!(pool_dlid = build_dm_uuid(mem, seg_lv(seg, 0)->lvid.s, NULL))) {
+	if (!(pool_dlid = build_dm_uuid(mem, seg_lv(seg, 0), NULL))) {
 		log_error("Failed to build uuid for pool LV %s.",
 			  seg_lv(seg, 0)->name);
 		return 0;
@@ -456,7 +450,7 @@ static int _thin_text_import(struct lv_segment *seg,
 			     struct dm_hash_table *pv_hash __attribute__((unused)))
 {
 	const char *lv_name;
-	struct logical_volume *pool_lv, *origin = NULL, *external_lv = NULL;
+	struct logical_volume *pool_lv, *origin = NULL, *external_lv = NULL, *merge_lv = NULL;
 
 	if (!dm_config_get_str(sn, "thin_pool", &lv_name))
 		return SEG_LOG_ERROR("Thin pool must be a string in");
@@ -475,6 +469,13 @@ static int _thin_text_import(struct lv_segment *seg,
 			return SEG_LOG_ERROR("Unknown origin %s in", lv_name);
 	}
 
+	if (dm_config_has_node(sn, "merge")) {
+		if (!dm_config_get_str(sn, "merge", &lv_name))
+			return SEG_LOG_ERROR("Merge lv must be a string in");
+		if (!(merge_lv = find_lv(seg->lv->vg, lv_name)))
+			return SEG_LOG_ERROR("Unknown merge lv %s in", lv_name);
+	}
+
 	if (!dm_config_get_uint32(sn, "device_id", &seg->device_id))
 		return SEG_LOG_ERROR("Could not read device_id for");
 
@@ -490,7 +491,7 @@ static int _thin_text_import(struct lv_segment *seg,
 			return SEG_LOG_ERROR("Unknown external origin %s in", lv_name);
 	}
 
-	if (!attach_pool_lv(seg, pool_lv, origin))
+	if (!attach_pool_lv(seg, pool_lv, origin, merge_lv))
 		return_0;
 
 	if (!attach_thin_external_origin(seg, external_lv))
@@ -509,6 +510,8 @@ static int _thin_text_export(const struct lv_segment *seg, struct formatter *f)
 		outf(f, "external_origin = \"%s\"", seg->external_lv->name);
 	if (seg->origin)
 		outf(f, "origin = \"%s\"", seg->origin->name);
+	if (seg->merge_lv)
+		outf(f, "merge = \"%s\"", seg->merge_lv->name);
 
 	return 1;
 }
@@ -519,22 +522,39 @@ static int _thin_add_target_line(struct dev_manager *dm,
 				 struct cmd_context *cmd __attribute__((unused)),
 				 void **target_state __attribute__((unused)),
 				 struct lv_segment *seg,
-				 const struct lv_activate_opts *laopts __attribute__((unused)),
+				 const struct lv_activate_opts *laopts,
 				 struct dm_tree_node *node, uint64_t len,
 				 uint32_t *pvmove_mirror_count __attribute__((unused)))
 {
 	char *pool_dlid, *external_dlid;
 	uint32_t device_id = seg->device_id;
+	unsigned attr;
 
 	if (!seg->pool_lv) {
 		log_error(INTERNAL_ERROR "Segment %s has no pool.",
 			  seg->lv->name);
 		return 0;
 	}
-	if (!(pool_dlid = build_dm_uuid(mem, seg->pool_lv->lvid.s, lv_layer(seg->pool_lv)))) {
+	if (!(pool_dlid = build_dm_uuid(mem, seg->pool_lv, lv_layer(seg->pool_lv)))) {
 		log_error("Failed to build uuid for pool LV %s.",
 			  seg->pool_lv->name);
 		return 0;
+	}
+
+	if (!laopts->no_merging) {
+		if (seg->merge_lv) {
+			log_error(INTERNAL_ERROR "Failed to add merged segment of %s.",
+				  seg->lv->name);
+			return 0;
+		}
+		/*
+		 * merge support for thinp snapshots is implemented by
+		 * simply swapping the thinp device_id of the snapshot
+		 * and origin.
+		 */
+		if (lv_is_merging_origin(seg->lv) && seg_is_thin_volume(find_snapshot(seg->lv)))
+			/* origin, use merging snapshot's device_id */
+			device_id = find_snapshot(seg->lv)->device_id;
 	}
 
 	if (!dm_tree_node_add_thin_target(node, len, pool_dlid, device_id))
@@ -542,7 +562,18 @@ static int _thin_add_target_line(struct dev_manager *dm,
 
 	/* Add external origin LV */
 	if (seg->external_lv) {
-		if (!(external_dlid = build_dm_uuid(mem, seg->external_lv->lvid.s,
+		if (!pool_supports_external_origin(first_seg(seg->pool_lv), seg->external_lv))
+			return_0;
+		if (seg->external_lv->size < seg->lv->size) {
+			/* Validate target supports smaller external origin */
+			if (!_thin_target_present(cmd, NULL, &attr) ||
+			    !(attr & THIN_FEATURE_EXTERNAL_ORIGIN_EXTEND)) {
+				log_error("Thin target does not support smaller size of external origin LV %s.",
+					  seg->external_lv->name);
+				return 0;
+			}
+		}
+		if (!(external_dlid = build_dm_uuid(mem, seg->external_lv,
 						    lv_layer(seg->external_lv)))) {
 			log_error("Failed to build uuid for external origin LV %s.",
 				  seg->external_lv->name);
@@ -586,7 +617,7 @@ static int _thin_target_percent(void **target_state __attribute__((unused)),
 }
 
 static int _thin_target_present(struct cmd_context *cmd,
-				const struct lv_segment *seg,
+				const struct lv_segment *seg __attribute__((unused)),
 				unsigned *attributes)
 {
 	/* List of features with their kernel target version */
@@ -600,7 +631,8 @@ static int _thin_target_present(struct cmd_context *cmd,
 		{ 1, 1, THIN_FEATURE_EXTERNAL_ORIGIN, "external_origin" },
 		{ 1, 4, THIN_FEATURE_BLOCK_SIZE, "block_size" },
 		{ 1, 5, THIN_FEATURE_DISCARDS_NON_POWER_2, "discards_non_power_2" },
-		{ 1, 9, THIN_FEATURE_METADATA_RESIZE, "metadata_resize" },
+		{ 1, 10, THIN_FEATURE_METADATA_RESIZE, "metadata_resize" },
+		{ 9, 11, THIN_FEATURE_EXTERNAL_ORIGIN_EXTEND, "external_origin_extend" },
 	};
 
 	static const char _lvmconf[] = "global/thin_disabled_features";
@@ -621,8 +653,9 @@ static int _thin_target_present(struct cmd_context *cmd,
 			return 0;
 		}
 
-		for (i = 0; i < sizeof(_features)/sizeof(*_features); i++)
-			if (maj >= _features[i].maj && min >= _features[i].min)
+		for (i = 0; i < DM_ARRAY_SIZE(_features); ++i)
+			if ((maj > _features[i].maj) ||
+			    (maj == _features[i].maj && min >= _features[i].min))
 				_attrs |= _features[i].thin_feature;
 			else
 				log_very_verbose("Target %s does not support %s.",
@@ -643,18 +676,15 @@ static int _thin_target_present(struct cmd_context *cmd,
 						continue;
 					}
 					str = cv->v.str;
-					if (!*str) {
-						log_error("Ignoring empty string in config file %s.",
-							  _lvmconf);
+					if (!*str)
 						continue;
-					}
-					for (i = 0; i < sizeof(_features)/sizeof(*_features); i++)
+					for (i = 0; i < DM_ARRAY_SIZE(_features); ++i)
 						if (strcasecmp(str, _features[i].feature) == 0)
 							_feature_mask |= _features[i].thin_feature;
 				}
 			}
 			_feature_mask = ~_feature_mask;
-			for (i = 0; i < sizeof(_features)/sizeof(*_features); i++)
+			for (i = 0; i < DM_ARRAY_SIZE(_features); ++i)
 				if ((_attrs & _features[i].thin_feature) &&
 				    !(_feature_mask & _features[i].thin_feature))
 					log_very_verbose("Target %s %s support disabled by %s",
@@ -727,7 +757,7 @@ int init_multiple_segtypes(struct cmd_context *cmd, struct segtype_library *segl
 	struct segment_type *segtype;
 	unsigned i;
 
-	for (i = 0; i < sizeof(reg_segtypes)/sizeof(reg_segtypes[0]); ++i) {
+	for (i = 0; i < DM_ARRAY_SIZE(reg_segtypes); ++i) {
 		segtype = dm_zalloc(sizeof(*segtype));
 
 		if (!segtype) {
