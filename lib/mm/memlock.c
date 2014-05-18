@@ -93,8 +93,8 @@ static const char * const _blacklist_maps[] = {
     "/LC_MESSAGES/",
     "gconv/gconv-modules.cache",
     "/libreadline.so.",	/* not using readline during mlock */
-    "/libncurses.so.",	/* not using readline during mlock */
-    "/libtinfo.so.",	/* not using readline during mlock */
+    "/libncurses.so.",	/* not using ncurses during mlock */
+    "/libtinfo.so.",	/* not using tinfo during mlock */
     "/libdl-",		/* not using dlopen,dlsym during mlock */
     /* "/libdevmapper-event.so" */
 };
@@ -176,7 +176,7 @@ static int _maps_line(const struct dm_config_node *cn, lvmlock_t lock,
 	}
 
 	/* always ignored areas */
-	for (i = 0; i < sizeof(_ignore_maps) / sizeof(_ignore_maps[0]); ++i)
+	for (i = 0; i < DM_ARRAY_SIZE(_ignore_maps); ++i)
 		if (strstr(line + pos, _ignore_maps[i])) {
 			log_debug_mem("%s ignore filter '%s' matches '%s': Skipping.",
 				      lock_str, _ignore_maps[i], line);
@@ -186,7 +186,7 @@ static int _maps_line(const struct dm_config_node *cn, lvmlock_t lock,
 	sz = to - from;
 	if (!cn) {
 		/* If no blacklist configured, use an internal set */
-		for (i = 0; i < sizeof(_blacklist_maps) / sizeof(_blacklist_maps[0]); ++i)
+		for (i = 0; i < DM_ARRAY_SIZE(_blacklist_maps); ++i)
 			if (strstr(line + pos, _blacklist_maps[i])) {
 				log_debug_mem("%s default filter '%s' matches '%s': Skipping.",
 					      lock_str, _blacklist_maps[i], line);
@@ -445,7 +445,7 @@ void memlock_inc_daemon(struct cmd_context *cmd)
 {
 	++_memlock_count_daemon;
 	if (_memlock_count_daemon == 1 && _critical_section > 0)
-                log_error(INTERNAL_ERROR "_memlock_inc_daemon used in critical section.");
+		log_error(INTERNAL_ERROR "_memlock_inc_daemon used in critical section.");
 	log_debug_mem("memlock_count_daemon inc to %d", _memlock_count_daemon);
 	_lock_mem_if_needed(cmd);
 }
@@ -456,6 +456,11 @@ void memlock_dec_daemon(struct cmd_context *cmd)
 		log_error(INTERNAL_ERROR "_memlock_count_daemon has dropped below 0.");
 	--_memlock_count_daemon;
 	log_debug_mem("memlock_count_daemon dec to %d", _memlock_count_daemon);
+	if (!_memlock_count_daemon && _critical_section && _mem_locked) {
+		log_error("Unlocking daemon memory in critical section.");
+		_unlock_mem(cmd);
+		_mem_locked = 0;
+	}
 	_unlock_mem_if_possible(cmd);
 }
 

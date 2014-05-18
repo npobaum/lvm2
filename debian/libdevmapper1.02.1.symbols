@@ -71,6 +71,7 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_get_library_version@Base 2:1.02.20
  dm_get_name_mangling_mode@Base 2:1.02.74
  dm_get_next_target@Base 2:1.02.20
+ dm_get_status_cache@Base 2:1.02.85
  dm_get_status_raid@Base 2:1.02.78
  dm_get_status_snapshot@Base 2:1.02.78
  dm_get_status_thin@Base 2:1.02.74
@@ -220,6 +221,7 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_tree_free@Base 2:1.02.20
  dm_tree_get_cookie@Base 2:1.02.36
  dm_tree_next_child@Base 2:1.02.20
+ dm_tree_node_add_cache_target@Base 2:1.02.85
  dm_tree_node_add_crypt_target@Base 2:1.02.36
  dm_tree_node_add_error_target@Base 2:1.02.20
  dm_tree_node_add_linear_target@Base 2:1.02.20

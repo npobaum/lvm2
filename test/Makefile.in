@@ -19,10 +19,10 @@ subdir = $(shell pwd|sed 's,.*/,,')
 srcdir = @srcdir@
 top_srcdir = @top_srcdir@
 top_builddir = @top_builddir@
-abs_srcdir = "@abs_srcdir@"
-abs_builddir = "@abs_builddir@"
-abs_top_builddir = "@abs_top_builddir@"
-abs_top_srcdir = "@abs_top_srcdir@"
+abs_srcdir = @abs_srcdir@
+abs_builddir = @abs_builddir@
+abs_top_builddir = @abs_top_builddir@
+abs_top_srcdir = @abs_top_srcdir@
 
 LVM_TEST_RESULTS ?= results
 export LVM_TEST_THIN_CHECK_CMD?=@THIN_CHECK_CMD@
@@ -41,6 +41,11 @@ ALL = $(shell find $(srcdir) \( -path \*/shell/\*.sh -or -path \*/api/\*.sh \) |
 comma = ,
 RUN = $(shell find $(srcdir) -regextype posix-egrep \( -path \*/shell/\*.sh -or -path \*/api/\*.sh \) -and -regex "$(srcdir)/.*($(subst $(comma),|,$(T))).*" -and -not -regex "$(srcdir)/.*($(subst $(comma),|,$(S))).*" | sort)
 RUN_BASE = $(subst $(srcdir)/,,$(RUN))
+
+ifeq ("@BUILD_LVMETAD@", "yes")
+LVMETAD_RUN_BASE = $(RUN_BASE)
+endif
+
 
 # Shell quote;
 SHELL_PATH_SQ = $(subst ','\'',$(SHELL_PATH))
@@ -61,6 +66,7 @@ help:
 	@echo "  clean			Clean dir."
 	@echo "  help			Display callable targets."
 	@echo -e "\nSupported variables:"
+	@echo "  LVM_TEST_CAN_CLOBBER_DMESG Allow to clobber dmesg buffer without /dev/kmsg. (1)"
 	@echo "  LVM_TEST_DEVDIR	Set to '/dev' to run on real /dev."
 	@echo "  LVM_TEST_DIR		Where to create test files [$(LVM_TEST_DIR)]."
 	@echo "  LVM_TEST_LOCKING	Normal (1), Cluster (3)."
@@ -72,6 +78,10 @@ help:
 	@echo "  LVM_TEST_THIN_DUMP_CMD   Command for thin_dump   [$(LVM_TEST_THIN_DUMP_CMD)]."
 	@echo "  LVM_TEST_THIN_REPAIR_CMD Command for thin_repair [$(LVM_TEST_THIN_REPAIR_CMD)]."
 	@echo "  LVM_TEST_UNLIMITED	Set to get unlimited test log (>32MB)"
+	@echo "  LVM_VALGRIND		Enable valgrind testing (1,2,3) execs $$"VALGRIND
+	@echo "  LVM_VALGRIND_CLVMD	Enable valgrind testing of clvmd (1)."
+	@echo "  LVM_VALGRIND_DMEVENTD	Enable valgrind testing of dmeventd (1)."
+	@echo "  LVM_VALGRIND_LVMETAD	Enable valgrind testing of lvmetad (1)."
 	@echo "  LVM_VERIFY_UDEV	Default verify state for lvm.conf."
 	@echo "  S			Skip given test (regex)."
 	@echo "  T			Run given test (regex)."
@@ -83,23 +93,18 @@ check: .tests-stamp
 	lvmetad_LVM_TEST_LVMETAD=1 \
 	./lib/harness $(patsubst %,normal:%,$(RUN_BASE)) \
 		      $(patsubst %,cluster:%,$(RUN_BASE)) \
-		      $(patsubst %,lvmetad:%,$(RUN_BASE))
+		      $(patsubst %,lvmetad:%,$(LVMETAD_RUN_BASE))
 
-check_full: .tests-stamp
+check_system: .tests-stamp
 	VERBOSE=$(VERBOSE) \
-	cluster_LVM_TEST_LOCKING=3 \
 	scluster_LVM_TEST_LOCKING=3 \
-	lvmetad_LVM_TEST_LVMETAD=1 \
 	slvmetad_LVM_TEST_LVMETAD=1 \
 	snormal_LVM_TEST_DEVDIR=/dev \
 	scluster_LVM_TEST_DEVDIR=/dev \
 	slvmetad_LVM_TEST_DEVDIR=/dev \
-	./lib/harness $(patsubst %,normal:%,$(RUN_BASE)) \
-		      $(patsubst %,cluster:%,$(RUN_BASE)) \
-		      $(patsubst %,lvmetad:%,$(RUN_BASE)) \
-		      $(patsubst %,snormal:%,$(RUN_BASE)) \
+	./lib/harness $(patsubst %,snormal:%,$(RUN_BASE)) \
 		      $(patsubst %,scluster:%,$(RUN_BASE)) \
-		      $(patsubst %,slvmetad:%,$(RUN_BASE))
+		      $(patsubst %,slvmetad:%,$(LVMETAD_RUN_BASE))
 
 check_cluster: .tests-stamp
 	@echo Testing with locking_type 3
@@ -109,12 +114,21 @@ check_local: .tests-stamp
 	@echo Testing with locking_type 1
 	VERBOSE=$(VERBOSE) LVM_TEST_LOCKING=1 ./lib/harness $(RUN_BASE)
 
+ifeq ("@BUILD_LVMETAD@", "yes")
 check_lvmetad: .tests-stamp
 	@echo Testing with lvmetad on
 	VERBOSE=$(VERBOSE) LVM_TEST_LVMETAD=1 ./lib/harness $(RUN_BASE)
+endif
 
 lib/should: lib/not
 	ln -sf not lib/should
+
+lib/invalid: lib/not
+	ln -sf not lib/invalid
+
+lib/fail: lib/not
+	ln -sf not lib/fail
+
 
 lib/%: lib/%.o .lib-dir-stamp
 	$(CC) $(LDFLAGS) -o $@ $<
@@ -125,17 +139,19 @@ lib/%: $(srcdir)/lib/%.sh .lib-dir-stamp
 
 lib/paths: $(srcdir)/Makefile.in .lib-dir-stamp
 	$(RM) $@-t
-	echo 'top_srcdir=$(top_srcdir)' >> $@-t
-	echo 'abs_top_builddir=$(abs_top_builddir)' >> $@-t
-	echo 'abs_top_srcdir=$(abs_top_srcdir)' >> $@-t
-	echo 'abs_srcdir=$(abs_srcdir)' >> $@-t
-	echo 'abs_builddir=$(abs_builddir)' >> $@-t
+	echo 'top_srcdir="$(top_srcdir)"' >> $@-t
+	echo 'abs_top_builddir="$(abs_top_builddir)"' >> $@-t
+	echo 'abs_top_srcdir="$(abs_top_srcdir)"' >> $@-t
+	echo 'abs_srcdir="$(abs_srcdir)"' >> $@-t
+	echo 'abs_builddir="$(abs_builddir)"' >> $@-t
 	echo 'export DM_UDEV_SYNCHRONISATION=$(dm_udev_synchronisation)' >> $@-t
 	echo 'export THIN=@THIN@' >> $@-t
-	echo 'export LVMETAD_PIDFILE=@LVMETAD_PIDFILE@' >> $@-t
+	echo 'export LVMETAD_PIDFILE="@LVMETAD_PIDFILE@"' >> $@-t
+	echo 'export DMEVENTD_PIDFILE="@DMEVENTD_PIDFILE@"' >> $@-t
+	echo 'export CLVMD_PIDFILE="@CLVMD_PIDFILE@"' >> $@-t
 	mv $@-t $@
 
-LIB = lib/not lib/should lib/harness \
+LIB = lib/not lib/invalid lib/fail lib/should lib/harness \
       lib/check lib/aux lib/test lib/utils lib/get lib/lvm-wrapper \
       lib/paths
 
@@ -161,6 +177,8 @@ CMDS = lvm $(shell cat $(top_builddir)/tools/.commands)
 	ln -fs $(abs_top_builddir)/daemons/lvmetad/lvmetad lib/lvmetad
 	ln -fs $(abs_top_srcdir)/scripts/vgimportclone.sh lib/vgimportclone
 	ln -fs $(abs_top_srcdir)/scripts/fsadm.sh lib/fsadm
+	ln -fs $(abs_top_srcdir)/conf/default.profile lib/default.profile
+	ln -fs $(abs_top_srcdir)/conf/thin-performance.profile lib/thin-performance.profile
 	touch $@
 
 clean:

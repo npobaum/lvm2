@@ -1,3 +1,10 @@
+lvm2 (2.02.106-1) unstable; urgency=medium
+
+  * New upstream version.
+  * Break older thin-provisioning-tools.
+
+ -- Bastian Blank <waldi@debian.org>  Sun, 18 May 2014 15:22:30 +0200
+
 lvm2 (2.02.104-2) unstable; urgency=medium
 
   * Don't longer disable O_DIRECT.

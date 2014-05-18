@@ -1,5 +1,11 @@
 /* lib/misc/configure.h.in.  Generated from configure.in by autoheader.  */
 
+/* Define to 1 to use libblkid detection of signatures when wiping. */
+#undef BLKID_WIPING_SUPPORT
+
+/* Define to 1 to include built-in support for cache. */
+#undef CACHE_INTERNAL
+
 /* Define to 1 if the `closedir' function returns void instead of `int'. */
 #undef CLOSEDIR_VOID
 
@@ -545,6 +551,10 @@
 
 /* The path to 'thin_check', if available. */
 #undef THIN_CHECK_CMD
+
+/* Define to 1 if the external 'thin_check' tool requires the
+   --clear-needs-check-flag option */
+#undef THIN_CHECK_NEEDS_CHECK
 
 /* The path to 'thin_dump', if available. */
 #undef THIN_DUMP_CMD

@@ -43,21 +43,24 @@ PYTHON = @PYTHON@
 
 LIBS = @LIBS@
 # Extra libraries always linked with static binaries
-STATIC_LIBS = $(SELINUX_LIBS) $(UDEV_LIBS)
+STATIC_LIBS = $(SELINUX_LIBS) $(UDEV_LIBS) $(BLKID_LIBS)
 DEFS += @DEFS@
 # FIXME set this only where it's needed, not globally?
-CFLAGS += @CFLAGS@ @UDEV_CFLAGS@
+CFLAGS += @CFLAGS@
 CLDFLAGS += @CLDFLAGS@
 ELDFLAGS += @ELDFLAGS@
 LDDEPS += @LDDEPS@
 LDFLAGS += @LDFLAGS@
 LIB_SUFFIX = @LIB_SUFFIX@
-LVMINTERNAL_LIBS = -llvm-internal $(DAEMON_LIBS) $(UDEV_LIBS) $(DL_LIBS)
+LVMINTERNAL_LIBS = -llvm-internal $(DAEMON_LIBS) $(UDEV_LIBS) $(DL_LIBS) $(BLKID_LIBS)
 DL_LIBS = @DL_LIBS@
 PTHREAD_LIBS = @PTHREAD_LIBS@
 READLINE_LIBS = @READLINE_LIBS@
 SELINUX_LIBS = @SELINUX_LIBS@
+UDEV_CFLAGS = @UDEV_CFLAGS@
 UDEV_LIBS = @UDEV_LIBS@
+BLKID_CFLAGS = @BLKID_CFLAGS@
+BLKID_LIBS = @BLKID_LIBS@
 TESTING = @TESTING@
 
 # Setup directory variables
@@ -82,7 +85,8 @@ udevdir = $(DESTDIR)@udevdir@
 pkgconfigdir = $(usrlibdir)/pkgconfig
 initdir = $(DESTDIR)$(sysconfdir)/rc.d/init.d
 systemd_unit_dir = $(DESTDIR)@systemdsystemunitdir@
-systemd_generator_dir = $(DESTDIR)@systemdutildir@/system-generators
+systemd_generator_dir = $(DESTDIR)$(SYSTEMD_GENERATOR_DIR)
+systemd_dir = $(DESTDIR)@systemdutildir@
 tmpfiles_dir = $(DESTDIR)@tmpfilesdir@
 ocf_scriptdir = $(DESTDIR)@OCFDIR@
 pyexecdir = $(DESTDIR)$(prefix)
@@ -90,6 +94,7 @@ pyexecdir = $(DESTDIR)$(prefix)
 USRLIB_RELPATH = $(shell echo $(abspath $(usrlibdir) $(libdir)) | \
   $(AWK) -f $(top_srcdir)/scripts/relpath.awk)
 
+SYSTEMD_GENERATOR_DIR = @systemdutildir@/system-generators
 DEFAULT_SYS_DIR = @DEFAULT_SYS_DIR@
 DEFAULT_ARCHIVE_DIR = $(DEFAULT_SYS_DIR)/@DEFAULT_ARCHIVE_SUBDIR@
 DEFAULT_BACKUP_DIR = $(DEFAULT_SYS_DIR)/@DEFAULT_BACKUP_SUBDIR@
@@ -147,6 +152,15 @@ ifeq ("@HAVE_WCLOBBERED@", "yes")
 WFLAGS += -Wclobbered -Wempty-body -Wignored-qualifiers \
  -Wmissing-parameter-type -Wold-style-declaration -Woverride-init \
  -Wtype-limits -Wsync-nand -Wlogical-op
+endif
+
+ifneq ("@STATIC_LINK@", "yes")
+ifeq ("@HAVE_PIE@", "yes")
+ifeq ("@HAVE_FULL_RELRO@", "yes")
+  EXTRA_EXEC_CFLAGS += -fPIE -DPIE
+  EXTRA_EXEC_LDFLAGS += -Wl,-z,relro,-z,now -pie
+endif
+endif
 endif
 
 #WFLAGS += -W -Wno-sign-compare -Wno-unused-parameter -Wno-missing-field-initializers
@@ -344,7 +358,7 @@ endif
 $(TARGETS): $(OBJECTS)
 
 %.o: %.c
-	$(CC) -c $(INCLUDES) $(DEFS) $(WFLAGS) $(CFLAGS) $< -o $@
+	$(CC) -c $(INCLUDES) $(DEFS) $(WFLAGS) $(CFLAGS) $(CFLAGS_$@) $< -o $@
 
 %.pot: %.c Makefile
 	$(CC) -E $(INCLUDES) -include $(top_srcdir)/include/pogen.h \

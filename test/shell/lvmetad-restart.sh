@@ -14,10 +14,12 @@
 test -e LOCAL_LVMETAD || skip
 aux prepare_pvs 2
 
-vgcreate $vg1 $dev1 $dev2
+vgcreate $vg1 "$dev1" "$dev2"
 vgs | grep $vg1
 
 kill $(cat LOCAL_LVMETAD)
 aux prepare_lvmetad
 
 vgs | grep $vg1
+
+vgremove -ff $vg1

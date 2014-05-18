@@ -29,6 +29,7 @@
 #include "label.h"
 #include "lvmcache.h"
 #include "lvmetad.h"
+#include "memlock.h"
 
 #include <unistd.h>
 #include <sys/param.h>
@@ -315,6 +316,55 @@ static void _xlate_mdah(struct mda_header *mdah)
 	}
 }
 
+static int _raw_read_mda_header(struct mda_header *mdah, struct device_area *dev_area)
+{
+	if (!dev_open_readonly(dev_area->dev))
+		return_0;
+
+	if (!dev_read(dev_area->dev, dev_area->start, MDA_HEADER_SIZE, mdah)) {
+		if (!dev_close(dev_area->dev))
+			stack;
+		return_0;
+	}
+
+	if (!dev_close(dev_area->dev))
+		return_0;
+
+	if (mdah->checksum_xl != xlate32(calc_crc(INITIAL_CRC, (uint8_t *)mdah->magic,
+						  MDA_HEADER_SIZE -
+						  sizeof(mdah->checksum_xl)))) {
+		log_error("Incorrect metadata area header checksum on %s"
+			  " at offset %"PRIu64, dev_name(dev_area->dev),
+			  dev_area->start);
+		return 0;
+	}
+
+	_xlate_mdah(mdah);
+
+	if (strncmp((char *)mdah->magic, FMTT_MAGIC, sizeof(mdah->magic))) {
+		log_error("Wrong magic number in metadata area header on %s"
+			  " at offset %"PRIu64, dev_name(dev_area->dev),
+			  dev_area->start);
+		return 0;
+	}
+
+	if (mdah->version != FMTT_VERSION) {
+		log_error("Incompatible metadata area header version: %d on %s"
+			  " at offset %"PRIu64, mdah->version,
+			  dev_name(dev_area->dev), dev_area->start);
+		return 0;
+	}
+
+	if (mdah->start != dev_area->start) {
+		log_error("Incorrect start sector in metadata area header: %"
+			  PRIu64" on %s at offset %"PRIu64, mdah->start,
+			  dev_name(dev_area->dev), dev_area->start);
+		return 0;
+	}
+
+	return 1;
+}
+
 struct mda_header *raw_read_mda_header(const struct format_type *fmt,
 				       struct device_area *dev_area)
 {
@@ -325,46 +375,12 @@ struct mda_header *raw_read_mda_header(const struct format_type *fmt,
 		return NULL;
 	}
 
-	if (!dev_read(dev_area->dev, dev_area->start, MDA_HEADER_SIZE, mdah))
-		goto_bad;
-
-	if (mdah->checksum_xl != xlate32(calc_crc(INITIAL_CRC, (uint8_t *)mdah->magic,
-						  MDA_HEADER_SIZE -
-						  sizeof(mdah->checksum_xl)))) {
-		log_error("Incorrect metadata area header checksum on %s"
-			  " at offset %"PRIu64, dev_name(dev_area->dev),
-			  dev_area->start);
-		goto bad;
-	}
-
-	_xlate_mdah(mdah);
-
-	if (strncmp((char *)mdah->magic, FMTT_MAGIC, sizeof(mdah->magic))) {
-		log_error("Wrong magic number in metadata area header on %s"
-			  " at offset %"PRIu64, dev_name(dev_area->dev),
-			  dev_area->start);
-		goto bad;
-	}
-
-	if (mdah->version != FMTT_VERSION) {
-		log_error("Incompatible metadata area header version: %d on %s"
-			  " at offset %"PRIu64, mdah->version,
-			  dev_name(dev_area->dev), dev_area->start);
-		goto bad;
-	}
-
-	if (mdah->start != dev_area->start) {
-		log_error("Incorrect start sector in metadata area header: %"
-			  PRIu64" on %s at offset %"PRIu64, mdah->start,
-			  dev_name(dev_area->dev), dev_area->start);
-		goto bad;
+	if (!_raw_read_mda_header(mdah, dev_area)) {
+		dm_pool_free(fmt->cmd->mem, mdah);
+		return NULL;
 	}
 
 	return mdah;
-
-bad:
-	dm_pool_free(fmt->cmd->mem, mdah);
-	return NULL;
 }
 
 static int _raw_write_mda_header(const struct format_type *fmt,
@@ -664,10 +680,8 @@ static int _vg_write_raw(struct format_instance *fid, struct volume_group *vg,
 		if (!dev_close(mdac->area.dev))
 			stack;
 
-		if (fidtc->raw_metadata_buf) {
-			dm_free(fidtc->raw_metadata_buf);
-			fidtc->raw_metadata_buf = NULL;
-		}
+		dm_free(fidtc->raw_metadata_buf);
+		fidtc->raw_metadata_buf = NULL;
 	}
 
 	return r;
@@ -753,10 +767,9 @@ static int _vg_commit_raw_rlocn(struct format_instance *fid,
 	if (!precommit) {
 		if (!dev_close(mdac->area.dev))
 			stack;
-		if (fidtc->raw_metadata_buf) {
-			dm_free(fidtc->raw_metadata_buf);
-			fidtc->raw_metadata_buf = NULL;
-		}
+
+		dm_free(fidtc->raw_metadata_buf);
+		fidtc->raw_metadata_buf = NULL;
 	}
 
 	return r;
@@ -1328,8 +1341,10 @@ static int _text_pv_write(const struct format_type *fmt, struct physical_volume 
 				   mdac->area.size >> SECTOR_SHIFT);
 
 		// if fmt is not the same as info->fmt we are in trouble
-		lvmcache_add_mda(info, mdac->area.dev,
-				 mdac->area.start, mdac->area.size, mda_is_ignored(mda));
+		if (!lvmcache_add_mda(info, mdac->area.dev,
+				      mdac->area.start, mdac->area.size,
+				      mda_is_ignored(mda)))
+			return_0;
 	}
 
 	if (!lvmcache_update_bas(info, pv))
@@ -1521,11 +1536,11 @@ static int _text_pv_initialise(const struct format_type *fmt,
 		/*
 		 * Calculate new PE start and bootloader area start value.
 		 * Make sure both are properly aligned!
-		 * If PE start can't be aligned because EA is taking
+		 * If PE start can't be aligned because BA is taking
 		 * the whole space, make PE start equal to the PV size
 		 * which effectively disables DA - it will have zero size.
 		 * This needs to be done as we can't have a PV without any DA.
-		 * But we still want to support a PV with EA only!
+		 * But we still want to support a PV with BA only!
 		 */
 		if (rp->ba_size) {
 			pv->ba_start = final_alignment;
@@ -1541,7 +1556,7 @@ static int _text_pv_initialise(const struct format_type *fmt,
 		/*
 		 * Try to keep the value of PE start set to a firm value if
 		 * requested. This is useful when restoring existing PE start
-		 * value (e.g. backups). Also, if creating an EA, try to place
+		 * value (e.g. backups). Also, if creating a BA, try to place
 		 * it in between the final alignment and existing PE start
 		 * if possible.
 		 */
@@ -1667,6 +1682,10 @@ static int _mda_export_text_raw(struct metadata_area *mda,
 				struct dm_config_node *parent)
 {
 	struct mda_context *mdc = (struct mda_context *) mda->metadata_locn;
+	char mdah[MDA_HEADER_SIZE]; /* temporary */
+
+	if (!mdc || !_raw_read_mda_header((struct mda_header *)mdah, &mdc->area))
+		return 1; /* pretend the MDA does not exist */
 
 	return config_make_nodes(cft, parent, NULL,
 				 "ignore = %" PRId64, (int64_t) mda_is_ignored(mda),
@@ -1849,7 +1868,6 @@ static int _create_vg_text_instance(struct format_instance *fid,
 		return 0;
 	}
 
-	fidtc->raw_metadata_buf = NULL;
 	fid->private = (void *) fidtc;
 
 	if (type & FMT_INSTANCE_PRIVATE_MDAS) {
@@ -1910,8 +1928,19 @@ static int _create_vg_text_instance(struct format_instance *fid,
 		}
 
 		if (type & FMT_INSTANCE_MDAS) {
-			/* Scan PVs in VG for any further MDAs */
-			lvmcache_label_scan(fid->fmt->cmd, 0);
+			/*
+			 * TODO in theory, this function should be never reached
+			 * while in critical_section(), because lvmcache's
+			 * cached_vg should be valid. However, this assumption
+			 * sometimes fails (possibly due to inconsistent
+			 * (precommit) metadata and/or missing devices), and
+			 * calling lvmcache_label_scan inside the critical
+			 * section may be fatal (i.e. deadlock).
+			 */
+			if (!critical_section())
+				/* Scan PVs in VG for any further MDAs */
+				lvmcache_label_scan(fid->fmt->cmd, 0);
+
 			if (!(vginfo = lvmcache_vginfo_from_vgname(vg_name, vg_id)))
 				goto_out;
 			if (!lvmcache_fid_add_mdas_vg(vginfo, fid))
@@ -2081,7 +2110,7 @@ static int _text_pv_add_metadata_area(const struct format_type *fmt,
 			 * alignment since it would be useless.
 			 * Check first whether we can apply that!
 			 */
-			if (!pe_start_locked &&
+			if (!pe_start_locked && alignment &&
 			    ((limit - mda_start) > alignment * 2)) {
 				mda_size = limit - mda_start - alignment * 2;
 
@@ -2276,7 +2305,7 @@ static int _text_pv_resize(const struct format_type *fmt,
 	}
 
 	/* If there's a VG, reduce size by counting in pe_start and metadata areas. */
-	if (vg) {
+	if (vg && !is_orphan_vg(vg->name)) {
 		size_reduction = pv_pe_start(pv);
 		if ((mda = fid_get_mda_indexed(fid, pvid, ID_LEN, 1)) &&
 		    (mdac = mda->metadata_locn))
@@ -2433,7 +2462,7 @@ struct format_type *create_text_format(struct cmd_context *cmd)
 		goto bad;
 	}
 
-	if (!(label_register_handler(FMT_TEXT_NAME, fmt->labeller))) {
+	if (!(label_register_handler(fmt->labeller))) {
 		log_error("Couldn't register text label handler.");
 		fmt->labeller->ops->destroy(fmt->labeller);
 		goto bad;
@@ -2456,7 +2485,8 @@ struct format_type *create_text_format(struct cmd_context *cmd)
 		}
 	}
 
-	if ((cn = find_config_tree_node(cmd, metadata_disk_areas_CFG, NULL))) {
+	if ((cn = find_config_tree_node(cmd, metadata_disk_areas_CFG_SUBSECTION, NULL))) {
+		/* FIXME: disk_areas do not work with lvmetad - the "id" can't be found. */
 		for (cn = cn->child; cn; cn = cn->sib) {
 			if (!_get_config_disk_area(cmd, cn, &mda_lists->raws))
 				goto_bad;

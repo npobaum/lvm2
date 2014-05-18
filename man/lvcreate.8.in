@@ -59,6 +59,8 @@ lvcreate \- create a logical volume in an existing volume group
 .RI { ReadAheadSectors | auto | none }]
 .RB [ \-t | \-\-test ]
 .RB [ \-T | \-\-thin
+.RB [ \-\-cachemode
+.RI { writeback | writethrough }
 .RB [ \-c | \-\-chunksize
 .IR ChunkSize [ bBsSkKmMgG ]]
 .RB [ \-\-discards
@@ -75,6 +77,7 @@ lvcreate \- create a logical volume in an existing volume group
 .RB [ \-\-type
 .IR SegmentType ]
 .RB [ \-v | \-\-verbose ]
+.RB [ \-W | \-\-wipesignatures ]
 .RB [ \-Z | \-\-zero
 .RI { y | n }]
 .IR VolumeGroup { Name | Path }[/ ThinPoolLogicalVolumeName ]
@@ -135,31 +138,47 @@ If autoactivation option is used (\fB\-a\fIay\fR), the logical volume is
 activated only if it matches an item in the
 .B activation/auto_activation_volume_list
 set in \fBlvm.conf\fP(5).
-For autoactivated logical volumes, \fB\-\-zero\fP \fIn\fP is always assumed
-and it can't be overridden. If the clustered locking is enabled,
+For autoactivated logical volumes, \fB\-\-zero\fP \fIn\fP and
+\fB\-\-wipesignatures\fP \fIn\fP is always assumed and it can't
+be overridden. If the clustered locking is enabled,
 \fB\-a\fIey\fR will activate exclusively on one node and
 .IR \fB\-a { a | l } y
 will activate only on the local node.
 .TP
-.IR \fB\-k ", " \fB\-\-setactivationskip " " { y | n }
+.IR \fB\-k ", " \fB\-\-setactivationskip "  {" y | n }
 Controls whether Logical Volumes are persistently flagged to be skipped during
 activation. By default, thin snapshot volumes are flagged for activation skip.
 To activate such volumes, an extra \fB\-K/\-\-ignoreactivationskip\fP option must
 be used. The flag is not applied during deactivation.
-Use \fBlvchange \-k/\-\-setactivationskip {y | n}\fP command to attach or
+Use \fBlvchange \-k/\-\-setactivationskip {y|n}\fP command to attach or
 detach the flag for existing volumes. To see whether the flag is attached,
 use \fBlvs\fP command where the state of the flag is reported within
 \fBlv_attr\fP bits.
 .TP
-.IR \fB\-K ", " \fB\-\-ignoreactivationskip
+.BR \-K ", " \-\-ignoreactivationskip
 Ignore the flag to skip Logical Volumes during activation.
+
+.TP
+.IR \fB\-\-cachemode " {" writeback | writethrough }
+Specifying a cache mode determines when the writes to a cache LV
+are considered complete.  When \fIwriteback\fP is specified, a write is
+considered complete as soon as it is stored in the cache pool LV.
+If \fIwritethough\fP is specified, a write is considered complete only
+when it has been stored in the cache pool LV and on the origin LV.
+While \fIwritethrough\fP may be slower for writes, it is more
+resilient if something should happen to a device associated with the
+cache pool LV.
+
 .TP
 .BR \-c ", " \-\-chunksize " " \fIChunkSize [ \fIbBsSkKmMgG ]
-Gives the size of chunk for snapshot and thin pool logical volumes.
+Gives the size of chunk for snapshot, cache pool and thin pool logical volumes.
 Default unit is in kilobytes.
 .br
 For snapshots the value must be power of 2 between 4KiB and 512KiB
 and the default value is 4.
+.br
+For cache pool LVs the value must be between 32KiB and 1GiB.  The default
+is 64KiB.  Values must be a multiple of 32KiB.
 .br
 For thin pools the value must be between 64KiB and
 1GiB and the default value starts with 64 and scales
@@ -186,7 +205,11 @@ the extra devices which are necessary for parity are
 internally accounted for.  Specifying
 .BI \-i 3
 would use 3 devices for striped logical volumes,
-4 devices for RAID 4/5, and 5 devices for RAID 6.
+4 devices for RAID 4/5, and 5 devices for RAID 6.  Alternatively,
+RAID 4/5/6 will stripe across all PVs in the volume group or
+all of the PVs specified if the
+.B \-i
+argument is omitted.
 .TP
 .BR \-I ", " \-\-stripesize " " \fIStripeSize
 Gives the number of kilobytes for the granularity of the stripes.
@@ -201,14 +224,17 @@ is specified.
 .TP
 .IR \fB\-l ", " \fB\-\-extents " " LogicalExtentsNumber [ % { VG | PVS | FREE | ORIGIN }]
 Gives the number of logical extents to allocate for the new
-logical volume.
+logical volume.  The total number of physical extents allocated will be
+greater than this, for example, if the volume is mirrored.
 The number can also be expressed as a percentage of the total space
 in the Volume Group with the suffix \fI%VG\fR, as a percentage of the
 remaining free space in the Volume Group with the suffix \fI%FREE\fR, as a
 percentage of the remaining free space for the specified
 PhysicalVolume(s) with the suffix \fI%PVS\fR, or (for a snapshot) as a
 percentage of the total space in the Origin Logical Volume with the
-suffix \fI%ORIGIN\fR.
+suffix \fI%ORIGIN\fR.  When expressed as a percentage, the number is treated
+as an approximate upper limit for the total number of physical extents
+to be allocated (including extents used by any mirrors, for example).
 .TP
 .IR \fB\-L ", " \fB\-\-size " " LogicalVolumeSize [ bBsSkKmMgGtTpPeE ]
 Gives the size to allocate for the new logical volume.
@@ -380,6 +406,7 @@ commandline switch alias that will enable their use
 However, this argument must be used when no existing
 commandline switch alias is available for the desired type,
 as is the case with
+.IR cache ,
 .IR error ,
 .IR raid1 ,
 .IR raid4 ,
@@ -388,6 +415,9 @@ as is the case with
 .IR raid10
 or
 .IR zero .
+Note that the cache segment type requires a dm-cache kernel module version
+1.3.0 or greater.
+
 .TP
 .BR \-V ", " \-\-virtualsize " " \fIVirtualSize [ \fIbBsSkKmMgGtTpPeE ]
 Creates a sparse device of the given size (in MiB by default) using a snapshot
@@ -399,8 +429,23 @@ requested size using the zero target.  A suffix of _vorigin is used for
 this device. Note: using sparse snapshots is not efficient for larger
 device sizes (GiB), thin provisioning should be used for this case.
 .TP
+.BR \-W ", " \-\-wipesignatures " {" \fIy | \fIn }
+Controls wiping of detected signatures on newly created Logical Volume.
+If this option is not specified, then by default signature wiping is done
+each time the zeroing (\fB\-Z\fP/\fB\-\-zero\fP) is done. This default behaviour
+can be controlled by \fBallocation/wipe_signatures_when_zeroing_new_lvs\fP
+setting found in \fBlvm.conf\fP(5).
+.br
+If blkid wiping is used (\fBallocation/use_blkid_wiping setting\fP in \fBlvm.conf\fP(5))
+and LVM2 is compiled with blkid wiping support, then \fBblkid\fP(8) library is used
+to detect the signatures (use \fBblkid -k\fP command to list the signatures that are recognized).
+Otherwise, native LVM2 code is used to detect signatures (MD RAID, swap and LUKS
+signatures are detected only in this case).
+.br
+Logical Volume is not wiped if the read only flag is set.
+.TP
 .BR \-Z ", " \-\-zero " {" \fIy | \fIn }
-Controls zeroing of the first KiB of data in the new logical volume.
+Controls zeroing of the first 4KiB of data in the new logical volume.
 .br
 Default is \fIy\fPes.
 .br
@@ -454,8 +499,14 @@ a parity drive for a total of 4 devices) and a stripesize of 64KiB:
 .sp
 .B lvcreate \-\-type raid5 \-L 5G \-i 3 \-I 64 \-n my_lv vg00
 
+Creates a RAID5 logical volume "vg00/my_lv", using all of the free
+space in the VG and spanning all the PVs in the VG:
+.sp
+.B lvcreate \-\-type raid5 \-l 100%FREE \-n my_lv vg00
+
 Creates a 5GiB RAID10 logical volume "vg00/my_lv", with 2 stripes on
-2 2-way mirrors.  Note that the \fB-i\fP and \fB-m\fP arguments behave differently.
+2 2-way mirrors.  Note that the \fB-i\fP and \fB-m\fP arguments behave
+differently.
 The \fB-i\fP specifies the number of stripes.
 The \fB-m\fP specifies the number of
 .B additional
@@ -481,6 +532,23 @@ which then becomes the thin external origin for the thin snapshot volume
 in vg00 that will use an existing thin pool "vg00/pool":
 .sp
 .B lvcreate -s --thinpool vg00/pool  origin
+
+Create a cache pool LV that can later be used to cache one
+logical volume.
+.sp
+.B lvcreate --type cache-pool -L 1G -n my_lv_cachepool vg /dev/fast1
+
+If there is an existing cache pool LV, create the large slow
+device (i.e. the origin LV) and link it to the supplied cache pool LV,
+creating a cache LV.
+.sp
+.B lvcreate --type cache -L 100G -n my_lv vg/my_lv_cachepool /dev/slow1
+
+If there is an existing logical volume, create the small and fast
+cache pool LV and link it to the supplied existing logical
+volume (i.e. the origin LV), creating a cache LV.
+.sp
+.B lvcreate --type cache -L 1G -n my_lv_cachepool vg/my_lv /dev/fast1
 
 .SH SEE ALSO
 .BR lvm (8),

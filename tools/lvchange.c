@@ -215,11 +215,8 @@ static int _lvchange_activate(struct cmd_context *cmd, struct logical_volume *lv
 
 	activate = (activation_change_t) arg_uint_value(cmd, activate_ARG, CHANGE_AY);
 
-	if (lv_activation_skip(lv, activate, arg_count(cmd, ignoreactivationskip_ARG), 0)) {
-		log_verbose("ACTIVATON_SKIP flag set for LV %s/%s, skipping activation.",
-			    lv->vg->name, lv->name);
+	if (lv_activation_skip(lv, activate, arg_count(cmd, ignoreactivationskip_ARG)))
 		return 1;
-	}
 
 	if (lv_is_cow(lv) && !lv_is_virtual_origin(origin_from_cow(lv)))
 		lv = origin_from_cow(lv);
@@ -478,7 +475,9 @@ static int lvchange_resync(struct cmd_context *cmd, struct logical_volume *lv)
 		log_very_verbose("Clearing %s device %s",
 				 (seg_is_raid(seg)) ? "metadata" : "log",
 				 lvl->lv->name);
-		if (!set_lv(cmd, lvl->lv, lvl->lv->size, 0)) {
+
+		if (!wipe_lv(lvl->lv, (struct wipe_params)
+			     { .do_zero = 1, .zero_sectors = lvl->lv->size })) {
 			log_error("Unable to reset sync status for %s",
 				  lv->name);
 			if (!deactivate_lv(cmd, lvl->lv))
@@ -934,7 +933,7 @@ static int lvchange_activation_skip(struct logical_volume *lv)
 }
 
 
-static int lvchange_single(struct cmd_context *cmd, struct logical_volume *lv,
+static int _lvchange_single(struct cmd_context *cmd, struct logical_volume *lv,
 			   void *handle __attribute__((unused)))
 {
 	int doit = 0, docmds = 0;
@@ -949,6 +948,11 @@ static int lvchange_single(struct cmd_context *cmd, struct logical_volume *lv,
 		log_error("Only -a permitted with read-only volume "
 			  "group \"%s\"", lv->vg->name);
 		return EINVALID_CMD_LINE;
+	}
+
+	if (lv_is_cache_pool(lv)) {
+		log_error("Can't change cache pool logical volume.");
+		return ECMD_FAILED;
 	}
 
 	if (lv_is_origin(lv) && !lv_is_thin_volume(lv) &&
@@ -1235,14 +1239,36 @@ int lvchange(struct cmd_context *cmd, int argc, char **argv)
 		return EINVALID_CMD_LINE;
 	}
 
-	if (arg_count(cmd, sysinit_ARG) && lvmetad_active() &&
+	/*
+	 * If --sysinit -aay is used and at the same time lvmetad is used,
+	 * we want to rely on autoactivation to take place. Also, we
+	 * need to take special care here as lvmetad service does
+	 * not neet to be running at this moment yet - it could be
+	 * just too early during system initialization time.
+	*/
+	if (arg_count(cmd, sysinit_ARG) && lvmetad_used() &&
 	    arg_uint_value(cmd, activate_ARG, 0) == CHANGE_AAY) {
-		log_warn("lvmetad is active while using --sysinit -a ay, "
-			 "skipping manual activation");
-		return ECMD_PROCESSED;
+		if (!lvmetad_socket_present()) {
+			/*
+			 * If lvmetad socket is not present yet,
+			 * the service is just not started. It'll
+			 * be started a bit later so we need to do
+			 * the activation without lvmetad which means
+			 * direct activation instead of autoactivation.
+			*/
+			log_warn("lvmetad is not active yet, using direct activation during sysinit");
+			lvmetad_set_active(0);
+		} else if (lvmetad_active()) {
+			/*
+			 * If lvmetad is active already, we want
+			 * to make use of the autoactivation.
+			*/
+			log_warn("lvmetad is active, skipping direct activation during sysinit");
+			return ECMD_PROCESSED;
+		}
 	}
 
 	return process_each_lv(cmd, argc, argv,
 			       update ? READ_FOR_UPDATE : 0, NULL,
-			       &lvchange_single);
+			       &_lvchange_single);
 }

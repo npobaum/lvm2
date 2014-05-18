@@ -22,6 +22,7 @@ expect_failure() {
 }
 
 prepare_clvmd() {
+	rm -f debug.log
 	test "${LVM_TEST_LOCKING:-0}" -ne 3 && return # not needed
 
 	if pgrep clvmd ; then
@@ -31,24 +32,28 @@ prepare_clvmd() {
 
 	# skip if we don't have our own clvmd...
 	(which clvmd 2>/dev/null | grep "$abs_builddir") || skip
+	# lvs is executed from clvmd - use our version
+	export LVM_BINARY=$(which lvm)
 
-	# skip if we singlenode is not compiled in
+	# skip if singlenode is not compiled in
 	(clvmd --help 2>&1 | grep "Available cluster managers" | grep "singlenode") || skip
 
 #	lvmconf "activation/monitoring = 1"
 	local run_valgrind=
-	test -z "$LVM_VALGRIND_CLVMD" || run_valgrind="run_valgrind"
+	test "${LVM_VALGRIND_CLVMD:-0}" -eq 0 || run_valgrind="run_valgrind"
+	rm -f "$CLVMD_PIDFILE"
 	$run_valgrind lib/clvmd -Isinglenode -d 1 -f &
-	local local_clvmd=$!
-	sleep .3
-	# extra sleep for slow valgrind
-	test -z "$LVM_VALGRIND_CLVMD" || sleep 7
-	# check that it is really running now
-	ps $local_clvmd || die
-	echo $local_clvmd > LOCAL_CLVMD
+	echo $! > LOCAL_CLVMD
+
+	for i in $(seq 1 100) ; do
+		test $i -eq 100 && die "Startup of clvmd is too slow."
+		test -e "$CLVMD_PIDFILE" && break
+		sleep .2
+	done
 }
 
 prepare_dmeventd() {
+	rm -f debug.log
 	if pgrep dmeventd ; then
 		echo "Cannot test dmeventd with real dmeventd ($(pgrep dmeventd)) running."
 		skip
@@ -59,14 +64,22 @@ prepare_dmeventd() {
 
 	lvmconf "activation/monitoring = 1"
 
-	dmeventd -f "$@" &
+	local run_valgrind=
+	test "${LVM_VALGRIND_DMEVENTD:-0}" -eq 0 || run_valgrind="run_valgrind"
+	$run_valgrind dmeventd -f "$@" &
 	echo $! > LOCAL_DMEVENTD
 
 	# FIXME wait for pipe in /var/run instead
-	sleep .3
+	for i in $(seq 1 100) ; do
+		test $i -eq 100 && die "Startup of dmeventd is too slow."
+		test -e "${DMEVENTD_PIDFILE}" && break
+		sleep .2
+	done
+	echo ok
 }
 
 prepare_lvmetad() {
+	rm -f debug.log
 	# skip if we don't have our own lvmetad...
 	(which lvmetad 2>/dev/null | grep "$abs_builddir") || skip
 
@@ -74,13 +87,34 @@ prepare_lvmetad() {
 	lvmconf "devices/md_component_detection = 0"
 
 	local run_valgrind=
-	test -z "$LVM_VALGRIND_LVMETAD" || run_valgrind="run_valgrind"
+	test "${LVM_VALGRIND_LVMETAD:-0}" -eq 0 || run_valgrind="run_valgrind"
 
 	echo "preparing lvmetad..."
 	$run_valgrind lvmetad -f "$@" -s "$TESTDIR/lvmetad.socket" -l wire,debug &
 	echo $! > LOCAL_LVMETAD
 	while ! test -e "$TESTDIR/lvmetad.socket"; do echo -n .; sleep .1; done # wait for the socket
 	echo ok
+}
+
+lvmetad_talk() {
+	local use=nc
+	if type -p socat >& /dev/null; then
+		use=socat
+	elif echo | not nc -U "$TESTDIR/lvmetad.socket" ; then
+		echo "WARNING: Neither socat nor nc -U seems to be available." 1>&2
+		echo "# failed to contact lvmetad"
+		return 1
+	fi
+
+	if test "$use" = nc ; then
+		nc -U "$TESTDIR/lvmetad.socket"
+	else
+		socat "unix-connect:$TESTDIR/lvmetad.socket" -
+	fi | tee -a lvmetad-talk.txt
+}
+
+lvmetad_dump() {
+	(echo 'request="dump"'; echo '##') | lvmetad_talk "$@"
 }
 
 notify_lvmetad() {
@@ -98,6 +132,7 @@ teardown_devs_prefixed() {
 	# Resume suspended devices first
 	for dm in $(dm_info suspended,name | grep "^Suspended:.*$prefix"); do
 		echo "dmsetup resume \"${dm#Suspended:}\""
+		dmsetup clear "${dm#Suspended:}"
 		dmsetup resume "${dm#Suspended:}" &
 	done
 
@@ -116,7 +151,7 @@ teardown_devs_prefixed() {
 	local need_udev_wait=0
 	init_udev_transaction
 	for dm in $(dm_info name --sort open | grep "$prefix"); do
-		dmsetup remove "$dm" &>/dev/null || remfail=yes
+		dmsetup remove --mangle none "$dm" &>/dev/null || remfail=yes
 		need_udev_wait=1
 	done
 	finish_udev_transaction
@@ -129,7 +164,7 @@ teardown_devs_prefixed() {
 		    test $num_devs -lt $num_remaining_devs -a $num_devs -ne 0; do
 			test "$stray" -eq 0 || echo "Removing $num_devs stray mapped devices with names beginning with $prefix: "
 			for dm in $(dm_info name --sort open | grep "$prefix") ; do
-				dmsetup remove -f "$dm" || true
+				dmsetup remove --mangle none -f "$dm" || true
 			done
 			num_remaining_devs=$num_devs
 		done
@@ -148,7 +183,7 @@ teardown_devs() {
 	# NOTE: SCSI_DEBUG_DEV test must come before the LOOP test because
 	# prepare_scsi_debug_dev() also sets LOOP to short-circuit prepare_loop()
 	if test -f SCSI_DEBUG_DEV; then
-		test ${LVM_TEST_PARALLEL:-0} -eq 1 || modprobe -r scsi_debug
+		test "${LVM_TEST_PARALLEL:-0}" -eq 1 || modprobe -r scsi_debug
 	else
 		test ! -f LOOP || losetup -d $(cat LOOP) || true
 		test ! -f LOOPFILE || rm -f $(cat LOOPFILE)
@@ -157,7 +192,7 @@ teardown_devs() {
 	rm -f LOOP
 
 	# Attempt to remove any loop devices that failed to get torn down if earlier tests aborted
-	test ${LVM_TEST_PARALLEL:-0} -eq 1 -o -z "$COMMON_PREFIX" || {
+	test "${LVM_TEST_PARALLEL:-0}" -eq 1 -o -z "$COMMON_PREFIX" || {
 		teardown_devs_prefixed "$COMMON_PREFIX" 1
 		local stray_loops=( $(losetup -a | grep "$COMMON_PREFIX" | cut -d: -f1) )
 		test ${#stray_loops[@]} -eq 0 || {
@@ -167,11 +202,19 @@ teardown_devs() {
 	}
 }
 
+kill_sleep_kill_() {
+	if test -s "$1" ; then
+		if kill -TERM "$(cat $1)" ; then
+			if test "$2" -eq 0 ; then sleep .1 ; else sleep 1 ; fi
+			kill -KILL "$(cat $1)" 2>/dev/null || true
+		fi
+	fi
+}
+
 teardown() {
 	echo -n "## teardown..."
-	test ! -s LOCAL_LVMETAD || \
-	    (kill -TERM "$(cat LOCAL_LVMETAD)" && sleep 1 &&
-	     kill -KILL "$(cat LOCAL_LVMETAD)" 2> /dev/null) || true
+
+	kill_sleep_kill_ LOCAL_LVMETAD ${LVM_VALGRIND_LVMETAD:-0}
 
 	dm_table | not egrep -q "$vg|$vg1|$vg2|$vg3|$vg4" || {
 		# Avoid activation of dmeventd if there is no pid
@@ -180,17 +223,11 @@ teardown() {
 			$vg $vg1 $vg2 $vg3 $vg4 &>/dev/null || rm -f debug.log
 	}
 
-	test -s LOCAL_CLVMD && {
-		kill -INT "$(cat LOCAL_CLVMD)"
-		test -z "$LVM_VALGRIND_CLVMD" || sleep 1
-		sleep .1
-		kill -9 "$(cat LOCAL_CLVMD)" &>/dev/null || true
-	}
+	kill_sleep_kill_ LOCAL_CLVMD ${LVM_VALGRIND_CLVMD:-0}
 
 	echo -n .
 
-	pgrep dmeventd || true
-	test ! -s LOCAL_DMEVENTD || kill -9 "$(cat LOCAL_DMEVENTD)" || true
+	kill_sleep_kill_ LOCAL_DMEVENTD ${LVM_VALGRIND_DMEVENTD:-0}
 
 	echo -n .
 
@@ -205,12 +242,7 @@ teardown() {
 
 	echo "ok"
 
-	test ${LVM_TEST_PARALLEL:-0} -eq 1 -o -n "$RUNNING_DMEVENTD" || not pgrep dmeventd #&>/dev/null
-}
-
-make_ioerror() {
-	echo 0 10000000 error | dmsetup create -u ${PREFIX}-ioerror ioerror
-	ln -s "$DM_DEV_DIR/mapper/ioerror" "$DM_DEV_DIR/ioerror"
+	test "${LVM_TEST_PARALLEL:-0}" -eq 1 -o -n "$RUNNING_DMEVENTD" || not pgrep dmeventd #&>/dev/null
 }
 
 prepare_loop() {
@@ -377,8 +409,8 @@ disable_dev() {
 	udev_wait
 	init_udev_transaction
 	for dev in "$@"; do
-		maj=$(($(stat --printf=0x%t "$dev")))
-		min=$(($(stat --printf=0x%T "$dev")))
+		maj=$(($(stat -L --printf=0x%t "$dev")))
+		min=$(($(stat -L --printf=0x%T "$dev")))
 		echo "Disabling device $dev ($maj:$min)"
 		dmsetup remove -f "$dev" 2>/dev/null || true
 		notify_lvmetad --major "$maj" --minor "$min"
@@ -389,10 +421,11 @@ disable_dev() {
 enable_dev() {
 	local dev
 
+	rm -f debug.log
 	init_udev_transaction
 	for dev in "$@"; do
 		local name=$(echo "$dev" | sed -e 's,.*/,,')
-		dmsetup create -u "TEST-$name" "$name" "$name.table" || \
+		dmsetup create -u "TEST-$name" "$name" "$name.table" 2>/dev/null || \
 			dmsetup load "$name" "$name.table"
 		# using device name (since device path does not exists yes with udev)
 		dmsetup resume "$name"
@@ -533,7 +566,7 @@ generate_config() {
 devices/dir = "$DM_DEV_DIR"
 devices/scan = "$DM_DEV_DIR"
 devices/filter = "a|.*|"
-devices/global_filter = [ "a|$DM_DEV_DIR/mirror|", "a|$DM_DEV_DIR/mapper/.*pv[0-9_]*$|", "r|.*|" ]
+devices/global_filter = [ "a|$DM_DEV_DIR/mapper/.*pv[0-9_]*$|", "r|.*|" ]
 devices/cache_dir = "$TESTDIR/etc"
 devices/sysfs_scan = 0
 devices/default_data_alignment = 1
@@ -563,6 +596,7 @@ activation/polling_interval = 0
 activation/snapshot_autoextend_percent = 50
 activation/snapshot_autoextend_threshold = 50
 activation/monitoring = 0
+allocation/wipe_signatures_when_zeroing_new_lvs = 0
 EOF
 	}
 
@@ -598,6 +632,14 @@ profileconf() {
 	mv -f PROFILE_$profile_name etc/profile/$profile_name.profile
 }
 
+prepare_profiles() {
+	test -d etc/profile || mkdir etc/profile
+	for profile_name in $@; do
+		test -L "$abs_top_builddir/test/lib/$profile_name.profile" || skip
+		cp "$abs_top_builddir/test/lib/$profile_name.profile" "etc/profile/$profile_name.profile"
+	done
+}
+
 apitest() {
 	local t=$1
 	shift
@@ -610,12 +652,13 @@ api() {
 	"$abs_top_builddir/test/api/wrapper" "$@" && rm -f debug.log
 }
 
-skip_if_mirror_recovery_broken() {
-        if test `uname -r` = 3.3.4-5.fc17.i686; then skip; fi
-        if test `uname -r` = 3.3.4-5.fc17.x86_64; then skip; fi
+mirror_recovery_works() {
+	case $(uname -r) in
+	  3.3.4-5.fc17.i686|3.3.4-5.fc17.x86_64) return 1 ;;
+	esac
 }
 
-skip_if_raid456_replace_broken() {
+raid456_replace_works() {
 # The way kmem_cache aliasing is done in the kernel is broken.
 # It causes RAID 4/5/6 tests to fail.
 #
@@ -644,13 +687,24 @@ skip_if_raid456_replace_broken() {
 # old instance to be preserved and causes a colision (and thus failure) in
 # kmem_cache_create().  I see this regularly in testing the following
 # kernels:
-        if test `uname -r` = 3.10.11-200.fc19.i686; then skip; fi
-        if test `uname -r` = 3.10.11-200.fc19.x86_64; then skip; fi
+#
+# This seems to be finaly resolved with this patch:
+# http://www.redhat.com/archives/dm-devel/2014-March/msg00008.html
+# so we need to put here exlusion for kernes which do trace SLUB
+#
+	case $(uname -r) in
+	  3.6.*.fc18.i686*|3.6.*.fc18.x86_64) return 1 ;;
+	  3.9.*.fc19.i686*|3.9.*.fc19.x86_64) return 1 ;;
+	  3.1[0123].*.fc18.i686*|3.1[0123].*.fc18.x86_64) return 1 ;;
+	  3.1[0123].*.fc19.i686*|3.1[0123].*.fc19.x86_64) return 1 ;;
+	  3.13.*.fc20.i686*|3.13.*.fc20.x86_64) return 1 ;;
+	  3.14.*.fc21.i686*|3.14.*.fc21.x86_64) return 1 ;;
+	esac
 }
 
 udev_wait() {
 	pgrep udev >/dev/null || return 0
-	which udevadm >/dev/null || return 0
+	which udevadm &>/dev/null || return 0
 	if test -n "$1" ; then
 		udevadm settle --exit-if-exists="$1" || true
 	else
@@ -670,6 +724,11 @@ wait_for_sync() {
 	return 1
 }
 
+# Check if tests are running on 64bit architecture
+can_use_16T() {
+	test "$(getconf LONG_BIT)" -eq 64
+}
+
 #
 # Check wheter kernel [dm module] target exist
 # at least in expected version
@@ -677,11 +736,17 @@ wait_for_sync() {
 # [dm-]target-name major minor revision
 #
 # i.e.   dm_target_at_least  dm-thin-pool  1 0
-target_at_least()
-{
+target_at_least() {
+	rm -f debug.log
 	case "$1" in
 	  dm-*) modprobe "$1" || true ;;
 	esac
+
+	if test "$1" = dm-raid; then
+		case "$(uname -r)" in
+		  3.12.0*) return 1 ;;
+		esac
+	fi
 
 	local version=$(dmsetup targets 2>/dev/null | grep "${1##dm-} " 2>/dev/null)
 	version=${version##* v}
@@ -704,8 +769,7 @@ target_at_least()
 	test "$revision" -ge "$3" 2>/dev/null || return 1
 }
 
-have_thin()
-{
+have_thin() {
 	target_at_least dm-thin-pool "$@" || exit 1
 	test "$THIN" = shared || test "$THIN" = internal || exit 1
 
@@ -714,12 +778,20 @@ have_thin()
 }
 
 # check if lvm shell is build-in  (needs readline)
-have_readline()
-{
+have_readline() {
 	echo version | lvm &>/dev/null
+}
+
+dmsetup_wrapped() {
+	udev_wait
+	dmsetup "$@"
 }
 
 test -f DEVICES && devs=$(cat DEVICES)
 
-#unset LVM_VALGRIND
-"$@"
+if test "$1" = dmsetup; then
+    shift
+    dmsetup_wrapped "$@"
+else
+    "$@"
+fi

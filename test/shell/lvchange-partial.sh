@@ -11,11 +11,13 @@
 
 . lib/test
 
-aux target_at_least dm-raid 1 1 0 || skip
 
 aux prepare_vg 4
 
-lvcreate --type raid1 -m 1 -l 2 -n $lv1 $vg
+TYPE=raid1
+aux target_at_least dm-raid 1 1 0 || TYPE=mirror
+
+lvcreate -aey --type $TYPE -m 1 -l 2 -n $lv1 $vg
 lvchange -an $vg/$lv1
 aux disable_dev "$dev1"
 
@@ -65,4 +67,5 @@ not lvchange --resync -ay $vg/$lv1
 not lvchange --resync --addtag foo $vg/$lv1
 
 aux enable_dev "$dev1"
-lvremove -ff $vg
+
+vgremove -ff $vg

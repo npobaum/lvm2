@@ -347,6 +347,9 @@ int pvremove_single(struct cmd_context *cmd, const char *pv_name,
 struct physical_volume *pvcreate_vol(struct cmd_context *cmd, const char *pv_name,
                                      struct pvcreate_params *pp, int write_now);
 
+int check_dev_block_size_for_vg(struct device *dev, const struct volume_group *vg,
+				unsigned int *max_phys_block_size_found);
+
 /* Manipulate PV structures */
 int pv_add(struct volume_group *vg, struct physical_volume *pv);
 int pv_remove(struct volume_group *vg, struct physical_volume *pv);
@@ -426,9 +429,8 @@ int add_seg_to_segs_using_this_lv(struct logical_volume *lv, struct lv_segment *
 int remove_seg_from_segs_using_this_lv(struct logical_volume *lv, struct lv_segment *seg);
 struct lv_segment *get_only_segment_using_this_lv(struct logical_volume *lv);
 
-int for_each_sub_lv(struct cmd_context *cmd, struct logical_volume *lv,
-                    int (*fn)(struct cmd_context *cmd,
-                              struct logical_volume *lv, void *data),
+int for_each_sub_lv(struct logical_volume *lv,
+                    int (*fn)(struct logical_volume *lv, void *data),
                     void *data);
 int move_lv_segments(struct logical_volume *lv_to,
 		     struct logical_volume *lv_from,
@@ -462,11 +464,12 @@ int fixup_imported_mirrors(struct volume_group *vg);
  * From thin_manip.c
  */
 int attach_pool_lv(struct lv_segment *seg, struct logical_volume *pool_lv,
-		   struct logical_volume *origin_lv);
+		   struct logical_volume *origin_lv, struct logical_volume *merge_lv);
 int detach_pool_lv(struct lv_segment *seg);
 int attach_pool_message(struct lv_segment *pool_seg, dm_thin_message_t type,
 			struct logical_volume *lv, uint32_t delete_id,
 			int auto_increment);
+int lv_is_merging_thin_snapshot(const struct logical_volume *lv);
 int pool_has_message(const struct lv_segment *seg,
 		     const struct logical_volume *lv, uint32_t device_id);
 int pool_below_threshold(const struct lv_segment *pool_seg);
@@ -484,6 +487,6 @@ int add_pv_to_vg(struct volume_group *vg, const char *pv_name,
 		 struct physical_volume *pv, struct pvcreate_params *pp);
 
 uint64_t find_min_mda_size(struct dm_list *mdas);
-char *tags_format_and_copy(struct dm_pool *mem, const struct dm_list *tags);
+char *tags_format_and_copy(struct dm_pool *mem, const struct dm_list *tagsl);
 
 #endif

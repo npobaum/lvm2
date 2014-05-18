@@ -298,7 +298,7 @@ struct format_type *init_format(struct cmd_context *cmd)
 	fmt->name = FMT_POOL_NAME;
 	fmt->alias = NULL;
 	fmt->orphan_vg_name = FMT_POOL_ORPHAN_VG_NAME;
-	fmt->features = 0;
+	fmt->features = FMT_OBSOLETE;
 	fmt->private = NULL;
 
 	dm_list_init(&fmt->mda_ops);
@@ -309,7 +309,7 @@ struct format_type *init_format(struct cmd_context *cmd)
 		return NULL;
 	}
 
-	if (!(label_register_handler(FMT_POOL_NAME, fmt->labeller))) {
+	if (!(label_register_handler(fmt->labeller))) {
 		log_error("Couldn't register pool label handler.");
 		fmt->labeller->ops->destroy(fmt->labeller);
 		dm_free(fmt);

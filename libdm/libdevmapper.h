@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2013 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2014 Red Hat, Inc. All rights reserved.
  *
  * This file is part of the device-mapper userspace tools.
  *
@@ -294,6 +294,39 @@ struct dm_status_raid {
 int dm_get_status_raid(struct dm_pool *mem, const char *params,
 		       struct dm_status_raid **status);
 
+struct dm_status_cache {
+	uint64_t version;  /* zero for now */
+
+	uint32_t metadata_block_size;   /* in 512B sectors */
+	uint32_t block_size;            /* AKA 'chunk_size' */
+
+	uint64_t metadata_used_blocks;
+	uint64_t metadata_total_blocks;
+
+	uint64_t used_blocks;
+	uint64_t dirty_blocks;
+	uint64_t total_blocks;
+
+	uint64_t read_hits;
+	uint64_t read_misses;
+	uint64_t write_hits;
+	uint64_t write_misses;
+
+	uint64_t demotions;
+	uint64_t promotions;
+
+	uint32_t feature_flags;
+
+	int core_argc;
+	char **core_argv;
+
+	char *policy_name;
+	int   policy_argc;
+	char **policy_argv;
+};
+
+int dm_get_status_cache(struct dm_pool *mem, const char *params,
+			struct dm_status_cache **status);
 
 /*
  * Snapshot target's format:
@@ -524,10 +557,10 @@ struct dm_tree_node *dm_tree_add_new_dev_with_udev_flags(struct dm_tree *tree,
  * Set major and minor to 0 or uuid to NULL to get the root node.
  */
 struct dm_tree_node *dm_tree_find_node(struct dm_tree *tree,
-					  uint32_t major,
-					  uint32_t minor);
+				       uint32_t major,
+				       uint32_t minor);
 struct dm_tree_node *dm_tree_find_node_by_uuid(struct dm_tree *tree,
-						  const char *uuid);
+					       const char *uuid);
 
 /*
  * Use this to walk through all children of a given node.
@@ -559,8 +592,8 @@ int dm_tree_node_num_children(const struct dm_tree_node *node, uint32_t inverted
  * Ignores devices that don't have a uuid starting with uuid_prefix.
  */
 int dm_tree_deactivate_children(struct dm_tree_node *dnode,
-				   const char *uuid_prefix,
-				   size_t uuid_prefix_len);
+				const char *uuid_prefix,
+				size_t uuid_prefix_len);
 /*
  * Preload/create a device plus all dependencies.
  * Ignores devices that don't have a uuid starting with uuid_prefix.
@@ -582,8 +615,8 @@ int dm_tree_activate_children(struct dm_tree_node *dnode,
  * Ignores devices that don't have a uuid starting with uuid_prefix.
  */
 int dm_tree_suspend_children(struct dm_tree_node *dnode,
-				   const char *uuid_prefix,
-				   size_t uuid_prefix_len);
+			     const char *uuid_prefix,
+			     size_t uuid_prefix_len);
 
 /*
  * Skip the filesystem sync when suspending.
@@ -613,36 +646,36 @@ void dm_tree_retry_remove(struct dm_tree_node *dnode);
  * Returns 1 if the tree walk has to be aborted.
  */
 int dm_tree_children_use_uuid(struct dm_tree_node *dnode,
-				 const char *uuid_prefix,
-				 size_t uuid_prefix_len);
+			      const char *uuid_prefix,
+			      size_t uuid_prefix_len);
 
 /*
  * Construct tables for new nodes before activating them.
  */
 int dm_tree_node_add_snapshot_origin_target(struct dm_tree_node *dnode,
-					       uint64_t size,
-					       const char *origin_uuid);
+					    uint64_t size,
+					    const char *origin_uuid);
 int dm_tree_node_add_snapshot_target(struct dm_tree_node *node,
-					uint64_t size,
-					const char *origin_uuid,
-					const char *cow_uuid,
-					int persistent,
-					uint32_t chunk_size);
+				     uint64_t size,
+				     const char *origin_uuid,
+				     const char *cow_uuid,
+				     int persistent,
+				     uint32_t chunk_size);
 int dm_tree_node_add_snapshot_merge_target(struct dm_tree_node *node,
-					     uint64_t size,
-					     const char *origin_uuid,
-					     const char *cow_uuid,
-					     const char *merge_uuid,
-					     uint32_t chunk_size);
+					   uint64_t size,
+					   const char *origin_uuid,
+					   const char *cow_uuid,
+					   const char *merge_uuid,
+					   uint32_t chunk_size);
 int dm_tree_node_add_error_target(struct dm_tree_node *node,
-				     uint64_t size);
+				  uint64_t size);
 int dm_tree_node_add_zero_target(struct dm_tree_node *node,
-				    uint64_t size);
+				 uint64_t size);
 int dm_tree_node_add_linear_target(struct dm_tree_node *node,
-				      uint64_t size);
+				   uint64_t size);
 int dm_tree_node_add_striped_target(struct dm_tree_node *node,
-				       uint64_t size,
-				       uint32_t stripe_size);
+				    uint64_t size,
+				    uint32_t stripe_size);
 
 #define DM_CRYPT_IV_DEFAULT	UINT64_C(-1)	/* iv_offset == seg offset */
 /*
@@ -659,7 +692,7 @@ int dm_tree_node_add_crypt_target(struct dm_tree_node *node,
 				  uint64_t iv_offset,
 				  const char *key);
 int dm_tree_node_add_mirror_target(struct dm_tree_node *node,
-				      uint64_t size);
+				   uint64_t size);
  
 /* Mirror log flags */
 #define DM_NOSYNC		0x00000001	/* Known already in sync */
@@ -668,11 +701,11 @@ int dm_tree_node_add_mirror_target(struct dm_tree_node *node,
 #define DM_CORELOG		0x00000008	/* In-memory log */
 
 int dm_tree_node_add_mirror_target_log(struct dm_tree_node *node,
-					  uint32_t region_size,
-					  unsigned clustered,
-					  const char *log_uuid,
-					  unsigned area_count,
-					  uint32_t flags);
+				       uint32_t region_size,
+				       unsigned clustered,
+				       const char *log_uuid,
+				       unsigned area_count,
+				       uint32_t flags);
 
 int dm_tree_node_add_raid_target(struct dm_tree_node *node,
 				 uint64_t size,
@@ -681,6 +714,22 @@ int dm_tree_node_add_raid_target(struct dm_tree_node *node,
 				 uint32_t stripe_size,
 				 uint64_t rebuilds,
 				 uint64_t flags);
+
+/*
+ * Defines bellow are based on kernel's dm-cache.c defines
+ * DM_CACHE_MIN_DATA_BLOCK_SIZE (32 * 1024 >> SECTOR_SHIFT)
+ * DM_CACHE_MAX_DATA_BLOCK_SIZE (1024 * 1024 * 1024 >> SECTOR_SHIFT)
+ */
+#define DM_CACHE_MIN_DATA_BLOCK_SIZE (UINT32_C(64))
+#define DM_CACHE_MAX_DATA_BLOCK_SIZE (UINT32_C(2097152))
+/*
+ * Max supported size for cache pool metadata device.
+ * Limitation is hardcoded into the kernel and bigger device sizes
+ * are not accepted.
+ *
+ * Limit defined in drivers/md/dm-cache-metadata.h
+ */
+#define DM_CACHE_METADATA_MAX_SECTORS DM_THIN_METADATA_MAX_SECTORS
 
 struct dm_tree_node_raid_params {
 	const char *raid_type;
@@ -711,6 +760,23 @@ struct dm_tree_node_raid_params {
 int dm_tree_node_add_raid_target_with_params(struct dm_tree_node *node,
 					     uint64_t size,
 					     struct dm_tree_node_raid_params *p);
+
+/* Cache feature_flags */
+#define DM_CACHE_FEATURE_WRITEBACK    0x00000001
+#define DM_CACHE_FEATURE_WRITETHROUGH 0x00000002
+
+int dm_tree_node_add_cache_target(struct dm_tree_node *node,
+				  uint64_t size,
+				  const char *metadata_uuid,
+				  const char *data_uuid,
+				  const char *origin_uuid,
+				  uint32_t chunk_size,
+				  uint32_t feature_flags, /* DM_CACHE_FEATURE_* */
+				  unsigned core_argc,
+				  const char *const *core_argv,
+				  const char *policy_name,
+				  unsigned policy_argc,
+				  const char *const *policy_argv);
 
 /*
  * Replicator operation mode
@@ -1083,7 +1149,7 @@ void dm_hash_remove(struct dm_hash_table *t, const char *key);
 
 void *dm_hash_lookup_binary(struct dm_hash_table *t, const void *key, uint32_t len);
 int dm_hash_insert_binary(struct dm_hash_table *t, const void *key, uint32_t len,
-		       void *data);
+			  void *data);
 void dm_hash_remove_binary(struct dm_hash_table *t, const void *key, uint32_t len);
 
 unsigned dm_hash_get_num_entries(struct dm_hash_table *t);

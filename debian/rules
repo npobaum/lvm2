@@ -84,6 +84,8 @@ $(STAMPS_DIR)/setup_deb: $(STAMPS_DIR)/source
 		--with-default-locking-dir=/run/lock/lvm \
 		--with-thin=internal \
 		--with-thin-check=/usr/sbin/thin_check \
+		--with-thin-dump=/usr/sbin/thin_dump \
+		--with-thin-repair=/usr/sbin/thin_repair \
 		--enable-applib \
 		--enable-cmdlib \
 		--enable-dmeventd \

@@ -19,6 +19,7 @@
 #include "toolcontext.h"
 #include "locking.h"
 #include "defaults.h"
+#include "lvmcache.h"
 #include "lvmetad.h"
 #include "display.h"
 #include "label.h"
@@ -549,50 +550,37 @@ static int pv_resize(struct physical_volume *pv,
 }
 
 int pv_resize_single(struct cmd_context *cmd,
-			     struct volume_group *vg,
-			     struct physical_volume *pv,
-			     const uint64_t new_size)
+		     struct volume_group *vg,
+		     struct physical_volume *pv,
+		     const uint64_t new_size)
 {
 	struct pv_list *pvl;
 	uint64_t size = 0;
 	int r = 0;
 	const char *pv_name = pv_dev_name(pv);
-	const char *vg_name = pv_vg_name(pv);
+	const char *vg_name = pv->vg_name;
 	struct volume_group *old_vg = vg;
 	int vg_needs_pv_write = 0;
 
-	if (is_orphan_vg(vg_name)) {
-		if (!lock_vol(cmd, vg_name, LCK_VG_WRITE, NULL)) {
-			log_error("Can't get lock for orphans");
-			return 0;
-		}
+	vg = vg_read_for_update(cmd, vg_name, NULL, 0);
 
-		if (!(pv = pv_read(cmd, pv_name, 1, 0))) {
-			unlock_vg(cmd, vg_name);
-			log_error("Unable to read PV \"%s\"", pv_name);
-			return 0;
-		}
-	} else {
-		vg = vg_read_for_update(cmd, vg_name, NULL, 0);
-
-		if (vg_read_error(vg)) {
-			release_vg(vg);
-			log_error("Unable to read volume group \"%s\".",
-				  vg_name);
-			return 0;
-		}
-
-		if (!(pvl = find_pv_in_vg(vg, pv_name))) {
-			log_error("Unable to find \"%s\" in volume group \"%s\"",
-				  pv_name, vg->name);
-			goto out;
-		}
-
-		pv = pvl->pv;
-
-		if (!archive(vg))
-			goto out;
+	if (vg_read_error(vg)) {
+		release_vg(vg);
+		log_error("Unable to read volume group \"%s\".",
+			  vg_name);
+		return 0;
 	}
+
+	if (!(pvl = find_pv_in_vg(vg, pv_name))) {
+		log_error("Unable to find \"%s\" in volume group \"%s\"",
+			  pv_name, vg->name);
+		goto out;
+	}
+
+	pv = pvl->pv;
+
+	if (!archive(vg))
+		goto out;
 
 	if (!(pv->fmt->features & FMT_RESIZE_PV)) {
 		log_error("Physical volume %s format does not support resizing.",
@@ -650,8 +638,6 @@ out:
 		log_error("Use pvcreate and vgcfgrestore "
 			  "to repair from archived metadata.");
 	unlock_vg(cmd, vg_name);
-	if (is_orphan_vg(vg_name))
-		free_pv_fid(pv);
 	if (!old_vg)
 		release_vg(vg);
 	return r;
@@ -667,80 +653,84 @@ const char _really_wipe[] =
 static int pvremove_check(struct cmd_context *cmd, const char *name,
 		unsigned force_count, unsigned prompt)
 {
-	struct physical_volume *pv;
+	struct device *dev;
+	struct label *label;
+	struct pv_list *pvl;
+	struct dm_list *pvslist;
+
+	struct physical_volume *pv = NULL;
+	int r = 0;
 
 	/* FIXME Check partition type is LVM unless --force is given */
 
-	/* Is there a pv here already? */
-	/* If not, this is an error unless you used -f. */
-	if (!(pv = pv_read(cmd, name, 1, 0))) {
-		if (force_count)
-			return 1;
-		log_error("Physical Volume %s not found", name);
+	if (!(dev = dev_cache_get(name, cmd->filter))) {
+		log_error("Device %s not found", name);
 		return 0;
 	}
 
-	/*
-	 * If a PV has no MDAs it may appear to be an
-	 * orphan until the metadata is read off
-	 * another PV in the same VG.  Detecting this
-	 * means checking every VG by scanning every
-	 * PV on the system.
-	 */
-	if (is_orphan(pv) && dm_list_empty(&pv->fid->metadata_areas_in_use) &&
-	    dm_list_empty(&pv->fid->metadata_areas_ignored)) {
-		if (!scan_vgs_for_pvs(cmd, 0)) {
-			log_error("Rescan for PVs without metadata areas "
-				  "failed.");
-			goto bad;
-		}
-		free_pv_fid(pv);
-		if (!(pv = pv_read(cmd, name, 1, 0))) {
-			log_error("Failed to read physical volume %s", name);
-			goto bad;
-		}
+	/* Is there a pv here already? */
+	/* If not, this is an error unless you used -f. */
+	if (!label_read(dev, &label, 0)) {
+		if (force_count)
+			return 1;
+		log_error("No PV label found on %s.", name);
+		return 0;
 	}
 
-	/* orphan ? */
+	lvmcache_seed_infos_from_lvmetad(cmd);
+	if (!(pvslist = get_pvs(cmd)))
+		return_0;
+
+	dm_list_iterate_items(pvl, pvslist)
+		if (pvl->pv->dev == dev)
+			pv = pvl->pv;
+
+	if (!pv) {
+		log_error(INTERNAL_ERROR "Physical Volume %s has a label,"
+			  " but is neither in a VG nor orphan.", name);
+		goto out; /* better safe than sorry */
+	}
+
 	if (is_orphan(pv)) {
-		free_pv_fid(pv);
-		return 1;
+		r = 1;
+		goto out;
 	}
 
-	/* Allow partial & exported VGs to be destroyed. */
 	/* we must have -ff to overwrite a non orphan */
 	if (force_count < 2) {
 		log_error("PV %s belongs to Volume Group %s so please use vgreduce first.", name, pv_vg_name(pv));
 		log_error("(If you are certain you need pvremove, then confirm by using --force twice.)");
-		goto bad;
+		goto out;
 	}
 
 	/* prompt */
 	if (!prompt &&
-	    yes_no_prompt(_really_wipe, name, pv_vg_name(pv)) == 'n') {
+	    yes_no_prompt("Really WIPE LABELS from physical volume \"%s\" "
+			  "of volume group \"%s\" [y/n]? ",
+			  name, pv_vg_name(pv)) == 'n') {
 		log_error("%s: physical volume label not removed", name);
-		goto bad;
+		goto out;
 	}
 
 	if (force_count) {
 		log_warn("WARNING: Wiping physical volume label from "
 			  "%s%s%s%s", name,
 			  !is_orphan(pv) ? " of volume group \"" : "",
-			  !is_orphan(pv) ? pv_vg_name(pv) : "",
+			  pv_vg_name(pv),
 			  !is_orphan(pv) ? "\"" : "");
 	}
 
-	free_pv_fid(pv);
-	return 1;
-
-bad:
-	free_pv_fid(pv);
-	return 0;
+	r = 1;
+out:
+	if (pvslist)
+		dm_list_iterate_items(pvl, pvslist)
+			free_pv_fid(pvl->pv);
+	return r;
 }
 
 int pvremove_single(struct cmd_context *cmd, const char *pv_name,
 		    void *handle __attribute__((unused)), unsigned force_count,
-		    unsigned prompt)
+	            unsigned prompt)
 {
 	struct device *dev;
 	int r = 0;

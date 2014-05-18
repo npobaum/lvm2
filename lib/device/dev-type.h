@@ -16,6 +16,7 @@
 #define _LVM_DEV_TYPE_H
 
 #include "device.h"
+#include "display.h"
 
 #define NUMBER_OF_MAJORS 4096
 
@@ -57,6 +58,14 @@ int major_is_scsi_device(struct dev_types *dt, int major);
 int dev_is_md(struct device *dev, uint64_t *sb);
 int dev_is_swap(struct device *dev, uint64_t *signature);
 int dev_is_luks(struct device *dev, uint64_t *signature);
+
+/* Signature wiping. */
+#define TYPE_LVM1_MEMBER	0x001
+#define TYPE_LVM2_MEMBER	0x002
+#define TYPE_DM_SNAPSHOT_COW	0x004
+int wipe_known_signatures(struct cmd_context *cmd, struct device *dev, const char *name,
+			  uint32_t types_to_exclude, uint32_t types_no_prompt,
+			  int yes, force_t force);
 
 /* Type-specific device properties */
 unsigned long dev_md_stripe_width(struct dev_types *dt, struct device *dev);

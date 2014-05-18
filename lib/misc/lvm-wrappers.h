@@ -17,7 +17,7 @@
 #define _LVM_WRAPPERS_H
 
 #ifdef UDEV_SYNC_SUPPORT
-#include <libudev.h>
+struct udev;
 struct udev *udev_get_library_context(void);
 #endif
 
@@ -31,6 +31,11 @@ int lvm_getpagesize(void);
  * Read 'len' bytes of entropy from /dev/urandom and store in 'buf'.
  */
 int read_urandom(void *buf, size_t len);
+
+/*
+ * Return random integer in [0,max) interval
+ */
+unsigned lvm_even_rand(unsigned *seed, unsigned max);
 
 #  ifndef HAVE_SIGINTERRUPT
 #    define siginterrupt(sig, flag) \

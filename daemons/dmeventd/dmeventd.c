@@ -55,6 +55,7 @@
 #  define OOM_SCORE_ADJ_MIN (-1000)
 
 /* Systemd on-demand activation support */
+#  define SD_RUNTIME_UNIT_FILE_DIR DEFAULT_DM_RUN_DIR "/systemd/system/"
 #  define SD_ACTIVATION_ENV_VAR_NAME "SD_ACTIVATION"
 #  define SD_LISTEN_PID_ENV_VAR_NAME "LISTEN_PID"
 #  define SD_LISTEN_FDS_ENV_VAR_NAME "LISTEN_FDS"
@@ -273,7 +274,6 @@ static int _pthread_create_smallstack(pthread_t *t, void *(*fun)(void *), void *
 	int r;
 	pthread_t tmp;
 	pthread_attr_t attr;
-	pthread_attr_init(&attr);
 
 	/*
 	 * From pthread_attr_init man page:
@@ -467,7 +467,7 @@ static int _get_status(struct message_data *message_data)
 	int i, j;
 	int ret = -1;
 	int count = dm_list_size(&_thread_registry);
-	int size = 0, current = 0;
+	int size = 0, current;
 	char *buffers[count];
 	char *message;
 
@@ -511,8 +511,32 @@ static int _get_status(struct message_data *message_data)
  out:
 	for (j = 0; j < i; ++j)
 		dm_free(buffers[j]);
-	return ret;
 
+	return ret;
+}
+
+static int _get_parameters(struct message_data *message_data) {
+	struct dm_event_daemon_message *msg = message_data->msg;
+	char buf[128];
+	int r = -1;
+
+	dm_free(msg->data);
+
+	if (!(dm_snprintf(buf, sizeof(buf), "%s pid=%d daemon=%s exec_method=%s",
+			  message_data->id,
+			  getpid(),
+			  _foreground ? "no" : "yes",
+			  _systemd_activation ? "systemd" : "direct")))
+		goto_out;
+
+	msg->size = strlen(buf) + 1;
+	if (!(msg->data = dm_malloc(msg->size)))
+		goto_out;
+	if (!dm_strncpy(msg->data, buf, msg->size))
+		goto_out;
+	r = 0;
+out:
+	return r;
 }
 
 /* Cleanup at exit. */
@@ -591,6 +615,8 @@ static void _unregister_for_timeout(struct thread_status *thread)
 	if (!dm_list_empty(&thread->timeout_list)) {
 		dm_list_del(&thread->timeout_list);
 		dm_list_init(&thread->timeout_list);
+		if (dm_list_empty(&_timeout_registry))
+			pthread_cond_signal(&_timeout_cond);
 	}
 	pthread_mutex_unlock(&_timeout_mutex);
 }
@@ -607,18 +633,10 @@ static void _no_intr_log(int level, const char *file, int line,
 		return;
 
 	va_start(ap, f);
-
-	if (level < _LOG_WARN)
-		vfprintf(stderr, f, ap);
-	else
-		vprintf(f, ap);
-
+	vfprintf((level < _LOG_WARN) ? stderr : stdout, f, ap);
 	va_end(ap);
 
-	if (level < _LOG_WARN)
-		fprintf(stderr, "\n");
-	else
-		fprintf(stdout, "\n");
+	fputc('\n', (level < _LOG_WARN) ? stderr : stdout);
 }
 
 static sigset_t _unblock_sigalrm(void)
@@ -638,6 +656,7 @@ static sigset_t _unblock_sigalrm(void)
 /* Wait on a device until an event occurs. */
 static int _event_wait(struct thread_status *thread, struct dm_task **task)
 {
+	static unsigned _in_event_counter = 0;
 	sigset_t set;
 	int ret = DM_WAIT_RETRY;
 	struct dm_task *dmt;
@@ -654,12 +673,20 @@ static int _event_wait(struct thread_status *thread, struct dm_task **task)
 	    !dm_task_set_event_nr(dmt, thread->event_nr))
 		goto out;
 
+	_lock_mutex();
+	/*
+	 * Check if there are already some waiting events,
+	 * in this case the logging is unmodified.
+	 * TODO: audit libdm thread usage
+	 */
+	if (!_in_event_counter++)
+		dm_log_init(_no_intr_log);
+	_unlock_mutex();
 	/*
 	 * This is so that you can break out of waiting on an event,
 	 * either for a timeout event, or to cancel the thread.
 	 */
 	set = _unblock_sigalrm();
-	dm_log_init(_no_intr_log);
 	errno = 0;
 	if (dm_task_run(dmt)) {
 		thread->current_events |= DM_EVENT_DEVICE_ERROR;
@@ -683,7 +710,10 @@ static int _event_wait(struct thread_status *thread, struct dm_task **task)
 	}
 
 	pthread_sigmask(SIG_SETMASK, &set, NULL);
-	dm_log_init(NULL);
+	_lock_mutex();
+	if (--_in_event_counter == 0)
+		dm_log_init(NULL);
+	_unlock_mutex();
 
       out:
 	if (ret == DM_WAIT_FATAL || ret == DM_WAIT_RETRY) {
@@ -752,10 +782,8 @@ static void _monitor_unregister(void *arg)
 			return;
 		}
 	thread->status = DM_THREAD_DONE;
-	pthread_mutex_lock(&_timeout_mutex);
 	UNLINK_THREAD(thread);
 	LINK(thread, &_thread_registry_unused);
-	pthread_mutex_unlock(&_timeout_mutex);
 	_unlock_mutex();
 }
 
@@ -783,7 +811,7 @@ static struct dm_task *_get_device_status(struct thread_status *ts)
 static void *_monitor_thread(void *arg)
 {
 	struct thread_status *thread = arg;
-	int wait_error = 0;
+	int wait_error;
 	struct dm_task *task;
 
 	pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL);
@@ -799,8 +827,10 @@ static void *_monitor_thread(void *arg)
 		thread->current_events = 0;
 
 		wait_error = _event_wait(thread, &task);
-		if (wait_error == DM_WAIT_RETRY)
+		if (wait_error == DM_WAIT_RETRY) {
+			usleep(100); /* avoid busy loop */
 			continue;
+		}
 
 		if (wait_error == DM_WAIT_FATAL)
 			break;
@@ -835,10 +865,8 @@ static void *_monitor_thread(void *arg)
 			_unlock_mutex();
 			break;
 		}
-		_unlock_mutex();
 
 		if (thread->events & thread->current_events) {
-			_lock_mutex();
 			thread->processing = 1;
 			_unlock_mutex();
 
@@ -850,6 +878,7 @@ static void *_monitor_thread(void *arg)
 			thread->processing = 0;
 			_unlock_mutex();
 		} else {
+			_unlock_mutex();
 			dm_task_destroy(task);
 			thread->current_task = NULL;
 		}
@@ -1003,8 +1032,6 @@ static int _register_for_event(struct message_data *message_data)
 		goto out;
 	}
 
-	_lock_mutex();
-
 	/* If creation of timeout thread fails (as it may), we fail
 	   here completely. The client is responsible for either
 	   retrying later or trying to register without timeout
@@ -1013,8 +1040,9 @@ static int _register_for_event(struct message_data *message_data)
 	   almost as good as dead already... */
 	if ((thread_new->events & DM_EVENT_TIMEOUT) &&
 	    (ret = -_register_for_timeout(thread_new)))
-		goto outth;
+		goto out;
 
+	_lock_mutex();
 	if (!(thread = _lookup_thread_status(message_data))) {
 		_unlock_mutex();
 
@@ -1038,8 +1066,6 @@ static int _register_for_event(struct message_data *message_data)
 
 	/* Or event # into events bitfield. */
 	thread->events |= message_data->events_field;
-
-    outth:
 	_unlock_mutex();
 
       out:
@@ -1084,17 +1110,18 @@ static int _unregister_for_event(struct message_data *message_data)
 
 	thread->events &= ~message_data->events_field;
 
-	if (!(thread->events & DM_EVENT_TIMEOUT))
+	if (!(thread->events & DM_EVENT_TIMEOUT)) {
+		_unlock_mutex();
 		_unregister_for_timeout(thread);
+		_lock_mutex();
+	}
 	/*
 	 * In case there's no events to monitor on this device ->
 	 * unlink and terminate its monitoring thread.
 	 */
 	if (!thread->events) {
-		pthread_mutex_lock(&_timeout_mutex);
 		UNLINK_THREAD(thread);
 		LINK(thread, &_thread_registry_unused);
-		pthread_mutex_unlock(&_timeout_mutex);
 	}
 	_unlock_mutex();
 
@@ -1110,20 +1137,18 @@ static int _unregister_for_event(struct message_data *message_data)
 static int _registered_device(struct message_data *message_data,
 			     struct thread_status *thread)
 {
-	struct dm_event_daemon_message *msg = message_data->msg;
-
-	const char *fmt = "%s %s %s %u";
-	const char *id = message_data->id;
-	const char *dso = thread->dso_data->dso_name;
-	const char *dev = thread->device.uuid;
 	int r;
+	struct dm_event_daemon_message *msg = message_data->msg;
 	unsigned events = ((thread->status == DM_THREAD_RUNNING) &&
 			   thread->events) ? thread->events :
 			    thread->events | DM_EVENT_REGISTRATION_PENDING;
 
 	dm_free(msg->data);
 
-	if ((r = dm_asprintf(&(msg->data), fmt, id, dso, dev, events)) < 0) {
+	if ((r = dm_asprintf(&(msg->data), "%s %s %s %u",
+			     message_data->id,
+			     thread->dso_data->dso_name,
+			     thread->device.uuid, events)) < 0) {
 		msg->size = 0;
 		return -ENOMEM;
 	}
@@ -1381,9 +1406,10 @@ static int _client_read(struct dm_event_fifos *fifos,
 		dm_free(msg->data);
 		msg->data = NULL;
 		msg->size = 0;
+		return 0;
 	}
 
-	return bytes == size;
+	return 1;
 }
 
 /*
@@ -1443,9 +1469,17 @@ static int _handle_request(struct dm_event_daemon_message *msg,
 		{ DM_EVENT_CMD_GET_TIMEOUT, _get_timeout},
 		{ DM_EVENT_CMD_ACTIVE, _active},
 		{ DM_EVENT_CMD_GET_STATUS, _get_status},
+		/* dmeventd parameters of running dmeventd,
+		 * returns 'pid=<pid> daemon=<no/yes> exec_method=<direct/systemd>'
+		 * 	pid - pidfile of running dmeventd
+		 * 	daemon - running as a daemon or not (foreground)?
+		 * 	exec_method - "direct" if executed directly or
+		 * 		      "systemd" if executed via systemd
+		 */
+		{ DM_EVENT_CMD_GET_PARAMETERS, _get_parameters},
 	}, *req;
 
-	for (req = requests; req < requests + sizeof(requests) / sizeof(struct request); req++)
+	for (req = requests; req < requests + DM_ARRAY_SIZE(requests); ++req)
 		if (req->cmd == msg->cmd)
 			return req->f(message_data);
 
@@ -1488,7 +1522,7 @@ static int _do_process_request(struct dm_event_daemon_message *msg)
 /* Only one caller at a time. */
 static void _process_request(struct dm_event_fifos *fifos)
 {
-	int die = 0;
+	int die;
 	struct dm_event_daemon_message msg = { 0 };
 
 	/*
@@ -1498,8 +1532,7 @@ static void _process_request(struct dm_event_fifos *fifos)
 	if (!_client_read(fifos, &msg))
 		return;
 
-	if (msg.cmd == DM_EVENT_CMD_DIE)
-		die = 1;
+	die = (msg.cmd == DM_EVENT_CMD_DIE) ? 1 : 0;
 
 	/* _do_process_request fills in msg (if memory allows for
 	   data, otherwise just cmd and size = 0) */
@@ -1510,7 +1543,11 @@ static void _process_request(struct dm_event_fifos *fifos)
 
 	dm_free(msg.data);
 
-	if (die) raise(9);
+	if (die) {
+		if (unlink(DMEVENTD_PIDFILE))
+			perror(DMEVENTD_PIDFILE ": unlink failed");
+		_exit(0);
+	}
 }
 
 static void _process_initial_registrations(void)
@@ -1573,8 +1610,10 @@ static void _cleanup_unused_threads(void)
 
 		if (thread->status == DM_THREAD_DONE) {
 			dm_list_del(l);
+			_unlock_mutex();
 			join_ret = pthread_join(thread->thread, NULL);
 			_free_thread_status(thread);
+			_lock_mutex();
 		}
 	}
 
@@ -1736,6 +1775,7 @@ out:
 	unsetenv(SD_LISTEN_FDS_ENV_VAR_NAME);
 	return r;
 }
+
 #endif
 
 static void _remove_files_on_exit(void)
@@ -1827,17 +1867,76 @@ static void _daemonize(void)
 	setsid();
 }
 
+static int _reinstate_registrations(struct dm_event_fifos *fifos)
+{
+	static const char _failed_parsing_msg[] = "Failed to parse existing event registration.\n";
+	static const char *_delim = " ";
+	struct dm_event_daemon_message msg = { 0 };
+	char *endp, *dso_name, *dev_name, *mask, *timeout;
+	unsigned long mask_value, timeout_value;
+	int i, ret;
+
+	ret = daemon_talk(fifos, &msg, DM_EVENT_CMD_HELLO, NULL, NULL, 0, 0);
+	dm_free(msg.data);
+	msg.data = NULL;
+
+	if (ret) {
+		fprintf(stderr, "Failed to communicate with new instance of dmeventd.\n");
+		return 0;
+	}
+
+	for (i = 0; _initial_registrations[i]; ++i) {
+		if (!(strtok(_initial_registrations[i], _delim)) ||
+		    !(dso_name = strtok(NULL, _delim)) ||
+		    !(dev_name = strtok(NULL, _delim)) ||
+		    !(mask = strtok(NULL, _delim)) ||
+		    !(timeout = strtok(NULL, _delim))) {
+			fprintf(stderr, _failed_parsing_msg);
+			continue;
+		}
+
+		errno = 0;
+		mask_value = strtoul(mask, &endp, 10);
+		if (errno || !endp || *endp) {
+			fprintf(stderr, _failed_parsing_msg);
+			continue;
+		}
+
+		errno = 0;
+		timeout_value = strtoul(timeout, &endp, 10);
+		if (errno || !endp || *endp) {
+			fprintf(stderr, _failed_parsing_msg);
+			continue;
+		}
+
+		if (daemon_talk(fifos, &msg, DM_EVENT_CMD_REGISTER_FOR_EVENT,
+				dso_name,
+				dev_name,
+				(enum dm_event_mask) mask_value,
+				timeout_value))
+			fprintf(stderr, "Failed to reinstate monitoring for device %s.\n", dev_name);
+	}
+
+	return 1;
+}
+
 static void restart(void)
 {
-	struct dm_event_fifos fifos = { 0 };
+	struct dm_event_fifos fifos = {
+		.server = -1,
+		.client = -1,
+		/* FIXME Make these either configurable or depend directly on dmeventd_path */
+		.client_path = DM_EVENT_FIFO_CLIENT,
+		.server_path = DM_EVENT_FIFO_SERVER
+	};
 	struct dm_event_daemon_message msg = { 0 };
 	int i, count = 0;
 	char *message;
 	int length;
 	int version;
+	const char *e;
 
 	/* Get the list of registrations from the running daemon. */
-
 	if (!init_fifos(&fifos)) {
 		fprintf(stderr, "WARNING: Could not initiate communication with existing dmeventd.\n");
 		exit(EXIT_FAILURE);
@@ -1845,20 +1944,18 @@ static void restart(void)
 
 	if (!dm_event_get_version(&fifos, &version)) {
 		fprintf(stderr, "WARNING: Could not communicate with existing dmeventd.\n");
-		fini_fifos(&fifos);
-		exit(EXIT_FAILURE);
+		goto bad;
 	}
 
 	if (version < 1) {
 		fprintf(stderr, "WARNING: The running dmeventd instance is too old.\n"
 			        "Protocol version %d (required: 1). Action cancelled.\n",
 			        version);
-		exit(EXIT_FAILURE);
+		goto bad;
 	}
 
-	if (daemon_talk(&fifos, &msg, DM_EVENT_CMD_GET_STATUS, "-", "-", 0, 0)) {
-		exit(EXIT_FAILURE);
-	}
+	if (daemon_talk(&fifos, &msg, DM_EVENT_CMD_GET_STATUS, "-", "-", 0, 0))
+		goto bad;
 
 	message = msg.data;
 	message = strchr(message, ' ');
@@ -1873,34 +1970,76 @@ static void restart(void)
 
 	if (!(_initial_registrations = dm_malloc(sizeof(char*) * (count + 1)))) {
 		fprintf(stderr, "Memory allocation registration failed.\n");
-		exit(EXIT_FAILURE);
+		goto bad;
 	}
 
 	for (i = 0; i < count; ++i) {
 		if (!(_initial_registrations[i] = dm_strdup(message))) {
 			fprintf(stderr, "Memory allocation for message failed.\n");
-			exit(EXIT_FAILURE);
+			goto bad;
 		}
 		message += strlen(message) + 1;
 	}
 	_initial_registrations[count] = 0;
 
+	if (version >= 2) {
+		if (daemon_talk(&fifos, &msg, DM_EVENT_CMD_GET_PARAMETERS, "-", "-", 0, 0)) {
+			fprintf(stderr, "Failed to acquire parameters from old dmeventd.\n");
+			goto bad;
+		}
+		if (strstr(msg.data, "exec_method=systemd"))
+			_systemd_activation = 1;
+	}
+#ifdef __linux__
+	/*
+	* If the protocol version is old, just assume that if systemd is running,
+	* the dmeventd is also run as a systemd service via fifo activation.
+	*/
+	if (version < 2) {
+		/* This check is copied from sd-daemon.c. */
+		struct stat st;
+		if (!lstat(SD_RUNTIME_UNIT_FILE_DIR, &st) && !!S_ISDIR(st.st_mode))
+			_systemd_activation = 1;
+	}
+#endif
+
 	if (daemon_talk(&fifos, &msg, DM_EVENT_CMD_DIE, "-", "-", 0, 0)) {
 		fprintf(stderr, "Old dmeventd refused to die.\n");
-		exit(EXIT_FAILURE);
+		goto bad;
 	}
 
-	/*
-	 * Wait for daemon to die, detected by sending further DIE messages
-	 * until one fails.
-	 */
+	if (!_systemd_activation &&
+	    ((e = getenv(SD_ACTIVATION_ENV_VAR_NAME)) && strcmp(e, "1")))
+		_systemd_activation = 1;
+
 	for (i = 0; i < 10; ++i) {
-		if (daemon_talk(&fifos, &msg, DM_EVENT_CMD_DIE, "-", "-", 0, 0))
-			break; /* yep, it's dead probably */
+		if ((access(DMEVENTD_PIDFILE, F_OK) == -1) && (errno == ENOENT))
+			break;
 		usleep(10);
 	}
 
+	if (!_systemd_activation) {
+		fini_fifos(&fifos);
+		return;
+	}
+
+	/* Reopen fifos. */
 	fini_fifos(&fifos);
+	if (!init_fifos(&fifos)) {
+		fprintf(stderr, "Could not initiate communication with new instance of dmeventd.\n");
+		exit(EXIT_FAILURE);
+	}
+
+	if (!_reinstate_registrations(&fifos)) {
+		fprintf(stderr, "Failed to reinstate monitoring with new instance of dmeventd.\n");
+		goto bad;
+	}
+
+	fini_fifos(&fifos);
+	exit(EXIT_SUCCESS);
+bad:
+	fini_fifos(&fifos);
+	exit(EXIT_FAILURE);
 }
 
 static void usage(char *prog, FILE *file)

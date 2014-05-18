@@ -19,10 +19,7 @@
 #include <sys/types.h>
 #include <inttypes.h>
 
-/* Define some portable printing types */
-#define PRIsize_t "zu"
-#define PRIptrdiff_t "td"
-#define PRIpid_t PRId32
+#include "libdevmapper.h"
 
 struct str_list {
 	struct dm_list list;

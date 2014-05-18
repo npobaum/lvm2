@@ -129,7 +129,7 @@ static int generate_unit(const char *dir, int unit)
 	      "# Direct LVM2 activation requires udev to be settled!\n\n"
 	      "[Unit]\n"
 	      "Description=Activation of LVM2 logical volumes\n"
-	      "Documentation=man:lvm(8) man:vgchange(8)\n"
+	      "Documentation=man:lvm2-activation-generator(8)\n"
 	      "SourcePath=/etc/lvm/lvm.conf\n"
 	      "DefaultDependencies=no\n", f);
 
@@ -150,7 +150,7 @@ static int generate_unit(const char *dir, int unit)
 		      "[Service]\n", f);
 	}
 
-	fputs("ExecStart=" LVM_PATH " vgchange -aay --sysinit\n"
+	fputs("ExecStart=" LVM_PATH " vgchange -aay --sysinit --ignoreskippedcluster\n"
 	      "Type=oneshot\n", f);
 
 	if (fclose(f) < 0) {
