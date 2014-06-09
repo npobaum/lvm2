@@ -436,7 +436,10 @@ static int _start_daemon(char *dmeventd_path, struct dm_event_fifos *fifos)
 	/* server is not running */
 
 	if ((args[0][0] == '/') && stat(args[0], &statbuf)) {
-		log_sys_error("stat", args[0]);
+		if (errno != ENOENT)
+			log_error("Unable to find " DMEVENTD_PATH ": %s", strerror(errno));
+		else
+			log_sys_debug("stat", DMEVENTD_PATH);
 		return 0;
 	}
 
@@ -626,10 +629,19 @@ int dm_event_register_handler(const struct dm_event_handler *dmevh)
 
 	if ((err = _do_event(DM_EVENT_CMD_REGISTER_FOR_EVENT, dmevh->dmeventd_path, &msg,
 			     dmevh->dso, uuid, dmevh->mask, dmevh->timeout)) < 0) {
-		log_error("%s: event registration failed: %s",
-			  dm_task_get_name(dmt),
-			  msg.data ? msg.data : strerror(-err));
-		ret = 0;
+		if (err != -ESRCH) {
+			log_error("%s: event registration failed: %s",
+				  dm_task_get_name(dmt),
+				  msg.data ? msg.data : strerror(-err));
+			ret = 0;
+		}
+		else {
+			/* XXX: Ignore missing daemon */
+			log_debug("%s: event registration failed, ignored: %s",
+				  dm_task_get_name(dmt),
+				  msg.data ? msg.data : strerror(-err));
+			ret = 2;
+		}
 	}
 
 	dm_free(msg.data);
