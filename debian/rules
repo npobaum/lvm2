@@ -75,6 +75,7 @@ $(STAMPS_DIR)/setup_deb: $(STAMPS_DIR)/source
 		--libdir=\$${exec_prefix}/lib/$(DEB_HOST_MULTIARCH) \
 		--with-usrlibdir=\$${prefix}/lib/$(DEB_HOST_MULTIARCH) \
 		--with-optimisation="$(CFLAGS_OPT_DEB)" \
+		--with-cache=internal \
 		--with-clvmd=cman,corosync,openais \
 		--with-cluster=internal \
 		--with-device-uid=0 \

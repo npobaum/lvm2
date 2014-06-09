@@ -1,3 +1,11 @@
+lvm2 (2.02.106-2) unstable; urgency=medium
+
+  * Enable cache support. (closes: #749599)
+  * Update Standards-Version to 3.9.5:
+    - Strip XC-prefix.
+
+ -- Bastian Blank <waldi@debian.org>  Mon, 09 Jun 2014 21:49:02 +0200
+
 lvm2 (2.02.106-1) unstable; urgency=medium
 
   * New upstream version.
