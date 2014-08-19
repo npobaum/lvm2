@@ -664,6 +664,7 @@ PKGCONFIG
 OCFDIR
 OCF
 MIRRORS
+MANGLING
 LVM_RELEASE_DATE
 LVM_RELEASE
 LVM_PATH
@@ -697,6 +698,7 @@ DMEVENTD
 DL_LIBS
 DEVMAPPER
 DEFAULT_RUN_DIR
+DEFAULT_PID_DIR
 DEFAULT_DM_RUN_DIR
 DEFAULT_LOCK_DIR
 DEFAULT_DATA_ALIGNMENT
@@ -766,6 +768,11 @@ PKGCONFIGINIT_CFLAGS
 PKG_CONFIG_LIBDIR
 PKG_CONFIG_PATH
 PKG_CONFIG
+CACHE_RESTORE_CMD
+CACHE_REPAIR_CMD
+CACHE_DUMP_CMD
+CACHE_CHECK_CMD
+THIN_RESTORE_CMD
 THIN_REPAIR_CMD
 THIN_DUMP_CMD
 THIN_CHECK_CMD
@@ -868,8 +875,13 @@ with_thin
 with_thin_check
 with_thin_dump
 with_thin_repair
+with_thin_restore
 enable_thin_check_needs_check
 with_cache
+with_cache_check
+with_cache_dump
+with_cache_repair
+with_cache_restore
 enable_readline
 enable_realtime
 enable_ocf
@@ -1599,8 +1611,8 @@ Optional Features:
   --enable-lvmetad        enable the LVM Metadata Daemon
   --disable-blkid_wiping  disable libblkid detection of signatures when wiping
                           and use native code instead
-  --enable-udev-systemd-background-jobs
-                          enable udev-systemd protocol to instantiate a
+  --disable-udev-systemd-background-jobs
+                          disable udev-systemd protocol to instantiate a
                           service for background job
   --enable-udev_sync      enable synchronisation with udev processing
   --enable-udev_rules     install rule files needed for udev synchronisation
@@ -1609,7 +1621,7 @@ Optional Features:
   --enable-compat         enable support for old device-mapper versions
   --enable-units-compat   enable output compatibility with old versions that
                           that do not use KiB-style unit suffixes
-  --disable-driver        disable calls to device-mapper in the kernel
+  --disable-ioctl         disable ioctl calls to device-mapper in the kernel
   --disable-o_direct      disable O_DIRECT
   --enable-applib         build application library
   --enable-cmdlib         build shared command library
@@ -1654,7 +1666,15 @@ Optional Packages:
   --with-thin-check=PATH  thin_check tool: [[autodetect]]
   --with-thin-dump=PATH   thin_dump tool: [[autodetect]]
   --with-thin-repair=PATH thin_repair tool: [[autodetect]]
+  --with-thin-restore=PATH
+                          thin_restore tool: [[autodetect]]
   --with-cache=TYPE       cache support: internal/shared/none [[TYPE=none]]
+  --with-cache-check=PATH cache_check tool: [[autodetect]]
+  --with-cache-dump=PATH  cache_dump tool: [[autodetect]]
+  --with-cache-repair=PATH
+                          cache_repair tool: [[autodetect]]
+  --with-cache-restore=PATH
+                          cache_restore tool: [[autodetect]]
   --with-ocfdir=DIR       install OCF files in DIR
                           [[PREFIX/lib/ocf/resource.d/lvm2]]
   --with-default-pid-dir=PID_DIR
@@ -4456,8 +4476,9 @@ else
   RANLIB="$ac_cv_prog_RANLIB"
 fi
 
-# Extract the first word of "cflow", so it can be a program name with args.
-set dummy cflow; ac_word=$2
+if test -n "$ac_tool_prefix"; then
+  # Extract the first word of "${ac_tool_prefix}cflow", so it can be a program name with args.
+set dummy ${ac_tool_prefix}cflow; ac_word=$2
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
 $as_echo_n "checking for $ac_word... " >&6; }
 if ${ac_cv_path_CFLOW_CMD+:} false; then :
@@ -4496,8 +4517,66 @@ $as_echo "no" >&6; }
 fi
 
 
-# Extract the first word of "cscope", so it can be a program name with args.
-set dummy cscope; ac_word=$2
+fi
+if test -z "$ac_cv_path_CFLOW_CMD"; then
+  ac_pt_CFLOW_CMD=$CFLOW_CMD
+  # Extract the first word of "cflow", so it can be a program name with args.
+set dummy cflow; ac_word=$2
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
+$as_echo_n "checking for $ac_word... " >&6; }
+if ${ac_cv_path_ac_pt_CFLOW_CMD+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  case $ac_pt_CFLOW_CMD in
+  [\\/]* | ?:[\\/]*)
+  ac_cv_path_ac_pt_CFLOW_CMD="$ac_pt_CFLOW_CMD" # Let the user override the test with a path.
+  ;;
+  *)
+  as_save_IFS=$IFS; IFS=$PATH_SEPARATOR
+for as_dir in $PATH
+do
+  IFS=$as_save_IFS
+  test -z "$as_dir" && as_dir=.
+    for ac_exec_ext in '' $ac_executable_extensions; do
+  if as_fn_executable_p "$as_dir/$ac_word$ac_exec_ext"; then
+    ac_cv_path_ac_pt_CFLOW_CMD="$as_dir/$ac_word$ac_exec_ext"
+    $as_echo "$as_me:${as_lineno-$LINENO}: found $as_dir/$ac_word$ac_exec_ext" >&5
+    break 2
+  fi
+done
+  done
+IFS=$as_save_IFS
+
+  ;;
+esac
+fi
+ac_pt_CFLOW_CMD=$ac_cv_path_ac_pt_CFLOW_CMD
+if test -n "$ac_pt_CFLOW_CMD"; then
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_pt_CFLOW_CMD" >&5
+$as_echo "$ac_pt_CFLOW_CMD" >&6; }
+else
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+fi
+
+  if test "x$ac_pt_CFLOW_CMD" = x; then
+    CFLOW_CMD=""
+  else
+    case $cross_compiling:$ac_tool_warned in
+yes:)
+{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: using cross tools not prefixed with host triplet" >&5
+$as_echo "$as_me: WARNING: using cross tools not prefixed with host triplet" >&2;}
+ac_tool_warned=yes ;;
+esac
+    CFLOW_CMD=$ac_pt_CFLOW_CMD
+  fi
+else
+  CFLOW_CMD="$ac_cv_path_CFLOW_CMD"
+fi
+
+if test -n "$ac_tool_prefix"; then
+  # Extract the first word of "${ac_tool_prefix}cscope", so it can be a program name with args.
+set dummy ${ac_tool_prefix}cscope; ac_word=$2
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
 $as_echo_n "checking for $ac_word... " >&6; }
 if ${ac_cv_path_CSCOPE_CMD+:} false; then :
@@ -4535,6 +4614,63 @@ else
 $as_echo "no" >&6; }
 fi
 
+
+fi
+if test -z "$ac_cv_path_CSCOPE_CMD"; then
+  ac_pt_CSCOPE_CMD=$CSCOPE_CMD
+  # Extract the first word of "cscope", so it can be a program name with args.
+set dummy cscope; ac_word=$2
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
+$as_echo_n "checking for $ac_word... " >&6; }
+if ${ac_cv_path_ac_pt_CSCOPE_CMD+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  case $ac_pt_CSCOPE_CMD in
+  [\\/]* | ?:[\\/]*)
+  ac_cv_path_ac_pt_CSCOPE_CMD="$ac_pt_CSCOPE_CMD" # Let the user override the test with a path.
+  ;;
+  *)
+  as_save_IFS=$IFS; IFS=$PATH_SEPARATOR
+for as_dir in $PATH
+do
+  IFS=$as_save_IFS
+  test -z "$as_dir" && as_dir=.
+    for ac_exec_ext in '' $ac_executable_extensions; do
+  if as_fn_executable_p "$as_dir/$ac_word$ac_exec_ext"; then
+    ac_cv_path_ac_pt_CSCOPE_CMD="$as_dir/$ac_word$ac_exec_ext"
+    $as_echo "$as_me:${as_lineno-$LINENO}: found $as_dir/$ac_word$ac_exec_ext" >&5
+    break 2
+  fi
+done
+  done
+IFS=$as_save_IFS
+
+  ;;
+esac
+fi
+ac_pt_CSCOPE_CMD=$ac_cv_path_ac_pt_CSCOPE_CMD
+if test -n "$ac_pt_CSCOPE_CMD"; then
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_pt_CSCOPE_CMD" >&5
+$as_echo "$ac_pt_CSCOPE_CMD" >&6; }
+else
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+fi
+
+  if test "x$ac_pt_CSCOPE_CMD" = x; then
+    CSCOPE_CMD=""
+  else
+    case $cross_compiling:$ac_tool_warned in
+yes:)
+{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: using cross tools not prefixed with host triplet" >&5
+$as_echo "$as_me: WARNING: using cross tools not prefixed with host triplet" >&2;}
+ac_tool_warned=yes ;;
+esac
+    CSCOPE_CMD=$ac_pt_CSCOPE_CMD
+  fi
+else
+  CSCOPE_CMD="$ac_cv_path_CSCOPE_CMD"
+fi
 
 
 ################################################################################
@@ -5559,17 +5695,6 @@ _ACEOF
 
 else
   as_fn_error $? "bailing out" "$LINENO" 5
-fi
-done
-
-for ac_func in siginterrupt
-do :
-  ac_fn_c_check_func "$LINENO" "siginterrupt" "ac_cv_func_siginterrupt"
-if test "x$ac_cv_func_siginterrupt" = xyes; then :
-  cat >>confdefs.h <<_ACEOF
-#define HAVE_SIGINTERRUPT 1
-_ACEOF
-
 fi
 done
 
@@ -6869,10 +6994,7 @@ fi
 
 { $as_echo "$as_me:${as_lineno-$LINENO}: result: $OWNER" >&5
 $as_echo "$OWNER" >&6; }
-
-if test x$OWNER != x; then
-	INSTALL="$INSTALL -o $OWNER"
-fi
+test -n "$OWNER" && INSTALL="$INSTALL -o $OWNER"
 
 ################################################################################
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking group owner" >&5
@@ -6885,10 +7007,7 @@ fi
 
 { $as_echo "$as_me:${as_lineno-$LINENO}: result: $GROUP" >&5
 $as_echo "$GROUP" >&6; }
-
-if test x$GROUP != x; then
-	INSTALL="$INSTALL -g $GROUP"
-fi
+test -n "$GROUP" && INSTALL="$INSTALL -g $GROUP"
 
 ################################################################################
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking device node uid" >&5
@@ -6970,7 +7089,7 @@ fi
 
 case "$MANGLING" in
  auto) mangling=DM_STRING_MANGLING_AUTO;;
- disabled) mangling=DM_STRING_MANGLING_NONE;;
+ none|disabled) mangling=DM_STRING_MANGLING_NONE;;
  hex) mangling=DM_STRING_MANGLING_HEX;;
  *) as_fn_error $? "--with-default-name-mangling parameter invalid" "$LINENO" 5;;
 esac
@@ -6995,7 +7114,7 @@ fi
 { $as_echo "$as_me:${as_lineno-$LINENO}: result: $LVM1_FALLBACK" >&5
 $as_echo "$LVM1_FALLBACK" >&6; }
 
-if test x$LVM1_FALLBACK = xyes; then
+if test "$LVM1_FALLBACK" = yes; then
 
 $as_echo "#define LVM1_FALLBACK 1" >>confdefs.h
 
@@ -7012,19 +7131,17 @@ else
   LVM1=internal
 fi
 
+
 { $as_echo "$as_me:${as_lineno-$LINENO}: result: $LVM1" >&5
 $as_echo "$LVM1" >&6; }
 
-if [ "x$LVM1" != xnone -a "x$LVM1" != xinternal -a "x$LVM1" != xshared ];
- then  as_fn_error $? "--with-lvm1 parameter invalid
-" "$LINENO" 5
-fi;
-
-if test x$LVM1 = xinternal; then
-
+case "$LVM1" in
+  none|share) ;;
+  internal)
 $as_echo "#define LVM1_INTERNAL 1" >>confdefs.h
-
-fi
+ ;;
+  *) as_fn_error $? "--with-lvm1 parameter invalid" "$LINENO" 5 ;;
+esac
 
 ################################################################################
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking whether to include support for GFS pool metadata" >&5
@@ -7040,16 +7157,13 @@ fi
 { $as_echo "$as_me:${as_lineno-$LINENO}: result: $POOL" >&5
 $as_echo "$POOL" >&6; }
 
-if [ "x$POOL" != xnone -a "x$POOL" != xinternal -a "x$POOL" != xshared ];
- then  as_fn_error $? "--with-pool parameter invalid
-" "$LINENO" 5
-fi;
-
-if test x$POOL = xinternal; then
-
+case "$POOL" in
+  none|shared) ;;
+  internal)
 $as_echo "#define POOL_INTERNAL 1" >>confdefs.h
-
-fi
+ ;;
+  *) as_fn_error $? "--with-pool parameter invalid" "$LINENO" 5
+esac
 
 ################################################################################
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking whether to include support for cluster locking" >&5
@@ -7063,16 +7177,13 @@ fi
 { $as_echo "$as_me:${as_lineno-$LINENO}: result: $CLUSTER" >&5
 $as_echo "$CLUSTER" >&6; }
 
-if [ "x$CLUSTER" != xnone -a "x$CLUSTER" != xinternal -a "x$CLUSTER" != xshared ];
- then  as_fn_error $? "--with-cluster parameter invalid
-" "$LINENO" 5
-fi;
-
-if test x$CLUSTER = xinternal; then
-
+case "$CLUSTER" in
+  none|shared) ;;
+  internal)
 $as_echo "#define CLUSTER_LOCKING_INTERNAL 1" >>confdefs.h
-
-fi
+ ;;
+  *) as_fn_error $? "--with-cluster parameter invalid" "$LINENO" 5 ;;
+esac
 
 ################################################################################
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking whether to include snapshots" >&5
@@ -7088,16 +7199,13 @@ fi
 { $as_echo "$as_me:${as_lineno-$LINENO}: result: $SNAPSHOTS" >&5
 $as_echo "$SNAPSHOTS" >&6; }
 
-if [ "x$SNAPSHOTS" != xnone -a "x$SNAPSHOTS" != xinternal -a "x$SNAPSHOTS" != xshared ];
- then  as_fn_error $? "--with-snapshots parameter invalid
-" "$LINENO" 5
-fi;
-
-if test x$SNAPSHOTS = xinternal; then
-
+case "$SNAPSHOTS" in
+  none|shared) ;;
+  internal)
 $as_echo "#define SNAPSHOT_INTERNAL 1" >>confdefs.h
-
-fi
+ ;;
+  *) as_fn_error $? "--with-snapshots parameter invalid" "$LINENO" 5 ;;
+esac
 
 ################################################################################
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking whether to include mirrors" >&5
@@ -7113,16 +7221,13 @@ fi
 { $as_echo "$as_me:${as_lineno-$LINENO}: result: $MIRRORS" >&5
 $as_echo "$MIRRORS" >&6; }
 
-if [ "x$MIRRORS" != xnone -a "x$MIRRORS" != xinternal -a "x$MIRRORS" != xshared ];
- then  as_fn_error $? "--with-mirrors parameter invalid
-" "$LINENO" 5
-fi;
-
-if test x$MIRRORS = xinternal; then
-
+case "$MIRRORS" in
+  none|shared) ;;
+  internal)
 $as_echo "#define MIRRORED_INTERNAL 1" >>confdefs.h
-
-fi
+ ;;
+  *) as_fn_error $? "--with-mirrors parameter invalid" "$LINENO" 5 ;;
+esac
 
 ################################################################################
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking whether to include raid" >&5
@@ -7138,16 +7243,13 @@ fi
 { $as_echo "$as_me:${as_lineno-$LINENO}: result: $RAID" >&5
 $as_echo "$RAID" >&6; }
 
-if [ "x$RAID" != xnone -a "x$RAID" != xinternal -a "x$RAID" != xshared ];
- then  as_fn_error $? "--with-raid parameter invalid
-" "$LINENO" 5
-fi;
-
-if test x$RAID = xinternal; then
-
+case "$RAID" in
+  none|shared) ;;
+  internal)
 $as_echo "#define RAID_INTERNAL 1" >>confdefs.h
-
-fi
+ ;;
+  *) as_fn_error $? "--with-raid parameter invalid" "$LINENO" 5 ;;
+esac
 
 ################################################################################
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking whether to include replicators" >&5
@@ -7207,6 +7309,14 @@ else
 fi
 
 
+# Check whether --with-thin-restore was given.
+if test "${with_thin_restore+set}" = set; then :
+  withval=$with_thin_restore; THIN_RESTORE_CMD=$withval
+else
+  THIN_RESTORE_CMD="autodetect"
+fi
+
+
 { $as_echo "$as_me:${as_lineno-$LINENO}: result: $THIN" >&5
 $as_echo "$THIN" >&6; }
 
@@ -7218,8 +7328,6 @@ $as_echo "#define THIN_INTERNAL 1" >>confdefs.h
   *) as_fn_error $? "--with-thin parameter invalid ($THIN)" "$LINENO" 5 ;;
 esac
 
-{ $as_echo "$as_me:${as_lineno-$LINENO}: checking whether thin_check supports the needs-check flag" >&5
-$as_echo_n "checking whether thin_check supports the needs-check flag... " >&6; }
 # Check whether --enable-thin_check_needs_check was given.
 if test "${enable_thin_check_needs_check+set}" = set; then :
   enableval=$enable_thin_check_needs_check; THIN_CHECK_NEEDS_CHECK=$enableval
@@ -7227,14 +7335,6 @@ else
   THIN_CHECK_NEEDS_CHECK=yes
 fi
 
-{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $THIN_CHECK_NEEDS_CHECK" >&5
-$as_echo "$THIN_CHECK_NEEDS_CHECK" >&6; }
-
-if test x$THIN_CHECK_NEEDS_CHECK = xyes; then
-
-$as_echo "#define THIN_CHECK_NEEDS_CHECK 1" >>confdefs.h
-
-fi
 
 # Test if necessary thin tools are available
 # if not - use plain defaults and warn user
@@ -7345,27 +7445,26 @@ fi
 $as_echo "$as_me: WARNING: thin_check not found in path $PATH" >&2;}
 			THIN_CHECK_CMD=/usr/sbin/thin_check
 			THIN_CONFIGURE_WARN=y
-		else
-			if test x$THIN_CHECK_NEEDS_CHECK = xyes; then
-				THIN_CHECK_VSN=`"$THIN_CHECK_CMD" -V 2>/dev/null`
-				THIN_CHECK_VSN_MAJOR=`echo "$THIN_CHECK_VSN" | $AWK -F '.' '{print $1}'`
-				THIN_CHECK_VSN_MINOR=`echo "$THIN_CHECK_VSN" | $AWK -F '.' '{print $2}'`
-
-				if test -z "$THIN_CHECK_VSN_MAJOR" -o -z "$THIN_CHECK_VSN_MINOR" ; then
-					{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: Found thin_check version \"$THIN_CHECK_VSN\"" >&5
-$as_echo "$as_me: WARNING: Found thin_check version \"$THIN_CHECK_VSN\"" >&2;}
-					THIN_CHECK_VERSION_WARN=y
-				else
-					if test "$THIN_CHECK_VSN_MAJOR" -eq 0 -a "$THIN_CHECK_VSN_MINOR" -lt 3 ; then
-						{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: Found thin_check version \"$THIN_CHECK_VSN\"" >&5
-$as_echo "$as_me: WARNING: Found thin_check version \"$THIN_CHECK_VSN\"" >&2;}
-						THIN_CHECK_VERSION_WARN=y
-					fi
-				fi
-			fi
 		fi
 	fi
-	# Empty means a config way to ignore thin checking
+	if test "$THIN_CHECK_NEEDS_CHECK" = yes; then
+		THIN_CHECK_VSN=`"$THIN_CHECK_CMD" -V 2>/dev/null`
+		THIN_CHECK_VSN_MAJOR=`echo "$THIN_CHECK_VSN" | $AWK -F '.' '{print $1}'`
+		THIN_CHECK_VSN_MINOR=`echo "$THIN_CHECK_VSN" | $AWK -F '.' '{print $2}'`
+
+		if test -z "$THIN_CHECK_VSN_MAJOR" -o -z "$THIN_CHECK_VSN_MINOR"; then
+			{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: $THIN_CHECK_CMD: Bad version \"$THIN_CHECK_VSN\" found" >&5
+$as_echo "$as_me: WARNING: $THIN_CHECK_CMD: Bad version \"$THIN_CHECK_VSN\" found" >&2;}
+			THIN_CHECK_VERSION_WARN=y
+			THIN_CHECK_NEEDS_CHECK=no
+		elif test "$THIN_CHECK_VSN_MAJOR" -eq 0 -a "$THIN_CHECK_VSN_MINOR" -lt 3; then
+			{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: $THIN_CHECK_CMD: Old version \"$THIN_CHECK_VSN\" found" >&5
+$as_echo "$as_me: WARNING: $THIN_CHECK_CMD: Old version \"$THIN_CHECK_VSN\" found" >&2;}
+			THIN_CHECK_VERSION_WARN=y
+			THIN_CHECK_NEEDS_CHECK=no
+		fi
+	fi
+	# Empty means a config way to ignore thin dumping
 	if test "$THIN_DUMP_CMD" = "autodetect"; then
 		if test -n "$ac_tool_prefix"; then
   # Extract the first word of "${ac_tool_prefix}thin_dump", so it can be a program name with args.
@@ -7472,7 +7571,7 @@ $as_echo "$as_me: WARNING: thin_dump not found in path $PATH" >&2;}
 			THIN_CONFIGURE_WARN=y
 		}
 	fi
-	# Empty means a config way to ignore thin checking
+	# Empty means a config way to ignore thin repairing
 	if test "$THIN_REPAIR_CMD" = "autodetect"; then
 		if test -n "$ac_tool_prefix"; then
   # Extract the first word of "${ac_tool_prefix}thin_repair", so it can be a program name with args.
@@ -7579,8 +7678,125 @@ $as_echo "$as_me: WARNING: thin_repair not found in path $PATH" >&2;}
 			THIN_CONFIGURE_WARN=y
 		}
 	fi
+	# Empty means a config way to ignore thin restoring
+	if test "$THIN_RESTORE_CMD" = "autodetect"; then
+		if test -n "$ac_tool_prefix"; then
+  # Extract the first word of "${ac_tool_prefix}thin_restore", so it can be a program name with args.
+set dummy ${ac_tool_prefix}thin_restore; ac_word=$2
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
+$as_echo_n "checking for $ac_word... " >&6; }
+if ${ac_cv_path_THIN_RESTORE_CMD+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  case $THIN_RESTORE_CMD in
+  [\\/]* | ?:[\\/]*)
+  ac_cv_path_THIN_RESTORE_CMD="$THIN_RESTORE_CMD" # Let the user override the test with a path.
+  ;;
+  *)
+  as_save_IFS=$IFS; IFS=$PATH_SEPARATOR
+for as_dir in $PATH
+do
+  IFS=$as_save_IFS
+  test -z "$as_dir" && as_dir=.
+    for ac_exec_ext in '' $ac_executable_extensions; do
+  if as_fn_executable_p "$as_dir/$ac_word$ac_exec_ext"; then
+    ac_cv_path_THIN_RESTORE_CMD="$as_dir/$ac_word$ac_exec_ext"
+    $as_echo "$as_me:${as_lineno-$LINENO}: found $as_dir/$ac_word$ac_exec_ext" >&5
+    break 2
+  fi
+done
+  done
+IFS=$as_save_IFS
+
+  ;;
+esac
+fi
+THIN_RESTORE_CMD=$ac_cv_path_THIN_RESTORE_CMD
+if test -n "$THIN_RESTORE_CMD"; then
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: $THIN_RESTORE_CMD" >&5
+$as_echo "$THIN_RESTORE_CMD" >&6; }
+else
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+fi
+
+
+fi
+if test -z "$ac_cv_path_THIN_RESTORE_CMD"; then
+  ac_pt_THIN_RESTORE_CMD=$THIN_RESTORE_CMD
+  # Extract the first word of "thin_restore", so it can be a program name with args.
+set dummy thin_restore; ac_word=$2
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
+$as_echo_n "checking for $ac_word... " >&6; }
+if ${ac_cv_path_ac_pt_THIN_RESTORE_CMD+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  case $ac_pt_THIN_RESTORE_CMD in
+  [\\/]* | ?:[\\/]*)
+  ac_cv_path_ac_pt_THIN_RESTORE_CMD="$ac_pt_THIN_RESTORE_CMD" # Let the user override the test with a path.
+  ;;
+  *)
+  as_save_IFS=$IFS; IFS=$PATH_SEPARATOR
+for as_dir in $PATH
+do
+  IFS=$as_save_IFS
+  test -z "$as_dir" && as_dir=.
+    for ac_exec_ext in '' $ac_executable_extensions; do
+  if as_fn_executable_p "$as_dir/$ac_word$ac_exec_ext"; then
+    ac_cv_path_ac_pt_THIN_RESTORE_CMD="$as_dir/$ac_word$ac_exec_ext"
+    $as_echo "$as_me:${as_lineno-$LINENO}: found $as_dir/$ac_word$ac_exec_ext" >&5
+    break 2
+  fi
+done
+  done
+IFS=$as_save_IFS
+
+  ;;
+esac
+fi
+ac_pt_THIN_RESTORE_CMD=$ac_cv_path_ac_pt_THIN_RESTORE_CMD
+if test -n "$ac_pt_THIN_RESTORE_CMD"; then
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_pt_THIN_RESTORE_CMD" >&5
+$as_echo "$ac_pt_THIN_RESTORE_CMD" >&6; }
+else
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+fi
+
+  if test "x$ac_pt_THIN_RESTORE_CMD" = x; then
+    THIN_RESTORE_CMD=""
+  else
+    case $cross_compiling:$ac_tool_warned in
+yes:)
+{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: using cross tools not prefixed with host triplet" >&5
+$as_echo "$as_me: WARNING: using cross tools not prefixed with host triplet" >&2;}
+ac_tool_warned=yes ;;
+esac
+    THIN_RESTORE_CMD=$ac_pt_THIN_RESTORE_CMD
+  fi
+else
+  THIN_RESTORE_CMD="$ac_cv_path_THIN_RESTORE_CMD"
+fi
+
+		test -z "$THIN_RESTORE_CMD" && {
+			{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: thin_restore not found in path $PATH" >&5
+$as_echo "$as_me: WARNING: thin_restore not found in path $PATH" >&2;}
+			THIN_RESTORE_CMD=/usr/sbin/thin_restore
+			THIN_CONFIGURE_WARN=y
+		}
+	fi
 	;;
 esac
+
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking whether thin_check supports the needs-check flag" >&5
+$as_echo_n "checking whether thin_check supports the needs-check flag... " >&6; }
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $THIN_CHECK_NEEDS_CHECK" >&5
+$as_echo "$THIN_CHECK_NEEDS_CHECK" >&6; }
+if test "$THIN_CHECK_NEEDS_CHECK" = yes; then
+
+$as_echo "#define THIN_CHECK_NEEDS_CHECK 1" >>confdefs.h
+
+fi
 
 
 cat >>confdefs.h <<_ACEOF
@@ -7600,6 +7816,12 @@ cat >>confdefs.h <<_ACEOF
 _ACEOF
 
 
+
+cat >>confdefs.h <<_ACEOF
+#define THIN_RESTORE_CMD "$THIN_RESTORE_CMD"
+_ACEOF
+
+
 ################################################################################
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking whether to include cache" >&5
 $as_echo_n "checking whether to include cache... " >&6; }
@@ -7608,22 +7830,511 @@ $as_echo_n "checking whether to include cache... " >&6; }
 if test "${with_cache+set}" = set; then :
   withval=$with_cache; CACHE=$withval
 else
-  CACHE=none
+  CACHE="none"
+fi
+
+
+# Check whether --with-cache-check was given.
+if test "${with_cache_check+set}" = set; then :
+  withval=$with_cache_check; CACHE_CHECK_CMD=$withval
+else
+  CACHE_CHECK_CMD="autodetect"
+fi
+
+
+# Check whether --with-cache-dump was given.
+if test "${with_cache_dump+set}" = set; then :
+  withval=$with_cache_dump; CACHE_DUMP_CMD=$withval
+else
+  CACHE_DUMP_CMD="autodetect"
+fi
+
+
+# Check whether --with-cache-repair was given.
+if test "${with_cache_repair+set}" = set; then :
+  withval=$with_cache_repair; CACHE_REPAIR_CMD=$withval
+else
+  CACHE_REPAIR_CMD="autodetect"
+fi
+
+
+# Check whether --with-cache-restore was given.
+if test "${with_cache_restore+set}" = set; then :
+  withval=$with_cache_restore; CACHE_RESTORE_CMD=$withval
+else
+  CACHE_RESTORE_CMD="autodetect"
 fi
 
 { $as_echo "$as_me:${as_lineno-$LINENO}: result: $CACHE" >&5
 $as_echo "$CACHE" >&6; }
 
-if [ "x$CACHE" != xnone -a "x$CACHE" != xinternal -a "x$CACHE" != xshared ];
- then  as_fn_error $? "--with-cache parameter invalid
-" "$LINENO" 5
-fi;
-
-if test x$CACHE = xinternal; then
-
+case "$CACHE" in
+ none|shared) ;;
+ internal)
 $as_echo "#define CACHE_INTERNAL 1" >>confdefs.h
+ ;;
+ *) as_fn_error $? "--with-cache parameter invalid" "$LINENO" 5 ;;
+esac
+
+# Test if necessary cache tools are available
+# if not - use plain defaults and warn user
+case "$CACHE" in
+  internal|shared)
+	# Empty means a config way to ignore cache checking
+	if test "$CACHE_CHECK_CMD" = "autodetect"; then
+		if test -n "$ac_tool_prefix"; then
+  # Extract the first word of "${ac_tool_prefix}cache_check", so it can be a program name with args.
+set dummy ${ac_tool_prefix}cache_check; ac_word=$2
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
+$as_echo_n "checking for $ac_word... " >&6; }
+if ${ac_cv_path_CACHE_CHECK_CMD+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  case $CACHE_CHECK_CMD in
+  [\\/]* | ?:[\\/]*)
+  ac_cv_path_CACHE_CHECK_CMD="$CACHE_CHECK_CMD" # Let the user override the test with a path.
+  ;;
+  *)
+  as_save_IFS=$IFS; IFS=$PATH_SEPARATOR
+for as_dir in $PATH
+do
+  IFS=$as_save_IFS
+  test -z "$as_dir" && as_dir=.
+    for ac_exec_ext in '' $ac_executable_extensions; do
+  if as_fn_executable_p "$as_dir/$ac_word$ac_exec_ext"; then
+    ac_cv_path_CACHE_CHECK_CMD="$as_dir/$ac_word$ac_exec_ext"
+    $as_echo "$as_me:${as_lineno-$LINENO}: found $as_dir/$ac_word$ac_exec_ext" >&5
+    break 2
+  fi
+done
+  done
+IFS=$as_save_IFS
+
+  ;;
+esac
+fi
+CACHE_CHECK_CMD=$ac_cv_path_CACHE_CHECK_CMD
+if test -n "$CACHE_CHECK_CMD"; then
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: $CACHE_CHECK_CMD" >&5
+$as_echo "$CACHE_CHECK_CMD" >&6; }
+else
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+fi
+
 
 fi
+if test -z "$ac_cv_path_CACHE_CHECK_CMD"; then
+  ac_pt_CACHE_CHECK_CMD=$CACHE_CHECK_CMD
+  # Extract the first word of "cache_check", so it can be a program name with args.
+set dummy cache_check; ac_word=$2
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
+$as_echo_n "checking for $ac_word... " >&6; }
+if ${ac_cv_path_ac_pt_CACHE_CHECK_CMD+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  case $ac_pt_CACHE_CHECK_CMD in
+  [\\/]* | ?:[\\/]*)
+  ac_cv_path_ac_pt_CACHE_CHECK_CMD="$ac_pt_CACHE_CHECK_CMD" # Let the user override the test with a path.
+  ;;
+  *)
+  as_save_IFS=$IFS; IFS=$PATH_SEPARATOR
+for as_dir in $PATH
+do
+  IFS=$as_save_IFS
+  test -z "$as_dir" && as_dir=.
+    for ac_exec_ext in '' $ac_executable_extensions; do
+  if as_fn_executable_p "$as_dir/$ac_word$ac_exec_ext"; then
+    ac_cv_path_ac_pt_CACHE_CHECK_CMD="$as_dir/$ac_word$ac_exec_ext"
+    $as_echo "$as_me:${as_lineno-$LINENO}: found $as_dir/$ac_word$ac_exec_ext" >&5
+    break 2
+  fi
+done
+  done
+IFS=$as_save_IFS
+
+  ;;
+esac
+fi
+ac_pt_CACHE_CHECK_CMD=$ac_cv_path_ac_pt_CACHE_CHECK_CMD
+if test -n "$ac_pt_CACHE_CHECK_CMD"; then
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_pt_CACHE_CHECK_CMD" >&5
+$as_echo "$ac_pt_CACHE_CHECK_CMD" >&6; }
+else
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+fi
+
+  if test "x$ac_pt_CACHE_CHECK_CMD" = x; then
+    CACHE_CHECK_CMD=""
+  else
+    case $cross_compiling:$ac_tool_warned in
+yes:)
+{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: using cross tools not prefixed with host triplet" >&5
+$as_echo "$as_me: WARNING: using cross tools not prefixed with host triplet" >&2;}
+ac_tool_warned=yes ;;
+esac
+    CACHE_CHECK_CMD=$ac_pt_CACHE_CHECK_CMD
+  fi
+else
+  CACHE_CHECK_CMD="$ac_cv_path_CACHE_CHECK_CMD"
+fi
+
+		if test -z "$CACHE_CHECK_CMD"; then
+			{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: cache_check not found in path $PATH" >&5
+$as_echo "$as_me: WARNING: cache_check not found in path $PATH" >&2;}
+			CACHE_CHECK_CMD=/usr/sbin/cache_check
+			CACHE_CONFIGURE_WARN=y
+		fi
+	fi
+	# Empty means a config way to ignore cache dumping
+	if test "$CACHE_DUMP_CMD" = "autodetect"; then
+		if test -n "$ac_tool_prefix"; then
+  # Extract the first word of "${ac_tool_prefix}cache_dump", so it can be a program name with args.
+set dummy ${ac_tool_prefix}cache_dump; ac_word=$2
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
+$as_echo_n "checking for $ac_word... " >&6; }
+if ${ac_cv_path_CACHE_DUMP_CMD+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  case $CACHE_DUMP_CMD in
+  [\\/]* | ?:[\\/]*)
+  ac_cv_path_CACHE_DUMP_CMD="$CACHE_DUMP_CMD" # Let the user override the test with a path.
+  ;;
+  *)
+  as_save_IFS=$IFS; IFS=$PATH_SEPARATOR
+for as_dir in $PATH
+do
+  IFS=$as_save_IFS
+  test -z "$as_dir" && as_dir=.
+    for ac_exec_ext in '' $ac_executable_extensions; do
+  if as_fn_executable_p "$as_dir/$ac_word$ac_exec_ext"; then
+    ac_cv_path_CACHE_DUMP_CMD="$as_dir/$ac_word$ac_exec_ext"
+    $as_echo "$as_me:${as_lineno-$LINENO}: found $as_dir/$ac_word$ac_exec_ext" >&5
+    break 2
+  fi
+done
+  done
+IFS=$as_save_IFS
+
+  ;;
+esac
+fi
+CACHE_DUMP_CMD=$ac_cv_path_CACHE_DUMP_CMD
+if test -n "$CACHE_DUMP_CMD"; then
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: $CACHE_DUMP_CMD" >&5
+$as_echo "$CACHE_DUMP_CMD" >&6; }
+else
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+fi
+
+
+fi
+if test -z "$ac_cv_path_CACHE_DUMP_CMD"; then
+  ac_pt_CACHE_DUMP_CMD=$CACHE_DUMP_CMD
+  # Extract the first word of "cache_dump", so it can be a program name with args.
+set dummy cache_dump; ac_word=$2
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
+$as_echo_n "checking for $ac_word... " >&6; }
+if ${ac_cv_path_ac_pt_CACHE_DUMP_CMD+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  case $ac_pt_CACHE_DUMP_CMD in
+  [\\/]* | ?:[\\/]*)
+  ac_cv_path_ac_pt_CACHE_DUMP_CMD="$ac_pt_CACHE_DUMP_CMD" # Let the user override the test with a path.
+  ;;
+  *)
+  as_save_IFS=$IFS; IFS=$PATH_SEPARATOR
+for as_dir in $PATH
+do
+  IFS=$as_save_IFS
+  test -z "$as_dir" && as_dir=.
+    for ac_exec_ext in '' $ac_executable_extensions; do
+  if as_fn_executable_p "$as_dir/$ac_word$ac_exec_ext"; then
+    ac_cv_path_ac_pt_CACHE_DUMP_CMD="$as_dir/$ac_word$ac_exec_ext"
+    $as_echo "$as_me:${as_lineno-$LINENO}: found $as_dir/$ac_word$ac_exec_ext" >&5
+    break 2
+  fi
+done
+  done
+IFS=$as_save_IFS
+
+  ;;
+esac
+fi
+ac_pt_CACHE_DUMP_CMD=$ac_cv_path_ac_pt_CACHE_DUMP_CMD
+if test -n "$ac_pt_CACHE_DUMP_CMD"; then
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_pt_CACHE_DUMP_CMD" >&5
+$as_echo "$ac_pt_CACHE_DUMP_CMD" >&6; }
+else
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+fi
+
+  if test "x$ac_pt_CACHE_DUMP_CMD" = x; then
+    CACHE_DUMP_CMD=""
+  else
+    case $cross_compiling:$ac_tool_warned in
+yes:)
+{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: using cross tools not prefixed with host triplet" >&5
+$as_echo "$as_me: WARNING: using cross tools not prefixed with host triplet" >&2;}
+ac_tool_warned=yes ;;
+esac
+    CACHE_DUMP_CMD=$ac_pt_CACHE_DUMP_CMD
+  fi
+else
+  CACHE_DUMP_CMD="$ac_cv_path_CACHE_DUMP_CMD"
+fi
+
+		test -z "$CACHE_DUMP_CMD" && {
+			{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: cache_dump not found in path $PATH" >&5
+$as_echo "$as_me: WARNING: cache_dump not found in path $PATH" >&2;}
+			CACHE_DUMP_CMD=/usr/sbin/cache_dump
+			CACHE_CONFIGURE_WARN=y
+		}
+	fi
+	# Empty means a config way to ignore cache repairing
+	if test "$CACHE_REPAIR_CMD" = "autodetect"; then
+		if test -n "$ac_tool_prefix"; then
+  # Extract the first word of "${ac_tool_prefix}cache_repair", so it can be a program name with args.
+set dummy ${ac_tool_prefix}cache_repair; ac_word=$2
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
+$as_echo_n "checking for $ac_word... " >&6; }
+if ${ac_cv_path_CACHE_REPAIR_CMD+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  case $CACHE_REPAIR_CMD in
+  [\\/]* | ?:[\\/]*)
+  ac_cv_path_CACHE_REPAIR_CMD="$CACHE_REPAIR_CMD" # Let the user override the test with a path.
+  ;;
+  *)
+  as_save_IFS=$IFS; IFS=$PATH_SEPARATOR
+for as_dir in $PATH
+do
+  IFS=$as_save_IFS
+  test -z "$as_dir" && as_dir=.
+    for ac_exec_ext in '' $ac_executable_extensions; do
+  if as_fn_executable_p "$as_dir/$ac_word$ac_exec_ext"; then
+    ac_cv_path_CACHE_REPAIR_CMD="$as_dir/$ac_word$ac_exec_ext"
+    $as_echo "$as_me:${as_lineno-$LINENO}: found $as_dir/$ac_word$ac_exec_ext" >&5
+    break 2
+  fi
+done
+  done
+IFS=$as_save_IFS
+
+  ;;
+esac
+fi
+CACHE_REPAIR_CMD=$ac_cv_path_CACHE_REPAIR_CMD
+if test -n "$CACHE_REPAIR_CMD"; then
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: $CACHE_REPAIR_CMD" >&5
+$as_echo "$CACHE_REPAIR_CMD" >&6; }
+else
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+fi
+
+
+fi
+if test -z "$ac_cv_path_CACHE_REPAIR_CMD"; then
+  ac_pt_CACHE_REPAIR_CMD=$CACHE_REPAIR_CMD
+  # Extract the first word of "cache_repair", so it can be a program name with args.
+set dummy cache_repair; ac_word=$2
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
+$as_echo_n "checking for $ac_word... " >&6; }
+if ${ac_cv_path_ac_pt_CACHE_REPAIR_CMD+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  case $ac_pt_CACHE_REPAIR_CMD in
+  [\\/]* | ?:[\\/]*)
+  ac_cv_path_ac_pt_CACHE_REPAIR_CMD="$ac_pt_CACHE_REPAIR_CMD" # Let the user override the test with a path.
+  ;;
+  *)
+  as_save_IFS=$IFS; IFS=$PATH_SEPARATOR
+for as_dir in $PATH
+do
+  IFS=$as_save_IFS
+  test -z "$as_dir" && as_dir=.
+    for ac_exec_ext in '' $ac_executable_extensions; do
+  if as_fn_executable_p "$as_dir/$ac_word$ac_exec_ext"; then
+    ac_cv_path_ac_pt_CACHE_REPAIR_CMD="$as_dir/$ac_word$ac_exec_ext"
+    $as_echo "$as_me:${as_lineno-$LINENO}: found $as_dir/$ac_word$ac_exec_ext" >&5
+    break 2
+  fi
+done
+  done
+IFS=$as_save_IFS
+
+  ;;
+esac
+fi
+ac_pt_CACHE_REPAIR_CMD=$ac_cv_path_ac_pt_CACHE_REPAIR_CMD
+if test -n "$ac_pt_CACHE_REPAIR_CMD"; then
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_pt_CACHE_REPAIR_CMD" >&5
+$as_echo "$ac_pt_CACHE_REPAIR_CMD" >&6; }
+else
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+fi
+
+  if test "x$ac_pt_CACHE_REPAIR_CMD" = x; then
+    CACHE_REPAIR_CMD=""
+  else
+    case $cross_compiling:$ac_tool_warned in
+yes:)
+{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: using cross tools not prefixed with host triplet" >&5
+$as_echo "$as_me: WARNING: using cross tools not prefixed with host triplet" >&2;}
+ac_tool_warned=yes ;;
+esac
+    CACHE_REPAIR_CMD=$ac_pt_CACHE_REPAIR_CMD
+  fi
+else
+  CACHE_REPAIR_CMD="$ac_cv_path_CACHE_REPAIR_CMD"
+fi
+
+		test -z "$CACHE_REPAIR_CMD" && {
+			{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: cache_repair not found in path $PATH" >&5
+$as_echo "$as_me: WARNING: cache_repair not found in path $PATH" >&2;}
+			CACHE_REPAIR_CMD=/usr/sbin/cache_repair
+			CACHE_CONFIGURE_WARN=y
+		}
+	fi
+	# Empty means a config way to ignore cache restoring
+	if test "$CACHE_RESTORE_CMD" = "autodetect"; then
+		if test -n "$ac_tool_prefix"; then
+  # Extract the first word of "${ac_tool_prefix}cache_restore", so it can be a program name with args.
+set dummy ${ac_tool_prefix}cache_restore; ac_word=$2
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
+$as_echo_n "checking for $ac_word... " >&6; }
+if ${ac_cv_path_CACHE_RESTORE_CMD+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  case $CACHE_RESTORE_CMD in
+  [\\/]* | ?:[\\/]*)
+  ac_cv_path_CACHE_RESTORE_CMD="$CACHE_RESTORE_CMD" # Let the user override the test with a path.
+  ;;
+  *)
+  as_save_IFS=$IFS; IFS=$PATH_SEPARATOR
+for as_dir in $PATH
+do
+  IFS=$as_save_IFS
+  test -z "$as_dir" && as_dir=.
+    for ac_exec_ext in '' $ac_executable_extensions; do
+  if as_fn_executable_p "$as_dir/$ac_word$ac_exec_ext"; then
+    ac_cv_path_CACHE_RESTORE_CMD="$as_dir/$ac_word$ac_exec_ext"
+    $as_echo "$as_me:${as_lineno-$LINENO}: found $as_dir/$ac_word$ac_exec_ext" >&5
+    break 2
+  fi
+done
+  done
+IFS=$as_save_IFS
+
+  ;;
+esac
+fi
+CACHE_RESTORE_CMD=$ac_cv_path_CACHE_RESTORE_CMD
+if test -n "$CACHE_RESTORE_CMD"; then
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: $CACHE_RESTORE_CMD" >&5
+$as_echo "$CACHE_RESTORE_CMD" >&6; }
+else
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+fi
+
+
+fi
+if test -z "$ac_cv_path_CACHE_RESTORE_CMD"; then
+  ac_pt_CACHE_RESTORE_CMD=$CACHE_RESTORE_CMD
+  # Extract the first word of "cache_restore", so it can be a program name with args.
+set dummy cache_restore; ac_word=$2
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
+$as_echo_n "checking for $ac_word... " >&6; }
+if ${ac_cv_path_ac_pt_CACHE_RESTORE_CMD+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  case $ac_pt_CACHE_RESTORE_CMD in
+  [\\/]* | ?:[\\/]*)
+  ac_cv_path_ac_pt_CACHE_RESTORE_CMD="$ac_pt_CACHE_RESTORE_CMD" # Let the user override the test with a path.
+  ;;
+  *)
+  as_save_IFS=$IFS; IFS=$PATH_SEPARATOR
+for as_dir in $PATH
+do
+  IFS=$as_save_IFS
+  test -z "$as_dir" && as_dir=.
+    for ac_exec_ext in '' $ac_executable_extensions; do
+  if as_fn_executable_p "$as_dir/$ac_word$ac_exec_ext"; then
+    ac_cv_path_ac_pt_CACHE_RESTORE_CMD="$as_dir/$ac_word$ac_exec_ext"
+    $as_echo "$as_me:${as_lineno-$LINENO}: found $as_dir/$ac_word$ac_exec_ext" >&5
+    break 2
+  fi
+done
+  done
+IFS=$as_save_IFS
+
+  ;;
+esac
+fi
+ac_pt_CACHE_RESTORE_CMD=$ac_cv_path_ac_pt_CACHE_RESTORE_CMD
+if test -n "$ac_pt_CACHE_RESTORE_CMD"; then
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_pt_CACHE_RESTORE_CMD" >&5
+$as_echo "$ac_pt_CACHE_RESTORE_CMD" >&6; }
+else
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+fi
+
+  if test "x$ac_pt_CACHE_RESTORE_CMD" = x; then
+    CACHE_RESTORE_CMD=""
+  else
+    case $cross_compiling:$ac_tool_warned in
+yes:)
+{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: using cross tools not prefixed with host triplet" >&5
+$as_echo "$as_me: WARNING: using cross tools not prefixed with host triplet" >&2;}
+ac_tool_warned=yes ;;
+esac
+    CACHE_RESTORE_CMD=$ac_pt_CACHE_RESTORE_CMD
+  fi
+else
+  CACHE_RESTORE_CMD="$ac_cv_path_CACHE_RESTORE_CMD"
+fi
+
+		test -z "$CACHE_RESTORE_CMD" && {
+			{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: cache_restore not found in path $PATH" >&5
+$as_echo "$as_me: WARNING: cache_restore not found in path $PATH" >&2;}
+			CACHE_RESTORE_CMD=/usr/sbin/cache_restore
+			CACHE_CONFIGURE_WARN=y
+		}
+	fi
+	;;
+esac
+
+
+cat >>confdefs.h <<_ACEOF
+#define CACHE_CHECK_CMD "$CACHE_CHECK_CMD"
+_ACEOF
+
+
+
+cat >>confdefs.h <<_ACEOF
+#define CACHE_DUMP_CMD "$CACHE_DUMP_CMD"
+_ACEOF
+
+
+
+cat >>confdefs.h <<_ACEOF
+#define CACHE_REPAIR_CMD "$CACHE_REPAIR_CMD"
+_ACEOF
+
+
+
+cat >>confdefs.h <<_ACEOF
+#define CACHE_RESTORE_CMD "$CACHE_RESTORE_CMD"
+_ACEOF
+
+
 
 ################################################################################
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking whether to enable readline" >&5
@@ -7672,6 +8383,7 @@ fi
 
 ################################################################################
 pkg_config_init() {
+	if test "$PKGCONFIG_INIT" != 1; then
 
 
 
@@ -7865,7 +8577,8 @@ else
 $as_echo "yes" >&6; }
 
 fi
-	PKGCONFIG_INIT=1
+		PKGCONFIG_INIT=1
+	fi
 }
 
 ################################################################################
@@ -7925,19 +8638,13 @@ else
   CLVMD=none
 fi
 
-if test x$CLVMD = xyes; then
-	CLVMD=all
-fi
+test "$CLVMD" = yes && CLVMD=all
 { $as_echo "$as_me:${as_lineno-$LINENO}: result: $CLVMD" >&5
 $as_echo "$CLVMD" >&6; }
 
-if  test x$CLVMD != xnone && test x$CLUSTER = xnone; then
-	CLUSTER=internal
-fi
+test "$CLVMD" != none -a "$CLUSTER" = none && CLUSTER=internal
 
-if test x$CLVMD != xnone && test x$PKGCONFIG_INIT != x1; then
-	pkg_config_init
-fi
+test "$CLVMD" != none && pkg_config_init
 
 CLVMD_CMANAGERS=""
 CLVMD_NEEDS_QDISKD=no
@@ -7958,9 +8665,7 @@ if [ `expr x"$CLVMD" : '.*openais.*'` != 0 ]; then
 	BUILDOPENAIS=yes
 	CLVMD_CMANAGERS="$CLVMD_CMANAGERS openais"
 fi
-if test x$CLVMD_NEEDS_QDISKD != xno; then
-	CLVMD_CMANAGERS="$CLVMD_CMANAGERS qdiskd"
-fi
+test "$CLVMD_NEEDS_QDISKD" != no && CLVMD_CMANAGERS="$CLVMD_CMANAGERS qdiskd"
 
 soft_bailout() {
 	NOTFOUND=1
@@ -7970,7 +8675,7 @@ hard_bailout() {
 	as_fn_error $? "bailing out" "$LINENO" 5
 }
 
-if test x$CLVMD = xall; then
+if test "$CLVMD" = all; then
 	bailout=soft_bailout
 	BUILDCMAN=yes
 	BUILDCOROSYNC=yes
@@ -8037,7 +8742,7 @@ fi
 	LIBS=$ac_check_lib_save_LIBS
 }
 
-if test x$BUILDCMAN = xyes; then
+if test "$BUILDCMAN" = yes; then
 
 pkg_failed=no
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for CMAN" >&5
@@ -8155,8 +8860,7 @@ fi
 	CHECKDLM=yes
 fi
 
-if test x$BUILDCOROSYNC = xyes || \
-   test x$BUILDOPENAIS = xyes; then
+if test "$BUILDCOROSYNC" = yes -o "$BUILDOPENAIS" = yes; then
 
 pkg_failed=no
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for COROSYNC" >&5
@@ -8232,7 +8936,7 @@ fi
 	CHECKCMAP=yes
 fi
 
-if test x$BUILDCOROSYNC = xyes; then
+if test "$BUILDCOROSYNC" = yes; then
 
 pkg_failed=no
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for QUORUM" >&5
@@ -8308,7 +9012,7 @@ fi
 	CHECKDLM=yes
 fi
 
-if test x$BUILDOPENAIS = xyes; then
+if test "$BUILDOPENAIS" = yes; then
 
 pkg_failed=no
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for SALCK" >&5
@@ -8385,7 +9089,7 @@ fi
 
 
 
-if test x$CHECKCONFDB = xyes; then
+if test "$CHECKCONFDB" = yes; then
 
 pkg_failed=no
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for CONFDB" >&5
@@ -8473,8 +9177,7 @@ fi
 done
 
 
-	if test x$HAVE_CONFDB != xyes && \
-	   test x$HAVE_CONFDB_H = xyes; then
+	if test "$HAVE_CONFDB" != yes -a "$HAVE_CONFDB_H" = yes; then
 		check_lib_no_libs confdb confdb_initialize
 		{ $as_echo "$as_me:${as_lineno-$LINENO}: result: no pkg for confdb, using -lconfdb" >&5
 $as_echo "no pkg for confdb, using -lconfdb" >&6; }
@@ -8484,7 +9187,7 @@ $as_echo "no pkg for confdb, using -lconfdb" >&6; }
 fi
 
 
-if test x$CHECKCMAP = xyes; then
+if test "$CHECKCMAP" = yes; then
 
 pkg_failed=no
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for CMAP" >&5
@@ -8572,8 +9275,7 @@ fi
 done
 
 
-	if test x$HAVE_CMAP != xyes && \
-	   test x$HAVE_CMAP_H = xyes; then
+	if test "$HAVE_CMAP" != yes -a "$HAVE_CMAP_H" = yes; then
 		check_lib_no_libs cmap cmap_initialize
 		{ $as_echo "$as_me:${as_lineno-$LINENO}: result: no pkg for cmap, using -lcmap" >&5
 $as_echo "no pkg for cmap, using -lcmap" >&6; }
@@ -8582,15 +9284,12 @@ $as_echo "no pkg for cmap, using -lcmap" >&6; }
 	fi
 fi
 
-if test x$BUILDCOROSYNC = xyes; then
-	if test x$HAVE_CMAP != xyes && \
-	   test x$HAVE_CONFDB != xyes && \
-	   test x$CLVMD != xall; then
-		as_fn_error $? "bailing out... cmap (corosync >= 2.0) or confdb (corosync < 2.0) library is required" "$LINENO" 5
-	fi
+if test "$BUILDCOROSYNC" = yes -a \
+	"$HAVE_CMAP" != yes -a "$HAVE_CONFDB" != yes -a "$CLVMD" != all; then
+	as_fn_error $? "bailing out... cmap (corosync >= 2.0) or confdb (corosync < 2.0) library is required" "$LINENO" 5
 fi
 
-if test x$CHECKCPG = xyes; then
+if test "$CHECKCPG" = yes; then
 
 pkg_failed=no
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for CPG" >&5
@@ -8664,7 +9363,7 @@ $as_echo "yes" >&6; }
 fi
 fi
 
-if test x$CHECKDLM = xyes; then
+if test "$CHECKDLM" = yes; then
 
 pkg_failed=no
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for DLM" >&5
@@ -8780,54 +9479,48 @@ $as_echo "yes" >&6; }
 fi
 fi
 
-if test x$CLVMD = xall; then
+if test "$CLVMD" = all; then
 	CLVMD=none
 	CLVMD_CMANAGERS=""
 	CLVMD_NEEDS_QDISKD=no
-	if test x$HAVE_CMAN = xyes && \
-	   test x$HAVE_DLM = xyes; then
+	if test "$HAVE_CMAN" = yes -a \
+		"$HAVE_DLM" = yes; then
 		{ $as_echo "$as_me:${as_lineno-$LINENO}: result: Enabling clvmd cman cluster manager" >&5
 $as_echo "Enabling clvmd cman cluster manager" >&6; }
 		CLVMD="$CLVMD,cman"
 		CLVMD_CMANAGERS="$CLVMD_CMANAGERS cman"
 		CLVMD_NEEDS_QDISKD=yes
 	fi
-	if test x$HAVE_COROSYNC = xyes && \
-	   test x$HAVE_QUORUM = xyes && \
-	   test x$HAVE_CPG = xyes && \
-	   test x$HAVE_DLM = xyes; then
-	   if test x$HAVE_CONFDB = xyes || test x$HAVE_CMAP = xyes; then
+	if test "$HAVE_COROSYNC" = yes -a \
+		"$HAVE_QUORUM" = yes -a \
+		"$HAVE_CPG" = yes -a \
+		"$HAVE_DLM" = yes; then
+	   if test "$HAVE_CONFDB" = yes -o "$HAVE_CMAP" = yes; then
 		{ $as_echo "$as_me:${as_lineno-$LINENO}: result: Enabling clvmd corosync cluster manager" >&5
 $as_echo "Enabling clvmd corosync cluster manager" >&6; }
 		CLVMD="$CLVMD,corosync"
 		CLVMD_CMANAGERS="$CLVMD_CMANAGERS corosync"
 	   fi
 	fi
-	if test x$HAVE_COROSYNC = xyes && \
-	   test x$HAVE_CPG = xyes && \
-	   test x$HAVE_SALCK = xyes; then
+	if test "$HAVE_COROSYNC" = yes -a \
+		"$HAVE_CPG" = yes -a \
+		"$HAVE_SALCK" = yes; then
 		{ $as_echo "$as_me:${as_lineno-$LINENO}: result: Enabling clvmd openais cluster manager" >&5
 $as_echo "Enabling clvmd openais cluster manager" >&6; }
 		CLVMD="$CLVMD,openais"
 		CLVMD_CMANAGERS="$CLVMD_CMANAGERS openais"
 	fi
-	if test x$CLVMD_NEEDS_QDISKD != xno; then
-		CLVMD_CMANAGERS="$CLVMD_CMANAGERS qdiskd"
-	fi
-	if test x$CLVMD = xnone; then
-		{ $as_echo "$as_me:${as_lineno-$LINENO}: result: Disabling clvmd build. No cluster manager detected." >&5
+	test "$CLVMD_NEEDS_QDISKD" != no && CLVMD_CMANAGERS="$CLVMD_CMANAGERS qdiskd"
+	test "$CLVMD" = none && { $as_echo "$as_me:${as_lineno-$LINENO}: result: Disabling clvmd build. No cluster manager detected." >&5
 $as_echo "Disabling clvmd build. No cluster manager detected." >&6; }
-	fi
 fi
 
 if [ `expr x"$CLVMD" : '.*corosync.*'` != 0 ]; then
-   if test x$HAVE_CMAP = xyes; then
-	CLVMD_CMANAGERS="$CLVMD_CMANAGERS dlm"
-   fi
+   test "$HAVE_CMAP" = yes && CLVMD_CMANAGERS="$CLVMD_CMANAGERS dlm"
 fi
 
 ################################################################################
-if test "x$CLVMD" != xnone; then
+if test "$CLVMD" != none; then
 
 # Check whether --with-clvmd-pidfile was given.
 if test "${with_clvmd_pidfile+set}" = set; then :
@@ -8859,7 +9552,7 @@ $as_echo "$CMIRRORD" >&6; }
 BUILD_CMIRRORD=$CMIRRORD
 
 ################################################################################
-if test "x$BUILD_CMIRRORD" = xyes; then
+if test "$BUILD_CMIRRORD" = yes; then
 
 # Check whether --with-cmirrord-pidfile was given.
 if test "${with_cmirrord_pidfile+set}" = set; then :
@@ -8876,10 +9569,8 @@ _ACEOF
 fi
 
 ################################################################################
-if [ "x$BUILD_CMIRRORD" = xyes ]; then
-		if  test x$PKGCONFIG_INIT != x1; then
-		pkg_config_init
-	fi
+if [ "$BUILD_CMIRRORD" = yes ]; then
+	pkg_config_init
 
 
 $as_echo "#define CMIRROR_HAS_CHECKPOINT 1" >>confdefs.h
@@ -8964,7 +9655,7 @@ $as_echo "yes" >&6; }
 	HAVE_SACKPT=yes
 fi
 
-	if test x$HAVE_CPG != xyes; then
+	if test "$HAVE_CPG" != yes; then
 
 pkg_failed=no
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for CPG" >&5
@@ -9072,7 +9763,7 @@ fi
 { $as_echo "$as_me:${as_lineno-$LINENO}: result: $DEBUG" >&5
 $as_echo "$DEBUG" >&6; }
 
-if test x$DEBUG = xyes; then
+if test "$DEBUG" = yes; then
 	COPTIMISE_FLAG=
 else
 	CSCOPE_CMD=
@@ -9180,10 +9871,11 @@ fi
 { $as_echo "$as_me:${as_lineno-$LINENO}: result: $PROFILING" >&5
 $as_echo "$PROFILING" >&6; }
 
-if test "x$PROFILING" = xyes; then
+if test "$PROFILING" = yes; then
   COPTIMISE_FLAG="$COPTIMISE_FLAG -fprofile-arcs -ftest-coverage"
-  # Extract the first word of "lcov", so it can be a program name with args.
-set dummy lcov; ac_word=$2
+  if test -n "$ac_tool_prefix"; then
+  # Extract the first word of "${ac_tool_prefix}lcov", so it can be a program name with args.
+set dummy ${ac_tool_prefix}lcov; ac_word=$2
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
 $as_echo_n "checking for $ac_word... " >&6; }
 if ${ac_cv_path_LCOV+:} false; then :
@@ -9222,8 +9914,66 @@ $as_echo "no" >&6; }
 fi
 
 
-  # Extract the first word of "genhtml", so it can be a program name with args.
-set dummy genhtml; ac_word=$2
+fi
+if test -z "$ac_cv_path_LCOV"; then
+  ac_pt_LCOV=$LCOV
+  # Extract the first word of "lcov", so it can be a program name with args.
+set dummy lcov; ac_word=$2
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
+$as_echo_n "checking for $ac_word... " >&6; }
+if ${ac_cv_path_ac_pt_LCOV+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  case $ac_pt_LCOV in
+  [\\/]* | ?:[\\/]*)
+  ac_cv_path_ac_pt_LCOV="$ac_pt_LCOV" # Let the user override the test with a path.
+  ;;
+  *)
+  as_save_IFS=$IFS; IFS=$PATH_SEPARATOR
+for as_dir in $PATH
+do
+  IFS=$as_save_IFS
+  test -z "$as_dir" && as_dir=.
+    for ac_exec_ext in '' $ac_executable_extensions; do
+  if as_fn_executable_p "$as_dir/$ac_word$ac_exec_ext"; then
+    ac_cv_path_ac_pt_LCOV="$as_dir/$ac_word$ac_exec_ext"
+    $as_echo "$as_me:${as_lineno-$LINENO}: found $as_dir/$ac_word$ac_exec_ext" >&5
+    break 2
+  fi
+done
+  done
+IFS=$as_save_IFS
+
+  ;;
+esac
+fi
+ac_pt_LCOV=$ac_cv_path_ac_pt_LCOV
+if test -n "$ac_pt_LCOV"; then
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_pt_LCOV" >&5
+$as_echo "$ac_pt_LCOV" >&6; }
+else
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+fi
+
+  if test "x$ac_pt_LCOV" = x; then
+    LCOV=""
+  else
+    case $cross_compiling:$ac_tool_warned in
+yes:)
+{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: using cross tools not prefixed with host triplet" >&5
+$as_echo "$as_me: WARNING: using cross tools not prefixed with host triplet" >&2;}
+ac_tool_warned=yes ;;
+esac
+    LCOV=$ac_pt_LCOV
+  fi
+else
+  LCOV="$ac_cv_path_LCOV"
+fi
+
+  if test -n "$ac_tool_prefix"; then
+  # Extract the first word of "${ac_tool_prefix}genhtml", so it can be a program name with args.
+set dummy ${ac_tool_prefix}genhtml; ac_word=$2
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
 $as_echo_n "checking for $ac_word... " >&6; }
 if ${ac_cv_path_GENHTML+:} false; then :
@@ -9262,11 +10012,67 @@ $as_echo "no" >&6; }
 fi
 
 
-  if test -z "$LCOV" -o -z "$GENHTML"; then
-    as_fn_error $? "lcov and genhtml are required for profiling" "$LINENO" 5
+fi
+if test -z "$ac_cv_path_GENHTML"; then
+  ac_pt_GENHTML=$GENHTML
+  # Extract the first word of "genhtml", so it can be a program name with args.
+set dummy genhtml; ac_word=$2
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
+$as_echo_n "checking for $ac_word... " >&6; }
+if ${ac_cv_path_ac_pt_GENHTML+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  case $ac_pt_GENHTML in
+  [\\/]* | ?:[\\/]*)
+  ac_cv_path_ac_pt_GENHTML="$ac_pt_GENHTML" # Let the user override the test with a path.
+  ;;
+  *)
+  as_save_IFS=$IFS; IFS=$PATH_SEPARATOR
+for as_dir in $PATH
+do
+  IFS=$as_save_IFS
+  test -z "$as_dir" && as_dir=.
+    for ac_exec_ext in '' $ac_executable_extensions; do
+  if as_fn_executable_p "$as_dir/$ac_word$ac_exec_ext"; then
+    ac_cv_path_ac_pt_GENHTML="$as_dir/$ac_word$ac_exec_ext"
+    $as_echo "$as_me:${as_lineno-$LINENO}: found $as_dir/$ac_word$ac_exec_ext" >&5
+    break 2
   fi
-  # Extract the first word of "genpng", so it can be a program name with args.
-set dummy genpng; ac_word=$2
+done
+  done
+IFS=$as_save_IFS
+
+  ;;
+esac
+fi
+ac_pt_GENHTML=$ac_cv_path_ac_pt_GENHTML
+if test -n "$ac_pt_GENHTML"; then
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_pt_GENHTML" >&5
+$as_echo "$ac_pt_GENHTML" >&6; }
+else
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+fi
+
+  if test "x$ac_pt_GENHTML" = x; then
+    GENHTML=""
+  else
+    case $cross_compiling:$ac_tool_warned in
+yes:)
+{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: using cross tools not prefixed with host triplet" >&5
+$as_echo "$as_me: WARNING: using cross tools not prefixed with host triplet" >&2;}
+ac_tool_warned=yes ;;
+esac
+    GENHTML=$ac_pt_GENHTML
+  fi
+else
+  GENHTML="$ac_cv_path_GENHTML"
+fi
+
+  test -z "$LCOV" -o -z "$GENHTML" && as_fn_error $? "lcov and genhtml are required for profiling" "$LINENO" 5
+  if test -n "$ac_tool_prefix"; then
+  # Extract the first word of "${ac_tool_prefix}genpng", so it can be a program name with args.
+set dummy ${ac_tool_prefix}genpng; ac_word=$2
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
 $as_echo_n "checking for $ac_word... " >&6; }
 if ${ac_cv_path_GENPNG+:} false; then :
@@ -9305,10 +10111,67 @@ $as_echo "no" >&6; }
 fi
 
 
+fi
+if test -z "$ac_cv_path_GENPNG"; then
+  ac_pt_GENPNG=$GENPNG
+  # Extract the first word of "genpng", so it can be a program name with args.
+set dummy genpng; ac_word=$2
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
+$as_echo_n "checking for $ac_word... " >&6; }
+if ${ac_cv_path_ac_pt_GENPNG+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  case $ac_pt_GENPNG in
+  [\\/]* | ?:[\\/]*)
+  ac_cv_path_ac_pt_GENPNG="$ac_pt_GENPNG" # Let the user override the test with a path.
+  ;;
+  *)
+  as_save_IFS=$IFS; IFS=$PATH_SEPARATOR
+for as_dir in $PATH
+do
+  IFS=$as_save_IFS
+  test -z "$as_dir" && as_dir=.
+    for ac_exec_ext in '' $ac_executable_extensions; do
+  if as_fn_executable_p "$as_dir/$ac_word$ac_exec_ext"; then
+    ac_cv_path_ac_pt_GENPNG="$as_dir/$ac_word$ac_exec_ext"
+    $as_echo "$as_me:${as_lineno-$LINENO}: found $as_dir/$ac_word$ac_exec_ext" >&5
+    break 2
+  fi
+done
+  done
+IFS=$as_save_IFS
+
+  ;;
+esac
+fi
+ac_pt_GENPNG=$ac_cv_path_ac_pt_GENPNG
+if test -n "$ac_pt_GENPNG"; then
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_pt_GENPNG" >&5
+$as_echo "$ac_pt_GENPNG" >&6; }
+else
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+fi
+
+  if test "x$ac_pt_GENPNG" = x; then
+    GENPNG=""
+  else
+    case $cross_compiling:$ac_tool_warned in
+yes:)
+{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: using cross tools not prefixed with host triplet" >&5
+$as_echo "$as_me: WARNING: using cross tools not prefixed with host triplet" >&2;}
+ac_tool_warned=yes ;;
+esac
+    GENPNG=$ac_pt_GENPNG
+  fi
+else
+  GENPNG="$ac_cv_path_GENPNG"
+fi
+
   if test -n "$GENPNG"; then
     { $as_echo "$as_me:${as_lineno-$LINENO}: checking whether $GENPNG has all required modules" >&5
 $as_echo_n "checking whether $GENPNG has all required modules... " >&6; }
-    if $GENPNG --help > /dev/null 2>&1 ; then
+    if "$GENPNG" --help > /dev/null 2>&1 ; then
       { $as_echo "$as_me:${as_lineno-$LINENO}: result: ok" >&5
 $as_echo "ok" >&6; }
       GENHTML="$GENHTML --frames"
@@ -9336,9 +10199,7 @@ fi
 $as_echo "$TESTING" >&6; }
 
 if test "$TESTING" = yes; then
-	if  test x$PKGCONFIG_INIT != x1; then
-		pkg_config_init
-	fi
+	pkg_config_init
 
 pkg_failed=no
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for CUNIT" >&5
@@ -9446,6 +10307,7 @@ fi
 $as_echo "$VALGRIND_POOL" >&6; }
 
 if test "$VALGRIND_POOL" = yes; then
+	pkg_config_init
 
 pkg_failed=no
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for VALGRIND" >&5
@@ -9535,7 +10397,7 @@ fi
 { $as_echo "$as_me:${as_lineno-$LINENO}: result: $DEVMAPPER" >&5
 $as_echo "$DEVMAPPER" >&6; }
 
-if test x$DEVMAPPER = xyes; then
+if test "$DEVMAPPER" = yes; then
 
 $as_echo "#define DEVMAPPER_SUPPORT 1" >>confdefs.h
 
@@ -9554,7 +10416,7 @@ $as_echo "$LVMETAD" >&6; }
 
 BUILD_LVMETAD=$LVMETAD
 
-if test x$BUILD_LVMETAD = xyes; then
+if test "$BUILD_LVMETAD" = yes; then
 
 $as_echo "#define LVMETAD_SUPPORT 1" >>confdefs.h
 
@@ -9587,10 +10449,8 @@ fi
 { $as_echo "$as_me:${as_lineno-$LINENO}: result: $BLKID_WIPING" >&5
 $as_echo "$BLKID_WIPING" >&6; }
 
-if test x$BLKID_WIPING != xno; then
-		if test x$PKGCONFIG_INIT != x1; then
-		pkg_config_init
-	fi
+if test "$BLKID_WIPING" != no; then
+	pkg_config_init
 
 pkg_failed=no
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for BLKID" >&5
@@ -9650,31 +10510,27 @@ fi
 	# Put the nasty error message in config.log where it belongs
 	echo "$BLKID_PKG_ERRORS" >&5
 
-	if test x$BLKID_WIPING = xmaybe; then
-					BLKID_WIPING=no
-				 else
-					as_fn_error $? "bailing out... blkid library >= 2.24 is required" "$LINENO" 5
-				 fi
-
+	if test "$BLKID_WIPING" = maybe; then
+				BLKID_WIPING=no
+			   else
+			        as_fn_error $? "bailing out... blkid library >= 2.24 is required" "$LINENO" 5
+			   fi
 elif test $pkg_failed = untried; then
      	{ $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
 $as_echo "no" >&6; }
-	if test x$BLKID_WIPING = xmaybe; then
-					BLKID_WIPING=no
-				 else
-					as_fn_error $? "bailing out... blkid library >= 2.24 is required" "$LINENO" 5
-				 fi
-
+	if test "$BLKID_WIPING" = maybe; then
+				BLKID_WIPING=no
+			   else
+			        as_fn_error $? "bailing out... blkid library >= 2.24 is required" "$LINENO" 5
+			   fi
 else
 	BLKID_CFLAGS=$pkg_cv_BLKID_CFLAGS
 	BLKID_LIBS=$pkg_cv_BLKID_LIBS
         { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
 $as_echo "yes" >&6; }
-	if test x$BLKID_WIPING = xmaybe; then
-					BLKID_WIPING=yes
-				 fi
+	test "$BLKID_WIPING" = maybe && BLKID_WIPING=yes
 fi
-	if test x$BLKID_WIPING = xyes; then
+	if test "$BLKID_WIPING" = yes; then
 		BLKID_PC="blkid"
 
 $as_echo "#define BLKID_WIPING_SUPPORT 1" >>confdefs.h
@@ -9689,7 +10545,7 @@ $as_echo_n "checking whether to use udev-systemd protocol for jobs in background
 if test "${enable_udev_systemd_background_jobs+set}" = set; then :
   enableval=$enable_udev_systemd_background_jobs; UDEV_SYSTEMD_BACKGROUND_JOBS=$enableval
 else
-  UDEV_SYSTEMD_BACKGROUND_JOBS=no
+  UDEV_SYSTEMD_BACKGROUND_JOBS=yes
 fi
 
 { $as_echo "$as_me:${as_lineno-$LINENO}: result: $UDEV_SYSTEMD_BACKGROUND_JOBS" >&5
@@ -9708,10 +10564,8 @@ fi
 { $as_echo "$as_me:${as_lineno-$LINENO}: result: $UDEV_SYNC" >&5
 $as_echo "$UDEV_SYNC" >&6; }
 
-if test x$UDEV_SYNC = xyes; then
-		if  test x$PKGCONFIG_INIT != x1; then
-		pkg_config_init
-	fi
+if test "$UDEV_SYNC" = yes; then
+	pkg_config_init
 
 pkg_failed=no
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for UDEV" >&5
@@ -9832,16 +10686,18 @@ fi
 { $as_echo "$as_me:${as_lineno-$LINENO}: result: $UDEV_RULE_EXEC_DETECTION" >&5
 $as_echo "$UDEV_RULE_EXEC_DETECTION" >&6; }
 
-{ $as_echo "$as_me:${as_lineno-$LINENO}: checking whether udev supports built-in blkid" >&5
+if test "$UDEV_RULE" != no ; then
+	{ $as_echo "$as_me:${as_lineno-$LINENO}: checking whether udev supports built-in blkid" >&5
 $as_echo_n "checking whether udev supports built-in blkid... " >&6; }
-test x$PKGCONFIG_INIT != x1 && pkg_config_init
-if $($PKG_CONFIG --atleast-version=176 libudev); then
-	UDEV_HAS_BUILTIN_BLKID=yes
-else
-	UDEV_HAS_BUILTIN_BLKID=no
-fi
-{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $UDEV_HAS_BUILTIN_BLKID" >&5
+	pkg_config_init
+	if $("$PKG_CONFIG" --atleast-version=176 libudev); then
+		UDEV_HAS_BUILTIN_BLKID=yes
+	else
+		UDEV_HAS_BUILTIN_BLKID=no
+	fi
+	{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $UDEV_HAS_BUILTIN_BLKID" >&5
 $as_echo "$UDEV_HAS_BUILTIN_BLKID" >&6; }
+fi
 
 ################################################################################
 # Check whether --enable-compat was given.
@@ -9852,11 +10708,10 @@ else
 fi
 
 
-if test x$DM_COMPAT = xyes; then
+if test "$DM_COMPAT" = yes; then
 	as_fn_error $? "--enable-compat is not currently supported.
 Since device-mapper version 1.02.66, only one version (4) of the device-mapper
-ioctl protocol is supported.
-	" "$LINENO" 5
+ioctl protocol is supported." "$LINENO" 5
 fi
 
 ################################################################################
@@ -9868,7 +10723,7 @@ else
 fi
 
 
-if test x$UNITS_COMPAT = xyes; then
+if test "$UNITS_COMPAT" = yes; then
 
 $as_echo "#define DEFAULT_SI_UNIT_CONSISTENCY 0" >>confdefs.h
 
@@ -9892,7 +10747,7 @@ fi
 { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ODIRECT" >&5
 $as_echo "$ODIRECT" >&6; }
 
-if test x$ODIRECT = xyes; then
+if test "$ODIRECT" = yes; then
 
 $as_echo "#define O_DIRECT_SUPPORT 1" >>confdefs.h
 
@@ -9911,7 +10766,7 @@ fi
 { $as_echo "$as_me:${as_lineno-$LINENO}: result: $APPLIB" >&5
 $as_echo "$APPLIB" >&6; }
 
-test x$APPLIB = xyes \
+test "$APPLIB" = yes \
   && LVM2APP_LIB=-llvm2app \
   || LVM2APP_LIB=
 
@@ -9928,7 +10783,7 @@ fi
 { $as_echo "$as_me:${as_lineno-$LINENO}: result: $CMDLIB" >&5
 $as_echo "$CMDLIB" >&6; }
 
-test x$CMDLIB = xyes \
+test "$CMDLIB" = yes \
   && LVM2CMD_LIB=-llvm2cmd \
   || LVM2CMD_LIB=
 
@@ -9945,14 +10800,12 @@ fi
 { $as_echo "$as_me:${as_lineno-$LINENO}: result: $PYTHON_BINDINGS" >&5
 $as_echo "$PYTHON_BINDINGS" >&6; }
 
-if test x$PYTHON_BINDINGS = xyes; then
-	if test x$APPLIB != xyes; then
-		as_fn_error $? "--enable-python_bindings requires --enable-applib
-		" "$LINENO" 5
-	fi
+if test "$PYTHON_BINDINGS" = yes; then
+	test "$APPLIB" != yes && as_fn_error $? "--enable-python_bindings requires --enable-applib" "$LINENO" 5
 
-	# Extract the first word of "python", so it can be a program name with args.
-set dummy python; ac_word=$2
+	if test -n "$ac_tool_prefix"; then
+  # Extract the first word of "${ac_tool_prefix}python", so it can be a program name with args.
+set dummy ${ac_tool_prefix}python; ac_word=$2
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
 $as_echo_n "checking for $ac_word... " >&6; }
 if ${ac_cv_path_PYTHON+:} false; then :
@@ -9978,7 +10831,6 @@ done
   done
 IFS=$as_save_IFS
 
-  test -z "$ac_cv_path_PYTHON" && ac_cv_path_PYTHON="notfound"
   ;;
 esac
 fi
@@ -9992,13 +10844,68 @@ $as_echo "no" >&6; }
 fi
 
 
-	if test x$PYTHON == xnotfound; then
-		as_fn_error $? "python is required for --enable-python_bindings but cannot be found
-		" "$LINENO" 5
-	fi
+fi
+if test -z "$ac_cv_path_PYTHON"; then
+  ac_pt_PYTHON=$PYTHON
+  # Extract the first word of "python", so it can be a program name with args.
+set dummy python; ac_word=$2
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
+$as_echo_n "checking for $ac_word... " >&6; }
+if ${ac_cv_path_ac_pt_PYTHON+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  case $ac_pt_PYTHON in
+  [\\/]* | ?:[\\/]*)
+  ac_cv_path_ac_pt_PYTHON="$ac_pt_PYTHON" # Let the user override the test with a path.
+  ;;
+  *)
+  as_save_IFS=$IFS; IFS=$PATH_SEPARATOR
+for as_dir in $PATH
+do
+  IFS=$as_save_IFS
+  test -z "$as_dir" && as_dir=.
+    for ac_exec_ext in '' $ac_executable_extensions; do
+  if as_fn_executable_p "$as_dir/$ac_word$ac_exec_ext"; then
+    ac_cv_path_ac_pt_PYTHON="$as_dir/$ac_word$ac_exec_ext"
+    $as_echo "$as_me:${as_lineno-$LINENO}: found $as_dir/$ac_word$ac_exec_ext" >&5
+    break 2
+  fi
+done
+  done
+IFS=$as_save_IFS
 
-	# Extract the first word of "python-config", so it can be a program name with args.
-set dummy python-config; ac_word=$2
+  ;;
+esac
+fi
+ac_pt_PYTHON=$ac_cv_path_ac_pt_PYTHON
+if test -n "$ac_pt_PYTHON"; then
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_pt_PYTHON" >&5
+$as_echo "$ac_pt_PYTHON" >&6; }
+else
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+fi
+
+  if test "x$ac_pt_PYTHON" = x; then
+    PYTHON=""
+  else
+    case $cross_compiling:$ac_tool_warned in
+yes:)
+{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: using cross tools not prefixed with host triplet" >&5
+$as_echo "$as_me: WARNING: using cross tools not prefixed with host triplet" >&2;}
+ac_tool_warned=yes ;;
+esac
+    PYTHON=$ac_pt_PYTHON
+  fi
+else
+  PYTHON="$ac_cv_path_PYTHON"
+fi
+
+	test -z "$PYTHON" && as_fn_error $? "python is required for --enable-python_bindings but cannot be found" "$LINENO" 5
+
+	if test -n "$ac_tool_prefix"; then
+  # Extract the first word of "${ac_tool_prefix}python-config", so it can be a program name with args.
+set dummy ${ac_tool_prefix}python-config; ac_word=$2
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
 $as_echo_n "checking for $ac_word... " >&6; }
 if ${ac_cv_path_PYTHON_CONFIG+:} false; then :
@@ -10024,7 +10931,6 @@ done
   done
 IFS=$as_save_IFS
 
-  test -z "$ac_cv_path_PYTHON_CONFIG" && ac_cv_path_PYTHON_CONFIG="notfound"
   ;;
 esac
 fi
@@ -10038,14 +10944,67 @@ $as_echo "no" >&6; }
 fi
 
 
-	if test x$PYTHON_CONFIG == xnotfound; then
-		as_fn_error $? "python headers are required for --enable-python_bindings but cannot be found
-		" "$LINENO" 5
-	fi
+fi
+if test -z "$ac_cv_path_PYTHON_CONFIG"; then
+  ac_pt_PYTHON_CONFIG=$PYTHON_CONFIG
+  # Extract the first word of "python-config", so it can be a program name with args.
+set dummy python-config; ac_word=$2
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
+$as_echo_n "checking for $ac_word... " >&6; }
+if ${ac_cv_path_ac_pt_PYTHON_CONFIG+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  case $ac_pt_PYTHON_CONFIG in
+  [\\/]* | ?:[\\/]*)
+  ac_cv_path_ac_pt_PYTHON_CONFIG="$ac_pt_PYTHON_CONFIG" # Let the user override the test with a path.
+  ;;
+  *)
+  as_save_IFS=$IFS; IFS=$PATH_SEPARATOR
+for as_dir in $PATH
+do
+  IFS=$as_save_IFS
+  test -z "$as_dir" && as_dir=.
+    for ac_exec_ext in '' $ac_executable_extensions; do
+  if as_fn_executable_p "$as_dir/$ac_word$ac_exec_ext"; then
+    ac_cv_path_ac_pt_PYTHON_CONFIG="$as_dir/$ac_word$ac_exec_ext"
+    $as_echo "$as_me:${as_lineno-$LINENO}: found $as_dir/$ac_word$ac_exec_ext" >&5
+    break 2
+  fi
+done
+  done
+IFS=$as_save_IFS
 
-	PYTHON_INCDIRS=`$PYTHON_CONFIG --includes`
-	PYTHON_LIBDIRS=`$PYTHON_CONFIG --libs`
+  ;;
+esac
+fi
+ac_pt_PYTHON_CONFIG=$ac_cv_path_ac_pt_PYTHON_CONFIG
+if test -n "$ac_pt_PYTHON_CONFIG"; then
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_pt_PYTHON_CONFIG" >&5
+$as_echo "$ac_pt_PYTHON_CONFIG" >&6; }
+else
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+fi
 
+  if test "x$ac_pt_PYTHON_CONFIG" = x; then
+    PYTHON_CONFIG=""
+  else
+    case $cross_compiling:$ac_tool_warned in
+yes:)
+{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: using cross tools not prefixed with host triplet" >&5
+$as_echo "$as_me: WARNING: using cross tools not prefixed with host triplet" >&2;}
+ac_tool_warned=yes ;;
+esac
+    PYTHON_CONFIG=$ac_pt_PYTHON_CONFIG
+  fi
+else
+  PYTHON_CONFIG="$ac_cv_path_PYTHON_CONFIG"
+fi
+
+	test -z "$PYTHON_CONFIG" && as_fn_error $? "python headers are required for --enable-python_bindings but cannot be found" "$LINENO" 5
+
+	PYTHON_INCDIRS=`"$PYTHON_CONFIG" --includes`
+	PYTHON_LIBDIRS=`"$PYTHON_CONFIG" --libs`
 fi
 
 ################################################################################
@@ -10101,18 +11060,14 @@ $as_echo "$DMEVENTD" >&6; }
 
 BUILD_DMEVENTD=$DMEVENTD
 
-if test x$DMEVENTD = xyes; then
-   if test x$MIRRORS != xinternal; then
-      as_fn_error $? "--enable-dmeventd currently requires --with-mirrors=internal
-      " "$LINENO" 5
+if test "$DMEVENTD" = yes; then
+   if test "$MIRRORS" != internal; then
+      as_fn_error $? "--enable-dmeventd currently requires --with-mirrors=internal" "$LINENO" 5
    fi
-   if test x$CMDLIB = xno; then
-      as_fn_error $? "--enable-dmeventd requires --enable-cmdlib to be used as well
-      " "$LINENO" 5
+   if test "$CMDLIB" = no; then
+      as_fn_error $? "--enable-dmeventd requires --enable-cmdlib to be used as well" "$LINENO" 5
    fi
-fi
 
-if test x$DMEVENTD = xyes; then
 
 $as_echo "#define DMEVENTD 1" >>confdefs.h
 
@@ -10209,9 +11164,7 @@ fi
 
 
 ################################################################################
-if [ "x$exec_prefix" = xNONE -a "x$prefix" = xNONE ];
- then  exec_prefix="";
-fi;
+test "$exec_prefix" = NONE -a "$prefix" = NONE && exec_prefix=""
 
 ################################################################################
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for dlopen in -ldl" >&5
@@ -10252,26 +11205,22 @@ fi
 $as_echo "$ac_cv_lib_dl_dlopen" >&6; }
 if test "x$ac_cv_lib_dl_dlopen" = xyes; then :
 
-
 $as_echo "#define HAVE_LIBDL 1" >>confdefs.h
 
-	DL_LIBS="-ldl"
-	HAVE_LIBDL=yes
+	      DL_LIBS="-ldl"
+	      HAVE_LIBDL=yes
 else
-
-	DL_LIBS=
-	HAVE_LIBDL=no
+  DL_LIBS=
+	      HAVE_LIBDL=no
 fi
 
 
 ################################################################################
-if [ \( "x$LVM1" = xshared -o "x$POOL" = xshared -o "x$CLUSTER" = xshared \
-      -o "x$SNAPSHOTS" = xshared -o "x$MIRRORS" = xshared \
-      -o "x$RAID" = xshared \
-      -o "x$CACHE" = xshared \
-      \) -a "x$STATIC_LINK" = xyes ];
- then  as_fn_error $? "Features cannot be 'shared' when building statically
-" "$LINENO" 5
+if [ \( "$LVM1" = shared -o "$POOL" = shared -o "$CLUSTER" = shared \
+      -o "$SNAPSHOTS" = shared -o "$MIRRORS" = shared \
+      -o "$RAID" = shared -o "$CACHE" = shared \
+      \) -a "$STATIC_LINK" = yes ]; then
+	as_fn_error $? "Features cannot be 'shared' when building statically" "$LINENO" 5
 fi
 
 ################################################################################
@@ -10330,7 +11279,7 @@ fi
 $as_echo "$SELINUX" >&6; }
 
 ################################################################################
-if test x$SELINUX = xyes; then
+if test "$SELINUX" = yes; then
 	{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for sepol_check_context in -lsepol" >&5
 $as_echo_n "checking for sepol_check_context in -lsepol... " >&6; }
 if ${ac_cv_lib_sepol_sepol_check_context+:} false; then :
@@ -10458,7 +11407,7 @@ fi
 fi
 
 ################################################################################
-if test x$REALTIME = xyes; then
+if test "$REALTIME" = yes; then
 	{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for clock_gettime in -lrt" >&5
 $as_echo_n "checking for clock_gettime in -lrt... " >&6; }
 if ${ac_cv_lib_rt_clock_gettime+:} false; then :
@@ -10502,7 +11451,7 @@ else
 fi
 
 
-	if test x$HAVE_REALTIME = xyes; then
+	if test "$HAVE_REALTIME" = yes; then
 
 $as_echo "#define HAVE_REALTIME 1" >>confdefs.h
 
@@ -10729,11 +11678,12 @@ fi
 { $as_echo "$as_me:${as_lineno-$LINENO}: result: $INTL" >&5
 $as_echo "$INTL" >&6; }
 
-if test x$INTL = xyes; then
+if test "$INTL" = yes; then
 # FIXME - Move this - can be device-mapper too
 	INTL_PACKAGE="lvm2"
-	# Extract the first word of "msgfmt", so it can be a program name with args.
-set dummy msgfmt; ac_word=$2
+	if test -n "$ac_tool_prefix"; then
+  # Extract the first word of "${ac_tool_prefix}msgfmt", so it can be a program name with args.
+set dummy ${ac_tool_prefix}msgfmt; ac_word=$2
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
 $as_echo_n "checking for $ac_word... " >&6; }
 if ${ac_cv_path_MSGFMT+:} false; then :
@@ -10772,10 +11722,66 @@ $as_echo "no" >&6; }
 fi
 
 
-	if [ "x$MSGFMT" == x ];
-		then  as_fn_error $? "msgfmt not found in path $PATH
-		" "$LINENO" 5
-	fi;
+fi
+if test -z "$ac_cv_path_MSGFMT"; then
+  ac_pt_MSGFMT=$MSGFMT
+  # Extract the first word of "msgfmt", so it can be a program name with args.
+set dummy msgfmt; ac_word=$2
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
+$as_echo_n "checking for $ac_word... " >&6; }
+if ${ac_cv_path_ac_pt_MSGFMT+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  case $ac_pt_MSGFMT in
+  [\\/]* | ?:[\\/]*)
+  ac_cv_path_ac_pt_MSGFMT="$ac_pt_MSGFMT" # Let the user override the test with a path.
+  ;;
+  *)
+  as_save_IFS=$IFS; IFS=$PATH_SEPARATOR
+for as_dir in $PATH
+do
+  IFS=$as_save_IFS
+  test -z "$as_dir" && as_dir=.
+    for ac_exec_ext in '' $ac_executable_extensions; do
+  if as_fn_executable_p "$as_dir/$ac_word$ac_exec_ext"; then
+    ac_cv_path_ac_pt_MSGFMT="$as_dir/$ac_word$ac_exec_ext"
+    $as_echo "$as_me:${as_lineno-$LINENO}: found $as_dir/$ac_word$ac_exec_ext" >&5
+    break 2
+  fi
+done
+  done
+IFS=$as_save_IFS
+
+  ;;
+esac
+fi
+ac_pt_MSGFMT=$ac_cv_path_ac_pt_MSGFMT
+if test -n "$ac_pt_MSGFMT"; then
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_pt_MSGFMT" >&5
+$as_echo "$ac_pt_MSGFMT" >&6; }
+else
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+fi
+
+  if test "x$ac_pt_MSGFMT" = x; then
+    MSGFMT=""
+  else
+    case $cross_compiling:$ac_tool_warned in
+yes:)
+{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: using cross tools not prefixed with host triplet" >&5
+$as_echo "$as_me: WARNING: using cross tools not prefixed with host triplet" >&2;}
+ac_tool_warned=yes ;;
+esac
+    MSGFMT=$ac_pt_MSGFMT
+  fi
+else
+  MSGFMT="$ac_cv_path_MSGFMT"
+fi
+
+	if [ -z "$MSGFMT" ]; then
+		as_fn_error $? "msgfmt not found in path $PATH" "$LINENO" 5
+	fi
 
 
 # Check whether --with-localedir was given.
@@ -10849,23 +11855,17 @@ fi
 if test "${with_systemdsystemunitdir+set}" = set; then :
   withval=$with_systemdsystemunitdir; systemdsystemunitdir=$withval
 else
-  	    test x$PKGCONFIG_INIT != x1 && pkg_config_init
-	    pkg_systemdsystemunitdir=$($PKG_CONFIG --variable=systemdsystemunitdir systemd)
+  pkg_config_init
+	    pkg_systemdsystemunitdir=$("$PKG_CONFIG" --variable=systemdsystemunitdir systemd)
 fi
 
 
-if test -n "$pkg_systemdsystemunitdir"; then
-	    systemdsystemunitdir=$pkg_systemdsystemunitdir;
-fi
+test -n "$pkg_systemdsystemunitdir" && systemdsystemunitdir=$pkg_systemdsystemunitdir
+test -z "$systemdsystemunitdir" && systemdsystemunitdir='${exec_prefix}/lib/systemd/system';
 
-if test -z "$systemdsystemunitdir"; then
-	    systemdsystemunitdir='${exec_prefix}/lib/systemd/system';
-fi
+systemdutildir=$("$PKG_CONFIG" --variable=systemdutildir systemd)
+test -z "$systemdutildir" && systemdutildir='${exec_prefix}/lib/systemd';
 
-systemdutildir=$($PKG_CONFIG --variable=systemdutildir systemd)
-if test -z "$systemdutildir"; then
-	    systemdutildir='${exec_prefix}/lib/systemd';
-fi
 ################################################################################
 
 # Check whether --with-tmpfilesdir was given.
@@ -10876,7 +11876,7 @@ else
 fi
 
 ################################################################################
-if test x$READLINE = xyes; then
+if test "$READLINE" = yes; then
 	for ac_header in readline/readline.h readline/history.h
 do :
   as_ac_Header=`$as_echo "ac_cv_header_$ac_header" | $as_tr_sh`
@@ -10887,14 +11887,14 @@ if eval test \"x\$"$as_ac_Header"\" = x"yes"; then :
 _ACEOF
 
 else
-  as_fn_error $? "bailing out" "$LINENO" 5
+  hard_bailout
 fi
 
 done
 
 fi
 
-if test x$CLVMD != xnone; then
+if test "$CLVMD" != none; then
 	for ac_header in mntent.h netdb.h netinet/in.h pthread.h search.h sys/mount.h sys/socket.h sys/uio.h sys/un.h utmpx.h
 do :
   as_ac_Header=`$as_echo "ac_cv_header_$ac_header" | $as_tr_sh`
@@ -10920,7 +11920,7 @@ if eval test \"x\$"$as_ac_var"\" = x"yes"; then :
 _ACEOF
 
 else
-  as_fn_error $? "bailing out" "$LINENO" 5
+  hard_bailout
 fi
 done
 
@@ -11065,7 +12065,7 @@ rm -f conftest*
 
 fi
 
-if test x$CLUSTER != xnone; then
+if test "$CLUSTER" != none; then
 	for ac_header in sys/socket.h sys/un.h
 do :
   as_ac_Header=`$as_echo "ac_cv_header_$ac_header" | $as_tr_sh`
@@ -11076,7 +12076,7 @@ if eval test \"x\$"$as_ac_Header"\" = x"yes"; then :
 _ACEOF
 
 else
-  as_fn_error $? "bailing out" "$LINENO" 5
+  hard_bailout
 fi
 
 done
@@ -11090,13 +12090,13 @@ if test "x$ac_cv_func_socket" = xyes; then :
 _ACEOF
 
 else
-  as_fn_error $? "bailing out" "$LINENO" 5
+  hard_bailout
 fi
 done
 
 fi
 
-if test x$DMEVENTD = xyes; then
+if test "$DMEVENTD" = yes; then
 	for ac_header in arpa/inet.h
 do :
   ac_fn_c_check_header_mongrel "$LINENO" "arpa/inet.h" "ac_cv_header_arpa_inet_h" "$ac_includes_default"
@@ -11106,14 +12106,14 @@ if test "x$ac_cv_header_arpa_inet_h" = xyes; then :
 _ACEOF
 
 else
-  as_fn_error $? "bailing out" "$LINENO" 5
+  hard_bailout
 fi
 
 done
 
 fi
 
-if test x$HAVE_LIBDL = xyes; then
+if test "$HAVE_LIBDL" = yes; then
 	for ac_header in dlfcn.h
 do :
   ac_fn_c_check_header_mongrel "$LINENO" "dlfcn.h" "ac_cv_header_dlfcn_h" "$ac_includes_default"
@@ -11123,14 +12123,14 @@ if test "x$ac_cv_header_dlfcn_h" = xyes; then :
 _ACEOF
 
 else
-  as_fn_error $? "bailing out" "$LINENO" 5
+  hard_bailout
 fi
 
 done
 
 fi
 
-if test x$INTL = xyes; then
+if test "$INTL" = yes; then
 	for ac_header in libintl.h
 do :
   ac_fn_c_check_header_mongrel "$LINENO" "libintl.h" "ac_cv_header_libintl_h" "$ac_includes_default"
@@ -11140,14 +12140,14 @@ if test "x$ac_cv_header_libintl_h" = xyes; then :
 _ACEOF
 
 else
-  as_fn_error $? "bailing out" "$LINENO" 5
+  hard_bailout
 fi
 
 done
 
 fi
 
-if test x$UDEV_SYNC = xyes; then
+if test "$UDEV_SYNC" = yes; then
 	for ac_header in sys/ipc.h sys/sem.h
 do :
   as_ac_Header=`$as_echo "ac_cv_header_$ac_header" | $as_tr_sh`
@@ -11158,7 +12158,7 @@ if eval test \"x\$"$as_ac_Header"\" = x"yes"; then :
 _ACEOF
 
 else
-  as_fn_error $? "bailing out" "$LINENO" 5
+  hard_bailout
 fi
 
 done
@@ -11166,8 +12166,9 @@ done
 fi
 
 ################################################################################
-# Extract the first word of "modprobe", so it can be a program name with args.
-set dummy modprobe; ac_word=$2
+if test -n "$ac_tool_prefix"; then
+  # Extract the first word of "${ac_tool_prefix}modprobe", so it can be a program name with args.
+set dummy ${ac_tool_prefix}modprobe; ac_word=$2
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
 $as_echo_n "checking for $ac_word... " >&6; }
 if ${ac_cv_path_MODPROBE_CMD+:} false; then :
@@ -11206,8 +12207,65 @@ $as_echo "no" >&6; }
 fi
 
 
+fi
+if test -z "$ac_cv_path_MODPROBE_CMD"; then
+  ac_pt_MODPROBE_CMD=$MODPROBE_CMD
+  # Extract the first word of "modprobe", so it can be a program name with args.
+set dummy modprobe; ac_word=$2
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
+$as_echo_n "checking for $ac_word... " >&6; }
+if ${ac_cv_path_ac_pt_MODPROBE_CMD+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  case $ac_pt_MODPROBE_CMD in
+  [\\/]* | ?:[\\/]*)
+  ac_cv_path_ac_pt_MODPROBE_CMD="$ac_pt_MODPROBE_CMD" # Let the user override the test with a path.
+  ;;
+  *)
+  as_save_IFS=$IFS; IFS=$PATH_SEPARATOR
+for as_dir in $PATH
+do
+  IFS=$as_save_IFS
+  test -z "$as_dir" && as_dir=.
+    for ac_exec_ext in '' $ac_executable_extensions; do
+  if as_fn_executable_p "$as_dir/$ac_word$ac_exec_ext"; then
+    ac_cv_path_ac_pt_MODPROBE_CMD="$as_dir/$ac_word$ac_exec_ext"
+    $as_echo "$as_me:${as_lineno-$LINENO}: found $as_dir/$ac_word$ac_exec_ext" >&5
+    break 2
+  fi
+done
+  done
+IFS=$as_save_IFS
 
-if test x$MODPROBE_CMD != x; then
+  ;;
+esac
+fi
+ac_pt_MODPROBE_CMD=$ac_cv_path_ac_pt_MODPROBE_CMD
+if test -n "$ac_pt_MODPROBE_CMD"; then
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_pt_MODPROBE_CMD" >&5
+$as_echo "$ac_pt_MODPROBE_CMD" >&6; }
+else
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+fi
+
+  if test "x$ac_pt_MODPROBE_CMD" = x; then
+    MODPROBE_CMD=""
+  else
+    case $cross_compiling:$ac_tool_warned in
+yes:)
+{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: using cross tools not prefixed with host triplet" >&5
+$as_echo "$as_me: WARNING: using cross tools not prefixed with host triplet" >&2;}
+ac_tool_warned=yes ;;
+esac
+    MODPROBE_CMD=$ac_pt_MODPROBE_CMD
+  fi
+else
+  MODPROBE_CMD="$ac_cv_path_MODPROBE_CMD"
+fi
+
+
+if test -n "$MODPROBE_CMD"; then
 
 cat >>confdefs.h <<_ACEOF
 #define MODPROBE_CMD "$MODPROBE_CMD"
@@ -11227,9 +12285,9 @@ _ACEOF
 
 
 if  test "$CLVMD" != none; then
-        clvmd_prefix=$ac_default_prefix
-        CLVMD_PATH="$clvmd_prefix/sbin/clvmd"
-        test "$prefix" != NONE && clvmd_prefix=$prefix
+	clvmd_prefix=$ac_default_prefix
+	CLVMD_PATH="$clvmd_prefix/sbin/clvmd"
+	test "$prefix" != NONE && clvmd_prefix=$prefix
 
 cat >>confdefs.h <<_ACEOF
 #define CLVMD_PATH "$CLVMD_PATH"
@@ -11381,10 +12439,7 @@ else
   interface=ioctl
 fi
 
-if [ "x$interface" != xioctl ];
-then
-  as_fn_error $? "--with-interface=ioctl required. fs no longer supported." "$LINENO" 5
-fi
+test "$interface" != ioctl && as_fn_error $? "--with-interface=ioctl required. fs no longer supported." "$LINENO" 5
 { $as_echo "$as_me:${as_lineno-$LINENO}: result: $interface" >&5
 $as_echo "$interface" >&6; }
 
@@ -11539,8 +12594,15 @@ LVM_LIBAPI=`echo "$VER" | $AWK -F '[()]' '{print $2}'`
 
 
 
+
+
+
+
+
+
+
 ################################################################################
-ac_config_files="$ac_config_files Makefile make.tmpl daemons/Makefile daemons/clvmd/Makefile daemons/cmirrord/Makefile daemons/dmeventd/Makefile daemons/dmeventd/libdevmapper-event.pc daemons/dmeventd/plugins/Makefile daemons/dmeventd/plugins/lvm2/Makefile daemons/dmeventd/plugins/raid/Makefile daemons/dmeventd/plugins/mirror/Makefile daemons/dmeventd/plugins/snapshot/Makefile daemons/dmeventd/plugins/thin/Makefile daemons/lvmetad/Makefile conf/Makefile conf/example.conf conf/default.profile include/.symlinks include/Makefile lib/Makefile lib/format1/Makefile lib/format_pool/Makefile lib/locking/Makefile lib/mirror/Makefile lib/replicator/Makefile lib/misc/lvm-version.h lib/raid/Makefile lib/snapshot/Makefile lib/thin/Makefile lib/cache_segtype/Makefile libdaemon/Makefile libdaemon/client/Makefile libdaemon/server/Makefile libdm/Makefile libdm/libdevmapper.pc liblvm/Makefile liblvm/liblvm2app.pc man/Makefile po/Makefile python/Makefile python/setup.py scripts/blkdeactivate.sh scripts/blk_availability_init_red_hat scripts/blk_availability_systemd_red_hat.service scripts/lvm2_cluster_activation_red_hat.sh scripts/lvm2_cluster_activation_systemd_red_hat.service scripts/clvmd_init_red_hat scripts/lvm2_clvmd_systemd_red_hat.service scripts/cmirrord_init_red_hat scripts/lvm2_cmirrord_systemd_red_hat.service scripts/lvm2_lvmetad_init_red_hat scripts/lvm2_lvmetad_systemd_red_hat.socket scripts/lvm2_lvmetad_systemd_red_hat.service scripts/lvm2_pvscan_systemd_red_hat@.service scripts/lvm2_monitoring_init_red_hat scripts/dm_event_systemd_red_hat.socket scripts/dm_event_systemd_red_hat.service scripts/lvm2_monitoring_systemd_red_hat.service scripts/lvm2_tmpfiles_red_hat.conf scripts/Makefile test/Makefile test/api/Makefile test/unit/Makefile tools/Makefile udev/Makefile unit-tests/datastruct/Makefile unit-tests/regex/Makefile unit-tests/mm/Makefile"
+ac_config_files="$ac_config_files Makefile make.tmpl daemons/Makefile daemons/clvmd/Makefile daemons/cmirrord/Makefile daemons/dmeventd/Makefile daemons/dmeventd/libdevmapper-event.pc daemons/dmeventd/plugins/Makefile daemons/dmeventd/plugins/lvm2/Makefile daemons/dmeventd/plugins/raid/Makefile daemons/dmeventd/plugins/mirror/Makefile daemons/dmeventd/plugins/snapshot/Makefile daemons/dmeventd/plugins/thin/Makefile daemons/lvmetad/Makefile conf/Makefile conf/example.conf conf/command_profile_template.profile conf/metadata_profile_template.profile include/.symlinks include/Makefile lib/Makefile lib/format1/Makefile lib/format_pool/Makefile lib/locking/Makefile lib/mirror/Makefile lib/replicator/Makefile lib/misc/lvm-version.h lib/raid/Makefile lib/snapshot/Makefile lib/thin/Makefile lib/cache_segtype/Makefile libdaemon/Makefile libdaemon/client/Makefile libdaemon/server/Makefile libdm/Makefile libdm/libdevmapper.pc liblvm/Makefile liblvm/liblvm2app.pc man/Makefile po/Makefile python/Makefile python/setup.py scripts/blkdeactivate.sh scripts/blk_availability_init_red_hat scripts/blk_availability_systemd_red_hat.service scripts/clvmd_init_red_hat scripts/cmirrord_init_red_hat scripts/dm_event_systemd_red_hat.service scripts/dm_event_systemd_red_hat.socket scripts/lvm2_cluster_activation_red_hat.sh scripts/lvm2_cluster_activation_systemd_red_hat.service scripts/lvm2_clvmd_systemd_red_hat.service scripts/lvm2_cmirrord_systemd_red_hat.service scripts/lvm2_lvmetad_init_red_hat scripts/lvm2_lvmetad_systemd_red_hat.service scripts/lvm2_lvmetad_systemd_red_hat.socket scripts/lvm2_monitoring_init_red_hat scripts/lvm2_monitoring_systemd_red_hat.service scripts/lvm2_pvscan_systemd_red_hat@.service scripts/lvm2_tmpfiles_red_hat.conf scripts/Makefile test/Makefile test/api/Makefile test/unit/Makefile tools/Makefile udev/Makefile unit-tests/datastruct/Makefile unit-tests/regex/Makefile unit-tests/mm/Makefile"
 
 cat >confcache <<\_ACEOF
 # This file is a shell script that caches the results of configure
@@ -12251,7 +13313,8 @@ do
     "daemons/lvmetad/Makefile") CONFIG_FILES="$CONFIG_FILES daemons/lvmetad/Makefile" ;;
     "conf/Makefile") CONFIG_FILES="$CONFIG_FILES conf/Makefile" ;;
     "conf/example.conf") CONFIG_FILES="$CONFIG_FILES conf/example.conf" ;;
-    "conf/default.profile") CONFIG_FILES="$CONFIG_FILES conf/default.profile" ;;
+    "conf/command_profile_template.profile") CONFIG_FILES="$CONFIG_FILES conf/command_profile_template.profile" ;;
+    "conf/metadata_profile_template.profile") CONFIG_FILES="$CONFIG_FILES conf/metadata_profile_template.profile" ;;
     "include/.symlinks") CONFIG_FILES="$CONFIG_FILES include/.symlinks" ;;
     "include/Makefile") CONFIG_FILES="$CONFIG_FILES include/Makefile" ;;
     "lib/Makefile") CONFIG_FILES="$CONFIG_FILES lib/Makefile" ;;
@@ -12279,20 +13342,20 @@ do
     "scripts/blkdeactivate.sh") CONFIG_FILES="$CONFIG_FILES scripts/blkdeactivate.sh" ;;
     "scripts/blk_availability_init_red_hat") CONFIG_FILES="$CONFIG_FILES scripts/blk_availability_init_red_hat" ;;
     "scripts/blk_availability_systemd_red_hat.service") CONFIG_FILES="$CONFIG_FILES scripts/blk_availability_systemd_red_hat.service" ;;
+    "scripts/clvmd_init_red_hat") CONFIG_FILES="$CONFIG_FILES scripts/clvmd_init_red_hat" ;;
+    "scripts/cmirrord_init_red_hat") CONFIG_FILES="$CONFIG_FILES scripts/cmirrord_init_red_hat" ;;
+    "scripts/dm_event_systemd_red_hat.service") CONFIG_FILES="$CONFIG_FILES scripts/dm_event_systemd_red_hat.service" ;;
+    "scripts/dm_event_systemd_red_hat.socket") CONFIG_FILES="$CONFIG_FILES scripts/dm_event_systemd_red_hat.socket" ;;
     "scripts/lvm2_cluster_activation_red_hat.sh") CONFIG_FILES="$CONFIG_FILES scripts/lvm2_cluster_activation_red_hat.sh" ;;
     "scripts/lvm2_cluster_activation_systemd_red_hat.service") CONFIG_FILES="$CONFIG_FILES scripts/lvm2_cluster_activation_systemd_red_hat.service" ;;
-    "scripts/clvmd_init_red_hat") CONFIG_FILES="$CONFIG_FILES scripts/clvmd_init_red_hat" ;;
     "scripts/lvm2_clvmd_systemd_red_hat.service") CONFIG_FILES="$CONFIG_FILES scripts/lvm2_clvmd_systemd_red_hat.service" ;;
-    "scripts/cmirrord_init_red_hat") CONFIG_FILES="$CONFIG_FILES scripts/cmirrord_init_red_hat" ;;
     "scripts/lvm2_cmirrord_systemd_red_hat.service") CONFIG_FILES="$CONFIG_FILES scripts/lvm2_cmirrord_systemd_red_hat.service" ;;
     "scripts/lvm2_lvmetad_init_red_hat") CONFIG_FILES="$CONFIG_FILES scripts/lvm2_lvmetad_init_red_hat" ;;
-    "scripts/lvm2_lvmetad_systemd_red_hat.socket") CONFIG_FILES="$CONFIG_FILES scripts/lvm2_lvmetad_systemd_red_hat.socket" ;;
     "scripts/lvm2_lvmetad_systemd_red_hat.service") CONFIG_FILES="$CONFIG_FILES scripts/lvm2_lvmetad_systemd_red_hat.service" ;;
-    "scripts/lvm2_pvscan_systemd_red_hat@.service") CONFIG_FILES="$CONFIG_FILES scripts/lvm2_pvscan_systemd_red_hat@.service" ;;
+    "scripts/lvm2_lvmetad_systemd_red_hat.socket") CONFIG_FILES="$CONFIG_FILES scripts/lvm2_lvmetad_systemd_red_hat.socket" ;;
     "scripts/lvm2_monitoring_init_red_hat") CONFIG_FILES="$CONFIG_FILES scripts/lvm2_monitoring_init_red_hat" ;;
-    "scripts/dm_event_systemd_red_hat.socket") CONFIG_FILES="$CONFIG_FILES scripts/dm_event_systemd_red_hat.socket" ;;
-    "scripts/dm_event_systemd_red_hat.service") CONFIG_FILES="$CONFIG_FILES scripts/dm_event_systemd_red_hat.service" ;;
     "scripts/lvm2_monitoring_systemd_red_hat.service") CONFIG_FILES="$CONFIG_FILES scripts/lvm2_monitoring_systemd_red_hat.service" ;;
+    "scripts/lvm2_pvscan_systemd_red_hat@.service") CONFIG_FILES="$CONFIG_FILES scripts/lvm2_pvscan_systemd_red_hat@.service" ;;
     "scripts/lvm2_tmpfiles_red_hat.conf") CONFIG_FILES="$CONFIG_FILES scripts/lvm2_tmpfiles_red_hat.conf" ;;
     "scripts/Makefile") CONFIG_FILES="$CONFIG_FILES scripts/Makefile" ;;
     "test/Makefile") CONFIG_FILES="$CONFIG_FILES test/Makefile" ;;
@@ -12902,7 +13965,8 @@ $as_echo "$as_me: WARNING: Support for thin provisioning is limited since some t
 test -n "$THIN_CHECK_VERSION_WARN" && { $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: You should also install thin_check vsn 0.3.2 (or later) to use lvm2 thin provisioning" >&5
 $as_echo "$as_me: WARNING: You should also install thin_check vsn 0.3.2 (or later) to use lvm2 thin provisioning" >&2;}
 
-if test x$ODIRECT != xyes; then
-  { $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: O_DIRECT disabled: low-memory pvmove may lock up" >&5
+test -n "$CACHE_CONFIGURE_WARN" && { $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: Support for cache is limited since some cache tools are missing!" >&5
+$as_echo "$as_me: WARNING: Support for cache is limited since some cache tools are missing!" >&2;}
+
+test "$ODIRECT" = yes || { $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: O_DIRECT disabled: low-memory pvmove may lock up" >&5
 $as_echo "$as_me: WARNING: O_DIRECT disabled: low-memory pvmove may lock up" >&2;}
-fi

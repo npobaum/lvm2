@@ -1,6 +1,6 @@
 .TH LVM.CONF 5 "LVM TOOLS #VERSION#" "Sistina Software UK" \" -*- nroff -*-
 .SH NAME
-lvm.conf \- Configuration file for LVM2
+lvm.conf \(em Configuration file for LVM2
 .SH SYNOPSIS
 .B #DEFAULT_SYS_DIR#/lvm.conf
 .SH DESCRIPTION
@@ -13,62 +13,82 @@ any have changed, all the files are reloaded.
 The settings defined in lvm.conf can be overridden by any
 of these extended configuration methods:
 .TP
-.B tag config
-.br
-See \fBtags\fP configuration setting description below.
-
-.TP
-.B profile config
-.br
-A profile is a set of selected customizable configuration settings
-that are aimed to achieve a certain characteristics in various
-environments or uses. Normally, the name of the profile should
-reflect that environment or use.
-
-LVM itself provides a few predefined configuration profiles.
-Users are allowed to add more profiles with different values if needed.
-For this purpose, there's the \fBdefault.profile\fP which contains all
-settings that are customizable by profiles. Users are encouraged
-to copy this default profile and edit it as needed. Alternatively,
-the \fBlvm dumpconfig --file <ProfileName.profile> --type profilable <section>\fP
-can be used to generate a configuration with profilable settings for
-given section and save it to new ProfileName.profile (if the section
-is not specified, all profilable settings are reported).
-
-The profiles are stored in #DEFAULT_PROFILE_DIR# directory by default.
-This location can be changed using the \fBconfig/profile_dir\fP setting.
-Each profile configuration is stored in \fBProfileName.profile\fP file
-in the profile directory. When referencing the profile, the \fB.profile\fP
-suffix is left out.
-
-The profile to use can be defined for each LVM command using the \fB\-\-profile ProfileName\fP
-command line option. When using a profile while creating Volume
-Groups or Logical Volumes, the ProfileName is stored in Volume Group
-metadata. When using such volumes later on, the profile is automatically
-loaded and applied. If Volume Group and any of its Logical Volumes have different
-profiles defined, the profile defined for the Logical Volume is used. Profiles
-attached to Volume Groups or Logical Volumes can be changed or detached
-using the \fBvgchange\fP(8) and \fBlvchange\fP(8) commands with \fB\-\-profile ProfileName\fP
-or \fB\-\-detachprofile\fP options. For any other LVM command, the \fB\-\-profile ProfileName\fP
-option causes the profile to be applied only temporarily during the command
-execution for any existing Volume Group or Logical Volume.
-
-The \fBvgs\fP and \fBlvs\fP reporting commands provide \fB-o vg_profile\fP and
-\fB-o lv_profile\fP output options to show the profile currently attached to a
-Volume Group or a Logical Volume.
-
-.TP
 .B direct config override on command line
 The \fB\-\-config ConfigurationString\fP command line option takes the
 ConfigurationString as direct string representation of the configuration
 to override the existing configuration. The ConfigurationString is of
 exactly the same format as used in any LVM configuration file.
 
+.TP
+.B profile config
+.br
+A profile is a set of selected customizable configuration settings
+that are aimed to achieve a certain characteristics in various
+environments or uses. It's used to override existing configuration.
+Normally, the name of the profile should reflect that environment or use.
+
+There are two groups of profiles recognised: \fBcommand profiles\fP and
+\fBmetadata profiles\fP.
+
+The \fBcommand profile\fP is used to override selected configuration
+settings at global LVM command level - it is applied at the very beginning
+of LVM command execution and it is used throughout the whole time of LVM
+command execution. The command profile is applied by using the
+\fB\-\-commandprofile ProfileName\fP command line option that is recognised by
+all LVM2 commands.
+
+The \fBmetadata profile\fP is used to override selected configuration
+settings at Volume Group/Logical Volume level - it is applied independently
+for each Volume Group/Logical Volume that is being processed. As such,
+each Volume Group/Logical Volume can store the profile name used
+in its metadata so next time the Volume Group/Logical Volume is
+processed, the profile is applied automatically. If Volume Group and
+any of its Logical Volumes have different profiles defined, the profile
+defined for the Logical Volume is preferred. The metadata profile can be
+attached/detached by using the \fBlvchange\fP and \fBvgchange\fP commands
+and their \fB\-\-metadataprofile ProfileName\fP and
+\fB\-\-detachprofile\fP options or the \fB\-\-metadataprofile\fP
+option during creation when using \fBvgcreate\fP or \fBlvcreate\fP command.
+The \fBvgs\fP and \fBlvs\fP reporting commands provide \fB-o vg_profile\fP
+and \fB-o lv_profile\fP output options to show the metadata profile
+currently attached to a Volume Group or a Logical Volume.
+
+The set of options allowed for command profiles is mutually exclusive
+when compared to the set of options allowed for metadata profiles. The
+settings that belong to either of these two sets can't be mixed together
+and LVM tools will reject such profiles.
+
+LVM itself provides a few predefined configuration profiles.
+Users are allowed to add more profiles with different values if needed.
+For this purpose, there's the \fBcommand_profile_template.profile\fP
+(for command profiles) and \fBmetadata_profile_template.profile\fP
+(for metadata profiles) which contain all settings that are customizable
+by profiles of certain type. Users are encouraged to copy these template
+profiles and edit them as needed. Alternatively, the
+\fBlvm dumpconfig \-\-file <ProfileName.profile> \-\-type profilable-command <section>\fP
+or \fBlvm dumpconfig \-\-file <ProfileName.profile> \-\-type profilable-metadata <section>\fP
+can be used to generate a configuration with profilable settings in either
+of the type for given section and save it to new ProfileName.profile
+(if the section is not specified, all profilable settings are reported).
+
+The profiles are stored in #DEFAULT_PROFILE_DIR# directory by default.
+This location can be changed by using the \fBconfig/profile_dir\fP setting.
+Each profile configuration is stored in \fBProfileName.profile\fP file
+in the profile directory. When referencing the profile, the \fB.profile\fP
+suffix is left out.
+
+.TP
+.B tag config
+.br
+See \fBtags\fP configuration setting description below.
+
 .LP
 When several configuration methods are used at the same time
 and when LVM looks for the value of a particular setting, it traverses
 this \fBconfig cascade\fP from left to right:
-\fBdirect config override on command line\fP -> \fBprofile config\fP -> \fBtag config\fP -> \fBlvm.conf\fP.
+
+\fBdirect config override on command line\fP -> \fBcommand profile config\fP -> \fBmetadata profile config\fP -> \fBtag config\fP -> \fBlvm.conf\fP
+
 No part of this cascade is compulsory. If there's no setting value found at
 the end of the cascade, a default value is used for that setting.
 Use \fBlvm dumpconfig\fP to check what settings are in use and what
@@ -229,7 +249,7 @@ start of the aligned data area of the Physical Volume will be shifted
 by the alignment_offset exposed in sysfs.
 .sp
 To see the location of the first Physical Extent of an existing Physical Volume
-use \fBpvs -o +pe_start\fP .  It will be a multiple of the requested
+use \fBpvs \-o +pe_start\fP .  It will be a multiple of the requested
 \fBdata_alignment\fP plus the alignment_offset from
 \fBdata_alignment_offset_detection\fP (if enabled) or the pvcreate
 commandline.
@@ -298,7 +318,7 @@ is invoked.  By default tools append messages to the log file.
 When set, display and reporting tools will still write the requested
 device properties to standard output, but messages confirming that
 something was or wasn't changed will be reduced to the 'verbose' level
-and not appear unless -v is supplied.
+and not appear unless \-v is supplied.
 .IP
 \fBsyslog\fP \(em Set to 1 (the default) to send log messages through syslog.
 Turn off by setting to 0.  If you set to an integer greater than one,
@@ -374,7 +394,7 @@ Interpreted as octal if the first digit is zero.
 Defaults to 077.
 Use 022 to allow other users to read the files by default.
 .IP
-\fBformat\fP \(em The default value of \fB--metadatatype\fP used
+\fBformat\fP \(em The default value of \fB\-\-metadatatype\fP used
 to determine which format of metadata to use when creating new
 physical volumes and volume groups. \fBlvm1\fP or \fBlvm2\fP.
 .IP
@@ -388,14 +408,14 @@ If an LVM2 tool is then run but unable to communicate
 with device-mapper, it will automatically invoke the equivalent LVM1
 version of the tool.  Note that for LVM1 tools to
 manipulate physical volumes and volume groups created by LVM2 you
-must use \fB--metadataformat lvm1\fP when creating them.
+must use \fB\-\-metadataformat lvm1\fP when creating them.
 .IP
 \fBlibrary_dir\fP \(em A directory searched for LVM2's shared libraries
 ahead of the places \fBdlopen\fP (3) searches.
 .IP
 \fBformat_libraries\fP \(em A list of shared libraries to load that contain
 code to process different formats of metadata. For example, liblvm2formatpool.so
-is needed to read GFS pool metadata if LVM2 was configured \fB--with-pool=shared\fP.
+is needed to read GFS pool metadata if LVM2 was configured \fB\-\-with-pool=shared\fP.
 .IP
 \fBlocking_type\fP \(em What type of locking to use.
 1 is the default, which use flocks on files in \fBlocking_dir\fP
@@ -404,7 +424,7 @@ avoid conflicting LVM2 commands running concurrently on a single
 machine. 0 disables locking and risks corrupting your metadata.
 If set to 2, the tools will load the external \fBlocking_library\fP
 (see below).
-If the tools were configured \fB--with-cluster=internal\fP
+If the tools were configured \fB\-\-with-cluster=internal\fP
 (the default) then 3 means to use built-in cluster-wide locking.
 Type 4 enforces read-only metadata and forbids any operations that
 might want to modify Volume Group metadata.
@@ -430,7 +450,7 @@ group metadata and PV state flags are obtained from the lvmetad instance and no
 scanning is done by the individual commands. In a setup with lvmetad, lvmetad
 udev rules \fBmust\fP be set up for LVM to work correctly. Without proper udev
 rules, all changes in block device configuration will be \fBignored\fP until a
-manual 'pvscan --cache' is performed.
+manual 'pvscan \-\-cache' is performed.
 .br
 If lvmetad has been running while use_lvmetad was 0, it \fBMUST\fP be stopped before
 changing use_lvmetad to 1 and started again afterwards.
@@ -467,7 +487,7 @@ These options are useful if you are replicating configuration files
 around a cluster.  Use of \fBhosttags = 1\fP means every machine
 can have static and identical local configuration files yet use
 different settings and activate different logical volumes by
-default.  See also \fBvolume_list\fP below and \fB--addtag\fP
+default.  See also \fBvolume_list\fP below and \fB\-\-addtag\fP
 in \fBlvm\fP (8).
 .TP
 \fBactivation\fP \(em Settings affecting device-mapper activation
@@ -544,7 +564,7 @@ to store on each physical volume.
 Currently it can be set to 0, 1 or 2.  The default is 1.
 If set to 2, one copy is placed at the beginning of the disk
 and the other is placed at the end.
-It can be overridden on the command line with \fB--pvmetadatacopies\fP
+It can be overridden on the command line with \fB\-\-pvmetadatacopies\fP
 (see \fBpvcreate\fP).
 If creating a volume group with just one physical volume, it's a
 good idea to have 2 copies.  If creating a large volume group with
@@ -570,12 +590,12 @@ metadata format, this states whether metadata areas should be ignored.
 The default is "n".  If metadata areas on a physical volume are ignored,
 LVM will not not store metadata in the metadata areas present on newly
 created Physical Volumes.  The option can be overridden on the command
-line with \fB--metadataignore\fP (See \fBpvcreate\fP and \fBpvchange\fP).
+line with \fB\-\-metadataignore\fP (See \fBpvcreate\fP and \fBpvchange\fP).
 Metadata areas cannot be created or extended after Logical Volumes have
 been allocated on the device.
 If you do not want to store metadata on this device, it is still wise
 always to allocate a metadata area (use a non-zero value for
-\fB--pvmetadatacopies\fP) in case you need it in the future and to use
+\fB\-\-pvmetadatacopies\fP) in case you need it in the future and to use
 this option to instruct LVM2 to ignore it.
 .IP
 \fBvgmetadatacopies\fP \(em When creating a volume group using the
@@ -583,17 +603,17 @@ LVM2 metadata format, this is the default number of copies of metadata
 desired across all the physical volumes in the volume group.  If set to
 a non-zero value, LVM will automatically set or clear the metadataignore
 flag on the physical volumes (see \fBpvcreate\fP and \fBpvchange\fP
-\fB--metadataignore\fP) in order to achieve the desired number of metadata
+\fB\-\-metadataignore\fP) in order to achieve the desired number of metadata
 copies.  An LVM command that adds or removes physical volumes (for example,
 \fBvgextend\fP, \fBvgreduce\fP, \fBvgsplit\fP, or \fBvgmerge\fP), may cause
 LVM to automatically set or clear the metadataignore flags.  Also, if
 physical volumes go missing or reappear, or a new number of copies is
-explicitly set (see \fBvgchange --vgmetadatacopies\fP), LVM may adjust
+explicitly set (see \fBvgchange \-\-vgmetadatacopies\fP), LVM may adjust
 the metadataignore flags.
 Set \fBvgmetadatacopies\fP to 0 instructs LVM not to set or clear the
 metadataignore flags automatically.  You may set a value larger than the
 sum of all metadata areas on all physical volumes.  The value can
-be overridden on the command line with \fB--vgmetadatacopies\fP for various
+be overridden on the command line with \fB\-\-vgmetadatacopies\fP for various
 commands (for example, \fBvgcreate\fP and \fBvgchange\fP), and can be
 queryied with the \fBvg_mda_copies\fP field of \fBvgs\fP.  This option
 is useful for volume groups containing large numbers of physical volumes

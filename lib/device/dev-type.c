@@ -460,9 +460,9 @@ static int _blkid_wipe(blkid_probe probe, struct device *dev, const char *name,
 		       uint32_t types_to_exclude, uint32_t types_no_prompt,
 		       int yes, force_t force)
 {
-	static const char _msg_failed_offset[] = "Failed to get offset of the %s signature on %s.";
-	static const char _msg_failed_length[] = "Failed to get length of the %s signature on %s.";
-	static const char _msg_wiping[] = "Wiping %s signature on %s.";
+	static const char const _msg_failed_offset[] = "Failed to get offset of the %s signature on %s.";
+	static const char const _msg_failed_length[] = "Failed to get length of the %s signature on %s.";
+	static const char const _msg_wiping[] = "Wiping %s signature on %s.";
 	const char *offset = NULL, *type = NULL, *magic = NULL,
 		   *usage = NULL, *label = NULL, *uuid = NULL;
 	loff_t offset_value;
@@ -495,9 +495,10 @@ static int _blkid_wipe(blkid_probe probe, struct device *dev, const char *name,
 	offset_value = strtoll(offset, NULL, 10);
 
 	if (!usage)
-		blkid_probe_lookup_value(probe, "USAGE", &usage, NULL);
-	blkid_probe_lookup_value(probe, "LABEL", &label, NULL);
-	blkid_probe_lookup_value(probe, "UUID", &uuid, NULL);
+		(void) blkid_probe_lookup_value(probe, "USAGE", &usage, NULL);
+	(void) blkid_probe_lookup_value(probe, "LABEL", &label, NULL);
+	(void) blkid_probe_lookup_value(probe, "UUID", &uuid, NULL);
+	/* Return values ignored here, in the worst case we print NULL */
 
 	log_verbose("Found existing signature on %s at offset %s: LABEL=\"%s\" "
 		    "UUID=\"%s\" TYPE=\"%s\" USAGE=\"%s\"",
@@ -506,8 +507,10 @@ static int _blkid_wipe(blkid_probe probe, struct device *dev, const char *name,
 	if (!_type_in_flag_list(type, types_no_prompt)) {
 		if (!yes && (force == PROMPT) &&
 		    yes_no_prompt("WARNING: %s signature detected on %s at offset %s. "
-				  "Wipe it? [y/n] ", type, name, offset) != 'y')
-			return_0;
+				  "Wipe it? [y/n]: ", type, name, offset) == 'n') {
+			log_error("Aborted wiping of %s.", type);
+			return 0;
+		}
 		log_print_unless_silent(_msg_wiping, type, name);
 	} else
 		log_verbose(_msg_wiping, type, name);
@@ -590,9 +593,11 @@ static int _wipe_signature(struct device *dev, const char *type, const char *nam
 
 	/* Specifying --yes => do not ask. */
 	if (!yes && (force == PROMPT) &&
-	    yes_no_prompt("WARNING: %s detected on %s. Wipe it? [y/n] ",
-			  type, name) != 'y')
-		return_0;
+	    yes_no_prompt("WARNING: %s detected on %s. Wipe it? [y/n]: ",
+			  type, name) == 'n') {
+		log_error("Aborted wiping of %s.", type);
+		return 0;
+	}
 
 	log_print_unless_silent("Wiping %s on %s.", type, name);
 	if (!dev_set(dev, offset_found, wipe_len, 0)) {
@@ -675,7 +680,7 @@ static unsigned long _dev_topology_attribute(struct dev_types *dt,
 	 */
 	if (stat(path, &info) == -1) {
 		if (errno != ENOENT) {
-			log_sys_error("stat", path);
+			log_sys_debug("stat", path);
 			return 0;
 		}
 		if (!dev_get_primary_dev(dt, dev, &primary))
@@ -687,24 +692,23 @@ static unsigned long _dev_topology_attribute(struct dev_types *dt,
 
 		if (stat(path, &info) == -1) {
 			if (errno != ENOENT)
-				log_sys_error("stat", path);
+				log_sys_debug("stat", path);
 			return 0;
 		}
 	}
 
 	if (!(fp = fopen(path, "r"))) {
-		log_sys_error("fopen", path);
+		log_sys_debug("fopen", path);
 		return 0;
 	}
 
 	if (!fgets(buffer, sizeof(buffer), fp)) {
-		log_sys_error("fgets", path);
+		log_sys_debug("fgets", path);
 		goto out;
 	}
 
 	if (sscanf(buffer, "%lu", &result) != 1) {
-		log_error("sysfs file %s not in expected format: %s", path,
-			  buffer);
+		log_warn("sysfs file %s not in expected format: %s", path, buffer);
 		goto out;
 	}
 
@@ -713,7 +717,7 @@ static unsigned long _dev_topology_attribute(struct dev_types *dt,
 
 out:
 	if (fclose(fp))
-		log_sys_error("fclose", path);
+		log_sys_debug("fclose", path);
 
 	return result >> SECTOR_SHIFT;
 }

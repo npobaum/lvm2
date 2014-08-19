@@ -151,7 +151,7 @@ teardown_devs_prefixed() {
 	local need_udev_wait=0
 	init_udev_transaction
 	for dm in $(dm_info name --sort open | grep "$prefix"); do
-		dmsetup remove --mangle none "$dm" &>/dev/null || remfail=yes
+		dmsetup remove "$dm" &>/dev/null || remfail=yes
 		need_udev_wait=1
 	done
 	finish_udev_transaction
@@ -164,7 +164,7 @@ teardown_devs_prefixed() {
 		    test $num_devs -lt $num_remaining_devs -a $num_devs -ne 0; do
 			test "$stray" -eq 0 || echo "Removing $num_devs stray mapped devices with names beginning with $prefix: "
 			for dm in $(dm_info name --sort open | grep "$prefix") ; do
-				dmsetup remove --mangle none -f "$dm" || true
+				dmsetup remove -f "$dm" || true
 			done
 			num_remaining_devs=$num_devs
 		done
@@ -185,8 +185,8 @@ teardown_devs() {
 	if test -f SCSI_DEBUG_DEV; then
 		test "${LVM_TEST_PARALLEL:-0}" -eq 1 || modprobe -r scsi_debug
 	else
-		test ! -f LOOP || losetup -d $(cat LOOP) || true
-		test ! -f LOOPFILE || rm -f $(cat LOOPFILE)
+		test ! -f LOOP || losetup -d $(< LOOP) || true
+		test ! -f LOOPFILE || rm -f $(< LOOPFILE)
 	fi
 	rm -f DEVICES # devs is set in prepare_devs()
 	rm -f LOOP
@@ -200,13 +200,16 @@ teardown_devs() {
 			for i in "${stray_loops[@]}" ; do losetup -d $i ; done
 		}
 	}
+
+	# Leave test when udev processed all removed devices
+	udev_wait
 }
 
 kill_sleep_kill_() {
 	if test -s "$1" ; then
-		if kill -TERM "$(cat $1)" ; then
+		if kill -TERM "$(< $1)" ; then
 			if test "$2" -eq 0 ; then sleep .1 ; else sleep 1 ; fi
-			kill -KILL "$(cat $1)" 2>/dev/null || true
+			kill -KILL "$(< $1)" 2>/dev/null || true
 		fi
 	fi
 }
@@ -250,7 +253,7 @@ prepare_loop() {
 	local i
 	local slash
 
-	test -f LOOP && LOOP=$(cat LOOP)
+	test -f LOOP && LOOP=$(< LOOP)
 	echo -n "## preparing loop device..."
 
 	# skip if prepare_scsi_debug_dev() was used
@@ -302,7 +305,7 @@ prepare_scsi_debug_dev() {
 	local DEV_SIZE=$1
 	local SCSI_DEBUG_PARAMS=${@:2}
 
-	test -f "SCSI_DEBUG_DEV" && return 0
+	test ! -f "SCSI_DEBUG_DEV" || return 0
 	test -z "$LOOP"
 	test -n "$DM_DEV_DIR"
 
@@ -311,7 +314,7 @@ prepare_scsi_debug_dev() {
 
 	# Skip test if scsi_debug module is unavailable or is already in use
 	modprobe --dry-run scsi_debug || skip
-	lsmod | grep -q scsi_debug && skip
+	lsmod | not grep -q scsi_debug || skip
 
 	# Create the scsi_debug device and determine the new scsi device's name
 	# NOTE: it will _never_ make sense to pass num_tgts param;
@@ -327,7 +330,7 @@ prepare_scsi_debug_dev() {
 	echo "$SCSI_DEBUG_DEV" > SCSI_DEBUG_DEV
 	echo "$SCSI_DEBUG_DEV" > LOOP
 	# Setting $LOOP provides means for prepare_devs() override
-	test "$LVM_TEST_DEVDIR" != "/dev" && ln -snf "$DEBUG_DEV" "$SCSI_DEBUG_DEV"
+	test "$LVM_TEST_DEVDIR" = "/dev" || ln -snf "$DEBUG_DEV" "$SCSI_DEBUG_DEV"
 }
 
 cleanup_scsi_debug_dev() {
@@ -349,13 +352,13 @@ prepare_devs() {
 	fi
 
 	local size=$(($loopsz/$n))
-	devs=
-
+	local count=0
 	init_udev_transaction
 	for i in $(seq 1 $n); do
 		local name="${PREFIX}$pvname$i"
 		local dev="$DM_DEV_DIR/mapper/$name"
-		devs="$devs $dev"
+		DEVICES[$count]=$dev
+		count=$(( $count + 1 ))
 		echo 0 $size linear "$LOOP" $((($i-1)*$size)) > "$name.table"
 		dmsetup create -u "TEST-$name" "$name" "$name.table"
 	done
@@ -370,7 +373,8 @@ prepare_devs() {
 	#	dmsetup table $name
 	#done
 
-	echo $devs > DEVICES
+	printf "%s\n" "${DEVICES[@]}" > DEVICES
+#	( IFS=$'\n'; echo "${DEVICES[*]}" ) >DEVICES
 	echo "ok"
 }
 
@@ -405,21 +409,50 @@ delay_dev() {
 
 disable_dev() {
 	local dev
+	local silent
+	local error
+	local notify
+
+	while test -n "$1"; do
+	    if test "$1" = "--silent"; then
+		silent=1
+		shift
+	    elif test "$1" = "--error"; then
+		error=1
+		shift
+	    else
+		break
+	    fi
+	done
 
 	udev_wait
-	init_udev_transaction
 	for dev in "$@"; do
 		maj=$(($(stat -L --printf=0x%t "$dev")))
 		min=$(($(stat -L --printf=0x%T "$dev")))
 		echo "Disabling device $dev ($maj:$min)"
-		dmsetup remove -f "$dev" 2>/dev/null || true
-		notify_lvmetad --major "$maj" --minor "$min"
+		notify="$notify $maj:$min"
+		if test -n "$error"; then
+		    echo 0 10000000 error | dmsetup load $dev
+		    dmsetup resume $dev
+		else
+		    dmsetup remove -f "$dev" 2>/dev/null || true
+		fi
 	done
-	finish_udev_transaction
+
+	test -n "$silent" || for num in $notify; do
+		notify_lvmetad --major $(echo $num | sed -e "s,:.*,,") \
+		               --minor $(echo $num | sed -e "s,.*:,,")
+	done
 }
 
 enable_dev() {
 	local dev
+	local silent
+
+	if test "$1" = "--silent"; then
+	    silent=1
+	    shift
+	fi
 
 	rm -f debug.log
 	init_udev_transaction
@@ -429,9 +462,12 @@ enable_dev() {
 			dmsetup load "$name" "$name.table"
 		# using device name (since device path does not exists yes with udev)
 		dmsetup resume "$name"
-		notify_lvmetad "$dev"
 	done
 	finish_udev_transaction
+
+	test -n "$silent" || for dev in "$@"; do
+		notify_lvmetad "$dev"
+	done
 }
 
 #
@@ -448,6 +484,7 @@ error_dev() {
 	local type
 	local pvdev
 	local offset
+	local silent
 
 	read pos size type pvdev offset < $name.table
 
@@ -477,8 +514,8 @@ error_dev() {
 	fi
 	# using device name (since device path does not exists yet with udev)
 	dmsetup resume "$name"
-	notify_lvmetad "$dev"
 	finish_udev_transaction
+	test -n "$silent" || notify_lvmetad "$dev"
 }
 
 backup_dev() {
@@ -501,14 +538,14 @@ restore_dev() {
 
 prepare_pvs() {
 	prepare_devs "$@"
-	pvcreate -ff $devs
+	pvcreate -ff "${DEVICES[@]}"
 }
 
 prepare_vg() {
 	teardown_devs
 
 	prepare_pvs "$@"
-	vgcreate -s 512K $vg $devs
+	vgcreate -s 512K $vg "${DEVICES[@]}"
 }
 
 extend_filter() {
@@ -561,8 +598,8 @@ generate_config() {
 	else
 	    LVM_VERIFY_UDEV=${LVM_VERIFY_UDEV:-1}
 	fi
-	test -f $config_values || {
-            cat > $config_values <<-EOF
+	test -f "$config_values" || {
+            cat > "$config_values" <<-EOF
 devices/dir = "$DM_DEV_DIR"
 devices/scan = "$DM_DEV_DIR"
 devices/filter = "a|.*|"
@@ -602,20 +639,19 @@ EOF
 
 	local v
 	for v in "$@"; do
-	    echo "$v" >> $config_values
-	done
+	    echo "$v"
+	done >> "$config_values"
 
-	rm -f $config
 	local s
-	for s in $(cat $config_values | cut -f1 -d/ | sort | uniq); do
-		echo "$s {" >> $config
+	for s in $(cut -f1 -d/ "$config_values" | sort | uniq); do
+		echo "$s {"
 		local k
-		for k in $(grep ^"$s"/ $config_values | cut -f1 -d= | sed -e 's, *$,,' | sort | uniq); do
-			grep "^$k" $config_values | tail -n 1 | sed -e "s,^$s/,	  ," >> $config
+		for k in $(grep ^"$s"/ "$config_values" | cut -f1 -d= | sed -e 's, *$,,' | sort | uniq); do
+			grep "^$k" "$config_values" | tail -n 1 | sed -e "s,^$s/,	  ,"
 		done
-		echo "}" >> $config
-		echo >> $config
-	done
+		echo "}"
+		echo
+	done | tee "$config"
 }
 
 lvmconf() {
@@ -629,7 +665,7 @@ profileconf() {
 	shift
 	generate_config "$@"
 	test -d etc/profile || mkdir etc/profile
-	mv -f PROFILE_$profile_name etc/profile/$profile_name.profile
+	mv -f "PROFILE_$profile_name" "etc/profile/$profile_name.profile"
 }
 
 prepare_profiles() {
@@ -653,7 +689,7 @@ api() {
 }
 
 mirror_recovery_works() {
-	case $(uname -r) in
+	case "$(uname -r)" in
 	  3.3.4-5.fc17.i686|3.3.4-5.fc17.x86_64) return 1 ;;
 	esac
 }
@@ -692,13 +728,15 @@ raid456_replace_works() {
 # http://www.redhat.com/archives/dm-devel/2014-March/msg00008.html
 # so we need to put here exlusion for kernes which do trace SLUB
 #
-	case $(uname -r) in
+	case "$(uname -r)" in
 	  3.6.*.fc18.i686*|3.6.*.fc18.x86_64) return 1 ;;
 	  3.9.*.fc19.i686*|3.9.*.fc19.x86_64) return 1 ;;
 	  3.1[0123].*.fc18.i686*|3.1[0123].*.fc18.x86_64) return 1 ;;
-	  3.1[0123].*.fc19.i686*|3.1[0123].*.fc19.x86_64) return 1 ;;
+	  3.1[01234].*.fc19.i686*|3.1[01234].*.fc19.x86_64) return 1 ;;
 	  3.13.*.fc20.i686*|3.13.*.fc20.x86_64) return 1 ;;
 	  3.14.*.fc21.i686*|3.14.*.fc21.x86_64) return 1 ;;
+	  3.15.*rc6*.fc21.i686*|3.15.*rc6*.fc21.x86_64) return 1 ;;
+	  3.16.*rc4*.fc21.i686*|3.16.*rc4*.fc21.x86_64) return 1 ;;
 	esac
 }
 
@@ -715,7 +753,7 @@ udev_wait() {
 # wait_for_sync <VG/LV>
 wait_for_sync() {
 	local i
-	for i in {1..500} ; do
+	for i in {1..3000} ; do
 		check in_sync $1 $2 && return
 		sleep .2
 	done
@@ -770,11 +808,21 @@ target_at_least() {
 }
 
 have_thin() {
-	target_at_least dm-thin-pool "$@" || exit 1
-	test "$THIN" = shared || test "$THIN" = internal || exit 1
+	test "$THIN" = shared -o "$THIN" = internal || return 1
+	target_at_least dm-thin-pool "$@" || return 1
 
 	# disable thin_check if not present in system
 	which thin_check || lvmconf 'global/thin_check_executable = ""'
+}
+
+have_raid() {
+	test "$RAID" = shared -o "$RAID" = internal || return 1
+	target_at_least dm-raid "$@"
+}
+
+have_cache() {
+	test "$CACHE" = shared -o "$CACHE" = internal || return 1
+	target_at_least dm-cache "$@"
 }
 
 # check if lvm shell is build-in  (needs readline)
@@ -787,7 +835,7 @@ dmsetup_wrapped() {
 	dmsetup "$@"
 }
 
-test -f DEVICES && devs=$(cat DEVICES)
+test -f DEVICES && devs=$(< DEVICES)
 
 if test "$1" = dmsetup; then
     shift

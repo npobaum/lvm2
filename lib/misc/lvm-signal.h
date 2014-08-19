@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2014 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -13,17 +13,19 @@
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
-#ifndef _LVM_TYPES_H
-#define _LVM_TYPES_H
+#ifndef _LVM_SIGNAL_H
+#define _LVM_SIGNAL_H
 
-#include <sys/types.h>
-#include <inttypes.h>
+void remove_ctrl_c_handler(void);
+void install_ctrl_c_handler(void);
+int init_signals(int suppress_messages);
 
-#include "libdevmapper.h"
+void sigint_allow(void);
+int sigint_caught(void);
+void sigint_restore(void);
+void sigint_clear(void);
 
-struct str_list {
-	struct dm_list list;
-	const char *str;
-};
+void block_signals(uint32_t flags);
+void unblock_signals(void);
 
 #endif

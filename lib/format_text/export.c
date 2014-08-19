@@ -396,7 +396,7 @@ static int _print_vg(struct formatter *f, struct volume_group *vg)
 	outf(f, "seqno = %u", vg->seqno);
 
 	if (vg->fid && vg->fid->fmt)
-		outf(f, "format = \"%s\" # informational", vg->fid->fmt->name);
+		outfc(f, "# informational", "format = \"%s\"", vg->fid->fmt->name);
 
 	if (!_print_flag_config(f, vg->status, VG_FLAGS))
 		return_0;

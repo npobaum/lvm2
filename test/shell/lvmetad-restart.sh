@@ -9,7 +9,7 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
-. lib/test
+. lib/inittest
 
 test -e LOCAL_LVMETAD || skip
 aux prepare_pvs 2
@@ -17,7 +17,7 @@ aux prepare_pvs 2
 vgcreate $vg1 "$dev1" "$dev2"
 vgs | grep $vg1
 
-kill $(cat LOCAL_LVMETAD)
+kill $(< LOCAL_LVMETAD)
 aux prepare_lvmetad
 
 vgs | grep $vg1

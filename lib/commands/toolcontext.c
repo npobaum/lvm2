@@ -256,24 +256,32 @@ static int _check_disable_udev(const char *msg) {
 	return 0;
 }
 
+static int _check_config_by_source(struct cmd_context *cmd, config_source_t source)
+{
+	struct dm_config_tree *cft;
+	struct cft_check_handle *handle;
+
+	if (!(cft = get_config_tree_by_source(cmd, source)) ||
+	    !(handle = get_config_tree_check_handle(cmd, cft)))
+		return 1;
+
+	return config_def_check(handle);
+}
+
 static int _check_config(struct cmd_context *cmd)
 {
+	int abort_on_error;
+
 	if (!find_config_tree_bool(cmd, config_checks_CFG, NULL))
 		return 1;
 
-	if (!cmd->cft_check_handle) {
-		if (!(cmd->cft_check_handle = dm_pool_zalloc(cmd->libmem, sizeof(*cmd->cft_check_handle)))) {
-			log_error("Configuration check handle allocation failed.");
-			return 0;
-		}
-	}
+	abort_on_error = find_config_tree_bool(cmd, config_abort_on_errors_CFG, NULL);
 
-	cmd->cft_check_handle->cft = cmd->cft;
-	cmd->cft_check_handle->cmd = cmd;
-
-	if (!config_def_check(cmd->cft_check_handle) &&
-	    find_config_tree_bool(cmd, config_abort_on_errors_CFG, NULL)) {
-		log_error("LVM configuration invalid.");
+	if ((!_check_config_by_source(cmd, CONFIG_STRING) ||
+	    !_check_config_by_source(cmd, CONFIG_MERGED_FILES) ||
+	    !_check_config_by_source(cmd, CONFIG_FILE)) &&
+	    abort_on_error) {
+		log_error("LVM_ configuration invalid.");
 		return 0;
 	}
 
@@ -282,14 +290,16 @@ static int _check_config(struct cmd_context *cmd)
 
 int process_profilable_config(struct cmd_context *cmd) {
 	if (!(cmd->default_settings.unit_factor =
-	      units_to_bytes(find_config_tree_str(cmd, global_units_CFG, NULL),
-			     &cmd->default_settings.unit_type))) {
+	      dm_units_to_factor(find_config_tree_str(cmd, global_units_CFG, NULL),
+				 &cmd->default_settings.unit_type, 1, NULL))) {
 		log_error("Invalid units specification");
 		return 0;
 	}
 
 	cmd->si_unit_consistency = find_config_tree_bool(cmd, global_si_unit_consistency_CFG, NULL);
+	cmd->report_binary_values_as_numeric = find_config_tree_bool(cmd, report_binary_values_as_numeric_CFG, NULL);
 	cmd->default_settings.suffix = find_config_tree_bool(cmd, global_suffix_CFG, NULL);
+	cmd->report_list_item_separator = find_config_tree_str(cmd, report_list_item_separator_CFG, NULL);
 
 	return 1;
 }
@@ -348,7 +358,7 @@ static int _process_config(struct cmd_context *cmd)
 
 	/* activation? */
 	cmd->default_settings.activation = find_config_tree_bool(cmd, global_activation_CFG, NULL);
-	set_activation(cmd->default_settings.activation);
+	set_activation(cmd->default_settings.activation, 0);
 
 	cmd->auto_set_activation_skip = find_config_tree_bool(cmd, activation_auto_set_activation_skip_CFG, NULL);
 
@@ -571,7 +581,7 @@ static int _load_config_file(struct cmd_context *cmd, const char *tag)
 		return 0;
 	}
 
-	if (!(cfl->cft = config_file_open_and_read(config_file, CONFIG_FILE)))
+	if (!(cfl->cft = config_file_open_and_read(config_file, CONFIG_FILE, cmd)))
 		return_0;
 
 	dm_list_add(&cmd->config_files, &cfl->list);
@@ -607,7 +617,7 @@ static int _init_lvm_conf(struct cmd_context *cmd)
 /* Read any additional config files */
 static int _init_tag_configs(struct cmd_context *cmd)
 {
-	struct str_list *sl;
+	struct dm_str_list *sl;
 
 	/* Tag list may grow while inside this loop */
 	dm_list_iterate_items(sl, &cmd->tags) {
@@ -621,21 +631,24 @@ static int _init_tag_configs(struct cmd_context *cmd)
 static int _init_profiles(struct cmd_context *cmd)
 {
 	const char *dir;
-	struct profile_params *pp;
-
-	if (!(pp = dm_pool_zalloc(cmd->libmem, sizeof(*pp)))) {
-		log_error("profile_params alloc failed");
-		return 0;
-	}
 
 	if (!(dir = find_config_tree_str(cmd, config_profile_dir_CFG, NULL)))
 		return_0;
 
-	pp->dir = dm_pool_strdup(cmd->libmem, dir);
-	dm_list_init(&pp->profiles_to_load);
-	dm_list_init(&pp->profiles);
+	if (!cmd->profile_params) {
+		if (!(cmd->profile_params = dm_pool_zalloc(cmd->libmem, sizeof(*cmd->profile_params)))) {
+			log_error("profile_params alloc failed");
+			return 0;
+		}
+		dm_list_init(&cmd->profile_params->profiles_to_load);
+		dm_list_init(&cmd->profile_params->profiles);
+	}
 
-	cmd->profile_params = pp;
+	if (!(dm_strncpy(cmd->profile_params->dir, dir, sizeof(cmd->profile_params->dir)))) {
+		log_error("_init_profiles: dm_strncpy failed");
+		return 0;
+	}
+
 	return 1;
 }
 
@@ -685,7 +698,7 @@ static void _destroy_config(struct cmd_context *cmd)
 {
 	struct config_tree_list *cfl;
 	struct dm_config_tree *cft;
-	struct profile *profile;
+	struct profile *profile, *tmp_profile;
 
 	/*
 	 * Configuration cascade:
@@ -704,13 +717,19 @@ static void _destroy_config(struct cmd_context *cmd)
 
 	/* CONFIG_PROFILE */
 	if (cmd->profile_params) {
-		remove_config_tree_by_source(cmd, CONFIG_PROFILE);
-		dm_list_iterate_items(profile, &cmd->profile_params->profiles_to_load)
+		remove_config_tree_by_source(cmd, CONFIG_PROFILE_COMMAND);
+		remove_config_tree_by_source(cmd, CONFIG_PROFILE_METADATA);
+		/*
+		 * Destroy config trees for any loaded profiles and
+		 * move these profiles to profile_to_load list.
+		 * Whenever these profiles are referenced later,
+		 * they will get loaded again automatically.
+		 */
+		dm_list_iterate_items_safe(profile, tmp_profile, &cmd->profile_params->profiles) {
 			config_destroy(profile->cft);
-		dm_list_iterate_items(profile, &cmd->profile_params->profiles)
-			config_destroy(profile->cft);
-		dm_list_init(&cmd->profile_params->profiles_to_load);
-		dm_list_init(&cmd->profile_params->profiles);
+			profile->cft = NULL;
+			dm_list_move(&cmd->profile_params->profiles_to_load, &profile->list);
+		}
 	}
 
 	/* CONFIG_STRING */
@@ -1587,6 +1606,8 @@ int refresh_filters(struct cmd_context *cmd)
 int refresh_toolcontext(struct cmd_context *cmd)
 {
 	struct dm_config_tree *cft_cmdline, *cft_tmp;
+	const char *profile_command_name, *profile_metadata_name;
+	struct profile *profile;
 
 	log_verbose("Reloading config files");
 
@@ -1609,7 +1630,15 @@ int refresh_toolcontext(struct cmd_context *cmd)
 	_destroy_dev_types(cmd);
 	_destroy_tags(cmd);
 
+	/* save config string passed on the command line */
 	cft_cmdline = remove_config_tree_by_source(cmd, CONFIG_STRING);
+
+	/* save the global profile name used */
+	profile_command_name = cmd->profile_params->global_command_profile ?
+				cmd->profile_params->global_command_profile->name : NULL;
+	profile_metadata_name = cmd->profile_params->global_metadata_profile ?
+				cmd->profile_params->global_metadata_profile->name : NULL;
+
 	_destroy_config(cmd);
 
 	cmd->config_initialized = 0;
@@ -1625,6 +1654,18 @@ int refresh_toolcontext(struct cmd_context *cmd)
 	cft_tmp = cmd->cft;
 	if (cft_cmdline)
 		cmd->cft = dm_config_insert_cascaded_tree(cft_cmdline, cft_tmp);
+
+	/* Reload the global profile. */
+	if (profile_command_name) {
+		if (!(profile = add_profile(cmd, profile_command_name, CONFIG_PROFILE_COMMAND)) ||
+		    !override_config_tree_from_profile(cmd, profile))
+			return_0;
+	}
+	if (profile_metadata_name) {
+		if (!(profile = add_profile(cmd, profile_metadata_name, CONFIG_PROFILE_METADATA)) ||
+		    !override_config_tree_from_profile(cmd, profile))
+			return_0;
+	}
 
 	/* Uses cmd->cft i.e. cft_cmdline + lvm.conf */
 	_init_logging(cmd);
@@ -1647,6 +1688,9 @@ int refresh_toolcontext(struct cmd_context *cmd)
 		cmd->cft = dm_config_insert_cascaded_tree(cft_cmdline, cmd->cft);
 
 	if (!_process_config(cmd))
+		return_0;
+
+	if (!_init_profiles(cmd))
 		return_0;
 
 	if (!(cmd->dev_types = create_dev_types(cmd->proc_dir,

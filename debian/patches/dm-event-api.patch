@@ -1,6 +1,6 @@
 --- a/daemons/dmeventd/libdevmapper-event.c
 +++ b/daemons/dmeventd/libdevmapper-event.c
-@@ -340,7 +340,7 @@
+@@ -334,7 +334,7 @@
  	return bytes == size;
  }
  
@@ -9,7 +9,7 @@
  		struct dm_event_daemon_message *msg, int cmd,
  		const char *dso_name, const char *dev_name,
  		enum dm_event_mask evmask, uint32_t timeout)
-@@ -462,7 +462,7 @@
+@@ -456,7 +456,7 @@
  	return ret;
  }
  
@@ -18,7 +18,7 @@
  {
  	/* FIXME? Is fifo the most suitable method? Why not share
  	   comms/daemon code with something else e.g. multipath? */
-@@ -500,10 +500,10 @@
+@@ -494,10 +494,10 @@
  	if (!_start_daemon(dmeventd_path, fifos))
  		return_0;
  
@@ -31,7 +31,7 @@
  {
  	if (fifos->client >= 0 && close(fifos->client))
  		log_sys_debug("close", fifos->client_path);
-@@ -590,16 +590,16 @@
+@@ -584,16 +584,16 @@
  		return -ESRCH;
  	}
  
@@ -51,9 +51,9 @@
  
  	return ret;
  }
-@@ -813,7 +813,7 @@
+@@ -805,7 +805,7 @@
  	char *p;
- 	struct dm_event_daemon_message msg = { 0, 0, NULL };
+ 	struct dm_event_daemon_message msg = { 0 };
  
 -	if (daemon_talk(fifos, &msg, DM_EVENT_CMD_HELLO, NULL, NULL, 0, 0))
 +	if (dm_event_daemon_talk(fifos, &msg, DM_EVENT_CMD_HELLO, NULL, NULL, 0, 0))
@@ -72,7 +72,7 @@
  dm_event_get_version
 --- a/daemons/dmeventd/dmeventd.c
 +++ b/daemons/dmeventd/dmeventd.c
-@@ -1885,7 +1885,7 @@
+@@ -1871,7 +1871,7 @@
  	unsigned long mask_value, timeout_value;
  	int i, ret;
  
@@ -81,7 +81,7 @@
  	dm_free(msg.data);
  	msg.data = NULL;
  
-@@ -1918,7 +1918,7 @@
+@@ -1904,7 +1904,7 @@
  			continue;
  		}
  
@@ -90,7 +90,7 @@
  				dso_name,
  				dev_name,
  				(enum dm_event_mask) mask_value,
-@@ -1946,7 +1946,7 @@
+@@ -1931,7 +1931,7 @@
  	const char *e;
  
  	/* Get the list of registrations from the running daemon. */
@@ -99,7 +99,7 @@
  		fprintf(stderr, "WARNING: Could not initiate communication with existing dmeventd.\n");
  		exit(EXIT_FAILURE);
  	}
-@@ -1963,7 +1963,7 @@
+@@ -1948,7 +1948,7 @@
  		goto bad;
  	}
  
@@ -107,9 +107,9 @@
 +	if (dm_event_daemon_talk(&fifos, &msg, DM_EVENT_CMD_GET_STATUS, "-", "-", 0, 0))
  		goto bad;
  
- 	message = msg.data;
-@@ -1992,7 +1992,7 @@
- 	_initial_registrations[count] = 0;
+ 	message = strchr(msg.data, ' ') + 1;
+@@ -1973,7 +1973,7 @@
+ 	_initial_registrations[count] = NULL;
  
  	if (version >= 2) {
 -		if (daemon_talk(&fifos, &msg, DM_EVENT_CMD_GET_PARAMETERS, "-", "-", 0, 0)) {
@@ -117,7 +117,7 @@
  			fprintf(stderr, "Failed to acquire parameters from old dmeventd.\n");
  			goto bad;
  		}
-@@ -2012,7 +2012,7 @@
+@@ -1993,7 +1993,7 @@
  	}
  #endif
  
@@ -126,7 +126,7 @@
  		fprintf(stderr, "Old dmeventd refused to die.\n");
  		goto bad;
  	}
-@@ -2028,13 +2028,13 @@
+@@ -2009,13 +2009,13 @@
  	}
  
  	if (!_systemd_activation) {
@@ -143,7 +143,7 @@
  		fprintf(stderr, "Could not initiate communication with new instance of dmeventd.\n");
  		exit(EXIT_FAILURE);
  	}
-@@ -2044,10 +2044,10 @@
+@@ -2025,10 +2025,10 @@
  		goto bad;
  	}
  

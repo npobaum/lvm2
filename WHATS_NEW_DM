@@ -1,3 +1,36 @@
+Version 1.02.88 - 5th August 2014
+=================================
+  Add dm_tree_set_optional_uuid_suffixes to handle upgrades.
+
+Version 1.02.87 - 23rd July 2014
+================================
+  Fix dm_report_field_string_list to handle delimiter with multiple chars.
+  Add dm_report_field_reserved_value for per-field reserved value definition.
+
+Version 1.02.86 - 23rd June 2014
+================================
+  Make "help" and "?" reporting fields implicit.
+  Recognize implicit "selected" field if using dm_report_init_with_selection.
+  Add support for implicit reporting fields which are predefined in libdm.
+  Add DM_REPORT_FIELD_TYPE_PERCENT: separate number and percent fields.
+  Add dm_percent_range_t,dm_percent_to_float,dm_make_percent to libdm for reuse.
+  Add dm_report_reserved_value to libdevmapper for reserved value definition.
+  Also display field types when listing all fields in selection help.
+  Recognize "help" keyword in selection string to show brief help for selection.
+  Always order items reported as string list field lexicographically.
+  Add dm_report_field_string_list to libdevmapper for direct string list report.
+  Add DM_REPORT_FIELD_TYPE_STRING_LIST: separate string and string list fields.
+  Add dm_str_list to libdevmapper for string list type definition and its reuse.
+  Add dmsetup -S/--select to define selection criteria for dmsetup reports.
+  Add dm_report_init_with_selection to intialize report with selection criteria.
+  Add DM_REPORT_FIELD_TYPE_SIZE: separate number and size reporting fields.
+  Use RemoveOnStop for dm-event.socket systemd unit.
+  Document env var 'DM_DEFAULT_NAME_MANGLING_MODE' in dmsetup man page.
+  Warn user about incorrect use of cookie with 'dmsetup remove --force'.
+  Also recognize 'help'/'?' as reserved sort key name to show help.
+  Add dm_units_to_factor for size unit parsing.
+  Increase bitset size for minors for thin dmeventd plugin.
+
 Version 1.02.85 - 10th April 2014
 =================================
   Check for sprintf error when building internal device path.

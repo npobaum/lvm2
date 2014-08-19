@@ -1,10 +1,12 @@
 .TH VGEXTEND 8 "LVM TOOLS #VERSION#" "Sistina Software UK" \" -*- nroff -*-
 .SH NAME
-vgextend \- add physical volumes to a volume group
+vgextend \(em add physical volumes to a volume group
 .SH SYNOPSIS
 .B vgextend
 .RB [ \-A | \-\-autobackup
 .RI { y | n }]
+.RB [ \-\-commandprofile
+.IR ProfileName ]
 .RB [ \-d | \-\-debug ]
 .RB [ \-h | \-? | \-\-help ]
 .RB [ \-\-restoremissing ]

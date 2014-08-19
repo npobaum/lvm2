@@ -133,6 +133,8 @@
 /* Mirror conversion type flags */
 #define MIRROR_BY_SEG		0x00000001U	/* segment-by-segment mirror */
 #define MIRROR_BY_LV		0x00000002U	/* mirror using whole mimage LVs */
+#define MIRROR_BY_SEGMENTED_LV	0x00000004U	/* mirror using whole mimage LVs that
+						 * preserve the segment structure */
 #define MIRROR_SKIP_INIT_SYNC	0x00000010U	/* skip initial sync */
 
 /* vg_read and vg_read_for_update flags */
@@ -161,17 +163,21 @@
 #define vg_is_archived(vg)	(((vg)->status & ARCHIVED_VG) ? 1 : 0)
 
 #define lv_is_external_origin(lv)	(((lv)->external_count > 0) ? 1 : 0)
-#define lv_is_thin_volume(lv)	((lv)->status & THIN_VOLUME ? 1 : 0)
-#define lv_is_thin_pool(lv)	((lv)->status & THIN_POOL ? 1 : 0)
+#define lv_is_thin_volume(lv)	(((lv)->status & (THIN_VOLUME)) ? 1 : 0)
+#define lv_is_thin_pool(lv)	(((lv)->status & (THIN_POOL)) ? 1 : 0)
 #define lv_is_used_thin_pool(lv)	(lv_is_thin_pool(lv) && !dm_list_empty(&(lv)->segs_using_this_lv))
-#define lv_is_thin_pool_data(lv)	((lv)->status & THIN_POOL_DATA ? 1 : 0)
-#define lv_is_thin_pool_metadata(lv)	((lv)->status & THIN_POOL_METADATA ? 1 : 0)
-#define lv_is_mirrored(lv)	((lv)->status & MIRRORED ? 1 : 0)
-#define lv_is_rlog(lv)		((lv)->status & REPLICATOR_LOG ? 1 : 0)
+#define lv_is_thin_pool_data(lv)	(((lv)->status & (THIN_POOL_DATA)) ? 1 : 0)
+#define lv_is_thin_pool_metadata(lv)	(((lv)->status & (THIN_POOL_METADATA)) ? 1 : 0)
+#define lv_is_mirrored(lv)	(((lv)->status & (MIRRORED)) ? 1 : 0)
+#define lv_is_rlog(lv)		(((lv)->status & (REPLICATOR_LOG)) ? 1 : 0)
 
-#define lv_is_thin_type(lv)	((lv)->status & (THIN_POOL | THIN_VOLUME | THIN_POOL_DATA | THIN_POOL_METADATA) ? 1 : 0)
-#define lv_is_mirror_type(lv)	((lv)->status & (MIRROR_LOG | MIRROR_IMAGE | MIRRORED | PVMOVE) ? 1 : 0)
+#define lv_is_thin_type(lv)	(((lv)->status & (THIN_POOL | THIN_VOLUME | THIN_POOL_DATA | THIN_POOL_METADATA)) ? 1 : 0)
+#define lv_is_mirror_type(lv)	(((lv)->status & (MIRROR_LOG | MIRROR_IMAGE | MIRRORED | PVMOVE)) ? 1 : 0)
+#define lv_is_mirror_image(lv)	(((lv)->status & (MIRROR_IMAGE)) ? 1 : 0)
+#define lv_is_mirror_log(lv)	(((lv)->status & (MIRROR_LOG)) ? 1 : 0)
 #define lv_is_raid(lv)		(((lv)->status & (RAID)) ? 1 : 0)
+#define lv_is_raid_image(lv)	(((lv)->status & (RAID_IMAGE)) ? 1 : 0)
+#define lv_is_raid_metadata(lv)	(((lv)->status & (RAID_META)) ? 1 : 0)
 #define lv_is_raid_type(lv)	(((lv)->status & (RAID | RAID_IMAGE | RAID_META)) ? 1 : 0)
 
 #define lv_is_cache(lv)		(((lv)->status & (CACHE)) ? 1 : 0)
@@ -180,8 +186,10 @@
 #define lv_is_cache_pool_metadata(lv)	(((lv)->status & (CACHE_POOL_METADATA)) ? 1 : 0)
 #define lv_is_cache_type(lv)	(((lv)->status & (CACHE | CACHE_POOL | CACHE_POOL_DATA | CACHE_POOL_METADATA)) ? 1 : 0)
 
-#define lv_is_virtual(lv)	(((lv)->status & VIRTUAL) ? 1 : 0)
-#define lv_is_pool_metadata_spare(lv)	(((lv)->status & POOL_METADATA_SPARE) ? 1 : 0)
+#define lv_is_virtual(lv)	(((lv)->status & (VIRTUAL)) ? 1 : 0)
+#define lv_is_pool(lv)		(((lv)->status & (CACHE_POOL | THIN_POOL)) ? 1 : 0)
+#define lv_is_pool_metadata(lv)		(((lv)->status & (CACHE_POOL_METADATA | THIN_POOL_METADATA)) ? 1 : 0)
+#define lv_is_pool_metadata_spare(lv)	(((lv)->status & (POOL_METADATA_SPARE)) ? 1 : 0)
 
 /* Ordered list - see lv_manip.c */
 typedef enum {
@@ -190,13 +198,11 @@ typedef enum {
 	AREA_LV
 } area_type_t;
 
-/*
- * Whether or not to force an operation.
- */
+/* Whether or not to force an operation */
 typedef enum {
 	PROMPT = 0, /* Issue yes/no prompt to confirm operation */
-	DONT_PROMPT = 1, /* Skip yes/no prompt */
-	DONT_PROMPT_OVERRIDE = 2 /* Skip prompt + override a second condition */
+	DONT_PROMPT = 1, /* Add more prompts */
+	DONT_PROMPT_OVERRIDE = 2 /* Add even more dangerous prompts */
 } force_t;
 
 typedef enum {
@@ -467,7 +473,7 @@ struct pvcreate_params {
 };
 
 struct lvresize_params {
-	const char *vg_name;
+	const char *vg_name; /* only-used when VG is not yet opened (in /tools) */
 	const char *lv_name;
 
 	uint32_t stripes;
@@ -697,17 +703,25 @@ struct logical_volume *find_pool_lv(const struct logical_volume *lv);
 int pool_is_active(const struct logical_volume *pool_lv);
 int pool_supports_external_origin(const struct lv_segment *pool_seg, const struct logical_volume *external_lv);
 int thin_pool_feature_supported(const struct logical_volume *pool_lv, int feature);
+int recalculate_pool_chunk_size_with_dev_hints(struct logical_volume *pool_lv,
+					       int passed_args,
+					       int chunk_size_calc_policy);
 int update_pool_lv(struct logical_volume *lv, int activate);
+int update_pool_params(const struct segment_type *segtype,
+		       struct volume_group *vg, unsigned target_attr,
+		       int passed_args, uint32_t data_extents,
+		       uint64_t *pool_metadata_size,
+		       int *chunk_size_calc_policy, uint32_t *chunk_size,
+		       thin_discards_t *discards, int *zero);
 int update_profilable_pool_params(struct cmd_context *cmd, struct profile *profile,
 				  int passed_args, int *chunk_size_calc_method,
 				  uint32_t *chunk_size, thin_discards_t *discards,
 				  int *zero);
 int update_thin_pool_params(struct volume_group *vg, unsigned attr,
-			    int passed_args,
-			    uint32_t data_extents, uint32_t extent_size,
+			    int passed_args, uint32_t data_extents,
+			    uint64_t *pool_metadata_size,
 			    int *chunk_size_calc_method, uint32_t *chunk_size,
-			    thin_discards_t *discards,
-			    uint64_t *pool_metadata_size, int *zero);
+			    thin_discards_t *discards, int *zero);
 int get_pool_discards(const char *str, thin_discards_t *discards);
 const char *get_pool_discards_name(thin_discards_t discards);
 struct logical_volume *alloc_pool_metadata(struct logical_volume *pool_lv,
@@ -776,7 +790,7 @@ struct lvcreate_params {
 
 	const char *origin; /* snap */
 	const char *pool;   /* thin */
-	const char *vg_name; /* all */
+	const char *vg_name; /* only-used when VG is not yet opened (in /tools) */
 	const char *lv_name; /* all */
 
 	/* Keep args given by the user on command line */
@@ -893,6 +907,14 @@ int get_pv_list_for_lv(struct dm_pool *mem,
 struct lv_segment *first_seg(const struct logical_volume *lv);
 struct lv_segment *last_seg(const struct logical_volume *lv);
 
+/* Human-readable LV type name. */
+const char *lv_type_name(const struct logical_volume *lv);
+
+/*
+ * Useful function to determine linear and striped volumes.
+ */
+int lv_is_linear(const struct logical_volume *lv);
+int lv_is_striped(const struct logical_volume *lv);
 
 /*
 * Useful functions for managing snapshots.
@@ -1024,18 +1046,18 @@ int lv_raid_reshape(struct logical_volume *lv,
 int lv_raid_replace(struct logical_volume *lv, struct dm_list *remove_pvs,
 		    struct dm_list *allocate_pvs);
 int lv_raid_remove_missing(struct logical_volume *lv);
+int partial_raid_lv_supports_degraded_activation(struct logical_volume *lv);
 /* --  metadata/raid_manip.c */
 
 /* ++  metadata/cache_manip.c */
 int update_cache_pool_params(struct volume_group *vg, unsigned attr,
-			     int passed_args,
-			     uint32_t data_extents, uint32_t extent_size,
-			     int *chunk_size_calc_method, uint32_t *chunk_size,
-			     thin_discards_t *discards,
-			     uint64_t *pool_metadata_size, int *zero);
+			     int passed_args, uint32_t data_extents,
+			     uint64_t *pool_metadata_size,
+			     int *chunk_size_calc_method, uint32_t *chunk_size);
 struct logical_volume *lv_cache_create(struct logical_volume *pool,
 				       struct logical_volume *origin);
 int lv_cache_remove(struct logical_volume *cache_lv);
+int get_cache_mode(const char *str, uint32_t *flags);
 /* --  metadata/cache_manip.c */
 
 struct cmd_vg *cmd_vg_add(struct dm_pool *mem, struct dm_list *cmd_vgs,
@@ -1065,7 +1087,7 @@ struct dm_list *lvs_using_lv(struct cmd_context *cmd, struct volume_group *vg,
 			  struct logical_volume *lv);
 
 uint32_t find_free_lvnum(struct logical_volume *lv);
-percent_t copy_percent(const struct logical_volume *lv_mirr);
+dm_percent_t copy_percent(const struct logical_volume *lv_mirr);
 char *generate_lv_name(struct volume_group *vg, const char *format,
 		       char *buffer, size_t len);
 

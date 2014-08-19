@@ -9,7 +9,7 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
-. lib/test
+. lib/inittest
 
 get_image_pvs() {
 	local d
@@ -22,9 +22,9 @@ get_image_pvs() {
 ########################################################
 # MAIN
 ########################################################
-aux target_at_least dm-raid 1 2 0 || skip
+aux have_raid 1 3 0 || skip
 
-aux prepare_pvs 5
+aux prepare_pvs 9
 vgcreate -s 256k $vg $(cat DEVICES)
 
 ###########################################

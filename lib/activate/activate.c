@@ -200,7 +200,7 @@ int lv_passes_auto_activation_filter(struct cmd_context *cmd, struct logical_vol
 }
 
 #ifndef DEVMAPPER_SUPPORT
-void set_activation(int act)
+void set_activation(int act, int silent)
 {
 	static int warned = 0;
 
@@ -253,16 +253,16 @@ int lv_check_not_in_use(struct cmd_context *cmd, struct logical_volume *lv,
 {
         return 0;
 }
-int lv_snapshot_percent(const struct logical_volume *lv, percent_t *percent)
+int lv_snapshot_percent(const struct logical_volume *lv, dm_percent_t *percent)
 {
 	return 0;
 }
 int lv_mirror_percent(struct cmd_context *cmd, const struct logical_volume *lv,
-		      int wait, percent_t *percent, uint32_t *event_nr)
+		      int wait, dm_percent_t *percent, uint32_t *event_nr)
 {
 	return 0;
 }
-int lv_raid_percent(const struct logical_volume *lv, percent_t *percent)
+int lv_raid_percent(const struct logical_volume *lv, dm_percent_t *percent)
 {
 	return 0;
 }
@@ -282,30 +282,34 @@ int lv_raid_message(const struct logical_volume *lv, const char *msg)
 {
 	return 0;
 }
-int lv_cache_block_info(const struct logical_volume *lv,
+int lv_cache_block_info(struct logical_volume *lv,
 			uint32_t *chunk_size, uint64_t *dirty_count,
 			uint64_t *used_count, uint64_t *total_count)
 {
 	return 0;
 }
-int lv_cache_policy_info(const struct logical_volume *lv,
-			 char **policy_name, int *policy_argc,
-			 const char *const **policy_argv)
+int lv_cache_policy_info(struct logical_volume *lv,
+			 const char **policy_name, int *policy_argc,
+			 const char ***policy_argv)
 {
 	return 0;
 }
 int lv_thin_pool_percent(const struct logical_volume *lv, int metadata,
-			 percent_t *percent)
+			 dm_percent_t *percent)
 {
 	return 0;
 }
 int lv_thin_percent(const struct logical_volume *lv, int mapped,
-		    percent_t *percent)
+		    dm_percent_t *percent)
 {
 	return 0;
 }
 int lv_thin_pool_transaction_id(const struct logical_volume *lv,
 				uint64_t *transaction_id)
+{
+	return 0;
+}
+int lv_thin_device_id(const struct logical_volume *lv, uint32_t *device_id)
 {
 	return 0;
 }
@@ -431,7 +435,7 @@ int lv_has_target_type(struct dm_pool *mem, struct logical_volume *lv,
 
 static int _activation = 1;
 
-void set_activation(int act)
+void set_activation(int act, int silent)
 {
 	if (act == _activation)
 		return;
@@ -440,9 +444,12 @@ void set_activation(int act)
 	if (_activation)
 		log_verbose("Activation enabled. Device-mapper kernel "
 			    "driver will be used.");
-	else
+	else if (!silent)
 		log_warn("WARNING: Activation disabled. No device-mapper "
 			  "interaction will be attempted.");
+	else
+		log_verbose("Activation disabled. No device-mapper "
+			    "interaction will be attempted.");
 }
 
 int activation(void)
@@ -712,21 +719,20 @@ int lv_check_not_in_use(struct cmd_context *cmd, struct logical_volume *lv,
 	}
 
 	open_count_check_retries = retry_deactivation() ? OPEN_COUNT_CHECK_RETRIES : 1;
-	while (open_count_check_retries--) {
-		if (info->open_count > 0) {
-			if (open_count_check_retries) {
-				usleep(OPEN_COUNT_CHECK_USLEEP_DELAY);
-				log_debug_activation("Retrying open_count check for %s/%s.",
-						     lv->vg->name, lv->name);
-				if (!lv_info(cmd, lv, 0, info, 1, 0))
-					return -1;
-				continue;
-			}
+	while (info->open_count > 0 && open_count_check_retries--) {
+		if (!open_count_check_retries) {
 			log_error("Logical volume %s/%s in use.",
 				  lv->vg->name, lv->name);
 			return 0;
-		} else
+		}
+
+		usleep(OPEN_COUNT_CHECK_USLEEP_DELAY);
+		log_debug_activation("Retrying open_count check for %s/%s.",
+				     lv->vg->name, lv->name);
+		if (!lv_info(cmd, lv, 0, info, 1, 0)) {
+			stack; /* device dissappeared? */
 			break;
+		}
 	}
 
 	return 1;
@@ -759,7 +765,7 @@ int lv_check_transient(struct logical_volume *lv)
 /*
  * Returns 1 if percent set, else 0 on failure.
  */
-int lv_snapshot_percent(const struct logical_volume *lv, percent_t *percent)
+int lv_snapshot_percent(const struct logical_volume *lv, dm_percent_t *percent)
 {
 	int r;
 	struct dev_manager *dm;
@@ -782,7 +788,7 @@ int lv_snapshot_percent(const struct logical_volume *lv, percent_t *percent)
 
 /* FIXME Merge with snapshot_percent */
 int lv_mirror_percent(struct cmd_context *cmd, const struct logical_volume *lv,
-		      int wait, percent_t *percent, uint32_t *event_nr)
+		      int wait, dm_percent_t *percent, uint32_t *event_nr)
 {
 	int r;
 	struct dev_manager *dm;
@@ -790,7 +796,7 @@ int lv_mirror_percent(struct cmd_context *cmd, const struct logical_volume *lv,
 	/* If mirrored LV is temporarily shrinked to 1 area (= linear),
 	 * it should be considered in-sync. */
 	if (dm_list_size(&lv->segments) == 1 && first_seg(lv)->area_count == 1) {
-		*percent = PERCENT_100;
+		*percent = DM_PERCENT_100;
 		return 1;
 	}
 
@@ -811,7 +817,7 @@ int lv_mirror_percent(struct cmd_context *cmd, const struct logical_volume *lv,
 	return r;
 }
 
-int lv_raid_percent(const struct logical_volume *lv, percent_t *percent)
+int lv_raid_percent(const struct logical_volume *lv, dm_percent_t *percent)
 {
 	return lv_mirror_percent(lv->vg->cmd, lv, 0, percent, NULL);
 }
@@ -1139,7 +1145,7 @@ int lv_cache_policy_info(struct logical_volume *lv,
  * Returns 1 if percent set, else 0 on failure.
  */
 int lv_thin_pool_percent(const struct logical_volume *lv, int metadata,
-			 percent_t *percent)
+			 dm_percent_t *percent)
 {
 	int r;
 	struct dev_manager *dm;
@@ -1165,7 +1171,7 @@ int lv_thin_pool_percent(const struct logical_volume *lv, int metadata,
  * Returns 1 if percent set, else 0 on failure.
  */
 int lv_thin_percent(const struct logical_volume *lv,
-		    int mapped, percent_t *percent)
+		    int mapped, dm_percent_t *percent)
 {
 	int r;
 	struct dev_manager *dm;
@@ -2226,9 +2232,19 @@ static int _lv_activate(struct cmd_context *cmd, const char *lvid_s,
 	}
 
 	if ((!lv->vg->cmd->partial_activation) && (lv->status & PARTIAL_LV)) {
-		log_error("Refusing activation of partial LV %s. Use --partial to override.",
-			  lv->name);
-		goto out;
+		if (!lv_is_raid_type(lv) || !partial_raid_lv_supports_degraded_activation(lv)) {
+			log_error("Refusing activation of partial LV %s.  "
+				  "Use '--activationmode partial' to override.",
+				  display_lvname(lv));
+			goto out;
+		}
+
+		if (!lv->vg->cmd->degraded_activation) {
+			log_error("Refusing activation of partial LV %s.  "
+				  "Try '--activationmode degraded'.",
+				  display_lvname(lv));
+			goto out;
+		}
 	}
 
 	if (lv_has_unknown_segments(lv)) {

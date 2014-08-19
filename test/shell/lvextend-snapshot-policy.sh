@@ -9,7 +9,7 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
-. lib/test
+. lib/inittest
 
 which mkfs.ext2 || skip
 
@@ -27,7 +27,7 @@ percent() {
 	get lv_field $vg/snap snap_percent | cut -d. -f1
 }
 
-aux prepare_dmeventd
+# no dmeventd running in this test, testing --use-policies
 aux prepare_vg 2
 
 lvcreate -aey -L24 -n base $vg

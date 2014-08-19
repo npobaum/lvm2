@@ -29,49 +29,26 @@ static int _get_vsn(struct cmd_context *cmd, uint16_t *version_int)
 	return 1;
 }
 
-static struct cft_check_handle *_get_cft_check_handle(struct cmd_context *cmd, struct dm_config_tree *cft)
-{
-	struct cft_check_handle *handle;
-	struct dm_pool *mem;
-
-	if (cft == cmd->cft) {
-		mem = cmd->libmem;
-		handle = cmd->cft_check_handle;
-	} else {
-		mem = cft->mem;
-		handle = NULL;
-	}
-
-	if (!handle) {
-		if (!(handle = dm_pool_zalloc(mem, sizeof(struct cft_check_handle)))) {
-			log_error("Configuration check handle allocation failed.");
-			return NULL;
-		}
-		handle->cmd = cmd;
-		handle->cft = cft;
-		if (cft == cmd->cft)
-			cmd->cft_check_handle = handle;
-	}
-
-	return handle;
-}
-
 static int _do_def_check(struct config_def_tree_spec *spec,
 			 struct dm_config_tree *cft,
 			 struct cft_check_handle **cft_check_handle)
 {
 	struct cft_check_handle *handle;
 
-	if (!(handle = _get_cft_check_handle(spec->cmd, cft)))
+	if (!(handle = get_config_tree_check_handle(spec->cmd, cft)))
 		return 0;
 
 	handle->force_check = 1;
 	handle->suppress_messages = 1;
 
-	if (spec->type == CFG_DEF_TREE_DIFF)
+	if (spec->type == CFG_DEF_TREE_DIFF) {
+		if (!handle->check_diff)
+			handle->skip_if_checked = 0;
 		handle->check_diff = 1;
-	else
+	} else {
 		handle->skip_if_checked = 1;
+		handle->check_diff = 0;
+	}
 
 	config_def_check(handle);
 	*cft_check_handle = handle;
@@ -94,6 +71,20 @@ static int _merge_config_cascade(struct cmd_context *cmd, struct dm_config_tree 
 	return merge_config_tree(cmd, *cft_merged, cft_cascaded, CONFIG_MERGE_TYPE_RAW);
 }
 
+static int _config_validate(struct cmd_context *cmd, struct dm_config_tree *cft)
+{
+	struct cft_check_handle *handle;
+
+	if (!(handle = get_config_tree_check_handle(cmd, cft)))
+		return 1;
+
+	handle->force_check = 1;
+	handle->skip_if_checked = 1;
+	handle->suppress_messages = 0;
+
+	return config_def_check(handle);
+}
+
 int dumpconfig(struct cmd_context *cmd, int argc, char **argv)
 {
 	const char *file = arg_str_value(cmd, file_ARG, NULL);
@@ -101,6 +92,7 @@ int dumpconfig(struct cmd_context *cmd, int argc, char **argv)
 	struct config_def_tree_spec tree_spec = {0};
 	struct dm_config_tree *cft = NULL;
 	struct cft_check_handle *cft_check_handle = NULL;
+	struct profile *profile = NULL;
 	int r = ECMD_PROCESSED;
 
 	tree_spec.cmd = cmd;
@@ -141,6 +133,18 @@ int dumpconfig(struct cmd_context *cmd, int argc, char **argv)
 		return EINVALID_CMD_LINE;
 
 	/*
+	 * The profile specified by --profile cmd arg is like --commandprofile,
+	 * but it is used just for dumping the profile content and not for
+	 * application.
+	 */
+	if (arg_count(cmd, profile_ARG) &&
+	    (!(profile = add_profile(cmd, arg_str_value(cmd, profile_ARG, NULL), CONFIG_PROFILE_COMMAND)) ||
+	    !override_config_tree_from_profile(cmd, profile))) {
+		log_error("Failed to load profile %s.", arg_str_value(cmd, profile_ARG, NULL));
+		return ECMD_FAILED;
+	}
+
+	/*
 	 * Set the 'cft' to work with based on whether we need the plain
 	 * config tree or merged config tree cascade if --mergedconfig is used.
 	 */
@@ -154,14 +158,7 @@ int dumpconfig(struct cmd_context *cmd, int argc, char **argv)
 		cft = cmd->cft;
 
 	if (arg_count(cmd, validate_ARG)) {
-		if (!(cft_check_handle = _get_cft_check_handle(cmd, cft)))
-			return ECMD_FAILED;
-
-		cft_check_handle->force_check = 1;
-		cft_check_handle->skip_if_checked = 1;
-		cft_check_handle->suppress_messages = 0;
-
-		if (config_def_check(cft_check_handle)) {
+		if (_config_validate(cmd, cft)) {
 			log_print("LVM configuration valid.");
 			goto out;
 		} else {
@@ -204,9 +201,18 @@ int dumpconfig(struct cmd_context *cmd, int argc, char **argv)
 		tree_spec.type = CFG_DEF_TREE_PROFILABLE;
 		/* profilable type does not require check status */
 	}
+	else if (!strcmp(type, "profilable-command")) {
+		tree_spec.type = CFG_DEF_TREE_PROFILABLE_CMD;
+		/* profilable-command type does not require check status */
+	}
+	else if (!strcmp(type, "profilable-metadata")) {
+		tree_spec.type = CFG_DEF_TREE_PROFILABLE_MDA;
+		/* profilable-metadata  type does not require check status */
+	}
 	else {
 		log_error("Incorrect type of configuration specified. "
-			  "Expected one of: current, default, missing, new, profilable.");
+			  "Expected one of: current, default, missing, new, "
+			  "profilable, profilable-command, profilable-metadata.");
 		r = EINVALID_CMD_LINE;
 		goto out;
 	}
@@ -234,6 +240,8 @@ int dumpconfig(struct cmd_context *cmd, int argc, char **argv)
 out:
 	if (cft && (cft != cmd->cft))
 		dm_pool_destroy(cft->mem);
+	else if (profile)
+		remove_config_tree_by_source(cmd, CONFIG_PROFILE_COMMAND);
 
 	/*
 	 * The cmd->cft (the "current" tree) is destroyed

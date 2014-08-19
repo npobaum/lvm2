@@ -164,18 +164,15 @@ out:
 static int _clear_dev_from_lvmetad_cache(dev_t devno, int32_t major, int32_t minor,
 					 activation_handler handler)
 {
-	char *buf;
+	char buf[24];
 
-	if (!dm_asprintf(&buf, "%" PRIi32 ":%" PRIi32, major, minor))
-		stack;
-	if (!lvmetad_pv_gone(devno, buf ? : "", handler)) {
-		dm_free(buf);
-		return 0;
-	}
+	(void) dm_snprintf(buf, sizeof(buf), "%" PRIi32 ":%" PRIi32, major, minor);
+
+	if (!lvmetad_pv_gone(devno, buf, handler))
+		return_0;
 
 	log_print_unless_silent("Device %s not found. "
-				"Cleared from lvmetad cache.", buf ? : "");
-	dm_free(buf);
+				"Cleared from lvmetad cache.", buf);
 
 	return 1;
 }
@@ -201,9 +198,8 @@ static int _pvscan_lvmetad(struct cmd_context *cmd, int argc, char **argv)
 	 * and to prevent hangs in clustered environment.
 	 */
 	/* TODO: Remove this once lvmetad + cluster supported! */
-	if (find_config_tree_int(cmd, global_locking_type_CFG, NULL) == 3 ||
-	    !find_config_tree_bool(cmd, global_use_lvmetad_CFG, NULL)) {
-		log_debug_lvmetad("_pvscan_lvmetad: immediate return");
+	if (!lvmetad_used()) {
+		log_verbose("Ignoring pvscan --cache command because lvmetad is not in use.");
 		return ret;
 	}
 

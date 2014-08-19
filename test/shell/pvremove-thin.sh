@@ -12,11 +12,11 @@
 # Checks we are not reading our own devices
 # https://bugzilla.redhat.com/show_bug.cgi?id=1064374
 
-. lib/test
+. lib/inittest
 
 aux prepare_vg
 
-aux target_at_least dm-thin-pool 1 8 0 || skip
+aux have_thin 1 8 0 || skip
 
 aux extend_filter_LVMTEST
 

@@ -9,13 +9,13 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
-. lib/test
+. lib/inittest
 
 aux prepare_vg 4
 
-# Attempt to create snapshot of a mirror origin - should fail
-lvcreate -aey --type mirror -m 1 -L 10M -n lv $vg
+lvcreate -aey --type mirror -m 1 -L 10M --nosync -n lv $vg
 
+# Create snapshot of a mirror origin
 lvcreate -s $vg/lv -L 10M -n snap
 
 # Down-convert (mirror -> linear) under a snapshot

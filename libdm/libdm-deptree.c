@@ -16,6 +16,7 @@
 #include "libdm-targets.h"
 #include "libdm-common.h"
 #include "kdev_t.h"
+#include "dm-ioctl.h"
 
 #include <stdarg.h>
 #include <sys/param.h>
@@ -300,6 +301,7 @@ struct dm_tree {
 	int no_flush;			/* 1 sets noflush (mirrors/multipath) */
 	int retry_remove;		/* 1 retries remove if not successful */
 	uint32_t cookie;
+	const char **optional_uuid_suffixes;	/* uuid suffixes ignored when matching */
 };
 
 /*
@@ -325,6 +327,7 @@ struct dm_tree *dm_tree_create(void)
 	dtree->skip_lockfs = 0;
 	dtree->no_flush = 0;
 	dtree->mem = dmem;
+	dtree->optional_uuid_suffixes = NULL;
 
 	if (!(dtree->devs = dm_hash_create(8))) {
 		log_error("dtree hash creation failed");
@@ -539,23 +542,57 @@ static struct dm_tree_node *_find_dm_tree_node(struct dm_tree *dtree,
 				     sizeof(dev));
 }
 
+void dm_tree_set_optional_uuid_suffixes(struct dm_tree *dtree, const char **optional_uuid_suffixes)
+{
+	dtree->optional_uuid_suffixes = optional_uuid_suffixes;
+}
+
 static struct dm_tree_node *_find_dm_tree_node_by_uuid(struct dm_tree *dtree,
 						       const char *uuid)
 {
 	struct dm_tree_node *node;
 	const char *default_uuid_prefix;
 	size_t default_uuid_prefix_len;
+	const char *suffix, *suffix_position;
+	char uuid_without_suffix[DM_UUID_LEN];
+	unsigned i = 0;
+	const char **suffix_list = dtree->optional_uuid_suffixes;
 
-	if ((node = dm_hash_lookup(dtree->uuids, uuid)))
+	if ((node = dm_hash_lookup(dtree->uuids, uuid))) {
+		log_debug("Matched uuid %s in deptree.", uuid);
 		return node;
+	}
 
 	default_uuid_prefix = dm_uuid_prefix();
 	default_uuid_prefix_len = strlen(default_uuid_prefix);
 
+	if (suffix_list && (suffix_position = rindex(uuid, '-'))) {
+		while ((suffix = suffix_list[i++])) {
+			if (strcmp(suffix_position + 1, suffix))
+				continue;
+
+			(void) strncpy(uuid_without_suffix, uuid, sizeof(uuid_without_suffix));
+			uuid_without_suffix[suffix_position - uuid] = '\0';
+
+			if ((node = dm_hash_lookup(dtree->uuids, uuid_without_suffix))) {
+				log_debug("Matched uuid %s (missing suffix -%s) in deptree.", uuid_without_suffix, suffix);
+				return node;
+			}
+
+			break;
+		};
+	}
+	
 	if (strncmp(uuid, default_uuid_prefix, default_uuid_prefix_len))
 		return NULL;
 
-	return dm_hash_lookup(dtree->uuids, uuid + default_uuid_prefix_len);
+	if ((node = dm_hash_lookup(dtree->uuids, uuid + default_uuid_prefix_len))) {
+		log_debug("Matched uuid %s (missing prefix) in deptree.", uuid + default_uuid_prefix_len);
+		return node;
+	}
+
+	log_debug("Not matched uuid %s in deptree.", uuid + default_uuid_prefix_len);
+	return NULL;
 }
 
 void dm_tree_node_set_udev_flags(struct dm_tree_node *dnode, uint16_t udev_flags)
@@ -1920,15 +1957,50 @@ static int _create_node(struct dm_tree_node *dnode)
 	if (!dm_task_no_open_count(dmt))
 		log_error("Failed to disable open_count");
 
-	if ((r = dm_task_run(dmt)))
-		r = dm_task_get_info(dmt, &dnode->info);
-
+	if ((r = dm_task_run(dmt))) {
+		if (!(r = dm_task_get_info(dmt, &dnode->info)))
+			/*
+			 * This should not be possible to occur.  However,
+			 * we print an error message anyway for the more
+			 * absurd cases (e.g. memory corruption) so there
+			 * is never any question as to which one failed.
+			 */
+			log_error(INTERNAL_ERROR
+				  "Unable to get DM task info for %s.",
+				  dnode->name);
+	}
 out:
 	dm_task_destroy(dmt);
 
 	return r;
 }
 
+/*
+ * _remove_node
+ *
+ * This function is only used to remove a DM device that has failed
+ * to load any table.
+ */
+static int _remove_node(struct dm_tree_node *dnode)
+{
+	if (!dnode->info.exists)
+		return 1;
+
+	if (dnode->info.live_table || dnode->info.inactive_table) {
+		log_error(INTERNAL_ERROR
+			  "_remove_node called on device with loaded table(s).");
+		return 0;
+	}
+
+	if (!_deactivate_node(dnode->name, dnode->info.major, dnode->info.minor,
+			      &dnode->dtree->cookie, dnode->udev_flags, 0)) {
+		log_error("Failed to clean-up device with no table: %s %u:%u",
+			  dnode->name ? dnode->name : "",
+			  dnode->info.major, dnode->info.minor);
+		return 0;
+	}
+	return 1;
+}
 
 static int _build_dev_string(char *devbuf, size_t bufsize, struct dm_tree_node *node)
 {
@@ -2662,7 +2734,7 @@ int dm_tree_preload_children(struct dm_tree_node *dnode,
 			     const char *uuid_prefix,
 			     size_t uuid_prefix_len)
 {
-	int r = 1;
+	int r = 1, node_created = 0;
 	void *handle = NULL;
 	struct dm_tree_node *child;
 	struct dm_info newinfo;
@@ -2684,13 +2756,25 @@ int dm_tree_preload_children(struct dm_tree_node *dnode,
 				return_0;
 
 		/* FIXME Cope if name exists with no uuid? */
-		if (!child->info.exists && !_create_node(child))
+		if (!child->info.exists && !(node_created = _create_node(child)))
 			return_0;
 
 		if (!child->info.inactive_table &&
 		    child->props.segment_count &&
-		    !_load_node(child))
+		    !_load_node(child)) {
+			/*
+			 * If the table load does not succeed, we remove the
+			 * device in the kernel that would otherwise have an
+			 * empty table.  This makes the create + load of the
+			 * device atomic.  However, if other dependencies have
+			 * already been created and loaded; this code is
+			 * insufficient to remove those - only the node
+			 * encountering the table load failure is removed.
+			 */
+			if (node_created && !_remove_node(child))
+				return_0;
 			return_0;
+		}
 
 		/* Propagate device size change change */
 		if (child->props.size_changed)

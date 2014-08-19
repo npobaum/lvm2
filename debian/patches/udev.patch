@@ -87,26 +87,25 @@ Author: Bastian Blank <waldi@debian.org>
  endif
  
  DM_DIR=$(shell grep "\#define DM_DIR" $(top_srcdir)/libdm/misc/dm-ioctl.h | awk '{print $$3}')
-@@ -55,8 +55,17 @@
+@@ -55,6 +55,18 @@
  %.rules: %.rules.in
  	$(SED) -e "s+(DM_DIR)+$(DM_DIR)+;s+(BLKID_RULE)+$(BLKID_RULE)+;s+(PVSCAN_RULE)+$(PVSCAN_RULE)+;s+(DM_EXEC_RULE)+$(DM_EXEC_RULE)+;s+(DM_EXEC)+$(DM_EXEC)+;s+(LVM_EXEC_RULE)+$(LVM_EXEC_RULE)+;s+(LVM_EXEC)+$(LVM_EXEC)+;" $< >$@
  
--%_install: %.rules
--	$(INSTALL_DATA) -D $< $(udevdir)/$(<F)
-+55-dm_install: 10-dm.rules
-+	$(INSTALL_DATA) -D $< $(udevdir)/55-dm.rules
++55-dm.rules: 10-dm.rules
++	ln -s $< $@
 +
-+56-lvm_install: 11-dm-lvm.rules
-+	$(INSTALL_DATA) -D $< $(udevdir)/56-lvm.rules
++56-lvm.rules: 11-dm-lvm.rules
++	ln -s $< $@
 +
-+60-persistent-storage-dm_install: 13-dm-disk.rules
-+	$(INSTALL_DATA) -D $< $(udevdir)/60-persistent-storage-dm.rules
++60-persistent-storage-dm.rules: 13-dm-disk.rules
++	ln -s $< $@
 +
-+69-lvm-metad_install: 69-dm-lvm-metad.rules
-+	$(INSTALL_DATA) -D $< $(udevdir)/69-lvm-metad.rules
++69-lvm-metad.rules: 69-dm-lvm-metad.rules
++	ln -s $< $@
++
+ %_install: %.rules
+ 	$(INSTALL_DATA) -D $< $(udevdir)/$(<F)
  
- install_device-mapper: $(DM_RULES:.rules=_install)
- install_lvm2: $(LVM_RULES:.rules=_install)
 --- a/udev/11-dm-lvm.rules.in
 +++ b/udev/11-dm-lvm.rules.in
 @@ -14,7 +14,7 @@

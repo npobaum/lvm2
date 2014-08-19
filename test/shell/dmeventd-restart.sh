@@ -9,7 +9,7 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
-. lib/test
+. lib/inittest
 
 aux prepare_dmeventd
 
@@ -30,7 +30,7 @@ lvchange --monitor y --verbose $vg/4way 2>&1 | tee lvchange.out
 grep 'already monitored' lvchange.out
 
 # now try what happens if no dmeventd is running
-kill -9 $(cat LOCAL_DMEVENTD)
+kill -9 $(< LOCAL_DMEVENTD)
 rm LOCAL_DMEVENTD
 
 dmeventd -R -f &

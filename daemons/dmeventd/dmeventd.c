@@ -26,6 +26,7 @@
 //#include "libmultilog.h"
 #include "dm-logging.h"
 
+#include <stdarg.h>
 #include <dlfcn.h>
 #include <errno.h>
 #include <pthread.h>
@@ -217,9 +218,9 @@ static pthread_cond_t _timeout_cond = PTHREAD_COND_INITIALIZER;
 static struct thread_status *_alloc_thread_status(const struct message_data *data,
 						  struct dso_data *dso_data)
 {
-	struct thread_status *ret = (typeof(ret)) dm_zalloc(sizeof(*ret));
+	struct thread_status *ret;
 
-	if (!ret)
+	if (!(ret = dm_zalloc(sizeof(*ret))))
 		return NULL;
 
 	if (!(ret->device.uuid = dm_strdup(data->device_uuid))) {
@@ -227,9 +228,6 @@ static struct thread_status *_alloc_thread_status(const struct message_data *dat
 		return NULL;
 	}
 
-	ret->current_task = NULL;
-	ret->device.name = NULL;
-	ret->device.major = ret->device.minor = 0;
 	ret->dso_data = dso_data;
 	ret->events = data->events_field;
 	ret->timeout = data->timeout_secs;
@@ -384,7 +382,6 @@ static int _parse_message(struct message_data *message_data)
 
 	dm_free(msg->data);
 	msg->data = NULL;
-	msg->size = 0;
 
 	return ret;
 }
@@ -406,15 +403,12 @@ static int _fill_device_data(struct thread_status *ts)
 {
 	struct dm_task *dmt;
 	struct dm_info dmi;
+	int ret = 0;
 
 	if (!ts->device.uuid)
 		return 0;
 
-	ts->device.name = NULL;
-	ts->device.major = ts->device.minor = 0;
-
-	dmt = dm_task_create(DM_DEVICE_INFO);
-	if (!dmt)
+	if (!(dmt = dm_task_create(DM_DEVICE_INFO)))
 		return 0;
 
 	if (!dm_task_set_uuid(dmt, ts->device.uuid))
@@ -423,8 +417,8 @@ static int _fill_device_data(struct thread_status *ts)
 	if (!dm_task_run(dmt))
 		goto fail;
 
-	ts->device.name = dm_strdup(dm_task_get_name(dmt));
-	if (!ts->device.name)
+	dm_free(ts->device.name);
+	if (!(ts->device.name = dm_strdup(dm_task_get_name(dmt))))
 		goto fail;
 
 	if (!dm_task_get_info(dmt, &dmi))
@@ -432,16 +426,11 @@ static int _fill_device_data(struct thread_status *ts)
 
 	ts->device.major = dmi.major;
 	ts->device.minor = dmi.minor;
-
+	ret = 1;
+fail:
 	dm_task_destroy(dmt);
-	return 1;
 
-      fail:
-	dm_task_destroy(dmt);
-	dm_free(ts->device.name);
-	ts->device.name = NULL;
-
-	return 0;
+	return ret;
 }
 
 /*
@@ -464,20 +453,17 @@ static int _get_status(struct message_data *message_data)
 {
 	struct dm_event_daemon_message *msg = message_data->msg;
 	struct thread_status *thread;
-	int i, j;
-	int ret = -1;
-	int count = dm_list_size(&_thread_registry);
+	int i = 0, j;
+	int ret = -ENOMEM;
+	int count;
 	int size = 0, current;
-	char *buffers[count];
+	size_t len;
+	char **buffers;
 	char *message;
 
-	dm_free(msg->data);
-
-	for (i = 0; i < count; ++i)
-		buffers[i] = NULL;
-
-	i = 0;
 	_lock_mutex();
+	count = dm_list_size(&_thread_registry);
+	buffers = alloca(sizeof(char*) * count);
 	dm_list_iterate_items(thread, &_thread_registry) {
 		if ((current = dm_asprintf(buffers + i, "0:%d %s %s %u %" PRIu32 ";",
 					   i, thread->dso_data->dso_name,
@@ -486,25 +472,24 @@ static int _get_status(struct message_data *message_data)
 			_unlock_mutex();
 			goto out;
 		}
-		++ i;
-		size += current;
+		++i;
+		size += current; /* count with trailing '\0' */
 	}
 	_unlock_mutex();
 
-	msg->size = size + strlen(message_data->id) + 1;
-	msg->data = dm_malloc(msg->size);
-	if (!msg->data)
+	len = strlen(message_data->id);
+	msg->size = size + len + 1;
+	dm_free(msg->data);
+	if (!(msg->data = dm_malloc(msg->size)))
 		goto out;
-	*msg->data = 0;
 
-	message = msg->data;
-	strcpy(message, message_data->id);
-	message += strlen(message_data->id);
-	*message = ' ';
-	message ++;
+	memcpy(msg->data, message_data->id, len);
+	message = msg->data + len;
+	*message++ = ' ';
 	for (j = 0; j < i; ++j) {
-		strcpy(message, buffers[j]);
-		message += strlen(buffers[j]);
+		len = strlen(buffers[j]);
+		memcpy(message, buffers[j], len);
+		message += len;
 	}
 
 	ret = 0;
@@ -517,26 +502,20 @@ static int _get_status(struct message_data *message_data)
 
 static int _get_parameters(struct message_data *message_data) {
 	struct dm_event_daemon_message *msg = message_data->msg;
-	char buf[128];
-	int r = -1;
+	int size;
 
 	dm_free(msg->data);
+	if ((size = dm_asprintf(&msg->data, "%s pid=%d daemon=%s exec_method=%s",
+				message_data->id, getpid(),
+				_foreground ? "no" : "yes",
+				_systemd_activation ? "systemd" : "direct")) < 0) {
+		stack;
+		return -ENOMEM;
+	}
 
-	if (!(dm_snprintf(buf, sizeof(buf), "%s pid=%d daemon=%s exec_method=%s",
-			  message_data->id,
-			  getpid(),
-			  _foreground ? "no" : "yes",
-			  _systemd_activation ? "systemd" : "direct")))
-		goto_out;
+	msg->size = (uint32_t) size;
 
-	msg->size = strlen(buf) + 1;
-	if (!(msg->data = dm_malloc(msg->size)))
-		goto_out;
-	if (!dm_strncpy(msg->data, buf, msg->size))
-		goto_out;
-	r = 0;
-out:
-	return r;
+	return 0;
 }
 
 /* Cleanup at exit. */
@@ -592,9 +571,8 @@ static int _register_for_timeout(struct thread_status *thread)
 
 	pthread_mutex_lock(&_timeout_mutex);
 
-	thread->next_time = time(NULL) + thread->timeout;
-
 	if (dm_list_empty(&thread->timeout_list)) {
+		thread->next_time = time(NULL) + thread->timeout;
 		dm_list_add(&_timeout_registry, &thread->timeout_list);
 		if (_timeout_running)
 			pthread_cond_signal(&_timeout_cond);
@@ -616,6 +594,7 @@ static void _unregister_for_timeout(struct thread_status *thread)
 		dm_list_del(&thread->timeout_list);
 		dm_list_init(&thread->timeout_list);
 		if (dm_list_empty(&_timeout_registry))
+			/* No more work -> wakeup to finish quickly */
 			pthread_cond_signal(&_timeout_cond);
 	}
 	pthread_mutex_unlock(&_timeout_mutex);
@@ -921,11 +900,11 @@ static struct dso_data *_lookup_dso(struct message_data *data)
 	struct dso_data *dso_data, *ret = NULL;
 
 	dm_list_iterate_items(dso_data, &_dso_registry)
-	    if (!strcmp(data->dso_name, dso_data->dso_name)) {
-		_lib_get(dso_data);
-		ret = dso_data;
-		break;
-	}
+		if (!strcmp(data->dso_name, dso_data->dso_name)) {
+			_lib_get(dso_data);
+			ret = dso_data;
+			break;
+		}
 
 	return ret;
 }
@@ -953,7 +932,7 @@ static int lookup_symbols(void *dl, struct dso_data *data)
 static struct dso_data *_load_dso(struct message_data *data)
 {
 	void *dl;
-	struct dso_data *ret = NULL;
+	struct dso_data *ret;
 	char dso_name[PATH_MAX];
 
 	if (strchr(data->dso_name, '/') == NULL) {
@@ -1157,10 +1136,8 @@ static int _registered_device(struct message_data *message_data,
 	if ((r = dm_asprintf(&(msg->data), "%s %s %s %u",
 			     message_data->id,
 			     thread->dso_data->dso_name,
-			     thread->device.uuid, events)) < 0) {
-		msg->size = 0;
+			     thread->device.uuid, events)) < 0)
 		return -ENOMEM;
-	}
 
 	msg->size = (uint32_t) r;
 
@@ -1269,13 +1246,11 @@ static int _get_timeout(struct message_data *message_data)
 
 	_lock_mutex();
 	if ((thread = _lookup_thread_status(message_data))) {
-		msg->size =
-		    dm_asprintf(&(msg->data), "%s %" PRIu32, message_data->id,
-				thread->timeout);
-	} else {
+		msg->size = dm_asprintf(&(msg->data), "%s %" PRIu32,
+					message_data->id, thread->timeout);
+	} else
 		msg->data = NULL;
-		msg->size = 0;
-	}
+
 	_unlock_mutex();
 
 	return thread ? 0 : -ENODEV;
@@ -1414,7 +1389,6 @@ static int _client_read(struct dm_event_fifos *fifos,
 	if (bytes != size) {
 		dm_free(msg->data);
 		msg->data = NULL;
-		msg->size = 0;
 		return 0;
 	}
 
@@ -1427,33 +1401,45 @@ static int _client_read(struct dm_event_fifos *fifos,
 static int _client_write(struct dm_event_fifos *fifos,
 			struct dm_event_daemon_message *msg)
 {
+	uint32_t temp[2];
 	unsigned bytes = 0;
 	int ret = 0;
 	fd_set fds;
 
-	size_t size = 2 * sizeof(uint32_t) + msg->size;
-	uint32_t *header = alloca(size);
+	size_t size = 2 * sizeof(uint32_t) + ((msg->data) ? msg->size : 0);
+	uint32_t *header = dm_malloc(size);
 	char *buf = (char *)header;
 
-	header[0] = htonl(msg->cmd);
-	header[1] = htonl(msg->size);
-	if (msg->data)
-		memcpy(buf + 2 * sizeof(uint32_t), msg->data, msg->size);
+	if (!header) {
+		/* Reply with ENOMEM message */
+		header = temp;
+		size = sizeof(temp);
+		header[0] = htonl(-ENOMEM);
+		header[1] = 0;
+	} else {
+		header[0] = htonl(msg->cmd);
+		header[1] = htonl((msg->data) ? msg->size : 0);
+		if (msg->data)
+			memcpy(buf + 2 * sizeof(uint32_t), msg->data, msg->size);
+	}
 
-	errno = 0;
-	while (bytes < size && errno != EIO) {
+	while (bytes < size) {
 		do {
 			/* Watch client write FIFO to be ready for output. */
 			FD_ZERO(&fds);
 			FD_SET(fifos->server, &fds);
-		} while (select(fifos->server + 1, NULL, &fds, NULL, NULL) !=
-			 1);
+		} while (select(fifos->server + 1, NULL, &fds, NULL, NULL) != 1);
 
-		ret = write(fifos->server, buf + bytes, size - bytes);
-		bytes += ret > 0 ? ret : 0;
+		if ((ret = write(fifos->server, buf + bytes, size - bytes)) > 0)
+			bytes += ret;
+		else if (errno == EIO)
+			break;
 	}
 
-	return bytes == size;
+	if (header != temp)
+		dm_free(header);
+
+	return (bytes == size);
 }
 
 /*
@@ -1465,34 +1451,35 @@ static int _client_write(struct dm_event_fifos *fifos,
 static int _handle_request(struct dm_event_daemon_message *msg,
 			  struct message_data *message_data)
 {
-	static struct request {
-		unsigned int cmd;
-		int (*f)(struct message_data *);
-	} requests[] = {
-		{ DM_EVENT_CMD_REGISTER_FOR_EVENT, _register_for_event},
-		{ DM_EVENT_CMD_UNREGISTER_FOR_EVENT, _unregister_for_event},
-		{ DM_EVENT_CMD_GET_REGISTERED_DEVICE, _get_registered_device},
-		{ DM_EVENT_CMD_GET_NEXT_REGISTERED_DEVICE,
-			_get_next_registered_device},
-		{ DM_EVENT_CMD_SET_TIMEOUT, _set_timeout},
-		{ DM_EVENT_CMD_GET_TIMEOUT, _get_timeout},
-		{ DM_EVENT_CMD_ACTIVE, _active},
-		{ DM_EVENT_CMD_GET_STATUS, _get_status},
-		/* dmeventd parameters of running dmeventd,
-		 * returns 'pid=<pid> daemon=<no/yes> exec_method=<direct/systemd>'
-		 * 	pid - pidfile of running dmeventd
-		 * 	daemon - running as a daemon or not (foreground)?
-		 * 	exec_method - "direct" if executed directly or
-		 * 		      "systemd" if executed via systemd
-		 */
-		{ DM_EVENT_CMD_GET_PARAMETERS, _get_parameters},
-	}, *req;
-
-	for (req = requests; req < requests + DM_ARRAY_SIZE(requests); ++req)
-		if (req->cmd == msg->cmd)
-			return req->f(message_data);
-
-	return -EINVAL;
+	switch (msg->cmd) {
+	case DM_EVENT_CMD_REGISTER_FOR_EVENT:
+		return _register_for_event(message_data);
+	case DM_EVENT_CMD_UNREGISTER_FOR_EVENT:
+		return _unregister_for_event(message_data);
+	case DM_EVENT_CMD_GET_REGISTERED_DEVICE:
+		return _get_registered_device(message_data);
+	case DM_EVENT_CMD_GET_NEXT_REGISTERED_DEVICE:
+		return _get_next_registered_device(message_data);
+	case DM_EVENT_CMD_SET_TIMEOUT:
+		return _set_timeout(message_data);
+	case DM_EVENT_CMD_GET_TIMEOUT:
+		return _get_timeout(message_data);
+	case DM_EVENT_CMD_ACTIVE:
+		return _active(message_data);
+	case DM_EVENT_CMD_GET_STATUS:
+		return _get_status(message_data);
+	/* dmeventd parameters of running dmeventd,
+	 * returns 'pid=<pid> daemon=<no/yes> exec_method=<direct/systemd>'
+	 * 	pid - pidfile of running dmeventd
+	 * 	daemon - running as a daemon or not (foreground)?
+	 * 	exec_method - "direct" if executed directly or
+	 * 		      "systemd" if executed via systemd
+	 */
+	case DM_EVENT_CMD_GET_PARAMETERS:
+		return _get_parameters(message_data);
+	default:
+		return -EINVAL;
+	}
 }
 
 /* Process a request passed from the communication thread. */
@@ -1508,11 +1495,10 @@ static int _do_process_request(struct dm_event_daemon_message *msg)
 		answer = msg->data;
 		if (answer) {
 			msg->size = dm_asprintf(&(msg->data), "%s %s %d", answer,
-						msg->cmd == DM_EVENT_CMD_DIE ? "DYING" : "HELLO",
+						(msg->cmd == DM_EVENT_CMD_DIE) ? "DYING" : "HELLO",
 						DM_EVENT_PROTOCOL_VERSION);
 			dm_free(answer);
-		} else
-			msg->size = 0;
+		}
 	} else if (msg->cmd != DM_EVENT_CMD_ACTIVE && !_parse_message(&message_data)) {
 		stack;
 		ret = -EINVAL;
@@ -1941,7 +1927,6 @@ static void restart(void)
 	struct dm_event_daemon_message msg = { 0 };
 	int i, count = 0;
 	char *message;
-	int length;
 	int version;
 	const char *e;
 
@@ -1966,16 +1951,12 @@ static void restart(void)
 	if (dm_event_daemon_talk(&fifos, &msg, DM_EVENT_CMD_GET_STATUS, "-", "-", 0, 0))
 		goto bad;
 
-	message = msg.data;
-	message = strchr(message, ' ');
-	++ message;
-	length = strlen(msg.data);
-	for (i = 0; i < length; ++i) {
+	message = strchr(msg.data, ' ') + 1;
+	for (i = 0; msg.data[i]; ++i)
 		if (msg.data[i] == ';') {
 			msg.data[i] = 0;
 			++count;
 		}
-	}
 
 	if (!(_initial_registrations = dm_malloc(sizeof(char*) * (count + 1)))) {
 		fprintf(stderr, "Memory allocation registration failed.\n");
@@ -1989,7 +1970,7 @@ static void restart(void)
 		}
 		message += strlen(message) + 1;
 	}
-	_initial_registrations[count] = 0;
+	_initial_registrations[count] = NULL;
 
 	if (version >= 2) {
 		if (dm_event_daemon_talk(&fifos, &msg, DM_EVENT_CMD_GET_PARAMETERS, "-", "-", 0, 0)) {

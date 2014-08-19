@@ -3,7 +3,7 @@ Author: Bastian Blank <waldi@debian.org>
 
 --- a/daemons/dmeventd/libdevmapper-event.c
 +++ b/daemons/dmeventd/libdevmapper-event.c
-@@ -436,7 +436,10 @@
+@@ -430,7 +430,10 @@
  	/* server is not running */
  
  	if ((args[0][0] == '/') && stat(args[0], &statbuf)) {
@@ -15,7 +15,7 @@ Author: Bastian Blank <waldi@debian.org>
  		return 0;
  	}
  
-@@ -626,10 +629,19 @@
+@@ -620,10 +623,19 @@
  
  	if ((err = _do_event(DM_EVENT_CMD_REGISTER_FOR_EVENT, dmevh->dmeventd_path, &msg,
  			     dmevh->dso, uuid, dmevh->mask, dmevh->timeout)) < 0) {
@@ -41,7 +41,7 @@ Author: Bastian Blank <waldi@debian.org>
  	dm_free(msg.data);
 --- a/lib/activate/activate.c
 +++ b/lib/activate/activate.c
-@@ -1603,10 +1603,12 @@
+@@ -1609,10 +1609,12 @@
  
  	if (!r)
  		return_0;
@@ -57,7 +57,7 @@ Author: Bastian Blank <waldi@debian.org>
  }
  
  #endif
-@@ -1620,7 +1622,7 @@
+@@ -1626,7 +1628,7 @@
  {
  #ifdef DMEVENTD
  	int i, pending = 0, monitored;
@@ -66,7 +66,7 @@ Author: Bastian Blank <waldi@debian.org>
  	struct dm_list *snh, *snht;
  	struct lv_segment *seg;
  	struct lv_segment *log_seg;
-@@ -1755,25 +1757,30 @@
+@@ -1761,25 +1763,30 @@
  			continue;
  
  		/* FIXME specify events */

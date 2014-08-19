@@ -12,7 +12,7 @@
 
 # Test conversion to thin external origin
 
-. lib/test
+. lib/inittest
 
 which mkfs.ext2 || skip
 which fsck || skip
@@ -109,7 +109,7 @@ lvchange -aey $vg
 lvs -a -o+origin_size,seg_size $vg
 
 # Chain external origins
-lvconvert --originname extorg1 --thinpool $vg/pool -T $vg/extorg
+lvconvert --type thin --originname extorg1 --thinpool $vg/pool $vg/extorg
 check inactive $vg extorg1
 
 lvconvert --originname extorg2 --thinpool $vg/pool -T $vg/extorg1
@@ -157,7 +157,7 @@ lvremove -ff $vg
 # Test conversion to the pool and thin external at the same time (rhbz #1003461)
 lvcreate -l50 -n pool $vg
 lvcreate -l100 -n thin $vg
-lvconvert --thin --thinpool $vg/pool $vg/thin --originname thin-origin
+lvconvert --yes --thin --thinpool $vg/pool $vg/thin --originname thin-origin
 check lv_field $vg/thin segtype thin
 check lv_field $vg/thin-origin segtype linear
 

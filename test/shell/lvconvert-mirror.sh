@@ -9,7 +9,7 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
-. lib/test
+. lib/inittest
 
 aux prepare_pvs 5 10
 # proper DEVRANGE needs to be set according to extent size
@@ -191,6 +191,10 @@ lvremove -ff $vg
 # "remove from original mirror (the original becomes linear)"
 lvcreate -aey -l2 --type mirror -m1 -n $lv1 $vg "$dev1" "$dev2" "$dev3:$DEVRANGE"
 lvconvert -m+1 -b $vg/$lv1 "$dev4"
+# FIXME: Extra wait here for mirror upconvert synchronization
+# otherwise we may fail her on parallel upconvert and downconvert
+# lvconvert-mirror-updown.sh tests this errornous case separately
+lvconvert $vg/$lv1
 lvconvert -m-1 $vg/$lv1 "$dev2"
 lvconvert $vg/$lv1
 

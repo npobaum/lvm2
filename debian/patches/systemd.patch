@@ -2,7 +2,7 @@ Author: Bastian Blank <waldi@debian.org>
 ---
 --- a/scripts/Makefile.in
 +++ b/scripts/Makefile.in
-@@ -98,6 +98,8 @@
+@@ -99,6 +99,8 @@
  
  install_systemd_units:
  	$(INSTALL_DIR) $(systemd_unit_dir)

@@ -35,7 +35,7 @@
 #define DEFAULT_MD_CHUNK_ALIGNMENT 1
 #define DEFAULT_IGNORE_LVM_MIRRORS 1
 #define DEFAULT_MULTIPATH_COMPONENT_DETECTION 1
-#define DEFAULT_IGNORE_SUSPENDED_DEVICES 1
+#define DEFAULT_IGNORE_SUSPENDED_DEVICES 0
 #define DEFAULT_DISABLE_AFTER_ERROR_COUNT 0
 #define DEFAULT_REQUIRE_RESTOREFILE_WITH_UUID 1
 #define DEFAULT_DATA_ALIGNMENT_OFFSET_DETECTION 1
@@ -90,6 +90,8 @@
 #define DEFAULT_THIN_POOL_ZERO 1
 #define DEFAULT_POOL_METADATA_SPARE 1 /* thin + cache */
 
+#define DEFAULT_CACHE_CHECK_OPTIONS "-q"
+#define DEFAULT_CACHE_REPAIR_OPTIONS ""
 #define DEFAULT_CACHE_POOL_METADATA_REQUIRE_SEPARATE_PVS 0
 #define DEFAULT_CACHE_POOL_CHUNK_SIZE 64 /* KB */
 #define DEFAULT_CACHE_POOL_MIN_METADATA_SIZE 2048  /* KB */
@@ -163,6 +165,7 @@
 #define DEFAULT_PROCESS_PRIORITY -18
 
 #define DEFAULT_AUTO_SET_ACTIVATION_SKIP 1
+#define DEFAULT_ACTIVATION_MODE "degraded"
 #define DEFAULT_USE_LINEAR_TARGET 1
 #define DEFAULT_STRIPE_FILLER "error"
 #define DEFAULT_RAID_REGION_SIZE   512	/* KB */
@@ -179,8 +182,9 @@
 #define DEFAULT_REP_PREFIXES 0
 #define DEFAULT_REP_QUOTED 1
 #define DEFAULT_REP_SEPARATOR " "
+#define DEFAULT_REP_LIST_ITEM_SEPARATOR ","
 
-#define DEFAULT_LVS_COLS "lv_name,vg_name,lv_attr,lv_size,pool_lv,origin,data_percent,move_pv,mirror_log,copy_percent,convert_lv"
+#define DEFAULT_LVS_COLS "lv_name,vg_name,lv_attr,lv_size,pool_lv,origin,data_percent,metadata_percent,move_pv,mirror_log,copy_percent,convert_lv"
 #define DEFAULT_VGS_COLS "vg_name,pv_count,lv_count,snap_count,vg_attr,vg_size,vg_free"
 #define DEFAULT_PVS_COLS "pv_name,vg_name,pv_fmt,pv_attr,pv_size,pv_free"
 #define DEFAULT_SEGS_COLS "lv_name,vg_name,lv_attr,stripes,segtype,seg_size"

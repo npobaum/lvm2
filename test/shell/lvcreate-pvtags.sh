@@ -9,7 +9,7 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
-. lib/test
+. lib/inittest
 
 aux prepare_pvs 3
 aux lvmconf 'allocation/maximise_cling = 0'
@@ -31,10 +31,10 @@ not lvcreate -l4 -i4 $vg @fast
 not lvcreate -l2 -i2 $vg "$DM_DEV_DIR/mapper/pv1"
 
 # lvcreate mirror
-lvcreate -aey -l1 --type mirror -m1 $vg @fast
+lvcreate -aey -l1 --type mirror -m1 --nosync $vg @fast
 
 # lvcreate mirror w/corelog
-lvcreate -aey -l1 --type mirror -m2 --corelog $vg @fast
+lvcreate -aey -l1 --type mirror -m2 --corelog --nosync $vg @fast
 
 # lvcreate mirror w/no free PVs
 not lvcreate -aey -l1 --type mirror -m2 $vg @fast

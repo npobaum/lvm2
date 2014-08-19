@@ -1,6 +1,6 @@
 --- a/conf/example.conf.in
 +++ b/conf/example.conf.in
-@@ -116,7 +116,7 @@
+@@ -135,7 +135,7 @@
      # N.B. If obtain_device_list_from_udev is set to 1 the list of
      # devices is instead obtained from udev and any existing .cache
      # file is removed.
@@ -9,7 +9,7 @@
      cache_file_prefix = ""
  
      # You can turn off writing this cache file by setting this to 0.
-@@ -561,7 +561,7 @@
+@@ -589,7 +589,7 @@
      # Full pathnames can be given.
  
      # Search this directory first for shared libraries.
@@ -20,10 +20,10 @@
      #   locking_library = "liblvm2clusterlock.so"
 --- a/daemons/dmeventd/dmeventd.c
 +++ b/daemons/dmeventd/dmeventd.c
-@@ -954,8 +954,17 @@
+@@ -933,8 +933,17 @@
  {
  	void *dl;
- 	struct dso_data *ret = NULL;
+ 	struct dso_data *ret;
 +	char dso_name[PATH_MAX];
  
 -	if (!(dl = dlopen(data->dso_name, RTLD_NOW))) {
@@ -51,7 +51,7 @@
  
 --- a/lib/config/config.c
 +++ b/lib/config/config.c
-@@ -1698,10 +1698,8 @@
+@@ -1914,10 +1914,8 @@
  
  	if (cache_dir || cache_file_prefix) {
  		if (dm_snprintf(buf, sizeof(buf),
@@ -64,7 +64,7 @@
  				cache_file_prefix ? : DEFAULT_CACHE_FILE_PREFIX) < 0) {
  			log_error("Persistent cache filename too long.");
  			return NULL;
-@@ -1709,8 +1707,8 @@
+@@ -1925,8 +1923,8 @@
  		return dm_pool_strdup(cmd->mem, buf);
  	}
  

@@ -106,7 +106,7 @@ int become_daemon(struct cmd_context *cmd, int skip_lvm)
  * Strip dev_dir if present
  */
 const char *skip_dev_dir(struct cmd_context *cmd, const char *vg_name,
-		   unsigned *dev_dir_found)
+			 unsigned *dev_dir_found)
 {
 	const char *dmdir = dm_dir();
 	size_t dmdir_len = strlen(dmdir), vglv_sz;
@@ -293,7 +293,7 @@ int process_each_lv(struct cmd_context *cmd, int argc, char **argv,
 
 	struct dm_list *tags_arg;
 	struct dm_list *vgnames;	/* VGs to process */
-	struct str_list *sll, *strl;
+	struct dm_str_list *sll, *strl;
 	struct cmd_vg *cvl_vg;
 	struct dm_list cmd_vgs;
 	struct dm_list failed_lvnames;
@@ -621,7 +621,7 @@ int process_each_vg(struct cmd_context *cmd, int argc, char **argv,
 	int opt = 0;
 	int ret_max = ECMD_PROCESSED;
 
-	struct str_list *sl;
+	struct dm_str_list *sl;
 	struct dm_list *vgnames, *vgids;
 	struct dm_list arg_vgnames, tagsl;
 
@@ -803,7 +803,7 @@ int process_each_pv(struct cmd_context *cmd, int argc, char **argv,
 	struct physical_volume *pv;
 	struct dm_list *pvslist = NULL, *vgnames;
 	struct dm_list tagsl;
-	struct str_list *sll;
+	struct dm_str_list *sll;
 	char *at_sign, *tagname;
 	struct device *dev;
 
@@ -1431,7 +1431,8 @@ int lv_change_activate(struct cmd_context *cmd, struct logical_volume *lv,
 int lv_refresh(struct cmd_context *cmd, struct logical_volume *lv)
 {
 	if (!cmd->partial_activation && (lv->status & PARTIAL_LV)) {
-		log_error("Refusing refresh of partial LV %s. Use --partial to override.",
+		log_error("Refusing refresh of partial LV %s."
+			  " Use '--activationmode partial' to override.",
 			  lv->name);
 		return 0;
 	}
@@ -1455,7 +1456,7 @@ int lv_refresh(struct cmd_context *cmd, struct logical_volume *lv)
 	 * - fortunately: polldaemon will immediately shutdown if the
 	 *   origin doesn't have a status with a snapshot percentage
 	 */
-	if (background_polling() && lv_is_merging_origin(lv))
+	if (background_polling() && lv_is_merging_origin(lv) && lv_is_active_locally(lv))
 		lv_spawn_background_polling(cmd, lv);
 
 	return 1;
@@ -1649,41 +1650,33 @@ int get_activation_monitoring_mode(struct cmd_context *cmd,
 	return 1;
 }
 
+/*
+ * Read pool options from cmdline
+ */
 int get_pool_params(struct cmd_context *cmd,
-		    struct profile *profile,
+		    const struct segment_type *segtype,
 		    int *passed_args,
-		    int *chunk_size_calc_method,
+		    uint64_t *pool_metadata_size,
+		    int *pool_metadata_spare,
 		    uint32_t *chunk_size,
 		    thin_discards_t *discards,
-		    uint64_t *pool_metadata_size,
 		    int *zero)
 {
-	int cache_pool = 0;
-
-	if (!strcmp("cache-pool", arg_str_value(cmd, type_ARG, "none")))
-		cache_pool = 1;
-
-	if (!cache_pool && !arg_count(cmd, thinpool_ARG)) {
-		/* Check for arguments that should only go with pools */
-		if (arg_count(cmd, poolmetadata_ARG)) {
-			log_error("'--poolmetadata' argument is only valid when"
-				  " converting to pool LVs.");
-			return_0;
-		}
-	}
-
 	*passed_args = 0;
-	if (!cache_pool && arg_count(cmd, zero_ARG)) {
-		*passed_args |= PASS_ARG_ZERO;
-		*zero = strcmp(arg_str_value(cmd, zero_ARG, "y"), "n");
-		log_very_verbose("Setting pool zeroing: %u", *zero);
-	}
 
-	if (!cache_pool && arg_count(cmd, discards_ARG)) {
-		*passed_args |= PASS_ARG_DISCARDS;
-		*discards = (thin_discards_t) arg_uint_value(cmd, discards_ARG, 0);
-		log_very_verbose("Setting pool discards: %s",
-				 get_pool_discards_name(*discards));
+	if (segtype_is_thin_pool(segtype) || segtype_is_thin(segtype)) {
+		if (arg_count(cmd, zero_ARG)) {
+			*passed_args |= PASS_ARG_ZERO;
+			*zero = strcmp(arg_str_value(cmd, zero_ARG, "y"), "n");
+			log_very_verbose("Setting pool zeroing: %u", *zero);
+		}
+
+		if (arg_count(cmd, discards_ARG)) {
+			*passed_args |= PASS_ARG_DISCARDS;
+			*discards = (thin_discards_t) arg_uint_value(cmd, discards_ARG, 0);
+			log_very_verbose("Setting pool discards: %s",
+					 get_pool_discards_name(*discards));
+		}
 	}
 
 	if (arg_count(cmd, chunksize_ARG)) {
@@ -1691,32 +1684,33 @@ int get_pool_params(struct cmd_context *cmd,
 			log_error("Negative chunk size is invalid.");
 			return 0;
 		}
+
 		*passed_args |= PASS_ARG_CHUNK_SIZE;
-		*chunk_size = arg_uint_value(cmd, chunksize_ARG, cache_pool ?
-					     DM_CACHE_MIN_DATA_BLOCK_SIZE :
-					     DM_THIN_MIN_DATA_BLOCK_SIZE);
+		*chunk_size = arg_uint_value(cmd, chunksize_ARG, 0);
 		log_very_verbose("Setting pool chunk size: %s",
 				 display_size(cmd, *chunk_size));
 	}
-
-	if (cache_pool) {
-		//FIXME: add cache_pool support to update_profilable_pool_params
-		if (!(*passed_args & PASS_ARG_CHUNK_SIZE))
-			*chunk_size = DEFAULT_CACHE_POOL_CHUNK_SIZE * 2;
-	} else if (!update_profilable_pool_params(cmd, profile, *passed_args,
-						  chunk_size_calc_method,
-						  chunk_size, discards, zero))
-		return_0;
 
 	if (arg_count(cmd, poolmetadatasize_ARG)) {
 		if (arg_sign_value(cmd, poolmetadatasize_ARG, SIGN_NONE) == SIGN_MINUS) {
 			log_error("Negative pool metadata size is invalid.");
 			return 0;
 		}
+
+		if (arg_count(cmd, poolmetadata_ARG)) {
+			log_error("Please specify either metadata logical volume or its size.");
+			return 0;
+		}
+
 		*passed_args |= PASS_ARG_POOL_METADATA_SIZE;
-	}
-	*pool_metadata_size = arg_uint64_value(cmd, poolmetadatasize_ARG,
-					       UINT64_C(0));
+		*pool_metadata_size = arg_uint64_value(cmd, poolmetadatasize_ARG,
+						       UINT64_C(0));
+	} else if (arg_count(cmd, poolmetadata_ARG))
+		*passed_args |= PASS_ARG_POOL_METADATA_SIZE; /* fixed size */
+
+	/* TODO: default in lvm.conf ? */
+	*pool_metadata_spare = arg_int_value(cmd, poolmetadataspare_ARG,
+					     DEFAULT_POOL_METADATA_SPARE);
 
 	return 1;
 }
@@ -1772,7 +1766,7 @@ int get_stripe_params(struct cmd_context *cmd, uint32_t *stripes, uint32_t *stri
 			return 0;
 		}
 
-		if(arg_uint64_value(cmd, stripesize_ARG, 0) > STRIPE_SIZE_LIMIT * 2) {
+		if (arg_uint64_value(cmd, stripesize_ARG, 0) > STRIPE_SIZE_LIMIT * 2) {
 			log_error("Stripe size cannot be larger than %s",
 				  display_size(cmd, (uint64_t) STRIPE_SIZE_LIMIT));
 			return 0;
