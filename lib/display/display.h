@@ -22,7 +22,7 @@
 
 #include <stdint.h>
 
-uint64_t units_to_bytes(const char *units, char *unit_type);
+const char *display_lvname(const struct logical_volume *lv);
 
 /* Specify size in KB */
 const char *display_size(const struct cmd_context *cmd, uint64_t size);

@@ -11,14 +11,15 @@
 
 # 'Exercise signature wiping during lvcreate'
 
-. lib/test
+. lib/inittest
 
 init_lv_() {
 	mkswap "$DM_DEV_DIR/$vg/$lv1"
 }
 
 test_blkid_() {
-	local type=$(blkid -s TYPE -o value -c /dev/null "$DM_DEV_DIR/$vg/$lv1")
+	local type
+	type=$(blkid -s TYPE -o value -c /dev/null "$DM_DEV_DIR/$vg/$lv1")
 	test "$type" = "swap"
 }
 

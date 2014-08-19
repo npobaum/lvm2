@@ -68,6 +68,65 @@ unsigned arg_is_set(const struct cmd_context *cmd, int a)
 	return arg_count(cmd, a) ? 1 : 0;
 }
 
+int arg_from_list_is_set(const struct cmd_context *cmd, const char *err_found, ...)
+{
+	int arg;
+	va_list ap;
+
+	va_start(ap, err_found);
+	while ((arg = va_arg(ap, int)) != -1 && !arg_count(cmd, arg))
+		/* empty */;
+	va_end(ap);
+
+	if (arg == -1)
+		return 0;
+
+	if (err_found)
+		log_error("%s %s.", arg_long_option_name(arg), err_found);
+
+	return 1;
+}
+
+int arg_outside_list_is_set(const struct cmd_context *cmd, const char *err_found, ...)
+{
+	int i, arg;
+	va_list ap;
+
+	for (i = 0; i < ARG_COUNT; ++i) {
+		switch (i) {
+		/* skip common options */
+		case commandprofile_ARG:
+		case config_ARG:
+		case debug_ARG:
+		case driverloaded_ARG:
+		case help2_ARG:
+		case help_ARG:
+		case profile_ARG:
+		case quiet_ARG:
+		case verbose_ARG:
+		case version_ARG:
+		case yes_ARG:
+			continue;
+		}
+		if (!arg_count(cmd, i))
+			continue; /* unset */
+		va_start(ap, err_found);
+		while (((arg = va_arg(ap, int)) != -1) && (arg != i))
+			/* empty */;
+		va_end(ap);
+
+		if (arg == i)
+			continue; /* set and in list */
+
+		if (err_found)
+			log_error("Option %s %s.", arg_long_option_name(i), err_found);
+
+		return 1;
+	}
+
+	return 0;
+}
+
 unsigned grouped_arg_is_set(const struct arg_values *av, int a)
 {
 	return grouped_arg_count(av, a) ? 1 : 0;
@@ -622,6 +681,7 @@ void lvm_register_commands(void)
 					    version_ARG, verbose_ARG, \
 					    yes_ARG, \
 					    quiet_ARG, config_ARG, \
+					    commandprofile_ARG, \
 					    profile_ARG, -1);
 #include "commands.h"
 #undef xx
@@ -865,6 +925,8 @@ int version(struct cmd_context *cmd __attribute__((unused)),
 
 static int _get_settings(struct cmd_context *cmd)
 {
+	const char *activation_mode;
+
 	cmd->current_settings = cmd->default_settings;
 
 	if (arg_count(cmd, debug_ARG))
@@ -877,10 +939,8 @@ static int _get_settings(struct cmd_context *cmd)
 	if (arg_count(cmd, quiet_ARG)) {
 		cmd->current_settings.debug = 0;
 		cmd->current_settings.verbose = 0;
+		cmd->current_settings.silent = (arg_count(cmd, quiet_ARG) > 1) ? 1 : 0;
 	}
-
-	if (arg_count(cmd, quiet_ARG) > 1)
-		cmd->current_settings.silent = 1;
 
 	if (arg_count(cmd, test_ARG))
 		cmd->current_settings.test = arg_count(cmd, test_ARG);
@@ -894,11 +954,41 @@ static int _get_settings(struct cmd_context *cmd)
 	cmd->current_settings.archive = arg_int_value(cmd, autobackup_ARG, cmd->current_settings.archive);
 	cmd->current_settings.backup = arg_int_value(cmd, autobackup_ARG, cmd->current_settings.backup);
 	cmd->current_settings.cache_vgmetadata = cmd->command->flags & CACHE_VGMETADATA ? 1 : 0;
-	cmd->partial_activation = 0;
 
-	if (arg_count(cmd, partial_ARG)) {
+	if (arg_count(cmd, readonly_ARG)) {
+		cmd->current_settings.activation = 0;
+		cmd->current_settings.archive = 0;
+		cmd->current_settings.backup = 0;
+	}
+
+	cmd->partial_activation = 0;
+	cmd->degraded_activation = 0;
+	activation_mode = find_config_tree_str(cmd, activation_mode_CFG, NULL);
+	if (!activation_mode)
+		activation_mode = DEFAULT_ACTIVATION_MODE;
+
+	if (arg_count(cmd, activationmode_ARG)) {
+		activation_mode = arg_str_value(cmd, activationmode_ARG,
+						activation_mode);
+
+		/* complain only if the two arguments conflict */
+		if (arg_count(cmd, partial_ARG) &&
+		    strcmp(activation_mode, "partial")) {
+			log_error("--partial and --activationmode are mutually"
+				  " exclusive arguments");
+			return EINVALID_CMD_LINE;
+		}
+	} else if (arg_count(cmd, partial_ARG))
+		activation_mode = "partial";
+
+	if (!strcmp(activation_mode, "partial")) {
 		cmd->partial_activation = 1;
 		log_warn("PARTIAL MODE. Incomplete logical volumes will be processed.");
+	} else if (!strcmp(activation_mode, "degraded"))
+		cmd->degraded_activation = 1;
+	else if (strcmp(activation_mode, "complete")) {
+		log_error("Invalid activation mode given.");
+		return EINVALID_CMD_LINE;
 	}
 
 	if (arg_count(cmd, ignorelockingfailure_ARG) || arg_count(cmd, sysinit_ARG))
@@ -916,11 +1006,14 @@ static int _get_settings(struct cmd_context *cmd)
 
 	if (arg_count(cmd, units_ARG))
 		if (!(cmd->current_settings.unit_factor =
-		      units_to_bytes(arg_str_value(cmd, units_ARG, ""),
-				     &cmd->current_settings.unit_type))) {
+		      dm_units_to_factor(arg_str_value(cmd, units_ARG, ""),
+					 &cmd->current_settings.unit_type, 1, NULL))) {
 			log_error("Invalid units specification");
 			return EINVALID_CMD_LINE;
 		}
+
+	if (arg_count(cmd, binary_ARG))
+		cmd->report_binary_values_as_numeric = 1;
 
 	if (arg_count(cmd, trustcache_ARG)) {
 		if (arg_count(cmd, all_ARG)) {
@@ -1022,7 +1115,7 @@ static void _apply_settings(struct cmd_context *cmd)
 	archive_enable(cmd, cmd->current_settings.archive);
 	backup_enable(cmd, cmd->current_settings.backup);
 
-	set_activation(cmd->current_settings.activation);
+	set_activation(cmd->current_settings.activation, cmd->metadata_read_only);
 
 	cmd->fmt = get_format_by_name(cmd, arg_str_value(cmd, metadatatype_ARG,
 				      cmd->current_settings.fmt_name));
@@ -1072,13 +1165,125 @@ static const char *_copy_command_line(struct cmd_context *cmd, int argc, char **
 	return NULL;
 }
 
+static int _prepare_profiles(struct cmd_context *cmd)
+{
+	static const char _failed_to_add_profile_msg[] = "Failed to add %s %s.";
+	static const char _failed_to_apply_profile_msg[] = "Failed to apply %s %s.";
+	static const char _command_profile_source_name[] = "command profile";
+	static const char _metadata_profile_source_name[] = "metadata profile";
+	static const char _setting_global_profile_msg[] = "Setting global %s \"%s\".";
+
+	const char *name;
+	struct profile *profile;
+	config_source_t source;
+	const char *source_name;
+
+	if (arg_count(cmd, profile_ARG)) {
+		/*
+		 * If --profile is used with dumpconfig, it's used
+		 * to dump the profile without the profile being applied.
+		 */
+		if (!strcmp(cmd->command->name, "dumpconfig"))
+			return 1;
+
+		/*
+		 * If --profile is used with lvcreate/lvchange/vgchange,
+		 * it's recognized as shortcut to --metadataprofile.
+		 * The --commandprofile is assumed otherwise.
+		 */
+		if (!strcmp(cmd->command->name, "lvcreate") ||
+		    !strcmp(cmd->command->name, "vgcreate") ||
+		    !strcmp(cmd->command->name, "lvchange") ||
+		    !strcmp(cmd->command->name, "vgchange")) {
+			if (arg_count(cmd, metadataprofile_ARG)) {
+				log_error("Only one of --profile or "
+					  " --metadataprofile allowed.");
+				return 0;
+			}
+			source = CONFIG_PROFILE_METADATA;
+			source_name = _metadata_profile_source_name;
+		}
+		else {
+			if (arg_count(cmd, commandprofile_ARG)) {
+				log_error("Only one of --profile or "
+					  "--commandprofile allowed.");
+				return 0;
+			}
+			source = CONFIG_PROFILE_COMMAND;
+			source_name = _command_profile_source_name;
+		}
+
+		name = arg_str_value(cmd, profile_ARG, NULL);
+
+		if (!(profile = add_profile(cmd, name, source))) {
+			log_error(_failed_to_add_profile_msg, source_name, name);
+			return 0;
+		}
+
+		if (source == CONFIG_PROFILE_COMMAND) {
+			log_debug(_setting_global_profile_msg, _command_profile_source_name, profile->name);
+			cmd->profile_params->global_command_profile = profile;
+		} else if (source == CONFIG_PROFILE_METADATA) {
+			log_debug(_setting_global_profile_msg, _metadata_profile_source_name, profile->name);
+			/* This profile will override any VG/LV-based profile if present */
+			cmd->profile_params->global_metadata_profile = profile;
+		}
+
+		if (!override_config_tree_from_profile(cmd, profile)) {
+			log_error(_failed_to_apply_profile_msg, source_name, name);
+			return 0;
+		}
+
+	}
+
+	if (arg_count(cmd, commandprofile_ARG)) {
+		name = arg_str_value(cmd, commandprofile_ARG, NULL);
+		source_name = _command_profile_source_name;
+
+		if (!(profile = add_profile(cmd, name, CONFIG_PROFILE_COMMAND))) {
+			log_error(_failed_to_add_profile_msg, source_name, name);
+			return 0;
+		}
+		if (!override_config_tree_from_profile(cmd, profile)) {
+			log_error(_failed_to_apply_profile_msg, source_name, name);
+			return 0;
+		}
+
+		log_debug(_setting_global_profile_msg, _command_profile_source_name, profile->name);
+		cmd->profile_params->global_command_profile = profile;
+	}
+
+
+	if (arg_count(cmd, metadataprofile_ARG)) {
+		name = arg_str_value(cmd, metadataprofile_ARG, NULL);
+		source_name = _metadata_profile_source_name;
+
+		if (!(profile = add_profile(cmd, name, CONFIG_PROFILE_METADATA))) {
+			log_error(_failed_to_add_profile_msg, source_name, name);
+			return 0;
+		}
+		if (!override_config_tree_from_profile(cmd, profile)) {
+			log_error(_failed_to_apply_profile_msg, source_name, name);
+			return 0;
+		}
+
+		log_debug(_setting_global_profile_msg, _metadata_profile_source_name, profile->name);
+		cmd->profile_params->global_metadata_profile = profile;
+	}
+
+	if (!process_profilable_config(cmd))
+		return_0;
+
+	return 1;
+}
+
 int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 {
+	struct dm_config_tree *config_string_cft;
+	struct dm_config_tree *config_profile_command_cft, *config_profile_metadata_cft;
 	int ret = 0;
 	int locking_type;
 	int monitoring;
-	struct dm_config_tree *old_cft;
-	struct profile *profile;
 
 	init_error_message_produced(0);
 
@@ -1117,33 +1322,28 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 	if (arg_count(cmd, config_ARG) || !cmd->config_initialized || config_files_changed(cmd)) {
 		/* Reinitialise various settings inc. logging, filters */
 		if (!refresh_toolcontext(cmd)) {
-			old_cft = remove_config_tree_by_source(cmd, CONFIG_STRING);
-			if (old_cft)
-				dm_config_destroy(old_cft);
+			if ((config_string_cft = remove_config_tree_by_source(cmd, CONFIG_STRING)))
+				dm_config_destroy(config_string_cft);
 			log_error("Updated config file invalid. Aborting.");
 			return ECMD_FAILED;
 		}
 	}
 
-	if (arg_count(cmd, profile_ARG)) {
-		if (!(profile = add_profile(cmd, arg_str_value(cmd, profile_ARG, NULL)))) {
-			log_error("Failed to add configuration profile.");
-			return ECMD_FAILED;
-		}
-		log_debug("Setting global configuration profile \"%s\".", profile->name);
-		/* This profile will override any VG/LV-based profile if present */
-		cmd->profile_params->global_profile = profile;
-		if (!override_config_tree_from_profile(cmd, profile)) {
-			log_error("Failed to apply configuration profile.");
-			return ECMD_FAILED;
-		}
-		if (!process_profilable_config(cmd))
+	if (arg_count(cmd, profile_ARG) ||
+	    arg_count(cmd, commandprofile_ARG) ||
+	    arg_count(cmd, metadataprofile_ARG)) {
+		if (!_prepare_profiles(cmd))
 			return_ECMD_FAILED;
 	}
+
+	if (arg_count(cmd, readonly_ARG))
+		cmd->metadata_read_only = 1;
 
 	if ((ret = _get_settings(cmd)))
 		goto_out;
 	_apply_settings(cmd);
+	if (cmd->degraded_activation)
+		log_verbose("DEGRADED MODE. Incomplete RAID LVs will be processed.");
 
 	if (!get_activation_monitoring_mode(cmd, &monitoring))
 		goto_out;
@@ -1168,7 +1368,13 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 		goto out;
 	}
 
-	if (arg_count(cmd, nolocking_ARG))
+	if (arg_count(cmd, readonly_ARG)) {
+		locking_type = 5;
+		if (lvmetad_used()) {
+			lvmetad_set_active(0);
+			log_verbose("Disabling use of lvmetad because read-only is set.");
+		}
+	} else if (arg_count(cmd, nolocking_ARG))
 		locking_type = 0;
 	else
 		locking_type = -1;
@@ -1188,8 +1394,14 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 		lvmcache_destroy(cmd, 1, 0);
 	}
 
-	if ((old_cft = remove_config_tree_by_source(cmd, CONFIG_STRING))) {
-		dm_config_destroy(old_cft);
+	if ((config_string_cft = remove_config_tree_by_source(cmd, CONFIG_STRING)))
+		dm_config_destroy(config_string_cft);
+
+	config_profile_command_cft = remove_config_tree_by_source(cmd, CONFIG_PROFILE_COMMAND);
+	config_profile_metadata_cft = remove_config_tree_by_source(cmd, CONFIG_PROFILE_METADATA);
+	cmd->profile_params->global_metadata_profile = NULL;
+
+	if (config_string_cft || config_profile_command_cft || config_profile_metadata_cft) {
 		/* Move this? */
 		if (!refresh_toolcontext(cmd))
 			stack;
@@ -1401,6 +1613,13 @@ struct cmd_context *init_lvm(void)
 
 	if (!udev_init_library_context())
 		stack;
+
+	/*
+	 * It's not necessary to use name mangling for LVM:
+	 *   - the character set used for LV names is subset of udev character set
+	 *   - when we check other devices (e.g. _device_is_usable fn), we use major:minor, not dm names
+	 */
+	dm_set_name_mangling_mode(DM_STRING_MANGLING_NONE);
 
 	if (!(cmd = create_toolcontext(0, NULL, 1, 0))) {
 		udev_fin_library_context();

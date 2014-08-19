@@ -11,7 +11,7 @@
 
 # test defaults entered through lvm.conf
 
-. lib/test
+. lib/inittest
 
 #
 # Main
@@ -30,6 +30,6 @@ lvcreate -T -L8M $vg/pool1
 
 check lv_field $vg/pool1 chunksize "128.00k"
 check lv_field $vg/pool1 discards "ignore"
-check lv_field $vg/pool1 zero 0
+check lv_field $vg/pool1 zero ""
 
 vgremove -f $vg

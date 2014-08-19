@@ -9,7 +9,7 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
-. lib/test
+. lib/inittest
 
 get_image_pvs() {
 	local d
@@ -24,7 +24,7 @@ get_image_pvs() {
 ########################################################
 # RAID10: Can replace 'copies - 1' devices from each stripe
 # Tests are run on 2-way mirror, 3-way stripe RAID10
-aux target_at_least dm-raid 1 3 1 || skip
+aux have_raid 1 3 1 || skip
 
 # 9 PVs needed for RAID10 testing (3-stripes/2-mirror - replacing 3 devs)
 aux prepare_pvs 9 80

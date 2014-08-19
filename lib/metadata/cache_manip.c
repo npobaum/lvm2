@@ -15,27 +15,22 @@
 #include "lib.h"
 #include "metadata.h"
 #include "locking.h"
-#include "pv_map.h"
 #include "lvm-string.h"
 #include "toolcontext.h"
-#include "lv_alloc.h"
-#include "pv_alloc.h"
 #include "display.h"
 #include "segtype.h"
-#include "archiver.h"
 #include "activate.h"
-#include "str_list.h"
 #include "defaults.h"
-#include "lvm-exec.h"
 
 int update_cache_pool_params(struct volume_group *vg, unsigned attr,
-			     int passed_args,
-			     uint32_t data_extents, uint32_t extent_size,
-			     int *chunk_size_calc_method, uint32_t *chunk_size,
-			     thin_discards_t *discards,
-			     uint64_t *pool_metadata_size, int *zero)
+			     int passed_args, uint32_t data_extents,
+			     uint64_t *pool_metadata_size,
+			     int *chunk_size_calc_method, uint32_t *chunk_size)
 {
 	uint64_t min_meta_size;
+
+	if (!(passed_args & PASS_ARG_CHUNK_SIZE))
+		*chunk_size = DEFAULT_CACHE_POOL_CHUNK_SIZE * 2;
 
 	if ((*chunk_size < DM_CACHE_MIN_DATA_BLOCK_SIZE) ||
 	    (*chunk_size > DM_CACHE_MAX_DATA_BLOCK_SIZE)) {
@@ -46,8 +41,8 @@ int update_cache_pool_params(struct volume_group *vg, unsigned attr,
 	}
 
 	if (*chunk_size & (DM_CACHE_MIN_DATA_BLOCK_SIZE - 1)) {
-		log_error("Chunk size must be a multiple of %u sectors.",
-			  DM_CACHE_MIN_DATA_BLOCK_SIZE);
+		log_error("Chunk size must be a multiple of %s.",
+			  display_size(vg->cmd, DM_CACHE_MIN_DATA_BLOCK_SIZE));
 		return 0;
 	}
 
@@ -57,7 +52,7 @@ int update_cache_pool_params(struct volume_group *vg, unsigned attr,
 	 * ... plus a good amount of padding (2x) to cover any
 	 * policy hint data that may be added in the future.
 	 */
-	min_meta_size = 16 * (data_extents * vg->extent_size);
+	min_meta_size = (uint64_t)data_extents * vg->extent_size * 16;
 	min_meta_size /= *chunk_size; /* # of Bytes we need */
 	min_meta_size *= 2;              /* plus some padding */
 	min_meta_size /= 512;            /* in sectors */
@@ -66,15 +61,18 @@ int update_cache_pool_params(struct volume_group *vg, unsigned attr,
 	if (!*pool_metadata_size)
 		*pool_metadata_size = min_meta_size;
 
-	if (*pool_metadata_size < min_meta_size) {
-		*pool_metadata_size = min_meta_size;
-		log_print("Increasing metadata device size to %"
-			  PRIu64 " sectors", *pool_metadata_size);
-	}
 	if (*pool_metadata_size > (2 * DEFAULT_CACHE_POOL_MAX_METADATA_SIZE)) {
 		*pool_metadata_size = 2 * DEFAULT_CACHE_POOL_MAX_METADATA_SIZE;
-		log_print("Reducing metadata device size to %" PRIu64 " sectors",
-			  *pool_metadata_size);
+		if (passed_args & PASS_ARG_POOL_METADATA_SIZE)
+			log_warn("WARNING: Maximum supported pool metadata size is %s.",
+				 display_size(vg->cmd, *pool_metadata_size));
+	} else if (*pool_metadata_size < min_meta_size) {
+		if (passed_args & PASS_ARG_POOL_METADATA_SIZE)
+			log_warn("WARNING: Minimum supported pool metadata size is %s "
+				 "(needs extra %s).",
+				 display_size(vg->cmd, min_meta_size),
+				 display_size(vg->cmd, min_meta_size - *pool_metadata_size));
+		*pool_metadata_size = min_meta_size;
 	}
 
 	return 1;
@@ -299,6 +297,20 @@ int lv_cache_remove(struct logical_volume *cache_lv)
 
 	if (!lv_remove(corigin_lv))
 		return_0;
+
+	return 1;
+}
+
+int get_cache_mode(const char *str, uint32_t *flags)
+{
+	if (!strcmp(str, "writethrough"))
+		*flags |= DM_CACHE_FEATURE_WRITETHROUGH;
+	else if (!strcmp(str, "writeback"))
+		*flags |= DM_CACHE_FEATURE_WRITEBACK;
+	else {
+		log_error("Cache pool cachemode \"%s\" is unknown.", str);
+		return 0;
+	}
 
 	return 1;
 }

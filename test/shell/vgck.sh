@@ -9,7 +9,7 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
-. lib/test
+. lib/inittest
 
 aux prepare_vg 3
 lvcreate -n blabla -L 1 $vg
@@ -18,11 +18,11 @@ dd if=/dev/urandom bs=512 seek=2 count=32 of="$dev2"
 
 # TODO: aux lvmconf "global/locking_type = 4"
 
+vgscan 2>&1 | tee vgscan.out
+
 if test -e LOCAL_LVMETAD; then
-    vgscan 2>&1 | tee vgscan.out
     not grep "Inconsistent metadata found for VG $vg" vgscan.out
 else
-    not vgscan 2>&1 | tee vgscan.out
     grep "Inconsistent metadata found for VG $vg" vgscan.out
 fi
 

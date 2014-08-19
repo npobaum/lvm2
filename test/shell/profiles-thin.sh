@@ -13,14 +13,17 @@
 # test thin profile functionality
 #
 
-. lib/test
+. lib/inittest
 
 DEV_SIZE=32
+
+# check we have thinp support compiled in
+aux have_thin 1 0 0 || skip
 
 aux prepare_profiles "thin-performance"
 
 # Create scsi debug dev with sector size of 4096B and 1MiB optimal_io_size
-aux prepare_scsi_debug_dev $DEV_SIZE sector_size=4096 opt_blks=256
+aux prepare_scsi_debug_dev $DEV_SIZE sector_size=4096 opt_blks=256 || skip
 aux prepare_pvs 1 $DEV_SIZE
 vgcreate $vg "$dev1"
 
@@ -31,7 +34,7 @@ vgcreate $vg "$dev1"
 lvcreate -L8m -T $vg/pool_generic
 check lv_field $vg/pool_generic profile ""
 check lv_field $vg/pool_generic chunk_size 64.00k
-check lv_field $vg/pool_generic zero 1
+check lv_field $vg/pool_generic zero "zero"
 
 # If "thin-performance" profile is used, the "performance"
 # policy is used to calculate chunk size which is 512KiB
@@ -41,7 +44,7 @@ check lv_field $vg/pool_generic zero 1
 lvcreate --profile thin-performance -L8m -T $vg/pool_performance
 check lv_field $vg/pool_performance profile "thin-performance"
 check lv_field $vg/pool_performance chunk_size 1.00m
-check lv_field $vg/pool_performance zero 0
+check lv_field $vg/pool_performance zero ""
 
 vgremove -ff $vg
 
@@ -53,4 +56,4 @@ lvcreate -L8m -T $vg/pool_performance_inherited
 check vg_field $vg profile "thin-performance"
 check lv_field $vg/pool_performance_inherited profile ""
 check lv_field $vg/pool_performance_inherited chunk_size 1.00m
-check lv_field $vg/pool_performance_inherited zero 0
+check lv_field $vg/pool_performance_inherited zero ""

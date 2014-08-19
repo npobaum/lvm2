@@ -9,9 +9,9 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
-. lib/test
+. lib/inittest
 
-aux target_at_least dm-cache 1 3 0 || skip
+aux have_cache 1 3 0 || skip
 
 aux prepare_vg 5 80
 
@@ -69,14 +69,20 @@ lvremove -f $vg/cache_pool
 #lvcreate -H -l 2 $vg/cache_pool -n $lv1
 #lvremove -f $vg
 
-if [ 1 -eq 0 ]; then
+# Bug 1110026
 # Create origin, then cache_pool and cache
-# FIXME: This case needs to use lvconvert
-lvcreate -l 2 -n $lv1 $vg
-lvconvert --type cache -l 1 $vg/$lv1 $mode
-dmsetup table ${vg}-$lv1 | grep cache  # ensure it is loaded in kernel
+lvcreate -aey -l 2 -n $lv1 $vg
+lvcreate --type cache -l 1 $vg/$lv1
+#should dmsetup table ${vg}-$lv1 | grep cache  # ensure it is loaded in kernel
 lvremove -ff $vg
-fi
+
+# Bug 1110026 & Bug 1095843
+# Create RAID1 origin, then cache_pool and cache
+lvcreate -aey -l 2 -n $lv1 $vg
+lvcreate --type cache -l 1 $vg/$lv1
+#should lvs -a $vg/${lv1}_corig_rimage_0        # ensure images are properly renamed
+#should dmsetup table ${vg}-$lv1 | grep cache  # ensure it is loaded in kernel
+lvremove -ff $vg
 
 # Shorthand CLI (origin exists, create cache_pool and cache)
 #lvcreate -l 1 -n $lv1 $vg
@@ -95,7 +101,7 @@ done
 ##############################
 
 # Attempt to create smaller cache than origin should fail
-lvcreate -l 1 -n $lv1 $vg
+lvcreate -aey -l 1 -n $lv1 $vg
 not lvcreate --type cache -l 2 $vg/$lv1
 
 

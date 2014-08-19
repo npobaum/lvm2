@@ -14,14 +14,12 @@
  */
 
 #include "lib.h"
-#include "toolcontext.h"
 #include "metadata.h"
 #include "segtype.h"
 #include "text_export.h"
 #include "config.h"
 #include "activate.h"
 #include "str_list.h"
-#include "defaults.h"
 
 #define SEG_LOG_ERROR(t, p...) \
 	log_error(t " segment %s of logical volume %s.", ## p, \
@@ -102,14 +100,14 @@ static int _snap_text_export(const struct lv_segment *seg, struct formatter *f)
 	return 1;
 }
 
+#ifdef DEVMAPPER_SUPPORT
 static int _snap_target_status_compatible(const char *type)
 {
 	return (strcmp(type, "snapshot-merge") == 0);
 }
 
-#ifdef DEVMAPPER_SUPPORT
 static int _snap_target_percent(void **target_state __attribute__((unused)),
-				percent_t *percent,
+				dm_percent_t *percent,
 				struct dm_pool *mem __attribute__((unused)),
 				struct cmd_context *cmd __attribute__((unused)),
 				struct lv_segment *seg __attribute__((unused)),
@@ -122,19 +120,19 @@ static int _snap_target_percent(void **target_state __attribute__((unused)),
 		return_0;
 
 	if (s->invalid)
-		*percent = PERCENT_INVALID;
+		*percent = DM_PERCENT_INVALID;
 	else if (s->merge_failed)
-		*percent = PERCENT_MERGE_FAILED;
+		*percent = LVM_PERCENT_MERGE_FAILED;
 	else {
 		*total_numerator += s->used_sectors;
 		*total_denominator += s->total_sectors;
 		if (s->has_metadata_sectors &&
 		    s->used_sectors == s->metadata_sectors)
-			*percent = PERCENT_0;
+			*percent = DM_PERCENT_0;
 		else if (s->used_sectors == s->total_sectors)
-			*percent = PERCENT_100;
+			*percent = DM_PERCENT_100;
 		else
-			*percent = make_percent(*total_numerator, *total_denominator);
+			*percent = dm_make_percent(*total_numerator, *total_denominator);
 	}
 
 	return 1;
@@ -180,7 +178,7 @@ static int _snap_target_present(struct cmd_context *cmd,
 	return _snap_present;
 }
 
-#ifdef DMEVENTD
+#  ifdef DMEVENTD
 
 static const char *_get_snapshot_dso_path(struct cmd_context *cmd)
 {
@@ -214,8 +212,7 @@ static int _target_unregister_events(struct lv_segment *seg,
 	return _target_set_events(seg, events, 0);
 }
 
-#endif /* DMEVENTD */
-#endif
+#  endif /* DMEVENTD */
 
 static int _snap_modules_needed(struct dm_pool *mem,
 				const struct lv_segment *seg __attribute__((unused)),
@@ -228,6 +225,7 @@ static int _snap_modules_needed(struct dm_pool *mem,
 
 	return 1;
 }
+#endif /* DEVMAPPER_SUPPORT */
 
 static void _snap_destroy(struct segment_type *segtype)
 {
@@ -239,17 +237,17 @@ static struct segtype_handler _snapshot_ops = {
 	.target_name = _snap_target_name,
 	.text_import = _snap_text_import,
 	.text_export = _snap_text_export,
-	.target_status_compatible = _snap_target_status_compatible,
 #ifdef DEVMAPPER_SUPPORT
+	.target_status_compatible = _snap_target_status_compatible,
 	.target_percent = _snap_target_percent,
 	.target_present = _snap_target_present,
+	.modules_needed = _snap_modules_needed,
 #  ifdef DMEVENTD
 	.target_monitored = _target_registered,
 	.target_monitor_events = _target_register_events,
 	.target_unmonitor_events = _target_unregister_events,
 #  endif	/* DMEVENTD */
 #endif
-	.modules_needed = _snap_modules_needed,
 	.destroy = _snap_destroy,
 };
 

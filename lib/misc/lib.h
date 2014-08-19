@@ -40,14 +40,8 @@
 #  include "lvm-logging.h"
 #  include "lvm-globals.h"
 #  include "lvm-wrappers.h"
-#  include "lvm-types.h"
 #endif
 
-#include <errno.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <unistd.h>
-#include <sys/stat.h>
 
 #endif

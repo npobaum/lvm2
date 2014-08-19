@@ -9,7 +9,7 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
-. lib/test
+. lib/inittest
 
 test -e LOCAL_LVMETAD || skip
 aux prepare_devs 2
@@ -20,3 +20,12 @@ vgcreate --metadatatype 1 $vg1 "$dev1"
 should vgscan --cache
 vgs | should grep $vg1
 pvs | should grep "$dev1"
+
+# check for RHBZ 1080189 -- SEGV in lvremove/vgremove
+pvcreate -ff -y --metadatatype 1 "$dev1" "$dev2"
+vgcreate --metadatatype 1 $vg1 "$dev1" "$dev2"
+lvcreate -l1 $vg1
+pvremove -ff -y $dev2
+vgchange -an $vg1
+not lvremove $vg1
+not vgremove -ff -y $vg1

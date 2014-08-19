@@ -82,21 +82,29 @@ static int _default_priority;
 
 /* list of maps, that are unconditionaly ignored */
 static const char * const _ignore_maps[] = {
-    "[vdso]",
-    "[vsyscall]",
-    "[vectors]",
+	"[vdso]",
+	"[vsyscall]",
+	"[vectors]",
 };
 
 /* default blacklist for maps */
 static const char * const _blacklist_maps[] = {
-    "locale/locale-archive",
-    "/LC_MESSAGES/",
-    "gconv/gconv-modules.cache",
-    "/libreadline.so.",	/* not using readline during mlock */
-    "/libncurses.so.",	/* not using ncurses during mlock */
-    "/libtinfo.so.",	/* not using tinfo during mlock */
-    "/libdl-",		/* not using dlopen,dlsym during mlock */
-    /* "/libdevmapper-event.so" */
+	"locale/locale-archive",
+	"/LC_MESSAGES/",
+	"gconv/gconv-modules.cache",
+	"/libblkid.so.",	/* not using lzma during mlock (selinux) */
+	"/liblzma.so.",	/* not using lzma during mlock (selinux) */
+	"/libncurses.so.",	/* not using ncurses during mlock */
+	"/libpcre.so.",	/* not using pcre during mlock (selinux) */
+	"/libreadline.so.",	/* not using readline during mlock */
+	"/libselinux.so.",	/* not using selinux during mlock */
+	"/libsepol.so.",	/* not using sepol during mlock */
+	"/libtinfo.so.",	/* not using tinfo during mlock */
+	"/libudev.so.",		/* not using udev during mlock */
+	"/libuuid.so.",		/* not using uuid during mlock (blkid) */
+	"/libdl-",		/* not using dlopen,dlsym during mlock */
+	"/etc/selinux",		/* not using selinux during mlock */
+	/* "/libdevmapper-event.so" */
 };
 
 typedef enum { LVM_MLOCK, LVM_MUNLOCK } lvmlock_t;
@@ -411,7 +419,7 @@ void critical_section_inc(struct cmd_context *cmd, const char *reason)
 	 * entering the critical section all needed profiles are
 	 * loaded to avoid the disk access later.
 	 */
-	load_pending_profiles(cmd);
+	(void) load_pending_profiles(cmd);
 
 	if (!_critical_section) {
 		_critical_section = 1;

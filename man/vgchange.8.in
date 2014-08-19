@@ -1,6 +1,6 @@
 .TH VGCHANGE 8 "LVM TOOLS #VERSION#" "Sistina Software UK" \" -*- nroff -*-
 .SH NAME
-vgchange \- change attributes of a volume group
+vgchange \(em change attributes of a volume group
 .SH SYNOPSIS
 .B vgchange
 .RB [ \-\-addtag
@@ -12,6 +12,8 @@ vgchange \- change attributes of a volume group
 .RB [ \-a | \-\-activate
 .RI [ a | e | l ]
 .RI { y | n }]
+.RB [ \-\-activationmode
+.IR { complete | degraded | partial } ]
 .RB [ \-K | \-\-ignoreactivationskip ]
 .RB [ \-\-monitor
 .RI { y | n }]
@@ -20,11 +22,11 @@ vgchange \- change attributes of a volume group
 .RB [ \-c | \-\-clustered
 .RI { y | n }]
 .RB [ \-u | \-\-uuid ]
+.RB [ \-\-commandprofile
+.IR ProfileName ]
 .RB [ \-d | \-\-debug ]
 .RB [ \-\-deltag
 .IR Tag ]
-.RB [ \-\-profile
-.IR ProfileName ]
 .RB [ \-\-detachprofile ]
 .RB [ \-h | \-\-help ]
 .RB [ \-\-ignorelockingfailure ]
@@ -34,15 +36,17 @@ vgchange \- change attributes of a volume group
 .RB [ \-\-noudevsync ]
 .RB [ \-l | \-\-logicalvolume
 .IR MaxLogicalVolumes ]
-.RB [ -p | \-\-maxphysicalvolumes
+.RB [ \-p | \-\-maxphysicalvolumes
 .IR MaxPhysicalVolumes ]
+.RB [ \-\-metadataprofile
+.IR ProfileName ]
 .RB [ \-\- [ vg ] metadatacopies ]
 .IR NumberOfCopies | unmanaged | all ]
 .RB [ \-P | \-\-partial ]
 .RB [ \-s | \-\-physicalextentsize
 .IR PhysicalExtentSize [ bBsSkKmMgGtTpPeE ]]
 .RB [ \-\-refresh ]
-.RB [ -t | \-\-test ]
+.RB [ \-t | \-\-test ]
 .RB [ \-v | \-\-verbose ]
 .RB [ \-\-version ]
 .RB [ \-x | \-\-resizeable
@@ -81,11 +85,36 @@ The \-aay option should be also used during system boot so it's
 possible to select which volumes to activate using the
 activation/auto_activation_volume_list settting.
 .IP
+Activation of a logical volume creates a symbolic link 
+/dev/VolumeGroupName/LogicalVolumeName pointing to the device node.
+This link is removed on deactivation.
+All software and scripts should access the device through
+this symbolic link and present this as the name of the device.
+The location and name of the underlying device node may depend on   
+the distribution and configuration (e.g. udev) and might change 
+from release to release.
+.IP
 If clustered locking is enabled, add 'e' to activate/deactivate
 exclusively on one node or 'l' to activate/deactivate only
 on the local node.
 Logical volumes with single-host snapshots are always activated
 exclusively because they can only be used on one node at once.
+.TP
+.BR \-\-activationmode " {" \fIcomplete | \fIdegraded | \fIpartial }
+The activation mode determines whether logical volumes are allowed to
+activate when there are physical volumes missing (e.g. due to a device
+failure).  \fIcomplete is the most restrictive; allowing only those
+logical volumes to be activated that are not affected by the missing
+PVs.  \fIdegraded allows RAID logical volumes to be activated even if
+they have PVs missing.  (Note that the "mirror" segment type is not
+considered a RAID logical volume.  The "raid1" segment type should
+be used instead.)  Finally, \fIpartial allows any logical volume to
+be activated even if portions are missing due to a missing or failed
+PV.  This last option should only be used when performing recovery or
+repair operations.  \fIdegraded is the default mode.  To change it, modify
+.B activation_mode
+in
+.BR lvm.conf (5).
 .TP
 .BR \-K ", " \-\-ignoreactivationskip
 Ignore the flag to skip Logical Volumes during activation.
@@ -99,9 +128,9 @@ particular time, you may still be able to use Volume Groups that
 are not marked as clustered.
 .TP
 .BR \-\-detachprofile
-Detach any configuration profiles attached to given Volume Groups.
-See also \fBlvm\fP(8) and \fBlvm.conf\fP(5) for more
-information about configuration profiles.
+Detach any metadata configuration profiles attached to given
+Volume Groups. See \fBlvm.conf\fP(5) for more information
+about \fBmetadata profiles\fP.
 .TP
 .BR \-u ", " \-\-uuid
 Generate new random UUID for specified Volume Groups.
@@ -166,13 +195,20 @@ For volume groups with metadata in lvm1 format, the limit is 255.
 If the metadata uses lvm2 format, the value 0 removes this restriction:
 there is then no limit.  If you have a large number of physical volumes in
 a volume group with metadata in lvm2 format, for tool performance reasons,
-you should consider some use of \fB--pvmetadatacopies 0\fP as described in
-\fBpvcreate(8)\fP, and/or use \fB--vgmetadatacopies\fP.
+you should consider some use of \fB\-\-pvmetadatacopies 0\fP as described in
+\fBpvcreate(8)\fP, and/or use \fB\-\-vgmetadatacopies\fP.
+.TP
+.BR \-\-metadataprofile " " \fIProfileName
+Uses and attaches ProfileName configuration profile to the volume group
+metadata. Whenever the volume group is processed next time, the profile
+is automatically applied. The profile is inherited by all logical volumes
+in the volume group unless the logical volume itself has its own profile
+attached. See \fBlvm.conf\fP(5) for more information about \fBmetadata profiles\fP.
 .TP
 .BR \-\- [ vg ] metadatacopies " " \fINumberOfCopies | \fIunmanaged | \fIall
 Sets the desired number of metadata copies in the volume group.  If set to
 a non-zero value, LVM will automatically manage the 'metadataignore'
-flags on the physical volumes (see \fBpvchange\fP or \fBpvcreate --metadataignore\fP) in order
+flags on the physical volumes (see \fBpvchange\fP or \fBpvcreate \-\-metadataignore\fP) in order
 to achieve \fINumberOfCopies\fP copies of metadata.  If set to \fIunmanaged\fP,
 LVM will not automatically manage the 'metadataignore' flags.  If set to
 \fIall\fP, LVM will first clear all of the 'metadataignore' flags on all
@@ -216,12 +252,12 @@ with/by physical volumes.
 .SH Examples
 To activate all known volume groups in the system:
 .sp
-.B vgchange -a y
+.B vgchange \-a y
 
 To change the maximum number of logical volumes of inactive volume group
 vg00 to 128.
 .sp
-.B vgchange -l 128 /dev/vg00
+.B vgchange \-l 128 /dev/vg00
 
 
 .SH SEE ALSO

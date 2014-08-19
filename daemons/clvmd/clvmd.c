@@ -19,10 +19,6 @@
 
 #include "clvmd-common.h"
 
-#include <pthread.h>
-#include <getopt.h>
-#include <ctype.h>
-
 #include "clvmd-comms.h"
 #include "clvm.h"
 #include "clvmd.h"
@@ -33,6 +29,11 @@
 #ifdef HAVE_COROSYNC_CONFDB_H
 #include <corosync/confdb.h>
 #endif
+
+#include <pthread.h>
+#include <getopt.h>
+#include <ctype.h>
+#include <stdarg.h>
 
 #include <fcntl.h>
 #include <netinet/in.h>
@@ -212,12 +213,13 @@ void debuglog(const char *fmt, ...)
 	time_t P;
 	va_list ap;
 	static int syslog_init = 0;
+	char buf_ctime[64];
 
 	switch (clvmd_get_debug()) {
 	case DEBUG_STDERR:
 		va_start(ap,fmt);
 		time(&P);
-		fprintf(stderr, "CLVMD[%x]: %.15s ", (int)pthread_self(), ctime(&P)+4 );
+		fprintf(stderr, "CLVMD[%x]: %.15s ", (int)pthread_self(), ctime_r(&P, buf_ctime) + 4);
 		vfprintf(stderr, fmt, ap);
 		va_end(ap);
 		break;
@@ -685,6 +687,9 @@ static int local_rendezvous_callback(struct local_client *thisfd, char *buf,
 			return 1;
 		}
 
+		pthread_cond_init(&newfd->bits.localsock.cond, NULL);
+		pthread_mutex_init(&newfd->bits.localsock.mutex, NULL);
+
 		if (fcntl(client_fd, F_SETFD, 1))
 			DEBUGLOG("Setting CLOEXEC on client fd failed: %s\n", strerror(errno));
 
@@ -775,25 +780,26 @@ static int local_pipe_callback(struct local_client *thisfd, char *buf,
 static void timedout_callback(struct local_client *client, const char *csid,
 			      int node_up)
 {
-	if (node_up) {
-		struct node_reply *reply;
-		char nodename[max_cluster_member_name_len];
+	struct node_reply *reply;
+	char nodename[max_cluster_member_name_len];
 
-		clops->name_from_csid(csid, nodename);
-		DEBUGLOG("Checking for a reply from %s\n", nodename);
-		pthread_mutex_lock(&client->bits.localsock.reply_mutex);
+	if (!node_up)
+		return;
 
-		reply = client->bits.localsock.replies;
-		while (reply && strcmp(reply->node, nodename) != 0)
-			reply = reply->next;
+	clops->name_from_csid(csid, nodename);
+	DEBUGLOG("Checking for a reply from %s\n", nodename);
+	pthread_mutex_lock(&client->bits.localsock.mutex);
 
-		pthread_mutex_unlock(&client->bits.localsock.reply_mutex);
+	reply = client->bits.localsock.replies;
+	while (reply && strcmp(reply->node, nodename) != 0)
+		reply = reply->next;
 
-		if (!reply) {
-			DEBUGLOG("Node %s timed-out\n", nodename);
-			add_reply_to_list(client, ETIMEDOUT, csid,
-					  "Command timed out", 18);
-		}
+	pthread_mutex_unlock(&client->bits.localsock.mutex);
+
+	if (!reply) {
+		DEBUGLOG("Node %s timed-out\n", nodename);
+		add_reply_to_list(client, ETIMEDOUT, csid,
+				  "Command timed out", 18);
 	}
 }
 
@@ -809,16 +815,20 @@ static void request_timed_out(struct local_client *client)
 	DEBUGLOG("Request timed-out. padding\n");
 	clops->cluster_do_node_callback(client, timedout_callback);
 
-	if (client->bits.localsock.num_replies !=
-	    client->bits.localsock.expected_replies) {
+	if (!client->bits.localsock.threadid)
+		return;
+
+	pthread_mutex_lock(&client->bits.localsock.mutex);
+
+	if (!client->bits.localsock.finished &&
+	    (client->bits.localsock.num_replies !=
+	     client->bits.localsock.expected_replies)) {
 		/* Post-process the command */
-		if (client->bits.localsock.threadid) {
-			pthread_mutex_lock(&client->bits.localsock.mutex);
-			client->bits.localsock.state = POST_COMMAND;
-			pthread_cond_signal(&client->bits.localsock.cond);
-			pthread_mutex_unlock(&client->bits.localsock.mutex);
-		}
+		client->bits.localsock.state = POST_COMMAND;
+		pthread_cond_signal(&client->bits.localsock.cond);
 	}
+
+	pthread_mutex_unlock(&client->bits.localsock.mutex);
 }
 
 /* This is where the real work happens */
@@ -1145,8 +1155,6 @@ static int cleanup_zombie(struct local_client *thisfd)
 	DEBUGLOG("EOF on local socket: inprogress=%d\n",
 		 thisfd->bits.localsock.in_progress);
 
-	thisfd->bits.localsock.finished = 1;
-
 	if ((pipe_client = thisfd->bits.localsock.pipe_client))
 		pipe_client = pipe_client->bits.pipe.client;
 
@@ -1157,6 +1165,7 @@ static int cleanup_zombie(struct local_client *thisfd)
 		if (pthread_mutex_trylock(&thisfd->bits.localsock.mutex))
 			return 1;
 		thisfd->bits.localsock.state = POST_COMMAND;
+		thisfd->bits.localsock.finished = 1;
 		pthread_cond_signal(&thisfd->bits.localsock.cond);
 		pthread_mutex_unlock(&thisfd->bits.localsock.mutex);
 
@@ -1169,6 +1178,7 @@ static int cleanup_zombie(struct local_client *thisfd)
 		DEBUGLOG("Waiting for pre&post thread (%p)\n", pipe_client);
 		pthread_mutex_lock(&thisfd->bits.localsock.mutex);
 		thisfd->bits.localsock.state = PRE_COMMAND;
+		thisfd->bits.localsock.finished = 1;
 		pthread_cond_signal(&thisfd->bits.localsock.cond);
 		pthread_mutex_unlock(&thisfd->bits.localsock.mutex);
 
@@ -1179,8 +1189,6 @@ static int cleanup_zombie(struct local_client *thisfd)
 		DEBUGLOG("Joined pre&post thread\n");
 
 		thisfd->bits.localsock.threadid = 0;
-		pthread_cond_destroy(&thisfd->bits.localsock.cond);
-		pthread_mutex_destroy(&thisfd->bits.localsock.mutex);
 
 		/* Remove the pipe client */
 		if (thisfd->bits.localsock.pipe_client) {
@@ -1319,16 +1327,6 @@ static int read_from_local_sock(struct local_client *thisfd)
 			missing_len -= len;
 			argslen += len;
 		}
-	}
-
-	/*
-	 * Initialise and lock the mutex so the subthread will wait
-	 * after finishing the PRE routine
-	 */
-	if (!thisfd->bits.localsock.threadid) {
-		pthread_mutex_init(&thisfd->bits.localsock.mutex, NULL);
-		pthread_cond_init(&thisfd->bits.localsock.cond, NULL);
-		pthread_mutex_init(&thisfd->bits.localsock.reply_mutex, NULL);
 	}
 
 	/* Only run the command if all the cluster nodes are running CLVMD */
@@ -1640,26 +1638,28 @@ static void add_reply_to_list(struct local_client *client, int status,
 	} else
 		reply->replymsg = NULL;
 
-	pthread_mutex_lock(&client->bits.localsock.reply_mutex);
-	/* Hook it onto the reply chain */
-	reply->next = client->bits.localsock.replies;
-	client->bits.localsock.replies = reply;
-	DEBUGLOG("Got %d replies, expecting: %d\n",
-		 client->bits.localsock.num_replies + 1,
-		 client->bits.localsock.expected_replies);
+	pthread_mutex_lock(&client->bits.localsock.mutex);
 
-	/* If we have the whole lot then do the post-process */
-	if (++client->bits.localsock.num_replies ==
-	    client->bits.localsock.expected_replies) {
+	if (client->bits.localsock.finished) {
+		dm_free(reply->replymsg);
+		dm_free(reply);
+	} else {
+		/* Hook it onto the reply chain */
+		reply->next = client->bits.localsock.replies;
+		client->bits.localsock.replies = reply;
+
+		/* If we have the whole lot then do the post-process */
 		/* Post-process the command */
-		if (client->bits.localsock.threadid) {
-			pthread_mutex_lock(&client->bits.localsock.mutex);
+		if (++client->bits.localsock.num_replies ==
+		    client->bits.localsock.expected_replies) {
 			client->bits.localsock.state = POST_COMMAND;
 			pthread_cond_signal(&client->bits.localsock.cond);
-			pthread_mutex_unlock(&client->bits.localsock.mutex);
 		}
+		DEBUGLOG("Got %d replies, expecting: %d\n",
+			 client->bits.localsock.num_replies,
+			 client->bits.localsock.expected_replies);
 	}
-	pthread_mutex_unlock(&client->bits.localsock.reply_mutex);
+	pthread_mutex_unlock(&client->bits.localsock.mutex);
 }
 
 /* This is the thread that runs the PRE and post commands for a particular connection */
@@ -1762,7 +1762,6 @@ static int process_local_command(struct clvm_header *msg, int msglen,
 	if (msg->flags & CLVMD_FLAG_REMOTE)
 		status = 0;
 	else
-		/* FIXME: usage of init_test() is unprotected */
 		status = do_command(client, msg, msglen, &replybuf, buflen, &replylen);
 
 	if (status)
@@ -1976,6 +1975,8 @@ static int process_work_item(struct lvm_thread_cmd *cmd)
 	if (cmd->msg == NULL) {
 		DEBUGLOG("process_work_item: free fd %d\n", cmd->client->fd);
 		cmd_client_cleanup(cmd->client);
+		pthread_mutex_destroy(&cmd->client->bits.localsock.mutex);
+		pthread_cond_destroy(&cmd->client->bits.localsock.cond);
 		dm_free(cmd->client);
 		return 0;
 	}

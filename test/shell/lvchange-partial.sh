@@ -9,13 +9,13 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
-. lib/test
+. lib/inittest
 
 
 aux prepare_vg 4
 
 TYPE=raid1
-aux target_at_least dm-raid 1 1 0 || TYPE=mirror
+aux have_raid 1 3 0 || TYPE=mirror
 
 lvcreate -aey --type $TYPE -m 1 -l 2 -n $lv1 $vg
 lvchange -an $vg/$lv1

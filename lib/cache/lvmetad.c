@@ -21,11 +21,12 @@
 #include "lvmetad-client.h"
 #include "format-text.h" // TODO for disk_locn, used as a DA representation
 #include "crc.h"
+#include "lvm-signal.h"
 
 #define SCAN_TIMEOUT_SECONDS	80
 #define MAX_RESCANS		10	/* Maximum number of times to scan all PVs and retry if the daemon returns a token mismatch error */
 
-static daemon_handle _lvmetad;
+static daemon_handle _lvmetad = { .error = 0 };
 static int _lvmetad_use = 0;
 static int _lvmetad_connected = 0;
 
@@ -67,12 +68,12 @@ void lvmetad_connect_or_warn(void)
 	if (!_lvmetad_use)
 		return;
 
-	if (!_lvmetad_connected)
+	if (!_lvmetad_connected && !_lvmetad.error) {
 		_lvmetad_connect();
 
-	if ((_lvmetad.socket_fd < 0 || _lvmetad.error))
-		log_warn("WARNING: Failed to connect to lvmetad: %s. Falling back to internal scanning.",
-			 strerror(_lvmetad.error));
+		if ((_lvmetad.socket_fd < 0 || _lvmetad.error))
+			log_warn("WARNING: Failed to connect to lvmetad. Falling back to internal scanning.");
+	}
 }
 
 int lvmetad_used(void)
@@ -93,21 +94,15 @@ int lvmetad_socket_present(void)
 
 int lvmetad_active(void)
 {
-	if (!_lvmetad_use)
-		return 0;
-
-	if (!_lvmetad_connected)
-		_lvmetad_connect();
-
-	if ((_lvmetad.socket_fd < 0 || _lvmetad.error))
-		log_debug_lvmetad("Failed to connect to lvmetad: %s.", strerror(_lvmetad.error));
-
+	lvmetad_connect_or_warn();
 	return _lvmetad_connected;
 }
 
 void lvmetad_set_active(int active)
 {
 	_lvmetad_use = active;
+	if (!active && lvmetad_active())
+		lvmetad_disconnect();
 }
 
 /*
@@ -124,7 +119,7 @@ void lvmetad_set_token(const struct dm_config_value *filter)
 		filter = filter->next;
 	}
 
-	if (!dm_asprintf(&_lvmetad_token, "filter:%u", ft))
+	if (dm_asprintf(&_lvmetad_token, "filter:%u", ft) < 0)
 		log_warn("WARNING: Failed to set lvmetad token. Out of memory?");
 }
 

@@ -114,7 +114,7 @@ int persistent_filter_load(struct dev_filter *f, struct dm_config_tree **cft_out
 		return_0;
 	}
 
-	if (!(cft = config_open(CONFIG_FILE, pf->file, 1)))
+	if (!(cft = config_open(CONFIG_FILE_SPECIAL, pf->file, 1)))
 		return_0;
 
 	if (!config_file_read(cft))
@@ -272,7 +272,7 @@ static int _lookup_p(struct dev_filter *f, struct device *dev)
 {
 	struct pfilter *pf = (struct pfilter *) f->private;
 	void *l = dm_hash_lookup(pf->devices, dev_name(dev));
-	struct str_list *sl;
+	struct dm_str_list *sl;
 
 	/* Cached BAD? */
 	if (l == PF_BAD_DEVICE) {

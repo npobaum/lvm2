@@ -20,7 +20,6 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
-#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/file.h>
@@ -57,7 +56,7 @@ static void _dm_event_handler_clear_dev_info(struct dm_event_handler *dmevh)
 
 struct dm_event_handler *dm_event_handler_create(void)
 {
-	struct dm_event_handler *dmevh = NULL;
+	struct dm_event_handler *dmevh;
 
 	if (!(dmevh = dm_zalloc(sizeof(*dmevh)))) {
 		log_error("Failed to allocate event handler.");
@@ -82,8 +81,7 @@ int dm_event_handler_set_dmeventd_path(struct dm_event_handler *dmevh, const cha
 
 	dm_free(dmevh->dmeventd_path);
 
-	dmevh->dmeventd_path = dm_strdup(dmeventd_path);
-	if (!dmevh->dmeventd_path)
+	if (!(dmevh->dmeventd_path = dm_strdup(dmeventd_path)))
 		return -ENOMEM;
 
 	return 0;
@@ -93,10 +91,10 @@ int dm_event_handler_set_dso(struct dm_event_handler *dmevh, const char *path)
 {
 	if (!path) /* noop */
 		return 0;
+
 	dm_free(dmevh->dso);
 
-	dmevh->dso = dm_strdup(path);
-	if (!dmevh->dso)
+	if (!(dmevh->dso = dm_strdup(path)))
 		return -ENOMEM;
 
 	return 0;
@@ -109,9 +107,9 @@ int dm_event_handler_set_dev_name(struct dm_event_handler *dmevh, const char *de
 
 	_dm_event_handler_clear_dev_info(dmevh);
 
-	dmevh->dev_name = dm_strdup(dev_name);
-	if (!dmevh->dev_name)
+	if (!(dmevh->dev_name = dm_strdup(dev_name)))
 		return -ENOMEM;
+
 	return 0;
 }
 
@@ -122,9 +120,9 @@ int dm_event_handler_set_uuid(struct dm_event_handler *dmevh, const char *uuid)
 
 	_dm_event_handler_clear_dev_info(dmevh);
 
-	dmevh->uuid = dm_strdup(uuid);
-	if (!dmevh->uuid)
+	if (!(dmevh->uuid = dm_strdup(uuid)))
 		return -ENOMEM;
+
 	return 0;
 }
 
@@ -224,7 +222,6 @@ static int _daemon_read(struct dm_event_fifos *fifos,
 	unsigned bytes = 0;
 	int ret, i;
 	fd_set fds;
-	struct timeval tval = { 0, 0 };
 	size_t size = 2 * sizeof(uint32_t);	/* status + size */
 	uint32_t *header = alloca(size);
 	char *buf = (char *)header;
@@ -232,11 +229,10 @@ static int _daemon_read(struct dm_event_fifos *fifos,
 	while (bytes < size) {
 		for (i = 0, ret = 0; (i < 20) && (ret < 1); i++) {
 			/* Watch daemon read FIFO for input. */
+			struct timeval tval = { .tv_sec = 1 };
 			FD_ZERO(&fds);
 			FD_SET(fifos->server, &fds);
-			tval.tv_sec = 1;
-			ret = select(fifos->server + 1, &fds, NULL, NULL,
-				     &tval);
+			ret = select(fifos->server + 1, &fds, NULL, NULL, &tval);
 			if (ret < 0 && errno != EINTR) {
 				log_error("Unable to read from event server");
 				return 0;
@@ -283,15 +279,13 @@ static int _daemon_read(struct dm_event_fifos *fifos,
 static int _daemon_write(struct dm_event_fifos *fifos,
 			 struct dm_event_daemon_message *msg)
 {
-	unsigned bytes = 0;
-	int ret = 0;
+	int ret;
 	fd_set fds;
-
+	size_t bytes = 0;
 	size_t size = 2 * sizeof(uint32_t) + msg->size;
 	uint32_t *header = alloca(size);
 	char *buf = (char *)header;
 	char drainbuf[128];
-	struct timeval tval = { 0, 0 };
 
 	header[0] = htonl(msg->cmd);
 	header[1] = htonl(msg->size);
@@ -299,9 +293,9 @@ static int _daemon_write(struct dm_event_fifos *fifos,
 
 	/* drain the answer fifo */
 	while (1) {
+		struct timeval tval = { .tv_usec = 100 };
 		FD_ZERO(&fds);
 		FD_SET(fifos->server, &fds);
-		tval.tv_usec = 100;
 		ret = select(fifos->server + 1, &fds, NULL, NULL, &tval);
 		if ((ret < 0) && (errno != EINTR)) {
 			log_error("Unable to talk to event daemon");
@@ -309,7 +303,7 @@ static int _daemon_write(struct dm_event_fifos *fifos,
 		}
 		if (ret == 0)
 			break;
-		ret = read(fifos->server, drainbuf, 127);
+		ret = read(fifos->server, drainbuf, sizeof(drainbuf));
 	}
 
 	while (bytes < size) {
@@ -610,7 +604,7 @@ int dm_event_register_handler(const struct dm_event_handler *dmevh)
 	int ret = 1, err;
 	const char *uuid;
 	struct dm_task *dmt;
-	struct dm_event_daemon_message msg = { 0, 0, NULL };
+	struct dm_event_daemon_message msg = { 0 };
 
 	if (!(dmt = _get_device_info(dmevh)))
 		return_0;
@@ -644,7 +638,7 @@ int dm_event_unregister_handler(const struct dm_event_handler *dmevh)
 	int ret = 1, err;
 	const char *uuid;
 	struct dm_task *dmt;
-	struct dm_event_daemon_message msg = { 0, 0, NULL };
+	struct dm_event_daemon_message msg = { 0 };
 
 	if (!(dmt = _get_device_info(dmevh)))
 		return_0;
@@ -695,7 +689,6 @@ static int _parse_message(struct dm_event_daemon_message *msg, char **dso_name,
 	    (*dso_name = _fetch_string(&p, ' ')) &&
 	    (*uuid = _fetch_string(&p, ' '))) {
 		*evmask = atoi(p);
-
 		dm_free(id);
 		return 0;
 	}
@@ -750,8 +743,8 @@ int dm_event_get_registered_device(struct dm_event_handler *dmevh, int next)
 		ret = -ENXIO; /* dmeventd probably gave us bogus uuid back */
 		goto fail;
 	}
-	dmevh->uuid = dm_strdup(reply_uuid);
-	if (!dmevh->uuid) {
+
+	if (!(dmevh->uuid = dm_strdup(reply_uuid))) {
 		ret = -ENOMEM;
 		goto fail;
 	}
@@ -770,8 +763,7 @@ int dm_event_get_registered_device(struct dm_event_handler *dmevh, int next)
 	dm_free(reply_uuid);
 	reply_uuid = NULL;
 
-	dmevh->dev_name = dm_strdup(dm_task_get_name(dmt));
-	if (!dmevh->dev_name) {
+	if (!(dmevh->dev_name = dm_strdup(dm_task_get_name(dmt)))) {
 		ret = -ENOMEM;
 		goto fail;
 	}
@@ -811,7 +803,7 @@ int dm_event_get_registered_device(struct dm_event_handler *dmevh, int next)
 
 int dm_event_get_version(struct dm_event_fifos *fifos, int *version) {
 	char *p;
-	struct dm_event_daemon_message msg = { 0, 0, NULL };
+	struct dm_event_daemon_message msg = { 0 };
 
 	if (daemon_talk(fifos, &msg, DM_EVENT_CMD_HELLO, NULL, NULL, 0, 0))
 		return 0;
@@ -856,6 +848,7 @@ int dm_event_get_timeout(const char *device_path, uint32_t *timeout)
 
 	if (!device_exists(device_path))
 		return -ENODEV;
+
 	if (!(ret = _do_event(DM_EVENT_CMD_GET_TIMEOUT, &msg, NULL, device_path,
 			     0, 0))) {
 		char *p = _skip_string(msg.data, ' ');

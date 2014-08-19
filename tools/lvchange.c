@@ -215,6 +215,9 @@ static int _lvchange_activate(struct cmd_context *cmd, struct logical_volume *lv
 
 	activate = (activation_change_t) arg_uint_value(cmd, activate_ARG, CHANGE_AY);
 
+	if (lv_is_cache_pool(lv))
+		return 1;
+
 	if (lv_activation_skip(lv, activate, arg_count(cmd, ignoreactivationskip_ARG)))
 		return 1;
 
@@ -347,7 +350,7 @@ static int lvchange_resync(struct cmd_context *cmd, struct logical_volume *lv)
 	}
 
 	if (lv_info(cmd, lv, 0, &info, 1, 0)) {
-		if (info.open_count) {
+		if (!lv_check_not_in_use(cmd, lv, &info)) {
 			log_error("Can't resync open logical volume \"%s\"",
 				  lv->name);
 			return 0;
@@ -362,9 +365,6 @@ static int lvchange_resync(struct cmd_context *cmd, struct logical_volume *lv)
 					  lv->name);
 				return 0;
 			}
-
-			if (sigint_caught())
-				return_0;
 
 			active = 1;
 			if (lv_is_active_exclusive_locally(lv))
@@ -898,8 +898,11 @@ static int lvchange_profile(struct logical_volume *lv)
 		new_profile_name = "(inherited)";
 		lv->profile = NULL;
 	} else {
-		new_profile_name = arg_str_value(lv->vg->cmd, profile_ARG, NULL);
-		if (!(new_profile = add_profile(lv->vg->cmd, new_profile_name)))
+		if (arg_count(lv->vg->cmd, metadataprofile_ARG))
+			new_profile_name = arg_str_value(lv->vg->cmd, metadataprofile_ARG, NULL);
+		else
+			new_profile_name = arg_str_value(lv->vg->cmd, profile_ARG, NULL);
+		if (!(new_profile = add_profile(lv->vg->cmd, new_profile_name, CONFIG_PROFILE_METADATA)))
 			return_0;
 		lv->profile = new_profile;
 	}
@@ -944,21 +947,18 @@ static int _lvchange_single(struct cmd_context *cmd, struct logical_volume *lv,
 	    (arg_count(cmd, contiguous_ARG) || arg_count(cmd, permission_ARG) ||
 	     arg_count(cmd, readahead_ARG) || arg_count(cmd, persistent_ARG) ||
 	     arg_count(cmd, discards_ARG) || arg_count(cmd, zero_ARG) ||
-	     arg_count(cmd, alloc_ARG) || arg_count(cmd, profile_ARG))) {
+	     arg_count(cmd, alloc_ARG) || arg_count(cmd, profile_ARG) ||
+	     arg_count(cmd, metadataprofile_ARG))) {
 		log_error("Only -a permitted with read-only volume "
 			  "group \"%s\"", lv->vg->name);
 		return EINVALID_CMD_LINE;
 	}
 
-	if (lv_is_cache_pool(lv)) {
-		log_error("Can't change cache pool logical volume.");
-		return ECMD_FAILED;
-	}
-
 	if (lv_is_origin(lv) && !lv_is_thin_volume(lv) &&
 	    (arg_count(cmd, contiguous_ARG) || arg_count(cmd, permission_ARG) ||
 	     arg_count(cmd, readahead_ARG) || arg_count(cmd, persistent_ARG) ||
-	     arg_count(cmd, alloc_ARG) || arg_count(cmd, profile_ARG))) {
+	     arg_count(cmd, alloc_ARG) || arg_count(cmd, profile_ARG) ||
+	     arg_count(cmd, metadataprofile_ARG))) {
 		log_error("Can't change logical volume \"%s\" under snapshot",
 			  lv->name);
 		return ECMD_FAILED;
@@ -1108,7 +1108,8 @@ static int _lvchange_single(struct cmd_context *cmd, struct logical_volume *lv,
 	}
 
 	/* change configuration profile */
-	if (arg_count(cmd, profile_ARG) || arg_count(cmd, detachprofile_ARG)) {
+	if (arg_count(cmd, profile_ARG) || arg_count(cmd, metadataprofile_ARG) ||
+	    arg_count(cmd, detachprofile_ARG)) {
 		if (!archive(lv->vg))
 			return_ECMD_FAILED;
 		doit += lvchange_profile(lv);
@@ -1170,6 +1171,7 @@ int lvchange(struct cmd_context *cmd, int argc, char **argv)
 		arg_count(cmd, persistent_ARG) ||
 		arg_count(cmd, addtag_ARG) ||
 		arg_count(cmd, deltag_ARG) ||
+		arg_count(cmd, metadataprofile_ARG) ||
 		arg_count(cmd, profile_ARG) ||
 		arg_count(cmd, detachprofile_ARG) ||
 		arg_count(cmd, setactivationskip_ARG);
@@ -1194,8 +1196,9 @@ int lvchange(struct cmd_context *cmd, int argc, char **argv)
 		return EINVALID_CMD_LINE;
 	}
 
-	if (arg_count(cmd, profile_ARG) && arg_count(cmd, detachprofile_ARG)) {
-		log_error("Only one of --profile and --detachprofile permitted.");
+	if ((arg_count(cmd, profile_ARG) || arg_count(cmd, metadataprofile_ARG)) &&
+	     arg_count(cmd, detachprofile_ARG)) {
+		log_error("Only one of --metadataprofile and --detachprofile permitted.");
 		return EINVALID_CMD_LINE;
 	}
 

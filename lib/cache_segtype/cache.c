@@ -74,11 +74,7 @@ static int _cache_pool_text_import(struct lv_segment *seg,
 	if (dm_config_has_node(sn, "cache_mode")) {
 		if (!(str = dm_config_find_str(sn, "cache_mode", NULL)))
 			return SEG_LOG_ERROR("cache_mode must be a string in");
-		if (!strcmp(str, "writethrough"))
-			seg->feature_flags |= DM_CACHE_FEATURE_WRITETHROUGH;
-		else if (!strcmp(str, "writeback"))
-			seg->feature_flags |= DM_CACHE_FEATURE_WRITEBACK;
-		else
+		if (!get_cache_mode(str, &seg->feature_flags))
 			return SEG_LOG_ERROR("Unknown cache_mode in");
 	}
 
@@ -216,35 +212,6 @@ static int _cache_pool_text_export(const struct lv_segment *seg,
 	return 1;
 }
 
-static int _cache_pool_add_target_line(struct dev_manager *dm,
-				       struct dm_pool *mem,
-				       struct cmd_context *cmd __attribute__((unused)),
-				       void **target_state __attribute__((unused)),
-				       struct lv_segment *seg,
-				       const struct lv_activate_opts *laopts __attribute__((unused)),
-				       struct dm_tree_node *node, uint64_t len,
-				       uint32_t *pvmove_mirror_count __attribute__((unused)))
-{
-	/*
-	 * This /could/ be directed at _cdata, but I prefer
-	 * not to give a user direct access to a sub-LV via
-	 * this cache_pool.
-	 */
-	return dm_tree_node_add_error_target(node, len);
-}
-
-static int _modules_needed(struct dm_pool *mem,
-			   const struct lv_segment *seg __attribute__((unused)),
-			   struct dm_list *modules)
-{
-	if (!str_list_add(mem, modules, "cache")) {
-		log_error("cache module string list allocation failed");
-		return 0;
-	}
-
-	return 1;
-}
-
 static void _destroy(struct segment_type *segtype)
 {
 	dm_free((void *) segtype);
@@ -281,6 +248,17 @@ static int _target_present(struct cmd_context *cmd,
 	return _cache_present;
 }
 
+static int _modules_needed(struct dm_pool *mem,
+			   const struct lv_segment *seg __attribute__((unused)),
+			   struct dm_list *modules)
+{
+	if (!str_list_add(mem, modules, "cache")) {
+		log_error("String list allocation failed for cache module.");
+		return 0;
+	}
+
+	return 1;
+}
 #endif /* DEVMAPPER_SUPPORT */
 
 static struct segtype_handler _cache_pool_ops = {
@@ -288,13 +266,12 @@ static struct segtype_handler _cache_pool_ops = {
 	.text_import = _cache_pool_text_import,
 	.text_import_area_count = _cache_pool_text_import_area_count,
 	.text_export = _cache_pool_text_export,
-	.add_target_line = _cache_pool_add_target_line,
 #ifdef DEVMAPPER_SUPPORT
 	.target_present = _target_present,
+	.modules_needed = _modules_needed,
 #  ifdef DMEVENTD
 #  endif        /* DMEVENTD */
 #endif
-	.modules_needed = _modules_needed,
 	.destroy = _destroy,
 };
 
@@ -348,6 +325,7 @@ static int _cache_text_export(const struct lv_segment *seg, struct formatter *f)
 	return 1;
 }
 
+#ifdef DEVMAPPER_SUPPORT
 static int _cache_add_target_line(struct dev_manager *dm,
 				 struct dm_pool *mem,
 				 struct cmd_context *cmd __attribute__((unused)),
@@ -384,19 +362,20 @@ static int _cache_add_target_line(struct dev_manager *dm,
 
 	return add_areas_line(dm, seg, node, 0u, seg->area_count);
 }
+#endif /* DEVMAPPER_SUPPORT */
 
 static struct segtype_handler _cache_ops = {
 	.name = _name,
 	.text_import = _cache_text_import,
 	.text_import_area_count = _cache_text_import_area_count,
 	.text_export = _cache_text_export,
-	.add_target_line = _cache_add_target_line,
 #ifdef DEVMAPPER_SUPPORT
+	.add_target_line = _cache_add_target_line,
 	.target_present = _target_present,
+	.modules_needed = _modules_needed,
 #  ifdef DMEVENTD
 #  endif        /* DMEVENTD */
 #endif
-	.modules_needed = _modules_needed,
 	.destroy = _destroy,
 };
 
@@ -445,4 +424,3 @@ int init_cache_segtypes(struct cmd_context *cmd,
 
 	return 1;
 }
-

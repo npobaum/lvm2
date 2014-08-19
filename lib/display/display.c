@@ -20,8 +20,9 @@
 #include "toolcontext.h"
 #include "segtype.h"
 #include "defaults.h"
-#include <math.h>  /* fabs() */
-#include <float.h> /* DBL_EPSILON */
+#include "lvm-signal.h"
+
+#include <stdarg.h>
 
 #define SIZE_BUF 128
 
@@ -42,103 +43,6 @@ static const struct {
 };
 
 static const int _num_policies = DM_ARRAY_SIZE(_policies);
-
-/* Test if the doubles are close enough to be considered equal */
-static int _close_enough(double d1, double d2)
-{
-	return fabs(d1 - d2) < DBL_EPSILON;
-}
-
-uint64_t units_to_bytes(const char *units, char *unit_type)
-{
-	char *ptr = NULL;
-	uint64_t v;
-	double custom_value = 0;
-	uint64_t multiplier;
-
-	if (isdigit(*units)) {
-		custom_value = strtod(units, &ptr);
-		if (ptr == units)
-			return 0;
-		v = (uint64_t) strtoull(units, NULL, 10);
-		if (_close_enough((double) v, custom_value))
-			custom_value = 0;	/* Use integer arithmetic */
-		units = ptr;
-	} else
-		v = 1;
-
-	/* Only one units char permitted. */
-	if (units[0] && units[1])
-		return 0;
-
-	if (v == 1)
-		*unit_type = *units;
-	else
-		*unit_type = 'U';
-
-	switch (*units) {
-	case 'h':
-	case 'H':
-		multiplier = v = UINT64_C(1);
-		*unit_type = *units;
-		break;
-	case 'b':
-	case 'B':
-		multiplier = UINT64_C(1);
-		break;
-#define KILO UINT64_C(1024)
-	case 's':
-	case 'S':
-		multiplier = (KILO/2);
-		break;
-	case 'k':
-		multiplier = KILO;
-		break;
-	case 'm':
-		multiplier = KILO * KILO;
-		break;
-	case 'g':
-		multiplier = KILO * KILO * KILO;
-		break;
-	case 't':
-		multiplier = KILO * KILO * KILO * KILO;
-		break;
-	case 'p':
-		multiplier = KILO * KILO * KILO * KILO * KILO;
-		break;
-	case 'e':
-		multiplier = KILO * KILO * KILO * KILO * KILO * KILO;
-		break;
-#undef KILO
-#define KILO UINT64_C(1000)
-	case 'K':
-		multiplier = KILO;
-		break;
-	case 'M':
-		multiplier = KILO * KILO;
-		break;
-	case 'G':
-		multiplier = KILO * KILO * KILO;
-		break;
-	case 'T':
-		multiplier = KILO * KILO * KILO * KILO;
-		break;
-	case 'P':
-		multiplier = KILO * KILO * KILO * KILO * KILO;
-		break;
-	case 'E':
-		multiplier = KILO * KILO * KILO * KILO * KILO * KILO;
-		break;
-#undef KILO
-	default:
-		return 0;
-	}
-
-	if (_close_enough(custom_value, 0.))
-		return v * multiplier; /* Use integer arithmetic */
-	else
-		return (uint64_t) (custom_value * multiplier);
-}
 
 char alloc_policy_char(alloc_policy_t alloc)
 {
@@ -187,6 +91,12 @@ static const char *_percent_types[7] = { "NONE", "VGS", "FREE", "LVS", "PVS", "O
 const char *get_percent_string(percent_type_t def)
 {
 	return _percent_types[def];
+}
+
+const char *display_lvname(const struct logical_volume *lv)
+{
+	/* On allocation failure, just return the LV name. */
+	return lv_fullname_dup(lv->vg->cmd->mem, lv) ? : lv->name;
 }
 
 #define BASE_UNKNOWN 0
@@ -523,11 +433,11 @@ int lvdisplay_full(struct cmd_context *cmd,
 	struct lv_segment *snap_seg = NULL, *mirror_seg = NULL;
 	struct lv_segment *seg = NULL;
 	int lvm1compat;
-	percent_t snap_percent;
+	dm_percent_t snap_percent;
 	int thin_data_active = 0, thin_metadata_active = 0;
-	percent_t thin_data_percent, thin_metadata_percent;
+	dm_percent_t thin_data_percent, thin_metadata_percent;
 	int thin_active = 0;
-	percent_t thin_percent;
+	dm_percent_t thin_percent;
 
 	if (!id_write_format(&lv->lvid.id[1], uuid, sizeof(uuid)))
 		return_0;
@@ -573,7 +483,7 @@ int lvdisplay_full(struct cmd_context *cmd,
 			if (inkernel &&
 			    (snap_active = lv_snapshot_percent(snap_seg->cow,
 							       &snap_percent)))
-				if (snap_percent == PERCENT_INVALID)
+				if (snap_percent == DM_PERCENT_INVALID)
 					snap_active = 0;
 			if (lvm1compat)
 				log_print("                       %s%s/%s [%s]",
@@ -590,7 +500,7 @@ int lvdisplay_full(struct cmd_context *cmd,
 		if (inkernel &&
 		    (snap_active = lv_snapshot_percent(snap_seg->cow,
 						       &snap_percent)))
-			if (snap_percent == PERCENT_INVALID)
+			if (snap_percent == DM_PERCENT_INVALID)
 				snap_active = 0;
 
 		if (lvm1compat)
@@ -607,7 +517,6 @@ int lvdisplay_full(struct cmd_context *cmd,
 	if (lv_is_thin_volume(lv)) {
 		seg = first_seg(lv);
 		log_print("LV Pool name           %s", seg->pool_lv->name);
-		log_print("LV Thin device ID      %u", seg->device_id);
 		if (seg->origin)
 			log_print("LV Thin origin name    %s",
 				  seg->origin->name);
@@ -623,24 +532,19 @@ int lvdisplay_full(struct cmd_context *cmd,
 			log_print("LV merged with         %s",
 				  find_snapshot(lv)->lv->name);
 	} else if (lv_is_thin_pool(lv)) {
-		if (inkernel) {
+		if (lv_info(cmd, lv, 1, &info, 1, 1) && info.exists) {
 			thin_data_active = lv_thin_pool_percent(lv, 0, &thin_data_percent);
 			thin_metadata_active = lv_thin_pool_percent(lv, 1, &thin_metadata_percent);
 		}
 		/* FIXME: display thin_pool targets transid for activated LV as well */
 		seg = first_seg(lv);
-		log_print("LV Pool transaction ID %" PRIu64, seg->transaction_id);
 		log_print("LV Pool metadata       %s", seg->metadata_lv->name);
 		log_print("LV Pool data           %s", seg_lv(seg, 0)->name);
-		log_print("LV Pool chunk size     %s",
-			  display_size(cmd, seg->chunk_size));
-		log_print("LV Zero new blocks     %s",
-			  seg->zero_new_blocks ? "yes" : "no");
 	}
 
 	if (inkernel && info.suspended)
 		log_print("LV Status              suspended");
-	else
+	else if (activation())
 		log_print("LV Status              %savailable",
 			  inkernel ? "" : "NOT ");
 
@@ -657,15 +561,15 @@ int lvdisplay_full(struct cmd_context *cmd,
 
 	if (thin_data_active)
 		log_print("Allocated pool data    %.2f%%",
-			  percent_to_float(thin_data_percent));
+			  dm_percent_to_float(thin_data_percent));
 
 	if (thin_metadata_active)
 		log_print("Allocated metadata     %.2f%%",
-			  percent_to_float(thin_metadata_percent));
+			  dm_percent_to_float(thin_metadata_percent));
 
 	if (thin_active)
 		log_print("Mapped size            %.2f%%",
-			  percent_to_float(thin_percent));
+			  dm_percent_to_float(thin_percent));
 
 	log_print("Current LE             %u",
 		  snap_seg ? snap_seg->origin->le_count : lv->le_count);
@@ -677,7 +581,7 @@ int lvdisplay_full(struct cmd_context *cmd,
 
 		if (snap_active)
 			log_print("Allocated to snapshot  %.2f%%",
-				  percent_to_float(snap_percent));
+				  dm_percent_to_float(snap_percent));
 
 		log_print("Snapshot chunk size    %s",
 			  display_size(cmd, (uint64_t) snap_seg->chunk_size));
@@ -759,10 +663,15 @@ int lvdisplay_segments(const struct logical_volume *lv)
 	log_print("--- Segments ---");
 
 	dm_list_iterate_items(seg, &lv->segments) {
-		log_print("Logical extent %u to %u:",
+		log_print("%s extents %u to %u:",
+			  lv_is_virtual(lv) ? "Virtual" : "Logical",
 			  seg->le, seg->le + seg->len - 1);
 
 		log_print("  Type\t\t%s", seg->segtype->ops->name(seg));
+
+		if (seg->segtype->ops->target_monitored)
+			log_print("  Monitoring\t\t%s",
+				  lvseg_monitor_dup(lv->vg->cmd->mem, seg));
 
 		if (seg->segtype->ops->display)
 			seg->segtype->ops->display(seg);
@@ -930,7 +839,7 @@ void display_segtypes(const struct cmd_context *cmd)
 
 void display_tags(const struct cmd_context *cmd)
 {
-	const struct str_list *sl;
+	const struct dm_str_list *sl;
 
 	dm_list_iterate_items(sl, &cmd->tags) {
 		log_print("%s", sl->str);
@@ -939,30 +848,31 @@ void display_tags(const struct cmd_context *cmd)
 
 void display_name_error(name_error_t name_error)
 {
-	if (name_error != NAME_VALID) {
-		switch(name_error) {
-		case NAME_INVALID_EMPTY:
-			log_error("Name is zero length");
-			break;
-		case NAME_INVALID_HYPEN:
-			log_error("Name cannot start with hyphen");
-			break;
-		case NAME_INVALID_DOTS:
-			log_error("Name starts with . or .. and has no "
-						"following character(s)");
-			break;
-		case NAME_INVALID_CHARSET:
-			log_error("Name contains invalid character, valid set includes: "
-					"[a-zA-Z0-9.-_+]");
-			break;
-		case NAME_INVALID_LENGTH:
-			/* Report that name length -1 to accommodate nul*/
-			log_error("Name length exceeds maximum limit of %d", (NAME_LEN -1));
-			break;
-		default:
-			log_error("Unknown error %d on name validation", name_error);
-			break;
-		}
+	switch(name_error) {
+	case NAME_VALID:
+		/* Valid name */
+		break;
+	case NAME_INVALID_EMPTY:
+		log_error("Name is zero length.");
+		break;
+	case NAME_INVALID_HYPEN:
+		log_error("Name cannot start with hyphen.");
+		break;
+	case NAME_INVALID_DOTS:
+		log_error("Name starts with . or .. and has no "
+			  "following character(s).");
+		break;
+	case NAME_INVALID_CHARSET:
+		log_error("Name contains invalid character, valid set includes: "
+			  "[a-zA-Z0-9.-_+].");
+		break;
+	case NAME_INVALID_LENGTH:
+		/* Report that name length - 1 to accommodate nul*/
+		log_error("Name length exceeds maximum limit of %d.", (NAME_LEN - 1));
+		break;
+	default:
+		log_error(INTERNAL_ERROR "Unknown error %d on name validation.", name_error);
+		break;
 	}
 }
 
@@ -973,11 +883,8 @@ void display_name_error(name_error_t name_error)
  */
 char yes_no_prompt(const char *prompt, ...)
 {
-	int c = 0, ret = 0;
+	int c = 0, ret = 0, cb = 0;
 	va_list ap;
-
-	if (silent_mode())
-		return 'n';
 
 	sigint_allow();
 	do {
@@ -986,11 +893,17 @@ char yes_no_prompt(const char *prompt, ...)
 			vfprintf(stderr, prompt, ap);
 			va_end(ap);
 			fflush(stderr);
+			if (silent_mode()) {
+				fputc('n', stderr);
+				ret = 'n';
+				break;
+			}
 			ret = 0;
 		}
 
 		if ((c = getchar()) == EOF) {
 			ret = 'n'; /* SIGINT */
+			cb = 1;
 			break;
 		}
 
@@ -1006,8 +919,11 @@ char yes_no_prompt(const char *prompt, ...)
 
 	sigint_restore();
 
+	if (cb && !sigint_caught())
+		fputc(ret, stderr);
+
 	if (c != '\n')
-		fprintf(stderr, "\n");
+		fputc('\n', stderr);
 
 	return ret;
 }

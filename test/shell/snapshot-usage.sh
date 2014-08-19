@@ -11,13 +11,14 @@
 
 # no automatic extensions please
 
-. lib/test
+. lib/inittest
 
 MKFS=mkfs.ext2
 which $MKFS || skip
 
 fill() {
-	dd if=/dev/zero of="$DM_DEV_DIR/$vg1/lvol0" bs=$1 count=1
+	dd if=/dev/zero of="$DM_DEV_DIR/${2:-$vg1/lvol0}" bs=$1 count=1 oflag=direct || \
+		die "Snapshot does not fit $1"
 }
 
 # Wait until device is opened
@@ -38,9 +39,6 @@ cleanup_tail()
 	vgremove -ff $vg
 	aux teardown
 }
-
-aux prepare_pvs 1
-vgcreate -s 4M $vg $(cat DEVICES)
 
 TSIZE=15P
 aux can_use_16T || TSIZE=15T
@@ -64,6 +62,21 @@ if aux target_at_least dm-snapshot 1 10 0 ; then
 	fi
 fi
 
+aux prepare_pvs 1
+vgcreate -s 4M $vg $(cat DEVICES)
+
+# Play with 1 extent
+lvcreate -aey -l1 -n $lv $vg
+# 100%LV is not supported for snapshot
+fail lvcreate -s -l 100%LV -n snap $vg/$lv |& tee out
+grep 'Please express size as %ORIGIN, %VG, %PVS, or %FREE' out
+# 100%ORIGIN needs to have enough space for all data and needs to round-up
+lvcreate -s -l 100%ORIGIN -n $lv1 $vg/$lv
+# everything needs to fit
+fill 4M $vg/$lv1
+lvremove -f $vg
+
+
 # Automatically activates exclusively in cluster
 lvcreate -s -l 100%FREE -n $lv $vg --virtualsize $TSIZE
 
@@ -76,6 +89,27 @@ pvcreate --setphysicalvolumesize 4T "$DM_DEV_DIR/$vg/$lv"
 trap 'cleanup_tail' EXIT
 vgcreate -s 1K $vg1 "$DM_DEV_DIR/$vg/$lv"
 
+
+# Play with small 1k 128 extents
+lvcreate -aey -L128K -n $lv $vg1
+# 100%ORIGIN needs to have enough space for all data
+lvcreate -s -l 100%ORIGIN -n snap100 $vg1/$lv
+# everything needs to fit
+fill 128k $vg1/snap100
+
+# 50%ORIGIN needs to have enough space for 50% of data
+lvcreate -s -l 50%ORIGIN -n snap50 $vg1/$lv
+fill 64k $vg1/snap50
+
+lvcreate -s -l 25%ORIGIN -n snap25 $vg1/$lv
+fill 32k $vg1/snap25
+
+# Check we do not provide too much extra space
+not fill 33k $vg1/snap25
+
+lvs -a $vg1
+lvremove -f $vg1
+
 # Test virtual snapshot over /dev/zero
 lvcreate -V50 -L10 -n $lv1 -s $vg1
 CHECK_ACTIVE="active"
@@ -87,7 +121,7 @@ lvchange -an $vg1
 lvchange -ay $vg1
 check lv_field $vg1/$lv1 lv_active "$CHECK_ACTIVE"
 
-# Test removal of opened (bug unmounted) snapshot (device busy) for a while
+# Test removal of opened (but unmounted) snapshot (device busy) for a while
 sleep 120 < "$DM_DEV_DIR/$vg1/$lv1" &
 SLEEP_PID=$!
 
@@ -145,6 +179,7 @@ lvextend -l+33 $vg1/lvol1
 check lv_field $vg1/lvol1 size "$EXPECT3"
 
 fill 20K
+
 lvremove -f $vg1
 
 # Check snapshot really deletes COW header for read-only snapshot
@@ -172,10 +207,17 @@ fsck -n "$DM_DEV_DIR/$vg1/snap"
 # we have 2 valid results  (unsure about correct version number)
 check lv_field $vg1/snap data_percent "$EXPECT4"
 
-# Can't test >= 16T devices on 32bit
-if test "$TSIZE" = 15P ; then
-
 vgremove -ff $vg1
+
+
+# Can't test >= 16T devices on 32bit
+test "$TSIZE" = 15P || exit 0
+
+# synchronize with udev activity
+# FIXME - otherwise sequence of vgremove followed by vgcreate may fail...
+# as there could be still remaing links in /dev
+# Unusure if 'vgcreate' should do this type of detection in udev mode.
+aux udev_wait
 
 # Check usability with largest extent size
 pvcreate "$DM_DEV_DIR/$vg/$lv"
@@ -189,4 +231,4 @@ lvremove -ff $vg1
 lvcreate -V15E -l1 -n $lv1 -s $vg1
 check lv_field $vg1/$lv1 origin_size "15.00e"
 
-fi
+vgremove -ff $vg1
