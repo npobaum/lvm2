@@ -1,3 +1,14 @@
+lvm2 (2.02.111-1) unstable; urgency=medium
+
+  * New upstream version.
+  * Install more systemd units:
+    - Add dm-event.service and dm-event.socket to dmeventd.
+    - Add lvm2-monitor.service to lvm2 and start it.
+  * Enable monitoring by default:
+    - Add dependency on dmeventd to lvm2 and liblvm2cmd2.02.
+
+ -- Bastian Blank <waldi@debian.org>  Sat, 06 Sep 2014 19:26:39 +0200
+
 lvm2 (2.02.109-1) unstable; urgency=medium
 
   * New upstream version.

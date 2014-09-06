@@ -1032,7 +1032,7 @@ activation {
 
     # Monitoring is enabled by default when activating logical volumes.
     # Set to 0 to disable monitoring or use the --ignoremonitoring option.
-    monitoring = 0
+    monitoring = 1
 
     # When pvmove or lvconvert must wait for the kernel to finish
     # synchronising or merging data, they check and report progress

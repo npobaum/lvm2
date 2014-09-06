@@ -230,8 +230,13 @@ int process_each_lv_in_vg(struct cmd_context *cmd,
 		    lv_is_cow(lvl->lv) && !lv_is_virtual_origin(origin_from_cow(lvl->lv)))
 			continue;
 
-		if (lv_is_virtual_origin(lvl->lv) && !arg_count(cmd, all_ARG))
+		if (lv_is_virtual_origin(lvl->lv) && !arg_count(cmd, all_ARG)) {
+			if (lvargs_supplied &&
+			    str_list_match_item(arg_lvnames, lvl->lv->name))
+				log_print_unless_silent("Ignoring virtual origin logical volume %s.",
+							display_lvname(lvl->lv));
 			continue;
+		}
 
 		/*
 		 * Only let hidden LVs through it --all was used or the LVs 
@@ -1630,6 +1635,8 @@ int pvcreate_params_validate(struct cmd_context *cmd,
 int get_activation_monitoring_mode(struct cmd_context *cmd,
 				   int *monitoring_mode)
 {
+	*monitoring_mode = DEFAULT_DMEVENTD_MONITOR;
+
 	if (arg_count(cmd, monitor_ARG) &&
 	    (arg_count(cmd, ignoremonitoring_ARG) ||
 	     arg_count(cmd, sysinit_ARG))) {
@@ -1637,15 +1644,13 @@ int get_activation_monitoring_mode(struct cmd_context *cmd,
 		return 0;
 	}
 
-	*monitoring_mode = find_config_tree_bool(cmd, activation_monitoring_CFG,
-						 DEFAULT_DMEVENTD_MONITOR);
-
-	if (is_static() || arg_count(cmd, ignoremonitoring_ARG) ||
-		 arg_count(cmd, sysinit_ARG))
-		*monitoring_mode = DMEVENTD_MONITOR_IGNORE;
-	else if (arg_count(cmd, monitor_ARG))
+	if (arg_count(cmd, monitor_ARG))
 		*monitoring_mode = arg_int_value(cmd, monitor_ARG,
-						 *monitoring_mode);
+						 DEFAULT_DMEVENTD_MONITOR);
+	else if (is_static() || arg_count(cmd, ignoremonitoring_ARG) ||
+		 arg_count(cmd, sysinit_ARG) ||
+		 !find_config_tree_bool(cmd, activation_monitoring_CFG, NULL))
+		*monitoring_mode = DMEVENTD_MONITOR_IGNORE;
 
 	return 1;
 }

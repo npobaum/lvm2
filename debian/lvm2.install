@@ -2,6 +2,8 @@
 etc/lvm/lvm.conf
 lib/systemd/system/lvm2-activation*
 lib/systemd/system/lvm2-lvmetad*
+lib/systemd/system/lvm2-monitor*
+lib/systemd/system/lvm2-pvscan*
 lib/udev/rules.d/*-lvm*.rules
 sbin/fsadm
 sbin/lv*

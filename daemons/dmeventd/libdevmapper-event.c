@@ -297,13 +297,21 @@ static int _daemon_write(struct dm_event_fifos *fifos,
 		FD_ZERO(&fds);
 		FD_SET(fifos->server, &fds);
 		ret = select(fifos->server + 1, &fds, NULL, NULL, &tval);
-		if ((ret < 0) && (errno != EINTR)) {
+		if (ret < 0) {
+			if (errno == EINTR)
+				continue;
 			log_error("Unable to talk to event daemon");
 			return 0;
 		}
 		if (ret == 0)
 			break;
 		ret = read(fifos->server, drainbuf, sizeof(drainbuf));
+		if (ret < 0) {
+			if ((errno == EINTR) || (errno == EAGAIN))
+				continue;
+			log_error("Unable to talk to event daemon");
+			return 0;
+		}
 	}
 
 	while (bytes < size) {
@@ -430,10 +438,7 @@ static int _start_daemon(char *dmeventd_path, struct dm_event_fifos *fifos)
 	/* server is not running */
 
 	if ((args[0][0] == '/') && stat(args[0], &statbuf)) {
-		if (errno != ENOENT)
-			log_error("Unable to find " DMEVENTD_PATH ": %s", strerror(errno));
-		else
-			log_sys_debug("stat", DMEVENTD_PATH);
+		log_sys_error("stat", args[0]);
 		return 0;
 	}
 
@@ -623,19 +628,10 @@ int dm_event_register_handler(const struct dm_event_handler *dmevh)
 
 	if ((err = _do_event(DM_EVENT_CMD_REGISTER_FOR_EVENT, dmevh->dmeventd_path, &msg,
 			     dmevh->dso, uuid, dmevh->mask, dmevh->timeout)) < 0) {
-		if (err != -ESRCH) {
-			log_error("%s: event registration failed: %s",
-				  dm_task_get_name(dmt),
-				  msg.data ? msg.data : strerror(-err));
-			ret = 0;
-		}
-		else {
-			/* XXX: Ignore missing daemon */
-			log_debug("%s: event registration failed, ignored: %s",
-				  dm_task_get_name(dmt),
-				  msg.data ? msg.data : strerror(-err));
-			ret = 2;
-		}
+		log_error("%s: event registration failed: %s",
+			  dm_task_get_name(dmt),
+			  msg.data ? msg.data : strerror(-err));
+		ret = 0;
 	}
 
 	dm_free(msg.data);
