@@ -933,8 +933,17 @@ static struct dso_data *_load_dso(struct message_data *data)
 {
 	void *dl;
 	struct dso_data *ret;
+	char dso_name[PATH_MAX];
 
-	if (!(dl = dlopen(data->dso_name, RTLD_NOW))) {
+	if (strchr(data->dso_name, '/') == NULL) {
+		strcpy(dso_name, PLUGIN_PATH);
+		strncat(dso_name, data->dso_name, sizeof(dso_name));
+	} else {
+		strncpy(dso_name, data->dso_name, sizeof(dso_name));
+	}
+	dso_name[sizeof(dso_name) - 1] = 0;
+
+	if (!(dl = dlopen(dso_name, RTLD_NOW))) {
 		const char *dlerr = dlerror();
 		syslog(LOG_ERR, "dmeventd %s dlopen failed: %s", data->dso_name,
 		       dlerr);
