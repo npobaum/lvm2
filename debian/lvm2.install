@@ -10,7 +10,9 @@ sbin/lv*
 sbin/pv*
 sbin/vg*
 usr/lib/tmpfiles.d/lvm2.conf
+usr/share/man/man5/lvm*
+usr/share/man/man7/lvm*
+usr/share/man/man8/fsadm*
 usr/share/man/man8/lv*
 usr/share/man/man8/pv*
 usr/share/man/man8/vg*
-usr/share/man/man5
