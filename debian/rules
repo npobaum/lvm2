@@ -248,7 +248,6 @@ install_lvm2: $(STAMPS_DIR)/install_deb
 	dh_systemd_enable --no-enable lvm2-lvmetad.service
 	dh_systemd_enable lvm2-activation.service lvm2-activation-early.service lvm2-lvmetad.socket lvm2-monitor.service
 	dh_systemd_start --restart-after-upgrade lvm2-lvmetad.socket
-	dh_systemd_start --no-restart-after-upgrade lvm2-monitor.socket
 	dh_installinit --no-start -- start 26 S .
 	+$(MAKE_SELF) install-base
 
