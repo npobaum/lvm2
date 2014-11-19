@@ -8,3 +8,4 @@ dm-event-api.patch
 udev.patch
 systemd.patch
 clvmd-openais-format.patch
+enable-issue-discards.patch

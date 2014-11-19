@@ -1,3 +1,5 @@
+../install_deb/lib/udev/rules.d/*lvm*.rules lib/udev/rules.d/
+../../85-lvm2.rules lib/udev/rules.d/
 etc/lvm/lvm.conf
 sbin/lv*
 sbin/pv*
