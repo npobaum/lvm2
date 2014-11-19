@@ -1,0 +1,20 @@
+Description: Enable "issue_discards" option by default
+ to trim SSDs when changing PVs. This option has no effect if the kernel or the
+ drive does not support trimming, so it's safe to enable by default.
+ See also https://blueprints.launchpad.net/ubuntu/+spec/core-1311-ssd-trimming
+Author: Martin Pitt <martin.pitt@ubuntu.com>
+Bug-Debian: http://bugs.debian.org/717313
+
+Index: lvm2-2.02.98/conf/example.conf.in
+===================================================================
+--- lvm2-2.02.98.orig/conf/example.conf.in	2013-12-13 10:43:03.000000000 +0100
++++ lvm2-2.02.98/conf/example.conf.in	2013-12-13 10:49:09.471664140 +0100
+@@ -196,7 +196,7 @@
+     # to 1, discards will only be issued if both the storage and kernel provide
+     # support.
+     # 1 enables; 0 disables.
+-    issue_discards = 0
++    issue_discards = 1
+ }
+ 
+ # This section allows you to configure the way in which LVM selects
