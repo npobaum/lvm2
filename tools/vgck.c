@@ -18,7 +18,7 @@
 static int vgck_single(struct cmd_context *cmd __attribute__((unused)),
 		       const char *vg_name,
 		       struct volume_group *vg,
-		       void *handle __attribute__((unused)))
+		       struct processing_handle *handle __attribute__((unused)))
 {
 	if (!vg_check_status(vg, EXPORTED_VG))
 		return_ECMD_FAILED;
@@ -37,7 +37,7 @@ static int vgck_single(struct cmd_context *cmd __attribute__((unused)),
 
 int vgck(struct cmd_context *cmd, int argc, char **argv)
 {
-	lvmetad_set_active(0);
+	lvmetad_set_active(cmd, 0);
 	return process_each_vg(cmd, argc, argv, 0, NULL,
 			       &vgck_single);
 }

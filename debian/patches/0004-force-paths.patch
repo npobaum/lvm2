@@ -1,0 +1,26 @@
+From 372062c9135d135f4c256331f510bbd3bdcc4b88 Mon Sep 17 00:00:00 2001
+From: Bastian Blank <waldi@debian.org>
+Date: Tue, 30 Jun 2015 11:46:08 +0200
+Subject: force-paths
+
+---
+ configure.in | 6 +-----
+ 1 file changed, 1 insertion(+), 5 deletions(-)
+
+diff --git a/configure.in b/configure.in
+index c2123b4..e7206eb 100644
+--- a/configure.in
++++ b/configure.in
+@@ -1560,11 +1560,7 @@ if test "$UDEV_SYNC" = yes; then
+ fi
+ 
+ ################################################################################
+-AC_PATH_TOOL(MODPROBE_CMD, modprobe)
+-
+-if test -n "$MODPROBE_CMD"; then
+-	AC_DEFINE_UNQUOTED([MODPROBE_CMD], ["$MODPROBE_CMD"], [The path to 'modprobe', if available.])
+-fi
++AC_DEFINE_UNQUOTED([MODPROBE_CMD], ["/sbin/modprobe"], [The path to 'modprobe', if available.])
+ 
+ 
+ lvm_exec_prefix=$exec_prefix

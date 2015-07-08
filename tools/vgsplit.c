@@ -14,7 +14,6 @@
  */
 
 #include "tools.h"
-#include "metadata.h"  /* for 'get_only_segment_using_this_lv' */
 
 static int _lv_is_in_vg(struct volume_group *vg, struct logical_volume *lv)
 {
@@ -71,7 +70,7 @@ static int _move_lvs(struct volume_group *vg_from, struct volume_group *vg_to)
 		if (lv_is_raid(lv))
 			continue;
 
-		if ((lv->status & MIRRORED))
+		if (lv_is_mirrored(lv))
 			continue;
 
 		if (lv_is_thin_pool(lv) ||
@@ -192,7 +191,7 @@ static int _move_mirrors(struct volume_group *vg_from,
 		if (lv_is_raid(lv))
 			continue;
 
-		if (!(lv->status & MIRRORED))
+		if (!lv_is_mirrored(lv))
 			continue;
 
 		seg = first_seg(lv);
@@ -351,7 +350,7 @@ static int _move_cache(struct volume_group *vg_from,
 			data = seg_lv(first_seg(seg->pool_lv), 0);
 			meta = first_seg(seg->pool_lv)->metadata_lv;
 			/* Ensure all components are coming along */
-			is_moving = !!_lv_is_in_vg(vg_to, orig);
+			is_moving = _lv_is_in_vg(vg_to, orig);
 		} else {
 			if (!dm_list_empty(&seg->lv->segs_using_this_lv) &&
 			    !(cache_seg = get_only_segment_using_this_lv(seg->lv)))
@@ -365,20 +364,20 @@ static int _move_cache(struct volume_group *vg_from,
 				is_moving = 1;
 		}
 
-		if (orig && (!!_lv_is_in_vg(vg_to, orig) != is_moving)) {
+		if (orig && (_lv_is_in_vg(vg_to, orig) != is_moving)) {
 			log_error("Can't split %s and its origin (%s)"
 				  " into separate VGs", lv->name, orig->name);
 			return 0;
 		}
 
-		if (data && (!!_lv_is_in_vg(vg_to, data) != is_moving)) {
+		if (data && (_lv_is_in_vg(vg_to, data) != is_moving)) {
 			log_error("Can't split %s and its cache pool"
 				  " data LV (%s) into separate VGs",
 				  lv->name, data->name);
 			return 0;
 		}
 
-		if (meta && (!!_lv_is_in_vg(vg_to, meta) != is_moving)) {
+		if (meta && (_lv_is_in_vg(vg_to, meta) != is_moving)) {
 			log_error("Can't split %s and its cache pool"
 				  " metadata LV (%s) into separate VGs",
 				  lv->name, meta->name);
@@ -551,7 +550,10 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 		if (!vgs_are_compatible(cmd, vg_from,vg_to))
 			goto_bad;
 	} else {
-		vgcreate_params_set_defaults(&vp_def, vg_from);
+		if (!vgcreate_params_set_defaults(cmd, &vp_def, vg_from)) {
+			r = EINVALID_CMD_LINE;
+			goto_bad;
+		}
 		vp_def.vg_name = vg_name_to;
 		if (!vgcreate_params_set_from_args(cmd, &vp_new, &vp_def)) {
 			r = EINVALID_CMD_LINE;
@@ -568,6 +570,7 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 		    !vg_set_max_pv(vg_to, vp_new.max_pv) ||
 		    !vg_set_alloc_policy(vg_to, vp_new.alloc) ||
 		    !vg_set_clustered(vg_to, vp_new.clustered) ||
+		    !vg_set_system_id(vg_to, vp_new.system_id) ||
 		    !vg_set_mda_copies(vg_to, vp_new.vgmetadatacopies))
 			goto_bad;
 	}

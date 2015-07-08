@@ -1,0 +1,66 @@
+From a30ff1ea0a0d6f28e8edb93e1afd9e1a4f48730c Mon Sep 17 00:00:00 2001
+From: Bastian Blank <waldi@debian.org>
+Date: Tue, 30 Jun 2015 11:46:12 +0200
+Subject: systemd
+
+---
+ scripts/Makefile.in                                  |  2 ++
+ scripts/lvm2-activation-early_systemd_debian.service | 14 ++++++++++++++
+ scripts/lvm2-activation_systemd_debian.service       | 14 ++++++++++++++
+ 3 files changed, 30 insertions(+)
+ create mode 100644 scripts/lvm2-activation-early_systemd_debian.service
+ create mode 100644 scripts/lvm2-activation_systemd_debian.service
+
+diff --git a/scripts/Makefile.in b/scripts/Makefile.in
+index e9cce3a..d92c772 100644
+--- a/scripts/Makefile.in
++++ b/scripts/Makefile.in
+@@ -104,6 +104,8 @@ endif
+ 
+ install_systemd_units:
+ 	$(INSTALL_DIR) $(systemd_unit_dir)
++	$(INSTALL_DATA) lvm2-activation_systemd_debian.service $(systemd_unit_dir)/lvm2-activation.service
++	$(INSTALL_DATA) lvm2-activation-early_systemd_debian.service $(systemd_unit_dir)/lvm2-activation-early.service
+ ifeq ("@BUILD_DMEVENTD@", "yes")
+ 	$(INSTALL_DATA) dm_event_systemd_red_hat.socket $(systemd_unit_dir)/dm-event.socket
+ 	$(INSTALL_DATA) dm_event_systemd_red_hat.service $(systemd_unit_dir)/dm-event.service
+diff --git a/scripts/lvm2-activation-early_systemd_debian.service b/scripts/lvm2-activation-early_systemd_debian.service
+new file mode 100644
+index 0000000..930cee5
+--- /dev/null
++++ b/scripts/lvm2-activation-early_systemd_debian.service
+@@ -0,0 +1,14 @@
++[Unit]
++Description=Activation of LVM2 logical volumes
++Documentation=man:lvm(8) man:vgchange(8)
++DefaultDependencies=no
++After=systemd-udev-settle.service
++Before=cryptsetup.target local-fs.target shutdown.target
++Wants=systemd-udev-settle.service
++
++[Service]
++ExecStart=/sbin/lvm vgchange -aay --sysinit
++Type=oneshot
++
++[Install]
++WantedBy=local-fs.target
+diff --git a/scripts/lvm2-activation_systemd_debian.service b/scripts/lvm2-activation_systemd_debian.service
+new file mode 100644
+index 0000000..b7a1967
+--- /dev/null
++++ b/scripts/lvm2-activation_systemd_debian.service
+@@ -0,0 +1,14 @@
++[Unit]
++Description=Activation of LVM2 logical volumes
++Documentation=man:lvm(8) man:vgchange(8)
++DefaultDependencies=no
++After=lvm2-activation-early.service cryptsetup.target
++Before=local-fs.target shutdown.target
++Wants=systemd-udev-settle.service
++
++[Service]
++ExecStart=/sbin/lvm vgchange -aay --sysinit
++Type=oneshot
++
++[Install]
++WantedBy=local-fs.target

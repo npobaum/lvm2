@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Copyright (C) 2013 Red Hat, Inc. All rights reserved.
+# Copyright (C) 2013-2014 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
 # modify, copy, or redistribute it subject to the terms and conditions
@@ -12,7 +12,11 @@
 
 # Test creation of thin snapshots using external origin
 
+export LVM_TEST_THIN_REPAIR_CMD=${LVM_TEST_THIN_REPAIR_CMD-/bin/false}
+
 . lib/inittest
+
+test -e LOCAL_LVMPOLLD && skip
 
 which mkfs.ext2 || skip
 which fsck || skip
@@ -60,8 +64,11 @@ lvcreate -s $vg/$lv2 --thinpool $vg/pool
 # Fail with --thin and --snapshot
 not lvcreate -s $vg/$lv5 --name $vg/$lv7 -T $vg/newpool
 
-# Fail to create already existing pool
-not lvcreate -s $vg/$lv2 -L10 --thinpool $vg/pool
+# Cannot specify size and thin pool.
+# TODO: maybe with --poolsize
+invalid lvcreate -s $vg/$lv2 -L10 --thinpool $vg/pool
+invalid lvcreate -s -K $vg/$lv2 --name $vg/$lv3 -L20 --chunksize 128 --thinpool $vg/newpool
+
 not lvcreate -s $vg/$lv2 --chunksize 64 --thinpool $vg/pool
 not lvcreate -s $vg/$lv2 --zero y --thinpool $vg/pool
 not lvcreate -s $vg/$lv2 --poolmetadata $vg/$lv1 --thinpool $vg/pool
@@ -70,7 +77,7 @@ not lvcreate -s $vg/$lv2 --poolmetadata $vg/$lv1 --thinpool $vg/pool
 not lvcreate -s $vg/$lv2 --thinpool $vg/newpool
 
 # Create pool and snap
-lvcreate -s -K $vg/$lv2 --name $vg/$lv3 -L20 --chunksize 128 --thinpool $vg/newpool
+lvcreate -T --name $vg/$lv3 -V10 -L20 --chunksize 128 --thinpool $vg/newpool
 lvcreate -s -K $vg/$lv3 --name $vg/$lv4
 lvcreate -s -K $vg/$lv2 --name $vg/$lv5 --thinpool $vg/newpool
 # Make normal thin snapshot

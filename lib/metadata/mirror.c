@@ -42,9 +42,7 @@
  */
 int is_temporary_mirror_layer(const struct logical_volume *lv)
 {
-	if (lv->status & MIRROR_IMAGE
-	    && lv->status & MIRRORED
-	    && !(lv->status & LOCKED))
+	if (lv_is_mirror_image(lv) && lv_is_mirrored(lv) && !lv_is_locked(lv))
 		return 1;
 
 	return 0;
@@ -58,7 +56,7 @@ struct logical_volume *find_temporary_mirror(const struct logical_volume *lv)
 {
 	struct lv_segment *seg;
 
-	if (!(lv->status & MIRRORED))
+	if (!lv_is_mirrored(lv))
 		return NULL;
 
 	seg = first_seg(lv);
@@ -80,10 +78,9 @@ struct logical_volume *find_temporary_mirror(const struct logical_volume *lv)
  *
  * Returns: 1 if available, 0 otherwise
  */
-static int _cluster_mirror_is_available(struct logical_volume *lv)
+int cluster_mirror_is_available(struct cmd_context *cmd)
 {
        unsigned attr = 0;
-       struct cmd_context *cmd = lv->vg->cmd;
        const struct segment_type *segtype;
 
        if (!(segtype = get_segtype_from_string(cmd, "mirror")))
@@ -92,7 +89,7 @@ static int _cluster_mirror_is_available(struct logical_volume *lv)
        if (!segtype->ops->target_present)
                return_0;
 
-       if (!segtype->ops->target_present(lv->vg->cmd, NULL, &attr))
+       if (!segtype->ops->target_present(cmd, NULL, &attr))
                return_0;
 
        if (!(attr & MIRROR_LOG_CLUSTERED))
@@ -109,7 +106,7 @@ uint32_t lv_mirror_count(const struct logical_volume *lv)
 	struct lv_segment *seg;
 	uint32_t s, mirrors;
 
-	if (!(lv->status & MIRRORED))
+	if (!lv_is_mirrored(lv))
 		return 1;
 
 	seg = first_seg(lv);
@@ -118,7 +115,7 @@ uint32_t lv_mirror_count(const struct logical_volume *lv)
 	if (!strcmp(seg->segtype->name, "raid10"))
 		return 2;
 
-	if (lv->status & PVMOVE)
+	if (lv_is_pvmove(lv))
 		return seg->area_count;
 
 	mirrors = 0;
@@ -158,19 +155,62 @@ struct lv_segment *find_mirror_seg(struct lv_segment *seg)
 /*
  * Reduce the region size if necessary to ensure
  * the volume size is a multiple of the region size.
+ *
+ * For internal use only log only in verbose mode
  */
 uint32_t adjusted_mirror_region_size(uint32_t extent_size, uint32_t extents,
-				     uint32_t region_size)
+				     uint32_t region_size, int internal, int clustered)
 {
 	uint64_t region_max;
+	uint64_t region_min, region_min_pow2;
 
-	region_max = (1 << (ffs((int)extents) - 1)) * (uint64_t) extent_size;
+	region_max = (UINT64_C(1) << (ffs((int)extents) - 1)) * (UINT64_C(1) << (ffs((int)extent_size) - 1));
 
 	if (region_max < UINT32_MAX && region_size > region_max) {
 		region_size = (uint32_t) region_max;
-		log_print_unless_silent("Using reduced mirror region size of %" PRIu32
-					" sectors", region_size);
+		if (!internal)
+			log_print_unless_silent("Using reduced mirror region size of %"
+						PRIu32 " sectors.", region_size);
+                else
+			log_verbose("Using reduced mirror region size of %"
+				    PRIu32 " sectors.", region_size);
 	}
+
+#ifdef CMIRROR_REGION_COUNT_LIMIT
+	if (clustered) {
+		/*
+		 * The CPG code used by cluster mirrors can only handle a
+		 * payload of < 1MB currently.  (This deficiency is tracked by
+		 * http://bugzilla.redhat.com/682771.)  The region size for cluster
+		 * mirrors must be restricted in such a way as to limit the
+		 * size of the bitmap to < 512kB, because there are two bitmaps
+		 * which get sent around during checkpointing while a cluster
+		 * mirror starts up.  Ergo, the number of regions must not
+		 * exceed 512k * 8.  We also need some room for the other
+		 * checkpointing structures as well, so we reduce by another
+		 * factor of two.
+		 *
+		 * This code should be removed when the CPG restriction is
+		 * lifted.
+		 */
+		region_min = (uint64_t) extents * extent_size / CMIRROR_REGION_COUNT_LIMIT;
+		region_min_pow2 = 1;
+		while (region_min_pow2 < region_min)
+			region_min_pow2 *= 2;
+
+		if (region_size < region_min_pow2) {
+			if (internal)
+				log_print_unless_silent("Increasing mirror region size from %"
+							PRIu32 " to %" PRIu64 " sectors.",
+							region_size, region_min_pow2);
+			else
+				log_verbose("Increasing mirror region size from %"
+					    PRIu32 " to %" PRIu64 " sectors.",
+					    region_size, region_min_pow2);
+			region_size = region_min_pow2;
+		}
+	}
+#endif /* CMIRROR_REGION_COUNT_LIMIT */
 
 	return region_size;
 }
@@ -417,7 +457,8 @@ static int _activate_lv_like_model(struct logical_volume *model,
 /*
  * Delete independent/orphan LV, it must acquire lock.
  */
-static int _delete_lv(struct logical_volume *mirror_lv, struct logical_volume *lv)
+static int _delete_lv(struct logical_volume *mirror_lv, struct logical_volume *lv,
+		      int reactivate)
 {
 	struct cmd_context *cmd = mirror_lv->vg->cmd;
 	struct dm_str_list *sl;
@@ -437,15 +478,17 @@ static int _delete_lv(struct logical_volume *mirror_lv, struct logical_volume *l
 		}
 	}
 
-	/* FIXME: the 'model' should be 'mirror_lv' not 'lv', I think. */
-	if (!_activate_lv_like_model(lv, lv))
-		return_0;
+	if (reactivate) {
+		/* FIXME: the 'model' should be 'mirror_lv' not 'lv', I think. */
+		if (!_activate_lv_like_model(lv, lv))
+			return_0;
 
-	/* FIXME Is this superfluous now? */
-	sync_local_dev_names(cmd);
+		/* FIXME Is this superfluous now? */
+		sync_local_dev_names(cmd);
 
-	if (!deactivate_lv(cmd, lv))
-		return_0;
+		if (!deactivate_lv(cmd, lv))
+			return_0;
+	}
 
 	if (!lv_remove(lv))
 		return_0;
@@ -612,7 +655,7 @@ static int _split_mirror_images(struct logical_volume *lv,
 	struct lv_list *lvl;
 	struct cmd_context *cmd = lv->vg->cmd;
 
-	if (!(lv->status & MIRRORED)) {
+	if (!lv_is_mirrored(lv)) {
 		log_error("Unable to split non-mirrored LV, %s",
 			  lv->name);
 		return 0;
@@ -744,6 +787,7 @@ static int _split_mirror_images(struct logical_volume *lv,
 		detached_log_lv = detach_mirror_log(mirrored_seg);
 		if (!remove_layer_from_lv(lv, sub_lv))
 			return_0;
+		lv->status &= ~MIRROR;
 		lv->status &= ~MIRRORED;
 		lv->status &= ~LV_NOTSYNCED;
 	}
@@ -795,11 +839,11 @@ static int _split_mirror_images(struct logical_volume *lv,
 	}
 
 	/* Remove original mirror layer if it has been converted to linear */
-	if (sub_lv && !_delete_lv(lv, sub_lv))
+	if (sub_lv && !_delete_lv(lv, sub_lv, 1))
 		return_0;
 
 	/* Remove the log if it has been converted to linear */
-	if (detached_log_lv && !_delete_lv(lv, detached_log_lv))
+	if (detached_log_lv && !_delete_lv(lv, detached_log_lv, 1))
 		return_0;
 
 	return 1;
@@ -848,6 +892,7 @@ static int _remove_mirror_images(struct logical_volume *lv,
 	struct lv_list *lvl;
 	struct dm_list tmp_orphan_lvs;
 	uint32_t orig_removed = num_removed;
+	int reactivate;
 
 	if (removed)
 		*removed = 0;
@@ -860,6 +905,7 @@ static int _remove_mirror_images(struct logical_volume *lv,
 	if (collapse && (old_area_count - num_removed != 1)) {
 		log_error("Incompatible parameters to _remove_mirror_images");
 		return 0;
+
 	}
 
 	num_removed = 0;
@@ -943,6 +989,7 @@ static int _remove_mirror_images(struct logical_volume *lv,
                  * mirror. Fix up the flags if we only have one image left.
                  */
                 if (lv_mirror_count(lv) == 1) {
+                    lv->status &= ~MIRROR;
                     lv->status &= ~MIRRORED;
                     lv->status &= ~LV_NOTSYNCED;
                 }
@@ -950,7 +997,7 @@ static int _remove_mirror_images(struct logical_volume *lv,
 		if (remove_log && !detached_log_lv)
 			detached_log_lv = detach_mirror_log(mirrored_seg);
 
-		if (lv->status & PVMOVE)
+		if (lv_is_pvmove(lv))
 			dm_list_iterate_items(pvmove_seg, &lv->segments)
 				pvmove_seg->status |= PVMOVE;
 	} else if (new_area_count == 0) {
@@ -959,6 +1006,7 @@ static int _remove_mirror_images(struct logical_volume *lv,
 		/* All mirror images are gone.
 		 * It can happen for vgreduce --removemissing. */
 		detached_log_lv = detach_mirror_log(mirrored_seg);
+		lv->status &= ~MIRROR;
 		lv->status &= ~MIRRORED;
 		lv->status &= ~LV_NOTSYNCED;
 		if (!replace_lv_with_error_segment(lv))
@@ -1087,16 +1135,17 @@ static int _remove_mirror_images(struct logical_volume *lv,
 	}
 
 	/* Save or delete the 'orphan' LVs */
+	reactivate = lv_is_active(lv_lock_holder(lv));
 	if (!collapse) {
 		dm_list_iterate_items(lvl, &tmp_orphan_lvs)
-			if (!_delete_lv(lv, lvl->lv))
+			if (!_delete_lv(lv, lvl->lv, reactivate))
 				return_0;
 	}
 
-	if (temp_layer_lv && !_delete_lv(lv, temp_layer_lv))
+	if (temp_layer_lv && !_delete_lv(lv, temp_layer_lv, reactivate))
 		return_0;
 
-	if (detached_log_lv && !_delete_lv(lv, detached_log_lv))
+	if (detached_log_lv && !_delete_lv(lv, detached_log_lv, reactivate))
 		return_0;
 
 	/* Mirror with only 1 area is 'in sync'. */
@@ -1497,16 +1546,17 @@ int remove_mirrors_from_segments(struct logical_volume *lv,
 	return 1;
 }
 
-const char *get_pvmove_pvname_from_lv_mirr(struct logical_volume *lv_mirr)
+const char *get_pvmove_pvname_from_lv_mirr(const struct logical_volume *lv_mirr)
 {
 	struct lv_segment *seg;
 
 	dm_list_iterate_items(seg, &lv_mirr->segments) {
 		if (!seg_is_mirrored(seg))
 			continue;
-		if (seg_type(seg, 0) != AREA_PV)
-			continue;
-		return dev_name(seg_dev(seg, 0));
+		if (seg_type(seg, 0) == AREA_PV)
+			return dev_name(seg_dev(seg, 0));
+		if (seg_type(seg, 0) == AREA_LV)
+			return dev_name(seg_dev(first_seg(seg_lv(seg, 0)), 0));
 	}
 
 	return NULL;
@@ -1515,16 +1565,16 @@ const char *get_pvmove_pvname_from_lv_mirr(struct logical_volume *lv_mirr)
 /*
  * Find first pvmove LV referenced by a segment of an LV.
  */
-struct logical_volume *find_pvmove_lv_in_lv(struct logical_volume *lv)
+const struct logical_volume *find_pvmove_lv_in_lv(const struct logical_volume *lv)
 {
-	struct lv_segment *seg;
+	const struct lv_segment *seg;
 	uint32_t s;
 
 	dm_list_iterate_items(seg, &lv->segments) {
 		for (s = 0; s < seg->area_count; s++) {
 			if (seg_type(seg, s) != AREA_LV)
 				continue;
-			if (seg_lv(seg, s)->status & PVMOVE)
+			if (lv_is_pvmove(seg_lv(seg, s)))
 				return seg_lv(seg, s);
 		}
 	}
@@ -1532,9 +1582,9 @@ struct logical_volume *find_pvmove_lv_in_lv(struct logical_volume *lv)
 	return NULL;
 }
 
-const char *get_pvmove_pvname_from_lv(struct logical_volume *lv)
+const char *get_pvmove_pvname_from_lv(const struct logical_volume *lv)
 {
-	struct logical_volume *pvmove_lv;
+	const struct logical_volume *pvmove_lv;
 
 	pvmove_lv = find_pvmove_lv_in_lv(lv);
 
@@ -1695,7 +1745,8 @@ static int _add_mirrors_that_preserve_segments(struct logical_volume *lv,
 
 	adjusted_region_size = adjusted_mirror_region_size(lv->vg->extent_size,
 							   lv->le_count,
-							   region_size);
+							   region_size, 1,
+							   vg_is_clustered(lv->vg));
 
 	if (!(ah = allocate_extents(lv->vg, NULL, segtype, 1, mirrors, 0, 0,
 				    lv->le_count, allocatable_pvs, alloc, 0,
@@ -1853,7 +1904,7 @@ static int _form_mirror(struct cmd_context *cmd, struct alloc_handle *ah,
 	}
 
 	if (!_create_mimage_lvs(ah, mirrors, stripes, stripe_size, lv, img_lvs, log))
-		return 0;
+		return_0;
 
 	if (!lv_add_mirror_lvs(lv, img_lvs, mirrors,
 			       MIRROR_IMAGE | (lv->status & LOCKED),
@@ -2116,10 +2167,10 @@ int lv_add_mirrors(struct cmd_context *cmd, struct logical_volume *lv,
 	if (vg_is_clustered(lv->vg)) {
 		/* FIXME: move this test out of this function */
 		/* Skip test for pvmove mirrors, it can use local mirror */
-		if (!(lv->status & (PVMOVE | LOCKED)) &&
+		if (!lv_is_pvmove(lv) && !lv_is_locked(lv) &&
 		    lv_is_active(lv) &&
 		    !lv_is_active_exclusive_locally(lv) && /* lv_is_active_remotely */
-		    !_cluster_mirror_is_available(lv)) {
+		    !cluster_mirror_is_available(lv->vg->cmd)) {
 			log_error("Shared cluster mirrors are not available.");
 			return 0;
 		}
@@ -2251,7 +2302,7 @@ int lv_remove_mirrors(struct cmd_context *cmd __attribute__((unused)),
 
 	/* MIRROR_BY_LV */
 	if (seg_type(seg, 0) == AREA_LV &&
-	    seg_lv(seg, 0)->status & MIRROR_IMAGE)
+	    lv_is_mirror_image(seg_lv(seg, 0)))
 		return remove_mirror_images(lv, new_mirrors + 1,
 					    is_removable, removable_baton,
 					    log_count ? 1U : 0);
@@ -2265,3 +2316,30 @@ int lv_remove_mirrors(struct cmd_context *cmd __attribute__((unused)),
 	return remove_mirrors_from_segments(lv, new_mirrors, status_mask);
 }
 
+int set_mirror_log_count(int *log_count, const char *mirrorlog)
+{
+	if (!strcmp("core", mirrorlog))
+		*log_count = MIRROR_LOG_CORE;
+	else if (!strcmp("disk", mirrorlog))
+		*log_count = MIRROR_LOG_DISK;
+	else if (!strcmp("mirrored", mirrorlog))
+		*log_count = MIRROR_LOG_MIRRORED;
+	else {
+		log_error("Mirror log type \"%s\" is unknown.", mirrorlog);
+		return 0;
+	}
+
+	return 1;
+}
+
+const char *get_mirror_log_name(int log_count)
+{
+	switch (log_count) {
+	case MIRROR_LOG_CORE: return "core";
+	case MIRROR_LOG_DISK: return "disk";
+	case MIRROR_LOG_MIRRORED: return "mirrored";
+	default:
+		log_error(INTERNAL_ERROR "Unknown mirror log count %d.", log_count);
+		return NULL;
+	}
+}

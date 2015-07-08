@@ -13,6 +13,8 @@
 
 . lib/inittest
 
+test -e LOCAL_LVMPOLLD && skip
+
 check_changed_uuid_() {
 	test "$1" != "$(get pv_field "$2" uuid)" || die "UUID has not changed!"
 }
@@ -20,7 +22,7 @@ check_changed_uuid_() {
 aux prepare_pvs 4
 
 # check 'allocatable' pv attribute
-pvcreate $dev1
+pvcreate "$dev1"
 check pv_field "$dev1" pv_attr ---
 vgcreate $vg1 "$dev1"
 check pv_field "$dev1" pv_attr a--

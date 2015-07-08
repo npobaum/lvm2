@@ -136,12 +136,13 @@ int lv_is_virtual_origin(const struct logical_volume *lv)
 
 int lv_is_merging_origin(const struct logical_volume *origin)
 {
-	return (origin->status & MERGING) ? 1 : 0;
+	return lv_is_merging(origin);
 }
 
 int lv_is_merging_cow(const struct logical_volume *snapshot)
 {
 	struct lv_segment *snap_seg = find_snapshot(snapshot);
+
 	/* checks lv_segment's status to see if cow is merging */
 	return (snap_seg && (snap_seg->status & MERGING)) ? 1 : 0;
 }
@@ -192,7 +193,7 @@ void init_snapshot_merge(struct lv_segment *snap_seg,
 
 	if (seg_is_thin_volume(snap_seg)) {
 		snap_seg->merge_lv = origin;
-		/* Making thin LV inivisible with regular log */
+		/* Making thin LV invisible with regular log */
 		lv_set_hidden(snap_seg->lv);
 		return;
 	}
@@ -282,9 +283,9 @@ int vg_remove_snapshot(struct logical_volume *cow)
 		clear_snapshot_merge(origin);
 		/*
 		 * preload origin IFF "snapshot-merge" target is active
-		 * - IMPORTANT: avoids preload if onactivate merge is pending
+		 * - IMPORTANT: avoids preload if inactivate merge is pending
 		 */
-		if (lv_has_target_type(origin->vg->cmd->mem, origin, NULL,
+		if (lv_has_target_type(origin->vg->vgmem, origin, NULL,
 				       "snapshot-merge")) {
 			/*
 			 * preload origin to:
@@ -324,6 +325,7 @@ int vg_remove_snapshot(struct logical_volume *cow)
 	if (is_origin_active && !suspend_lv(origin->vg->cmd, origin)) {
 		log_error("Failed to refresh %s without snapshot.",
 			  origin->name);
+		vg_revert(origin->vg);
 		return 0;
 	}
 	if (!vg_commit(origin->vg))

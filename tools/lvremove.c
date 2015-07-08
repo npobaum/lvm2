@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2014 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -15,19 +15,11 @@
 
 #include "tools.h"
 
-static int lvremove_single(struct cmd_context *cmd, struct logical_volume *lv,
-			   void *handle __attribute__((unused)))
-{
-	if (!lv_remove_with_dependencies(cmd, lv, (force_t) arg_count(cmd, force_ARG), 0))
-		return_ECMD_FAILED;
-
-	return ECMD_PROCESSED;
-}
-
 int lvremove(struct cmd_context *cmd, int argc, char **argv)
 {
-	if (!argc) {
-		log_error("Please enter one or more logical volume paths");
+	if (!argc && !arg_is_set(cmd, select_ARG)) {
+		log_error("Please enter one or more logical volume paths "
+			  "or use --select for selection.");
 		return EINVALID_CMD_LINE;
 	}
 

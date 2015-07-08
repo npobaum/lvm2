@@ -95,8 +95,23 @@ const char *get_percent_string(percent_type_t def)
 
 const char *display_lvname(const struct logical_volume *lv)
 {
-	/* On allocation failure, just return the LV name. */
-	return lv_fullname_dup(lv->vg->cmd->mem, lv) ? : lv->name;
+	char *name;
+	int r;
+
+	if ((lv->vg->cmd->display_lvname_idx + NAME_LEN) >= sizeof((lv->vg->cmd->display_buffer)))
+		lv->vg->cmd->display_lvname_idx = 0;
+
+	name = lv->vg->cmd->display_buffer + lv->vg->cmd->display_lvname_idx;
+	r = dm_snprintf(name, NAME_LEN, "%s/%s", lv->vg->name, lv->name);
+
+	if (r < 0) {
+		log_error("Full LV name \"%s/%s\" is too long.", lv->vg->name, lv->name);
+		return NULL;
+	}
+
+	lv->vg->cmd->display_lvname_idx += r;
+
+	return name;
 }
 
 #define BASE_UNKNOWN 0
@@ -385,7 +400,7 @@ int pvdisplay_short(const struct cmd_context *cmd __attribute__((unused)),
 	char uuid[64] __attribute__((aligned(8)));
 
 	if (!pv)
-		return 0;
+		return_0;
 
 	if (!id_write_format(&pv->id, uuid, sizeof(uuid)))
 		return_0;
@@ -399,7 +414,8 @@ int pvdisplay_short(const struct cmd_context *cmd __attribute__((unused)),
 		  pv->pe_count, pv->pe_count - pv->pe_alloc_count);
 
 	log_print(" ");
-	return 0;
+
+	return 1; /* ECMD_PROCESSED */
 }
 
 void lvdisplay_colons(const struct logical_volume *lv)
@@ -587,10 +603,10 @@ int lvdisplay_full(struct cmd_context *cmd,
 			  display_size(cmd, (uint64_t) snap_seg->chunk_size));
 	}
 
-	if (lv->status & MIRRORED) {
+	if (lv_is_mirrored(lv)) {
 		mirror_seg = first_seg(lv);
 		log_print("Mirrored volumes       %" PRIu32, mirror_seg->area_count);
-		if (lv->status & CONVERTING)
+		if (lv_is_converting(lv))
 			log_print("LV type        Mirror undergoing conversion");
 	}
 
@@ -623,7 +639,7 @@ int lvdisplay_full(struct cmd_context *cmd,
 
 	log_print(" ");
 
-	return 0;
+	return 1; /* ECMD_PROCESSED */
 }
 
 void display_stripe(const struct lv_segment *seg, uint32_t s, const char *pre)
@@ -667,7 +683,7 @@ int lvdisplay_segments(const struct logical_volume *lv)
 			  lv_is_virtual(lv) ? "Virtual" : "Logical",
 			  seg->le, seg->le + seg->len - 1);
 
-		log_print("  Type\t\t%s", seg->segtype->ops->name(seg));
+		log_print("  Type\t\t%s", lvseg_name(seg));
 
 		if (seg->segtype->ops->target_monitored)
 			log_print("  Monitoring\t\t%s",
@@ -695,7 +711,7 @@ void vgdisplay_full(const struct volume_group *vg)
 
 	log_print("--- Volume group ---");
 	log_print("VG Name               %s", vg->name);
-	log_print("System ID             %s", vg->system_id);
+	log_print("System ID             %s", (vg->system_id && *vg->system_id) ? vg->system_id : vg->lvm1_system_id ? : "");
 	log_print("Format                %s", vg->fid->fmt->name);
 	if (vg->fid->fmt->features & FMT_MDAS) {
 		log_print("Metadata Areas        %d",
@@ -855,7 +871,7 @@ void display_name_error(name_error_t name_error)
 	case NAME_INVALID_EMPTY:
 		log_error("Name is zero length.");
 		break;
-	case NAME_INVALID_HYPEN:
+	case NAME_INVALID_HYPHEN:
 		log_error("Name cannot start with hyphen.");
 		break;
 	case NAME_INVALID_DOTS:

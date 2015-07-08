@@ -24,6 +24,7 @@
 #include "display.h"
 #include "label.h"
 #include "archiver.h"
+#include "lvm-signal.h"
 
 static struct pv_segment *_alloc_pv_segment(struct dm_pool *mem,
 					    struct physical_volume *pv,
@@ -374,6 +375,10 @@ uint32_t pv_list_extents_free(const struct dm_list *pvh)
 	struct pv_segment *pvseg;
 
 	dm_list_iterate_items(pvl, pvh) {
+		if (!pvl->pe_ranges) {
+			log_warn(INTERNAL_ERROR "WARNING: PV %s is without initialized PE ranges.", dev_name(pvl->pv->dev));
+			continue;
+		}
 		dm_list_iterate_items(per, pvl->pe_ranges) {
 			dm_list_iterate_items(pvseg, &pvl->pv->segments) {
 				if (!pvseg_is_allocated(pvseg))
@@ -615,30 +620,11 @@ int pv_resize_single(struct cmd_context *cmd,
 		     struct physical_volume *pv,
 		     const uint64_t new_size)
 {
-	struct pv_list *pvl;
 	uint64_t size = 0;
 	int r = 0;
 	const char *pv_name = pv_dev_name(pv);
 	const char *vg_name = pv->vg_name;
-	struct volume_group *old_vg = vg;
 	int vg_needs_pv_write = 0;
-
-	vg = vg_read_for_update(cmd, vg_name, NULL, 0);
-
-	if (vg_read_error(vg)) {
-		release_vg(vg);
-		log_error("Unable to read volume group \"%s\".",
-			  vg_name);
-		return 0;
-	}
-
-	if (!(pvl = find_pv_in_vg(vg, pv_name))) {
-		log_error("Unable to find \"%s\" in volume group \"%s\"",
-			  pv_name, vg->name);
-		goto out;
-	}
-
-	pv = pvl->pv;
 
 	if (!archive(vg))
 		goto out;
@@ -665,7 +651,7 @@ int pv_resize_single(struct cmd_context *cmd,
 	}
 
 	log_verbose("Resizing volume \"%s\" to %" PRIu64 " sectors.",
-		    pv_name, pv_size(pv));
+		    pv_name, size);
 
 	if (!pv_resize(pv, vg, size))
 		goto_out;
@@ -698,9 +684,6 @@ out:
 	if (!r && vg_needs_pv_write)
 		log_error("Use pvcreate and vgcfgrestore "
 			  "to repair from archived metadata.");
-	unlock_vg(cmd, vg_name);
-	if (!old_vg)
-		release_vg(vg);
 	return r;
 }
 
@@ -712,12 +695,11 @@ const char _really_wipe[] =
  * 0 indicates we may not.
  */
 static int pvremove_check(struct cmd_context *cmd, const char *name,
-		unsigned force_count, unsigned prompt)
+			  unsigned force_count, unsigned prompt, struct dm_list *pvslist)
 {
 	struct device *dev;
 	struct label *label;
 	struct pv_list *pvl;
-	struct dm_list *pvslist;
 
 	struct physical_volume *pv = NULL;
 	int r = 0;
@@ -737,10 +719,6 @@ static int pvremove_check(struct cmd_context *cmd, const char *name,
 		log_error("No PV label found on %s.", name);
 		return 0;
 	}
-
-	lvmcache_seed_infos_from_lvmetad(cmd);
-	if (!(pvslist = get_pvs(cmd)))
-		return_0;
 
 	dm_list_iterate_items(pvl, pvslist)
 		if (pvl->pv->dev == dev)
@@ -783,26 +761,18 @@ static int pvremove_check(struct cmd_context *cmd, const char *name,
 
 	r = 1;
 out:
-	if (pvslist)
-		dm_list_iterate_items(pvl, pvslist)
-			free_pv_fid(pvl->pv);
 	return r;
 }
 
 int pvremove_single(struct cmd_context *cmd, const char *pv_name,
 		    void *handle __attribute__((unused)), unsigned force_count,
-	            unsigned prompt)
+	            unsigned prompt, struct dm_list *pvslist)
 {
 	struct device *dev;
 	struct lvmcache_info *info;
 	int r = 0;
 
-	if (!lock_vol(cmd, VG_ORPHANS, LCK_VG_WRITE, NULL)) {
-		log_error("Can't get lock for orphan PVs");
-		return 0;
-	}
-
-	if (!pvremove_check(cmd, pv_name, force_count, prompt))
+	if (!pvremove_check(cmd, pv_name, force_count, prompt, pvslist))
 		goto out;
 
 	if (!(dev = dev_cache_get(pv_name, cmd->filter))) {
@@ -838,9 +808,48 @@ int pvremove_single(struct cmd_context *cmd, const char *pv_name,
 	r = 1;
 
 out:
+	return r;
+}
+
+int pvremove_many(struct cmd_context *cmd, struct dm_list *pv_names,
+		  unsigned force_count, unsigned prompt)
+{
+	int ret = 1;
+	struct dm_list *pvslist = NULL;
+	struct pv_list *pvl;
+	const struct dm_str_list *pv_name;
+
+	if (!lock_vol(cmd, VG_ORPHANS, LCK_VG_WRITE, NULL)) {
+		log_error("Can't get lock for orphan PVs");
+		return 0;
+	}
+
+	lvmcache_seed_infos_from_lvmetad(cmd);
+
+	if (!(pvslist = get_pvs(cmd))) {
+		ret = 0;
+		goto_out;
+	}
+
+	dm_list_iterate_items(pv_name, pv_names) {
+		if (!pvremove_single(cmd, pv_name->str, NULL, force_count, prompt, pvslist)) {
+			stack;
+			ret = 0;
+		}
+		if (sigint_caught()) {
+			ret = 0;
+			goto_out;
+		}
+	}
+
+out:
 	unlock_vg(cmd, VG_ORPHANS);
 
-	return r;
+	if (pvslist)
+		dm_list_iterate_items(pvl, pvslist)
+			free_pv_fid(pvl->pv);
+
+	return ret;
 }
 
 int pvcreate_single(struct cmd_context *cmd, const char *pv_name,

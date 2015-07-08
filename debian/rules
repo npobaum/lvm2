@@ -13,7 +13,6 @@ include /usr/share/dpkg/buildflags.mk
 
 SOURCE := $(shell dpkg-parsechangelog | sed -ne 's,^Source: *\(.*\)$$,\1,p')
 VERSION_COMPLETE := $(shell dpkg-parsechangelog | sed -ne 's,^Version: *\(.*\)$$,\1,p')
-VERSION_UPSTREAM := $(shell echo "$(VERSION_COMPLETE)" | sed -e 's,^[0-9]*:,,' -e 's,-[^-]*$$,,')
 VERSION_DEBIAN := $(shell echo "$(VERSION_COMPLETE)" | sed -e 's,^[^-]*-,,')
 
 DEVMAPPER_ABINAME = 1.02.1
@@ -91,6 +90,7 @@ $(STAMPS_DIR)/setup_deb: $(STAMPS_DIR)/source
 		--enable-cmdlib \
 		--enable-dmeventd \
 		--enable-lvmetad \
+		--enable-lvmpolld \
 		--enable-pkgconfig \
 		--enable-readline \
 		--enable-udev_rules \
@@ -245,9 +245,22 @@ install_lvm2: export DH_OPTIONS = -plvm2
 install_lvm2: DIR = $(BUILD_DIR)/install_deb
 install_lvm2: $(STAMPS_DIR)/install_deb
 	+$(MAKE_SELF) install-base-prep INSTALL_DIR='$(DIR)'
-	dh_systemd_enable --no-enable lvm2-lvmetad.service
-	dh_systemd_enable lvm2-activation.service lvm2-activation-early.service lvm2-lvmetad.socket lvm2-monitor.service
-	dh_systemd_start --restart-after-upgrade lvm2-lvmetad.socket
+	dh_installinit --restart-after-upgrade --name lvm2-lvmetad
+	dh_installinit --restart-after-upgrade --name lvm2-lvmpolld
+	dh_systemd_enable \
+		lvm2-activation.service lvm2-activation-early.service \
+		lvm2-monitor.service \
+		lvm2-lvmetad.socket \
+		lvm2-lvmpolld.socket
+	dh_systemd_enable --no-enable \
+		lvm2-lvmetad.service \
+		lvm2-lvmpolld.service
+	dh_systemd_start --restart-after-upgrade \
+		lvm2-lvmetad.service \
+		lvm2-lvmpolld.service
+	dh_systemd_start --no-restart-on-upgrade \
+		lvm2-lvmetad.socket \
+		lvm2-lvmpolld.socket
 	dh_installinit --no-start -- start 26 S .
 	+$(MAKE_SELF) install-base
 
@@ -261,20 +274,5 @@ binary-indep:
 binary-arch: $(addprefix install_,libdevmapper libdevmapper-udeb libdevmapper-event libdevmapper-dev dmsetup dmsetup-udeb dmeventd liblvm2 lvm2 lvm2-udeb clvm)
 
 binary: binary-indep binary-arch
-
-DIR_ORIG = ../orig/$(SOURCE)-$(VERSION_UPSTREAM)
-TAR_ORIG_NAME = $(SOURCE)_$(VERSION_UPSTREAM).orig.tar.gz
-TAR_ORIG = $(firstword $(wildcard ../$(TAR_ORIG_NAME)) $(wildcard ../orig/$(TAR_ORIG_NAME)))
-
-orig: $(DIR_ORIG)
-	rsync --delete --exclude debian --exclude .svk --exclude .svn -a $(DIR_ORIG)/ .
-
-$(DIR_ORIG):
-ifeq ($(TAR_ORIG),)
-	$(error Cannot find orig tarball $(TAR_ORIG_NAME))
-else
-	mkdir -p ../orig
-	tar -C ../orig -xzf $(TAR_ORIG)
-endif
 
 .PHONY: build clean binary-indep binary-arch binary install configure

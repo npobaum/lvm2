@@ -11,12 +11,11 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
 
+export LVM_TEST_THIN_REPAIR_CMD=${LVM_TEST_THIN_REPAIR_CMD-/bin/false}
+
 . lib/inittest
 
 aux have_thin 1 0 0 || skip
-
-# disable thin_check if not present in system
-which thin_check || aux lvmconf 'global/thin_check_executable = ""'
 
 aux prepare_devs 2
 

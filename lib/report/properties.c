@@ -104,9 +104,20 @@ static dm_percent_t _snap_percent(const struct logical_volume *lv)
 static dm_percent_t _data_percent(const struct logical_volume *lv)
 {
 	dm_percent_t percent;
+	struct lv_status_cache *status;
 
 	if (lv_is_cow(lv))
 		return _snap_percent(lv);
+
+	if (lv_is_cache(lv) || lv_is_cache_pool(lv)) {
+		if (!lv_cache_status(lv, &status)) {
+			stack;
+			return DM_PERCENT_INVALID;
+		}
+		percent = status->dirty_usage;
+		dm_pool_destroy(status->mem);
+		return percent;
+	}
 
 	if (lv_is_thin_volume(lv))
 		return lv_thin_percent(lv, 0, &percent) ? percent : DM_PERCENT_INVALID;
@@ -117,8 +128,22 @@ static dm_percent_t _data_percent(const struct logical_volume *lv)
 static dm_percent_t _metadata_percent(const struct logical_volume *lv)
 {
 	dm_percent_t percent;
+	struct lv_status_cache *status;
 
-	return lv_thin_pool_percent(lv, 1, &percent) ? percent : DM_PERCENT_INVALID;
+	if (lv_is_cache(lv) || lv_is_cache_pool(lv)) {
+		if (!lv_cache_status(lv, &status)) {
+			stack;
+			return DM_PERCENT_INVALID;
+		}
+		percent = status->dirty_usage;
+		dm_pool_destroy(status->mem);
+		return percent;
+	}
+
+	if (lv_is_thin_pool(lv))
+		return lv_thin_pool_percent(lv, 1, &percent) ? percent : DM_PERCENT_INVALID;
+
+	return DM_PERCENT_INVALID;
 }
 
 /* PV */
@@ -223,6 +248,21 @@ GET_PV_NUM_PROPERTY_FN(pv_ba_size, SECTOR_SIZE * pv->ba_size)
 #define _lv_skip_activation_set prop_not_implemented_set
 #define _lv_skip_activation_get prop_not_implemented_get
 
+#define _cache_total_blocks_set prop_not_implemented_set
+#define _cache_total_blocks_get prop_not_implemented_get
+#define _cache_used_blocks_set prop_not_implemented_set
+#define _cache_used_blocks_get prop_not_implemented_get
+#define _cache_dirty_blocks_set prop_not_implemented_set
+#define _cache_dirty_blocks_get prop_not_implemented_get
+#define _cache_read_hits_set prop_not_implemented_set
+#define _cache_read_hits_get prop_not_implemented_get
+#define _cache_read_misses_set prop_not_implemented_set
+#define _cache_read_misses_get prop_not_implemented_get
+#define _cache_write_hits_set prop_not_implemented_set
+#define _cache_write_hits_get prop_not_implemented_get
+#define _cache_write_misses_set prop_not_implemented_set
+#define _cache_write_misses_get prop_not_implemented_get
+
 /* LV */
 GET_LV_STR_PROPERTY_FN(lv_uuid, lv_uuid_dup(lv))
 #define _lv_uuid_set prop_not_implemented_set
@@ -241,6 +281,8 @@ GET_LV_STR_PROPERTY_FN(lv_attr, lv_attr_dup(lv->vg->vgmem, lv))
 GET_LV_NUM_PROPERTY_FN(lv_major, lv->major)
 #define _lv_major_set prop_not_implemented_set
 GET_LV_NUM_PROPERTY_FN(lv_minor, lv->minor)
+#define _lv_when_full_get prop_not_implemented_get
+#define _lv_when_full_set prop_not_implemented_set
 #define _lv_minor_set prop_not_implemented_set
 GET_LV_NUM_PROPERTY_FN(lv_read_ahead, lv->read_ahead * SECTOR_SIZE)
 #define _lv_read_ahead_set prop_not_implemented_set
@@ -258,6 +300,10 @@ GET_LV_STR_PROPERTY_FN(origin, lv_origin_dup(lv->vg->vgmem, lv))
 #define _origin_set prop_not_implemented_set
 GET_LV_NUM_PROPERTY_FN(origin_size, (SECTOR_SIZE * lv_origin_size(lv)))
 #define _origin_size_set prop_not_implemented_set
+#define _lv_ancestors_set prop_not_implemented_set
+#define _lv_ancestors_get prop_not_implemented_get
+#define _lv_descendants_set prop_not_implemented_set
+#define _lv_descendants_get prop_not_implemented_get
 GET_LV_NUM_PROPERTY_FN(snap_percent, _snap_percent(lv))
 #define _snap_percent_set prop_not_implemented_set
 GET_LV_NUM_PROPERTY_FN(copy_percent, _copy_percent(lv))
@@ -320,6 +366,8 @@ GET_VG_NUM_PROPERTY_FN(vg_free, (SECTOR_SIZE * vg_free(vg)))
 #define _vg_free_set prop_not_implemented_set
 GET_VG_STR_PROPERTY_FN(vg_sysid, vg_system_id_dup(vg))
 #define _vg_sysid_set prop_not_implemented_set
+GET_VG_STR_PROPERTY_FN(vg_systemid, vg_system_id_dup(vg))
+#define _vg_systemid_set prop_not_implemented_set
 GET_VG_NUM_PROPERTY_FN(vg_extent_size, (SECTOR_SIZE * vg->extent_size))
 #define _vg_extent_size_set prop_not_implemented_set
 GET_VG_NUM_PROPERTY_FN(vg_extent_count, vg->extent_count)
@@ -380,6 +428,8 @@ GET_LVSEG_NUM_PROPERTY_FN(thin_id, lvseg->device_id)
 #define _thin_id_set prop_not_implemented_set
 GET_LVSEG_STR_PROPERTY_FN(discards, lvseg_discards_dup(lvseg->lv->vg->vgmem, lvseg))
 #define _discards_set prop_not_implemented_set
+GET_LVSEG_STR_PROPERTY_FN(cachemode, lvseg_cachemode_dup(lvseg->lv->vg->vgmem, lvseg))
+#define _cachemode_set prop_not_implemented_set
 GET_LVSEG_NUM_PROPERTY_FN(seg_start, (SECTOR_SIZE * lvseg_start(lvseg)))
 #define _seg_start_set prop_not_implemented_set
 GET_LVSEG_NUM_PROPERTY_FN(seg_start_pe, lvseg->le)
@@ -398,6 +448,11 @@ GET_LVSEG_STR_PROPERTY_FN(devices, lvseg_devices(lvseg->lv->vg->vgmem, lvseg))
 GET_LVSEG_STR_PROPERTY_FN(seg_monitor, lvseg_monitor_dup(lvseg->lv->vg->vgmem, lvseg))
 #define _seg_monitor_set prop_not_implemented_set
 
+#define _cache_policy_get prop_not_implemented_get
+#define _cache_policy_set prop_not_implemented_set
+#define _cache_settings_get prop_not_implemented_get
+#define _cache_settings_set prop_not_implemented_set
+
 /* PVSEG */
 GET_PVSEG_NUM_PROPERTY_FN(pvseg_start, pvseg->pe)
 #define _pvseg_start_set prop_not_implemented_set
@@ -407,7 +462,7 @@ GET_PVSEG_NUM_PROPERTY_FN(pvseg_size, (SECTOR_SIZE * pvseg->len))
 
 struct lvm_property_type _properties[] = {
 #include "columns.h"
-	{ 0, "", 0, 0, 0, { .integer = 0 }, prop_not_implemented_get, prop_not_implemented_set },
+	{ 0, "", 0, 0, 0, 0, { .integer = 0 }, prop_not_implemented_get, prop_not_implemented_set },
 };
 
 #undef STR
@@ -416,6 +471,7 @@ struct lvm_property_type _properties[] = {
 #undef SIZ
 #undef PCT
 #undef STR_LIST
+#undef SNUM
 #undef FIELD
 
 int lvseg_get_property(const struct lv_segment *lvseg,
@@ -427,7 +483,7 @@ int lvseg_get_property(const struct lv_segment *lvseg,
 int lv_get_property(const struct logical_volume *lv,
 		    struct lvm_property_type *prop)
 {
-	return prop_get_property(_properties, lv, prop, LVS);
+	return prop_get_property(_properties, lv, prop, LVS | LVSINFO | LVSSTATUS | LVSINFOSTATUS);
 }
 
 int vg_get_property(const struct volume_group *vg,
@@ -451,7 +507,7 @@ int pv_get_property(const struct physical_volume *pv,
 int lv_set_property(struct logical_volume *lv,
 		    struct lvm_property_type *prop)
 {
-	return prop_set_property(_properties, lv, prop, LVS);
+	return prop_set_property(_properties, lv, prop, LVS | LVSINFO | LVSSTATUS | LVSINFOSTATUS);
 }
 
 int vg_set_property(struct volume_group *vg,

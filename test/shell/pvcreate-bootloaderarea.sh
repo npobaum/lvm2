@@ -13,9 +13,10 @@ test_description='Test pvcreate bootloader area support'
 
 . lib/inittest
 
+test -e LOCAL_LVMPOLLD && skip
+
 aux prepare_devs 1
-aux lvmconf 'global/suffix=0'
-aux lvmconf 'global/units="b"'
+aux lvmconf 'global/suffix=0' 'global/units="b"'
 
 #COMM 'pvcreate sets/aligns bootloader area correctly'
 pvcreate --dataalignment 262144b --bootloaderareasize 614400b "$dev1"
@@ -27,7 +28,7 @@ check pv_field "$dev1" ba_size "786432"
 check pv_field "$dev1" pe_start "1048576"
 
 #COMM 'pvcreate with booloader area size - test corner cases'
-dev_size=$(pvs -o pv_size --noheadings $dev1)
+dev_size=$(pvs -o pv_size --noheadings "$dev1")
 pv_size=$[dev_size - 1048576] # device size - 1m pe_start = area for data
 
 # try to use the whole data area for bootloader area, remaining data area is zero then (pe_start = pv_size)

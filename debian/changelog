@@ -1,3 +1,13 @@
+lvm2 (2.02.122-1) unstable; urgency=medium
+
+  * New upsream version.
+  * Make sure lvmetad is enabled:
+    - Add init-script.
+  * Build and enable lvmpolld:
+    - Add init-script.
+
+ -- Bastian Blank <waldi@debian.org>  Wed, 08 Jul 2015 18:38:20 +0200
+
 lvm2 (2.02.111-2.2) unstable; urgency=medium
 
   * Non-maintainer upload

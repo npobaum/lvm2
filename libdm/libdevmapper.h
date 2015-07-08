@@ -151,6 +151,7 @@ struct dm_info {
 	int32_t target_count;
 
 	int deferred_remove;
+	int internal_suspend;
 };
 
 struct dm_deps {
@@ -174,8 +175,6 @@ struct dm_versions {
 
 int dm_get_library_version(char *version, size_t size);
 int dm_task_get_driver_version(struct dm_task *dmt, char *version, size_t size);
-
-#define dm_task_get_info dm_task_get_info_with_deferred_remove
 int dm_task_get_info(struct dm_task *dmt, struct dm_info *dmi);
 
 /*
@@ -320,7 +319,7 @@ struct dm_status_cache {
 	uint64_t demotions;
 	uint64_t promotions;
 
-	uint32_t feature_flags;
+	uint64_t feature_flags;
 
 	int core_argc;
 	char **core_argv;
@@ -366,8 +365,12 @@ struct dm_status_thin_pool {
 	uint64_t used_data_blocks;
 	uint64_t total_data_blocks;
 	uint64_t held_metadata_root;
-	uint32_t read_only;
+	uint32_t read_only;		/* metadata may not be changed */
 	dm_thin_discards_t discards;
+	uint32_t fail : 1;		/* all I/O fails */
+	uint32_t error_if_no_space : 1;	/* otherwise queue_if_no_space */
+	uint32_t out_of_data_space : 1;	/* metadata may be changed, but data may not be allocated */
+	uint32_t reserved : 29;
 };
 
 int dm_get_status_thin_pool(struct dm_pool *mem, const char *params,
@@ -388,6 +391,11 @@ int dm_get_status_thin(struct dm_pool *mem, const char *params,
  * Call this to actually run the ioctl.
  */
 int dm_task_run(struct dm_task *dmt);
+
+/*
+ * The errno from the last device-mapper ioctl performed by dm_task_run.
+ */
+int dm_task_get_errno(struct dm_task *dmt);
 
 /*
  * Call this to make or remove the device nodes associated with previously
@@ -774,19 +782,35 @@ int dm_tree_node_add_raid_target_with_params(struct dm_tree_node *node,
 /* Cache feature_flags */
 #define DM_CACHE_FEATURE_WRITEBACK    0x00000001
 #define DM_CACHE_FEATURE_WRITETHROUGH 0x00000002
+#define DM_CACHE_FEATURE_PASSTHROUGH  0x00000004
 
+struct dm_config_node;
+/*
+ * Use for passing cache policy and all its args e.g.:
+ *
+ * policy_settings {
+ *    migration_threshold=2048
+ *    sequention_threashold=100
+ *    ...
+ * }
+ *
+ * For policy without any parameters use NULL.
+ */
 int dm_tree_node_add_cache_target(struct dm_tree_node *node,
 				  uint64_t size,
+				  uint64_t feature_flags, /* DM_CACHE_FEATURE_* */
 				  const char *metadata_uuid,
 				  const char *data_uuid,
 				  const char *origin_uuid,
-				  uint32_t chunk_size,
-				  uint32_t feature_flags, /* DM_CACHE_FEATURE_* */
-				  unsigned core_argc,
-				  const char *const *core_argv,
 				  const char *policy_name,
-				  unsigned policy_argc,
-				  const char *const *policy_argv);
+				  const struct dm_config_node *policy_settings,
+				  uint32_t chunk_size);
+
+/*
+ * FIXME Add individual cache policy pairs  <key> = value, like:
+ * int dm_tree_node_add_cache_policy_arg(struct dm_tree_node *dnode,
+ *				      const char *key, uint64_t value);
+ */
 
 /*
  * Replicator operation mode
@@ -870,7 +894,14 @@ int dm_tree_node_add_thin_pool_message(struct dm_tree_node *node,
 int dm_tree_node_set_thin_pool_discard(struct dm_tree_node *node,
 				       unsigned ignore,
 				       unsigned no_passdown);
-
+/*
+ * Set error if no space, instead of queueing for thin pool.
+ */
+int dm_tree_node_set_thin_pool_error_if_no_space(struct dm_tree_node *node,
+						 unsigned error_if_no_space);
+/* Start thin pool with metadata in read-only mode */
+int dm_tree_node_set_thin_pool_read_only(struct dm_tree_node *node,
+					 unsigned read_only);
 /*
  * FIXME: Defines bellow are based on kernel's dm-thin.c defines
  * MAX_DEV_ID ((1 << 24) - 1)
@@ -1200,7 +1231,8 @@ struct dm_str_list {
  * Initialise a list before use.
  * The list head's next and previous pointers point back to itself.
  */
-#define DM_LIST_INIT(name)	struct dm_list name = { &(name), &(name) }
+#define DM_LIST_HEAD_INIT(name)	 { &(name), &(name) }
+#define DM_LIST_INIT(name)	struct dm_list name = DM_LIST_HEAD_INIT(name)
 void dm_list_init(struct dm_list *head);
 
 /*
@@ -1630,6 +1662,7 @@ struct dm_report_object_type {
 	uint32_t id;			/* Powers of 2 */
 	const char *desc;
 	const char *prefix;		/* field id string prefix (optional) */
+	/* FIXME: convert to proper usage of const pointers here */
 	void *(*data_fn)(void *object);	/* callback from report_object() */
 };
 
@@ -1735,9 +1768,26 @@ struct dm_report *dm_report_init_with_selection(uint32_t *report_types,
 						const char *selection,
 						const struct dm_report_reserved_value reserved_values[],
 						void *private_data);
+/*
+ * Report an object, pass it through the selection criteria if they
+ * are present and display the result on output if it passes the criteria.
+ */
 int dm_report_object(struct dm_report *rh, void *object);
-int dm_report_set_output_selection(struct dm_report *rh, uint32_t *report_types,
-				   const char *selection);
+/*
+ * The same as dm_report_object, but display the result on output only if
+ * 'do_output' arg is set. Also, save the result of selection in 'selected'
+ * arg if it's not NULL (either 1 if the object passes, otherwise 0).
+ */
+int dm_report_object_is_selected(struct dm_report *rh, void *object, int do_output, int *selected);
+
+/*
+ * Compact report output so that if field value is empty for all rows in
+ * the report, drop the field from output completely (including headers).
+ * Compact output is applicable only if report is buffered, otherwise
+ * this function has no effect.
+ */
+int dm_report_compact_fields(struct dm_report *rh);
+
 int dm_report_output(struct dm_report *rh);
 void dm_report_free(struct dm_report *rh);
 
@@ -1831,6 +1881,11 @@ struct dm_config_tree *dm_config_insert_cascaded_tree(struct dm_config_tree *fir
  */
 struct dm_config_tree *dm_config_remove_cascaded_tree(struct dm_config_tree *cft);
 
+/*
+ * Create a new, uncascaded config tree equivalent to the input cascade.
+ */
+struct dm_config_tree *dm_config_flatten(struct dm_config_tree *cft);
+
 void dm_config_destroy(struct dm_config_tree *cft);
 
 /* Simple output line by line. */
@@ -1857,6 +1912,7 @@ int dm_config_write_one_node_out(const struct dm_config_node *cn, const struct d
 
 struct dm_config_node *dm_config_find_node(const struct dm_config_node *cn, const char *path);
 int dm_config_has_node(const struct dm_config_node *cn, const char *path);
+int dm_config_remove_node(struct dm_config_node *parent, struct dm_config_node *remove);
 const char *dm_config_find_str(const struct dm_config_node *cn, const char *path, const char *fail);
 const char *dm_config_find_str_allow_empty(const struct dm_config_node *cn, const char *path, const char *fail);
 int dm_config_find_int(const struct dm_config_node *cn, const char *path, int fail);

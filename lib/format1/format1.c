@@ -180,6 +180,8 @@ out:
 static struct volume_group *_format1_vg_read(struct format_instance *fid,
 				     const char *vg_name,
 				     struct metadata_area *mda __attribute__((unused)),
+				     struct cached_vg_fmtdata **vg_fmtdata __attribute__((unused)),
+				     unsigned *use_previous_vg __attribute__((unused)),
 				     int single_device __attribute__((unused)))
 {
 	struct volume_group *vg;
@@ -493,25 +495,13 @@ static int _format1_vg_setup(struct format_instance *fid, struct volume_group *v
 	if (!vg->max_pv || vg->max_pv >= MAX_PV)
 		vg->max_pv = MAX_PV - 1;
 
-	if (vg->extent_size > MAX_PE_SIZE || vg->extent_size < MIN_PE_SIZE) {
-		log_error("Extent size must be between %s and %s",
-			  display_size(fid->fmt->cmd, (uint64_t) MIN_PE_SIZE),
-			  display_size(fid->fmt->cmd, (uint64_t) MAX_PE_SIZE));
+	if (!vg_check_new_extent_size(vg->fid->fmt, vg->extent_size))
+		return_0;
 
-		return 0;
-	}
-
-	if (vg->extent_size % MIN_PE_SIZE) {
-		log_error("Extent size must be multiple of %s",
-			  display_size(fid->fmt->cmd, (uint64_t) MIN_PE_SIZE));
-		return 0;
-	}
-
-	/* Redundant? */
-	if (vg->extent_size & (vg->extent_size - 1)) {
-		log_error("Extent size must be power of 2");
-		return 0;
-	}
+        /* Generate lvm1_system_id if not yet set */
+        if (!*vg->lvm1_system_id &&
+            !generate_lvm1_system_id(vg->cmd, vg->lvm1_system_id, ""))
+		return_0;
 
 	return 1;
 }
@@ -607,7 +597,8 @@ struct format_type *init_format(struct cmd_context *cmd)
 	fmt->alias = NULL;
 	fmt->orphan_vg_name = FMT_LVM1_ORPHAN_VG_NAME;
 	fmt->features = FMT_RESTRICTED_LVIDS | FMT_ORPHAN_ALLOCATABLE |
-			FMT_RESTRICTED_READAHEAD | FMT_OBSOLETE;
+			FMT_RESTRICTED_READAHEAD | FMT_OBSOLETE |
+			FMT_SYSTEMID_ON_PVS;
 	fmt->private = NULL;
 
 	dm_list_init(&fmt->mda_ops);

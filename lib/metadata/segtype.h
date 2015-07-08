@@ -43,11 +43,15 @@ struct dev_manager;
 #define SEG_THIN_VOLUME		0x00001000U
 #define SEG_CACHE		0x00002000U
 #define SEG_CACHE_POOL		0x00004000U
+#define SEG_MIRROR		0x00008000U
+#define SEG_ONLY_EXCLUSIVE	0x00010000U /* In cluster only exlusive activation */
+#define SEG_CAN_ERROR_WHEN_FULL	0x00020000U
 #define SEG_UNKNOWN		0x80000000U
 
 #define segtype_is_cache(segtype)	((segtype)->flags & SEG_CACHE ? 1 : 0)
 #define segtype_is_cache_pool(segtype)	((segtype)->flags & SEG_CACHE_POOL ? 1 : 0)
 #define segtype_is_mirrored(segtype)	((segtype)->flags & SEG_AREAS_MIRRORED ? 1 : 0)
+#define segtype_is_mirror(segtype)	((segtype)->flags & SEG_MIRROR ? 1 : 0)
 #define segtype_is_pool(segtype)	((segtype)->flags & (SEG_CACHE_POOL | SEG_THIN_POOL)  ? 1 : 0)
 #define segtype_is_raid(segtype)	((segtype)->flags & SEG_RAID ? 1 : 0)
 #define segtype_is_striped(segtype)	((segtype)->flags & SEG_AREAS_STRIPED ? 1 : 0)
@@ -55,10 +59,12 @@ struct dev_manager;
 #define segtype_is_thin_pool(segtype)	((segtype)->flags & SEG_THIN_POOL ? 1 : 0)
 #define segtype_is_thin_volume(segtype)	((segtype)->flags & SEG_THIN_VOLUME ? 1 : 0)
 #define segtype_is_virtual(segtype)	((segtype)->flags & SEG_VIRTUAL ? 1 : 0)
+#define segtype_is_unknown(segtype)	((segtype)->flags & SEG_UNKNOWN ? 1 : 0)
 
 #define seg_is_cache(seg)	segtype_is_cache((seg)->segtype)
 #define seg_is_cache_pool(seg)	segtype_is_cache_pool((seg)->segtype)
 #define seg_is_linear(seg)	(seg_is_striped(seg) && ((seg)->area_count == 1))
+#define seg_is_mirror(seg)	segtype_is_mirror((seg)->segtype)
 #define seg_is_mirrored(seg)	segtype_is_mirrored((seg)->segtype)
 #define seg_is_pool(seg)	segtype_is_pool((seg)->segtype)
 #define seg_is_raid(seg)	segtype_is_raid((seg)->segtype)
@@ -70,14 +76,15 @@ struct dev_manager;
 #define seg_is_thin_pool(seg)	segtype_is_thin_pool((seg)->segtype)
 #define seg_is_thin_volume(seg)	segtype_is_thin_volume((seg)->segtype)
 #define seg_is_virtual(seg)	segtype_is_virtual((seg)->segtype)
+#define seg_unknown(seg)	segtype_is_unknown((seg)->segtype)
 #define seg_can_split(seg)	((seg)->segtype->flags & SEG_CAN_SPLIT ? 1 : 0)
 #define seg_cannot_be_zeroed(seg) ((seg)->segtype->flags & SEG_CANNOT_BE_ZEROED ? 1 : 0)
 #define seg_monitored(seg)	((seg)->segtype->flags & SEG_MONITORED ? 1 : 0)
-#define seg_unknown(seg)	((seg)->segtype->flags & SEG_UNKNOWN ? 1 : 0)
+#define seg_only_exclusive(seg)	((seg)->segtype->flags & SEG_ONLY_EXCLUSIVE ? 1 : 0)
+#define seg_can_error_when_full(seg) ((seg)->segtype->flags & SEG_CAN_ERROR_WHEN_FULL ? 1 : 0)
 
 struct segment_type {
 	struct dm_list list;		/* Internal */
-	struct cmd_context *cmd;	/* lvm_register_segtype() sets this. */
 
 	uint32_t flags;
 	uint32_t parity_devs;           /* Parity drives required by segtype */
@@ -174,6 +181,7 @@ int init_replicator_segtype(struct cmd_context *cmd, struct segtype_library *seg
 #define THIN_FEATURE_DISCARDS_NON_POWER_2	(1U << 4)
 #define THIN_FEATURE_METADATA_RESIZE		(1U << 5)
 #define THIN_FEATURE_EXTERNAL_ORIGIN_EXTEND	(1U << 6)
+#define THIN_FEATURE_ERROR_IF_NO_SPACE		(1U << 7)
 
 #ifdef THIN_INTERNAL
 int init_thin_segtypes(struct cmd_context *cmd, struct segtype_library *seglib);

@@ -44,6 +44,7 @@ struct volume_group {
 	struct cmd_context *cmd;
 	struct dm_pool *vgmem;
 	struct format_instance *fid;
+	const struct format_type *original_fmt;	/* Set when processing backup files */
 	struct lvmcache_vginfo *vginfo;
 	struct dm_list *cmd_vgs;/* List of wanted/locked and opened VGs */
 	uint32_t cmd_missing_vgs;/* Flag marks missing VG */
@@ -67,7 +68,9 @@ struct volume_group {
 	struct id id;
 	const char *name;
 	const char *old_name;		/* Set during vgrename and vgcfgrestore */
-	char *system_id;
+	const char *system_id;
+	char *lvm1_system_id;
+	const char *lock_type;
 
 	uint32_t extent_size;
 	uint32_t extent_count;
@@ -86,6 +89,24 @@ struct volume_group {
 	 */
 
 	struct dm_list pvs_to_create;
+
+	/*
+	 * List of physical volumes that carry outdated metadata that belongs
+	 * to this VG. Currently only populated when lvmetad is in use. The PVs
+	 * on this list could still belong to the VG (but their MDA carries an
+	 * out-of-date copy of the VG metadata) or they could no longer belong
+	 * to the VG. With lvmetad, this list is populated with all PVs that
+	 * have a VGID matching ours, but seqno that is smaller than the
+	 * current seqno for the VG. The MDAs on still-in-VG PVs are updated as
+	 * part of the normal vg_write/vg_commit process. The MDAs on PVs that
+	 * no longer belong to the VG are wiped during vg_read.
+	 *
+	 * However, even though still-in-VG PVs *may* be on the list, this is
+	 * not guaranteed. The in-lvmetad list is cleared whenever out-of-VG
+	 * outdated PVs are wiped during vg_read.
+	 */
+
+	struct dm_list pvs_outdated;
 
 	/*
 	 * logical volumes
@@ -108,6 +129,11 @@ struct volume_group {
 	/*
 	 * FIXME: Move the next fields into a different struct?
 	 */
+
+	/*
+	 * List of removed logical volumes by _lv_reduce.
+	 */
+	struct dm_list removed_lvs;
 
 	/*
 	 * List of removed physical volumes by pvreduce.
@@ -144,9 +170,11 @@ uint32_t vg_seqno(const struct volume_group *vg);
 uint64_t vg_status(const struct volume_group *vg);
 int vg_set_alloc_policy(struct volume_group *vg, alloc_policy_t alloc);
 int vg_set_clustered(struct volume_group *vg, int clustered);
+int vg_set_system_id(struct volume_group *vg, const char *system_id);
 uint64_t vg_size(const struct volume_group *vg);
 uint64_t vg_free(const struct volume_group *vg);
 uint64_t vg_extent_size(const struct volume_group *vg);
+int vg_check_new_extent_size(const struct format_type *fmt, uint32_t new_extent_size);
 int vg_set_extent_size(struct volume_group *vg, uint32_t new_extent_size);
 uint64_t vg_extent_count(const struct volume_group *vg);
 uint64_t vg_free_count(const struct volume_group *vg);

@@ -136,7 +136,7 @@ static const char *decode_flags(unsigned char flags)
 		flags & LCK_DMEVENTD_MONITOR_MODE ? "DMEVENTD_MONITOR|" : "",
 		flags & LCK_ORIGIN_ONLY_MODE ? "ORIGIN_ONLY|" : "",
 		flags & LCK_TEST_MODE ? "TEST|" : "",
-		flags & LCK_CONVERT ? "CONVERT|" : "",
+		flags & LCK_CONVERT_MODE ? "CONVERT|" : "",
 		flags & LCK_DMEVENTD_MONITOR_IGNORE ? "DMEVENTD_MONITOR_IGNORE|" : "",
 		flags & LCK_REVERT_MODE ? "REVERT|" : "");
 
@@ -375,7 +375,7 @@ static int do_activate_lv(char *resource, unsigned char command, unsigned char l
 	 * of exclusive lock to shared one during activation.
 	 */
 	if (!test_mode() && command & LCK_CLUSTER_VG) {
-		status = hold_lock(resource, mode, LCKF_NOQUEUE | (lock_flags & LCK_CONVERT ? LCKF_CONVERT:0));
+		status = hold_lock(resource, mode, LCKF_NOQUEUE | ((lock_flags & LCK_CONVERT_MODE) ? LCKF_CONVERT:0));
 		if (status) {
 			/* Return an LVM-sensible error for this.
 			 * Forcing EIO makes the upper level return this text
@@ -842,7 +842,7 @@ void lvm_do_backup(const char *vgname)
 
 	pthread_mutex_lock(&lvm_lock);
 
-	vg = vg_read_internal(cmd, vgname, NULL /*vgid*/, 1, &consistent);
+	vg = vg_read_internal(cmd, vgname, NULL /*vgid*/, WARN_PV_READ, &consistent);
 
 	if (vg && consistent)
 		check_current_backup(vg);

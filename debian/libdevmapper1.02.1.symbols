@@ -1,5 +1,8 @@
 libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  Base@Base 2:1.02.20
+ DM_1_02_97@DM_1_02_97 2:1.02.99
+ DM_1_02_98@DM_1_02_98 2:1.02.99
+ DM_1_02_99@DM_1_02_99 2:1.02.99
  dm_asprintf@Base 2:1.02.20
  dm_basename@Base 2:1.02.20
  dm_bit_and@Base 2:1.02.47
@@ -25,6 +28,7 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_config_find_node@Base 2:1.02.74
  dm_config_find_str@Base 2:1.02.74
  dm_config_find_str_allow_empty@Base 2:1.02.74
+ dm_config_flatten@Base 2:1.02.99
  dm_config_from_string@Base 2:1.02.74
  dm_config_get_custom@Base 2:1.02.74
  dm_config_get_list@Base 2:1.02.74
@@ -39,6 +43,7 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_config_parent_name@Base 2:1.02.74
  dm_config_parse@Base 2:1.02.74
  dm_config_remove_cascaded_tree@Base 2:1.02.74
+ dm_config_remove_node@Base 2:1.02.99
  dm_config_set_custom@Base 2:1.02.74
  dm_config_tree_find_bool@Base 2:1.02.74
  dm_config_tree_find_float@Base 2:1.02.74
@@ -144,6 +149,7 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_regex_create@Base 2:1.02.20
  dm_regex_fingerprint@Base 2:1.02.63
  dm_regex_match@Base 2:1.02.20
+ dm_report_compact_fields@Base 2:1.02.99
  dm_report_field_int32@Base 2:1.02.27
  dm_report_field_int@Base 2:1.02.27
  dm_report_field_percent@Base 2:1.02.88
@@ -157,6 +163,7 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_report_init@Base 2:1.02.27
  dm_report_init_with_selection@Base 2:1.02.88
  dm_report_object@Base 2:1.02.27
+ dm_report_object_is_selected@Base 2:1.02.99
  dm_report_output@Base 2:1.02.27
  dm_report_set_output_field_name_prefix@Base 2:1.02.27
  dm_set_dev_dir@Base 2:1.02.20
@@ -177,7 +184,9 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_task_enable_checks@Base 2:1.02.65
  dm_task_get_deps@Base 2:1.02.20
  dm_task_get_driver_version@Base 2:1.02.20
+ dm_task_get_errno@DM_1_02_98 2:1.02.99
  dm_task_get_info@Base 2:1.02.20
+ dm_task_get_info@DM_1_02_97 2:1.02.99
  dm_task_get_info_with_deferred_remove@Base 2:1.02.90
  dm_task_get_message_response@Base 2:1.02.82
  dm_task_get_name@Base 2:1.02.20
@@ -259,6 +268,8 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_tree_node_set_read_ahead@Base 2:1.02.24
  dm_tree_node_set_thin_external_origin@Base 2:1.02.77
  dm_tree_node_set_thin_pool_discard@Base 2:1.02.77
+ dm_tree_node_set_thin_pool_error_if_no_space@Base 2:1.02.99
+ dm_tree_node_set_thin_pool_read_only@DM_1_02_99 2:1.02.99
  dm_tree_node_set_udev_flags@Base 2:1.02.74
  dm_tree_node_size_changed@Base 2:1.02.36
  dm_tree_preload_children@Base 2:1.02.20

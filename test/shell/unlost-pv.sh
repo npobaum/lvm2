@@ -11,6 +11,8 @@
 
 . lib/inittest
 
+test -e LOCAL_LVMPOLLD && skip
+
 check_() {
 	# vgscan needs --cache option for direct scan if lvmetad is used
 	test -e LOCAL_LVMETAD && cache="--cache"
@@ -42,5 +44,11 @@ aux enable_dev "$dev1"
 check_
 test -e LOCAL_LVMETAD && lvremove $vg/boo # FIXME trigger a write :-(
 check_ not
+
+aux disable_dev "$dev1"
+vgreduce --removemissing --force $vg
+aux enable_dev "$dev1"
+vgs 2>&1 | grep 'Removing PV'
+vgs 2>&1 | not grep 'Removing PV'
 
 vgremove -ff $vg
