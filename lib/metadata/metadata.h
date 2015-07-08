@@ -33,6 +33,8 @@
 //#define STRIPE_SIZE_MAX ( 512L * 1024L >> SECTOR_SHIFT)	/* 512 KB in sectors */
 //#define STRIPE_SIZE_LIMIT ((UINT_MAX >> 2) + 1)
 //#define MAX_RESTRICTED_LVS 255	/* Used by FMT_RESTRICTED_LVIDS */
+#define MIN_PE_SIZE     (8192L >> SECTOR_SHIFT) /* 8 KB in sectors - format1 only */
+#define MAX_PE_SIZE     (16L * 1024L * (1024L >> SECTOR_SHIFT) * 1024L) /* format1 only */
 #define MIRROR_LOG_OFFSET	2	/* sectors */
 #define VG_MEMPOOL_CHUNK	10240	/* in bytes, hint only */
 
@@ -55,7 +57,7 @@
 
 #define SPINDOWN_LV          	UINT64_C(0x00000010)	/* LV */
 #define BADBLOCK_ON       	UINT64_C(0x00000020)	/* LV */
-#define VIRTUAL			UINT64_C(0x00010000)	/* LV - internal use only */
+//#define VIRTUAL			UINT64_C(0x00010000)	/* LV - internal use only */
 #define PRECOMMITTED		UINT64_C(0x00200000)	/* VG - internal use only */
 #define POSTORDER_FLAG		UINT64_C(0x02000000) /* Not real flags, reserved for  */
 #define POSTORDER_OPEN_FLAG	UINT64_C(0x04000000) /* temporary use inside vg_read_internal. */
@@ -70,6 +72,7 @@ struct dm_config_tree;
 struct metadata_area;
 struct alloc_handle;
 struct lvmcache_info;
+struct cached_vg_fmtdata;
 
 /* Per-format per-metadata area operations */
 struct metadata_area_ops {
@@ -77,10 +80,14 @@ struct metadata_area_ops {
 	struct volume_group *(*vg_read) (struct format_instance * fi,
 					 const char *vg_name,
 					 struct metadata_area * mda,
+					 struct cached_vg_fmtdata **vg_fmtdata,
+					 unsigned *use_previous_vg,
 					 int single_device);
 	struct volume_group *(*vg_read_precommit) (struct format_instance * fi,
 					 const char *vg_name,
-					 struct metadata_area * mda);
+					 struct metadata_area * mda,
+					 struct cached_vg_fmtdata **vg_fmtdata,
+					 unsigned *use_previous_vg);
 	/*
 	 * Write out complete VG metadata.  You must ensure internal
 	 * consistency before calling. eg. PEs can't refer to PVs not
@@ -341,10 +348,6 @@ unsigned long set_pe_align_offset(struct physical_volume *pv,
 
 int pv_write_orphan(struct cmd_context *cmd, struct physical_volume *pv);
 
-int pvremove_single(struct cmd_context *cmd, const char *pv_name,
-			   void *handle __attribute__((unused)), unsigned force_count,
-			   unsigned prompt);
-
 struct physical_volume *pvcreate_vol(struct cmd_context *cmd, const char *pv_name,
                                      struct pvcreate_params *pp, int write_now);
 
@@ -391,6 +394,9 @@ struct lv_segment *find_pool_seg(const struct lv_segment *seg);
 /* Find some unused device_id for thin pool LV segment. */
 uint32_t get_free_pool_device_id(struct lv_segment *thin_pool_seg);
 
+/* Check if the new thin-pool could be used for lvm2 thin volumes */
+int check_new_thin_pool(const struct logical_volume *pool_lv);
+
 /*
  * Remove a dev_dir if present.
  */
@@ -428,11 +434,14 @@ int lv_split_segment(struct logical_volume *lv, uint32_t le);
  */
 int add_seg_to_segs_using_this_lv(struct logical_volume *lv, struct lv_segment *seg);
 int remove_seg_from_segs_using_this_lv(struct logical_volume *lv, struct lv_segment *seg);
-struct lv_segment *get_only_segment_using_this_lv(const struct logical_volume *lv);
 
+int for_each_sub_lv_except_pools(struct logical_volume *lv,
+				 int (*fn)(struct logical_volume *lv, void *data),
+				 void *data);
 int for_each_sub_lv(struct logical_volume *lv,
-                    int (*fn)(struct logical_volume *lv, void *data),
-                    void *data);
+		    int (*fn)(struct logical_volume *lv, void *data),
+		    void *data);
+
 int move_lv_segments(struct logical_volume *lv_to,
 		     struct logical_volume *lv_from,
 		     uint64_t set_status, uint64_t reset_status);
@@ -451,6 +460,8 @@ struct volume_group *import_vg_from_buffer(const char *buf,
 					   struct format_instance *fid);
 struct volume_group *import_vg_from_config_tree(const struct dm_config_tree *cft,
 						struct format_instance *fid);
+struct volume_group *import_vg_from_lvmetad_config_tree(const struct dm_config_tree *cft,
+							struct format_instance *fid);
 
 /*
  * Mirroring functions

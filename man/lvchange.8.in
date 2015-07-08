@@ -8,13 +8,18 @@ lvchange \(em change attributes of a logical volume
 .RB [ \-A | \-\-autobackup
 .RI { y | n }]
 .RB [ \-a | \-\-activate
-.RI [ a | e | l ]{ y | n }]
+.RI [ a | e | s | l ]{ y | n }]
 .RB [ \-\-activationmode
-.IR { complete | degraded | partial } ]
-.RB [ \-k | \-\-setactivationskip { y | n } ]
+.RI { complete | degraded | partial }]
+.RB [ \-k | \-\-setactivationskip
+.RI { y | n }]
 .RB [ \-K | \-\-ignoreactivationskip ]
 .RB [ \-\-alloc
 .IR AllocationPolicy ]
+.RB [ \-\-cachepolicy
+.IR policy ]
+.RB [ \-\-cachesettings
+.IR key=value ]
 .RB [ \-\-commandprofile
 .IR ProfileName ]
 .RB [ \-C | \-\-contiguous
@@ -26,6 +31,8 @@ lvchange \(em change attributes of a logical volume
 .RB [ \-\-detachprofile ]
 .RB [ \-\-discards
 .RI { ignore | nopassdown | passdown }]
+.RB [ \-\-errorwhenfull
+.RI { y | n }]
 .RB [ \-\-resync ]
 .RB [ \-h | \-? | \-\-help ]
 .RB [ \-\-ignorelockingfailure ]
@@ -44,26 +51,29 @@ lvchange \(em change attributes of a logical volume
 .RB [ \-\-[raid]writebehind
 .IR IOCount ]
 .RB [ \-\-[raid]writemostly
-.IR PhysicalVolume [ : { t | n | y }]]
+.IR PhysicalVolume [ : { y | n | t }]]
 .RB [ \-\-sysinit ]
 .RB [ \-\-noudevsync ]
 .RB [ \-\-metadataprofile
 .IR ProfileName ]
 .RB [ \-M | \-\-persistent
-.RI { y | n }]
+.RI { y | n }
 .RB [ \-\-minor
 .IR minor ]
+.RB [ \-\-major
+.IR major ]]
 .RB [ \-P | \-\-partial ]
 .RB [ \-p | \-\-permission
 .RI { r | rw }]
 .RB [ \-r | \-\-readahead
 .RI { ReadAheadSectors | auto | none }]
 .RB [ \-\-refresh ]
+.RB [ \-S | \-\-select
+.IR Selection ]
 .RB [ \-t | \-\-test ]
 .RB [ \-v | \-\-verbose ]
 .RB [ \-Z | \-\-zero
 .RI { y | n }]
-.I LogicalVolumePath
 .RI [ LogicalVolumePath ...]
 .SH DESCRIPTION
 lvchange allows you to change the attributes of a logical volume
@@ -71,19 +81,19 @@ including making them known to the kernel ready for use.
 .SH OPTIONS
 See \fBlvm\fP(8) for common options.
 .TP
-.BR \-a ", " \-\-activate " [" \fIa | \fIe | \fIl ]{ \fIy | \fIn }
+.BR \-a ", " \-\-activate " [" \fIa | \fIe | \fIs | \fIl ]{ \fIy | \fIn }
 Controls the availability of the logical volumes for use.
 Communicates with the kernel device-mapper driver via
 libdevmapper to activate (\-ay) or deactivate (\-an) the
-logical volumes. 
+logical volumes.
 .IP
 Activation of a logical volume creates a symbolic link
 /dev/VolumeGroupName/LogicalVolumeName pointing to the device node.
 This link is removed on deactivation.
 All software and scripts should access the device through
 this symbolic link and present this as the name of the device.
-The location and name of the underlying device node may depend on 
-the distribution and configuration (e.g. udev) and might change 
+The location and name of the underlying device node may depend on
+the distribution and configuration (e.g. udev) and might change
 from release to release.
 .IP
 If autoactivation option is used (\-aay),
@@ -94,24 +104,49 @@ activation. The \-aay option should be also used during system
 boot so it's possible to select which volumes to activate using
 the activation/auto_activation_volume_list setting.
 .IP
-If clustered locking is enabled, -aey will activate exclusively
-on one node and -aly will activate only on the local node.
-To deactivate only on the local node use -aln.
-Logical volumes with single-host snapshots are always activated
-exclusively because they can only be used on one node at once.
+In a clustered VG, clvmd is used for activation, and the
+following options are possible:
+
+With \-aey, clvmd activates the LV in exclusive mode
+(with an exclusive lock), allowing a single node to activate the LV.
+
+With \-asy, clvmd activates the LV in shared mode
+(with a shared lock), allowing multiple nodes to activate the LV concurrently.
+If the LV type prohibits shared access, such as an LV with a snapshot,
+the 's' option is ignored and an exclusive lock is used.
+
+With \-ay (no mode specified), clvmd activates the LV in shared mode
+if the LV type allows concurrent access, such as a linear LV.
+Otherwise, clvmd activates the LV in exclusive mode.
+
+With \-aey, \-asy, and \-ay, clvmd attempts to activate the LV
+on all nodes.  If exclusive mode is used, then only one of the
+nodes will be successful.
+
+With \-an, clvmd attempts to deactivate the LV on all nodes.
+
+With \-aly, clvmd activates the LV only on the local node, and \-aln
+deactivates only on the local node.  If the LV type allows concurrent
+access, then shared mode is used, otherwise exclusive.
+
+LVs with snapshots are always activated exclusively because they can only
+be used on one node at once.
+
+For local VGs, \-ay, \-aey, and \-asy are all equivalent.
+
 .TP
 .BR \-\-activationmode " {" \fIcomplete | \fIdegraded | \fIpartial }
 The activation mode determines whether logical volumes are allowed to
 activate when there are physical volumes missing (e.g. due to a device
-failure).  \fIcomplete is the most restrictive; allowing only those
+failure).  \fIcomplete\fP is the most restrictive; allowing only those
 logical volumes to be activated that are not affected by the missing
-PVs.  \fIdegraded allows RAID logical volumes to be activated even if
-they have PVs missing.  (Note that the "mirror" segment type is not
-considered a RAID logical volume.  The "raid1" segment type should
-be used instead.)  Finally, \fIpartial allows any logical volume to
+PVs.  \fIdegraded\fP allows RAID logical volumes to be activated even if
+they have PVs missing.  (Note that the "\fImirror\fP" segment type is not
+considered a RAID logical volume.  The "\fIraid1\fP" segment type should
+be used instead.)  Finally, \fIpartial\fP allows any logical volume to
 be activated even if portions are missing due to a missing or failed
 PV.  This last option should only be used when performing recovery or
-repair operations.  \fIdegraded is the default mode.  To change it, modify
+repair operations.  \fIdegraded\fP is the default mode.  To change it, modify
 .B activation_mode
 in
 .BR lvm.conf (5).
@@ -127,6 +162,11 @@ of the flag is reported within \fBlv_attr\fP bits.
 .TP
 .BR \-K ", " \-\-ignoreactivationskip
 Ignore the flag to skip Logical Volumes during activation.
+.TP
+.BR  \-\-cachepolicy " " policy ", " \-\-cachesettings " " key=value
+Only applicable to cached LVs; see also \fBlvmcache(7)\fP. Sets
+the cache policy and its associated tunable settings. In most use-cases,
+default values should be adequate.
 .TP
 .BR \-C ", " \-\-contiguous " {" \fIy | \fIn }
 Tries to set or reset the contiguous allocation policy for
@@ -144,8 +184,13 @@ Set this to \fIignore\fP to ignore any discards received by a
 thin pool Logical Volume.  Set to \fInopassdown\fP to process such
 discards within the thin pool itself and allow the no-longer-needed
 extents to be overwritten by new data.  Set to \fIpassdown\fP (the
-default) to process them both within the thin pool itself and to 
+default) to process them both within the thin pool itself and to
 pass them down the underlying device.
+.TP
+.BR \-\-errorwhenfull " {" \fIy | \fIn }
+Sets thin pool behavior when data space is exhaused. See
+.BR lvcreate (8)
+for information.
 .TP
 .B \-\-resync
 Forces the complete resynchronization of a mirror.  In normal
@@ -164,6 +209,11 @@ See \fBlvm.conf\fP(5) for more information about \fBmetadata profiles\fP.
 .TP
 .B \-\-minor \fIminor
 Set the minor number.
+.TP
+.B \-\-major \fImajor
+Sets the major number. This option is supported only on older systems
+(kernel version 2.4) and is ignored on modern Linux systems where major
+numbers are dynamically assigned.
 .TP
 .BR \-\-monitor " {" \fIy | \fIn }
 Start or stop monitoring a mirrored or snapshot logical volume with
@@ -213,14 +263,14 @@ to the constituent devices must complete before the array signals the
 write has completed).  Setting the value to zero clears the preference
 and allows the system to choose the value arbitrarily.
 .TP
-.IR \fB\-\-[raid]writemostly " " PhysicalVolume [ : { t | y | n }]
+.IR \fB\-\-[raid]writemostly " " PhysicalVolume [ : { y | n | t }]
 Mark a device in a RAID1 logical volume as \fIwrite-mostly\fP.  All reads
 to these drives will be avoided unless absolutely necessary.  This keeps
 the number of I/Os to the drive to a minimum.  The default behavior is to
 set the write-mostly attribute for the specified physical volume in the
 logical volume.  It is possible to also remove the write-mostly flag by
-appending a ":n" to the physical volume or to toggle the value by specifying
-":t".  The \fB\-\-writemostly\fP argument can be specified more than one time
+appending a "\fI:n\fP" to the physical volume or to toggle the value by specifying
+"\fI:t\fP".  The \fB\-\-writemostly\fP argument can be specified more than one time
 in a single command; making it possible to toggle the write-mostly attributes
 for all the physical volumes in a logical volume at once.
 .TP
@@ -254,6 +304,7 @@ Do not use this if dmeventd is already monitoring a device.
 .TP
 .BR \-M ", " \-\-persistent " {" \fIy | \fIn }
 Set to y to make the minor number specified persistent.
+Change of persistent numbers is not supported for pool volumes.
 .TP
 .BR \-p ", " \-\-permission " {" \fIr | \fIrw }
 Change access permission to read-only or read/write.

@@ -13,12 +13,14 @@
 
 . lib/inittest
 
+test -e LOCAL_LVMPOLLD && skip
+
 # FIXME  update test to make something useful on <16T
 aux can_use_16T || skip
 
 aux prepare_vg 4
 
-lvcreate -s -l 100%FREE -n $lv $vg --virtualsize 1024T
+lvcreate --type snapshot -s -l 100%FREE -n $lv $vg --virtualsize 1024T
 
 #FIXME this should be 1024T
 #check lv_field $vg/$lv size "128.00m"

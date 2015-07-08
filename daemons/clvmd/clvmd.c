@@ -153,16 +153,11 @@ static if_type_t get_cluster_type(void);
 static void usage(const char *prog, FILE *file)
 {
 	fprintf(file, "Usage: %s [options]\n"
-		"   -V       Show version of clvmd\n"
-		"   -h       Show this help information\n"
-		"   -d[n]    Set debug logging (0:none, 1:stderr (implies -f option), 2:syslog)\n"
-		"   -f       Don't fork, run in the foreground\n"
-		"   -E<lockuuid> Take this lock uuid as exclusively locked resource (for restart)\n"
-		"   -R       Tell all running clvmds in the cluster to reload their device cache\n"
-		"   -S       Restart clvmd, preserving exclusive locks\n"
 		"   -C       Sets debug level (from -d) on all clvmd instances clusterwide\n"
-		"   -t<secs> Command timeout (default 60 seconds)\n"
-		"   -T<secs> Startup timeout (default none)\n"
+		"   -d[n]    Set debug logging (0:none, 1:stderr (implies -f option), 2:syslog)\n"
+		"   -E<uuid> Take this lock uuid as exclusively locked resource (for restart)\n"
+		"   -f       Don't fork, run in the foreground\n"
+		"   -h       Show this help information\n"
 		"   -I<cmgr> Cluster manager (default: auto)\n"
 		"            Available cluster managers: "
 #ifdef USE_COROSYNC
@@ -177,6 +172,12 @@ static void usage(const char *prog, FILE *file)
 #ifdef USE_SINGLENODE
 		"singlenode "
 #endif
+		"\n"
+		"   -R       Tell all running clvmds in the cluster to reload their device cache\n"
+		"   -S       Restart clvmd, preserving exclusive locks\n"
+		"   -t<secs> Command timeout (default: 60 seconds)\n"
+		"   -T<secs> Startup timeout (default:  0 seconds)\n"
+		"   -V       Show version of clvmd\n"
 		"\n", prog);
 }
 
@@ -899,8 +900,10 @@ static void main_loop(int cmd_timeout)
 					ret = thisfd->callback(thisfd, buf, sizeof(buf),
 							       csid, &newfd);
 					/* Ignore EAGAIN */
-					if (ret < 0 && (errno == EAGAIN || errno == EINTR))
+					if (ret < 0 && (errno == EAGAIN || errno == EINTR)) {
+						lastfd = thisfd;
 						continue;
+                                        }
 
 					/* Got error or EOF: Remove it from the list safely */
 					if (ret <= 0) {
@@ -1128,7 +1131,7 @@ static void dump_message(char *buf, int len)
 		row[j] = buf[i];
 		str[j] = (isprint(buf[i])) ? buf[i] : ' ';
 
-		if ((j == 8) || (i + 1 == len)) {
+		if (i + 1 == len) {
 			for (;j < 8; ++j) {
 				row[j] = 0;
 				str[j] = ' ';

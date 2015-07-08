@@ -33,7 +33,7 @@
 #include <unistd.h>
 
 #ifndef CLUSTER_LOCKING_INTERNAL
-int lock_resource(struct cmd_context *cmd, const char *resource, uint32_t flags, struct logical_volume *lv __attribute__((unused)));
+int lock_resource(struct cmd_context *cmd, const char *resource, uint32_t flags, const struct logical_volume *lv __attribute__((unused)));
 int query_resource(const char *resource, int *mode);
 void locking_end(void);
 int locking_init(int type, struct dm_config_tree *cf, uint32_t *flags);
@@ -411,9 +411,9 @@ static int _lock_for_cluster(struct cmd_context *cmd, unsigned char clvmd_cmd,
 /* API entry point for LVM */
 #ifdef CLUSTER_LOCKING_INTERNAL
 static int _lock_resource(struct cmd_context *cmd, const char *resource,
-			  uint32_t flags, struct logical_volume *lv __attribute__((unused)))
+			  uint32_t flags, const struct logical_volume *lv __attribute__((unused)))
 #else
-	int lock_resource(struct cmd_context *cmd, const char *resource, uint32_t flags, struct logical_volume *lv __attribute__((unused)))
+	int lock_resource(struct cmd_context *cmd, const char *resource, uint32_t flags, const struct logical_volume *lv __attribute__((unused)))
 #endif
 {
 	char lockname[PATH_MAX];
@@ -611,7 +611,7 @@ int init_cluster_locking(struct locking_type *locking, struct cmd_context *cmd,
 	locking->query_resource = _query_resource;
 	locking->fin_locking = _locking_end;
 	locking->reset_locking = _reset_locking;
-	locking->flags = LCK_PRE_MEMLOCK | LCK_CLUSTERED;
+	locking->flags = LCK_PRE_MEMLOCK | LCK_CLUSTERED | LCK_SUPPORTS_REMOTE_QUERIES;
 
 	_clvmd_sock = _open_local_sock(suppress_messages);
 	if (_clvmd_sock == -1)

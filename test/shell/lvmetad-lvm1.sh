@@ -12,6 +12,8 @@
 . lib/inittest
 
 test -e LOCAL_LVMETAD || skip
+test -e LOCAL_LVMPOLLD && skip
+
 aux prepare_devs 2
 pvcreate --metadatatype 1 "$dev1"
 should vgscan --cache
@@ -25,7 +27,7 @@ pvs | should grep "$dev1"
 pvcreate -ff -y --metadatatype 1 "$dev1" "$dev2"
 vgcreate --metadatatype 1 $vg1 "$dev1" "$dev2"
 lvcreate -l1 $vg1
-pvremove -ff -y $dev2
+pvremove -ff -y "$dev2"
 vgchange -an $vg1
 not lvremove $vg1
 not vgremove -ff -y $vg1

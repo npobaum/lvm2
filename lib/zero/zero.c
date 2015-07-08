@@ -14,15 +14,8 @@
 
 #include "lib.h"
 #include "segtype.h"
-#include "display.h"
-#include "config.h"
 #include "str_list.h"
 #include "activate.h"
-
-static const char *_zero_name(const struct lv_segment *seg)
-{
-	return seg->segtype->name;
-}
 
 static int _zero_merge_segments(struct lv_segment *seg1, struct lv_segment *seg2)
 {
@@ -79,7 +72,6 @@ static void _zero_destroy(struct segment_type *segtype)
 }
 
 static struct segtype_handler _zero_ops = {
-	.name = _zero_name,
 	.merge_segments = _zero_merge_segments,
 #ifdef DEVMAPPER_SUPPORT
 	.add_target_line = _zero_add_target_line,
@@ -96,10 +88,8 @@ struct segment_type *init_zero_segtype(struct cmd_context *cmd)
 	if (!segtype)
 		return_NULL;
 
-	segtype->cmd = cmd;
 	segtype->ops = &_zero_ops;
 	segtype->name = "zero";
-	segtype->private = NULL;
 	segtype->flags = SEG_CAN_SPLIT | SEG_VIRTUAL | SEG_CANNOT_BE_ZEROED;
 
 	log_very_verbose("Initialised segtype: %s", segtype->name);

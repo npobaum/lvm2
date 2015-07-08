@@ -36,11 +36,6 @@ static const char _thin_module[] = "thin";
 /* TODO: using static field here, maybe should be a part of segment_type */
 static unsigned _feature_mask;
 
-static const char *_thin_pool_name(const struct lv_segment *seg)
-{
-	return seg->segtype->name;
-}
-
 static void _thin_pool_display(const struct lv_segment *seg)
 {
 	log_print("  Chunk size\t\t%s",
@@ -120,7 +115,7 @@ static int _thin_pool_text_import(struct lv_segment *seg,
 
 	if (!discards_str)
 		seg->discards = THIN_DISCARDS_IGNORE;
-	else if (!get_pool_discards(discards_str, &seg->discards))
+	else if (!set_pool_discards(&seg->discards, discards_str))
 		return SEG_LOG_ERROR("Discards option unsupported for");
 
 	if (dm_config_has_node(sn, "low_water_mark") &&
@@ -264,6 +259,7 @@ static int _thin_pool_add_target_line(struct dev_manager *dm,
 				      uint32_t *pvmove_mirror_count __attribute__((unused)))
 {
 	static int _no_discards = 0;
+	static int _no_error_if_no_space = 0;
 	char *metadata_dlid, *pool_dlid;
 	const struct lv_thin_message *lmsg;
 	const struct logical_volume *origin;
@@ -318,6 +314,12 @@ static int _thin_pool_add_target_line(struct dev_manager *dm,
 	} else if (seg->discards != THIN_DISCARDS_IGNORE)
 		log_warn_suppress(_no_discards++, "WARNING: Thin pool target does "
 				  "not support discards (needs kernel >= 3.4).");
+
+	if (attr & THIN_FEATURE_ERROR_IF_NO_SPACE)
+		dm_tree_node_set_thin_pool_error_if_no_space(node, lv_is_error_when_full(seg->lv));
+	else if (lv_is_error_when_full(seg->lv))
+		log_warn_suppress(_no_error_if_no_space++, "WARNING: Thin pool target does "
+				  "not support error if no space (needs version >= 1.10).");
 
 	/*
 	 * Add messages only for activation tree.
@@ -448,11 +450,6 @@ static int _target_unregister_events(struct lv_segment *seg,
 
 #  endif /* DMEVENTD */
 #endif /* DEVMAPPER_SUPPORT */
-
-static const char *_thin_name(const struct lv_segment *seg)
-{
-	return seg->segtype->name;
-}
 
 static void _thin_display(const struct lv_segment *seg)
 {
@@ -612,14 +609,18 @@ static int _thin_target_percent(void **target_state __attribute__((unused)),
 				uint64_t *total_denominator)
 {
 	struct dm_status_thin *s;
+	uint64_t csize;
 
 	/* Status for thin device is in sectors */
 	if (!dm_get_status_thin(mem, params, &s))
 		return_0;
 
 	if (seg) {
-		*percent = dm_make_percent(s->mapped_sectors, seg->lv->size);
-		*total_denominator += seg->lv->size;
+		/* Pool allocates whole chunk so round-up to nearest one */
+		csize = first_seg(seg->pool_lv)->chunk_size;
+		csize = ((seg->lv->size + csize - 1) / csize) * csize;
+		*percent = dm_make_percent(s->mapped_sectors, csize);
+		*total_denominator += csize;
 	} else {
 		/* No lv_segment info here */
 		*percent = DM_PERCENT_INVALID;
@@ -648,7 +649,8 @@ static int _thin_target_present(struct cmd_context *cmd,
 		{ 1, 4, THIN_FEATURE_BLOCK_SIZE, "block_size" },
 		{ 1, 5, THIN_FEATURE_DISCARDS_NON_POWER_2, "discards_non_power_2" },
 		{ 1, 10, THIN_FEATURE_METADATA_RESIZE, "metadata_resize" },
-		{ 9, 11, THIN_FEATURE_EXTERNAL_ORIGIN_EXTEND, "external_origin_extend" },
+		{ 1, 10, THIN_FEATURE_ERROR_IF_NO_SPACE, "error_if_no_space" },
+		{ 1, 13, THIN_FEATURE_EXTERNAL_ORIGIN_EXTEND, "external_origin_extend" },
 	};
 
 	static const char _lvmconf[] = "global/thin_disabled_features";
@@ -720,7 +722,6 @@ static void _thin_destroy(struct segment_type *segtype)
 }
 
 static struct segtype_handler _thin_pool_ops = {
-	.name = _thin_pool_name,
 	.display = _thin_pool_display,
 	.text_import = _thin_pool_text_import,
 	.text_import_area_count = _thin_pool_text_import_area_count,
@@ -740,7 +741,6 @@ static struct segtype_handler _thin_pool_ops = {
 };
 
 static struct segtype_handler _thin_ops = {
-	.name = _thin_name,
 	.display = _thin_display,
 	.text_import = _thin_text_import,
 	.text_export = _thin_text_export,
@@ -765,9 +765,10 @@ int init_multiple_segtypes(struct cmd_context *cmd, struct segtype_library *segl
 		const char name[16];
 		uint32_t flags;
 	} reg_segtypes[] = {
-		{ &_thin_pool_ops, "thin-pool", SEG_THIN_POOL },
+		{ &_thin_pool_ops, "thin-pool", SEG_THIN_POOL | SEG_CANNOT_BE_ZEROED |
+		SEG_ONLY_EXCLUSIVE | SEG_CAN_ERROR_WHEN_FULL },
 		/* FIXME Maybe use SEG_THIN_VOLUME instead of SEG_VIRTUAL */
-		{ &_thin_ops, "thin", SEG_THIN_VOLUME | SEG_VIRTUAL }
+		{ &_thin_ops, "thin", SEG_THIN_VOLUME | SEG_VIRTUAL | SEG_ONLY_EXCLUSIVE }
 	};
 
 	struct segment_type *segtype;

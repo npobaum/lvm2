@@ -914,6 +914,7 @@ static uint32_t _get_cookie_value(const char *str_value)
 	unsigned long int value;
 	char *p;
 
+	errno = 0;
 	if (!(value = strtoul(str_value, &p, 0)) ||
 	    *p ||
 	    (value == ULONG_MAX && errno == ERANGE) ||
@@ -3824,13 +3825,15 @@ int main(int argc, char **argv)
 	}
 
 	if (_switches[HELP_ARG]) {
-		cmd = _find_command("help");
-		goto doit;
+		if ((cmd = _find_command("help")))
+			goto doit;
+		goto unknown;
 	}
 
 	if (_switches[VERSION_ARG]) {
-		cmd = _find_command("version");
-		goto doit;
+		if ((cmd = _find_command("version")))
+			goto doit;
+		goto unknown;
 	}
 
 	if (argc == 0) {
@@ -3839,6 +3842,7 @@ int main(int argc, char **argv)
 	}
 
 	if (!(cmd = _find_command(argv[0]))) {
+unknown:
 		fprintf(stderr, "Unknown command\n");
 		_usage(stderr);
 		goto out;

@@ -13,6 +13,8 @@
 
 . lib/inittest
 
+test -e LOCAL_LVMPOLLD && skip
+
 # FIXME  update test to make something useful on <16T
 aux can_use_16T || skip
 
@@ -20,11 +22,11 @@ aux have_raid 1 3 0 || skip
 
 aux prepare_vg 5
 
-lvcreate -s -l 20%FREE -n $lv1 $vg --virtualsize 256T
-lvcreate -s -l 20%FREE -n $lv2 $vg --virtualsize 256T
-lvcreate -s -l 20%FREE -n $lv3 $vg --virtualsize 256T
-lvcreate -s -l 20%FREE -n $lv4 $vg --virtualsize 256T
-lvcreate -s -l 20%FREE -n $lv5 $vg --virtualsize 256T
+lvcreate --type snapshot -s -l 20%FREE -n $lv1 $vg --virtualsize 256T
+lvcreate --type snapshot -s -l 20%FREE -n $lv2 $vg --virtualsize 256T
+lvcreate --type snapshot -s -l 20%FREE -n $lv3 $vg --virtualsize 256T
+lvcreate --type snapshot -s -l 20%FREE -n $lv4 $vg --virtualsize 256T
+lvcreate --type snapshot -s -l 20%FREE -n $lv5 $vg --virtualsize 256T
 
 aux extend_filter_LVMTEST
 

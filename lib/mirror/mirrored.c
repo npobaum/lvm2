@@ -38,11 +38,6 @@ struct mirror_state {
 	uint32_t default_region_size;
 };
 
-static const char *_mirrored_name(const struct lv_segment *seg)
-{
-	return seg->segtype->name;
-}
-
 static void _mirrored_display(const struct lv_segment *seg)
 {
 	const char *size;
@@ -440,7 +435,8 @@ static int _mirrored_add_target_line(struct dev_manager *dm, struct dm_pool *mem
 	} else
 		region_size = adjusted_mirror_region_size(seg->lv->vg->extent_size,
 							  seg->area_len,
-							  mirr_state->default_region_size);
+							  mirr_state->default_region_size, 1,
+							  vg_is_clustered(seg->lv->vg));
 
 	if (!dm_tree_node_add_mirror_target(node, len))
 		return_0;
@@ -592,7 +588,6 @@ static void _mirrored_destroy(struct segment_type *segtype)
 }
 
 static struct segtype_handler _mirrored_ops = {
-	.name = _mirrored_name,
 	.display = _mirrored_display,
 	.text_import_area_count = _mirrored_text_import_area_count,
 	.text_import = _mirrored_text_import,
@@ -624,11 +619,9 @@ struct segment_type *init_segtype(struct cmd_context *cmd)
 	if (!segtype)
 		return_NULL;
 
-	segtype->cmd = cmd;
 	segtype->ops = &_mirrored_ops;
 	segtype->name = "mirror";
-	segtype->private = NULL;
-	segtype->flags = SEG_AREAS_MIRRORED;
+	segtype->flags = SEG_MIRROR | SEG_AREAS_MIRRORED;
 
 #ifdef DEVMAPPER_SUPPORT
 #  ifdef DMEVENTD

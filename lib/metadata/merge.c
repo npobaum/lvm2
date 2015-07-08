@@ -45,12 +45,12 @@ int lv_merge_segments(struct logical_volume *lv)
 	 * having a matching segment structure.
 	 */
 
-	if (lv->status & LOCKED || lv->status & PVMOVE)
+	if (lv_is_locked(lv) || lv_is_pvmove(lv))
 		return 1;
 
-	if ((lv->status & MIRROR_IMAGE) &&
+	if (lv_is_mirror_image(lv) &&
 	    (seg = get_only_segment_using_this_lv(lv)) &&
-	    (seg->lv->status & LOCKED || seg->lv->status & PVMOVE))
+	    (lv_is_locked(seg->lv) || lv_is_pvmove(seg->lv)))
 		return 1;
 
 	dm_list_iterate_safe(segh, t, &lv->segments) {
@@ -110,7 +110,7 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 			}
 		}
 
-		if (lv_is_thin_pool_data(lv) &&
+		if (lv_is_pool_data(lv) &&
 		    (!(seg2 = first_seg(lv)) || !(seg2 = find_pool_seg(seg2)) ||
 		     seg2->area_count != 1 || seg_type(seg2, 0) != AREA_LV ||
 		     seg_lv(seg2, 0) != lv)) {
@@ -119,7 +119,7 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 			inc_error_count;
 		}
 
-		if (lv_is_thin_pool_metadata(lv) &&
+		if (lv_is_pool_metadata(lv) &&
 		    (!(seg2 = first_seg(lv)) || !(seg2 = find_pool_seg(seg2)) ||
 		     seg2->metadata_lv != lv)) {
 			log_error("LV %s: segment 1 pool metadata LV does not point back to same LV",
@@ -147,6 +147,13 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 			inc_error_count;
 		}
 
+		if (lv_is_error_when_full(lv) &&
+		    !seg_can_error_when_full(seg)) {
+			log_error("LV %s: segment %u (%s) does not support flag "
+				  "ERROR_WHEN_FULL.", lv->name, seg_count, seg->segtype->name);
+			inc_error_count;
+		}
+
 		if (complete_vg && seg->log_lv &&
 		    !seg_is_mirrored(seg) && !(seg->status & RAID_IMAGE)) {
 			log_error("LV %s: segment %u log LV %s is not a "
@@ -159,7 +166,7 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 		 * Check mirror log - which is attached to the mirrored seg
 		 */
 		if (complete_vg && seg->log_lv && seg_is_mirrored(seg)) {
-			if (!(seg->log_lv->status & MIRROR_LOG)) {
+			if (!lv_is_mirror_log(seg->log_lv)) {
 				log_error("LV %s: segment %u log LV %s is not "
 					  "a mirror log",
 					  lv->name, seg_count, seg->log_lv->name);
@@ -224,19 +231,15 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 					inc_error_count;
 				}
 
-				if ((seg_is_thin_pool(seg) &&
-				     ((seg->chunk_size < DM_THIN_MIN_DATA_BLOCK_SIZE) ||
-				     (seg->chunk_size > DM_THIN_MAX_DATA_BLOCK_SIZE))) ||
-				    (seg_is_cache_pool(seg) &&
-				     ((seg->chunk_size < DM_CACHE_MIN_DATA_BLOCK_SIZE) ||
-				     (seg->chunk_size > DM_CACHE_MAX_DATA_BLOCK_SIZE)))) {
-					log_error("LV %s: %s segment %u has chunk size %u out of range.",
+				if (seg_is_pool(seg) &&
+				    !validate_pool_chunk_size(lv->vg->cmd, seg->segtype, seg->chunk_size)) {
+					log_error("LV %s: %s segment %u has invalid chunk size %u.",
 						  lv->name, seg->segtype->name, seg_count, seg->chunk_size);
 					inc_error_count;
 				}
 			} else {
 				if (seg->metadata_lv) {
-					log_error("LV %s: segment %u must not have thin pool metadata LV set",
+					log_error("LV %s: segment %u must not have pool metadata LV set",
 						  lv->name, seg_count);
 					inc_error_count;
 				}
@@ -301,7 +304,7 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 				}
 			} else {
 				if (seg->pool_lv) {
-					log_error("LV %s: segment %u must not have thin pool LV set",
+					log_error("LV %s: segment %u must not have pool LV set",
 						  lv->name, seg_count);
 					inc_error_count;
 				}
@@ -346,7 +349,7 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 				}
 
 				if (complete_vg && seg_lv(seg, s) &&
-				    (seg_lv(seg, s)->status & MIRROR_IMAGE) &&
+				    lv_is_mirror_image(seg_lv(seg, s)) &&
 				    (!(seg2 = find_seg_by_le(seg_lv(seg, s),
 							    seg_le(seg, s))) ||
 				     find_mirror_seg(seg2) != seg)) {
@@ -485,8 +488,7 @@ static int _lv_split_segment(struct logical_volume *lv, struct lv_segment *seg,
 
 	if (!seg_can_split(seg)) {
 		log_error("Unable to split the %s segment at LE %" PRIu32
-			  " in LV %s", seg->segtype->ops->name(seg),
-			  le, lv->name);
+			  " in LV %s", lvseg_name(seg), le, lv->name);
 		return 0;
 	}
 
@@ -494,7 +496,7 @@ static int _lv_split_segment(struct logical_volume *lv, struct lv_segment *seg,
 	if (!(split_seg = alloc_lv_segment(seg->segtype,
 					   seg->lv, seg->le, seg->len,
 					   seg->status, seg->stripe_size,
-					   seg->log_lv, seg->pool_lv,
+					   seg->log_lv,
 					   seg->area_count, seg->area_len,
 					   seg->chunk_size, seg->region_size,
 					   seg->extents_copied, seg->pvmove_source_seg))) {

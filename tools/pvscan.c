@@ -43,7 +43,7 @@ static void _pvscan_display_single(struct cmd_context *cmd,
 		/* pv_show(pv); */
 
 		/* FIXME - Moved to Volume Group structure */
-		/* log_print("System Id             %s", pv->vg->system_id); */
+		/* log_print("system ID             %s", pv->vg->system_id); */
 
 		/* log_print(" "); */
 		/* return; */
@@ -189,6 +189,8 @@ static int _pvscan_lvmetad(struct cmd_context *cmd, int argc, char **argv)
 	dev_t devno;
 	activation_handler handler = NULL;
 
+	cmd->include_foreign_vgs = 1;
+
 	/*
 	 * Return here immediately if lvmetad is not used.
 	 * Also return if locking_type=3 (clustered) as we
@@ -239,8 +241,17 @@ static int _pvscan_lvmetad(struct cmd_context *cmd, int argc, char **argv)
 		if (pv_name[0] == '/') {
 			/* device path */
 			if (!(dev = dev_cache_get(pv_name, cmd->lvmetad_filter))) {
-				log_error("Physical Volume %s not found.", pv_name);
-				ret = ECMD_FAILED;
+				if ((dev = dev_cache_get(pv_name, NULL))) {
+					if (!_clear_dev_from_lvmetad_cache(dev->dev, MAJOR(dev->dev), MINOR(dev->dev), handler)) {
+						stack;
+						ret = ECMD_FAILED;
+						break;
+					}
+				} else {
+					log_error("Physical Volume %s not found.", pv_name);
+					ret = ECMD_FAILED;
+					break;
+				}
 				continue;
 			}
 		}
@@ -251,7 +262,7 @@ static int _pvscan_lvmetad(struct cmd_context *cmd, int argc, char **argv)
 				ret = ECMD_FAILED;
 				continue;
 			}
-			devno = MKDEV((dev_t)major, minor);
+			devno = MKDEV((dev_t)major, (dev_t)minor);
 			if (!(dev = dev_cache_get_by_devt(devno, cmd->lvmetad_filter))) {
 				if (!(_clear_dev_from_lvmetad_cache(devno, major, minor, handler))) {
 					stack;
@@ -266,7 +277,7 @@ static int _pvscan_lvmetad(struct cmd_context *cmd, int argc, char **argv)
 			stack;
 			break;
 		}
-		if (!lvmetad_pvscan_single(cmd, dev, handler)) {
+		if (!lvmetad_pvscan_single(cmd, dev, handler, 0)) {
 			ret = ECMD_FAILED;
 			stack;
 			break;
@@ -284,7 +295,7 @@ static int _pvscan_lvmetad(struct cmd_context *cmd, int argc, char **argv)
 		if (major < 0 || minor < 0)
 			continue;
 
-		devno = MKDEV((dev_t)major, minor);
+		devno = MKDEV((dev_t)major, (dev_t)minor);
 
 		if (!(dev = dev_cache_get_by_devt(devno, cmd->lvmetad_filter))) {
 			if (!(_clear_dev_from_lvmetad_cache(devno, major, minor, handler))) {
@@ -299,7 +310,7 @@ static int _pvscan_lvmetad(struct cmd_context *cmd, int argc, char **argv)
 			stack;
 			break;
 		}
-		if (!lvmetad_pvscan_single(cmd, dev, handler)) {
+		if (!lvmetad_pvscan_single(cmd, dev, handler, 0)) {
 			ret = ECMD_FAILED;
 			stack;
 			break;
@@ -327,7 +338,7 @@ int pvscan(struct cmd_context *cmd, int argc, char **argv)
 	uint64_t size_new = 0;
 	unsigned len;
 
-	if (arg_count(cmd, cache_ARG))
+	if (arg_count(cmd, cache_long_ARG))
 		return _pvscan_lvmetad(cmd, argc, argv);
 
 	if (argc) {
@@ -360,8 +371,8 @@ int pvscan(struct cmd_context *cmd, int argc, char **argv)
 		return ECMD_FAILED;
 	}
 
-	if (cmd->filter->wipe)
-		cmd->filter->wipe(cmd->filter);
+	if (cmd->full_filter->wipe)
+		cmd->full_filter->wipe(cmd->full_filter);
 	lvmcache_destroy(cmd, 1, 0);
 
 	/* populate lvmcache */

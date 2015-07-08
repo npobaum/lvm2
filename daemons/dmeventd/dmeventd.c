@@ -117,6 +117,42 @@ static int _foreground = 0;
 static int _restart = 0;
 static char **_initial_registrations = 0;
 
+/* FIXME Make configurable at runtime */
+#ifdef DEBUG
+#  define DEBUGLOG(fmt, args...) debuglog("[Thr %x]: " fmt, (int)pthread_self(), ## args)
+void debuglog(const char *fmt, ... ) __attribute__ ((format(printf, 1, 2)));
+
+void debuglog(const char *fmt, ...)
+{
+	va_list ap;
+
+	va_start(ap, fmt);
+	vsyslog(LOG_DEBUG, fmt, ap);
+	va_end(ap);
+}
+
+static const char *decode_cmd(uint32_t cmd)
+{
+	switch (cmd) {
+	case DM_EVENT_CMD_ACTIVE:			return "ACTIVE";
+	case DM_EVENT_CMD_REGISTER_FOR_EVENT:		return "REGISTER_FOR_EVENT";
+	case DM_EVENT_CMD_UNREGISTER_FOR_EVENT:		return "UNREGISTER_FOR_EVENT";
+	case DM_EVENT_CMD_GET_REGISTERED_DEVICE:	return "GET_REGISTERED_DEVICE";
+	case DM_EVENT_CMD_GET_NEXT_REGISTERED_DEVICE:	return "GET_NEXT_REGISTERED_DEVICE";
+	case DM_EVENT_CMD_SET_TIMEOUT:			return "SET_TIMEOUT";
+	case DM_EVENT_CMD_GET_TIMEOUT:			return "GET_TIMEOUT";
+	case DM_EVENT_CMD_HELLO:			return "HELLO";
+	case DM_EVENT_CMD_DIE:				return "DIE";
+	case DM_EVENT_CMD_GET_STATUS:			return "GET_STATUS";
+	case DM_EVENT_CMD_GET_PARAMETERS:		return "GET_PARAMETERS";
+	default:					return "unknown";
+	}
+}
+
+#else
+#  define DEBUGLOG(fmt, args...) do { } while (0)
+#endif
+
 /* Data kept about a DSO. */
 struct dso_data {
 	struct dm_list list;
@@ -538,6 +574,7 @@ static void *_timeout_thread(void *unused __attribute__((unused)))
 	struct timespec timeout;
 	time_t curr_time;
 
+	DEBUGLOG("Timeout thread starting.");
 	timeout.tv_nsec = 0;
 	pthread_cleanup_push(_exit_timeout, NULL);
 	pthread_mutex_lock(&_timeout_mutex);
@@ -549,6 +586,7 @@ static void *_timeout_thread(void *unused __attribute__((unused)))
 		dm_list_iterate_items_gen(thread, &_timeout_registry, timeout_list) {
 			if (thread->next_time <= curr_time) {
 				thread->next_time = curr_time + thread->timeout;
+				DEBUGLOG("Sending SIGALRM to Thr %x for timeout.", (int) thread->thread);
 				pthread_kill(thread->thread, SIGALRM);
 			}
 
@@ -560,6 +598,7 @@ static void *_timeout_thread(void *unused __attribute__((unused)))
 				       &timeout);
 	}
 
+	DEBUGLOG("Timeout thread finished.");
 	pthread_cleanup_pop(1);
 
 	return NULL;
@@ -640,9 +679,11 @@ static int _event_wait(struct thread_status *thread, struct dm_task **task)
 	int ret = DM_WAIT_RETRY;
 	struct dm_task *dmt;
 	struct dm_info info;
+	int ioctl_errno;
 
 	*task = 0;
 
+	DEBUGLOG("Preparing waitevent task for %s", thread->device.uuid);
 	if (!(dmt = dm_task_create(DM_DEVICE_WAITEVENT)))
 		return DM_WAIT_RETRY;
 
@@ -661,32 +702,37 @@ static int _event_wait(struct thread_status *thread, struct dm_task **task)
 	if (!_in_event_counter++)
 		dm_log_init(_no_intr_log);
 	_unlock_mutex();
+
+	DEBUGLOG("Starting waitevent task for %s", thread->device.uuid);
 	/*
 	 * This is so that you can break out of waiting on an event,
 	 * either for a timeout event, or to cancel the thread.
 	 */
 	set = _unblock_sigalrm();
-	errno = 0;
 	if (dm_task_run(dmt)) {
 		thread->current_events |= DM_EVENT_DEVICE_ERROR;
 		ret = DM_WAIT_INTR;
 
 		if ((ret = dm_task_get_info(dmt, &info)))
 			thread->event_nr = info.event_nr;
-	} else if (thread->events & DM_EVENT_TIMEOUT && errno == EINTR) {
-		thread->current_events |= DM_EVENT_TIMEOUT;
-		ret = DM_WAIT_INTR;
-	} else if (thread->status == DM_THREAD_SHUTDOWN && errno == EINTR) {
-		ret = DM_WAIT_FATAL;
 	} else {
-		syslog(LOG_NOTICE, "dm_task_run failed, errno = %d, %s",
-		       errno, strerror(errno));
-		if (errno == ENXIO) {
-			syslog(LOG_ERR, "%s disappeared, detaching",
-			       thread->device.name);
+		ioctl_errno = dm_task_get_errno(dmt);
+		if (thread->events & DM_EVENT_TIMEOUT && ioctl_errno == EINTR) {
+			thread->current_events |= DM_EVENT_TIMEOUT;
+			ret = DM_WAIT_INTR;
+		} else if (thread->status == DM_THREAD_SHUTDOWN && ioctl_errno == EINTR)
 			ret = DM_WAIT_FATAL;
+		else {
+			syslog(LOG_NOTICE, "dm_task_run failed, errno = %d, %s",
+			       ioctl_errno, strerror(ioctl_errno));
+			if (ioctl_errno == ENXIO) {
+				syslog(LOG_ERR, "%s disappeared, detaching",
+				       thread->device.name);
+				ret = DM_WAIT_FATAL;
+			}
 		}
 	}
+	DEBUGLOG("Completed waitevent task for %s", thread->device.uuid);
 
 	pthread_sigmask(SIG_SETMASK, &set, NULL);
 	_lock_mutex();
@@ -735,6 +781,7 @@ static void _monitor_unregister(void *arg)
 {
 	struct thread_status *thread = arg, *thread_iter;
 
+	DEBUGLOG("_monitor_unregister thread cleanup handler running");
 	if (!_do_unregister_device(thread))
 		syslog(LOG_ERR, "%s: %s unregister failed\n", __func__,
 		       thread->device.name);
@@ -760,6 +807,7 @@ static void _monitor_unregister(void *arg)
 			_unlock_mutex();
 			return;
 		}
+	DEBUGLOG("Marking Thr %x as DONE and unused.", (int)thread->thread);
 	thread->status = DM_THREAD_DONE;
 	UNLINK_THREAD(thread);
 	LINK(thread, &_thread_registry_unused);
@@ -863,6 +911,7 @@ static void *_monitor_thread(void *arg)
 		}
 	}
 
+	DEBUGLOG("Finished _monitor_thread");
 	pthread_cleanup_pop(1);
 
 	return NULL;
@@ -876,6 +925,7 @@ static int _create_thread(struct thread_status *thread)
 
 static int _terminate_thread(struct thread_status *thread)
 {
+	DEBUGLOG("Sending SIGALRM to terminate Thr %x.", (int)thread->thread);
 	return pthread_kill(thread->thread, SIGALRM);
 }
 
@@ -1099,6 +1149,7 @@ static int _unregister_for_event(struct message_data *message_data)
 	 * unlink and terminate its monitoring thread.
 	 */
 	if (!thread->events) {
+		DEBUGLOG("Marking Thr %x unused (no events).", (int)thread->thread);
 		UNLINK_THREAD(thread);
 		LINK(thread, &_thread_registry_unused);
 	}
@@ -1136,26 +1187,20 @@ static int _registered_device(struct message_data *message_data,
 }
 
 static int _want_registered_device(char *dso_name, char *device_uuid,
-				  struct thread_status *thread)
+				   struct thread_status *thread)
 {
 	/* If DSO names and device paths are equal. */
 	if (dso_name && device_uuid)
 		return !strcmp(dso_name, thread->dso_data->dso_name) &&
-		    !strcmp(device_uuid, thread->device.uuid) &&
-			(thread->status == DM_THREAD_RUNNING ||
-			 (thread->events & DM_EVENT_REGISTRATION_PENDING));
+		    !strcmp(device_uuid, thread->device.uuid);
 
 	/* If DSO names are equal. */
 	if (dso_name)
-		return !strcmp(dso_name, thread->dso_data->dso_name) &&
-			(thread->status == DM_THREAD_RUNNING ||
-			 (thread->events & DM_EVENT_REGISTRATION_PENDING));
+		return !strcmp(dso_name, thread->dso_data->dso_name);
 
 	/* If device paths are equal. */
 	if (device_uuid)
-		return !strcmp(device_uuid, thread->device.uuid) &&
-			(thread->status == DM_THREAD_RUNNING ||
-			 (thread->events & DM_EVENT_REGISTRATION_PENDING));
+		return !strcmp(device_uuid, thread->device.uuid);
 
 	return 1;
 }
@@ -1182,6 +1227,18 @@ static int _get_registered_dev(struct message_data *message_data, int next)
 	 */
 	if (hit && !next)
 		goto reg;
+
+	/*
+	 * If we didn't get a match, try the threads waiting to be deleted.
+	 * FIXME Do something similar if 'next' is set.
+	 */
+	if (!hit && !next)
+		dm_list_iterate_items(thread, &_thread_registry_unused)
+			if (_want_registered_device(message_data->dso_name,
+						    message_data->device_uuid, thread)) {
+				hit = thread;
+				goto reg;
+			}
 
 	if (!hit)
 		goto out;
@@ -1510,6 +1567,9 @@ static void _process_request(struct dm_event_fifos *fifos)
 {
 	int die;
 	struct dm_event_daemon_message msg = { 0 };
+#ifdef DEBUG
+	const char *cmd;
+#endif
 
 	/*
 	 * Read the request from the client (client_read, client_write
@@ -1517,6 +1577,8 @@ static void _process_request(struct dm_event_fifos *fifos)
 	 */
 	if (!_client_read(fifos, &msg))
 		return;
+
+	DEBUGLOG("%s (0x%x) processing...", decode_cmd(msg.cmd), msg.cmd);
 
 	die = (msg.cmd == DM_EVENT_CMD_DIE) ? 1 : 0;
 
@@ -1528,6 +1590,8 @@ static void _process_request(struct dm_event_fifos *fifos)
 		stack;
 
 	dm_free(msg.data);
+
+	DEBUGLOG("%s (0x%x) completed.", decode_cmd(msg.cmd), msg.cmd);
 
 	if (die) {
 		if (unlink(DMEVENTD_PIDFILE))
@@ -1577,10 +1641,8 @@ static void _cleanup_unused_threads(void)
 				if (ret == ESRCH) {
 					thread->status = DM_THREAD_DONE;
 				} else if (ret) {
-					syslog(LOG_ERR,
-					       "Unable to terminate thread: %s\n",
-					       strerror(-ret));
-					stack;
+					syslog(LOG_ERR, "Unable to terminate thread: %s",
+					       strerror(ret));
 				}
 				break;
 			}
@@ -1595,6 +1657,7 @@ static void _cleanup_unused_threads(void)
 		}
 
 		if (thread->status == DM_THREAD_DONE) {
+			DEBUGLOG("Destroying Thr %x.", (int)thread->thread);
 			dm_list_del(l);
 			_unlock_mutex();
 			join_ret = pthread_join(thread->thread, NULL);
@@ -1611,7 +1674,7 @@ static void _cleanup_unused_threads(void)
 
 static void _sig_alarm(int signum __attribute__((unused)))
 {
-	pthread_testcancel();
+	/* empty SIG_IGN */;
 }
 
 /* Init thread signal handling. */
@@ -1934,8 +1997,8 @@ static void restart(void)
 
 	if (version < 1) {
 		fprintf(stderr, "WARNING: The running dmeventd instance is too old.\n"
-			        "Protocol version %d (required: 1). Action cancelled.\n",
-			        version);
+				"Protocol version %d (required: 1). Action cancelled.\n",
+				version);
 		goto bad;
 	}
 

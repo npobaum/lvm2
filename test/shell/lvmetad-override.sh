@@ -12,9 +12,11 @@
 . lib/inittest
 
 test -e LOCAL_LVMETAD || skip
+test -e LOCAL_LVMPOLLD && skip
+
 aux prepare_pvs 2
 
-vgcreate $vg1 $dev1 $dev2
+vgcreate $vg1 "$dev1" "$dev2"
 lvchange -ay $vg1 2>&1 | not grep "Failed to connect"
 kill $(< LOCAL_LVMETAD)
 lvchange -ay $vg1 2>&1 | grep "Failed to connect"
