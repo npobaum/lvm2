@@ -58,6 +58,7 @@ device-mapper: $(TARGETS)
 
 LIBS += -ldevmapper
 LVMLIBS += -ldevmapper-event $(PTHREAD_LIBS)
+CFLAGS += -DPLUGIN_PATH=\"$(libdir)/device-mapper/\"
 
 CFLAGS_dmeventd.o += $(EXTRA_EXEC_CFLAGS)
 
