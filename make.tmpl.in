@@ -482,7 +482,7 @@ else
 	for i in $(EXPORTED_SYMBOLS); do\
 		echo "$${i##*.} {"; echo "	global:";\
 		$(SED) "s/^/		/;s/$$/;/" $$i;\
-		test "$$i" = Base && { echo "	local:"; echo "		*;"; };\
+		test "$${i##*.}" = Base && { echo "	local:"; echo "		*;"; };\
 		echo "};";\
 	done > $@
 endif
