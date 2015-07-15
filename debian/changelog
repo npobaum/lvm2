@@ -1,3 +1,15 @@
+lvm2 (2.02.122-2) unstable; urgency=medium
+
+  * Workaround broken API/ABI of dm_tree_node_add_cache_target
+    (closes: #791888):
+    - Update symbol version to 2:1.02.99.
+    - Update breaks from libdevmapper to lvm2 and liblvm2app2.2.
+  * Use sysinit mode in initramfs.
+  * Use lvm2 activation generator instead of static services.
+  * Finally remove explicit init script ordering.
+
+ -- Bastian Blank <waldi@debian.org>  Wed, 15 Jul 2015 21:58:12 +0200
+
 lvm2 (2.02.122-1) unstable; urgency=medium
 
   * New upsream version.
