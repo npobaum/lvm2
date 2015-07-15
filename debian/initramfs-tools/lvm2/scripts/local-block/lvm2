@@ -19,6 +19,10 @@ if [ ! -e /sbin/lvm ]; then
 	exit 0
 fi
 
+lvchange_activate() {
+	lvm lvchange -aay --sysinit --ignoreskippedcluster "$@"
+}
+
 dev="$1"
 
 case "$dev" in
@@ -28,7 +32,7 @@ case "$dev" in
 	eval $(dmsetup splitname --nameprefixes --noheadings --rows "$dev")
 
 	if [ "$DM_VG_NAME" ] && [ "$DM_LV_NAME" ]; then
-		lvm lvchange -aly --ignorelockingfailure "$DM_VG_NAME/$DM_LV_NAME"
+		lvchange_activate "$DM_VG_NAME/$DM_LV_NAME"
 		rc=$?
 		if [ $rc = 5 ]; then
 			echo "Unable to find LVM volume $DM_VG_NAME/$DM_LV_NAME"
@@ -40,7 +44,7 @@ case "$dev" in
 	# Could be /dev/VG/LV; use lvs to check
 	dev="${dev#/dev/}"
 	if lvm lvs -- "$dev" >/dev/null 2>/dev/null; then
-		lvm lvchange -aly --ignorelockingfailure "$dev"
+		lvchange_activate "$dev"
 	fi
 	;;
 esac
