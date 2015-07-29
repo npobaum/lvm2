@@ -1,3 +1,10 @@
+lvm2 (2.02.126-1) unstable; urgency=medium
+
+  * New upstream version.
+  * Install new udev rules in initamfs.
+
+ -- Bastian Blank <waldi@debian.org>  Wed, 29 Jul 2015 19:29:56 +0200
+
 lvm2 (2.02.122-2) unstable; urgency=medium
 
   * Workaround broken API/ABI of dm_tree_node_add_cache_target

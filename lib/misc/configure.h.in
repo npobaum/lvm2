@@ -6,6 +6,10 @@
 /* The path to 'cache_check', if available. */
 #undef CACHE_CHECK_CMD
 
+/* Define to 1 if the external 'cache_check' tool requires the
+   --clear-needs-check-flag option */
+#undef CACHE_CHECK_NEEDS_CHECK
+
 /* The path to 'cache_dump', if available. */
 #undef CACHE_DUMP_CMD
 
@@ -68,6 +72,10 @@
 /* Default system configuration directory. */
 #undef DEFAULT_ETC_DIR
 
+/* Fall back to LVM1 by default if device-mapper is missing from the kernel.
+   */
+#undef DEFAULT_FALLBACK_TO_LVM1
+
 /* Name of default locking directory. */
 #undef DEFAULT_LOCK_DIR
 
@@ -95,8 +103,14 @@
 /* Path to LVM system directory. */
 #undef DEFAULT_SYS_DIR
 
+/* Use blkid wiping by default. */
+#undef DEFAULT_USE_BLKID_WIPING
+
 /* Use lvmetad by default. */
 #undef DEFAULT_USE_LVMETAD
+
+/* Use lvmlockd by default. */
+#undef DEFAULT_USE_LVMLOCKD
 
 /* Use lvmpolld by default. */
 #undef DEFAULT_USE_LVMPOLLD
@@ -400,7 +414,7 @@
 /* Define to 1 if you have the `strtoul' function. */
 #undef HAVE_STRTOUL
 
-/* Define to 1 if `st_rdev' is a member of `struct stat'. */
+/* Define to 1 if `st_rdev' is member of `struct stat'. */
 #undef HAVE_STRUCT_STAT_ST_RDEV
 
 /* Define to 1 if you have the <syslog.h> header file. */
@@ -510,6 +524,12 @@
 /* Locale-dependent data */
 #undef LOCALEDIR
 
+/* Define to 1 to include code that uses lvmlockd dlm option. */
+#undef LOCKDDLM_SUPPORT
+
+/* Define to 1 to include code that uses lvmlockd sanlock option. */
+#undef LOCKDSANLOCK_SUPPORT
+
 /* Define to 1 if `lstat' dereferences a symlink specified with a trailing
    slash. */
 #undef LSTAT_FOLLOWS_SLASHED_SYMLINK
@@ -526,6 +546,12 @@
 
 /* Define to 1 to include code that uses lvmetad. */
 #undef LVMETAD_SUPPORT
+
+/* Path to lvmlockd pidfile. */
+#undef LVMLOCKD_PIDFILE
+
+/* Define to 1 to include code that uses lvmlockd. */
+#undef LVMLOCKD_SUPPORT
 
 /* Path to lvmpolld pidfile. */
 #undef LVMPOLLD_PIDFILE
@@ -564,9 +590,6 @@
 
 /* Define to the one symbol short name of this package. */
 #undef PACKAGE_TARNAME
-
-/* Define to the home page for this package. */
-#undef PACKAGE_URL
 
 /* Define to the version of this package. */
 #undef PACKAGE_VERSION
@@ -608,6 +631,9 @@
 
 /* Define to 1 if you have the ANSI C header files. */
 #undef STDC_HEADERS
+
+/* Path to testsuite data */
+#undef TESTSUITE_DATA
 
 /* The path to 'thin_check', if available. */
 #undef THIN_CHECK_CMD

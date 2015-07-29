@@ -1,3 +1,48 @@
+Version 2.02.126 - 24th July 2015
+=================================
+  Fix long option hyphen removal. (2.02.122)
+  Fix clvmd freeze if client disappears without first releasing its locks.
+  Fix lvconvert segfaults while performing snapshots merge.
+  Ignore errors during detection if use_blkid_wiping=1 and --force is used.
+  Recognise DM_ABORT_ON_INTERNAL_ERRORS env var override in lvm logging fn.
+  Fix alloc segfault when extending LV with fewer stripes than in first seg.
+  Fix handling of cache policy name.
+  Set cache policy before with the first lvm2 cache pool metadata commit.
+  Fix detection of thin-pool overprovisioning (2.02.124).
+  Fix lvmpolld segfaults on 32 bit architectures.
+  Add lvmlockd lock_args validation to vg_validate.
+  Fix ignored --startstopservices option if running lvmconf with systemd.
+  Hide sanlock LVs when processing LVs in VG unless named or --all used.
+
+Version 2.02.125 - 7th July 2015
+================================
+  Fix getline memory usage in lvmpolld.
+  Add support --clear-needs-check-flag for cache_check of cache pool metadata.
+  Add lvmetactl for developer use only.
+  Rename global/lock_retries to lvmlockd_retries.
+  Replace --enable-lvmlockd by --enable-lockd-sanlock and --enable-lockd-dlm.
+
+Version 2.02.124 - 3rd July 2015
+================================
+  Move sending thin pool messages from resume to suspend phase.
+  Report warning when pool is overprovisioned and not auto resized.
+  Recognize free-form date/time values for lv_time field in selection criteria.
+  Added experimental lvmlockd with configure --enable-lvmlockd.
+  Fix regression in select to match string fields if using synonyms (2.02.123).
+  Fix regression when printing more lv names via display_lvname (2.02.122).
+  Add missing error logging to unlock_vg and sync_local_dev_names callers.
+
+Version 2.02.123 - 30th June 2015
+=================================
+  Add report/time_format lvm.conf option to define time format for report.
+  Fix makefile shell compare == when building lvmetad lvmpolld (2.02.120).
+  Add --type full to lvmconfig for full configuration tree view.
+  Add undocumented environment variables to lvm man page. (2.02.119)
+  Add device synchronization point before activating a new snapshot.
+  Add --withspaces to lvmconfig to add spaces in output for better readability.
+  Add custom main function to libdaemon.
+  Use lvmetad to track out-of-date metadata discovered.
+
 Version 2.02.122 - 20th June 2015
 =================================
   Flush stdout before printing to stderr.

@@ -1,4 +1,4 @@
-From c0007e784da1985ba3774c956d05e71f371359ac Mon Sep 17 00:00:00 2001
+From 6f7d560390530f14d22bdade33e18423ed00555f Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 30 Jun 2015 11:46:07 +0200
 Subject: dirs
@@ -11,10 +11,10 @@ Subject: dirs
  4 files changed, 16 insertions(+), 8 deletions(-)
 
 diff --git a/conf/example.conf.in b/conf/example.conf.in
-index e809488..44c519d 100644
+index 3900ad4..1319944 100644
 --- a/conf/example.conf.in
 +++ b/conf/example.conf.in
-@@ -149,7 +149,7 @@ devices {
+@@ -157,7 +157,7 @@ devices {
  	# It is safe to delete this file; the tools regenerate it.
  	# If obtain_device_list_from_udev is enabled, the list of devices
  	# is obtained from udev and any existing .cache file is removed.
@@ -36,10 +36,10 @@ index 47bfb67..67f74b5 100644
  CFLAGS_dmeventd.o += $(EXTRA_EXEC_CFLAGS)
  
 diff --git a/daemons/dmeventd/dmeventd.c b/daemons/dmeventd/dmeventd.c
-index fcfa423..4bb02a4 100644
+index 1ff5bf9..c04caf5 100644
 --- a/daemons/dmeventd/dmeventd.c
 +++ b/daemons/dmeventd/dmeventd.c
-@@ -983,8 +983,17 @@ static struct dso_data *_load_dso(struct message_data *data)
+@@ -978,8 +978,17 @@ static struct dso_data *_load_dso(struct message_data *data)
  {
  	void *dl;
  	struct dso_data *ret;
@@ -59,10 +59,10 @@ index fcfa423..4bb02a4 100644
  		syslog(LOG_ERR, "dmeventd %s dlopen failed: %s", data->dso_name,
  		       dlerr);
 diff --git a/lib/config/config.c b/lib/config/config.c
-index 32b3c66..bfef258 100644
+index eb8880e..2476595 100644
 --- a/lib/config/config.c
 +++ b/lib/config/config.c
-@@ -2113,10 +2113,8 @@ const char *get_default_devices_cache_CFG(struct cmd_context *cmd, struct profil
+@@ -2293,10 +2293,8 @@ const char *get_default_devices_cache_CFG(struct cmd_context *cmd, struct profil
  
  	if (cache_dir || cache_file_prefix) {
  		if (dm_snprintf(buf, sizeof(buf),
@@ -75,7 +75,7 @@ index 32b3c66..bfef258 100644
  				cache_file_prefix ? : DEFAULT_CACHE_FILE_PREFIX) < 0) {
  			log_error("Persistent cache filename too long.");
  			return NULL;
-@@ -2124,8 +2122,8 @@ const char *get_default_devices_cache_CFG(struct cmd_context *cmd, struct profil
+@@ -2304,8 +2302,8 @@ const char *get_default_devices_cache_CFG(struct cmd_context *cmd, struct profil
  		return dm_pool_strdup(cmd->mem, buf);
  	}
  

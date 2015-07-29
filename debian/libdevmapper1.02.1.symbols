@@ -1,5 +1,8 @@
 libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  Base@Base 2:1.02.20
+ DM_1_02_100@DM_1_02_100 2:1.02.103
+ DM_1_02_101@DM_1_02_101 2:1.02.103
+ DM_1_02_103@DM_1_02_103 2:1.02.103
  DM_1_02_97@DM_1_02_97 2:1.02.99
  DM_1_02_98@DM_1_02_98 2:1.02.99
  DM_1_02_99@DM_1_02_99 2:1.02.99
@@ -13,6 +16,7 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_bitset_destroy@Base 2:1.02.20
  dm_bitset_equal@Base 2:1.02.47
  dm_bounds_check_debug@Base 2:1.02.20
+ dm_bounds_check_wrapper@DM_1_02_103 2:1.02.103
  dm_build_dm_name@Base 2:1.02.74
  dm_build_dm_uuid@Base 2:1.02.74
  dm_config_clone_node@Base 2:1.02.74
@@ -52,7 +56,9 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_config_tree_find_node@Base 2:1.02.74
  dm_config_tree_find_str@Base 2:1.02.74
  dm_config_tree_find_str_allow_empty@Base 2:1.02.74
+ dm_config_value_get_format_flags@DM_1_02_100 2:1.02.103
  dm_config_value_is_bool@Base 2:1.02.78
+ dm_config_value_set_format_flags@DM_1_02_100 2:1.02.103
  dm_config_write_node@Base 2:1.02.74
  dm_config_write_node_out@Base 2:1.02.78
  dm_config_write_one_node@Base 2:1.02.77
@@ -68,11 +74,13 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_dir@Base 2:1.02.20
  dm_driver_version@Base 2:1.02.20
  dm_dump_memory_debug@Base 2:1.02.20
+ dm_dump_memory_wrapper@DM_1_02_103 2:1.02.103
  dm_escape_double_quotes@Base 2:1.02.74
  dm_escaped_len@Base 2:1.02.74
  dm_fclose@Base 2:1.02.24
  dm_format_dev@Base 2:1.02.20
  dm_free_aux@Base 2:1.02.20
+ dm_free_wrapper@DM_1_02_103 2:1.02.103
  dm_get_library_version@Base 2:1.02.20
  dm_get_name_mangling_mode@Base 2:1.02.74
  dm_get_next_target@Base 2:1.02.20
@@ -125,6 +133,7 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_make_percent@Base 2:1.02.88
  dm_malloc_aux@Base 2:1.02.20
  dm_malloc_aux_debug@Base 2:1.02.20
+ dm_malloc_wrapper@DM_1_02_103 2:1.02.103
  dm_mknodes@Base 2:1.02.20
  dm_mountinfo_read@Base 2:1.02.78
  dm_percent_to_float@Base 2:1.02.88
@@ -146,6 +155,7 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_pool_zalloc@Base 2:1.02.20
  dm_prepare_selinux_context@Base 2:1.02.63
  dm_realloc_aux@Base 2:1.02.20
+ dm_realloc_wrapper@DM_1_02_103 2:1.02.103
  dm_regex_create@Base 2:1.02.20
  dm_regex_fingerprint@Base 2:1.02.63
  dm_regex_match@Base 2:1.02.20
@@ -166,6 +176,8 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_report_object_is_selected@Base 2:1.02.99
  dm_report_output@Base 2:1.02.27
  dm_report_set_output_field_name_prefix@Base 2:1.02.27
+ dm_report_value_cache_get@DM_1_02_101 2:1.02.103
+ dm_report_value_cache_set@DM_1_02_101 2:1.02.103
  dm_set_dev_dir@Base 2:1.02.20
  dm_set_name_mangling_mode@Base 2:1.02.74
  dm_set_selinux_context@Base 2:1.02.20
@@ -175,6 +187,7 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_split_lvm_name@Base 2:1.02.20
  dm_split_words@Base 2:1.02.20
  dm_strdup_aux@Base 2:1.02.20
+ dm_strdup_wrapper@DM_1_02_103 2:1.02.103
  dm_strncpy@Base 2:1.02.74
  dm_sysfs_dir@Base 2:1.02.74
  dm_task_add_target@Base 2:1.02.20
@@ -293,3 +306,4 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_vasprintf@Base 2:1.02.77
  dm_zalloc_aux@Base 2:1.02.63
  dm_zalloc_aux_debug@Base 2:1.02.63
+ dm_zalloc_wrapper@DM_1_02_103 2:1.02.103

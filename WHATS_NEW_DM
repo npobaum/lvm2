@@ -1,3 +1,31 @@
+Version 1.02.103 - 24th July 2015
+=================================
+  Introduce libdevmapper wrappers for all malloc-related functions.
+
+Version 1.02.102 - 7th July 2015
+================================
+  Include tool.h for default non-library use.
+  Introduce format macros with embedded % such as FMTu64.
+
+Version 1.02.101 - 3rd July 2015
+================================
+  Add experimental support to passing messages in suspend tree.
+  Add dm_report_value_cache_{set,get} to support caching during report/select.
+  Add dm_report_reserved_handler to handle report reserved value actions.
+  Support dynamic value in select: DM_REPORT_FIELD_RESERVED_VALUE_DYNAMIC_VALUE.
+  Support fuzzy names in select: DM_REPORT_FIELD_RESERVED_VALUE_FUZZY_NAMES.
+  Thin pool trace messages show a device name and major:minor.
+
+Version 1.02.100 - 30th June 2015
+=================================
+  Add since, after, until and before time operators to be used in selection.
+  Add support for time in reports and selection: DM_REPORT_FIELD_TYPE_TIME.
+  Support report reserved value ranges: DM_REPORT_FIELD_RESERVED_VALUE_RANGE.
+  Support report reserved value names: DM_REPORT_FIELD_RESERVED_VALUE_NAMED.
+  Add DM_CONFIG_VALUE_FMT_{INT_OCTAL,STRING_NO_QUOTES} config value format flag.
+  Add DM_CONFIG_VALUE_FMT_COMMON_{ARRAY,EXTRA_SPACE} config value format flag.
+  Add dm_config_value_{get,set}_format_flags to get and set config value format.
+
 Version 1.02.99 - 20th June 2015
 ================================
   New dm_tree_node_set_thin_pool_read_only(DM_1_02_99) for read-only thin pool.

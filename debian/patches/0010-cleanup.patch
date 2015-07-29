@@ -1,26 +1,12 @@
-From 26fd5645578caf347e3862cec0113a8b4b68a1fc Mon Sep 17 00:00:00 2001
+From e63e6bbdb68aa3cc9143aed086ae79e731856089 Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 30 Jun 2015 12:43:46 +0200
 Subject: cleanup
 
 ---
- libdaemon/Makefile.in | 2 +-
- make.tmpl.in          | 2 +-
- 2 files changed, 2 insertions(+), 2 deletions(-)
+ make.tmpl.in | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
 
-diff --git a/libdaemon/Makefile.in b/libdaemon/Makefile.in
-index c0379a4..7a637c4 100644
---- a/libdaemon/Makefile.in
-+++ b/libdaemon/Makefile.in
-@@ -19,7 +19,7 @@ top_builddir = @top_builddir@
- 
- SUBDIRS += client
- 
--ifeq (yes, $(shell test @BUILD_LVMETAD@ == yes -o @BUILD_LVMPOLLD@ == yes && echo yes))
-+ifeq (yes, $(shell test @BUILD_LVMETAD@ = yes -o @BUILD_LVMPOLLD@ = yes && echo yes))
-   SUBDIRS += server
- server: client
- endif
 diff --git a/make.tmpl.in b/make.tmpl.in
 index ce0d599..b75a6a1 100644
 --- a/make.tmpl.in
