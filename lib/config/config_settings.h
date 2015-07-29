@@ -50,6 +50,8 @@
  *                                 CFG_DEFAULT_UNDEFINED - node's default value is undefined (depends on other system/kernel values outside of lvm)
  *                                 CFG_DEFAULT_COMMENTED - node's default value is commented out on output
  *                                 CFG_DISABLED - configuration is disabled (defaults always used)
+ *                                 CFG_FORMAT_INT_OCTAL - print integer number in octal form (also prefixed by "0")
+ *                                 CFG_SECTION_NO_CHECK - do not check content of the section at all - use with care!!!
  *
  * type:		       Allowed type for the value of simple configuation setting, one of:
  *                                 CFG_TYPE_BOOL
@@ -80,7 +82,7 @@
  *                             (see also lvmconfig ... --withversions)
  *
  * unconfigured_default_value: Unconfigured default value used as a default value which is
- *                             in "@...@" form and which is then substitued with concrete value
+ *                             in "@...@" form and which is then substituted with concrete value
  *                             while running configure.
  *                             (see also 'lvmconfig --type default --unconfigured')
  *
@@ -202,7 +204,7 @@ cfg(devices_external_device_info_source_CFG, "external_device_info_source", devi
 	"udev - Reuse existing udev database records. Applicable\n"
 	"only if LVM is compiled with udev support.\n")
 
-cfg_array(devices_preferred_names_CFG, "preferred_names", devices_CFG_SECTION, CFG_ALLOW_EMPTY | CFG_DEFAULT_COMMENTED , CFG_TYPE_STRING, "#S", vsn(1, 2, 19), NULL, 0, NULL,
+cfg_array(devices_preferred_names_CFG, "preferred_names", devices_CFG_SECTION, CFG_ALLOW_EMPTY | CFG_DEFAULT_UNDEFINED , CFG_TYPE_STRING, NULL, vsn(1, 2, 19), NULL, 0, NULL,
 	"Select which path name to display for a block device.\n"
 	"If multiple path names exist for a block device,\n"
 	"and LVM needs to display a name for the device,\n"
@@ -219,7 +221,7 @@ cfg_array(devices_preferred_names_CFG, "preferred_names", devices_CFG_SECTION, C
 	"Example:\n"
 	"preferred_names = [ \"^/dev/mpath/\", \"^/dev/mapper/mpath\", \"^/dev/[hs]d\" ]\n")
 
-cfg_array(devices_filter_CFG, "filter", devices_CFG_SECTION, CFG_DEFAULT_UNDEFINED, CFG_TYPE_STRING, NULL, vsn(1, 0, 0), NULL, 0, NULL,
+cfg_array(devices_filter_CFG, "filter", devices_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, "#Sa|.*/|", vsn(1, 0, 0), NULL, 0, NULL,
 	"Limit the block devices that are used by LVM commands.\n"
 	"This is a list of regular expressions used to accept or\n"
 	"reject block device path names.  Each regex is delimited\n"
@@ -249,12 +251,12 @@ cfg_array(devices_filter_CFG, "filter", devices_CFG_SECTION, CFG_DEFAULT_UNDEFIN
 	"filter = [ \"a|loop|\", \"r|.*|\" ]\n"
 	"Example:\n"
 	"Accept all loop devices and ide drives except hdc.\n"
-	"filter =[ \"a|loop|\", \"r|/dev/hdc|\", \"a|/dev/ide|\", \"r|.*|\" ]\n"
+	"filter = [ \"a|loop|\", \"r|/dev/hdc|\", \"a|/dev/ide|\", \"r|.*|\" ]\n"
 	"Example:\n"
 	"Use anchors to be very specific.\n"
 	"filter = [ \"a|^/dev/hda8$|\", \"r|.*/|\" ]\n")
 
-cfg_array(devices_global_filter_CFG, "global_filter", devices_CFG_SECTION, CFG_DEFAULT_UNDEFINED, CFG_TYPE_STRING, NULL, vsn(2, 2, 98), NULL, 0, NULL,
+cfg_array(devices_global_filter_CFG, "global_filter", devices_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, "#Sa|.*/|", vsn(2, 2, 98), NULL, 0, NULL,
 	"Limit the block devices that are used by LVM system components.\n"
 	"Because devices/filter may be overridden from the command line,\n"
 	"it is not suitable for system-wide device filtering, e.g. udev\n"
@@ -422,7 +424,7 @@ cfg(allocation_maximise_cling_CFG, "maximise_cling", allocation_CFG_SECTION, 0, 
 	"the same disks.  This setting can be used to disable the changes\n"
 	"and revert to the previous algorithm.\n")
 
-cfg(allocation_use_blkid_wiping_CFG, "use_blkid_wiping", allocation_CFG_SECTION, 0, CFG_TYPE_BOOL, 1, vsn(2, 2, 105), NULL, 0, NULL,
+cfg(allocation_use_blkid_wiping_CFG, "use_blkid_wiping", allocation_CFG_SECTION, 0, CFG_TYPE_BOOL, 1, vsn(2, 2, 105), "@DEFAULT_USE_BLKID_WIPING@", 0, NULL,
 	"Use blkid to detect existing signatures on new PVs and LVs.\n"
 	"The blkid library can detect more signatures than the\n"
 	"native LVM detection code, but may take longer.\n"
@@ -596,7 +598,7 @@ cfg(backup_retain_days_CFG, "retain_days", backup_CFG_SECTION, 0, CFG_TYPE_INT, 
 cfg(shell_history_size_CFG, "history_size", shell_CFG_SECTION, 0, CFG_TYPE_INT, DEFAULT_MAX_HISTORY, vsn(1, 0, 0), NULL, 0, NULL,
 	"Number of lines of history to store in ~/.lvm_history.\n")
 
-cfg(global_umask_CFG, "umask", global_CFG_SECTION, 0, CFG_TYPE_INT, DEFAULT_UMASK, vsn(1, 0, 0), NULL, 0, NULL,
+cfg(global_umask_CFG, "umask", global_CFG_SECTION, CFG_FORMAT_INT_OCTAL, CFG_TYPE_INT, DEFAULT_UMASK, vsn(1, 0, 0), NULL, 0, NULL,
 	"The file creation mask for any files and directories created.\n"
 	"Interpreted as octal if the first digit is zero.\n")
 
@@ -617,7 +619,7 @@ cfg(global_si_unit_consistency_CFG, "si_unit_consistency", global_CFG_SECTION, C
 cfg(global_suffix_CFG, "suffix", global_CFG_SECTION, CFG_PROFILABLE, CFG_TYPE_BOOL, DEFAULT_SUFFIX, vsn(1, 0, 0), NULL, 0, NULL,
 	"Display unit suffix for sizes.\n"
 	"This setting has no effect if the units are in human-readable\n"
-	"form (global/units=\"h\") in which case the suffix is always\n"
+	"form (global/units = \"h\") in which case the suffix is always\n"
 	"displayed.\n")
 
 cfg(global_activation_CFG, "activation", global_CFG_SECTION, 0, CFG_TYPE_BOOL, DEFAULT_ACTIVATION, vsn(1, 0, 0), NULL, 0, NULL,
@@ -627,7 +629,7 @@ cfg(global_activation_CFG, "activation", global_CFG_SECTION, 0, CFG_TYPE_BOOL, D
 	"is not present in the kernel, disabling this should suppress\n"
 	"the error messages.\n")
 
-cfg(global_fallback_to_lvm1_CFG, "fallback_to_lvm1", global_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_BOOL, DEFAULT_FALLBACK_TO_LVM1, vsn(1, 0, 18), NULL, 0, NULL,
+cfg(global_fallback_to_lvm1_CFG, "fallback_to_lvm1", global_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_BOOL, DEFAULT_FALLBACK_TO_LVM1, vsn(1, 0, 18), "@DEFAULT_FALLBACK_TO_LVM1@", 0, NULL,
 	"Try running LVM1 tools if LVM cannot communicate with DM.\n"
 	"This option only applies to 2.4 kernels and is provided to\n"
 	"help switch between device-mapper kernels and LVM1 kernels.\n"
@@ -796,7 +798,7 @@ cfg(global_lvdisplay_shows_full_device_path_CFG, "lvdisplay_shows_full_device_pa
 	"was never a valid path in the /dev filesystem.\n"
 	"Enable this option to reinstate the previous format.\n")
 
-cfg(global_use_lvmetad_CFG, "use_lvmetad", global_CFG_SECTION, 0, CFG_TYPE_BOOL, DEFAULT_USE_LVMETAD, vsn(2, 2, 93), NULL, 0, NULL,
+cfg(global_use_lvmetad_CFG, "use_lvmetad", global_CFG_SECTION, 0, CFG_TYPE_BOOL, DEFAULT_USE_LVMETAD, vsn(2, 2, 93), "@DEFAULT_USE_LVMETAD@", 0, NULL,
 	"Use lvmetad to cache metadata and reduce disk scanning.\n"
 	"When enabled (and running), lvmetad provides LVM commands\n"
 	"with VG metadata and PV state.  LVM commands then avoid\n"
@@ -830,6 +832,20 @@ cfg(global_use_lvmetad_CFG, "use_lvmetad", global_CFG_SECTION, 0, CFG_TYPE_BOOL,
 	"LVM prints warnings and ignores lvmetad if this combination\n"
 	"is seen.\n")
 
+cfg(global_use_lvmlockd_CFG, "use_lvmlockd", global_CFG_SECTION, 0, CFG_TYPE_BOOL, 0, vsn(2, 2, 124), NULL, 0, NULL,
+	"Use lvmlockd for locking among hosts using LVM on shared storage.\n")
+
+cfg(global_lvmlockd_lock_retries_CFG, "lvmlockd_lock_retries", global_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_LVMLOCKD_LOCK_RETRIES, vsn(2, 2, 125), NULL, 0, NULL,
+	"Retry lvmlockd lock requests this many times.\n")
+
+cfg(global_sanlock_lv_extend_CFG, "sanlock_lv_extend", global_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_SANLOCK_LV_EXTEND_MB, vsn(2, 2, 124), NULL, 0, NULL,
+	"Size in MiB to extend the internal LV holding sanlock locks.\n"
+	"The internal LV holds locks for each LV in the VG, and after\n"
+	"enough LVs have been created, the internal LV needs to be extended.\n"
+	"lvcreate will automatically extend the internal LV when needed by\n"
+	"the amount specified here.  Setting this to 0 disables the\n"
+	"automatic extension and can cause lvcreate to fail.\n")
+
 cfg(global_thin_check_executable_CFG, "thin_check_executable", global_CFG_SECTION, CFG_ALLOW_EMPTY | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, THIN_CHECK_CMD, vsn(2, 2, 94), "@THIN_CHECK_CMD@", 0, NULL,
 	"The full path to the thin_check command.\n"
 	"LVM uses this command to check that a thin metadata\n"
@@ -854,7 +870,7 @@ cfg(global_thin_repair_executable_CFG, "thin_repair_executable", global_CFG_SECT
 	"Also see thin_repair_options.\n"
 	"(For thin tools, see thin_check_executable.)\n")
 
-cfg_array(global_thin_check_options_CFG, "thin_check_options", global_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, "#S" DEFAULT_THIN_CHECK_OPTION1 "#S" DEFAULT_THIN_CHECK_OPTION2, vsn(2, 2, 96), NULL, 0, NULL,
+cfg_array(global_thin_check_options_CFG, "thin_check_options", global_CFG_SECTION, CFG_ALLOW_EMPTY | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_THIN_CHECK_OPTIONS_CONFIG, vsn(2, 2, 96), NULL, 0, NULL,
 	"List of options passed to the thin_check command.\n"
 	"With thin_check version 2.1 or newer you can add\n"
 	"--ignore-non-fatal-errors to let it pass through\n"
@@ -862,10 +878,10 @@ cfg_array(global_thin_check_options_CFG, "thin_check_options", global_CFG_SECTIO
 	"With thin_check version 3.2 or newer you should add\n"
 	"--clear-needs-check-flag.\n")
 
-cfg_array(global_thin_repair_options_CFG, "thin_repair_options", global_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, "#S" DEFAULT_THIN_REPAIR_OPTIONS, vsn(2, 2, 100), NULL, 0, NULL,
+cfg_array(global_thin_repair_options_CFG, "thin_repair_options", global_CFG_SECTION, CFG_ALLOW_EMPTY | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_THIN_REPAIR_OPTIONS_CONFIG, vsn(2, 2, 100), NULL, 0, NULL,
 	"List of options passed to the thin_repair command.\n")
 
-cfg_array(global_thin_disabled_features_CFG, "thin_disabled_features", global_CFG_SECTION, CFG_ALLOW_EMPTY | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, "#S", vsn(2, 2, 99), NULL, 0, NULL,
+cfg_array(global_thin_disabled_features_CFG, "thin_disabled_features", global_CFG_SECTION, CFG_ALLOW_EMPTY | CFG_DEFAULT_UNDEFINED, CFG_TYPE_STRING, NULL, vsn(2, 2, 99), NULL, 0, NULL,
 	"Features to not use in the thin driver.\n"
 	"This can be helpful for testing, or to avoid\n"
 	"using a feature that is causing problems.\n"
@@ -885,7 +901,9 @@ cfg(global_cache_check_executable_CFG, "cache_check_executable", global_CFG_SECT
 	"Set to \"\" to skip this check.  (Not recommended.)\n"
 	"Also see cache_check_options.\n"
 	"The cache tools are available from the package\n"
-	"device-mapper-persistent-data.\n")
+	"device-mapper-persistent-data.\n"
+	"With cache_check version 5.0 or newer you should add\n"
+	"--clear-needs-check-flag.\n")
 
 cfg(global_cache_dump_executable_CFG, "cache_dump_executable", global_CFG_SECTION, CFG_ALLOW_EMPTY | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, CACHE_DUMP_CMD, vsn(2, 2, 108), "@CACHE_DUMP_CMD@", 0, NULL,
 	"The full path to the cache_dump command.\n"
@@ -899,10 +917,10 @@ cfg(global_cache_repair_executable_CFG, "cache_repair_executable", global_CFG_SE
 	"Also see cache_repair_options.\n"
 	"(For cache tools, see cache_check_executable.)\n")
 
-cfg_array(global_cache_check_options_CFG, "cache_check_options", global_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, "#S" DEFAULT_CACHE_CHECK_OPTION1, vsn(2, 2, 108), NULL, 0, NULL,
+cfg_array(global_cache_check_options_CFG, "cache_check_options", global_CFG_SECTION, CFG_ALLOW_EMPTY | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_CACHE_CHECK_OPTIONS_CONFIG, vsn(2, 2, 108), NULL, 0, NULL,
 	"List of options passed to the cache_check command.\n")
 
-cfg_array(global_cache_repair_options_CFG, "cache_repair_options", global_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, "#S" DEFAULT_CACHE_REPAIR_OPTIONS, vsn(2, 2, 108), NULL, 0, NULL,
+cfg_array(global_cache_repair_options_CFG, "cache_repair_options", global_CFG_SECTION, CFG_ALLOW_EMPTY | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_CACHE_REPAIR_OPTIONS_CONFIG, vsn(2, 2, 108), NULL, 0, NULL,
 	"List of options passed to the cache_repair command.\n")
 
 cfg(global_system_id_source_CFG, "system_id_source", global_CFG_SECTION, 0, CFG_TYPE_STRING, DEFAULT_SYSTEM_ID_SOURCE, vsn(2, 2, 117), NULL, 0, NULL,
@@ -936,7 +954,7 @@ cfg(activation_checks_CFG, "checks", activation_CFG_SECTION, 0, CFG_TYPE_BOOL, D
 	"Some of the checks may be expensive, so it's best to use\n"
 	"this only when there seems to be a problem.\n")
 
-cfg(global_use_lvmpolld_CFG, "use_lvmpolld", global_CFG_SECTION, 0, CFG_TYPE_BOOL, DEFAULT_USE_LVMPOLLD, vsn(2, 2, 120), NULL, 0, NULL,
+cfg(global_use_lvmpolld_CFG, "use_lvmpolld", global_CFG_SECTION, 0, CFG_TYPE_BOOL, DEFAULT_USE_LVMPOLLD, vsn(2, 2, 120), "@DEFAULT_USE_LVMPOLLD@", 0, NULL,
 	"Use lvmpolld to supervise long running LVM commands.\n"
 	"When enabled, control of long running LVM commands is transferred\n"
 	"from the original LVM command to the lvmpolld daemon.  This allows\n"
@@ -1205,7 +1223,7 @@ cfg_array(activation_mlock_filter_CFG, "mlock_filter", activation_CFG_SECTION, C
 	"locale-archive was found to make up over 80% of the memory\n"
 	"used by the process.\n"
 	"Example:\n"
-	"mlock_filter=[ \"locale/locale-archive\", \"gconv/gconv-modules.cache\" ]\n")
+	"mlock_filter = [ \"locale/locale-archive\", \"gconv/gconv-modules.cache\" ]\n")
 
 cfg(activation_use_mlockall_CFG, "use_mlockall", activation_CFG_SECTION, 0, CFG_TYPE_BOOL, DEFAULT_USE_MLOCKALL, vsn(2, 2, 62), NULL, 0, NULL,
 	"Use the old behavior of mlockall to pin all memory.\n"
@@ -1254,6 +1272,14 @@ cfg(activation_mode_CFG, "activation_mode", activation_CFG_SECTION, 0, CFG_TYPE_
 	"This setting should not normally be used, but may\n"
 	"sometimes assist with data recovery.\n"
 	"The '--activationmode' option overrides this setting.\n")
+
+cfg_array(activation_lock_start_list_CFG, "lock_start_list", activation_CFG_SECTION, CFG_ALLOW_EMPTY|CFG_DEFAULT_UNDEFINED, CFG_TYPE_STRING, NULL, vsn(2, 2, 124), NULL, 0, NULL,
+	"Locking is started only for VGs selected by this list.\n"
+	"The rules are the same as those for LVs in volume_list.\n")
+
+cfg_array(activation_auto_lock_start_list_CFG, "auto_lock_start_list", activation_CFG_SECTION, CFG_ALLOW_EMPTY|CFG_DEFAULT_UNDEFINED, CFG_TYPE_STRING, NULL, vsn(2, 2, 124), NULL, 0, NULL,
+	"Locking is auto-started only for VGs selected by this list.\n"
+	"The rules are the same as those for LVs in auto_activation_volume_list.\n")
 
 cfg(metadata_pvmetadatacopies_CFG, "pvmetadatacopies", metadata_CFG_SECTION, CFG_ADVANCED | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_PVMETADATACOPIES, vsn(1, 0, 0), NULL, 0, NULL,
 	"Number of copies of metadata to store on each PV.\n"
@@ -1355,6 +1381,79 @@ cfg(report_binary_values_as_numeric_CFG, "binary_values_as_numeric", report_CFG_
 	"For columns that have exactly two valid values to report\n"
 	"(not counting the 'unknown' value which denotes that the\n"
 	"value could not be determined).\n")
+
+cfg(report_time_format_CFG, "time_format", report_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_TIME_FORMAT, vsn(2, 2, 123), NULL, 0, NULL,
+        "Set time format for fields reporting time values.\n"
+	"Format specification is a string which may contain special character\n"
+	"sequences and ordinary character sequences. Ordinary character sequences\n"
+	"are copied verbatim. Each special character sequence is introduced by \'%\'\n"
+	"character and such sequence is then substituted with a value as described below:\n"
+	"\%a     The abbreviated name of the day of the week according to the\n"
+	"       current locale.\n"
+	"\%A     The full name of the day of the week according to the current locale.\n"
+	"\%b     The abbreviated month name according to the current locale.\n"
+	"\%B     The full month name according to the current locale.\n"
+	"\%c     The preferred date and time representation for the current locale. (alt E)\n"
+	"\%C     The century number (year/100) as a 2-digit integer. (alt E)\n"
+	"\%d     The day of the month as a decimal number (range 01 to 31). (alt O)\n"
+	"\%D     Equivalent to \%m/\%d/\%y.  (For Americans only. Americans should\n"
+	"       note that in other countries\%d/\%m/\%y is rather common. This means\n"
+	"       that in international context this format is ambiguous and should not\n"
+	"       be used.\n"
+	"\%e     Like \%d, the day of the month as a decimal number, but a leading zero\n"
+	"       is replaced by a space. (alt O)\n"
+	"\%E     Modifier: use alternative local-dependent representation if available.\n"
+	"\%F     Equivalent to \%Y-\%m-\%d (the ISO 8601 date format).\n"
+	"\%G     The ISO 8601 week-based year with century as adecimal number. The 4-digit\n"
+	"       year corresponding to the ISO week number (see \%V). This has the same\n"
+	"       format and value as \%Y, except that if the ISO week number belongs to\n"
+	"       the previous or next year, that year is used instead.\n"
+	"\%g     Like \%G, but without century, that is, with a 2-digit year (00-99).\n"
+	"\%h     Equivalent to \%b.\n"
+	"\%H     The hour as a decimal number using a 24-hour clock (range 00 to 23). (alt O)\n"
+	"\%I     The hour as a decimal number using a 12-hour clock (range 01 to 12). (alt O)\n"
+	"\%j     The day of the year as a decimal number (range 001 to 366).\n"
+	"\%k     The hour (24-hour clock) as a decimal number (range 0 to 23);\n"
+	"       single digits are preceded by a blank. (See also \%H.)\n"
+	"\%l     The hour (12-hour clock) as a decimal number (range 1 to 12);\n"
+	"       single digits are preceded by a blank. (See also \%I.)\n"
+	"\%m     The month as a decimal number (range 01 to 12). (alt O)\n"
+	"\%M     The minute as a decimal number (range 00 to 59). (alt O)\n"
+	"\%O     Modifier: use alternative numeric symbols.\n"
+	"\%p     Either \"AM\" or \"PM\" according to the given time value,\n"
+	"       or the corresponding strings for the current locale. Noon is\n"
+	"       treated as \"PM\" and midnight as \"AM\".\n"
+	"\%P     Like \%p but in lowercase: \"am\" or \"pm\" or a corresponding\n"
+	"       string for the current locale.\n"
+	"\%r     The time in a.m. or p.m. notation. In the POSIX locale this is\n"
+	"       equivalent to \%I:\%M:\%S \%p.\n"
+	"\%R     The time in 24-hour notation (\%H:\%M). For a version including\n"
+	"       the seconds, see \%T below.\n"
+	"\%s     The number of seconds since the Epoch, 1970-01-01 00:00:00 +0000 (UTC)\n"
+	"\%S     The second as a decimal number (range 00 to 60).\n"
+	"       (The range is up to 60 to allow for occasional leap seconds.) (alt O)\n"
+	"\%t     A tab character.\n"
+	"\%T     The time in 24-hour notation (\%H:\%M:\%S).\n"
+	"\%u     The day of the week as a decimal, range 1 to 7, Monday being 1.\n"
+	"       See also \%w. (alt O)\n"
+	"\%U     The week number of the current year as a decimal number,\n"
+	"       range 00 to 53, starting with the first Sunday as the first\n"
+	"       day of week 01. See also \%V and \%W. (alt O)\n"
+	"\%V     The ISO 8601 week number of the current year as a decimal number,\n"
+	"       range 01 to 53, where week 1 is the first week that has at least 4 days\n"
+	"       in the new year. See also \%U and \%W. (alt O)\n"
+	"\%w     The day of the week as a decimal, range 0 to 6, Sunday being 0.\n"
+	"       See also \%u. (alt O)\n"
+	"\%W     The week number of the current year as a decimal number, range 00 to 53,\n"
+	"       starting with the first Monday as the first day of week 01. (alt O)\n"
+	"\%x     The preferred date representation for the current locale without the time. (alt E)\n"
+	"\%X     The preferred time representation for the current locale without the date. (alt E)\n"
+	"\%y     The year as a decimal number without a century (range 00 to 99). (alt E, alt O)\n"
+	"\%Y     The year as a decimal number including the century. (alt E)\n"
+	"\%z     The +hhmm or -hhmm numeric timezone (that is, the hour and minute\n"
+	"       offset from UTC).\n"
+	"\%Z     The timezone name or abbreviation.\n"
+	"\%\%     A literal '\%' character.\n")
 
 cfg(report_devtypes_sort_CFG, "devtypes_sort", report_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_DEVTYPES_SORT, vsn(2, 2, 101), NULL, 0, NULL,
 	"List of columns to sort by when reporting 'lvm devtypes' command.\n"
@@ -1496,7 +1595,7 @@ cfg(local_system_id_CFG, "system_id", local_CFG_SECTION, CFG_ALLOW_EMPTY | CFG_D
 	"Set the system_id to the string 'host1'.\n"
 	"system_id = \"host1\"\n")
 
-cfg_array(local_extra_system_ids_CFG, "extra_system_ids", local_CFG_SECTION, CFG_ALLOW_EMPTY | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, "#S", vsn(2, 2, 117), NULL, 0, NULL,
+cfg_array(local_extra_system_ids_CFG, "extra_system_ids", local_CFG_SECTION, CFG_ALLOW_EMPTY | CFG_DEFAULT_UNDEFINED, CFG_TYPE_STRING, NULL, vsn(2, 2, 117), NULL, 0, NULL,
 	"A list of extra VG system IDs the local host can access.\n"
 	"VGs with the system IDs listed here (in addition\n"
 	"to the host's own system ID) can be fully accessed\n"
@@ -1505,5 +1604,10 @@ cfg_array(local_extra_system_ids_CFG, "extra_system_ids", local_CFG_SECTION, CFG
 	"local host, which is determined by system_id_source.)\n"
 	"Use this only after consulting 'man lvmsystemid'\n"
 	"to be certain of correct usage and possible dangers.\n")
+
+cfg(local_host_id_CFG, "host_id", local_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, 0, vsn(2, 2, 124), NULL, 0, NULL,
+	"The lvmlockd sanlock host_id.\n"
+	"This must be a unique among all hosts,\n"
+	"and must be between 1 and 2000.\n")
 
 cfg(CFG_COUNT, NULL, root_CFG_SECTION, 0, CFG_TYPE_INT, 0, vsn(0, 0, 0), NULL, 0, NULL, NULL)

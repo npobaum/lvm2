@@ -241,8 +241,15 @@ struct load_properties {
 	 */
 	unsigned delay_resume_if_new;
 
-	/* Send messages for this node in preload */
+	/*
+	 * Call node_send_messages(), set to 2 if there are messages
+	 * When != 0, it validates matching transaction id, thus thin-pools
+	 * where transation_id is passed as 0 are never validated, this
+	 * allows external managment of thin-pool TID.
+	 */
 	unsigned send_messages;
+	/* Skip suspending node's children, used when sending messages to thin-pool */
+	int skip_suspend;
 };
 
 /* Two of these used to join two nodes with uses and used_by. */
@@ -301,6 +308,7 @@ struct dm_tree {
 	int no_flush;			/* 1 sets noflush (mirrors/multipath) */
 	int retry_remove;		/* 1 retries remove if not successful */
 	uint32_t cookie;
+	char buf[DM_NAME_LEN + 32];	/* print buffer for device_name (major:minor) */
 	const char **optional_uuid_suffixes;	/* uuid suffixes ignored when matching */
 };
 
@@ -593,6 +601,19 @@ static struct dm_tree_node *_find_dm_tree_node_by_uuid(struct dm_tree *dtree,
 
 	log_debug("Not matched uuid %s in deptree.", uuid + default_uuid_prefix_len);
 	return NULL;
+}
+
+/* Return node's device_name (major:minor) for debug messages */
+static const char *_node_name(struct dm_tree_node *dnode)
+{
+	if (dm_snprintf(dnode->dtree->buf, sizeof(dnode->dtree->buf),
+			"%s (%" PRIu32 ":%" PRIu32 ")",
+			dnode->name, dnode->info.major, dnode->info.minor) < 0) {
+		stack;
+		return dnode->name;
+	}
+
+	return dnode->dtree->buf;
 }
 
 void dm_tree_node_set_udev_flags(struct dm_tree_node *dnode, uint16_t udev_flags)
@@ -1437,12 +1458,14 @@ static int _thin_pool_status_transaction_id(struct dm_tree_node *dnode, uint64_t
 		goto out;
 	}
 
-	if (!params || (sscanf(params, "%" PRIu64, transaction_id) != 1)) {
+	if (!params || (sscanf(params, FMTu64, transaction_id) != 1)) {
 		log_error("Failed to parse transaction_id from %s.", params);
 		goto out;
 	}
 
-	log_debug_activation("Thin pool transaction id: %" PRIu64 " status: %s.", *transaction_id, params);
+	log_debug_activation("Found transaction id %" PRIu64 " for thin pool %s "
+			     "with status line: %s.",
+			     *transaction_id, _node_name(dnode), params);
 
 	r = 1;
 out:
@@ -1556,15 +1579,16 @@ static int _node_send_messages(struct dm_tree_node *dnode,
 	if (trans_id == seg->transaction_id) {
 		dnode->props.send_messages = 0; /* messages already committed */
 		if (have_messages)
-			log_debug_activation("Thin pool transaction_id matches %" PRIu64
-					     ", skipping messages.", trans_id);
+			log_debug_activation("Thin pool %s transaction_id matches %"
+					     PRIu64 ", skipping messages.",
+					     _node_name(dnode), trans_id);
 		return 1;
 	}
 
 	/* Error if there are no stacked messages or id mismatches */
 	if (trans_id != (seg->transaction_id - have_messages)) {
-		log_error("Thin pool transaction_id is %" PRIu64 ", while expected %" PRIu64 ".",
-			  trans_id, seg->transaction_id - have_messages);
+		log_error("Thin pool %s transaction_id is %" PRIu64 ", while expected %" PRIu64 ".",
+			  _node_name(dnode), trans_id, seg->transaction_id - have_messages);
 		return 0;
 	}
 
@@ -1578,9 +1602,9 @@ static int _node_send_messages(struct dm_tree_node *dnode,
 			if (!_thin_pool_status_transaction_id(dnode, &trans_id))
 				return_0;
 			if (trans_id != tmsg->message.u.m_set_transaction_id.new_id) {
-				log_error("Thin pool transaction_id is %" PRIu64
+				log_error("Thin pool %s transaction_id is %" PRIu64
 					  " and does not match expected  %" PRIu64 ".",
-					  trans_id,
+					  _node_name(dnode), trans_id,
 					  tmsg->message.u.m_set_transaction_id.new_id);
 				return 0;
 			}
@@ -1751,6 +1775,19 @@ int dm_tree_suspend_children(struct dm_tree_node *dnode,
 		    !info.exists || info.suspended)
 			continue;
 
+		/* If child has some real messages send them */
+		if ((child->props.send_messages > 1) && r) {
+			if (!(r = _node_send_messages(child, uuid_prefix, uuid_prefix_len, 1)))
+				stack;
+			else {
+				log_debug_activation("Sent messages to thin-pool %s."
+						     "skipping suspend of its children.",
+						     _node_name(child));
+				child->props.skip_suspend++;
+			}
+			continue;
+		}
+
 		if (!_suspend_node(name, info.major, info.minor,
 				   child->dtree->skip_lockfs,
 				   child->dtree->no_flush, &newinfo)) {
@@ -1769,6 +1806,9 @@ int dm_tree_suspend_children(struct dm_tree_node *dnode,
 	handle = NULL;
 
 	while ((child = dm_tree_next_child(&handle, dnode, 0))) {
+		if (child->props.skip_suspend)
+			continue;
+
 		if (!(uuid = dm_tree_node_get_uuid(child))) {
 			stack;
 			continue;
@@ -3035,7 +3075,7 @@ int dm_get_status_snapshot(struct dm_pool *mem, const char *params,
 		return 0;
 	}
 
-	r = sscanf(params, "%" PRIu64 "/%" PRIu64 " %" PRIu64,
+	r = sscanf(params, FMTu64 "/" FMTu64 " " FMTu64,
 		   &s->used_sectors, &s->total_sectors,
 		   &s->metadata_sectors);
 
@@ -3836,7 +3876,8 @@ int dm_tree_node_add_thin_pool_message(struct dm_tree_node *node,
 
 	tm->message.type = type;
 	dm_list_add(&seg->thin_messages, &tm->list);
-	node->props.send_messages = 1;
+	/* Higher value >1 identifies there are really some messages */
+	node->props.send_messages = 2;
 
 	return 1;
 }
@@ -3951,7 +3992,7 @@ int dm_get_status_thin_pool(struct dm_pool *mem, const char *params,
 	}
 
 	/* FIXME: add support for held metadata root */
-	if (sscanf(params, "%" PRIu64 " %" PRIu64 "/%" PRIu64 " %" PRIu64 "/%" PRIu64 "%n",
+	if (sscanf(params, FMTu64 " " FMTu64 "/" FMTu64 " " FMTu64 "/" FMTu64 "%n",
 		   &s->transaction_id,
 		   &s->used_metadata_blocks,
 		   &s->total_metadata_blocks,
@@ -4003,7 +4044,7 @@ int dm_get_status_thin(struct dm_pool *mem, const char *params,
 	if (strchr(params, '-')) {
 		s->mapped_sectors = 0;
 		s->highest_mapped_sector = 0;
-	} else if (sscanf(params, "%" PRIu64 " %" PRIu64,
+	} else if (sscanf(params, FMTu64 " " FMTu64,
 		   &s->mapped_sectors,
 		   &s->highest_mapped_sector) != 2) {
 		dm_pool_free(mem, s);

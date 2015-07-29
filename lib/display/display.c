@@ -86,6 +86,38 @@ alloc_policy_t get_alloc_from_string(const char *str)
 	return ALLOC_INVALID;
 }
 
+const char *get_lock_type_string(lock_type_t lock_type)
+{
+	switch (lock_type) {
+	case LOCK_TYPE_INVALID:
+		return "invalid";
+	case LOCK_TYPE_NONE:
+		return "none";
+	case LOCK_TYPE_CLVM:
+		return "clvm";
+	case LOCK_TYPE_DLM:
+		return "dlm";
+	case LOCK_TYPE_SANLOCK:
+		return "sanlock";
+	}
+	return "invalid";
+}
+
+lock_type_t get_lock_type_from_string(const char *str)
+{
+	if (!str)
+		return LOCK_TYPE_NONE;
+	if (!strcmp(str, "none"))
+		return LOCK_TYPE_NONE;
+	if (!strcmp(str, "clvm"))
+		return LOCK_TYPE_CLVM;
+	if (!strcmp(str, "dlm"))
+		return LOCK_TYPE_DLM;
+	if (!strcmp(str, "sanlock"))
+		return LOCK_TYPE_SANLOCK;
+	return LOCK_TYPE_INVALID;
+}
+
 static const char *_percent_types[7] = { "NONE", "VG", "FREE", "LV", "PVS", "ORIGIN" };
 
 const char *get_percent_string(percent_type_t def)
@@ -109,7 +141,7 @@ const char *display_lvname(const struct logical_volume *lv)
 		return NULL;
 	}
 
-	lv->vg->cmd->display_lvname_idx += r;
+	lv->vg->cmd->display_lvname_idx += r + 1;
 
 	return name;
 }
@@ -489,7 +521,7 @@ int lvdisplay_full(struct cmd_context *cmd,
 	log_print("LV UUID                %s", uuid);
 	log_print("LV Write Access        %s", access_str);
 	log_print("LV Creation host, time %s, %s",
-		  lv_host_dup(cmd->mem, lv), lv_time_dup(cmd->mem, lv));
+		  lv_host_dup(cmd->mem, lv), lv_time_dup(cmd->mem, lv, 1));
 
 	if (lv_is_origin(lv)) {
 		log_print("LV snapshot status     source of");

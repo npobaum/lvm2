@@ -18,6 +18,7 @@
 #include <ctype.h>
 #include <math.h>  /* fabs() */
 #include <float.h> /* DBL_EPSILON */
+#include <time.h>
 
 /*
  * Internal flags
@@ -62,6 +63,7 @@ struct dm_report {
 
 	/* Null-terminated array of reserved values */
 	const struct dm_report_reserved_value *reserved_values;
+	struct dm_hash_table *value_cache;
 };
 
 /*
@@ -100,11 +102,13 @@ struct op_def {
 #define FLD_CMP_LT		0x01000000
 #define FLD_CMP_REGEX		0x02000000
 #define FLD_CMP_NUMBER		0x04000000
+#define FLD_CMP_TIME		0x08000000
 /*
- * #define FLD_CMP_STRING 0x08000000
- * We could defined FLD_CMP_STRING here for completeness here,
+ * #define FLD_CMP_STRING 0x10000000
+ * We could define FLD_CMP_STRING here for completeness here,
  * but it's not needed - we can check operator compatibility with
- * field type by using FLD_CMP_REGEX and FLD_CMP_NUMBER flags only.
+ * field type by using FLD_CMP_REGEX, FLD_CMP_NUMBER and
+ * FLD_CMP_TIME flags only.
  */
 
 /*
@@ -115,12 +119,16 @@ struct op_def {
 static struct op_def _op_cmp[] = {
 	{ "=~", FLD_CMP_REGEX, "Matching regular expression. [regex]" },
 	{ "!~", FLD_CMP_REGEX|FLD_CMP_NOT, "Not matching regular expression. [regex]" },
-	{ "=", FLD_CMP_EQUAL, "Equal to. [number, size, percent, string, string list]" },
-	{ "!=", FLD_CMP_NOT|FLD_CMP_EQUAL, "Not equal to. [number, size, percent, string, string_list]" },
-	{ ">=", FLD_CMP_NUMBER|FLD_CMP_GT|FLD_CMP_EQUAL, "Greater than or equal to. [number, size, percent]" },
-	{ ">", FLD_CMP_NUMBER|FLD_CMP_GT, "Greater than. [number, size, percent]" },
-	{ "<=", FLD_CMP_NUMBER|FLD_CMP_LT|FLD_CMP_EQUAL, "Less than or equal to. [number, size, percent]" },
-	{ "<", FLD_CMP_NUMBER|FLD_CMP_LT, "Less than. [number, size, percent]" },
+	{ "=", FLD_CMP_EQUAL, "Equal to. [number, size, percent, string, string list, time]" },
+	{ "!=", FLD_CMP_NOT|FLD_CMP_EQUAL, "Not equal to. [number, size, percent, string, string_list, time]" },
+	{ ">=", FLD_CMP_NUMBER|FLD_CMP_TIME|FLD_CMP_GT|FLD_CMP_EQUAL, "Greater than or equal to. [number, size, percent, time]" },
+	{ ">", FLD_CMP_NUMBER|FLD_CMP_TIME|FLD_CMP_GT, "Greater than. [number, size, percent, time]" },
+	{ "<=", FLD_CMP_NUMBER|FLD_CMP_TIME|FLD_CMP_LT|FLD_CMP_EQUAL, "Less than or equal to. [number, size, percent, time]" },
+	{ "<", FLD_CMP_NUMBER|FLD_CMP_TIME|FLD_CMP_LT, "Less than. [number, size, percent, time]" },
+	{ "since", FLD_CMP_TIME|FLD_CMP_GT|FLD_CMP_EQUAL, "Since specified time (same as '>='). [time]" },
+	{ "after", FLD_CMP_TIME|FLD_CMP_GT, "After specified time (same as '>'). [time]"},
+	{ "until", FLD_CMP_TIME|FLD_CMP_LT|FLD_CMP_EQUAL, "Until specified time (same as '<='). [time]"},
+	{ "before", FLD_CMP_TIME|FLD_CMP_LT, "Before specified time (same as '<'). [time]"},
 	{ NULL, 0, NULL }
 };
 
@@ -162,16 +170,22 @@ struct selection_str_list {
 	struct dm_list *list;
 };
 
-struct field_selection {
-	struct field_properties *fp;
-	uint32_t flags;
+struct field_selection_value {
 	union {
 		const char *s;
 		uint64_t i;
+		time_t t;
 		double d;
 		struct dm_regex *r;
 		struct selection_str_list *l;
 	} v;
+	struct field_selection_value *next;
+};
+
+struct field_selection {
+	struct field_properties *fp;
+	uint32_t flags;
+	struct field_selection_value *value;
 };
 
 struct selection_node {
@@ -181,6 +195,12 @@ struct selection_node {
 		struct field_selection *item;
 		struct dm_list set;
 	} selection;
+};
+
+struct reserved_value_wrapper {
+	const char *matched_name;
+	const struct dm_report_reserved_value *reserved;
+	const void *value;
 };
 
 /*
@@ -619,7 +639,7 @@ int dm_report_field_uint64(struct dm_report *rh,
 		return 0;
 	}
 
-	if (dm_snprintf(repstr, 21, "%" PRIu64 , value) < 0) {
+	if (dm_snprintf(repstr, 21, FMTu64 , value) < 0) {
 		log_error("dm_report_field_uint64: uint64 too big: %" PRIu64, value);
 		return 0;
 	}
@@ -651,6 +671,7 @@ static const char *_get_field_type_name(unsigned field_type)
 		case DM_REPORT_FIELD_TYPE_NUMBER: return "number";
 		case DM_REPORT_FIELD_TYPE_SIZE: return "size";
 		case DM_REPORT_FIELD_TYPE_PERCENT: return "percent";
+		case DM_REPORT_FIELD_TYPE_TIME: return "time";
 		case DM_REPORT_FIELD_TYPE_STRING_LIST: return "string list";
 		default: return "unknown";
 	}
@@ -1202,6 +1223,8 @@ void dm_report_free(struct dm_report *rh)
 {
 	if (rh->selection)
 		dm_pool_destroy(rh->selection->mem);
+	if (rh->value_cache)
+		dm_hash_destroy(rh->value_cache);
 	dm_pool_destroy(rh->mem);
 	dm_free(rh);
 }
@@ -1257,32 +1280,103 @@ static void *_report_get_implicit_field_data(struct dm_report *rh __attribute__(
 	return NULL;
 }
 
-static int _close_enough(double d1, double d2)
+static int _dbl_equal(double d1, double d2)
 {
 	return fabs(d1 - d2) < DBL_EPSILON;
 }
 
-static int _do_check_value_is_reserved(unsigned type, const void *reserved_value,
-				       const void *value1, const void *value2)
+static int _dbl_greater(double d1, double d2)
 {
-	switch (type) {
+	return (d1 > d2) && !_dbl_equal(d1, d2);
+}
+
+static int _dbl_less(double d1, double d2)
+{
+	return (d1 < d2) && !_dbl_equal(d1, d2);
+}
+
+static int _dbl_greater_or_equal(double d1, double d2)
+{
+	return _dbl_greater(d1, d2) || _dbl_equal(d1, d2);
+}
+
+static int _dbl_less_or_equal(double d1, double d2)
+{
+	return _dbl_less(d1, d2) || _dbl_equal(d1, d2);
+}
+
+#define _uint64 *(uint64_t *)
+#define _uint64arr(var,index) ((uint64_t *)var)[index]
+#define _str (const char *)
+#define _dbl *(double *)
+#define _dblarr(var,index) ((double *)var)[index]
+
+static int _do_check_value_is_strictly_reserved(unsigned type, const void *res_val, int res_range,
+						const void *val, struct field_selection *fs)
+{
+	int sel_range = fs ? fs->value->next != NULL : 0;
+
+	switch (type & DM_REPORT_FIELD_TYPE_MASK) {
 		case DM_REPORT_FIELD_TYPE_NUMBER:
-			if ((*(uint64_t *)value1 == *(uint64_t *) reserved_value) ||
-			    (value2 && (*(uint64_t *)value2 == *(uint64_t *) reserved_value)))
-				return 1;
+			if (res_range && sel_range) {
+				/* both reserved value and selection value are ranges */
+				if (((_uint64 val >= _uint64arr(res_val,0)) && (_uint64 val <= _uint64arr(res_val,1))) ||
+				    (fs && ((fs->value->v.i == _uint64arr(res_val,0)) && (fs->value->next->v.i == _uint64arr(res_val,1)))))
+					return 1;
+			} else if (res_range) {
+				/* only reserved value is a range */
+				if (((_uint64 val >= _uint64arr(res_val,0)) && (_uint64 val <= _uint64arr(res_val,1))) ||
+				    (fs && ((fs->value->v.i >= _uint64arr(res_val,0)) && (fs->value->v.i <= _uint64arr(res_val,1)))))
+					return 1;
+			} else if (sel_range) {
+				/* only selection value is a range */
+				if (((_uint64 val >= _uint64 res_val) && (_uint64 val <= _uint64 res_val)) ||
+				    (fs && ((fs->value->v.i >= _uint64 res_val) && (fs->value->next->v.i <= _uint64 res_val))))
+					return 1;
+			} else {
+				/* neither selection value nor reserved value is a range */
+				if ((_uint64 val == _uint64 res_val) ||
+				    (fs && (fs->value->v.i == _uint64 res_val)))
+					return 1;
+			}
 			break;
+
 		case DM_REPORT_FIELD_TYPE_STRING:
-			if ((!strcmp((const char *)value1, (const char *) reserved_value)) ||
-			    (value2 && (!strcmp((const char *)value2, (const char *) reserved_value))))
+			/* there are no ranges for string type yet */
+			if ((!strcmp(_str val, _str res_val)) ||
+			    (fs && (!strcmp(fs->value->v.s, _str res_val))))
 				return 1;
 			break;
+
 		case DM_REPORT_FIELD_TYPE_SIZE:
-			if ((_close_enough(*(double *)value1, *(double *) reserved_value)) ||
-			    (value2 && (_close_enough(*(double *)value2, *(double *) reserved_value))))
-				return 1;
+			if (res_range && sel_range) {
+				/* both reserved value and selection value are ranges */
+				if ((_dbl_greater_or_equal(_dbl val, _dblarr(res_val,0)) && _dbl_less_or_equal(_dbl val, _dblarr(res_val,1))) ||
+				    (fs && (_dbl_equal(fs->value->v.d, _dblarr(res_val,0)) && (_dbl_equal(fs->value->next->v.d, _dblarr(res_val,1))))))
+					return 1;
+			} else if (res_range) {
+				/* only reserved value is a range */
+				if ((_dbl_greater_or_equal(_dbl val, _dblarr(res_val,0)) && _dbl_less_or_equal(_dbl val, _dblarr(res_val,1))) ||
+				    (fs && (_dbl_greater_or_equal(fs->value->v.d, _dblarr(res_val,0)) && _dbl_less_or_equal(fs->value->v.d, _dblarr(res_val,1)))))
+					return 1;
+			} else if (sel_range) {
+				/* only selection value is a range */
+				if ((_dbl_greater_or_equal(_dbl val, _dbl res_val) && (_dbl_less_or_equal(_dbl val, _dbl res_val))) ||
+				    (fs && (_dbl_greater_or_equal(fs->value->v.d, _dbl res_val) && _dbl_less_or_equal(fs->value->next->v.d, _dbl res_val))))
+					return 1;
+			} else {
+				/* neither selection value nor reserved value is a range */
+				if ((_dbl_equal(_dbl val, _dbl res_val)) ||
+				    (fs && (_dbl_equal(fs->value->v.d, _dbl res_val))))
+					return 1;
+			}
 			break;
+
 		case DM_REPORT_FIELD_TYPE_STRING_LIST:
 			/* FIXME Add comparison for string list */
+			break;
+		case DM_REPORT_FIELD_TYPE_TIME:
+			/* FIXME Add comparison for time */
 			break;
 	}
 
@@ -1292,22 +1386,27 @@ static int _do_check_value_is_reserved(unsigned type, const void *reserved_value
 /*
  * Used to check whether a value of certain type used in selection is reserved.
  */
-static int _check_value_is_reserved(struct dm_report *rh, uint32_t field_num, unsigned type,
-				    const void *value1, const void *value2)
+static int _check_value_is_strictly_reserved(struct dm_report *rh, uint32_t field_num, unsigned type,
+					     const void *val, struct field_selection *fs)
 {
 	const struct dm_report_reserved_value *iter = rh->reserved_values;
 	const struct dm_report_field_reserved_value *frv;
+	int res_range;
 
 	if (!iter)
 		return 0;
 
 	while (iter->value) {
-		if (iter->type == DM_REPORT_FIELD_TYPE_NONE) {
-			frv = (const struct dm_report_field_reserved_value *) iter->value;
-			if (frv->field_num == field_num && _do_check_value_is_reserved(type, frv->value, value1, value2))
+		/* Only check strict reserved values, not the weaker form ("named" reserved value). */
+		if (!(iter->type & DM_REPORT_FIELD_RESERVED_VALUE_NAMED)) {
+			res_range = iter->type & DM_REPORT_FIELD_RESERVED_VALUE_RANGE;
+			if ((iter->type & DM_REPORT_FIELD_TYPE_MASK) == DM_REPORT_FIELD_TYPE_NONE) {
+				frv = (const struct dm_report_field_reserved_value *) iter->value;
+				if (frv->field_num == field_num && _do_check_value_is_strictly_reserved(type, frv->value, res_range, val, fs))
+					return 1;
+			} else if (iter->type & type && _do_check_value_is_strictly_reserved(type, iter->value, res_range, val, fs))
 				return 1;
-		} else if (iter->type & type && _do_check_value_is_reserved(type, iter->value, value1, value2))
-			return 1;
+		}
 		iter++;
 	}
 
@@ -1315,21 +1414,39 @@ static int _check_value_is_reserved(struct dm_report *rh, uint32_t field_num, un
 }
 
 static int _cmp_field_int(struct dm_report *rh, uint32_t field_num, const char *field_id,
-			  uint64_t a, uint64_t b, uint32_t flags)
+			  uint64_t val, struct field_selection *fs)
 {
-	switch(flags & FLD_CMP_MASK) {
+	int range = fs->value->next != NULL;
+	const uint64_t sel1 = fs->value->v.i;
+	const uint64_t sel2 = range ? fs->value->next->v.i : 0;
+
+	switch(fs->flags & FLD_CMP_MASK) {
 		case FLD_CMP_EQUAL:
-			return a == b;
+			return range ? ((val >= sel1) && (val <= sel2)) : val == sel1;
+
 		case FLD_CMP_NOT|FLD_CMP_EQUAL:
-			return a != b;
+			return range ? !((val >= sel1) && (val <= sel2)) : val != sel1;
+
 		case FLD_CMP_NUMBER|FLD_CMP_GT:
-			return _check_value_is_reserved(rh, field_num, DM_REPORT_FIELD_TYPE_NUMBER, &a, &b) ? 0 : a > b;
+			if (_check_value_is_strictly_reserved(rh, field_num, DM_REPORT_FIELD_TYPE_NUMBER, &val, fs))
+				return 0;
+			return range ? val > sel2 : val > sel1;
+
 		case FLD_CMP_NUMBER|FLD_CMP_GT|FLD_CMP_EQUAL:
-			return _check_value_is_reserved(rh, field_num, DM_REPORT_FIELD_TYPE_NUMBER, &a, &b) ? 0 : a >= b;
+			if (_check_value_is_strictly_reserved(rh, field_num, DM_REPORT_FIELD_TYPE_NUMBER, &val, fs))
+				return 0;
+			return val >= sel1;
+
 		case FLD_CMP_NUMBER|FLD_CMP_LT:
-			return _check_value_is_reserved(rh, field_num, DM_REPORT_FIELD_TYPE_NUMBER, &a, &b) ? 0 : a < b;
+			if (_check_value_is_strictly_reserved(rh, field_num, DM_REPORT_FIELD_TYPE_NUMBER, &val, fs))
+				return 0;
+			return val < sel1;
+
 		case FLD_CMP_NUMBER|FLD_CMP_LT|FLD_CMP_EQUAL:
-			return _check_value_is_reserved(rh, field_num, DM_REPORT_FIELD_TYPE_NUMBER, &a, &b) ? 0 : a <= b;
+			if (_check_value_is_strictly_reserved(rh, field_num, DM_REPORT_FIELD_TYPE_NUMBER, &val, fs))
+				return 0;
+			return range ? val <= sel2 : val <= sel1;
+
 		default:
 			log_error(INTERNAL_ERROR "_cmp_field_int: unsupported number "
 				  "comparison type for field %s", field_id);
@@ -1339,21 +1456,42 @@ static int _cmp_field_int(struct dm_report *rh, uint32_t field_num, const char *
 }
 
 static int _cmp_field_double(struct dm_report *rh, uint32_t field_num, const char *field_id,
-			     double a, double b, uint32_t flags)
+			     double val, struct field_selection *fs)
 {
-	switch(flags & FLD_CMP_MASK) {
+	int range = fs->value->next != NULL;
+	double sel1 = fs->value->v.d;
+	double sel2 = range ? fs->value->next->v.d : 0;
+
+	switch(fs->flags & FLD_CMP_MASK) {
 		case FLD_CMP_EQUAL:
-			return _close_enough(a, b);
+			return range ? (_dbl_greater_or_equal(val, sel1) && _dbl_less_or_equal(val, sel2))
+				     : _dbl_equal(val, sel1);
+
 		case FLD_CMP_NOT|FLD_CMP_EQUAL:
-			return !_close_enough(a, b);
+			return range ? !(_dbl_greater_or_equal(val, sel1) && _dbl_less_or_equal(val, sel2))
+				     : !_dbl_equal(val, sel1);
+
 		case FLD_CMP_NUMBER|FLD_CMP_GT:
-			return _check_value_is_reserved(rh, field_num, DM_REPORT_FIELD_TYPE_SIZE, &a, &b) ? 0 : (a > b) && !_close_enough(a, b);
+			if (_check_value_is_strictly_reserved(rh, field_num, DM_REPORT_FIELD_TYPE_SIZE, &val, fs))
+				return 0;
+			return range ? _dbl_greater(val, sel2)
+				     : _dbl_greater(val, sel1);
+
 		case FLD_CMP_NUMBER|FLD_CMP_GT|FLD_CMP_EQUAL:
-			return _check_value_is_reserved(rh, field_num, DM_REPORT_FIELD_TYPE_SIZE, &a, &b) ? 0 : (a > b) || _close_enough(a, b);
+			if (_check_value_is_strictly_reserved(rh, field_num, DM_REPORT_FIELD_TYPE_SIZE, &val, fs))
+				return 0;
+			return _dbl_greater_or_equal(val, sel1);
+
 		case FLD_CMP_NUMBER|FLD_CMP_LT:
-			return _check_value_is_reserved(rh, field_num, DM_REPORT_FIELD_TYPE_SIZE, &a, &b) ? 0 : (a < b) && !_close_enough(a, b);
+			if (_check_value_is_strictly_reserved(rh, field_num, DM_REPORT_FIELD_TYPE_SIZE, &val, fs))
+				return 0;
+			return _dbl_less(val, sel1);
+
 		case FLD_CMP_NUMBER|FLD_CMP_LT|FLD_CMP_EQUAL:
-			return _check_value_is_reserved(rh, field_num, DM_REPORT_FIELD_TYPE_SIZE, &a, &b) ? 0 : a < b || _close_enough(a, b);
+			if (_check_value_is_strictly_reserved(rh, field_num, DM_REPORT_FIELD_TYPE_SIZE, &val, fs))
+				return 0;
+			return range ? _dbl_less_or_equal(val, sel2) : _dbl_less_or_equal(val, sel1); 
+
 		default:
 			log_error(INTERNAL_ERROR "_cmp_field_double: unsupported number "
 				  "comparison type for selection field %s", field_id);
@@ -1364,16 +1502,55 @@ static int _cmp_field_double(struct dm_report *rh, uint32_t field_num, const cha
 
 static int _cmp_field_string(struct dm_report *rh __attribute__((unused)),
 			     uint32_t field_num, const char *field_id,
-			     const char *a, const char *b, uint32_t flags)
+			     const char *val, struct field_selection *fs)
 {
-	switch (flags & FLD_CMP_MASK) {
+	const char *sel = fs->value->v.s;
+
+	switch (fs->flags & FLD_CMP_MASK) {
 		case FLD_CMP_EQUAL:
-			return !strcmp(a, b);
+			return !strcmp(val, sel);
 		case FLD_CMP_NOT|FLD_CMP_EQUAL:
-			return strcmp(a, b);
+			return strcmp(val, sel);
 		default:
 			log_error(INTERNAL_ERROR "_cmp_field_string: unsupported string "
 				  "comparison type for selection field %s", field_id);
+	}
+
+	return 0;
+}
+
+static int _cmp_field_time(struct dm_report *rh,
+			   uint32_t field_num, const char *field_id,
+			   time_t val, struct field_selection *fs)
+{
+	int range = fs->value->next != NULL;
+	time_t sel1 = fs->value->v.t;
+	time_t sel2 = range ? fs->value->next->v.t : 0;
+
+	switch(fs->flags & FLD_CMP_MASK) {
+		case FLD_CMP_EQUAL:
+			return range ? ((val >= sel1) && (val <= sel2)) : val == sel1;
+		case FLD_CMP_NOT|FLD_CMP_EQUAL:
+			return range ? ((val >= sel1) && (val <= sel2)) : val != sel1;
+		case FLD_CMP_TIME|FLD_CMP_GT:
+			if (_check_value_is_strictly_reserved(rh, field_num, DM_REPORT_FIELD_TYPE_TIME, &val, fs))
+				return 0;
+			return range ? val > sel2 : val > sel1;
+		case FLD_CMP_TIME|FLD_CMP_GT|FLD_CMP_EQUAL:
+			if (_check_value_is_strictly_reserved(rh, field_num, DM_REPORT_FIELD_TYPE_TIME, &val, fs))
+				return 0;
+			return val >= sel1;
+		case FLD_CMP_TIME|FLD_CMP_LT:
+			if (_check_value_is_strictly_reserved(rh, field_num, DM_REPORT_FIELD_TYPE_TIME, &val, fs))
+				return 0;
+			return val < sel1;
+		case FLD_CMP_TIME|FLD_CMP_LT|FLD_CMP_EQUAL:
+			if (_check_value_is_strictly_reserved(rh, field_num, DM_REPORT_FIELD_TYPE_TIME, &val, fs))
+				return 0;
+			return range ? val <= sel2 : val <= sel1;
+		default:
+			log_error(INTERNAL_ERROR "_cmp_field_time: unsupported time "
+				  "comparison type for field %s", field_id);
 	}
 
 	return 0;
@@ -1458,12 +1635,13 @@ static int _cmp_field_string_list_any(const struct str_list_sort_value *val,
 
 static int _cmp_field_string_list(struct dm_report *rh __attribute__((unused)),
 				  uint32_t field_num, const char *field_id,
-				  const struct str_list_sort_value *value,
-				  const struct selection_str_list *selection, uint32_t flags)
+				  const struct str_list_sort_value *val,
+				  struct field_selection *fs)
 {
+	const struct selection_str_list *sel = fs->value->v.l;
 	int subset, r;
 
-	switch (selection->type & SEL_LIST_MASK) {
+	switch (sel->type & SEL_LIST_MASK) {
 		case SEL_LIST_LS:
 			subset = 0;
 			break;
@@ -1475,13 +1653,13 @@ static int _cmp_field_string_list(struct dm_report *rh __attribute__((unused)),
 			return 0;
 	}
 
-	switch (selection->type & SEL_MASK) {
+	switch (sel->type & SEL_MASK) {
 		case SEL_AND:
-			r = subset ? _cmp_field_string_list_subset_all(value, selection)
-				   : _cmp_field_string_list_strict_all(value, selection);
+			r = subset ? _cmp_field_string_list_subset_all(val, sel)
+				   : _cmp_field_string_list_strict_all(val, sel);
 			break;
 		case SEL_OR:
-			r = _cmp_field_string_list_any(value, selection);
+			r = _cmp_field_string_list_any(val, sel);
 			break;
 		default:
 			log_error(INTERNAL_ERROR "_cmp_field_string_list: unsupported string "
@@ -1490,13 +1668,13 @@ static int _cmp_field_string_list(struct dm_report *rh __attribute__((unused)),
 			return 0;
 	}
 
-	return flags & FLD_CMP_NOT ? !r : r;
+	return fs->flags & FLD_CMP_NOT ? !r : r;
 }
 
-static int _cmp_field_regex(const char *s, struct dm_regex *r, uint32_t flags)
+static int _cmp_field_regex(const char *s, struct field_selection *fs)
 {
-	int match = dm_regex_match(r, s) >= 0;
-	return flags & FLD_CMP_NOT ? !match : match;
+	int match = dm_regex_match(fs->value->v.r, s) >= 0;
+	return fs->flags & FLD_CMP_NOT ? !match : match;
 }
 
 static int _compare_selection_field(struct dm_report *rh,
@@ -1515,7 +1693,7 @@ static int _compare_selection_field(struct dm_report *rh,
 	}
 
 	if (fs->flags & FLD_CMP_REGEX)
-		r = _cmp_field_regex((const char *) f->sort_value, fs->v.r, fs->flags);
+		r = _cmp_field_regex((const char *) f->sort_value, fs);
 	else {
 		switch(f->props->flags & DM_REPORT_FIELD_TYPE_MASK) {
 			case DM_REPORT_FIELD_TYPE_PERCENT:
@@ -1527,17 +1705,19 @@ static int _compare_selection_field(struct dm_report *rh,
 					return 0;
 				/* fall through */
 			case DM_REPORT_FIELD_TYPE_NUMBER:
-				r = _cmp_field_int(rh, f->props->field_num, field_id, *(const uint64_t *) f->sort_value, fs->v.i, fs->flags);
+				r = _cmp_field_int(rh, f->props->field_num, field_id, *(const uint64_t *) f->sort_value, fs);
 				break;
 			case DM_REPORT_FIELD_TYPE_SIZE:
-				r = _cmp_field_double(rh, f->props->field_num, field_id, *(double *) f->sort_value, fs->v.d, fs->flags);
+				r = _cmp_field_double(rh, f->props->field_num, field_id, *(double *) f->sort_value, fs);
 				break;
 			case DM_REPORT_FIELD_TYPE_STRING:
-				r = _cmp_field_string(rh, f->props->field_num, field_id, (const char *) f->sort_value, fs->v.s, fs->flags);
+				r = _cmp_field_string(rh, f->props->field_num, field_id, (const char *) f->sort_value, fs);
 				break;
 			case DM_REPORT_FIELD_TYPE_STRING_LIST:
-				r = _cmp_field_string_list(rh, f->props->field_num, field_id, (const struct str_list_sort_value *) f->sort_value,
-							   fs->v.l, fs->flags);
+				r = _cmp_field_string_list(rh, f->props->field_num, field_id, (const struct str_list_sort_value *) f->sort_value, fs);
+				break;
+			case DM_REPORT_FIELD_TYPE_TIME:
+				r = _cmp_field_time(rh, f->props->field_num, field_id, *(const time_t *) f->sort_value, fs);
 				break;
 			default:
 				log_error(INTERNAL_ERROR "_compare_selection_field: unknown field type for field %s", field_id);
@@ -1943,14 +2123,48 @@ static const char *_tok_value_string(const char *s,
 	return s;
 }
 
-static const char *_reserved_name(const char **names, const char *s, size_t len)
+static const char *_reserved_name(struct dm_report *rh,
+				  const struct dm_report_reserved_value *reserved,
+				  const struct dm_report_field_reserved_value *frv,
+				  uint32_t field_num, const char *s, size_t len)
 {
-	const char **name = names;
+	dm_report_reserved_handler handler;
+	const char *canonical_name;
+	const char **name;
+	char *tmp_s;
+	char c;
+	int r;
+
+	name = reserved->names;
 	while (*name) {
 		if ((strlen(*name) == len) && !strncmp(*name, s, len))
 			return *name;
 		name++;
 	}
+
+	if (reserved->type & DM_REPORT_FIELD_RESERVED_VALUE_FUZZY_NAMES) {
+		handler = (dm_report_reserved_handler) frv ? frv->value : reserved->value;
+		c = s[len];
+		tmp_s = (char *) s;
+		tmp_s[len] = '\0';
+		if ((r = handler(rh, rh->selection->mem, field_num,
+				 DM_REPORT_RESERVED_PARSE_FUZZY_NAME,
+				 tmp_s, (const void **) &canonical_name)) <= 0) {
+			if (r == -1)
+				log_error(INTERNAL_ERROR "%s reserved value handler for field %s has missing "
+					  "implementation of DM_REPORT_RESERVED_PARSE_FUZZY_NAME action",
+					  (reserved->type & DM_REPORT_FIELD_TYPE_MASK) ? "type-specific" : "field-specific",
+					   rh->fields[field_num].id);
+			else
+				log_error("Error occured while processing %s reserved value handler for field %s",
+					  (reserved->type & DM_REPORT_FIELD_TYPE_MASK) ? "type-specific" : "field-specific",
+					   rh->fields[field_num].id);
+		}
+		tmp_s[len] = c;
+		if (r && canonical_name)
+			return canonical_name;
+	}
+
 	return NULL;
 }
 
@@ -1961,14 +2175,15 @@ static const char *_reserved_name(const char **names, const char *s, size_t len)
 static const char *_get_reserved(struct dm_report *rh, unsigned type,
 				 uint32_t field_num, int implicit,
 				 const char *s, const char **begin, const char **end,
-				 const struct dm_report_reserved_value **reserved)
+				 struct reserved_value_wrapper *rvw)
 {
 	const struct dm_report_reserved_value *iter = implicit ? NULL : rh->reserved_values;
+	const struct dm_report_field_reserved_value *frv;
 	const char *tmp_begin, *tmp_end, *tmp_s = s;
 	const char *name = NULL;
 	char c;
 
-	*reserved = NULL;
+	rvw->reserved = NULL;
 
 	if (!iter)
 		return s;
@@ -1978,14 +2193,16 @@ static const char *_get_reserved(struct dm_report *rh, unsigned type,
 		return s;
 
 	while (iter->value) {
-		if (!iter->type) {
+		if (!(iter->type & DM_REPORT_FIELD_TYPE_MASK)) {
 			/* DM_REPORT_FIELD_TYPE_NONE - per-field reserved value */
-			if (((((const struct dm_report_field_reserved_value *) iter->value)->field_num) == field_num) &&
-			    (name = _reserved_name(iter->names, tmp_begin, tmp_end - tmp_begin)))
+			frv = (const struct dm_report_field_reserved_value *) iter->value;
+			if ((frv->field_num == field_num) && (name = _reserved_name(rh, iter, frv, field_num,
+										    tmp_begin, tmp_end - tmp_begin)))
 				break;
 		} else if (iter->type & type) {
 			/* DM_REPORT_FIELD_TYPE_* - per-type reserved value */
-			if ((name = _reserved_name(iter->names, tmp_begin, tmp_end - tmp_begin)))
+			if ((name = _reserved_name(rh, iter, NULL, field_num,
+						   tmp_begin, tmp_end - tmp_begin)))
 				break;
 		}
 		iter++;
@@ -1996,7 +2213,8 @@ static const char *_get_reserved(struct dm_report *rh, unsigned type,
 		*begin = tmp_begin;
 		*end = tmp_end;
 		s = tmp_s;
-		*reserved = iter;
+		rvw->reserved = iter;
+		rvw->matched_name = name;
 	}
 
 	return s;
@@ -2027,6 +2245,21 @@ dm_percent_t dm_make_percent(uint64_t numerator, uint64_t denominator)
 	}
 }
 
+int dm_report_value_cache_set(struct dm_report *rh, const char *name, const void *data)
+{
+	if (!rh->value_cache && (!(rh->value_cache = dm_hash_create(64)))) {
+		log_error("Failed to create cache for values used during reporting.");
+		return 0;
+	}
+
+	return dm_hash_insert(rh->value_cache, name, (void *) data);
+}
+
+const void *dm_report_value_cache_get(struct dm_report *rh, const char *name)
+{
+	return (rh->value_cache) ? dm_hash_lookup(rh->value_cache, name) : NULL;
+}
+
 /*
  * Used to check whether the reserved_values definition passed to
  * dm_report_init_with_selection contains only supported reserved value types.
@@ -2040,7 +2273,14 @@ static int _check_reserved_values_supported(const struct dm_report_field_type fi
 	static uint32_t supported_reserved_types = DM_REPORT_FIELD_TYPE_NUMBER |
 						   DM_REPORT_FIELD_TYPE_SIZE |
 						   DM_REPORT_FIELD_TYPE_PERCENT |
-						   DM_REPORT_FIELD_TYPE_STRING;
+						   DM_REPORT_FIELD_TYPE_STRING |
+						   DM_REPORT_FIELD_TYPE_TIME;
+	static uint32_t supported_reserved_types_with_range = DM_REPORT_FIELD_RESERVED_VALUE_RANGE |
+							      DM_REPORT_FIELD_TYPE_NUMBER |
+							      DM_REPORT_FIELD_TYPE_SIZE |
+							      DM_REPORT_FIELD_TYPE_PERCENT |
+							      DM_REPORT_FIELD_TYPE_TIME;
+
 
 	if (!reserved_values)
 		return 1;
@@ -2048,8 +2288,10 @@ static int _check_reserved_values_supported(const struct dm_report_field_type fi
 	iter = reserved_values;
 
 	while (iter->value) {
-		if (iter->type) {
-			if (!(iter->type & supported_reserved_types)) {
+		if (iter->type & DM_REPORT_FIELD_TYPE_MASK) {
+			if (!(iter->type & supported_reserved_types) ||
+			    ((iter->type & DM_REPORT_FIELD_RESERVED_VALUE_RANGE) &&
+			     !(iter->type & supported_reserved_types_with_range))) {
 				log_error(INTERNAL_ERROR "_check_reserved_values_supported: "
 					  "global reserved value for type 0x%x not supported",
 					   iter->type);
@@ -2058,7 +2300,9 @@ static int _check_reserved_values_supported(const struct dm_report_field_type fi
 		} else {
 			field_res = (const struct dm_report_field_reserved_value *) iter->value;
 			field = &fields[field_res->field_num];
-			if (!(field->flags & supported_reserved_types)) {
+			if (!(field->flags & supported_reserved_types) ||
+			    ((iter->type & DM_REPORT_FIELD_RESERVED_VALUE_RANGE) &&
+			     !(iter->type & supported_reserved_types_with_range))) {
 				log_error(INTERNAL_ERROR "_check_reserved_values_supported: "
 					  "field-specific reserved value of type 0x%x for "
 					  "field %s not supported",
@@ -2085,10 +2329,10 @@ static const char *_tok_value_regex(struct dm_report *rh,
 				    const struct dm_report_field_type *ft,
 				    const char *s, const char **begin,
 				    const char **end, uint32_t *flags,
-				    const struct dm_report_reserved_value **reserved)
+				    struct reserved_value_wrapper *rvw)
 {
 	char c;
-	*reserved = NULL;
+	rvw->reserved = NULL;
 
 	s = _skip_space(s);
 
@@ -2293,6 +2537,456 @@ bad:
 	return s;
 }
 
+struct time_value {
+	int range;
+	time_t t1;
+	time_t t2;
+};
+
+static const char *_out_of_range_msg = "Field selection value %s out of supported range for field %s.";
+
+/*
+ * Standard formatted date and time - ISO8601.
+ *
+ * date time timezone
+ *
+ * date:
+ * YYYY-MM-DD (or shortly YYYYMMDD)
+ * YYYY-MM (shortly YYYYMM), auto DD=1
+ * YYYY, auto MM=01 and DD=01
+ *
+ * time:
+ * hh:mm:ss (or shortly hhmmss)
+ * hh:mm (or shortly hhmm), auto ss=0
+ * hh (or shortly hh), auto mm=0, auto ss=0
+ *
+ * timezone:
+ * +hh:mm or -hh:mm (or shortly +hhmm or -hhmm)
+ * +hh or -hh
+*/
+
+#define DELIM_DATE '-'
+#define DELIM_TIME ':'
+
+static int _days_in_month[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+
+static int _is_leap_year(long year)
+{
+	return (((year % 4==0) && (year % 100 != 0)) || (year % 400 == 0));
+}
+
+static int _get_days_in_month(long month, long year)
+{
+	return (month == 2 && _is_leap_year(year)) ? _days_in_month[month-1] + 1
+						   : _days_in_month[month-1];
+}
+
+typedef enum {
+	RANGE_NONE,
+	RANGE_SECOND,
+	RANGE_MINUTE,
+	RANGE_HOUR,
+	RANGE_DAY,
+	RANGE_MONTH,
+	RANGE_YEAR
+} time_range_t;
+
+static char *_get_date(char *str, struct tm *tm, time_range_t *range)
+{
+	static const char incorrect_date_format_msg[] = "Incorrect date format.";
+	time_range_t tmp_range = RANGE_NONE;
+	long n1, n2 = -1, n3 = -1;
+	char *s = str, *end;
+	size_t len = 0;
+
+	if (!isdigit(*s))
+		/* we need a year at least */
+		return NULL;
+
+	n1 = strtol(s, &end, 10);
+	if (*end == DELIM_DATE) {
+		len += (4 - (end - s)); /* diff in length from standard YYYY */
+		s = end + 1;
+		if (isdigit(*s)) {
+			n2 = strtol(s, &end, 10);
+			len += (2 - (end - s)); /* diff in length from standard MM */
+			if (*end == DELIM_DATE) {
+				s = end + 1;
+				n3 = strtol(s, &end, 10);
+				len += (2 - (end - s)); /* diff in length from standard DD */
+			}
+		}
+	}
+
+	len = len + end - str;
+
+	/* variations from standard YYYY-MM-DD */
+	if (n3 == -1) {
+		if (n2 == -1) {
+			if (len == 4) {
+				/* YYYY */
+				tmp_range = RANGE_YEAR;
+				n3 = n2 = 1;
+			} else if (len == 6) {
+				/* YYYYMM */
+				tmp_range = RANGE_MONTH;
+				n3 = 1;
+				n2 = n1 % 100;
+				n1 = n1 / 100;
+			} else if (len == 8) {
+				tmp_range = RANGE_DAY;
+				/* YYYYMMDD */
+				n3 = n1 % 100;
+				n2 = (n1 / 100) % 100;
+				n1 = n1 / 10000;
+			} else {
+				log_error(incorrect_date_format_msg);
+				return NULL;
+			}
+		} else {
+			if (len == 7) {
+				tmp_range = RANGE_MONTH;
+				/* YYYY-MM */
+				n3 = 1;
+			} else {
+				log_error(incorrect_date_format_msg);
+				return NULL;
+			}
+		}
+	}
+
+	if (n2 < 1 || n2 > 12) {
+		log_error("Specified month out of range.");
+		return NULL;
+	}
+
+	if (n3 < 1 || n3 > _get_days_in_month(n2, n1)) {
+		log_error("Specified day out of range.");
+		return NULL;
+	}
+
+	if (tmp_range == RANGE_NONE)
+		tmp_range = RANGE_DAY;
+
+	tm->tm_year = n1 - 1900;
+	tm->tm_mon = n2 - 1;
+	tm->tm_mday = n3;
+	*range = tmp_range;
+
+	return (char *) _skip_space(end);
+}
+
+static char *_get_time(char *str, struct tm *tm, time_range_t *range)
+{
+	static const char incorrect_time_format_msg[] = "Incorrect time format.";
+	time_range_t tmp_range = RANGE_NONE;
+	long n1, n2 = -1, n3 = -1;
+	char *s = str, *end;
+	size_t len = 0;
+
+	if (!isdigit(*s)) {
+		/* time is not compulsory */
+		tm->tm_hour = tm->tm_min = tm->tm_sec = 0;
+		return (char *) _skip_space(s);
+	}
+
+	n1 = strtol(s, &end, 10);
+	if (*end == DELIM_TIME) {
+		len += (2 - (end - s)); /* diff in length from standard HH */
+		s = end + 1;
+		if (isdigit(*s)) {
+			n2 = strtol(s, &end, 10);
+			len += (2 - (end - s)); /* diff in length from standard MM */
+			if (*end == DELIM_TIME) {
+				s = end + 1;
+				n3 = strtol(s, &end, 10);
+				len += (2 - (end - s)); /* diff in length from standard SS */
+			}
+		}
+	}
+
+	len = len + end - str;
+
+	/* variations from standard HH:MM:SS */
+	if (n3 == -1) {
+		if (n2 == -1) {
+			if (len == 2) {
+				/* HH */
+				tmp_range = RANGE_HOUR;
+				n3 = n2 = 0;
+			} else if (len == 4) {
+				/* HHMM */
+				tmp_range = RANGE_MINUTE;
+				n3 = 0;
+				n2 = n1 % 100;
+				n1 = n1 / 100;
+			} else if (len == 6) {
+				/* HHMMSS */
+				tmp_range = RANGE_SECOND;
+				n3 = n1 % 100;
+				n2 = (n1 / 100) % 100;
+				n1 = n1 / 10000;
+			} else {
+				log_error(incorrect_time_format_msg);
+				return NULL;
+			}
+		} else {
+			if (len == 5) {
+				/* HH:MM */
+				tmp_range = RANGE_MINUTE;
+				n3 = 0;
+			} else {
+				log_error(incorrect_time_format_msg);
+				return NULL;
+			}
+		}
+	}
+
+	if (n1 < 0 || n1 > 23) {
+		log_error("Specified hours out of range.");
+		return NULL;
+	}
+
+	if (n2 < 0 || n2 > 60) {
+		log_error("Specified minutes out of range.");
+		return NULL;
+	}
+
+	if (n3 < 0 || n3 > 60) {
+		log_error("Specified seconds out of range.");
+		return NULL;
+	}
+
+	/* Just time without exact date is incomplete! */
+	if (*range != RANGE_DAY) {
+		log_error("Full date specification needed.");
+		return NULL;
+	}
+
+	tm->tm_hour = n1;
+	tm->tm_min = n2;
+	tm->tm_sec = n3;
+	*range = tmp_range;
+
+	return (char *) _skip_space(end);
+}
+
+/* The offset is always an absolute offset against GMT! */
+static char *_get_tz(char *str, int *tz_supplied, int *offset)
+{
+	long n1, n2 = -1;
+	char *s = str, *end;
+	int sign = 1; /* +HH:MM by default */
+	size_t len = 0;
+
+	*tz_supplied = 0;
+	*offset = 0;
+
+	if (!isdigit(*s)) {
+		if (*s == '+')  {
+			sign = 1;
+			s = s + 1;
+		} else if (*s == '-') {
+			sign = -1;
+			s = s + 1;
+		} else
+			return (char *) _skip_space(s);
+	}
+
+	n1 = strtol(s, &end, 10);
+	if (*end == DELIM_TIME) {
+		len = (2 - (end - s)); /* diff in length from standard HH */
+		s = end + 1;
+		if (isdigit(*s)) {
+			n2 = strtol(s, &end, 10);
+			len = (2 - (end - s)); /* diff in length from standard MM */
+		}
+	}
+
+	len = len + end - s;
+
+	/* variations from standard HH:MM */
+	if (n2 == -1) {
+		if (len == 2) {
+			/* HH */
+			n2 = 0;
+		} else if (len == 4) {
+			/* HHMM */
+			n2 = n1 % 100;
+			n1 = n1 / 100;
+		} else
+			return NULL;
+	}
+
+	if (n2 < 0 || n2 > 60)
+		return NULL;
+
+	if (n1 < 0 || n1 > 14)
+		return NULL;
+
+	/* timezone offset in seconds */
+	*offset = sign * ((n1 * 3600) + (n2 * 60));
+	*tz_supplied = 1;
+	return (char *) _skip_space(end);
+}
+
+static int _local_tz_offset(time_t t_local)
+{
+	struct tm tm_gmt;
+	time_t t_gmt;
+
+	gmtime_r(&t_local, &tm_gmt);
+	t_gmt = mktime(&tm_gmt);
+
+	/*
+	 * gmtime returns time that is adjusted
+	 * for DST.Subtract this adjustment back
+	 * to give us proper *absolute* offset
+	 * for our local timezone.
+	 */
+	if (tm_gmt.tm_isdst)
+		t_gmt -= 3600;
+
+	return t_local - t_gmt;
+}
+
+static void _get_final_time(time_range_t range, struct tm *tm,
+			    int tz_supplied, int offset,
+			    struct time_value *tval)
+{
+
+	struct tm tm_up = *tm;
+
+	switch (range) {
+		case RANGE_SECOND:
+			if (tm_up.tm_sec < 59) {
+				tm_up.tm_sec += 1;
+				break;
+			}
+		case RANGE_MINUTE:
+			if (tm_up.tm_min < 59) {
+				tm_up.tm_min += 1;
+				break;
+			}
+		case RANGE_HOUR:
+			if (tm_up.tm_hour < 23) {
+				tm_up.tm_hour += 1;
+				break;
+			}
+		case RANGE_DAY:
+			if (tm_up.tm_mday < _get_days_in_month(tm_up.tm_mon, tm_up.tm_year)) {
+				tm_up.tm_mday += 1;
+				break;
+			}
+		case RANGE_MONTH:
+			if (tm_up.tm_mon < 11) {
+				tm_up.tm_mon += 1;
+				break;
+			}
+		case RANGE_YEAR:
+			tm_up.tm_year += 1;
+			break;
+		case RANGE_NONE:
+			/* nothing to do here */
+			break;
+	}
+
+	tval->range = (range != RANGE_NONE);
+	tval->t1 = mktime(tm);
+	tval->t2 = mktime(&tm_up) - 1;
+
+	if (tz_supplied) {
+		/*
+		 * The 'offset' is with respect to the GMT.
+		 * Calculate what the offset is with respect
+		 * to our local timezone and adjust times
+		 * so they represent time in our local timezone.
+		 */
+		offset -= _local_tz_offset(tval->t1);
+		tval->t1 -= offset;
+		tval->t2 -= offset;
+	}
+}
+
+static int _parse_formatted_date_time(char *str, struct time_value *tval)
+{
+	time_range_t range = RANGE_NONE;
+	struct tm tm = {0};
+	int gmt_offset;
+	int tz_supplied;
+
+	tm.tm_year = tm.tm_mday = tm.tm_mon = -1;
+	tm.tm_hour = tm.tm_min = tm.tm_sec = -1;
+	tm.tm_isdst = tm.tm_wday = tm.tm_yday = -1;
+
+	if (!(str = _get_date(str, &tm, &range)))
+		return 0;
+
+	if (!(str = _get_time(str, &tm, &range)))
+		return 0;
+
+	if (!(str = _get_tz(str, &tz_supplied, &gmt_offset)))
+		return 0;
+
+	if (*str)
+		return 0;
+
+	_get_final_time(range, &tm, tz_supplied, gmt_offset, tval);
+
+	return 1;
+}
+
+static const char *_tok_value_time(const struct dm_report_field_type *ft,
+				   struct dm_pool *mem, const char *s,
+				   const char **begin, const char **end,
+				   struct time_value *tval)
+{
+	char *time_str = NULL;
+	const char *r = NULL;
+	uint64_t t;
+	char c;
+
+	s = _skip_space(s);
+
+	if (*s == '@') {
+		/* Absolute time value in number of seconds since epoch. */
+		if (!(s = _tok_value_number(s+1, begin, end)))
+			goto_out;
+
+		if (!(time_str = dm_pool_strndup(mem, *begin, *end - *begin))) {
+			log_error("_tok_value_time: dm_pool_strndup failed");
+			goto out;
+		}
+
+		if (((t = strtoull(time_str, NULL, 10)) == ULLONG_MAX) && errno == ERANGE) {
+			log_error(_out_of_range_msg, time_str, ft->id);
+			goto out;
+		}
+
+		tval->range = 0;
+		tval->t1 = (time_t) t;
+		tval->t2 = 0;
+		r = s;
+	} else {
+		c = _get_and_skip_quote_char(&s);
+		if (!(s = _tok_value_string(s, begin, end, c, SEL_AND | SEL_OR | SEL_PRECEDENCE_PE, NULL)))
+			goto_out;
+
+		if (!(time_str = dm_pool_strndup(mem, *begin, *end - *begin))) {
+			log_error("tok_value_time: dm_pool_strndup failed");
+			goto out;
+		}
+
+		if (!_parse_formatted_date_time(time_str, tval))
+			goto_out;
+		r = s;
+	}
+out:
+	if (time_str)
+		dm_pool_free(mem, time_str);
+	return r;
+}
+
 /*
  * Input:
  *   ft              - field type for which the value is parsed
@@ -2311,19 +3005,28 @@ static const char *_tok_value(struct dm_report *rh,
 			      const char *s,
 			      const char **begin, const char **end,
 			      uint32_t *flags,
-			      const struct dm_report_reserved_value **reserved,
+			      struct reserved_value_wrapper *rvw,
 			      struct dm_pool *mem, void *custom)
 {
 	int expected_type = ft->flags & DM_REPORT_FIELD_TYPE_MASK;
 	struct selection_str_list **str_list;
+	struct time_value *tval;
 	uint64_t *factor;
 	const char *tmp;
 	char c;
 
 	s = _skip_space(s);
 
-	s = _get_reserved(rh, expected_type, field_num, implicit, s, begin, end, reserved);
-	if (*reserved) {
+	s = _get_reserved(rh, expected_type, field_num, implicit, s, begin, end, rvw);
+	if (rvw->reserved) {
+		/*
+		 * FLD_CMP_NUMBER shares operators with FLD_CMP_TIME,
+		 * so adjust flags here based on expected type.
+		 */
+		if (expected_type == DM_REPORT_FIELD_TYPE_TIME)
+			*flags &= ~FLD_CMP_NUMBER;
+		else if (expected_type == DM_REPORT_FIELD_TYPE_NUMBER)
+			*flags &= ~FLD_CMP_TIME;
 		*flags |= expected_type;
 		return s;
 	}
@@ -2395,6 +3098,28 @@ static const char *_tok_value(struct dm_report *rh,
 			}
 
 			*flags |= expected_type;
+			/*
+			 * FLD_CMP_NUMBER shares operators with FLD_CMP_TIME,
+			 * but we have NUMBER here, so remove FLD_CMP_TIME.
+			 */
+			*flags &= ~FLD_CMP_TIME;
+			break;
+
+		case DM_REPORT_FIELD_TYPE_TIME:
+			tval = (struct time_value *) custom;
+			if (!(s = _tok_value_time(ft, mem, s, begin, end, tval))) {
+				log_error("Failed to parse time value "
+					  "for selection field %s.", ft->id);
+				return NULL;
+			}
+
+			*flags |= DM_REPORT_FIELD_TYPE_TIME;
+			/*
+			 * FLD_CMP_TIME shares operators with FLD_CMP_NUMBER,
+			 * but we have TIME here, so remove FLD_CMP_NUMBER.
+			 */
+			*flags &= ~FLD_CMP_NUMBER;
+			break;
 	}
 
 	return s;
@@ -2425,12 +3150,45 @@ static const char *_tok_field_name(const char *s,
 	return s;
 }
 
-static const void *_get_reserved_value(const struct dm_report_reserved_value *reserved)
+static int _get_reserved_value(struct dm_report *rh, uint32_t field_num,
+			       struct reserved_value_wrapper *rvw)
 {
-	if (reserved->type)
-		return reserved->value;
+	const void *tmp_value;
+	dm_report_reserved_handler handler;
+	int r;
+
+	if (!rvw->reserved) {
+		rvw->value = NULL;
+		return 1;
+	}
+
+	if (rvw->reserved->type & DM_REPORT_FIELD_TYPE_MASK)
+		/* type reserved value */
+		tmp_value = rvw->reserved->value;
 	else
-		return ((const struct dm_report_field_reserved_value *) reserved->value)->value;
+		/* per-field reserved value */
+		tmp_value = ((const struct dm_report_field_reserved_value *) rvw->reserved->value)->value;
+
+	if (rvw->reserved->type & (DM_REPORT_FIELD_RESERVED_VALUE_DYNAMIC_VALUE | DM_REPORT_FIELD_RESERVED_VALUE_FUZZY_NAMES)) {
+		handler = (dm_report_reserved_handler) tmp_value;
+		if ((r = handler(rh, rh->selection->mem, field_num,
+				 DM_REPORT_RESERVED_GET_DYNAMIC_VALUE,
+				 rvw->matched_name, &tmp_value) <= 0)) {
+			if (r == -1)
+				log_error(INTERNAL_ERROR "%s reserved value handler for field %s has missing"
+					  "implementation of DM_REPORT_RESERVED_GET_DYNAMIC_VALUE action",
+					  (rvw->reserved->type) & DM_REPORT_FIELD_TYPE_MASK ? "type-specific" : "field-specific",
+					  rh->fields[field_num].id);
+			else
+				log_error("Error occured while processing %s reserved value handler for field %s",
+					  (rvw->reserved->type) & DM_REPORT_FIELD_TYPE_MASK ? "type-specific" : "field-specific",
+					  rh->fields[field_num].id);
+			return 0;
+		}
+	}
+
+	rvw->value = tmp_value;
+	return 1;
 }
 
 static struct field_selection *_create_field_selection(struct dm_report *rh,
@@ -2439,15 +3197,16 @@ static struct field_selection *_create_field_selection(struct dm_report *rh,
 						       const char *v,
 						       size_t len,
 						       uint32_t flags,
-						       const struct dm_report_reserved_value *reserved,
+						       struct reserved_value_wrapper *rvw,
 						       void *custom)
 {
-	static const char *_out_of_range_msg = "Field selection value %s out of supported range for field %s.";
+	static const char *_field_selection_value_alloc_failed_msg = "dm_report: struct field_selection_value allocation failed for selection field %s";
 	const struct dm_report_field_type *fields = implicit ? _implicit_report_fields
 							     : rh->fields;
 	struct field_properties *fp, *found = NULL;
 	struct field_selection *fs;
 	const char *field_id;
+	struct time_value *tval;
 	uint64_t factor;
 	char *s;
 
@@ -2479,8 +3238,28 @@ static struct field_selection *_create_field_selection(struct dm_report *rh,
 			  "allocation failed for selection field %s", field_id);
 		return NULL;
 	}
+
+	if (!(fs->value = dm_pool_zalloc(rh->selection->mem, sizeof(struct field_selection_value)))) {
+		log_error(_field_selection_value_alloc_failed_msg, field_id);
+		goto error;
+	}
+
+	if (((rvw->reserved && (rvw->reserved->type & DM_REPORT_FIELD_RESERVED_VALUE_RANGE)) ||
+	    (((flags & DM_REPORT_FIELD_TYPE_MASK) == DM_REPORT_FIELD_TYPE_TIME) && ((struct time_value *) custom)->range))
+		 &&
+	    !(fs->value->next = dm_pool_zalloc(rh->selection->mem, sizeof(struct field_selection_value)))) {
+		log_error(_field_selection_value_alloc_failed_msg, field_id);
+		goto error;
+	}
+
 	fs->fp = found;
 	fs->flags = flags;
+
+	if (!_get_reserved_value(rh, field_num, rvw)) {
+		log_error("dm_report: could not get reserved value "
+			  "while processing selection field %s", field_id);
+		goto error;
+	}
 
 	/* store comparison operand */
 	if (flags & FLD_CMP_REGEX) {
@@ -2493,94 +3272,116 @@ static struct field_selection *_create_field_selection(struct dm_report *rh,
 		memcpy(s, v, len);
 		s[len] = '\0';
 
-		fs->v.r = dm_regex_create(rh->selection->mem, (const char **) &s, 1);
+		fs->value->v.r = dm_regex_create(rh->selection->mem, (const char **) &s, 1);
 		dm_free(s);
-		if (!fs->v.r) {
+		if (!fs->value->v.r) {
 			log_error("dm_report: failed to create regex "
 				  "matcher for selection field %s", field_id);
 			goto error;
 		}
 	} else {
-		/* STRING, NUMBER, SIZE or STRING_LIST */
-		if (!(s = dm_pool_alloc(rh->selection->mem, len + 1))) {
-			log_error("dm_report: dm_pool_alloc failed to store "
-				  "value for selection field %s", field_id);
+		/* STRING, NUMBER, SIZE, PERCENT, STRING_LIST, TIME */
+		if (!(s = dm_pool_strndup(rh->selection->mem, v, len))) {
+			log_error("dm_report: dm_pool_strndup for value "
+				  "of selection field %s", field_id);
 			goto error;
 		}
-		memcpy(s, v, len);
-		s[len] = '\0';
 
 		switch (flags & DM_REPORT_FIELD_TYPE_MASK) {
 			case DM_REPORT_FIELD_TYPE_STRING:
-				if (reserved) {
-					fs->v.s = (const char *) _get_reserved_value(reserved);
+				if (rvw->value) {
+					fs->value->v.s = (const char *) rvw->value;
+					if (rvw->reserved->type & DM_REPORT_FIELD_RESERVED_VALUE_RANGE)
+						fs->value->next->v.s = (((const char **) rvw->value)[1]);
 					dm_pool_free(rh->selection->mem, s);
 				} else {
-					fs->v.s = s;
-					if (_check_value_is_reserved(rh, field_num, DM_REPORT_FIELD_TYPE_STRING, fs->v.s, NULL)) {
-						log_error("String value %s found in selection is reserved.", fs->v.s);
+					fs->value->v.s = s;
+					if (_check_value_is_strictly_reserved(rh, field_num, DM_REPORT_FIELD_TYPE_STRING, fs->value->v.s, NULL)) {
+						log_error("String value %s found in selection is reserved.", fs->value->v.s);
 						goto error;
 					}
 				}
 				break;
 			case DM_REPORT_FIELD_TYPE_NUMBER:
-				if (reserved)
-					fs->v.i = *(uint64_t *) _get_reserved_value(reserved);
-				else {
-					if (((fs->v.i = strtoull(s, NULL, 10)) == ULLONG_MAX) &&
+				if (rvw->value) {
+					fs->value->v.i = *(uint64_t *) rvw->value;
+					if (rvw->reserved->type & DM_REPORT_FIELD_RESERVED_VALUE_RANGE)
+						fs->value->next->v.i = (((uint64_t *) rvw->value)[1]);
+				} else {
+					if (((fs->value->v.i = strtoull(s, NULL, 10)) == ULLONG_MAX) &&
 						 (errno == ERANGE)) {
 						log_error(_out_of_range_msg, s, field_id);
 						goto error;
 					}
-					if (_check_value_is_reserved(rh, field_num, DM_REPORT_FIELD_TYPE_NUMBER, &fs->v.i, NULL)) {
-						log_error("Numeric value %" PRIu64 " found in selection is reserved.", fs->v.i);
+					if (_check_value_is_strictly_reserved(rh, field_num, DM_REPORT_FIELD_TYPE_NUMBER, &fs->value->v.i, NULL)) {
+						log_error("Numeric value %" PRIu64 " found in selection is reserved.", fs->value->v.i);
 						goto error;
 					}
 				}
 				dm_pool_free(rh->selection->mem, s);
 				break;
 			case DM_REPORT_FIELD_TYPE_SIZE:
-				if (reserved)
-					fs->v.d = *(double *) _get_reserved_value(reserved);
-				else {
-					fs->v.d = strtod(s, NULL);
+				if (rvw->value) {
+					fs->value->v.d = *(double *) rvw->value;
+					if (rvw->reserved->type & DM_REPORT_FIELD_RESERVED_VALUE_RANGE)
+						fs->value->next->v.d = (((double *) rvw->value)[1]);
+				} else {
+					fs->value->v.d = strtod(s, NULL);
 					if (errno == ERANGE) {
 						log_error(_out_of_range_msg, s, field_id);
 						goto error;
 					}
 					if (custom && (factor = *((uint64_t *)custom)))
-						fs->v.d *= factor;
-					fs->v.d /= 512; /* store size in sectors! */
-					if (_check_value_is_reserved(rh, field_num, DM_REPORT_FIELD_TYPE_SIZE, &fs->v.d, NULL)) {
-						log_error("Size value %f found in selection is reserved.", fs->v.d);
+						fs->value->v.d *= factor;
+					fs->value->v.d /= 512; /* store size in sectors! */
+					if (_check_value_is_strictly_reserved(rh, field_num, DM_REPORT_FIELD_TYPE_SIZE, &fs->value->v.d, NULL)) {
+						log_error("Size value %f found in selection is reserved.", fs->value->v.d);
 						goto error;
 					}
 				}
 				dm_pool_free(rh->selection->mem, s);
 				break;
 			case DM_REPORT_FIELD_TYPE_PERCENT:
-				if (reserved)
-					fs->v.i = *(uint64_t *) _get_reserved_value(reserved);
-				else {
-					fs->v.d = strtod(s, NULL);
-					if ((errno == ERANGE) || (fs->v.d < 0) || (fs->v.d > 100)) {
+				if (rvw->value) {
+					fs->value->v.i = *(uint64_t *) rvw->value;
+					if (rvw->reserved->type & DM_REPORT_FIELD_RESERVED_VALUE_RANGE)
+						fs->value->next->v.i = (((uint64_t *) rvw->value)[1]);
+				} else {
+					fs->value->v.d = strtod(s, NULL);
+					if ((errno == ERANGE) || (fs->value->v.d < 0) || (fs->value->v.d > 100)) {
 						log_error(_out_of_range_msg, s, field_id);
 						goto error;
 					}
 
-					fs->v.i = (dm_percent_t) (DM_PERCENT_1 * fs->v.d);
+					fs->value->v.i = (dm_percent_t) (DM_PERCENT_1 * fs->value->v.d);
 
-					if (_check_value_is_reserved(rh, field_num, DM_REPORT_FIELD_TYPE_PERCENT, &fs->v.i, NULL)) {
+					if (_check_value_is_strictly_reserved(rh, field_num, DM_REPORT_FIELD_TYPE_PERCENT, &fs->value->v.i, NULL)) {
 						log_error("Percent value %s found in selection is reserved.", s);
 						goto error;
 					}
 				}
 				break;
 			case DM_REPORT_FIELD_TYPE_STRING_LIST:
-				fs->v.l = *(struct selection_str_list **)custom;
-				if (_check_value_is_reserved(rh, field_num, DM_REPORT_FIELD_TYPE_STRING_LIST, fs->v.l, NULL)) {
+				fs->value->v.l = *(struct selection_str_list **)custom;
+				if (_check_value_is_strictly_reserved(rh, field_num, DM_REPORT_FIELD_TYPE_STRING_LIST, fs->value->v.l, NULL)) {
 					log_error("String list value found in selection is reserved.");
 					goto error;
+				}
+				break;
+			case DM_REPORT_FIELD_TYPE_TIME:
+				if (rvw->value) {
+					fs->value->v.t = *(time_t *) rvw->value;
+					if (rvw->reserved->type & DM_REPORT_FIELD_RESERVED_VALUE_RANGE)
+						fs->value->next->v.t = (((time_t *) rvw->value)[1]);
+				} else {
+					tval = (struct time_value *) custom;
+					fs->value->v.t = tval->t1;
+					if (tval->range)
+						fs->value->next->v.t = tval->t2;
+					if (_check_value_is_strictly_reserved(rh, field_num, DM_REPORT_FIELD_TYPE_TIME, &fs->value->v.t, NULL)) {
+						log_error("Time value found in selection is reserved.");
+						goto error;
+					}
 				}
 				break;
 			default:
@@ -2674,7 +3475,7 @@ out_reserved_values:
 	log_warn("  Comparison operators:");
 	t = _op_cmp;
 	for (; t->string; t++)
-		log_warn("    %4s  - %s", t->string, t->desc);
+		log_warn("    %6s  - %s", t->string, t->desc);
 	log_warn(" ");
 	log_warn("  Logical and grouping operators:");
 	t = _op_log;
@@ -2718,7 +3519,8 @@ static struct selection_node *_parse_selection(struct dm_report *rh,
 	int implicit;
 	const struct dm_report_field_type *ft;
 	struct selection_str_list *str_list;
-	const struct dm_report_reserved_value *reserved;
+	struct reserved_value_wrapper rvw = {0};
+	struct time_value tval;
 	uint64_t factor;
 	void *custom = NULL;
 	char *tmp;
@@ -2769,39 +3571,54 @@ static struct selection_node *_parse_selection(struct dm_report *rh,
 		goto bad;
 	}
 
-	/* some operators can compare only numeric fields (NUMBER, SIZE or PERCENT) */
-	if ((flags & FLD_CMP_NUMBER) &&
-	    (ft->flags != DM_REPORT_FIELD_TYPE_NUMBER) &&
-	    (ft->flags != DM_REPORT_FIELD_TYPE_SIZE) &&
-	    (ft->flags != DM_REPORT_FIELD_TYPE_PERCENT)) {
-		_display_selection_help(rh);
-		log_error("Operator can be used only with number, size or percent fields: %s", ws);
-		goto bad;
-	}
-
 	/* comparison value */
 	if (flags & FLD_CMP_REGEX) {
-		if (!(last = _tok_value_regex(rh, ft, last, &vs, &ve, &flags, &reserved)))
+		/*
+		 * REGEX value
+		 */
+		if (!(last = _tok_value_regex(rh, ft, last, &vs, &ve, &flags, &rvw)))
 			goto_bad;
 	} else {
+		/*
+		 * STRING, NUMBER, SIZE, PERCENT, STRING_LIST, TIME value
+		 */
+		if (flags & FLD_CMP_NUMBER) {
+			if (!(ft->flags & (DM_REPORT_FIELD_TYPE_NUMBER |
+					   DM_REPORT_FIELD_TYPE_SIZE |
+					   DM_REPORT_FIELD_TYPE_PERCENT |
+					   DM_REPORT_FIELD_TYPE_TIME))) {
+				_display_selection_help(rh);
+				log_error("Operator can be used only with number, size, time or percent fields: %s", ws);
+				goto bad;
+			}
+		} else if (flags & FLD_CMP_TIME) {
+			if (!(ft->flags & DM_REPORT_FIELD_TYPE_TIME)) {
+				_display_selection_help(rh);
+				log_error("Operator can be used only with time fields: %s", ws);
+				goto bad;
+			}
+		}
+
 		if (ft->flags == DM_REPORT_FIELD_TYPE_SIZE ||
 		    ft->flags == DM_REPORT_FIELD_TYPE_NUMBER ||
 		    ft->flags == DM_REPORT_FIELD_TYPE_PERCENT)
 			custom = &factor;
+		else if (ft->flags & DM_REPORT_FIELD_TYPE_TIME)
+			custom = &tval;
 		else if (ft->flags == DM_REPORT_FIELD_TYPE_STRING_LIST)
 			custom = &str_list;
 		else
 			custom = NULL;
 		if (!(last = _tok_value(rh, ft, field_num, implicit,
 					last, &vs, &ve, &flags,
-					&reserved, rh->selection->mem, custom)))
+					&rvw, rh->selection->mem, custom)))
 			goto_bad;
 	}
 
 	*next = _skip_space(last);
 
 	/* create selection */
-	if (!(fs = _create_field_selection(rh, field_num, implicit, vs, (size_t) (ve - vs), flags, reserved, custom)))
+	if (!(fs = _create_field_selection(rh, field_num, implicit, vs, (size_t) (ve - vs), flags, &rvw, custom)))
 		return_NULL;
 
 	/* create selection node */
@@ -3103,7 +3920,8 @@ static int _row_compare(const void *a, const void *b)
 		sfa = (*rowa->sort_fields)[cnt];
 		sfb = (*rowb->sort_fields)[cnt];
 		if ((sfa->props->flags & DM_REPORT_FIELD_TYPE_NUMBER) ||
-		    (sfa->props->flags & DM_REPORT_FIELD_TYPE_SIZE)) {
+		    (sfa->props->flags & DM_REPORT_FIELD_TYPE_SIZE) ||
+		    (sfa->props->flags & DM_REPORT_FIELD_TYPE_TIME)) {
 			const uint64_t numa =
 			    *(const uint64_t *) sfa->sort_value;
 			const uint64_t numb =

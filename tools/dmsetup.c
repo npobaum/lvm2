@@ -16,22 +16,13 @@
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
-#define _GNU_SOURCE
-#define _FILE_OFFSET_BITS 64
-
-#include "configure.h"
+#include "tool.h"
 
 #include "dm-logging.h"
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <ctype.h>
 #include <dirent.h>
-#include <errno.h>
-#include <unistd.h>
 #include <sys/wait.h>
-#include <unistd.h>
 #include <sys/param.h>
 #include <locale.h>
 #include <langinfo.h>
@@ -1186,7 +1177,7 @@ static int _udevcomplete_all(CMD_ARGS)
 			if (semctl(sid, 0, IPC_RMID, 0) < 0) {
 				log_error("Could not cleanup notification semaphore "
 					  "with semid %d and cookie value "
-					  "%" PRIu32 " (0x%" PRIx32 ")", sid,
+					  FMTu32 " (0x" FMTx32 ")", sid,
 					  sdata.sem_perm.__key, sdata.sem_perm.__key);
 				continue;
 			}
@@ -1196,7 +1187,7 @@ static int _udevcomplete_all(CMD_ARGS)
 	}
 
 	log_print("%d semaphores with keys prefixed by "
-		  "%" PRIu16 " (0x%" PRIx16 ") destroyed. %d skipped.",
+		  FMTu16 " (0x" FMTx16 ") destroyed. %d skipped.",
 		  counter, DM_COOKIE_MAGIC, DM_COOKIE_MAGIC, skipped);
 
 	return 1;
@@ -1713,7 +1704,7 @@ static int _status(CMD_ARGS)
 					while (*c && *c != ' ')
 						*c++ = '0';
 				}
-				printf("%" PRIu64 " %" PRIu64 " %s %s",
+				printf(FMTu64 " " FMTu64 " %s %s",
 				       start, length, target_type, params);
 			}
 			printf("\n");

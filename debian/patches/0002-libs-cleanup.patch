@@ -1,4 +1,4 @@
-From f50b922591326fb26b5b9d18e56753c27e6b3ba6 Mon Sep 17 00:00:00 2001
+From c0184ef65a1faa9095c2d931d55eeb83814df0c9 Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 30 Jun 2015 11:46:05 +0200
 Subject: libs-cleanup
@@ -8,10 +8,10 @@ Subject: libs-cleanup
  1 file changed, 7 insertions(+), 60 deletions(-)
 
 diff --git a/configure.in b/configure.in
-index 86ab98a..c2123b4 100644
+index 7bb18a4..242c9d9 100644
 --- a/configure.in
 +++ b/configure.in
-@@ -613,7 +613,7 @@ dnl -- Disable readline
+@@ -651,7 +651,7 @@ dnl -- Disable readline
  AC_MSG_CHECKING(whether to enable readline)
  AC_ARG_ENABLE([readline],
  	      AC_HELP_STRING([--disable-readline], [disable readline support]),
@@ -20,7 +20,7 @@ index 86ab98a..c2123b4 100644
  AC_MSG_RESULT($READLINE)
  
  ################################################################################
-@@ -1410,21 +1410,9 @@ AC_MSG_RESULT($SELINUX)
+@@ -1544,21 +1544,9 @@ AC_MSG_RESULT($SELINUX)
  ################################################################################
  dnl -- Check for selinux
  if test "$SELINUX" = yes; then
@@ -45,7 +45,7 @@ index 86ab98a..c2123b4 100644
  fi
  
  ################################################################################
-@@ -1457,49 +1445,6 @@ dnl -- Check for getopt
+@@ -1591,49 +1579,6 @@ dnl -- Check for getopt
  AC_CHECK_HEADERS(getopt.h, AC_DEFINE([HAVE_GETOPTLONG], 1, [Define to 1 if getopt_long is available.]))
  
  ################################################################################
@@ -95,7 +95,7 @@ index 86ab98a..c2123b4 100644
  dnl -- Internationalisation stuff
  AC_MSG_CHECKING(whether to enable internationalisation)
  AC_ARG_ENABLE(nls,
-@@ -1582,7 +1527,8 @@ AC_ARG_WITH(tmpfilesdir,
+@@ -1716,7 +1661,8 @@ AC_ARG_WITH(tmpfilesdir,
  ################################################################################
  dnl -- Ensure additional headers required
  if test "$READLINE" = yes; then
@@ -105,7 +105,7 @@ index 86ab98a..c2123b4 100644
  fi
  
  if test "$CLVMD" != none; then
-@@ -1837,6 +1783,7 @@ AC_SUBST(SACKPT_LIBS)
+@@ -1976,6 +1922,7 @@ AC_SUBST(SACKPT_LIBS)
  AC_SUBST(SALCK_CFLAGS)
  AC_SUBST(SALCK_LIBS)
  AC_SUBST(SELINUX_LIBS)
