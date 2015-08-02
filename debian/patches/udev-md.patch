@@ -1,0 +1,26 @@
+From 329e01b05085261272c3c8eb31c81449b28ee252 Mon Sep 17 00:00:00 2001
+From: Bastian Blank <waldi@debian.org>
+Date: Sun, 2 Aug 2015 10:03:28 +0200
+Subject: Workaround incorrect blkid call in mdadm udev
+
+Patch-Name: udev-md.patch
+---
+ udev/69-dm-lvm-metad.rules.in | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/udev/69-dm-lvm-metad.rules.in b/udev/69-dm-lvm-metad.rules.in
+index bd75fc8..9f12c39 100644
+--- a/udev/69-dm-lvm-metad.rules.in
++++ b/udev/69-dm-lvm-metad.rules.in
+@@ -27,6 +27,11 @@ ENV{ID_FS_TYPE}=="LVM2_member|LVM1_member", ENV{.ID_FS_TYPE_NEW}!="LVM2_member|L
+ ENV{ID_FS_TYPE}="$env{.ID_FS_TYPE_NEW}"
+ ENV{LVM_PV_GONE}=="1", GOTO="lvm_scan"
+ 
++# XXX: Properly call blkid on md devices. Workaround for #793631
++KERNEL!="md[0-9]*", GOTO="next"
++IMPORT{builtin}="blkid"
++LABEL="next"
++
+ # Only process devices already marked as a PV - this requires blkid to be called before.
+ ENV{ID_FS_TYPE}!="LVM2_member|LVM1_member", GOTO="lvm_end"
+ ENV{DM_MULTIPATH_DEVICE_PATH}=="1", GOTO="lvm_end"
