@@ -27,6 +27,11 @@ ENV{ID_FS_TYPE}=="LVM2_member|LVM1_member", ENV{.ID_FS_TYPE_NEW}!="LVM2_member|L
 ENV{ID_FS_TYPE}="$env{.ID_FS_TYPE_NEW}"
 ENV{LVM_PV_GONE}=="1", GOTO="lvm_scan"
 
+# XXX: Properly call blkid on md devices. Workaround for #793631
+KERNEL!="md[0-9]*", GOTO="next"
+IMPORT{builtin}="blkid"
+LABEL="next"
+
 # Only process devices already marked as a PV - this requires blkid to be called before.
 ENV{ID_FS_TYPE}!="LVM2_member|LVM1_member", GOTO="lvm_end"
 ENV{DM_MULTIPATH_DEVICE_PATH}=="1", GOTO="lvm_end"
