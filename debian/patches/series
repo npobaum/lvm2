@@ -8,3 +8,4 @@
 0008-systemd.patch
 0009-clvmd-openais-format.patch
 0010-cleanup.patch
+udev-md.patch
