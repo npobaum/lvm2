@@ -94,7 +94,8 @@ $(STAMPS_DIR)/setup_deb: $(STAMPS_DIR)/source
 		--enable-pkgconfig \
 		--enable-readline \
 		--enable-udev_rules \
-		--enable-udev_sync
+		--enable-udev_sync \
+		--disable-udev-systemd-background-jobs
 	touch $@
 
 $(STAMPS_DIR)/setup_udeb: SOURCE_DIR = $(BUILD_DIR)/source
