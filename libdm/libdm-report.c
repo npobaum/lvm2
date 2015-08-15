@@ -35,6 +35,12 @@ struct selection {
 struct dm_report {
 	struct dm_pool *mem;
 
+	/**
+	 * Cache the first row allocated so that all rows and fields
+	 * can be disposed of in a single dm_pool_free() call.
+	 */
+	struct row *first_row;
+
 	/* To report all available types */
 #define REPORT_TYPES_ALL	UINT32_MAX
 	uint32_t report_types;
@@ -53,6 +59,7 @@ struct dm_report {
 
 	/* Array of field definitions */
 	const struct dm_report_field_type *fields;
+	const char **canonical_field_ids;
 	const struct dm_report_object_type *types;
 
 	/* To store caller private data */
@@ -151,18 +158,18 @@ static struct op_def _op_cmp[] = {
 #define SEL_LIST_SUBSET_LE	0x00080000
 
 static struct op_def _op_log[] = {
-        { "&&", SEL_AND, "All fields must match" },
+	{ "&&", SEL_AND, "All fields must match" },
 	{ ",", SEL_AND, "All fields must match" },
-        { "||", SEL_OR, "At least one field must match" },
+	{ "||", SEL_OR, "At least one field must match" },
 	{ "#", SEL_OR, "At least one field must match" },
-        { "!", SEL_MODIFIER_NOT, "Logical negation" },
-        { "(", SEL_PRECEDENCE_PS, "Left parenthesis" },
-        { ")", SEL_PRECEDENCE_PE, "Right parenthesis" },
-        { "[", SEL_LIST_LS, "List start" },
-        { "]", SEL_LIST_LE, "List end"},
-        { "{", SEL_LIST_SUBSET_LS, "List subset start"},
-        { "}", SEL_LIST_SUBSET_LE, "List subset end"},
-        { NULL,  0, NULL},
+	{ "!", SEL_MODIFIER_NOT, "Logical negation" },
+	{ "(", SEL_PRECEDENCE_PS, "Left parenthesis" },
+	{ ")", SEL_PRECEDENCE_PE, "Right parenthesis" },
+	{ "[", SEL_LIST_LS, "List start" },
+	{ "]", SEL_LIST_LE, "List end"},
+	{ "{", SEL_LIST_SUBSET_LS, "List subset start"},
+	{ "}", SEL_LIST_SUBSET_LE, "List subset end"},
+	{ NULL,  0, NULL},
 };
 
 struct selection_str_list {
@@ -788,7 +795,7 @@ static struct field_properties * _add_field(struct dm_report *rh,
 {
 	struct field_properties *fp;
 
-	if (!(fp = dm_pool_zalloc(rh->mem, sizeof(struct field_properties)))) {
+	if (!(fp = dm_pool_zalloc(rh->mem, sizeof(*fp)))) {
 		log_error("dm_report: struct field_properties allocation "
 			  "failed");
 		return NULL;
@@ -814,25 +821,52 @@ static struct field_properties * _add_field(struct dm_report *rh,
 	return fp;
 }
 
+static int _get_canonical_field_name(const char *field,
+				     size_t flen,
+				     char *canonical_field,
+				     size_t fcanonical_len,
+				     int *differs)
+{
+	size_t i;
+	int diff = 0;
+
+	for (i = 0; *field && flen; field++, flen--) {
+		if (*field == '_') {
+			diff = 1;
+			continue;
+		}
+		if (i >= fcanonical_len) {
+			log_error("%s: field name too long", field);
+			return 0;
+		}
+		canonical_field[i++] = *field;
+	}
+
+	canonical_field[i] = '\0';
+	if (differs)
+		*differs = diff;
+	return 1;
+}
+
 /*
- * Compare name1 against name2 or prefix plus name2
- * name2 is not necessarily null-terminated.
- * len2 is the length of name2.
+ * Compare canonical_name1 against canonical_name2 or prefix
+ * plus canonical_name2. Canonical name is a name where all
+ * superfluous characters are removed (underscores for now).
+ * Both names are always null-terminated.
  */
-static int _is_same_field(const char *name1, const char *name2,
-			  size_t len2, const char *prefix)
+static int _is_same_field(const char *canonical_name1, const char *canonical_name2,
+			  const char *prefix)
 {
 	size_t prefix_len;
 
 	/* Exact match? */
-	if (!strncasecmp(name1, name2, len2) && strlen(name1) == len2)
+	if (!strcasecmp(canonical_name1, canonical_name2))
 		return 1;
 
 	/* Match including prefix? */
-	prefix_len = strlen(prefix);
-	if (!strncasecmp(prefix, name1, prefix_len) &&
-	    !strncasecmp(name1 + prefix_len, name2, len2) &&
-	    strlen(name1) == prefix_len + len2)
+	prefix_len = strlen(prefix) - 1;
+	if (!strncasecmp(prefix, canonical_name1, prefix_len) &&
+	    !strcasecmp(canonical_name1 + prefix_len, canonical_name2))
 		return 1;
 
 	return 0;
@@ -846,15 +880,20 @@ static void _all_match_combine(const struct dm_report_object_type *types,
 			       const char *field, size_t flen,
 			       uint32_t *report_types)
 {
+	char field_canon[DM_REPORT_FIELD_TYPE_ID_LEN];
 	const struct dm_report_object_type *t;
 	size_t prefix_len;
 
-	for (t = types; t->data_fn; t++) {
-		prefix_len = strlen(t->prefix);
+	if (!_get_canonical_field_name(field, flen, field_canon, DM_REPORT_FIELD_TYPE_ID_LEN, NULL))
+		return;
+	flen = strlen(field_canon);
 
-		if (!strncasecmp(t->prefix, field, prefix_len) &&
+	for (t = types; t->data_fn; t++) {
+		prefix_len = strlen(t->prefix) - 1;
+
+		if (!strncasecmp(t->prefix, field_canon, prefix_len) &&
 		    ((unprefixed_all_matched && (flen == prefix_len)) ||
-		     (!strncasecmp(field + prefix_len, "all", 3) &&
+		     (!strncasecmp(field_canon + prefix_len, "all", 3) &&
 		      (flen == prefix_len + 3))))
 			*report_types |= t->id;
 	}
@@ -899,13 +938,17 @@ static int _add_all_fields(struct dm_report *rh, uint32_t type)
 static int _get_field(struct dm_report *rh, const char *field, size_t flen,
 		      uint32_t *f_ret, int *implicit)
 {
+	char field_canon[DM_REPORT_FIELD_TYPE_ID_LEN];
 	uint32_t f;
 
 	if (!flen)
 		return 0;
 
+	if (!_get_canonical_field_name(field, flen, field_canon, DM_REPORT_FIELD_TYPE_ID_LEN, NULL))
+		return 0;
+
 	for (f = 0; _implicit_report_fields[f].report_fn; f++) {
-		if (_is_same_field(_implicit_report_fields[f].id, field, flen, rh->field_prefix)) {
+		if (_is_same_field(_implicit_report_fields[f].id, field_canon, rh->field_prefix)) {
 			*f_ret = f;
 			*implicit = 1;
 			return 1;
@@ -913,7 +956,7 @@ static int _get_field(struct dm_report *rh, const char *field, size_t flen,
 	}
 
 	for (f = 0; rh->fields[f].report_fn; f++) {
-		if (_is_same_field(rh->fields[f].id, field, flen, rh->field_prefix)) {
+		if (_is_same_field(rh->canonical_field_ids[f], field_canon, rh->field_prefix)) {
 			*f_ret = f;
 			*implicit = 0;
 			return 1;
@@ -992,6 +1035,7 @@ static int _add_sort_key(struct dm_report *rh, uint32_t field_num, int implicit,
 static int _key_match(struct dm_report *rh, const char *key, size_t len,
 		      unsigned report_type_only)
 {
+	char key_canon[DM_REPORT_FIELD_TYPE_ID_LEN];
 	uint32_t f;
 	uint32_t flags;
 
@@ -1014,12 +1058,15 @@ static int _key_match(struct dm_report *rh, const char *key, size_t len,
 		return 0;
 	}
 
+	if (!_get_canonical_field_name(key, len, key_canon, DM_REPORT_FIELD_TYPE_ID_LEN, NULL))
+		return 0;
+
 	for (f = 0; _implicit_report_fields[f].report_fn; f++)
-		if (_is_same_field(_implicit_report_fields[f].id, key, len, rh->field_prefix))
+		if (_is_same_field(_implicit_report_fields[f].id, key_canon, rh->field_prefix))
 			return _add_sort_key(rh, f, 1, flags, report_type_only);
 
 	for (f = 0; rh->fields[f].report_fn; f++)
-		if (_is_same_field(rh->fields[f].id, key, len, rh->field_prefix))
+		if (_is_same_field(rh->canonical_field_ids[f], key_canon, rh->field_prefix))
 			return _add_sort_key(rh, f, 0, flags, report_type_only);
 
 	return 0;
@@ -1127,6 +1174,36 @@ static int _help_requested(struct dm_report *rh)
 	return 0;
 }
 
+static int _canonicalize_field_ids(struct dm_report *rh)
+{
+	size_t registered_field_count = 0, i;
+	char canonical_field[DM_REPORT_FIELD_TYPE_ID_LEN];
+	char *canonical_field_dup;
+	int differs;
+
+	while (*rh->fields[registered_field_count].id)
+		registered_field_count++;
+
+	if (!(rh->canonical_field_ids = dm_pool_alloc(rh->mem, registered_field_count * sizeof(const char *)))) {
+		log_error("_canonicalize_field_ids: dm_pool_alloc failed");
+		return 0;
+	}
+
+	for (i = 0; i < registered_field_count; i++) {
+		if (!_get_canonical_field_name(rh->fields[i].id, strlen(rh->fields[i].id),
+					       canonical_field, DM_REPORT_FIELD_TYPE_ID_LEN, &differs))
+			return_0;
+
+		if (differs) {
+			canonical_field_dup = dm_pool_strdup(rh->mem, canonical_field);
+			rh->canonical_field_ids[i] = canonical_field_dup;
+		} else
+			rh->canonical_field_ids[i] = rh->fields[i].id;
+	}
+
+	return 1;
+}
+
 struct dm_report *dm_report_init(uint32_t *report_types,
 				 const struct dm_report_object_type *types,
 				 const struct dm_report_field_type *fields,
@@ -1184,6 +1261,11 @@ struct dm_report *dm_report_init(uint32_t *report_types,
 	if (!(rh->mem = dm_pool_create("report", 10 * 1024))) {
 		log_error("dm_report_init: allocation of memory pool failed");
 		dm_free(rh);
+		return NULL;
+	}
+
+	if (!_canonicalize_field_ids(rh)) {
+		dm_report_free(rh);
 		return NULL;
 	}
 
@@ -1800,6 +1882,9 @@ static int _do_report_object(struct dm_report *rh, void *object, int do_output, 
 		log_error("_do_report_object: struct row allocation failed");
 		return 0;
 	}
+
+	if (!rh->first_row)
+		rh->first_row = row;
 
 	row->rh = rh;
 
@@ -3835,9 +3920,6 @@ static int _report_headings(struct dm_report *rh)
 	char *buf = NULL;
 	size_t buf_size = 0;
 
-	if (rh->flags & RH_HEADINGS_PRINTED)
-		return 1;
-
 	rh->flags |= RH_HEADINGS_PRINTED;
 
 	if (!(rh->flags & DM_REPORT_OUTPUT_HEADINGS))
@@ -3894,8 +3976,12 @@ static int _report_headings(struct dm_report *rh)
 		log_error("dm_report: Failed to generate report headings for printing");
 		goto bad;
 	}
-	log_print("%s", (char *) dm_pool_end_object(rh->mem));
 
+	/* print all headings */
+	heading = (char *) dm_pool_end_object(rh->mem);
+	log_print("%s", heading);
+
+	dm_pool_free(rh->mem, (void *)heading);
 	dm_free(buf);
 
 	return 1;
@@ -3904,6 +3990,14 @@ static int _report_headings(struct dm_report *rh)
 	dm_free(buf);
 	dm_pool_abandon_object(rh->mem);
 	return 0;
+}
+
+int dm_report_column_headings(struct dm_report *rh)
+{
+	/* Columns-as-rows does not use _report_headings. */
+	if (rh->flags & DM_REPORT_OUTPUT_COLUMNS_AS_ROWS)
+		return 1;
+	return _report_headings(rh);
 }
 
 /*
@@ -4084,6 +4178,19 @@ bad:
 	return 0;
 }
 
+static void _destroy_rows(struct dm_report *rh)
+{
+	/*
+	 * free the first row allocated to this report: since this is a
+	 * pool allocation this will also free all subsequently allocated
+	 * rows from the report and any associated string data.
+	 */
+	if(rh->first_row)
+		dm_pool_free(rh->mem, rh->first_row);
+	rh->first_row = NULL;
+	dm_list_init(&rh->rows);
+}
+
 static int _output_as_rows(struct dm_report *rh)
 {
 	const struct dm_report_field_type *fields;
@@ -4139,6 +4246,8 @@ static int _output_as_rows(struct dm_report *rh)
 		log_print("%s", (char *) dm_pool_end_object(rh->mem));
 	}
 
+	_destroy_rows(rh);
+
 	return 1;
 
       bad:
@@ -4187,8 +4296,7 @@ static int _output_as_columns(struct dm_report *rh)
 		dm_list_del(&row->list);
 	}
 
-	if (row)
-		dm_pool_free(rh->mem, row);
+	_destroy_rows(rh);
 
 	return 1;
 
