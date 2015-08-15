@@ -115,9 +115,6 @@ static void _flags_str_to_lockd_flags(const char *flags_str, uint32_t *lockd_fla
 	if (strstr(flags_str, "NO_GL_LS"))
 		*lockd_flags |= LD_RF_NO_GL_LS;
 
-	if (strstr(flags_str, "LOCAL_LS"))
-		*lockd_flags |= LD_RF_LOCAL_LS;
-
 	if (strstr(flags_str, "DUP_GL_LS"))
 		*lockd_flags |= LD_RF_DUP_GL_LS;
 
@@ -126,6 +123,9 @@ static void _flags_str_to_lockd_flags(const char *flags_str, uint32_t *lockd_fla
 
 	if (strstr(flags_str, "ADD_LS_ERROR"))
 		*lockd_flags |= LD_RF_ADD_LS_ERROR;
+
+	if (strstr(flags_str, "WARN_GL_REMOVED"))
+		*lockd_flags |= LD_RF_WARN_GL_REMOVED;
 }
 
 /*
@@ -320,9 +320,6 @@ static int _lockd_request(struct cmd_context *cmd,
 
 /*
  * Eventually add an option to specify which pv the lvmlock lv should be placed on.
- * FIXME: when converting a VG from lock_type none to sanlock, we need to count
- * the number of existing LVs to ensure that the new sanlock_lv is large enough
- * for all of them that need locks.
  */
 
 static int _create_sanlock_lv(struct cmd_context *cmd, struct volume_group *vg,
@@ -559,7 +556,7 @@ out:
 	return ret;
 }
 
-static int _init_vg_sanlock(struct cmd_context *cmd, struct volume_group *vg)
+static int _init_vg_sanlock(struct cmd_context *cmd, struct volume_group *vg, int lv_lock_count)
 {
 	daemon_reply reply;
 	const char *reply_str;
@@ -588,7 +585,18 @@ static int _init_vg_sanlock(struct cmd_context *cmd, struct volume_group *vg)
 	 * LV, then activates the lvmlock LV.  The lvmlock LV must be active
 	 * before we ask lvmlockd to initialize the VG because sanlock needs
 	 * to initialize leases on the lvmlock LV.
+	 *
+	 * When converting an existing VG to sanlock, the sanlock lv needs to
+	 * be large enough to hold leases for all existing lvs needing locks.
+	 * One sanlock lease uses 1MB/8MB for 512/4K sector size devices, so
+	 * increase the initial size by 1MB/8MB for each existing lv.
+	 * FIXME: we don't know what sector size the pv will have, so we
+	 * multiply by 8 (MB) unnecessarily when the sector size is 512.
 	 */
+
+	if (lv_lock_count)
+		extend_mb += (lv_lock_count * 8);
+
 	if (!_create_sanlock_lv(cmd, vg, LOCKD_SANLOCK_LV_NAME, extend_mb)) {
 		log_error("Failed to create internal lv.");
 		return 0;
@@ -722,6 +730,7 @@ static int _free_vg_dlm(struct cmd_context *cmd, struct volume_group *vg)
 static int _free_vg_sanlock(struct cmd_context *cmd, struct volume_group *vg)
 {
 	daemon_reply reply;
+	uint32_t lockd_flags = 0;
 	int result;
 	int ret;
 
@@ -743,7 +752,7 @@ static int _free_vg_sanlock(struct cmd_context *cmd, struct volume_group *vg)
 				"vg_lock_args = %s", vg->lock_args,
 				NULL);
 
-	if (!_lockd_result(reply, &result, NULL)) {
+	if (!_lockd_result(reply, &result, &lockd_flags)) {
 		ret = 0;
 	} else {
 		ret = (result < 0) ? 0 : 1;
@@ -763,6 +772,9 @@ static int _free_vg_sanlock(struct cmd_context *cmd, struct volume_group *vg)
 		log_error("_free_vg_sanlock lvmlockd result %d", result);
 		goto out;
 	}
+
+	if (lockd_flags & LD_RF_WARN_GL_REMOVED)
+		log_warn("VG %s held the sanlock global lock, enable global lock in another VG.", vg->name);
 
 	/*
 	 * The usleep delay gives sanlock time to close the lock lv,
@@ -812,7 +824,7 @@ static void _forget_vg_name(struct cmd_context *cmd, struct volume_group *vg)
 /* vgcreate */
 
 int lockd_init_vg(struct cmd_context *cmd, struct volume_group *vg,
-		  const char *lock_type)
+		  const char *lock_type, int lv_lock_count)
 {
 	switch (get_lock_type_from_string(lock_type)) {
 	case LOCK_TYPE_NONE:
@@ -823,7 +835,7 @@ int lockd_init_vg(struct cmd_context *cmd, struct volume_group *vg,
 	case LOCK_TYPE_DLM:
 		return _init_vg_dlm(cmd, vg);
 	case LOCK_TYPE_SANLOCK:
-		return _init_vg_sanlock(cmd, vg);
+		return _init_vg_sanlock(cmd, vg, lv_lock_count);
 	default:
 		log_error("Unknown lock_type.");
 		return 0;
@@ -1177,23 +1189,48 @@ int lockd_gl_create(struct cmd_context *cmd, const char *def_mode, const char *v
 		 * skip acquiring the global lock when creating this initial
 		 * VG, and enable the global lock in this VG.
 		 *
-		 * Here we assume that this is an initial bootstrap condition
-		 * based on the fact that lvmlockd has seen no lockd VGs.
-		 * (A commmand line option could be added to allow the user
-		 * to make this initial bootstrap condition explicit.)
+		 * This initial bootstrap condition is identified based on
+		 * two things:
 		 *
-		 * That assumption might be wrong.  It is possible that a global
-		 * lock does exist in a VG that has not yet been seen.  If that
-		 * VG appears after this creates a new VG with a new enabled
-		 * global lock, then there will be two VGs containing enabled
-		 * global locks, and one will need to be disabled by the user.
+		 * 1. No sanlock VGs have been started in lvmlockd, causing
+		 *    lvmlockd to return NO_GL_LS/NO_LOCKSPACES.
+		 *
+		 * 2. No sanlock VGs are seen in lvmcache after the disk
+		 *    scan performed in lvmetad_validate_global_cache().
+		 *
+		 * If both of those are true, we go ahead and create this new
+		 * VG which will have the global lock enabled.  However, this
+		 * has a shortcoming: another sanlock VG may exist that hasn't
+		 * appeared to the system yet.  If that VG has its global lock
+		 * enabled, then when it appears later, duplicate global locks
+		 * will be seen, and a warning will indicate that one of them
+		 * should be disabled.
+		 *
+		 * The two bootstrap conditions have another shortcoming to the
+		 * opposite effect:  other sanlock VGs may be visible to the
+		 * system, but none of them have a global lock enabled.
+		 * In that case, it would make sense to create this new VG with
+		 * an enabled global lock.  (FIXME: we could detect that none
+		 * of the existing sanlock VGs have a gl enabled and allow this
+		 * vgcreate to go ahead.)  Enabling the global lock in one of
+		 * the existing sanlock VGs is currently the simplest solution.
 		 */
 
 		if ((lockd_flags & LD_RF_NO_GL_LS) &&
 		    (lockd_flags & LD_RF_NO_LOCKSPACES) &&
 		    !strcmp(vg_lock_type, "sanlock")) {
-			log_print_unless_silent("Enabling sanlock global lock");
 			lvmetad_validate_global_cache(cmd, 1);
+			/*
+			 * lvmcache holds provisional VG lock_type info because
+			 * lvmetad_validate_global_cache did a disk scan.
+			 */
+			if (lvmcache_contains_lock_type_sanlock(cmd)) {
+				/* FIXME: we could check that all are started, and then check that none have gl enabled. */
+				log_error("Global lock failed: start existing sanlock VGs to access global lock.");
+				log_error("(If all sanlock VGs are started, enable global lock with lvmlockctl.)");
+				return 0;
+			}
+			log_print_unless_silent("Enabling sanlock global lock");
 			return 1;
 		}
 
@@ -1320,6 +1357,7 @@ int lockd_gl(struct cmd_context *cmd, const char *def_mode, uint32_t flags)
 	const char *mode = NULL;
 	const char *opts = NULL;
 	uint32_t lockd_flags;
+	int force_cache_update = 0;
 	int retries = 0;
 	int result;
 
@@ -1364,8 +1402,8 @@ int lockd_gl(struct cmd_context *cmd, const char *def_mode, uint32_t flags)
 		/* We can continue reading if a shared lock fails. */
 		if (!strcmp(mode, "sh")) {
 			log_warn("Reading without shared global lock.");
-			lvmetad_validate_global_cache(cmd, 1);
-			return 1;
+			force_cache_update = 1;
+			goto allow;
 		}
 
 		log_error("Global lock failed: check that lvmlockd is running.");
@@ -1388,9 +1426,19 @@ int lockd_gl(struct cmd_context *cmd, const char *def_mode, uint32_t flags)
 	 *
 	 * ESTARTING: the lockspace with the gl is starting.
 	 * The VG with the global lock is starting and should finish shortly.
+	 *
+	 * ELOCKIO: sanlock gets i/o errors when trying to read/write leases
+	 * (This can progress to EVGKILLED.)
+	 *
+	 * EVGKILLED: the sanlock lockspace is being killed after losing
+	 * access to lease storage.
 	 */
 
-	if (result == -ENOLS || result == -ESTARTING) {
+	if (result == -ENOLS ||
+	    result == -ESTARTING ||
+	    result == -EVGKILLED ||
+	    result == -ELOCKIO) {
+
 		if (!strcmp(mode, "un"))
 			return 1;
 
@@ -1399,9 +1447,13 @@ int lockd_gl(struct cmd_context *cmd, const char *def_mode, uint32_t flags)
 		 */
 		if (strcmp(mode, "sh")) {
 			if (result == -ESTARTING)
-				log_error("Global lock failed: lockspace is starting.");
+				log_error("Global lock failed: lockspace is starting");
 			else if (result == -ENOLS)
-				log_error("Global lock failed: check that global lockspace is started.");
+				log_error("Global lock failed: check that global lockspace is started");
+			else if (result == -ELOCKIO)
+				log_error("Global lock failed: storage errors for sanlock leases");
+			else if (result == -EVGKILLED)
+				log_error("Global lock failed: storage failed for sanlock leases");
 			else
 				log_error("Global lock failed: error %d", result);
 			return 0;
@@ -1415,14 +1467,21 @@ int lockd_gl(struct cmd_context *cmd, const char *def_mode, uint32_t flags)
 
 		if (result == -ESTARTING) {
 			log_warn("Skipping global lock: lockspace is starting");
-			lvmetad_validate_global_cache(cmd, 1);
-			return 1;
+			force_cache_update = 1;
+			goto allow;
+		}
+
+		if (result == -ELOCKIO || result == -EVGKILLED) {
+			log_warn("Skipping global lock: storage %s for sanlock leases",
+				  result == -ELOCKIO ? "errors" : "failed");
+			force_cache_update = 1;
+			goto allow;
 		}
 
 		if ((lockd_flags & LD_RF_NO_GL_LS) || (lockd_flags & LD_RF_NO_LOCKSPACES)) {
 			log_warn("Skipping global lock: lockspace not found or started");
-			lvmetad_validate_global_cache(cmd, 1);
-			return 1;
+			force_cache_update = 1;
+			goto allow;
 		}
 
 		/*
@@ -1438,11 +1497,7 @@ int lockd_gl(struct cmd_context *cmd, const char *def_mode, uint32_t flags)
 		log_warn("Duplicate sanlock global locks should be corrected");
 
 	if (result < 0) {
-		if (ignorelockingfailure()) {
-			log_debug("Ignore failed locking for global lock");
-			lvmetad_validate_global_cache(cmd, 1);
-			return 1;
-		} else if (result == -EAGAIN) {
+		if (result == -EAGAIN) {
 			/*
 			 * Most of the time, retries should avoid this case.
 			 */
@@ -1459,9 +1514,8 @@ int lockd_gl(struct cmd_context *cmd, const char *def_mode, uint32_t flags)
 		}
 	}
 
-	if (!(flags & LDGL_SKIP_CACHE_VALIDATE))
-		lvmetad_validate_global_cache(cmd, 0);
-
+ allow:
+	lvmetad_validate_global_cache(cmd, force_cache_update);
 	return 1;
 }
 
@@ -1477,7 +1531,7 @@ int lockd_gl(struct cmd_context *cmd, const char *def_mode, uint32_t flags)
  *
  * The result of the VG lock operation needs to be saved in lockd_state
  * because the result needs to be passed into vg_read so it can be
- * assessed in combination with vg->lock_state.
+ * assessed in combination with vg->lock_type.
  *
  * The VG lock protects the VG metadata on disk from concurrent access
  * among hosts.  The VG lock also ensures that the local lvmetad cache
@@ -1654,6 +1708,28 @@ int lockd_vg(struct cmd_context *cmd, const char *vg_name, const char *def_mode,
 	}
 
 	/*
+	 * sanlock is getting i/o errors while reading/writing leases, or the
+	 * lockspace/VG is being killed after failing to renew its lease for
+	 * too long.
+	 */
+	if (result == -EVGKILLED || result == -ELOCKIO) {
+		const char *problem = (result == -ELOCKIO ? "errors" : "failed");
+
+		if (!strcmp(mode, "un")) {
+			ret = 1;
+			goto out;
+		} else if (!strcmp(mode, "sh")) {
+			log_warn("VG %s lock skipped: storage %s for sanlock leases", vg_name, problem);
+			ret = 1;
+			goto out;
+		} else {
+			log_error("VG %s lock failed: storage %s for sanlock leases", vg_name, problem);
+			ret = 0;
+			goto out;
+		}
+	}
+
+	/*
 	 * An unused/previous lockspace for the VG was found.
 	 * This means it must be a lockd VG, not local.  The
 	 * lockspace needs to be started to be used.
@@ -1732,11 +1808,6 @@ out:
 	 */
 	if ((lockd_flags & LD_RF_DUP_GL_LS) && strcmp(mode, "un"))
 		log_warn("Duplicate sanlock global lock in VG %s", vg_name);
- 
-	if (!ret && ignorelockingfailure()) {
-		log_debug("Ignore failed locking for VG %s", vg_name);
-		return 1;
-	}
  
 	return ret;
 }
@@ -1872,6 +1943,12 @@ int lockd_lv_name(struct cmd_context *cmd, struct volume_group *vg,
 
 	if (result == -ENOLS) {
 		log_error("LV %s/%s lock failed: lockspace is inactive", vg->name, lv_name);
+		return 0;
+	}
+
+	if (result == -EVGKILLED || result == -ELOCKIO) {
+		const char *problem = (result == -ELOCKIO ? "errors" : "failed");
+		log_error("LV %s/%s lock failed: storage %s for sanlock leases", vg->name, lv_name, problem);
 		return 0;
 	}
 

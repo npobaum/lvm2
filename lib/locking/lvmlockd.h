@@ -17,8 +17,7 @@
 #define LOCKD_SANLOCK_LV_NAME "lvmlock"
 
 /* lockd_gl flags */
-#define LDGL_SKIP_CACHE_VALIDATE  0x00000001
-#define LDGL_UPDATE_NAMES         0x00000002
+#define LDGL_UPDATE_NAMES         0x00000001
 
 /* lockd_lv flags */
 #define LDLV_MODE_NO_SH           0x00000001
@@ -27,7 +26,7 @@
 /* lvmlockd result flags */
 #define LD_RF_NO_LOCKSPACES     0x00000001
 #define LD_RF_NO_GL_LS          0x00000002
-#define LD_RF_LOCAL_LS          0x00000004
+#define LD_RF_WARN_GL_REMOVED   0x00000004
 #define LD_RF_DUP_GL_LS         0x00000008
 #define LD_RF_INACTIVE_LS       0x00000010
 #define LD_RF_ADD_LS_ERROR      0x00000020
@@ -54,7 +53,7 @@ void lvmlockd_disconnect(void);
 
 /* vgcreate/vgremove use init/free */
 
-int lockd_init_vg(struct cmd_context *cmd, struct volume_group *vg, const char *lock_type);
+int lockd_init_vg(struct cmd_context *cmd, struct volume_group *vg, const char *lock_type, int lv_lock_count);
 int lockd_free_vg_before(struct cmd_context *cmd, struct volume_group *vg);
 void lockd_free_vg_final(struct cmd_context *cmd, struct volume_group *vg);
 
@@ -125,7 +124,7 @@ static inline int lvmlockd_use(void)
 	return 0;
 }
 
-static inline int lockd_init_vg(struct cmd_context *cmd, struct volume_group *vg, const char *lock_type)
+static inline int lockd_init_vg(struct cmd_context *cmd, struct volume_group *vg, const char *lock_type, int lv_lock_count)
 {
 	return 1;
 }

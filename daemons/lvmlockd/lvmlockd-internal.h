@@ -51,6 +51,8 @@ enum {
 	LD_OP_RUNNING_LM,
 	LD_OP_FIND_FREE_LOCK,
 	LD_OP_FORGET_VG_NAME,
+	LD_OP_KILL_VG,
+	LD_OP_DROP_VG,
 };
 
 /* resource types */
@@ -101,6 +103,7 @@ struct client {
 #define LD_AF_INACTIVE_LS          0x00004000
 #define LD_AF_ADD_LS_ERROR         0x00008000
 #define LD_AF_ADOPT                0x00010000
+#define LD_AF_WARN_GL_REMOVED	   0x00020000
 
 /*
  * Number of times to repeat a lock request after
@@ -182,6 +185,9 @@ struct lockspace {
 	unsigned int thread_done : 1;
 	unsigned int sanlock_gl_enabled: 1;
 	unsigned int sanlock_gl_dup: 1;
+	unsigned int free_vg: 1;
+	unsigned int kill_vg: 1;
+	unsigned int drop_vg: 1;
 
 	struct list_head actions;	/* new client actions */
 	struct list_head resources;	/* resource/lock state for gl/vg/lv */
@@ -305,6 +311,7 @@ static inline int list_empty(const struct list_head *head)
  * or when disable_gl matches.
  */
 
+EXTERN int gl_running_dlm;
 EXTERN int gl_type_static;
 EXTERN int gl_use_dlm;
 EXTERN int gl_use_sanlock;
@@ -312,9 +319,6 @@ EXTERN pthread_mutex_t gl_type_mutex;
 
 EXTERN char gl_lsname_dlm[MAX_NAME+1];
 EXTERN char gl_lsname_sanlock[MAX_NAME+1];
-
-EXTERN int gl_running_dlm;
-EXTERN int gl_auto_dlm;
 
 EXTERN int daemon_test; /* run as much as possible without a live lock manager */
 EXTERN int daemon_debug;

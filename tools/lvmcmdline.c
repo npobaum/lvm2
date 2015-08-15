@@ -1463,6 +1463,11 @@ static int _init_lvmlockd(struct cmd_context *cmd)
 	return 1;
 }
 
+static int _cmd_no_meta_proc(struct cmd_context *cmd)
+{
+	return cmd->command->flags & NO_METADATA_PROCESSING;
+}
+
 int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 {
 	struct dm_config_tree *config_string_cft;
@@ -1541,7 +1546,7 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 			goto_out;
 		}
 
-	if (arg_count(cmd, config_ARG) || !cmd->config_initialized || config_files_changed(cmd)) {
+	if (arg_count(cmd, config_ARG) || !cmd->initialized.config || config_files_changed(cmd)) {
 		/* Reinitialise various settings inc. logging, filters */
 		if (!refresh_toolcontext(cmd)) {
 			if ((config_string_cft = remove_config_tree_by_source(cmd, CONFIG_STRING)))
@@ -1552,6 +1557,12 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 	}
 
 	if (!_prepare_profiles(cmd))
+		return_ECMD_FAILED;
+
+	if (!cmd->initialized.connections && !_cmd_no_meta_proc(cmd) && !init_connections(cmd))
+		return_ECMD_FAILED;
+
+	if (!cmd->initialized.filters && !_cmd_no_meta_proc(cmd) && !init_filters(cmd, 1))
 		return_ECMD_FAILED;
 
 	if (arg_count(cmd, readonly_ARG))
@@ -1587,7 +1598,9 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 		goto out;
 	}
 
-	if (arg_count(cmd, readonly_ARG)) {
+	if (_cmd_no_meta_proc(cmd))
+		locking_type = 0;
+	else if (arg_count(cmd, readonly_ARG)) {
 		if (find_config_tree_bool(cmd, global_use_lvmlockd_CFG, NULL)) {
 			/*
 			 * FIXME: we could use locking_type 5 here if that didn't
@@ -1610,12 +1623,12 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 	else
 		locking_type = -1;
 
-	if (!init_locking(locking_type, cmd, arg_count(cmd, sysinit_ARG))) {
+	if (!init_locking(locking_type, cmd, _cmd_no_meta_proc(cmd) || arg_count(cmd, sysinit_ARG))) {
 		ret = ECMD_FAILED;
 		goto_out;
 	}
 
-	if (!_init_lvmlockd(cmd)) {
+	if (!_cmd_no_meta_proc(cmd) && !_init_lvmlockd(cmd)) {
 		ret = ECMD_FAILED;
 		goto_out;
 	}
@@ -1873,7 +1886,7 @@ static int _close_stray_fds(const char *command)
 	return 1;
 }
 
-struct cmd_context *init_lvm(void)
+struct cmd_context *init_lvm(unsigned set_connections, unsigned set_filters)
 {
 	struct cmd_context *cmd;
 
@@ -1887,7 +1900,8 @@ struct cmd_context *init_lvm(void)
 	 */
 	dm_set_name_mangling_mode(DM_STRING_MANGLING_NONE);
 
-	if (!(cmd = create_toolcontext(0, NULL, 1, 0))) {
+	if (!(cmd = create_toolcontext(0, NULL, 1, 0,
+			set_connections, set_filters))) {
 		udev_fin_library_context();
 		return_NULL;
 	}
@@ -2055,7 +2069,7 @@ int lvm2_main(int argc, char **argv)
 	if (!alias && argc > 1 && !strcmp(argv[1], "version"))
 		return lvm_return_code(version(NULL, argc, argv));
 
-	if (!(cmd = init_lvm()))
+	if (!(cmd = init_lvm(0, 0)))
 		return -1;
 
 	cmd->argv = argv;

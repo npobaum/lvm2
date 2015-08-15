@@ -1,3 +1,13 @@
+lvm2 (2.02.127-1) unstable; urgency=medium
+
+  * Remove superfluous directory specs. (closes: #794200)
+  * Set default pid directory to /run. (closes: #783120)
+  * Force activation of snapshots in initramfs. (closes: #555958)
+  * Cleanup initramfs-tools scripts.
+  * Set architecture to linux-any. (closes: #638255)
+
+ -- Bastian Blank <waldi@debian.org>  Sat, 15 Aug 2015 11:58:45 +0200
+
 lvm2 (2.02.126-3) unstable; urgency=medium
 
   * Also remove racy file test from mdadm udev interaction.
