@@ -45,7 +45,6 @@
 @top_srcdir@/lib/metadata/vg.h
 @top_srcdir@/lib/mm/memlock.h
 @top_srcdir@/lib/mm/xlate.h
-@top_builddir@/lib/misc/configure.h
 @top_srcdir@/lib/misc/crc.h
 @top_srcdir@/lib/misc/intl.h
 @top_srcdir@/lib/misc/last-path-component.h
@@ -56,7 +55,6 @@
 @top_srcdir@/lib/misc/lvm-globals.h
 @top_srcdir@/lib/misc/lvm-signal.h
 @top_srcdir@/lib/misc/lvm-string.h
-@top_builddir@/lib/misc/lvm-version.h
 @top_srcdir@/lib/misc/lvm-percent.h
 @top_srcdir@/lib/misc/lvm-wrappers.h
 @top_srcdir@/lib/misc/sharedlib.h

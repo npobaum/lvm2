@@ -1,4 +1,4 @@
-From a8da19c22b552d10785b848bcc5a64a95fb12f71 Mon Sep 17 00:00:00 2001
+From 48f44c44cd25d15028ede7c959da67865939d744 Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 11 Aug 2015 22:06:54 +0200
 Subject: Don't run pvscan in background
@@ -9,12 +9,12 @@ Patch-Name: systemd-pvscan-background.patch
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/udev/Makefile.in b/udev/Makefile.in
-index 80cef03..3909ddf 100644
+index 0dddd4c..1708661 100644
 --- a/udev/Makefile.in
 +++ b/udev/Makefile.in
 @@ -49,7 +49,7 @@ endif
  ifeq ("@UDEV_SYSTEMD_BACKGROUND_JOBS@", "yes")
- PVSCAN_RULE=ACTION\!=\"remove\", ENV{LVM_PV_GONE}==\"1\", RUN\+=\"@bindir@/systemd-run $(LVM_EXEC)\/lvm pvscan --cache \$$major\:\$$minor\", GOTO=\"lvm_end\"\nENV{SYSTEMD_ALIAS}=\"\/dev\/block\/\$$major:\$$minor\"\nENV{ID_MODEL}=\"LVM PV \$$env{ID_FS_UUID_ENC} on \/dev\/\$$name\"\nENV{SYSTEMD_WANTS}=\"lvm2-pvscan@\$$major:\$$minor.service\"
+ PVSCAN_RULE=ACTION\!=\"remove\", ENV{LVM_PV_GONE}==\"1\", RUN\+=\"@bindir@/systemd-run $(LVM_EXEC)\/lvm pvscan --cache \$$major\:\$$minor\", GOTO=\"lvm_end\"\nENV{SYSTEMD_ALIAS}=\"\/dev\/block\/\$$major:\$$minor\"\nENV{ID_MODEL}=\"LVM PV \$$env{ID_FS_UUID_ENC} on \/dev\/\$$name\"\nENV{SYSTEMD_WANTS}\+=\"lvm2-pvscan@\$$major:\$$minor.service\"
  else
 -PVSCAN_RULE=RUN\+\=\"$(LVM_EXEC)/lvm pvscan --background --cache --activate ay --major \$$major --minor \$$minor\", ENV{LVM_SCANNED}=\"1\"
 +PVSCAN_RULE=RUN\+\=\"$(LVM_EXEC)/lvm pvscan --cache --activate ay --major \$$major --minor \$$minor\", ENV{LVM_SCANNED}=\"1\"

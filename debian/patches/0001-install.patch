@@ -1,4 +1,4 @@
-From af9cd980f1fa28ca8682904122a0c63f8d15de77 Mon Sep 17 00:00:00 2001
+From 77e5b33b2e62c747777c8023288a0c3cde599f73 Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 30 Jun 2015 11:46:04 +0200
 Subject: install
@@ -75,7 +75,7 @@ index cfd473a..ddaf78c 100644
  
  install_lvm2: install_dm_plugin
 diff --git a/make.tmpl.in b/make.tmpl.in
-index 731dab7..ce0d599 100644
+index f1d4fad..ef00e06 100644
 --- a/make.tmpl.in
 +++ b/make.tmpl.in
 @@ -17,20 +17,10 @@ SHELL = /bin/sh
@@ -101,7 +101,7 @@ index 731dab7..ce0d599 100644
  MKDIR_P = @MKDIR_P@
  MSGFMT = @MSGFMT@
  LCOV = @LCOV@
-@@ -94,8 +84,7 @@ tmpfiles_dir = $(DESTDIR)@tmpfilesdir@
+@@ -95,8 +85,7 @@ tmpfiles_dir = $(DESTDIR)@tmpfilesdir@
  ocf_scriptdir = $(DESTDIR)@OCFDIR@
  pyexecdir = $(DESTDIR)$(prefix)
  
@@ -111,7 +111,7 @@ index 731dab7..ce0d599 100644
  
  SYSTEMD_GENERATOR_DIR = @systemdutildir@/system-generators
  DEFAULT_SYS_DIR = @DEFAULT_SYS_DIR@
-@@ -124,22 +113,14 @@ MAKEFLAGS = @JOBS@
+@@ -125,22 +114,14 @@ MAKEFLAGS = @JOBS@
  endif
  
  # Handle installation of files
@@ -138,7 +138,7 @@ index 731dab7..ce0d599 100644
  
  .SUFFIXES: .c .cpp .d .o .so .a .po .pot .mo .dylib
  
-@@ -430,17 +411,14 @@ install_lib_shared: $(LIB_SHARED)
+@@ -431,17 +412,14 @@ install_lib_shared: $(LIB_SHARED)
  	$(INSTALL_DIR) $(usrlibdir)
  	$(LN_S) -f $(USRLIB_RELPATH)$(<F).$(LIB_VERSION) $(usrlibdir)/$(<F)
  

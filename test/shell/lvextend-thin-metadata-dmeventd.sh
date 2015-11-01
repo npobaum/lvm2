@@ -11,11 +11,11 @@
 
 # Test autoextension of thin metadata volume
 
+SKIP_WITH_LVMPOLLD=1
+
 export LVM_TEST_THIN_REPAIR_CMD=${LVM_TEST_THIN_REPAIR_CMD-/bin/false}
 
 . lib/inittest
-
-test -e LOCAL_LVMPOLLD && skip
 
 meta_percent_() {
 	get lv_field $vg/pool metadata_percent | cut -d. -f1
@@ -23,8 +23,8 @@ meta_percent_() {
 
 wait_for_change_() {
 	# dmeventd only checks every 10 seconds :(
-	for i in $(seq 1 15) ; do
-		test "$(meta_percent_)" != "$1" && return
+	for i in $(seq 1 12) ; do
+		test "$(meta_percent_)" -lt "$1" && return
 		sleep 1
 	done
 
@@ -37,14 +37,20 @@ wait_for_change_() {
 # Currently it expects 2MB thin metadata and 200MB data volume size
 # Argument specifies how many devices should be created.
 fake_metadata_() {
-	echo '<superblock uuid="" time="1" transaction="'$2'" data_block_size="128" nr_data_blocks="3200">'
-	for i in $(seq 1 $1)
+	echo '<superblock uuid="" time="0" transaction="'$2'" data_block_size="128" nr_data_blocks="3200">'
+	echo ' <device dev_id="1" mapped_blocks="0" transaction="0" creation_time="0" snap_time="0">'
+	echo ' </device>'
+	echo ' <device dev_id="2" mapped_blocks="0" transaction="0" creation_time="0" snap_time="0">'
+	echo ' </device>'
+	for i in $(seq 10 $1)
 	do
-		echo ' <device dev_id="'$i'" mapped_blocks="785" transaction="0" creation_time="0" snap_time="1">'
-		echo '  <range_mapping origin_begin="0" data_begin="0" length="37" time="0"/>'
+		echo ' <device dev_id="'$i'" mapped_blocks="30" transaction="0" creation_time="0" snap_time="0">'
+		echo '  <range_mapping origin_begin="0" data_begin="0" length="29" time="0"/>'
 		echo ' </device>'
+		set +x
 	done
 	echo "</superblock>"
+	set -x
 }
 
 test -n "$LVM_TEST_THIN_RESTORE_CMD" || LVM_TEST_THIN_RESTORE_CMD=$(which thin_restore) || skip
@@ -63,11 +69,12 @@ vgcreate -s 1M $vg $(cat DEVICES)
 # Testing dmeventd autoresize
 lvcreate -L200M -V500M -n thin -T $vg/pool 2>&1 | tee out
 not grep "WARNING: Sum" out
+lvcreate -V2M -n thin2 $vg/pool
 lvcreate -L2M -n $lv1 $vg
-lvchange -an $vg/thin $vg/pool
+lvchange -an $vg/thin $vg/thin2 $vg/pool
 
 # Prepare some fake metadata with unmatching id
-# Transaction_id is lower by 1 and there are no message -> ERROR
+# Transaction_id is lower by 1 and there are no messages -> ERROR
 fake_metadata_ 10 0 >data
 "$LVM_TEST_THIN_RESTORE_CMD" -i data -o "$DM_DEV_DIR/mapper/$vg-$lv1"
 lvconvert -y --thinpool $vg/pool --poolmetadata $vg/$lv1
@@ -86,16 +93,37 @@ grep expected out
 check inactive $vg pool_tmeta
 
 # Prepare some fake metadata prefilled to ~81% (>70%)
-fake_metadata_ 400 1 >data
+fake_metadata_ 400 2 >data
 "$LVM_TEST_THIN_RESTORE_CMD" -i data -o "$DM_DEV_DIR/mapper/$vg-$lv1"
 
 # Swap volume with restored fake metadata
-lvconvert -y --thinpool $vg/pool --poolmetadata $vg/$lv1
+lvconvert -y --chunksize 64k --thinpool $vg/pool --poolmetadata $vg/$lv1
 
 vgchange -ay $vg
 
-# Check dmeventd resizes metadata
+# Check dmeventd resizes metadata via timeout (nothing is written to pool)
 pre=$(meta_percent_)
 wait_for_change_ $pre
+
+lvchange -an $vg
+
+#
+fake_metadata_ 350 2 >data
+lvchange -ay $vg/$lv1
+"$LVM_TEST_THIN_RESTORE_CMD" -i data -o "$DM_DEV_DIR/mapper/$vg-$lv1"
+
+lvconvert -y --chunksize 64k --thinpool $vg/pool --poolmetadata $vg/$lv1
+lvchange -ay $vg/pool  $vg/$lv1
+lvs -a $vg
+
+lvcreate -s -Ky -n $lv2 $vg/thin
+pre=$(meta_percent_)
+
+# go over thin metadata threshold
+echo 2 >"$DM_DEV_DIR/mapper/$vg-$lv2"
+
+wait_for_change_ $pre
+
+lvs -a $vg
 
 vgremove -f $vg

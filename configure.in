@@ -16,7 +16,7 @@ AC_PREREQ(2.61)
 dnl -- Process this file with autoconf to produce a configure script.
 AC_INIT
 AC_CONFIG_SRCDIR([lib/device/dev-cache.h])
-AC_CONFIG_HEADERS([lib/misc/configure.h])
+AC_CONFIG_HEADERS([include/configure.h])
 
 ################################################################################
 dnl -- Setup the directory where autoconf has auxilary files
@@ -103,7 +103,7 @@ AC_CHECK_HEADERS([assert.h ctype.h dirent.h errno.h fcntl.h float.h \
   sys/time.h sys/types.h sys/utsname.h sys/wait.h time.h \
   unistd.h], , [AC_MSG_ERROR(bailing out)])
 
-AC_CHECK_HEADERS(termios.h sys/statvfs.h)
+AC_CHECK_HEADERS(termios.h sys/statvfs.h sys/timerfd.h)
 
 case "$host_os" in
 	linux*)
@@ -154,6 +154,15 @@ AC_FUNC_REALLOC
 AC_FUNC_STAT
 AC_FUNC_STRTOD
 AC_FUNC_VPRINTF
+
+################################################################################
+dnl -- Disable dependency tracking
+AC_MSG_CHECKING(whether to enable dependency tracking)
+AC_ARG_ENABLE(dependency-tracking,
+	      AC_HELP_STRING([--disable-dependency-tracking],
+			     [speeds up one-time build.]),
+	      USE_TRACKING=$enableval, USE_TRACKING=yes)
+AC_MSG_RESULT($USE_TRACKING)
 
 ################################################################################
 dnl -- Enables statically-linked tools
@@ -584,18 +593,25 @@ case "$CACHE" in
 		fi
 	fi
 	if test "$CACHE_CHECK_NEEDS_CHECK" = yes; then
-		CACHE_CHECK_VSN=`"$CACHE_CHECK_CMD" -V 2>/dev/null`
-		CACHE_CHECK_VSN_MAJOR=`echo "$CACHE_CHECK_VSN" | $AWK -F '.' '{print $1}'`
-		CACHE_CHECK_VSN_MINOR=`echo "$CACHE_CHECK_VSN" | $AWK -F '.' '{print $2}'`
+		$CACHE_CHECK_CMD -V 2>/dev/null >conftest.tmp
+		read -r CACHE_CHECK_VSN < conftest.tmp
+		IFS=.- read -r CACHE_CHECK_VSN_MAJOR CACHE_CHECK_VSN_MINOR CACHE_CHECK_VSN_PATCH LEFTOVER < conftest.tmp
+		rm -f conftest.tmp
 
-		if test -z "$CACHE_CHECK_VSN_MAJOR" -o -z "$CACHE_CHECK_VSN_MINOR"; then
+		# Require version >= 0.5.4 for --clear-needs-check-flag
+		if test -z "$CACHE_CHECK_VSN_MAJOR" \
+			|| test -z "$CACHE_CHECK_VSN_MINOR" \
+			|| test -z "$CACHE_CHECK_VSN_PATCH"; then
 			AC_MSG_WARN([$CACHE_CHECK_CMD: Bad version "$CACHE_CHECK_VSN" found])
 			CACHE_CHECK_VERSION_WARN=y
 			CACHE_CHECK_NEEDS_CHECK=no
-		elif test "$CACHE_CHECK_VSN_MAJOR" -eq 0 -a "$CACHE_CHECK_VSN_MINOR" -lt 5; then
-			AC_MSG_WARN([$CACHE_CHECK_CMD: Old version "$CACHE_CHECK_VSN" found])
-			CACHE_CHECK_VERSION_WARN=y
-			CACHE_CHECK_NEEDS_CHECK=no
+		elif test "$CACHE_CHECK_VSN_MAJOR" -eq 0 ; then
+			if test "$CACHE_CHECK_VSN_MINOR" -lt 5 \
+				|| test "$CACHE_CHECK_VSN_MINOR" -eq 5 -a "$CACHE_CHECK_VSN_PATCH" -lt 4; then
+				AC_MSG_WARN([$CACHE_CHECK_CMD: Old version "$CACHE_CHECK_VSN" found])
+				CACHE_CHECK_VERSION_WARN=y
+				CACHE_CHECK_NEEDS_CHECK=no
+			fi
 		fi
 	fi
 	# Empty means a config way to ignore cache dumping
@@ -1531,6 +1547,10 @@ if [[ \( "$LVM1" = shared -o "$POOL" = shared -o "$CLUSTER" = shared \
 fi
 
 ################################################################################
+AC_CHECK_LIB(m, log10,
+	[M_LIBS="-lm"], hard_bailout)
+
+################################################################################
 AC_CHECK_LIB([pthread], [pthread_mutex_lock],
 	[PTHREAD_LIBS="-lpthread"], hard_bailout)
 
@@ -1558,11 +1578,10 @@ if test "$REALTIME" = yes; then
 	if test "$HAVE_REALTIME" = yes; then
 		AC_DEFINE([HAVE_REALTIME], 1, [Define to 1 to include support for realtime clock.])
 		LIBS="-lrt $LIBS"
-		RT_PC="librt"
+		RT_LIB="-lrt"
 	else
 		AC_MSG_WARN(Disabling realtime clock)
 	fi
-	AC_MSG_RESULT($HAVE_REALTIME)
 fi
 
 dnl Check if the system has struct stat st_ctim.
@@ -1719,12 +1738,10 @@ test "$lvm_exec_prefix" = NONE && lvm_exec_prefix=$ac_default_prefix
 LVM_PATH="$lvm_exec_prefix/sbin/lvm"
 AC_DEFINE_UNQUOTED(LVM_PATH, ["$LVM_PATH"], [Path to lvm binary.])
 
-if  test "$CLVMD" != none; then
-	clvmd_prefix=$ac_default_prefix
-	test "$prefix" != NONE && clvmd_prefix=$prefix
-	CLVMD_PATH="$clvmd_prefix/sbin/clvmd"
-	AC_DEFINE_UNQUOTED(CLVMD_PATH, ["$CLVMD_PATH"], [Path to clvmd binary.])
-fi
+clvmd_prefix=$ac_default_prefix
+test "$prefix" != NONE && clvmd_prefix=$prefix
+CLVMD_PATH="$clvmd_prefix/sbin/clvmd"
+AC_DEFINE_UNQUOTED(CLVMD_PATH, ["$CLVMD_PATH"], [Path to clvmd binary.])
 
 ################################################################################
 dnl -- dmeventd pidfile and executable path
@@ -1813,14 +1830,14 @@ test "$interface" != ioctl && AC_MSG_ERROR([--with-interface=ioctl required. fs 
 AC_MSG_RESULT($interface)
 
 ################################################################################
-DM_LIB_VERSION="\"`cat "$srcdir"/VERSION_DM 2>/dev/null || echo Unknown`\""
-AC_DEFINE_UNQUOTED(DM_LIB_VERSION, $DM_LIB_VERSION, [Library version])
+read DM_LIB_VERSION < "$srcdir"/VERSION_DM 2>/dev/null || DM_LIB_VERSION=Unknown
+AC_DEFINE_UNQUOTED(DM_LIB_VERSION, "$DM_LIB_VERSION", [Library version])
 
 DM_LIB_PATCHLEVEL=`cat "$srcdir"/VERSION_DM | $AWK -F '[[-. ]]' '{printf "%s.%s.%s",$1,$2,$3}'`
 
-LVM_VERSION="\"`cat "$srcdir"/VERSION 2>/dev/null || echo Unknown`\""
+read VER < "$srcdir"/VERSION 2>/dev/null || VER=Unknown
 
-VER=`cat "$srcdir"/VERSION`
+LVM_VERSION=\"$VER\"
 LVM_RELEASE_DATE="\"`echo $VER | $SED 's/.* (//;s/).*//'`\""
 VER=`echo "$VER" | $AWK '{print $1}'`
 LVM_RELEASE="\"`echo "$VER" | $AWK -F '-' '{print $2}'`\""
@@ -1888,7 +1905,6 @@ AC_SUBST(DLM_LIBS)
 AC_SUBST(DL_LIBS)
 AC_SUBST(DMEVENTD)
 AC_SUBST(DMEVENTD_PATH)
-AC_SUBST(DM_LIB_VERSION)
 AC_SUBST(DM_LIB_PATCHLEVEL)
 AC_SUBST(ELDFLAGS)
 AC_SUBST(FSADM)
@@ -1919,6 +1935,7 @@ AC_SUBST(OCF)
 AC_SUBST(OCFDIR)
 AC_SUBST(PKGCONFIG)
 AC_SUBST(POOL)
+AC_SUBST(M_LIBS)
 AC_SUBST(PTHREAD_LIBS)
 AC_SUBST(PYTHON)
 AC_SUBST(PYTHON_BINDINGS)
@@ -1927,7 +1944,7 @@ AC_SUBST(PYTHON_LIBDIRS)
 AC_SUBST(QUORUM_CFLAGS)
 AC_SUBST(QUORUM_LIBS)
 AC_SUBST(RAID)
-AC_SUBST(RT_PC)
+AC_SUBST(RT_LIB)
 AC_SUBST(READLINE_LIBS)
 AC_SUBST(REPLICATORS)
 AC_SUBST(SACKPT_CFLAGS)
@@ -1957,6 +1974,7 @@ AC_SUBST(UDEV_SYNC)
 AC_SUBST(UDEV_SYSTEMD_BACKGROUND_JOBS)
 AC_SUBST(UDEV_RULE_EXEC_DETECTION)
 AC_SUBST(UDEV_HAS_BUILTIN_BLKID)
+AC_SUBST(USE_TRACKING)
 AC_SUBST(VALGRIND_POOL)
 AC_SUBST(WRITE_INSTALL)
 AC_SUBST(DMEVENTD_PIDFILE)
@@ -2011,7 +2029,7 @@ lib/format_pool/Makefile
 lib/locking/Makefile
 lib/mirror/Makefile
 lib/replicator/Makefile
-lib/misc/lvm-version.h
+include/lvm-version.h
 lib/raid/Makefile
 lib/snapshot/Makefile
 lib/thin/Makefile

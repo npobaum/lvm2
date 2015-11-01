@@ -453,7 +453,7 @@ static int _read_mirror_params(struct cmd_context *cmd,
 static int _read_raid_params(struct cmd_context *cmd,
 			     struct lvcreate_params *lp)
 {
-	if ((lp->stripes < 2) && !strcmp(lp->segtype->name, SEG_TYPE_NAME_RAID10)) {
+	if ((lp->stripes < 2) && segtype_is_raid10(lp->segtype)) {
 		if (arg_count(cmd, stripes_ARG)) {
 			/* User supplied the bad argument */
 			log_error("Segment type 'raid10' requires 2 or more stripes.");
@@ -468,15 +468,14 @@ static int _read_raid_params(struct cmd_context *cmd,
 	 * RAID1 does not take a stripe arg
 	 */
 	if ((lp->stripes > 1) && seg_is_mirrored(lp) &&
-	    strcmp(lp->segtype->name, SEG_TYPE_NAME_RAID10)) {
+	    !segtype_is_raid10(lp->segtype)) {
 		log_error("Stripe argument cannot be used with segment type, %s",
 			  lp->segtype->name);
 		return 0;
 	}
 
 	if (arg_count(cmd, mirrors_ARG) && segtype_is_raid(lp->segtype) &&
-	    strcmp(lp->segtype->name, SEG_TYPE_NAME_RAID1) &&
-	    strcmp(lp->segtype->name, SEG_TYPE_NAME_RAID10)) {
+	    !segtype_is_raid1(lp->segtype) && !segtype_is_raid10(lp->segtype)) {
 		log_error("Mirror argument cannot be used with segment type, %s",
 			  lp->segtype->name);
 		return 0;
@@ -501,18 +500,27 @@ static int _read_mirror_and_raid_params(struct cmd_context *cmd,
 					struct lvcreate_params *lp)
 {
 	int pagesize = lvm_getpagesize();
+	unsigned max_images;
+	const char *segtype_name;
 
 	/* Common mirror and raid params */
 	if (arg_count(cmd, mirrors_ARG)) {
 		lp->mirrors = arg_uint_value(cmd, mirrors_ARG, 0) + 1;
+		if (segtype_is_raid1(lp->segtype)) {
+			segtype_name = SEG_TYPE_NAME_RAID1;
+			max_images = DEFAULT_RAID_MAX_IMAGES;
+		} else {
+			segtype_name = SEG_TYPE_NAME_MIRROR;
+			max_images = DEFAULT_MIRROR_MAX_IMAGES;
+		}
 
-		if (lp->mirrors > DEFAULT_MIRROR_MAX_IMAGES) {
-			log_error("Only up to " DM_TO_STRING(DEFAULT_MIRROR_MAX_IMAGES)
-				  " images in mirror supported currently.");
+		if (lp->mirrors > max_images) {
+			log_error("Only up to %u images in %s supported currently.",
+				  max_images, segtype_name);
 			return 0;
 		}
 
-		if ((lp->mirrors > 2) && !strcmp(lp->segtype->name, SEG_TYPE_NAME_RAID10)) {
+		if ((lp->mirrors > 2) && segtype_is_raid10(lp->segtype)) {
 			/*
 			 * FIXME: When RAID10 is no longer limited to
 			 *        2-way mirror, 'lv_mirror_count()'
@@ -567,21 +575,14 @@ static int _read_mirror_and_raid_params(struct cmd_context *cmd,
 static int _read_cache_params(struct cmd_context *cmd,
 			      struct lvcreate_params *lp)
 {
-	const char *cachemode;
-
 	if (!seg_is_cache(lp) && !seg_is_cache_pool(lp))
 		return 1;
 
-	if (!(cachemode = arg_str_value(cmd, cachemode_ARG, NULL)))
-		cachemode = find_config_tree_str(cmd, allocation_cache_pool_cachemode_CFG, NULL);
-
-	if (!set_cache_pool_feature(&lp->feature_flags, cachemode))
+	if (!get_cache_params(cmd,
+			      &lp->cache_mode,
+			      &lp->policy_name,
+			      &lp->policy_settings))
 		return_0;
-
-	if (!get_cache_policy_params(cmd, &lp->policy_name, &lp->policy_settings)) {
-		log_error("Failed to parse cache policy and/or settings.");
-		return 0;
-	}
 
 	return 1;
 }
@@ -668,14 +669,14 @@ static int _lvcreate_params(struct cmd_context *cmd,
 		   (arg_is_set(cmd, virtualoriginsize_ARG) ||
 		   !arg_is_set(cmd, virtualsize_ARG)))
 		/* Snapshot has higher priority then thin */
-		segtype_str = "snapshot"; /* --thinpool makes thin volume */
+		segtype_str = SEG_TYPE_NAME_SNAPSHOT; /* --thinpool makes thin volume */
 	else if (arg_is_set(cmd, cache_ARG) || arg_is_set(cmd, cachepool_ARG))
-		segtype_str = "cache";
+		segtype_str = SEG_TYPE_NAME_CACHE;
 	else if (arg_is_set(cmd, thin_ARG) || arg_is_set(cmd, thinpool_ARG))
-		segtype_str = "thin";
+		segtype_str = SEG_TYPE_NAME_THIN;
 	else if (arg_is_set(cmd, virtualsize_ARG)) {
 		if (arg_is_set(cmd, virtualoriginsize_ARG))
-			segtype_str = "snapshot"; /* --virtualoriginsize incompatible with pools */
+			segtype_str = SEG_TYPE_NAME_SNAPSHOT; /* --virtualoriginsize incompatible with pools */
 		else
 			segtype_str = find_config_tree_str(cmd, global_sparse_segtype_default_CFG, NULL);
 	} else if (arg_uint_value(cmd, mirrors_ARG, 0)) {
@@ -684,7 +685,7 @@ static int _lvcreate_params(struct cmd_context *cmd,
 			? global_raid10_segtype_default_CFG : global_mirror_segtype_default_CFG;
 		segtype_str = find_config_tree_str(cmd, mirror_default_cfg, NULL);
 	} else
-		segtype_str = "striped";
+		segtype_str = SEG_TYPE_NAME_STRIPED;
 
 	if (!(lp->segtype = get_segtype_from_string(cmd, segtype_str)))
 		return_0;
@@ -707,6 +708,7 @@ static int _lvcreate_params(struct cmd_context *cmd,
 	contiguous_ARG,\
 	ignoreactivationskip_ARG,\
 	ignoremonitoring_ARG,\
+	monitor_ARG,\
 	mirrors_ARG,\
 	name_ARG,\
 	noudevsync_ARG,\
@@ -776,7 +778,8 @@ static int _lvcreate_params(struct cmd_context *cmd,
 					    CACHE_POOL_ARGS,
 					    LVCREATE_ARGS,
 					    POOL_ARGS,
-					    SIZE_ARGS,
+					    extents_ARG,
+					    size_ARG,
 					    cache_ARG,
 					    chunksize_ARG,
 					    -1))
@@ -911,7 +914,7 @@ static int _lvcreate_params(struct cmd_context *cmd,
 				}
 
 				log_debug_metadata("Switching from thin to thin pool segment type.");
-				if (!(lp->segtype = get_segtype_from_string(cmd, "thin-pool")))
+				if (!(lp->segtype = get_segtype_from_string(cmd, SEG_TYPE_NAME_THIN_POOL)))
 					return_0;
 			} else	/* Parse free arg as snapshot origin */
 				lp->snapshot = 1;
@@ -979,8 +982,7 @@ static int _lvcreate_params(struct cmd_context *cmd,
 			return 0;
 		}
 
-		if (!strcmp(lp->segtype->name, SEG_TYPE_NAME_RAID10) &&
-		    !(lp->target_attr & RAID_FEATURE_RAID10)) {
+		if (segtype_is_raid10(lp->segtype) && !(lp->target_attr & RAID_FEATURE_RAID10)) {
 			log_error("RAID module does not support RAID10.");
 			return 0;
 		}
@@ -1089,8 +1091,6 @@ static int _determine_cache_argument(struct volume_group *vg,
 		/* If cache args not given, use those from cache pool */
 		if (!arg_is_set(cmd, chunksize_ARG))
 			lp->chunk_size = first_seg(lv)->chunk_size;
-		if (!arg_is_set(cmd, cachemode_ARG))
-			lp->feature_flags = first_seg(lv)->feature_flags;
 	} else if (lv) {
 		/* Origin exists, create cache pool volume */
 		if (!validate_lv_cache_create_origin(lv))
@@ -1104,6 +1104,8 @@ static int _determine_cache_argument(struct volume_group *vg,
 		}
 		/* FIXME How to handle skip flag? */
 		if (arg_from_list_is_set(cmd, "is unsupported with cache conversion",
+					 stripes_ARG,
+					 stripesize_ARG,
 					 setactivationskip_ARG,
 					 ignoreactivationskip_ARG,
 					 -1))
@@ -1188,7 +1190,7 @@ static int _determine_snapshot_type(struct volume_group *vg,
 	}
 
 	log_debug_metadata("Switching from snapshot to thin segment type.");
-	if (!(lp->segtype = get_segtype_from_string(vg->cmd, "thin")))
+	if (!(lp->segtype = get_segtype_from_string(vg->cmd, SEG_TYPE_NAME_THIN)))
 		return_0;
 	lp->snapshot = 0;
 
@@ -1220,7 +1222,7 @@ static int _check_raid_parameters(struct volume_group *vg,
 				  lp->segtype->name);
 			return 0;
 		}
-	} else if (!strcmp(lp->segtype->name, SEG_TYPE_NAME_RAID10)) {
+	} else if (segtype_is_raid10(lp->segtype)) {
 		if (!arg_count(cmd, stripes_ARG))
 			lp->stripes = devs / lp->mirrors;
 		if (lp->stripes < 2) {

@@ -184,12 +184,20 @@ const char *skip_dev_dir(struct cmd_context *cmd, const char *vg_name,
  *   If *skip is 1, it's OK for the caller to read the list of PVs in the VG.
  */
 static int _ignore_vg(struct volume_group *vg, const char *vg_name,
-		      struct dm_list *arg_vgnames, int allow_inconsistent, int *skip)
+		      struct dm_list *arg_vgnames, uint32_t read_flags,
+		      int *skip, int *notfound)
 {
 	uint32_t read_error = vg_read_error(vg);
-	*skip = 0;
 
-	if ((read_error & FAILED_INCONSISTENT) && allow_inconsistent)
+	*skip = 0;
+	*notfound = 0;
+
+	if ((read_error & FAILED_NOTFOUND) && (read_flags & READ_OK_NOTFOUND)) {
+		*notfound = 1;
+		return 0;
+	}
+
+	if ((read_error & FAILED_INCONSISTENT) && (read_flags & READ_ALLOW_INCONSISTENT))
 		read_error &= ~FAILED_INCONSISTENT; /* Check for other errors */
 
 	if ((read_error & FAILED_CLUSTERED) && vg->cmd->ignore_clustered_vgs) {
@@ -898,11 +906,17 @@ int vgcreate_params_set_from_args(struct cmd_context *cmd,
 	use_clvmd = (locking_type == 3);
 
 	if (arg_is_set(cmd, locktype_ARG)) {
-		if (arg_is_set(cmd, clustered_ARG) || arg_is_set(cmd, shared_ARG)) {
-			log_error("A lock type cannot be specified with --shared or --clustered.");
+		if (arg_is_set(cmd, clustered_ARG)) {
+			log_error("A lock type cannot be specified with --clustered.");
 			return 0;
 		}
+
 		lock_type = arg_str_value(cmd, locktype_ARG, "");
+
+		if (arg_is_set(cmd, shared_ARG) && !is_lockd_type(lock_type)) {
+			log_error("The --shared option requires lock type sanlock or dlm.");
+			return 0;
+		}
 
 	} else if (arg_is_set(cmd, clustered_ARG)) {
 		const char *arg_str = arg_str_value(cmd, clustered_ARG, "");
@@ -925,9 +939,14 @@ int vgcreate_params_set_from_args(struct cmd_context *cmd,
 		}
 
 	} else if (arg_is_set(cmd, shared_ARG)) {
+		int found_multiple = 0;
+
 		if (use_lvmlockd) {
-			if (!(lock_type = lockd_running_lock_type(cmd))) {
-				log_error("Failed to detect a running lock manager to select lock type.");
+			if (!(lock_type = lockd_running_lock_type(cmd, &found_multiple))) {
+				if (found_multiple)
+					log_error("Found multiple lock managers, select one with --lock-type.");
+				else
+					log_error("Failed to detect a running lock manager to select lock type.");
 				return 0;
 			}
 
@@ -1399,8 +1418,10 @@ static int _validate_cachepool_params(const char *name,
 	return 1;
 }
 
-int get_cache_policy_params(struct cmd_context *cmd, const char **name,
-			    struct dm_config_tree **settings)
+int get_cache_params(struct cmd_context *cmd,
+		     const char **mode,
+		     const char **name,
+		     struct dm_config_tree **settings)
 {
 	const char *str;
 	struct arg_value_group_list *group;
@@ -1408,7 +1429,14 @@ int get_cache_policy_params(struct cmd_context *cmd, const char **name,
 	struct dm_config_node *cn;
 	int ok = 0;
 
-	*name = arg_str_value(cmd, cachepolicy_ARG, DEFAULT_CACHE_POOL_POLICY);
+	if (mode)
+		*mode = arg_str_value(cmd, cachemode_ARG, NULL);
+
+	if (name)
+		*name = arg_str_value(cmd, cachepolicy_ARG, NULL);
+
+	if (!settings)
+		return 1;
 
 	dm_list_iterate_items(group, &cmd->arg_value_groups) {
 		if (!grouped_arg_is_set(group->arg_values, cachesettings_ARG))
@@ -1428,6 +1456,9 @@ int get_cache_policy_params(struct cmd_context *cmd, const char **name,
 		if (!dm_config_parse(current, str, str + strlen(str)))
 			goto_out;
 	}
+
+	if (!current)
+		return 1;
 
 	if (!(result = dm_config_flatten(current)))
 		goto_out;
@@ -1878,7 +1909,7 @@ int select_match_pv(struct cmd_context *cmd, struct processing_handle *handle,
 	return 1;
 }
 
-static int _process_vgnameid_list(struct cmd_context *cmd, uint32_t flags,
+static int _process_vgnameid_list(struct cmd_context *cmd, uint32_t read_flags,
 				  struct dm_list *vgnameids_to_process,
 				  struct dm_list *arg_vgnames,
 				  struct dm_list *arg_tags,
@@ -1895,6 +1926,7 @@ static int _process_vgnameid_list(struct cmd_context *cmd, uint32_t flags,
 	int ret_max = ECMD_PROCESSED;
 	int ret;
 	int skip;
+	int notfound;
 	int process_all = 0;
 
 	/*
@@ -1913,19 +1945,20 @@ static int _process_vgnameid_list(struct cmd_context *cmd, uint32_t flags,
 		vg_name = vgnl->vg_name;
 		vg_uuid = vgnl->vgid;
 		skip = 0;
+		notfound = 0;
 
 		if (!lockd_vg(cmd, vg_name, NULL, 0, &lockd_state)) {
 			ret_max = ECMD_FAILED;
 			continue;
 		}
 
-		vg = vg_read(cmd, vg_name, vg_uuid, flags, lockd_state);
-		if (_ignore_vg(vg, vg_name, arg_vgnames, flags & READ_ALLOW_INCONSISTENT, &skip)) {
+		vg = vg_read(cmd, vg_name, vg_uuid, read_flags, lockd_state);
+		if (_ignore_vg(vg, vg_name, arg_vgnames, read_flags, &skip, &notfound)) {
 			stack;
 			ret_max = ECMD_FAILED;
 			goto endvg;
 		}
-		if (skip)
+		if (skip || notfound)
 			goto endvg;
 
 		/* Process this VG? */
@@ -1945,7 +1978,8 @@ static int _process_vgnameid_list(struct cmd_context *cmd, uint32_t flags,
 			unlock_vg(cmd, vg_name);
 endvg:
 		release_vg(vg);
-		lockd_vg(cmd, vg_name, "un", 0, &lockd_state);
+		if (!lockd_vg(cmd, vg_name, "un", 0, &lockd_state))
+			stack;
 	}
 
 	/* the VG is selected if at least one LV is selected */
@@ -1986,7 +2020,7 @@ static int _copy_str_to_vgnameid_list(struct cmd_context *cmd, struct dm_list *s
  * Call process_single_vg() for each VG selected by the command line arguments.
  */
 int process_each_vg(struct cmd_context *cmd, int argc, char **argv,
-		    uint32_t flags, struct processing_handle *handle,
+		    uint32_t read_flags, struct processing_handle *handle,
 		    process_single_vg_fn_t process_single_vg)
 {
 	int handle_supplied = handle != NULL;
@@ -1996,7 +2030,7 @@ int process_each_vg(struct cmd_context *cmd, int argc, char **argv,
 	struct dm_list vgnameids_to_process;	/* vgnameid_list */
 
 	int enable_all_vgs = (cmd->command->flags & ALL_VGS_IS_DEFAULT);
-	unsigned one_vgname_arg = (flags & ONE_VGNAME_ARG);
+	int one_vgname_arg = (cmd->command->flags & ONE_VGNAME_ARG);
 	int ret;
 
 	/* Disable error in vg_read so we can print it from ignore_vg. */
@@ -2036,6 +2070,9 @@ int process_each_vg(struct cmd_context *cmd, int argc, char **argv,
 		goto out;
 	}
 
+	if (dm_list_empty(&arg_vgnames))
+		read_flags |= READ_OK_NOTFOUND;
+
 	/*
 	 * If we obtained a full list of VGs on the system, we need to work through them all;
 	 * otherwise we can merely work through the VG names provided.
@@ -2052,7 +2089,7 @@ int process_each_vg(struct cmd_context *cmd, int argc, char **argv,
 	    !init_selection_handle(cmd, handle, VGS))
 		goto_out;
 
-	ret = _process_vgnameid_list(cmd, flags, &vgnameids_to_process,
+	ret = _process_vgnameid_list(cmd, read_flags, &vgnameids_to_process,
 				     &arg_vgnames, &arg_tags, handle, process_single_vg);
 out:
 	if (!handle_supplied)
@@ -2341,7 +2378,7 @@ static int _get_arg_lvnames(struct cmd_context *cmd,
 	return ret_max;
 }
 
-static int _process_lv_vgnameid_list(struct cmd_context *cmd, uint32_t flags,
+static int _process_lv_vgnameid_list(struct cmd_context *cmd, uint32_t read_flags,
 				     struct dm_list *vgnameids_to_process,
 				     struct dm_list *arg_vgnames,
 				     struct dm_list *arg_lvnames,
@@ -2362,6 +2399,7 @@ static int _process_lv_vgnameid_list(struct cmd_context *cmd, uint32_t flags,
 	int ret_max = ECMD_PROCESSED;
 	int ret;
 	int skip;
+	int notfound;
 
 	dm_list_iterate_items(vgnl, vgnameids_to_process) {
 		if (sigint_caught())
@@ -2370,6 +2408,7 @@ static int _process_lv_vgnameid_list(struct cmd_context *cmd, uint32_t flags,
 		vg_name = vgnl->vg_name;
 		vg_uuid = vgnl->vgid;
 		skip = 0;
+		notfound = 0;
 
 		/*
 		 * arg_lvnames contains some elements that are just "vgname"
@@ -2406,14 +2445,13 @@ static int _process_lv_vgnameid_list(struct cmd_context *cmd, uint32_t flags,
 			continue;
 		}
 
-		vg = vg_read(cmd, vg_name, vg_uuid, flags, lockd_state);
-		if (_ignore_vg(vg, vg_name, arg_vgnames, flags & READ_ALLOW_INCONSISTENT, &skip)) {
+		vg = vg_read(cmd, vg_name, vg_uuid, read_flags, lockd_state);
+		if (_ignore_vg(vg, vg_name, arg_vgnames, read_flags, &skip, &notfound)) {
 			stack;
 			ret_max = ECMD_FAILED;
 			goto endvg;
-
 		}
-		if (skip)
+		if (skip || notfound)
 			goto endvg;
 
 		ret = process_each_lv_in_vg(cmd, vg, &lvnames, tags_arg, 0,
@@ -2426,7 +2464,8 @@ static int _process_lv_vgnameid_list(struct cmd_context *cmd, uint32_t flags,
 		unlock_vg(cmd, vg_name);
 endvg:
 		release_vg(vg);
-		lockd_vg(cmd, vg_name, "un", 0, &lockd_state);
+		if (!lockd_vg(cmd, vg_name, "un", 0, &lockd_state))
+			stack;
 	}
 
 	return ret_max;
@@ -2435,7 +2474,7 @@ endvg:
 /*
  * Call process_single_lv() for each LV selected by the command line arguments.
  */
-int process_each_lv(struct cmd_context *cmd, int argc, char **argv, uint32_t flags,
+int process_each_lv(struct cmd_context *cmd, int argc, char **argv, uint32_t read_flags,
 		    struct processing_handle *handle, process_single_lv_fn_t process_single_lv)
 {
 	int handle_supplied = handle != NULL;
@@ -2502,6 +2541,9 @@ int process_each_lv(struct cmd_context *cmd, int argc, char **argv, uint32_t fla
 		goto out;
 	}
 
+	if (dm_list_empty(&arg_vgnames))
+		read_flags |= READ_OK_NOTFOUND;
+
 	/*
 	 * If we obtained a full list of VGs on the system, we need to work through them all;
 	 * otherwise we can merely work through the VG names provided.
@@ -2511,7 +2553,7 @@ int process_each_lv(struct cmd_context *cmd, int argc, char **argv, uint32_t fla
 	else if ((ret = _copy_str_to_vgnameid_list(cmd, &arg_vgnames, &vgnameids_to_process)) != ECMD_PROCESSED)
 		goto_out;
 
-	ret = _process_lv_vgnameid_list(cmd, flags, &vgnameids_to_process, &arg_vgnames, &arg_lvnames,
+	ret = _process_lv_vgnameid_list(cmd, read_flags, &vgnameids_to_process, &arg_vgnames, &arg_lvnames,
 					&arg_tags, handle, process_single_lv);
 out:
 	if (!handle_supplied)
@@ -2657,6 +2699,59 @@ static struct device_id_list *_device_list_find_pvid(struct dm_list *devices, st
 	return NULL;
 }
 
+static int _device_list_copy(struct cmd_context *cmd, struct dm_list *src, struct dm_list *dst)
+{
+	struct device_id_list *dil;
+	struct device_id_list *dil_new;
+
+	dm_list_iterate_items(dil, src) {
+		if (!(dil_new = dm_pool_alloc(cmd->mem, sizeof(*dil_new)))) {
+			log_error("device_id_list alloc failed.");
+			return ECMD_FAILED;
+		}
+
+		dil_new->dev = dil->dev;
+		strncpy(dil_new->pvid, dil->pvid, ID_LEN);
+		dm_list_add(dst, &dil_new->list);
+	}
+
+	return ECMD_PROCESSED;
+}
+
+/*
+ * For each device in arg_devices or all_devices that has a pvid, add a copy of
+ * that device to arg_missed.  All PVs (devices with a pvid) should have been
+ * found while processing all VGs (including orphan VGs).  But, some may have
+ * been missed if VGs were changing at the same time.  This function creates a
+ * list of PVs that still remain in the given list, i.e. were missed the first
+ * time.  A second iteration through VGs can look for these explicitly.
+ * (arg_devices is used if specific PVs are being processed; all_devices is
+ * used if all devs are being processed)
+ */
+static int _get_missed_pvs(struct cmd_context *cmd,
+			   struct dm_list *devices,
+			   struct dm_list *arg_missed)
+{
+	struct device_id_list *dil;
+	struct device_id_list *dil_missed;
+
+	dm_list_iterate_items(dil, devices) {
+		if (!dil->pvid[0])
+			continue;
+
+		if (!(dil_missed = dm_pool_alloc(cmd->mem, sizeof(*dil_missed)))) {
+			log_error("device_id_list alloc failed.");
+			return ECMD_FAILED;
+		}
+
+		dil_missed->dev = dil->dev;
+		strncpy(dil_missed->pvid, dil->pvid, ID_LEN);
+		dm_list_add(arg_missed, &dil_missed->list);
+	}
+
+	return ECMD_PROCESSED;
+}
+
 static int _process_device_list(struct cmd_context *cmd, struct dm_list *all_devices,
 				struct processing_handle *handle,
 				process_single_pv_fn_t process_single_pv)
@@ -2790,12 +2885,17 @@ static int _process_pvs_in_vg(struct cmd_context *cmd,
 			}
 
 			/*
+			 * We have processed the PV on device pv->dev.  Now
+			 * deal with any duplicates of this PV on other
+			 * devices.
+			 */
+
+			/*
 			 * This is a very rare and obscure case where multiple
 			 * duplicate devices are specified on the command line
 			 * referring to this PV.  In this case we want to
 			 * process this PV once for each specified device.
 			 */
-
 			if (!skip && !dm_list_empty(arg_devices)) {
 				while ((dil = _device_list_find_pvid(arg_devices, pv))) {
 					_device_list_remove(arg_devices, dil->dev);
@@ -2830,7 +2930,6 @@ static int _process_pvs_in_vg(struct cmd_context *cmd,
 			 * we want each of them to be displayed in the context
 			 * of this VG, so that this VG name appears next to it.
 			 */
-
 			if (process_all_devices && lvmcache_found_duplicate_pvs()) {
 				while ((dil = _device_list_find_pvid(all_devices, pv))) {
 					_device_list_remove(all_devices, dil->dev);
@@ -2845,6 +2944,20 @@ static int _process_pvs_in_vg(struct cmd_context *cmd,
 						ret_max = ret;
 
 					lvmcache_replace_dev(cmd, pv, dev_orig);
+				}
+			}
+
+			/*
+			 * Remove any duplicates of the processed device from
+			 * the list of all devices.  If they were left in the
+			 * list of all devices, they would be considered
+			 * "missed" at the end.
+			 */
+			if (process_all_pvs && lvmcache_found_duplicate_pvs()) {
+				while ((dil = _device_list_find_pvid(all_devices, pv))) {
+					log_very_verbose("Skip duplicate device %s of processed device %s",
+							 dev_name(dil->dev), dev_name(pv->dev));
+					_device_list_remove(all_devices, dil->dev);
 				}
 			}
 		}
@@ -2872,7 +2985,7 @@ out:
  * should produce an error.  Any devices remaining in all_devices were
  * not found and should be processed by process_device_list().
  */
-static int _process_pvs_in_vgs(struct cmd_context *cmd, uint32_t flags,
+static int _process_pvs_in_vgs(struct cmd_context *cmd, uint32_t read_flags,
 			       struct dm_list *all_vgnameids,
 			       struct dm_list *all_devices,
 			       struct dm_list *arg_devices,
@@ -2890,6 +3003,7 @@ static int _process_pvs_in_vgs(struct cmd_context *cmd, uint32_t flags,
 	int ret_max = ECMD_PROCESSED;
 	int ret;
 	int skip;
+	int notfound;
 
 	dm_list_iterate_items(vgnl, all_vgnameids) {
 		if (sigint_caught())
@@ -2898,20 +3012,23 @@ static int _process_pvs_in_vgs(struct cmd_context *cmd, uint32_t flags,
 		vg_name = vgnl->vg_name;
 		vg_uuid = vgnl->vgid;
 		skip = 0;
+		notfound = 0;
 
 		if (!lockd_vg(cmd, vg_name, NULL, 0, &lockd_state)) {
 			ret_max = ECMD_FAILED;
 			continue;
 		}
 
-		vg = vg_read(cmd, vg_name, vg_uuid, flags | READ_WARN_INCONSISTENT, lockd_state);
-		if (_ignore_vg(vg, vg_name, NULL, flags & READ_ALLOW_INCONSISTENT, &skip)) {
+		vg = vg_read(cmd, vg_name, vg_uuid, read_flags, lockd_state);
+		if (_ignore_vg(vg, vg_name, NULL, read_flags, &skip, &notfound)) {
 			stack;
 			ret_max = ECMD_FAILED;
 			if (!skip)
 				goto endvg;
 			/* Drop through to eliminate a clustered VG's PVs from the devices list */
 		}
+		if (notfound)
+			goto endvg;
 		
 		/*
 		 * Don't continue when skip is set, because we need to remove
@@ -2930,7 +3047,8 @@ static int _process_pvs_in_vgs(struct cmd_context *cmd, uint32_t flags,
 			unlock_vg(cmd, vg->name);
 endvg:
 		release_vg(vg);
-		lockd_vg(cmd, vg_name, "un", 0, &lockd_state);
+		if (!lockd_vg(cmd, vg_name, "un", 0, &lockd_state))
+			stack;
 
 		/* Quit early when possible. */
 		if (!process_all_pvs && dm_list_empty(arg_tags) && dm_list_empty(arg_devices))
@@ -2943,13 +3061,14 @@ endvg:
 int process_each_pv(struct cmd_context *cmd,
 		    int argc, char **argv,
 		    const char *only_this_vgname,
-		    uint32_t flags,
+		    uint32_t read_flags,
 		    struct processing_handle *handle,
 		    process_single_pv_fn_t process_single_pv)
 {
 	struct dm_list arg_tags;	/* str_list */
 	struct dm_list arg_pvnames;	/* str_list */
 	struct dm_list arg_devices;	/* device_id_list */
+	struct dm_list arg_missed;	/* device_id_list */
 	struct dm_list all_vgnameids;	/* vgnameid_list */
 	struct dm_list all_devices;	/* device_id_list */
 	struct device_id_list *dil;
@@ -2958,12 +3077,26 @@ int process_each_pv(struct cmd_context *cmd,
 	int ret_max = ECMD_PROCESSED;
 	int ret;
 
+	/*
+	 * When processing a specific VG name, warn if it's inconsistent and
+	 * print an error if it's not found.  Otherwise we're processing all
+	 * VGs, in which case the command doesn't care if the VG is inconsisent
+	 * or not found; it just wants to skip that VG.  (It may be not found
+	 * if it was removed between creating the list of all VGs and then
+	 * processing each VG.
+	 */
+	if (only_this_vgname)
+		read_flags |= READ_WARN_INCONSISTENT;
+	else
+		read_flags |= READ_OK_NOTFOUND;
+
 	/* Disable error in vg_read so we can print it from ignore_vg. */
 	cmd->vg_read_print_access_error = 0;
 
 	dm_list_init(&arg_tags);
 	dm_list_init(&arg_pvnames);
 	dm_list_init(&arg_devices);
+	dm_list_init(&arg_missed);
 	dm_list_init(&all_vgnameids);
 	dm_list_init(&all_devices);
 
@@ -3010,11 +3143,11 @@ int process_each_pv(struct cmd_context *cmd,
 		return ret;
 	}
 
-	if ((ret = _get_arg_devices(cmd, &arg_pvnames, &arg_devices) != ECMD_PROCESSED))
+	if ((ret = _get_arg_devices(cmd, &arg_pvnames, &arg_devices)) != ECMD_PROCESSED)
 		/* get_arg_devices reports the error for any PV names not found. */
 		ret_max = ECMD_FAILED;
 
-	ret = _process_pvs_in_vgs(cmd, flags, &all_vgnameids, &all_devices,
+	ret = _process_pvs_in_vgs(cmd, read_flags, &all_vgnameids, &all_devices,
 				  &arg_devices, &arg_tags,
 				  process_all_pvs, process_all_devices,
 				  handle, process_single_pv);
@@ -3022,6 +3155,49 @@ int process_each_pv(struct cmd_context *cmd,
 		stack;
 	if (ret > ret_max)
 		ret_max = ret;
+
+	/*
+	 * Some PVs may have been missed by the first search if another command
+	 * moved them at the same time.  Repeat the search for only the
+	 * specific PVs missed.  lvmcache needs clearing for a fresh search.
+	 *
+	 * If missed PVs are found in this repeated search, they are removed
+	 * from the arg_missed list, but they also need to be removed from the
+	 * arg_devices list, otherwise the check at the end will produce an
+	 * error, thinking they weren't found.  This is the reason for saving
+	 * and comparing the original arg_missed list.
+	 */
+	if (!process_all_pvs)
+		_get_missed_pvs(cmd, &arg_devices, &arg_missed);
+	else
+		_get_missed_pvs(cmd, &all_devices, &arg_missed);
+
+	if (!dm_list_empty(&arg_missed)) {
+		struct dm_list arg_missed_orig;
+
+		dm_list_init(&arg_missed_orig);
+		_device_list_copy(cmd, &arg_missed, &arg_missed_orig);
+
+		log_verbose("Some PVs were not found in first search, retrying.");
+
+		lvmcache_destroy(cmd, 0, 0);
+		lvmcache_init();
+		lvmcache_seed_infos_from_lvmetad(cmd);
+
+		ret = _process_pvs_in_vgs(cmd, read_flags, &all_vgnameids, &all_devices,
+					  &arg_missed, &arg_tags, 0, 0,
+					  handle, process_single_pv);
+		if (ret != ECMD_PROCESSED)
+			stack;
+		if (ret > ret_max)
+			ret_max = ret;
+
+		/* Devices removed from arg_missed are removed from arg_devices. */
+		dm_list_iterate_items(dil, &arg_missed_orig) {
+			if (!_device_list_find_dev(&arg_missed, dil->dev))
+				_device_list_remove(&arg_devices, dil->dev);
+		}
+	}
 
 	dm_list_iterate_items(dil, &arg_devices) {
 		log_error("Failed to find physical volume \"%s\".", dev_name(dil->dev));

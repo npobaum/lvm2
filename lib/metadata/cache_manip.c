@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2014 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2014-2015 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -29,7 +29,17 @@
 #define DM_HINT_OVERHEAD_PER_BLOCK	8  /* bytes */
 #define DM_MAX_HINT_WIDTH		(4+16)  /* bytes.  FIXME Configurable? */
 
-const char *get_cache_pool_cachemode_name(const struct lv_segment *seg)
+int cache_mode_is_set(const struct lv_segment *seg)
+{
+	if (seg_is_cache(seg))
+		seg = first_seg(seg->pool_lv);
+
+	return (seg->feature_flags & (DM_CACHE_FEATURE_WRITEBACK |
+				      DM_CACHE_FEATURE_WRITETHROUGH |
+				      DM_CACHE_FEATURE_PASSTHROUGH)) ? 1 : 0;
+}
+
+const char *get_cache_mode_name(const struct lv_segment *seg)
 {
 	if (seg->feature_flags & DM_CACHE_FEATURE_WRITEBACK)
 		return "writeback";
@@ -46,20 +56,66 @@ const char *get_cache_pool_cachemode_name(const struct lv_segment *seg)
 	return NULL;
 }
 
-int set_cache_pool_feature(uint64_t *feature_flags, const char *str)
+int cache_set_mode(struct lv_segment *seg, const char *str)
 {
+	struct cmd_context *cmd = seg->lv->vg->cmd;
+	int id;
+	uint64_t mode;
+
+	if (!str && !seg_is_cache(seg))
+		return 1;			/* Defaults only for cache */
+
+	if (seg_is_cache(seg))
+		seg = first_seg(seg->pool_lv);
+
+	if (!str) {
+		if (cache_mode_is_set(seg))
+			return 1;               /* Default already set in cache pool */
+
+		id = allocation_cache_mode_CFG;
+
+		/* If present, check backward compatible settings */
+		if (!find_config_node(cmd, cmd->cft, id) &&
+		    find_config_node(cmd, cmd->cft, allocation_cache_pool_cachemode_CFG))
+			id = allocation_cache_pool_cachemode_CFG;
+
+		str = find_config_tree_str(cmd, id, NULL);
+	}
+
 	if (!strcmp(str, "writeback"))
-		*feature_flags |= DM_CACHE_FEATURE_WRITEBACK;
+		mode = DM_CACHE_FEATURE_WRITEBACK;
 	else if (!strcmp(str, "writethrough"))
-		*feature_flags |= DM_CACHE_FEATURE_WRITETHROUGH;
-	else if (!strcmp(str, "passhrough"))
-		*feature_flags |= DM_CACHE_FEATURE_PASSTHROUGH;
+		mode = DM_CACHE_FEATURE_WRITETHROUGH;
+	else if (!strcmp(str, "passthrough"))
+		mode = DM_CACHE_FEATURE_PASSTHROUGH;
 	else {
-		log_error("Cache pool feature \"%s\" is unknown.", str);
+		log_error("Cannot set unknown cache mode \"%s\".", str);
 		return 0;
 	}
 
+	seg->feature_flags &= ~(DM_CACHE_FEATURE_WRITEBACK |
+				DM_CACHE_FEATURE_WRITETHROUGH |
+				DM_CACHE_FEATURE_PASSTHROUGH);
+	seg->feature_flags |= mode;
+
 	return 1;
+}
+
+/*
+ * At least warn a user if certain cache stacks may present some problems
+ */
+void cache_check_for_warns(const struct lv_segment *seg)
+{
+	struct logical_volume *origin_lv = seg_lv(seg, 0);
+
+	if (lv_is_raid(origin_lv) &&
+	    first_seg(seg->pool_lv)->feature_flags & DM_CACHE_FEATURE_WRITEBACK)
+		log_warn("WARNING: Data redundancy is lost with writeback "
+			 "caching of raid logical volume!");
+
+	if (lv_is_thin_pool_data(seg->lv))
+		log_warn("WARNING: Cached thin pool's data cannot be currently "
+			 "resized and require manual uncache before resize!");
 }
 
 int update_cache_pool_params(const struct segment_type *segtype,
@@ -205,7 +261,7 @@ struct logical_volume *lv_cache_create(struct logical_volume *pool_lv,
 	if (lv_is_thin_pool(cache_lv))
 		cache_lv = seg_lv(first_seg(cache_lv), 0); /* cache _tdata */
 
-	if (!(segtype = get_segtype_from_string(cmd, "cache")))
+	if (!(segtype = get_segtype_from_string(cmd, SEG_TYPE_NAME_CACHE)))
 		return_NULL;
 
 	if (!insert_layer_for_lv(cmd, cache_lv, CACHE, "_corig"))
@@ -351,7 +407,7 @@ int lv_cache_remove(struct logical_volume *cache_lv)
 
 	/* Replace 'error' with 'cache' segtype */
 	cache_seg = first_seg(corigin_lv);
-	if (!(cache_seg->segtype = get_segtype_from_string(corigin_lv->vg->cmd, "cache")))
+	if (!(cache_seg->segtype = get_segtype_from_string(corigin_lv->vg->cmd, SEG_TYPE_NAME_CACHE)))
 		return_0;
 
 	if (!(cache_seg->areas = dm_pool_zalloc(cache_lv->vg->vgmem, sizeof(*cache_seg->areas))))
@@ -395,36 +451,103 @@ int lv_is_cache_origin(const struct logical_volume *lv)
 	return seg && lv_is_cache(seg->lv) && !lv_is_pending_delete(seg->lv) && (seg_lv(seg, 0) == lv);
 }
 
-int lv_cache_set_policy(struct logical_volume *lv, const char *name,
-			const struct dm_config_tree *settings)
+static const char *_get_default_cache_policy(struct cmd_context *cmd)
 {
-	struct dm_config_node *cn;
-	struct dm_config_tree *old = NULL, *new = NULL, *tmp = NULL;
-	int r = 0;
-	struct lv_segment *seg = first_seg(lv);
+	const struct segment_type *segtype = get_segtype_from_string(cmd, SEG_TYPE_NAME_CACHE);
+	unsigned attr = ~0;
+        const char *def = NULL;
 
-	if (lv_is_cache(lv))
-		seg = first_seg(seg->pool_lv);
-
-	if (seg->policy_settings) {
-		if (!(old = dm_config_create()))
-			goto_out;
-		if (!(new = dm_config_create()))
-			goto_out;
-		new->root = settings->root;
-		old->root = seg->policy_settings;
-		new->cascade = old;
-		if (!(tmp = dm_config_flatten(new)))
-			goto_out;
+	if (!segtype ||
+	    !segtype->ops->target_present ||
+	    !segtype->ops->target_present(cmd, NULL, &attr)) {
+		log_warn("WARNING: Cannot detect default cache policy, using \""
+			 DEFAULT_CACHE_POLICY "\".");
+		return DEFAULT_CACHE_POLICY;
 	}
 
-	if ((cn = dm_config_find_node((tmp) ? tmp->root : settings->root, "policy_settings")) &&
-	    !(seg->policy_settings = dm_config_clone_node_with_mem(lv->vg->vgmem, cn, 0)))
-		goto_out;
+	if (attr & CACHE_FEATURE_POLICY_SMQ)
+		def = "smq";
+	else if (attr & CACHE_FEATURE_POLICY_MQ)
+		def = "mq";
+	else {
+		log_error("Default cache policy is not available.");
+		return NULL;
+	}
 
-	if (name && !(seg->policy_name = dm_pool_strdup(lv->vg->vgmem, name))) {
-		log_error("Failed to duplicate policy name.");
-		goto out;
+	log_debug_metadata("Detected default cache_policy \"%s\".", def);
+
+	return def;
+}
+
+int cache_set_policy(struct lv_segment *seg, const char *name,
+		     const struct dm_config_tree *settings)
+{
+	struct dm_config_node *cn;
+	const struct dm_config_node *cns;
+	struct dm_config_tree *old = NULL, *new = NULL, *tmp = NULL;
+	int r = 0;
+	const int passed_seg_is_cache = seg_is_cache(seg);
+
+	if (passed_seg_is_cache)
+		seg = first_seg(seg->pool_lv);
+
+	if (name) {
+		if (!(seg->policy_name = dm_pool_strdup(seg->lv->vg->vgmem, name))) {
+			log_error("Failed to duplicate policy name.");
+			return 0;
+		}
+	} else if (!seg->policy_name && passed_seg_is_cache) {
+		if (!(seg->policy_name = find_config_tree_str(seg->lv->vg->cmd, allocation_cache_policy_CFG, NULL)) &&
+		    !(seg->policy_name = _get_default_cache_policy(seg->lv->vg->cmd)))
+			return_0;
+	}
+
+	if (settings) {
+		if (!seg->policy_name) {
+			log_error(INTERNAL_ERROR "Can't set policy settings without policy name.");
+			return 0;
+		}
+
+		if (seg->policy_settings) {
+			if (!(old = dm_config_create()))
+				goto_out;
+			if (!(new = dm_config_create()))
+				goto_out;
+			new->root = settings->root;
+			old->root = seg->policy_settings;
+			new->cascade = old;
+			if (!(tmp = dm_config_flatten(new)))
+				goto_out;
+		}
+
+		if ((cn = dm_config_find_node((tmp) ? tmp->root : settings->root, "policy_settings")) &&
+		    !(seg->policy_settings = dm_config_clone_node_with_mem(seg->lv->vg->vgmem, cn, 0)))
+			goto_out;
+	} else if (passed_seg_is_cache && /* Look for command's profile cache_policies */
+		   (cns = find_config_tree_node(seg->lv->vg->cmd, allocation_cache_settings_CFG_SECTION, NULL))) {
+		/* Try to find our section for given policy */
+		for (cn = cns->child; cn; cn = cn->sib) {
+			/* Only matching section names */
+			if (cn->v || strcmp(cn->key, seg->policy_name) != 0)
+				continue;
+
+			if (!cn->child)
+				break;
+
+			if (!(new = dm_config_create()))
+				goto_out;
+
+			if (!(new->root = dm_config_clone_node_with_mem(new->mem,
+									cn->child, 1)))
+				goto_out;
+
+			if (!(seg->policy_settings = dm_config_create_node(new, "policy_settings")))
+				goto_out;
+
+			seg->policy_settings->child = new->root;
+
+			break; /* Only first match counts */
+		}
 	}
 
 restart: /* remove any 'default" nodes */

@@ -28,8 +28,6 @@
 #define LD_RF_NO_GL_LS          0x00000002
 #define LD_RF_WARN_GL_REMOVED   0x00000004
 #define LD_RF_DUP_GL_LS         0x00000008
-#define LD_RF_INACTIVE_LS       0x00000010
-#define LD_RF_ADD_LS_ERROR      0x00000020
 
 /* lockd_state flags */
 #define LDST_EX			0x00000001
@@ -54,7 +52,7 @@ void lvmlockd_disconnect(void);
 /* vgcreate/vgremove use init/free */
 
 int lockd_init_vg(struct cmd_context *cmd, struct volume_group *vg, const char *lock_type, int lv_lock_count);
-int lockd_free_vg_before(struct cmd_context *cmd, struct volume_group *vg);
+int lockd_free_vg_before(struct cmd_context *cmd, struct volume_group *vg, int changing);
 void lockd_free_vg_final(struct cmd_context *cmd, struct volume_group *vg);
 
 /* vgrename */
@@ -64,7 +62,7 @@ int lockd_rename_vg_final(struct cmd_context *cmd, struct volume_group *vg, int 
 
 /* start and stop the lockspace for a vg */
 
-int lockd_start_vg(struct cmd_context *cmd, struct volume_group *vg);
+int lockd_start_vg(struct cmd_context *cmd, struct volume_group *vg, int start_init);
 int lockd_stop_vg(struct cmd_context *cmd, struct volume_group *vg);
 int lockd_start_wait(struct cmd_context *cmd);
 
@@ -91,7 +89,7 @@ int lockd_init_lv_args(struct cmd_context *cmd, struct volume_group *vg,
 int lockd_free_lv(struct cmd_context *cmd, struct volume_group *vg,
 		  const char *lv_name, struct id *lv_id, const char *lock_args);
 
-const char *lockd_running_lock_type(struct cmd_context *cmd);
+const char *lockd_running_lock_type(struct cmd_context *cmd, int *found_multiple);
 
 int handle_sanlock_lv(struct cmd_context *cmd, struct volume_group *vg);
 
@@ -129,7 +127,7 @@ static inline int lockd_init_vg(struct cmd_context *cmd, struct volume_group *vg
 	return 1;
 }
 
-static inline int lockd_free_vg_before(struct cmd_context *cmd, struct volume_group *vg)
+static inline int lockd_free_vg_before(struct cmd_context *cmd, struct volume_group *vg, int changing)
 {
 	return 1;
 }
@@ -149,7 +147,7 @@ static inline int lockd_rename_vg_final(struct cmd_context *cmd, struct volume_g
 	return 1;
 }
 
-static inline int lockd_start_vg(struct cmd_context *cmd, struct volume_group *vg)
+static inline int lockd_start_vg(struct cmd_context *cmd, struct volume_group *vg, int start_init)
 {
 	return 0;
 }
@@ -225,7 +223,7 @@ static inline int lockd_free_lv(struct cmd_context *cmd, struct volume_group *vg
 	return 1;
 }
 
-static inline const char *lockd_running_lock_type(struct cmd_context *cmd)
+static inline const char *lockd_running_lock_type(struct cmd_context *cmd, int *found_multiple)
 {
 	log_error("Using a shared lock type requires lvmlockd.");
 	return NULL;

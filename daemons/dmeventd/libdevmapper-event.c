@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2005-2015 Red Hat, Inc. All rights reserved.
  *
  * This file is part of the device-mapper userspace tools.
  *
@@ -12,9 +12,9 @@
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
+#include "dm-logging.h"
 #include "dmlib.h"
 #include "libdevmapper-event.h"
-//#include "libmultilog.h"
 #include "dmeventd.h"
 
 #include <fcntl.h>
@@ -23,7 +23,11 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <arpa/inet.h>		/* for htonl, ntohl */
+#include <pthread.h>
+#include <syslog.h>
 
+static int _debug_level = 0;
+static int _use_syslog = 0;
 static int _sequence_nr = 0;
 
 struct dm_event_handler {
@@ -194,7 +198,7 @@ static int _check_message_id(struct dm_event_daemon_message *msg)
 	if ((sscanf(msg->data, "%d:%d", &pid, &seq_nr) != 2) ||
 	    (pid != getpid()) || (seq_nr != _sequence_nr)) {
 		log_error("Ignoring out-of-sequence reply from dmeventd. "
-			  "Expected %d:%d but received %s", getpid(),
+			  "Expected %d:%d but received %s.", getpid(),
 			  _sequence_nr, msg->data);
 		return 0;
 	}
@@ -229,7 +233,7 @@ static int _daemon_read(struct dm_event_fifos *fifos,
 			FD_SET(fifos->server, &fds);
 			ret = select(fifos->server + 1, &fds, NULL, NULL, &tval);
 			if (ret < 0 && errno != EINTR) {
-				log_error("Unable to read from event server");
+				log_error("Unable to read from event server.");
 				return 0;
 			}
 			if ((ret == 0) && (i > 4) && !bytes) {
@@ -295,7 +299,7 @@ static int _daemon_write(struct dm_event_fifos *fifos,
 		if (ret < 0) {
 			if (errno == EINTR)
 				continue;
-			log_error("Unable to talk to event daemon");
+			log_error("Unable to talk to event daemon.");
 			return 0;
 		}
 		if (ret == 0)
@@ -304,7 +308,7 @@ static int _daemon_write(struct dm_event_fifos *fifos,
 		if (ret < 0) {
 			if ((errno == EINTR) || (errno == EAGAIN))
 				continue;
-			log_error("Unable to talk to event daemon");
+			log_error("Unable to talk to event daemon.");
 			return 0;
 		}
 	}
@@ -316,7 +320,7 @@ static int _daemon_write(struct dm_event_fifos *fifos,
 			FD_SET(fifos->client, &fds);
 			ret = select(fifos->client + 1, NULL, &fds, NULL, NULL);
 			if ((ret < 0) && (errno != EINTR)) {
-				log_error("Unable to talk to event daemon");
+				log_error("Unable to talk to event daemon.");
 				return 0;
 			}
 		} while (ret < 1);
@@ -326,7 +330,7 @@ static int _daemon_write(struct dm_event_fifos *fifos,
 			if ((errno == EINTR) || (errno == EAGAIN))
 				continue;
 			else {
-				log_error("Unable to talk to event daemon");
+				log_error("Unable to talk to event daemon.");
 				return 0;
 			}
 		}
@@ -356,7 +360,7 @@ int dm_event_daemon_talk(struct dm_event_fifos *fifos,
 			  getpid(), _sequence_nr,
 			  dso_name ? : "-", dev_name ? : "-", evmask, timeout)))
 	    < 0) {
-		log_error("_daemon_talk: message allocation failed");
+		log_error("_daemon_talk: message allocation failed.");
 		return -ENOMEM;
 	}
 	msg->cmd = cmd;
@@ -444,11 +448,11 @@ static int _start_daemon(char *dmeventd_path, struct dm_event_fifos *fifos)
 
 	else if (!pid) {
 		execvp(args[0], args);
-		log_error("Unable to exec dmeventd: %s", strerror(errno));
+		log_error("Unable to exec dmeventd: %s.", strerror(errno));
 		_exit(EXIT_FAILURE);
 	} else {
 		if (waitpid(pid, &status, 0) < 0)
-			log_error("Unable to start dmeventd: %s",
+			log_error("Unable to start dmeventd: %s.",
 				  strerror(errno));
 		else if (WEXITSTATUS(status))
 			log_error("Unable to start dmeventd.");
@@ -521,7 +525,7 @@ static struct dm_task *_get_device_info(const struct dm_event_handler *dmevh)
 	struct dm_info info;
 
 	if (!(dmt = dm_task_create(DM_DEVICE_INFO))) {
-		log_error("_get_device_info: dm_task creation for info failed");
+		log_error("_get_device_info: dm_task creation for info failed.");
 		return NULL;
 	}
 
@@ -539,17 +543,17 @@ static struct dm_task *_get_device_info(const struct dm_event_handler *dmevh)
 
 	/* FIXME Add name or uuid or devno to messages */
 	if (!dm_task_run(dmt)) {
-		log_error("_get_device_info: dm_task_run() failed");
+		log_error("_get_device_info: dm_task_run() failed.");
 		goto bad;
 	}
 
 	if (!dm_task_get_info(dmt, &info)) {
-		log_error("_get_device_info: failed to get info for device");
+		log_error("_get_device_info: failed to get info for device.");
 		goto bad;
 	}
 
 	if (!info.exists) {
-		log_error("_get_device_info: %s%s%s%.0d%s%.0d%s%s: device not found",
+		log_error("_get_device_info: %s%s%s%.0d%s%.0d%s%s: device not found.",
 			  dmevh->uuid ? : "",
 			  (!dmevh->uuid && dmevh->dev_name) ? dmevh->dev_name : "",
 			  (!dmevh->uuid && !dmevh->dev_name && dmevh->major > 0) ? "(" : "",
@@ -618,12 +622,12 @@ int dm_event_register_handler(const struct dm_event_handler *dmevh)
 	    !strstr(dmevh->dso, "libdevmapper-event-lvm2snapshot.so") &&
 	    !strstr(dmevh->dso, "libdevmapper-event-lvm2mirror.so") &&
 	    !strstr(dmevh->dso, "libdevmapper-event-lvm2raid.so"))
-		log_warn("WARNING: %s: dmeventd plugins are deprecated", dmevh->dso);
+		log_warn("WARNING: %s: dmeventd plugins are deprecated.", dmevh->dso);
 
 
 	if ((err = _do_event(DM_EVENT_CMD_REGISTER_FOR_EVENT, dmevh->dmeventd_path, &msg,
 			     dmevh->dso, uuid, dmevh->mask, dmevh->timeout)) < 0) {
-		log_error("%s: event registration failed: %s",
+		log_error("%s: event registration failed: %s.",
 			  dm_task_get_name(dmt),
 			  msg.data ? msg.data : strerror(-err));
 		ret = 0;
@@ -650,7 +654,7 @@ int dm_event_unregister_handler(const struct dm_event_handler *dmevh)
 
 	if ((err = _do_event(DM_EVENT_CMD_UNREGISTER_FOR_EVENT, dmevh->dmeventd_path, &msg,
 			    dmevh->dso, uuid, dmevh->mask, dmevh->timeout)) < 0) {
-		log_error("%s: event deregistration failed: %s",
+		log_error("%s: event deregistration failed: %s.",
 			  dm_task_get_name(dmt),
 			  msg.data ? msg.data : strerror(-err));
 		ret = 0;
@@ -823,6 +827,79 @@ int dm_event_get_version(struct dm_event_fifos *fifos, int *version) {
 	return 1;
 }
 
+void dm_event_log_set(int debug_level, int use_syslog)
+{
+	_debug_level = debug_level;
+	_use_syslog = use_syslog;
+}
+
+void dm_event_log(const char *subsys, int level, const char *file,
+		  int line, int dm_errno_or_class,
+		  const char *format, va_list ap)
+{
+	static pthread_mutex_t _log_mutex = PTHREAD_MUTEX_INITIALIZER;
+	static time_t start = 0;
+	const char *indent = "";
+	FILE *stream = stdout;
+	int prio = -1;
+	time_t now;
+
+	switch (level & ~(_LOG_STDERR | _LOG_ONCE)) {
+	case _LOG_DEBUG:
+		if (_debug_level < 3)
+			return;
+		prio = LOG_DEBUG;
+		indent = "      ";
+		break;
+	case _LOG_INFO:
+		if (_debug_level < 2)
+			return;
+		prio = LOG_INFO;
+		indent = "    ";
+		break;
+	case _LOG_NOTICE:
+		if (_debug_level < 1)
+			return;
+		prio = LOG_NOTICE;
+		indent = "  ";
+		break;
+	case _LOG_WARN:
+		prio = LOG_WARNING;
+		break;
+	case _LOG_ERR:
+		prio = LOG_ERR;
+		stream = stderr;
+		break;
+	default:
+		prio = LOG_CRIT;
+	}
+
+	/* Serialize to keep lines readable */
+	pthread_mutex_lock(&_log_mutex);
+
+	if (_use_syslog) {
+		vsyslog(prio, format, ap);
+	} else {
+		now = time(NULL);
+		if (!start)
+			start = now;
+		now -= start;
+		fprintf(stream, "[%2d:%02d] %8x:%-6s%s",
+			(int)now / 60, (int)now % 60,
+			// TODO: Maybe use shorter ID
+			// ((int)(pthread_self()) >> 6) & 0xffff,
+			(int)pthread_self(), subsys,
+			(_debug_level > 3) ? "" : indent);
+		if (_debug_level > 3)
+			fprintf(stream, "%28s:%4d %s", file, line, indent);
+		vfprintf(stream, _(format), ap);
+		fputc('\n', stream);
+		fflush(stream);
+	}
+
+	pthread_mutex_unlock(&_log_mutex);
+}
+
 #if 0				/* left out for now */
 
 static char *_skip_string(char *src, const int delimiter)
@@ -856,7 +933,7 @@ int dm_event_get_timeout(const char *device_path, uint32_t *timeout)
 			     0, 0))) {
 		char *p = _skip_string(msg.data, ' ');
 		if (!p) {
-			log_error("malformed reply from dmeventd '%s'\n",
+			log_error("Malformed reply from dmeventd '%s'.",
 				  msg.data);
 			dm_free(msg.data);
 			return -EIO;

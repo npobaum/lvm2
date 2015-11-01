@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2014 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2005-2015 Red Hat, Inc. All rights reserved.
  *
  * This file is part of the device-mapper userspace tools.
  *
@@ -86,7 +86,7 @@ static const struct {
 	{ SEG_RAID6_NC, "raid6_nc"},
 
 	/*
-	 *WARNING: Since 'raid' target overloads this 1:1 mapping table
+	 * WARNING: Since 'raid' target overloads this 1:1 mapping table
 	 * for search do not add new enum elements past them!
 	 */
 	{ SEG_RAID5_LS, "raid5"}, /* same as "raid5_ls" (default for MD also) */
@@ -159,7 +159,7 @@ struct load_segment {
 	uint32_t stripe_size;		/* Striped + raid */
 
 	int persistent;			/* Snapshot */
-	uint32_t chunk_size;		/* Snapshot + cache */
+	uint32_t chunk_size;		/* Snapshot */
 	struct dm_tree_node *cow;	/* Snapshot */
 	struct dm_tree_node *origin;	/* Snapshot + Snapshot origin + Cache */
 	struct dm_tree_node *merge;	/* Snapshot */
@@ -200,7 +200,7 @@ struct load_segment {
 	struct dm_list thin_messages;	/* Thin_pool */
 	uint64_t transaction_id;	/* Thin_pool */
 	uint64_t low_water_mark;	/* Thin_pool */
-	uint32_t data_block_size;       /* Thin_pool */
+	uint32_t data_block_size;       /* Thin_pool + cache */
 	unsigned skip_block_zeroing;	/* Thin_pool */
 	unsigned ignore_discard;	/* Thin_pool target vsn 1.1 */
 	unsigned no_discard_passdown;	/* Thin_pool target vsn 1.1 */
@@ -220,7 +220,7 @@ struct load_properties {
 	uint32_t read_ahead_flags;
 
 	unsigned segment_count;
-	unsigned size_changed;
+	int size_changed;
 	struct dm_list segs;
 
 	const char *new_name;
@@ -1427,7 +1427,8 @@ static int _suspend_node(const char *name, uint32_t major, uint32_t minor,
 	return r;
 }
 
-static int _thin_pool_status_transaction_id(struct dm_tree_node *dnode, uint64_t *transaction_id)
+static int _thin_pool_get_status(struct dm_tree_node *dnode,
+				 struct dm_status_thin_pool *s)
 {
 	struct dm_task *dmt;
 	int r = 0;
@@ -1458,14 +1459,12 @@ static int _thin_pool_status_transaction_id(struct dm_tree_node *dnode, uint64_t
 		goto out;
 	}
 
-	if (!params || (sscanf(params, FMTu64, transaction_id) != 1)) {
-		log_error("Failed to parse transaction_id from %s.", params);
-		goto out;
-	}
+	if (!parse_thin_pool_status(params, s))
+		goto_out;
 
 	log_debug_activation("Found transaction id %" PRIu64 " for thin pool %s "
 			     "with status line: %s.",
-			     *transaction_id, _node_name(dnode), params);
+			     s->transaction_id, _node_name(dnode), params);
 
 	r = 1;
 out:
@@ -1553,7 +1552,7 @@ static int _node_send_messages(struct dm_tree_node *dnode,
 {
 	struct load_segment *seg;
 	struct thin_message *tmsg;
-	uint64_t trans_id;
+	struct dm_status_thin_pool stp = { 0 };
 	const char *uuid;
 	int have_messages;
 
@@ -1572,39 +1571,39 @@ static int _node_send_messages(struct dm_tree_node *dnode,
 		return 1;
 	}
 
-	if (!_thin_pool_status_transaction_id(dnode, &trans_id))
+	if (!_thin_pool_get_status(dnode, &stp))
 		return_0;
 
 	have_messages = !dm_list_empty(&seg->thin_messages) ? 1 : 0;
-	if (trans_id == seg->transaction_id) {
+	if (stp.transaction_id == seg->transaction_id) {
 		dnode->props.send_messages = 0; /* messages already committed */
 		if (have_messages)
 			log_debug_activation("Thin pool %s transaction_id matches %"
 					     PRIu64 ", skipping messages.",
-					     _node_name(dnode), trans_id);
+					     _node_name(dnode), stp.transaction_id);
 		return 1;
 	}
 
 	/* Error if there are no stacked messages or id mismatches */
-	if (trans_id != (seg->transaction_id - have_messages)) {
+	if ((stp.transaction_id + 1) != seg->transaction_id) {
 		log_error("Thin pool %s transaction_id is %" PRIu64 ", while expected %" PRIu64 ".",
-			  _node_name(dnode), trans_id, seg->transaction_id - have_messages);
+			  _node_name(dnode), stp.transaction_id, seg->transaction_id - have_messages);
 		return 0;
 	}
 
-	if (!send)
+	if (!have_messages || !send)
 		return 1; /* transaction_id is matching */
 
 	dm_list_iterate_items(tmsg, &seg->thin_messages) {
 		if (!(_thin_pool_node_message(dnode, tmsg)))
 			return_0;
 		if (tmsg->message.type == DM_THIN_MESSAGE_SET_TRANSACTION_ID) {
-			if (!_thin_pool_status_transaction_id(dnode, &trans_id))
+			if (!_thin_pool_get_status(dnode, &stp))
 				return_0;
-			if (trans_id != tmsg->message.u.m_set_transaction_id.new_id) {
+			if (stp.transaction_id != tmsg->message.u.m_set_transaction_id.new_id) {
 				log_error("Thin pool %s transaction_id is %" PRIu64
 					  " and does not match expected  %" PRIu64 ".",
-					  _node_name(dnode), trans_id,
+					  _node_name(dnode), stp.transaction_id,
 					  tmsg->message.u.m_set_transaction_id.new_id);
 				return 0;
 			}
@@ -2329,6 +2328,20 @@ static int _mirror_emit_segment_line(struct dm_task *dmt, struct load_segment *s
 	return 1;
 }
 
+/* Is parameter non-zero? */
+#define PARAM_IS_SET(p) ((p) ? 1 : 0)
+
+/* Return number of bits assuming 4 * 64 bit size */
+static int _get_params_count(uint64_t bits)
+{
+	int r = 0;
+
+	r += 2 * hweight32(bits & 0xFFFFFFFF);
+	r += 2 * hweight32(bits >> 32);
+
+	return r;
+}
+
 static int _raid_emit_segment_line(struct dm_task *dmt, uint32_t major,
 				   uint32_t minor, struct load_segment *seg,
 				   uint64_t *seg_start, char *params,
@@ -2341,25 +2354,14 @@ static int _raid_emit_segment_line(struct dm_task *dmt, uint32_t major,
 	if ((seg->flags & DM_NOSYNC) || (seg->flags & DM_FORCESYNC))
 		param_count++;
 
-	if (seg->region_size)
-		param_count += 2;
+	param_count += 2 * (PARAM_IS_SET(seg->region_size) +
+			    PARAM_IS_SET(seg->writebehind) +
+			    PARAM_IS_SET(seg->min_recovery_rate) +
+			    PARAM_IS_SET(seg->max_recovery_rate));
 
-	if (seg->writebehind)
-		param_count += 2;
-
-	if (seg->min_recovery_rate)
-		param_count += 2;
-
-	if (seg->max_recovery_rate)
-		param_count += 2;
-
-	/* rebuilds is 64-bit */
-	param_count += 2 * hweight32(seg->rebuilds & 0xFFFFFFFF);
-	param_count += 2 * hweight32(seg->rebuilds >> 32);
-
-	/* rebuilds is 64-bit */
-	param_count += 2 * hweight32(seg->writemostly & 0xFFFFFFFF);
-	param_count += 2 * hweight32(seg->writemostly >> 32);
+	/* rebuilds and writemostly are 64 bits */
+	param_count += _get_params_count(seg->rebuilds);
+	param_count += _get_params_count(seg->writemostly);
 
 	if ((seg->type == SEG_RAID1) && seg->stripe_size)
 		log_error("WARNING: Ignoring RAID1 stripe size");
@@ -2379,13 +2381,6 @@ static int _raid_emit_segment_line(struct dm_task *dmt, uint32_t major,
 		if (seg->rebuilds & (1ULL << i))
 			EMIT_PARAMS(pos, " rebuild %u", i);
 
-	for (i = 0; i < (seg->area_count / 2); i++)
-		if (seg->writemostly & (1ULL << i))
-			EMIT_PARAMS(pos, " write_mostly %u", i);
-
-	if (seg->writebehind)
-		EMIT_PARAMS(pos, " writebehind %u", seg->writebehind);
-
 	if (seg->min_recovery_rate)
 		EMIT_PARAMS(pos, " min_recovery_rate %u",
 			    seg->min_recovery_rate);
@@ -2393,6 +2388,13 @@ static int _raid_emit_segment_line(struct dm_task *dmt, uint32_t major,
 	if (seg->max_recovery_rate)
 		EMIT_PARAMS(pos, " max_recovery_rate %u",
 			    seg->max_recovery_rate);
+
+	for (i = 0; i < (seg->area_count / 2); i++)
+		if (seg->writemostly & (1ULL << i))
+			EMIT_PARAMS(pos, " write_mostly %u", i);
+
+	if (seg->writebehind)
+		EMIT_PARAMS(pos, " max_write_behind %u", seg->writebehind);
 
 	/* Print number of metadata/data device pairs */
 	EMIT_PARAMS(pos, " %u", seg->area_count/2);
@@ -2429,8 +2431,8 @@ static int _cache_emit_segment_line(struct dm_task *dmt,
 
 	EMIT_PARAMS(pos, " %s %s %s", metadata, data, origin);
 
-	/* Chunk size */
-	EMIT_PARAMS(pos, " %u", seg->chunk_size);
+	/* Data block size */
+	EMIT_PARAMS(pos, " %u", seg->data_block_size);
 
 	/* Features */
 	/* feature_count = hweight32(seg->flags); */
@@ -2727,7 +2729,8 @@ static int _load_node(struct dm_tree_node *dnode)
 
 		existing_table_size = dm_task_get_existing_table_size(dmt);
 		if ((dnode->props.size_changed =
-		     (existing_table_size == seg_start) ? 0 : 1)) {
+		     (existing_table_size == seg_start) ? 0 :
+		     (existing_table_size > seg_start) ? -1 : 1)) {
 			/*
 			 * Kernel usually skips size validation on zero-length devices
 			 * now so no need to preload them.
@@ -2823,8 +2826,10 @@ int dm_tree_preload_children(struct dm_tree_node *dnode,
 		}
 
 		/* Propagate device size change change */
-		if (child->props.size_changed)
+		if (child->props.size_changed > 0 && !dnode->props.size_changed)
 			dnode->props.size_changed = 1;
+		else if (child->props.size_changed < 0)
+			dnode->props.size_changed = -1;
 
 		/* Resume device immediately if it has parents and its size changed */
 		if (!dm_tree_node_num_children(child, 1) || !child->props.size_changed)
@@ -3059,43 +3064,6 @@ int dm_tree_node_add_snapshot_merge_target(struct dm_tree_node *node,
 				    merge_uuid, 1, chunk_size);
 }
 
-int dm_get_status_snapshot(struct dm_pool *mem, const char *params,
-			   struct dm_status_snapshot **status)
-{
-	struct dm_status_snapshot *s;
-	int r;
-
-	if (!params) {
-		log_error("Failed to parse invalid snapshot params.");
-		return 0;
-	}
-
-	if (!(s = dm_pool_zalloc(mem, sizeof(*s)))) {
-		log_error("Failed to allocate snapshot status structure.");
-		return 0;
-	}
-
-	r = sscanf(params, FMTu64 "/" FMTu64 " " FMTu64,
-		   &s->used_sectors, &s->total_sectors,
-		   &s->metadata_sectors);
-
-	if (r == 3 || r == 2)
-		s->has_metadata_sectors = (r == 3);
-	else if (!strcmp(params, "Invalid"))
-		s->invalid = 1;
-	else if (!strcmp(params, "Merge failed"))
-		s->merge_failed = 1;
-	else {
-		dm_pool_free(mem, s);
-		log_error("Failed to parse snapshot params: %s.", params);
-		return 0;
-	}
-
-	*status = s;
-
-	return 1;
-}
-
 int dm_tree_node_add_error_target(struct dm_tree_node *node,
 				  uint64_t size)
 {
@@ -3267,84 +3235,6 @@ int dm_tree_node_add_raid_target(struct dm_tree_node *node,
 	return dm_tree_node_add_raid_target_with_params(node, size, &params);
 }
 
-/*
- * Various RAID status versions include:
- * Versions < 1.5.0 (4 fields):
- *   <raid_type> <#devs> <health_str> <sync_ratio>
- * Versions 1.5.0+  (6 fields):
- *   <raid_type> <#devs> <health_str> <sync_ratio> <sync_action> <mismatch_cnt>
- */
-int dm_get_status_raid(struct dm_pool *mem, const char *params,
-		       struct dm_status_raid **status)
-{
-	int i;
-	const char *pp, *p;
-	struct dm_status_raid *s;
-
-	if (!params || !(p = strchr(params, ' '))) {
-		log_error("Failed to parse invalid raid params.");
-		return 0;
-	}
-	p++;
-
-	/* second field holds the device count */
-	if (sscanf(p, "%d", &i) != 1)
-		return_0;
-
-	if (!(s = dm_pool_zalloc(mem, sizeof(struct dm_status_raid))))
-		return_0;
-
-	if (!(s->raid_type = dm_pool_zalloc(mem, p - params)))
-		goto_bad; /* memory is freed went pool is destroyed */
-
-	if (!(s->dev_health = dm_pool_zalloc(mem, i + 1)))
-		goto_bad;
-
-	if (sscanf(params, "%s %u %s %" PRIu64 "/%" PRIu64,
-		   s->raid_type,
-		   &s->dev_count,
-		   s->dev_health,
-		   &s->insync_regions,
-		   &s->total_regions) != 5) {
-		log_error("Failed to parse raid params: %s", params);
-		goto bad;
-	}
-
-	*status = s;
-
-	/*
-	 * All pre-1.5.0 version parameters are read.  Now we check
-	 * for additional 1.5.0+ parameters.
-	 *
-	 * Note that 'sync_action' will be NULL (and mismatch_count
-	 * will be 0) if the kernel returns a pre-1.5.0 status.
-	 */
-	for (p = params, i = 0; i < 4; i++, p++)
-		if (!(p = strchr(p, ' ')))
-			return 1;  /* return pre-1.5.0 status */
-
-	pp = p;
-	if (!(p = strchr(p, ' '))) {
-		log_error(INTERNAL_ERROR "Bad RAID status received.");
-		goto bad;
-	}
-	p++;
-
-	if (!(s->sync_action = dm_pool_zalloc(mem, p - pp)))
-		goto_bad;
-
-	if (sscanf(pp, "%s %" PRIu64, s->sync_action, &s->mismatch_count) != 2) {
-		log_error("Failed to parse raid params: %s", params);
-		goto bad;
-	}
-
-	return 1;
-bad:
-	dm_pool_free(mem, s);
-
-	return 0;
-}
-
 int dm_tree_node_add_cache_target(struct dm_tree_node *node,
 				  uint64_t size,
 				  uint64_t feature_flags, /* DM_CACHE_FEATURE_* */
@@ -3353,10 +3243,36 @@ int dm_tree_node_add_cache_target(struct dm_tree_node *node,
 				  const char *origin_uuid,
 				  const char *policy_name,
 				  const struct dm_config_node *policy_settings,
-				  uint32_t chunk_size)
+				  uint32_t data_block_size)
 {
 	struct dm_config_node *cn;
 	struct load_segment *seg;
+
+	switch (feature_flags &
+		(DM_CACHE_FEATURE_PASSTHROUGH |
+		 DM_CACHE_FEATURE_WRITETHROUGH |
+		 DM_CACHE_FEATURE_WRITEBACK)) {
+		 case DM_CACHE_FEATURE_PASSTHROUGH:
+		 case DM_CACHE_FEATURE_WRITETHROUGH:
+		 case DM_CACHE_FEATURE_WRITEBACK:
+			 break;
+		 default:
+			 log_error("Invalid cache's feature flag " FMTu64 ".",
+				   feature_flags);
+			 return 0;
+	}
+
+	if (data_block_size < DM_CACHE_MIN_DATA_BLOCK_SIZE) {
+		log_error("Data block size %u is lower then %u sectors.",
+			  data_block_size, DM_CACHE_MIN_DATA_BLOCK_SIZE);
+		return 0;
+	}
+
+	if (data_block_size > DM_CACHE_MAX_DATA_BLOCK_SIZE) {
+		log_error("Data block size %u is higher then %u sectors.",
+			  data_block_size, DM_CACHE_MAX_DATA_BLOCK_SIZE);
+		return 0;
+	}
 
 	if (!(seg = _add_segment(node, SEG_CACHE, size)))
 		return_0;
@@ -3379,7 +3295,6 @@ int dm_tree_node_add_cache_target(struct dm_tree_node *node,
 	if (!_link_tree_nodes(node, seg->metadata))
 		return_0;
 
-
 	if (!(seg->origin = dm_tree_find_node_by_uuid(node->dtree,
 						      origin_uuid))) {
 		log_error("Missing cache's origin uuid %s.",
@@ -3389,8 +3304,9 @@ int dm_tree_node_add_cache_target(struct dm_tree_node *node,
 	if (!_link_tree_nodes(node, seg->origin))
 		return_0;
 
-	seg->chunk_size = chunk_size;
-	seg->flags = feature_flags;
+	seg->data_block_size = data_block_size;
+	/* Enforce WriteThough mode for cleaner policy */
+	seg->flags = (strcmp(policy_name, "cleaner") == 0) ? DM_CACHE_FEATURE_WRITETHROUGH : feature_flags;
 	seg->policy_name = policy_name;
 
 	/* FIXME: better validation missing */
@@ -3408,145 +3324,7 @@ int dm_tree_node_add_cache_target(struct dm_tree_node *node,
 		}
 	}
 
-
 	return 1;
-}
-
-static const char *advance_to_next_word(const char *str, int count)
-{
-	int i;
-	const char *p;
-
-	for (p = str, i = 0; i < count; i++, p++)
-		if (!(p = strchr(p, ' ')))
-			return NULL;
-
-	return p;
-}
-
-/*
- * <metadata block size> <#used metadata blocks>/<#total metadata blocks>
- * <cache block size> <#used cache blocks>/<#total cache blocks>
- * <#read hits> <#read misses> <#write hits> <#write misses>
- * <#demotions> <#promotions> <#dirty> <#features> <features>*
- * <#core args> <core args>* <policy name> <#policy args> <policy args>*
- *
- * metadata block size      : Fixed block size for each metadata block in
- *                            sectors
- * #used metadata blocks    : Number of metadata blocks used
- * #total metadata blocks   : Total number of metadata blocks
- * cache block size         : Configurable block size for the cache device
- *                            in sectors
- * #used cache blocks       : Number of blocks resident in the cache
- * #total cache blocks      : Total number of cache blocks
- * #read hits               : Number of times a READ bio has been mapped
- *                            to the cache
- * #read misses             : Number of times a READ bio has been mapped
- *                            to the origin
- * #write hits              : Number of times a WRITE bio has been mapped
- *                            to the cache
- * #write misses            : Number of times a WRITE bio has been
- *                            mapped to the origin
- * #demotions               : Number of times a block has been removed
- *                            from the cache
- * #promotions              : Number of times a block has been moved to
- *                            the cache
- * #dirty                   : Number of blocks in the cache that differ
- *                            from the origin
- * #feature args            : Number of feature args to follow
- * feature args             : 'writethrough' (optional)
- * #core args               : Number of core arguments (must be even)
- * core args                : Key/value pairs for tuning the core
- *                            e.g. migration_threshold
- *			     *policy name              : Name of the policy
- * #policy args             : Number of policy arguments to follow (must be even)
- * policy args              : Key/value pairs
- *                            e.g. sequential_threshold
- */
-int dm_get_status_cache(struct dm_pool *mem, const char *params,
-			struct dm_status_cache **status)
-{
-	int i, feature_argc;
-	char *str;
-	const char *p, *pp;
-	struct dm_status_cache *s;
-
-	if (!(s = dm_pool_zalloc(mem, sizeof(struct dm_status_cache))))
-		return_0;
-
-	/* Read in args that have definitive placement */
-	if (sscanf(params,
-		   " %" PRIu32
-		   " %" PRIu64 "/%" PRIu64
-		   " %" PRIu32
-		   " %" PRIu64 "/%" PRIu64
-		   " %" PRIu64 " %" PRIu64
-		   " %" PRIu64 " %" PRIu64
-		   " %" PRIu64 " %" PRIu64
-		   " %" PRIu64
-		   " %d",
-		   &s->metadata_block_size,
-		   &s->metadata_used_blocks, &s->metadata_total_blocks,
-		   &s->block_size, /* AKA, chunk_size */
-		   &s->used_blocks, &s->total_blocks,
-		   &s->read_hits, &s->read_misses,
-		   &s->write_hits, &s->write_misses,
-		   &s->demotions, &s->promotions,
-		   &s->dirty_blocks,
-		   &feature_argc) != 14)
-		goto bad;
-
-	/* Now jump to "features" section */
-	if (!(p = advance_to_next_word(params, 12)))
-		goto bad;
-
-	/* Read in features */
-	for (i = 0; i < feature_argc; i++) {
-		if (!strncmp(p, "writethrough ", 13))
-			s->feature_flags |= DM_CACHE_FEATURE_WRITETHROUGH;
-		else if (!strncmp(p, "writeback ", 10))
-			s->feature_flags |= DM_CACHE_FEATURE_WRITEBACK;
-		else
-			log_error("Unknown feature in status: %s", params);
-
-		if (!(p = advance_to_next_word(p, 1)))
-			goto bad;
-	}
-
-	/* Read in core_args. */
-	if (sscanf(p, "%d ", &s->core_argc) != 1)
-		goto bad;
-	if (s->core_argc &&
-	    (!(s->core_argv = dm_pool_zalloc(mem, sizeof(char *) * s->core_argc)) ||
-	     !(p = advance_to_next_word(p, 1)) ||
-	     !(str = dm_pool_strdup(mem, p)) ||
-	     !(p = advance_to_next_word(p, s->core_argc)) ||
-	     (dm_split_words(str, s->core_argc, 0, s->core_argv) != s->core_argc)))
-		goto bad;
-
-	/* Read in policy args */
-	pp = p;
-	if (!(p = advance_to_next_word(p, 1)) ||
-	    !(s->policy_name = dm_pool_zalloc(mem, (p - pp))))
-		goto bad;
-	if (sscanf(pp, "%s %d", s->policy_name, &s->policy_argc) != 2)
-		goto bad;
-	if (s->policy_argc &&
-	    (!(s->policy_argv = dm_pool_zalloc(mem, sizeof(char *) * s->policy_argc)) ||
-	     !(p = advance_to_next_word(p, 1)) ||
-	     !(str = dm_pool_strdup(mem, p)) ||
-	     (dm_split_words(str, s->policy_argc, 0, s->policy_argv) != s->policy_argc)))
-		goto bad;
-
-	*status = s;
-	return 1;
-
-bad:
-	log_error("Failed to parse cache params: %s", params);
-	dm_pool_free(mem, s);
-	*status = NULL;
-
-	return 0;
 }
 
 int dm_tree_node_add_replicator_target(struct dm_tree_node *node,
@@ -3975,88 +3753,6 @@ int dm_tree_node_set_thin_external_origin(struct dm_tree_node *node,
 	return 1;
 }
 
-int dm_get_status_thin_pool(struct dm_pool *mem, const char *params,
-			    struct dm_status_thin_pool **status)
-{
-	struct dm_status_thin_pool *s;
-	int pos;
-
-	if (!params) {
-		log_error("Failed to parse invalid thin pool params.");
-		return 0;
-	}
-
-	if (!(s = dm_pool_zalloc(mem, sizeof(struct dm_status_thin_pool)))) {
-		log_error("Failed to allocate thin_pool status structure.");
-		return 0;
-	}
-
-	/* FIXME: add support for held metadata root */
-	if (sscanf(params, FMTu64 " " FMTu64 "/" FMTu64 " " FMTu64 "/" FMTu64 "%n",
-		   &s->transaction_id,
-		   &s->used_metadata_blocks,
-		   &s->total_metadata_blocks,
-		   &s->used_data_blocks,
-		   &s->total_data_blocks, &pos) < 5) {
-		dm_pool_free(mem, s);
-		log_error("Failed to parse thin pool params: %s.", params);
-		return 0;
-	}
-
-	/* New status flags */
-	if (strstr(params + pos, "no_discard_passdown"))
-		s->discards = DM_THIN_DISCARDS_NO_PASSDOWN;
-	else if (strstr(params + pos, "ignore_discard"))
-		s->discards = DM_THIN_DISCARDS_IGNORE;
-	else /* default discard_passdown */
-		s->discards = DM_THIN_DISCARDS_PASSDOWN;
-
-	if (strstr(params + pos, "ro "))
-		s->read_only = 1;
-	else if (strstr(params + pos, "fail"))
-		s->fail = 1;
-	else if (strstr(params + pos, "out_of_data_space"))
-		s->out_of_data_space = 1;
-
-	if (strstr(params + pos, "error_if_no_space"))
-		s->error_if_no_space = 1;
-
-	*status = s;
-
-	return 1;
-}
-
-int dm_get_status_thin(struct dm_pool *mem, const char *params,
-		       struct dm_status_thin **status)
-{
-	struct dm_status_thin *s;
-
-	if (!params) {
-		log_error("Failed to parse invalid thin params.");
-		return 0;
-	}
-
-	if (!(s = dm_pool_zalloc(mem, sizeof(struct dm_status_thin)))) {
-		log_error("Failed to allocate thin status structure.");
-		return 0;
-	}
-
-	if (strchr(params, '-')) {
-		s->mapped_sectors = 0;
-		s->highest_mapped_sector = 0;
-	} else if (sscanf(params, FMTu64 " " FMTu64,
-		   &s->mapped_sectors,
-		   &s->highest_mapped_sector) != 2) {
-		dm_pool_free(mem, s);
-		log_error("Failed to parse thin params: %s.", params);
-		return 0;
-	}
-
-	*status = s;
-
-	return 1;
-}
-
 static int _add_area(struct dm_tree_node *node, struct load_segment *seg, struct dm_tree_node *dev_node, uint64_t offset)
 {
 	struct seg_area *area;
@@ -4160,3 +3856,19 @@ void dm_tree_node_set_callback(struct dm_tree_node *dnode,
 	dnode->callback = cb;
 	dnode->callback_data = data;
 }
+
+/*
+ * Backward compatible dm_tree_node_size_changed() implementations.
+ *
+ * Keep these at the end of the file to avoid adding clutter around the
+ * current dm_tree_node_size_changed() version.
+ */
+#if defined(__GNUC__)
+int dm_tree_node_size_changed_base(const struct dm_tree_node *dnode);
+DM_EXPORT_SYMBOL_BASE(dm_tree_node_size_changed);
+int dm_tree_node_size_changed_base(const struct dm_tree_node *dnode)
+{
+	/* Base does not make difference between smaller and bigger */
+	return dm_tree_node_size_changed(dnode) ? 1 : 0;
+}
+#endif

@@ -643,6 +643,7 @@ LVMETAD_PIDFILE
 DMEVENTD_PIDFILE
 WRITE_INSTALL
 VALGRIND_POOL
+USE_TRACKING
 UDEV_HAS_BUILTIN_BLKID
 UDEV_RULE_EXEC_DETECTION
 UDEV_SYSTEMD_BACKGROUND_JOBS
@@ -659,12 +660,13 @@ SELINUX_PC
 SELINUX_LIBS
 REPLICATORS
 READLINE_LIBS
-RT_PC
+RT_LIB
 RAID
 PYTHON_LIBDIRS
 PYTHON_INCDIRS
 PYTHON_BINDINGS
 PTHREAD_LIBS
+M_LIBS
 POOL
 PKGCONFIG
 OCFDIR
@@ -692,7 +694,6 @@ BLKDEACTIVATE
 FSADM
 ELDFLAGS
 DM_LIB_PATCHLEVEL
-DM_LIB_VERSION
 DMEVENTD_PATH
 DMEVENTD
 DL_LIBS
@@ -875,6 +876,7 @@ SHELL'
 ac_subst_files=''
 ac_user_opts='
 enable_option_checking
+enable_dependency_tracking
 enable_static_link
 with_user
 with_group
@@ -1633,6 +1635,8 @@ Optional Features:
   --disable-option-checking  ignore unrecognized --enable/--with options
   --disable-FEATURE       do not include FEATURE (same as --enable-FEATURE=no)
   --enable-FEATURE[=ARG]  include FEATURE [ARG=yes]
+  --disable-dependency-tracking
+                          speeds up one-time build.
   --enable-static_link    use this to link the tools to their libraries
                           statically (default is dynamic linking
   --enable-lvm1_fallback  use this to fall back and use LVM1 binaries if
@@ -2965,7 +2969,7 @@ ac_compiler_gnu=$ac_cv_c_compiler_gnu
 
 
 
-ac_config_headers="$ac_config_headers lib/misc/configure.h"
+ac_config_headers="$ac_config_headers include/configure.h"
 
 
 ################################################################################
@@ -5734,7 +5738,7 @@ fi
 done
 
 
-for ac_header in termios.h sys/statvfs.h
+for ac_header in termios.h sys/statvfs.h sys/timerfd.h
 do :
   as_ac_Header=`$as_echo "ac_cv_header_$ac_header" | $as_tr_sh`
 ac_fn_c_check_header_mongrel "$LINENO" "$ac_header" "$as_ac_Header" "$ac_includes_default"
@@ -7632,6 +7636,19 @@ done
 
 
 ################################################################################
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking whether to enable dependency tracking" >&5
+$as_echo_n "checking whether to enable dependency tracking... " >&6; }
+# Check whether --enable-dependency-tracking was given.
+if test "${enable_dependency_tracking+set}" = set; then :
+  enableval=$enable_dependency_tracking; USE_TRACKING=$enableval
+else
+  USE_TRACKING=yes
+fi
+
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $USE_TRACKING" >&5
+$as_echo "$USE_TRACKING" >&6; }
+
+################################################################################
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking whether to use static linking" >&5
 $as_echo_n "checking whether to use static linking... " >&6; }
 # Check whether --enable-static_link was given.
@@ -8813,20 +8830,27 @@ $as_echo "$as_me: WARNING: cache_check not found in path $PATH" >&2;}
 		fi
 	fi
 	if test "$CACHE_CHECK_NEEDS_CHECK" = yes; then
-		CACHE_CHECK_VSN=`"$CACHE_CHECK_CMD" -V 2>/dev/null`
-		CACHE_CHECK_VSN_MAJOR=`echo "$CACHE_CHECK_VSN" | $AWK -F '.' '{print $1}'`
-		CACHE_CHECK_VSN_MINOR=`echo "$CACHE_CHECK_VSN" | $AWK -F '.' '{print $2}'`
+		$CACHE_CHECK_CMD -V 2>/dev/null >conftest.tmp
+		read -r CACHE_CHECK_VSN < conftest.tmp
+		IFS=.- read -r CACHE_CHECK_VSN_MAJOR CACHE_CHECK_VSN_MINOR CACHE_CHECK_VSN_PATCH LEFTOVER < conftest.tmp
+		rm -f conftest.tmp
 
-		if test -z "$CACHE_CHECK_VSN_MAJOR" -o -z "$CACHE_CHECK_VSN_MINOR"; then
+		# Require version >= 0.5.4 for --clear-needs-check-flag
+		if test -z "$CACHE_CHECK_VSN_MAJOR" \
+			|| test -z "$CACHE_CHECK_VSN_MINOR" \
+			|| test -z "$CACHE_CHECK_VSN_PATCH"; then
 			{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: $CACHE_CHECK_CMD: Bad version \"$CACHE_CHECK_VSN\" found" >&5
 $as_echo "$as_me: WARNING: $CACHE_CHECK_CMD: Bad version \"$CACHE_CHECK_VSN\" found" >&2;}
 			CACHE_CHECK_VERSION_WARN=y
 			CACHE_CHECK_NEEDS_CHECK=no
-		elif test "$CACHE_CHECK_VSN_MAJOR" -eq 0 -a "$CACHE_CHECK_VSN_MINOR" -lt 5; then
-			{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: $CACHE_CHECK_CMD: Old version \"$CACHE_CHECK_VSN\" found" >&5
+		elif test "$CACHE_CHECK_VSN_MAJOR" -eq 0 ; then
+			if test "$CACHE_CHECK_VSN_MINOR" -lt 5 \
+				|| test "$CACHE_CHECK_VSN_MINOR" -eq 5 -a "$CACHE_CHECK_VSN_PATCH" -lt 4; then
+				{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: $CACHE_CHECK_CMD: Old version \"$CACHE_CHECK_VSN\" found" >&5
 $as_echo "$as_me: WARNING: $CACHE_CHECK_CMD: Old version \"$CACHE_CHECK_VSN\" found" >&2;}
-			CACHE_CHECK_VERSION_WARN=y
-			CACHE_CHECK_NEEDS_CHECK=no
+				CACHE_CHECK_VERSION_WARN=y
+				CACHE_CHECK_NEEDS_CHECK=no
+			fi
 		fi
 	fi
 	# Empty means a config way to ignore cache dumping
@@ -12563,6 +12587,50 @@ if [ \( "$LVM1" = shared -o "$POOL" = shared -o "$CLUSTER" = shared \
 fi
 
 ################################################################################
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for log10 in -lm" >&5
+$as_echo_n "checking for log10 in -lm... " >&6; }
+if ${ac_cv_lib_m_log10+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  ac_check_lib_save_LIBS=$LIBS
+LIBS="-lm  $LIBS"
+cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+
+/* Override any GCC internal prototype to avoid an error.
+   Use char because int might match the return type of a GCC
+   builtin and then its argument prototype would still apply.  */
+#ifdef __cplusplus
+extern "C"
+#endif
+char log10 ();
+int
+main ()
+{
+return log10 ();
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_link "$LINENO"; then :
+  ac_cv_lib_m_log10=yes
+else
+  ac_cv_lib_m_log10=no
+fi
+rm -f core conftest.err conftest.$ac_objext \
+    conftest$ac_exeext conftest.$ac_ext
+LIBS=$ac_check_lib_save_LIBS
+fi
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_cv_lib_m_log10" >&5
+$as_echo "$ac_cv_lib_m_log10" >&6; }
+if test "x$ac_cv_lib_m_log10" = xyes; then :
+  M_LIBS="-lm"
+else
+  hard_bailout
+fi
+
+
+################################################################################
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for pthread_mutex_lock in -lpthread" >&5
 $as_echo_n "checking for pthread_mutex_lock in -lpthread... " >&6; }
 if ${ac_cv_lib_pthread_pthread_mutex_lock+:} false; then :
@@ -12795,13 +12863,11 @@ fi
 $as_echo "#define HAVE_REALTIME 1" >>confdefs.h
 
 		LIBS="-lrt $LIBS"
-		RT_PC="librt"
+		RT_LIB="-lrt"
 	else
 		{ $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: Disabling realtime clock" >&5
 $as_echo "$as_me: WARNING: Disabling realtime clock" >&2;}
 	fi
-	{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $HAVE_REALTIME" >&5
-$as_echo "$HAVE_REALTIME" >&6; }
 fi
 
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for struct stat has st_ctim." >&5
@@ -13818,16 +13884,14 @@ cat >>confdefs.h <<_ACEOF
 _ACEOF
 
 
-if  test "$CLVMD" != none; then
-	clvmd_prefix=$ac_default_prefix
-	test "$prefix" != NONE && clvmd_prefix=$prefix
-	CLVMD_PATH="$clvmd_prefix/sbin/clvmd"
+clvmd_prefix=$ac_default_prefix
+test "$prefix" != NONE && clvmd_prefix=$prefix
+CLVMD_PATH="$clvmd_prefix/sbin/clvmd"
 
 cat >>confdefs.h <<_ACEOF
 #define CLVMD_PATH "$CLVMD_PATH"
 _ACEOF
 
-fi
 
 ################################################################################
 if test "$BUILD_DMEVENTD" = yes; then
@@ -13978,18 +14042,18 @@ test "$interface" != ioctl && as_fn_error $? "--with-interface=ioctl required. f
 $as_echo "$interface" >&6; }
 
 ################################################################################
-DM_LIB_VERSION="\"`cat "$srcdir"/VERSION_DM 2>/dev/null || echo Unknown`\""
+read DM_LIB_VERSION < "$srcdir"/VERSION_DM 2>/dev/null || DM_LIB_VERSION=Unknown
 
 cat >>confdefs.h <<_ACEOF
-#define DM_LIB_VERSION $DM_LIB_VERSION
+#define DM_LIB_VERSION "$DM_LIB_VERSION"
 _ACEOF
 
 
 DM_LIB_PATCHLEVEL=`cat "$srcdir"/VERSION_DM | $AWK -F '[-. ]' '{printf "%s.%s.%s",$1,$2,$3}'`
 
-LVM_VERSION="\"`cat "$srcdir"/VERSION 2>/dev/null || echo Unknown`\""
+read VER < "$srcdir"/VERSION 2>/dev/null || VER=Unknown
 
-VER=`cat "$srcdir"/VERSION`
+LVM_VERSION=\"$VER\"
 LVM_RELEASE_DATE="\"`echo $VER | $SED 's/.* (//;s/).*//'`\""
 VER=`echo "$VER" | $AWK '{print $1}'`
 LVM_RELEASE="\"`echo "$VER" | $AWK -F '-' '{print $2}'`\""
@@ -14146,8 +14210,9 @@ LVM_LIBAPI=`echo "$VER" | $AWK -F '[()]' '{print $2}'`
 
 
 
+
 ################################################################################
-ac_config_files="$ac_config_files Makefile make.tmpl daemons/Makefile daemons/clvmd/Makefile daemons/cmirrord/Makefile daemons/dmeventd/Makefile daemons/dmeventd/libdevmapper-event.pc daemons/dmeventd/plugins/Makefile daemons/dmeventd/plugins/lvm2/Makefile daemons/dmeventd/plugins/raid/Makefile daemons/dmeventd/plugins/mirror/Makefile daemons/dmeventd/plugins/snapshot/Makefile daemons/dmeventd/plugins/thin/Makefile daemons/lvmetad/Makefile daemons/lvmpolld/Makefile daemons/lvmlockd/Makefile conf/Makefile conf/example.conf conf/lvmlocal.conf conf/command_profile_template.profile conf/metadata_profile_template.profile include/.symlinks include/Makefile lib/Makefile lib/format1/Makefile lib/format_pool/Makefile lib/locking/Makefile lib/mirror/Makefile lib/replicator/Makefile lib/misc/lvm-version.h lib/raid/Makefile lib/snapshot/Makefile lib/thin/Makefile lib/cache_segtype/Makefile libdaemon/Makefile libdaemon/client/Makefile libdaemon/server/Makefile libdm/Makefile libdm/libdevmapper.pc liblvm/Makefile liblvm/liblvm2app.pc man/Makefile po/Makefile python/Makefile python/setup.py scripts/blkdeactivate.sh scripts/blk_availability_init_red_hat scripts/blk_availability_systemd_red_hat.service scripts/clvmd_init_red_hat scripts/cmirrord_init_red_hat scripts/dm_event_systemd_red_hat.service scripts/dm_event_systemd_red_hat.socket scripts/lvm2_cluster_activation_red_hat.sh scripts/lvm2_cluster_activation_systemd_red_hat.service scripts/lvm2_clvmd_systemd_red_hat.service scripts/lvm2_cmirrord_systemd_red_hat.service scripts/lvm2_lvmetad_init_red_hat scripts/lvm2_lvmetad_systemd_red_hat.service scripts/lvm2_lvmetad_systemd_red_hat.socket scripts/lvm2_lvmpolld_init_red_hat scripts/lvm2_lvmpolld_systemd_red_hat.service scripts/lvm2_lvmpolld_systemd_red_hat.socket scripts/lvm2_lvmlockd_systemd_red_hat.service scripts/lvm2_lvmlocking_systemd_red_hat.service scripts/lvm2_monitoring_init_red_hat scripts/lvm2_monitoring_systemd_red_hat.service scripts/lvm2_pvscan_systemd_red_hat@.service scripts/lvm2_tmpfiles_red_hat.conf scripts/Makefile test/Makefile test/api/Makefile test/unit/Makefile tools/Makefile udev/Makefile unit-tests/datastruct/Makefile unit-tests/regex/Makefile unit-tests/mm/Makefile"
+ac_config_files="$ac_config_files Makefile make.tmpl daemons/Makefile daemons/clvmd/Makefile daemons/cmirrord/Makefile daemons/dmeventd/Makefile daemons/dmeventd/libdevmapper-event.pc daemons/dmeventd/plugins/Makefile daemons/dmeventd/plugins/lvm2/Makefile daemons/dmeventd/plugins/raid/Makefile daemons/dmeventd/plugins/mirror/Makefile daemons/dmeventd/plugins/snapshot/Makefile daemons/dmeventd/plugins/thin/Makefile daemons/lvmetad/Makefile daemons/lvmpolld/Makefile daemons/lvmlockd/Makefile conf/Makefile conf/example.conf conf/lvmlocal.conf conf/command_profile_template.profile conf/metadata_profile_template.profile include/.symlinks include/Makefile lib/Makefile lib/format1/Makefile lib/format_pool/Makefile lib/locking/Makefile lib/mirror/Makefile lib/replicator/Makefile include/lvm-version.h lib/raid/Makefile lib/snapshot/Makefile lib/thin/Makefile lib/cache_segtype/Makefile libdaemon/Makefile libdaemon/client/Makefile libdaemon/server/Makefile libdm/Makefile libdm/libdevmapper.pc liblvm/Makefile liblvm/liblvm2app.pc man/Makefile po/Makefile python/Makefile python/setup.py scripts/blkdeactivate.sh scripts/blk_availability_init_red_hat scripts/blk_availability_systemd_red_hat.service scripts/clvmd_init_red_hat scripts/cmirrord_init_red_hat scripts/dm_event_systemd_red_hat.service scripts/dm_event_systemd_red_hat.socket scripts/lvm2_cluster_activation_red_hat.sh scripts/lvm2_cluster_activation_systemd_red_hat.service scripts/lvm2_clvmd_systemd_red_hat.service scripts/lvm2_cmirrord_systemd_red_hat.service scripts/lvm2_lvmetad_init_red_hat scripts/lvm2_lvmetad_systemd_red_hat.service scripts/lvm2_lvmetad_systemd_red_hat.socket scripts/lvm2_lvmpolld_init_red_hat scripts/lvm2_lvmpolld_systemd_red_hat.service scripts/lvm2_lvmpolld_systemd_red_hat.socket scripts/lvm2_lvmlockd_systemd_red_hat.service scripts/lvm2_lvmlocking_systemd_red_hat.service scripts/lvm2_monitoring_init_red_hat scripts/lvm2_monitoring_systemd_red_hat.service scripts/lvm2_pvscan_systemd_red_hat@.service scripts/lvm2_tmpfiles_red_hat.conf scripts/Makefile test/Makefile test/api/Makefile test/unit/Makefile tools/Makefile udev/Makefile unit-tests/datastruct/Makefile unit-tests/regex/Makefile unit-tests/mm/Makefile"
 
 cat >confcache <<\_ACEOF
 # This file is a shell script that caches the results of configure
@@ -14841,7 +14906,7 @@ cat >>$CONFIG_STATUS <<\_ACEOF || ac_write_fail=1
 for ac_config_target in $ac_config_targets
 do
   case $ac_config_target in
-    "lib/misc/configure.h") CONFIG_HEADERS="$CONFIG_HEADERS lib/misc/configure.h" ;;
+    "include/configure.h") CONFIG_HEADERS="$CONFIG_HEADERS include/configure.h" ;;
     "Makefile") CONFIG_FILES="$CONFIG_FILES Makefile" ;;
     "make.tmpl") CONFIG_FILES="$CONFIG_FILES make.tmpl" ;;
     "daemons/Makefile") CONFIG_FILES="$CONFIG_FILES daemons/Makefile" ;;
@@ -14871,7 +14936,7 @@ do
     "lib/locking/Makefile") CONFIG_FILES="$CONFIG_FILES lib/locking/Makefile" ;;
     "lib/mirror/Makefile") CONFIG_FILES="$CONFIG_FILES lib/mirror/Makefile" ;;
     "lib/replicator/Makefile") CONFIG_FILES="$CONFIG_FILES lib/replicator/Makefile" ;;
-    "lib/misc/lvm-version.h") CONFIG_FILES="$CONFIG_FILES lib/misc/lvm-version.h" ;;
+    "include/lvm-version.h") CONFIG_FILES="$CONFIG_FILES include/lvm-version.h" ;;
     "lib/raid/Makefile") CONFIG_FILES="$CONFIG_FILES lib/raid/Makefile" ;;
     "lib/snapshot/Makefile") CONFIG_FILES="$CONFIG_FILES lib/snapshot/Makefile" ;;
     "lib/thin/Makefile") CONFIG_FILES="$CONFIG_FILES lib/thin/Makefile" ;;

@@ -581,8 +581,11 @@ int config_file_read(struct dm_config_tree *cft)
 		if (!(cf->dev = dev_create_file(filename, NULL, NULL, 1)))
 			return_0;
 
-		if (!dev_open_readonly_buffered(cf->dev))
+		if (!dev_open_readonly_buffered(cf->dev)) {
+			dev_destroy_file(cf->dev);
+			cf->dev = NULL;
 			return_0;
+		}
 	}
 
 	r = config_file_read_fd(cft, cf->dev, 0, (size_t) info.st_size, 0, 0,
@@ -1691,6 +1694,11 @@ static int _out_prefix_fn(const struct dm_config_node *cn, const char *line, voi
 		if (cfg_def->comment) {
 			int pos = 0;
 			while (_copy_one_line(cfg_def->comment, commentline, &pos, strlen(cfg_def->comment))) {
+				if ((commentline[0] == '#') && (strlen(commentline) == 1)) {
+					if (!out->tree_spec->withspaces)
+						continue;
+					commentline[0] = '\0';
+				}
 				fprintf(out->fp, "%s# %s\n", line, commentline);
 				/* withsummary prints only the first comment line. */
 				if (!out->tree_spec->withcomments)
@@ -1712,6 +1720,9 @@ static int _out_prefix_fn(const struct dm_config_node *cn, const char *line, voi
 
 		if (cfg_def->flags & CFG_DEFAULT_UNDEFINED)
 			fprintf(out->fp, "%s# This configuration %s does not have a default value defined.\n", line, node_type_name);
+
+		if (cfg_def->flags & CFG_DEFAULT_COMMENTED)
+			fprintf(out->fp, "%s# This configuration %s has an automatic default value.\n", line, node_type_name);
 
 		if ((out->tree_spec->type == CFG_DEF_TREE_FULL) &&
 		    (out->tree_spec->check_status[cn->id] & CFG_USED))

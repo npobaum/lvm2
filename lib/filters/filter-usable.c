@@ -29,22 +29,19 @@ static int _native_check_pv_min_size(struct device *dev)
 
 	/* Check it's accessible */
 	if (!dev_open_readonly_quiet(dev)) {
-		log_debug_devs("%s: Skipping: open failed [%s:%p]",
-				dev_name(dev), dev_ext_name(dev), dev->ext.handle);
+		log_debug_devs("%s: Skipping: open failed", dev_name(dev));
 		return 0;
 	}
 
 	/* Check it's not too small */
 	if (!dev_get_size(dev, &size)) {
-		log_debug_devs("%s: Skipping: dev_get_size failed [%s:%p]",
-				dev_name(dev), dev_ext_name(dev), dev->ext.handle);
+		log_debug_devs("%s: Skipping: dev_get_size failed", dev_name(dev));
 		goto out;
 	}
 
 	if (size < pv_min_size()) {
-		log_debug_devs("%s: Skipping: %s [%s:%p]", dev_name(dev),
-				_too_small_to_hold_pv_msg,
-				dev_ext_name(dev), dev->ext.handle);
+		log_debug_devs("%s: Skipping: %s", dev_name(dev),
+				_too_small_to_hold_pv_msg);
 		goto out;
 	}
 
@@ -115,26 +112,11 @@ static int _passes_usable_filter(struct dev_filter *f, struct device *dev)
 {
 	filter_mode_t mode = *((filter_mode_t *) f->private);
 	struct dev_usable_check_params ucp = {0};
-	int r;
-
-	/* check if the device is not too small to hold a PV */
-	switch (mode) {
-		case FILTER_MODE_NO_LVMETAD:
-			/* fall through */
-		case FILTER_MODE_PRE_LVMETAD:
-			if (!_check_pv_min_size(dev))
-				return 0;
-			break;
-		case FILTER_MODE_POST_LVMETAD:
-			/* nothing to do here */
-			break;
-	}
+	int r = 1;
 
 	/* further checks are done on dm devices only */
-	if (!dm_is_dm_major(MAJOR(dev->dev)))
-		return 1;
-
-	switch (mode) {
+	if (dm_is_dm_major(MAJOR(dev->dev))) {
+		switch (mode) {
 		case FILTER_MODE_NO_LVMETAD:
 			ucp.check_empty = 1;
 			ucp.check_blocked = 1;
@@ -163,10 +145,25 @@ static int _passes_usable_filter(struct dev_filter *f, struct device *dev)
 			ucp.check_error_target = 0;
 			ucp.check_reserved = 0;
 			break;
+		}
+
+		if (!(r = device_is_usable(dev, ucp)))
+			log_debug_devs("%s: Skipping unusable device.", dev_name(dev));
 	}
 
-	if (!(r = device_is_usable(dev, ucp)))
-		log_debug_devs("%s: Skipping unusable device", dev_name(dev));
+	if (r) {
+		/* check if the device is not too small to hold a PV */
+		switch (mode) {
+		case FILTER_MODE_NO_LVMETAD:
+			/* fall through */
+		case FILTER_MODE_PRE_LVMETAD:
+			r = _check_pv_min_size(dev);
+			break;
+		case FILTER_MODE_POST_LVMETAD:
+			/* nothing to do here */
+			break;
+		}
+	}
 
 	return r;
 }

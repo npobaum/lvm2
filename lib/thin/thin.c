@@ -118,10 +118,6 @@ static int _thin_pool_text_import(struct lv_segment *seg,
 	else if (!set_pool_discards(&seg->discards, discards_str))
 		return SEG_LOG_ERROR("Discards option unsupported for");
 
-	if (dm_config_has_node(sn, "low_water_mark") &&
-	    !dm_config_get_uint64(sn, "low_water_mark", &seg->low_water_mark))
-		return SEG_LOG_ERROR("Could not read low_water_mark");
-
 	if ((seg->chunk_size < DM_THIN_MIN_DATA_BLOCK_SIZE) ||
 	    (seg->chunk_size > DM_THIN_MAX_DATA_BLOCK_SIZE))
 		return SEG_LOG_ERROR("Unsupported value %u for chunk_size",
@@ -168,9 +164,6 @@ static int _thin_pool_text_export(const struct lv_segment *seg, struct formatter
 		log_error(INTERNAL_ERROR "Invalid discards value %d.", seg->discards);
 		return 0;
 	}
-
-	if (seg->low_water_mark)
-		outf(f, "low_water_mark = %" PRIu64, seg->low_water_mark);
 
 	if (seg->zero_new_blocks)
 		outf(f, "zero_new_blocks = 1");
@@ -266,6 +259,8 @@ static int _thin_pool_add_target_line(struct dev_manager *dm,
 	struct lvinfo info;
 	uint64_t transaction_id = 0;
 	unsigned attr;
+	uint64_t low_water_mark;
+	int threshold;
 
 	if (!_thin_target_present(cmd, NULL, &attr))
 		return_0;
@@ -277,27 +272,37 @@ static int _thin_pool_add_target_line(struct dev_manager *dm,
 
 	if (!(attr & THIN_FEATURE_BLOCK_SIZE) &&
 	    (seg->chunk_size & (seg->chunk_size - 1))) {
-		log_error("Thin pool target does not support %uKiB chunk size "
-			  "(needs kernel >= 3.6).", seg->chunk_size / 2);
+		log_error("Thin pool target does not support %s chunk size (needs"
+			  " kernel >= 3.6).", display_size(cmd, seg->chunk_size));
 		return 0;
 	}
 
 	if (!(metadata_dlid = build_dm_uuid(mem, seg->metadata_lv, NULL))) {
 		log_error("Failed to build uuid for metadata LV %s.",
-			  seg->metadata_lv->name);
+			  display_lvname(seg->metadata_lv));
 		return 0;
 	}
 
 	if (!(pool_dlid = build_dm_uuid(mem, seg_lv(seg, 0), NULL))) {
 		log_error("Failed to build uuid for pool LV %s.",
-			  seg_lv(seg, 0)->name);
+			  display_lvname(seg_lv(seg, 0)));
 		return 0;
 	}
 
+	threshold = find_config_tree_int(seg->lv->vg->cmd,
+					 activation_thin_pool_autoextend_threshold_CFG,
+					 lv_config_profile(seg->lv));
+	if (threshold < 50)
+		threshold = 50;
+	if (threshold < 100)
+		low_water_mark = (len * threshold + 99) / 100;
+	else
+		low_water_mark = len;
+
 	if (!dm_tree_node_add_thin_pool_target(node, len,
-					       seg->transaction_id + (laopts->send_messages ? 1 : 0),
+					       seg->transaction_id,
 					       metadata_dlid, pool_dlid,
-					       seg->chunk_size, seg->low_water_mark,
+					       seg->chunk_size, low_water_mark,
 					       seg->zero_new_blocks ? 0 : 1))
 		return_0;
 
@@ -345,7 +350,7 @@ static int _thin_pool_add_target_line(struct dev_manager *dm,
 				 */
 				if (!lv_thin_pool_transaction_id(seg->lv, &transaction_id))
 					return_0; /* Thin pool should exist and work */
-				if (transaction_id != seg->transaction_id) {
+				if ((transaction_id + 1) != seg->transaction_id) {
 					log_error("Can't create snapshot %s as origin %s is not suspended.",
 						  lmsg->u.lv->name, origin->name);
 					return 0;
@@ -373,11 +378,11 @@ static int _thin_pool_add_target_line(struct dev_manager *dm,
 
 	if (!dm_list_empty(&seg->thin_messages)) {
 		/* Messages were passed, modify transaction_id as the last one */
-		log_debug_activation("Thin pool set transaction id %" PRIu64 ".", seg->transaction_id + 1);
+		log_debug_activation("Thin pool set transaction id %" PRIu64 ".", seg->transaction_id);
 		if (!dm_tree_node_add_thin_pool_message(node,
 							DM_THIN_MESSAGE_SET_TRANSACTION_ID,
-							seg->transaction_id,
-							seg->transaction_id + 1))
+							seg->transaction_id - 1,
+							seg->transaction_id))
 			return_0;
 	}
 
@@ -620,6 +625,15 @@ static int _thin_target_percent(void **target_state __attribute__((unused)),
 		/* Pool allocates whole chunk so round-up to nearest one */
 		csize = first_seg(seg->pool_lv)->chunk_size;
 		csize = ((seg->lv->size + csize - 1) / csize) * csize;
+		if (s->mapped_sectors > csize) {
+			log_warn("WARNING: LV %s maps %s while the size is only %s.",
+				 display_lvname(seg->lv),
+				 display_size(cmd, s->mapped_sectors),
+				 display_size(cmd, csize));
+			/* Don't show nonsense numbers like i.e. 1000% full */
+			s->mapped_sectors = csize;
+		}
+
 		*percent = dm_make_percent(s->mapped_sectors, csize);
 		*total_denominator += csize;
 	} else {

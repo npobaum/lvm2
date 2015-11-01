@@ -7,6 +7,5 @@
 0007-udev.patch
 0008-systemd.patch
 0009-clvmd-openais-format.patch
-0010-cleanup.patch
 udev-md.patch
 systemd-pvscan-background.patch

@@ -1,4 +1,4 @@
-From 412e46f0c8de7f6cd2e689662afe2ace7aa13810 Mon Sep 17 00:00:00 2001
+From 302928d937871bacbb44577e6bf510bd7d487869 Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 30 Jun 2015 11:46:11 +0200
 Subject: udev
@@ -109,7 +109,7 @@ index 4b64dd6..b5cc790 100644
  
  SYMLINK+="disk/by-id/dm-name-$env{DM_NAME}"
 diff --git a/udev/Makefile.in b/udev/Makefile.in
-index 390069b..80cef03 100644
+index cd031ae..0dddd4c 100644
 --- a/udev/Makefile.in
 +++ b/udev/Makefile.in
 @@ -18,10 +18,10 @@ top_builddir = @top_builddir@

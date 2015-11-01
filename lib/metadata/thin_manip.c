@@ -63,6 +63,10 @@ int attach_pool_message(struct lv_segment *pool_seg, dm_thin_message_t type,
 
 	tmsg->type = type;
 
+	/* If the 1st message is add in non-read-only mode, modify transaction_id */
+	if (!no_update && dm_list_empty(&pool_seg->thin_messages))
+		pool_seg->transaction_id++;
+
 	dm_list_add(&pool_seg->thin_messages, &tmsg->list);
 
 	log_debug_metadata("Added %s message.",
@@ -212,7 +216,7 @@ int thin_pool_feature_supported(const struct logical_volume *lv, int feature)
 int pool_below_threshold(const struct lv_segment *pool_seg)
 {
 	dm_percent_t percent;
-	int threshold = DM_PERCENT_1 *
+	dm_percent_t threshold = DM_PERCENT_1 *
 		find_config_tree_int(pool_seg->lv->vg->cmd, activation_thin_pool_autoextend_threshold_CFG,
 				     lv_config_profile(pool_seg->lv));
 
@@ -220,15 +224,27 @@ int pool_below_threshold(const struct lv_segment *pool_seg)
 	if (!lv_thin_pool_percent(pool_seg->lv, 0, &percent))
 		return_0;
 
-	if (percent >= threshold)
+	if (percent > threshold) {
+		log_debug("Threshold configured for free data space in "
+			  "thin pool %s has been reached (%.2f%% >= %.2f%%).",
+			  display_lvname(pool_seg->lv),
+			  dm_percent_to_float(percent),
+			  dm_percent_to_float(threshold));
 		return 0;
+	}
 
 	/* Metadata */
 	if (!lv_thin_pool_percent(pool_seg->lv, 1, &percent))
 		return_0;
 
-	if (percent >= threshold)
+	if (percent > threshold) {
+		log_debug("Threshold configured for free metadata space in "
+			  "thin pool %s has been reached (%.2f%% > %.2f%%).",
+			  display_lvname(pool_seg->lv),
+			  dm_percent_to_float(percent),
+			  dm_percent_to_float(threshold));
 		return 0;
+	}
 
 	return 1;
 }
@@ -475,9 +491,6 @@ int update_pool_lv(struct logical_volume *lv, int activate)
 	}
 
 	dm_list_init(&(first_seg(lv)->thin_messages));
-
-	/* thin-pool target transaction is finished, increase lvm2 TID */
-	first_seg(lv)->transaction_id++;
 
 	if (!vg_write(lv->vg) || !vg_commit(lv->vg))
 		return_0;

@@ -154,7 +154,7 @@ static void usage(const char *prog, FILE *file)
 {
 	fprintf(file, "Usage: %s [options]\n"
 		"   -C       Sets debug level (from -d) on all clvmd instances clusterwide\n"
-		"   -d[n]    Set debug logging (0:none, 1:stderr (implies -f option), 2:syslog)\n"
+		"   -d[<n>]  Set debug logging (0:none, 1:stderr (implies -f option), 2:syslog)\n"
 		"   -E<uuid> Take this lock uuid as exclusively locked resource (for restart)\n"
 		"   -f       Don't fork, run in the foreground\n"
 		"   -h       Show this help information\n"
@@ -855,12 +855,12 @@ static void main_loop(int cmd_timeout)
 		int quorate = clops->is_quorate();
 		int client_count = 0;
 		int max_fd = 0;
+		struct local_client *lastfd = &local_client_head;
+		struct local_client *nextfd = local_client_head.next;
 
 		/* Wait on the cluster FD and all local sockets/pipes */
 		local_client_head.fd = clops->get_main_cluster_fd();
 		FD_ZERO(&in);
-		struct local_client *lastfd = &local_client_head;
-		struct local_client *nextfd = local_client_head.next;
 
 		for (thisfd = &local_client_head; thisfd; thisfd = thisfd->next) {
 			client_count++;

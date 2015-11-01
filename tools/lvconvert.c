@@ -50,7 +50,7 @@ struct lvconvert_params {
 	uint32_t stripes;
 	uint32_t stripe_size;
 	uint32_t read_ahead;
-	uint64_t feature_flags; /* cache_pool */
+	const char *cache_mode; /* cache */
 	const char *policy_name; /* cache */
 	struct dm_config_tree *policy_settings; /* cache */
 
@@ -299,26 +299,14 @@ static int _read_pool_params(struct cmd_context *cmd, int *pargc, char ***pargv,
 	} else if (!strcmp(type_str, "thin-pool"))
 		thinpool = 1;
 
-	if (cachepool) {
-		const char *cachemode = arg_str_value(cmd, cachemode_ARG, NULL);
-		if (!cachemode)
-			cachemode = find_config_tree_str(cmd, allocation_cache_pool_cachemode_CFG, NULL);
-
-		if (!set_cache_pool_feature(&lp->feature_flags, cachemode))
-			return_0;
-
-		if (!get_cache_policy_params(cmd, &lp->policy_name, &lp->policy_settings)) {
-			log_error("Failed to parse cache policy and/or settings.");
-			return 0;
-		}
-	} else {
-		if (arg_from_list_is_set(cmd, "is valid only with cache pools",
-					 cachepool_ARG, cachemode_ARG, -1))
-			return_0;
-		if (lp->cache) {
-			log_error("--cache requires --cachepool.");
-			return 0;
-		}
+	if (lp->cache && !cachepool) {
+		log_error("--cache requires --cachepool.");
+		return 0;
+	}
+	if ((lp->cache || cachepool) &&
+	    !get_cache_params(cmd, &lp->cache_mode, &lp->policy_name, &lp->policy_settings)) {
+		log_error("Failed to parse cache policy and/or settings.");
+		return 0;
 	}
 
 	if (thinpool) {
@@ -562,7 +550,7 @@ static int _read_params(struct cmd_context *cmd, int argc, char **argv,
 					    -1))
 			return_0;
 
-		if (!(lp->segtype = get_segtype_from_string(cmd, "snapshot")))
+		if (!(lp->segtype = get_segtype_from_string(cmd, SEG_TYPE_NAME_SNAPSHOT)))
 			return_0;
 	} else if (lp->splitsnapshot)	/* Destroy snapshot retaining cow as separate LV */
 		;
@@ -599,7 +587,7 @@ static int _read_params(struct cmd_context *cmd, int argc, char **argv,
 		}
 		log_verbose("Setting chunk size to %s.", display_size(cmd, lp->chunk_size));
 
-		if (!(lp->segtype = get_segtype_from_string(cmd, "snapshot")))
+		if (!(lp->segtype = get_segtype_from_string(cmd, SEG_TYPE_NAME_SNAPSHOT)))
 			return_0;
 
 		lp->zero = (lp->segtype->flags & SEG_CANNOT_BE_ZEROED)
@@ -687,7 +675,7 @@ static int _read_params(struct cmd_context *cmd, int argc, char **argv,
 		if (arg_count(cmd, mirrors_ARG) && !lp->mirrors) {
 			/* down-converting to linear/stripe? */
 			if (!(lp->segtype =
-			      get_segtype_from_string(cmd, "striped")))
+			      get_segtype_from_string(cmd, SEG_TYPE_NAME_STRIPED)))
 				return_0;
 		} else if (arg_count(cmd, type_ARG)) {
 			/* changing mirror type? */
@@ -775,6 +763,9 @@ static int _lvconvert_poll_by_id(struct cmd_context *cmd, struct poll_operation_
 				 int is_merging_origin,
 				 int is_merging_origin_thin)
 {
+	if (test_mode())
+		return ECMD_PROCESSED;
+
 	if (is_merging_origin)
 		return poll_daemon(cmd, background,
 				(MERGING | (is_merging_origin_thin ? THIN_VOLUME : SNAPSHOT)),
@@ -2014,7 +2005,7 @@ static int _lvconvert_uncache(struct cmd_context *cmd,
 		return 0;
 	}
 
-	if (!lv_remove_single(cmd, first_seg(lv)->pool_lv, lp->force, 0))
+	if (!lv_remove_single(cmd, first_seg(lv)->pool_lv, (force_t) lp->force, 0))
 		return_0;
 
 	log_print_unless_silent("Logical volume %s is not cached.", display_lvname(lv));
@@ -2357,7 +2348,7 @@ static int _lvconvert_pool_repair(struct cmd_context *cmd,
 	pmslv = pool_lv->vg->pool_metadata_spare_lv;
 
 	/* Check we have pool metadata spare LV */
-	if (!handle_pool_metadata_spare(pool_lv->vg, 0, NULL, 1))
+	if (!handle_pool_metadata_spare(pool_lv->vg, 0, lp->pvh, 1))
 		return_0;
 
 	if (pmslv != pool_lv->vg->pool_metadata_spare_lv) {
@@ -2442,7 +2433,7 @@ static int _lvconvert_pool_repair(struct cmd_context *cmd,
 			 * Scan only the 1st. line for transation id.
 			 * Watch out, if the thin_dump format changes
 			 */
-			if ((fgets(meta_path, sizeof(meta_path), f) > 0) &&
+			if (fgets(meta_path, sizeof(meta_path), f) &&
 			    (trans_id_str = strstr(meta_path, "transaction=\"")) &&
 			    (sscanf(trans_id_str + 13, FMTu64, &trans_id) == 1) &&
 			    (trans_id != first_seg(pool_lv)->transaction_id) &&
@@ -2482,7 +2473,7 @@ deactivate_pmslv:
 	}
 
 	/* Try to allocate new pool metadata spare LV */
-	if (!handle_pool_metadata_spare(pool_lv->vg, 0, NULL, 1))
+	if (!handle_pool_metadata_spare(pool_lv->vg, 0, lp->pvh, 1))
 		stack;
 
 	if (dm_snprintf(meta_path, sizeof(meta_path), "%s_meta%%d", pool_lv->name) < 0) {
@@ -2498,14 +2489,14 @@ deactivate_pmslv:
 	if (!detach_pool_metadata_lv(first_seg(pool_lv), &mlv))
 		return_0;
 
+	/* Swap _pmspare and _tmeta name */
 	if (!swap_lv_identifiers(cmd, mlv, pmslv))
 		return_0;
 
-	/* Used _pmspare will become _tmeta */
 	if (!attach_pool_metadata_lv(first_seg(pool_lv), pmslv))
 		return_0;
 
-	/* Used _tmeta will become visible  _meta%d */
+	/* Used _tmeta (now _pmspare) becomes _meta%d */
 	if (!lv_rename_update(cmd, mlv, pms_path, 0))
 		return_0;
 
@@ -2584,7 +2575,7 @@ static int _lvconvert_thin(struct cmd_context *cmd,
 	if (!pool_supports_external_origin(first_seg(pool_lv), lv))
 		return_0;
 
-	if (!(lvc.segtype = get_segtype_from_string(cmd, "thin")))
+	if (!(lvc.segtype = get_segtype_from_string(cmd, SEG_TYPE_NAME_THIN)))
 		return_0;
 
 	if (!archive(vg))
@@ -2840,7 +2831,7 @@ static int _lvconvert_pool(struct cmd_context *cmd,
 
 		if (!metadata_lv) {
 			if (arg_from_list_is_set(cmd, "is invalid with existing pool",
-						 cachemode_ARG, chunksize_ARG, discards_ARG,
+						 chunksize_ARG, discards_ARG,
 						 zero_ARG, poolmetadatasize_ARG, -1))
 				return_0;
 
@@ -3073,17 +3064,19 @@ static int _lvconvert_pool(struct cmd_context *cmd,
 	/* FIXME: revert renamed LVs in fail path? */
 	/* FIXME: any common code with metadata/thin_manip.c  extend_pool() ? */
 
-	seg->low_water_mark = 0;
 	seg->transaction_id = 0;
 
 mda_write:
 	seg->chunk_size = lp->chunk_size;
 	seg->discards = lp->discards;
 	seg->zero_new_blocks = lp->zero ? 1 : 0;
-	seg->feature_flags = lp->feature_flags; /* cache-pool */
+
+	if (lp->cache_mode &&
+	    !cache_set_mode(seg, lp->cache_mode))
+		return_0;
 
 	if ((lp->policy_name || lp->policy_settings) &&
-	    !lv_cache_set_policy(seg->lv, lp->policy_name, lp->policy_settings))
+	    !cache_set_policy(seg, lp->policy_name, lp->policy_settings))
 		return_0;
 
 	/* Rename deactivated metadata LV to have _tmeta suffix */
@@ -3190,6 +3183,14 @@ static int _lvconvert_cache(struct cmd_context *cmd,
 
 	if (!(cache_lv = lv_cache_create(pool_lv, origin_lv)))
 		return_0;
+
+	if (!cache_set_mode(first_seg(cache_lv), lp->cache_mode))
+		return_0;
+
+	if (!cache_set_policy(first_seg(cache_lv), lp->policy_name, lp->policy_settings))
+		return_0;
+
+	cache_check_for_warns(first_seg(cache_lv));
 
 	if (!lv_update_and_reload(cache_lv))
 		return_0;
@@ -3427,14 +3428,12 @@ static int lvconvert_single(struct cmd_context *cmd, struct lvconvert_params *lp
 	}
 
 	/*
-	 * If the lv is inactive before and after the command, the
-	 * use of PERSISTENT here means the lv will remain locked as
-	 * an effect of running the lvconvert.
-	 * To unlock it, it would need to be activated+deactivated.
-	 * Or, we could identify the commands for which the lv remains
-	 * inactive, and not use PERSISTENT here for those cases.
+	 * Request a transient lock.  If the LV is active, it has a persistent
+	 * lock already, and this request does nothing.  If the LV is not
+	 * active, this acquires a transient lock that will be released when
+	 * the command exits.
 	 */
-	if (!lockd_lv(cmd, lv, "ex", LDLV_PERSISTENT))
+	if (!lockd_lv(cmd, lv, "ex", 0))
 		goto_bad;
 
 	/*
@@ -3459,7 +3458,8 @@ bad:
 	unlock_vg(cmd, lp->vg_name);
 
 	/* Unlock here so it's not held during polling. */
-	lockd_vg(cmd, lp->vg_name, "un", 0, &lockd_state);
+	if (!lockd_vg(cmd, lp->vg_name, "un", 0, &lockd_state))
+		stack;
 
 	release_vg(vg);
 out:
