@@ -81,12 +81,14 @@ struct dm_report {
 #define FLD_ASCENDING	0x00004000
 #define FLD_DESCENDING	0x00008000
 #define FLD_COMPACTED	0x00010000
+#define FLD_COMPACT_ONE 0x00020000
 
 struct field_properties {
 	struct dm_list list;
 	uint32_t field_num;
 	uint32_t sort_posn;
-	int32_t width;
+	int32_t initial_width;
+	int32_t width; /* current width: adjusted by dm_report_object() */
 	const struct dm_report_object_type *type;
 	uint32_t flags;
 	int implicit;
@@ -257,7 +259,7 @@ static int _selected_disp(struct dm_report *rh,
 			  const void *data,
 			  void *private __attribute__((unused)))
 {
-	struct row *row = (struct row *)data;
+	const struct row *row = (const struct row *)data;
 	return dm_report_field_int(rh, field, &row->selected);
 }
 
@@ -774,7 +776,8 @@ static int _copy_field(struct dm_report *rh, struct field_properties *dest,
 							     : rh->fields;
 
 	dest->field_num = field_num;
-	dest->width = fields[field_num].width;
+	dest->initial_width = fields[field_num].width;
+	dest->width = fields[field_num].width; /* adjusted in _do_report_object() */
 	dest->flags = fields[field_num].flags & DM_REPORT_FIELD_MASK;
 	dest->implicit = implicit;
 
@@ -1387,11 +1390,11 @@ static int _dbl_less_or_equal(double d1, double d2)
 	return _dbl_less(d1, d2) || _dbl_equal(d1, d2);
 }
 
-#define _uint64 *(uint64_t *)
-#define _uint64arr(var,index) ((uint64_t *)var)[index]
+#define _uint64 *(const uint64_t *)
+#define _uint64arr(var,index) ((const uint64_t *)var)[index]
 #define _str (const char *)
-#define _dbl *(double *)
-#define _dblarr(var,index) ((double *)var)[index]
+#define _dbl *(const double *)
+#define _dblarr(var,index) ((const double *)var)[index]
 
 static int _do_check_value_is_strictly_reserved(unsigned type, const void *res_val, int res_range,
 						const void *val, struct field_selection *fs)
@@ -1642,11 +1645,21 @@ static int _cmp_field_time(struct dm_report *rh,
 static int _cmp_field_string_list_strict_all(const struct str_list_sort_value *val,
 					     const struct selection_str_list *sel)
 {
+	unsigned int sel_list_size = dm_list_size(sel->list);
 	struct dm_str_list *sel_item;
 	unsigned int i = 1;
 
+	if (!val->items[0].len) {
+		if (sel_list_size == 1) {
+			/* match blank string list with selection defined as blank string only */
+			sel_item = dm_list_item(dm_list_first(sel->list), struct dm_str_list);
+			return !strcmp(sel_item->str, "");
+		}
+		return 0;
+	}
+
 	/* if item count differs, it's clear the lists do not match */
-	if (val->items[0].len != dm_list_size(sel->list))
+	if (val->items[0].len != sel_list_size)
 		return 0;
 
 	/* both lists are sorted so they either match 1:1 or not */
@@ -1664,15 +1677,21 @@ static int _cmp_field_string_list_strict_all(const struct str_list_sort_value *v
 static int _cmp_field_string_list_subset_all(const struct str_list_sort_value *val,
 					     const struct selection_str_list *sel)
 {
+	unsigned int sel_list_size = dm_list_size(sel->list);
 	struct dm_str_list *sel_item;
 	unsigned int i, last_found = 1;
 	int r = 0;
 
-	/* if value has no items and selection has at leas one, it's clear there's no match */
-	if ((val->items[0].len == 0) && dm_list_size(sel->list))
+	if (!val->items[0].len) {
+		if (sel_list_size == 1) {
+			/* match blank string list with selection defined as blank string only */
+			sel_item = dm_list_item(dm_list_first(sel->list), struct dm_str_list);
+			return !strcmp(sel_item->str, "");
+		}
 		return 0;
+	}
 
-	/* Check selection is a subset of the value. */
+	/* check selection is a subset of the value */
 	dm_list_iterate_items(sel_item, sel->list) {
 		r = 0;
 		for (i = last_found; i <= val->items[0].len; i++) {
@@ -1696,9 +1715,14 @@ static int _cmp_field_string_list_any(const struct str_list_sort_value *val,
 	struct dm_str_list *sel_item;
 	unsigned int i;
 
-	/* if value has no items and selection has at least one, it's clear there's no match */
-	if ((val->items[0].len == 0) && dm_list_size(sel->list))
+	/* match blank string list with selection that contains blank string */
+	if (!val->items[0].len) {
+		dm_list_iterate_items(sel_item, sel->list) {
+			if (!strcmp(sel_item->str, ""))
+				return 1;
+		}
 		return 0;
+	}
 
 	dm_list_iterate_items(sel_item, sel->list) {
 		/*
@@ -1790,7 +1814,7 @@ static int _compare_selection_field(struct dm_report *rh,
 				r = _cmp_field_int(rh, f->props->field_num, field_id, *(const uint64_t *) f->sort_value, fs);
 				break;
 			case DM_REPORT_FIELD_TYPE_SIZE:
-				r = _cmp_field_double(rh, f->props->field_num, field_id, *(double *) f->sort_value, fs);
+				r = _cmp_field_double(rh, f->props->field_num, field_id, *(const double *) f->sort_value, fs);
 				break;
 			case DM_REPORT_FIELD_TYPE_STRING:
 				r = _cmp_field_string(rh, f->props->field_num, field_id, (const char *) f->sort_value, fs);
@@ -1990,7 +2014,7 @@ out:
 	return r;
 }
 
-int dm_report_compact_fields(struct dm_report *rh)
+static int _do_report_compact_fields(struct dm_report *rh, int global)
 {
 	struct dm_report_field *field;
 	struct field_properties *fp;
@@ -2013,7 +2037,9 @@ int dm_report_compact_fields(struct dm_report *rh)
 	 * in next step...
 	 */
 	dm_list_iterate_items(fp, &rh->field_props) {
-		if (!(fp->flags & FLD_HIDDEN))
+		if (fp->flags & FLD_HIDDEN)
+			continue;
+		if (global || (fp->flags & FLD_COMPACT_ONE))
 			fp->flags |= (FLD_COMPACTED | FLD_HIDDEN);
 	}
 
@@ -2040,6 +2066,61 @@ int dm_report_compact_fields(struct dm_report *rh)
 	 */
 
 	return 1;
+}
+
+int dm_report_compact_fields(struct dm_report *rh)
+{
+	return _do_report_compact_fields(rh, 1);
+}
+
+static int _field_to_compact_match(struct dm_report *rh, const char *field, size_t flen)
+{
+	struct field_properties *fp;
+	uint32_t f;
+	int implicit;
+
+	if ((_get_field(rh, field, flen, &f, &implicit))) {
+		dm_list_iterate_items(fp, &rh->field_props) {
+			if ((fp->implicit == implicit) && (fp->field_num == f)) {
+				fp->flags |= FLD_COMPACT_ONE;
+				break;
+			}
+		}
+		return 1;
+	}
+
+	return 0;
+}
+
+static int _parse_fields_to_compact(struct dm_report *rh, const char *fields)
+{
+	const char *ws;		  /* Word start */
+	const char *we = fields;  /* Word end */
+
+	if (!fields)
+		return 1;
+
+	while (*we) {
+		while (*we && *we == ',')
+			we++;
+		ws = we;
+		while (*we && *we != ',')
+			we++;
+		if (!_field_to_compact_match(rh, ws, (size_t) (we - ws))) {
+			log_error("dm_report: Unrecognized field: %.*s", (int) (we - ws), ws);
+			return 0;
+		}
+	}
+
+	return 1;
+}
+
+int dm_report_compact_given_fields(struct dm_report *rh, const char *fields)
+{
+	if (!_parse_fields_to_compact(rh, fields))
+		return_0;
+
+	return _do_report_compact_fields(rh, 0);
 }
 
 int dm_report_object(struct dm_report *rh, void *object)
@@ -2307,7 +2388,8 @@ static const char *_get_reserved(struct dm_report *rh, unsigned type,
 
 float dm_percent_to_float(dm_percent_t percent)
 {
-	return (float) percent / DM_PERCENT_1;
+	/* Add 0.f to prevent returning -0.00 */
+	return (float) percent / DM_PERCENT_1 + 0.f;
 }
 
 dm_percent_t dm_make_percent(uint64_t numerator, uint64_t denominator)
@@ -2446,8 +2528,8 @@ static const char *_tok_value_regex(struct dm_report *rh,
 
 static int _str_list_item_cmp(const void *a, const void *b)
 {
-	const struct dm_str_list **item_a = (const struct dm_str_list **) a;
-	const struct dm_str_list **item_b = (const struct dm_str_list **) b;
+	const struct dm_str_list * const *item_a = (const struct dm_str_list * const *) a;
+	const struct dm_str_list * const *item_b = (const struct dm_str_list * const *) b;
 
 	return strcmp((*item_a)->str, (*item_b)->str);
 }
@@ -2457,11 +2539,8 @@ static int _add_item_to_string_list(struct dm_pool *mem, const char *begin,
 {
 	struct dm_str_list *item;
 
-	if (begin == end)
-		return_0;
-
 	if (!(item = dm_pool_zalloc(mem, sizeof(*item))) ||
-	    !(item->str = dm_pool_strndup(mem, begin, end - begin))) {
+	    !(item->str = begin == end ? "" : dm_pool_strndup(mem, begin, end - begin))) {
 		log_error("_add_item_to_string_list: memory allocation failed for string list item");
 		return 0;
 	}
@@ -3357,7 +3436,7 @@ static struct field_selection *_create_field_selection(struct dm_report *rh,
 		memcpy(s, v, len);
 		s[len] = '\0';
 
-		fs->value->v.r = dm_regex_create(rh->selection->mem, (const char **) &s, 1);
+		fs->value->v.r = dm_regex_create(rh->selection->mem, (const char * const *) &s, 1);
 		dm_free(s);
 		if (!fs->value->v.r) {
 			log_error("dm_report: failed to create regex "
@@ -3377,7 +3456,7 @@ static struct field_selection *_create_field_selection(struct dm_report *rh,
 				if (rvw->value) {
 					fs->value->v.s = (const char *) rvw->value;
 					if (rvw->reserved->type & DM_REPORT_FIELD_RESERVED_VALUE_RANGE)
-						fs->value->next->v.s = (((const char **) rvw->value)[1]);
+						fs->value->next->v.s = (((const char * const *) rvw->value)[1]);
 					dm_pool_free(rh->selection->mem, s);
 				} else {
 					fs->value->v.s = s;
@@ -3389,9 +3468,9 @@ static struct field_selection *_create_field_selection(struct dm_report *rh,
 				break;
 			case DM_REPORT_FIELD_TYPE_NUMBER:
 				if (rvw->value) {
-					fs->value->v.i = *(uint64_t *) rvw->value;
+					fs->value->v.i = *(const uint64_t *) rvw->value;
 					if (rvw->reserved->type & DM_REPORT_FIELD_RESERVED_VALUE_RANGE)
-						fs->value->next->v.i = (((uint64_t *) rvw->value)[1]);
+						fs->value->next->v.i = (((const uint64_t *) rvw->value)[1]);
 				} else {
 					if (((fs->value->v.i = strtoull(s, NULL, 10)) == ULLONG_MAX) &&
 						 (errno == ERANGE)) {
@@ -3407,16 +3486,16 @@ static struct field_selection *_create_field_selection(struct dm_report *rh,
 				break;
 			case DM_REPORT_FIELD_TYPE_SIZE:
 				if (rvw->value) {
-					fs->value->v.d = *(double *) rvw->value;
+					fs->value->v.d = *(const double *) rvw->value;
 					if (rvw->reserved->type & DM_REPORT_FIELD_RESERVED_VALUE_RANGE)
-						fs->value->next->v.d = (((double *) rvw->value)[1]);
+						fs->value->next->v.d = (((const double *) rvw->value)[1]);
 				} else {
 					fs->value->v.d = strtod(s, NULL);
 					if (errno == ERANGE) {
 						log_error(_out_of_range_msg, s, field_id);
 						goto error;
 					}
-					if (custom && (factor = *((uint64_t *)custom)))
+					if (custom && (factor = *((const uint64_t *)custom)))
 						fs->value->v.d *= factor;
 					fs->value->v.d /= 512; /* store size in sectors! */
 					if (_check_value_is_strictly_reserved(rh, field_num, DM_REPORT_FIELD_TYPE_SIZE, &fs->value->v.d, NULL)) {
@@ -3428,9 +3507,9 @@ static struct field_selection *_create_field_selection(struct dm_report *rh,
 				break;
 			case DM_REPORT_FIELD_TYPE_PERCENT:
 				if (rvw->value) {
-					fs->value->v.i = *(uint64_t *) rvw->value;
+					fs->value->v.i = *(const uint64_t *) rvw->value;
 					if (rvw->reserved->type & DM_REPORT_FIELD_RESERVED_VALUE_RANGE)
-						fs->value->next->v.i = (((uint64_t *) rvw->value)[1]);
+						fs->value->next->v.i = (((const uint64_t *) rvw->value)[1]);
 				} else {
 					fs->value->v.d = strtod(s, NULL);
 					if ((errno == ERANGE) || (fs->value->v.d < 0) || (fs->value->v.d > 100)) {
@@ -3455,9 +3534,9 @@ static struct field_selection *_create_field_selection(struct dm_report *rh,
 				break;
 			case DM_REPORT_FIELD_TYPE_TIME:
 				if (rvw->value) {
-					fs->value->v.t = *(time_t *) rvw->value;
+					fs->value->v.t = *(const time_t *) rvw->value;
 					if (rvw->reserved->type & DM_REPORT_FIELD_RESERVED_VALUE_RANGE)
-						fs->value->next->v.t = (((time_t *) rvw->value)[1]);
+						fs->value->next->v.t = (((const time_t *) rvw->value)[1]);
 				} else {
 					tval = (struct time_value *) custom;
 					fs->value->v.t = tval->t1;
@@ -4178,6 +4257,13 @@ bad:
 	return 0;
 }
 
+static void _reset_field_props(struct dm_report *rh)
+{
+	struct field_properties *fp;
+	dm_list_iterate_items(fp, &rh->field_props)
+		fp->width = fp->initial_width;
+}
+
 static void _destroy_rows(struct dm_report *rh)
 {
 	/*
@@ -4185,10 +4271,13 @@ static void _destroy_rows(struct dm_report *rh)
 	 * pool allocation this will also free all subsequently allocated
 	 * rows from the report and any associated string data.
 	 */
-	if(rh->first_row)
+	if (rh->first_row)
 		dm_pool_free(rh->mem, rh->first_row);
 	rh->first_row = NULL;
 	dm_list_init(&rh->rows);
+
+	/* Reset field widths to original values. */
+	_reset_field_props(rh);
 }
 
 static int _output_as_rows(struct dm_report *rh)
@@ -4303,6 +4392,11 @@ static int _output_as_columns(struct dm_report *rh)
       bad:
 	dm_pool_abandon_object(rh->mem);
 	return 0;
+}
+
+int dm_report_is_empty(struct dm_report *rh)
+{
+	return dm_list_empty(&rh->rows) ? 1 : 0;
 }
 
 int dm_report_output(struct dm_report *rh)

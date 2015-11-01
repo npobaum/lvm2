@@ -185,18 +185,9 @@ static int restart_fds[2];
  * Each lockspace has its own thread to do locking.
  * The lockspace thread makes synchronous lock requests to dlm/sanlock.
  * Every vg with a lockd type, i.e. "dlm", "sanlock", should be on this list.
- *
- * lockspaces_inactive holds old ls structs for vgs that have been
- * stopped, or for vgs that failed to start.  The old ls structs
- * are removed from the inactive list and freed when a new ls with
- * the same name is started and added to the standard lockspaces list.
- * Keeping this bit of "history" for the ls allows us to return a
- * more informative error message if a vg lock request is made for
- * an ls that has been stopped or failed to start.
  */
 static pthread_mutex_t lockspaces_mutex;
 static struct list_head lockspaces;
-static struct list_head lockspaces_inactive;
 
 /*
  * Client thread reads client requests and writes client results.
@@ -206,11 +197,11 @@ static pthread_mutex_t client_mutex;
 static pthread_cond_t client_cond;
 static struct list_head client_list;    /* connected clients */
 static struct list_head client_results; /* actions to send back to clients */
-static uint32_t client_ids;             /* 0 and ADOPT_CLIENT_ID are skipped */
+static uint32_t client_ids;             /* 0 and INTERNAL_CLIENT_ID are skipped */
 static int client_stop;                 /* stop the thread */
 static int client_work;                 /* a client on client_list has work to do */
 
-#define ADOPT_CLIENT_ID 0xFFFFFFFF      /* special client_id for adopt actions */
+#define INTERNAL_CLIENT_ID 0xFFFFFFFF   /* special client_id for internal actions */
 static struct list_head adopt_results;  /* special start actions from adopt_locks() */
 
 /*
@@ -264,7 +255,10 @@ static int alloc_new_structs; /* used for initializing in setup_structs */
 
 static int add_lock_action(struct action *act);
 static int str_to_lm(const char *str);
-static int clear_lockspace_inactive(char *name);
+static int setup_dump_socket(void);
+static void send_dump_buf(int fd, int dump_len);
+static int dump_info(int *dump_len);
+static int dump_log(int *dump_len);
 
 static int _syslog_name_to_num(const char *name)
 {
@@ -733,12 +727,16 @@ static const char *op_str(int x)
 		return "running_lm";
 	case LD_OP_FIND_FREE_LOCK:
 		return "find_free_lock";
-	case LD_OP_FORGET_VG_NAME:
-		return "forget_vg_name";
 	case LD_OP_KILL_VG:
 		return "kill_vg";
 	case LD_OP_DROP_VG:
 		return "drop_vg";
+	case LD_OP_DUMP_LOG:
+		return "dump_log";
+	case LD_OP_DUMP_INFO:
+		return "dump_info";
+	case LD_OP_BUSY:
+		return "busy";
 	default:
 		return "op_unknown";
 	};
@@ -877,14 +875,14 @@ static int lm_rem_lockspace(struct lockspace *ls, struct action *act, int free_v
 }
 
 static int lm_lock(struct lockspace *ls, struct resource *r, int mode, struct action *act,
-		   uint32_t *r_version, int *retry, int adopt)
+		   struct val_blk *vb_out, int *retry, int adopt)
 {
 	int rv;
 
 	if (ls->lm_type == LD_LM_DLM)
-		rv = lm_lock_dlm(ls, r, mode, r_version, adopt);
+		rv = lm_lock_dlm(ls, r, mode, vb_out, adopt);
 	else if (ls->lm_type == LD_LM_SANLOCK)
-		rv = lm_lock_sanlock(ls, r, mode, r_version, retry, adopt);
+		rv = lm_lock_sanlock(ls, r, mode, vb_out, retry, adopt);
 	else
 		return -1;
 
@@ -930,7 +928,7 @@ static int lm_unlock(struct lockspace *ls, struct resource *r, struct action *ac
 static int lm_hosts(struct lockspace *ls, int notify)
 {
 	if (ls->lm_type == LD_LM_DLM)
-		return 0;
+		return lm_hosts_dlm(ls, notify);
 	else if (ls->lm_type == LD_LM_SANLOCK)
 		return lm_hosts_sanlock(ls, notify);
 	return -1;
@@ -963,6 +961,13 @@ static int lm_find_free_lock(struct lockspace *ls, uint64_t *free_offset)
 
 static void add_client_result(struct action *act)
 {
+	if (act->flags & LD_AF_NO_CLIENT) {
+		log_debug("internal action done op %s mode %s result %d vg %s",
+			  op_str(act->op), mode_str(act->mode), act->result, act->vg_name);
+		free_action(act);
+		return;
+	}
+
 	pthread_mutex_lock(&client_mutex);
 	if (act->flags & LD_AF_ADOPT)
 		list_add_tail(&act->list, &adopt_results);
@@ -1019,10 +1024,19 @@ static void add_work_action(struct action *act)
 static int res_lock(struct lockspace *ls, struct resource *r, struct action *act, int *retry)
 {
 	struct lock *lk;
-	uint32_t r_version = 0;
-	int rv;
+	struct val_blk vb;
+	uint32_t new_version = 0;
+	int inval_meta;
+	int rv = 0;
 
-	log_debug("S %s R %s res_lock mode %s", ls->name, r->name, mode_str(act->mode));
+	memset(&vb, 0, sizeof(vb));
+
+	r->last_client_id = act->client_id;
+
+	if (r->type == LD_RT_LV)
+		log_debug("S %s R %s res_lock cl %u mode %s (%s)", ls->name, r->name, act->client_id, mode_str(act->mode), act->lv_name);
+	else
+		log_debug("S %s R %s res_lock cl %u mode %s", ls->name, r->name, act->client_id, mode_str(act->mode));
 
 	if (r->mode == LD_LK_SH && act->mode == LD_LK_SH)
 		goto add_lk;
@@ -1030,101 +1044,244 @@ static int res_lock(struct lockspace *ls, struct resource *r, struct action *act
 	if (r->type == LD_RT_LV && act->lv_args[0])
 		memcpy(r->lv_args, act->lv_args, MAX_ARGS);
 
-	rv = lm_lock(ls, r, act->mode, act, &r_version, retry, act->flags & LD_AF_ADOPT);
-	if (rv == -EAGAIN)
-		return rv;
-	if (rv < 0) {
-		log_error("S %s R %s res_lock lm error %d", ls->name, r->name, rv);
-		return rv;
-	}
+	rv = lm_lock(ls, r, act->mode, act, &vb, retry, act->flags & LD_AF_ADOPT);
 
-	log_debug("S %s R %s res_lock lm done r_version %u",
-		  ls->name, r->name, r_version);
+	if (r->use_vb)
+		log_debug("S %s R %s res_lock rv %d read vb %x %x %u",
+			  ls->name, r->name, rv, vb.version, vb.flags, vb.r_version);
+	else
+		log_debug("S %s R %s res_lock rv %d", ls->name, r->name, rv);
+
+	if (rv < 0)
+		return rv;
 
 	if (sanlock_gl_dup && ls->sanlock_gl_enabled)
 		act->flags |= LD_AF_DUP_GL_LS;
 
-	/* lm_lock() reads new r_version */
+	/*
+	 * Check new lvb values to decide if lvmetad cache should
+	 * be invalidated.  When we need to invalidate the lvmetad
+	 * cache, but don't have a usable r_version from the lvb,
+	 * send lvmetad new_version 0 which causes it to invalidate
+	 * the VG metdata without comparing against the currently
+	 * cached VG seqno.
+	 */
 
-	if ((r_version > r->version) || (!r->version && !r->version_zero_valid)) {
-		/*
-		 * New r_version of the lock: means that another
-		 * host has changed data protected by this lock
-		 * since the last time we acquired it.  We
-		 * should invalidate any local cache of the data
-		 * protected by this lock and reread it from disk.
-		 */
-		r->version = r_version;
+	inval_meta = 0;
 
+	if (!r->use_vb) {
+		/* LV locks don't use an lvb. */
+
+	} else if (vb.version && ((vb.version & 0xFF00) > (VAL_BLK_VERSION & 0xFF00))) {
+		log_error("S %s R %s res_lock invalid val_blk version %x flags %x r_version %u",
+			  ls->name, r->name, vb.version, vb.flags, vb.r_version);
+		inval_meta = 1;
+		new_version = 0;
+		rv = -EINVAL;
+
+	} else if (vb.r_version && (vb.r_version == r->version)) {
 		/*
-		 * When a new global lock is enabled in a new vg,
-		 * it will have version zero, and the first time
-		 * we use it we need to validate the global cache
-		 * since we don't have any version history to know
-		 * the state of the cache.  The version could remain
-		 * zero for a long time if no global state is changed
-		 * to cause the GL version to be incremented to 1.
+		 * Common case when the version hasn't changed.
+		 * Do nothing.
 		 */
+	} else if (r->version && vb.r_version && (vb.r_version > r->version)) {
+		/*
+		 * Common case when the version has changed.  Another host
+		 * has changed the data protected by the lock since we last
+		 * acquired it, and increased r_version so we know that our
+		 * cache is invalid.
+		 */
+		log_debug("S %s R %s res_lock got version %u our %u",
+			  ls->name, r->name, vb.r_version, r->version);
+		r->version = vb.r_version;
+		new_version = vb.r_version;
+		r->version_zero_valid = 0;
+		inval_meta = 1;
+
+	} else if (r->version_zero_valid && !vb.r_version) {
+		/*
+		 * The lvb is in a persistent zero state, which will end
+		 * once someone uses the lock and writes a new lvb value.
+		 * Do nothing.
+		 */
+		log_debug("S %s R %s res_lock version_zero_valid still zero", ls->name, r->name);
+
+	} else if (r->version_zero_valid && vb.r_version) {
+		/*
+		 * Someone has written to the lvb after it was in a
+		 * persistent zero state.  Begin tracking normal
+		 * non-zero changes.  We may or may not have known
+		 * about a previous non-zero version (in r->version).
+		 * If we did, it means the lvb content was lost and
+		 * has now been reinitialized.
+		 *
+		 * If the new reinitialized value is less than the
+		 * previous non-zero value in r->version, then something
+		 * unusual has happened.  For a VG lock, it probably
+		 * means the VG was removed and recreated.  Invalidate
+		 * our cache and begin using the new VG version.  For
+		 * a GL lock, another host may have reinitialized a
+		 * lost/zero lvb with a value less than we'd seen
+		 * before.  Invalidate the cache, and begin using
+		 * the lower version (or continue using our old
+		 * larger version?)
+		 */
+		if (r->version && (r->version >= vb.r_version)) {
+			log_debug("S %s R %s res_lock version_zero_valid got version %u less than our %u",
+				  ls->name, r->name, vb.r_version, r->version);
+			new_version = 0;
+		} else {
+			log_debug("S %s R %s res_lock version_zero_valid got version %u our %u",
+				ls->name, r->name, vb.r_version, r->version);
+			new_version = vb.r_version;
+		}
+		r->version = vb.r_version;
+		r->version_zero_valid = 0;
+		inval_meta = 1;
+
+	} else if (!r->version && vb.r_version) {
+		/*
+		 * The first time we've acquired the lock and seen the lvb.
+		 */
+		log_debug("S %s R %s res_lock initial version %u", ls->name, r->name, vb.r_version);
+		r->version = vb.r_version;
+		inval_meta = 1;
+		new_version = vb.r_version;
+		r->version_zero_valid = 0;
+
+	} else if (!r->version && !vb.r_version) {
+		/*
+		 * The lock may have never been used to change something.
+		 * (e.g. a new sanlock GL?)
+		 */
+		log_debug("S %s R %s res_lock all versions zero", ls->name, r->name);
+		if (!r->version_zero_valid) {
+			inval_meta = 1;
+			new_version = 0;
+		}
 		r->version_zero_valid = 1;
 
+	} else if (r->version && !vb.r_version) {
 		/*
-		 * r is vglk: tell lvmetad to set the vg invalid
-		 * flag, and provide the new r_version.  If lvmetad finds
-		 * that its cached vg has seqno less than the value
-		 * we send here, it will set the vg invalid flag.
-		 * lvm commands that read the vg from lvmetad, will
-		 * see the invalid flag returned, will reread the
-		 * vg from disk, update the lvmetad copy, and go on.
+		 * The lvb content has been lost or never been initialized.
+		 * It can be lost during dlm recovery when the master node
+		 * is removed.
 		 *
-		 * r is global: tell lvmetad to set the global invalid
-		 * flag.  When commands see this flag returned from lvmetad,
-		 * they will reread metadata from disk, update the lvmetad
-		 * caches, and tell lvmetad to set global invalid to 0.
+		 * If we're the next to write the lvb, reinitialze it to the
+		 * new VG seqno, or a new GL counter larger than was seen by
+		 * any hosts before (how to estimate that?)
+		 *
+		 * If we see non-zero values before we next write to it, use
+		 * those values.
+		 *
+		 * While the lvb values remain zero, the data for the lock
+		 * is unchanged and we don't need to invalidate metadata.
 		 */
+		if ((ls->lm_type == LD_LM_DLM) && !vb.version && !vb.flags)
+			log_debug("S %s R %s res_lock all lvb content is blank",
+				  ls->name, r->name);
+		log_debug("S %s R %s res_lock our version %u got vb %x %x %u",
+			  ls->name, r->name, r->version, vb.version, vb.flags, vb.r_version);
+		r->version_zero_valid = 1;
+		inval_meta = 1;
+		new_version = 0;
 
-		if ((r->type == LD_RT_VG) && lvmetad_connected) {
-			daemon_reply reply;
-			char *uuid;
+	} else if (r->version && vb.r_version && (vb.r_version < r->version)) {
+		/*
+		 * The lvb value has gone backwards, which shouldn't generally happen,
+		 * but could when the dlm lvb is lost and reinitialized, or the VG
+		 * is removed and recreated.
+		 *
+		 * If this is a VG lock, it probably means the VG has been removed
+		 * and recreated while we had the dlm lockspace running.
+		 * FIXME: how does the cache validation and replacement in lvmetad
+		 * work in this case?
+		 */
+		log_debug("S %s R %s res_lock got version %u less than our version %u",
+			  ls->name, r->name, vb.r_version, r->version);
+		r->version = vb.r_version;
+		inval_meta = 1;
+		new_version = 0;
+		r->version_zero_valid = 0;
+	} else {
+		log_debug("S %s R %s res_lock undefined vb condition vzv %d our version %u vb %x %x %u",
+			  ls->name, r->name, r->version_zero_valid, r->version,
+			  vb.version, vb.flags, vb.r_version);
+	}
 
-			log_debug("S %s R %s res_lock set lvmetad vg version %u",
-				  ls->name, r->name, r_version);
+	if (vb.version && vb.r_version && (vb.flags & VBF_REMOVED)) {
+		/* Should we set ls->thread_stop = 1 ? */
+		log_debug("S %s R %s res_lock vb flag REMOVED",
+			  ls->name, r->name);
+		rv = -EREMOVED;
+	}
+
+	if (!lvmetad_connected && inval_meta)
+		log_debug("S %s R %s res_lock no lvmetad connection to invalidate",
+			  ls->name, r->name);
+
+	/*
+	 * r is vglk: tell lvmetad to set the vg invalid
+	 * flag, and provide the new r_version.  If lvmetad finds
+	 * that its cached vg has seqno less than the value
+	 * we send here, it will set the vg invalid flag.
+	 * lvm commands that read the vg from lvmetad, will
+	 * see the invalid flag returned, will reread the
+	 * vg from disk, update the lvmetad copy, and go on.
+	 *
+	 * r is global: tell lvmetad to set the global invalid
+	 * flag.  When commands see this flag returned from lvmetad,
+	 * they will reread metadata from disk, update the lvmetad
+	 * caches, and tell lvmetad to set global invalid to 0.
+	 */
+
+	if (lvmetad_connected && inval_meta && (r->type == LD_RT_VG)) {
+		daemon_reply reply;
+		char *uuid;
+
+		log_debug("S %s R %s res_lock set lvmetad vg version %u",
+			  ls->name, r->name, new_version);
 	
-			if (!ls->vg_uuid[0] || !strcmp(ls->vg_uuid, "none"))
-				uuid = ls->name;
-			else
-				uuid = ls->vg_uuid;
+		if (!ls->vg_uuid[0] || !strcmp(ls->vg_uuid, "none"))
+			uuid = (char *)"none";
+		else
+			uuid = ls->vg_uuid;
 
-			pthread_mutex_lock(&lvmetad_mutex);
-			reply = daemon_send_simple(lvmetad_handle, "set_vg_info",
-						   "token = %s", "skip",
-						   "uuid = %s", uuid,
-						   "version = %d", (int)r_version,
-						   NULL);
+		pthread_mutex_lock(&lvmetad_mutex);
+		reply = daemon_send_simple(lvmetad_handle, "set_vg_info",
+					   "token = %s", "skip",
+					   "uuid = %s", uuid,
+					   "name = %s", ls->vg_name,
+					   "version = %d", (int)new_version,
+					   NULL);
 			pthread_mutex_unlock(&lvmetad_mutex);
 
-			if (reply.error || strcmp(daemon_reply_str(reply, "response", ""), "OK"))
-				log_error("set_vg_info in lvmetad failed %d", reply.error);
-			daemon_reply_destroy(reply);
-		}
+		if (reply.error || strcmp(daemon_reply_str(reply, "response", ""), "OK"))
+			log_error("set_vg_info in lvmetad failed %d", reply.error);
+		daemon_reply_destroy(reply);
+	}
 
-		if ((r->type == LD_RT_GL) && lvmetad_connected) {
-			daemon_reply reply;
+	if (lvmetad_connected && inval_meta && (r->type == LD_RT_GL)) {
+		daemon_reply reply;
 
-			log_debug("S %s R %s res_lock set lvmetad global invalid",
-				  ls->name, r->name);
+		log_debug("S %s R %s res_lock set lvmetad global invalid",
+			  ls->name, r->name);
 
-			pthread_mutex_lock(&lvmetad_mutex);
-			reply = daemon_send_simple(lvmetad_handle, "set_global_info",
+		pthread_mutex_lock(&lvmetad_mutex);
+		reply = daemon_send_simple(lvmetad_handle, "set_global_info",
 						   "token = %s", "skip",
 						   "global_invalid = %d", 1,
 						   NULL);
-			pthread_mutex_unlock(&lvmetad_mutex);
+		pthread_mutex_unlock(&lvmetad_mutex);
 
-			if (reply.error || strcmp(daemon_reply_str(reply, "response", ""), "OK"))
-				log_error("set_global_info in lvmetad failed %d", reply.error);
-			daemon_reply_destroy(reply);
-		}
+		if (reply.error || strcmp(daemon_reply_str(reply, "response", ""), "OK"))
+			log_error("set_global_info in lvmetad failed %d", reply.error);
+		daemon_reply_destroy(reply);
 	}
+
+	/*
+	 * Record the new lock state.
+	 */
 
 	r->mode = act->mode;
 
@@ -1143,9 +1300,29 @@ add_lk:
 		lk->client_id = 0;
 	}
 
+	/*
+	 * LV_LOCK means the action acquired the lv lock in the lock manager
+	 * (as opposed to finding that the lv lock was already held).  If
+	 * the client for this LV_LOCK action fails before we send the result,
+	 * then we automatically unlock the lv since the lv wasn't activated.
+	 * (There will always be an odd chance the lv lock is held while the
+	 * lv is not active, but this helps.)  The most common case where this
+	 * is helpful is when the lv lock operation is slow/delayed and the
+	 * command is canceled by the user.
+	 *
+	 * LV_UNLOCK means the lv unlock action was generated by lvmlockd when
+	 * it tried to send the reply for an lv lock action (with LV_LOCK set),
+	 * and failed to send the reply to the client/command.  The
+	 * last_client_id saved on the resource is compared to this LV_UNLOCK
+	 * action before the auto unlock is done in case another action locked
+	 * the lv between the failed client lock action and the auto unlock.
+	 */
+	if (r->type == LD_RT_LV)
+		act->flags |= LD_AF_LV_LOCK;
+
 	list_add_tail(&lk->list, &r->locks);
 
-	return 0;
+	return rv;
 }
 
 static int res_convert(struct lockspace *ls, struct resource *r,
@@ -1154,7 +1331,9 @@ static int res_convert(struct lockspace *ls, struct resource *r,
 	uint32_t r_version;
 	int rv;
 
-	log_debug("S %s R %s res_convert mode %d", ls->name, r->name, act->mode);
+	r->last_client_id = act->client_id;
+
+	log_debug("S %s R %s res_convert cl %u mode %d", ls->name, r->name, act->client_id, act->mode);
 
 	if (act->mode == LD_LK_EX && lk->mode == LD_LK_SH && r->sh_count > 1)
 		return -EAGAIN;
@@ -1232,7 +1411,7 @@ static int res_cancel(struct lockspace *ls, struct resource *r,
 	return -ENOENT;
 
 do_cancel:
-	log_debug("S %s R %s res_cancel client %d", ls->name, r->name, cact->client_id);
+	log_debug("S %s R %s res_cancel cl %u", ls->name, r->name, cact->client_id);
 	cact->result = -ECANCELED;
 	list_del(&cact->list);
 	add_client_result(cact);
@@ -1280,30 +1459,46 @@ static int res_unlock(struct lockspace *ls, struct resource *r,
 	}
 
 	if (act->op != LD_OP_CLOSE)
-		log_error("S %s R %s res_unlock no locks", ls->name, r->name);
+		log_debug("S %s R %s res_unlock cl %u no locks", ls->name, r->name, act->client_id);
 	return -ENOENT;
 
 do_unlock:
-	log_debug("S %s R %s res_unlock %s", ls->name, r->name,
-		  (act->op == LD_OP_CLOSE) ? "from close" : "");
+	if ((act->flags & LD_AF_LV_UNLOCK) && (r->last_client_id != act->client_id)) {
+		log_debug("S %s R %s res_unlock cl %u for failed client ignored, last client %u",
+			  ls->name, r->name, act->client_id, r->last_client_id);
+		return -ENOENT;
+	}
+
+	r->last_client_id = act->client_id;
+
+	if (act->op == LD_OP_CLOSE)
+		log_debug("S %s R %s res_unlock cl %u from close", ls->name, r->name, act->client_id);
+	else if (r->type == LD_RT_LV)
+		log_debug("S %s R %s res_unlock cl %u (%s)", ls->name, r->name, act->client_id, act->lv_name);
+	else
+		log_debug("S %s R %s res_unlock cl %u", ls->name, r->name, act->client_id);
 
 	/* send unlock to lm when last sh lock is unlocked */
 	if (lk->mode == LD_LK_SH) {
 		r->sh_count--;
-		if (r->sh_count > 0)
+		if (r->sh_count > 0) {
+			log_debug("S %s R %s res_unlock sh_count %u", ls->name, r->name, r->sh_count);
 			goto rem_lk;
+		}
 	}
 
 	if ((r->type == LD_RT_GL) && (r->mode == LD_LK_EX)) {
 		r->version++;
 		lk->version = r->version;
 		r_version = r->version;
+		r->version_zero_valid = 0;
 
 		log_debug("S %s R %s res_unlock r_version inc %u", ls->name, r->name, r_version);
 
 	} else if ((r->type == LD_RT_VG) && (r->mode == LD_LK_EX) && (lk->version > r->version)) {
 		r->version = lk->version;
 		r_version = r->version;
+		r->version_zero_valid = 0;
 
 		log_debug("S %s R %s res_unlock r_version new %u",
 			  ls->name, r->name, r_version);
@@ -1337,14 +1532,14 @@ static int res_update(struct lockspace *ls, struct resource *r,
 
 	lk = find_lock_client(r, act->client_id);
 	if (!lk) {
-		log_error("S %s R %s res_update client %u lock not found",
+		log_error("S %s R %s res_update cl %u lock not found",
 			  ls->name, r->name, act->client_id);
 		return -ENOENT;
 	}
 
 	if (r->mode != LD_LK_EX) {
-		log_error("S %s R %s res_update version on non-ex lock",
-			  ls->name, r->name);
+		log_error("S %s R %s res_update cl %u version on non-ex lock",
+			  ls->name, r->name, act->client_id);
 		return -EINVAL;
 	}
 
@@ -1355,7 +1550,7 @@ static int res_update(struct lockspace *ls, struct resource *r,
 	else
 		lk->version = act->version;
 
-	log_debug("S %s R %s res_update lk version to %u", ls->name, r->name, lk->version);
+	log_debug("S %s R %s res_update cl %u lk version to %u", ls->name, r->name, act->client_id, lk->version);
 
 	return 0;
 }
@@ -1555,6 +1750,7 @@ static void res_process(struct lockspace *ls, struct resource *r,
 			continue;
 		} else {
 			/* success */
+			r->last_client_id = act->client_id;
 			act->result = -EALREADY;
 			list_del(&act->list);
 			add_client_result(act);
@@ -1589,6 +1785,7 @@ static void res_process(struct lockspace *ls, struct resource *r,
 			continue;
 		} else {
 			/* success */
+			r->last_client_id = act->client_id;
 			act->result = -EALREADY;
 			list_del(&act->list);
 			add_client_result(act);
@@ -1626,6 +1823,7 @@ static void res_process(struct lockspace *ls, struct resource *r,
 
 		if ((lk->mode == LD_LK_EX) ||
 		    (lk->mode == LD_LK_SH && act->mode == LD_LK_SH)) {
+			r->last_client_id = act->client_id;
 			act->result = 0;
 			list_del(&act->list);
 			add_client_result(act);
@@ -1633,6 +1831,7 @@ static void res_process(struct lockspace *ls, struct resource *r,
 			/* persistent lock is sh, transient request is ex */
 			/* FIXME: can we remove this case? do a convert here? */
 			log_debug("res_process %s existing persistent lock new transient", r->name);
+			r->last_client_id = act->client_id;
 			act->result = -EEXIST;
 			list_del(&act->list);
 			add_client_result(act);
@@ -1667,10 +1866,12 @@ static void res_process(struct lockspace *ls, struct resource *r,
 		if (lk->mode != act->mode) {
 			/* FIXME: convert and change to persistent? */
 			log_debug("res_process %s existing transient lock new persistent", r->name);
+			r->last_client_id = act->client_id;
 			act->result = -EEXIST;
 			list_del(&act->list);
 			add_client_result(act);
 		} else {
+			r->last_client_id = act->client_id;
 			lk->flags |= LD_LF_PERSISTENT;
 			lk->client_id = 0;
 			act->result = 0;
@@ -1718,7 +1919,6 @@ static void res_process(struct lockspace *ls, struct resource *r,
 	 * is gl or vg (transient real conflicts we want to hide from command).
 	 * lv lock conflicts won't be transient so don't retry them.
 	 */
-
 
 	if (r->mode == LD_LK_EX)
 		return;
@@ -1945,15 +2145,18 @@ static struct resource *find_resource_act(struct lockspace *ls,
 		return NULL;
 
 	r->type = act->rt;
-
 	r->mode = LD_LK_UN;
 
-	if (r->type == LD_RT_GL)
+	if (r->type == LD_RT_GL) {
 		strncpy(r->name, R_NAME_GL, MAX_NAME);
-	else if (r->type == LD_RT_VG)
+		r->use_vb = 1;
+	} else if (r->type == LD_RT_VG) {
 		strncpy(r->name, R_NAME_VG, MAX_NAME);
-	else if (r->type == LD_RT_LV)
+		r->use_vb = 1;
+	} else if (r->type == LD_RT_LV) {
 		strncpy(r->name, act->lv_uuid, MAX_NAME);
+		r->use_vb = 0;
+	}
 
 	list_add_tail(&r->list, &ls->resources);
 
@@ -1980,12 +2183,9 @@ static int other_sanlock_vgs_exist(struct lockspace *ls_rem)
 {
 	struct lockspace *ls;
 
-	list_for_each_entry(ls, &lockspaces_inactive, list) {
-		log_debug("other sanlock vg exists inactive %s", ls->name);
-		return 1;
-	}
-
 	list_for_each_entry(ls, &lockspaces, list) {
+		if (ls->lm_type != LD_LM_SANLOCK)
+			continue;
 		if (!strcmp(ls->name, ls_rem->name))
 			continue;
 		log_debug("other sanlock vg exists %s", ls->name);
@@ -2205,6 +2405,18 @@ static void *lockspace_thread_main(void *arg_in)
 				break;
 			}
 
+			if (act->op == LD_OP_BUSY && act->rt == LD_RT_VG) {
+				log_debug("S %s checking if lockspace is busy", ls->name);
+				rv = lm_hosts(ls, 0);
+				if (rv)
+					act->result = -EBUSY;
+				else
+					act->result = 0;
+				list_del(&act->list);
+				add_client_result(act);
+				continue;
+			}
+
 			if (act->op == LD_OP_RENAME_BEFORE && act->rt == LD_RT_VG) {
 				/* vgrename */
 				log_debug("S %s checking for lockspace hosts", ls->name);
@@ -2387,12 +2599,11 @@ out_act:
 	ls->thread_done = 1;
 	ls->free_vg = free_vg;
 	ls->drop_vg = drop_vg;
+	if (ls->lm_type == LD_LM_DLM && !strcmp(ls->name, gl_lsname_dlm))
+		global_dlm_lockspace_exists = 0;
 	pthread_mutex_unlock(&lockspaces_mutex);
 
-	/*
-	 * worker_thread will join this thread, and free the
-	 * ls or move it to lockspaces_inactive.
-	 */
+	/* worker_thread will join this thread, and free the ls */
 	pthread_mutex_lock(&worker_mutex);
 	worker_wake = 1;
 	pthread_cond_signal(&worker_cond);
@@ -2486,14 +2697,10 @@ static int add_lockspace_thread(const char *ls_name,
 {
 	struct lockspace *ls, *ls2;
 	struct resource *r;
-	uint32_t version = 0;
 	int rv;
 
-	if (act)
-		version = act->version;
-
 	log_debug("add_lockspace_thread %s %s version %u",
-		  lm_str(lm_type), ls_name, version);
+		  lm_str(lm_type), ls_name, act ? act->version : 0);
 
 	if (!(ls = alloc_lockspace()))
 		return -ENOMEM;
@@ -2523,17 +2730,20 @@ static int add_lockspace_thread(const char *ls_name,
 
 	r->type = LD_RT_VG;
 	r->mode = LD_LK_UN;
-	r->version = version;
+	r->use_vb = 1;
 	strncpy(r->name, R_NAME_VG, MAX_NAME);
 	list_add_tail(&r->list, &ls->resources);
 
 	pthread_mutex_lock(&lockspaces_mutex);
 	ls2 = find_lockspace_name(ls->name);
 	if (ls2) {
-		if (ls2->thread_stop)
+		if (ls2->thread_stop) {
+			log_debug("add_lockspace_thread %s exists and stopping", ls->name);
 			rv = -EAGAIN;
-		else
+		} else {
+			log_debug("add_lockspace_thread %s exists", ls->name);
 			rv = -EEXIST;
+		}
 		pthread_mutex_unlock(&lockspaces_mutex);
 		free_resource(r);
 		free(ls);
@@ -2547,13 +2757,14 @@ static int add_lockspace_thread(const char *ls_name,
 	if (act)
 		list_add(&act->list, &ls->actions);
 
-	clear_lockspace_inactive(ls->name);
-
+	if (ls->lm_type == LD_LM_DLM && !strcmp(ls->name, gl_lsname_dlm))
+		global_dlm_lockspace_exists = 1;
 	list_add_tail(&ls->list, &lockspaces);
 	pthread_mutex_unlock(&lockspaces_mutex);
 
 	rv = pthread_create(&ls->thread, NULL, lockspace_thread_main, ls);
 	if (rv < 0) {
+		log_error("add_lockspace_thread %s pthread error %d %d", ls->name, rv, errno);
 		pthread_mutex_lock(&lockspaces_mutex);
 		list_del(&ls->list);
 		pthread_mutex_unlock(&lockspaces_mutex);
@@ -2575,22 +2786,24 @@ static int add_dlm_global_lockspace(struct action *act)
 {
 	int rv;
 
-	if (gl_running_dlm)
-		return -EEXIST;
-	gl_running_dlm = 1;
+	if (global_dlm_lockspace_exists)
+		return 0;
 
 	/*
-	 * There's a short period after which a previous gl lockspace thread
-	 * has set gl_running_dlm = 0, but before its ls struct has been
-	 * deleted, during which this add_lockspace_thread() can fail with
-	 * -EAGAIN.
+	 * FIXME: if the dlm global lockspace is started without a global
+	 * lock request, insert an internal gl sh lock request?
 	 */
 
 	rv = add_lockspace_thread(gl_lsname_dlm, NULL, NULL, LD_LM_DLM, NULL, act);
-	if (rv < 0) {
-		log_error("add_dlm_global_lockspace add_lockspace_thread %d", rv);
-		gl_running_dlm = 0;
-	}
+	if (rv < 0)
+		log_debug("add_dlm_global_lockspace add_lockspace_thread %d", rv);
+
+	/*
+	 * EAGAIN may be returned for a short period because
+	 * global_dlm_lockspace_exists is set to 0 before the
+	 * ls is removed from the lockspaces list by the
+	 * worker_thread.
+	 */
 
 	return rv;
 }
@@ -2672,20 +2885,16 @@ static int add_lockspace(struct action *act)
 	}
 
 	if (act->rt == LD_RT_VG) {
-		if (gl_use_dlm) {
-			rv = add_dlm_global_lockspace(NULL);
-			if (rv < 0 && rv != -EEXIST)
-				return rv;
-		}
+		if (gl_use_dlm)
+			add_dlm_global_lockspace(NULL);
 
 		vg_ls_name(act->vg_name, ls_name);
 
 		rv = add_lockspace_thread(ls_name, act->vg_name, act->vg_uuid,
 					  act->lm_type, act->vg_args,
 					  act);
-
 		if (rv)
-			log_error("add_lockspace %s add_lockspace_thread %d", ls_name, rv);
+			log_debug("add_lockspace %s add_lockspace_thread %d", ls_name, rv);
 		return rv;
 	}
 
@@ -2793,65 +3002,6 @@ static int count_lockspace_starting(uint32_t client_id)
 	return count;
 }
 
-/* lockspaces_mutex is held */
-static struct lockspace *find_lockspace_inactive(char *ls_name)
-{
-	struct lockspace *ls;
-
-	list_for_each_entry(ls, &lockspaces_inactive, list) {
-		if (!strcmp(ls->name, ls_name))
-			return ls;
-	}
-
-	return NULL;
-}
-
-/* lockspaces_mutex is held */
-static int clear_lockspace_inactive(char *ls_name)
-{
-	struct lockspace *ls;
-
-	ls = find_lockspace_inactive(ls_name);
-	if (ls) {
-		list_del(&ls->list);
-		free(ls);
-		return 1;
-	}
-
-	return 0;
-}
-
-static int forget_lockspace_inactive(char *vg_name)
-{
-	char ls_name[MAX_NAME+1];
-	int found;
-
-	memset(ls_name, 0, sizeof(ls_name));
-	vg_ls_name(vg_name, ls_name);
-
-	log_debug("forget_lockspace_inactive %s", ls_name);
-
-	pthread_mutex_lock(&lockspaces_mutex);
-	found = clear_lockspace_inactive(ls_name);
-	pthread_mutex_unlock(&lockspaces_mutex);
-
-	if (found)
-		return 0;
-	return -ENOENT;
-}
-
-static void free_lockspaces_inactive(void)
-{
-	struct lockspace *ls, *safe;
-
-	pthread_mutex_lock(&lockspaces_mutex);
-	list_for_each_entry_safe(ls, safe, &lockspaces_inactive, list) {
-		list_del(&ls->list);
-		free(ls);
-	}
-	pthread_mutex_unlock(&lockspaces_mutex);
-}
-
 /*
  * Loop through all lockspaces, and:
  * - if do_stop is set, stop any that are not stopped
@@ -2925,15 +3075,14 @@ static int for_each_lockspace(int do_stop, int do_free, int do_force)
 				pthread_join(ls->thread, NULL);
 				list_del(&ls->list);
 
+				/* FIXME: will free_vg ever not be set? */
 
-				/* In future we may need to free ls->actions here */
-				free_ls_resources(ls);
-
-				if (ls->free_vg)
+				if (ls->free_vg) {
+					/* In future we may need to free ls->actions here */
+					free_ls_resources(ls);
 					free(ls);
-				else
-					list_add(&ls->list, &lockspaces_inactive);
-				free_count++;
+					free_count++;
+				}
 			} else {
 				need_free++;
 			}
@@ -3381,14 +3530,14 @@ static void client_resume(struct client *cl)
 
 	if (!cl->poll_ignore || cl->fd == -1 || cl->pi == -1) {
 		/* shouldn't happen */
-		log_error("client_resume %d bad state ig %d fd %d pi %d",
+		log_error("client_resume %u bad state ig %d fd %d pi %d",
 			  cl->id, cl->poll_ignore, cl->fd, cl->pi);
 		return;
 	}
 
 	pthread_mutex_lock(&pollfd_mutex);
 	if (pollfd[cl->pi].fd != POLL_FD_IGNORE) {
-		log_error("client_resume %d pi %d fd %d not IGNORE",
+		log_error("client_resume %u pi %d fd %d not IGNORE",
 			  cl->id, cl->pi, cl->fd);
 	}
 	pollfd[cl->pi].fd = cl->fd;
@@ -3399,14 +3548,17 @@ static void client_resume(struct client *cl)
 }
 
 /* called from client_thread, cl->mutex is held */
-static void client_send_result(struct client *cl, struct action *act)
+static int client_send_result(struct client *cl, struct action *act)
 {
 	response res;
 	char result_flags[128];
+	int dump_len = 0;
+	int dump_fd = -1;
+	int rv = 0;
 
 	if (cl->dead) {
-		log_debug("client send %d skip dead", cl->id);
-		return;
+		log_debug("send cl %u skip dead", cl->id);
+		return -1;
 	}
 
 	memset(result_flags, 0, sizeof(result_flags));
@@ -3451,12 +3603,6 @@ static void client_send_result(struct client *cl, struct action *act)
 	if (act->flags & LD_AF_DUP_GL_LS)
 		strcat(result_flags, "DUP_GL_LS,");
 
-	if (act->flags & LD_AF_INACTIVE_LS)
-		strcat(result_flags, "INACTIVE_LS,");
-
-	if (act->flags & LD_AF_ADD_LS_ERROR)
-		strcat(result_flags, "ADD_LS_ERROR,");
-
 	if (act->flags & LD_AF_WARN_GL_REMOVED)
 		strcat(result_flags, "WARN_GL_REMOVED,");
 	
@@ -3474,7 +3620,7 @@ static void client_send_result(struct client *cl, struct action *act)
 		if (act->lv_args[0])
 			lv_args = act->lv_args;
 
-		log_debug("send %s[%d.%u] %s %s rv %d vg_args %s lv_args %s",
+		log_debug("send %s[%d] cl %u %s %s rv %d vg_args %s lv_args %s",
 			  cl->name[0] ? cl->name : "client", cl->pid, cl->id,
 			  op_str(act->op), rt_str(act->rt),
 			  act->result, vg_args ? vg_args : "", lv_args ? lv_args : "");
@@ -3487,12 +3633,39 @@ static void client_send_result(struct client *cl, struct action *act)
 					  "lv_lock_args = %s", lv_args,
 					  "result_flags = %s", result_flags[0] ? result_flags : "none",
 					  NULL);
+
+	} else if (act->op == LD_OP_DUMP_LOG || act->op == LD_OP_DUMP_INFO) {
+		/*
+		 * lvmlockctl creates the unix socket then asks us to write to it.
+		 * FIXME: move processing this to a new dedicated query thread to
+		 * avoid having a large data dump interfere with normal operation
+		 * of the client thread?
+		 */
+
+		dump_fd = setup_dump_socket();
+		if (dump_fd < 0)
+			act->result = dump_fd;
+		else if (act->op == LD_OP_DUMP_LOG)
+			act->result = dump_log(&dump_len);
+		else if (act->op == LD_OP_DUMP_INFO)
+			act->result = dump_info(&dump_len);
+		else
+			act->result = -EINVAL;
+
+		log_debug("send %s[%d] cl %u dump result %d dump_len %d",
+			  cl->name[0] ? cl->name : "client", cl->pid, cl->id,
+			  act->result, dump_len);
+
+		res = daemon_reply_simple("OK",
+					  "result = %d", act->result,
+					  "dump_len = %d", dump_len,
+					  NULL);
 	} else {
 		/*
 		 * A normal reply.
 		 */
 
-		log_debug("send %s[%d.%u] %s %s rv %d %s %s",
+		log_debug("send %s[%d] cl %u %s %s rv %d %s %s",
 			  cl->name[0] ? cl->name : "client", cl->pid, cl->id,
 			  op_str(act->op), rt_str(act->rt),
 			  act->result, (act->result == -ENOLS) ? "ENOLS" : "", result_flags);
@@ -3506,10 +3679,24 @@ static void client_send_result(struct client *cl, struct action *act)
 					  NULL);
 	}
 
-	buffer_write(cl->fd, &res.buffer);
+	if (!buffer_write(cl->fd, &res.buffer)) {
+		rv = -errno;
+		if (rv >= 0)
+			rv = -1;
+		log_debug("send cl %u fd %d error %d", cl->id, cl->fd, rv);
+	}
+
 	buffer_destroy(&res.buffer);
 
 	client_resume(cl);
+
+	if (dump_fd >= 0) {
+		/* To avoid deadlock, send data here after the reply. */
+		send_dump_buf(dump_fd, dump_len);
+		close(dump_fd);
+	}
+
+	return rv;
 }
 
 /* called from client_thread */
@@ -3517,6 +3704,13 @@ static void client_purge(struct client *cl)
 {
 	struct lockspace *ls;
 	struct action *act;
+
+	/*
+	 * If the client made no lock requests, there can be
+	 * no locks to release for it.
+	 */
+	if (!cl->lock_ops)
+		return;
 
 	pthread_mutex_lock(&lockspaces_mutex);
 	list_for_each_entry(ls, &lockspaces, list) {
@@ -3546,71 +3740,72 @@ static int add_lock_action(struct action *act)
 
 	memset(ls_name, 0, sizeof(ls_name));
 
-	/* Determine which lockspace this action is for, and set ls_name. */
+	/*
+	 * Determine which lockspace this action is for, and set ls_name.
+	 */
 
-	if (act->rt == LD_RT_GL && gl_use_sanlock &&
-	    (act->op == LD_OP_ENABLE || act->op == LD_OP_DISABLE))
+	if (act->rt == LD_RT_GL) {
+		/* Global lock is requested */
+		if (gl_use_sanlock && (act->op == LD_OP_ENABLE || act->op == LD_OP_DISABLE)) {
+			vg_ls_name(act->vg_name, ls_name);
+		} else {
+			if (!gl_use_dlm && !gl_use_sanlock) {
+				if (lm_is_running_dlm())
+					gl_use_dlm = 1;
+				else if (lm_is_running_sanlock())
+					gl_use_sanlock = 1;
+			}
+			gl_ls_name(ls_name);
+		}
+	} else {
+		/* VG lock is requested */
 		vg_ls_name(act->vg_name, ls_name);
-	else if (act->rt == LD_RT_GL)
-		gl_ls_name(ls_name);
-	else
-		vg_ls_name(act->vg_name, ls_name);
+	}
 
  retry:
 	pthread_mutex_lock(&lockspaces_mutex);
 	if (ls_name[0])
 		ls = find_lockspace_name(ls_name);
+	pthread_mutex_unlock(&lockspaces_mutex);
 	if (!ls) {
-		int ls_inactive = 0;
-		int ls_create_fail = 0;
-
-		if (ls_name[0])
-			ls = find_lockspace_inactive(ls_name);
-		if (ls) {
-			ls_inactive = 1;
-			ls_create_fail = ls->create_fail;
-			ls = NULL;
-		}
-		pthread_mutex_unlock(&lockspaces_mutex);
-
 		if (act->op == LD_OP_UPDATE && act->rt == LD_RT_VG) {
-			log_debug("lockspace not found ignored for vg update");
+			log_debug("lockspace \"%s\" not found ignored for vg update", ls_name);
 			return -ENOLS;
 
 		} else if (act->flags & LD_AF_SEARCH_LS) {
-			/* fail if we've already tried searching for the ls */
-			log_debug("lockspace search repeated %s", ls_name);
+			/*
+			 * Fail if we've already tried searching for the lockspace.
+			 */
+			log_debug("lockspace \"%s\" not found after search", ls_name);
 			return -ENOLS;
 
 		} else if (act->op == LD_OP_LOCK && act->rt == LD_RT_GL && gl_use_sanlock) {
-			/* gl may have been enabled in an existing vg */
-			log_debug("gl lockspace not found check sanlock vgs");
+			/*
+			 * The sanlock global lock may have been enabled in an existing VG,
+			 * so search existing VGs for an enabled global lock.
+			 */
+			log_debug("lockspace \"%s\" not found for sanlock gl, searching...", ls_name);
 			act->flags |= LD_AF_SEARCH_LS;
 			add_work_action(act);
 			return 0;
 
-		} else if (act->op == LD_OP_LOCK && act->rt == LD_RT_GL && gl_use_dlm) {
-			log_debug("gl lockspace not found add dlm global");
+		} else if (act->op == LD_OP_LOCK && act->rt == LD_RT_GL && act->mode != LD_LK_UN && gl_use_dlm) {
+			/*
+			 * Automatically start the dlm global lockspace when
+			 * a command tries to acquire the global lock.
+			 */
+			log_debug("lockspace \"%s\" not found for dlm gl, adding...", ls_name);
 			act->flags |= LD_AF_SEARCH_LS;
 			act->flags |= LD_AF_WAIT_STARTING;
 			add_dlm_global_lockspace(NULL);
-			gl_ls_name(ls_name);
 			goto retry;
 
 		} else if (act->op == LD_OP_LOCK && act->mode == LD_LK_UN) {
-			log_debug("lockspace not found ignored for unlock");
+			log_debug("lockspace \"%s\" not found for unlock ignored", ls_name);
 			return -ENOLS;
 
-		} else if (act->op == LD_OP_LOCK && act->rt == LD_RT_VG && ls_inactive) {
-			/* ls has been stopped or previously failed to start */
-			log_debug("lockspace inactive create_fail %d %s",
-				  ls_create_fail, ls_name);
-			act->flags |= LD_AF_INACTIVE_LS;
-			if (ls_create_fail)
-				act->flags |= LD_AF_ADD_LS_ERROR;
-			return -ENOLS;
 		} else {
-			log_debug("lockspace not found %s", ls_name);
+			log_debug("lockspace \"%s\" not found", ls_name);
 			return -ENOLS;
 		}
 	}
@@ -3627,17 +3822,6 @@ static int add_lock_action(struct action *act)
 	}
 
 	pthread_mutex_lock(&ls->mutex);
-	if (ls->thread_stop && ls->thread_done) {
-		log_debug("lockspace is done finish cleanup %s", ls_name);
-		pthread_join(ls->thread, NULL);
-		list_del(&ls->list);
-		pthread_mutex_unlock(&ls->mutex);
-		free_ls_resources(ls);
-		free(ls);
-		pthread_mutex_unlock(&lockspaces_mutex);
-		goto retry;
-	}
-
 	if (ls->thread_stop) {
 		pthread_mutex_unlock(&ls->mutex);
 		pthread_mutex_unlock(&lockspaces_mutex);
@@ -3700,6 +3884,11 @@ static int str_to_op_rt(const char *req_name, int *op, int *rt)
 	}
 	if (!strcmp(req_name, "free_vg")) {
 		*op = LD_OP_FREE;
+		*rt = LD_RT_VG;
+		return 0;
+	}
+	if (!strcmp(req_name, "busy_vg")) {
+		*op = LD_OP_BUSY;
 		*rt = LD_RT_VG;
 		return 0;
 	}
@@ -3775,11 +3964,6 @@ static int str_to_op_rt(const char *req_name, int *op, int *rt)
 	}
 	if (!strcmp(req_name, "find_free_lock")) {
 		*op = LD_OP_FIND_FREE_LOCK;
-		*rt = LD_RT_VG;
-		return 0;
-	}
-	if (!strcmp(req_name, "forget_vg_name")) {
-		*op = LD_OP_FORGET_VG_NAME;
 		*rt = LD_RT_VG;
 		return 0;
 	}
@@ -3876,23 +4060,43 @@ static int setup_dump_socket(void)
 	return s;
 }
 
-static int send_dump_buf(int fd, int dump_len)
+#define MAX_SEND_LEN 65536
+#define RESEND_DELAY_US 1000
+#define RESEND_DELAY_US_MAX 500000
+
+static void send_dump_buf(int fd, int dump_len)
 {
 	int pos = 0;
 	int ret;
+	int send_len;
+	int delay = 0;
 
-retry:
-	ret = sendto(fd, dump_buf + pos, dump_len - pos, MSG_DONTWAIT | MSG_NOSIGNAL,
+	if (!dump_len)
+		return;
+repeat:
+	if (dump_len - pos < MAX_SEND_LEN)
+		send_len = dump_len - pos;
+	else
+		send_len = MAX_SEND_LEN;
+
+	ret = sendto(fd, dump_buf + pos, send_len, MSG_NOSIGNAL | MSG_DONTWAIT,
 		     (struct sockaddr *)&dump_addr, dump_addrlen);
-	if (ret <= 0)
-		return ret;
+	if (ret < 0) {
+		if ((errno == EAGAIN || errno == EINTR) && (delay < RESEND_DELAY_US_MAX)) {
+			usleep(RESEND_DELAY_US);
+			delay += RESEND_DELAY_US;
+			goto repeat;
+		}
+		log_error("send_dump_buf delay %d errno %d", delay, errno);
+		return;
+	}
 
 	pos += ret;
 
 	if (pos < dump_len)
-		goto retry;
+		goto repeat;
 
-	return 0;
+	log_debug("send_dump_buf delay %d total %d", delay, pos);
 }
 
 static int print_structs(const char *prefix, int pos, int len)
@@ -4147,10 +4351,10 @@ static void client_recv_action(struct client *cl)
 	rv = buffer_read(cl->fd, &req.buffer);
 	if (!rv) {
 		if (errno == ECONNRESET) {
-			log_debug("client recv %d ECONNRESET", cl->id);
+			log_debug("client recv %u ECONNRESET", cl->id);
 			cl->dead = 1;
 		} else {
-			log_error("client recv %d buffer_read error %d", cl->id, errno);
+			log_error("client recv %u buffer_read error %d", cl->id, errno);
 		}
 		buffer_destroy(&req.buffer);
 		client_resume(cl);
@@ -4159,7 +4363,7 @@ static void client_recv_action(struct client *cl)
 
 	req.cft = dm_config_from_string(req.buffer.mem);
 	if (!req.cft) {
-		log_error("client recv %d config_from_string error", cl->id);
+		log_error("client recv %u config_from_string error", cl->id);
 		buffer_destroy(&req.buffer);
 		client_resume(cl);
 		return;
@@ -4168,15 +4372,14 @@ static void client_recv_action(struct client *cl)
 	str = daemon_request_str(req, "request", NULL);
 	rv = str_to_op_rt(str, &op, &rt);
 	if (rv < 0) {
-		log_error("client recv %d bad request name \"%s\"", cl->id, str ? str : "");
+		log_error("client recv %u bad request name \"%s\"", cl->id, str ? str : "");
 		dm_config_destroy(req.cft);
 		buffer_destroy(&req.buffer);
 		client_resume(cl);
 		return;
 	}
 
-	if (op == LD_OP_HELLO || op == LD_OP_QUIT ||
-	    op == LD_OP_DUMP_INFO || op == LD_OP_DUMP_LOG) {
+	if (op == LD_OP_HELLO || op == LD_OP_QUIT) {
 
 		/*
 		 * FIXME: add the client command name to the hello messages
@@ -4197,37 +4400,11 @@ static void client_recv_action(struct client *cl)
 
 		buffer_init(&res.buffer);
 
-		if (op == LD_OP_DUMP_INFO || op == LD_OP_DUMP_LOG) {
-			int dump_len = 0;
-			int fd;
-
-			fd = setup_dump_socket();
-			if (fd < 0)
-				result = fd;
-			else if (op == LD_OP_DUMP_INFO)
-				result = dump_info(&dump_len);
-			else if (op == LD_OP_DUMP_LOG)
-				result = dump_log(&dump_len);
-			else
-				result = -EINVAL;
-
-			res = daemon_reply_simple("OK",
-					  "result = %d", result,
-					  "dump_len = %d", dump_len,
-					  NULL);
-			if (fd >= 0) {
-				send_dump_buf(fd, dump_len);
-				close(fd);
-			}
-
-		} else {
-			res = daemon_reply_simple("OK",
+		res = daemon_reply_simple("OK",
 					  "result = %d", result,
 					  "protocol = %s", lvmlockd_protocol,
 					  "version = %d", lvmlockd_protocol_version,
 					  NULL);
-		}
-
 		buffer_write(cl->fd, &res.buffer);
 		buffer_destroy(&res.buffer);
 		dm_config_destroy(req.cft);
@@ -4318,7 +4495,7 @@ static void client_recv_action(struct client *cl)
 	dm_config_destroy(req.cft);
 	buffer_destroy(&req.buffer);
 
-	log_debug("recv %s[%d.%u] %s %s \"%s\" mode %s flags %x",
+	log_debug("recv %s[%d] cl %u %s %s \"%s\" mode %s flags %x",
 		  cl->name[0] ? cl->name : "client", cl->pid, cl->id,
 		  op_str(act->op), rt_str(act->rt), act->vg_name, mode_str(act->mode), opts);
 
@@ -4334,12 +4511,21 @@ static void client_recv_action(struct client *cl)
 		goto out;
 	}
 
+	if (act->op == LD_OP_LOCK && act->mode != LD_LK_UN)
+		cl->lock_ops = 1;
+
 	switch (act->op) {
 	case LD_OP_START:
 		rv = add_lockspace(act);
 		break;
 	case LD_OP_STOP:
 		rv = rem_lockspace(act);
+		break;
+	case LD_OP_DUMP_LOG:
+	case LD_OP_DUMP_INFO:
+		/* The client thread reply will copy and send the dump. */
+		add_client_result(act);
+		rv = 0;
 		break;
 	case LD_OP_INIT:
 	case LD_OP_START_WAIT:
@@ -4358,11 +4544,8 @@ static void client_recv_action(struct client *cl)
 	case LD_OP_FIND_FREE_LOCK:
 	case LD_OP_KILL_VG:
 	case LD_OP_DROP_VG:
+	case LD_OP_BUSY:
 		rv = add_lock_action(act);
-		break;
-	case LD_OP_FORGET_VG_NAME:
-		act->result = forget_lockspace_inactive(act->vg_name);
-		add_client_result(act);
 		break;
 	default:
 		rv = -EINVAL;
@@ -4379,6 +4562,8 @@ static void *client_thread_main(void *arg_in)
 {
 	struct client *cl;
 	struct action *act;
+	struct action *act_un;
+	int rv;
 
 	while (1) {
 		pthread_mutex_lock(&client_mutex);
@@ -4402,11 +4587,30 @@ static void *client_thread_main(void *arg_in)
 
 			if (cl) {
 				pthread_mutex_lock(&cl->mutex);
-				client_send_result(cl, act);
+				rv = client_send_result(cl, act);
 				pthread_mutex_unlock(&cl->mutex);
 			} else {
-				log_debug("no client for result");
+				log_debug("no client %u for result", act->client_id);
+				rv = -1;
 			}
+
+			/*
+			 * The client failed after we acquired an LV lock for
+			 * it, but before getting this reply saying it's done.
+			 * So the lv will not be active and we should release
+			 * the lv lock it requested.
+			 */
+			if ((rv < 0) && (act->flags & LD_AF_LV_LOCK)) {
+				log_debug("auto unlock lv for failed client %u", act->client_id);
+				if ((act_un = alloc_action())) {
+					memcpy(act_un, act, sizeof(struct action));
+					act_un->mode = LD_LK_UN;
+					act_un->flags |= LD_AF_LV_UNLOCK;
+					act_un->flags &= ~LD_AF_LV_LOCK;
+					add_lock_action(act_un);
+				}
+			}
+
 			free_action(act);
 			continue;
 		}
@@ -4436,6 +4640,7 @@ static void *client_thread_main(void *arg_in)
 				log_debug("client rem %d pi %d fd %d ig %d",
 					  cl->id, cl->pi, cl->fd, cl->poll_ignore);
 				*/
+
 				/*
 				 * If cl->dead was set in main_loop, then the
 				 * fd has already been closed and the pollfd
@@ -4658,6 +4863,7 @@ static int get_lockd_vgs(struct list_head *vg_lockd)
 					goto next;
 				}
 
+				r->use_vb = 0;
 				r->type = LD_RT_LV;
 				strncpy(r->name, lv_uuid, MAX_NAME);
 				if (lock_args)
@@ -5078,7 +5284,7 @@ static void adopt_locks(void)
 		act->flags = (LD_AF_ADOPT | LD_AF_WAIT);
 		act->rt = LD_RT_GL;
 		act->lm_type = LD_LM_DLM;
-		act->client_id = ADOPT_CLIENT_ID;
+		act->client_id = INTERNAL_CLIENT_ID;
 		add_dlm_global_lockspace(act);
 		count_start++;
 	}
@@ -5090,7 +5296,7 @@ static void adopt_locks(void)
 		act->flags = (LD_AF_ADOPT | LD_AF_WAIT);
 		act->rt = LD_RT_VG;
 		act->lm_type = ls->lm_type;
-		act->client_id = ADOPT_CLIENT_ID;
+		act->client_id = INTERNAL_CLIENT_ID;
 		strncpy(act->vg_name, ls->vg_name, MAX_NAME);
 		memcpy(act->vg_uuid, ls->vg_uuid, 64);
 		memcpy(act->vg_args, ls->vg_args, MAX_ARGS);
@@ -5182,7 +5388,7 @@ static void adopt_locks(void)
 			act->rt = LD_RT_LV;
 			act->mode = LD_LK_EX;
 			act->flags = (LD_AF_ADOPT | LD_AF_PERSISTENT);
-			act->client_id = ADOPT_CLIENT_ID;
+			act->client_id = INTERNAL_CLIENT_ID;
 			act->lm_type = ls->lm_type;
 			strncpy(act->vg_name, ls->vg_name, MAX_NAME);
 			strncpy(act->lv_uuid, r->name, MAX_NAME);
@@ -5210,7 +5416,7 @@ static void adopt_locks(void)
 		act->rt = LD_RT_VG;
 		act->mode = LD_LK_SH;
 		act->flags = LD_AF_ADOPT;
-		act->client_id = ADOPT_CLIENT_ID;
+		act->client_id = INTERNAL_CLIENT_ID;
 		act->lm_type = ls->lm_type;
 		strncpy(act->vg_name, ls->vg_name, MAX_NAME);
 
@@ -5236,7 +5442,7 @@ static void adopt_locks(void)
 	act->rt = LD_RT_GL;
 	act->mode = LD_LK_SH;
 	act->flags = LD_AF_ADOPT;
-	act->client_id = ADOPT_CLIENT_ID;
+	act->client_id = INTERNAL_CLIENT_ID;
 	act->lm_type = (gl_use_sanlock ? LD_LM_SANLOCK : LD_LM_DLM);
 
 	log_debug("adopt lock for gl");
@@ -5475,7 +5681,7 @@ static void process_listener(int poll_fd)
 	pthread_mutex_lock(&client_mutex);
 	client_ids++;
 
-	if (client_ids == ADOPT_CLIENT_ID)
+	if (client_ids == INTERNAL_CLIENT_ID)
 		client_ids++;
 	if (!client_ids)
 		client_ids++;
@@ -5484,7 +5690,7 @@ static void process_listener(int poll_fd)
 	list_add_tail(&cl->list, &client_list);
 	pthread_mutex_unlock(&client_mutex);
 
-	log_debug("client add id %d pi %d fd %d", cl->id, cl->pi, cl->fd);
+	log_debug("new cl %u pi %d fd %d", cl->id, cl->pi, cl->fd);
 }
 
 /*
@@ -5542,7 +5748,6 @@ static int main_loop(daemon_state *ds_arg)
 	strcpy(gl_lsname_dlm, S_NAME_GL_DLM);
 
 	INIT_LIST_HEAD(&lockspaces);
-	INIT_LIST_HEAD(&lockspaces_inactive);
 	pthread_mutex_init(&lockspaces_mutex, NULL);
 	pthread_mutex_init(&pollfd_mutex, NULL);
 	pthread_mutex_init(&log_mutex, NULL);
@@ -5628,14 +5833,14 @@ static int main_loop(daemon_state *ds_arg)
 
 				if (cl->recv) {
 					/* should not happen */
-					log_error("main client %d already recv", cl->id);
+					log_error("main client %u already recv", cl->id);
 
 				} else if (cl->dead) {
 					/* should not happen */
-					log_error("main client %d already dead", cl->id);
+					log_error("main client %u already dead", cl->id);
 
 				} else if (is_dead) {
-					log_debug("close %s[%d.%u] fd %d",
+					log_debug("close %s[%d] cl %u fd %d",
 						  cl->name[0] ? cl->name : "client",
 						  cl->pid, cl->id, cl->fd);
 					cl->dead = 1;
@@ -5682,7 +5887,6 @@ static int main_loop(daemon_state *ds_arg)
 	}
 
 	for_each_lockspace_retry(DO_STOP, DO_FREE, DO_FORCE);
-	free_lockspaces_inactive();
 	close_worker_thread();
 	close_client_thread();
 	closelog();

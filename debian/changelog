@@ -1,3 +1,16 @@
+lvm2 (2.02.133-1) unstable; urgency=medium
+
+  * New upstream version.
+  * Remove references to EVMS. (closes: #794405)
+  * Remove support for cman and openais.
+  * Make libdevmapper-dev depend on libudev-dev. (closes: #797800)
+  * Use debhelper compat level 9.
+  * Cleanup old systemd services.
+  * Add python bindings. (closes: #773984)
+  * Update Standards-Version to 3.9.6, no changes.
+
+ -- Bastian Blank <waldi@debian.org>  Sun, 01 Nov 2015 10:42:25 +0100
+
 lvm2 (2.02.127-1) unstable; urgency=medium
 
   * Remove superfluous directory specs. (closes: #794200)

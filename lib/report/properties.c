@@ -149,11 +149,11 @@ static dm_percent_t _metadata_percent(const struct logical_volume *lv)
 /* PV */
 GET_PV_STR_PROPERTY_FN(pv_fmt, pv_fmt_dup(pv))
 #define _pv_fmt_set prop_not_implemented_set
-GET_PV_STR_PROPERTY_FN(pv_uuid, pv_uuid_dup(pv))
+GET_PV_STR_PROPERTY_FN(pv_uuid, pv_uuid_dup(pv->vg->vgmem, pv))
 #define _pv_uuid_set prop_not_implemented_set
 GET_PV_NUM_PROPERTY_FN(dev_size, SECTOR_SIZE * pv_dev_size(pv))
 #define _dev_size_set prop_not_implemented_set
-GET_PV_STR_PROPERTY_FN(pv_name, pv_name_dup(pv))
+GET_PV_STR_PROPERTY_FN(pv_name, pv_name_dup(pv->vg->vgmem, pv))
 #define _pv_name_set prop_not_implemented_set
 GET_PV_NUM_PROPERTY_FN(pv_mda_free, SECTOR_SIZE * pv_mda_free(pv))
 #define _pv_mda_free_set prop_not_implemented_set
@@ -264,7 +264,7 @@ GET_PV_NUM_PROPERTY_FN(pv_ba_size, SECTOR_SIZE * pv->ba_size)
 #define _cache_write_misses_get prop_not_implemented_get
 
 /* LV */
-GET_LV_STR_PROPERTY_FN(lv_uuid, lv_uuid_dup(lv))
+GET_LV_STR_PROPERTY_FN(lv_uuid, lv_uuid_dup(lv->vg->vgmem, lv))
 #define _lv_uuid_set prop_not_implemented_set
 GET_LV_STR_PROPERTY_FN(lv_name, lv_name_dup(lv->vg->vgmem, lv))
 #define _lv_name_set prop_not_implemented_set
@@ -298,6 +298,8 @@ GET_LV_NUM_PROPERTY_FN(seg_count, dm_list_size(&lv->segments))
 #define _seg_count_set prop_not_implemented_set
 GET_LV_STR_PROPERTY_FN(origin, lv_origin_dup(lv->vg->vgmem, lv))
 #define _origin_set prop_not_implemented_set
+GET_LV_STR_PROPERTY_FN(origin_uuid, lv_origin_uuid_dup(lv->vg->vgmem, lv))
+#define _origin_uuid_set prop_not_implemented_set
 GET_LV_NUM_PROPERTY_FN(origin_size, (SECTOR_SIZE * lv_origin_size(lv)))
 #define _origin_size_set prop_not_implemented_set
 #define _lv_ancestors_set prop_not_implemented_set
@@ -322,20 +324,32 @@ GET_LV_STR_PROPERTY_FN(raid_sync_action, _raidsyncaction(lv))
 #define _raid_sync_action_set prop_not_implemented_set
 GET_LV_STR_PROPERTY_FN(move_pv, lv_move_pv_dup(lv->vg->vgmem, lv))
 #define _move_pv_set prop_not_implemented_set
+GET_LV_STR_PROPERTY_FN(move_pv_uuid, lv_move_pv_uuid_dup(lv->vg->vgmem, lv))
+#define _move_pv_uuid_set prop_not_implemented_set
 GET_LV_STR_PROPERTY_FN(convert_lv, lv_convert_lv_dup(lv->vg->vgmem, lv))
 #define _convert_lv_set prop_not_implemented_set
+GET_LV_STR_PROPERTY_FN(convert_lv_uuid, lv_convert_lv_uuid_dup(lv->vg->vgmem, lv))
+#define _convert_lv_uuid_set prop_not_implemented_set
 GET_LV_STR_PROPERTY_FN(lv_tags, lv_tags_dup(lv))
 #define _lv_tags_set prop_not_implemented_set
 GET_LV_STR_PROPERTY_FN(mirror_log, lv_mirror_log_dup(lv->vg->vgmem, lv))
 #define _mirror_log_set prop_not_implemented_set
+GET_LV_STR_PROPERTY_FN(mirror_log_uuid, lv_mirror_log_uuid_dup(lv->vg->vgmem, lv))
+#define _mirror_log_uuid_set prop_not_implemented_set
 GET_LV_STR_PROPERTY_FN(lv_modules, lv_modules_dup(lv->vg->vgmem, lv))
 #define _lv_modules_set prop_not_implemented_set
 GET_LV_STR_PROPERTY_FN(data_lv, lv_data_lv_dup(lv->vg->vgmem, lv))
 #define _data_lv_set prop_not_implemented_set
+GET_LV_STR_PROPERTY_FN(data_lv_uuid, lv_data_lv_uuid_dup(lv->vg->vgmem, lv))
+#define _data_lv_uuid_set prop_not_implemented_set
 GET_LV_STR_PROPERTY_FN(metadata_lv, lv_metadata_lv_dup(lv->vg->vgmem, lv))
 #define _metadata_lv_set prop_not_implemented_set
+GET_LV_STR_PROPERTY_FN(metadata_lv_uuid, lv_metadata_lv_uuid_dup(lv->vg->vgmem, lv))
+#define _metadata_lv_uuid_set prop_not_implemented_set
 GET_LV_STR_PROPERTY_FN(pool_lv, lv_pool_lv_dup(lv->vg->vgmem, lv))
 #define _pool_lv_set prop_not_implemented_set
+GET_LV_STR_PROPERTY_FN(pool_lv_uuid, lv_pool_lv_uuid_dup(lv->vg->vgmem, lv))
+#define _pool_lv_uuid_set prop_not_implemented_set
 GET_LV_NUM_PROPERTY_FN(data_percent, _data_percent(lv))
 #define _data_percent_set prop_not_implemented_set
 GET_LV_NUM_PROPERTY_FN(metadata_percent, _metadata_percent(lv))
@@ -406,6 +420,8 @@ GET_VG_NUM_PROPERTY_FN(vg_mda_copies, (vg_mda_copies(vg)))
 SET_VG_NUM_PROPERTY_FN(vg_mda_copies, vg_set_mda_copies)
 GET_VG_STR_PROPERTY_FN(vg_profile, vg_profile_dup(vg))
 #define _vg_profile_set prop_not_implemented_set
+GET_VG_NUM_PROPERTY_FN(vg_missing_pv_count, vg_missing_pv_count(vg))
+#define _vg_missing_pv_count_set prop_not_implemented_set
 
 /* LVSEG */
 GET_LVSEG_STR_PROPERTY_FN(segtype, lvseg_segtype_dup(lvseg->lv->vg->vgmem, lvseg))
@@ -449,8 +465,13 @@ GET_LVSEG_STR_PROPERTY_FN(seg_tags, lvseg_tags_dup(lvseg))
 GET_LVSEG_STR_PROPERTY_FN(seg_pe_ranges,
 			  lvseg_seg_pe_ranges(lvseg->lv->vg->vgmem, lvseg))
 #define _seg_pe_ranges_set prop_not_implemented_set
+GET_LVSEG_STR_PROPERTY_FN(seg_metadata_le_ranges,
+			  lvseg_seg_metadata_le_ranges(lvseg->lv->vg->vgmem, lvseg))
+#define _seg_metadata_le_ranges_set prop_not_implemented_set
 GET_LVSEG_STR_PROPERTY_FN(devices, lvseg_devices(lvseg->lv->vg->vgmem, lvseg))
 #define _devices_set prop_not_implemented_set
+GET_LVSEG_STR_PROPERTY_FN(metadata_devices, lvseg_metadata_devices(lvseg->lv->vg->vgmem, lvseg))
+#define _metadata_devices_set prop_not_implemented_set
 GET_LVSEG_STR_PROPERTY_FN(seg_monitor, lvseg_monitor_dup(lvseg->lv->vg->vgmem, lvseg))
 #define _seg_monitor_set prop_not_implemented_set
 

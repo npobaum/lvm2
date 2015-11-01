@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2011 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2005-2015 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -13,168 +13,133 @@
  */
 
 #include "lib.h"
-
-#include "libdevmapper-event.h"
 #include "dmeventd_lvm.h"
+#include "libdevmapper-event.h"
 
-#include <syslog.h> /* FIXME Replace syslog with multilog */
-/* FIXME Missing openlog? */
-/* FIXME Replace most syslogs with log_error() style messages and add complete context. */
+struct dso_state {
+	struct dm_pool *mem;
+	char cmd_lvscan[512];
+	char cmd_lvconvert[512];
+	int failed;
+};
+
+DM_EVENT_LOG_FN("raid")
+
 /* FIXME Reformat to 80 char lines. */
 
-/*
- * run_repair is a close copy to
- * plugins/mirror/dmeventd_mirror.c:_remove_failed_devices()
- */
-static int run_repair(const char *device)
+static int _process_raid_event(struct dso_state *state, char *params, const char *device)
 {
-	int r;
-#define CMD_SIZE 256	/* FIXME Use system restriction */
-	char cmd_str[CMD_SIZE];
+	struct dm_status_raid *status;
+	const char *d;
 
-	if (!dmeventd_lvm2_command(dmeventd_lvm2_pool(), cmd_str, sizeof(cmd_str),
-				  "lvscan --cache", device))
-		return -1;
-
-	r = dmeventd_lvm2_run(cmd_str);
-
-	if (!r)
-		syslog(LOG_INFO, "Re-scan of RAID device %s failed.", device);
-
-	if (!dmeventd_lvm2_command(dmeventd_lvm2_pool(), cmd_str, sizeof(cmd_str),
-				  "lvconvert --config devices{ignore_suspended_devices=1} "
-				  "--repair --use-policies", device))
-		return -1;
-
-	/* if repair goes OK, report success even if lvscan has failed */
-	r = dmeventd_lvm2_run(cmd_str);
-
-	if (!r)
-		syslog(LOG_INFO, "Repair of RAID device %s failed.", device);
-
-	return (r) ? 0 : -1;
-}
-
-static int _process_raid_event(char *params, const char *device)
-{
-	int i, n, failure = 0;
-	char *p, *a[4];
-	char *raid_type;
-	char *num_devices;
-	char *health_chars;
-	char *resync_ratio;
-
-	/*
-	 * RAID parms:     <raid_type> <#raid_disks> \
-	 *                 <health chars> <resync ratio>
-	 */
-	if (!dm_split_words(params, 4, 0, a)) {
-		syslog(LOG_ERR, "Failed to process status line for %s\n",
-		       device);
-		return -EINVAL;
-	}
-	raid_type = a[0];
-	num_devices = a[1];
-	health_chars = a[2];
-	resync_ratio = a[3];
-
-	if (!(n = atoi(num_devices))) {
-		syslog(LOG_ERR, "Failed to parse number of devices for %s: %s",
-		       device, num_devices);
-		return -EINVAL;
+	if (!dm_get_status_raid(state->mem, params, &status)) {
+		log_error("Failed to process status line for %s.", device);
+		return 0;
 	}
 
-	for (i = 0; i < n; i++) {
-		switch (health_chars[i]) {
-		case 'A':
-			/* Device is 'A'live and well */
-		case 'a':
-			/* Device is 'a'live, but not yet in-sync */
-			break;
-		case 'D':
-			syslog(LOG_ERR,
-			       "Device #%d of %s array, %s, has failed.",
-			       i, raid_type, device);
-			failure++;
-			break;
-		default:
-			/* Unhandled character returned from kernel */
-			break;
+	if ((d = strchr(status->dev_health, 'D'))) {
+		if (state->failed)
+			goto out; /* already reported */
+
+		log_error("Device #%d of %s array, %s, has failed.",
+			  (int)(d - status->dev_health),
+			  status->raid_type, device);
+
+		state->failed = 1;
+		if (!dmeventd_lvm2_run_with_lock(state->cmd_lvscan))
+			log_warn("WARNING: Re-scan of RAID device %s failed.", device);
+
+		/* if repair goes OK, report success even if lvscan has failed */
+		if (!dmeventd_lvm2_run_with_lock(state->cmd_lvconvert)) {
+			log_info("Repair of RAID device %s failed.", device);
+			dm_pool_free(state->mem, status);
+			return 0;
 		}
-		if (failure)
-			return run_repair(device);
+	} else {
+		state->failed = 0;
+		log_info("%s array, %s, is %s in-sync.",
+			 status->raid_type, device,
+			 (status->insync_regions == status->total_regions) ? "now" : "not");
 	}
+out:
+	dm_pool_free(state->mem, status);
 
-	p = strstr(resync_ratio, "/");
-	if (!p) {
-		syslog(LOG_ERR, "Failed to parse resync_ratio for %s: %s",
-		       device, resync_ratio);
-		return -EINVAL;
-	}
-	p[0] = '\0';
-	syslog(LOG_INFO, "%s array, %s, is %s in-sync.",
-	       raid_type, device, strcmp(resync_ratio, p+1) ? "not" : "now");
-
-	return 0;
+	return 1;
 }
 
 void process_event(struct dm_task *dmt,
 		   enum dm_event_mask event __attribute__((unused)),
-		   void **unused __attribute__((unused)))
+		   void **user)
 {
+	struct dso_state *state = *user;
 	void *next = NULL;
 	uint64_t start, length;
 	char *target_type = NULL;
 	char *params;
 	const char *device = dm_task_get_name(dmt);
 
-	dmeventd_lvm2_lock();
-
 	do {
 		next = dm_get_next_target(dmt, next, &start, &length,
 					  &target_type, &params);
 
 		if (!target_type) {
-			syslog(LOG_INFO, "%s mapping lost.", device);
+			log_info("%s mapping lost.", device);
 			continue;
 		}
 
 		if (strcmp(target_type, "raid")) {
-			syslog(LOG_INFO, "%s has non-raid portion.", device);
+			log_info("%s has non-raid portion.", device);
 			continue;
 		}
 
-		if (_process_raid_event(params, device))
-			syslog(LOG_ERR, "Failed to process event for %s",
-			       device);
+		if (!_process_raid_event(state, params, device))
+			log_error("Failed to process event for %s.",
+				  device);
 	} while (next);
-
-	dmeventd_lvm2_unlock();
 }
 
 int register_device(const char *device,
 		    const char *uuid __attribute__((unused)),
 		    int major __attribute__((unused)),
 		    int minor __attribute__((unused)),
-		    void **unused __attribute__((unused)))
+		    void **user)
 {
-	if (!dmeventd_lvm2_init())
-		return 0;
+	struct dso_state *state;
 
-	syslog(LOG_INFO, "Monitoring RAID device %s for events.", device);
+	if (!dmeventd_lvm2_init_with_pool("raid_state", state))
+		goto_bad;
+
+	if (!dmeventd_lvm2_command(state->mem, state->cmd_lvscan, sizeof(state->cmd_lvscan),
+				   "lvscan --cache", device) ||
+	    !dmeventd_lvm2_command(state->mem, state->cmd_lvconvert, sizeof(state->cmd_lvconvert),
+				   "lvconvert --config devices{ignore_suspended_devices=1} "
+				   "--repair --use-policies", device)) {
+		dmeventd_lvm2_exit_with_pool(state);
+		goto_bad;
+	}
+
+	*user = state;
+
+	log_info("Monitoring RAID device %s for events.", device);
 
 	return 1;
+bad:
+	log_error("Failed to monitor RAID %s.", device);
+
+	return 0;
 }
 
 int unregister_device(const char *device,
 		      const char *uuid __attribute__((unused)),
 		      int major __attribute__((unused)),
 		      int minor __attribute__((unused)),
-		      void **unused __attribute__((unused)))
+		      void **user)
 {
-	syslog(LOG_INFO, "No longer monitoring RAID device %s for events.",
-	       device);
-	dmeventd_lvm2_exit();
+	struct dso_state *state = *user;
+
+	dmeventd_lvm2_exit_with_pool(state);
+	log_info("No longer monitoring RAID device %s for events.",
+		 device);
 
 	return 1;
 }

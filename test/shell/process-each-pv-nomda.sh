@@ -10,18 +10,19 @@
 # Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
 test_description='Test process_each_pv with zero mda'
+SKIP_WITH_LVMPOLLD=1
 
 . lib/inittest
-
-test -e LOCAL_LVMPOLLD && skip
 
 aux prepare_devs 2
 
 pvcreate "$dev1" --metadatacopies 0
 pvcreate "$dev2"
 
-vgcreate $vg1 "$dev1" "$dev2"
+vgcreate $SHARED $vg1 "$dev1" "$dev2"
 
 pvdisplay -a -C | tee err
 grep "$dev1" err
 grep "$dev2" err
+
+vgremove $vg1

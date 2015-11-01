@@ -70,7 +70,7 @@ xx(devtypes,
    "\t[--nameprefixes]\n"
    "\t[--noheadings]\n"
    "\t[--nosuffix]\n"
-   "\t[-o|--options [+]Field[,Field]]\n"
+   "\t[-o|--options [+|-|#]Field[,Field]]\n"
    "\t[-O|--sort [+|-]key1[,[+|-]key2[,...]]]\n"
    "\t[--rows]\n"
    "\t[-S|--select Selection]\n"
@@ -138,16 +138,16 @@ xx(lvchange,
    "Change the attributes of logical volume(s)",
    CACHE_VGMETADATA | PERMITTED_READ_ONLY,
    "lvchange\n"
-   "\t[-A|--autobackup y|n]\n"
-   "\t[-a|--activate [a|e|l]{y|n}]\n"
+   "\t[-A|--autobackup {y|n}]\n"
+   "\t[-a|--activate [a][e|s|l]{y|n}]\n"
    "\t[--activationmode {complete|degraded|partial}"
-   "\t[--addtag Tag]\n"
-   "\t[--alloc AllocationPolicy]\n"
-   "\t[-C|--contiguous y|n]\n"
-   "\t[--cachepolicy policyname] [--cachesettings parameter=value]\n"
-   "\t[--commandprofile ProfileName]\n"
+   "\t[--addtag <Tag>]\n"
+   "\t[--alloc <AllocationPolicy>]\n"
+   "\t[-C|--contiguous {y|n}]\n"
+   "\t[--cachepolicy <policyname>] [--cachesettings <parameter=value>]\n"
+   "\t[--commandprofile <ProfileName>]\n"
    "\t[-d|--debug]\n"
-   "\t[--deltag Tag]\n"
+   "\t[--deltag <Tag>]\n"
    "\t[--detachprofile]\n"
    "\t[--errorwhenfull {y|n}]\n"
    "\t[-f|--force]\n"
@@ -161,16 +161,16 @@ xx(lvchange,
    "\t[--monitor {y|n}]\n"
    "\t[--poll {y|n}]\n"
    "\t[--noudevsync]\n"
-   "\t[-M|--persistent y|n] [-j|--major major] [--minor minor]\n"
-   "\t[--metadataprofile ProfileName]\n"
+   "\t[-M|--persistent {y|n}] [-j|--major <major>] [--minor <minor>]\n"
+   "\t[--metadataprofile <ProfileName>]\n"
    "\t[-P|--partial]\n"
-   "\t[-p|--permission r|rw]\n"
-   "\t[--[raid]minrecoveryrate Rate]\n"
-   "\t[--[raid]maxrecoveryrate Rate]\n"
+   "\t[-p|--permission {r|rw}]\n"
+   "\t[--[raid]minrecoveryrate <Rate>]\n"
+   "\t[--[raid]maxrecoveryrate <Rate>]\n"
    "\t[--[raid]syncaction {check|repair}\n"
-   "\t[--[raid]writebehind IOCount]\n"
-   "\t[--[raid]writemostly PhysicalVolume[:{t|n|y}]]\n"
-   "\t[-r|--readahead ReadAheadSectors|auto|none]\n"
+   "\t[--[raid]writebehind <IOCount>]\n"
+   "\t[--[raid]writemostly <PhysicalVolume>[:{t|n|y}]]\n"
+   "\t[-r|--readahead <ReadAheadSectors>|auto|none]\n"
    "\t[--refresh]\n"
    "\t[--resync]\n"
    "\t[-S|--select Selection]\n"
@@ -180,7 +180,7 @@ xx(lvchange,
    "\t[--version]\n"
    "\t[-y|--yes]\n"
    "\t[-Z|--zero {y|n}]\n"
-   "\tLogicalVolume[Path] [LogicalVolume[Path]...]\n",
+   "\t<LogicalVolume[Path]> [<LogicalVolume[Path]>...]\n",
 
    activationmode_ARG, addtag_ARG, alloc_ARG, autobackup_ARG, activate_ARG,
    available_ARG, cachepolicy_ARG, cachesettings_ARG, contiguous_ARG, deltag_ARG,
@@ -275,6 +275,8 @@ xx(lvconvert,
    "[--type cache[-pool]|-H|--cache]\n"
    "\t[--cachepool CacheDataLogicalVolume[Path]]\n"
    "\t[--cachemode CacheMode]\n"
+   "\t[--cachepolicy policy]\n"
+   "\t[--cachesettings key=value]\n"
    "\t[--chunksize size]\n"
    "\t[--poolmetadataspare {y|n}]]\n"
    "\t[{--poolmetadata CacheMetadataLogicalVolume[Path] |\n"
@@ -282,7 +284,8 @@ xx(lvconvert,
    COMMON_OPTS
    "\t[Cache|CacheDataPool]LogicalVolume[Path] [PhysicalVolumePath...]\n\n",
 
-   alloc_ARG, background_ARG, cache_ARG, cachemode_ARG, cachepool_ARG, chunksize_ARG,
+   alloc_ARG, background_ARG, cache_ARG, cachemode_ARG,
+   cachepool_ARG, cachepolicy_ARG, cachesettings_ARG, chunksize_ARG,
    corelog_ARG, discards_ARG, force_ARG, interval_ARG, merge_ARG, mirrorlog_ARG,
    mirrors_ARG, name_ARG, noudevsync_ARG, originname_ARG, poolmetadata_ARG,
    poolmetadatasize_ARG, poolmetadataspare_ARG, readahead_ARG, regionsize_ARG,
@@ -301,6 +304,8 @@ xx(lvcreate,
    "\t[--alloc AllocationPolicy]\n"
    "\t[-H|--cache\n"
    "\t  [--cachemode {writeback|writethrough}]\n"
+   "\t  [--cachepolicy policy]\n"
+   "\t  [--cachesettings key=value]\n"
    "\t[--cachepool CachePoolLogicalVolume{Name|Path}]\n"
    "\t[-c|--chunksize ChunkSize]\n"
    "\t[-C|--contiguous {y|n}]\n"
@@ -426,7 +431,7 @@ xx(lvdisplay,
    "\t[--ignoreskippedcluster]\n"
    "\t[--noheadings]\n"
    "\t[--nosuffix]\n"
-   "\t[-o|--options [+]Field[,Field]]\n"
+   "\t[-o|--options [+|-|#]Field[,Field]]\n"
    "\t[-O|--sort [+|-]key1[,[+|-]key2[,...]]]\n"
    "\t[-S|--select Selection]\n"
    "\t[-P|--partial]\n"
@@ -660,7 +665,7 @@ xx(lvs,
    "\t[--nameprefixes]\n"
    "\t[--noheadings]\n"
    "\t[--nosuffix]\n"
-   "\t[-o|--options [+]Field[,Field]]\n"
+   "\t[-o|--options [+|-|#]Field[,Field]]\n"
    "\t[-O|--sort [+|-]key1[,[+|-]key2[,...]]]\n"
    "\t[-P|--partial]\n"
    "\t[--readonly]\n"
@@ -841,7 +846,7 @@ xx(pvdisplay,
    "\t[--ignoreskippedcluster]\n"
    "\t[--noheadings]\n"
    "\t[--nosuffix]\n"
-   "\t[-o|--options [+]Field[,Field]]\n"
+   "\t[-o|--options [+|-|#]Field[,Field]]\n"
    "\t[-O|--sort [+|-]key1[,[+|-]key2[,...]]]\n"
    "\t[-S|--select Selection]\n"
    "\t[--readonly]\n"
@@ -933,7 +938,7 @@ xx(pvs,
    "\t[--nameprefixes]\n"
    "\t[--noheadings]\n"
    "\t[--nosuffix]\n"
-   "\t[-o|--options [+]Field[,Field]]\n"
+   "\t[-o|--options [+|-|#]Field[,Field]]\n"
    "\t[-O|--sort [+|-]key1[,[+|-]key2[,...]]]\n"
    "\t[-P|--partial]\n"
    "\t[--readonly]\n"
@@ -1172,7 +1177,7 @@ xx(vgdisplay,
    "\t[--ignoreskippedcluster]\n"
    "\t[--noheadings]\n"
    "\t[--nosuffix]\n"
-   "\t[-o|--options [+]Field[,Field]]\n"
+   "\t[-o|--options [+|-|#]Field[,Field]]\n"
    "\t[-O|--sort [+|-]key1[,[+|-]key2[,...]]]\n"
    "\t[-P|--partial]\n"
    "\t[-S|--select Selection]\n"
@@ -1206,7 +1211,7 @@ xx(vgexport,
 
 xx(vgextend,
    "Add physical volumes to a volume group",
-   0,
+   ONE_VGNAME_ARG,
    "vgextend\n"
    "\t[-A|--autobackup y|n]\n"
    "\t[--restoremissing]\n"
@@ -1345,7 +1350,7 @@ xx(vgs,
    "\t[--nameprefixes]\n"
    "\t[--noheadings]\n"
    "\t[--nosuffix]\n"
-   "\t[-o|--options [+]Field[,Field]]\n"
+   "\t[-o|--options [+|-|#]Field[,Field]]\n"
    "\t[-O|--sort [+|-]key1[,[+|-]key2[,...]]]\n"
    "\t[-P|--partial]\n"
    "\t[--readonly]\n"

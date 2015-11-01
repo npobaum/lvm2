@@ -119,12 +119,24 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 			inc_error_count;
 		}
 
-		if (lv_is_pool_metadata(lv) &&
-		    (!(seg2 = first_seg(lv)) || !(seg2 = find_pool_seg(seg2)) ||
-		     seg2->metadata_lv != lv)) {
-			log_error("LV %s: segment 1 pool metadata LV does not point back to same LV",
-				  lv->name);
-			inc_error_count;
+		if (lv_is_pool_metadata(lv)) {
+			if (!(seg2 = first_seg(lv)) || !(seg2 = find_pool_seg(seg2)) ||
+			    seg2->metadata_lv != lv) {
+				log_error("LV %s: segment 1 pool metadata LV does not point back to same LV",
+					  lv->name);
+				inc_error_count;
+			}
+			if (lv_is_thin_pool_metadata(lv) &&
+			    !strstr(lv->name, "_tmeta")) {
+				log_error("LV %s: thin pool metadata LV does not use _tmeta",
+					  lv->name);
+				inc_error_count;
+			} else if (lv_is_cache_pool_metadata(lv) &&
+				   !strstr(lv->name, "_cmeta")) {
+				log_error("LV %s: cache pool metadata LV does not use _cmeta",
+					  lv->name);
+				inc_error_count;
+			}
 		}
 	}
 
@@ -208,7 +220,21 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 				}
 
 			}
-			if (seg_is_cache_pool(seg)) {
+			if (seg_is_cache_pool(seg) &&
+			    !dm_list_empty(&seg->lv->segs_using_this_lv)) {
+				switch (seg->feature_flags &
+					(DM_CACHE_FEATURE_PASSTHROUGH |
+					 DM_CACHE_FEATURE_WRITETHROUGH |
+					 DM_CACHE_FEATURE_WRITEBACK)) {
+					 case DM_CACHE_FEATURE_PASSTHROUGH:
+					 case DM_CACHE_FEATURE_WRITETHROUGH:
+					 case DM_CACHE_FEATURE_WRITEBACK:
+						 break;
+					 default:
+						 log_error("LV %s has invalid cache's feature flag.",
+							   lv->name);
+						 inc_error_count;
+				}
 				if (!seg->policy_name) {
 					log_error("LV %s is missing cache policy name.", lv->name);
 					inc_error_count;

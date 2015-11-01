@@ -9,21 +9,16 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
-. lib/inittest
+SKIP_WITH_LVMPOLLD=1
 
-test -e LOCAL_LVMPOLLD && skip
+. lib/inittest
 
 lvm version
 
-test -n "$abs_top_builddir" || skip
-
-v=$abs_top_builddir/lib/misc/lvm-version.h
-sed -n "/#define LVM_VERSION ./s///p" "$v" | sed "s/ .*//" > expected
-
-lvm pvmove --version|sed -n "1s/.*: *\([0-9][^ ]*\) .*/\1/p" > actual
+lvm pvmove --version|sed -n "1s/.*: *\([0-9][^ ]*\) .*/\1/p" | tee version
 
 # ensure they are the same
-diff -u actual expected
+diff -u version lib/version-expected
 
 # ensure we can create devices (uses dmsetup, etc)
 aux prepare_devs 5

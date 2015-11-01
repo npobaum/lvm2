@@ -151,13 +151,12 @@ static void format_info_r(char *line, char *r_name_out, char *r_type_out)
 	sscanf(line, "info=r name=%s type=%s mode=%s %s version=%u",
 	       r_name, r_type, mode, sh_count, &ver);
 
-	/* when mode is not un, wait and print each lk line */
+	strcpy(r_name_out, r_name);
+	strcpy(r_type_out, r_type);
 
-	if (strcmp(mode, "un")) {
-		strcpy(r_name_out, r_name);
-		strcpy(r_type_out, r_type);
+	/* when mode is not un, wait and print each lk line */
+	if (strcmp(mode, "un"))
 		return;
-	}
 
 	/* when mode is un, there will be no lk lines, so print now */
 
@@ -229,7 +228,7 @@ static void format_info_r_action(char *line, char *r_name, char *r_type)
 	find_client_info(client_id, &pid, cl_name);
 
 	if (strcmp(op, "lock")) {
-		printf("OP %s pid %u (%s)", op, pid, cl_name);
+		printf("OP %s pid %u (%s)\n", op, pid, cl_name);
 		return;
 	}
 
@@ -380,6 +379,7 @@ static int setup_dump_socket(void)
 
 	rv = bind(s, (struct sockaddr *) &dump_addr, dump_addrlen);
 	if (rv < 0) {
+		rv = -errno;
 		if (!close(s))
 			log_error("failed to close dump socket");
 		return rv;
@@ -393,6 +393,7 @@ static int do_dump(const char *req_name)
 	daemon_reply reply;
 	int result;
 	int fd, rv = 0;
+	int count = 0;
 
 	fd = setup_dump_socket();
 	if (fd < 0) {
@@ -423,13 +424,18 @@ static int do_dump(const char *req_name)
 
 	memset(dump_buf, 0, sizeof(dump_buf));
 
-	rv = recvfrom(fd, dump_buf, dump_len, MSG_WAITALL,
+retry:
+	rv = recvfrom(fd, dump_buf + count, dump_len - count, MSG_WAITALL,
 		      (struct sockaddr *)&dump_addr, &dump_addrlen);
 	if (rv < 0) {
 		log_error("recvfrom error %d %d", rv, errno);
 		rv = -errno;
 		goto out;
 	}
+	count += rv;
+
+	if (count < dump_len)
+		goto retry;
 
 	rv = 0;
 	if ((info && dump) || !strcmp(req_name, "dump"))
@@ -593,14 +599,14 @@ static void print_usage(void)
 	printf("      Wait option for other commands.\n");
 	printf("--force | -f 0|1>\n");
 	printf("      Force option for other commands.\n");
-	printf("--kill | -k <vg_name>\n");
-	printf("      Kill access to the vg when sanlock cannot renew lease.\n");
-	printf("--drop | -r <vg_name>\n");
-	printf("      Clear locks for the vg after it has been killed and is no longer used.\n");
-	printf("--gl-enable <vg_name>\n");
-	printf("      Tell lvmlockd to enable the global lock in a sanlock vg.\n");
-	printf("--gl-disable <vg_name>\n");
-	printf("      Tell lvmlockd to disable the global lock in a sanlock vg.\n");
+	printf("--kill | -k <vgname>\n");
+	printf("      Kill access to the VG when sanlock cannot renew lease.\n");
+	printf("--drop | -r <vgname>\n");
+	printf("      Clear locks for the VG when it is unused after kill (-k).\n");
+	printf("--gl-enable | -E <vgname>\n");
+	printf("      Tell lvmlockd to enable the global lock in a sanlock VG.\n");
+	printf("--gl-disable | -D <vgname>\n");
+	printf("      Tell lvmlockd to disable the global lock in a sanlock VG.\n");
 	printf("--stop-lockspaces | -S\n");
 	printf("      Stop all lockspaces.\n");
 }
@@ -725,11 +731,13 @@ int main(int argc, char **argv)
 	}
 
 	if (gl_enable) {
+		syslog(LOG_INFO, "Enabling global lock in VG %s.", arg_vg_name);
 		rv = do_able("enable_gl");
 		goto out;
 	}
 
 	if (gl_disable) {
+		syslog(LOG_INFO, "Disabling global lock in VG %s.", arg_vg_name);
 		rv = do_able("disable_gl");
 		goto out;
 	}

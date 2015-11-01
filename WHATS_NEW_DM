@@ -1,3 +1,82 @@
+Version 1.02.110 - 30th October 2015
+====================================
+  Disable thin monitoring plugin when it fails too often (>10 times).
+  Fix/restore parsing of empty field '-' when processing dmeventd event.
+  Enhance dm_tree_node_size_changed() to recognize size reduction.
+  Support exit on idle for dmenventd (1 hour).
+  Add support to allow unmonitor device from plugin itself.
+  New design for thread co-operation in dmeventd.
+  Dmeventd read device status with 'noflush'.
+  Dmeventd closes control device when no device is monitored.
+  Thin plugin for dmeventd improved percentage usage.
+  Snapshot plugin for dmeventd improved percentage usage.
+  Add dm_hold_control_dev to allow holding of control device open.
+  Add dm_report_compact_given_fields to remove given empty fields from report.
+  Use libdm status parsing and local mem raid dmeventd plugin.
+  Use local mem pool and lock only lvm2 execution for mirror dmeventd plugin.
+  Lock protect only lvm2 execution for snapshot and thin dmeventd plugin.
+  Use local mempool for raid and mirror plugins.
+  Reworked thread initialization for dmeventd plugins.
+  Dmeventd handles snapshot overflow for now equally as invalid.
+  Convert dmeventd to use common logging macro system from libdm.
+  Return -ENOMEM when device registration fails instead of 0 (=success).
+  Enforce writethrough mode for cleaner policy.
+  Add support for recognition and deactivation of MD devices to blkdeactivate.
+  Move target status functions out of libdm-deptree.
+  Correct use of max_write_behind parameter when generating raid target line.
+  Fix dm-event systemd service to make sure it is executed before mounting.
+
+Version 1.02.109 - 22nd September 2016
+======================================
+  Update man pages for dmsetup and dmstats.
+  Improve help text for dmsetup.
+  Use --noflush and --nolockfs when removing device with --force.
+  Parse new Overflow status string for snapshot target.
+  Check dir path components are valid if using dm_create_dir, error out if not.
+  Fix /dev/mapper handling to remove dangling entries if symlinks are found.
+  Make it possible to use blank value as selection for string list report field.
+
+Version 1.02.108 - 15th September 2015
+======================================
+  Do not check for full thin pool when activating without messages (1.02.107).
+
+Version 1.02.107 - 5th September 2015
+=====================================
+  Parse thin-pool status with one single routine internally.
+  Add --histogram to select default histogram fields for list and report.
+  Add report fields for displaying latency histogram configuration and data.
+  Add dmstats --bounds to specify histogram boundaries for a new region.
+  Add dm_histogram_to_string() to format histogram data in string form.
+  Add public methods to libdm to access numerical histogram config and data.
+  Parse and store histogram data in dm_stats_list() and dm_stats_populate().
+  Add an argument to specify histogram bounds to dm_stats_create_region().
+  Add dm_histogram_bounds_from_{string,uint64_t}() to parse histogram bounds.
+  Add dm_histogram handle type to represent a latency histogram and its bounds.
+  Fix devmapper.pc pkgconfig file to not reference non-existent rt.pc file.
+  Reinstate dm_task_get_info@Base to libdevmapper exports. (1.02.106)
+
+Version 1.02.106 - 26th August 2015
+===================================
+  Add 'precise' column to statistics reports.
+  Add --precise switch to 'dmstats create' to request nanosecond counters.
+  Add precise argument to dm_stats_create_region().
+  Add support to libdm-stats for precise_timestamps
+
+Version 1.02.105 - 17th August 2015
+===================================
+  Fix 'dmstats list -o all' segfault.
+  Separate dmstats statistics fields from region information fields.
+  Add interval and interval_ns fields to dmstats reports.
+  Do not include internal glibc headers in libdm-timestamp.c (1.02.104)
+  Exit immediately if no device is supplied to dmsetup wipe_table.
+  Suppress dmsetup report headings when no data is output. (1.02.104)
+  Adjust dmsetup usage/help output selection to match command invoked.
+  Fix dmsetup -o all to select correct fields in splitname report.
+  Restructure internal dmsetup argument handling across all commands.
+  Add dm_report_is_empty() to indicate there is no data awaiting output.
+  Add more arg validation for dm_tree_node_add_cache_target().
+  Add --alldevices switch to replace use of --force for stats create / delete.
+
 Version 1.02.104 - 10th August 2015
 ===================================
   Add dmstats.8 man page

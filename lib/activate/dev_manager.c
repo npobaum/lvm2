@@ -143,23 +143,23 @@ static int _get_segment_status_from_target_params(const char *target_name,
 		return 0;
 	}
 
-	if (!strcmp(segtype->name, "cache")) {
+	if (segtype_is_cache(segtype)) {
 		if (!dm_get_status_cache(seg_status->mem, params, &(seg_status->cache)))
 			return_0;
 		seg_status->type = SEG_STATUS_CACHE;
-	} else if (!strcmp(segtype->name, "raid")) {
+	} else if (segtype_is_raid(segtype)) {
 		if (!dm_get_status_raid(seg_status->mem, params, &seg_status->raid))
 			return_0;
 		seg_status->type = SEG_STATUS_RAID;
-	} else if (!strcmp(segtype->name, "thin")) {
+	} else if (segtype_is_thin_volume(segtype)) {
 		if (!dm_get_status_thin(seg_status->mem, params, &seg_status->thin))
 			return_0;
 		seg_status->type = SEG_STATUS_THIN;
-	} else if (!strcmp(segtype->name, "thin-pool")) {
+	} else if (segtype_is_thin_pool(segtype)) {
 		if (!dm_get_status_thin_pool(seg_status->mem, params, &seg_status->thin_pool))
 			return_0;
 		seg_status->type = SEG_STATUS_THIN_POOL;
-	} else if (!strcmp(segtype->name, "snapshot")) {
+	} else if (segtype_is_snapshot(segtype)) {
 		if (!dm_get_status_snapshot(seg_status->mem, params, &seg_status->snapshot))
 			return_0;
 		seg_status->type = SEG_STATUS_SNAPSHOT;
@@ -518,6 +518,73 @@ out:
 	return r;
 }
 
+static int _ignore_unusable_thins(struct device *dev)
+{
+	/* TODO make function for thin testing */
+	struct dm_pool *mem;
+	struct dm_status_thin_pool *status;
+	struct dm_task *dmt = NULL;
+	void *next = NULL;
+	uint64_t start, length;
+	char *target_type = NULL;
+	char *params;
+	int minor, major;
+	int r = 0;
+
+	if (!(mem = dm_pool_create("unusable_thins", 128)))
+		return_0;
+
+	if (!(dmt = dm_task_create(DM_DEVICE_TABLE)))
+		goto_out;
+	if (!dm_task_no_open_count(dmt))
+		goto_out;
+	if (!dm_task_set_major_minor(dmt, MAJOR(dev->dev), MINOR(dev->dev), 1))
+		goto_out;
+	if (!dm_task_run(dmt)) {
+		log_error("Failed to get state of mapped device.");
+		goto out;
+	}
+	dm_get_next_target(dmt, next, &start, &length, &target_type, &params);
+	if (sscanf(params, "%d:%d", &minor, &major) != 2) {
+		log_error("Failed to get thin-pool major:minor for thin device %d:%d.",
+			  (int)MAJOR(dev->dev), (int)MINOR(dev->dev));
+		goto out;
+	}
+	dm_task_destroy(dmt);
+
+	if (!(dmt = dm_task_create(DM_DEVICE_STATUS)))
+		goto_out;
+	if (!dm_task_no_flush(dmt))
+		log_warn("Can't set no_flush.");
+	if (!dm_task_no_open_count(dmt))
+		goto_out;
+	if (!dm_task_set_major_minor(dmt, minor, major, 1))
+		goto_out;
+	if (!dm_task_run(dmt)) {
+		log_error("Failed to get state of mapped device.");
+		goto out;
+	}
+
+	dm_get_next_target(dmt, next, &start, &length, &target_type, &params);
+	if (!dm_get_status_thin_pool(mem, params, &status))
+		return_0;
+
+	if (status->read_only || status->out_of_data_space) {
+		log_warn("WARNING: %s: Thin's thin-pool needs inspection.",
+			 dev_name(dev));
+		goto out;
+	}
+
+	r = 1;
+out:
+	if (dmt)
+		dm_task_destroy(dmt);
+
+	dm_pool_destroy(mem);
+
+        return r;
+}
+
 /*
  * device_is_usable
  * @dev
@@ -642,6 +709,13 @@ int device_is_usable(struct device *dev, struct dev_usable_check_params check)
 		if (check.check_suspended && target_type &&
 		    (!strcmp(target_type, "snapshot") || !strcmp(target_type, "snapshot-origin")) &&
 		    _ignore_suspended_snapshot_component(dev)) {
+			log_debug_activation("%s: %s device %s not usable.", dev_name(dev), target_type, name);
+			goto out;
+		}
+
+		/* TODO: extend check struct ? */
+		if (target_type && !strcmp(target_type, "thin") &&
+		    !_ignore_unusable_thins(dev)) {
 			log_debug_activation("%s: %s device %s not usable.", dev_name(dev), target_type, name);
 			goto out;
 		}
@@ -971,6 +1045,11 @@ static int _percent_run(struct dev_manager *dm, const char *name,
 				wait ? DM_DEVICE_WAITEVENT : DM_DEVICE_STATUS, 0, 0, 0)))
 		return_0;
 
+	/* No freeze on overfilled thin-pool, read existing slightly outdated data */
+	if (lv && lv_is_thin_pool(lv) &&
+	    !dm_task_no_flush(dmt))
+		log_warn("Can't set no_flush flag."); /* Non fatal */
+
 	if (!dm_task_run(dmt))
 		goto_out;
 
@@ -1038,7 +1117,7 @@ static int _percent_run(struct dev_manager *dm, const char *name,
 			goto_out;
 	}
 
-	log_debug_activation("LV percent: %f", dm_percent_to_float(*overall_percent));
+	log_debug_activation("LV percent: %.2f", dm_percent_to_float(*overall_percent));
 	r = 1;
 
       out:
@@ -3198,7 +3277,7 @@ static int _tree_action(struct dev_manager *dm, const struct logical_volume *lv,
 		break;
 	case SUSPEND:
 		dm_tree_skip_lockfs(root);
-		if (!dm->flush_required && lv_is_mirror(lv) && !lv_is_pvmove(lv))
+		if (!dm->flush_required && !lv_is_pvmove(lv))
 			dm_tree_use_no_flush_suspend(root);
 		/* Fall through */
 	case SUSPEND_WITH_LOCKFS:
@@ -3217,7 +3296,14 @@ static int _tree_action(struct dev_manager *dm, const struct logical_volume *lv,
 		if (!dm_tree_preload_children(root, dlid, DLID_SIZE))
 			goto_out;
 
-		if (dm_tree_node_size_changed(root))
+		if ((dm_tree_node_size_changed(root) < 0))
+			dm->flush_required = 1;
+
+		/* Currently keep the code require flush for any
+		 * non 'thin pool/volume, mirror' or with any size change */
+		if (!lv_is_thin_volume(lv) &&
+		    !lv_is_thin_pool(lv) &&
+		    (!lv_is_mirror(lv) || dm_tree_node_size_changed(root)))
 			dm->flush_required = 1;
 
 		if (action == ACTIVATE) {

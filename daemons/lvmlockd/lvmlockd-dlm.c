@@ -67,6 +67,8 @@ int lm_data_size_dlm(void)
 #define VG_LOCK_ARGS_MINOR 0
 #define VG_LOCK_ARGS_PATCH 0
 
+static int dlm_has_lvb_bug;
+
 static int cluster_name_from_args(char *vg_args, char *clustername)
 {
 	return last_string_from_args(vg_args, clustername);
@@ -160,6 +162,7 @@ int lm_prepare_lockspace_dlm(struct lockspace *ls)
 {
 	char sys_clustername[MAX_ARGS+1];
 	char arg_clustername[MAX_ARGS+1];
+	uint32_t major = 0, minor = 0, patch = 0;
 	struct lm_dlm *lmd;
 	int rv;
 
@@ -169,6 +172,17 @@ int lm_prepare_lockspace_dlm(struct lockspace *ls)
 	rv = read_cluster_name(sys_clustername);
 	if (rv < 0)
 		return -EMANAGER;
+
+	rv = dlm_kernel_version(&major, &minor, &patch);
+	if (rv < 0) {
+		log_error("prepare_lockspace_dlm kernel_version not detected %d", rv);
+		dlm_has_lvb_bug = 1;
+	}
+
+	if ((major == 6) && (minor == 0) && (patch == 1)) {
+		log_debug("dlm kernel version %u.%u.%u has lvb bug", major, minor, patch);
+		dlm_has_lvb_bug = 1;
+	}
 
 	if (!ls->vg_args[0]) {
 		/* global lockspace has no vg args */
@@ -246,10 +260,6 @@ int lm_rem_lockspace_dlm(struct lockspace *ls, int free_vg)
  out:
 	free(lmd);
 	ls->lm_data = NULL;
-
-	if (!strcmp(ls->name, gl_lsname_dlm))
-		gl_running_dlm = 0;
-
 	return 0;
 }
 
@@ -333,7 +343,7 @@ static int to_dlm_mode(int ld_mode)
 }
 
 static int lm_adopt_dlm(struct lockspace *ls, struct resource *r, int ld_mode,
-			uint32_t *r_version)
+			struct val_blk *vb_out)
 {
 	struct lm_dlm *lmd = (struct lm_dlm *)ls->lm_data;
 	struct rd_dlm *rdd = (struct rd_dlm *)r->lm_data;
@@ -342,7 +352,7 @@ static int lm_adopt_dlm(struct lockspace *ls, struct resource *r, int ld_mode,
 	int mode;
 	int rv;
 
-	*r_version = 0;
+	memset(vb_out, 0, sizeof(struct val_blk));
 
 	if (!r->lm_init) {
 		rv = lm_add_resource_dlm(ls, r, 0);
@@ -384,7 +394,7 @@ static int lm_adopt_dlm(struct lockspace *ls, struct resource *r, int ld_mode,
 			  (void *)1, (void *)1, (void *)1,
 			  NULL, NULL);
 
-	if (rv == -EAGAIN) {
+	if (rv == -1 && errno == -EAGAIN) {
 		log_debug("S %s R %s adopt_dlm adopt mode %d try other mode",
 			  ls->name, r->name, ld_mode);
 		rv = -EUCLEAN;
@@ -421,14 +431,13 @@ static int lm_adopt_dlm(struct lockspace *ls, struct resource *r, int ld_mode,
  */
 
 int lm_lock_dlm(struct lockspace *ls, struct resource *r, int ld_mode,
-		uint32_t *r_version, int adopt)
+		struct val_blk *vb_out, int adopt)
 {
 	struct lm_dlm *lmd = (struct lm_dlm *)ls->lm_data;
 	struct rd_dlm *rdd = (struct rd_dlm *)r->lm_data;
 	struct dlm_lksb *lksb;
 	struct val_blk vb;
 	uint32_t flags = 0;
-	uint16_t vb_version;
 	int mode;
 	int rv;
 
@@ -436,7 +445,7 @@ int lm_lock_dlm(struct lockspace *ls, struct resource *r, int ld_mode,
 		/* When adopting, we don't follow the normal method
 		   of acquiring a NL lock then converting it to the
 		   desired mode. */
-		return lm_adopt_dlm(ls, r, ld_mode, r_version);
+		return lm_adopt_dlm(ls, r, ld_mode, vb_out);
 	}
 
 	if (!r->lm_init) {
@@ -464,19 +473,37 @@ int lm_lock_dlm(struct lockspace *ls, struct resource *r, int ld_mode,
 	log_debug("S %s R %s lock_dlm", ls->name, r->name);
 
 	if (daemon_test) {
-		*r_version = 0;
+		memset(vb_out, 0, sizeof(struct val_blk));
 		return 0;
+	}
+
+	/*
+	 * The dlm lvb bug means that converting NL->EX will not return 
+	 * the latest lvb, so we have to convert NL->PR->EX to reread it.
+	 */
+	if (dlm_has_lvb_bug && (ld_mode == LD_LK_EX)) {
+		rv = dlm_ls_lock_wait(lmd->dh, LKM_PRMODE, lksb, flags,
+				      r->name, strlen(r->name),
+				      0, NULL, NULL, NULL);
+		if (rv == -1) {
+			log_debug("S %s R %s lock_dlm acquire mode PR for %d rv %d",
+				  ls->name, r->name, mode, rv);
+			goto lockrv;
+		}
+
+		/* Fall through to request EX. */
 	}
 
 	rv = dlm_ls_lock_wait(lmd->dh, mode, lksb, flags,
 			      r->name, strlen(r->name),
 			      0, NULL, NULL, NULL);
-	if (rv == -EAGAIN) {
-		log_error("S %s R %s lock_dlm mode %d rv EAGAIN", ls->name, r->name, mode);
+lockrv:
+	if (rv == -1 && errno == EAGAIN) {
+		log_debug("S %s R %s lock_dlm acquire mode %d rv EAGAIN", ls->name, r->name, mode);
 		return -EAGAIN;
 	}
 	if (rv < 0) {
-		log_error("S %s R %s lock_dlm error %d", ls->name, r->name, rv);
+		log_error("S %s R %s lock_dlm acquire error %d errno %d", ls->name, r->name, rv, errno);
 		return rv;
 	}
 
@@ -484,28 +511,22 @@ int lm_lock_dlm(struct lockspace *ls, struct resource *r, int ld_mode,
 		if (lksb->sb_flags & DLM_SBF_VALNOTVALID) {
 			log_debug("S %s R %s lock_dlm VALNOTVALID", ls->name, r->name);
 			memset(rdd->vb, 0, sizeof(struct val_blk));
-			*r_version = 0;
+			memset(vb_out, 0, sizeof(struct val_blk));
 			goto out;
 		}
 
+		/*
+		 * 'vb' contains disk endian values, not host endian.
+		 * It is copied directly to rdd->vb which is also kept
+		 * in disk endian form.
+		 * vb_out is returned to the caller in host endian form.
+		 */
 		memcpy(&vb, lksb->sb_lvbptr, sizeof(struct val_blk));
-		vb_version = le16_to_cpu(vb.version);
+		memcpy(rdd->vb, &vb, sizeof(vb));
 
-		if (vb_version && ((vb_version & 0xFF00) > (VAL_BLK_VERSION & 0xFF00))) {
-			log_error("S %s R %s lock_dlm ignore vb_version %x",
-				  ls->name, r->name, vb_version);
-			*r_version = 0;
-			free(rdd->vb);
-			rdd->vb = NULL;
-			lksb->sb_lvbptr = NULL;
-			goto out;
-		}
-
-		*r_version = le32_to_cpu(vb.r_version);
-		memcpy(rdd->vb, &vb, sizeof(vb)); /* rdd->vb saved as le */
-
-		log_debug("S %s R %s lock_dlm get r_version %u",
-			  ls->name, r->name, *r_version);
+		vb_out->version = le16_to_cpu(vb.version);
+		vb_out->flags = le16_to_cpu(vb.flags);
+		vb_out->r_version = le32_to_cpu(vb.r_version);
 	}
 out:
 	return 0;
@@ -549,7 +570,7 @@ int lm_convert_dlm(struct lockspace *ls, struct resource *r,
 	rv = dlm_ls_lock_wait(lmd->dh, mode, lksb, flags,
 			      r->name, strlen(r->name),
 			      0, NULL, NULL, NULL);
-	if (rv == -EAGAIN) {
+	if (rv == -1 && errno == EAGAIN) {
 		/* FIXME: When does this happen?  Should something different be done? */
 		log_error("S %s R %s convert_dlm mode %d rv EAGAIN", ls->name, r->name, mode);
 		return -EAGAIN;
@@ -561,16 +582,16 @@ int lm_convert_dlm(struct lockspace *ls, struct resource *r,
 }
 
 int lm_unlock_dlm(struct lockspace *ls, struct resource *r,
-		  uint32_t r_version, uint32_t lmuf_flags)
+		  uint32_t r_version, uint32_t lmu_flags)
 {
 	struct lm_dlm *lmd = (struct lm_dlm *)ls->lm_data;
 	struct rd_dlm *rdd = (struct rd_dlm *)r->lm_data;
 	struct dlm_lksb *lksb = &rdd->lksb;
+	struct val_blk vb_prev;
+	struct val_blk vb_next;
 	uint32_t flags = 0;
+	int new_vb = 0;
 	int rv;
-
-	log_debug("S %s R %s unlock_dlm r_version %u flags %x",
-		  ls->name, r->name, r_version, lmuf_flags);
 
 	/*
 	 * Do not set PERSISTENT, because we don't need an orphan
@@ -579,19 +600,46 @@ int lm_unlock_dlm(struct lockspace *ls, struct resource *r,
 
 	flags |= LKF_CONVERT;
 
-	if (rdd->vb && r_version && (r->mode == LD_LK_EX)) {
-		if (!rdd->vb->version) {
-			/* first time vb has been written */
-			rdd->vb->version = cpu_to_le16(VAL_BLK_VERSION);
-		}
-		if (r_version)
-			rdd->vb->r_version = cpu_to_le32(r_version);
-		memcpy(lksb->sb_lvbptr, rdd->vb, sizeof(struct val_blk));
+	if (rdd->vb && (r->mode == LD_LK_EX)) {
 
-		log_debug("S %s R %s unlock_dlm set r_version %u",
-			  ls->name, r->name, r_version);
+		/* vb_prev and vb_next are in disk endian form */
+		memcpy(&vb_prev, rdd->vb, sizeof(struct val_blk));
+		memcpy(&vb_next, rdd->vb, sizeof(struct val_blk));
+
+		if (!vb_prev.version) {
+			vb_next.version = cpu_to_le16(VAL_BLK_VERSION);
+			new_vb = 1;
+		}
+
+		if ((lmu_flags & LMUF_FREE_VG) && (r->type == LD_RT_VG)) {
+			vb_next.flags = cpu_to_le16(VBF_REMOVED);
+			new_vb = 1;
+		}
+
+		if (r_version) {
+			vb_next.r_version = cpu_to_le32(r_version);
+			new_vb = 1;
+		}
+
+		if (new_vb) {
+			memcpy(rdd->vb, &vb_next, sizeof(struct val_blk));
+			memcpy(lksb->sb_lvbptr, &vb_next, sizeof(struct val_blk));
+
+			log_debug("S %s R %s unlock_dlm vb old %x %x %u new %x %x %u",
+				  ls->name, r->name,
+				  le16_to_cpu(vb_prev.version),
+				  le16_to_cpu(vb_prev.flags),
+				  le32_to_cpu(vb_prev.r_version),
+				  le16_to_cpu(vb_next.version),
+				  le16_to_cpu(vb_next.flags),
+				  le32_to_cpu(vb_next.r_version));
+		} else {
+			log_debug("S %s R %s unlock_dlm vb unchanged", ls->name, r->name);
+		}
 
 		flags |= LKF_VALBLK;
+	} else {
+		log_debug("S %s R %s unlock_dlm", ls->name, r->name);
 	}
 
 	if (daemon_test)
@@ -613,6 +661,62 @@ int lm_unlock_dlm(struct lockspace *ls, struct resource *r,
  */
 
 #define DLM_LOCKSPACES_PATH "/sys/kernel/config/dlm/cluster/spaces"
+
+/*
+ * FIXME: this should be implemented differently.
+ * It's not nice to use an aspect of the dlm clustering
+ * implementation, which could change.  It would be
+ * better to do something like use a special lock in the
+ * lockspace that was held PR by all nodes, and then an
+ * EX request on it could check if it's started (and
+ * possibly also notify others to stop it automatically).
+ * Or, possibly an enhancement to libdlm that would give
+ * info about lockspace members.
+ *
+ * (We could let the VG be removed while others still
+ * have the lockspace running, which largely works, but
+ * introduces problems if another VG with the same name is
+ * recreated while others still have the lockspace running
+ * for the previous VG.  We'd also want a way to clean up
+ * the stale lockspaces on the others eventually.)
+ */
+
+int lm_hosts_dlm(struct lockspace *ls, int notify)
+{
+	static const char closedir_err_msg[] = "lm_hosts_dlm: closedir failed";
+	char ls_nodes_path[PATH_MAX];
+	struct dirent *de;
+	DIR *ls_dir;
+	int count = 0;
+
+	memset(ls_nodes_path, 0, sizeof(ls_nodes_path));
+	snprintf(ls_nodes_path, PATH_MAX-1, "%s/%s/nodes",
+		 DLM_LOCKSPACES_PATH, ls->name);
+
+	if (!(ls_dir = opendir(ls_nodes_path)))
+		return -ECONNREFUSED;
+
+	while ((de = readdir(ls_dir))) {
+		if (de->d_name[0] == '.')
+			continue;
+		count++;
+	}
+
+	if (closedir(ls_dir))
+		log_error(closedir_err_msg);
+
+	if (!count) {
+		log_error("lm_hosts_dlm found no nodes in %s", ls_nodes_path);
+		return 0;
+	}
+
+	/*
+	 * Assume that a count of one node represents ourself,
+	 * and any value over one represents other nodes.
+	 */
+
+	return count - 1;
+}
 
 int lm_get_lockspaces_dlm(struct list_head *ls_rejoin)
 {
@@ -660,3 +764,4 @@ int lm_is_running_dlm(void)
 		return 0;
 	return 1;
 }
+

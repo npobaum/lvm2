@@ -21,7 +21,6 @@
 #include "activate.h"
 #include "lv_alloc.h"
 #include "lvm-string.h"
-#include "lvmlockd.h"
 
 static int _lv_is_raid_with_tracking(const struct logical_volume *lv,
 				     struct logical_volume **tracking)
@@ -398,8 +397,10 @@ static struct logical_volume *_alloc_image_component(struct logical_volume *lv,
 	}
 
 	if (dm_snprintf(img_name, sizeof(img_name), "%s_%s_%%d",
-			(alt_base_name) ? : lv->name, type_suffix) < 0)
-		return_0;
+			(alt_base_name) ? : lv->name, type_suffix) < 0) {
+		log_error("Component name for raid %s is too long.", lv->name);
+		return 0;
+	}
 
 	status = LVM_READ | LVM_WRITE | LV_REBUILD | type;
 	if (!(tmp_lv = lv_create_empty(img_name, NULL, status, ALLOC_INHERIT, lv->vg))) {
@@ -407,7 +408,7 @@ static struct logical_volume *_alloc_image_component(struct logical_volume *lv,
 		return 0;
 	}
 
-	if (!(segtype = get_segtype_from_string(lv->vg->cmd, "striped")))
+	if (!(segtype = get_segtype_from_string(lv->vg->cmd, SEG_TYPE_NAME_STRIPED)))
 		return_0;
 
 	if (!lv_add_segment(ah, first_area, 1, tmp_lv, segtype, 0, status, 0)) {
@@ -459,9 +460,12 @@ static int _alloc_image_components(struct logical_volume *lv,
 	 * individual devies, we must specify how large the individual device
 	 * is along with the number we want ('count').
 	 */
-	extents = (segtype->parity_devs) ?
-		(lv->le_count / (seg->area_count - segtype->parity_devs)) :
-		lv->le_count;
+	if (segtype_is_raid10(segtype))
+		extents = lv->le_count / (seg->area_count / 2); /* we enforce 2 mirrors right now */
+	else
+		extents = (segtype->parity_devs) ?
+			   (lv->le_count / (seg->area_count - segtype->parity_devs)) :
+			   lv->le_count;
 
 	if (!(ah = allocate_extents(lv->vg, NULL, segtype, 0, count, count,
 				    region_size, extents, pvs,
@@ -866,7 +870,7 @@ static int _raid_extract_images(struct logical_volume *lv, uint32_t new_count,
 					sizeof(*lvl_array) * extract * 2)))
 		return_0;
 
-	if (!(error_segtype = get_segtype_from_string(lv->vg->cmd, "error")))
+	if (!(error_segtype = get_segtype_from_string(lv->vg->cmd, SEG_TYPE_NAME_ERROR)))
 		return_0;
 
 	/*
@@ -1101,7 +1105,7 @@ int lv_raid_split(struct logical_volume *lv, const char *split_name,
 	}
 
 	if (!seg_is_mirrored(first_seg(lv)) ||
-	    !strcmp(first_seg(lv)->segtype->name, SEG_TYPE_NAME_RAID10)) {
+	    seg_is_raid10(first_seg(lv))) {
 		log_error("Unable to split logical volume of segment type, %s",
 			  lvseg_name(first_seg(lv)));
 		return 0;
@@ -1474,13 +1478,11 @@ int lv_raid_reshape(struct logical_volume *lv,
 		return 0;
 	}
 
-	if (!strcmp(seg->segtype->name, "mirror") &&
-	    (!strcmp(new_segtype->name, SEG_TYPE_NAME_RAID1)))
-	    return _convert_mirror_to_raid1(lv, new_segtype);
+	if (seg_is_mirror(seg) && segtype_is_raid1(new_segtype))
+		return _convert_mirror_to_raid1(lv, new_segtype);
 
-	log_error("Converting the segment type for %s/%s from %s to %s"
-		  " is not yet supported.", lv->vg->name, lv->name,
-		  lvseg_name(seg), new_segtype->name);
+	log_error("Converting the segment type for %s/%s from %s to %s is not yet supported.",
+		  lv->vg->name, lv->name, lvseg_name(seg), new_segtype->name);
 	return 0;
 }
 
@@ -1662,7 +1664,7 @@ int lv_raid_replace(struct logical_volume *lv,
 			  lvseg_name(raid_seg),
 			  lv->vg->name, lv->name);
 		return 0;
-	} else if (!strcmp(raid_seg->segtype->name, SEG_TYPE_NAME_RAID10)) {
+	} else if (seg_is_raid10(raid_seg)) {
 		uint32_t i, rebuilds_per_group = 0;
 		/* FIXME: We only support 2-way mirrors in RAID10 currently */
 		uint32_t copies = 2;
@@ -1894,7 +1896,7 @@ static int _partial_raid_lv_is_redundant(const struct logical_volume *lv)
 	uint32_t i, s, rebuilds_per_group = 0;
 	uint32_t failed_components = 0;
 
-	if (!strcmp(raid_seg->segtype->name, SEG_TYPE_NAME_RAID10)) {
+	if (seg_is_raid10(raid_seg)) {
 		/* FIXME: We only support 2-way mirrors in RAID10 currently */
 		copies = 2;
 		for (i = 0; i < raid_seg->area_count * copies; i++) {

@@ -37,7 +37,7 @@ const char *lvm_pv_get_uuid(const pv_t pv)
 {
 	const char *rc;
 	struct saved_env e = store_user_env(pv->vg->cmd);
-	rc = pv_uuid_dup(pv);
+	rc = pv_uuid_dup(pv->vg->vgmem, pv);
 	restore_user_env(&e);
 	return rc;
 }
@@ -155,9 +155,8 @@ static struct dm_list *_lvm_list_pvs(lvm_t libh)
 	} else {
 		dm_list_init(&rc->pvslist);
 		dm_list_init(&rc->vgslist);
-		if( !get_pvs_perserve_vg(cmd, &rc->pvslist, &rc->vgslist) ) {
-			return NULL;
-		}
+		if (!get_pvs_perserve_vg(cmd, &rc->pvslist, &rc->vgslist))
+			return_NULL;
 
 		/*
 		 * If we have no PVs we still need to have access to cmd

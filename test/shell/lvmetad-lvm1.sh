@@ -9,19 +9,24 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
+SKIP_WITHOUT_LVMETAD=1
+SKIP_WITH_LVMPOLLD=1
+
 . lib/inittest
 
-test -e LOCAL_LVMETAD || skip
-test -e LOCAL_LVMPOLLD && skip
+# lvmetad does not support lvm1 format
 
 aux prepare_devs 2
 pvcreate --metadatatype 1 "$dev1"
-should vgscan --cache
-pvs | should grep "$dev1"
+not vgscan --cache
+pvs | tee out
+not grep "$dev1" out
 vgcreate --metadatatype 1 $vg1 "$dev1"
-should vgscan --cache
-vgs | should grep $vg1
-pvs | should grep "$dev1"
+not vgscan --cache
+vgs | tee out
+not grep $vg1 out
+pvs | tee out
+not grep "$dev1" out
 
 # check for RHBZ 1080189 -- SEGV in lvremove/vgremove
 pvcreate -ff -y --metadatatype 1 "$dev1" "$dev2"

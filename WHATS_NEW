@@ -1,3 +1,92 @@
+Version 2.02.133 - 30th October 2015
+====================================
+  Support repeated -o|--options for reporting commands.
+  Support -o- and -o# for reporting commands to remove and compact fields.
+  Fix missing PVs from pvs output if vgremove is run concurrently.
+  Remove unwanted error message when running pvs/vgs/lvs and vgremove at once.
+  Check newly created VG's metadata do not overlap in metadata ring buffer.
+  Check metadata area size is at least the minimum size defined for the format.
+  Thin pool targets uses low_water_mark from profile.
+  Dropping 'yet' from error of unsupported thick snapshot of snapshots.
+  Do not support unpartitioned DASD devices with CDL formatted with pvcreate.
+  For thins use flush for suspend only when volume size is reduced.
+  Enable code which detects the need of flush during suspend.
+  Ensure --use-policy will resize volume to fit below threshold.
+  Correct percentage evaluation when checking thin-pool over threshold.
+  Fix lvmcache to move PV from VG to orphans if VG is removed and lvmetad used.
+  Fix lvmcache to not cache even invalid info about PV which got removed.
+  Support checking of memlock daemon counter.
+  Allow all log levels to be used with the lvmetad -l option.
+  Add optional shutdown when idle support for lvmetad.
+  Fix missing in-sync progress info while lvconvert used with lvmpolld.
+  Add report/compact_output_cols to lvm.conf to define report cols to compact.
+  Do not change logging in lvm2 library when it's already set.
+  Check for enough space in thin-pool in command before creating new thin.
+  Make libblkid detect all copies of the same signature if use_blkid_wiping=1.
+  Fix vgimportclone with -n to not add number unnecessarily to base VG name.
+  Cleanup vgimportclone script and remove dependency on awk, grep, cut and tr.
+  Add vg_missing_pv_count report field to report number of missing PVs in a VG.
+  Properly identify internal LV holding sanlock locks within lv_role field.
+  Add metadata_devices and seg_metadata_le_ranges report fields for raid vols.
+  Fix lvm2-{activation,clvmd,cmirrord,monitor} service to exec before mounting.
+
+Version 2.02.132 - 22nd September 2015
+======================================
+  Fix lvmconf to set locking_type=2 if external locking library is requested.
+  Remove verbose message when rescanning an unchanged device. (2.02.119)
+  Add origin_uuid, mirror_log_uuid, move_pv_uuid, convert_lv_uuid report fields.
+  Add pool_lv_uuid, metadata_lv_uuid, data_lv_uuid reporting fields.
+  Fix PV label processing failure after pvcreate in lvm shell with lvmetad.
+
+Version 2.02.131 - 15th September 2015
+======================================
+  Rename 'make install_full_man' to install_all_man and add all_man target.
+  Fix vgimportclone cache_dir path name (2.02.115).
+  Swapping of LV identifiers handles more complex LVs.
+  Use passed list of PVS when allocating space in lvconvert --thinpool.
+  Disallow usage of --stripe and --stripesize when creating cache pool.
+  Warn user when caching raid or thin pool data LV.
+  When layering LV, move LV flags with segments.
+  Ignore persistent cache if configuration changed. (2.02.127)
+  Fix devices/filter to be applied before disk-accessing filters. (2.02.112)
+  Make tags only when requested via 'make tags'.
+  Configure supports --disable-dependency-tracking for one-time builds.
+  Fix usage of configure.h when building in srcdir != builddir.
+
+Version 2.02.130 - 5th September 2015
+=====================================
+  Fix use of uninitialized device status if reading outdated .cache record.
+  Restore support for --monitor option in lvcreate (2.02.112).
+  Read thin-pool data and metadata percent without flush.
+  Detect blocked thin-pool and avoid scanning their thin volumes.
+  Check if dm device is usable before checking its size (2.02.116).
+  Extend parsing of cache_check version in configure.
+  Make lvpoll error messages visible in lvmpolld's stderr and in syslog.
+  Add 'make install_full_man' to install all man pages regardless of config.
+
+Version 2.02.129 - 26th August 2015
+===================================
+  Drop error message when vgdisplay encounters an exported VG. (2.02.27)
+  Fix shared library generation to stop exporting internal functions.(2.02.120)
+  Accept --cachemode with lvconvert.
+  Fix and improve reporting properties of cache-pool.
+  Enable usage of --cachepolicy and --cachesetting with lvconvert.
+  Don't allow to reduce size of thin-pool metadata.
+  Fix debug buffer overflows in cmirrord logging.
+  Add --foreground and --help to cmirrord.
+
+Version 2.02.128 - 17th August 2015
+===================================
+  Allocation setting cache_pool_cachemode is replaced by cache_mode.
+  Don't attempt to close config file that couldn't be opened.
+  Check for valid cache mode in validation of cache segment.
+  Change internal interface handling cache mode and policy.
+  When no cache policy specified, prefer smq (if available) over mq.
+  Add demo cache-mq and cache-smq profiles.
+  Add cmd profilable allocation/cache_policy,cache_settings,cache_mode.
+  Require cache_check 0.5.4 for use of --clear-needs-check-flag.
+  Fix lvmetad udev rules to not override SYSTEMD_WANTS, add the service instead.
+
 Version 2.02.127 - 10th August 2015
 ===================================
   Do not init filters, locking, lvmetad, lvmpolld if command doesn't use it.

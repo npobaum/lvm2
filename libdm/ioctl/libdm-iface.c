@@ -81,6 +81,7 @@ static dm_bitset_t _dm_bitset = NULL;
 static uint32_t _dm_device_major = 0;
 
 static int _control_fd = -1;
+static int _hold_control_fd_open = 0;
 static int _version_checked = 0;
 static int _version_ok = 1;
 static unsigned _ioctl_buffer_double_factor = 0;
@@ -604,6 +605,20 @@ static int dm_inactive_supported(void)
 	return inactive_supported;
 }
 
+int dm_message_supports_precise_timestamps(void)
+{
+	/*
+	 * 4.32.0 supports "precise_timestamps" and "histogram:" options
+	 * to @stats_create messages but lacks the ability to report
+	 * these properties via a subsequent @stats_list: require at
+	 * least 4.33.0 in order to use these features.
+	 */
+	if (dm_check_version() && _dm_version >= 4)
+		if (_dm_version_minor >= 33)
+			return 1;
+	return 0;
+}
+
 void *dm_get_next_target(struct dm_task *dmt, void *next,
 			 uint64_t *start, uint64_t *length,
 			 char **target_type, char **params)
@@ -667,13 +682,7 @@ int dm_format_dev(char *buf, int bufsize, uint32_t dev_major,
 	return 1;
 }
 
-#if defined(__GNUC__)
-int dm_task_get_info_v1_02_97(struct dm_task *dmt, struct dm_info *info);
-DM_EXPORTED_SYMBOL(dm_task_get_info, 1_02_97);
-int dm_task_get_info_v1_02_97(struct dm_task *dmt, struct dm_info *info)
-#else
 int dm_task_get_info(struct dm_task *dmt, struct dm_info *info)
-#endif
 {
 	if (!dmt->dmi.v4)
 		return 0;
@@ -1193,8 +1202,13 @@ static struct dm_ioctl *_flatten(struct dm_task *dmt, unsigned repeat_count)
 
 	if (dmt->type == DM_DEVICE_SUSPEND)
 		dmi->flags |= DM_SUSPEND_FLAG;
-	if (dmt->no_flush)
-		dmi->flags |= DM_NOFLUSH_FLAG;
+	if (dmt->no_flush) {
+		if (_dm_version_minor < 12)
+			log_verbose("No flush flag unsupported by kernel. "
+				    "Buffers will be flushed.");
+		else
+			dmi->flags |= DM_NOFLUSH_FLAG;
+	}
 	if (dmt->read_only)
 		dmi->flags |= DM_READONLY_FLAG;
 	if (dmt->skip_lockfs)
@@ -2071,9 +2085,18 @@ repeat_ioctl:
 	return 0;
 }
 
+void dm_hold_control_dev(int hold_open)
+{
+	_hold_control_fd_open = hold_open ? 1 : 0;
+
+	log_debug("Hold of control device is now %sset.",
+		  _hold_control_fd_open ? "" : "un");
+}
+
 void dm_lib_release(void)
 {
-	_close_control_fd();
+	if (!_hold_control_fd_open)
+		_close_control_fd();
 	dm_timestamp_destroy(_dm_ioctl_timestamp);
 	_dm_ioctl_timestamp = NULL;
 	update_devs();
@@ -2126,12 +2149,12 @@ void dm_lib_exit(void)
  */
 
 int dm_task_get_info_base(struct dm_task *dmt, struct dm_info *info);
-DM_EXPORTED_SYMBOL_BASE(dm_task_get_info);
+DM_EXPORT_SYMBOL_BASE(dm_task_get_info);
 int dm_task_get_info_base(struct dm_task *dmt, struct dm_info *info)
 {
 	struct dm_info new_info;
 
-	if (!dm_task_get_info_v1_02_97(dmt, &new_info))
+	if (!dm_task_get_info(dmt, &new_info))
 		return 0;
 
 	memcpy(info, &new_info, offsetof(struct dm_info, deferred_remove));
@@ -2144,7 +2167,7 @@ int dm_task_get_info_with_deferred_remove(struct dm_task *dmt, struct dm_info *i
 {
 	struct dm_info new_info;
 
-	if (!dm_task_get_info_v1_02_97(dmt, &new_info))
+	if (!dm_task_get_info(dmt, &new_info))
 		return 0;
 
 	memcpy(info, &new_info, offsetof(struct dm_info, internal_suspend));

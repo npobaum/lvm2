@@ -363,7 +363,7 @@ static int _native_dev_is_partitioned(struct dev_types *dt, struct device *dev)
 		return 0;
 
 	/* Unpartitioned DASD devices are not supported. */
-	if (MAJOR(dev->dev) == dt->dasd_major)
+	if ((MAJOR(dev->dev) == dt->dasd_major) && dasd_is_cdl_formatted(dev))
 		return 1;
 
 	if (!dev_open_readonly_quiet(dev)) {
@@ -651,8 +651,13 @@ static int _wipe_known_signatures_with_blkid(struct device *dev, const char *nam
 						 BLKID_SUBLKS_BADCSUM);
 
 	while (!blkid_do_probe(probe)) {
-		if ((r_wipe = _blkid_wipe(probe, dev, name, types_to_exclude, types_no_prompt, yes, force)) == 1)
+		if ((r_wipe = _blkid_wipe(probe, dev, name, types_to_exclude, types_no_prompt, yes, force)) == 1) {
 			(*wiped)++;
+			if (blkid_probe_step_back(probe)) {
+				log_error("Failed to step back blkid probe to check just wiped signature.");
+				goto out;
+			}
+		}
 		/* do not count excluded types */
 		if (r_wipe != 2)
 			found++;
@@ -734,13 +739,20 @@ int wipe_known_signatures(struct cmd_context *cmd, struct device *dev,
 			  uint32_t types_no_prompt, int yes, force_t force,
 			  int *wiped)
 {
+	int blkid_wiping_enabled = find_config_tree_bool(cmd, allocation_use_blkid_wiping_CFG, NULL);
+
 #ifdef BLKID_WIPING_SUPPORT
-	if (find_config_tree_bool(cmd, allocation_use_blkid_wiping_CFG, NULL))
+	if (blkid_wiping_enabled)
 		return _wipe_known_signatures_with_blkid(dev, name,
 							 types_to_exclude,
 							 types_no_prompt,
 							 yes, force, wiped);
 #endif
+	if (blkid_wiping_enabled) {
+		log_warn("allocation/use_blkid_wiping=1 configuration setting is set "
+			 "while LVM is not compiled with blkid wiping support.");
+		log_warn("Falling back to native LVM signature detection.");
+	}
 	return _wipe_known_signatures_with_lvm(dev, name,
 					       types_to_exclude,
 					       types_no_prompt,

@@ -163,10 +163,9 @@
 /* vg_read and vg_read_for_update flags */
 #define READ_ALLOW_INCONSISTENT	0x00010000U
 #define READ_ALLOW_EXPORTED	0x00020000U
+#define READ_OK_NOTFOUND	0x00040000U
 #define READ_WARN_INCONSISTENT	0x00080000U
-
-/* A meta-flag, useful with toollib for_each_* functions. */
-#define READ_FOR_UPDATE		0x00100000U
+#define READ_FOR_UPDATE		0x00100000U /* A meta-flag, useful with toollib for_each_* functions. */
 
 /* vg's "read_status" field */
 #define FAILED_INCONSISTENT	0x00000001U
@@ -455,7 +454,6 @@ struct lv_segment {
 	struct lv_segment_area *meta_areas;	/* For RAID */
 	struct logical_volume *metadata_lv;	/* For thin_pool */
 	uint64_t transaction_id;		/* For thin_pool, thin */
-	uint64_t low_water_mark;		/* For thin_pool */
 	unsigned zero_new_blocks;		/* For thin_pool */
 	thin_discards_t discards;		/* For thin_pool */
 	struct dm_list thin_messages;		/* For thin_pool */
@@ -650,9 +648,9 @@ int lv_resize(struct cmd_context *cmd, struct logical_volume *lv,
  * Return a handle to VG metadata.
  */
 struct volume_group *vg_read(struct cmd_context *cmd, const char *vg_name,
-			     const char *vgid, uint32_t flags, uint32_t lockd_state);
+			     const char *vgid, uint32_t read_flags, uint32_t lockd_state);
 struct volume_group *vg_read_for_update(struct cmd_context *cmd, const char *vg_name,
-			 const char *vgid, uint32_t flags, uint32_t lockd_state);
+			 const char *vgid, uint32_t read_flags, uint32_t lockd_state);
 
 /* 
  * Test validity of a VG handle.
@@ -901,7 +899,7 @@ struct lvcreate_params {
 	uint32_t min_recovery_rate; /* RAID */
 	uint32_t max_recovery_rate; /* RAID */
 
-	uint64_t feature_flags; /* cache */
+	const char *cache_mode; /* cache */
 	const char *policy_name; /* cache */
 	struct dm_config_tree *policy_settings; /* cache */
 
@@ -1153,8 +1151,12 @@ struct lv_status_cache {
 	dm_percent_t dirty_usage;
 };
 
-const char *get_cache_pool_cachemode_name(const struct lv_segment *seg);
-int set_cache_pool_feature(uint64_t *feature_flags, const char *str);
+const char *get_cache_mode_name(const struct lv_segment *cache_seg);
+int cache_mode_is_set(const struct lv_segment *seg);
+int cache_set_mode(struct lv_segment *cache_seg, const char *str);
+int cache_set_policy(struct lv_segment *cache_seg, const char *name,
+		     const struct dm_config_tree *settings);
+void cache_check_for_warns(const struct lv_segment *seg);
 int update_cache_pool_params(const struct segment_type *segtype,
 			     struct volume_group *vg, unsigned attr,
 			     int passed_args, uint32_t pool_data_extents,
@@ -1165,8 +1167,6 @@ int validate_lv_cache_create_origin(const struct logical_volume *origin_lv);
 struct logical_volume *lv_cache_create(struct logical_volume *pool,
 				       struct logical_volume *origin);
 int lv_cache_remove(struct logical_volume *cache_lv);
-int lv_cache_set_policy(struct logical_volume *cache_lv, const char *name,
-			const struct dm_config_tree *settings);
 int wipe_cache_pool(struct logical_volume *cache_pool_lv);
 /* --  metadata/cache_manip.c */
 

@@ -35,8 +35,8 @@ struct logical_volume {
 	int32_t major;
 	int32_t minor;
 
-	uint64_t size;		/* Sectors */
-	uint32_t le_count;
+	uint64_t size;		/* Sectors visible */
+	uint32_t le_count;	/* Logical extents visible */
 
 	uint32_t origin_count;
 	uint32_t external_count;
@@ -62,25 +62,34 @@ uint64_t lv_size(const struct logical_volume *lv);
 uint64_t lv_metadata_size(const struct logical_volume *lv);
 char *lv_attr_dup_with_info_and_seg_status(struct dm_pool *mem, const struct lv_with_info_and_seg_status *lvdm);
 char *lv_attr_dup(struct dm_pool *mem, const struct logical_volume *lv);
-char *lv_uuid_dup(const struct logical_volume *lv);
+char *lv_uuid_dup(struct dm_pool *mem, const struct logical_volume *lv);
 char *lv_tags_dup(const struct logical_volume *lv);
 char *lv_path_dup(struct dm_pool *mem, const struct logical_volume *lv);
 char *lv_dmpath_dup(struct dm_pool *mem, const struct logical_volume *lv);
 uint64_t lv_origin_size(const struct logical_volume *lv);
 char *lv_move_pv_dup(struct dm_pool *mem, const struct logical_volume *lv);
+char *lv_move_pv_uuid_dup(struct dm_pool *mem, const struct logical_volume *lv);
 char *lv_convert_lv_dup(struct dm_pool *mem, const struct logical_volume *lv);
+char *lv_convert_lv_uuid_dup(struct dm_pool *mem, const struct logical_volume *lv);
 int lv_kernel_major(const struct logical_volume *lv);
 int lv_kernel_minor(const struct logical_volume *lv);
 char *lv_mirror_log_dup(struct dm_pool *mem, const struct logical_volume *lv);
+char *lv_mirror_log_uuid_dup(struct dm_pool *mem, const struct logical_volume *lv);
 char *lv_data_lv_dup(struct dm_pool *mem, const struct logical_volume *lv);
+char *lv_data_lv_uuid_dup(struct dm_pool *mem, const struct logical_volume *lv);
 char *lv_metadata_lv_dup(struct dm_pool *mem, const struct logical_volume *lv);
+char *lv_metadata_lv_uuid_dup(struct dm_pool *mem, const struct logical_volume *lv);
 char *lv_pool_lv_dup(struct dm_pool *mem, const struct logical_volume *lv);
+char *lv_pool_lv_uuid_dup(struct dm_pool *mem, const struct logical_volume *lv);
+
 char *lv_modules_dup(struct dm_pool *mem, const struct logical_volume *lv);
 char *lv_name_dup(struct dm_pool *mem, const struct logical_volume *lv);
 char *lv_fullname_dup(struct dm_pool *mem, const struct logical_volume *lv);
 struct logical_volume *lv_parent(const struct logical_volume *lv);
 char *lv_parent_dup(struct dm_pool *mem, const struct logical_volume *lv);
 char *lv_origin_dup(struct dm_pool *mem, const struct logical_volume *lv);
+char *lv_origin_uuid_dup(struct dm_pool *mem, const struct logical_volume *lv);
+
 uint32_t lv_kernel_read_ahead(const struct logical_volume *lv);
 const char *lvseg_name(const struct lv_segment *seg);
 uint64_t lvseg_start(const struct lv_segment *seg);
@@ -92,7 +101,9 @@ char *lvseg_cachemode_dup(struct dm_pool *mem, const struct lv_segment *seg);
 char *lvseg_monitor_dup(struct dm_pool *mem, const struct lv_segment *seg);
 char *lvseg_tags_dup(const struct lv_segment *seg);
 char *lvseg_devices(struct dm_pool *mem, const struct lv_segment *seg);
+char *lvseg_metadata_devices(struct dm_pool *mem, const struct lv_segment *seg);
 char *lvseg_seg_pe_ranges(struct dm_pool *mem, const struct lv_segment *seg);
+char *lvseg_seg_metadata_le_ranges(struct dm_pool *mem, const struct lv_segment *seg);
 char *lv_time_dup(struct dm_pool *mem, const struct logical_volume *lv, int iso_mode);
 char *lv_host_dup(struct dm_pool *mem, const struct logical_volume *lv);
 int lv_set_creation(struct logical_volume *lv,
