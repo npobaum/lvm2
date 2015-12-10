@@ -1,7 +1,8 @@
 Source: lvm2
 Section: admin
 Priority: optional
-Maintainer: Debian LVM Team <pkg-lvm-maintainers@lists.alioth.debian.org>
+Maintainer: Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>
+XSBC-Original-Maintainer: Debian LVM Team <pkg-lvm-maintainers@lists.alioth.debian.org>
 Uploaders: Bastian Blank <waldi@debian.org>
 Build-Depends:
  debhelper (>> 9),
@@ -25,9 +26,10 @@ X-Python3-Version: >= 3.4
 
 Package: lvm2
 Architecture: linux-any
-Depends: ${shlibs:Depends}, ${misc:Depends}, lsb-base, dmsetup (>> 2:1.02.47), dmeventd (>> 2:1.02.90), initscripts (>= 2.88dsf-13.3)
+Depends: ${shlibs:Depends}, ${misc:Depends}, lsb-base, dmsetup (>> 2:1.02.47), dmeventd (>> 2:1.02.90), initscripts (>= 2.88dsf-13.3), watershed (>= 2), udev (>= 228-2ubuntu2~)
 Suggests: thin-provisioning-tools
 Breaks: initramfs-tools (<< 0.99), thin-provisioning-tools (<< 0.3.2)
+Replaces: udev (<< 228-2ubuntu2)
 Multi-Arch: foreign
 Description: Linux Logical Volume Manager
  This is LVM2, the rewrite of The Linux Logical Volume Manager.  LVM
@@ -40,7 +42,7 @@ Package: lvm2-udeb
 Package-Type: udeb
 Section: debian-installer
 Architecture: linux-any
-Depends: ${shlibs:Depends}, ${misc:Depends}
+Depends: ${shlibs:Depends}, ${misc:Depends}, watershed-udeb
 Description: Linux Logical Volume Manager
  This is a udeb, or a microdeb, for the debian-installer.
  .
@@ -54,7 +56,7 @@ Package: clvm
 Priority: extra
 Architecture: linux-any
 Depends: ${shlibs:Depends}, ${misc:Depends}, lvm2 (= ${binary:Version}), lsb-base
-Recommends: corosync | openais | cman
+Recommends: corosync
 Multi-Arch: foreign
 Description: Cluster LVM Daemon for lvm2
  This package provides the clustering interface for lvm2, when used with
@@ -66,6 +68,7 @@ Package: libdevmapper-dev
 Section: libdevel
 Architecture: linux-any
 Depends: ${misc:Depends}, libdevmapper1.02.1 (= ${binary:Version}), libdevmapper-event1.02.1 (= ${binary:Version}), libudev-dev, libselinux1-dev
+Multi-Arch: same
 Description: Linux Kernel Device Mapper header files
  The Linux Kernel Device Mapper is the LVM (Linux Logical Volume Management)
  Team's implementation of a minimalistic kernel-space driver that handles
@@ -102,6 +105,7 @@ Package-Type: udeb
 Section: debian-installer
 Architecture: linux-any
 Depends: ${shlibs:Depends}, ${misc:Depends}
+Recommends: dmsetup-udeb
 Description: Linux Kernel Device Mapper userspace library
  This is a udeb, or a microdeb, for the debian-installer.
  .
