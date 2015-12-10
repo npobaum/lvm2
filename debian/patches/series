@@ -9,3 +9,4 @@
 0009-clvmd-openais-format.patch
 udev-md.patch
 systemd-pvscan-background.patch
+enable-issue-discards.patch

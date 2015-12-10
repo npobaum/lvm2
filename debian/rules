@@ -59,6 +59,7 @@ $(STAMPS_DIR)/source:
 	mkdir -p '$(DIR)'
 	cp -al $(SOURCE_FILES) '$(DIR)'
 	cd $(DIR); autoreconf
+	cd $(DIR); cp -f /usr/share/misc/config.guess /usr/share/misc/config.sub autoconf/
 	touch $@
 
 setup: $(STAMPS_DIR)/setup_deb $(STAMPS_DIR)/setup_udeb
@@ -96,6 +97,7 @@ $(STAMPS_DIR)/setup_deb: $(STAMPS_DIR)/source
 		--enable-udev_rules \
 		--enable-udev_sync \
 		--disable-udev-systemd-background-jobs
+	cp po/lvm2.po po/lvm2.pot
 	touch $@
 
 $(STAMPS_DIR)/setup_udeb: SOURCE_DIR = $(BUILD_DIR)/source
@@ -109,6 +111,7 @@ $(STAMPS_DIR)/setup_udeb: $(STAMPS_DIR)/source
 		--with-cluster=none \
 		--with-lvm1=none \
 		--with-pool=none \
+		--disable-dmeventd \
 		--disable-readline \
 		--disable-selinux
 	touch $@
@@ -143,6 +146,7 @@ clean:
 	dh_testdir
 	rm -rf $(BUILD_DIR) $(STAMPS_DIR)
 	dh_clean
+	rm -f po/lvm2.pot
 
 $(STAMPS_DIR)/install_deb: DIR = $(BUILD_DIR)/build_deb
 $(STAMPS_DIR)/install_deb: INSTALL_DIR = $(BUILD_DIR)/install_deb
@@ -183,6 +187,7 @@ install-base:
 	dh_installdebconf
 	dh_installdocs
 	dh_installexamples
+	dh_installman
 	dh_link
 	dh_strip
 	dh_compress
@@ -196,6 +201,8 @@ install-base:
 install_clvm: export DH_OPTIONS = -pclvm
 install_clvm: DIR = $(BUILD_DIR)/install_deb
 install_clvm: $(STAMPS_DIR)/install_deb
+	mkdir -p $(BUILD_DIR)/install_deb/usr/lib/ocf/resource.d/lvm2
+	install -m 755 debian/clvmd.ra $(BUILD_DIR)/install_deb/usr/lib/ocf/resource.d/lvm2/clvmd
 	+$(MAKE_SELF) install-base-prep INSTALL_DIR='$(DIR)'
 	dh_installinit --no-start
 	+$(MAKE_SELF) install-base
@@ -213,6 +220,7 @@ install_dmsetup: export DH_OPTIONS = -pdmsetup
 install_dmsetup: DIR = $(BUILD_DIR)/install_deb
 install_dmsetup: $(STAMPS_DIR)/install_deb install_libdevmapper
 	+$(MAKE_SELF) install-base-prep INSTALL_DIR='$(DIR)'
+	chmod +x -R debian/dmsetup/usr/share/initramfs-tools
 	+$(MAKE_SELF) install-base CHANGELOG=WHATS_NEW_DM GENCONTROL_ARGS="-v$(DEVMAPPER_VERSION_DEBIAN)"
 
 install_dmsetup-udeb: PACKAGE_NAME = dmsetup-udeb
@@ -278,6 +286,8 @@ install_lvm2: $(STAMPS_DIR)/install_deb install_libdevmapper install_liblvm2
 		lvm2-monitor.service \
 		lvm2-lvmetad.socket \
 		lvm2-lvmpolld.socket
+	# superseded by 85-lvm2.rules
+	rm debian/lvm2/lib/systemd/system-generators/lvm2-activation-generator
 	dh_systemd_enable --no-enable \
 		lvm2-lvmetad.service \
 		lvm2-lvmpolld.service
@@ -287,6 +297,8 @@ install_lvm2: $(STAMPS_DIR)/install_deb install_libdevmapper install_liblvm2
 	dh_systemd_start --no-restart-on-upgrade \
 		lvm2-lvmetad.socket \
 		lvm2-lvmpolld.socket
+	rm -rf debian/lvm2/usr/share/initramfs-tools/scripts/local-top
+	chmod +x -R debian/lvm2/usr/share/initramfs-tools
 	+$(MAKE_SELF) install-base
 
 install_lvm2-udeb: export DH_OPTIONS = -plvm2-udeb
