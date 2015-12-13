@@ -207,6 +207,7 @@ install_dmeventd: $(STAMPS_DIR)/install_deb install_liblvm2
 	dh_systemd_enable --no-enable dm-event.service
 	dh_systemd_enable dm-event.socket
 	dh_systemd_start --restart-after-upgrade dm-event.socket
+	dh_makeshlibs
 	+$(MAKE_SELF) install-base CHANGELOG=WHATS_NEW_DM GENCONTROL_ARGS="-v$(DEVMAPPER_VERSION_DEBIAN)"
 
 install_dmsetup: export DH_OPTIONS = -pdmsetup

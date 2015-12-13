@@ -1,81 +1,14 @@
-From 77e5b33b2e62c747777c8023288a0c3cde599f73 Mon Sep 17 00:00:00 2001
+From 4a861b0f92e7e5db263836e7bcc8b6d9516f483a Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 30 Jun 2015 11:46:04 +0200
 Subject: install
 
 ---
- daemons/dmeventd/plugins/lvm2/Makefile.in     |  2 +-
- daemons/dmeventd/plugins/mirror/Makefile.in   |  2 +-
- daemons/dmeventd/plugins/raid/Makefile.in     |  1 +
- daemons/dmeventd/plugins/snapshot/Makefile.in |  2 +-
- daemons/dmeventd/plugins/thin/Makefile.in     |  1 +
- make.tmpl.in                                  | 42 +++++++--------------------
- 6 files changed, 15 insertions(+), 35 deletions(-)
+ make.tmpl.in | 33 +++++++--------------------------
+ 1 file changed, 7 insertions(+), 26 deletions(-)
 
-diff --git a/daemons/dmeventd/plugins/lvm2/Makefile.in b/daemons/dmeventd/plugins/lvm2/Makefile.in
-index a7b9a2e..93898ee 100644
---- a/daemons/dmeventd/plugins/lvm2/Makefile.in
-+++ b/daemons/dmeventd/plugins/lvm2/Makefile.in
-@@ -26,6 +26,6 @@ include $(top_builddir)/make.tmpl
- 
- LIBS += @LVM2CMD_LIB@ -ldevmapper $(PTHREAD_LIBS)
- 
--install_lvm2: install_lib_shared
-+install_lvm2: install_dm_lib
- 
- install: install_lvm2
-diff --git a/daemons/dmeventd/plugins/mirror/Makefile.in b/daemons/dmeventd/plugins/mirror/Makefile.in
-index 4a2870a..22c3c50 100644
---- a/daemons/dmeventd/plugins/mirror/Makefile.in
-+++ b/daemons/dmeventd/plugins/mirror/Makefile.in
-@@ -17,7 +17,7 @@ top_srcdir = @top_srcdir@
- top_builddir = @top_builddir@
- 
- INCLUDES += -I$(top_srcdir)/daemons/dmeventd/plugins/lvm2
--CLDFLAGS += -L$(top_builddir)/daemons/dmeventd/plugins/lvm2
-+CLDFLAGS += -L$(top_builddir)/daemons/dmeventd/plugins/lvm2 -Wl,-rpath,'$$ORIGIN'
- 
- SOURCES = dmeventd_mirror.c
- 
-diff --git a/daemons/dmeventd/plugins/raid/Makefile.in b/daemons/dmeventd/plugins/raid/Makefile.in
-index 47582ae..932b71f 100644
---- a/daemons/dmeventd/plugins/raid/Makefile.in
-+++ b/daemons/dmeventd/plugins/raid/Makefile.in
-@@ -29,6 +29,7 @@ CFLOW_LIST_TARGET = $(LIB_NAME).cflow
- 
- include $(top_builddir)/make.tmpl
- 
-+CLDFLAGS += -Wl,-rpath,'$$ORIGIN'
- LIBS += -ldevmapper-event-lvm2 -ldevmapper
- 
- install_lvm2: install_dm_plugin
-diff --git a/daemons/dmeventd/plugins/snapshot/Makefile.in b/daemons/dmeventd/plugins/snapshot/Makefile.in
-index b766f16..7db7019 100644
---- a/daemons/dmeventd/plugins/snapshot/Makefile.in
-+++ b/daemons/dmeventd/plugins/snapshot/Makefile.in
-@@ -17,7 +17,7 @@ top_srcdir = @top_srcdir@
- top_builddir = @top_builddir@
- 
- INCLUDES += -I$(top_srcdir)/daemons/dmeventd/plugins/lvm2
--CLDFLAGS += -L$(top_builddir)/daemons/dmeventd/plugins/lvm2
-+CLDFLAGS += -L$(top_builddir)/daemons/dmeventd/plugins/lvm2 -Wl,-rpath,'$$ORIGIN'
- 
- SOURCES = dmeventd_snapshot.c
- 
-diff --git a/daemons/dmeventd/plugins/thin/Makefile.in b/daemons/dmeventd/plugins/thin/Makefile.in
-index cfd473a..ddaf78c 100644
---- a/daemons/dmeventd/plugins/thin/Makefile.in
-+++ b/daemons/dmeventd/plugins/thin/Makefile.in
-@@ -29,6 +29,7 @@ CFLOW_LIST_TARGET = $(LIB_NAME).cflow
- 
- include $(top_builddir)/make.tmpl
- 
-+CLDFLAGS += -Wl,-rpath,'$$ORIGIN'
- LIBS += -ldevmapper-event-lvm2 -ldevmapper
- 
- install_lvm2: install_dm_plugin
 diff --git a/make.tmpl.in b/make.tmpl.in
-index f1d4fad..ef00e06 100644
+index f1d4fad..5106792 100644
 --- a/make.tmpl.in
 +++ b/make.tmpl.in
 @@ -17,20 +17,10 @@ SHELL = /bin/sh
@@ -138,24 +71,3 @@ index f1d4fad..ef00e06 100644
  
  .SUFFIXES: .c .cpp .d .o .so .a .po .pot .mo .dylib
  
-@@ -431,17 +412,14 @@ install_lib_shared: $(LIB_SHARED)
- 	$(INSTALL_DIR) $(usrlibdir)
- 	$(LN_S) -f $(USRLIB_RELPATH)$(<F).$(LIB_VERSION) $(usrlibdir)/$(<F)
- 
--# FIXME: plugins are installed to subdirs
--#        and for compatibility links in libdir are created
--#        when the code is fixed links could be removed.
-+install_dm_lib: $(LIB_SHARED)
-+	$(INSTALL_PROGRAM) -D $< $(libdir)/device-mapper/$(<F).$(LIB_VERSION)
-+
- install_dm_plugin: $(LIB_SHARED)
- 	$(INSTALL_PROGRAM) -D $< $(libdir)/device-mapper/$(<F)
--	$(LN_S) -f device-mapper/$(<F) $(libdir)/$(<F)
- 
- install_lvm2_plugin: $(LIB_SHARED)
- 	$(INSTALL_PROGRAM) -D $< $(libdir)/lvm2/$(<F)
--	$(LN_S) -f lvm2/$(<F) $(libdir)/$(<F)
--	$(LN_S) -f $(<F) $(libdir)/$(<F).$(LIB_VERSION)
- endif
- 
- $(LIB_STATIC): $(OBJECTS)
