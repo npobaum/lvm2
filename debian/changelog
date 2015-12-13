@@ -1,3 +1,11 @@
+lvm2 (2.02.133-2) unstable; urgency=medium
+
+  * Build-depend on a lot corosync stuff. (closes: #804541)
+  * Drop event plugin directory move.  This moves the plugins back into
+    the main library path. (closes: #807279)
+
+ -- Bastian Blank <waldi@debian.org>  Sun, 13 Dec 2015 18:02:40 +0100
+
 lvm2 (2.02.133-1) unstable; urgency=medium
 
   * New upstream version.

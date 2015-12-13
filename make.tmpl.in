@@ -412,14 +412,17 @@ install_lib_shared: $(LIB_SHARED)
 	$(INSTALL_DIR) $(usrlibdir)
 	$(LN_S) -f $(USRLIB_RELPATH)$(<F).$(LIB_VERSION) $(usrlibdir)/$(<F)
 
-install_dm_lib: $(LIB_SHARED)
-	$(INSTALL_PROGRAM) -D $< $(libdir)/device-mapper/$(<F).$(LIB_VERSION)
-
+# FIXME: plugins are installed to subdirs
+#        and for compatibility links in libdir are created
+#        when the code is fixed links could be removed.
 install_dm_plugin: $(LIB_SHARED)
 	$(INSTALL_PROGRAM) -D $< $(libdir)/device-mapper/$(<F)
+	$(LN_S) -f device-mapper/$(<F) $(libdir)/$(<F)
 
 install_lvm2_plugin: $(LIB_SHARED)
 	$(INSTALL_PROGRAM) -D $< $(libdir)/lvm2/$(<F)
+	$(LN_S) -f lvm2/$(<F) $(libdir)/$(<F)
+	$(LN_S) -f $(<F) $(libdir)/$(<F).$(LIB_VERSION)
 endif
 
 $(LIB_STATIC): $(OBJECTS)
