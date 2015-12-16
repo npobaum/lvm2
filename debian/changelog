@@ -1,3 +1,12 @@
+lvm2 (2.02.133-1ubuntu2) xenial; urgency=medium
+
+  * Lower libdevmapper1.02.1's Depends: dmsetup to a Recommends:. This breaks
+    the circular dependency that causes upgrade failures. As dmsetup is
+    "Priority: required", this has no other practical consequences.
+    (Closes: #586424, LP: #1032823)
+
+ -- Martin Pitt <martin.pitt@ubuntu.com>  Wed, 16 Dec 2015 15:55:09 +0100
+
 lvm2 (2.02.133-1ubuntu1) xenial; urgency=medium
 
   * Merge with Debian unstable. Remaining Ubuntu changes:
