@@ -85,7 +85,8 @@ Section: libs
 Priority: optional
 Architecture: linux-any
 Pre-Depends: ${misc:Pre-Depends}
-Depends: ${shlibs:Depends}, ${misc:Depends}, dmsetup (>= ${binary:Version})
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Recommends: dmsetup (>= ${binary:Version})
 Breaks: lvm2 (<< 2.02.122), liblvm2app2.2 (<< 2.02.122)
 Conflicts: libdevmapper1.02
 Multi-Arch: same
