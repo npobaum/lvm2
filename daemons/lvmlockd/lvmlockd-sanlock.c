@@ -14,7 +14,6 @@
 #include "tool.h"
 
 #include "daemon-server.h"
-#include "daemon-log.h"
 #include "xlate.h"
 
 #include "lvmlockd-internal.h"
@@ -25,12 +24,10 @@
 #include "sanlock_admin.h"
 #include "sanlock_resource.h"
 
-#include <pthread.h>
 #include <stddef.h>
 #include <poll.h>
 #include <errno.h>
 #include <syslog.h>
-#include <sys/socket.h>
 
 /*
 -------------------------------------------------------------------------------
@@ -205,9 +202,9 @@ int lm_data_size_sanlock(void)
  */
 
 #define LS_BEGIN 0
-#define GL_LOCK_BEGIN 65
-#define VG_LOCK_BEGIN 66
-#define LV_LOCK_BEGIN 67
+#define GL_LOCK_BEGIN UINT64_C(65)
+#define VG_LOCK_BEGIN UINT64_C(66)
+#define LV_LOCK_BEGIN UINT64_C(67)
 
 static int lock_lv_name_from_args(char *vg_args, char *lock_lv_name)
 {

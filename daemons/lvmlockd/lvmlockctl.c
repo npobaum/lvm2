@@ -18,7 +18,6 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <syslog.h>
-#include <sys/wait.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 
@@ -456,7 +455,7 @@ static int do_able(const char *req_name)
 
 	reply = _lvmlockd_send(req_name,
 				"cmd = %s", "lvmlockctl",
-				"pid = %d", getpid(),
+				"pid = " FMTd64, (int64_t) getpid(),
 				"vg_name = %s", arg_vg_name,
 				NULL);
 
@@ -487,7 +486,7 @@ static int do_stop_lockspaces(void)
 
 	reply = _lvmlockd_send("stop_all",
 				"cmd = %s", "lvmlockctl",
-				"pid = %d", getpid(),
+				"pid = " FMTd64, (int64_t) getpid(),
 				"opts = %s", opts[0] ? opts : "none",
 				NULL);
 
@@ -522,7 +521,7 @@ static int do_kill(void)
 
 	reply = _lvmlockd_send("kill_vg",
 				"cmd = %s", "lvmlockctl",
-				"pid = %d", getpid(),
+				"pid = " FMTd64, (int64_t) getpid(),
 				"vg_name = %s", arg_vg_name,
 				NULL);
 
@@ -568,7 +567,7 @@ static int do_drop(void)
 
 	reply = _lvmlockd_send("drop_vg",
 				"cmd = %s", "lvmlockctl",
-				"pid = %d", getpid(),
+				"pid = " FMTd64, (int64_t) getpid(),
 				"vg_name = %s", arg_vg_name,
 				NULL);
 

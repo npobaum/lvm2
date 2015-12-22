@@ -55,6 +55,7 @@ struct lvmcache_vgsummary {
 	struct id vgid;
 	uint64_t vgstatus;
 	char *creation_host;
+	const char *system_id;
 	const char *lock_type;
 	uint32_t mda_checksum;
 	size_t mda_size;
@@ -98,6 +99,7 @@ struct lvmcache_vginfo *lvmcache_vginfo_from_vgname(const char *vgname,
 struct lvmcache_vginfo *lvmcache_vginfo_from_vgid(const char *vgid);
 struct lvmcache_info *lvmcache_info_from_pvid(const char *pvid, int valid_only);
 const char *lvmcache_vgname_from_vgid(struct dm_pool *mem, const char *vgid);
+const char *lvmcache_vgid_from_vgname(struct cmd_context *cmd, const char *vgname);
 struct device *lvmcache_device_from_pvid(struct cmd_context *cmd, const struct id *pvid,
 				unsigned *scan_done_once, uint64_t *label_sector);
 const char *lvmcache_pvid_from_devname(struct cmd_context *cmd,
@@ -193,5 +195,6 @@ int lvmcache_contains_lock_type_sanlock(struct cmd_context *cmd);
 void lvmcache_get_max_name_lengths(struct cmd_context *cmd,
 			unsigned *pv_max_name_len, unsigned *vg_max_name_len);
 
+int lvmcache_vg_is_foreign(struct cmd_context *cmd, const char *vgname, const char *vgid);
 
 #endif

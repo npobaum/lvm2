@@ -16,7 +16,6 @@
 
 #include "daemon-io.h"
 #include "daemon-server.h"
-#include "daemon-log.h"
 #include "lvm-version.h"
 #include "lvmetad-client.h"
 #include "lvmlockd-client.h"
@@ -1021,6 +1020,43 @@ static void add_work_action(struct action *act)
 	pthread_mutex_unlock(&worker_mutex);
 }
 
+static daemon_reply send_lvmetad(const char *id, ...)
+{
+	daemon_reply reply;
+	va_list ap;
+	int retries = 0;
+
+	va_start(ap, id);
+
+	/*
+	 * mutex is used because all threads share a single
+	 * lvmetad connection/handle.
+	 */
+	pthread_mutex_lock(&lvmetad_mutex);
+retry:
+	reply = daemon_send_simple_v(lvmetad_handle, id, ap);
+
+	/* lvmetad may have been restarted */
+	if ((reply.error == ECONNRESET) && (retries < 2)) {
+		daemon_close(lvmetad_handle);
+		lvmetad_connected = 0;
+
+		lvmetad_handle = lvmetad_open(NULL);
+		if (lvmetad_handle.error || lvmetad_handle.socket_fd < 0) {
+			log_error("lvmetad_open reconnect error %d", lvmetad_handle.error);
+		} else {
+			log_debug("lvmetad reconnected");
+			lvmetad_connected = 1;
+		}
+		retries++;
+		goto retry;
+	}
+	pthread_mutex_unlock(&lvmetad_mutex);
+
+	va_end(ap);
+	return reply;
+}
+
 static int res_lock(struct lockspace *ls, struct resource *r, struct action *act, int *retry)
 {
 	struct lock *lk;
@@ -1247,14 +1283,12 @@ static int res_lock(struct lockspace *ls, struct resource *r, struct action *act
 		else
 			uuid = ls->vg_uuid;
 
-		pthread_mutex_lock(&lvmetad_mutex);
-		reply = daemon_send_simple(lvmetad_handle, "set_vg_info",
-					   "token = %s", "skip",
-					   "uuid = %s", uuid,
-					   "name = %s", ls->vg_name,
-					   "version = %d", (int)new_version,
-					   NULL);
-			pthread_mutex_unlock(&lvmetad_mutex);
+		reply = send_lvmetad("set_vg_info",
+				     "token = %s", "skip",
+				     "uuid = %s", uuid,
+				     "name = %s", ls->vg_name,
+				     "version = " FMTd64, (int64_t)new_version,
+				     NULL);
 
 		if (reply.error || strcmp(daemon_reply_str(reply, "response", ""), "OK"))
 			log_error("set_vg_info in lvmetad failed %d", reply.error);
@@ -1267,12 +1301,10 @@ static int res_lock(struct lockspace *ls, struct resource *r, struct action *act
 		log_debug("S %s R %s res_lock set lvmetad global invalid",
 			  ls->name, r->name);
 
-		pthread_mutex_lock(&lvmetad_mutex);
-		reply = daemon_send_simple(lvmetad_handle, "set_global_info",
-						   "token = %s", "skip",
-						   "global_invalid = %d", 1,
-						   NULL);
-		pthread_mutex_unlock(&lvmetad_mutex);
+		reply = send_lvmetad("set_global_info",
+				     "token = %s", "skip",
+				     "global_invalid = " FMTd64, INT64_C(1),
+				     NULL);
 
 		if (reply.error || strcmp(daemon_reply_str(reply, "response", ""), "OK"))
 			log_error("set_global_info in lvmetad failed %d", reply.error);
@@ -3030,6 +3062,7 @@ static int for_each_lockspace(int do_stop, int do_free, int do_force)
 	int free_count = 0;
 	int done;
 	int stop;
+	int perrno;
 
 	pthread_mutex_lock(&lockspaces_mutex);
 
@@ -3072,7 +3105,9 @@ static int for_each_lockspace(int do_stop, int do_free, int do_force)
 			 * thread touches the ls struct under lockspaces_mutex.
 			 */
 			if (done) {
-				pthread_join(ls->thread, NULL);
+				if ((perrno = pthread_join(ls->thread, NULL)))
+					log_error("pthread_join error %d", perrno);
+
 				list_del(&ls->list);
 
 				/* FIXME: will free_vg ever not be set? */
@@ -3592,12 +3627,15 @@ static int client_send_result(struct client *cl, struct action *act)
 			strcat(result_flags, "NO_LOCKSPACES,");
 		pthread_mutex_unlock(&lockspaces_mutex);
 
-		if (gl_use_sanlock && !gl_lsname_sanlock[0])
+		if (gl_use_sanlock) {
+			if (!gl_lsname_sanlock[0])
+				strcat(result_flags, "NO_GL_LS,");
+		} else if (gl_use_dlm) {
+			if (!gl_lsname_dlm[0])
+				strcat(result_flags, "NO_GL_LS,");
+		} else {
 			strcat(result_flags, "NO_GL_LS,");
-		else if (gl_use_dlm && !gl_lsname_dlm[0])
-			strcat(result_flags, "NO_GL_LS,");
-		else
-			strcat(result_flags, "NO_GL_LS,");
+		}
 	}
 
 	if (act->flags & LD_AF_DUP_GL_LS)
@@ -3626,9 +3664,9 @@ static int client_send_result(struct client *cl, struct action *act)
 			  act->result, vg_args ? vg_args : "", lv_args ? lv_args : "");
 
 		res = daemon_reply_simple("OK",
-					  "op = %d", act->op,
-					  "op_result = %d", act->result,
-					  "lm_result = %d", act->lm_rv,
+					  "op = " FMTd64, (int64_t)act->op,
+					  "op_result = " FMTd64, (int64_t) act->result,
+					  "lm_result = " FMTd64, (int64_t) act->lm_rv,
 					  "vg_lock_args = %s", vg_args,
 					  "lv_lock_args = %s", lv_args,
 					  "result_flags = %s", result_flags[0] ? result_flags : "none",
@@ -3657,8 +3695,8 @@ static int client_send_result(struct client *cl, struct action *act)
 			  act->result, dump_len);
 
 		res = daemon_reply_simple("OK",
-					  "result = %d", act->result,
-					  "dump_len = %d", dump_len,
+					  "result = " FMTd64, (int64_t) act->result,
+					  "dump_len = " FMTd64, (int64_t) dump_len,
 					  NULL);
 	} else {
 		/*
@@ -3671,10 +3709,10 @@ static int client_send_result(struct client *cl, struct action *act)
 			  act->result, (act->result == -ENOLS) ? "ENOLS" : "", result_flags);
 
 		res = daemon_reply_simple("OK",
-					  "op = %d", act->op,
+					  "op = " FMTd64, (int64_t) act->op,
 					  "lock_type = %s", lm_str(act->lm_type),
-					  "op_result = %d", act->result,
-					  "lm_result = %d", act->lm_rv,
+					  "op_result = " FMTd64, (int64_t) act->result,
+					  "lm_result = " FMTd64, (int64_t) act->lm_rv,
 					  "result_flags = %s", result_flags[0] ? result_flags : "none",
 					  NULL);
 	}
@@ -4401,9 +4439,9 @@ static void client_recv_action(struct client *cl)
 		buffer_init(&res.buffer);
 
 		res = daemon_reply_simple("OK",
-					  "result = %d", result,
+					  "result = " FMTd64, (int64_t) result,
 					  "protocol = %s", lvmlockd_protocol,
-					  "version = %d", lvmlockd_protocol_version,
+					  "version = " FMTd64, (int64_t) lvmlockd_protocol_version,
 					  NULL);
 		buffer_write(cl->fd, &res.buffer);
 		buffer_destroy(&res.buffer);
@@ -4742,15 +4780,11 @@ static int get_lockd_vgs(struct list_head *vg_lockd)
 	const char *lock_type;
 	const char *lock_args;
 	char find_str_path[PATH_MAX];
-	int mutex_unlocked = 0;
 	int rv = 0;
 
 	INIT_LIST_HEAD(&update_vgs);
 
-	pthread_mutex_lock(&lvmetad_mutex);
-	reply = daemon_send_simple(lvmetad_handle, "vg_list",
-				   "token = %s", "skip",
-				   NULL);
+	reply = send_lvmetad("vg_list", "token = %s", "skip", NULL);
 
 	if (reply.error || strcmp(daemon_reply_str(reply, "response", ""), "OK")) {
 		log_error("vg_list from lvmetad failed %d", reply.error);
@@ -4787,10 +4821,10 @@ static int get_lockd_vgs(struct list_head *vg_lockd)
 	/* get vg_name and lock_type for each vg uuid entry in update_vgs */
 
 	list_for_each_entry(ls, &update_vgs, list) {
-		reply = daemon_send_simple(lvmetad_handle, "vg_lookup",
-					   "token = %s", "skip",
-					   "uuid = %s", ls->vg_uuid,
-					   NULL);
+		reply = send_lvmetad("vg_lookup",
+				     "token = %s", "skip",
+				     "uuid = %s", ls->vg_uuid,
+				     NULL);
 
 		if (reply.error || strcmp(daemon_reply_str(reply, "response", ""), "OK")) {
 			log_error("vg_lookup from lvmetad failed %d", reply.error);
@@ -4879,8 +4913,6 @@ static int get_lockd_vgs(struct list_head *vg_lockd)
 		if (rv < 0)
 			break;
 	}
-	pthread_mutex_unlock(&lvmetad_mutex);
-	mutex_unlocked = 1;
 out:
 	/* Return lockd VG's on the vg_lockd list. */
 
@@ -4892,9 +4924,6 @@ out:
 		else
 			free(ls);
 	}
-
-	if (!mutex_unlocked)
-		pthread_mutex_unlock(&lvmetad_mutex);
 
 	return rv;
 }

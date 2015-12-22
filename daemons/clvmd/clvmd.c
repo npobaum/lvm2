@@ -374,7 +374,7 @@ int main(int argc, char *argv[])
 	/* Deal with command-line arguments */
 	opterr = 0;
 	optind = 0;
-	while ((opt = getopt_long(argc, argv, "vVhfd:t:RST:CI:E:",
+	while ((opt = getopt_long(argc, argv, "Vhfd:t:RST:CI:E:",
 				  longopts, NULL)) != -1) {
 		switch (opt) {
 		case 'h':
@@ -604,7 +604,10 @@ int main(int argc, char *argv[])
 		 local_client_head.fd, &local_client_head, newfd->fd, newfd);
 
 	/* Don't let anyone else to do work until we are started */
-	pthread_create(&lvm_thread, &stack_attr, lvm_thread_fn, &lvm_params);
+	if (pthread_create(&lvm_thread, &stack_attr, lvm_thread_fn, &lvm_params)) {
+		log_sys_error("pthread_create", "");
+		goto out;
+	}
 
 	/* Don't start until the LVM thread is ready */
 	pthread_barrier_wait(&lvm_start_barrier);

@@ -2429,7 +2429,7 @@ static int _cache_emit_segment_line(struct dm_task *dmt,
 	if (!_build_dev_string(origin, sizeof(origin), seg->origin))
 		return_0;
 
-	EMIT_PARAMS(pos, " %s %s %s", metadata, data, origin);
+	EMIT_PARAMS(pos, "%s %s %s", metadata, data, origin);
 
 	/* Data block size */
 	EMIT_PARAMS(pos, " %u", seg->data_block_size);
@@ -2788,6 +2788,7 @@ int dm_tree_preload_children(struct dm_tree_node *dnode,
 	struct dm_tree_node *child;
 	struct dm_info newinfo;
 	int update_devs_flag = 0;
+	struct load_segment *seg;
 
 	/* Preload children first */
 	while ((child = dm_tree_next_child(&handle, dnode, 0))) {
@@ -2834,6 +2835,22 @@ int dm_tree_preload_children(struct dm_tree_node *dnode,
 		/* Resume device immediately if it has parents and its size changed */
 		if (!dm_tree_node_num_children(child, 1) || !child->props.size_changed)
 			continue;
+
+		if (!node_created && (dm_list_size(&child->props.segs) == 1)) {
+			/* If thin-pool child nodes were preloaded WITH changed size
+			 * skip device resume, as this is likely resize of data or
+			 * metadata device and so thin pool needs suspend before
+			 * resume operation.
+			 * Note: child->props.segment_count is already 0 here
+			 */
+			seg = dm_list_item(dm_list_last(&child->props.segs),
+					   struct load_segment);
+			if (seg->type == SEG_THIN_POOL) {
+				log_debug_activation("Skipping resume of thin-pool %s.",
+						     child->name);
+				continue;
+			}
+		}
 
 		if (!child->info.inactive_table && !child->info.suspended)
 			continue;
@@ -3190,7 +3207,7 @@ int dm_tree_node_add_mirror_target(struct dm_tree_node *node,
 
 int dm_tree_node_add_raid_target_with_params(struct dm_tree_node *node,
 					     uint64_t size,
-					     struct dm_tree_node_raid_params *p)
+					     const struct dm_tree_node_raid_params *p)
 {
 	unsigned i;
 	struct load_segment *seg = NULL;
@@ -3200,8 +3217,10 @@ int dm_tree_node_add_raid_target_with_params(struct dm_tree_node *node,
 			if (!(seg = _add_segment(node,
 						 _dm_segtypes[i].type, size)))
 				return_0;
-	if (!seg)
-		return_0;
+	if (!seg) {
+		log_error("Unsupported raid type %s.", p->raid_type);
+		return 0;
+	}
 
 	seg->region_size = p->region_size;
 	seg->stripe_size = p->stripe_size;

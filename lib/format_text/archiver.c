@@ -98,20 +98,10 @@ static char *_build_desc(struct dm_pool *mem, const char *line, int before)
 	return buffer;
 }
 
-static int __archive(struct volume_group *vg)
+static int _archive(struct volume_group *vg, int compulsory)
 {
 	char *desc;
 
-	if (!(desc = _build_desc(vg->cmd->mem, vg->cmd->cmd_line, 1)))
-		return_0;
-
-	return archive_vg(vg, vg->cmd->archive_params->dir, desc,
-			  vg->cmd->archive_params->keep_days,
-			  vg->cmd->archive_params->keep_number);
-}
-
-int archive(struct volume_group *vg)
-{
 	/* Don't archive orphan VGs. */
 	if (is_orphan_vg(vg->name))
 		return 1;
@@ -130,25 +120,42 @@ int archive(struct volume_group *vg)
 		return 1;
 	}
 
-	if (!dm_create_dir(vg->cmd->archive_params->dir))
-		return 0;
+	if (!dm_create_dir(vg->cmd->archive_params->dir)) {
+		if (compulsory)
+			return_0;
+		return 1;
+	}
 
 	/* Trap a read-only file system */
 	if ((access(vg->cmd->archive_params->dir, R_OK | W_OK | X_OK) == -1) &&
-	     (errno == EROFS))
-		return 0;
+	    (errno == EROFS)) {
+		if (compulsory) {
+			log_error("Cannot archive volume group metadata for %s to read-only filesystem.",
+				  vg->name);
+			return 0;
+		}
+		return 1;
+	}
 
 	log_verbose("Archiving volume group \"%s\" metadata (seqno %u).", vg->name,
 		    vg->seqno);
-	if (!__archive(vg)) {
-		log_error("Volume group \"%s\" metadata archive failed.",
-			  vg->name);
-		return 0;
-	}
+
+	if (!(desc = _build_desc(vg->cmd->mem, vg->cmd->cmd_line, 1)))
+		return_0;
+
+	if (!archive_vg(vg, vg->cmd->archive_params->dir, desc,
+			vg->cmd->archive_params->keep_days,
+			vg->cmd->archive_params->keep_number))
+		return_0;
 
 	vg->status |= ARCHIVED_VG;
 
 	return 1;
+}
+
+int archive(struct volume_group *vg)
+{
+	return _archive(vg, 1);
 }
 
 int archive_display(struct cmd_context *cmd, const char *vg_name)
@@ -207,7 +214,7 @@ void backup_enable(struct cmd_context *cmd, int flag)
 	cmd->backup_params->enabled = flag;
 }
 
-static int __backup(struct volume_group *vg)
+static int _backup(struct volume_group *vg)
 {
 	char name[PATH_MAX];
 	char *desc;
@@ -242,10 +249,13 @@ int backup_locally(struct volume_group *vg)
 
 	/* Trap a read-only file system */
 	if ((access(vg->cmd->backup_params->dir, R_OK | W_OK | X_OK) == -1) &&
-	    (errno == EROFS))
+	    (errno == EROFS)) {
+		/* Will take a backup next time when FS is writable */
+		log_debug("Skipping backup of volume group on read-only filesystem.");
 		return 0;
+	}
 
-	if (!__backup(vg)) {
+	if (!_backup(vg)) {
 		log_error("Backup of volume group %s metadata failed.",
 			  vg->name);
 		return 0;
@@ -484,6 +494,9 @@ int backup_to_file(const char *file, const char *desc, struct volume_group *vg)
 
 /*
  * Update backup (and archive) if they're out-of-date or don't exist.
+ *
+ * This function is not supposed to log_error
+ * when the filesystem with archive/backup dir is read-only.
  */
 void check_current_backup(struct volume_group *vg)
 {
@@ -500,8 +513,9 @@ void check_current_backup(struct volume_group *vg)
 		return;
 
 	if (dm_snprintf(path, sizeof(path), "%s/%s",
-			 vg->cmd->backup_params->dir, vg->name) < 0) {
-		log_debug("Failed to generate backup filename.");
+			vg->cmd->backup_params->dir, vg->name) < 0) {
+		log_warn("WARNING: Failed to generate backup pathname %s/%s.",
+			 vg->cmd->backup_params->dir, vg->name);
 		return;
 	}
 
@@ -517,11 +531,11 @@ void check_current_backup(struct volume_group *vg)
 	log_suppress(old_suppress);
 
 	if (vg_backup) {
-		if (!archive(vg_backup))
+		if (!_archive(vg_backup, 0))
 			stack;
 		release_vg(vg_backup);
 	}
-	if (!archive(vg))
+	if (!_archive(vg, 0))
 		stack;
 	if (!backup_locally(vg))
 		stack;

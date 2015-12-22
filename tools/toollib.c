@@ -1729,7 +1729,7 @@ int validate_restricted_lvname_param(struct cmd_context *cmd, const char **vg_na
  */
 static int _get_arg_vgnames(struct cmd_context *cmd,
 			    int argc, char **argv,
-			    unsigned one_vgname_arg,
+			    const char *one_vgname,
 			    struct dm_list *arg_vgnames,
 			    struct dm_list *arg_tags)
 {
@@ -1739,15 +1739,19 @@ static int _get_arg_vgnames(struct cmd_context *cmd,
 
 	log_verbose("Using volume group(s) on command line.");
 
+	if (one_vgname) {
+		if (!str_list_add(cmd->mem, arg_vgnames,
+				  dm_pool_strdup(cmd->mem, one_vgname))) {
+			log_error("strlist allocation failed.");
+			return ECMD_FAILED;
+		}
+		return ret_max;
+	}
+
 	for (; opt < argc; opt++) {
 		vg_name = argv[opt];
 
 		if (*vg_name == '@') {
-			if (one_vgname_arg) {
-				log_error("This command does not yet support a tag to identify a Volume Group.");
-				return EINVALID_CMD_LINE;
-			}
-
 			if (!validate_tag(vg_name + 1)) {
 				log_error("Skipping invalid tag: %s", vg_name);
 				if (ret_max < EINVALID_CMD_LINE)
@@ -1769,8 +1773,6 @@ static int _get_arg_vgnames(struct cmd_context *cmd,
 			log_error("Invalid volume group name %s.", vg_name);
 			if (ret_max < EINVALID_CMD_LINE)
 				ret_max = EINVALID_CMD_LINE;
-			if (one_vgname_arg)
-				break;
 			continue;
 		}
 
@@ -1779,9 +1781,6 @@ static int _get_arg_vgnames(struct cmd_context *cmd,
 			log_error("strlist allocation failed.");
 			return ECMD_FAILED;
 		}
-
-		if (one_vgname_arg)
-			break;
 	}
 
 	return ret_max;
@@ -1916,6 +1915,7 @@ static int _process_vgnameid_list(struct cmd_context *cmd, uint32_t read_flags,
 				  struct processing_handle *handle,
 				  process_single_vg_fn_t process_single_vg)
 {
+	char uuid[64] __attribute__((aligned(8)));
 	struct volume_group *vg;
 	struct vgnameid_list *vgnl;
 	const char *vg_name;
@@ -1936,7 +1936,7 @@ static int _process_vgnameid_list(struct cmd_context *cmd, uint32_t read_flags,
 		process_all = 1;
 
 	/*
-	 * FIXME If one_vgname_arg, only proceed if exactly one VG matches tags or selection.
+	 * FIXME If one_vgname, only proceed if exactly one VG matches tags or selection.
 	 */
 	dm_list_iterate_items(vgnl, vgnameids_to_process) {
 		if (sigint_caught())
@@ -1946,6 +1946,11 @@ static int _process_vgnameid_list(struct cmd_context *cmd, uint32_t read_flags,
 		vg_uuid = vgnl->vgid;
 		skip = 0;
 		notfound = 0;
+
+		if (vg_uuid)
+			id_write_format((const struct id*)vg_uuid, uuid, sizeof(uuid));
+
+		log_very_verbose("Processing VG %s %s", vg_name, vg_uuid ? uuid : "");
 
 		if (!lockd_vg(cmd, vg_name, NULL, 0, &lockd_state)) {
 			ret_max = ECMD_FAILED;
@@ -1966,6 +1971,9 @@ static int _process_vgnameid_list(struct cmd_context *cmd, uint32_t read_flags,
 		    (!dm_list_empty(arg_vgnames) && str_list_match_item(arg_vgnames, vg_name)) ||
 		    (!dm_list_empty(arg_tags) && str_list_match_list(arg_tags, &vg->tags, NULL))) &&
 		    select_match_vg(cmd, handle, vg, &selected) && selected) {
+
+			log_very_verbose("Process single VG %s", vg_name);
+
 			ret = process_single_vg(cmd, vg_name, vg, handle);
 			_update_selection_result(handle, &whole_selected);
 			if (ret != ECMD_PROCESSED)
@@ -1988,39 +1996,168 @@ endvg:
 }
 
 /*
- * Copy the contents of a str_list of VG names to a name list, filling
- * in the vgid with NULL (unknown).
+ * Check if a command line VG name is ambiguous, i.e. there are multiple VGs on
+ * the system that have the given name.  If *one* VG with the given name is
+ * local and the rest are foreign, then use the local VG (removing foreign VGs
+ * with the same name from the vgnameids_on_system list).  If multiple VGs with
+ * the given name are local, we don't know which VG is intended, so remove the
+ * ambiguous name from the list of args.
  */
-static int _copy_str_to_vgnameid_list(struct cmd_context *cmd, struct dm_list *sll,
-				      struct dm_list *vgnll)
+static int _resolve_duplicate_vgnames(struct cmd_context *cmd,
+				      struct dm_list *arg_vgnames,
+				      struct dm_list *vgnameids_on_system)
 {
-	const char *vgname;
-	struct dm_str_list *sl;
-	struct vgnameid_list *vgnl;
+	struct dm_str_list *sl, *sl2;
+	struct vgnameid_list *vgnl, *vgnl2;
+	char uuid[64] __attribute__((aligned(8)));
+	int found;
+	int ret = ECMD_PROCESSED;
 
-	dm_list_iterate_items(sl, sll) {
-		vgname = sl->str;
-
-		vgnl = dm_pool_alloc(cmd->mem, sizeof(*vgnl));
-		if (!vgnl) {
-			log_error("vgnameid_list allocation failed.");
-			return ECMD_FAILED;
+	dm_list_iterate_items_safe(sl, sl2, arg_vgnames) {
+		found = 0;
+		dm_list_iterate_items(vgnl, vgnameids_on_system) {
+			if (strcmp(sl->str, vgnl->vg_name))
+				continue;
+			found++;
 		}
 
-		vgnl->vgid = NULL;
-		vgnl->vg_name = dm_pool_strdup(cmd->mem, vgname);
+		if (found < 2)
+			continue;
 
-		dm_list_add(vgnll, &vgnl->list);
+		/*
+		 * More than one VG match the given name.
+		 * If only one is local, use that one.
+		 */
+
+		found = 0;
+		dm_list_iterate_items_safe(vgnl, vgnl2, vgnameids_on_system) {
+			if (strcmp(sl->str, vgnl->vg_name))
+				continue;
+
+			/*
+			 * Without lvmetad, a label scan has already populated
+			 * lvmcache vginfo with this information.
+			 * With lvmetad, this function does vg_lookup on this
+			 * name/vgid and checks system_id in the metadata.
+			 */
+			if (lvmcache_vg_is_foreign(cmd, vgnl->vg_name, vgnl->vgid)) {
+				id_write_format((const struct id*)vgnl->vgid, uuid, sizeof(uuid));
+				log_warn("WARNING: Ignoring foreign VG with matching name %s UUID %s.",
+					 vgnl->vg_name, uuid);
+				dm_list_del(&vgnl->list);
+			} else {
+				found++;
+			}
+		}
+
+		if (found < 2)
+			continue;
+
+		/*
+		 * More than one VG with this name is local so the intended VG
+		 * is unknown.
+		 */
+		log_error("Multiple VGs found with the same name: skipping %s", sl->str);
+		log_error("Use the VG UUID with --select vg_uuid=<uuid>");
+		dm_list_del(&sl->list);
+		ret = ECMD_FAILED;
 	}
 
-	return ECMD_PROCESSED;
+	return ret;
+}
+
+/*
+ * For each arg_vgname, move the corresponding entry from
+ * vgnameids_on_system to vgnameids_to_process.  If an
+ * item in arg_vgnames doesn't exist in vgnameids_on_system,
+ * then add a new entry for it to vgnameids_to_process.
+ */
+static void _choose_vgs_to_process(struct cmd_context *cmd,
+				   struct dm_list *arg_vgnames,
+				   struct dm_list *vgnameids_on_system,
+				   struct dm_list *vgnameids_to_process)
+{
+	char uuid[64] __attribute__((aligned(8)));
+	struct dm_str_list *sl, *sl2;
+	struct vgnameid_list *vgnl, *vgnl2;
+	struct id id;
+	int arg_is_uuid = 0;
+	int found;
+
+	dm_list_iterate_items_safe(sl, sl2, arg_vgnames) {
+		found = 0;
+		dm_list_iterate_items_safe(vgnl, vgnl2, vgnameids_on_system) {
+			if (strcmp(sl->str, vgnl->vg_name))
+				continue;
+
+			dm_list_del(&vgnl->list);
+			dm_list_add(vgnameids_to_process, &vgnl->list);
+			found = 1;
+			break;
+		}
+
+		/*
+		 * If the VG name arg looks like a UUID, then check if it
+		 * matches the UUID of a VG.  (--select should generally
+		 * be used to select a VG by uuid instead.)
+		 */
+		if (!found && (cmd->command->flags & ALLOW_UUID_AS_NAME))
+			arg_is_uuid = id_read_format_try(&id, sl->str);
+
+		if (!found && arg_is_uuid) {
+			dm_list_iterate_items_safe(vgnl, vgnl2, vgnameids_on_system) {
+				if (!(id_write_format((const struct id*)vgnl->vgid, uuid, sizeof(uuid))))
+					continue;
+
+				if (strcmp(sl->str, uuid))
+					continue;
+
+				log_print("Processing VG %s because of matching UUID %s",
+					  vgnl->vg_name, uuid);
+
+				dm_list_del(&vgnl->list);
+				dm_list_add(vgnameids_to_process, &vgnl->list);
+
+				/* Make the arg_vgnames entry use the actual VG name. */
+				sl->str = dm_pool_strdup(cmd->mem, vgnl->vg_name);
+
+				found = 1;
+				break;
+			}
+		}
+		
+		/*
+		 * If the name arg was not found in the list of all VGs, then
+		 * it probably doesn't exist, but we want the "VG not found"
+		 * failure to be handled by the existing vg_read() code for
+		 * that error.  So, create an entry with just the VG name so
+		 * that the processing loop will attempt to process it and use
+		 * the vg_read() error path.
+		 */
+		if (!found) {
+			log_verbose("VG name on command line not found in list of VGs: %s", sl->str);
+
+			if (!(vgnl = dm_pool_alloc(cmd->mem, sizeof(*vgnl))))
+				continue;
+
+			vgnl->vgid = NULL;
+
+			if (!(vgnl->vg_name = dm_pool_strdup(cmd->mem, sl->str)))
+				continue;
+
+			dm_list_add(vgnameids_to_process, &vgnl->list);
+		}
+	}
 }
 
 /*
  * Call process_single_vg() for each VG selected by the command line arguments.
+ * If one_vgname is set, process only that VG and ignore argc/argv (which should be 0/NULL)..
+ * If one_vgname is not set, get VG names to process from argc/argv.
  */
 int process_each_vg(struct cmd_context *cmd, int argc, char **argv,
-		    uint32_t read_flags, struct processing_handle *handle,
+		    const char *one_vgname, uint32_t read_flags,
+		    struct processing_handle *handle,
 		    process_single_vg_fn_t process_single_vg)
 {
 	int handle_supplied = handle != NULL;
@@ -2028,9 +2165,9 @@ int process_each_vg(struct cmd_context *cmd, int argc, char **argv,
 	struct dm_list arg_vgnames;		/* str_list */
 	struct dm_list vgnameids_on_system;	/* vgnameid_list */
 	struct dm_list vgnameids_to_process;	/* vgnameid_list */
-
 	int enable_all_vgs = (cmd->command->flags & ALL_VGS_IS_DEFAULT);
-	int one_vgname_arg = (cmd->command->flags & ONE_VGNAME_ARG);
+	int process_all_vgs_on_system = 0;
+	int ret_max = ECMD_PROCESSED;
 	int ret;
 
 	/* Disable error in vg_read so we can print it from ignore_vg. */
@@ -2044,29 +2181,57 @@ int process_each_vg(struct cmd_context *cmd, int argc, char **argv,
 	/*
 	 * Find any VGs or tags explicitly provided on the command line.
 	 */
-	if ((ret = _get_arg_vgnames(cmd, argc, argv, one_vgname_arg, &arg_vgnames, &arg_tags)) != ECMD_PROCESSED)
+	if ((ret = _get_arg_vgnames(cmd, argc, argv, one_vgname, &arg_vgnames, &arg_tags)) != ECMD_PROCESSED) {
+		ret_max = ret;
 		goto_out;
+	}
 
 	/*
-	 * Obtain the complete list of VGs present on the system if it is needed because:
-	 *   any tags were supplied and need resolving; or
-	 *   no VG names were given and the command defaults to processing all VGs.
+	 * Process all VGs on the system when:
+	 * . tags are specified and all VGs need to be read to
+	 *   look for matching tags.
+	 * . no VG names are specified and the command defaults
+	 *   to processing all VGs when none are specified.
 	 */
-	if ((dm_list_empty(&arg_vgnames) && enable_all_vgs) || !dm_list_empty(&arg_tags)) {
-		/* Needed for a current listing of the global VG namespace. */
-		if (!lockd_gl(cmd, "sh", 0)) {
-			ret = ECMD_FAILED;
-			goto_out;
-		}
+	if ((dm_list_empty(&arg_vgnames) && enable_all_vgs) || !dm_list_empty(&arg_tags))
+		process_all_vgs_on_system = 1;
 
-		if (!get_vgnameids(cmd, &vgnameids_on_system, NULL, 0))
-			goto_out;
+	/*
+	 * Needed for a current listing of the global VG namespace.
+	 */
+	if (process_all_vgs_on_system && !lockd_gl(cmd, "sh", 0)) {
+		ret_max = ECMD_FAILED;
+		goto_out;
+	}
+
+	/*
+	 * A list of all VGs on the system is needed when:
+	 * . processing all VGs on the system
+	 * . A VG name is specified which may refer to one
+	 *   of multiple VGs on the system with that name.
+	 */
+	log_very_verbose("Get list of VGs on system");
+
+	if (!get_vgnameids(cmd, &vgnameids_on_system, NULL, 0)) {
+		ret_max = ECMD_FAILED;
+		goto_out;
+	}
+
+	if (!dm_list_empty(&arg_vgnames)) {
+		/* This may remove entries from arg_vgnames or vgnameids_on_system. */
+		ret = _resolve_duplicate_vgnames(cmd, &arg_vgnames, &vgnameids_on_system);
+		if (ret > ret_max)
+			ret_max = ret;
+		if (dm_list_empty(&arg_vgnames) && dm_list_empty(&arg_tags)) {
+			ret_max = ECMD_FAILED;
+			goto out;
+		}
 	}
 
 	if (dm_list_empty(&arg_vgnames) && dm_list_empty(&vgnameids_on_system)) {
 		/* FIXME Should be log_print, but suppressed for reporting cmds */
 		log_verbose("No volume groups found.");
-		ret = ECMD_PROCESSED;
+		ret_max = ECMD_PROCESSED;
 		goto out;
 	}
 
@@ -2074,28 +2239,37 @@ int process_each_vg(struct cmd_context *cmd, int argc, char **argv,
 		read_flags |= READ_OK_NOTFOUND;
 
 	/*
-	 * If we obtained a full list of VGs on the system, we need to work through them all;
-	 * otherwise we can merely work through the VG names provided.
+	 * When processing all VGs, vgnameids_on_system simply becomes
+	 * vgnameids_to_process.
+	 * When processing only specified VGs, then for each item in
+	 * arg_vgnames, move the corresponding entry from
+	 * vgnameids_on_system to vgnameids_to_process.
 	 */
-	if (!dm_list_empty(&vgnameids_on_system))
+	if (process_all_vgs_on_system)
 		dm_list_splice(&vgnameids_to_process, &vgnameids_on_system);
-	else if ((ret = _copy_str_to_vgnameid_list(cmd, &arg_vgnames, &vgnameids_to_process)) != ECMD_PROCESSED)
-		goto_out;
+	else
+		_choose_vgs_to_process(cmd, &arg_vgnames, &vgnameids_on_system, &vgnameids_to_process);
 
-	if (!handle && !(handle = init_processing_handle(cmd)))
+	if (!handle && !(handle = init_processing_handle(cmd))) {
+		ret_max = ECMD_FAILED;
 		goto_out;
+	}
 
 	if (handle->internal_report_for_select && !handle->selection_handle &&
-	    !init_selection_handle(cmd, handle, VGS))
+	    !init_selection_handle(cmd, handle, VGS)) {
+		ret_max = ECMD_FAILED;
 		goto_out;
+	}
 
 	ret = _process_vgnameid_list(cmd, read_flags, &vgnameids_to_process,
 				     &arg_vgnames, &arg_tags, handle, process_single_vg);
+	if (ret > ret_max)
+		ret_max = ret;
 out:
 	if (!handle_supplied)
 		destroy_processing_handle(cmd, handle);
 
-	return ret;
+	return ret_max;
 }
 
 int process_each_lv_in_vg(struct cmd_context *cmd, struct volume_group *vg,
@@ -2386,6 +2560,7 @@ static int _process_lv_vgnameid_list(struct cmd_context *cmd, uint32_t read_flag
 				     struct processing_handle *handle,
 				     process_single_lv_fn_t process_single_lv)
 {
+	char uuid[64] __attribute__((aligned(8)));
 	struct volume_group *vg;
 	struct vgnameid_list *vgnl;
 	struct dm_str_list *sl;
@@ -2440,6 +2615,11 @@ static int _process_lv_vgnameid_list(struct cmd_context *cmd, uint32_t read_flag
 			}
 		}
 
+		if (vg_uuid)
+			id_write_format((const struct id*)vg_uuid, uuid, sizeof(uuid));
+
+		log_very_verbose("Processing VG %s %s", vg_name, vg_uuid ? uuid : "");
+
 		if (!lockd_vg(cmd, vg_name, NULL, 0, &lockd_state)) {
 			ret_max = ECMD_FAILED;
 			continue;
@@ -2483,9 +2663,9 @@ int process_each_lv(struct cmd_context *cmd, int argc, char **argv, uint32_t rea
 	struct dm_list arg_lvnames;		/* str_list */
 	struct dm_list vgnameids_on_system;	/* vgnameid_list */
 	struct dm_list vgnameids_to_process;	/* vgnameid_list */
-
 	int enable_all_vgs = (cmd->command->flags & ALL_VGS_IS_DEFAULT);
-	int need_vgnameids = 0;
+	int process_all_vgs_on_system = 0;
+	int ret_max = ECMD_PROCESSED;
 	int ret;
 
 	/* Disable error in vg_read so we can print it from ignore_vg. */
@@ -2500,44 +2680,74 @@ int process_each_lv(struct cmd_context *cmd, int argc, char **argv, uint32_t rea
 	/*
 	 * Find any LVs, VGs or tags explicitly provided on the command line.
 	 */
-	if ((ret = _get_arg_lvnames(cmd, argc, argv, &arg_vgnames, &arg_lvnames, &arg_tags) != ECMD_PROCESSED))
+	if ((ret = _get_arg_lvnames(cmd, argc, argv, &arg_vgnames, &arg_lvnames, &arg_tags) != ECMD_PROCESSED)) {
+		ret_max = ret;
 		goto_out;
+	}
 
-	if (!handle && !(handle = init_processing_handle(cmd)))
+	if (!handle && !(handle = init_processing_handle(cmd))) {
+		ret_max = ECMD_FAILED;
 		goto_out;
+	}
 
 	if (handle->internal_report_for_select && !handle->selection_handle &&
-	    !init_selection_handle(cmd, handle, LVS))
+	    !init_selection_handle(cmd, handle, LVS)) {
+		ret_max = ECMD_FAILED;
 		goto_out;
+	}
 
 	/*
-	 * Obtain the complete list of VGs present on the system if it is needed because:
-	 *   any tags were supplied and need resolving; or
-	 *   no VG names were given and the select option needs resolving; or
-	 *   no VG names were given and the command defaults to processing all VGs.
-	*/
+	 * Process all VGs on the system when:
+	 * . tags are specified and all VGs need to be read to
+	 *   look for matching tags.
+	 * . no VG names are specified and the command defaults
+	 *   to processing all VGs when none are specified.
+	 * . no VG names are specified and the select option needs
+	 *   resolving.
+	 */
 	if (!dm_list_empty(&arg_tags))
-		need_vgnameids = 1;
+		process_all_vgs_on_system = 1;
 	else if (dm_list_empty(&arg_vgnames) && enable_all_vgs)
-		need_vgnameids = 1;
+		process_all_vgs_on_system = 1;
 	else if (dm_list_empty(&arg_vgnames) && handle->internal_report_for_select)
-		need_vgnameids = 1;
+		process_all_vgs_on_system = 1;
 
-	if (need_vgnameids) {
-		/* Needed for a current listing of the global VG namespace. */
-		if (!lockd_gl(cmd, "sh", 0)) {
-			ret = ECMD_FAILED;
-			goto_out;
+	/*
+	 * Needed for a current listing of the global VG namespace.
+	 */
+	if (process_all_vgs_on_system && !lockd_gl(cmd, "sh", 0)) {
+		ret_max = ECMD_FAILED;
+		goto_out;
+	}
+
+	/*
+	 * A list of all VGs on the system is needed when:
+	 * . processing all VGs on the system
+	 * . A VG name is specified which may refer to one
+	 *   of multiple VGs on the system with that name.
+	 */
+	log_very_verbose("Get list of VGs on system");
+
+	if (!get_vgnameids(cmd, &vgnameids_on_system, NULL, 0)) {
+		ret_max = ECMD_FAILED;
+		goto_out;
+	}
+
+	if (!dm_list_empty(&arg_vgnames)) {
+		/* This may remove entries from arg_vgnames or vgnameids_on_system. */
+		ret = _resolve_duplicate_vgnames(cmd, &arg_vgnames, &vgnameids_on_system);
+		if (ret > ret_max)
+			ret_max = ret;
+		if (dm_list_empty(&arg_vgnames) && dm_list_empty(&arg_tags)) {
+			ret_max = ECMD_FAILED;
+			goto out;
 		}
-
-		if (!get_vgnameids(cmd, &vgnameids_on_system, NULL, 0))
-			goto_out;
 	}
 
 	if (dm_list_empty(&arg_vgnames) && dm_list_empty(&vgnameids_on_system)) {
 		/* FIXME Should be log_print, but suppressed for reporting cmds */
 		log_verbose("No volume groups found.");
-		ret = ECMD_PROCESSED;
+		ret_max = ECMD_PROCESSED;
 		goto out;
 	}
 
@@ -2545,20 +2755,27 @@ int process_each_lv(struct cmd_context *cmd, int argc, char **argv, uint32_t rea
 		read_flags |= READ_OK_NOTFOUND;
 
 	/*
-	 * If we obtained a full list of VGs on the system, we need to work through them all;
-	 * otherwise we can merely work through the VG names provided.
+	 * When processing all VGs, vgnameids_on_system simply becomes
+	 * vgnameids_to_process.
+	 * When processing only specified VGs, then for each item in
+	 * arg_vgnames, move the corresponding entry from
+	 * vgnameids_on_system to vgnameids_to_process.
 	 */
-	if (!dm_list_empty(&vgnameids_on_system))
+	if (process_all_vgs_on_system)
 		dm_list_splice(&vgnameids_to_process, &vgnameids_on_system);
-	else if ((ret = _copy_str_to_vgnameid_list(cmd, &arg_vgnames, &vgnameids_to_process)) != ECMD_PROCESSED)
-		goto_out;
+	else
+		_choose_vgs_to_process(cmd, &arg_vgnames, &vgnameids_on_system, &vgnameids_to_process);
 
 	ret = _process_lv_vgnameid_list(cmd, read_flags, &vgnameids_to_process, &arg_vgnames, &arg_lvnames,
 					&arg_tags, handle, process_single_lv);
+
+	if (ret > ret_max)
+		ret_max = ret;
 out:
 	if (!handle_supplied)
 		destroy_processing_handle(cmd, handle);
-	return ret;
+
+	return ret_max;
 }
 
 static int _get_arg_pvnames(struct cmd_context *cmd,
@@ -3181,7 +3398,11 @@ int process_each_pv(struct cmd_context *cmd,
 		log_verbose("Some PVs were not found in first search, retrying.");
 
 		lvmcache_destroy(cmd, 0, 0);
-		lvmcache_init();
+		if (!lvmcache_init()) {
+			log_error("Failed to initalize lvm cache.");
+			ret_max = ECMD_FAILED;
+			goto out;
+		}
 		lvmcache_seed_infos_from_lvmetad(cmd);
 
 		ret = _process_pvs_in_vgs(cmd, read_flags, &all_vgnameids, &all_devices,
