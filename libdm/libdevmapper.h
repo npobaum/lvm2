@@ -127,6 +127,7 @@ enum {
  * each ioctl command you want to execute.
  */
 
+struct dm_pool;
 struct dm_task;
 struct dm_timestamp;
 
@@ -281,17 +282,43 @@ void *dm_get_next_target(struct dm_task *dmt,
 			 char **target_type, char **params);
 
 /*
- * Parse params from STATUS call for raid target
+ * Following dm_get_status_* functions will allocate approriate status structure
+ * from passed mempool together with the necessary character arrays.
+ * Destroying the mempool will release all asociated allocation.
  */
-struct dm_pool;
 
-/*
- * dm_get_status_raid will allocate the dm_status_raid structure and
- * the necessary character arrays from the mempool provided to the
- * function.  If the mempool is from a dev_manager struct (dm->mem),
- * then the caller does not need to free the memory - simply calling
- * dev_manager_destroy will do.
- */
+/* Parse params from STATUS call for mirror target */
+typedef enum {
+	DM_STATUS_MIRROR_ALIVE	      = 'A',/* No failures */
+	DM_STATUS_MIRROR_FLUSH_FAILED = 'F',/* Mirror out-of-sync */
+	DM_STATUS_MIRROR_WRITE_FAILED = 'D',/* Mirror out-of-sync */
+	DM_STATUS_MIRROR_SYNC_FAILED  = 'S',/* Mirror out-of-sync */
+	DM_STATUS_MIRROR_READ_FAILED  = 'R',/* Mirror data unaffected */
+	DM_STATUS_MIRROR_UNCLASSIFIED = 'U' /* Bug */
+} dm_status_mirror_health_t;
+
+struct dm_status_mirror {
+	uint64_t total_regions;
+	uint64_t insync_regions;
+	uint32_t dev_count;             /* # of devs[] elements (<= 8) */
+	struct {
+		dm_status_mirror_health_t health;
+		uint32_t major;
+		uint32_t minor;
+	} *devs;                        /* array with individual legs */
+	const char *log_type;           /* core, disk,.... */
+	uint32_t log_count;		/* # of logs[] elements */
+	struct {
+		dm_status_mirror_health_t health;
+		uint32_t major;
+		uint32_t minor;
+	} *logs;			/* array with individual logs */
+};
+
+int dm_get_status_mirror(struct dm_pool *mem, const char *params,
+			 struct dm_status_mirror **status);
+
+/* Parse params from STATUS call for raid target */
 struct dm_status_raid {
 	uint64_t reserved;
 	uint64_t total_regions;
@@ -306,6 +333,7 @@ struct dm_status_raid {
 int dm_get_status_raid(struct dm_pool *mem, const char *params,
 		       struct dm_status_raid **status);
 
+/* Parse params from STATUS call for cache target */
 struct dm_status_cache {
 	uint64_t version;  /* zero for now */
 
@@ -341,6 +369,8 @@ int dm_get_status_cache(struct dm_pool *mem, const char *params,
 			struct dm_status_cache **status);
 
 /*
+ * Parse params from STATUS call for snapshot target
+ *
  * Snapshot target's format:
  * <= 1.7.0: <used_sectors>/<total_sectors>
  * >= 1.8.0: <used_sectors>/<total_sectors> <metadata_sectors>
@@ -358,9 +388,7 @@ struct dm_status_snapshot {
 int dm_get_status_snapshot(struct dm_pool *mem, const char *params,
 			   struct dm_status_snapshot **status);
 
-/*
- * Parse params from STATUS call for thin_pool target
- */
+/* Parse params from STATUS call for thin_pool target */
 typedef enum {
 	DM_THIN_DISCARDS_IGNORE,
 	DM_THIN_DISCARDS_NO_PASSDOWN,
@@ -385,9 +413,7 @@ struct dm_status_thin_pool {
 int dm_get_status_thin_pool(struct dm_pool *mem, const char *params,
 			    struct dm_status_thin_pool **status);
 
-/*
- * Parse params from STATUS call for thin target
- */
+/* Parse params from STATUS call for thin target */
 struct dm_status_thin {
 	uint64_t mapped_sectors;
 	uint64_t highest_mapped_sector;
@@ -1441,7 +1467,7 @@ struct dm_tree_node_raid_params {
 
 int dm_tree_node_add_raid_target_with_params(struct dm_tree_node *node,
 					     uint64_t size,
-					     struct dm_tree_node_raid_params *p);
+					     const struct dm_tree_node_raid_params *p);
 
 /* Cache feature_flags */
 #define DM_CACHE_FEATURE_WRITEBACK    0x00000001
@@ -1848,6 +1874,59 @@ char *dm_hash_get_key(struct dm_hash_table *t, struct dm_hash_node *n);
 void *dm_hash_get_data(struct dm_hash_table *t, struct dm_hash_node *n);
 struct dm_hash_node *dm_hash_get_first(struct dm_hash_table *t);
 struct dm_hash_node *dm_hash_get_next(struct dm_hash_table *t, struct dm_hash_node *n);
+
+/*
+ * dm_hash_insert() replaces the value of an existing
+ * entry with a matching key if one exists.  Otherwise
+ * it adds a new entry.
+ *
+ * dm_hash_insert_with_val() inserts a new entry if
+ * another entry with the same key already exists.
+ * val_len is the size of the data being inserted.
+ *
+ * If two entries with the same key exist,
+ * (added using dm_hash_insert_allow_multiple), then:
+ * . dm_hash_lookup() returns the first one it finds, and
+ *   dm_hash_lookup_with_val() returns the one with a matching
+ *   val_len/val.
+ * . dm_hash_remove() removes the first one it finds, and
+ *   dm_hash_remove_with_val() removes the one with a matching
+ *   val_len/val.
+ *
+ * If a single entry with a given key exists, and it has
+ * zero val_len, then:
+ * . dm_hash_lookup() returns it
+ * . dm_hash_lookup_with_val(val_len=0) returns it
+ * . dm_hash_remove() removes it
+ * . dm_hash_remove_with_val(val_len=0) removes it
+ *
+ * dm_hash_lookup_with_count() is a single call that will
+ * both lookup a key's value and check if there is more
+ * than one entry with the given key.
+ *
+ * (It is not meant to retrieve all the entries with the
+ * given key.  In the common case where a single entry exists
+ * for the key, it is useful to have a single call that will
+ * both look up the value and indicate if multiple values
+ * exist for the key.)
+ *
+ * dm_hash_lookup_with_count:
+ * . If no entries exist, the function returns NULL, and
+ *   the count is set to 0.
+ * . If only one entry exists, the value of that entry is
+ *   returned and count is set to 1.
+ * . If N entries exists, the value of the first entry is
+ *   returned and count is set to N.
+ */
+
+void *dm_hash_lookup_with_val(struct dm_hash_table *t, const char *key,
+                              const void *val, uint32_t val_len);
+void dm_hash_remove_with_val(struct dm_hash_table *t, const char *key,
+                             const void *val, uint32_t val_len);
+int dm_hash_insert_allow_multiple(struct dm_hash_table *t, const char *key,
+                                  const void *val, uint32_t val_len);
+void *dm_hash_lookup_with_count(struct dm_hash_table *t, const char *key, int *count);
+
 
 #define dm_hash_iterate(v, h) \
 	for (v = dm_hash_get_first((h)); v; \

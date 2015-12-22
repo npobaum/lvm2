@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2003-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2015 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -17,10 +17,17 @@
 
 static int _get_vsn(struct cmd_context *cmd, uint16_t *version_int)
 {
-	const char *atversion = arg_str_value(cmd, atversion_ARG, LVM_VERSION);
+	const char *vsn;
 	unsigned int major, minor, patchlevel;
 
-	if (sscanf(atversion, "%u.%u.%u", &major, &minor, &patchlevel) != 3) {
+	if (arg_count(cmd, atversion_ARG))
+		vsn = arg_str_value(cmd, atversion_ARG, NULL);
+	else if (arg_count(cmd, sinceversion_ARG))
+		vsn = arg_str_value(cmd, sinceversion_ARG, NULL);
+	else
+		vsn = LVM_VERSION;
+
+	if (sscanf(vsn, "%u.%u.%u", &major, &minor, &patchlevel) != 3) {
 		log_error("Incorrect version format.");
 		return 0;
 	}
@@ -110,10 +117,21 @@ int dumpconfig(struct cmd_context *cmd, int argc, char **argv)
 		return EINVALID_CMD_LINE;
 	}
 
-	if (arg_count(cmd, atversion_ARG) && !arg_count(cmd, configtype_ARG) &&
-	    !arg_count(cmd, list_ARG)) {
-		log_error("--atversion requires --type or --list");
-		return EINVALID_CMD_LINE;
+	if (arg_count(cmd, atversion_ARG)) {
+		if (arg_count(cmd, sinceversion_ARG)) {
+			log_error("Only one of --atversion and --sinceversion permitted.");
+			return EINVALID_CMD_LINE;
+		}
+
+		if (!arg_count(cmd, configtype_ARG) && !arg_count(cmd, list_ARG)) {
+			log_error("--atversion requires --type or --list");
+			return EINVALID_CMD_LINE;
+		}
+	} else if (arg_count(cmd, sinceversion_ARG)) {
+		if (!arg_count(cmd, configtype_ARG) || strcmp(type, "new")) {
+			log_error("--sinceversion requires --type new");
+			return EINVALID_CMD_LINE;
+		}
 	}
 
 	if (arg_count(cmd, ignoreadvanced_ARG))
@@ -252,7 +270,8 @@ int dumpconfig(struct cmd_context *cmd, int argc, char **argv)
 		}
 	}
 	else if (!strcmp(type, "new")) {
-		tree_spec.type = CFG_DEF_TREE_NEW;
+		tree_spec.type = arg_count(cmd, sinceversion_ARG) ? CFG_DEF_TREE_NEW_SINCE
+								  : CFG_DEF_TREE_NEW;
 		/* new type does not require check status */
 	}
 	else if (!strcmp(type, "profilable")) {

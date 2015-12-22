@@ -12,6 +12,7 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  *@DM_1_02_106 2:1.02.106
  *@DM_1_02_107 2:1.02.107
  *@DM_1_02_110 2:1.02.110
+ *@DM_1_02_113 2:1.02.113
  dm_asprintf@Base 2:1.02.20
  dm_basename@Base 2:1.02.20
  dm_bit_and@Base 2:1.02.47
@@ -100,12 +101,16 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  dm_hash_get_next@Base 2:1.02.20
  dm_hash_get_num_entries@Base 2:1.02.20
  dm_hash_insert@Base 2:1.02.20
+ dm_hash_insert_allow_multiple@Base 2:1.02.114
  dm_hash_insert_binary@Base 2:1.02.20
  dm_hash_iter@Base 2:1.02.20
  dm_hash_lookup@Base 2:1.02.20
  dm_hash_lookup_binary@Base 2:1.02.20
+ dm_hash_lookup_with_count@Base 2:1.02.114
+ dm_hash_lookup_with_val@Base 2:1.02.114
  dm_hash_remove@Base 2:1.02.20
  dm_hash_remove_binary@Base 2:1.02.20
+ dm_hash_remove_with_val@Base 2:1.02.114
  dm_hash_wipe@Base 2:1.02.20
  dm_is_dm_major@Base 2:1.02.20
  dm_is_empty_dir@Base 2:1.02.74

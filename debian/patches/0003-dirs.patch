@@ -1,4 +1,4 @@
-From a4bebcb473199c161c9761a98ab15c9b47c0aa81 Mon Sep 17 00:00:00 2001
+From 7022534e9763899eae55da8a3bb9c18c13b038c0 Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 30 Jun 2015 11:46:07 +0200
 Subject: dirs
@@ -22,10 +22,10 @@ index b8c0407..c9c6776 100644
  	# Configuration option devices/cache_file_prefix.
  	# A prefix used before the .cache file name. See devices/cache_dir.
 diff --git a/lib/config/config.c b/lib/config/config.c
-index ac1049d..94bd111 100644
+index 5551a7f..42db3a3 100644
 --- a/lib/config/config.c
 +++ b/lib/config/config.c
-@@ -2304,10 +2304,8 @@ const char *get_default_devices_cache_CFG(struct cmd_context *cmd, struct profil
+@@ -2309,10 +2309,8 @@ const char *get_default_devices_cache_CFG(struct cmd_context *cmd, struct profil
  
  	if (cache_dir || cache_file_prefix) {
  		if (dm_snprintf(buf, sizeof(buf),
@@ -38,7 +38,7 @@ index ac1049d..94bd111 100644
  				cache_file_prefix ? : DEFAULT_CACHE_FILE_PREFIX) < 0) {
  			log_error("Persistent cache filename too long.");
  			return NULL;
-@@ -2315,8 +2313,8 @@ const char *get_default_devices_cache_CFG(struct cmd_context *cmd, struct profil
+@@ -2320,8 +2318,8 @@ const char *get_default_devices_cache_CFG(struct cmd_context *cmd, struct profil
  		return dm_pool_strdup(cmd->mem, buf);
  	}
  

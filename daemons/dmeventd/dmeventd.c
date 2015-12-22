@@ -408,7 +408,7 @@ static struct thread_status *_alloc_thread_status(const struct message_data *dat
 	if (!(thread->device.uuid = dm_strdup(data->device_uuid)))
 		goto_out;
 
-        /* Until real name resolved, use UUID */
+	/* Until real name resolved, use UUID */
 	if (!(thread->device.name = dm_strdup(data->device_uuid)))
 		goto_out;
 
@@ -1355,78 +1355,89 @@ static int _get_timeout(struct message_data *message_data)
 	return (msg->data && msg->size) ? 0 : -ENOMEM;
 }
 
-/* Open fifos used for client communication. */
-static int _open_fifos(struct dm_event_fifos *fifos)
+static int _open_fifo(const char *path)
 {
 	struct stat st;
+	int fd = -1;
+ 
+ 	/*
+	 * FIXME Explicitly verify the code's requirement that path is secure:
+	 * - All parent directories owned by root without group/other write access unless sticky.
+	 */
 
-	/* Create client fifo. */
-	(void) dm_prepare_selinux_context(fifos->client_path, S_IFIFO);
-	if ((mkfifo(fifos->client_path, 0600) == -1) && errno != EEXIST) {
-		log_sys_error("client mkfifo", fifos->client_path);
-		(void) dm_prepare_selinux_context(NULL, 0);
-		goto fail;
+	/* If path exists, only use it if it is root-owned fifo mode 0600 */
+	if ((lstat(path, &st) < 0)) {
+		if (errno != ENOENT) {
+			log_sys_error("stat", path);
+			return -1;
+		}
+	} else if (!S_ISFIFO(st.st_mode) || st.st_uid ||
+		   (st.st_mode & (S_IEXEC | S_IRWXG | S_IRWXO))) {
+		log_warn("WARNING: %s has wrong attributes: Replacing.", path);
+		if (unlink(path)) {
+			log_sys_error("unlink", path);
+			return -1;
+		}
 	}
 
-	/* Create server fifo. */
-	(void) dm_prepare_selinux_context(fifos->server_path, S_IFIFO);
-	if ((mkfifo(fifos->server_path, 0600) == -1) && errno != EEXIST) {
-		log_sys_error("server mkfifo", fifos->server_path);
+	/* Create fifo. */
+	(void) dm_prepare_selinux_context(path, S_IFIFO);
+	if ((mkfifo(path, 0600) == -1) && errno != EEXIST) {
+		log_sys_error("mkfifo", path);
 		(void) dm_prepare_selinux_context(NULL, 0);
 		goto fail;
 	}
 
 	(void) dm_prepare_selinux_context(NULL, 0);
 
-	/* Warn about wrong permissions if applicable */
-	if ((!stat(fifos->client_path, &st)) && (st.st_mode & 0777) != 0600)
-		log_warn("WARNING: Fixing wrong permissions on %s: %s.\n",
-			 fifos->client_path, strerror(errno));
-
-	if ((!stat(fifos->server_path, &st)) && (st.st_mode & 0777) != 0600)
-		log_warn("WARNING: Fixing wrong permissions on %s: %s.\n",
-			 fifos->server_path, strerror(errno));
-
-	/* If they were already there, make sure permissions are ok. */
-	if (chmod(fifos->client_path, 0600)) {
-		log_sys_error("chmod", fifos->client_path);
-		goto fail;
-	}
-
-	if (chmod(fifos->server_path, 0600)) {
-		log_sys_error("chmod", fifos->server_path);
-		goto fail;
-	}
-
 	/* Need to open read+write or we will block or fail */
-	if ((fifos->server = open(fifos->server_path, O_RDWR)) < 0) {
-		log_sys_error("server open", fifos->server_path);
+	if ((fd = open(path, O_RDWR)) < 0) {
+		log_sys_error("open", path);
 		goto fail;
 	}
 
-	if (fcntl(fifos->server, F_SETFD, FD_CLOEXEC) < 0) {
-		log_sys_error("fcntl(FD_CLOEXEC)", fifos->server_path);
+	/* Warn about wrong permissions if applicable */
+	if (fstat(fd, &st)) {
+		log_sys_error("fstat", path);
 		goto fail;
 	}
 
-	/* Need to open read+write for select() to work. */
-	if ((fifos->client = open(fifos->client_path, O_RDWR)) < 0) {
-		log_sys_error("client open", fifos->client_path);
+	if (!S_ISFIFO(st.st_mode) || st.st_uid ||
+	    (st.st_mode & (S_IEXEC | S_IRWXG | S_IRWXO))) {
+		log_error("%s: fifo has incorrect attributes", path);
 		goto fail;
 	}
 
-	if (fcntl(fifos->client, F_SETFD, FD_CLOEXEC) < 0) {
-		log_sys_error("fcntl(FD_CLOEXEC)", fifos->client_path);
+	if (fcntl(fd, F_SETFD, FD_CLOEXEC)) {
+		log_sys_error("fcntl(FD_CLOEXEC)", path);
 		goto fail;
 	}
+
+	return fd;
+
+fail:
+	if ((fd >= 0) && close(fd))
+		log_sys_error("close", path);
+
+	return -1;
+}
+
+/* Open fifos used for client communication. */
+static int _open_fifos(struct dm_event_fifos *fifos)
+{
+	/* Create client fifo. */
+	if ((fifos->client = _open_fifo(fifos->client_path)) < 0)
+		goto fail;
+
+	/* Create server fifo. */
+	if ((fifos->server = _open_fifo(fifos->server_path)) < 0)
+		goto fail;
 
 	return 1;
-fail:
-	if (fifos->server >= 0 && close(fifos->server))
-		log_sys_error("server close", fifos->server_path);
 
+fail:
 	if (fifos->client >= 0 && close(fifos->client))
-		log_sys_error("client close", fifos->client_path);
+		log_sys_error("close", fifos->client_path);
 
 	return 0;
 }
@@ -1961,21 +1972,21 @@ static int _reinstate_registrations(struct dm_event_fifos *fifos)
 		    !(dev_name = strtok(NULL, _delim)) ||
 		    !(mask = strtok(NULL, _delim)) ||
 		    !(timeout = strtok(NULL, _delim))) {
-			fprintf(stderr, _failed_parsing_msg);
+			fputs(_failed_parsing_msg, stderr);
 			continue;
 		}
 
 		errno = 0;
 		mask_value = strtoul(mask, &endp, 10);
 		if (errno || !endp || *endp) {
-			fprintf(stderr, _failed_parsing_msg);
+			fputs(_failed_parsing_msg, stderr);
 			continue;
 		}
 
 		errno = 0;
 		timeout_value = strtoul(timeout, &endp, 10);
 		if (errno || !endp || *endp) {
-			fprintf(stderr, _failed_parsing_msg);
+			fputs(_failed_parsing_msg, stderr);
 			continue;
 		}
 
@@ -2260,9 +2271,9 @@ int main(int argc, char *argv[])
 
 	log_notice("dmeventd shutting down.");
 
-	if (close(fifos.client))
+	if (fifos.client >= 0 && close(fifos.client))
 		log_sys_error("client close", fifos.client_path);
-	if (close(fifos.server))
+	if (fifos.server >= 0 && close(fifos.server))
 		log_sys_error("server close", fifos.server_path);
 
 	if (_use_syslog)

@@ -822,7 +822,7 @@ static int _stats_parse_region(struct dm_stats *dms, const char *resp,
 	struct dm_pool *mem = dms->mem;
 	struct dm_stats_counters cur;
 	FILE *stats_rows = NULL;
-	uint64_t start, len;
+	uint64_t start = 0, len = 0;
 	char row[256];
 	int r;
 
@@ -1228,20 +1228,19 @@ static struct dm_task *_stats_print_region(struct dm_stats *dms,
 				    unsigned num_lines, unsigned clear)
 {
 	/* @stats_print[_clear] <region_id> [<start_line> <num_lines>] */
-	const char *clear_str = "_clear", *lines_fmt = "%u %u";
-	const char *msg_fmt = "@stats_print%s " FMTu64 " %s";
 	const char *err_fmt = "Could not prepare @stats_print %s.";
 	struct dm_task *dmt = NULL;
 	char msg[1024], lines[64];
 
 	if (start_line || num_lines)
 		if (!dm_snprintf(lines, sizeof(lines),
-				 lines_fmt, start_line, num_lines)) {
+				 "%u %u", start_line, num_lines)) {
 			log_error(err_fmt, "row specification");
 			return NULL;
 		}
 
-	if (!dm_snprintf(msg, sizeof(msg), msg_fmt, (clear) ? clear_str : "",
+	if (!dm_snprintf(msg, sizeof(msg), "@stats_print%s " FMTu64 " %s",
+			 (clear) ? "_clear" : "",
 			 region_id, (start_line || num_lines) ? lines : "")) {
 		log_error(err_fmt, "message");
 		return NULL;
@@ -1259,6 +1258,7 @@ char *dm_stats_print_region(struct dm_stats *dms, uint64_t region_id,
 {
 	char *resp = NULL;
 	struct dm_task *dmt = NULL;
+	const char *response;
 
 	if (!_stats_bound(dms))
 		return_0;
@@ -1269,11 +1269,13 @@ char *dm_stats_print_region(struct dm_stats *dms, uint64_t region_id,
 	if (!dmt)
 		return_0;
 
-	resp = dm_pool_strdup(dms->mem, dm_task_get_message_response(dmt));
-	dm_task_destroy(dmt);
+	if (!(response = dm_task_get_message_response(dmt)))
+		goto_out;
 
-	if (!resp)
+	if (!(resp = dm_pool_strdup(dms->mem, response)))
 		log_error("Could not allocate memory for response buffer.");
+out:
+	dm_task_destroy(dmt);
 
 	return resp;
 }
@@ -1977,10 +1979,9 @@ dm_percent_t dm_histogram_get_bin_percent(const struct dm_histogram *dmh,
  */
 static struct dm_histogram *_alloc_dm_histogram(int nr_bins)
 {
-	struct dm_histogram *dmh = NULL;
-	struct dm_histogram_bin *cur = NULL;
 	/* Allocate space for dm_histogram + nr_entries. */
-	size_t size = sizeof(*dmh) + (unsigned) nr_bins * sizeof(*cur);
+	size_t size = sizeof(struct dm_histogram) +
+		(unsigned) nr_bins * sizeof(struct dm_histogram_bin);
 	return dm_zalloc(size);
 }
 
@@ -2305,6 +2306,10 @@ const char *dm_histogram_to_string(const struct dm_histogram *dmh, int bin,
 		} else if (bounds)
 			len = dm_snprintf(buf, sizeof(buf), "%s%s", bounds_buf,
 					  sep);
+		else {
+			*buf = '\0';
+			len = 0;
+		}
 
 		if (len < 0)
 			goto_bad;

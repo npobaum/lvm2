@@ -1,3 +1,53 @@
+Version 2.02.138 - 14th December 2015
+=====================================
+  Support lvrename for hidden (used) cache pools.
+  Fix lvrename for stacked cache pools.
+
+Version 2.02.137 - 5th December 2015
+====================================
+  Restore archiving before changing metadata in vgextend (2.02.117).
+  Dropped internal usage of log_suppress(2).
+  Cleaned logging code for buffer size usage.
+  Added internal id_read_format_try() function to check and read valid UUID.
+  Change lvcreate, lvrename, lvresize to use process_each_vg.
+  Change process_each_vg to handle single VG as separate arg.
+  Issue error if ambiguous VG name is supplied in most commands.
+  Make process_each fns always work through full list of known VG names.
+  Use dm_get_status_mirror() instead of individual parsers.
+  Add mem pool arg for check_transient_status() target function.
+  Avoid misleading error with -m is omitted with lvconvert to raid types.
+  Add system_id to vginfo cache.
+
+Version 2.02.136 - 28th November 2015
+=====================================
+  Add new --sinceversion option for lvmconfig --type new.
+  Fix inactive table loaded for wrapping thin-pool when resizing it.
+  Extend the list of ignored libraries when locking memory.
+
+Version 2.02.135 - 23rd November 2015
+=====================================
+  Add a model file for Coverity.
+  Show correct error message for unsupported yet cache pool repair.
+  Allow lvconvert cache pools' data and metadata LV to raid.
+  Fix reading of old metadata with missing cache policy or mode settings.
+  Issue error if external_device_info_source=udev and udev db record incomplete.
+  Update lvmetad duplicate VG name handling to use hash function extensions.
+  Detect invalid vgrenames by vgid where the name is unchanged.
+  Fix passing of 32bit values through daemons (mostly lvmlockd).
+  Use local memory pool for whole alloc_handle manipulation.
+  Add missing pointer validation after dm_get_next_target().
+  Do not deref NULL pointer in debug message for _match_pv_tags().
+  Drop unneeded stat() call when checking for sysfs file.
+  Fix memory leak on error path of failing thin-pool percentage check.
+  Add missing test for failing node allocation in lvmetad.
+  Correct configure messages when enabling/disabling lvmlockd.
+
+Version 2.02.134 - 9th November 2015
+====================================
+  Refactor some lvmetad code and adjust some duplicate PV messages.
+  No longer repair/wipe VG/PVs if inaccessible because foreign or shared.
+  Pass correct data size to mirror log calc so log can be bigger than 1 extent.
+
 Version 2.02.133 - 30th October 2015
 ====================================
   Support repeated -o|--options for reporting commands.

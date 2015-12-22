@@ -1,3 +1,11 @@
+lvm2 (2.02.138-1) unstable; urgency=medium
+
+  * New upstream version.
+  * Add watch file. (closes: #742305)
+    - This does not add the signature key.
+
+ -- Bastian Blank <waldi@debian.org>  Tue, 22 Dec 2015 19:34:04 +0100
+
 lvm2 (2.02.133-2) unstable; urgency=medium
 
   * Build-depend on a lot corosync stuff. (closes: #804541)

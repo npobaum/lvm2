@@ -412,28 +412,55 @@ static int _start_daemon(char *dmeventd_path, struct dm_event_fifos *fifos)
 	char default_dmeventd_path[] = DMEVENTD_PATH;
 	char *args[] = { dmeventd_path ? : default_dmeventd_path, NULL };
 
-	if (stat(fifos->client_path, &statbuf))
-		goto start_server;
+	/*
+	 * FIXME Explicitly verify the code's requirement that client_path is secure:
+	 * - All parent directories owned by root without group/other write access unless sticky.
+	 */
 
-	if (!S_ISFIFO(statbuf.st_mode)) {
-		log_error("%s is not a fifo.", fifos->client_path);
+	/* If client fifo path exists, only use it if it is root-owned fifo mode 0600 */
+	if ((lstat(fifos->client_path, &statbuf) < 0)) {
+		if (errno == ENOENT)
+			/* Jump ahead if fifo does not already exist. */
+			goto start_server;
+		else {
+			log_sys_error("stat", fifos->client_path);
+			return 0;
+		}
+	} else if (!S_ISFIFO(statbuf.st_mode)) {
+		log_error("%s must be a fifo.", fifos->client_path);
+		return 0;
+	} else if (statbuf.st_uid) {
+		log_error("%s must be owned by uid 0.", fifos->client_path);
+		return 0;
+	} else if (statbuf.st_mode & (S_IEXEC | S_IRWXG | S_IRWXO)) {
+		log_error("%s must have mode 0600.", fifos->client_path);
 		return 0;
 	}
 
 	/* Anyone listening?  If not, errno will be ENXIO */
 	fifos->client = open(fifos->client_path, O_WRONLY | O_NONBLOCK);
 	if (fifos->client >= 0) {
+		/* Should never happen if all the above checks passed. */
+		if ((fstat(fifos->client, &statbuf) < 0) ||
+		    !S_ISFIFO(statbuf.st_mode) || statbuf.st_uid ||
+		    (statbuf.st_mode & (S_IEXEC | S_IRWXG | S_IRWXO))) {
+			log_error("%s is no longer a secure root-owned fifo with mode 0600.", fifos->client_path);
+			if (close(fifos->client))
+				log_sys_debug("close", fifos->client_path);
+			return 0;
+		}
+
 		/* server is running and listening */
 		if (close(fifos->client))
 			log_sys_debug("close", fifos->client_path);
 		return 1;
-	} else if (errno != ENXIO) {
+	} else if (errno != ENXIO && errno != ENOENT)  {
 		/* problem */
 		log_sys_error("open", fifos->client_path);
 		return 0;
 	}
 
-      start_server:
+start_server:
 	/* server is not running */
 
 	if ((args[0][0] == '/') && stat(args[0], &statbuf)) {
@@ -587,8 +614,8 @@ static int _do_event(int cmd, char *dmeventd_path, struct dm_event_daemon_messag
 	};
 
 	if (!_init_client(dmeventd_path, &fifos)) {
-		stack;
-		return -ESRCH;
+		ret = -ESRCH;
+		goto_out;
 	}
 
 	ret = daemon_talk(&fifos, msg, DM_EVENT_CMD_HELLO, NULL, NULL, 0, 0);
@@ -598,7 +625,7 @@ static int _do_event(int cmd, char *dmeventd_path, struct dm_event_daemon_messag
 
 	if (!ret)
 		ret = daemon_talk(&fifos, msg, cmd, dso_name, dev_name, evmask, timeout);
-
+out:
 	/* what is the opposite of init? */
 	fini_fifos(&fifos);
 
@@ -727,6 +754,7 @@ int dm_event_get_registered_device(struct dm_event_handler *dmevh, int next)
 
 	uuid = dm_task_get_uuid(dmt);
 
+	/* FIXME Distinguish errors connecting to daemon */
 	if (_do_event(next ? DM_EVENT_CMD_GET_NEXT_REGISTERED_DEVICE :
 		      DM_EVENT_CMD_GET_REGISTERED_DEVICE, dmevh->dmeventd_path,
 		      &msg, dmevh->dso, uuid, dmevh->mask, 0)) {
@@ -841,7 +869,7 @@ void dm_event_log(const char *subsys, int level, const char *file,
 	static time_t start = 0;
 	const char *indent = "";
 	FILE *stream = stdout;
-	int prio = -1;
+	int prio;
 	time_t now;
 
 	switch (level & ~(_LOG_STDERR | _LOG_ONCE)) {
