@@ -1,3 +1,13 @@
+lvm2 (2.02.122-1ubuntu2) wily; urgency=medium
+
+  * Remove the init script dependency on cman_tool. (LP: #1089013)
+    - debian/clvm.init: check corosync cluster status since the cman
+      tooling isn't available. Change start/stop dependencies to dlm
+      instead of cman and openais since those packages are no longer
+      available.
+
+ -- Billy Olsen <billy.olsen@canonical.com>  Sat, 16 Jan 2016 21:47:11 -0700
+
 lvm2 (2.02.122-1ubuntu1) wily; urgency=medium
 
   * Merge with Debian unstable. Remaining Ubuntu changes:
