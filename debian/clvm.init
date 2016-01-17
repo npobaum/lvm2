@@ -4,8 +4,8 @@
 # Provides:          clvm
 # Required-Start:    lvm2
 # Required-Stop:     lvm2
-# Should-Start:      cman corosync openais
-# Should-Stop:       cman corosync openais
+# Should-Start:      corosync dlm
+# Should-Stop:       corosync dlm
 # Default-Start:     S
 # Default-Stop:      0 6
 # Short-Description: start and stop the lvm cluster locking daemon
@@ -32,9 +32,12 @@ if [ ! -f /etc/cluster/cluster.conf ]; then
 	exit 0
 fi
 
-if ! cman_tool status >/dev/null 2>&1; then
-	log_failure_msg "clvmd: cluster is not running. Aborting."
-	exit 0
+# Since the cluster service is not available, check the corosync
+# service is up and running. The corosync service is used in
+# conjunction with dlm to coordinate locking in clvm
+if ! /usr/sbin/corosync-quorumtool -s >/dev/null 2>&1; then
+        log_failure_msg "clvmd: corosync is not running. Aborting."
+        exit 0
 fi
 
 CLVMDTIMEOUT=20
