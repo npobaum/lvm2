@@ -10,7 +10,7 @@
  *
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #ifndef LVM_ACTIVATE_H
@@ -189,6 +189,7 @@ int lvs_in_vg_opened(const struct volume_group *vg);
 
 int lv_is_active(const struct logical_volume *lv);
 int lv_is_active_locally(const struct logical_volume *lv);
+int lv_is_active_remotely(const struct logical_volume *lv);
 int lv_is_active_but_not_locally(const struct logical_volume *lv);
 int lv_is_active_exclusive(const struct logical_volume *lv);
 int lv_is_active_exclusive_locally(const struct logical_volume *lv);

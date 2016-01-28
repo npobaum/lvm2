@@ -9,7 +9,7 @@
  *
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #include "lib.h"
@@ -377,9 +377,12 @@ static int _replicator_target_present(struct cmd_context *cmd,
 	static int _checked = 0;
 	static int _present = 0;
 
+	if (!activation())
+		return 0;
+
 	if (!_checked) {
-		_present = target_present(cmd, REPLICATOR_MODULE, 1);
 		_checked = 1;
+		_present = target_present(cmd, REPLICATOR_MODULE, 1);
 	}
 
 	return _present;

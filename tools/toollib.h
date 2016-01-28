@@ -10,7 +10,7 @@
  *
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #ifndef _LVM_TOOLLIB_H
@@ -102,7 +102,7 @@ int process_each_vg(struct cmd_context *cmd, int argc, char **argv,
 		    process_single_vg_fn_t process_single_vg);
 
 int process_each_pv(struct cmd_context *cmd, int argc, char **argv,
-		    const char *vg_name, uint32_t lock_type,
+		    const char *vg_name, uint32_t read_flags,
 		    struct processing_handle *handle,
 		    process_single_pv_fn_t process_single_pv);
 

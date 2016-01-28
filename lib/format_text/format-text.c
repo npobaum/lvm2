@@ -10,7 +10,7 @@
  *
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #include "lib.h"
@@ -1818,10 +1818,6 @@ static int _text_pv_setup(const struct format_type *fmt,
 		pv->pe_count = (uint32_t) pe_count;
 	}
 
-	/* Unlike LVM1, we don't store this outside a VG */
-	/* FIXME Default from config file? vgextend cmdline flag? */
-	pv->status |= ALLOCATABLE_PV;
-
 	return 1;
 }
 
@@ -1963,7 +1959,7 @@ static int _create_vg_text_instance(struct format_instance *fid,
 			 */
 			if (!critical_section())
 				/* Scan PVs in VG for any further MDAs */
-				lvmcache_label_scan(fid->fmt->cmd, 0);
+				lvmcache_label_scan(fid->fmt->cmd);
 
 			if (!(vginfo = lvmcache_vginfo_from_vgname(vg_name, vg_id)))
 				goto_out;

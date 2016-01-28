@@ -9,7 +9,7 @@
  *
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #include "lib.h"
@@ -511,7 +511,8 @@ int lvm_scan(lvm_t libh)
 	int rc = 0;
 	struct saved_env e = store_user_env((struct cmd_context *)libh);
 
-	if (!lvmcache_label_scan((struct cmd_context *)libh, 2))
+	lvmcache_force_next_label_scan();
+	if (!lvmcache_label_scan((struct cmd_context *)libh))
 		rc = -1;
 
 	restore_user_env(&e);

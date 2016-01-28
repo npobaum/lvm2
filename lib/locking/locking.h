@@ -10,7 +10,7 @@
  *
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #ifndef _LVM_LOCKING_H
@@ -28,7 +28,12 @@ int vg_write_lock_held(void);
 int locking_is_clustered(void);
 int locking_supports_remote_queries(void);
 
-int remote_lock_held(const char *vol, int *exclusive);
+#ifndef NODE_ALL
+#  define NODE_ALL     "*"
+#  define NODE_LOCAL   "."
+#  define NODE_REMOTE  "^"
+#endif
+int cluster_lock_held(const char *vol, const char *node, int *exclusive);
 
 /*
  * LCK_VG:

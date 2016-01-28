@@ -1,4 +1,4 @@
-From 4a7f7e788b6fb0d36d4984d780b20ba31afadc23 Mon Sep 17 00:00:00 2001
+From c1bb4557bd6ebd0469222fe3a1c4abb7b49848cf Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 30 Jun 2015 11:46:09 +0200
 Subject: implicit-pointer
@@ -8,7 +8,7 @@ Subject: implicit-pointer
  1 file changed, 4 deletions(-)
 
 diff --git a/tools/lvm.c b/tools/lvm.c
-index 63cc0b4..faf820a 100644
+index b7cec81..48f82e5 100644
 --- a/tools/lvm.c
 +++ b/tools/lvm.c
 @@ -26,10 +26,6 @@ int main(int argc, char **argv)

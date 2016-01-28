@@ -10,7 +10,7 @@
  *
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 /***********  Replace with script?
@@ -1323,7 +1323,7 @@ xx(vgremove,
 
 xx(vgrename,
    "Rename a volume group",
-   ALLOW_UUID_AS_NAME,
+   ALLOW_UUID_AS_NAME | REQUIRES_FULL_LABEL_SCAN,
    "vgrename\n"
    "\t[-A|--autobackup y|n]\n"
    "\t[--commandprofile ProfileName]\n"

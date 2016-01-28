@@ -9,7 +9,7 @@
  *
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #include "lib.h"
@@ -450,6 +450,8 @@ GET_LVSEG_NUM_PROPERTY_FN(thin_id, lvseg->device_id)
 #define _thin_id_set prop_not_implemented_set
 GET_LVSEG_STR_PROPERTY_FN(discards, lvseg_discards_dup(lvseg->lv->vg->vgmem, lvseg))
 #define _discards_set prop_not_implemented_set
+GET_LVSEG_STR_PROPERTY_FN(kernel_discards, lvseg_kernel_discards_dup(lvseg->lv->vg->vgmem, lvseg))
+#define _kernel_discards_set prop_not_implemented_set
 GET_LVSEG_STR_PROPERTY_FN(cachemode, lvseg_cachemode_dup(lvseg->lv->vg->vgmem, lvseg))
 #define _cachemode_set prop_not_implemented_set
 GET_LVSEG_NUM_PROPERTY_FN(seg_start, (SECTOR_SIZE * lvseg_start(lvseg)))
@@ -462,15 +464,15 @@ GET_LVSEG_NUM_PROPERTY_FN(seg_size_pe, lvseg->len)
 #define _seg_size_pe_set prop_not_implemented_set
 GET_LVSEG_STR_PROPERTY_FN(seg_tags, lvseg_tags_dup(lvseg))
 #define _seg_tags_set prop_not_implemented_set
-GET_LVSEG_STR_PROPERTY_FN(seg_pe_ranges,
-			  lvseg_seg_pe_ranges(lvseg->lv->vg->vgmem, lvseg))
+GET_LVSEG_STR_PROPERTY_FN(seg_pe_ranges, lvseg_seg_pe_ranges_str(lvseg->lv->vg->vgmem, lvseg))
 #define _seg_pe_ranges_set prop_not_implemented_set
-GET_LVSEG_STR_PROPERTY_FN(seg_metadata_le_ranges,
-			  lvseg_seg_metadata_le_ranges(lvseg->lv->vg->vgmem, lvseg))
+GET_LVSEG_STR_PROPERTY_FN(seg_le_ranges, lvseg_seg_le_ranges_str(lvseg->lv->vg->vgmem, lvseg))
+#define _seg_le_ranges_set prop_not_implemented_set
+GET_LVSEG_STR_PROPERTY_FN(seg_metadata_le_ranges, lvseg_seg_metadata_le_ranges_str(lvseg->lv->vg->vgmem, lvseg))
 #define _seg_metadata_le_ranges_set prop_not_implemented_set
-GET_LVSEG_STR_PROPERTY_FN(devices, lvseg_devices(lvseg->lv->vg->vgmem, lvseg))
+GET_LVSEG_STR_PROPERTY_FN(devices, lvseg_devices_str(lvseg->lv->vg->vgmem, lvseg))
 #define _devices_set prop_not_implemented_set
-GET_LVSEG_STR_PROPERTY_FN(metadata_devices, lvseg_metadata_devices(lvseg->lv->vg->vgmem, lvseg))
+GET_LVSEG_STR_PROPERTY_FN(metadata_devices, lvseg_metadata_devices_str(lvseg->lv->vg->vgmem, lvseg))
 #define _metadata_devices_set prop_not_implemented_set
 GET_LVSEG_STR_PROPERTY_FN(seg_monitor, lvseg_monitor_dup(lvseg->lv->vg->vgmem, lvseg))
 #define _seg_monitor_set prop_not_implemented_set
@@ -479,6 +481,8 @@ GET_LVSEG_STR_PROPERTY_FN(seg_monitor, lvseg_monitor_dup(lvseg->lv->vg->vgmem, l
 #define _cache_policy_set prop_not_implemented_set
 #define _cache_settings_get prop_not_implemented_get
 #define _cache_settings_set prop_not_implemented_set
+#define _kernel_cache_settings_get prop_not_implemented_get
+#define _kernel_cache_settings_set prop_not_implemented_set
 
 /* PVSEG */
 GET_PVSEG_NUM_PROPERTY_FN(pvseg_start, pvseg->pe)

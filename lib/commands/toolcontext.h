@@ -10,7 +10,7 @@
  *
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #ifndef _LVM_TOOLCONTEXT_H
@@ -113,6 +113,7 @@ struct cmd_context {
 	 * Switches.
 	 */
 	unsigned is_long_lived:1;		/* optimises persistent_filter handling */
+	unsigned check_pv_dev_sizes:1;
 	unsigned handles_missing_pvs:1;
 	unsigned handles_unknown_segments:1;
 	unsigned use_linear_target:1;
@@ -121,6 +122,7 @@ struct cmd_context {
 	unsigned auto_set_activation_skip:1;
 	unsigned si_unit_consistency:1;
 	unsigned report_binary_values_as_numeric:1;
+	unsigned report_mark_hidden_devices:1;
 	unsigned metadata_read_only:1;
 	unsigned ignore_clustered_vgs:1;
 	unsigned threaded:1;			/* set if running within a thread e.g. clvmd */

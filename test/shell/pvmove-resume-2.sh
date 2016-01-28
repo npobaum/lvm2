@@ -7,7 +7,7 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, write to the Free Software Foundation,
-# Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+# Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
 # Check whether all available pvmove resume methods works as expected.
 # lvchange is able to resume pvmoves in progress.
@@ -75,7 +75,7 @@ test_pvmove_resume() {
 	aux enable_dev "$dev2"
 
 	i=0
-	while get lv_field $vg name -a | grep "^\[pvmove"; do
+	while get lv_field $vg name -a | grep "^pvmove"; do
 		# wait for 30 secs at max
 		test $i -ge 300 && die "Pvmove is too slow or does not progress."
 		sleep .1
@@ -128,7 +128,7 @@ pvmove_fg() {
 	fi
 
 	# ...thus finish polling
-	get lv_field $vg name -a | grep "^\[pvmove0\]"
+	get lv_field $vg name -a | grep "^pvmove0"
 
 	aux enable_dev "$dev2"
 
@@ -148,7 +148,7 @@ pvmove_bg() {
 	fi
 
 	# ...thus finish polling
-	get lv_field $vg name -a | grep "^\[pvmove0\]"
+	get lv_field $vg name -a | grep "^pvmove0"
 
 	LVM_TEST_TAG="kill_me_$PREFIX" pvmove -b
 }
@@ -166,7 +166,7 @@ pvmove_fg_single() {
 	fi
 
 	# ...thus finish polling
-	get lv_field $vg name -a | grep "^\[pvmove0\]"
+	get lv_field $vg name -a | grep "^pvmove0"
 
 	aux enable_dev "$dev2"
 
@@ -186,7 +186,7 @@ pvmove_bg_single() {
 	fi
 
 	# ...thus finish polling
-	get lv_field $vg name -a | grep "^\[pvmove0\]"
+	get lv_field $vg name -a | grep "^pvmove0"
 
 	LVM_TEST_TAG="kill_me_$PREFIX" pvmove -b "$dev1"
 }

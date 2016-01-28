@@ -10,7 +10,7 @@
  *
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #include "lib.h"
@@ -478,6 +478,7 @@ int process_profilable_config(struct cmd_context *cmd)
 
 	cmd->si_unit_consistency = find_config_tree_bool(cmd, global_si_unit_consistency_CFG, NULL);
 	cmd->report_binary_values_as_numeric = find_config_tree_bool(cmd, report_binary_values_as_numeric_CFG, NULL);
+	cmd->report_mark_hidden_devices = find_config_tree_bool(cmd, report_mark_hidden_devices_CFG, NULL);
 	cmd->default_settings.suffix = find_config_tree_bool(cmd, global_suffix_CFG, NULL);
 	cmd->report_list_item_separator = find_config_tree_str(cmd, report_list_item_separator_CFG, NULL);
 	if (!(cmd->time_format = _set_time_format(cmd)))
@@ -668,6 +669,8 @@ static int _process_config(struct cmd_context *cmd)
 	}
 	/* LVM stores sizes internally in units of 512-byte sectors. */
 	init_pv_min_size((uint64_t)pv_min_kb * (1024 >> SECTOR_SHIFT));
+
+	cmd->check_pv_dev_sizes = find_config_tree_bool(cmd, metadata_check_pv_device_sizes_CFG, NULL);
 
 	if (!process_profilable_config(cmd))
 		return_0;

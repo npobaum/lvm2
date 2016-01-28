@@ -10,7 +10,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #include "clvmd-common.h"
@@ -663,7 +663,8 @@ int do_refresh_cache(void)
 
 	init_full_scan_done(0);
 	init_ignore_suspended_devices(1);
-	lvmcache_label_scan(cmd, 2);
+	lvmcache_force_next_label_scan();
+	lvmcache_label_scan(cmd);
 	dm_pool_empty(cmd->mem);
 
 	pthread_mutex_unlock(&lvm_lock);
@@ -900,8 +901,12 @@ int init_clvm(struct dm_hash_table *excl_uuid)
 	if (!get_initial_state(excl_uuid))
 		log_error("Cannot load initial lock states.");
 
+	if (!udev_init_library_context())
+		stack;
+
 	if (!(cmd = create_toolcontext(1, NULL, 0, 1, 1, 1))) {
 		log_error("Failed to allocate command context");
+		udev_fin_library_context();
 		return 0;
 	}
 
@@ -928,6 +933,7 @@ void destroy_lvm(void)
 	if (cmd) {
 		memlock_dec_daemon(cmd);
 		destroy_toolcontext(cmd);
+		udev_fin_library_context();
 		cmd = NULL;
 	}
 }

@@ -11,7 +11,7 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, write to the Free Software Foundation,
-# Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+# Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 #
 # vgimportclone: This script is used to rename the VG and change the associated
 #                VG and PV UUIDs (primary application being HW snapshot restore)
@@ -291,7 +291,7 @@ while read VGNAME VGEXPORTED VGMISSINGPVCOUNT; do
     fi
 
     "$LVM" pvchange ${LVM_OPTS} ${TEST_OPT} --uuid --config 'global{activation=0}' --select "vg_name=${VGNAME}"
-    checkvalue $? "Unable to change all PV uuids in VG ${VG_NAME}"
+    checkvalue $? "Unable to change all PV uuids in VG ${VGNAME}"
 
     NEWVGNAME=`getvgname "${OLDVGS}" "${VGNAME}" "${NEWVG}"`
 
