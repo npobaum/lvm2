@@ -10,7 +10,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 /* Definitions for CLVMD server and clients */
@@ -76,8 +76,10 @@ static const char CLVMD_SOCKNAME[]= DEFAULT_RUN_DIR "/clvmd.sock";
 #define CLVMD_CMD_SYNC_NAMES	    45
 
 /* Used internally by some callers, but not part of the protocol.*/
-#define NODE_ALL	"*"
-#define NODE_LOCAL	"."
-#define NODE_REMOTE	"^"
+#ifndef NODE_ALL
+#  define NODE_ALL	"*"
+#  define NODE_LOCAL	"."
+#  define NODE_REMOTE	"^"
+#endif
 
 #endif

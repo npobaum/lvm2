@@ -10,7 +10,7 @@
  *
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #include "lib.h"
@@ -70,7 +70,7 @@ static int _no_lock_resource(struct cmd_context *cmd, const char *resource,
 	return 1;
 }
 
-static int _no_query_resource(const char *resource, int *mode)
+static int _no_query_resource(const char *resource, const char *node, int *mode)
 {
 	log_very_verbose("Locking is disabled: Treating lock %s as not held.",
 			 resource);

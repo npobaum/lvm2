@@ -10,7 +10,7 @@
  *
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #include "lib.h"
@@ -373,7 +373,9 @@ int read_pool_pds(const struct format_type *fmt, const char *vg_name,
 					   vg_name);
 			return 0;
 		}
-		lvmcache_label_scan(fmt->cmd, full_scan);
+		if (full_scan > 0)
+			lvmcache_force_next_label_scan();
+		lvmcache_label_scan(fmt->cmd);
 
 	} while (1);
 

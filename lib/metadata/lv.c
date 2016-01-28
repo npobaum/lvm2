@@ -10,7 +10,7 @@
  *
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #include "lib.h"
@@ -28,17 +28,24 @@
 static struct utsname _utsname;
 static int _utsinit = 0;
 
-static char *_format_pvsegs(struct dm_pool *mem, const struct lv_segment *seg,
-			    int range_format, int metadata_areas_only)
+static struct dm_list *_format_pvsegs(struct dm_pool *mem, const struct lv_segment *seg,
+				      int range_format, int metadata_areas_only,
+				      int mark_hidden)
 {
 	unsigned int s;
 	const char *name = NULL;
 	uint32_t extent = 0;
+	uint32_t seg_len = 0;
 	char extent_str[32];
+	struct logical_volume *lv;
+	int visible = 1;
+	char *list_item;
+	size_t list_item_len;
+	struct dm_list *result = NULL;
 
-	if (!dm_pool_begin_object(mem, 256)) {
-		log_error("dm_pool_begin_object failed");
-		return NULL;
+	if (!(result = str_list_create(mem))) {
+		log_error("_format_pvsegs: str_list_create failed");
+		goto bad;
 	}
 
 	if (metadata_areas_only && (!seg_is_raid(seg) || lv_is_raid_metadata(seg->lv) || lv_is_raid_image(seg->lv)))
@@ -47,7 +54,10 @@ static char *_format_pvsegs(struct dm_pool *mem, const struct lv_segment *seg,
 	for (s = 0; s < seg->area_count; s++) {
 		switch (metadata_areas_only ? seg_metatype(seg, s) : seg_type(seg, s)) {
 		case AREA_LV:
-			name = metadata_areas_only ? seg_metalv(seg, s)->name : seg_lv(seg, s)->name;
+			lv = metadata_areas_only ? seg_metalv(seg, s) : seg_lv(seg, s);
+			seg_len = metadata_areas_only ? seg_metalv(seg, s)->le_count : seg_lv(seg, s)->le_count;
+			visible = lv_is_visible(lv);
+			name = lv->name;
 			extent = metadata_areas_only ? seg_le(seg, s) : 0;
 			break;
 		case AREA_PV:
@@ -56,79 +66,141 @@ static char *_format_pvsegs(struct dm_pool *mem, const struct lv_segment *seg,
 				continue;
 			name = dev_name(seg_dev(seg, s));
 			extent = seg_pe(seg, s);
+			seg_len = seg->area_len;
 			break;
 		case AREA_UNASSIGNED:
 			name = "unassigned";
 			extent = 0;
+			seg_len = 0;
 			break;
 		default:
 			log_error(INTERNAL_ERROR "Unknown area segtype.");
-			return NULL;
+			goto bad;
 		}
 
-		if (!dm_pool_grow_object(mem, name, strlen(name))) {
-			log_error("dm_pool_grow_object failed");
-			return NULL;
-		}
-
-		if (dm_snprintf(extent_str, sizeof(extent_str),
-				"%s%" PRIu32 "%s",
-				range_format ? ":" : "(", extent,
-				range_format ? "-"  : ")") < 0) {
-			log_error("Extent number dm_snprintf failed");
-			return NULL;
-		}
-		if (!dm_pool_grow_object(mem, extent_str, strlen(extent_str))) {
-			log_error("dm_pool_grow_object failed");
-			return NULL;
-		}
+		list_item_len = strlen(name);
+		if (!visible && mark_hidden)
+			/* +2 for [ ] */
+			list_item_len += 2;
 
 		if (range_format) {
 			if (dm_snprintf(extent_str, sizeof(extent_str),
-					FMTu32, metadata_areas_only ? extent + seg_metalv(seg, s)->le_count - 1 : extent + seg->area_len - 1) < 0) {
-				log_error("Extent number dm_snprintf failed");
-				return NULL;
+					":%" PRIu32 "-%" PRIu32,
+					extent, extent + seg_len - 1) < 0) {
+				log_error("_format_pvseggs: extent range dm_snprintf failed");
+				goto bad;
 			}
-			if (!dm_pool_grow_object(mem, extent_str, strlen(extent_str))) {
-				log_error("dm_pool_grow_object failed");
-				return NULL;
+		} else {
+			if (dm_snprintf(extent_str, sizeof(extent_str),
+					"(%" PRIu32 ")", extent) < 0) {
+				log_error("_format_pvsegs: extent number dm_snprintf failed");
+				goto bad;
 			}
 		}
+		list_item_len += strlen(extent_str);
+		/* trialing 0 */
+		list_item_len += 1;
 
-		if ((s != seg->area_count - 1) &&
-		    !dm_pool_grow_object(mem, range_format ? " " : ",", 1)) {
-			log_error("dm_pool_grow_object failed");
-			return NULL;
+		if (!(list_item = dm_pool_zalloc(mem, list_item_len))) {
+			log_error("_format_pvsegs: list item dm_pool_zalloc failed");
+			goto bad;
+		}
+
+		if (dm_snprintf(list_item, list_item_len,
+				"%s%s%s%s",
+				(!visible && mark_hidden) ? "[" : "",
+				name,
+				(!visible && mark_hidden) ? "]" : "",
+				extent_str) < 0) {
+			log_error("_format_pvsegs: list item dmsnprintf failed");
+			goto bad;
+		}
+
+		if (!str_list_add_no_dup_check(mem, result, list_item)) {
+			log_error("_format_pvsegs: failed to add item to list");
+			goto bad;
 		}
 	}
-
 out:
-	if (!dm_pool_grow_object(mem, "\0", 1)) {
-		log_error("dm_pool_grow_object failed");
-		return NULL;
-	}
-
-	return dm_pool_end_object(mem);
+	return result;
+bad:
+	dm_pool_free(mem, result);
+	return NULL;
 }
 
-char *lvseg_devices(struct dm_pool *mem, const struct lv_segment *seg)
+struct dm_list *lvseg_devices(struct dm_pool *mem, const struct lv_segment *seg)
 {
-	return _format_pvsegs(mem, seg, 0, 0);
+	return _format_pvsegs(mem, seg, 0, 0, 0);
 }
 
-char *lvseg_metadata_devices(struct dm_pool *mem, const struct lv_segment *seg)
+char *lvseg_devices_str(struct dm_pool *mem, const struct lv_segment *seg)
 {
-	return _format_pvsegs(mem, seg, 0, 1);
+	struct dm_list *list;
+
+	if (!(list = lvseg_devices(mem, seg)))
+		return_NULL;
+
+	return str_list_to_str(mem, list, ",");
 }
 
-char *lvseg_seg_pe_ranges(struct dm_pool *mem, const struct lv_segment *seg)
+struct dm_list *lvseg_metadata_devices(struct dm_pool *mem, const struct lv_segment *seg)
 {
-	return _format_pvsegs(mem, seg, 1, 0);
+	return _format_pvsegs(mem, seg, 0, 1, 0);
 }
 
-char *lvseg_seg_metadata_le_ranges(struct dm_pool *mem, const struct lv_segment *seg)
+char *lvseg_metadata_devices_str(struct dm_pool *mem, const struct lv_segment *seg)
 {
-	return _format_pvsegs(mem, seg, 1, 1);
+	struct dm_list *list;
+
+	if (!(list = lvseg_devices(mem, seg)))
+		return_NULL;
+
+	return str_list_to_str(mem, list, ",");
+}
+
+struct dm_list *lvseg_seg_pe_ranges(struct dm_pool *mem, const struct lv_segment *seg)
+{
+	return _format_pvsegs(mem, seg, 1, 0, 0);
+}
+
+char *lvseg_seg_pe_ranges_str(struct dm_pool *mem, const struct lv_segment *seg)
+{
+	struct dm_list *list;
+
+	if (!(list = lvseg_seg_pe_ranges(mem, seg)))
+		return_NULL;
+
+	return str_list_to_str(mem, list, " ");
+}
+
+struct dm_list *lvseg_seg_le_ranges(struct dm_pool *mem, const struct lv_segment *seg)
+{
+	return _format_pvsegs(mem, seg, 1, 0, seg->lv->vg->cmd->report_mark_hidden_devices);
+}
+
+char *lvseg_seg_le_ranges_str(struct dm_pool *mem, const struct lv_segment *seg)
+{
+	struct dm_list *list;
+
+	if (!(list = lvseg_seg_pe_ranges(mem, seg)))
+		return_NULL;
+
+	return str_list_to_str(mem, list, seg->lv->vg->cmd->report_list_item_separator);
+}
+
+struct dm_list *lvseg_seg_metadata_le_ranges(struct dm_pool *mem, const struct lv_segment *seg)
+{
+	return _format_pvsegs(mem, seg, 1, 1, seg->lv->vg->cmd->report_mark_hidden_devices);
+}
+
+char *lvseg_seg_metadata_le_ranges_str(struct dm_pool *mem, const struct lv_segment *seg)
+{
+	struct dm_list *list;
+
+	if (!(list = lvseg_seg_metadata_le_ranges(mem, seg)))
+		return_NULL;
+
+	return str_list_to_str(mem, list, seg->lv->vg->cmd->report_list_item_separator);
 }
 
 char *lvseg_tags_dup(const struct lv_segment *seg)
@@ -144,6 +216,45 @@ char *lvseg_segtype_dup(struct dm_pool *mem, const struct lv_segment *seg)
 char *lvseg_discards_dup(struct dm_pool *mem, const struct lv_segment *seg)
 {
 	return  dm_pool_strdup(mem, get_pool_discards_name(seg->discards));
+}
+
+char *lvseg_kernel_discards_dup_with_info_and_seg_status(struct dm_pool *mem, const struct lv_with_info_and_seg_status *lvdm)
+{
+	const char *s = "";
+	char *ret;
+
+	if (lvdm->seg_status.type == SEG_STATUS_THIN_POOL)
+		s = get_pool_discards_name(lvdm->seg_status.thin_pool->discards);
+
+	if (!(ret = dm_pool_strdup(mem, s))) {
+		log_error("lvseg_kernel_discards_dup_with_info_and_seg_status: dm_pool_strdup failed");
+		return NULL;
+	}
+
+	return ret;
+}
+
+char *lvseg_kernel_discards_dup(struct dm_pool *mem, const struct lv_segment *seg)
+{
+	char *ret = NULL;
+	struct lv_with_info_and_seg_status status = {
+		.seg_status.type = SEG_STATUS_NONE,
+		.seg_status.seg = seg
+	};
+
+	if (!lv_is_thin_pool(seg->lv))
+		return NULL;
+
+	if (!(status.seg_status.mem = dm_pool_create("reporter_pool", 1024)))
+		return_NULL;
+
+	if (!(status.info_ok = lv_info_with_seg_status(seg->lv->vg->cmd, seg->lv, seg, 1, &status, 0, 0)))
+		goto_bad;
+
+	ret = lvseg_kernel_discards_dup_with_info_and_seg_status(mem, &status);
+bad:
+	dm_pool_destroy(status.seg_status.mem);
+	return ret;
 }
 
 char *lvseg_cachemode_dup(struct dm_pool *mem, const struct lv_segment *seg)
@@ -236,11 +347,9 @@ uint32_t lv_kernel_read_ahead(const struct logical_volume *lv)
 	return info.read_ahead;
 }
 
-static char *_do_lv_origin_dup(struct dm_pool *mem, const struct logical_volume *lv,
-			       int uuid)
+struct logical_volume *lv_origin_lv(const struct logical_volume *lv)
 {
-	struct logical_volume *origin;
-
+	struct logical_volume *origin = NULL;
 
 	if (lv_is_cow(lv))
 		origin = origin_from_cow(lv);
@@ -250,13 +359,22 @@ static char *_do_lv_origin_dup(struct dm_pool *mem, const struct logical_volume 
 		origin = first_seg(lv)->origin;
 	else if (lv_is_thin_volume(lv) && first_seg(lv)->external_lv)
 		origin = first_seg(lv)->external_lv;
-	else
+
+	return origin;
+}
+
+static char *_do_lv_origin_dup(struct dm_pool *mem, const struct logical_volume *lv,
+			       int uuid)
+{
+	struct logical_volume *origin_lv = lv_origin_lv(lv);
+
+	if (!origin_lv)
 		return NULL;
 
 	if (uuid)
-		return lv_uuid_dup(mem, origin);
+		return lv_uuid_dup(mem, origin_lv);
 	else
-		return lv_name_dup(mem, origin);
+		return lv_name_dup(mem, origin_lv);
 }
 
 char *lv_origin_dup(struct dm_pool *mem, const struct logical_volume *lv)
@@ -327,21 +445,30 @@ char *lv_modules_dup(struct dm_pool *mem, const struct logical_volume *lv)
 	return tags_format_and_copy(mem, modules);
 }
 
-static char *_do_lv_mirror_log_dup(struct dm_pool *mem, const struct logical_volume *lv,
-				   int uuid)
+struct logical_volume *lv_mirror_log_lv(const struct logical_volume *lv)
 {
 	struct lv_segment *seg;
 
 	dm_list_iterate_items(seg, &lv->segments) {
-		if (seg_is_mirrored(seg) && seg->log_lv) {
-			if (uuid)
-				return lv_uuid_dup(mem, seg->log_lv);
-			else
-				return lv_name_dup(mem, seg->log_lv);
-		}
+		if (seg_is_mirrored(seg) && seg->log_lv)
+			return seg->log_lv;
 	}
 
 	return NULL;
+}
+
+static char *_do_lv_mirror_log_dup(struct dm_pool *mem, const struct logical_volume *lv,
+				   int uuid)
+{
+	struct logical_volume *mirror_log_lv = lv_mirror_log_lv(lv);
+
+	if (!mirror_log_lv)
+		return NULL;
+
+	if (uuid)
+		return lv_uuid_dup(mem, mirror_log_lv);
+	else
+		return lv_name_dup(mem, mirror_log_lv);
 }
 
 char *lv_mirror_log_dup(struct dm_pool *mem, const struct logical_volume *lv)
@@ -354,22 +481,27 @@ char *lv_mirror_log_uuid_dup(struct dm_pool *mem, const struct logical_volume *l
 	return _do_lv_mirror_log_dup(mem, lv, 1);
 }
 
+struct logical_volume *lv_pool_lv(const struct logical_volume *lv)
+{
+	struct lv_segment *seg = (lv_is_thin_volume(lv) || lv_is_cache(lv)) ?
+				  first_seg(lv) : NULL;
+	struct logical_volume *pool_lv = seg ? seg->pool_lv : NULL;
+
+	return pool_lv;
+}
+
 static char *_do_lv_pool_lv_dup(struct dm_pool *mem, const struct logical_volume *lv,
 				int uuid)
 {
-	struct lv_segment *seg;
+	struct logical_volume *pool_lv = lv_pool_lv(lv);
 
-	dm_list_iterate_items(seg, &lv->segments) {
-		if (seg->pool_lv &&
-		    (seg_is_thin_volume(seg) || seg_is_cache(seg))) {
-			if (uuid)
-				return lv_uuid_dup(mem, seg->pool_lv);
-			else
-				return lv_name_dup(mem, seg->pool_lv);
-		}
-	}
+	if (!pool_lv)
+		return NULL;
 
-	return NULL;
+	if (uuid)
+		return lv_uuid_dup(mem, pool_lv);
+	else
+		return lv_name_dup(mem, pool_lv);
 }
 
 char *lv_pool_lv_dup(struct dm_pool *mem, const struct logical_volume *lv)
@@ -382,20 +514,27 @@ char *lv_pool_lv_uuid_dup(struct dm_pool *mem, const struct logical_volume *lv)
 	return _do_lv_pool_lv_dup(mem, lv, 1);
 }
 
+struct logical_volume *lv_data_lv(const struct logical_volume *lv)
+{
+	struct lv_segment *seg = (lv_is_thin_pool(lv) || lv_is_cache_pool(lv)) ?
+				  first_seg(lv) : NULL;
+	struct logical_volume *data_lv = seg ? seg_lv(seg, 0) : NULL;
+
+	return data_lv;
+}
+
 static char *_do_lv_data_lv_dup(struct dm_pool *mem, const struct logical_volume *lv,
 				int uuid)
 {
-	struct lv_segment *seg = (lv_is_thin_pool(lv) || lv_is_cache_pool(lv)) ?
-		first_seg(lv) : NULL;
+	struct logical_volume *data_lv = lv_data_lv(lv);
 
-	if (seg) {
-		if (uuid)
-			return lv_uuid_dup(mem, seg_lv(seg, 0));
-		else
-			return lv_name_dup(mem, seg_lv(seg, 0));
-	}
+	if (!data_lv)
+		return NULL;
 
-	return NULL;
+	if (uuid)
+		return lv_uuid_dup(mem, data_lv);
+	else
+		return lv_name_dup(mem, data_lv);
 }
 
 char *lv_data_lv_dup(struct dm_pool *mem, const struct logical_volume *lv)
@@ -408,21 +547,27 @@ char *lv_data_lv_uuid_dup(struct dm_pool *mem, const struct logical_volume *lv)
 	return _do_lv_data_lv_dup(mem, lv, 1);
 }
 
+struct logical_volume *lv_metadata_lv(const struct logical_volume *lv)
+{
+	struct lv_segment *seg = (lv_is_thin_pool(lv) || lv_is_cache_pool(lv)) ?
+				  first_seg(lv) : NULL;
+	struct logical_volume *metadata_lv = seg ? seg->metadata_lv : NULL;
+
+	return metadata_lv;
+}
 
 static char *_do_lv_metadata_lv_dup(struct dm_pool *mem, const struct logical_volume *lv,
 				    int uuid)
 {
-	struct lv_segment *seg = (lv_is_thin_pool(lv) || lv_is_cache_pool(lv)) ?
-		first_seg(lv) : NULL;
+	struct logical_volume *metadata_lv = lv_metadata_lv(lv);
 
-	if (seg) {
-		if (uuid)
-			return lv_uuid_dup(mem, seg->metadata_lv);
-		else
-			return lv_name_dup(mem, seg->metadata_lv);
-	}
+	if (!metadata_lv)
+		return NULL;
 
-	return NULL;
+	if (uuid)
+		return lv_uuid_dup(mem, metadata_lv);
+	else
+		return lv_name_dup(mem, metadata_lv);
 }
 
 char *lv_metadata_lv_dup(struct dm_pool *mem, const struct logical_volume *lv)
@@ -462,8 +607,7 @@ int lv_kernel_major(const struct logical_volume *lv)
 	return -1;
 }
 
-static char *_do_lv_convert_lv_dup(struct dm_pool *mem, const struct logical_volume *lv,
-				   int uuid)
+struct logical_volume *lv_convert_lv(const struct logical_volume *lv)
 {
 	struct lv_segment *seg;
 
@@ -472,14 +616,25 @@ static char *_do_lv_convert_lv_dup(struct dm_pool *mem, const struct logical_vol
 
 		/* Temporary mirror is always area_num == 0 */
 		if (seg_type(seg, 0) == AREA_LV &&
-		    is_temporary_mirror_layer(seg_lv(seg, 0))) {
-			if (uuid)
-				return lv_uuid_dup(mem, seg_lv(seg, 0));
-			else
-				return lv_name_dup(mem, seg_lv(seg, 0));
-		}
+		    is_temporary_mirror_layer(seg_lv(seg, 0)))
+			return seg_lv(seg, 0);
 	}
+
 	return NULL;
+}
+
+static char *_do_lv_convert_lv_dup(struct dm_pool *mem, const struct logical_volume *lv,
+				   int uuid)
+{
+	struct logical_volume *convert_lv = lv_convert_lv(lv);
+
+	if (!convert_lv)
+		return NULL;
+
+	if (uuid)
+		return lv_uuid_dup(mem, convert_lv);
+	else
+		return lv_name_dup(mem, convert_lv);
 }
 
 char *lv_convert_lv_dup(struct dm_pool *mem, const struct logical_volume *lv)

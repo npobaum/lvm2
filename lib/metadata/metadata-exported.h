@@ -10,7 +10,7 @@
  *
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 /*
@@ -84,7 +84,7 @@
 
 //#define POSTORDER_FLAG	UINT64_C(0x0000000002000000) /* Not real flags, reserved for
 //#define POSTORDER_OPEN_FLAG	UINT64_C(0x0000000004000000)    temporary use inside vg_read_internal. */
-//#define VIRTUAL_ORIGIN	UINT64_C(0x0000000008000000)	/* LV - internal use only */
+#define VIRTUAL_ORIGIN		UINT64_C(0x0000000008000000)	/* LV - internal use only */
 
 #define MERGING			UINT64_C(0x0000000010000000)	/* LV SEG */
 
@@ -191,8 +191,11 @@
 #define lv_is_locked(lv)	(((lv)->status & LOCKED) ? 1 : 0)
 #define lv_is_virtual(lv)	(((lv)->status & VIRTUAL) ? 1 : 0)
 #define lv_is_merging(lv)	(((lv)->status & MERGING) ? 1 : 0)
+#define lv_is_merging_origin(lv) (lv_is_merging(lv))
+#define lv_is_snapshot(lv)	(((lv)->status & SNAPSHOT) ? 1 : 0)
 #define lv_is_converting(lv)	(((lv)->status & CONVERTING) ? 1 : 0)
 #define lv_is_external_origin(lv)	(((lv)->external_count > 0) ? 1 : 0)
+#define lv_is_virtual_origin(lv) (((lv)->status & VIRTUAL_ORIGIN) ? 1 : 0)
 
 #define lv_is_thin_volume(lv)	(((lv)->status & THIN_VOLUME) ? 1 : 0)
 #define lv_is_thin_pool(lv)	(((lv)->status & THIN_POOL) ? 1 : 0)
@@ -302,7 +305,7 @@ struct pv_segment {
 	uint32_t lv_area;	/* Index to area in LV segment */
 };
 
-#define pvseg_is_allocated(pvseg) ((pvseg)->lvseg)
+#define pvseg_is_allocated(pvseg) ((pvseg)->lvseg ? 1 : 0)
 
 /*
  * Properties of each format instance type.
@@ -571,17 +574,16 @@ struct lvresize_params {
 
 	/* FIXME Deal with meaningless 'ac' */
 	/* Arg counts & values */
+	alloc_policy_t ac_alloc;
+	unsigned ac_force;
+	unsigned ac_mirrors;
+	uint32_t ac_mirrors_value;
+	unsigned ac_no_sync;
 	unsigned ac_policy;
 	unsigned ac_stripes;
 	uint32_t ac_stripes_value;
-	unsigned ac_mirrors;
-	uint32_t ac_mirrors_value;
 	unsigned ac_stripesize;
 	uint64_t ac_stripesize_value;
-	alloc_policy_t ac_alloc;
-	unsigned ac_no_sync;
-	unsigned ac_force;
-
 	const char *ac_type;
 };
 
@@ -1004,12 +1006,10 @@ struct lv_segment *get_only_segment_using_this_lv(const struct logical_volume *l
 * Useful functions for managing snapshots.
 */
 int lv_is_origin(const struct logical_volume *lv);
-int lv_is_virtual_origin(const struct logical_volume *lv);
 int lv_is_thin_origin(const struct logical_volume *lv, unsigned *snapshot_count);
 int lv_is_cache_origin(const struct logical_volume *lv);
 int lv_is_cow(const struct logical_volume *lv);
-int lv_is_merging_origin(const struct logical_volume *origin);
-int lv_is_merging_cow(const struct logical_volume *snapshot);
+int lv_is_merging_cow(const struct logical_volume *cow);
 uint32_t cow_max_extents(const struct logical_volume *origin, uint32_t chunk_size);
 int cow_has_min_chunks(const struct volume_group *vg, uint32_t cow_extents, uint32_t chunk_size);
 int lv_is_cow_covering_origin(const struct logical_volume *lv);
@@ -1204,9 +1204,9 @@ int pv_change_metadataignore(struct physical_volume *pv, uint32_t mda_ignore);
 
 int vg_flag_write_locked(struct volume_group *vg);
 int vg_check_write_mode(struct volume_group *vg);
-#define vg_is_clustered(vg) (vg_status((vg)) & CLUSTERED)
-#define vg_is_exported(vg) (vg_status((vg)) & EXPORTED_VG)
-#define vg_is_resizeable(vg) (vg_status((vg)) & RESIZEABLE_VG)
+#define vg_is_clustered(vg) ((vg_status((vg)) & CLUSTERED) ? 1 : 0)
+#define vg_is_exported(vg) ((vg_status((vg)) & EXPORTED_VG) ? 1 : 0)
+#define vg_is_resizeable(vg) ((vg_status((vg)) & RESIZEABLE_VG) ? 1 : 0)
 
 int lv_has_unknown_segments(const struct logical_volume *lv);
 int vg_has_unknown_segments(const struct volume_group *vg);

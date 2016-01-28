@@ -10,7 +10,7 @@
  *
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #include "tools.h"
@@ -189,6 +189,15 @@ static int _auto_activation_handler(struct cmd_context *cmd,
 		log_error("%s: autoactivation failed.", vg->name);
 		goto out;
 	}
+
+	/*
+	 * After sucessfull activation we need to initialise polling
+	 * for all activated LVs in a VG. Possible enhancement would
+	 * be adding --poll y|n cmdline option for pvscan and call
+	 * init_background_polling routine in autoactivation handler.
+	 */
+	if (!(vgchange_background_polling(vg->cmd, vg)))
+		goto_out;
 
 	r = 1;
 
@@ -404,10 +413,6 @@ int pvscan(struct cmd_context *cmd, int argc, char **argv)
 	if (!lockd_gl(cmd, "sh", 0))
 		return_ECMD_FAILED;
 
-	if (cmd->full_filter->wipe)
-		cmd->full_filter->wipe(cmd->full_filter);
-
-	lvmcache_destroy(cmd, 1, 0);
 
 	if (!(handle = init_processing_handle(cmd))) {
 		log_error("Failed to initialize processing handle.");

@@ -10,7 +10,7 @@
  *
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #ifndef _LVM_TOOLS_H
@@ -105,6 +105,8 @@ struct arg_value_group_list {
 #define LOCKD_VG_SH		0x00000020
 /* Command does not process any metadata. */
 #define NO_METADATA_PROCESSING	0x00000040
+/* Command wants to scan for new devices and force labels to be read from them all. */
+#define REQUIRES_FULL_LABEL_SCAN 0x00000080
  
 /* a register of the lvm commands */
 struct command {
@@ -182,5 +184,7 @@ int mirror_remove_missing(struct cmd_context *cmd,
 
 int vgchange_activate(struct cmd_context *cmd, struct volume_group *vg,
 		       activation_change_t activate);
+
+int vgchange_background_polling(struct cmd_context *cmd, struct volume_group *vg);
 
 #endif

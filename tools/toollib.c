@@ -10,7 +10,7 @@
  *
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #include "tools.h"
@@ -777,7 +777,7 @@ int vgcreate_params_set_from_args(struct cmd_context *cmd,
 	}
 
 	if (arg_uint64_value(cmd, physicalextentsize_ARG, 0) > MAX_EXTENT_SIZE) {
-		log_error("Physical extent size cannot be larger than %s.",
+		log_error("Physical extent size must be smaller than %s.",
 				  display_size(cmd, (uint64_t) MAX_EXTENT_SIZE));
 		return 0;
 	}
@@ -2205,6 +2205,16 @@ int process_each_vg(struct cmd_context *cmd, int argc, char **argv,
 	}
 
 	/*
+	 * First rescan for available devices, then force the next
+	 * label scan to be done.  get_vgnameids() will scan labels
+	 * (when not using lvmetad).
+	 */
+	if (cmd->command->flags & REQUIRES_FULL_LABEL_SCAN) {
+		dev_cache_full_scan(cmd->full_filter);
+		lvmcache_force_next_label_scan();
+	}
+
+	/*
 	 * A list of all VGs on the system is needed when:
 	 * . processing all VGs on the system
 	 * . A VG name is specified which may refer to one
@@ -2396,7 +2406,7 @@ int process_each_lv_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 
 		log_very_verbose("Adding %s/%s to the list of LVs to be processed.", vg->name, lvl->lv->name);
 
-		if (!(final_lvl = dm_pool_zalloc(vg->vgmem, sizeof(struct lv_list)))) {
+		if (!(final_lvl = dm_pool_zalloc(cmd->mem, sizeof(struct lv_list)))) {
 			log_error("Failed to allocate final LV list item.");
 			ret_max = ECMD_FAILED;
 			goto_out;
@@ -2406,6 +2416,10 @@ int process_each_lv_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 	}
 
 	dm_list_iterate_items(lvl, &final_lvs) {
+		if (sigint_caught()) {
+			ret_max = ECMD_FAILED;
+			goto_out;
+		}
 		/*
 		 *  FIXME: Once we have index over vg->removed_lvs, check directly
 		 *         LV presence there and remove LV_REMOVE flag/lv_is_removed fn
@@ -3023,7 +3037,6 @@ static int _process_pvs_in_vg(struct cmd_context *cmd,
 	const char *pv_name;
 	int selected;
 	int process_pv;
-	int dev_found;
 	int ret_max = ECMD_PROCESSED;
 	int ret = 0;
 
@@ -3077,21 +3090,17 @@ static int _process_pvs_in_vg(struct cmd_context *cmd,
 			else
 				log_very_verbose("Processing PV %s in VG %s.", pv_name, vg->name);
 
-			dev_found = _device_list_remove(all_devices, pv->dev);
+			_device_list_remove(all_devices, pv->dev);
 
 			/*
-			 * FIXME PVs with no mdas may turn up in an orphan VG when
-			 * not using lvmetad as well as their correct VG.  They
-			 * will be missing from all_devices the second time
-			 * around but must not be processed twice or trigger a message.
-			 *
-			 * Missing PVs will also need processing even though they are
-			 * not present in all_devices.
+			 * pv->dev should be found in all_devices unless it's a
+			 * case of a "missing device".  Previously there have
+			 * been cases where we needed to skip processing the PV
+			 * if pv->dev was not found in all_devices to avoid
+			 * processing a PV twice, i.e. when the PV had no MDAs
+			 * it would be seen once in its real VG and again
+			 * wrongly in the orphan VG.  This no longer happens.
 			 */
-			if (!dev_found && !is_missing_pv(pv)) {
-				log_verbose("Skipping PV %s in VG %s: not in device list.", pv_name, vg->name);
-				continue;
-			}
 
 			if (!skip) {
 				ret = process_single_pv(cmd, vg, pv, handle);
@@ -3338,6 +3347,16 @@ int process_each_pv(struct cmd_context *cmd,
 	/* Needed for a current listing of the global VG namespace. */
 	if (!only_this_vgname && !lockd_gl(cmd, "sh", 0))
 		return_ECMD_FAILED;
+
+	/*
+	 * This full scan would be done by _get_all_devices() if
+	 * it were not done here first.  It's called here first
+	 * so that get_vgnameids() will look at any new devices.
+	 */
+	if (!trust_cache()) {
+		dev_cache_full_scan(cmd->full_filter);
+		lvmcache_destroy(cmd, 1, 0);
+	}
 
 	/*
 	 * Need pvid's set on all PVs before processing so that pvid's

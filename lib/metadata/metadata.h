@@ -10,7 +10,7 @@
  *
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 /*
@@ -61,7 +61,6 @@
 #define PRECOMMITTED		UINT64_C(0x00200000)	/* VG - internal use only */
 #define POSTORDER_FLAG		UINT64_C(0x02000000) /* Not real flags, reserved for  */
 #define POSTORDER_OPEN_FLAG	UINT64_C(0x04000000) /* temporary use inside vg_read_internal. */
-#define VIRTUAL_ORIGIN		UINT64_C(0x08000000)	/* LV - internal use only */
 
 #define SHARED            	UINT64_C(0x00000800)	/* VG */
 

@@ -11,7 +11,7 @@
  *
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #include "tools.h"
@@ -41,8 +41,11 @@ static int _pvresize_single(struct cmd_context *cmd,
 	 * i.e. the global lock is only needed for orphans.
 	 * Convert sh to ex.
 	 */
-	if (is_orphan(pv) && !lockd_gl(cmd, "ex", 0))
-		return_ECMD_FAILED;
+	if (is_orphan(pv)) {
+		if (!lockd_gl(cmd, "ex", 0))
+			return_ECMD_FAILED;
+		cmd->lockd_gl_disable = 1;
+	}
 
 	if (!pv_resize_single(cmd, vg, pv, params->new_size))
 		return_ECMD_FAILED;

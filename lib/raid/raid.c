@@ -9,7 +9,7 @@
  *
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #include "lib.h"
@@ -320,12 +320,13 @@ static int _raid_target_present(struct cmd_context *cmd,
 	unsigned i;
 
 	if (!_raid_checked) {
-		_raid_present = target_present(cmd, "raid", 1);
+		_raid_checked = 1;
 
-		if (!target_version("raid", &maj, &min, &patchlevel)) {
-			log_error("Cannot read target version of RAID kernel module.");
+		if (!(_raid_present = target_present(cmd, "raid", 1)))
 			return 0;
-		}
+
+		if (!target_version("raid", &maj, &min, &patchlevel))
+			return_0;
 
 		for (i = 0; i < DM_ARRAY_SIZE(_features); ++i)
 			if ((maj > _features[i].maj) ||
@@ -334,8 +335,6 @@ static int _raid_target_present(struct cmd_context *cmd,
 			else
 				log_very_verbose("Target raid does not support %s.",
 						 _features[i].feature);
-
-		_raid_checked = 1;
 	}
 
 	if (attributes)

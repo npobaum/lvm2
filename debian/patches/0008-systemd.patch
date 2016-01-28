@@ -1,4 +1,4 @@
-From f6486fe12d7d5616ea417d8f342322e0ebedc921 Mon Sep 17 00:00:00 2001
+From 44cb4af9eb1e3621b9c962e8ff358565df950082 Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 30 Jun 2015 11:46:12 +0200
 Subject: systemd
@@ -8,7 +8,7 @@ Subject: systemd
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/scripts/lvm2_activation_generator_systemd_red_hat.c b/scripts/lvm2_activation_generator_systemd_red_hat.c
-index 8a1b173..3a48dbd 100644
+index 62467bd..b75bf80 100644
 --- a/scripts/lvm2_activation_generator_systemd_red_hat.c
 +++ b/scripts/lvm2_activation_generator_systemd_red_hat.c
 @@ -137,7 +137,7 @@ static int generate_unit(const char *dir, int unit, int sysinit_needed)

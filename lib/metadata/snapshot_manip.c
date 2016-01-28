@@ -10,7 +10,7 @@
  *
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #include "lib.h"
@@ -129,21 +129,11 @@ int lv_is_visible(const struct logical_volume *lv)
 	return lv->status & VISIBLE_LV ? 1 : 0;
 }
 
-int lv_is_virtual_origin(const struct logical_volume *lv)
+int lv_is_merging_cow(const struct logical_volume *cow)
 {
-	return (lv->status & VIRTUAL_ORIGIN) ? 1 : 0;
-}
+	struct lv_segment *snap_seg = find_snapshot(cow);
 
-int lv_is_merging_origin(const struct logical_volume *origin)
-{
-	return lv_is_merging(origin);
-}
-
-int lv_is_merging_cow(const struct logical_volume *snapshot)
-{
-	struct lv_segment *snap_seg = find_snapshot(snapshot);
-
-	/* checks lv_segment's status to see if cow is merging */
+	/* checks lv_segment's status to see if snapshot is merging */
 	return (snap_seg && (snap_seg->status & MERGING)) ? 1 : 0;
 }
 
@@ -224,6 +214,28 @@ void clear_snapshot_merge(struct logical_volume *origin)
 	origin->status &= ~MERGING;
 }
 
+static struct lv_segment *_alloc_snapshot_seg(struct logical_volume *lv)
+{
+	struct lv_segment *seg;
+	const struct segment_type *segtype;
+
+	segtype = get_segtype_from_string(lv->vg->cmd, SEG_TYPE_NAME_SNAPSHOT);
+	if (!segtype) {
+		log_error("Failed to find snapshot segtype");
+		return NULL;
+	}
+
+	if (!(seg = alloc_lv_segment(segtype, lv, 0, lv->le_count, 0, 0,
+				     NULL, 0, lv->le_count, 0, 0, 0, NULL))) {
+		log_error("Couldn't allocate new snapshot segment.");
+		return NULL;
+	}
+
+	dm_list_add(&lv->segments, &seg->list);
+
+	return seg;
+}
+
 int vg_add_snapshot(struct logical_volume *origin,
 		    struct logical_volume *cow, union lvid *lvid,
 		    uint32_t extent_count, uint32_t chunk_size)
@@ -251,7 +263,7 @@ int vg_add_snapshot(struct logical_volume *origin,
 
 	snap->le_count = extent_count;
 
-	if (!(seg = alloc_snapshot_seg(snap, 0, 0)))
+	if (!(seg = _alloc_snapshot_seg(snap)))
 		return_0;
 
 	init_snapshot_seg(seg, origin, cow, chunk_size, 0);
