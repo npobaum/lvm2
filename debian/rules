@@ -87,6 +87,7 @@ $(STAMPS_DIR)/setup_deb: $(STAMPS_DIR)/source
 		--with-thin-dump=/usr/sbin/thin_dump \
 		--with-thin-repair=/usr/sbin/thin_repair \
 		--enable-applib \
+		--enable-blkid_wiping \
 		--enable-cmdlib \
 		--enable-dmeventd \
 		--enable-lvmetad \
