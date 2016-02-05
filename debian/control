@@ -8,6 +8,7 @@ Build-Depends:
  dh-python,
  dh-systemd,
  automake,
+ libblkid-dev,
  libcmap-dev,
  libcorosync-common-dev,
  libcpg-dev,
@@ -28,9 +29,8 @@ X-Python3-Version: >= 3.4
 
 Package: lvm2
 Architecture: linux-any
-Depends: ${shlibs:Depends}, ${misc:Depends}, lsb-base, dmsetup (>> 2:1.02.47), dmeventd (>> 2:1.02.90), initscripts (>= 2.88dsf-13.3)
+Depends: ${shlibs:Depends}, ${misc:Depends}, lsb-base, dmsetup, dmeventd
 Suggests: thin-provisioning-tools
-Breaks: initramfs-tools (<< 0.99), thin-provisioning-tools (<< 0.3.2)
 Multi-Arch: foreign
 Description: Linux Logical Volume Manager
  This is LVM2, the rewrite of The Linux Logical Volume Manager.  LVM
@@ -69,6 +69,7 @@ Package: libdevmapper-dev
 Section: libdevel
 Architecture: linux-any
 Depends: ${misc:Depends}, libdevmapper1.02.1 (= ${binary:Version}), libdevmapper-event1.02.1 (= ${binary:Version}), libudev-dev, libselinux1-dev
+Multi-Arch: same
 Description: Linux Kernel Device Mapper header files
  The Linux Kernel Device Mapper is the LVM (Linux Logical Volume Management)
  Team's implementation of a minimalistic kernel-space driver that handles
@@ -116,8 +117,7 @@ Description: Linux Kernel Device Mapper userspace library
 
 Package: dmsetup
 Architecture: linux-any
-Depends: ${shlibs:Depends}, ${misc:Depends}, util-linux (>> 2.16)
-Conflicts: devicekit-disks (<< 009)
+Depends: ${shlibs:Depends}, ${misc:Depends}
 Multi-Arch: foreign
 Description: Linux Kernel Device Mapper userspace library
  The Linux Kernel Device Mapper is the LVM (Linux Logical Volume Management)
@@ -186,7 +186,7 @@ Package: liblvm2cmd2.02
 Section: libs
 Architecture: linux-any
 Pre-Depends: ${misc:Pre-Depends}
-Depends: ${shlibs:Depends}, ${misc:Depends}, dmeventd (>> 2:1.02.90)
+Depends: ${shlibs:Depends}, ${misc:Depends}, dmeventd
 Multi-Arch: same
 Description: LVM2 command library
  This package contains the lvm2cmd shared library.
@@ -195,6 +195,7 @@ Package: liblvm2-dev
 Section: libdevel
 Architecture: linux-any
 Depends: ${shlibs:Depends}, ${misc:Depends}, liblvm2app2.2 (= ${binary:Version}), liblvm2cmd2.02 (= ${binary:Version}), libdevmapper-dev
+Multi-Arch: same
 Description: LVM2 libraries - development files
  This package contains files needed to develop applications that use the
  lvm2app library.
@@ -204,6 +205,7 @@ Section: python
 Architecture: linux-any
 Depends: ${shlibs:Depends}, ${python:Depends}, ${misc:Depends}
 Provides: ${python:Provides}
+Multi-Arch: same
 Description: LVM2 application library - Python 2 binding
  This package contains the python binding of the lvm2app library. It allows
  easier access to the basic LVM objects and provides functions to enumerate,
@@ -214,6 +216,7 @@ Section: python
 Architecture: linux-any
 Depends: ${shlibs:Depends}, ${python3:Depends}, ${misc:Depends}
 Provides: ${python3:Provides}
+Multi-Arch: same
 Description: LVM2 application library - Python 3 binding
  This package contains the python binding of the lvm2app library. It allows
  easier access to the basic LVM objects and provides functions to enumerate,

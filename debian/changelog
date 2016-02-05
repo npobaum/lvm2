@@ -1,3 +1,11 @@
+lvm2 (2.02.141-2) unstable; urgency=medium
+
+  * Use blkid.
+  * Mark dev and python packages as multi-arch same. (closes: 731294)
+  * Remove old dependency and conflicts. (closes: 804972)
+
+ -- Bastian Blank <waldi@debian.org>  Fri, 05 Feb 2016 22:11:45 +0100
+
 lvm2 (2.02.141-1) unstable; urgency=medium
 
   * New upstream version.
