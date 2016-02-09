@@ -42,7 +42,7 @@ Package: lvm2-udeb
 Package-Type: udeb
 Section: debian-installer
 Architecture: linux-any
-Depends: ${shlibs:Depends}, ${misc:Depends}, watershed-udeb
+Depends: ${shlibs:Depends}, ${misc:Depends}
 Description: Linux Logical Volume Manager
  This is a udeb, or a microdeb, for the debian-installer.
  .

@@ -1,3 +1,13 @@
+lvm2 (2.02.133-1ubuntu5) xenial; urgency=medium
+
+  * Drop udev rules from lvm2-udeb package. Otherwise, lvm groups and
+    volumes are activated behind partman's back e.g. after dasd drive
+    activation. And thus prevents dasdfmt from succeeding. LP: #1536664
+  * Drop watershed-udeb dependency, no longer needed.
+  * Keep dmsetup udev rules.
+
+ -- Dimitri John Ledkov <xnox@ubuntu.com>  Tue, 09 Feb 2016 10:14:58 +0000
+
 lvm2 (2.02.133-1ubuntu4) xenial; urgency=medium
 
   * Remove the init script dependency on cman_tool. (LP: #1089013)
