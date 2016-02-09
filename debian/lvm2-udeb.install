@@ -1,4 +1,3 @@
-../../85-lvm2.rules lib/udev/rules.d/
 etc/lvm/lvm.conf
 sbin/lv*
 sbin/pv*
