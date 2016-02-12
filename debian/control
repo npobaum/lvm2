@@ -9,7 +9,7 @@ Build-Depends:
  dh-python,
  dh-systemd,
  automake,
- libcorosync-dev,
+ libcorosync-common-dev,
  libdlm-dev (>> 2),
  libreadline-gplv2-dev,
  libselinux1-dev,
