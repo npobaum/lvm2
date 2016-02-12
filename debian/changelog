@@ -1,3 +1,10 @@
+lvm2 (2.02.133-1ubuntu7) xenial; urgency=medium
+
+  * Build-depend on libcorosync-common-dev and others, instead of
+    libcorosync-dev.
+
+ -- Matthias Klose <doko@ubuntu.com>  Fri, 12 Feb 2016 10:40:28 +0100
+
 lvm2 (2.02.133-1ubuntu5) xenial; urgency=medium
 
   * Drop udev rules from lvm2-udeb package. Otherwise, lvm groups and
