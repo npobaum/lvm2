@@ -82,11 +82,6 @@ struct lv_names {
 	const char *new;
 };
 
-struct pv_and_int {
-	struct physical_volume *pv;
-	int *i;
-};
-
 enum {
 	LV_TYPE_UNKNOWN,
 	LV_TYPE_PUBLIC,
@@ -569,93 +564,6 @@ bad:
 
 	return 0;
 }
-
-static int _lv_is_on_pv(struct logical_volume *lv, void *data)
-{
-	int *is_on_pv = ((struct pv_and_int *)data)->i;
-	struct physical_volume *pv = ((struct pv_and_int *)data)->pv;
-	uint32_t s;
-	struct physical_volume *pv2;
-	struct lv_segment *seg;
-
-	if (!lv || !(first_seg(lv)))
-		return_0;
-
-	/*
-	 * If the LV has already been found to be on the PV, then
-	 * we don't need to continue checking - just return.
-	 */
-	if (*is_on_pv)
-		return 1;
-
-	dm_list_iterate_items(seg, &lv->segments) {
-		for (s = 0; s < seg->area_count; s++) {
-			if (seg_type(seg, s) != AREA_PV)
-				continue;
-
-			pv2 = seg_pv(seg, s);
-			if (id_equal(&pv->id, &pv2->id)) {
-				*is_on_pv = 1;
-				return 1;
-			}
-			if (pv->dev && pv2->dev &&
-			    (pv->dev->dev == pv2->dev->dev)) {
-				*is_on_pv = 1;
-				return 1;
-			}
-		}
-	}
-
-	return 1;
-}
-
-/*
- * lv_is_on_pv
- * @lv:
- * @pv:
- *
- * If any of the component devices of the LV are on the given PV, 1
- * is returned; otherwise 0.  For example if one of the images of a RAID
- * (or its metadata device) is on the PV, 1 would be returned for the
- * top-level LV.
- * If you wish to check the images themselves, you should pass them.
- *
- * Returns: 1 if LV (or part of LV) is on PV, 0 otherwise
- */
-int lv_is_on_pv(struct logical_volume *lv, struct physical_volume *pv)
-{
-	int is_on_pv = 0;
-	struct pv_and_int context = { pv, &is_on_pv };
-
-	if (!_lv_is_on_pv(lv, &context) ||
-	    !for_each_sub_lv(lv, _lv_is_on_pv, &context))
-		/* Failure only happens if bad arguments are passed */
-		log_error(INTERNAL_ERROR "for_each_sub_lv failure.");
-
-	log_debug_metadata("%s is %son %s", lv->name,
-			   is_on_pv ? "" : "not ", pv_dev_name(pv));
-	return is_on_pv;
-}
-
-/*
- * lv_is_on_pvs
- * @lv
- * @pvs
- *
- * Returns 1 if the LV (or part of the LV) is on any of the pvs
- * in the list, 0 otherwise.
- */
-int lv_is_on_pvs(struct logical_volume *lv, struct dm_list *pvs)
-{
-	struct pv_list *pvl;
-
-	dm_list_iterate_items(pvl, pvs)
-		if (lv_is_on_pv(lv, pvl->pv))
-			return 1;
-
-	return 0;
-}
-
 struct dm_list_and_mempool {
 	struct dm_list *list;
 	struct dm_pool *mem;
@@ -4316,7 +4224,8 @@ static int _request_confirmation(const struct volume_group *vg,
 	if (lp->resizefs) {
 		if (!info.exists) {
 			log_error("Logical volume %s must be activated "
-				  "before resizing filesystem", lp->lv_name);
+				  "before resizing filesystem.",
+				  display_lvname(lv));
 			return 0;
 		}
 		return 1;
@@ -4325,7 +4234,7 @@ static int _request_confirmation(const struct volume_group *vg,
 	if (!info.exists)
 		return 1;
 
-	log_warn("WARNING: Reducing active%s logical volume to %s",
+	log_warn("WARNING: Reducing active%s logical volume to %s.",
 		 info.open_count ? " and open" : "",
 		 display_size(vg->cmd, (uint64_t) lp->extents * vg->extent_size));
 
@@ -4333,8 +4242,9 @@ static int _request_confirmation(const struct volume_group *vg,
 
 	if (!lp->ac_force) {
 		if (yes_no_prompt("Do you really want to reduce %s? [y/n]: ",
-				  lp->lv_name) == 'n') {
-			log_error("Logical volume %s NOT reduced", lp->lv_name);
+				  display_lvname(lv)) == 'n') {
+			log_error("Logical volume %s NOT reduced",
+				  display_lvname(lv));
 			return 0;
 		}
 		if (sigint_caught())
@@ -4407,13 +4317,13 @@ static int _adjust_amount(dm_percent_t percent, int policy_threshold, int *polic
 {
 	if (!(DM_PERCENT_0 < percent && percent <= DM_PERCENT_100) ||
 	    percent <= (policy_threshold * DM_PERCENT_1))
-		return 0;
+		return 0; /* nothing to do */
 	/*
 	 * Evaluate the minimal amount needed to get bellow threshold.
 	 * Keep using DM_PERCENT_1 units for better precision.
 	 * Round-up to needed percentage value
 	 */
-	percent = (percent/policy_threshold + (DM_PERCENT_1 - 1) / 100) / (DM_PERCENT_1 / 100) - 100;
+	percent = (percent / policy_threshold + (DM_PERCENT_1 - 1) / 100) / (DM_PERCENT_1 / 100) - 100;
 
 	/* Use it if current policy amount is smaller */
 	if (*policy_amount < percent)
@@ -4822,7 +4732,7 @@ static int _lvresize_adjust_extents(struct cmd_context *cmd, struct logical_volu
 	uint32_t seg_logical_extents;
 	uint32_t seg_physical_extents;
 	uint32_t area_multiple;
-	uint32_t stripesize_extents;
+	uint32_t stripes_extents;
 	uint32_t size_rest;
 	uint32_t existing_logical_extents = lv->le_count;
 	uint32_t existing_physical_extents, saved_existing_physical_extents;
@@ -4974,11 +4884,9 @@ static int _lvresize_adjust_extents(struct cmd_context *cmd, struct logical_volu
 			}
 		}
 	} else {  /* If reducing, find stripes, stripesize & size of last segment */
-		if (lp->stripes || lp->stripe_size || lp->mirrors) {
-			lp->stripes = lp->stripe_size = lp->mirrors = 0;
+		if (lp->ac_stripes || lp->ac_stripesize || lp->ac_mirrors)
 			log_print_unless_silent("Ignoring stripes, stripesize and mirrors "
 						"arguments when reducing.");
-		}
 
 		if (lp->sign == SIGN_MINUS)  {
 			if (lp->extents >= existing_extents) {
@@ -5055,22 +4963,24 @@ static int _lvresize_adjust_extents(struct cmd_context *cmd, struct logical_volu
 			return 0;
 		}
 
-		if (!(stripesize_extents = lp->stripe_size / vg->extent_size))
-			stripesize_extents = 1;
+		/* Segment size in extents must be divisible by stripes */
+		stripes_extents = lp->stripes;
+		if (lp->stripe_size > vg->extent_size)
+			/* Strip size is bigger then extent size needs more extents */
+			stripes_extents *= (lp->stripe_size / vg->extent_size);
 
-		size_rest = seg_size % (lp->stripes * stripesize_extents);
+		size_rest = seg_size % stripes_extents;
 		/* Round toward the original size. */
 		if (size_rest &&
 		    ((lp->extents < existing_logical_extents) ||
 		     !lp->percent ||
 		     (vg->free_count >= (lp->extents - existing_logical_extents - size_rest +
-					 (lp->stripes * stripesize_extents))))) {
+					 stripes_extents)))) {
 			log_print_unless_silent("Rounding size (%d extents) up to stripe "
 						"boundary size for segment (%d extents)",
-						lp->extents, lp->extents - size_rest +
-						(lp->stripes * stripesize_extents));
-			lp->extents = lp->extents - size_rest +
-				      (lp->stripes * stripesize_extents);
+						lp->extents,
+						lp->extents - size_rest + stripes_extents);
+			lp->extents = lp->extents - size_rest + stripes_extents;
 		} else if (size_rest) {
 			log_print_unless_silent("Rounding size (%d extents) down to stripe "
 						"boundary size for segment (%d extents)",
@@ -5395,20 +5305,6 @@ char *generate_lv_name(struct volume_group *vg, const char *format,
 	return buffer;
 }
 
-int vg_max_lv_reached(struct volume_group *vg)
-{
-	if (!vg->max_lv)
-		return 0;
-
-	if (vg->max_lv > vg_visible_lvs(vg))
-		return 0;
-
-	log_verbose("Maximum number of logical volumes (%u) reached "
-		    "in volume group %s", vg->max_lv, vg->name);
-
-	return 1;
-}
-
 struct logical_volume *alloc_lv(struct dm_pool *mem)
 {
 	struct logical_volume *lv;
@@ -5596,37 +5492,6 @@ struct dm_list *build_parallel_areas_from_lv(struct logical_volume *lv,
 	 */
 
 	return parallel_areas;
-}
-
-int link_lv_to_vg(struct volume_group *vg, struct logical_volume *lv)
-{
-	struct lv_list *lvl;
-
-	if (vg_max_lv_reached(vg))
-		stack;
-
-	if (!(lvl = dm_pool_zalloc(vg->vgmem, sizeof(*lvl))))
-		return_0;
-
-	lvl->lv = lv;
-	lv->vg = vg;
-	dm_list_add(&vg->lvs, &lvl->list);
-	lv->status &= ~LV_REMOVED;
-
-	return 1;
-}
-
-int unlink_lv_from_vg(struct logical_volume *lv)
-{
-	struct lv_list *lvl;
-
-	if (!(lvl = find_lv_in_vg(lv->vg, lv->name)))
-		return_0;
-
-	dm_list_move(&lv->vg->removed_lvs, &lvl->list);
-	lv->status |= LV_REMOVED;
-
-	return 1;
 }
 
 void lv_set_visible(struct logical_volume *lv)

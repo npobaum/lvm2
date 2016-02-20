@@ -1,3 +1,10 @@
+lvm2 (2.02.142-1) unstable; urgency=medium
+
+  * New upstream version.
+    - Fix unalligned memory access. (closes: #809685)
+
+ -- Bastian Blank <waldi@debian.org>  Sat, 20 Feb 2016 13:50:19 +0100
+
 lvm2 (2.02.141-2) unstable; urgency=medium
 
   * Use blkid.
