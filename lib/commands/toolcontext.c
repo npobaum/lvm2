@@ -278,6 +278,8 @@ static int _parse_debug_classes(struct cmd_context *cmd)
 			debug_classes |= LOG_CLASS_LOCKING;
 		else if (!strcasecmp(cv->v.str, "lvmpolld"))
 			debug_classes |= LOG_CLASS_LVMPOLLD;
+		else if (!strcasecmp(cv->v.str, "dbus"))
+			debug_classes |= LOG_CLASS_DBUS;
 		else
 			log_verbose("Unrecognised value for log/debug_classes: %s", cv->v.str);
 	}
@@ -674,6 +676,9 @@ static int _process_config(struct cmd_context *cmd)
 
 	if (!process_profilable_config(cmd))
 		return_0;
+
+	if (find_config_tree_bool(cmd, report_two_word_unknown_device_CFG, NULL))
+		init_unknown_device_name("unknown device");
 
 	init_detect_internal_vg_cache_corruption
 		(find_config_tree_bool(cmd, global_detect_internal_vg_cache_corruption_CFG, NULL));

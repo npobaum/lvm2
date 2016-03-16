@@ -1319,6 +1319,21 @@ static int _write_single_mda(struct metadata_area *mda, void *baton)
 	return 1;
 }
 
+static int _set_ext_flags(struct physical_volume *pv, struct lvmcache_info *info)
+{
+	uint32_t ext_flags = lvmcache_ext_flags(info);
+
+	if (is_orphan(pv))
+		ext_flags &= ~PV_EXT_USED;
+	else
+		ext_flags |= PV_EXT_USED;
+
+	lvmcache_set_ext_version(info, PV_HEADER_EXTENSION_VSN);
+	lvmcache_set_ext_flags(info, ext_flags);
+
+	return 1;
+}
+
 /* Only for orphans - FIXME That's not true any more */
 static int _text_pv_write(const struct format_type *fmt, struct physical_volume *pv)
 {
@@ -1402,6 +1417,9 @@ static int _text_pv_write(const struct format_type *fmt, struct physical_volume 
 	if (!lvmcache_foreach_mda(info, _write_single_mda, &baton))
 		return_0;
 
+	if (!_set_ext_flags(pv, info))
+		return_0;
+
 	if (!label_write(pv->dev, label)) {
 		stack;
 		if (!dev_close(pv->dev))
@@ -1417,6 +1435,30 @@ static int _text_pv_write(const struct format_type *fmt, struct physical_volume 
 
 	if (!dev_close(pv->dev))
 		return_0;
+
+	return 1;
+}
+
+static int _text_pv_needs_rewrite(const struct format_type *fmt, struct physical_volume *pv,
+				  int *needs_rewrite)
+{
+	struct lvmcache_info *info;
+	uint32_t ext_vsn;
+
+	*needs_rewrite = 0;
+
+	if (!pv->is_labelled)
+		return 1;
+
+	if (!(info = lvmcache_info_from_pvid((const char *)&pv->id, 0))) {
+		log_error("Failed to find cached info for PV %s.", pv_dev_name(pv));
+		return 0;
+	}
+
+	ext_vsn = lvmcache_ext_version(info);
+
+	if (ext_vsn < PV_HEADER_EXTENSION_VSN)
+		*needs_rewrite = 1;
 
 	return 1;
 }
@@ -1508,12 +1550,11 @@ static int _text_pv_read(const struct format_type *fmt, const char *pv_name,
 }
 
 static int _text_pv_initialise(const struct format_type *fmt,
-			       const int64_t label_sector,
-			       unsigned long data_alignment,
-			       unsigned long data_alignment_offset,
-			       struct pvcreate_restorable_params *rp,
+			       struct pv_create_args *pva,
 			       struct physical_volume *pv)
 {
+	unsigned long data_alignment = pva->data_alignment;
+	unsigned long data_alignment_offset = pva->data_alignment_offset;
 	unsigned long adjustment, final_alignment = 0;
 
 	if (!data_alignment)
@@ -1550,13 +1591,13 @@ static int _text_pv_initialise(const struct format_type *fmt,
 		return 0;
 	}
 
-	if (pv->size < final_alignment + rp->ba_size) {
+	if (pv->size < final_alignment + pva->ba_size) {
 		log_error("%s: Bootloader area with data-aligned start must "
 			  "not exceed device size.", pv_dev_name(pv));
 		return 0;
 	}
 
-	if (rp->pe_start == PV_PE_START_CALC) {
+	if (pva->pe_start == PV_PE_START_CALC) {
 		/*
 		 * Calculate new PE start and bootloader area start value.
 		 * Make sure both are properly aligned!
@@ -1566,10 +1607,10 @@ static int _text_pv_initialise(const struct format_type *fmt,
 		 * This needs to be done as we can't have a PV without any DA.
 		 * But we still want to support a PV with BA only!
 		 */
-		if (rp->ba_size) {
+		if (pva->ba_size) {
 			pv->ba_start = final_alignment;
-			pv->ba_size = rp->ba_size;
-			if ((adjustment = rp->ba_size % pv->pe_align))
+			pv->ba_size = pva->ba_size;
+			if ((adjustment = pva->ba_size % pv->pe_align))
 				pv->ba_size += pv->pe_align - adjustment;
 			if (pv->size < pv->ba_start + pv->ba_size)
 				pv->ba_size = pv->size - pv->ba_start;
@@ -1584,26 +1625,26 @@ static int _text_pv_initialise(const struct format_type *fmt,
 		 * it in between the final alignment and existing PE start
 		 * if possible.
 		 */
-		pv->pe_start = rp->pe_start;
-		if (rp->ba_size) {
-			if ((rp->ba_start && rp->ba_start + rp->ba_size > rp->pe_start) ||
-			    (rp->pe_start <= final_alignment) ||
-			    (rp->pe_start - final_alignment < rp->ba_size)) {
+		pv->pe_start = pva->pe_start;
+		if (pva->ba_size) {
+			if ((pva->ba_start && pva->ba_start + pva->ba_size > pva->pe_start) ||
+			    (pva->pe_start <= final_alignment) ||
+			    (pva->pe_start - final_alignment < pva->ba_size)) {
 				log_error("%s: Bootloader area would overlap "
 					  "data area.", pv_dev_name(pv));
 				return 0;
 			} else {
-				pv->ba_start = rp->ba_start ? : final_alignment;
-				pv->ba_size = rp->ba_size;
+				pv->ba_start = pva->ba_start ? : final_alignment;
+				pv->ba_size = pva->ba_size;
 			}
 		}
 	}
 
-	if (rp->extent_size)
-		pv->pe_size = rp->extent_size;
+	if (pva->extent_size)
+		pv->pe_size = pva->extent_size;
 
-	if (rp->extent_count)
-		pv->pe_count = rp->extent_count;
+	if (pva->extent_count)
+		pv->pe_count = pva->extent_count;
 
 	if ((pv->pe_start + pv->pe_count * (uint64_t)pv->pe_size - 1) > pv->size) {
 		log_error("Physical extents end beyond end of device %s.",
@@ -1611,8 +1652,8 @@ static int _text_pv_initialise(const struct format_type *fmt,
 		return 0;
 	}
 
-	if (label_sector != -1)
-                pv->label_sector = label_sector;
+	if (pva->label_sector != -1)
+                pv->label_sector = pva->label_sector;
 
 	return 1;
 }
@@ -2366,6 +2407,7 @@ static struct format_handler _text_handler = {
 	.pv_remove_metadata_area = _text_pv_remove_metadata_area,
 	.pv_resize = _text_pv_resize,
 	.pv_write = _text_pv_write,
+	.pv_needs_rewrite = _text_pv_needs_rewrite,
 	.vg_setup = _text_vg_setup,
 	.lv_setup = _text_lv_setup,
 	.create_instance = _text_create_text_instance,
@@ -2466,7 +2508,7 @@ struct format_type *create_text_format(struct cmd_context *cmd)
 	fmt->features = FMT_SEGMENTS | FMT_MDAS | FMT_TAGS | FMT_PRECOMMIT |
 			FMT_UNLIMITED_VOLS | FMT_RESIZE_PV |
 			FMT_UNLIMITED_STRIPESIZE | FMT_BAS | FMT_CONFIG_PROFILE |
-			FMT_NON_POWER2_EXTENTS;
+			FMT_NON_POWER2_EXTENTS | FMT_PV_FLAGS;
 
 	if (!(mda_lists = dm_malloc(sizeof(struct mda_lists)))) {
 		log_error("Failed to allocate dir_list");

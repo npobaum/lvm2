@@ -54,6 +54,11 @@ LVMPOLLD_NDEV_FLAVOUR = ,ndev-lvmpolld,ndev-cluster-lvmpolld,ndev-lvmetad-lvmpol
 LVMPOLLD_UDEV_FLAVOUR = ,udev-lvmpolld,udev-cluster-lvmpolld,udev-lvmetad-lvmpolld
 endif
 
+ifeq ("@BUILD_LVMLOCKD@", "yes")
+LVMLOCKD_RUN_BASE = $(RUN_BASE)
+LVMLOCKD_UDEV_FLAVOUR = ,udev-lvmlockd-test
+endif
+
 # Shell quote;
 SHELL_PATH_SQ := $(subst ','\'',$(SHELL_PATH))
 
@@ -74,6 +79,7 @@ help:
 	@echo "  check_lvmpolld         Run tests with lvmpolld daemon."
 	@echo "  check_lvmlockd_sanlock Run tests with lvmlockd and sanlock."
 	@echo "  check_lvmlockd_dlm     Run tests with lvmlockd and dlm."
+	@echo "  check_lvmlockd_test    Run tests with lvmlockd --test."
 	@echo "  clean			Clean dir."
 	@echo "  help			Display callable targets."
 	@echo -e "\nSupported variables:"
@@ -116,7 +122,7 @@ check: .tests-stamp
 check_system: .tests-stamp
 	VERBOSE=$(VERBOSE) ./lib/runner \
 		--testdir . --outdir $(LVM_TEST_RESULTS) \
-		--flavours udev-vanilla,udev-cluster$(LVMETAD_UDEV_FLAVOUR)$(LVMPOLLD_UDEV_FLAVOUR) --only $(T) --skip $(S)
+		--flavours udev-vanilla,udev-cluster$(LVMETAD_UDEV_FLAVOUR)$(LVMPOLLD_UDEV_FLAVOUR)$(LVMLOCKD_UDEV_FLAVOUR) --only $(T) --skip $(S)
 
 check_cluster: .tests-stamp
 	VERBOSE=$(VERBOSE) ./lib/runner \
@@ -146,26 +152,21 @@ ifeq ("@BUILD_LVMLOCKD@", "yes")
 check_lvmlockd_sanlock: .tests-stamp
 	VERBOSE=$(VERBOSE) ./lib/runner \
 		--testdir . --outdir results \
-		--flavours udev-lvmlockd-sanlock --only shell/sanlock-prepare.sh
-	VERBOSE=$(VERBOSE) ./lib/runner \
-		--testdir . --outdir results \
-		--flavours udev-lvmlockd-sanlock --only $(T) --skip $(S)
-	VERBOSE=$(VERBOSE) ./lib/runner \
-		--testdir . --outdir results \
-		--flavours udev-lvmlockd-sanlock --only shell/sanlock-remove.sh
+		--flavours udev-lvmlockd-sanlock --only shell/aa-lvmlockd-sanlock-prepare.sh,$(T),shell/zz-lvmlockd-sanlock-remove.sh --skip $(S)
 endif
 
 ifeq ("@BUILD_LVMLOCKD@", "yes")
 check_lvmlockd_dlm: .tests-stamp
 	VERBOSE=$(VERBOSE) ./lib/runner \
 		--testdir . --outdir results \
-		--flavours udev-lvmlockd-dlm --only shell/dlm-prepare.sh
+		--flavours udev-lvmlockd-dlm --only shell/aa-lvmlockd-dlm-prepare.sh,$(T),shell/zz-lvmlockd-dlm-remove.sh --skip $(S)
+endif
+
+ifeq ("@BUILD_LVMLOCKD@", "yes")
+check_lvmlockd_test: .tests-stamp
 	VERBOSE=$(VERBOSE) ./lib/runner \
 		--testdir . --outdir results \
-		--flavours udev-lvmlockd-dlm --only $(T) --skip $(S)
-	VERBOSE=$(VERBOSE) ./lib/runner \
-		--testdir . --outdir results \
-		--flavours udev-lvmlockd-dlm --only shell/dlm-remove.sh
+		--flavours udev-lvmlockd-test --only $(T) --skip $(S)
 endif
 
 DATADIR = $(datadir)/lvm2-testsuite
@@ -185,6 +186,7 @@ LIB_FLAVOURS = \
  flavour-udev-lvmpolld\
  flavour-udev-lvmlockd-sanlock\
  flavour-udev-lvmlockd-dlm\
+ flavour-udev-lvmlockd-test\
  flavour-udev-vanilla
 
 LIB_LVMLOCKD_CONF = \
@@ -197,7 +199,7 @@ LIB_NOT = not
 LIB_LINK_NOT = invalid fail should
 LIB_SHARED = check aux inittest utils get lvm-wrapper
 
-install: .tests-stamp lib/paths-installed lib/version-expected
+install: .tests-stamp lib/paths-installed
 	@echo $(srcdir)
 	$(INSTALL_DIR) $(DATADIR)/{shell,api,lib} $(EXECDIR)
 	$(INSTALL_DATA) shell/*.sh $(DATADIR)/shell
@@ -207,7 +209,9 @@ install: .tests-stamp lib/paths-installed lib/version-expected
 	cd lib && $(INSTALL_DATA) \
 		$(LIB_FLAVOURS) \
 		$(LIB_LVMLOCKD_CONF) \
-		version-expected $(DATADIR)/lib
+		dm-version-expected \
+		version-expected \
+		$(DATADIR)/lib
 	@for i in cache-mq cache-smq thin-performance ; do \
 		echo "$(INSTALL_DATA) $(abs_top_srcdir)/conf/$$i.profile $(DATADIR)/lib"; \
 		$(INSTALL_DATA) $(abs_top_srcdir)/conf/$$i.profile $(DATADIR)/lib; done
@@ -286,10 +290,13 @@ lib/paths: lib/paths-common
 lib/version-expected: $(top_srcdir)/VERSION .lib-dir-stamp
 	cut -f 1 -d ' ' <$< >$@
 
+lib/dm-version-expected: $(top_srcdir)/VERSION_DM .lib-dir-stamp
+	cut -f 1 -d ' ' <$< >$@
+
 CMDS = lvm $(shell cat $(top_builddir)/tools/.commands 2>/dev/null)
 LIB = $(addprefix lib/, $(LIB_SHARED) $(LIB_LOCAL) $(LIB_NOT) $(LIB_LINK_NOT) $(LIB_FLAVOURS))
 
-.tests-stamp: $(ALL) $(LIB) $(SUBDIRS) lib/version-expected
+.tests-stamp: $(ALL) $(LIB) $(SUBDIRS) lib/version-expected lib/dm-version-expected
 	@if test "$(srcdir)" != . ; then \
 		echo "Linking tests to builddir."; \
 		$(MKDIR_P) shell; \
@@ -307,6 +314,7 @@ LIB = $(addprefix lib/, $(LIB_SHARED) $(LIB_LOCAL) $(LIB_NOT) $(LIB_LINK_NOT) $(
 		tools/dmsetup daemons/lvmetad/lvmetad \
 		daemons/lvmpolld/lvmpolld ; do \
 		$(LN_S) -f $(abs_top_builddir)/$$i lib/; done
+	$(LN_S) -f $(abs_top_builddir)/tools/dmsetup lib/dmstats
 	$(LN_S) -f $(abs_top_srcdir)/conf/thin-performance.profile lib/
 	$(LN_S) -f $(abs_top_srcdir)/scripts/fsadm.sh lib/fsadm
 	$(LN_S) -f $(abs_top_srcdir)/scripts/vgimportclone.sh lib/vgimportclone
@@ -321,7 +329,8 @@ endif
 
 CLEAN_TARGETS += .lib-dir-stamp .tests-stamp $(LIB) $(addprefix lib/,\
 	$(CMDS) clvmd dmeventd dmsetup lvmetad lvmpolld \
-	harness thin-performance.profile fsadm vgimportclone version-expected \
+	harness thin-performance.profile fsadm vgimportclone \
+	dm-version-expected version-expected \
 	paths-installed paths-installed-t paths-common paths-common-t)
 
 Makefile: $(srcdir)/Makefile.in $(top_builddir)/config.status

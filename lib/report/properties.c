@@ -190,6 +190,10 @@ GET_PV_NUM_PROPERTY_FN(pv_ba_size, SECTOR_SIZE * pv->ba_size)
 #define _pv_exported_get prop_not_implemented_get
 #define _pv_missing_set prop_not_implemented_set
 #define _pv_missing_get prop_not_implemented_get
+#define _pv_ext_vsn_get prop_not_implemented_get
+#define _pv_ext_vsn_set prop_not_implemented_set
+#define _pv_in_use_get prop_not_implemented_get
+#define _pv_in_use_set prop_not_implemented_set
 
 #define _vg_permissions_set prop_not_implemented_set
 #define _vg_permissions_get prop_not_implemented_get
@@ -247,6 +251,10 @@ GET_PV_NUM_PROPERTY_FN(pv_ba_size, SECTOR_SIZE * pv->ba_size)
 #define _lv_health_status_get prop_not_implemented_get
 #define _lv_skip_activation_set prop_not_implemented_set
 #define _lv_skip_activation_get prop_not_implemented_get
+#define _lv_check_needed_set prop_not_implemented_set
+#define _lv_check_needed_get prop_not_implemented_get
+#define _lv_historical_set prop_not_implemented_set
+#define _lv_historical_get prop_not_implemented_get
 
 #define _cache_total_blocks_set prop_not_implemented_set
 #define _cache_total_blocks_get prop_not_implemented_get
@@ -304,8 +312,12 @@ GET_LV_NUM_PROPERTY_FN(origin_size, (SECTOR_SIZE * lv_origin_size(lv)))
 #define _origin_size_set prop_not_implemented_set
 #define _lv_ancestors_set prop_not_implemented_set
 #define _lv_ancestors_get prop_not_implemented_get
+#define _lv_full_ancestors_set prop_not_implemented_set
+#define _lv_full_ancestors_get prop_not_implemented_get
 #define _lv_descendants_set prop_not_implemented_set
 #define _lv_descendants_get prop_not_implemented_get
+#define _lv_full_descendants_set prop_not_implemented_set
+#define _lv_full_descendants_get prop_not_implemented_get
 GET_LV_NUM_PROPERTY_FN(snap_percent, _snap_percent(lv))
 #define _snap_percent_set prop_not_implemented_set
 GET_LV_NUM_PROPERTY_FN(copy_percent, _copy_percent(lv))
@@ -356,8 +368,10 @@ GET_LV_NUM_PROPERTY_FN(metadata_percent, _metadata_percent(lv))
 #define _metadata_percent_set prop_not_implemented_set
 GET_LV_NUM_PROPERTY_FN(lv_metadata_size, lv_metadata_size(lv) * SECTOR_SIZE)
 #define _lv_metadata_size_set prop_not_implemented_set
-GET_LV_STR_PROPERTY_FN(lv_time, lv_time_dup(lv->vg->vgmem, lv, 0))
+GET_LV_STR_PROPERTY_FN(lv_time, lv_creation_time_dup(lv->vg->vgmem, lv, 0))
 #define _lv_time_set prop_not_implemented_set
+GET_LV_STR_PROPERTY_FN(lv_time_removed, lv_removal_time_dup(lv->vg->vgmem, lv, 0))
+#define _lv_time_removed_set prop_not_implemented_set
 GET_LV_STR_PROPERTY_FN(lv_host, lv_host_dup(lv->vg->vgmem, lv))
 #define _lv_host_set prop_not_implemented_set
 GET_LV_STR_PROPERTY_FN(lv_active, lv_active_dup(lv->vg->vgmem, lv))
@@ -384,10 +398,10 @@ GET_VG_STR_PROPERTY_FN(vg_sysid, vg_system_id_dup(vg))
 #define _vg_sysid_set prop_not_implemented_set
 GET_VG_STR_PROPERTY_FN(vg_systemid, vg_system_id_dup(vg))
 #define _vg_systemid_set prop_not_implemented_set
-GET_VG_STR_PROPERTY_FN(vg_locktype, vg_lock_type_dup(vg))
-#define _vg_locktype_set prop_not_implemented_set
-GET_VG_STR_PROPERTY_FN(vg_lockargs, vg_lock_args_dup(vg))
-#define _vg_lockargs_set prop_not_implemented_set
+GET_VG_STR_PROPERTY_FN(vg_lock_type, vg_lock_type_dup(vg))
+#define _vg_lock_type_set prop_not_implemented_set
+GET_VG_STR_PROPERTY_FN(vg_lock_args, vg_lock_args_dup(vg))
+#define _vg_lock_args_set prop_not_implemented_set
 GET_VG_NUM_PROPERTY_FN(vg_extent_size, (SECTOR_SIZE * vg->extent_size))
 #define _vg_extent_size_set prop_not_implemented_set
 GET_VG_NUM_PROPERTY_FN(vg_extent_count, vg->extent_count)
@@ -428,16 +442,10 @@ GET_LVSEG_STR_PROPERTY_FN(segtype, lvseg_segtype_dup(lvseg->lv->vg->vgmem, lvseg
 #define _segtype_set prop_not_implemented_set
 GET_LVSEG_NUM_PROPERTY_FN(stripes, lvseg->area_count)
 #define _stripes_set prop_not_implemented_set
-GET_LVSEG_NUM_PROPERTY_FN(stripesize, (SECTOR_SIZE * lvseg->stripe_size))
-#define _stripesize_set prop_not_implemented_set
 GET_LVSEG_NUM_PROPERTY_FN(stripe_size, (SECTOR_SIZE * lvseg->stripe_size))
 #define _stripe_size_set prop_not_implemented_set
-GET_LVSEG_NUM_PROPERTY_FN(regionsize, (SECTOR_SIZE * lvseg->region_size))
-#define _regionsize_set prop_not_implemented_set
 GET_LVSEG_NUM_PROPERTY_FN(region_size, (SECTOR_SIZE * lvseg->region_size))
 #define _region_size_set prop_not_implemented_set
-GET_LVSEG_NUM_PROPERTY_FN(chunksize, (SECTOR_SIZE * lvseg_chunksize(lvseg)))
-#define _chunksize_set prop_not_implemented_set
 GET_LVSEG_NUM_PROPERTY_FN(chunk_size, (SECTOR_SIZE * lvseg_chunksize(lvseg)))
 #define _chunk_size_set prop_not_implemented_set
 GET_LVSEG_NUM_PROPERTY_FN(thin_count, dm_list_size(&lvseg->lv->segs_using_this_lv))
@@ -452,8 +460,8 @@ GET_LVSEG_STR_PROPERTY_FN(discards, lvseg_discards_dup(lvseg->lv->vg->vgmem, lvs
 #define _discards_set prop_not_implemented_set
 GET_LVSEG_STR_PROPERTY_FN(kernel_discards, lvseg_kernel_discards_dup(lvseg->lv->vg->vgmem, lvseg))
 #define _kernel_discards_set prop_not_implemented_set
-GET_LVSEG_STR_PROPERTY_FN(cachemode, lvseg_cachemode_dup(lvseg->lv->vg->vgmem, lvseg))
-#define _cachemode_set prop_not_implemented_set
+GET_LVSEG_STR_PROPERTY_FN(cache_mode, lvseg_cachemode_dup(lvseg->lv->vg->vgmem, lvseg))
+#define _cache_mode_set prop_not_implemented_set
 GET_LVSEG_NUM_PROPERTY_FN(seg_start, (SECTOR_SIZE * lvseg_start(lvseg)))
 #define _seg_start_set prop_not_implemented_set
 GET_LVSEG_NUM_PROPERTY_FN(seg_start_pe, lvseg->le)
@@ -483,6 +491,8 @@ GET_LVSEG_STR_PROPERTY_FN(seg_monitor, lvseg_monitor_dup(lvseg->lv->vg->vgmem, l
 #define _cache_settings_set prop_not_implemented_set
 #define _kernel_cache_settings_get prop_not_implemented_get
 #define _kernel_cache_settings_set prop_not_implemented_set
+#define _kernel_cache_policy_get prop_not_implemented_get
+#define _kernel_cache_policy_set prop_not_implemented_set
 
 /* PVSEG */
 GET_PVSEG_NUM_PROPERTY_FN(pvseg_start, pvseg->pe)

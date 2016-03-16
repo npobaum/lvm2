@@ -9,6 +9,7 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
+SKIP_WITH_LVMLOCKD=1
 SKIP_WITHOUT_LVMETAD=1
 SKIP_WITH_LVMPOLLD=1
 
@@ -31,7 +32,7 @@ vgs | grep $vg1
 pvchange --metadataignore y "$dev1"
 aux disable_dev "$dev2"
 pvscan --cache
-check pv_field "$dev1" vg_name ""
+check pv_field "$dev1" vg_name "[unknown]"
 aux enable_dev "$dev2"
 pvscan --cache
 check pv_field "$dev1" vg_name "$vg1"

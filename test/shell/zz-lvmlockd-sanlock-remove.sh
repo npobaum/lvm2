@@ -26,11 +26,16 @@ vgremove --config 'devices { global_filter=["a|GL_DEV|", "r|.*|"] filter=["a|GL_
 # lvmlockctl -d > lvmlockd-debug.txt
 # sanlock log_dump > sanlock-debug.txt
 
+lvmlockctl --stop-lockspaces
+sleep 1
 killall lvmlockd
+sleep 1
+killall lvmlockd || true
+sleep 1
 killall sanlock
-
-killall -9 lvmlockd
-killall -9 sanlock
+sleep 1
+killall -9 lvmlockd || true
+killall -9 sanlock || true
 
 # FIXME: dmsetup remove LVMTEST*-lvmlock
 

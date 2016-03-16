@@ -128,6 +128,8 @@ struct cmd_context {
 	unsigned threaded:1;			/* set if running within a thread e.g. clvmd */
 	unsigned independent_metadata_areas:1;	/* active formats have MDAs outside PVs */
 	unsigned unknown_system_id:1;
+	unsigned include_historical_lvs:1;	/* also process/report/display historical LVs */
+	unsigned record_historical_lvs:1;	/* record historical LVs */
 	unsigned include_foreign_vgs:1;		/* report/display cmds can reveal foreign VGs */
 	unsigned include_shared_vgs:1;		/* report/display cmds can reveal lockd VGs */
 	unsigned include_active_foreign_vgs:1;	/* cmd should process foreign VGs with active LVs */
@@ -139,6 +141,9 @@ struct cmd_context {
 	unsigned lockd_vg_rescan:1;
 	unsigned lockd_vg_default_sh:1;
 	unsigned lockd_vg_enforce_sh:1;
+	unsigned vg_notify:1;
+	unsigned lv_notify:1;
+	unsigned pv_notify:1;
 
 	/*
 	 * Filtering.

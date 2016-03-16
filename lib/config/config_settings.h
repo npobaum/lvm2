@@ -581,7 +581,7 @@ cfg(log_activation_CFG, "activation", log_CFG_SECTION, 0, CFG_TYPE_BOOL, 0, vsn(
 
 cfg(log_activate_file_CFG, "activate_file", log_CFG_SECTION, CFG_DEFAULT_UNDEFINED | CFG_UNSUPPORTED, CFG_TYPE_STRING, NULL, vsn(1, 0, 0), NULL, 0, NULL, NULL)
 
-cfg_array(log_debug_classes_CFG, "debug_classes", log_CFG_SECTION, CFG_ALLOW_EMPTY, CFG_TYPE_STRING, "#Smemory#Sdevices#Sactivation#Sallocation#Slvmetad#Smetadata#Scache#Slocking#Slvmpolld", vsn(2, 2, 99), NULL, 0, NULL,
+cfg_array(log_debug_classes_CFG, "debug_classes", log_CFG_SECTION, CFG_ALLOW_EMPTY, CFG_TYPE_STRING, "#Smemory#Sdevices#Sactivation#Sallocation#Slvmetad#Smetadata#Scache#Slocking#Slvmpolld#Sdbus", vsn(2, 2, 99), NULL, 0, NULL,
 	"Select log messages by class.\n"
 	"Some debugging messages are assigned to a class and only appear in\n"
 	"debug output if the class is listed here. Classes currently\n"
@@ -995,6 +995,11 @@ cfg(global_use_lvmpolld_CFG, "use_lvmpolld", global_CFG_SECTION, 0, CFG_TYPE_BOO
 	"and to use its own control group. When this option is disabled, LVM\n"
 	"commands will supervise long running operations by forking themselves.\n")
 
+cfg(global_notify_dbus_CFG, "notify_dbus", global_CFG_SECTION, 0, CFG_TYPE_BOOL, DEFAULT_NOTIFY_DBUS, vsn(2, 2, 145), NULL, 0, NULL,
+	"Enable D-Bus notification from LVM commands.\n"
+	"When enabled, an LVM command that changes PVs, changes VG metadata,\n"
+	"or changes the activation state of an LV will send a notification.\n")
+
 cfg(activation_udev_sync_CFG, "udev_sync", activation_CFG_SECTION, 0, CFG_TYPE_BOOL, DEFAULT_UDEV_SYNC, vsn(2, 2, 51), NULL, 0, NULL,
 	"Use udev notifications to synchronize udev and LVM.\n"
 	"The --nodevsync option overrides this setting.\n"
@@ -1360,6 +1365,18 @@ cfg(metadata_check_pv_device_sizes_CFG, "check_pv_device_sizes", metadata_CFG_SE
 	"less than corresponding PV size. You should not disable this unless\n"
 	"you are absolutely sure about what you are doing!\n")
 
+cfg(metadata_record_lvs_history_CFG, "record_lvs_history", metadata_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_BOOL, DEFAULT_RECORD_LVS_HISTORY, vsn(2, 2, 145), NULL, 0, NULL,
+	"When enabled, LVM keeps history records about removed LVs in\n"
+	"metadata. The information that is recorded in metadata for\n"
+	"historical LVs is reduced when compared to original\n"
+	"information kept in metadata for live LVs. Currently, this\n"
+	"feature is supported for thin and thin snapshot LVs only.\n")
+
+cfg(metadata_lvs_history_retention_time_CFG, "lvs_history_retention_time", metadata_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_LVS_HISTORY_RETENTION_TIME, vsn(2, 2, 145), NULL, 0, NULL,
+	"Retention time in seconds after which a record about individual\n"
+	"historical logical volume is automatically destroyed.\n"
+	"A value of 0 disables this feature.\n")
+
 cfg(metadata_pvmetadatacopies_CFG, "pvmetadatacopies", metadata_CFG_SECTION, CFG_ADVANCED | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_PVMETADATACOPIES, vsn(1, 0, 0), NULL, 0, NULL,
 	"Number of copies of metadata to store on each PV.\n"
 	"The --pvmetadatacopies option overrides this setting.\n"
@@ -1681,6 +1698,10 @@ cfg(report_pvsegs_cols_verbose_CFG, "pvsegs_cols_verbose", report_CFG_SECTION, C
 
 cfg(report_mark_hidden_devices_CFG, "mark_hidden_devices", report_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED, CFG_TYPE_BOOL, 1, vsn(2, 2, 140), NULL, 0, NULL,
 	"Use brackets [] to mark hidden devices.\n")
+
+cfg(report_two_word_unknown_device_CFG, "two_word_unknown_device", report_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_BOOL, 0, vsn(2, 2, 146), NULL, 0, NULL,
+	"Use the two words 'unknown device' in place of '[unknown]'.\n"
+	"This is displayed when the device for a PV is not known.\n")
 
 cfg(dmeventd_mirror_library_CFG, "mirror_library", dmeventd_CFG_SECTION, 0, CFG_TYPE_STRING, DEFAULT_DMEVENTD_MIRROR_LIB, vsn(1, 2, 3), NULL, 0, NULL,
 	"The library dmeventd uses when monitoring a mirror device.\n"

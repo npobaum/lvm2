@@ -273,7 +273,7 @@ struct logical_volume *lv_cache_create(struct logical_volume *pool_lv,
 	seg = first_seg(cache_lv);
 	seg->segtype = segtype;
 
-	if (!attach_pool_lv(seg, pool_lv, NULL, NULL))
+	if (!attach_pool_lv(seg, pool_lv, NULL, NULL, NULL))
 		return_NULL;
 
 	return cache_lv;
@@ -359,10 +359,16 @@ int lv_cache_remove(struct logical_volume *cache_lv)
 	 */
 	if (!lv_cache_status(cache_lv, &status))
 		return_0;
-	dirty_blocks = status->cache->dirty_blocks;
-	if (!(status->cache->feature_flags & DM_CACHE_FEATURE_WRITETHROUGH))
-		dirty_blocks++; /* Not writethrough - always dirty */
-	is_cleaner = !strcmp(status->cache->policy_name, "cleaner");
+	if (!status->cache->fail) {
+		is_cleaner = !strcmp(status->cache->policy_name, "cleaner");
+		dirty_blocks = status->cache->dirty_blocks;
+		if (!(status->cache->feature_flags & DM_CACHE_FEATURE_WRITETHROUGH))
+			dirty_blocks++; /* Not writethrough - always dirty */
+	} else {
+		log_warn("WARNING: Skippping flush for failed cache.");
+		is_cleaner = 0;
+		dirty_blocks = 0;
+	}
 	dm_pool_destroy(status->mem);
 
 	if (dirty_blocks && !is_cleaner) {
@@ -378,6 +384,10 @@ int lv_cache_remove(struct logical_volume *cache_lv)
 	while (dirty_blocks) {
 		if (!lv_cache_status(cache_lv, &status))
 			return_0;
+		if (status->cache->fail) {
+			log_warn("WARNING: Flushing of failing cache skipped.");
+			break;
+		}
 		dirty_blocks = status->cache->dirty_blocks;
 		dm_pool_destroy(status->mem);
 		if (dirty_blocks) {
@@ -424,7 +434,7 @@ int lv_cache_remove(struct logical_volume *cache_lv)
 	corigin_lv->status |= LV_PENDING_DELETE;
 
 	/* Reattach cache pool */
-	if (!attach_pool_lv(cache_seg, cache_pool_lv, NULL, NULL))
+	if (!attach_pool_lv(cache_seg, cache_pool_lv, NULL, NULL, NULL))
 		return_0;
 
 	/* Suspend/resume also deactivates deleted LV via support of LV_PENDING_DELETE */

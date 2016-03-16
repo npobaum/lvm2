@@ -1,3 +1,11 @@
+lvm2 (2.02.146-1) unstable; urgency=medium
+
+  * New upstream version.
+  * Build-depend on autoconf-archive.
+  * Install blkdeactivate and dmstats.
+
+ -- Bastian Blank <waldi@debian.org>  Wed, 16 Mar 2016 13:21:41 +0100
+
 lvm2 (2.02.142-1) unstable; urgency=medium
 
   * New upstream version.

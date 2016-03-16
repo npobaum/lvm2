@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copyright (C) 2008-2012 Red Hat, Inc. All rights reserved.
+# Copyright (C) 2016 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
 # modify, copy, or redistribute it subject to the terms and conditions
@@ -9,19 +9,20 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
-test_description='Hello world for vgcreate with lvmlockd and sanlock'
+SKIP_WITH_LVMPOLLD=1
 
 . lib/inittest
 
-[ -z "$LVM_TEST_LOCK_TYPE_SANLOCK" ] && skip;
+# Don't attempt to test stats with driver < 4.33.00
+aux driver_at_least 4 33 || skip
 
-aux prepare_pvs 1
+# ensure we can create devices (uses dmsetup, etc)
+aux prepare_devs 1
 
-vgcreate $SHARED $vg "$dev1"
+# prepare a stats region with a histogram
+dmstats create --bounds 10ms,20ms,30ms "$dev1"
 
-vgs -o+locktype,lockargs $vg
-
-check vg_field $vg vg_locktype sanlock
-
-vgremove $vg
-
+# basic dmstats report commands
+dmstats report
+dmstats report --count 1
+dmstats report --histogram

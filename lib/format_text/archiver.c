@@ -329,27 +329,110 @@ struct volume_group *backup_read_vg(struct cmd_context *cmd,
 	return vg;
 }
 
-/* ORPHAN and VG locks held before calling this */
-int backup_restore_vg(struct cmd_context *cmd, struct volume_group *vg, int drop_lvmetad)
+static int _restore_vg_should_write_pv(struct physical_volume *pv, int do_pvcreate)
 {
-	struct pv_list *pvl;
+	struct lvmcache_info *info;
+
+	if (do_pvcreate)
+		return 1;
+
+	if (!(pv->fmt->features & FMT_PV_FLAGS))
+		return 0;
+
+	if (!(info = lvmcache_info_from_pvid(pv->dev->pvid, 0))) {
+		log_error("Failed to find cached info for PV %s.", pv_dev_name(pv));
+		return -1;
+	}
+
+	/*
+	 * We're restoring a VG and if the PV_EXT_USED
+	 * flag is not set yet in PV, we need to set it now!
+	 * This may happen if we have plain PVs without a VG
+	 * and we're restoring former VG from backup on top
+	 * of these PVs.
+	 */
+	if (!(lvmcache_ext_flags(info) & PV_EXT_USED))
+		return 1;
+
+	return 0;
+}
+
+/* ORPHAN and VG locks held before calling this */
+int backup_restore_vg(struct cmd_context *cmd, struct volume_group *vg,
+		      int drop_lvmetad,
+		      int do_pvcreate,
+		      struct pv_create_args *pva)
+{
+	struct dm_list new_pvs;
+	struct pv_list *pvl, *new_pvl;
+	struct physical_volume *existing_pv, *pv;
+	struct dm_list *pvs = &vg->pvs;
 	struct format_instance *fid;
 	struct format_instance_ctx fic;
-	uint32_t tmp;
+	int should_write_pv;
+	uint32_t tmp_extent_size;
 
 	/*
 	 * FIXME: Check that the PVs referenced in the backup are
 	 * not members of other existing VGs.
 	 */
 
+	/* Prepare new PVs if needed. */
+	if (do_pvcreate) {
+		dm_list_init(&new_pvs);
+
+		dm_list_iterate_items(pvl, &vg->pvs) {
+			existing_pv = pvl->pv;
+
+			pva->id = existing_pv->id;
+			pva->idp = &pva->id;
+			pva->pe_start = pv_pe_start(existing_pv);
+			pva->extent_count = pv_pe_count(existing_pv);
+			pva->extent_size = pv_pe_size(existing_pv);
+			/* pe_end = pv_pe_count(existing_pv) * pv_pe_size(existing_pv) + pe_start - 1 */
+
+			if (!(pv = pv_create(cmd, pv_dev(existing_pv), pva))) {
+				log_error("Failed to setup physical volume \"%s\".",
+					  pv_dev_name(existing_pv));
+				return 0;
+			}
+			pv->vg_name = vg->name;
+			pv->vgid = vg->id;
+
+			if (!(new_pvl = dm_pool_zalloc(vg->vgmem, sizeof(*new_pvl)))) {
+				log_error("Failed to allocate PV list item for \"%s\".",
+					  pv_dev_name(pvl->pv));
+				return 0;
+			}
+
+			new_pvl->pv = pv;
+			dm_list_add(&new_pvs, &new_pvl->list);
+
+			log_verbose("Set up physical volume for \"%s\" with %" PRIu64
+				    " available sectors.", pv_dev_name(pv), pv_size(pv));
+		}
+
+		pvs = &new_pvs;
+	}
+
 	/* Attempt to write out using currently active format */
 	fic.type = FMT_INSTANCE_AUX_MDAS;
 	fic.context.vg_ref.vg_name = vg->name;
 	fic.context.vg_ref.vg_id = NULL;
 	if (!(fid = cmd->fmt->ops->create_instance(cmd->fmt, &fic))) {
-		log_error("Failed to allocate format instance");
+		log_error("Failed to allocate format instance.");
 		return 0;
 	}
+
+	if (do_pvcreate) {
+		log_verbose("Deleting existing metadata for VG %s.", vg->name);
+		if (!vg_remove_mdas(vg)) {
+			cmd->fmt->ops->destroy_instance(fid);
+			log_error("Removal of existing metadata for VG %s failed.", vg->name);
+			return 0;
+		}
+	}
+
 	vg_set_fid(vg, fid);
 
 	/*
@@ -362,16 +445,58 @@ int backup_restore_vg(struct cmd_context *cmd, struct volume_group *vg, int drop
 	}
 
 	/* Add any metadata areas on the PVs */
-	dm_list_iterate_items(pvl, &vg->pvs) {
-		tmp = vg->extent_size;
+	dm_list_iterate_items(pvl, pvs) {
+		if ((should_write_pv = _restore_vg_should_write_pv(pvl->pv, do_pvcreate)) < 0)
+			return_0;
+
+		if (should_write_pv) {
+			if (!(new_pvl = dm_pool_zalloc(vg->vgmem, sizeof(*new_pvl)))) {
+				log_error("Failed to allocate structure for scheduled "
+					  "writing of PV '%s'.", pv_dev_name(pvl->pv));
+				return 0;
+			}
+
+			new_pvl->pv = pvl->pv;
+			dm_list_add(&vg->pv_write_list, &new_pvl->list);
+		}
+
+		/* Add any metadata areas on the PV. */
+		tmp_extent_size = vg->extent_size;
 		vg->extent_size = 0;
 		if (!vg->fid->fmt->ops->pv_setup(vg->fid->fmt, pvl->pv, vg)) {
-			vg->extent_size = tmp;
-			log_error("Format-specific setup for %s failed",
+			vg->extent_size = tmp_extent_size;
+			log_error("Format-specific setup for %s failed.",
 				  pv_dev_name(pvl->pv));
 			return 0;
 		}
-		vg->extent_size = tmp;
+		vg->extent_size = tmp_extent_size;
+	}
+
+	if (do_pvcreate) {
+		dm_list_iterate_items(pvl, &vg->pv_write_list) {
+			struct device *dev = pv_dev(pvl->pv);
+			const char *pv_name = dev_name(dev);
+
+			if (!label_remove(dev)) {
+				log_error("Failed to wipe existing label on %s", pv_name);
+				return 0;
+			}
+
+			log_verbose("Zeroing start of device %s", pv_name);
+			if (!dev_open_quiet(dev)) {
+				log_error("%s not opened: device not zeroed", pv_name);
+				return 0;
+			}
+
+			if (!dev_set(dev, UINT64_C(0), (size_t) 2048, 0)) {
+				log_error("%s not wiped: aborting", pv_name);
+				if (!dev_close(dev))
+					stack;
+				return 0;
+			}
+			if (!dev_close(dev))
+				stack;
+		}
 	}
 
 	if (!vg_write(vg))
@@ -425,7 +550,7 @@ int backup_restore_from_file(struct cmd_context *cmd, const char *vg_name,
 
 	missing_pvs = vg_missing_pv_count(vg);
 	if (missing_pvs == 0)
-		r = backup_restore_vg(cmd, vg, 1);
+		r = backup_restore_vg(cmd, vg, 1, 0, NULL);
 	else
 		log_error("Cannot restore Volume Group %s with %i PVs "
 			  "marked as missing.", vg->name, missing_pvs);

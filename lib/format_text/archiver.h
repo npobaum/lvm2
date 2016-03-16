@@ -51,7 +51,12 @@ int backup_remove(struct cmd_context *cmd, const char *vg_name);
 
 struct volume_group *backup_read_vg(struct cmd_context *cmd,
 				    const char *vg_name, const char *file);
-int backup_restore_vg(struct cmd_context *cmd, struct volume_group *vg, int drop_lvmetad);
+
+int backup_restore_vg(struct cmd_context *cmd, struct volume_group *vg,
+                      int drop_lvmetad,
+                      int do_pvcreate,
+		      struct pv_create_args *pva);
+
 int backup_restore_from_file(struct cmd_context *cmd, const char *vg_name,
 			     const char *file, int force);
 int backup_restore(struct cmd_context *cmd, const char *vg_name, int force);

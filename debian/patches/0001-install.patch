@@ -1,4 +1,4 @@
-From a13840a46facca6b4a95b71a9475ab10028d9adb Mon Sep 17 00:00:00 2001
+From 16d9344ee59dd6c49edc57e0bd4fc773304ee634 Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 30 Jun 2015 11:46:04 +0200
 Subject: install
@@ -8,7 +8,7 @@ Subject: install
  1 file changed, 7 insertions(+), 26 deletions(-)
 
 diff --git a/make.tmpl.in b/make.tmpl.in
-index a640851..3bfee34 100644
+index d418cfb..a78ef08 100644
 --- a/make.tmpl.in
 +++ b/make.tmpl.in
 @@ -17,20 +17,10 @@ SHELL = /bin/sh
@@ -34,9 +34,9 @@ index a640851..3bfee34 100644
  MKDIR_P = @MKDIR_P@
  MSGFMT = @MSGFMT@
  LCOV = @LCOV@
-@@ -95,8 +85,7 @@ tmpfiles_dir = $(DESTDIR)@tmpfilesdir@
- ocf_scriptdir = $(DESTDIR)@OCFDIR@
- pyexecdir = $(DESTDIR)$(prefix)
+@@ -104,8 +94,7 @@ pythonprefix = $(DESTDIR)$(prefix)
+ python2dir = @PYTHON2DIR@
+ python3dir = @PYTHON3DIR@
  
 -USRLIB_RELPATH = $(shell echo $(abspath $(usrlibdir) $(libdir)) | \
 -  $(AWK) -f $(top_srcdir)/scripts/relpath.awk)
@@ -44,7 +44,7 @@ index a640851..3bfee34 100644
  
  SYSTEMD_GENERATOR_DIR = @systemdutildir@/system-generators
  DEFAULT_SYS_DIR = @DEFAULT_SYS_DIR@
-@@ -125,22 +114,14 @@ MAKEFLAGS = @JOBS@
+@@ -134,22 +123,14 @@ MAKEFLAGS = @JOBS@
  endif
  
  # Handle installation of files

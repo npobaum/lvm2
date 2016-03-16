@@ -27,12 +27,18 @@ static int _pvchange_single(struct cmd_context *cmd, struct volume_group *vg,
 	const char *pv_name = pv_dev_name(pv);
 	char uuid[64] __attribute__((aligned(8)));
 	unsigned done = 0;
+	int used;
 
 	int allocatable = arg_int_value(cmd, allocatable_ARG, 0);
 	int mda_ignore = arg_int_value(cmd, metadataignore_ARG, 0);
 	int tagargs = arg_count(cmd, addtag_ARG) + arg_count(cmd, deltag_ARG);
 
 	params->total++;
+
+	if (vg && vg_is_exported(vg)) {
+		log_error("Volume group %s is exported", vg->name);
+		goto bad;
+	}
 
 	/* If in a VG, must change using volume group. */
 	if (!is_orphan(pv)) {
@@ -48,10 +54,21 @@ static int _pvchange_single(struct cmd_context *cmd, struct volume_group *vg,
 		}
 		if (!archive(vg))
 			goto_bad;
-	} else if (tagargs) {
-		log_error("Can't change tag on Physical Volume %s not "
-			  "in volume group", pv_name);
-		goto bad;
+	} else {
+		if (tagargs) {
+			log_error("Can't change tag on Physical Volume %s not "
+				  "in volume group", pv_name);
+			goto bad;
+		}
+
+		if ((used = is_used_pv(pv)) < 0)
+			goto_bad;
+
+		if (used && (arg_count(cmd, force_ARG) != DONT_PROMPT_OVERRIDE)) {
+			log_error("PV %s is used by a VG but its metadata is missing.", pv_name);
+			log_error("Can't change PV '%s' without -ff.", pv_name);
+			goto bad;
+		}
 	}
 
 	if (arg_count(cmd, allocatable_ARG)) {
@@ -216,7 +233,9 @@ int pvchange(struct cmd_context *cmd, int argc, char **argv)
 		}
 	}
 
-	ret = process_each_pv(cmd, argc, argv, NULL, READ_FOR_UPDATE, handle, _pvchange_single);
+	set_pv_notify(cmd);
+
+	ret = process_each_pv(cmd, argc, argv, NULL, 0, READ_FOR_UPDATE | READ_ALLOW_EXPORTED, handle, _pvchange_single);
 
 	if (!argc)
 		unlock_vg(cmd, VG_GLOBAL);

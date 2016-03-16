@@ -699,6 +699,189 @@ static int _read_lvnames(struct format_instance *fid __attribute__((unused)),
 	return 1;
 }
 
+static int _read_historical_lvnames(struct format_instance *fid __attribute__((unused)),
+				     struct volume_group *vg, const struct dm_config_node *hlvn,
+				     const struct dm_config_node *vgn __attribute__((unused)),
+				     struct dm_hash_table *pv_hash __attribute__((unused)),
+				     struct dm_hash_table *lv_hash __attribute__((unused)),
+				     unsigned *scan_done_once __attribute__((unused)),
+				     unsigned report_missing_devices __attribute__((unused)))
+{
+	struct dm_pool *mem = vg->vgmem;
+	struct generic_logical_volume *glv;
+	struct glv_list *glvl;
+	const char *str;
+	uint64_t timestamp;
+
+	if (!(glv = dm_pool_zalloc(mem, sizeof(struct generic_logical_volume))) ||
+	    !(glv->historical = dm_pool_zalloc(mem, sizeof(struct historical_logical_volume))) ||
+	    !(glvl = dm_pool_zalloc(mem, sizeof(struct glv_list)))) {
+		log_error("Removed logical volume structure allocation failed");
+		goto bad;
+	}
+
+	glv->is_historical = 1;
+	glv->historical->vg = vg;
+	dm_list_init(&glv->historical->indirect_glvs);
+
+	if (!(glv->historical->name = dm_pool_strdup(mem, hlvn->key)))
+		goto_bad;
+
+	if (!(hlvn = hlvn->child)) {
+		log_error("Empty removed logical volume section.");
+		goto_bad;
+	}
+
+	if (!_read_id(&glv->historical->lvid.id[1], hlvn, "id")) {
+		log_error("Couldn't read uuid for removed logical volume %s in vg %s.",
+			  glv->historical->name, vg->name);
+		return 0;
+	}
+	memcpy(&glv->historical->lvid.id[0], &glv->historical->vg->id, sizeof(glv->historical->lvid.id[0]));
+
+	if (dm_config_get_str(hlvn, "name", &str)) {
+		if (!(glv->historical->name = dm_pool_strdup(mem, str)))
+			goto_bad;
+	}
+
+	if (dm_config_has_node(hlvn, "creation_time")) {
+		if (!_read_uint64(hlvn, "creation_time", &timestamp)) {
+			log_error("Invalid creation_time for removed logical volume %s.", str);
+			goto bad;
+		}
+		glv->historical->timestamp = timestamp;
+	}
+
+	if (dm_config_has_node(hlvn, "removal_time")) {
+		if (!_read_uint64(hlvn, "removal_time", &timestamp)) {
+			log_error("Invalid removal_time for removed logical volume %s.", str);
+			goto bad;
+		}
+		glv->historical->timestamp_removed = timestamp;
+	}
+
+	glvl->glv = glv;
+	dm_list_add(&vg->historical_lvs, &glvl->list);
+
+	return 1;
+bad:
+	if (glv)
+		dm_pool_free(mem, glv);
+	return 0;
+}
+
+static int _read_historical_lvnames_interconnections(struct format_instance *fid __attribute__((unused)),
+						 struct volume_group *vg, const struct dm_config_node *hlvn,
+						 const struct dm_config_node *vgn __attribute__((unused)),
+						 struct dm_hash_table *pv_hash __attribute__((unused)),
+						 struct dm_hash_table *lv_hash __attribute__((unused)),
+						 unsigned *scan_done_once __attribute__((unused)),
+						 unsigned report_missing_devices __attribute__((unused)))
+{
+	struct dm_pool *mem = vg->vgmem;
+	const char *historical_lv_name, *origin_name = NULL;
+	struct generic_logical_volume *glv, *origin_glv, *descendant_glv;
+	struct logical_volume *tmp_lv;
+	struct glv_list *glvl = NULL;
+	const struct dm_config_value *descendants = NULL;
+
+	historical_lv_name = hlvn->key;
+	hlvn = hlvn->child;
+
+	if (!(glv = find_historical_glv(vg, historical_lv_name, 0, NULL))) {
+		log_error("Unknown historical logical volume %s/%s%s",
+			  vg->name, HISTORICAL_LV_PREFIX, historical_lv_name);
+		goto bad;
+	}
+
+	if (dm_config_has_node(hlvn, "origin")) {
+		if (!dm_config_get_str(hlvn, "origin", &origin_name)) {
+			log_error("Couldn't read origin for historical logical "
+				  "volume %s/%s%s", vg->name, HISTORICAL_LV_PREFIX, historical_lv_name);
+			goto bad;
+		}
+	}
+
+	if (dm_config_has_node(hlvn, "descendants")) {
+		if (!dm_config_get_list(hlvn, "descendants", &descendants)) {
+			log_error("Couldn't get descendants list for historical logical "
+				  "volume %s/%s%s", vg->name, HISTORICAL_LV_PREFIX, historical_lv_name);
+			goto bad;
+		}
+		if (descendants->type == DM_CFG_EMPTY_ARRAY) {
+			log_error("Found empty descendants list for historical logical "
+				  "volume %s/%s%s", vg->name, HISTORICAL_LV_PREFIX, historical_lv_name);
+			goto bad;
+		}
+	}
+
+	if (!origin_name && !descendants)
+		/* no interconnections */
+		return 1;
+
+	if (origin_name) {
+		if (!(glvl = dm_pool_zalloc(mem, sizeof(struct glv_list)))) {
+			log_error("Failed to allocate list item for historical logical "
+				  "volume %s/%s%s", vg->name, HISTORICAL_LV_PREFIX, historical_lv_name);
+			goto bad;
+		}
+		glvl->glv = glv;
+
+		if (!strncmp(origin_name, HISTORICAL_LV_PREFIX, strlen(HISTORICAL_LV_PREFIX))) {
+			if (!(origin_glv = find_historical_glv(vg, origin_name + strlen(HISTORICAL_LV_PREFIX), 0, NULL))) {
+				log_error("Unknown origin %s for historical logical volume %s/%s%s",
+					  origin_name, vg->name, HISTORICAL_LV_PREFIX, historical_lv_name);
+				goto bad;
+			}
+		} else {
+			if (!(tmp_lv = find_lv(vg, origin_name))) {
+				log_error("Unknown origin %s for historical logical volume %s/%s%s",
+					  origin_name, vg->name, HISTORICAL_LV_PREFIX, historical_lv_name);
+				goto bad;
+			}
+
+			if (!(origin_glv = get_or_create_glv(mem, tmp_lv, NULL)))
+				goto bad;
+		}
+
+		glv->historical->indirect_origin = origin_glv;
+		if (origin_glv->is_historical)
+			dm_list_add(&origin_glv->historical->indirect_glvs, &glvl->list);
+		else
+			dm_list_add(&origin_glv->live->indirect_glvs, &glvl->list);
+	}
+
+	if (descendants) {
+		do {
+			if (descendants->type != DM_CFG_STRING) {
+				log_error("Descendant value for historical logical volume %s/%s%s "
+					  "is not a string.", vg->name, HISTORICAL_LV_PREFIX, historical_lv_name);
+				goto bad;
+			}
+
+			if (!(tmp_lv = find_lv(vg, descendants->v.str))) {
+				log_error("Failed to find descendant %s for historical LV %s.",
+					  descendants->v.str, historical_lv_name);
+				goto bad;
+			}
+
+			if (!(descendant_glv = get_or_create_glv(mem, tmp_lv, NULL)))
+				goto bad;
+
+			if (!add_glv_to_indirect_glvs(mem, glv, descendant_glv))
+				goto bad;
+
+			descendants = descendants->next;
+		} while (descendants);
+	}
+
+	return 1;
+bad:
+	if (glvl)
+		dm_pool_free(mem, glvl);
+	return 0;
+}
+
 static int _read_lvsegs(struct format_instance *fid,
 			struct volume_group *vg, const struct dm_config_node *lvn,
 			const struct dm_config_node *vgn __attribute__((unused)),
@@ -982,10 +1165,24 @@ static struct volume_group *_read_vg(struct format_instance *fid,
 		goto bad;
 	}
 
+	if (!_read_sections(fid, "historical_logical_volumes", _read_historical_lvnames, vg,
+			    vgn, pv_hash, lv_hash, 1, NULL)) {
+		log_error("Couldn't read all historical logical volumes for volume "
+			  "group %s.", vg->name);
+		goto bad;
+	}
+
 	if (!_read_sections(fid, "logical_volumes", _read_lvsegs, vg,
 			    vgn, pv_hash, lv_hash, 1, NULL)) {
 		log_error("Couldn't read all logical volumes for "
 			  "volume group %s.", vg->name);
+		goto bad;
+	}
+
+	if (!_read_sections(fid, "historical_logical_volumes", _read_historical_lvnames_interconnections,
+			    vg, vgn, pv_hash, lv_hash, 1, NULL)) {
+		log_error("Couldn't read all removed logical volume interconnections "
+			  "for volume group %s.", vg->name);
 		goto bad;
 	}
 

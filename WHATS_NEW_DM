@@ -1,3 +1,21 @@
+Version 1.02.120 - 11th March 2016
+==================================
+  Improve parsing of cache status and report Fail, Error, needs_check, ro.
+
+Version 1.02.119 - 4th March 2016
+=================================
+  Fix dm_config_write_node and variants to return error on subsection failures.
+  Remove 4096 char limit due to buffer size if writing dm_config_node.
+
+Version 1.02.118 - 26th February 2016
+=====================================
+  Fix string boundary check in _get_canonical_field_name().
+  Always initialized hist struct in _stats_parse_histogram().
+
+Version 1.02.117 - 21st February 2016
+=====================================
+  Improve status parsing for thin-pool and thin devices.
+
 Version 1.02.116 - 15th February 2016
 =====================================
   Use fully aligned allocations for dm_pool_strdup/strndup() (1.02.64).

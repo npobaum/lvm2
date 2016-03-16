@@ -222,22 +222,46 @@ __attribute__ ((format(printf, 2, 3)))
 static int _line_append(struct config_output *out, const char *fmt, ...)
 {
 	char buf[4096];
+	char *dyn_buf = NULL;
 	va_list ap;
 	int n;
+
+	/*
+	 * We should be fine with the 4096 char buffer 99% of the time,
+	 * but if we need to go beyond that, allocate the buffer dynamically.
+	 */
 
 	va_start(ap, fmt);
 	n = vsnprintf(&buf[0], sizeof buf - 1, fmt, ap);
 	va_end(ap);
 
-	if (n < 0 || n > (int) sizeof buf - 1) {
+	if (n < 0) {
 		log_error("vsnprintf failed for config line");
 		return 0;
 	}
 
-	if (!dm_pool_grow_object(out->mem, &buf[0], strlen(buf))) {
+	if (n > (int) sizeof buf - 1) {
+		/*
+		 * Fixed size buffer with sizeof buf is not enough,
+		 * so try dynamically allocated buffer now...
+		 */
+		va_start(ap, fmt);
+		n = dm_vasprintf(&dyn_buf, fmt, ap);
+		va_end(ap);
+
+		if (n < 0) {
+			log_error("dm_vasprintf failed for config line");
+			return 0;
+		}
+	}
+
+	if (!dm_pool_grow_object(out->mem, dyn_buf ? : buf, 0)) {
 		log_error("dm_pool_grow_object failed for config line");
+		dm_free(dyn_buf);
 		return 0;
 	}
+
+	dm_free(dyn_buf);
 
 	return 1;
 }
@@ -342,7 +366,8 @@ static int _write_config(const struct dm_config_node *n, int only_one,
 			line_append(" {");
 			if (!_line_end(n, out))
 				return_0;
-			_write_config(n->child, 0, out, level + 1);
+			if (!_write_config(n->child, 0, out, level + 1))
+				return_0;
 			if (!_line_start(out))
 				return_0;
 			line_append("%s}", space);

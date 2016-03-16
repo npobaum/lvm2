@@ -84,8 +84,10 @@ struct lv_names {
 
 enum {
 	LV_TYPE_UNKNOWN,
+	LV_TYPE_NONE,
 	LV_TYPE_PUBLIC,
 	LV_TYPE_PRIVATE,
+	LV_TYPE_HISTORY,
 	LV_TYPE_LINEAR,
 	LV_TYPE_STRIPED,
 	LV_TYPE_MIRROR,
@@ -130,8 +132,10 @@ enum {
 
 static const char *_lv_type_names[] = {
 	[LV_TYPE_UNKNOWN] =				"unknown",
+	[LV_TYPE_NONE] =				"none",
 	[LV_TYPE_PUBLIC] =				"public",
 	[LV_TYPE_PRIVATE] =				"private",
+	[LV_TYPE_HISTORY] =				"history",
 	[LV_TYPE_LINEAR] =				"linear",
 	[LV_TYPE_STRIPED] =				"striped",
 	[LV_TYPE_MIRROR] =				"mirror",
@@ -470,6 +474,12 @@ int lv_layout_and_role(struct dm_pool *mem, const struct logical_volume *lv,
 	if (!(*role = str_list_create(mem))) {
 		log_error("LV role list allocation failed");
 		goto bad;
+	}
+
+	if (lv_is_historical(lv)) {
+		if (!str_list_add_no_dup_check(mem, *layout, _lv_type_names[LV_TYPE_NONE]) ||
+		    !str_list_add_no_dup_check(mem, *role, _lv_type_names[LV_TYPE_HISTORY]))
+			goto_bad;
 	}
 
 	/* Mirrors and related */
@@ -1360,7 +1370,7 @@ int replace_lv_with_error_segment(struct logical_volume *lv)
 
 int lv_refresh_suspend_resume(struct cmd_context *cmd, struct logical_volume *lv)
 {
-	if (!cmd->partial_activation && (lv->status & PARTIAL_LV)) {
+	if (!cmd->partial_activation && lv_is_partial(lv)) {
 		log_error("Refusing refresh of partial LV %s."
 			  " Use '--activationmode partial' to override.",
 			  display_lvname(lv));
@@ -1388,11 +1398,75 @@ int lv_reduce(struct logical_volume *lv, uint32_t extents)
 	return _lv_reduce(lv, extents, 1);
 }
 
+int historical_glv_remove(struct generic_logical_volume *glv)
+{
+	struct generic_logical_volume *origin_glv;
+	struct glv_list *glvl, *user_glvl;
+	struct historical_logical_volume *hlv;
+	int reconnected;
+
+	if (!glv || !glv->is_historical)
+		return_0;
+
+	hlv = glv->historical;
+
+	if (!(glv = find_historical_glv(hlv->vg, hlv->name, 0, &glvl))) {
+		if (!(find_historical_glv(hlv->vg, hlv->name, 1, NULL))) {
+			log_error(INTERNAL_ERROR "historical_glv_remove: historical LV %s/-%s not found ",
+				  hlv->vg->name, hlv->name);
+			return 0;
+		} else {
+			log_verbose("Historical LV %s/-%s already on removed list ",
+				    hlv->vg->name, hlv->name);
+			return 1;
+		}
+	}
+
+	if ((origin_glv = hlv->indirect_origin) &&
+	    !remove_glv_from_indirect_glvs(origin_glv, glv))
+		return_0;
+
+	dm_list_iterate_items(user_glvl, &hlv->indirect_glvs) {
+		reconnected = 0;
+		if ((origin_glv && !origin_glv->is_historical) && !user_glvl->glv->is_historical)
+			log_verbose("Removing historical connection between %s and %s.",
+				     origin_glv->live->name, user_glvl->glv->live->name);
+		else if (hlv->vg->cmd->record_historical_lvs) {
+			if (!add_glv_to_indirect_glvs(hlv->vg->vgmem, origin_glv, user_glvl->glv))
+				return_0;
+			reconnected = 1;
+		}
+
+		if (!reconnected) {
+			/*
+			 * Break ancestry chain if we're removing historical LV and tracking
+			 * historical LVs is switched off either via:
+			 *   - "metadata/record_lvs_history=0" config
+			 *   - "--nohistory" cmd line option
+			 *
+			 * Also, break the chain if we're unable to store such connection at all
+			 * because we're removing the very last historical LV that was in between
+			 * live LVs - pure live LVs can't store any indirect origin relation in
+			 * metadata - we need at least one historical LV to do that!
+			 */
+			if (user_glvl->glv->is_historical)
+				user_glvl->glv->historical->indirect_origin = NULL;
+			else
+				first_seg(user_glvl->glv->live)->indirect_origin = NULL;
+		}
+	}
+
+	dm_list_move(&hlv->vg->removed_historical_lvs, &glvl->list);
+	return 1;
+}
+
 /*
  * Completely remove an LV.
  */
 int lv_remove(struct logical_volume *lv)
 {
+	if (lv_is_historical(lv))
+		return historical_glv_remove(lv->this_glv);
 
 	if (!lv_reduce(lv, lv->le_count))
 		return_0;
@@ -1662,8 +1736,10 @@ static int _setup_alloced_segment(struct logical_volume *lv, uint64_t status,
 	lv->size += (uint64_t) extents * lv->vg->extent_size;
 
 	if (lv_is_thin_pool_data(lv)) {
+		if (!(thin_pool_seg = get_only_segment_using_this_lv(lv)))
+			return_0;
+
 		/* Update thin pool segment from the layered LV */
-		thin_pool_seg = get_only_segment_using_this_lv(lv);
 		thin_pool_seg->lv->le_count =
 			thin_pool_seg->len =
 			thin_pool_seg->area_len = lv->le_count;
@@ -3952,10 +4028,12 @@ out:
 static int _rename_single_lv(struct logical_volume *lv, char *new_name)
 {
 	struct volume_group *vg = lv->vg;
+	int historical;
 
-	if (find_lv_in_vg(vg, new_name)) {
-		log_error("Logical volume \"%s\" already exists in "
-			  "volume group \"%s\"", new_name, vg->name);
+	if (lv_name_is_used_in_vg(vg, new_name, &historical)) {
+		log_error("%sLogical Volume \"%s\" already exists in "
+			  "volume group \"%s\"", historical ? "historical " : "",
+			   new_name, vg->name);
 		return 0;
 	}
 
@@ -4118,6 +4196,8 @@ int lv_rename_update(struct cmd_context *cmd, struct logical_volume *lv,
 {
 	struct volume_group *vg = lv->vg;
 	struct lv_names lv_names = { .old = lv->name };
+	int old_lv_is_historical = lv_is_historical(lv);
+	int historical;
 
 	/*
 	 * rename is not allowed on sub LVs except for pools
@@ -4129,9 +4209,10 @@ int lv_rename_update(struct cmd_context *cmd, struct logical_volume *lv,
 		return 0;
 	}
 
-	if (find_lv_in_vg(vg, new_name)) {
-		log_error("Logical volume \"%s\" already exists in "
-			  "volume group \"%s\"", new_name, vg->name);
+	if (lv_name_is_used_in_vg(vg, new_name, &historical)) {
+		log_error("%sLogical Volume \"%s\" already exists in "
+			  "volume group \"%s\"", historical ? "Historical " : "",
+			  new_name, vg->name);
 		return 0;
 	}
 
@@ -4143,23 +4224,34 @@ int lv_rename_update(struct cmd_context *cmd, struct logical_volume *lv,
 	if (update_mda && !archive(vg))
 		return_0;
 
-	if (!(lv_names.new = dm_pool_strdup(cmd->mem, new_name))) {
-		log_error("Failed to allocate space for new name.");
-		return 0;
+	if (old_lv_is_historical) {
+		/*
+		 * Historical LVs have neither sub LVs nor any
+		 * devices to reload, so just update metadata.
+		 */
+		lv->this_glv->historical->name = lv->name = new_name;
+		if (update_mda &&
+		    (!vg_write(vg) || !vg_commit(vg)))
+			return_0;
+	} else {
+		if (!(lv_names.new = dm_pool_strdup(cmd->mem, new_name))) {
+			log_error("Failed to allocate space for new name.");
+			return 0;
+		}
+
+		/* rename sub LVs */
+		if (!for_each_sub_lv_except_pools(lv, _rename_cb, (void *) &lv_names))
+			return_0;
+
+		/* rename main LV */
+		lv->name = lv_names.new;
+
+		if (lv_is_cow(lv))
+			lv = origin_from_cow(lv);
+
+		if (update_mda && !lv_update_and_reload((struct logical_volume *)lv_lock_holder(lv)))
+			return_0;
 	}
-
-	/* rename sub LVs */
-	if (!for_each_sub_lv_except_pools(lv, _rename_cb, (void *) &lv_names))
-		return_0;
-
-	/* rename main LV */
-	lv->name = lv_names.new;
-
-	if (lv_is_cow(lv))
-		lv = origin_from_cow(lv);
-
-	if (update_mda && !lv_update_and_reload((struct logical_volume *)lv_lock_holder(lv)))
-		return_0;
 
 	return 1;
 }
@@ -5289,6 +5381,7 @@ char *generate_lv_name(struct volume_group *vg, const char *format,
 		       char *buffer, size_t len)
 {
 	struct lv_list *lvl;
+	struct glv_list *glvl;
 	int high = -1, i;
 
 	dm_list_iterate_items(lvl, &vg->lvs) {
@@ -5299,10 +5392,112 @@ char *generate_lv_name(struct volume_group *vg, const char *format,
 			high = i;
 	}
 
+	dm_list_iterate_items(glvl, &vg->historical_lvs) {
+		if (sscanf(glvl->glv->historical->name, format, &i) != 1)
+			continue;
+
+		if (i > high)
+			high = i;
+	}
+
 	if (dm_snprintf(buffer, len, format, high + 1) < 0)
 		return NULL;
 
 	return buffer;
+}
+
+struct generic_logical_volume *get_or_create_glv(struct dm_pool*mem, struct logical_volume *lv, int *glv_created)
+{
+	struct generic_logical_volume *glv;
+
+	if (!(glv = lv->this_glv)) {
+		if (!(glv = dm_pool_zalloc(mem, sizeof(struct generic_logical_volume)))) {
+			log_error("Failed to allocate generic logical volume structure.");
+			return NULL;
+		}
+		glv->live = lv;
+		lv->this_glv = glv;
+		if (glv_created)
+			*glv_created = 1;
+	} else if (glv_created)
+		*glv_created = 0;
+
+	return glv;
+}
+
+struct glv_list *get_or_create_glvl(struct dm_pool *mem, struct logical_volume *lv, int *glv_created)
+{
+	struct glv_list *glvl;
+
+	if (!(glvl = dm_pool_zalloc(mem, sizeof(struct glv_list)))) {
+		log_error("Failed to allocate generic logical volume list item.");
+		return NULL;
+	}
+
+	if (!(glvl->glv = get_or_create_glv(mem, lv, glv_created))) {
+		dm_pool_free(mem, glvl);
+		return_NULL;
+	}
+
+	return glvl;
+}
+
+int add_glv_to_indirect_glvs(struct dm_pool *mem,
+				  struct generic_logical_volume *origin_glv,
+				  struct generic_logical_volume *glv)
+{
+	struct glv_list *glvl;
+
+	if (!(glvl = dm_pool_zalloc(mem, sizeof(struct glv_list)))) {
+		log_error("Failed to allocate generic volume list item "
+			  "for indirect glv %s", glv->is_historical ? glv->historical->name
+								    : glv->live->name);
+		return 0;
+	}
+
+	glvl->glv = glv;
+
+	if (glv->is_historical)
+		glv->historical->indirect_origin = origin_glv;
+	else
+		first_seg(glv->live)->indirect_origin = origin_glv;
+
+	if (origin_glv) {
+		if (origin_glv->is_historical)
+			dm_list_add(&origin_glv->historical->indirect_glvs, &glvl->list);
+		else
+			dm_list_add(&origin_glv->live->indirect_glvs, &glvl->list);
+	}
+
+	return 1;
+}
+
+int remove_glv_from_indirect_glvs(struct generic_logical_volume *origin_glv,
+				  struct generic_logical_volume *glv)
+{
+	struct glv_list *glvl, *tglvl;
+	struct dm_list *list = origin_glv->is_historical ? &origin_glv->historical->indirect_glvs
+							 : &origin_glv->live->indirect_glvs;
+
+	dm_list_iterate_items_safe(glvl, tglvl, list) {
+		if (glvl->glv != glv)
+			continue;
+
+		dm_list_del(&glvl->list);
+
+		if (glvl->glv->is_historical)
+			glvl->glv->historical->indirect_origin = NULL;
+		else
+			first_seg(glvl->glv->live)->indirect_origin = NULL;
+
+		return 1;
+	}
+
+	log_error(INTERNAL_ERROR "%s logical volume %s is not a user of %s.",
+		  glv->is_historical ? "historical" : "Live",
+		  glv->is_historical ? glv->historical->name : glv->live->name,
+		  origin_glv->is_historical ? origin_glv->historical->name : origin_glv->live->name);
+	return 0;
 }
 
 struct logical_volume *alloc_lv(struct dm_pool *mem)
@@ -5318,6 +5513,7 @@ struct logical_volume *alloc_lv(struct dm_pool *mem)
 	dm_list_init(&lv->segments);
 	dm_list_init(&lv->tags);
 	dm_list_init(&lv->segs_using_this_lv);
+	dm_list_init(&lv->indirect_glvs);
 	dm_list_init(&lv->rsites);
 
 	return lv;
@@ -5335,6 +5531,7 @@ struct logical_volume *lv_create_empty(const char *name,
 	struct format_instance *fi = vg->fid;
 	struct logical_volume *lv;
 	char dname[NAME_LEN];
+	int historical;
 
 	if (vg_max_lv_reached(vg))
 		stack;
@@ -5344,9 +5541,10 @@ struct logical_volume *lv_create_empty(const char *name,
 		log_error("Failed to generate unique name for the new "
 			  "logical volume");
 		return NULL;
-	} else if (find_lv_in_vg(vg, name)) {
+	} else if (lv_name_is_used_in_vg(vg, name, &historical)) {
 		log_error("Unable to create LV %s in Volume Group %s: "
-			  "name already in use.", name, vg->name);
+			  "name already in use%s.", name, vg->name,
+			  historical ? " by historical LV" : "");
 		return NULL;
 	}
 
@@ -5520,7 +5718,7 @@ int lv_remove_single(struct cmd_context *cmd, struct logical_volume *lv,
 	struct volume_group *vg;
 	struct logical_volume *format1_origin = NULL;
 	int format1_reload_required = 0;
-	int visible;
+	int visible, historical;
 	struct logical_volume *pool_lv = NULL;
 	struct logical_volume *lock_lv = lv;
 	struct lv_segment *cache_seg = NULL;
@@ -5611,7 +5809,7 @@ int lv_remove_single(struct cmd_context *cmd, struct logical_volume *lv,
 		}
 	}
 
-	if ((force == PROMPT) && ask_discard &&
+	if (!lv_is_historical(lv) && (force == PROMPT) && ask_discard &&
 	    yes_no_prompt("Do you really want to remove and DISCARD "
 			  "logical volume %s? [y/n]: ",
 			  lv->name) == 'n') {
@@ -5633,9 +5831,9 @@ int lv_remove_single(struct cmd_context *cmd, struct logical_volume *lv,
 		is_last_pool = 1;
 	}
 
-	/* Used cache pool or COW cannot be activated */
+	/* Used cache pool, COW or historical LV cannot be activated */
 	if ((!lv_is_cache_pool(lv) || dm_list_empty(&lv->segs_using_this_lv)) &&
-	    !lv_is_cow(lv) &&
+	    !lv_is_cow(lv) && !lv_is_historical(lv) &&
 	    !deactivate_lv(cmd, lv)) {
 		/* FIXME Review and fix the snapshot error paths! */
 		log_error("Unable to deactivate logical volume %s.",
@@ -5697,10 +5895,15 @@ int lv_remove_single(struct cmd_context *cmd, struct logical_volume *lv,
 	}
 
 	visible = lv_is_visible(lv);
+	historical = lv_is_historical(lv);
 
-	log_verbose("Releasing logical volume \"%s\"", lv->name);
+	log_verbose("Releasing %slogical volume \"%s\"",
+		    historical ? "historical " : "",
+		    historical ? lv->this_glv->historical->name : lv->name);
 	if (!lv_remove(lv)) {
-		log_error("Error releasing logical volume \"%s\"", lv->name);
+		log_error("Error releasing %slogical volume \"%s\"",
+			  historical ? "historical ": "",
+			  historical ? lv->this_glv->historical->name : lv->name);
 		return 0;
 	}
 
@@ -5763,8 +5966,10 @@ int lv_remove_single(struct cmd_context *cmd, struct logical_volume *lv,
 	lockd_lv(cmd, lock_lv, "un", LDLV_PERSISTENT);
 	lockd_free_lv(cmd, vg, lv->name, &lv->lvid.id[1], lv->lock_args);
 
-	if (!suppress_remove_message && visible)
-		log_print_unless_silent("Logical volume \"%s\" successfully removed", lv->name);
+	if (!suppress_remove_message && (visible || historical))
+		log_print_unless_silent("%sogical volume \"%s\" successfully removed",
+					historical ? "Historical l" : "L",
+					historical ? lv->this_glv->historical->name : lv->name);
 
 	return 1;
 }
@@ -6201,7 +6406,7 @@ int remove_layer_from_lv(struct logical_volume *lv,
 	struct lv_segment *parent_seg;
 	struct segment_type *segtype;
 	struct lv_names lv_names;
-	int r;
+	unsigned r;
 
 	log_very_verbose("Removing layer %s for %s", layer_lv->name, lv->name);
 
@@ -6277,7 +6482,7 @@ struct logical_volume *insert_layer_for_lv(struct cmd_context *cmd,
 	struct segment_type *segtype;
 	struct lv_segment *mapseg;
 	struct lv_names lv_names;
-	unsigned exclusive = 0;
+	unsigned exclusive = 0, i;
 
 	/* create an empty layer LV */
 	if (dm_snprintf(name, sizeof(name), "%s%s", lv_where->name, layer_suffix) < 0) {
@@ -6370,8 +6575,8 @@ struct logical_volume *insert_layer_for_lv(struct cmd_context *cmd,
 	 *   currently supported only for thin data layer
 	 *   FIXME: without strcmp it breaks mirrors....
 	 */
-	for (r = 0; r < DM_ARRAY_SIZE(_suffixes); ++r)
-		if (strcmp(layer_suffix, _suffixes[r]) == 0) {
+	for (i = 0; i < DM_ARRAY_SIZE(_suffixes); ++i)
+		if (strcmp(layer_suffix, _suffixes[i]) == 0) {
 			lv_names.old = lv_where->name;
 			lv_names.new = layer_lv->name;
 			if (!for_each_sub_lv(layer_lv, _rename_cb, (void *) &lv_names))
@@ -6832,10 +7037,12 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 	struct logical_volume *tmp_lv;
 	struct lv_segment *seg, *pool_seg;
 	int thin_pool_was_active = -1; /* not scanned, inactive, active */
+	int historical;
 
-	if (new_lv_name && find_lv_in_vg(vg, new_lv_name)) {
-		log_error("Logical volume \"%s\" already exists in "
-			  "volume group \"%s\"", new_lv_name, vg->name);
+	if (new_lv_name && lv_name_is_used_in_vg(vg, new_lv_name, &historical)) {
+		log_error("%sLogical Volume \"%s\" already exists in "
+			  "volume group \"%s\"", historical ? "historical " : "",
+			  new_lv_name, vg->name);
 		return NULL;
 	}
 
@@ -7238,13 +7445,13 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 		if (origin_lv && lv_is_thin_volume(origin_lv) &&
 		    (first_seg(origin_lv)->pool_lv == pool_lv)) {
 			/* For thin snapshot pool must match */
-			if (!attach_pool_lv(seg, pool_lv, origin_lv, NULL))
+			if (!attach_pool_lv(seg, pool_lv, origin_lv, NULL, NULL))
 				return_NULL;
 			/* Use the same external origin */
 			if (!attach_thin_external_origin(seg, first_seg(origin_lv)->external_lv))
 				return_NULL;
 		} else {
-			if (!attach_pool_lv(seg, pool_lv, NULL, NULL))
+			if (!attach_pool_lv(seg, pool_lv, NULL, NULL, NULL))
 				return_NULL;
 			/* If there is an external origin... */
 			if (!attach_thin_external_origin(seg, origin_lv))
