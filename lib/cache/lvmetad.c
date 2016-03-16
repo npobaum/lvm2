@@ -105,6 +105,7 @@ void lvmetad_disconnect(void)
 {
 	if (_lvmetad_connected)
 		daemon_close(_lvmetad);
+
 	_lvmetad_connected = 0;
 }
 
@@ -165,14 +166,17 @@ int lvmetad_socket_present(void)
 int lvmetad_active(void)
 {
 	lvmetad_connect_or_warn();
+
 	return _lvmetad_connected;
 }
 
 void lvmetad_set_active(struct cmd_context *cmd, int active)
 {
 	_lvmetad_use = active;
+
 	if (!active && lvmetad_active())
 		lvmetad_disconnect();
+
 	if (cmd && !refresh_filters(cmd))
 		stack;
 }
@@ -282,6 +286,7 @@ static int _token_update(void)
 	}
 
 	daemon_reply_destroy(repl);
+
 	return 1;
 }
 
@@ -368,6 +373,8 @@ static int _pv_populate_lvmcache(struct cmd_context *cmd,
 	dev_t devt = dm_config_find_int(cn->child, "device", 0);
 	uint64_t devsize = dm_config_find_int64(cn->child, "dev_size", 0),
 		 label_sector = dm_config_find_int64(cn->child, "label_sector", 0);
+	uint32_t ext_flags = (uint32_t) dm_config_find_int64(cn->child, "ext_flags", 0);
+	uint32_t ext_version = (uint32_t) dm_config_find_int64(cn->child, "ext_version", 0);
 
 	if (!fmt && fmt_name)
 		fmt = get_format_by_name(cmd, fmt_name);
@@ -478,12 +485,17 @@ static int _pv_populate_lvmcache(struct cmd_context *cmd,
 	}
 
 	lvmcache_set_preferred_duplicates((const char *)&vgid);
+
+	lvmcache_set_ext_flags(info, ext_flags);
+	lvmcache_set_ext_version(info, ext_version);
+
 	return 1;
 }
 
 static int _pv_update_struct_pv(struct physical_volume *pv, struct format_instance *fid)
 {
 	struct lvmcache_info *info;
+
 	if ((info = lvmcache_info_from_pvid((const char *)&pv->id, 0))) {
 		pv->label_sector = lvmcache_get_label(info)->sector;
 		pv->dev = lvmcache_device(info);
@@ -491,9 +503,10 @@ static int _pv_update_struct_pv(struct physical_volume *pv, struct format_instan
 			pv->status |= MISSING_PV;
 		if (!lvmcache_fid_add_mdas_pv(info, fid))
 			return_0;
-                pv->fid = fid;
+		pv->fid = fid;
 	} else
 		pv->status |= MISSING_PV; /* probably missing */
+
 	return 1;
 }
 
@@ -501,7 +514,7 @@ struct volume_group *lvmetad_vg_lookup(struct cmd_context *cmd, const char *vgna
 {
 	struct volume_group *vg = NULL;
 	struct volume_group *vg2 = NULL;
-	daemon_reply reply;
+	daemon_reply reply = { 0 };
 	int found;
 	char uuid[64];
 	struct format_instance *fid = NULL;
@@ -674,9 +687,12 @@ struct _fixup_baton {
 
 static int _fixup_ignored(struct metadata_area *mda, void *baton) {
 	struct _fixup_baton *b = baton;
+
 	if (b->i == b->find)
 		mda_set_ignored(mda, b->ignore);
+
 	b->i ++;
+
 	return 1;
 }
 
@@ -823,6 +839,7 @@ out_success:
 
 out:
 	daemon_reply_destroy(reply);
+
 	return result;
 }
 
@@ -897,6 +914,7 @@ int lvmetad_get_vgnameids(struct cmd_context *cmd, struct dm_list *vgnameids)
 	}
 
 	daemon_reply_destroy(reply);
+
 	return 1;
 }
 
@@ -932,6 +950,7 @@ int lvmetad_vg_list_to_lvmcache(struct cmd_context *cmd)
 		}
 
 	daemon_reply_destroy(reply);
+
 	return 1;
 }
 
@@ -999,13 +1018,15 @@ static int _extract_ba(struct disk_locn *ba, void *baton)
 static int _extract_mdas(struct lvmcache_info *info, struct dm_config_tree *cft,
 			 struct dm_config_node *pre_sib)
 {
-	struct _extract_dl_baton baton = { .i = 0, .cft = cft, .pre_sib = NULL };
+	struct _extract_dl_baton baton = { .cft = cft };
 
 	if (!lvmcache_foreach_mda(info, &_extract_mda, &baton))
 		return 0;
+
 	baton.i = 0;
 	if (!lvmcache_foreach_da(info, &_extract_da, &baton))
 		return 0;
+
 	baton.i = 0;
 	if (!lvmcache_foreach_ba(info, &_extract_ba, &baton))
 		return 0;
@@ -1041,12 +1062,16 @@ int lvmetad_pv_found(const struct id *pvid, struct device *dev, const struct for
 		return_0;
 	}
 
+	/* TODO: resolve what does it actually mean  'info == NULL'
+	 *       missing info is likely an INTERNAL_ERROR */
 	if (!config_make_nodes(pvmeta, pvmeta->root, NULL,
 			       "device = %"PRId64, (int64_t) dev->dev,
 			       "dev_size = %"PRId64, (int64_t) (info ? lvmcache_device_size(info) : 0),
 			       "format = %s", fmt->name,
 			       "label_sector = %"PRId64, (int64_t) label_sector,
 			       "id = %s", uuid,
+			       "ext_version = %"PRId64, (int64_t) (info ? lvmcache_ext_version(info) : 0),
+			       "ext_flags = %"PRId64, (int64_t) (info ? lvmcache_ext_flags(info) : 0),
 			       NULL))
 	{
 		dm_config_destroy(pvmeta);
@@ -1164,11 +1189,11 @@ int lvmetad_pv_gone(dev_t devno, const char *pv_name, activation_handler handler
 		return 1;
 
 	/*
-         *  TODO: automatic volume deactivation takes place here *before*
-         *        all cached info is gone - call handler. Also, consider
-         *        integrating existing deactivation script  that deactivates
-         *        the whole stack from top to bottom (not yet upstream).
-         */
+	 *  TODO: automatic volume deactivation takes place here *before*
+	 *        all cached info is gone - call handler. Also, consider
+	 *        integrating existing deactivation script  that deactivates
+	 *        the whole stack from top to bottom (not yet upstream).
+	 */
 
 	log_debug_lvmetad("Telling lvmetad to forget any PV on %s", pv_name);
 	reply = _lvmetad_send("pv_gone", "device = %" PRId64, (int64_t) devno, NULL);
@@ -1407,8 +1432,9 @@ int lvmetad_pvscan_single(struct cmd_context *cmd, struct device *dev,
 
 bad:
 	/* FIXME kill lvmetad automatically if we can */
-	log_error("Update of lvmetad failed. This is a serious problem.\n  "
+	log_error("Update of lvmetad failed. This is a serious problem.\n"
 		  "It is strongly recommended that you restart lvmetad immediately.");
+
 	return 0;
 }
 
@@ -1528,6 +1554,7 @@ static int _lvmetad_get_pv_cache_list(struct cmd_context *cmd, struct dm_list *p
 		return 1;
 
 	log_debug_lvmetad("Asking lvmetad for complete list of known PVs");
+
 	reply = _lvmetad_send("pv_list", NULL);
 	if (!_lvmetad_handle_reply(reply, "list PVs", "", NULL)) {
 		log_error("lvmetad message failed.");
@@ -1624,10 +1651,8 @@ static void _update_changed_pvs_in_udev(struct cmd_context *cmd,
 				continue;
 
 			if (!id_equal(&before->pvid, &after->pvid)) {
-				memset(id_before, 0, sizeof(id_before));
-				memset(id_after, 0, sizeof(id_after));
-				strncpy(&id_before[0], (char *) &before->pvid, sizeof(id_before) - 1);
-				strncpy(&id_after[0], (char *) &after->pvid, sizeof(id_after) - 1);
+				dm_strncpy(id_before, (char *) &before->pvid, sizeof(id_before));
+				dm_strncpy(id_after, (char *) &after->pvid, sizeof(id_after));
 
 				log_debug_devs("device %d:%d changed pvid from %s to %s",
 					       (int)MAJOR(before->devt), (int)MINOR(before->devt),
@@ -1653,8 +1678,7 @@ static void _update_changed_pvs_in_udev(struct cmd_context *cmd,
 		}
 
 		if (!found) {
-			memset(id_before, 0, sizeof(id_before));
-			strncpy(&id_before[0], (char *) &before->pvid, sizeof(id_before) - 1);
+			dm_strncpy(id_before, (char *) &before->pvid, sizeof(id_before));
 
 			log_debug_devs("device %d:%d pvid %s vg %s is gone",
 				       (int)MAJOR(before->devt), (int)MINOR(before->devt),
@@ -1746,10 +1770,8 @@ void lvmetad_validate_global_cache(struct cmd_context *cmd, int force)
 
 	daemon_reply_destroy(reply);
 
-	if (!global_invalid) {
-		/* cache is valid */
-		return;
-	}
+	if (!global_invalid)
+		return; /* cache is valid */
 
  do_scan:
 	/*
@@ -1831,6 +1853,6 @@ int lvmetad_vg_is_foreign(struct cmd_context *cmd, const char *vgname, const cha
 	ret = !is_system_id_allowed(cmd, system_id);
 
 	daemon_reply_destroy(reply);
+
 	return ret;
 }
-

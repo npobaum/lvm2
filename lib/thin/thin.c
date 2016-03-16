@@ -404,8 +404,10 @@ static int _thin_pool_target_percent(void **target_state __attribute__((unused))
 	if (!dm_get_status_thin_pool(mem, params, &s))
 		return_0;
 
+	if (s->fail || s->error)
+		*percent = DM_PERCENT_INVALID;
 	/* With 'seg' report metadata percent, otherwice data percent */
-	if (seg) {
+	else if (seg) {
 		*percent = dm_make_percent(s->used_metadata_blocks,
 					   s->total_metadata_blocks);
 		*total_numerator += s->used_metadata_blocks;
@@ -471,6 +473,7 @@ static int _thin_text_import(struct lv_segment *seg,
 {
 	const char *lv_name;
 	struct logical_volume *pool_lv, *origin = NULL, *external_lv = NULL, *merge_lv = NULL;
+	struct generic_logical_volume *indirect_origin = NULL;
 
 	if (!dm_config_get_str(sn, "thin_pool", &lv_name))
 		return SEG_LOG_ERROR("Thin pool must be a string in");
@@ -511,7 +514,7 @@ static int _thin_text_import(struct lv_segment *seg,
 			return SEG_LOG_ERROR("Unknown external origin %s in", lv_name);
 	}
 
-	if (!attach_pool_lv(seg, pool_lv, origin, merge_lv))
+	if (!attach_pool_lv(seg, pool_lv, origin, indirect_origin, merge_lv))
 		return_0;
 
 	if (!attach_thin_external_origin(seg, external_lv))
@@ -530,6 +533,7 @@ static int _thin_text_export(const struct lv_segment *seg, struct formatter *f)
 		outf(f, "external_origin = \"%s\"", seg->external_lv->name);
 	if (seg->origin)
 		outf(f, "origin = \"%s\"", seg->origin->name);
+
 	if (seg->merge_lv)
 		outf(f, "merge = \"%s\"", seg->merge_lv->name);
 
@@ -622,7 +626,9 @@ static int _thin_target_percent(void **target_state __attribute__((unused)),
 	if (!dm_get_status_thin(mem, params, &s))
 		return_0;
 
-	if (seg) {
+	if (s->fail)
+		*percent = DM_PERCENT_INVALID;
+	else if (seg) {
 		/* Pool allocates whole chunk so round-up to nearest one */
 		csize = first_seg(seg->pool_lv)->chunk_size;
 		csize = ((seg->lv->size + csize - 1) / csize) * csize;

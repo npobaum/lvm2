@@ -28,6 +28,11 @@
 static struct utsname _utsname;
 static int _utsinit = 0;
 
+int lv_is_historical(const struct logical_volume *lv)
+{
+	return lv->this_glv && lv->this_glv->is_historical;
+}
+
 static struct dm_list *_format_pvsegs(struct dm_pool *mem, const struct lv_segment *seg,
 				      int range_format, int metadata_areas_only,
 				      int mark_hidden)
@@ -1035,7 +1040,7 @@ char *lv_attr_dup_with_info_and_seg_status(struct dm_pool *mem, const struct lv_
 	}
 
 	/* Blank if this is a "free space" LV. */
-	if (!*lv->name)
+	if (!*lv->name && !lv_is_historical(lv))
 		goto out;
 
 	if (lv_is_pvmove(lv))
@@ -1099,7 +1104,10 @@ char *lv_attr_dup_with_info_and_seg_status(struct dm_pool *mem, const struct lv_
 
 	repstr[3] = (lv->status & FIXED_MINOR) ? 'm' : '-';
 
-	if (!activation() || !lvdm->info_ok) {
+	if (lv_is_historical(lv)) {
+		repstr[4] = 'h';
+		repstr[5] = '-';
+	} else if (!activation() || !lvdm->info_ok) {
 		repstr[4] = 'X';		/* Unknown */
 		repstr[5] = 'X';		/* Unknown */
 	} else if (lvdm->info.exists) {
@@ -1128,6 +1136,14 @@ char *lv_attr_dup_with_info_and_seg_status(struct dm_pool *mem, const struct lv_
 					repstr[4] = 'm'; /* snapshot merge failed */
 			}
 		}
+
+		/* 'c' when cache/thin-pool is active with needs_check flag
+		 * 'C' for suspend */
+		if ((lv_is_thin_pool(lv) &&
+		     lvdm->seg_status.thin_pool->needs_check) ||
+		    (lv_is_cache(lv) &&
+		     lvdm->seg_status.cache->needs_check))
+			repstr[4] = lvdm->info.suspended ? 'C' : 'c';
 
 		/*
 		 * 'R' indicates read-only activation of a device that
@@ -1167,7 +1183,7 @@ char *lv_attr_dup_with_info_and_seg_status(struct dm_pool *mem, const struct lv_
 		repstr[7] = '-';
 
 	repstr[8] = '-';
-	if (lv->status & PARTIAL_LV)
+	if (lv_is_partial(lv))
 		repstr[8] = 'p';
 	else if (lv_is_raid_type(lv)) {
 		uint64_t n;
@@ -1180,6 +1196,14 @@ char *lv_attr_dup_with_info_and_seg_status(struct dm_pool *mem, const struct lv_
 				repstr[8] = 'm';  /* RAID has 'm'ismatches */
 		} else if (lv->status & LV_WRITEMOSTLY)
 			repstr[8] = 'w';  /* sub-LV has 'w'ritemostly */
+	} else if (lv_is_cache(lv) &&
+		   (lvdm->seg_status.type != SEG_STATUS_NONE)) {
+		if (lvdm->seg_status.type == SEG_STATUS_UNKNOWN)
+			repstr[8] = 'X'; /* Unknown */
+		else if (lvdm->seg_status.cache->fail)
+			repstr[8] = 'F';
+		else if (lvdm->seg_status.cache->read_only)
+			repstr[8] = 'M';
 	} else if (lv_is_thin_pool(lv) &&
 		   (lvdm->seg_status.type != SEG_STATUS_NONE)) {
 		if (lvdm->seg_status.type == SEG_STATUS_UNKNOWN)
@@ -1190,6 +1214,12 @@ char *lv_attr_dup_with_info_and_seg_status(struct dm_pool *mem, const struct lv_
 			repstr[8] = 'D';
 		else if (lvdm->seg_status.thin_pool->read_only)
 			repstr[8] = 'M';
+	} else if (lv_is_thin_volume(lv) &&
+		   (lvdm->seg_status.type != SEG_STATUS_NONE)) {
+		if (lvdm->seg_status.type == SEG_STATUS_UNKNOWN)
+			repstr[8] = 'X'; /* Unknown */
+		else if (lvdm->seg_status.thin->fail)
+			repstr[8] = 'F';
 	}
 
 	if (lv->status & LV_ACTIVATION_SKIP)
@@ -1257,12 +1287,13 @@ int lv_set_creation(struct logical_volume *lv,
 	return 1;
 }
 
-char *lv_time_dup(struct dm_pool *mem, const struct logical_volume *lv, int iso_mode)
+static char *_time_dup(struct cmd_context *cmd, struct dm_pool *mem,
+		       time_t ts, int iso_mode)
 {
 	char buffer[4096];
 	struct tm *local_tm;
-	time_t ts = (time_t)lv->timestamp;
-	const char *format = iso_mode ? DEFAULT_TIME_FORMAT : lv->vg->cmd->time_format;
+	const char *format = iso_mode ? DEFAULT_TIME_FORMAT
+				      : cmd->time_format;
 
 	if (!ts ||
 	    !(local_tm = localtime(&ts)) ||
@@ -1270,6 +1301,22 @@ char *lv_time_dup(struct dm_pool *mem, const struct logical_volume *lv, int iso_
 		buffer[0] = 0;
 
 	return dm_pool_strdup(mem, buffer);
+}
+
+char *lv_creation_time_dup(struct dm_pool *mem, const struct logical_volume *lv, int iso_mode)
+{
+	time_t ts = lv_is_historical(lv) ? (time_t) lv->this_glv->historical->timestamp
+					 : (time_t) lv->timestamp;
+
+	return _time_dup(lv->vg->cmd, mem, ts, iso_mode);
+}
+
+char *lv_removal_time_dup(struct dm_pool *mem, const struct logical_volume *lv, int iso_mode)
+{
+	time_t ts = lv_is_historical(lv) ? (time_t)lv->this_glv->historical->timestamp_removed
+					 : (time_t)0;
+
+	return _time_dup(lv->vg->cmd, mem, ts, iso_mode);
 }
 
 char *lv_host_dup(struct dm_pool *mem, const struct logical_volume *lv)

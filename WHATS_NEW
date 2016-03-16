@@ -1,3 +1,65 @@
+Version 2.02.146 - 11th March 2016
+==================================
+  More man page cleanups in lvconvert.
+  Fix makefile vpath in /udev when generating udev rules files.
+  Another attempt to improve VG name parsing for lvconvert (2.02.144).
+  Use new cache status info and skip flushing for failed cache.
+  Support --uncache with missing PVs.
+  Tidy report field names, headings and widths.
+  Add vgscan --notifydbus to send a dbus notification.
+  Add dbus notification from commands after a PV/VG/LV changes state.
+
+Version 2.02.145 - 4th March 2016
+=================================
+  Make it possible to use lvremove and lvrename on historical LVs.
+  For historical LVs, report 'none' for lv_layout and 'history' for lv_role.
+  Add full_{ancestors,descendants} fields to report LV ancestry with history.
+  Report (h)istorical state within 5th bit (State) of the lv_attr field.
+  Add lv_historical reporting field to report if LV is historical or not.
+  Add lv_time_removed reporting field to display removal time for hist. LVs.
+  Report lv_name, lv_uuid, vg_name, lv_time for historical LVs.
+  Add --nohistory switch to lvremove to disable history recording on demand.
+  Add -H|--history switch to lvs and lvdisplay to include historical LVs.
+  Create historical LVs out of removed thin snapshot LVs and record in history.
+  Add metadata/lvs_history_retention_time for automatic removal of hist. LVs.
+  Add metadata/record_lvs_history config for switching LV history recording.
+  Add support and infrastructure for tracking historical LVs.
+  Improve lvconvert man page.
+  Add kernel_cache_policy lvs field.
+  Display [unknown] instead of 'unknown device' in pvs output.
+  Fix error path when pvcreate allocation fails (2.02.144).
+  Display [unknown] instead of blank for unknown VG names in pvs output.
+
+Version 2.02.144 - 26th February 2016
+=====================================
+  Use new PV processing code in pvcreate/vgcreate/vgextend/pvremove.
+  Add new PV processing code that prompts user without locks held.
+  Prevent lvmlockd blocking with new flag requiring sanlock 3.3.0.
+  Only show (u)sed pv_attr char when PV is not (a)llocatable. (2.02.143)
+  Update makefile to generate lcov output also for lvmpolld and lvmlockd.
+  Fix SystemdService lvm2-lvmdbusd.service name.
+  Improve support for env LVM_VG_NAME for reference VG name in lvconvert.
+  Fix regression when lvresize accepted zero sizes. (2.02.141)
+  Always warn user about PV in use even when pvremove uses --force --force.
+  Use uninitialized pool header detection in all cases.
+  Fix read error detection when checking for uninitialized thin-pool header.
+  Fix error path for internal error in lvmetad VG lookup code.
+
+Version 2.02.143 - 21st February 2016
+=====================================
+  Fix error path when sending thin-pool message fails in update_pool_lv().
+  Support reporting CheckNeeded and Fail state for thin-pool and thin LV.
+  For failing thin-pool and thin volume correctly report percentage as INVALID.
+  Report -1, not 'unkown' for lv_{snapshot_invalid,merge_failed} with --binary.
+  Add configure --enable-dbus-service for an LVM D-Bus service.
+  Replace configure --enable-python_bindings with python2 and python3 versions.
+  If PV belongs to some VG and metadata missing, skip it if system ID is used.
+  Automatically change PV header extension to latest version if writing PV/VG.
+  Identify used PVs in pv_attr field by new 'u' character.
+  Add pv_in_use reporting field to report if PV is used or not.
+  Add pv_ext_vsn reporting field to report PV header extension version.
+  Add protective flag marking PVs as used even if no metadata available.
+
 Version 2.02.142 - 15th February 2016
 =====================================
   Fix memory pool corruption in pvmove (2.02.141).

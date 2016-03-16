@@ -11,6 +11,7 @@
 
 # 'Test pvchange option values'
 
+SKIP_WITH_LVMLOCKD=1
 SKIP_WITH_LVMPOLLD=1
 
 . lib/inittest
@@ -27,7 +28,7 @@ check pv_field "$dev1" pv_attr ---
 vgcreate $vg1 "$dev1"
 check pv_field "$dev1" pv_attr a--
 pvchange --allocatable n "$dev1"
-check pv_field "$dev1" pv_attr ---
+check pv_field "$dev1" pv_attr u--
 vgremove -ff $vg1
 not pvchange --allocatable y "$dev1"
 pvremove -ff "$dev1"
@@ -50,7 +51,7 @@ do
 # "vgchange disable/enable allocation for pvs with metadatacopies = $mda (bz452982)"
 	pvchange "$dev1" -x n
 	pvchange "$dev1" -x n   # already disabled
-	check pv_field "$dev1" pv_attr  ---
+	check pv_field "$dev1" pv_attr  u--
 	pvchange "$dev1" -x y
 	pvchange "$dev1" -x y   # already enabled
 	check pv_field "$dev1" pv_attr  a--
@@ -112,7 +113,10 @@ vgremove -f $vg1
 fail pvchange "$dev1" --addtag test
 fail pvchange "$dev1" --deltag test
 
+if test -n "$LVM_TEST_LVM1" ; then
 # cannot add PV tag to lvm1 format
 pvcreate -M1 "$dev1"
 vgcreate -M1 $vg1 "$dev1"
 fail pvchange "$dev1" --addtag test
+fi
+

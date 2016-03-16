@@ -361,8 +361,14 @@ struct dm_status_cache {
 	char **core_argv;
 
 	char *policy_name;
-	int   policy_argc;
+	int policy_argc;
 	char **policy_argv;
+
+	unsigned error : 1;		/* detected error (switches to fail soon) */
+	unsigned fail : 1;		/* all I/O fails */
+	unsigned needs_check : 1;	/* metadata needs check */
+	unsigned read_only : 1;		/* metadata may not be changed */
+	uint32_t reserved : 28;
 };
 
 int dm_get_status_cache(struct dm_pool *mem, const char *params,
@@ -406,8 +412,10 @@ struct dm_status_thin_pool {
 	dm_thin_discards_t discards;
 	uint32_t fail : 1;		/* all I/O fails */
 	uint32_t error_if_no_space : 1;	/* otherwise queue_if_no_space */
-	uint32_t out_of_data_space : 1;	/* metadata may be changed, but data may not be allocated */
-	uint32_t reserved : 29;
+	uint32_t out_of_data_space : 1;	/* metadata may be changed, but data may not be allocated (no rw) */
+	uint32_t needs_check : 1;	/* metadata needs check */
+	uint32_t error : 1;		/* detected error (switches to fail soon) */
+	uint32_t reserved : 27;
 };
 
 int dm_get_status_thin_pool(struct dm_pool *mem, const char *params,
@@ -417,6 +425,8 @@ int dm_get_status_thin_pool(struct dm_pool *mem, const char *params,
 struct dm_status_thin {
 	uint64_t mapped_sectors;
 	uint64_t highest_mapped_sector;
+	uint32_t fail : 1;              /* Thin volume fails I/O */
+	uint32_t reserved : 31;
 };
 
 int dm_get_status_thin(struct dm_pool *mem, const char *params,

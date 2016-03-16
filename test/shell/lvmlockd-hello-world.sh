@@ -9,16 +9,17 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
-test_description='Remove the dlm test setup'
+test_description='Hello world for vgcreate with lvmlockd and sanlock'
 
 . lib/inittest
 
-[ -z "$LVM_TEST_LOCK_TYPE_DLM" ] && skip;
+[ -z "$LVM_TEST_LVMLOCKD" ] && skip;
 
-# FIXME: collect debug logs (only if a test failed?)
-# lvmlockctl -d > lvmlockd-debug.txt
-# dlm_tool dump > dlm-debug.txt
+aux prepare_pvs 1
 
-systemctl stop dlm
-systemctl stop corosync
-killall lvmlockd
+vgcreate $SHARED $vg "$dev1"
+
+vgs -o+locktype,lockargs $vg
+
+vgremove $vg
+

@@ -130,7 +130,9 @@ static int _get_segment_status_from_target_params(const char *target_name,
 	 * linear/striped, old snapshots and raids have proper
 	 * segment selected for status!
 	 */
-	if (strcmp(target_name, "cache") && strcmp(target_name, "thin-pool"))
+	if (strcmp(target_name, "cache") &&
+	    strcmp(target_name, "thin-pool") &&
+	    strcmp(target_name, "thin"))
 		return 1;
 
 	if (!(segtype = get_segtype_from_string(seg_status->seg->lv->vg->cmd, target_name)))
@@ -314,7 +316,7 @@ static int _ignore_blocked_mirror_devices(struct device *dev,
 			if (!(tmp_dev = dev_create_file(buf, NULL, NULL, 0)))
 				goto_out;
 
-			tmp_dev->dev = MKDEV((dev_t)sm->logs[0].major, sm->logs[0].minor);
+			tmp_dev->dev = MKDEV((dev_t)sm->logs[0].major, (dev_t)sm->logs[0].minor);
 			if (device_is_usable(tmp_dev, (struct dev_usable_check_params)
 					     { .check_empty = 1,
 					       .check_blocked = 1,
@@ -350,7 +352,8 @@ static int _ignore_blocked_mirror_devices(struct device *dev,
 	do {
 		next = dm_get_next_target(dmt, next, &s, &l,
 					  &target_type, &params);
-		if ((s == start) && (l == length)) {
+		if ((s == start) && (l == length) &&
+		    target_type && params) {
 			if (strcmp(target_type, "mirror"))
 				goto_out;
 
@@ -1331,12 +1334,18 @@ int dev_manager_cache_status(struct dev_manager *dm,
 
 	c = (*status)->cache;
 	(*status)->mem = dm->mem; /* User has to destroy this mem pool later */
-	(*status)->data_usage = dm_make_percent(c->used_blocks,
-						c->total_blocks);
-	(*status)->metadata_usage = dm_make_percent(c->metadata_used_blocks,
-						    c->metadata_total_blocks);
-	(*status)->dirty_usage = dm_make_percent(c->dirty_blocks,
-						 c->used_blocks);
+	if (c->fail || c->error) {
+		(*status)->data_usage =
+			(*status)->metadata_usage =
+			(*status)->dirty_usage = DM_PERCENT_INVALID;
+	} else {
+		(*status)->data_usage = dm_make_percent(c->used_blocks,
+							c->total_blocks);
+		(*status)->metadata_usage = dm_make_percent(c->metadata_used_blocks,
+							    c->metadata_total_blocks);
+		(*status)->dirty_usage = dm_make_percent(c->dirty_blocks,
+							 c->used_blocks);
+	}
 	r = 1;
 out:
 	dm_task_destroy(dmt);
@@ -1839,20 +1848,20 @@ static int _pool_callback(struct dm_tree_node *node,
 			return 0;
 		}
 		/* let's assume there is no problem to read 64 bytes */
-		if (read(fd, buf, sizeof(buf)) < sizeof(buf)) {
+		if (read(fd, buf, sizeof(buf)) < (int)sizeof(buf)) {
 			log_sys_error("read", argv[args]);
 			if (close(fd))
 				log_sys_error("close", argv[args]);
 			return 0;
 		}
-		for (ret = 0; ret < DM_ARRAY_SIZE(buf); ++ret)
+		for (ret = 0; ret < (int) DM_ARRAY_SIZE(buf); ++ret)
 			if (buf[ret])
 				break;
 
 		if (close(fd))
 			log_sys_error("close", argv[args]);
 
-		if (ret == DM_ARRAY_SIZE(buf)) {
+		if (ret == (int) DM_ARRAY_SIZE(buf)) {
 			log_debug("%s skipped, detect empty disk header on %s.",
 				  argv[0], argv[args]);
 			return 1;
@@ -1914,7 +1923,7 @@ static int _pool_register_callback(struct dev_manager *dm,
 		data->global = "thin";
 	} else if (lv_is_cache(lv)) { /* cache pool */
 		data->pool_lv = first_seg(lv)->pool_lv;
-		data->skip_zero = dm->activation;
+		data->skip_zero = 1; /* cheap read-error detection */
 		data->exec = global_cache_check_executable_CFG;
 		data->opts = global_cache_check_options_CFG;
 		data->global = "cache";

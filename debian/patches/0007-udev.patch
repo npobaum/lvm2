@@ -1,4 +1,4 @@
-From 2cd73c982f70e4ca5bca2c509b6abcee22a88546 Mon Sep 17 00:00:00 2001
+From 0ee614087d33442a5ef8f4cbc7ea8bb461622724 Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 30 Jun 2015 11:46:11 +0200
 Subject: udev
@@ -109,12 +109,12 @@ index 4b64dd6..b5cc790 100644
  
  SYMLINK+="disk/by-id/dm-name-$env{DM_NAME}"
 diff --git a/udev/Makefile.in b/udev/Makefile.in
-index d23eb7d..177f89a 100644
+index cb968df..04e2338 100644
 --- a/udev/Makefile.in
 +++ b/udev/Makefile.in
-@@ -18,10 +18,10 @@ top_builddir = @top_builddir@
+@@ -17,10 +17,10 @@ top_builddir = @top_builddir@
+ 
  include $(top_builddir)/make.tmpl
- vpath %.rules $(srcdir)
  
 -DM_RULES=10-dm.rules 13-dm-disk.rules 95-dm-notify.rules
 -LVM_RULES=11-dm-lvm.rules
@@ -126,8 +126,8 @@ index d23eb7d..177f89a 100644
  endif
  
  DM_DIR=$(shell grep "\#define DM_DIR" $(top_srcdir)/libdm/misc/dm-ioctl.h | awk '{print $$3}')
-@@ -55,6 +55,18 @@ endif
- %.rules: %.rules.in
+@@ -54,6 +54,18 @@ endif
+ %.rules: $(srcdir)/%.rules.in
  	$(SED) -e "s+(DM_DIR)+$(DM_DIR)+;s+(BLKID_RULE)+$(BLKID_RULE)+;s+(PVSCAN_RULE)+$(PVSCAN_RULE)+;s+(DM_EXEC_RULE)+$(DM_EXEC_RULE)+;s+(DM_EXEC)+$(DM_EXEC)+;s+(LVM_EXEC_RULE)+$(LVM_EXEC_RULE)+;s+(LVM_EXEC)+$(LVM_EXEC)+;" $< >$@
  
 +55-dm.rules: 10-dm.rules

@@ -32,10 +32,11 @@ typedef enum {
 	ALLOC_INHERIT
 } alloc_policy_t;
 
-struct pv_to_create {
+struct pv_to_write {
 	struct dm_list list;
 	struct physical_volume *pv;
 	struct pvcreate_params *pp;
+	int new_pv;
 };
 
 #define MAX_EXTENT_COUNT  (UINT32_MAX)
@@ -90,7 +91,9 @@ struct volume_group {
 	 * a PV label yet. They need to be pvcreate'd at vg_write time.
 	 */
 
-	struct dm_list pvs_to_create;
+	struct dm_list pvs_to_write; /* struct pv_to_write */
+
+	struct dm_list pv_write_list; /* struct pv_list */
 
 	/*
 	 * List of physical volumes that carry outdated metadata that belongs
@@ -125,6 +128,7 @@ struct volume_group {
 	 * - one for the user-visible mirror LV
 	 */
 	struct dm_list lvs;
+	struct dm_list historical_lvs;
 
 	struct dm_list tags;
 
@@ -136,6 +140,11 @@ struct volume_group {
 	 * List of removed logical volumes by _lv_reduce.
 	 */
 	struct dm_list removed_lvs;
+
+	/*
+	 * List of removed historical logical volumes by historical_glv_remove.
+	 */
+	struct dm_list removed_historical_lvs;
 
 	/*
 	 * List of removed physical volumes by pvreduce.

@@ -37,8 +37,13 @@
 #define MAX_EXTENT_SIZE ((uint32_t) -1)
 #define MIN_NON_POWER2_EXTENT_SIZE (128U * 2U)	/* 128KB in sectors */
 
+#define HISTORICAL_LV_PREFIX "-"
+
 /* Layer suffix */
 #define MIRROR_SYNC_LAYER "_mimagetmp"
+
+/* PV extension flags */
+#define PV_EXT_USED		UINT32_C(0x00000001)
 
 /* Various flags */
 /* Note that the bits no longer necessarily correspond to LVM1 disk format */
@@ -150,6 +155,7 @@
 #define FMT_OBSOLETE		0x000001000U	/* Obsolete format? */
 #define FMT_NON_POWER2_EXTENTS	0x000002000U	/* Non-power-of-2 extent sizes? */
 #define FMT_SYSTEMID_ON_PVS	0x000004000U	/* System ID is stored on PVs not VG */
+#define FMT_PV_FLAGS		0x000008000U	/* Supports PV flags */
 
 #define systemid_on_pvs(vg)	((vg)->fid->fmt->features & FMT_SYSTEMID_ON_PVS)
 
@@ -189,6 +195,7 @@
 #define vg_is_archived(vg)	(((vg)->status & ARCHIVED_VG) ? 1 : 0)
 
 #define lv_is_locked(lv)	(((lv)->status & LOCKED) ? 1 : 0)
+#define lv_is_partial(lv)	(((lv)->status & PARTIAL_LV) ? 1 : 0)
 #define lv_is_virtual(lv)	(((lv)->status & VIRTUAL) ? 1 : 0)
 #define lv_is_merging(lv)	(((lv)->status & MERGING) ? 1 : 0)
 #define lv_is_merging_origin(lv) (lv_is_merging(lv))
@@ -442,6 +449,7 @@ struct lv_segment {
 	uint32_t chunk_size;	/* For snapshots/thin_pool.  In sectors. */
 				/* For thin_pool, 128..2097152. */
 	struct logical_volume *origin;	/* snap and thin */
+	struct generic_logical_volume *indirect_origin;
 	struct logical_volume *merge_lv; /* thin, merge descendent lv into this ancestor */
 	struct logical_volume *cow;
 	struct dm_list origin_list;
@@ -500,6 +508,11 @@ struct lv_list {
 	struct logical_volume *lv;
 };
 
+struct glv_list {
+	struct dm_list list;
+	struct generic_logical_volume *glv;
+};
+
 struct vg_list {
 	struct dm_list list;
 	struct volume_group *vg;
@@ -513,10 +526,21 @@ struct vgnameid_list {
 
 #define PV_PE_START_CALC ((uint64_t) -1) /* Calculate pe_start value */
 
-struct pvcreate_restorable_params {
-	const char *restorefile; /* 0 if no --restorefile option */
-	struct id id; /* FIXME: redundant */
-	struct id *idp; /* 0 if no --uuid option */
+/*
+ * Values used by pv_create().
+ */
+struct pv_create_args {
+	uint64_t size;
+	uint64_t data_alignment;
+	uint64_t data_alignment_offset;
+	uint64_t label_sector;
+	int pvmetadatacopies;
+	uint64_t pvmetadatasize;
+	unsigned metadataignore;
+
+	/* used when restoring */
+	struct id id;
+	struct id *idp;
 	uint64_t ba_start;
 	uint64_t ba_size;
 	uint64_t pe_start;
@@ -525,17 +549,45 @@ struct pvcreate_restorable_params {
 };
 
 struct pvcreate_params {
+	/*
+	 * From argc and argv.
+	 */
+	char **pv_names;
+	uint32_t pv_count;
+
+	/*
+	 * From command line args.
+	 */
 	int zero;
-	uint64_t size;
-	uint64_t data_alignment;
-	uint64_t data_alignment_offset;
-	int pvmetadatacopies;
-	uint64_t pvmetadatasize;
-	int64_t labelsector;
 	force_t force;
 	unsigned yes;
-	unsigned metadataignore;
-	struct pvcreate_restorable_params rp;
+
+	/*
+	 * From recovery-specific command line args.
+	 */
+	const char *restorefile; /* NULL if no --restorefile option */
+	const char *uuid_str;    /* id in printable format, NULL if no id */
+
+	/*
+	 * Values used by pv_create().
+	 */
+	struct pv_create_args pva;
+
+	/*
+	 * Used for command processing.
+	 */
+	struct dm_list prompts;         /* pvcreate_prompt */
+	struct dm_list arg_devices;     /* pvcreate_device, one for each pv_name */
+	struct dm_list arg_process;     /* pvcreate_device, used for processing */
+	struct dm_list arg_confirm;     /* pvcreate_device, used for processing */
+	struct dm_list arg_create;      /* pvcreate_device, used for pvcreate */
+	struct dm_list arg_remove;      /* pvcreate_device, used for pvremove */
+	struct dm_list arg_fail;        /* pvcreate_device, failed to create */
+	struct dm_list pvs;             /* pv_list, created and usable for vgcreate/vgextend */
+	const char *orphan_vg_name;
+	unsigned is_remove : 1;         /* is removing PVs, not creating */
+	unsigned preserve_existing : 1;
+	unsigned check_failed : 1;
 };
 
 struct lvresize_params {
@@ -587,8 +639,6 @@ struct lvresize_params {
 	const char *ac_type;
 };
 
-int pvcreate_single(struct cmd_context *cmd, const char *pv_name,
-		    struct pvcreate_params *pp);
 void pvcreate_params_set_defaults(struct pvcreate_params *pp);
 
 /*
@@ -662,15 +712,7 @@ uint32_t vg_read_error(struct volume_group *vg_handle);
 /* pe_start and pe_end relate to any existing data so that new metadata
 * areas can avoid overlap */
 struct physical_volume *pv_create(const struct cmd_context *cmd,
-				  struct device *dev,
-				  uint64_t size,
-				  unsigned long data_alignment,
-				  unsigned long data_alignment_offset,
-				  uint64_t label_sector,
-				  unsigned pvmetadatacopies,
-				  uint64_t pvmetadatasize,
-				  unsigned metadataignore,
-				  struct pvcreate_restorable_params *rp);
+				  struct device *dev, struct pv_create_args *pva);
 
 int pvremove_single(struct cmd_context *cmd, const char *pv_name,
 		    void *handle __attribute__((unused)), unsigned force_count,
@@ -692,6 +734,7 @@ uint32_t pv_list_extents_free(const struct dm_list *pvh);
 int validate_new_vg_name(struct cmd_context *cmd, const char *vg_name);
 int vg_validate(struct volume_group *vg);
 struct volume_group *vg_create(struct cmd_context *cmd, const char *vg_name);
+struct volume_group *vg_lock_and_create(struct cmd_context *cmd, const char *vg_name);
 int vg_remove_mdas(struct volume_group *vg);
 int vg_remove_check(struct volume_group *vg);
 void vg_remove_pvs(struct volume_group *vg);
@@ -701,6 +744,7 @@ int vg_rename(struct cmd_context *cmd, struct volume_group *vg,
 	      const char *new_name);
 int vg_extend(struct volume_group *vg, int pv_count, const char *const *pv_names,
 	      struct pvcreate_params *pp);
+int vg_extend_each_pv(struct volume_group *vg, struct pvcreate_params *pp);
 int vg_reduce(struct volume_group *vg, const char *pv_name);
 
 int vgreduce_single(struct cmd_context *cmd, struct volume_group *vg,
@@ -762,6 +806,9 @@ int lv_extend(struct logical_volume *lv,
 
 /* lv must be part of lv->vg->lvs */
 int lv_remove(struct logical_volume *lv);
+
+/* historical_glv must be part of lv->vg->historical_lvs */
+int historical_glv_remove(struct generic_logical_volume *historical_glv);
 
 int lv_remove_single(struct cmd_context *cmd, struct logical_volume *lv,
 		     force_t force, int suppress_remove_message);
@@ -982,6 +1029,14 @@ struct lv_list *find_lv_in_vg(const struct volume_group *vg,
 /* FIXME Merge these functions with ones above */
 struct logical_volume *find_lv(const struct volume_group *vg,
 			       const char *lv_name);
+
+struct generic_logical_volume *find_historical_glv(const struct volume_group *vg,
+						    const char *historical_lv_name,
+						    int check_removed_list,
+						    struct glv_list **glvl_found);
+
+int lv_name_is_used_in_vg(const struct volume_group *vg, const char *name, int *historical);
+
 struct physical_volume *find_pv_by_name(struct cmd_context *cmd,
 					const char *pv_name,
 					int allow_orphan, int allow_unformatted);
@@ -1016,6 +1071,8 @@ int lv_is_cow_covering_origin(const struct logical_volume *lv);
 
 /* Test if given LV is visible from user's perspective */
 int lv_is_visible(const struct logical_volume *lv);
+
+int lv_is_historical(const struct logical_volume *lv);
 
 int pv_is_in_vg(struct volume_group *vg, struct physical_volume *pv);
 
@@ -1196,6 +1253,9 @@ dm_percent_t copy_percent(const struct logical_volume *lv_mirr);
 char *generate_lv_name(struct volume_group *vg, const char *format,
 		       char *buffer, size_t len);
 
+struct generic_logical_volume *get_or_create_glv(struct dm_pool *mem, struct logical_volume *lv, int *glv_created);
+struct glv_list *get_or_create_glvl(struct dm_pool *mem, struct logical_volume *lv, int *glv_created);
+
 /*
 * Begin skeleton for external LVM library
 */
@@ -1239,5 +1299,7 @@ int validate_vg_rename_params(struct cmd_context *cmd,
 int is_lockd_type(const char *lock_type);
 
 int is_system_id_allowed(struct cmd_context *cmd, const char *system_id);
+
+int vg_strip_outdated_historical_lvs(struct volume_group *vg);
 
 #endif

@@ -7,6 +7,9 @@
 
 test_description='Test duplicate PVs'
 
+SKIP_WITH_LVMLOCKD=1
+SKIP_WITH_LVMPOLLD=1
+
 . lib/inittest
 
 aux prepare_devs 2

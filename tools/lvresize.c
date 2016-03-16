@@ -47,6 +47,16 @@ static int _lvresize_params(struct cmd_context *cmd, int argc, char **argv,
 		 */
 		lp->sizeargs = arg_count(cmd, extents_ARG) + arg_count(cmd, size_ARG);
 
+		if (arg_from_list_is_zero(cmd, "may not be zero",
+					  chunksize_ARG, extents_ARG,
+					  poolmetadatasize_ARG,
+					  regionsize_ARG,
+					  size_ARG,
+					  stripes_ARG, stripesize_ARG,
+					  virtualsize_ARG,
+					  -1))
+			return_0;
+
 		if (arg_count(cmd, poolmetadatasize_ARG)) {
 			lp->poolmetadatasize = arg_uint64_value(cmd, poolmetadatasize_ARG, 0);
 			lp->poolmetadatasign = arg_sign_value(cmd, poolmetadatasize_ARG, SIGN_NONE);
@@ -199,10 +209,12 @@ int lvresize(struct cmd_context *cmd, int argc, char **argv)
 {
 	struct processing_handle *handle;
 	struct lvresize_params lp = { 0 };
-	int ret = ECMD_FAILED;
+	int ret;
 
-	if (!_lvresize_params(cmd, argc, argv, &lp))
+	if (!_lvresize_params(cmd, argc, argv, &lp)) {
+		stack;
 		return EINVALID_CMD_LINE;
+	}
 
 	if (!(handle = init_processing_handle(cmd))) {
 		log_error("Failed to initialize processing handle.");

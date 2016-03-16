@@ -839,8 +839,9 @@ static int _get_canonical_field_name(const char *field,
 			diff = 1;
 			continue;
 		}
-		if (i >= fcanonical_len) {
-			log_error("%s: field name too long", field);
+		if ((i + 1) >= fcanonical_len) {
+			canonical_field[0] = '\0';
+			log_error("%s: field name too long.", field);
 			return 0;
 		}
 		canonical_field[i++] = *field;
@@ -888,7 +889,7 @@ static void _all_match_combine(const struct dm_report_object_type *types,
 	const struct dm_report_object_type *t;
 	size_t prefix_len;
 
-	if (!_get_canonical_field_name(field, flen, field_canon, DM_REPORT_FIELD_TYPE_ID_LEN, NULL))
+	if (!_get_canonical_field_name(field, flen, field_canon, sizeof(field_canon), NULL))
 		return;
 	flen = strlen(field_canon);
 
@@ -948,7 +949,7 @@ static int _get_field(struct dm_report *rh, const char *field, size_t flen,
 	if (!flen)
 		return 0;
 
-	if (!_get_canonical_field_name(field, flen, field_canon, DM_REPORT_FIELD_TYPE_ID_LEN, NULL))
+	if (!_get_canonical_field_name(field, flen, field_canon, sizeof(field_canon), NULL))
 		return_0;
 
 	for (f = 0; _implicit_report_fields[f].report_fn; f++) {
@@ -1062,7 +1063,7 @@ static int _key_match(struct dm_report *rh, const char *key, size_t len,
 		return 0;
 	}
 
-	if (!_get_canonical_field_name(key, len, key_canon, DM_REPORT_FIELD_TYPE_ID_LEN, NULL))
+	if (!_get_canonical_field_name(key, len, key_canon, sizeof(key_canon), NULL))
 		return_0;
 
 	for (f = 0; _implicit_report_fields[f].report_fn; f++)
@@ -1195,7 +1196,7 @@ static int _canonicalize_field_ids(struct dm_report *rh)
 
 	for (i = 0; i < registered_field_count; i++) {
 		if (!_get_canonical_field_name(rh->fields[i].id, strlen(rh->fields[i].id),
-					       canonical_field, DM_REPORT_FIELD_TYPE_ID_LEN, &differs))
+					       canonical_field, sizeof(canonical_field), &differs))
 			return_0;
 
 		if (differs) {

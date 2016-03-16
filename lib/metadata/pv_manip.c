@@ -687,9 +687,6 @@ out:
 	return r;
 }
 
-const char _really_wipe[] =
-    "Really WIPE LABELS from physical volume \"%s\" of volume group \"%s\" [y/n]? ";
-
 /*
  * Decide whether it is "safe" to wipe the labels on this device.
  * 0 indicates we may not.
@@ -697,17 +694,18 @@ const char _really_wipe[] =
 static int pvremove_check(struct cmd_context *cmd, const char *name,
 			  unsigned force_count, unsigned prompt, struct dm_list *pvslist)
 {
+	static const char really_wipe_msg[] = "Really WIPE LABELS from physical volume";
 	struct device *dev;
 	struct label *label;
 	struct pv_list *pvl;
-
 	struct physical_volume *pv = NULL;
+	int used;
 	int r = 0;
 
 	/* FIXME Check partition type is LVM unless --force is given */
 
 	if (!(dev = dev_cache_get(name, cmd->filter))) {
-		log_error("Device %s not found", name);
+		log_error("Device %s not found.", name);
 		return 0;
 	}
 
@@ -725,41 +723,54 @@ static int pvremove_check(struct cmd_context *cmd, const char *name,
 			pv = pvl->pv;
 
 	if (!pv) {
-		log_error(INTERNAL_ERROR "Physical Volume %s has a label,"
-			  " but is neither in a VG nor orphan.", name);
+		log_error(INTERNAL_ERROR "Physical Volume %s has a label, "
+			  "but is neither in a VG nor orphan.", name);
 		goto out; /* better safe than sorry */
 	}
 
 	if (is_orphan(pv)) {
-		r = 1;
-		goto out;
+		if ((used = is_used_pv(pv)) < 0)
+			goto_out;
+
+		if (used) {
+			log_warn("WARNING: PV %s is used by a VG but its metadata is missing.", name);
+
+			if (force_count < 2)
+				goto_bad;
+
+			if (!prompt &&
+			    yes_no_prompt("%s \"%s\" that is marked as belonging to a VG [y/n]? ",
+					  really_wipe_msg, name) == 'n')
+				goto_bad;
+		}
+	} else {
+		log_warn("WARNING: PV %s is used by VG %s (consider using vgreduce).", name, pv_vg_name(pv));
+
+		if (force_count < 2)
+			goto_bad;
+
+		if (!prompt &&
+		    yes_no_prompt("%s \"%s\" of volume group \"%s\" [y/n]? ",
+				  really_wipe_msg, name, pv_vg_name(pv)) == 'n')
+			goto_bad;
 	}
 
-	/* we must have -ff to overwrite a non orphan */
-	if (force_count < 2) {
-		log_error("PV %s belongs to Volume Group %s so please use vgreduce first.", name, pv_vg_name(pv));
-		log_error("(If you are certain you need pvremove, then confirm by using --force twice.)");
-		goto out;
-	}
-
-	/* prompt */
-	if (!prompt &&
-	    yes_no_prompt("Really WIPE LABELS from physical volume \"%s\" "
-			  "of volume group \"%s\" [y/n]? ",
-			  name, pv_vg_name(pv)) == 'n') {
-		log_error("%s: physical volume label not removed", name);
-		goto out;
-	}
-
-	if (force_count) {
+	if (force_count)
 		log_warn("WARNING: Wiping physical volume label from "
-			  "%s%s%s%s", name,
-			  !is_orphan(pv) ? " of volume group \"" : "",
-			  pv_vg_name(pv),
-			  !is_orphan(pv) ? "\"" : "");
-	}
+			 "%s%s%s%s", name,
+			 !is_orphan(pv) ? " of volume group \"" : "",
+			 pv_vg_name(pv),
+			 !is_orphan(pv) ? "\"" : "");
 
 	r = 1;
+bad:
+	if (!r) {
+		log_error("%s: physical volume label not removed.", name);
+
+		if (force_count < 2) /* Show hint as log_error() */
+			log_error("(If you are certain you need pvremove, "
+				  "then confirm by using --force twice.)");
+	}
 out:
 	return r;
 }
@@ -850,25 +861,4 @@ out:
 			free_pv_fid(pvl->pv);
 
 	return ret;
-}
-
-int pvcreate_single(struct cmd_context *cmd, const char *pv_name,
-		    struct pvcreate_params *pp)
-{
-	int r = 0;
-
-	if (!lock_vol(cmd, VG_ORPHANS, LCK_VG_WRITE, NULL)) {
-		log_error("Can't get lock for orphan PVs");
-		return 0;
-	}
-
-	if (!(pvcreate_vol(cmd, pv_name, pp, 1)))
-		goto_out;
-
-	r = 1;
-
-out:
-	unlock_vg(cmd, VG_ORPHANS);
-
-	return r;
 }
