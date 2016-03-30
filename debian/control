@@ -30,7 +30,7 @@ X-Python3-Version: >= 3.4
 
 Package: lvm2
 Architecture: linux-any
-Depends: ${shlibs:Depends}, ${misc:Depends}, lsb-base, dmsetup (>> 2:1.02.47), dmeventd (>> 2:1.02.90), initscripts (>= 2.88dsf-13.3), watershed (>= 2), udev (>= 228-2ubuntu2~)
+Depends: ${shlibs:Depends}, ${misc:Depends}, lsb-base, dmsetup (>> 2:1.02.47), dmeventd (>> 2:1.02.90), initscripts (>= 2.88dsf-13.3), udev (>= 228-2ubuntu2~)
 Suggests: thin-provisioning-tools
 Breaks: initramfs-tools (<< 0.99), thin-provisioning-tools (<< 0.3.2)
 Replaces: udev (<< 228-2ubuntu2)

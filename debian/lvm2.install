@@ -1,5 +1,4 @@
 ../../initramfs-tools/lvm2/* usr/share/initramfs-tools
-../../../debian/85-lvm2.rules /lib/udev/rules.d
 etc/lvm/lvm.conf
 lib/systemd/system/lvm2-lvmetad*
 lib/systemd/system/lvm2-lvmpolld*
