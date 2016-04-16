@@ -1,3 +1,12 @@
+lvm2 (2.02.133-1ubuntu10) xenial; urgency=medium
+
+  * Cherry-pick change from lvm2 2.02.133-2 in Debian to move event plugins
+    back onto the main library patch, which fixes problems with monitoring
+    failing for snapshots and raid volumes.  Closes: #807279, LP: #1556451,
+    LP: #1561228.
+
+ -- Steve Langasek <steve.langasek@ubuntu.com>  Sat, 16 Apr 2016 00:06:53 -0700
+
 lvm2 (2.02.133-1ubuntu9) xenial; urgency=medium
 
   * Do not start when inside a container (LP: #1568954) 
