@@ -99,8 +99,13 @@ else
 	dir="$HOME/$dirbase"
 fi
 
-test -e $dir && die 3 "Fatal: $dir already exists"
-$MKDIR -p $dir || die 4 "Fatal: could not create $dir"
+if test -d $dir ; then
+	(shopt -s nullglob dotglob; test -r $dir -a -w $dir -a -x $dir && cd $dir && files=(*) && ((! ${#files[@]}))) || \
+		die 5 "Fatal: directory $dir already exists and is not empty or inaccessible"
+else
+	test -e $dir && die 3 "Fatal: $dir already exists"
+	$MKDIR -p $dir || die 4 "Fatal: could not create $dir"
+fi
 
 log="$dir/lvmdump.log"
 

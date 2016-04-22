@@ -1,3 +1,32 @@
+Version 2.02.150 - 9th April 2016
+=================================
+  Avoid using flushing dm status ioctl when checking for usable DM device.
+  Check for devices without LVM- uuid prefix only with kernels < 3.X.
+  Reuse %FREE size aproximation with lvcreate -l%PVS thin-pool.
+  Allow the lvmdump directory to exist already provided it is empty.
+  Show lvconverted percentage with 2 decimal digits.
+  Fix regression in suspend when repairing --type mirror (2.02.133).
+
+Version 2.02.149 - 1st April 2016
+=================================
+  Do not flush thin-pool when checking metadata fullness.
+  Remove spurious error about no value in /sys/dev/block/major:minor/dm/uuid.
+  Fix device mismatch detection for LV if persistent .cache file is used.
+  Fix holder device not being found in /dev while sysfs has it during dev scan.
+
+Version 2.02.148 - 26th March 2016
+==================================
+  Introduce TARGET_NAME and MODULE NAME macros.
+  Replace hard-coded module and target names with macros.
+  Add pv_major and pv_minor report fields.
+  Detect and warn about mismatch between devices used and assumed for an LV.
+
+Version 2.02.147 - 19th March 2016
+==================================
+  If available, use /proc/self/mountinfo to detect mounted volume in fsadm.
+  Fix resize of stacked raid thin data volume (2.02.141).
+  Fix test for lvremove failure in lvconvert --uncache (2.02.146).
+
 Version 2.02.146 - 11th March 2016
 ==================================
   More man page cleanups in lvconvert.

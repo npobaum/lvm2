@@ -1,4 +1,4 @@
-From ef9130acb71fb8978cdb0e24d97f607e149a1c84 Mon Sep 17 00:00:00 2001
+From f49a33e444d378d1ce5c4b679eb6f9c9022fa837 Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 30 Jun 2015 11:46:09 +0200
 Subject: implicit-pointer
