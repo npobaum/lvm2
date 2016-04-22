@@ -1,4 +1,4 @@
-From a7d99bc5daa00b7a887d11dc22a001516281a0c6 Mon Sep 17 00:00:00 2001
+From db50d0dd64dde561dc0d1b6a372e86a5ac8e9d6a Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 30 Jun 2015 11:46:10 +0200
 Subject: dm-event-api
@@ -110,7 +110,7 @@ index 25b34a7..998ca52 100644
  }
  
 diff --git a/daemons/dmeventd/libdevmapper-event.c b/daemons/dmeventd/libdevmapper-event.c
-index 871c0d6..2b3e23a 100644
+index d395ed3..cdb5c62 100644
 --- a/daemons/dmeventd/libdevmapper-event.c
 +++ b/daemons/dmeventd/libdevmapper-event.c
 @@ -341,7 +341,7 @@ static int _daemon_write(struct dm_event_fifos *fifos,

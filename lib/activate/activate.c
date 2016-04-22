@@ -660,7 +660,7 @@ static int _lv_info(struct cmd_context *cmd, const struct logical_volume *lv,
 	/* New thin-pool has no layer, but -tpool suffix needs to be queried */
 	if (!use_layer && lv_is_new_thin_pool(lv)) {
 		/* Check if there isn't existing old thin pool mapping in the table */
-		if (!dev_manager_info(cmd->mem, lv, NULL, 0, 0, &dminfo, NULL, NULL))
+		if (!dev_manager_info(cmd, lv, NULL, 0, 0, &dminfo, NULL, NULL))
 			return_0;
 		if (!dminfo.exists)
 			use_layer = 1;
@@ -669,7 +669,7 @@ static int _lv_info(struct cmd_context *cmd, const struct logical_volume *lv,
 	if (seg_status)
 		seg_status->seg = seg;
 
-	if (!dev_manager_info(cmd->mem, lv,
+	if (!dev_manager_info(cmd, lv,
 			      (use_layer) ? lv_layer(lv) : NULL,
 			      with_open_count, with_read_ahead,
 			      &dminfo, (info) ? &info->read_ahead : NULL,
@@ -1160,7 +1160,7 @@ int lv_thin_pool_transaction_id(const struct logical_volume *lv,
 	if (!lv_info(lv->vg->cmd, lv, 1, NULL, 0, 0))
 		return 0;
 
-	log_debug_activation("Checking thin-pool percent for LV %s.",
+	log_debug_activation("Checking thin-pool transaction id for LV %s.",
 			     display_lvname(lv));
 
 	if (!(dm = dev_manager_create(lv->vg->cmd, lv->vg->name, 1)))
@@ -1827,7 +1827,7 @@ static int _lv_suspend(struct cmd_context *cmd, const char *lvid_s,
 	const struct logical_volume *lv_pre_to_free = NULL;
 	struct logical_volume *lv_pre_tmp;
 	struct seg_list *sl;
-        struct lv_segment *snap_seg;
+	struct lv_segment *snap_seg;
 	struct lvinfo info;
 	int r = 0, lockfs = 0, flush_required = 0;
 	struct detached_lv_data detached;
@@ -1931,6 +1931,16 @@ static int _lv_suspend(struct cmd_context *cmd, const char *lvid_s,
 					goto_out;
 			}
 		}
+	}
+
+	/* Flush is ATM required for the tested cases
+	 * NOTE: Mirror repair requires noflush for proper repair!
+	 * TODO: Relax this limiting condition further */
+	if (!flush_required &&
+	    (lv_is_pvmove(lv) ||
+	     (!lv_is_mirror(lv) && !lv_is_thin_pool(lv) && !lv_is_thin_volume(lv)))) {
+		log_debug("Requiring flush for LV %s.", display_lvname(lv));
+		flush_required = 1;
 	}
 
 	if (!monitor_dev_for_events(cmd, lv, laopts, 0))

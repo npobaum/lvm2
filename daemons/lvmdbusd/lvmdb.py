@@ -12,10 +12,11 @@
 from collections import OrderedDict
 
 import pprint as prettyprint
+import os
 
 try:
 	from . import cmdhandler
-	from .utils import log_debug
+	from .utils import log_debug, log_error
 except SystemError:
 	import cmdhandler
 	from utils import log_debug
@@ -309,6 +310,11 @@ class DataStore(object):
 		else:
 			rc = []
 			for s in pv_name:
+				# Ths user could be using a symlink instead of the actual
+				# block device, make sure we are using actual block device file
+				# if the pv name isn't in the lookup
+				if s not in self.pv_path_to_uuid:
+					s = os.path.realpath(s)
 				rc.append(self.pvs[self.pv_path_to_uuid[s]])
 			return rc
 
@@ -331,13 +337,13 @@ class DataStore(object):
 					rc.append(self.lvs[self.lv_full_name_to_uuid[s]])
 				return rc
 		except KeyError as ke:
-			print("Key %s not found!" % (str(lv_names)))
-			print("lv name to uuid lookup")
+			log_error("Key %s not found!" % (str(lv_names)))
+			log_error("lv name to uuid lookup")
 			for keys in sorted(self.lv_full_name_to_uuid.keys()):
-				print("%s" % (keys))
-			print("lvs entries by uuid")
+				log_error("%s" % (keys))
+			log_error("lvs entries by uuid")
 			for keys in sorted(self.lvs.keys()):
-				print("%s" % (keys))
+				log_error("%s" % (keys))
 			raise ke
 
 	def pv_pe_segments(self, pv_uuid):

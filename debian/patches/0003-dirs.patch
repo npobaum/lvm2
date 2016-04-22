@@ -1,4 +1,4 @@
-From 570718e3c8b303a99dd2aa704b8315b7c300fdc0 Mon Sep 17 00:00:00 2001
+From 3b00d5f58ba3cb40f810c1bf9c9cb4c6ffaddd49 Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 30 Jun 2015 11:46:07 +0200
 Subject: dirs
@@ -9,7 +9,7 @@ Subject: dirs
  2 files changed, 5 insertions(+), 7 deletions(-)
 
 diff --git a/conf/example.conf.in b/conf/example.conf.in
-index a21dd96..b2ce0a1 100644
+index 255d329..44c6d64 100644
 --- a/conf/example.conf.in
 +++ b/conf/example.conf.in
 @@ -158,7 +158,7 @@ devices {

@@ -301,8 +301,12 @@ lvmpolld_dump() {
 }
 
 prepare_lvmdbusd() {
+	local daemon=
 	rm -f debug.log_LVMDBUSD_out
 
+	kill_sleep_kill_ LOCAL_LVMDBUSD 0
+
+        # FIXME: This is not correct! Daemon is auto started.
 	echo "checking lvmdbusd is NOT running..."
 	if ps -elf | grep lvmdbusd | grep python3; then
 		echo "Cannot run while existing lvmdbusd process exists"
@@ -311,14 +315,28 @@ prepare_lvmdbusd() {
 	echo ok
 
 	# skip if we don't have our own lvmdbusd...
-        # TODO: lvmdbusd is not in PATH
-	#(which lvmdbusd 2>/dev/null | grep "$abs_builddir") || skip
-	[[ -x $abs_top_builddir/daemons/lvmdbusd/lvmdbusd ]] || skip
+	if test -z "${installed_testsuite+varset}"; then
+		# NOTE: this is always present - additional checks are needed:
+		daemon="$abs_top_builddir/daemons/lvmdbusd/lvmdbusd"
+		# Setup the python path so we can run
+		export PYTHONPATH=$abs_top_builddir/daemons
+	else
+		daemon="$(which lvmdbusd || :)"
+	fi
+	[[ -n $daemon && -x $daemon ]] || skip "The daemon is missing"
 
-	kill_sleep_kill_ LOCAL_LVMDBUSD 0
+	which python3 >/dev/null || skip "Missing python3"
+	python3 -c "import pyudev, dbus, gi.repository" || skip "Missing python modules"
+
+        # TODO: Tests should use session bus instead of system bus
+	# Copy the needed file to run on the system bus if it doesn't
+	# already exist
+	if [ ! -f /etc/dbus-1/system.d/com.redhat.lvmdbus1.conf ]; then
+		install -m 644 $abs_top_builddir/scripts/com.redhat.lvmdbus1.conf /etc/dbus-1/system.d/
+	fi
 
 	echo "preparing lvmdbusd..."
-	$abs_top_builddir/daemons/lvmdbusd/lvmdbusd --debug --udev > debug.log_LVMDBUSD_out 2>&1 &
+	"$daemon" --debug --udev > debug.log_LVMDBUSD_out 2>&1 &
 	local pid=$!
 
 	sleep 1
@@ -413,7 +431,7 @@ teardown_devs() {
 		test ${#stray_loops[@]} -eq 0 || {
 			teardown_devs_prefixed "$COMMON_PREFIX" 1
 			echo "Removing stray loop devices containing $COMMON_PREFIX: ${stray_loops[@]}"
-			for i in "${stray_loops[@]}" ; do test ! -b $i || losetup -d $i ; done
+			for i in "${stray_loops[@]}" ; do test ! -b $i || losetup -d $i || true ; done
 			# Leave test when udev processed all removed devices
 			udev_wait
 		}
@@ -425,6 +443,7 @@ kill_sleep_kill_() {
 	slow=$2
 	if test -s $pidfile ; then
 		pid=$(< $pidfile)
+		rm -f $pidfile
 		kill -TERM $pid 2>/dev/null || return 0
 		if test $slow -eq 0 ; then sleep .1 ; else sleep 1 ; fi
 		kill -KILL $pid 2>/dev/null || true

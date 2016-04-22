@@ -25,7 +25,7 @@ which "$FSCK" || skip
 #
 # Main
 #
-aux have_cache 1 3 0 || skip
+aux have_cache 1 5 0 || skip
 
 aux prepare_vg 4
 
@@ -61,6 +61,10 @@ lvconvert -H --cachemode writethrough --cachepool $vg/cpool $lv1
 
 aux disable_dev "$dev2"
 
+# Deactivate before remove
+# FIXME: handle this while LV is alive
+lvchange -an $vg/$lv1
+
 # Check it is prompting for confirmation
 not lvconvert --uncache $vg/$lv1
 # --yes to drop when Check its prompting
@@ -72,6 +76,9 @@ lvconvert --yes --uncache $vg/$lv1
 #lvchange -ay $vg
 
 aux enable_dev "$dev2"
+
+# FIXME: temporary workaround
+lvcreate -L1 -n $lv5 $vg
 lvremove -ff $vg
 
 ##########################
@@ -92,15 +99,17 @@ lvs -a -o+seg_pe_ranges,cachemode $vg
 sync
 
 # Seriously damage cache metadata
-aux error_dev  "$dev1" 2054:2
+aux error_dev "$dev1" 2054:2
 
-# Here we usually for the 1st. notice needs_check
-check lv_attr_bit state $vg/$lv1 "c"
-
-sleep .1
-
-# And now cache is finaly Failed
-check lv_attr_bit health $vg/$lv1 "F"
+# On fixed kernel we get instant Fail here
+get lv_field  $vg/$lv1 lv_attr | tee out
+grep "Cwi-a-C-F-" out || {
+	# while on older unfixed we just notice needs_check
+	grep "Cwi-c-C---" out
+	sleep .1
+	# And now cache is finaly Failed
+	check lv_attr_bit health $vg/$lv1 "F"
+}
 check lv_field $vg/$lv1 lv_health_status "failed"
 
 aux disable_dev "$dev1"
