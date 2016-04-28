@@ -63,7 +63,7 @@ static int _vsn1_check_version(const struct dm_config_tree *cft)
 	const struct dm_config_value *cv;
 
 	// TODO if this is pvscan --cache, we want this check back.
-	if (lvmetad_active())
+	if (lvmetad_used())
 		return 1;
 
 	/*
@@ -241,8 +241,8 @@ static int _read_pv(struct format_instance *fid,
 		return 0;
 	}
 
-	/* TODO is the !lvmetad_active() too coarse here? */
-	if (!pv->dev && !lvmetad_active())
+	/* TODO is the !lvmetad_used() too coarse here? */
+	if (!pv->dev && !lvmetad_used())
 		pv->status |= MISSING_PV;
 
 	if ((pv->status & MISSING_PV) && pv->dev && pv_mda_used_count(pv) == 0) {
@@ -1229,12 +1229,16 @@ static void _read_desc(struct dm_pool *mem,
 }
 
 /*
- * It would be more accurate to call this _read_vgsummary().
  * It is used to read vgsummary information about a VG
  * before locking and reading the VG via vg_read().
+ * read_vgsummary: read VG metadata before VG is locked
+ *                 and save the data in struct vgsummary
+ * read_vg: read VG metadata after VG is locked
+ *          and save the data in struct volume_group
+ * FIXME: why are these separate?
  */
-static int _read_vgname(const struct format_type *fmt, const struct dm_config_tree *cft, 
-			struct lvmcache_vgsummary *vgsummary)
+static int _read_vgsummary(const struct format_type *fmt, const struct dm_config_tree *cft, 
+			   struct lvmcache_vgsummary *vgsummary)
 {
 	const struct dm_config_node *vgn;
 	struct dm_pool *mem = fmt->cmd->mem;
@@ -1285,7 +1289,7 @@ static struct text_vg_version_ops _vsn1_ops = {
 	.check_version = _vsn1_check_version,
 	.read_vg = _read_vg,
 	.read_desc = _read_desc,
-	.read_vgname = _read_vgname,
+	.read_vgsummary = _read_vgsummary
 };
 
 struct text_vg_version_ops *text_vg_vsn1_init(void)

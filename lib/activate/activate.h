@@ -81,6 +81,7 @@ struct lv_activate_opts {
 				 * set of flags to avoid any scanning in udev. These udev
 				 * flags are persistent in udev db for any spurious event
 				 * that follows. */
+	unsigned resuming;	/* Set when resuming after a suspend. */
 };
 
 void set_activation(int activation, int silent);
@@ -146,7 +147,7 @@ int lv_info_with_seg_status(struct cmd_context *cmd, const struct logical_volume
 			    struct lv_with_info_and_seg_status *status,
 			    int with_open_count, int with_read_ahead);
 
-int lv_check_not_in_use(const struct logical_volume *lv);
+int lv_check_not_in_use(const struct logical_volume *lv, int error_if_used);
 
 /*
  * Returns 1 if activate_lv has been set: 1 = activate; 0 = don't.

@@ -22,6 +22,7 @@
 
 #include "stub.h"
 #include "last-path-component.h"
+#include "format1.h"
 
 #include <signal.h>
 #include <sys/stat.h>
@@ -1111,9 +1112,6 @@ static int _get_settings(struct cmd_context *cmd)
 	 */
 	cmd->vg_read_print_access_error = 1;
 		
-	if (!arg_count(cmd, sysinit_ARG))
-		lvmetad_connect_or_warn();
-
 	if (arg_count(cmd, nosuffix_ARG))
 		cmd->current_settings.suffix = 0;
 
@@ -1473,8 +1471,8 @@ static int _cmd_no_meta_proc(struct cmd_context *cmd)
 
 int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 {
-	struct dm_config_tree *config_string_cft;
-	struct dm_config_tree *config_profile_command_cft, *config_profile_metadata_cft;
+	struct dm_config_tree *config_string_cft, *config_profile_command_cft, *config_profile_metadata_cft;
+	const char *reason = NULL;
 	int ret = 0;
 	int locking_type;
 	int monitoring;
@@ -1600,6 +1598,13 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 		goto out;
 	}
 
+	if (!strcmp(cmd->fmt->name, FMT_LVM1_NAME) && lvmetad_used()) {
+		log_warn("WARNING: Disabling lvmetad cache which does not support obsolete metadata.");
+		lvmetad_set_disabled(cmd, "LVM1");
+		log_warn("WARNING: Not using lvmetad because lvm1 format is used.");
+		lvmetad_make_unused(cmd);
+	}
+
 	if (cmd->metadata_read_only &&
 	    !(cmd->command->flags & PERMITTED_READ_ONLY)) {
 		log_error("%s: Command not permitted while global/metadata_read_only "
@@ -1624,8 +1629,8 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 		}
 
 		if (lvmetad_used()) {
-			lvmetad_set_active(cmd, 0);
-			log_verbose("Disabling use of lvmetad because read-only is set.");
+			lvmetad_make_unused(cmd);
+			log_verbose("Not using lvmetad because read-only is set.");
 		}
 	} else if (arg_count(cmd, nolocking_ARG))
 		locking_type = 0;
@@ -1643,13 +1648,36 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 	}
 
 	/*
-	 * Other hosts might have changed foreign VGs so enforce a rescan
-	 * before processing any command using them.
+	 * pvscan/vgscan/lvscan/vgimport want their own control over rescanning
+	 * to populate lvmetad and have similar code of their own.
+	 * Other commands use this general policy for using lvmetad.
+	 *
+	 * The lvmetad cache may need to be repopulated before we use it because:
+	 * - We are reading foreign VGs which others hosts may have changed
+	 *   which our lvmetad would not have seen.
+	 * - lvmetad may have just been started and no command has been run
+	 *   to populate it yet (e.g. no pvscan --cache was run).
+	 * - Another local command may have run with a different global filter
+	 *   which changed the content of lvmetad from what we want (recognized
+	 *   by different token values.)
+	 *
+	 * lvmetad may have been previously disabled (or disabled during the
+	 * rescan done here) because duplicate devices or lvm1 metadata were seen.
+	 * In this case, disable the *use* of lvmetad by this command, reverting to
+	 * disk scanning.
 	 */
-	if (cmd->include_foreign_vgs && lvmetad_used() &&
-	    !lvmetad_pvscan_foreign_vgs(cmd, NULL)) {
-		log_error("Failed to scan devices.");
-		return ECMD_FAILED;
+	if (lvmetad_used() && !(cmd->command->flags & NO_LVMETAD_AUTOSCAN)) {
+		if (cmd->include_foreign_vgs || !lvmetad_token_matches(cmd)) {
+			if (lvmetad_used() && !lvmetad_pvscan_all_devs(cmd, NULL, cmd->include_foreign_vgs ? 1 : 0)) {
+				log_warn("WARNING: Not using lvmetad because cache update failed.");
+				lvmetad_make_unused(cmd);
+			}
+		}
+
+		if (lvmetad_used() && lvmetad_is_disabled(cmd, &reason)) {
+			log_warn("WARNING: Not using lvmetad because %s.", reason);
+			lvmetad_make_unused(cmd);
+		}
 	}
 
 	/*

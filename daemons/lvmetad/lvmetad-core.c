@@ -22,6 +22,7 @@
 #include "daemon-server.h"
 #include "daemon-log.h"
 #include "lvm-version.h"
+#include "lvmetad-client.h"
 
 #include <assert.h>
 #include <errno.h>
@@ -196,7 +197,14 @@ struct vg_info {
 	uint32_t flags; /* VGFL_ */
 };
 
-#define GLFL_INVALID 0x00000001
+#define GLFL_INVALID                   0x00000001
+#define GLFL_DISABLE                   0x00000002
+#define GLFL_DISABLE_REASON_DIRECT     0x00000004
+#define GLFL_DISABLE_REASON_LVM1       0x00000008
+#define GLFL_DISABLE_REASON_DUPLICATES 0x00000010
+
+#define GLFL_DISABLE_REASON_ALL (GLFL_DISABLE_REASON_DIRECT | GLFL_DISABLE_REASON_LVM1 | GLFL_DISABLE_REASON_DUPLICATES)
+
 #define VGFL_INVALID 0x00000001
 
 typedef struct {
@@ -2601,9 +2609,42 @@ static response vg_remove(lvmetad_state *s, request r)
 	return daemon_reply_simple("OK", NULL);
 }
 
+/*
+ * Whether lvmetad is disabled is determined only by the single
+ * flag GLFL_DISABLE.  The REASON flags are only explanatory
+ * additions to GLFL_DISABLE, and do not control the disabled state.
+ * The REASON flags can accumulate if multiple reasons exist for
+ * the disabled flag.  When clearing GLFL_DISABLE, all REASON flags
+ * are cleared.  The caller clearing GLFL_DISABLE should only do so
+ * when all the reasons for it have gone.
+ */
+
 static response set_global_info(lvmetad_state *s, request r)
 {
 	const int global_invalid = daemon_request_int(r, "global_invalid", -1);
+	const int global_disable = daemon_request_int(r, "global_disable", -1);
+	const char *reason;
+	uint32_t reason_flags = 0;
+
+	if ((reason = daemon_request_str(r, "disable_reason", NULL))) {
+		if (strstr(reason, LVMETAD_DISABLE_REASON_DIRECT))
+			reason_flags |= GLFL_DISABLE_REASON_DIRECT;
+		if (strstr(reason, LVMETAD_DISABLE_REASON_LVM1))
+			reason_flags |= GLFL_DISABLE_REASON_LVM1;
+		if (strstr(reason, LVMETAD_DISABLE_REASON_DUPLICATES))
+			reason_flags |= GLFL_DISABLE_REASON_DUPLICATES;
+	}
+
+	if (global_invalid != -1) {
+		DEBUGLOG(s, "set global info invalid from %d to %d",
+			 (s->flags & GLFL_INVALID) ? 1 : 0, global_invalid);
+	}
+
+	if (global_disable != -1) {
+		DEBUGLOG(s, "set global info disable from %d to %d %s",
+			 (s->flags & GLFL_DISABLE) ? 1 : 0, global_disable,
+			 reason ? reason : "");
+	}
 
 	if (global_invalid == 1)
 		s->flags |= GLFL_INVALID;
@@ -2611,13 +2652,60 @@ static response set_global_info(lvmetad_state *s, request r)
 	else if (global_invalid == 0)
 		s->flags &= ~GLFL_INVALID;
 
+	if (global_disable == 1) {
+		s->flags |= GLFL_DISABLE;
+		s->flags |= reason_flags;
+
+	} else if (global_disable == 0) {
+		s->flags &= ~GLFL_DISABLE;
+		s->flags &= ~GLFL_DISABLE_REASON_ALL;
+	}
+
 	return daemon_reply_simple("OK", NULL);
 }
 
+#define REASON_BUF_SIZE 64
+
+/*
+ * FIXME: save the time when "updating" begins, and add a config setting for
+ * how long we'll allow an update to take.  Before returning "updating" as the
+ * token value in get_global_info, check if the update has exceeded the max
+ * allowed time.  If so, then clear the current cache state and return "none"
+ * as the current token value, so that the command will repopulate our cache.
+ *
+ * This will resolve the problem of a command starting to update the cache and
+ * then failing, leaving the token set to "update in progress".
+ */
+
 static response get_global_info(lvmetad_state *s, request r)
 {
+	char reason[REASON_BUF_SIZE];
+
+	/* This buffer should be large enough to hold all the possible reasons. */
+
+	memset(reason, 0, sizeof(reason));
+
+	if (s->flags & GLFL_DISABLE) {
+		snprintf(reason, REASON_BUF_SIZE - 1, "%s%s%s",
+			 (s->flags & GLFL_DISABLE_REASON_DIRECT)     ? LVMETAD_DISABLE_REASON_DIRECT "," : "",
+			 (s->flags & GLFL_DISABLE_REASON_LVM1)       ? LVMETAD_DISABLE_REASON_LVM1 "," : "",
+			 (s->flags & GLFL_DISABLE_REASON_DUPLICATES) ? LVMETAD_DISABLE_REASON_DUPLICATES "," : "");
+	}
+
+	if (!reason[0])
+		strcpy(reason, "none");
+
+	DEBUGLOG(s, "global info invalid is %d disable is %d reason %s",
+		 (s->flags & GLFL_INVALID) ? 1 : 0,
+		 (s->flags & GLFL_DISABLE) ? 1 : 0, reason);
+
 	return daemon_reply_simple("OK", "global_invalid = " FMTd64,
 					 (int64_t)((s->flags & GLFL_INVALID) ? 1 : 0),
+					 "global_disable = " FMTd64,
+					 (int64_t)((s->flags & GLFL_DISABLE) ? 1 : 0),
+					 "disable_reason = %s", reason,
+					 "token = %s",
+					 s->token[0] ? s->token : "none",
 					 NULL);
 }
 
@@ -2815,13 +2903,17 @@ static response handler(daemon_state s, client_handle h, request r)
 	lvmetad_state *state = s.private;
 	const char *rq = daemon_request_str(r, "request", "NONE");
 	const char *token = daemon_request_str(r, "token", "NONE");
+	char prev_token[128] = { 0 };
 
 	pthread_mutex_lock(&state->token_lock);
 	if (!strcmp(rq, "token_update")) {
+		memcpy(prev_token, state->token, 128);
 		strncpy(state->token, token, 128);
 		state->token[127] = 0;
 		pthread_mutex_unlock(&state->token_lock);
-		return daemon_reply_simple("OK", NULL);
+		return daemon_reply_simple("OK",
+					   "prev_token = %s", prev_token,
+					   NULL);
 	}
 
 	if (strcmp(token, state->token) && strcmp(rq, "dump") && strcmp(token, "skip")) {

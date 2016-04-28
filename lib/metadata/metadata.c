@@ -4037,6 +4037,14 @@ static int _check_or_repair_pv_ext(struct cmd_context *cmd,
 					    "VG %s but not marked as used.",
 					    pv_dev_name(pvl->pv), vg->name);
 				*inconsistent_pvs = 1;
+			} else if (is_lockd_type(vg->lock_type)) {
+				/*
+				 * FIXME: decide how to handle repair for shared VGs.
+				 */
+				log_warn("Skip repair of PV %s that is in shared "
+					    "VG %s but not marked as used.",
+					    pv_dev_name(pvl->pv), vg->name);
+				*inconsistent_pvs = 1;
 			} else {
 				log_warn("WARNING: Repairing Physical Volume %s that is "
 					 "in Volume Group %s but not marked as used.",
@@ -4114,7 +4122,7 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 		return _vg_read_orphans(cmd, warn_flags, vgname, consistent);
 	}
 
-	if (lvmetad_active() && !use_precommitted) {
+	if (lvmetad_used() && !use_precommitted) {
 		if ((correct_vg = lvmcache_get_vg(cmd, vgname, vgid, precommitted))) {
 			dm_list_iterate_items(pvl, &correct_vg->pvs)
 				if (pvl->pv->dev)
@@ -4602,10 +4610,10 @@ static int _check_devs_used_correspond_with_lv(struct dm_pool *mem, struct dm_li
 				found_inconsistent = 1;
 			} else {
 				if (!dm_pool_grow_object(mem, DEV_LIST_DELIM, sizeof(DEV_LIST_DELIM) - 1))
-					goto_bad;
+					return_0;
 			}
 			if (!dm_pool_grow_object(mem, dev_name(dev), 0))
-				goto_bad;
+				return_0;
 		}
 	}
 
@@ -4613,7 +4621,7 @@ static int _check_devs_used_correspond_with_lv(struct dm_pool *mem, struct dm_li
 		return 1;
 
 	if (!dm_pool_grow_object(mem, "\0", 1))
-		goto_bad;
+		return_0;
 	used_devnames = dm_pool_end_object(mem);
 
 	found_inconsistent = 0;
@@ -4622,9 +4630,9 @@ static int _check_devs_used_correspond_with_lv(struct dm_pool *mem, struct dm_li
 			if (seg_type(seg, s) == AREA_PV) {
 				if (!(dev = seg_dev(seg, s))) {
 					log_error("Couldn't find device for segment belonging to "
-						  "%s/%s while checking used and assumed devices.",
-						  lv->vg->name, lv->name);
-					goto bad;
+						  "%s while checking used and assumed devices.",
+						  display_lvname(lv));
+					return 0;
 				}
 				if (!(dev->flags & DEV_USED_FOR_LV)) {
 					if (!found_inconsistent) {
@@ -4632,10 +4640,10 @@ static int _check_devs_used_correspond_with_lv(struct dm_pool *mem, struct dm_li
 						found_inconsistent = 1;
 					} else {
 						if (!dm_pool_grow_object(mem, DEV_LIST_DELIM, sizeof(DEV_LIST_DELIM) - 1))
-							goto_bad;
+							return_0;
 					}
 					if (!dm_pool_grow_object(mem, dev_name(dev), 0))
-						goto bad;
+						return_0;
 				}
 			}
 		}
@@ -4643,20 +4651,14 @@ static int _check_devs_used_correspond_with_lv(struct dm_pool *mem, struct dm_li
 
 	if (found_inconsistent) {
 		if (!dm_pool_grow_object(mem, "\0", 1))
-			goto_bad;
+			return_0;
 		assumed_devnames = dm_pool_end_object(mem);
 	}
 
-	log_warn("WARNING: Device mismatch detected for %s/%s which is accessing %s instead of %s.",
-		 lv->vg->name, lv->name, used_devnames, assumed_devnames);
+	log_warn("WARNING: Device mismatch detected for %s which is accessing %s instead of %s.",
+		 display_lvname(lv), used_devnames, assumed_devnames);
 
-	/* This also frees assumed_devnames. */
-	dm_pool_free(mem, (void *) used_devnames);
 	return 1;
-bad:
-	if (found_inconsistent)
-		dm_pool_abandon_object(mem);
-	return 0;
 }
 
 static int _check_devs_used_correspond_with_vg(struct volume_group *vg)
@@ -4941,7 +4943,7 @@ static struct physical_volume *_pv_read(struct cmd_context *cmd,
 	if (!(dev = dev_cache_get(pv_name, cmd->filter)))
 		return_NULL;
 
-	if (lvmetad_active()) {
+	if (lvmetad_used()) {
 		info = lvmcache_info_from_pvid(dev->pvid, 0);
 		if (!info) {
 			if (!lvmetad_pv_lookup_by_dev(cmd, dev, &found))
@@ -5036,7 +5038,7 @@ int get_vgnameids(struct cmd_context *cmd, struct dm_list *vgnameids,
 		return 1;
 	}
 
-	if (lvmetad_active()) {
+	if (lvmetad_used()) {
 		/*
 		 * This just gets the list of names/ids from lvmetad
 		 * and does not populate lvmcache.
