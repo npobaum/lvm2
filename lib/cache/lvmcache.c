@@ -164,7 +164,7 @@ void lvmcache_set_preferred_duplicates(const char *vgid)
 
 void lvmcache_seed_infos_from_lvmetad(struct cmd_context *cmd)
 {
-	if (!lvmetad_active() || _has_scanned)
+	if (!lvmetad_used() || _has_scanned)
 		return;
 
 	if (!lvmetad_pv_list_to_lvmcache(cmd)) {
@@ -504,12 +504,13 @@ struct lvmcache_vginfo *lvmcache_vginfo_from_vgname(const char *vgname, const ch
 		return lvmcache_vginfo_from_vgid(vgid);
 
 	if (!_vgname_hash) {
-		log_debug_cache(INTERNAL_ERROR "Internal cache is no yet initialized.");
+		log_debug_cache(INTERNAL_ERROR "Internal lvmcache is no yet initialized.");
 		return NULL;
 	}
 
 	if (!(vginfo = dm_hash_lookup(_vgname_hash, vgname))) {
-		log_debug_cache("Metadata cache has no info for vgname: \"%s\"", vgname);
+		log_debug_cache("lvmcache has no info for vgname \"%s\"%s" FMTVGID ".",
+				vgname, (vgid) ? " with VGID " : "", (vgid) ? : "");
 		return NULL;
 	}
 
@@ -520,8 +521,8 @@ struct lvmcache_vginfo *lvmcache_vginfo_from_vgname(const char *vgname, const ch
 		while ((vginfo = vginfo->next));
 
 	if  (!vginfo)
-		log_debug_cache("Metadata cache has not found vgname \"%s\" with vgid \"%."
-				DM_TO_STRING(ID_LEN) "s\".", vgname, vgid ? : "");
+		log_debug_cache("lvmcache has not found vgname \"%s\"%s" FMTVGID ".",
+				vgname, (vgid) ? " with VGID " : "", (vgid) ? : "");
 
 	return vginfo;
 }
@@ -541,7 +542,7 @@ const struct format_type *lvmcache_fmt_from_vgname(struct cmd_context *cmd,
 	char vgid_found[ID_LEN + 1] __attribute__((aligned(8)));
 
 	if (!(vginfo = lvmcache_vginfo_from_vgname(vgname, vgid))) {
-		if (!lvmetad_active())
+		if (!lvmetad_used())
 			return NULL; /* too bad */
 		/* If we don't have the info but we have lvmetad, we can ask
 		 * there before failing. */
@@ -783,7 +784,7 @@ int lvmcache_label_scan(struct cmd_context *cmd)
 
 	int r = 0;
 
-	if (lvmetad_active())
+	if (lvmetad_used())
 		return 1;
 
 	/* Avoid recursion when a PVID can't be found! */
@@ -861,7 +862,7 @@ struct volume_group *lvmcache_get_vg(struct cmd_context *cmd, const char *vgname
 	 * using the classic scanning mechanics, and read from disk or from
 	 * lvmcache.
 	 */
-	if (lvmetad_active() && !precommitted) {
+	if (lvmetad_used() && !precommitted) {
 		/* Still serve the locally cached VG if available */
 		if (vgid && (vginfo = lvmcache_vginfo_from_vgid(vgid)) &&
 		    vginfo->vgmetadata && (vg = vginfo->cached_vg))
@@ -1081,7 +1082,7 @@ static struct device *_device_from_pvid(const struct id *pvid,
 	struct label *label;
 
 	if ((info = lvmcache_info_from_pvid((const char *) pvid, 0))) {
-		if (lvmetad_active()) {
+		if (lvmetad_used()) {
 			if (info->label && label_sector)
 				*label_sector = info->label->sector;
 			return info->dev;
@@ -1273,7 +1274,7 @@ static int _lvmcache_update_vgid(struct lvmcache_info *info,
 	}
 
 	if (!is_orphan_vg(vginfo->vgname))
-		log_debug_cache("lvmcache: %s: setting %s VGID to %s",
+		log_debug_cache("lvmcache %s: VG %s: set VGID to " FMTVGID ".",
 				(info) ? dev_name(info->dev) : "",
 				vginfo->vgname, vginfo->vgid);
 
@@ -1504,16 +1505,16 @@ static int _lvmcache_update_vgname(struct lvmcache_info *info,
 
 	if (info) {
 		if (info->mdas.n)
-			sprintf(mdabuf, " with %u mdas", dm_list_size(&info->mdas));
+			sprintf(mdabuf, " with %u mda(s)", dm_list_size(&info->mdas));
 		else
 			mdabuf[0] = '\0';
-		log_debug_cache("lvmcache: %s: now in VG %s%s%s%s%s",
+		log_debug_cache("lvmcache %s: now in VG %s%s%s%s%s.",
 				dev_name(info->dev),
 				vgname, vginfo->vgid[0] ? " (" : "",
 				vginfo->vgid[0] ? vginfo->vgid : "",
 				vginfo->vgid[0] ? ")" : "", mdabuf);
 	} else
-		log_debug_cache("lvmcache: initialised VG %s", vgname);
+		log_debug_cache("lvmcache initialised VG %s.", vgname);
 
 	return 1;
 }
@@ -1526,7 +1527,7 @@ static int _lvmcache_update_vgstatus(struct lvmcache_info *info, uint32_t vgstat
 		return 1;
 
 	if ((info->vginfo->status & EXPORTED_VG) != (vgstatus & EXPORTED_VG))
-		log_debug_cache("lvmcache: %s: VG %s %s exported",
+		log_debug_cache("lvmcache %s: VG %s %s exported.",
 				dev_name(info->dev), info->vginfo->vgname,
 				vgstatus & EXPORTED_VG ? "now" : "no longer");
 
@@ -1543,12 +1544,12 @@ static int _lvmcache_update_vgstatus(struct lvmcache_info *info, uint32_t vgstat
 		dm_free(info->vginfo->creation_host);
 
 	if (!(info->vginfo->creation_host = dm_strdup(creation_host))) {
-		log_error("cache creation host alloc failed for %s",
+		log_error("cache creation host alloc failed for %s.",
 			  creation_host);
 		return 0;
 	}
 
-	log_debug_cache("lvmcache: %s: VG %s: Set creation host to %s.",
+	log_debug_cache("lvmcache %s: VG %s: set creation host to %s.",
 			dev_name(info->dev), info->vginfo->vgname, creation_host);
 
 set_lock_type:
@@ -1567,7 +1568,7 @@ set_lock_type:
 		return 0;
 	}
 
-	log_debug_cache("lvmcache: %s: VG %s: Set lock_type to %s.",
+	log_debug_cache("lvmcache %s: VG %s: set lock_type to %s.",
 			dev_name(info->dev), info->vginfo->vgname, lock_type);
 
 set_system_id:
@@ -1586,7 +1587,7 @@ set_system_id:
 		return 0;
 	}
 
-	log_debug_cache("lvmcache: %s: VG %s: Set system_id to %s.",
+	log_debug_cache("lvmcache %s: VG %s: set system_id to %s.",
 			dev_name(info->dev), info->vginfo->vgname, system_id);
 
 out:
@@ -1607,8 +1608,10 @@ static int _lvmcache_update_vg_mda_info(struct lvmcache_info *info, uint32_t mda
 
 	/* FIXME Add checksum index */
 
-	log_debug_cache("lvmcache: %s: VG %s: Stored metadata checksum %" PRIu32 " with size %" PRIsize_t ".",
-			dev_name(info->dev), info->vginfo->vgname, mda_checksum, mda_size);
+	log_debug_cache("lvmcache %s: VG %s: stored metadata checksum 0x%08"
+			PRIx32 " with size %" PRIsize_t ".",
+			dev_name(info->dev), info->vginfo->vgname,
+			mda_checksum, mda_size);
 
 	return 1;
 }
@@ -1961,7 +1964,7 @@ struct lvmcache_info *lvmcache_add(struct labeller *labeller, const char *pvid,
 			 * device already exists?  Things don't seem to work
 			 * if we do that for some reason.
 			 */
-			log_debug_cache("Found same device %s with same pvid %s",
+			log_debug_cache("Found same device %s with same pvid %s.",
 					dev_name(existing->dev), pvid_s);
 		}
 
@@ -2394,7 +2397,7 @@ int lvmcache_is_orphan(struct lvmcache_info *info) {
 int lvmcache_vgid_is_cached(const char *vgid) {
 	struct lvmcache_vginfo *vginfo;
 
-	if (lvmetad_active())
+	if (lvmetad_used())
 		return 1;
 
 	vginfo = lvmcache_vginfo_from_vgid(vgid);
@@ -2494,7 +2497,7 @@ int lvmcache_vg_is_foreign(struct cmd_context *cmd, const char *vgname, const ch
 	struct lvmcache_vginfo *vginfo;
 	int ret = 0;
 
-	if (lvmetad_active())
+	if (lvmetad_used())
 		return lvmetad_vg_is_foreign(cmd, vgname, vgid);
 
 	if ((vginfo = lvmcache_vginfo_from_vgid(vgid)))

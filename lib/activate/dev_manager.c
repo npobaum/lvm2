@@ -381,7 +381,7 @@ static int _device_is_suspended(int major, int minor)
 
 	if (!(dmt = _setup_task(NULL, NULL, NULL, DM_DEVICE_INFO,
 				major, minor, 0)))
-		goto_out;
+		return_0;
 
 	if (!dm_task_run(dmt) ||
 	    !dm_task_get_info(dmt, &info)) {
@@ -406,7 +406,7 @@ static int _ignore_suspended_snapshot_component(struct device *dev)
 
 	if (!(dmt = _setup_task(NULL, NULL, NULL, DM_DEVICE_TABLE,
 				MAJOR(dev->dev), MINOR(dev->dev), 0)))
-		goto_out;
+		return_0;
 
 	if (!dm_task_run(dmt)) {
 		log_error("Failed to get state of snapshot or snapshot origin device");
@@ -529,7 +529,7 @@ int device_is_usable(struct device *dev, struct dev_usable_check_params check)
 
 	if (!(dmt = _setup_task(NULL, NULL, NULL, DM_DEVICE_STATUS,
 				MAJOR(dev->dev), MINOR(dev->dev), 0)))
-		goto_out;
+		return_0;
 
 	/* Non-blocking status read */
 	if (!dm_task_no_flush(dmt))
@@ -766,11 +766,11 @@ static const struct dm_info *_cached_dm_info(struct dm_pool *mem,
 		return_NULL;
 
 	if (!(dnode = dm_tree_find_node_by_uuid(dtree, dlid)))
-		goto_out;
+		goto out;
 
 	if (!(dinfo = dm_tree_node_get_info(dnode))) {
-		log_error("Failed to get info from tree node for %s.",
-			  display_lvname(lv));
+		log_warn("WARNING: Cannot get info from tree node for %s.",
+			 display_lvname(lv));
 		goto out;
 	}
 
@@ -806,13 +806,28 @@ int lv_has_target_type(struct dm_pool *mem, const struct logical_volume *lv,
 	if (!dm_task_get_info(dmt, &info) || !info.exists)
 		goto_out;
 
+	/* If there is a preloaded table, use that in preference. */
+	if (info.inactive_table) {
+		dm_task_destroy(dmt);
+
+		if (!(dmt = _setup_task(NULL, dlid, 0, DM_DEVICE_STATUS, 0, 0, 0)))
+			goto_bad;
+
+		if (!dm_task_query_inactive_table(dmt))
+			goto_out;
+
+		if (!dm_task_run(dmt))
+			goto_out;
+
+		if (!dm_task_get_info(dmt, &info) || !info.exists || !info.inactive_table)
+			goto_out;
+	}
+
 	do {
 		next = dm_get_next_target(dmt, next, &start, &length,
 					  &type, &params);
-		if (type && strncmp(type, target_type,
-				    strlen(target_type)) == 0) {
-			if (info.live_table)
-				r = 1;
+		if (type && !strncmp(type, target_type, strlen(target_type))) {
+			r = 1;
 			break;
 		}
 	} while (next);
@@ -823,6 +838,67 @@ bad:
 	dm_pool_free(mem, dlid);
 
 	return r;
+}
+
+static int _thin_lv_has_device_id(struct dm_pool *mem, const struct logical_volume *lv,
+				  const char *layer, unsigned device_id)
+{
+	char *dlid;
+	struct dm_task *dmt;
+	struct dm_info info;
+	void *next = NULL;
+	uint64_t start, length;
+	char *type = NULL;
+	char *params = NULL;
+	unsigned id = ~0;
+
+	if (!(dlid = build_dm_uuid(mem, lv, layer)))
+		return_0;
+
+	if (!(dmt = _setup_task(NULL, dlid, 0, DM_DEVICE_TABLE, 0, 0, 0)))
+		goto_bad;
+
+	if (!dm_task_run(dmt))
+		goto_out;
+
+	if (!dm_task_get_info(dmt, &info) || !info.exists)
+		goto_out;
+
+	/* If there is a preloaded table, use that in preference. */
+	if (info.inactive_table) {
+		dm_task_destroy(dmt);
+
+		if (!(dmt = _setup_task(NULL, dlid, 0, DM_DEVICE_TABLE, 0, 0, 0)))
+			goto_bad;
+
+		if (!dm_task_query_inactive_table(dmt))
+			goto_out;
+
+		if (!dm_task_run(dmt))
+			goto_out;
+
+		if (!dm_task_get_info(dmt, &info) || !info.exists || !info.inactive_table)
+			goto_out;
+	}
+
+	(void) dm_get_next_target(dmt, next, &start, &length, &type, &params);
+
+	if (!type || strcmp(type, TARGET_NAME_THIN))
+		goto_out;
+
+	if (!params || sscanf(params, "%*u:%*u %u", &id) != 1)
+		goto_out;
+
+	log_debug_activation("%soaded thin volume %s with id %u is %smatching id %u.",
+			     info.inactive_table  ? "Prel" : "L",
+			     display_lvname(lv), id,
+			     (device_id != id) ? "not " : "", device_id);
+out:
+	dm_task_destroy(dmt);
+bad:
+	dm_pool_free(mem, dlid);
+
+	return (device_id == id);
 }
 
 int add_linear_area_to_dtree(struct dm_tree_node *node, uint64_t size, uint32_t extent_size, int use_linear_target, const char *vgname, const char *lvname)
@@ -1687,7 +1763,7 @@ static int _add_dev_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 		/*
 		 * FIXME compare info.major with lv->major if multiple major support
 		 */
-		if (info.exists && (info.minor != lv->minor)) {
+		if (info.exists && ((int) info.minor != lv->minor)) {
 			log_error("Volume %s (%" PRIu32 ":%" PRIu32")"
 				  " differs from already active device "
 				  "(%" PRIu32 ":%" PRIu32")",
@@ -2665,6 +2741,7 @@ static int _add_new_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 	uint32_t read_ahead = lv->read_ahead;
 	uint32_t read_ahead_flags = UINT32_C(0);
 	int save_pending_delete = dm->track_pending_delete;
+	int merge_in_progress = 0;
 
 	/* LV with pending delete is never put new into a table */
 	if (lv_is_pending_delete(lv) && !_cached_dm_info(dm->mem, dtree, lv, NULL))
@@ -2685,23 +2762,51 @@ static int _add_new_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 	if (!layer && lv_is_merging_origin(lv)) {
 		seg = find_snapshot(lv);
 		/*
-		 * Clear merge attributes if merge isn't currently possible:
+		 * Prevent merge if merge isn't currently possible:
 		 * either origin or merging snapshot are open
-		 * - but use "snapshot-merge" if it is already in use
+		 * - for old snaps use "snapshot-merge" if it is already in use
 		 * - open_count is always retrieved (as of dm-ioctl 4.7.0)
 		 *   so just use the tree's existing nodes' info
 		 */
-		/* An activating merging origin won't have a node in the tree yet */
-		if (((dinfo = _cached_dm_info(dm->mem, dtree, lv, NULL)) &&
-		     dinfo->open_count) ||
-		    ((dinfo = _cached_dm_info(dm->mem, dtree,
-					      seg_is_thin_volume(seg) ?
-					      seg->lv : seg->cow, NULL)) &&
-		     dinfo->open_count)) {
-			if (seg_is_thin_volume(seg) ||
-			    /* FIXME Is there anything simpler to check for instead? */
-			    !lv_has_target_type(dm->mem, lv, NULL, TARGET_NAME_SNAPSHOT_MERGE))
+		if ((dinfo = _cached_dm_info(dm->mem, dtree, lv, NULL))) {
+			/* Merging origin LV is present, check if mergins is already running. */
+			if ((seg_is_thin_volume(seg) && _thin_lv_has_device_id(dm->mem, lv, NULL, seg->device_id)) ||
+			    (!seg_is_thin_volume(seg) && lv_has_target_type(dm->mem, lv, NULL, TARGET_NAME_SNAPSHOT_MERGE))) {
+				log_debug_activation("Merging of snapshot volume %s to origin %s is in progress.",
+						     display_lvname(seg->lv), display_lvname(seg->lv));
+				merge_in_progress = 1; /* Merge is already running */
+			} /* Merge is not yet running, so check if it can be started */
+			else if (laopts->resuming) {
+				log_debug_activation("Postponing pending snapshot merge for origin %s, "
+						     "merge was not started before suspend.",
+						     display_lvname(lv));
+				laopts->no_merging = 1; /* Cannot be reloaded in suspend */
+			} /* Non-resuming merge requires origin to be unused */
+			else if (dinfo->open_count) {
+				log_debug_activation("Postponing pending snapshot merge for origin %s, "
+						     "origin volume is opened.",
+						     display_lvname(lv));
 				laopts->no_merging = 1;
+			}
+		}
+
+		/* If merge would be still undecided, look as snapshot */
+		if (!merge_in_progress && !laopts->no_merging &&
+		    (dinfo = _cached_dm_info(dm->mem, dtree,
+					     seg_is_thin_volume(seg) ?
+					     seg->lv : seg->cow, NULL))) {
+			if (seg_is_thin_volume(seg)) {
+				/* Active thin snapshot prevents merge */
+				log_debug_activation("Postponing pending snapshot merge for origin volume %s, "
+						     "merging thin snapshot volume %s is active.",
+						     display_lvname(lv), display_lvname(seg->lv));
+				laopts->no_merging = 1;
+			} else if (dinfo->open_count) {
+				log_debug_activation("Postponing pending snapshot merge for origin volume %s, "
+						     "merging snapshot volume %s is opened.",
+						     display_lvname(lv), display_lvname(seg->lv));
+				laopts->no_merging = 1;
+			}
 		}
 	}
 
@@ -3052,6 +3157,8 @@ static int _tree_action(struct dev_manager *dm, const struct logical_volume *lv,
 		/* Preload any devices required before any suspensions */
 		if (!dm_tree_preload_children(root, dlid, DLID_SIZE))
 			goto_out;
+
+		//if (action == PRELOAD) { log_debug("SLEEP"); sleep(7); }
 
 		if ((dm_tree_node_size_changed(root) < 0))
 			dm->flush_required = 1;

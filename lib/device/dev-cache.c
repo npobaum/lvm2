@@ -379,17 +379,13 @@ static int _get_sysfs_value(const char *path, char *buf, size_t buf_size, int er
 		goto out;
 	}
 
-	if (!(len = strlen(buf)) || (len == 1 && buf[0] == '\n')) {
-		if (error_if_no_value) {
-			log_error("_get_sysfs_value: %s: no value", path);
-			goto out;
-		}
-	}
+	if ((len = strlen(buf)) && buf[len - 1] == '\n')
+		buf[--len] = '\0';
 
-	if (buf[len - 1] == '\n')
-		buf[len - 1] = '\0';
-
-	r = 1;
+	if (!len && error_if_no_value)
+		log_error("_get_sysfs_value: %s: no value", path);
+	else
+		r = 1;
 out:
 	if (fclose(fp))
 		log_sys_error("fclose", path);
@@ -433,6 +429,8 @@ static struct dm_list *_get_or_add_list_by_index_key(struct dm_hash_table *idx, 
 
 static struct device *_insert_sysfs_dev(dev_t devno, const char *devname)
 {
+	static struct device _fake_dev = { .flags = DEV_USED_FOR_LV };
+	struct stat stat0;
 	char path[PATH_MAX];
 	char *path_copy;
 	struct device *dev;
@@ -440,6 +438,13 @@ static struct device *_insert_sysfs_dev(dev_t devno, const char *devname)
 	if (dm_snprintf(path, sizeof(path), "%s%s", _cache.dev_dir, devname) < 0) {
 		log_error("_insert_sysfs_dev: %s: dm_snprintf failed", devname);
 		return NULL;
+	}
+
+	if (lstat(path, &stat0) < 0) {
+		/* When device node does not exist return fake entry.
+		 * This may happen when i.e. lvm2 device dir != /dev */
+		log_debug("%s: Not available device node", path);
+		return &_fake_dev;
 	}
 
 	if (!(dev = _dev_create(devno)))
@@ -486,7 +491,7 @@ static struct device *_get_device_for_sysfs_dev_name_using_devno(const char *dev
 		return NULL;
 	}
 
-	devno = MKDEV(major, minor);
+	devno = MKDEV((dev_t)major, (dev_t)minor);
 	if (!(dev = (struct device *) btree_lookup(_cache.devices, (uint32_t) devno))) {
 		/*
 		 * If we get here, it means the device is referenced in sysfs, but it's not yet in /dev.
@@ -846,7 +851,7 @@ static int _dev_cache_iterate_sysfs_for_index(const char *path)
 			continue;
 		}
 
-		devno = MKDEV(major, minor);
+		devno = MKDEV((dev_t)major, (dev_t)minor);
 		if (!(dev = (struct device *) btree_lookup(_cache.devices, (uint32_t) devno)) &&
 		    !(dev = (struct device *) btree_lookup(_cache.sysfs_only_devices, (uint32_t) devno))) {
 			if (!dm_device_get_name(major, minor, 1, devname, sizeof(devname)) ||
@@ -895,11 +900,11 @@ int dev_cache_index_devs(void)
 	} else if (!sysfs_has_dev_block)
 		return 1;
 
-	int with_udev = obtain_device_list_from_udev() &&
-			udev_get_library_context();
+	if (obtain_device_list_from_udev() &&
+	    udev_get_library_context())
+		return _dev_cache_iterate_devs_for_index();  /* with udev */
 
-	return with_udev ? _dev_cache_iterate_devs_for_index()
-			 : _dev_cache_iterate_sysfs_for_index(path);
+	return _dev_cache_iterate_sysfs_for_index(path);
 }
 
 #ifdef UDEV_SYNC_SUPPORT
@@ -999,8 +1004,6 @@ static void _insert_dirs(struct dm_list *dirs)
 			log_debug_devs("%s: Failed to insert devices to "
 				       "device cache fully", dl->dir);
 	}
-
-	(void) dev_cache_index_devs();
 }
 
 #else	/* UDEV_SYNC_SUPPORT */
@@ -1073,6 +1076,8 @@ static void _full_scan(int dev_scan)
 		return;
 
 	_insert_dirs(&_cache.dirs);
+
+	(void) dev_cache_index_devs();
 
 	dm_list_iterate_items(dl, &_cache.files)
 		_insert_file(dl->dir);
