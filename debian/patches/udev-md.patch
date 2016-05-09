@@ -1,4 +1,4 @@
-From 9fda2747cf0f7b4899f95c47d3188e14fa8f31fe Mon Sep 17 00:00:00 2001
+From 3a6ac22b6ac00f2e1ad5edaaccd794da641f5013 Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Sun, 2 Aug 2015 10:03:28 +0200
 Subject: Fix mdadm udev interaction

@@ -120,6 +120,23 @@ void cache_check_for_warns(const struct lv_segment *seg)
 			 "resized and require manual uncache before resize!");
 }
 
+/*
+ * Returns minimum size of cache metadata volume for give  data and chunk size
+ * (all values in sector)
+ * Default meta size is: (Overhead + mapping size + hint size)
+ */
+static uint64_t _cache_min_metadata_size(uint64_t data_size, uint32_t chunk_size)
+{
+	uint64_t min_meta_size;
+
+	min_meta_size = data_size / chunk_size;		/* nr_chunks */
+	min_meta_size *= (DM_BYTES_PER_BLOCK + DM_MAX_HINT_WIDTH + DM_HINT_OVERHEAD_PER_BLOCK);
+	min_meta_size = (min_meta_size + (SECTOR_SIZE - 1)) >> SECTOR_SHIFT;	/* in sectors */
+	min_meta_size += DM_TRANSACTION_OVERHEAD * (1024 >> SECTOR_SHIFT);
+
+	return min_meta_size;
+}
+
 int update_cache_pool_params(const struct segment_type *segtype,
 			     struct volume_group *vg, unsigned attr,
 			     int passed_args, uint32_t pool_data_extents,
@@ -128,7 +145,7 @@ int update_cache_pool_params(const struct segment_type *segtype,
 {
 	uint64_t min_meta_size;
 	uint32_t extent_size = vg->extent_size;
-	uint64_t pool_metadata_size = (uint64_t) *pool_metadata_extents * vg->extent_size;
+	uint64_t pool_metadata_size = (uint64_t) *pool_metadata_extents * extent_size;
 
 	if (!(passed_args & PASS_ARG_CHUNK_SIZE))
 		*chunk_size = DEFAULT_CACHE_POOL_CHUNK_SIZE * 2;
@@ -136,14 +153,7 @@ int update_cache_pool_params(const struct segment_type *segtype,
 	if (!validate_pool_chunk_size(vg->cmd, segtype, *chunk_size))
 		return_0;
 
-	/*
-	 * Default meta size is:
-	 * (Overhead + mapping size + hint size)
-	 */
-	min_meta_size = (uint64_t) pool_data_extents * extent_size / *chunk_size;	/* nr_chunks */
-	min_meta_size *= (DM_BYTES_PER_BLOCK + DM_MAX_HINT_WIDTH + DM_HINT_OVERHEAD_PER_BLOCK);
-	min_meta_size = (min_meta_size + (SECTOR_SIZE - 1)) >> SECTOR_SHIFT;	/* in sectors */
-	min_meta_size += DM_TRANSACTION_OVERHEAD * (1024 >> SECTOR_SHIFT);
+	min_meta_size = _cache_min_metadata_size((uint64_t) pool_data_extents * extent_size, *chunk_size);
 
 	/* Round up to extent size */
 	if (min_meta_size % extent_size)
@@ -173,6 +183,25 @@ int update_cache_pool_params(const struct segment_type *segtype,
 	return 1;
 }
 
+/*
+ * Validate if existing cache-pool can be used with given chunk size
+ * i.e. cache-pool metadata size fits all info.
+ */
+int validate_lv_cache_chunk_size(struct logical_volume *pool_lv, uint32_t chunk_size)
+{
+	uint64_t min_size = _cache_min_metadata_size(pool_lv->size, chunk_size);
+
+	if (min_size > first_seg(pool_lv)->metadata_lv->size) {
+		log_error("Cannot use chunk size %s with cache pool %s. "
+			  "Minimal required size for metadata is %s.",
+			  display_size(pool_lv->vg->cmd, chunk_size),
+			  display_lvname(pool_lv),
+			  display_size(pool_lv->vg->cmd, min_size));
+		return 0;
+	}
+
+	return 1;
+}
 /*
  * Validate arguments for converting origin into cached volume with given cache pool.
  *
@@ -279,6 +308,62 @@ struct logical_volume *lv_cache_create(struct logical_volume *pool_lv,
 }
 
 /*
+ * Checks cache status and loops until there are not dirty blocks
+ * Set 1 to *is_clean when there are no dirty blocks on return.
+ */
+int lv_cache_wait_for_clean(struct logical_volume *cache_lv, int *is_clean)
+{
+	struct lv_segment *cache_seg = first_seg(cache_lv);
+	struct lv_status_cache *status;
+	int cleaner_policy;
+	uint64_t dirty_blocks;
+
+	*is_clean = 0;
+
+	//FIXME: use polling to do this...
+	for (;;) {
+		if (!lv_cache_status(cache_lv, &status))
+			return_0;
+		if (status->cache->fail) {
+			dm_pool_destroy(status->mem);
+			log_warn("WARNING: Skippping flush for failed cache.");
+			return 1;
+		}
+
+		cleaner_policy = !strcmp(status->cache->policy_name, "cleaner");
+		dirty_blocks = status->cache->dirty_blocks;
+
+		/* No clear policy and writeback mode means dirty */
+		if (!cleaner_policy &&
+		    (status->cache->feature_flags & DM_CACHE_FEATURE_WRITEBACK))
+			dirty_blocks++;
+		dm_pool_destroy(status->mem);
+
+		if (!dirty_blocks)
+			break;
+
+		if (cleaner_policy) {
+			log_print_unless_silent(FMTu64 " blocks must still be flushed.",
+						dirty_blocks);
+			/* TODO: Use centralized place */
+			usleep(500000);
+			continue;
+		}
+
+		/* Switch to cleaner policy to flush the cache */
+		log_print_unless_silent("Flushing cache for %s.",
+					display_lvname(cache_lv));
+		cache_seg->cleaner_policy = 1;
+		/* Reaload kernel with "cleaner" policy */
+		if (!lv_update_and_reload_origin(cache_lv))
+			return_0;
+	}
+
+	*is_clean = 1;
+
+	return 1;
+}
+/*
  * lv_cache_remove
  * @cache_lv
  *
@@ -291,12 +376,10 @@ struct logical_volume *lv_cache_create(struct logical_volume *pool_lv,
  */
 int lv_cache_remove(struct logical_volume *cache_lv)
 {
-	int is_cleaner;
-	uint64_t dirty_blocks;
 	struct lv_segment *cache_seg = first_seg(cache_lv);
 	struct logical_volume *corigin_lv;
 	struct logical_volume *cache_pool_lv;
-	struct lv_status_cache *status;
+	int is_clear;
 
 	if (!lv_is_cache(cache_lv)) {
 		log_error(INTERNAL_ERROR "LV %s is not cache volume.",
@@ -356,45 +439,8 @@ int lv_cache_remove(struct logical_volume *cache_lv)
 	 * remove the cache_pool then without waiting for the flush to
 	 * complete.
 	 */
-	if (!lv_cache_status(cache_lv, &status))
+	if (!lv_cache_wait_for_clean(cache_lv, &is_clear))
 		return_0;
-	if (!status->cache->fail) {
-		is_cleaner = !strcmp(status->cache->policy_name, "cleaner");
-		dirty_blocks = status->cache->dirty_blocks;
-		if (!(status->cache->feature_flags & DM_CACHE_FEATURE_WRITETHROUGH))
-			dirty_blocks++; /* Not writethrough - always dirty */
-	} else {
-		log_warn("WARNING: Skippping flush for failed cache.");
-		is_cleaner = 0;
-		dirty_blocks = 0;
-	}
-	dm_pool_destroy(status->mem);
-
-	if (dirty_blocks && !is_cleaner) {
-		/* Switch to cleaner policy to flush the cache */
-		log_print_unless_silent("Flushing cache for %s.", cache_lv->name);
-		cache_seg->cleaner_policy = 1;
-		/* update the kernel to put the cleaner policy in place */
-		if (!lv_update_and_reload_origin(cache_lv))
-			return_0;
-	}
-
-	//FIXME: use polling to do this...
-	while (dirty_blocks) {
-		if (!lv_cache_status(cache_lv, &status))
-			return_0;
-		if (status->cache->fail) {
-			log_warn("WARNING: Flushing of failing cache skipped.");
-			break;
-		}
-		dirty_blocks = status->cache->dirty_blocks;
-		dm_pool_destroy(status->mem);
-		if (dirty_blocks) {
-			log_print_unless_silent(FMTu64 " blocks must still be flushed.",
-						dirty_blocks);
-			sleep(1);
-		}
-	}
 
 	cache_pool_lv = cache_seg->pool_lv;
 	if (!detach_pool_lv(cache_seg))
@@ -583,6 +629,40 @@ out:
 		dm_config_destroy(old);
 
 	return r;
+}
+
+/*
+ * Universal 'wrapper' function  do-it-all
+ * to update all commonly specified cache parameters
+ */
+int cache_set_params(struct lv_segment *seg,
+		     const char *cache_mode,
+		     const char *policy_name,
+		     const struct dm_config_tree *policy_settings,
+		     uint32_t chunk_size)
+{
+	struct lv_segment *pool_seg;
+
+	if (!cache_set_mode(seg, cache_mode))
+		return_0;
+
+	if (!cache_set_policy(seg, policy_name, policy_settings))
+		return_0;
+
+	pool_seg = seg_is_cache(seg) ? first_seg(seg->pool_lv) : seg;
+
+	if (chunk_size) {
+		if (!validate_lv_cache_chunk_size(pool_seg->lv, chunk_size))
+			return_0;
+		pool_seg->chunk_size = chunk_size;
+	} else {
+		/* TODO: some calc_policy solution for cache ? */
+		if (!recalculate_pool_chunk_size_with_dev_hints(pool_seg->lv, 0,
+								THIN_CHUNK_SIZE_CALC_METHOD_GENERIC))
+			return_0;
+	}
+
+	return 1;
 }
 
 /*

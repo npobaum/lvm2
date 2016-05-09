@@ -1,3 +1,25 @@
+Version 2.02.153 - 7th May 2016
+===============================
+  Change warning messages related to duplicate PVs.
+  A named device is always processed itself, not switched for a duplicate.
+  Add PV attr "d" and report field "duplicate" for duplicate PVs.
+  Add config setting to disallow VG changes when duplicate PVs exist.
+  Use device size and active LVs to choose the preferred duplicate PV.
+  Disable lvmetad when duplicate PVs are seen.
+  Support --chunksize option also when caching LV when possible.
+  Add function to check for target presence and version via 1 ioctl.
+
+Version 2.02.152 - 30th April 2016
+==================================
+  Use any inherited tags when wiping metadata sub LVs to ensure activation.
+  Add str_list_wipe.
+  Improve support for interrupting procesing of volumes during lvchange.
+  Use failed command return code when lvchanging read-only volume.
+  Show creation transaction_id and zeroing state of pool with thin volume.
+  Stop checking for dm_cache_mq policy with cache target 1.9 (alias to smq).
+  Check first /sys/module/dm_* dir existance before using modprobe.
+  Remove mpath from 10-dm.rules, superseded by 11-dm-mpath.rules (mpath>=0.6.0).
+
 Version 2.02.151 - 23rd April 2016
 ==================================
   Fix error path after reusing of _setup_task (2.02.150).

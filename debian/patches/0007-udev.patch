@@ -1,4 +1,4 @@
-From 8bd02ba904c3809d880064a94cd23fedc4652270 Mon Sep 17 00:00:00 2001
+From 0ab0c27a0f3e24d90b885ee85ddd96cb0890da6c Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 30 Jun 2015 11:46:11 +0200
 Subject: udev
@@ -11,14 +11,18 @@ Subject: udev
  4 files changed, 28 insertions(+), 22 deletions(-)
 
 diff --git a/udev/10-dm.rules.in b/udev/10-dm.rules.in
-index 2755530..fb2ea68 100644
+index b4fa52a..49111ec 100644
 --- a/udev/10-dm.rules.in
 +++ b/udev/10-dm.rules.in
-@@ -12,13 +12,18 @@
+@@ -12,7 +12,6 @@
  #   DM_NAME - actual DM device's name
  #   DM_UUID - UUID set for DM device (blank if not specified)
  #   DM_SUSPENDED - suspended state of DM device (0 or 1)
 -#   DM_UDEV_RULES_VSN - DM udev rules version
+ #
+ # These rules cover only basic device-mapper functionality in udev.
+ #
+@@ -30,9 +29,15 @@
  
  KERNEL=="device-mapper", NAME="(DM_DIR)/control"
  
@@ -35,7 +39,7 @@ index 2755530..fb2ea68 100644
  
  # Device created, major and minor number assigned - "add" event generated.
  # Table loaded - no event generated.
-@@ -32,12 +37,6 @@ KERNEL!="dm-[0-9]*", GOTO="dm_end"
+@@ -46,12 +51,6 @@ KERNEL!="dm-[0-9]*", GOTO="dm_end"
  # is not recommended.
  ACTION!="add|change", GOTO="dm_end"
  
@@ -48,7 +52,7 @@ index 2755530..fb2ea68 100644
  # Rule out easy-to-detect inappropriate events first.
  ENV{DISK_RO}=="1", GOTO="dm_disable"
  
-@@ -54,7 +53,7 @@ IMPORT{db}="DM_UDEV_LOW_PRIORITY_FLAG"
+@@ -68,7 +67,7 @@ IMPORT{db}="DM_UDEV_LOW_PRIORITY_FLAG"
  IMPORT{db}="DM_UDEV_DISABLE_LIBRARY_FALLBACK_FLAG"
  IMPORT{db}="DM_UDEV_PRIMARY_SOURCE_FLAG"
  IMPORT{db}="DM_UDEV_FLAG7"
@@ -57,7 +61,7 @@ index 2755530..fb2ea68 100644
  LABEL="dm_flags_done"
  
  # Normally, we operate on "change" events. But when coldplugging, there's an
-@@ -70,7 +69,7 @@ LABEL="dm_flags_done"
+@@ -84,7 +83,7 @@ LABEL="dm_flags_done"
  # script to not remove the existing udev database so we can reuse the information
  # stored at the time of device activation in the initrd.
  ACTION!="add", GOTO="dm_no_coldplug"
@@ -66,7 +70,7 @@ index 2755530..fb2ea68 100644
  ENV{DM_ACTIVATION}="1"
  LABEL="dm_no_coldplug"
  
-@@ -110,13 +109,8 @@ ENV{DM_SUSPENDED}=="Suspended", ENV{DM_SUSPENDED}="1"
+@@ -124,13 +123,8 @@ ENV{DM_SUSPENDED}=="Suspended", ENV{DM_SUSPENDED}="1"
  # This variable provides a reliable way to check that device-mapper
  # rules were installed. It means that all needed variables are set
  # by these rules directly so there's no need to acquire them again

@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2013 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2016 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -603,7 +603,24 @@ int module_present(struct cmd_context *cmd, const char *target_name)
 #ifdef MODPROBE_CMD
 	char module[128];
 	const char *argv[] = { MODPROBE_CMD, module, NULL };
+#endif
+	struct stat st;
+	char path[PATH_MAX];
+	int i = dm_snprintf(path, (sizeof(path) - 1), "%smodule/dm_%s",
+			    dm_sysfs_dir(), target_name);
 
+	if (i > 0) {
+		while (path[--i] != '/')  /* stop on dm_ */
+			if (path[i] == '-')
+				path[i] = '_'; /* replace '-' with '_' */
+
+		if ((lstat(path, &st) == 0) && S_ISDIR(st.st_mode)) {
+			log_debug_activation("Module directory %s exists.", path);
+			return 1;
+		}
+	}
+
+#ifdef MODPROBE_CMD
 	if (dm_snprintf(module, sizeof(module), "dm-%s", target_name) < 0) {
 		log_error("module_present module name too long: %s",
 			  target_name);
@@ -615,25 +632,33 @@ int module_present(struct cmd_context *cmd, const char *target_name)
 	return ret;
 }
 
-int target_present(struct cmd_context *cmd, const char *target_name,
-		   int use_modprobe)
+int target_present_version(struct cmd_context *cmd, const char *target_name,
+			   int use_modprobe,
+			   uint32_t *maj, uint32_t *min, uint32_t *patchlevel)
 {
-	uint32_t maj, min, patchlevel;
-
-	if (!activation())
+	if (!activation()) {
+		log_error(INTERNAL_ERROR "Target present version called when activation is disabled.");
 		return 0;
-
+	}
 #ifdef MODPROBE_CMD
 	if (use_modprobe) {
-		if (target_version(target_name, &maj, &min, &patchlevel))
+		if (target_version(target_name, maj, min, patchlevel))
 			return 1;
 
 		if (!module_present(cmd, target_name))
 			return_0;
 	}
 #endif
+	return target_version(target_name, maj, min, patchlevel);
+}
 
-	return target_version(target_name, &maj, &min, &patchlevel);
+int target_present(struct cmd_context *cmd, const char *target_name,
+		   int use_modprobe)
+{
+	uint32_t maj, min, patchlevel;
+
+	return target_present_version(cmd, target_name, use_modprobe,
+				      &maj, &min, &patchlevel);
 }
 
 static int _lv_info(struct cmd_context *cmd, const struct logical_volume *lv,

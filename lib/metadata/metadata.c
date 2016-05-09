@@ -691,7 +691,7 @@ static int _check_pv_dev_sizes(struct volume_group *vg)
 		size = pv_size(pvl->pv);
 
 		if (dev_size < size) {
-			log_warn("Device %s has size of %" PRIu64 " sectors which "
+			log_warn("WARNING: Device %s has size of %" PRIu64 " sectors which "
 				 "is smaller than corresponding PV size of %" PRIu64
 				  " sectors. Was device resized?",
 				  pv_dev_name(pvl->pv), dev_size, size);
@@ -3434,6 +3434,13 @@ int vg_write(struct volume_group *vg)
 		return 0;
 	}
 
+	if (lvmcache_found_duplicate_pvs() && vg_has_duplicate_pvs(vg) &&
+	    !find_config_tree_bool(vg->cmd, devices_allow_changes_with_duplicate_pvs_CFG, NULL)) {
+		log_error("Cannot update volume group %s with duplicate PV devices.",
+			  vg->name);
+		return 0;
+	}
+
 	if (vg_has_unknown_segments(vg) && !vg->cmd->handles_unknown_segments) {
 		log_error("Cannot update volume group %s with unknown segments in it!",
 			  vg->name);
@@ -3890,7 +3897,7 @@ static int _check_reappeared_pv(struct volume_group *correct_vg,
 	dm_list_iterate_items(pvl, &correct_vg->pvs)
 		if (pv->dev == pvl->pv->dev && is_missing_pv(pvl->pv)) {
 			if (act)
-				log_warn("Missing device %s reappeared, updating "
+				log_warn("WARNING: Missing device %s reappeared, updating "
 					 "metadata for VG %s to version %u.",
 					 pv_dev_name(pvl->pv),  pv_vg_name(pvl->pv), 
 					 correct_vg->seqno);
@@ -3901,9 +3908,11 @@ static int _check_reappeared_pv(struct volume_group *correct_vg,
 				}
 				++ rv;
 			} else if (act)
-				log_warn("Device still marked missing because of allocated data "
-					 "on it, remove volumes and consider vgreduce --removemissing.");
+				log_warn("WARNING: Device %s still marked missing because of allocated data "
+					 "on it, remove volumes and consider vgreduce --removemissing.",
+					 pv_dev_name(pvl->pv));
 		}
+
 	return rv;
 }
 
@@ -3916,6 +3925,11 @@ static int _repair_inconsistent_vg(struct volume_group *vg)
 {
 	unsigned saved_handles_missing_pvs = vg->cmd->handles_missing_pvs;
 
+	if (lvmcache_found_duplicate_pvs()) {
+		log_debug_metadata("Skip metadata repair with duplicates.");
+		return 0;
+	}
+
 	/* Cannot write foreign VGs, the owner will repair it. */
 	if (_is_foreign_vg(vg)) {
 		log_verbose("Skip metadata repair for foreign VG.");
@@ -3927,6 +3941,8 @@ static int _repair_inconsistent_vg(struct volume_group *vg)
 		log_verbose("Skip metadata repair for shared VG.");
 		return 0;
 	}
+
+	log_warn("WARNING: Inconsistent metadata found for VG %s - updating to use version %u", vg->name, vg->seqno);
 
 	vg->cmd->handles_missing_pvs = 1;
 	if (!vg_write(vg)) {
@@ -3949,6 +3965,11 @@ static int _wipe_outdated_pvs(struct cmd_context *cmd, struct volume_group *vg, 
 {
 	struct pv_list *pvl, *pvl2;
 	char uuid[64] __attribute__((aligned(8)));
+
+	if (lvmcache_found_duplicate_pvs()) {
+		log_debug_metadata("Skip wiping outdated PVs with duplicates.");
+		return 0;
+	}
 
 	/*
 	 * Cannot write foreign VGs, the owner will repair it.
@@ -4535,9 +4556,6 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 			return correct_vg;
 		}
 
-		log_warn("WARNING: Inconsistent metadata found for VG %s - updating "
-			 "to use version %u", vgname, correct_vg->seqno);
-
 		/*
 		 * If PV is marked missing but we found it,
 		 * update metadata and remove MISSING flag
@@ -4597,6 +4615,7 @@ static int _check_devs_used_correspond_with_lv(struct dm_pool *mem, struct dm_li
 	struct device *dev;
 	struct lv_segment *seg;
 	uint32_t s;
+	int warned_about_no_dev = 0;
 	char *used_devnames = NULL, *assumed_devnames = NULL;
 
 	if (!(list = dev_cache_get_dev_list_for_lvid(lv->lvid.s + ID_LEN)))
@@ -4629,10 +4648,13 @@ static int _check_devs_used_correspond_with_lv(struct dm_pool *mem, struct dm_li
 		for (s = 0; s < seg->area_count; s++) {
 			if (seg_type(seg, s) == AREA_PV) {
 				if (!(dev = seg_dev(seg, s))) {
-					log_error("Couldn't find device for segment belonging to "
-						  "%s while checking used and assumed devices.",
-						  display_lvname(lv));
-					return 0;
+					if (!warned_about_no_dev) {
+						log_warn("WARNING: Couldn't find all devices for LV %s "
+							 "while checking used and assumed devices.",
+							  display_lvname(lv));
+						warned_about_no_dev = 1;
+					}
+					continue;
 				}
 				if (!(dev->flags & DEV_USED_FOR_LV)) {
 					if (!found_inconsistent) {
@@ -4653,10 +4675,9 @@ static int _check_devs_used_correspond_with_lv(struct dm_pool *mem, struct dm_li
 		if (!dm_pool_grow_object(mem, "\0", 1))
 			return_0;
 		assumed_devnames = dm_pool_end_object(mem);
+		log_warn("WARNING: Device mismatch detected for %s which is accessing %s instead of %s.",
+			 display_lvname(lv), used_devnames, assumed_devnames);
 	}
-
-	log_warn("WARNING: Device mismatch detected for %s which is accessing %s instead of %s.",
-		 display_lvname(lv), used_devnames, assumed_devnames);
 
 	return 1;
 }
@@ -4679,6 +4700,15 @@ static int _check_devs_used_correspond_with_vg(struct volume_group *vg)
 
 	/* Mark all PVs in VG as used. */
 	dm_list_iterate_items(pvl, &vg->pvs) {
+		/*
+		 * FIXME: It's not clear if the meaning
+		 * of "missing" should always include the
+		 * !pv->dev case, or if "missing" is the
+		 * more narrow case where VG metadata has
+		 * been written with the MISSING flag.
+		 */
+		if (!pvl->pv->dev)
+			continue;
 		if (is_missing_pv(pvl->pv))
 			continue;
 		pvl->pv->dev->flags |= DEV_ASSUMED_FOR_LV;

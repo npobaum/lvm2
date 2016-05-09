@@ -3834,6 +3834,16 @@ static int _lv_extend_layered_lv(struct alloc_handle *ah,
 				return 0;
 			}
 			lv_set_visible(meta_lv);
+
+			/*
+			 * Copy any tags from the new LV to the metadata LV so
+			 * it can be activated temporarily.
+			 */
+			if (!str_list_dup(meta_lv->vg->vgmem, &meta_lv->tags, &lv->tags)) {
+				log_error("Failed to copy tags onto LV %s to clear metadata.", display_lvname(meta_lv));
+				return 0;
+			}
+
 			clear_metadata = 1;
 		}
 
@@ -3882,6 +3892,9 @@ static int _lv_extend_layered_lv(struct alloc_handle *ah,
 				return 0;
 			}
 			lv_set_hidden(meta_lv);
+
+			/* Wipe any temporary tags required for activation. */
+			str_list_wipe(&meta_lv->tags);
 		}
 	}
 
@@ -7153,9 +7166,17 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 			return NULL;
 		}
 
+		if (seg_is_cache(lp)) {
+			/* validate metadata size */
+			if (!validate_lv_cache_chunk_size(pool_lv, lp->chunk_size))
+				return_0;
+
+			first_seg(pool_lv)->chunk_size = lp->chunk_size;
+		}
+
 		/* Validate volume size to to aling on chunk for small extents */
 		/* Cache chunk size is always set */
-		size = seg_is_cache(lp) ? lp->chunk_size : first_seg(pool_lv)->chunk_size;
+		size = first_seg(pool_lv)->chunk_size;
 		if (size > vg->extent_size) {
 			/* Align extents on chunk boundary size */
 			size = ((uint64_t)vg->extent_size * lp->extents + size - 1) /
@@ -7357,7 +7378,7 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 		lp->wipe_signatures = 0;
 	}
 
-	if (!seg_is_virtual(lp) && !lp->approx_alloc &&
+	if (!segtype_is_virtual(create_segtype) && !lp->approx_alloc &&
 	    (vg->free_count < lp->extents)) {
 		log_error("Volume group \"%s\" has insufficient free space "
 			  "(%u extents): %u required.",
@@ -7369,7 +7390,7 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 		return_NULL;
 
 
-	if (pool_lv && seg_is_thin_volume(lp)) {
+	if (pool_lv && segtype_is_thin_volume(create_segtype)) {
 		/* Ensure all stacked messages are submitted */
 		if ((pool_is_active(pool_lv) || is_change_activating(lp->activate)) &&
 		    !update_pool_lv(pool_lv, 1))
@@ -7385,7 +7406,7 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 		log_debug_metadata("Setting read ahead sectors %u.", lv->read_ahead);
 	}
 
-	if (!seg_is_pool(lp) && lp->minor >= 0) {
+	if (!segtype_is_pool(create_segtype) && lp->minor >= 0) {
 		lv->major = lp->major;
 		lv->minor = lp->minor;
 		lv->status |= FIXED_MINOR;
@@ -7406,39 +7427,27 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 	if (!lv_extend(lv, create_segtype,
 		       lp->stripes, lp->stripe_size,
 		       lp->mirrors,
-		       seg_is_pool(lp) ? lp->pool_metadata_extents : lp->region_size,
-		       seg_is_thin_volume(lp) ? lp->virtual_extents : lp->extents,
+		       segtype_is_pool(create_segtype) ? lp->pool_metadata_extents : lp->region_size,
+		       segtype_is_thin_volume(create_segtype) ? lp->virtual_extents : lp->extents,
 		       lp->pvh, lp->alloc, lp->approx_alloc))
 		return_NULL;
 
 	/* Unlock memory if possible */
 	memlock_unlock(vg->cmd);
 
-	if (seg_is_cache_pool(lp) || seg_is_cache(lp)) {
-		if (!cache_set_mode(first_seg(lv), lp->cache_mode)) {
+	if (lv_is_cache_pool(lv)) {
+		if (!cache_set_params(first_seg(lv),
+				      lp->cache_mode,
+				      lp->policy_name,
+				      lp->policy_settings,
+				      lp->chunk_size)) {
 			stack;
 			goto revert_new_lv;
 		}
-
-		if (!cache_set_policy(first_seg(lv), lp->policy_name, lp->policy_settings)) {
-			stack;
-			goto revert_new_lv;
-		}
-
-		pool_lv = pool_lv ? : lv;
-		if (lp->chunk_size) {
-			first_seg(pool_lv)->chunk_size = lp->chunk_size;
-			/* TODO: some calc_policy solution for cache ? */
-			if (!recalculate_pool_chunk_size_with_dev_hints(pool_lv, lp->passed_args,
-									THIN_CHUNK_SIZE_CALC_METHOD_GENERIC)) {
-				stack;
-				goto revert_new_lv;
-			}
-		}
-	} else if (seg_is_raid(lp)) {
+	} else if (lv_is_raid(lv)) {
 		first_seg(lv)->min_recovery_rate = lp->min_recovery_rate;
 		first_seg(lv)->max_recovery_rate = lp->max_recovery_rate;
-	} else if (seg_is_thin_pool(lp)) {
+	} else if (lv_is_thin_pool(lv)) {
 		first_seg(lv)->chunk_size = lp->chunk_size;
 		first_seg(lv)->zero_new_blocks = lp->zero ? 1 : 0;
 		first_seg(lv)->discards = lp->discards;
@@ -7449,7 +7458,7 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 		}
 		if (lp->error_when_full)
 			lv->status |= LV_ERROR_WHEN_FULL;
-	} else if (pool_lv && seg_is_thin_volume(lp)) {
+	} else if (pool_lv && lv_is_virtual(lv)) { /* going to be a thin volume */
 		seg = first_seg(lv);
 		pool_seg = first_seg(pool_lv);
 		if (!(seg->device_id = get_free_pool_device_id(pool_seg)))
@@ -7636,10 +7645,11 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 		}
 		lv = tmp_lv;
 
-		if (!cache_set_mode(first_seg(lv), lp->cache_mode))
-			return_NULL; /* revert? */
-
-		if (!cache_set_policy(first_seg(lv), lp->policy_name, lp->policy_settings))
+		if (!cache_set_params(first_seg(lv),
+				      lp->cache_mode,
+				      lp->policy_name,
+				      lp->policy_settings,
+				      (lp->passed_args & PASS_ARG_CHUNK_SIZE) ? lp->chunk_size : 0))
 			return_NULL; /* revert? */
 
 		cache_check_for_warns(first_seg(lv));
@@ -7761,16 +7771,16 @@ struct logical_volume *lv_create_single(struct volume_group *vg,
 			if (!(lv = _lv_create_an_lv(vg, lp, lp->pool_name)))
 				return_NULL;
 
-			if (lv_is_cache(lv)) {
-				/* Here it's been converted via lvcreate */
-				log_print_unless_silent("Logical volume %s is now cached.",
-							display_lvname(lv));
-				return lv;
+			if (!lv_is_cache(lv)) {
+				log_error(INTERNAL_ERROR "Logical volume is not cache %s.",
+					  display_lvname(lv));
+				return NULL;
 			}
 
-			log_error(INTERNAL_ERROR "Logical volume is not cache %s.",
-				  display_lvname(lv));
-			return NULL;
+			/* Convertion via lvcreate */
+			log_print_unless_silent("Logical volume %s is now cached.",
+						display_lvname(lv));
+			return lv;
 		} else {
 			log_error(INTERNAL_ERROR "Creation of pool for unsupported segment type %s.",
 				  lp->segtype->name);
