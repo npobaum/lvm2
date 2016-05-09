@@ -1,3 +1,9 @@
+lvm2 (2.02.153-1) unstable; urgency=medium
+
+  * New upstream version.
+
+ -- Bastian Blank <waldi@debian.org>  Mon, 09 May 2016 16:45:31 +0200
+
 lvm2 (2.02.151-1) unstable; urgency=medium
 
   * New upstream version.

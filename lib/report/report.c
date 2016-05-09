@@ -2446,7 +2446,7 @@ static int _transactionid_disp(struct dm_report *rh, struct dm_pool *mem,
 {
 	const struct lv_segment *seg = (const struct lv_segment *) data;
 
-	if (seg_is_thin_pool(seg))
+	if (seg_is_thin_pool(seg) || seg_is_thin_volume(seg))
 		return dm_report_field_uint64(rh, field, &seg->transaction_id);
 
 	return _field_set_value(field, "", &GET_TYPE_RESERVED_VALUE(num_undef_64));
@@ -3111,6 +3111,16 @@ static int _pvinuse_disp(struct dm_report *rh, struct dm_pool *mem,
 	return _binary_disp(rh, mem, field, used, GET_FIRST_RESERVED_NAME(pv_in_use_y), private);
 }
 
+static int _pvduplicate_disp(struct dm_report *rh, struct dm_pool *mem,
+			    struct dm_report_field *field,
+			    const void *data, void *private)
+{
+	const struct physical_volume *pv = (const struct physical_volume *) data;
+	int duplicate = lvmcache_dev_is_unchosen_duplicate(pv->dev);
+
+	return _binary_disp(rh, mem, field, duplicate, GET_FIRST_RESERVED_NAME(pv_duplicate_y), private);
+}
+
 static int _vgpermissions_disp(struct dm_report *rh, struct dm_pool *mem,
 			       struct dm_report_field *field,
 			       const void *data, void *private)
@@ -3477,6 +3487,9 @@ static int _thinzero_disp(struct dm_report *rh, struct dm_pool *mem,
 			   const void *data, void *private)
 {
 	const struct lv_segment *seg = (const struct lv_segment *) data;
+
+	if (seg_is_thin_volume(seg))
+		seg = first_seg(seg->pool_lv);
 
 	if (seg_is_thin_pool(seg))
 		return _binary_disp(rh, mem, field, seg->zero_new_blocks, GET_FIRST_RESERVED_NAME(zero_y), private);

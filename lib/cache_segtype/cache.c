@@ -208,11 +208,16 @@ static int _target_present(struct cmd_context *cmd,
 		uint32_t maj;
 		uint32_t min;
 		unsigned cache_feature;
+		unsigned cache_alias;
 		const char feature[12];
 		const char module[12]; /* check dm-%s */
+		const char *aliasing;
 	} _features[] = {
-		{ 1, 3, CACHE_FEATURE_POLICY_MQ, "policy_mq", "cache-mq" },
-		{ 1, 8, CACHE_FEATURE_POLICY_SMQ, "policy_smq", "cache-smq" },
+		/* Assumption: cache >=1.9 always aliases MQ policy */
+		{ 1, 9, CACHE_FEATURE_POLICY_SMQ, CACHE_FEATURE_POLICY_MQ, "policy_smq", "cache-smq",
+		" and aliases cache-mq" },
+		{ 1, 8, CACHE_FEATURE_POLICY_SMQ, 0, "policy_smq", "cache-smq" },
+		{ 1, 3, CACHE_FEATURE_POLICY_MQ, 0, "policy_mq", "cache-mq" },
 	};
 	static const char _lvmconf[] = "global/cache_disabled_features";
 	static unsigned _attrs = 0;
@@ -230,10 +235,8 @@ static int _target_present(struct cmd_context *cmd,
 	if (!_cache_checked) {
 		_cache_checked = 1;
 
-		if (!(_cache_present = target_present(cmd, TARGET_NAME_CACHE, 1)))
-			return 0;
-
-		if (!target_version(TARGET_NAME_CACHE, &maj, &min, &patchlevel))
+		if (!(_cache_present = target_present_version(cmd, TARGET_NAME_CACHE, 1,
+							      &maj, &min, &patchlevel)))
 			return_0;
 
 		if ((maj < 1) ||
@@ -245,13 +248,17 @@ static int _target_present(struct cmd_context *cmd,
 			return 0;
 		}
 
-
 		for (i = 0; i < DM_ARRAY_SIZE(_features); ++i) {
+			if (_attrs & _features[i].cache_feature)
+				continue; /* already present */
 			if (((maj > _features[i].maj) ||
 			     (maj == _features[i].maj && min >= _features[i].min)) &&
-			    (!_features[i].module[0] || module_present(cmd, _features[i].module)))
-				_attrs |= _features[i].cache_feature;
-			else
+			    module_present(cmd, _features[i].module)) {
+				log_debug_activation("Cache policy %s is available%s.",
+						     _features[i].module,
+						     _features[i].aliasing ? : "");
+				_attrs |= (_features[i].cache_feature | _features[i].cache_alias);
+			} else if (!_features[i].cache_alias)
 				log_very_verbose("Target %s does not support %s.",
 						 _cache_module, _features[i].feature);
 		}

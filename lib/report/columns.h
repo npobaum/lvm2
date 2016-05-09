@@ -148,6 +148,7 @@ FIELD(PVS, pv, NUM, "#PMdaUse", id, 0, pvmdasused, pv_mda_used_count, "Number of
 FIELD(PVS, pv, SIZ, "BA Start", ba_start, 0, size64, pv_ba_start, "Offset to the start of PV Bootloader Area on the underlying device in current units.", 0)
 FIELD(PVS, pv, SIZ, "BA Size", ba_size, 0, size64, pv_ba_size, "Size of PV Bootloader Area in current units.", 0)
 FIELD(PVS, pv, BIN, "PInUse", id, 0, pvinuse, pv_in_use, "Set if PV is used.", 0)
+FIELD(PVS, pv, BIN, "Duplicate", id, 0, pvduplicate, pv_duplicate, "Set if PV is an unchosen duplicate.", 0)
 
 FIELD(VGS, vg, STR, "Fmt", cmd, 0, vgfmt, vg_fmt, "Type of metadata.", 0)
 FIELD(VGS, vg, STR, "VG UUID", id, 38, uuid, vg_uuid, "Unique identifier.", 0)
@@ -191,8 +192,8 @@ FIELD(SEGS, seg, SIZ, "Chunk", list, 0, chunksize, chunk_size, "For snapshots, t
 FIELD(SEGS, seg, NUM, "#Thins", list, 0, thincount, thin_count, "For thin pools, the number of thin volumes in this pool.", 0)
 FIELD(SEGS, seg, STR, "Discards", list, 0, discards, discards, "For thin pools, how discards are handled.", 0)
 FIELD(SEGS, seg, STR, "CacheMode", list, 0, cachemode, cache_mode, "For cache pools, how writes are cached.", 0)
-FIELD(SEGS, seg, BIN, "Zero", list, 0, thinzero, zero, "For thin pools, if zeroing is enabled.", 0)
-FIELD(SEGS, seg, NUM, "TransId", list, 0, transactionid, transaction_id, "For thin pools, the transaction id.", 0)
+FIELD(SEGS, seg, BIN, "Zero", list, 0, thinzero, zero, "For thin pools and volumes, if zeroing is enabled.", 0)
+FIELD(SEGS, seg, NUM, "TransId", list, 0, transactionid, transaction_id, "For thin pools, the transaction id and creation transaction id for thins.", 0)
 FIELD(SEGS, seg, NUM, "ThId", list, 0, thinid, thin_id, "For thin volume, the thin device id.", 0)
 FIELD(SEGS, seg, SIZ, "Start", list, 0, segstart, seg_start, "Offset within the LV to the start of the segment in current units.", 0)
 FIELD(SEGS, seg, NUM, "Start", list, 0, segstartpe, seg_start_pe, "Offset within the LV to the start of the segment in physical extents.", 0)

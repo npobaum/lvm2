@@ -1216,16 +1216,23 @@ int cache_mode_is_set(const struct lv_segment *seg);
 int cache_set_mode(struct lv_segment *cache_seg, const char *str);
 int cache_set_policy(struct lv_segment *cache_seg, const char *name,
 		     const struct dm_config_tree *settings);
+int cache_set_params(struct lv_segment *seg,
+		     const char *cache_mode,
+		     const char *policy_name,
+		     const struct dm_config_tree *policy_settings,
+		     uint32_t chunk_size);
 void cache_check_for_warns(const struct lv_segment *seg);
 int update_cache_pool_params(const struct segment_type *segtype,
 			     struct volume_group *vg, unsigned attr,
 			     int passed_args, uint32_t pool_data_extents,
 			     uint32_t *pool_metadata_extents,
 			     int *chunk_size_calc_method, uint32_t *chunk_size);
+int validate_lv_cache_chunk_size(struct logical_volume *pool_lv, uint32_t chunk_size);
 int validate_lv_cache_create_pool(const struct logical_volume *pool_lv);
 int validate_lv_cache_create_origin(const struct logical_volume *origin_lv);
 struct logical_volume *lv_cache_create(struct logical_volume *pool,
 				       struct logical_volume *origin);
+int lv_cache_wait_for_clean(struct logical_volume *cache_lv, int *is_clean);
 int lv_cache_remove(struct logical_volume *cache_lv);
 int wipe_cache_pool(struct logical_volume *cache_pool_lv);
 /* --  metadata/cache_manip.c */
