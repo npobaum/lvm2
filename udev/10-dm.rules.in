@@ -12,7 +12,6 @@
 #   DM_NAME - actual DM device's name
 #   DM_UUID - UUID set for DM device (blank if not specified)
 #   DM_SUSPENDED - suspended state of DM device (0 or 1)
-#   DM_UDEV_RULES_VSN - DM udev rules version
 #
 # These rules cover only basic device-mapper functionality in udev.
 #
@@ -30,9 +29,15 @@
 
 KERNEL=="device-mapper", NAME="(DM_DIR)/control"
 
+# Decode udev control flags and set environment variables appropriately.
+# These flags are encoded in DM_COOKIE variable that was introduced in
+# kernel version 2.6.31. Therefore, we can use this feature with
+# kernels >= 2.6.31 only.
+ENV{DM_COOKIE}=="?*", IMPORT{program}="/sbin/dmsetup udevflags $env{DM_COOKIE}"
+ENV{DM_COOKIE}=="?*", RUN+="/sbin/dmsetup udevcomplete $env{DM_COOKIE}"
+
 SUBSYSTEM!="block", GOTO="dm_end"
 KERNEL!="dm-[0-9]*", GOTO="dm_end"
-(DM_EXEC_RULE)
 
 # Device created, major and minor number assigned - "add" event generated.
 # Table loaded - no event generated.
@@ -45,12 +50,6 @@ KERNEL!="dm-[0-9]*", GOTO="dm_end"
 # loaded and is properly resumed. For this reason, direct use of dm-X nodes
 # is not recommended.
 ACTION!="add|change", GOTO="dm_end"
-
-# Decode udev control flags and set environment variables appropriately.
-# These flags are encoded in DM_COOKIE variable that was introduced in
-# kernel version 2.6.31. Therefore, we can use this feature with
-# kernels >= 2.6.31 only. Cookie is not decoded for remove event.
-ENV{DM_COOKIE}=="?*", IMPORT{program}="(DM_EXEC)/dmsetup udevflags $env{DM_COOKIE}"
 
 # Rule out easy-to-detect inappropriate events first.
 ENV{DISK_RO}=="1", GOTO="dm_disable"
@@ -68,7 +67,7 @@ IMPORT{db}="DM_UDEV_LOW_PRIORITY_FLAG"
 IMPORT{db}="DM_UDEV_DISABLE_LIBRARY_FALLBACK_FLAG"
 IMPORT{db}="DM_UDEV_PRIMARY_SOURCE_FLAG"
 IMPORT{db}="DM_UDEV_FLAG7"
-IMPORT{db}="DM_UDEV_RULES_VSN"
+IMPORT{db}="DM_UDEV_RULES"
 LABEL="dm_flags_done"
 
 # Normally, we operate on "change" events. But when coldplugging, there's an
@@ -84,7 +83,7 @@ LABEL="dm_flags_done"
 # script to not remove the existing udev database so we can reuse the information
 # stored at the time of device activation in the initrd.
 ACTION!="add", GOTO="dm_no_coldplug"
-ENV{DM_UDEV_RULES_VSN}!="1", ENV{DM_UDEV_PRIMARY_SOURCE_FLAG}!="1", GOTO="dm_disable"
+ENV{DM_UDEV_PRIMARY_SOURCE_FLAG}!="1", GOTO="dm_disable"
 ENV{DM_ACTIVATION}="1"
 LABEL="dm_no_coldplug"
 
@@ -124,13 +123,8 @@ ENV{DM_SUSPENDED}=="Suspended", ENV{DM_SUSPENDED}="1"
 # This variable provides a reliable way to check that device-mapper
 # rules were installed. It means that all needed variables are set
 # by these rules directly so there's no need to acquire them again
-# later. Other rules can alternate the functionality based on this
-# fact (e.g. fallback to rules that behave correctly even without
-# these rules installed). It also provides versioning for any
-# possible future changes.
-# VSN 1 - original rules
-# VSN 2 - add support for synthesized events
-ENV{DM_UDEV_RULES_VSN}="2"
+# later.
+ENV{DM_UDEV_RULES}="1"
 
 ENV{DM_UDEV_DISABLE_DM_RULES_FLAG}!="1", ENV{DM_NAME}=="?*", SYMLINK+="(DM_DIR)/$env{DM_NAME}"
 
