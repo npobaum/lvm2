@@ -114,6 +114,8 @@ struct arg_value_group_list {
 #define NO_LVMETAD_AUTOSCAN      0x00000200
 /* Command should process unused duplicate devices. */
 #define ENABLE_DUPLICATE_DEVS    0x00000400
+/* Command does not accept tags as args. */
+#define DISALLOW_TAG_ARGS        0x00000800
  
 /* a register of the lvm commands */
 struct command {
@@ -133,6 +135,7 @@ void usage(const char *name);
 /* the argument verify/normalise functions */
 int yes_no_arg(struct cmd_context *cmd, struct arg_values *av);
 int activation_arg(struct cmd_context *cmd, struct arg_values *av);
+int cachemode_arg(struct cmd_context *cmd, struct arg_values *av);
 int discards_arg(struct cmd_context *cmd, struct arg_values *av);
 int mirrorlog_arg(struct cmd_context *cmd, struct arg_values *av);
 int size_kb_arg(struct cmd_context *cmd, struct arg_values *av);

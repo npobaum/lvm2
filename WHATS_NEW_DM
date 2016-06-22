@@ -1,3 +1,15 @@
+Version 1.02.127 - 11th June 2016
+=================================
+ Fix blkdeactivate regression causing skipping of dm + md devices. (1.02.126)
+
+Version 1.02.126 - 3rd June 2016
+================================
+  Report passthrough caching mode when parsing cache mode.
+
+Version 1.02.125 - 14th May 2016
+================================
+  Show library version in message even if dm driver version is unavailable.
+
 Version 1.02.124 - 30th April 2016
 ==================================
   Add dm_udev_wait_immediate to libdevmapper for waiting outside the library.
@@ -93,7 +105,7 @@ Version 1.02.110 - 30th October 2015
   Correct use of max_write_behind parameter when generating raid target line.
   Fix dm-event systemd service to make sure it is executed before mounting.
 
-Version 1.02.109 - 22nd September 2016
+Version 1.02.109 - 22nd September 2015
 ======================================
   Update man pages for dmsetup and dmstats.
   Improve help text for dmsetup.

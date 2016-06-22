@@ -114,6 +114,7 @@ enum {
 	LV_TYPE_DATA,
 	LV_TYPE_SPARE,
 	LV_TYPE_VIRTUAL,
+	LV_TYPE_RAID0,
 	LV_TYPE_RAID1,
 	LV_TYPE_RAID10,
 	LV_TYPE_RAID4,
@@ -162,6 +163,7 @@ static const char *_lv_type_names[] = {
 	[LV_TYPE_DATA] =				"data",
 	[LV_TYPE_SPARE] =				"spare",
 	[LV_TYPE_VIRTUAL] =				"virtual",
+	[LV_TYPE_RAID0] =				SEG_TYPE_NAME_RAID0,
 	[LV_TYPE_RAID1] =				SEG_TYPE_NAME_RAID1,
 	[LV_TYPE_RAID10] =				SEG_TYPE_NAME_RAID10,
 	[LV_TYPE_RAID4] =				SEG_TYPE_NAME_RAID4,
@@ -256,7 +258,10 @@ static int _lv_layout_and_role_raid(struct dm_pool *mem,
 
 	segtype = first_seg(lv)->segtype;
 
-	if (segtype_is_raid1(segtype)) {
+	if (segtype_is_raid0(segtype)) {
+		if (!str_list_add_no_dup_check(mem, layout, _lv_type_names[LV_TYPE_RAID0]))
+			goto_bad;
+	} else if (segtype_is_raid1(segtype)) {
 		if (!str_list_add_no_dup_check(mem, layout, _lv_type_names[LV_TYPE_RAID1]))
 			goto_bad;
 	} else if (segtype_is_raid10(segtype)) {
@@ -860,14 +865,14 @@ dm_percent_t copy_percent(const struct logical_volume *lv)
 		denominator += seg->area_len;
 
 		/* FIXME Generalise name of 'extents_copied' field */
-		if ((seg_is_raid(seg) || seg_is_mirrored(seg)) &&
+		if (((seg_is_raid(seg) && !seg_is_any_raid0(seg)) || seg_is_mirrored(seg)) &&
 		    (seg->area_count > 1))
 			numerator += seg->extents_copied;
 		else
 			numerator += seg->area_len;
 	}
 
-	return denominator ? dm_make_percent(numerator, denominator) : 100.0;
+	return denominator ? dm_make_percent(numerator, denominator) : DM_PERCENT_100;
 }
 
 /* Round up extents to next stripe boundary for number of stripes */
@@ -1014,7 +1019,7 @@ static int _release_and_discard_lv_segment_area(struct lv_segment *seg, uint32_t
 		}
 
 		/* Remove metadata area if image has been removed */
-		if (area_reduction == seg->area_len) {
+		if (seg->meta_areas && seg_metalv(seg, s) && (area_reduction == seg->area_len)) {
 			if (!lv_reduce(seg_metalv(seg, s),
 				       seg_metalv(seg, s)->le_count)) {
 				log_error("Failed to remove RAID meta-device %s",
@@ -1368,8 +1373,11 @@ int replace_lv_with_error_segment(struct logical_volume *lv)
 	return 1;
 }
 
-int lv_refresh_suspend_resume(struct cmd_context *cmd, struct logical_volume *lv)
+int lv_refresh_suspend_resume(const struct logical_volume *lv)
 {
+	struct cmd_context *cmd = lv->vg->cmd;
+	int r = 1;
+
 	if (!cmd->partial_activation && lv_is_partial(lv)) {
 		log_error("Refusing refresh of partial LV %s."
 			  " Use '--activationmode partial' to override.",
@@ -1379,15 +1387,15 @@ int lv_refresh_suspend_resume(struct cmd_context *cmd, struct logical_volume *lv
 
 	if (!suspend_lv(cmd, lv)) {
 		log_error("Failed to suspend %s.", display_lvname(lv));
-		return 0;
+		r = 0;
 	}
 
 	if (!resume_lv(cmd, lv)) {
 		log_error("Failed to reactivate %s.", display_lvname(lv));
-		return 0;
+		r = 0;
 	}
 
-	return 1;
+	return r;
 }
 
 /*
@@ -3751,7 +3759,7 @@ static int _lv_insert_empty_sublvs(struct logical_volume *lv,
 			return_0;
 
 		/* Metadata LVs for raid */
-		if (segtype_is_raid(segtype)) {
+		if (segtype_is_raid(segtype) && !segtype_is_raid0(segtype)) {
 			if (dm_snprintf(img_name, sizeof(img_name), "%s_rmeta_%u",
 					lv->name, i) < 0)
 				goto_bad;
@@ -3787,6 +3795,7 @@ static int _lv_extend_layered_lv(struct alloc_handle *ah,
 	struct lv_segment *seg = first_seg(lv);
 	uint32_t fa, s;
 	int clear_metadata = 0;
+	uint32_t area_multiple = 1;
 
 	if (!(segtype = get_segtype_from_string(lv->vg->cmd, SEG_TYPE_NAME_STRIPED)))
 		return_0;
@@ -3799,11 +3808,13 @@ static int _lv_extend_layered_lv(struct alloc_handle *ah,
 	if (seg_is_raid(seg)) {
 		stripes = 1;
 		stripe_size = 0;
+		if (seg_is_raid0(seg))
+			area_multiple = seg->area_count;
 	}
 
 	for (fa = first_area, s = 0; s < seg->area_count; s++) {
 		if (is_temporary_mirror_layer(seg_lv(seg, s))) {
-			if (!_lv_extend_layered_lv(ah, seg_lv(seg, s), extents,
+			if (!_lv_extend_layered_lv(ah, seg_lv(seg, s), extents / area_multiple,
 						   fa, stripes, stripe_size))
 				return_0;
 			fa += lv_mirror_count(seg_lv(seg, s));
@@ -3819,7 +3830,7 @@ static int _lv_extend_layered_lv(struct alloc_handle *ah,
 		}
 
 		/* Extend metadata LVs only on initial creation */
-		if (seg_is_raid(seg) && !lv->le_count) {
+		if (seg_is_raid_with_meta(seg) && !lv->le_count) {
 			if (!seg->meta_areas) {
 				log_error("No meta_areas for RAID type");
 				return 0;
@@ -3854,6 +3865,7 @@ static int _lv_extend_layered_lv(struct alloc_handle *ah,
 		/*
 		 * We must clear the metadata areas upon creation.
 		 */
+		/* FIXME VG is not in a fully-consistent state here and should not be committed! */
 		if (!vg_write(lv->vg) || !vg_commit(lv->vg))
 			return_0;
 
@@ -3898,7 +3910,7 @@ static int _lv_extend_layered_lv(struct alloc_handle *ah,
 		}
 	}
 
-	seg->area_len += extents;
+	seg->area_len += extents / area_multiple;
 	seg->len += extents;
 
 	if (!_setup_lv_size(lv, lv->le_count + extents))
@@ -3953,7 +3965,7 @@ int lv_extend(struct logical_volume *lv,
 		 */
 		/* FIXME Support striped metadata pool */
 		log_count = 1;
-	} else if (segtype_is_raid(segtype) && !lv->le_count)
+	} else if (segtype_is_raid(segtype) && !segtype_is_raid0(segtype) && !lv->le_count)
 		log_count = mirrors * stripes;
 	/* FIXME log_count should be 1 for mirrors */
 
@@ -3963,7 +3975,7 @@ int lv_extend(struct logical_volume *lv,
 		return_0;
 
 	new_extents = ah->new_extents;
-	if (segtype_is_raid(segtype))
+	if (segtype_is_raid(segtype) && !segtype_is_raid0(segtype))
 		new_extents -= ah->log_len * ah->area_multiple;
 
 	if (segtype_is_pool(segtype)) {
@@ -4182,12 +4194,12 @@ static int _for_each_sub_lv(struct logical_volume *lv, int skip_pools,
 				return_0;
 		}
 
-		if (!seg_is_raid(seg))
+		if (!seg_is_raid_with_meta(seg))
 			continue;
 
 		/* RAID has meta_areas */
 		for (s = 0; s < seg->area_count; s++) {
-			if (seg_metatype(seg, s) != AREA_LV)
+			if ((seg_metatype(seg, s) != AREA_LV) || !seg_metalv(seg, s))
 				continue;
 			if (!fn(seg_metalv(seg, s), data))
 				return_0;
@@ -5398,7 +5410,7 @@ int lv_resize(struct cmd_context *cmd, struct logical_volume *lv,
 	return 1;
 bad:
 	if (inactive && !deactivate_lv(cmd, lock_lv))
-		log_error("Problem deactivating %s.", lock_lv->name);
+		log_error("Problem deactivating %s.", display_lvname(lock_lv));
 
 	return 0;
 }
@@ -5759,39 +5771,39 @@ int lv_remove_single(struct cmd_context *cmd, struct logical_volume *lv,
 		return_0;
 
 	if (lv_is_origin(lv)) {
-		log_error("Can't remove logical volume \"%s\" under snapshot",
-			  lv->name);
+		log_error("Can't remove logical volume %s under snapshot.",
+			  display_lvname(lv));
 		return 0;
 	}
 
 	if (lv_is_external_origin(lv)) {
-		log_error("Can't remove external origin logical volume \"%s\".",
-			  lv->name);
+		log_error("Can't remove external origin logical volume %s.",
+			  display_lvname(lv));
 		return 0;
 	}
 
 	if (lv_is_mirror_image(lv)) {
-		log_error("Can't remove logical volume %s used by a mirror",
-			  lv->name);
+		log_error("Can't remove logical volume %s used by a mirror.",
+			  display_lvname(lv));
 		return 0;
 	}
 
 	if (lv_is_mirror_log(lv)) {
-		log_error("Can't remove logical volume %s used as mirror log",
-			  lv->name);
+		log_error("Can't remove logical volume %s used as mirror log.",
+			  display_lvname(lv));
 		return 0;
 	}
 
 	if (lv_is_raid_metadata(lv) || lv_is_raid_image(lv)) {
-		log_error("Can't remove logical volume %s used as RAID device",
-			  lv->name);
+		log_error("Can't remove logical volume %s used as RAID device.",
+			  display_lvname(lv));
 		return 0;
 	}
 
 	if (lv_is_thin_pool_data(lv) || lv_is_thin_pool_metadata(lv) ||
 	    lv_is_cache_pool_data(lv) || lv_is_cache_pool_metadata(lv)) {
 		log_error("Can't remove logical volume %s used by a pool.",
-			  lv->name);
+			  display_lvname(lv));
 		return 0;
 	} else if (lv_is_thin_volume(lv)) {
 		if (!(pool_lv = first_seg(lv)->pool_lv)) {
@@ -5803,7 +5815,7 @@ int lv_remove_single(struct cmd_context *cmd, struct logical_volume *lv,
 	}
 
 	if (lv_is_locked(lv)) {
-		log_error("Can't remove locked LV %s", lv->name);
+		log_error("Can't remove locked logical volume %s.", display_lvname(lv));
 		return 0;
 	}
 
@@ -5826,8 +5838,8 @@ int lv_remove_single(struct cmd_context *cmd, struct logical_volume *lv,
 					  "%slogical volume %s? [y/n]: ",
 					  ask_discard ? " and DISCARD" : "",
 					  vg_is_clustered(vg) ? "clustered " : "",
-					  lv->name) == 'n') {
-				log_error("Logical volume %s not removed", lv->name);
+					  display_lvname(lv)) == 'n') {
+				log_error("Logical volume %s not removed.", display_lvname(lv));
 				return 0;
 			} else {
 				ask_discard = 0;
@@ -5838,8 +5850,8 @@ int lv_remove_single(struct cmd_context *cmd, struct logical_volume *lv,
 	if (!lv_is_historical(lv) && (force == PROMPT) && ask_discard &&
 	    yes_no_prompt("Do you really want to remove and DISCARD "
 			  "logical volume %s? [y/n]: ",
-			  lv->name) == 'n') {
-		log_error("Logical volume %s not removed", lv->name);
+			  display_lvname(lv)) == 'n') {
+		log_error("Logical volume %s not removed.", display_lvname(lv));
 		return 0;
 	}
 
@@ -5895,7 +5907,7 @@ int lv_remove_single(struct cmd_context *cmd, struct logical_volume *lv,
 		if (!(lv->vg->fid->fmt->features & FMT_MDAS))
 			format1_origin = origin_from_cow(lv);
 
-		log_verbose("Removing snapshot %s", lv->name);
+		log_verbose("Removing snapshot volume %s.", display_lvname(lv));
 		/* vg_remove_snapshot() will preload origin/former snapshots */
 		if (!vg_remove_snapshot(lv))
 			return_0;
@@ -7078,7 +7090,7 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 	if (!activation()) {
 		if (seg_is_cache(lp) ||
 		    seg_is_mirror(lp) ||
-		    seg_is_raid(lp) ||
+		    (seg_is_raid(lp) && !seg_is_raid0(lp)) ||
 		    seg_is_thin(lp) ||
 		    lp->snapshot) {
 			/*
@@ -7256,7 +7268,7 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 		/* FIXME Eventually support raid/mirrors with -m */
 		if (!(create_segtype = get_segtype_from_string(vg->cmd, SEG_TYPE_NAME_STRIPED)))
 			return_0;
-	} else if (seg_is_mirrored(lp) || seg_is_raid(lp)) {
+	} else if (seg_is_mirrored(lp) || (seg_is_raid(lp) && !seg_is_any_raid0(lp))) {
 		if (is_change_activating(lp->activate) && (lp->activate != CHANGE_AEY) &&
 		    vg_is_clustered(vg) && seg_is_mirrored(lp) && !seg_is_raid(lp) &&
 		    !cluster_mirror_is_available(vg->cmd)) {
@@ -7389,7 +7401,6 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 	if (!archive(vg))
 		return_NULL;
 
-
 	if (pool_lv && segtype_is_thin_volume(create_segtype)) {
 		/* Ensure all stacked messages are submitted */
 		if ((pool_is_active(pool_lv) || is_change_activating(lp->activate)) &&
@@ -7444,7 +7455,7 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 			stack;
 			goto revert_new_lv;
 		}
-	} else if (lv_is_raid(lv)) {
+	} else if (lv_is_raid(lv) && !seg_is_any_raid0(first_seg(lv))) {
 		first_seg(lv)->min_recovery_rate = lp->min_recovery_rate;
 		first_seg(lv)->max_recovery_rate = lp->max_recovery_rate;
 	} else if (lv_is_thin_pool(lv)) {

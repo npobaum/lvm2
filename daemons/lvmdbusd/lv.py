@@ -24,6 +24,39 @@ from . import background
 from .utils import round_size
 
 
+# Try and build a key for a LV, so that we sort the LVs with least dependencies
+# first.  This may be error prone because of the flexibility LVM
+# provides and what you can stack.
+def get_key(i):
+
+	name = i['lv_name']
+	parent = i['lv_parent']
+	pool = i['pool_lv']
+	a1 = ""
+	a2 = ""
+
+	if name[0] == '[':
+		a1 = '#'
+
+	# We have a parent
+	if parent:
+		# Check if parent is hidden
+		if parent[0] == '[':
+			a2 = '##'
+		else:
+			a2 = '#'
+
+	# If a LV has a pool, then it should be sorted/loaded after the pool
+	# lv, unless it's a hidden too, then after other hidden, but before visible
+	if pool:
+		if pool[0] != '[':
+			a2 += '~'
+		else:
+			a1 = '$' + a1
+
+	return "%s%s%s" % (a1, a2, name)
+
+
 # noinspection PyUnusedLocal
 def lvs_state_retrieve(selection, cache_refresh=True):
 	rc = []
@@ -31,7 +64,13 @@ def lvs_state_retrieve(selection, cache_refresh=True):
 	if cache_refresh:
 		cfg.db.refresh()
 
-	for l in cfg.db.fetch_lvs(selection):
+	# When building up the model, it's best to process LVs with the least
+	# dependencies to those that are dependant upon other LVs.  Otherwise, when
+	# we are trying to gather information we could be in a position where we
+	# don't have information available yet.
+	lvs = sorted(cfg.db.fetch_lvs(selection), key=get_key)
+
+	for l in lvs:
 		rc.append(LvState(
 			l['lv_uuid'], l['lv_name'],
 			l['lv_path'], n(l['lv_size']),
@@ -61,7 +100,7 @@ class LvState(State):
 		rc = []
 		for pv in sorted(cfg.db.lv_contained_pv(uuid)):
 			(pv_uuid, pv_name, pv_segs) = pv
-			pv_obj = cfg.om.get_object_path_by_lvm_id(
+			pv_obj = cfg.om.get_object_path_by_uuid_lvm_id(
 				pv_uuid, pv_name, gen_new=False)
 			rc.append((pv_obj, pv_segs))
 
@@ -84,7 +123,7 @@ class LvState(State):
 
 		for l in cfg.db.hidden_lvs(self.Uuid):
 			full_name = "%s/%s" % (vg_name, l[1])
-			op = cfg.om.get_object_path_by_lvm_id(
+			op = cfg.om.get_object_path_by_uuid_lvm_id(
 				l[0], full_name, gen_new=False)
 			assert op
 			rc.append(op)
@@ -104,7 +143,7 @@ class LvState(State):
 		else:
 			self._segs.extend(set(segtypes))
 
-		self.Vg = cfg.om.get_object_path_by_lvm_id(
+		self.Vg = cfg.om.get_object_path_by_uuid_lvm_id(
 			vg_uuid, vg_name, vg_obj_path_generate)
 
 		self.Devices = LvState._pv_devices(self.Uuid)
@@ -112,7 +151,7 @@ class LvState(State):
 		if PoolLv:
 			gen = utils.lv_object_path_method(Name, (Attr, layout, role))
 
-			self.PoolLv = cfg.om.get_object_path_by_lvm_id(
+			self.PoolLv = cfg.om.get_object_path_by_uuid_lvm_id(
 				pool_lv_uuid, '%s/%s' % (vg_name, PoolLv),
 				gen)
 		else:
@@ -120,7 +159,7 @@ class LvState(State):
 
 		if OriginLv:
 			self.OriginLv = \
-				cfg.om.get_object_path_by_lvm_id(
+				cfg.om.get_object_path_by_uuid_lvm_id(
 					origin_uuid, '%s/%s' % (vg_name, OriginLv),
 					vg_obj_path_generate)
 		else:
@@ -137,8 +176,6 @@ class LvState(State):
 			self.Name, (self.Attr, self.layout, self.role))
 
 	def _object_type_create(self):
-		if self.Name[0] == '[':
-			return LvCommon
 		if self.Attr[0] == 't':
 			return LvThinPool
 		elif self.Attr[0] == 'C':
@@ -146,6 +183,8 @@ class LvState(State):
 				return LvCachePool
 			else:
 				return LvCacheLv
+		elif self.Name[0] == '[':
+			return LvCommon
 		elif self.OriginLv != '/':
 			return LvSnapShot
 		else:
@@ -153,7 +192,7 @@ class LvState(State):
 
 	def create_dbus_object(self, path):
 		if not path:
-			path = cfg.om.get_object_path_by_lvm_id(
+			path = cfg.om.get_object_path_by_uuid_lvm_id(
 				self.Uuid, self.lvm_id, self._object_path_create())
 
 		obj_ctor = self._object_type_create()
@@ -179,6 +218,7 @@ class LvState(State):
 @utils.dbus_property(LV_COMMON_INTERFACE, 'HiddenLvs', "ao")
 class LvCommon(AutomatedProperties):
 	_Tags_meta = ("as", LV_COMMON_INTERFACE)
+	_Roles_meta = ("as", LV_COMMON_INTERFACE)
 	_IsThinVolume_meta = ("b", LV_COMMON_INTERFACE)
 	_IsThinPool_meta = ("b", LV_COMMON_INTERFACE)
 	_Active_meta = ("b", LV_COMMON_INTERFACE)
@@ -281,6 +321,10 @@ class LvCommon(AutomatedProperties):
 		return utils.parse_tags(self.state.Tags)
 
 	@property
+	def Roles(self):
+		return utils.parse_tags(self.state.role)
+
+	@property
 	def lvm_id(self):
 		return self.state.lvm_id
 
@@ -306,6 +350,18 @@ class LvCommon(AutomatedProperties):
 
 # noinspection PyPep8Naming
 class Lv(LvCommon):
+	def _fetch_hidden(self, name):
+
+		# The name is vg/name
+		full_name = "%s/%s" % (self.vg_name_lookup(), name)
+		return cfg.om.get_object_path_by_lvm_id(full_name)
+
+	def _get_data_meta(self):
+
+		# Get the data
+		return (self._fetch_hidden(self.state.data_lv),
+				self._fetch_hidden(self.state.metadata_lv))
+
 	# noinspection PyUnusedLocal,PyPep8Naming
 	def __init__(self, object_path, object_state):
 		super(Lv, self).__init__(object_path, object_state)
@@ -629,23 +685,6 @@ class LvThinPool(Lv):
 	_DataLv_meta = ("o", THIN_POOL_INTERFACE)
 	_MetaDataLv_meta = ("o", THIN_POOL_INTERFACE)
 
-	def _fetch_hidden(self, name):
-
-		# The name is vg/name
-		full_name = "%s/%s" % (self.vg_name_lookup(), name)
-
-		o = cfg.om.get_object_by_lvm_id(full_name)
-		if o:
-			return o.dbus_object_path()
-
-		return '/'
-
-	def _get_data_meta(self):
-
-		# Get the data
-		return (self._fetch_hidden(self.state.data_lv),
-				self._fetch_hidden(self.state.metadata_lv))
-
 	def __init__(self, object_path, object_state):
 		super(LvThinPool, self).__init__(object_path, object_state)
 		self.set_interface(THIN_POOL_INTERFACE)
@@ -702,9 +741,21 @@ class LvThinPool(Lv):
 
 # noinspection PyPep8Naming
 class LvCachePool(Lv):
+	_DataLv_meta = ("o", CACHE_POOL_INTERFACE)
+	_MetaDataLv_meta = ("o", CACHE_POOL_INTERFACE)
+
 	def __init__(self, object_path, object_state):
 		super(LvCachePool, self).__init__(object_path, object_state)
 		self.set_interface(CACHE_POOL_INTERFACE)
+		self._data_lv, self._metadata_lv = self._get_data_meta()
+
+	@property
+	def DataLv(self):
+		return self._data_lv
+
+	@property
+	def MetaDataLv(self):
+		return self._metadata_lv
 
 	@staticmethod
 	def _cache_lv(lv_uuid, lv_name, lv_object_path, cache_options):
@@ -727,8 +778,7 @@ class LvCachePool(Lv):
 				cfg.om.remove_object(lv_to_cache, emit_signal=True)
 				cfg.load()
 
-				lv_converted = \
-					cfg.om.get_object_by_lvm_id(fcn).dbus_object_path()
+				lv_converted = cfg.om.get_object_path_by_lvm_id(fcn)
 
 			else:
 				raise dbus.exceptions.DBusException(
@@ -791,9 +841,7 @@ class LvCacheLv(Lv):
 				cfg.om.remove_object(dbo, emit_signal=True)
 				cfg.load()
 
-				uncached_lv_path = \
-					cfg.om.get_object_by_lvm_id(lv_name).dbus_object_path()
-
+				uncached_lv_path = cfg.om.get_object_path_by_lvm_id(lv_name)
 			else:
 				raise dbus.exceptions.DBusException(
 					LV_INTERFACE,

@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2016 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -223,18 +223,15 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 			}
 			if (seg_is_cache_pool(seg) &&
 			    !dm_list_empty(&seg->lv->segs_using_this_lv)) {
-				switch (seg->feature_flags &
-					(DM_CACHE_FEATURE_PASSTHROUGH |
-					 DM_CACHE_FEATURE_WRITETHROUGH |
-					 DM_CACHE_FEATURE_WRITEBACK)) {
-					 case DM_CACHE_FEATURE_PASSTHROUGH:
-					 case DM_CACHE_FEATURE_WRITETHROUGH:
-					 case DM_CACHE_FEATURE_WRITEBACK:
-						 break;
-					 default:
-						 log_error("LV %s has invalid cache's feature flag.",
-							   lv->name);
-						 inc_error_count;
+				switch (seg->cache_mode) {
+				case CACHE_MODE_WRITETHROUGH:
+				case CACHE_MODE_WRITEBACK:
+				case CACHE_MODE_PASSTHROUGH:
+					break;
+				default:
+					log_error("LV %s has invalid cache's feature flag.",
+						  lv->name);
+					inc_error_count;
 				}
 				if (!seg->policy_name) {
 					log_error("LV %s is missing cache policy name.", lv->name);
@@ -444,7 +441,7 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 				continue;
 			if (lv == seg_lv(seg, s))
 				seg_found++;
-			if (seg_is_raid(seg) && (lv == seg_metalv(seg, s)))
+			if (seg_is_raid_with_meta(seg) && (lv == seg_metalv(seg, s)))
 				seg_found++;
 		}
 		if (seg_is_replicator_dev(seg)) {
@@ -458,13 +455,14 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 				seg_found++;
 		}
 		if (seg_is_replicator(seg) && lv == seg->rlog_lv)
-				seg_found++;
+			seg_found++;
 		if (seg->log_lv == lv)
 			seg_found++;
 		if (seg->metadata_lv == lv || seg->pool_lv == lv)
 			seg_found++;
 		if (seg_is_thin_volume(seg) && (seg->origin == lv || seg->external_lv == lv))
 			seg_found++;
+
 		if (!seg_found) {
 			log_error("LV %s is used by LV %s:%" PRIu32 "-%" PRIu32
 				  ", but missing ptr from %s to %s",
@@ -483,10 +481,11 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 
 		seg_found = 0;
 		dm_list_iterate_items(seg2, &seg->lv->segments)
-			if (sl->seg == seg2) {
+			if (seg == seg2) {
 				seg_found++;
 				break;
 			}
+
 		if (!seg_found) {
 			log_error("LV segment %s:%" PRIu32 "-%" PRIu32
 				  " is incorrectly listed as being used by LV %s",

@@ -198,7 +198,8 @@ install_clvm: export DH_OPTIONS = -pclvm
 install_clvm: DIR = $(BUILD_DIR)/install_deb
 install_clvm: $(STAMPS_DIR)/install_deb
 	+$(MAKE_SELF) install-base-prep INSTALL_DIR='$(DIR)'
-	dh_installinit --no-start
+	dh_systemd_enable --no-enable lvm2-cluster-activation.service
+	dh_systemd_start --no-start --no-restart-after-upgrade lvm2-cluster-activation.service
 	+$(MAKE_SELF) install-base
 
 install_dmeventd: export DH_OPTIONS = -pdmeventd

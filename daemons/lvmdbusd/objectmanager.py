@@ -124,8 +124,8 @@ class ObjectManager(AutomatedProperties):
 		with self.rlock:
 			path, props = dbus_object.emit_data()
 
-			# print 'Registering object path %s for %s' %
-			# (path, dbus_object.lvm_id)
+			# print('Registering object path %s for %s' %
+			#		(path, dbus_object.lvm_id))
 
 			# We want fast access to the object by a number of different ways
 			# so we use multiple hashs with different keys
@@ -173,7 +173,7 @@ class ObjectManager(AutomatedProperties):
 	def get_object_by_uuid_lvm_id(self, uuid, lvm_id):
 		with self.rlock:
 			return self.get_object_by_path(
-				self.get_object_path_by_lvm_id(uuid, lvm_id, None, False))
+				self.get_object_path_by_uuid_lvm_id(uuid, lvm_id, None, False))
 
 	def get_object_by_lvm_id(self, lvm_id):
 		"""
@@ -184,6 +184,17 @@ class ObjectManager(AutomatedProperties):
 			if lvm_id in self._id_to_object_path:
 				return self.get_object_by_path(self._id_to_object_path[lvm_id])
 			return None
+
+	def get_object_path_by_lvm_id(self, lvm_id):
+		"""
+		Given an lvm identifier, return the object path for it
+		:param lvm_id: The lvm identifier
+		:return: Object path or '/' if not found
+		"""
+		with self.rlock:
+			if lvm_id in self._id_to_object_path:
+				return self._id_to_object_path[lvm_id]
+			return '/'
 
 	def _uuid_verify(self, path, uuid, lvm_id):
 		"""
@@ -212,8 +223,8 @@ class ObjectManager(AutomatedProperties):
 		self._uuid_verify(path, uuid, lvm_identifier)
 		return path
 
-	def get_object_path_by_lvm_id(self, uuid, lvm_id, path_create=None,
-								gen_new=True):
+	def get_object_path_by_uuid_lvm_id(self, uuid, lvm_id, path_create=None,
+									   gen_new=True):
 		"""
 		For a given lvm asset return the dbus object registered to it.  If the
 		object is not found and gen_new == True and path_create is a valid

@@ -1,4 +1,4 @@
-From ed1fe049ae900fa9b062c1483cc16a91465162db Mon Sep 17 00:00:00 2001
+From f6cbdfb2d98bd39f70d763ed39e338cfe39b6e9b Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 11 Aug 2015 22:06:54 +0200
 Subject: Don't run pvscan in background
