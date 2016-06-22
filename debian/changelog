@@ -1,3 +1,13 @@
+lvm2 (2.02.156-1) unstable; urgency=medium
+
+  * New upstream version.
+  * Build-depend on systemd for pkg-config info.
+  * Only support systemd in cluster package. (closes: #796625)
+  * Update dependencies and description of cluster package.
+  * Disable cluster while removing cluster package.
+
+ -- Bastian Blank <waldi@debian.org>  Wed, 22 Jun 2016 16:18:48 +0200
+
 lvm2 (2.02.153-1) unstable; urgency=medium
 
   * New upstream version.

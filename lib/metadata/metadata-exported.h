@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2014 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2016 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -230,6 +230,7 @@
 
 #define lv_is_cache(lv)		(((lv)->status & CACHE) ? 1 : 0)
 #define lv_is_cache_pool(lv)	(((lv)->status & CACHE_POOL) ? 1 : 0)
+#define lv_is_used_cache_pool(lv)	(lv_is_cache_pool(lv) && !dm_list_empty(&(lv)->segs_using_this_lv))
 #define lv_is_cache_pool_data(lv)	(((lv)->status & CACHE_POOL_DATA) ? 1 : 0)
 #define lv_is_cache_pool_metadata(lv)	(((lv)->status & CACHE_POOL_METADATA) ? 1 : 0)
 #define lv_is_cache_type(lv)	(((lv)->status & (CACHE | CACHE_POOL | CACHE_POOL_DATA | CACHE_POOL_METADATA)) ? 1 : 0)
@@ -272,6 +273,13 @@ typedef enum {
 	THIN_DISCARDS_NO_PASSDOWN,
 	THIN_DISCARDS_PASSDOWN,
 } thin_discards_t;
+
+typedef enum {
+	CACHE_MODE_UNDEFINED = 0,
+	CACHE_MODE_WRITETHROUGH,
+	CACHE_MODE_WRITEBACK,
+	CACHE_MODE_PASSTHROUGH,
+} cache_mode_t;
 
 typedef enum {
 	LOCK_TYPE_INVALID = -1,
@@ -472,7 +480,7 @@ struct lv_segment {
 	struct logical_volume *pool_lv;		/* For thin, cache */
 	uint32_t device_id;			/* For thin, 24bit */
 
-	uint64_t feature_flags;			/* For cache_pool */
+	cache_mode_t cache_mode;		/* For cache_pool */
 	const char *policy_name;		/* For cache_pool */
 	struct dm_config_node *policy_settings;	/* For cache_pool */
 	unsigned cleaner_policy;		/* For cache */
@@ -793,7 +801,7 @@ int lv_empty(struct logical_volume *lv);
 /* Empty an LV and add error segment */
 int replace_lv_with_error_segment(struct logical_volume *lv);
 
-int lv_refresh_suspend_resume(struct cmd_context *cmd, struct logical_volume *lv);
+int lv_refresh_suspend_resume(const struct logical_volume *lv);
 
 /* Entry point for all LV extent allocations */
 int lv_extend(struct logical_volume *lv,
@@ -948,7 +956,7 @@ struct lvcreate_params {
 	uint32_t min_recovery_rate; /* RAID */
 	uint32_t max_recovery_rate; /* RAID */
 
-	const char *cache_mode; /* cache */
+	cache_mode_t cache_mode; /* cache */
 	const char *policy_name; /* cache */
 	struct dm_config_tree *policy_settings; /* cache */
 
@@ -1211,13 +1219,14 @@ struct lv_status_cache {
 	dm_percent_t dirty_usage;
 };
 
+const char *display_cache_mode(const struct lv_segment *seg);
 const char *get_cache_mode_name(const struct lv_segment *cache_seg);
-int cache_mode_is_set(const struct lv_segment *seg);
-int cache_set_mode(struct lv_segment *cache_seg, const char *str);
+int set_cache_mode(cache_mode_t *mode, const char *cache_mode);
+int cache_set_cache_mode(struct lv_segment *cache_seg, cache_mode_t mode);
 int cache_set_policy(struct lv_segment *cache_seg, const char *name,
 		     const struct dm_config_tree *settings);
 int cache_set_params(struct lv_segment *seg,
-		     const char *cache_mode,
+		     cache_mode_t mode,
 		     const char *policy_name,
 		     const struct dm_config_tree *policy_settings,
 		     uint32_t chunk_size);

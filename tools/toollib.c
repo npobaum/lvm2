@@ -1099,7 +1099,7 @@ int lv_refresh(struct cmd_context *cmd, struct logical_volume *lv)
 						display_lvname(lv), display_lvname(snapshot_lv));
 	}
 
-	if (!lv_refresh_suspend_resume(cmd, lv))
+	if (!lv_refresh_suspend_resume(lv))
 		return_0;
 
 	/*
@@ -1334,7 +1334,7 @@ static int _validate_cachepool_params(const char *name,
 }
 
 int get_cache_params(struct cmd_context *cmd,
-		     const char **mode,
+		     cache_mode_t *cache_mode,
 		     const char **name,
 		     struct dm_config_tree **settings)
 {
@@ -1344,8 +1344,8 @@ int get_cache_params(struct cmd_context *cmd,
 	struct dm_config_node *cn;
 	int ok = 0;
 
-	if (mode)
-		*mode = arg_str_value(cmd, cachemode_ARG, NULL);
+	if (cache_mode)
+		*cache_mode = (cache_mode_t) arg_uint_value(cmd, cachemode_ARG, CACHE_MODE_UNDEFINED);
 
 	if (name)
 		*name = arg_str_value(cmd, cachepolicy_ARG, NULL);
@@ -1645,6 +1645,7 @@ int validate_restricted_lvname_param(struct cmd_context *cmd, const char **vg_na
 static int _get_arg_vgnames(struct cmd_context *cmd,
 			    int argc, char **argv,
 			    const char *one_vgname,
+			    struct dm_list *use_vgnames,
 			    struct dm_list *arg_vgnames,
 			    struct dm_list *arg_tags)
 {
@@ -1658,6 +1659,11 @@ static int _get_arg_vgnames(struct cmd_context *cmd,
 			log_error("strlist allocation failed.");
 			return ECMD_FAILED;
 		}
+		return ret_max;
+	}
+
+	if (use_vgnames && !dm_list_empty(use_vgnames)) {
+		dm_list_splice(arg_vgnames, use_vgnames);
 		return ret_max;
 	}
 
@@ -1758,72 +1764,59 @@ void destroy_processing_handle(struct cmd_context *cmd, struct processing_handle
 
 
 int select_match_vg(struct cmd_context *cmd, struct processing_handle *handle,
-		    struct volume_group *vg, int *selected)
+		    struct volume_group *vg)
 {
-	struct selection_handle *sh = handle->selection_handle;
+	int r;
 
-	if (!handle->internal_report_for_select) {
-		*selected = 1;
+	if (!handle->internal_report_for_select)
 		return 1;
-	}
 
-	sh->orig_report_type = VGS;
-
-	if (!report_for_selection(cmd, sh, NULL, vg, NULL)) {
+	handle->selection_handle->orig_report_type = VGS;
+	if (!(r = report_for_selection(cmd, handle, NULL, vg, NULL)))
 		log_error("Selection failed for VG %s.", vg->name);
-		return 0;
-	}
+	handle->selection_handle->orig_report_type = 0;
 
-	sh->orig_report_type = 0;
-	*selected = sh->selected;
-
-	return 1;
+	return r;
 }
 
 int select_match_lv(struct cmd_context *cmd, struct processing_handle *handle,
-		    struct volume_group *vg, struct logical_volume *lv, int *selected)
+		    struct volume_group *vg, struct logical_volume *lv)
 {
-	struct selection_handle *sh = handle->selection_handle;
+	int r;
 
-	if (!handle->internal_report_for_select) {
-		*selected = 1;
+	if (!handle->internal_report_for_select)
 		return 1;
-	}
 
-	sh->orig_report_type = LVS;
-
-	if (!report_for_selection(cmd, sh, NULL, vg, lv)) {
+	handle->selection_handle->orig_report_type = LVS;
+	if (!(r = report_for_selection(cmd, handle, NULL, vg, lv)))
 		log_error("Selection failed for LV %s.", lv->name);
-		return 0;
-	}
+	handle->selection_handle->orig_report_type = 0;
 
-	sh->orig_report_type = 0;
-	*selected = sh->selected;
-
-	return 1;
+	return r;
 }
 
 int select_match_pv(struct cmd_context *cmd, struct processing_handle *handle,
-		    struct volume_group *vg, struct physical_volume *pv, int *selected)
+		    struct volume_group *vg, struct physical_volume *pv)
 {
-	struct selection_handle *sh = handle->selection_handle;
+	int r;
 
-	if (!handle->internal_report_for_select) {
-		*selected = 1;
+	if (!handle->internal_report_for_select)
 		return 1;
-	}
 
-	sh->orig_report_type = PVS;
-
-	if (!report_for_selection(cmd, sh, pv, vg, NULL)) {
+	handle->selection_handle->orig_report_type = PVS;
+	if (!(r = report_for_selection(cmd, handle, pv, vg, NULL)))
 		log_error("Selection failed for PV %s.", dev_name(pv->dev));
-		return 0;
-	}
+	handle->selection_handle->orig_report_type = 0;
 
-	sh->orig_report_type = 0;
-	*selected = sh->selected;
+	return r;
+}
 
-	return 1;
+static int _select_matches(struct processing_handle *handle)
+{
+	if (!handle->internal_report_for_select)
+		return 1;
+
+	return handle->selection_handle->selected;
 }
 
 static int _process_vgnameid_list(struct cmd_context *cmd, uint32_t read_flags,
@@ -1839,7 +1832,6 @@ static int _process_vgnameid_list(struct cmd_context *cmd, uint32_t read_flags,
 	const char *vg_name;
 	const char *vg_uuid;
 	uint32_t lockd_state = 0;
-	int selected;
 	int whole_selected = 0;
 	int ret_max = ECMD_PROCESSED;
 	int ret;
@@ -1866,8 +1858,8 @@ static int _process_vgnameid_list(struct cmd_context *cmd, uint32_t read_flags,
 		skip = 0;
 		notfound = 0;
 
-		if (vg_uuid)
-			id_write_format((const struct id*)vg_uuid, uuid, sizeof(uuid));
+		if (vg_uuid && !id_write_format((const struct id*)vg_uuid, uuid, sizeof(uuid)))
+			stack;
 
 		log_very_verbose("Processing VG %s %s", vg_name, vg_uuid ? uuid : "");
 
@@ -1891,7 +1883,7 @@ static int _process_vgnameid_list(struct cmd_context *cmd, uint32_t read_flags,
 		if ((process_all ||
 		    (!dm_list_empty(arg_vgnames) && str_list_match_item(arg_vgnames, vg_name)) ||
 		    (!dm_list_empty(arg_tags) && str_list_match_list(arg_tags, &vg->tags, NULL))) &&
-		    select_match_vg(cmd, handle, vg, &selected) && selected) {
+		    select_match_vg(cmd, handle, vg) && _select_matches(handle)) {
 
 			log_very_verbose("Process single VG %s", vg_name);
 
@@ -1962,7 +1954,8 @@ static int _resolve_duplicate_vgnames(struct cmd_context *cmd,
 			 * name/vgid and checks system_id in the metadata.
 			 */
 			if (lvmcache_vg_is_foreign(cmd, vgnl->vg_name, vgnl->vgid)) {
-				id_write_format((const struct id*)vgnl->vgid, uuid, sizeof(uuid));
+				if (!id_write_format((const struct id*)vgnl->vgid, uuid, sizeof(uuid)))
+					stack;
 				log_warn("WARNING: Ignoring foreign VG with matching name %s UUID %s.",
 					 vgnl->vg_name, uuid);
 				dm_list_del(&vgnl->list);
@@ -1979,7 +1972,7 @@ static int _resolve_duplicate_vgnames(struct cmd_context *cmd,
 		 * is unknown.
 		 */
 		log_error("Multiple VGs found with the same name: skipping %s", sl->str);
-		log_error("Use the VG UUID with --select vg_uuid=<uuid>");
+		log_error("Use --select vg_uuid=<uuid> in place of the VG name.");
 		dm_list_del(&sl->list);
 		ret = ECMD_FAILED;
 	}
@@ -2073,11 +2066,14 @@ static void _choose_vgs_to_process(struct cmd_context *cmd,
 
 /*
  * Call process_single_vg() for each VG selected by the command line arguments.
- * If one_vgname is set, process only that VG and ignore argc/argv (which should be 0/NULL)..
+ * If one_vgname is set, process only that VG and ignore argc/argv (which should be 0/NULL).
  * If one_vgname is not set, get VG names to process from argc/argv.
  */
-int process_each_vg(struct cmd_context *cmd, int argc, char **argv,
-		    const char *one_vgname, uint32_t read_flags,
+int process_each_vg(struct cmd_context *cmd,
+		    int argc, char **argv,
+		    const char *one_vgname,
+		    struct dm_list *use_vgnames,
+		    uint32_t read_flags,
 		    struct processing_handle *handle,
 		    process_single_vg_fn_t process_single_vg)
 {
@@ -2104,7 +2100,7 @@ int process_each_vg(struct cmd_context *cmd, int argc, char **argv,
 	/*
 	 * Find any VGs or tags explicitly provided on the command line.
 	 */
-	if ((ret = _get_arg_vgnames(cmd, argc, argv, one_vgname, &arg_vgnames, &arg_tags)) != ECMD_PROCESSED) {
+	if ((ret = _get_arg_vgnames(cmd, argc, argv, one_vgname, use_vgnames, &arg_vgnames, &arg_tags)) != ECMD_PROCESSED) {
 		ret_max = ret;
 		goto_out;
 	}
@@ -2255,7 +2251,6 @@ int process_each_lv_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 {
 	int ret_max = ECMD_PROCESSED;
 	int ret = 0;
-	int selected;
 	int whole_selected = 0;
 	int handle_supplied = handle != NULL;
 	unsigned process_lv;
@@ -2360,7 +2355,7 @@ int process_each_lv_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 		if (!process_lv && tags_supplied && str_list_match_list(tags_in, &lvl->lv->tags, NULL))
 			process_lv = 1;
 
-		process_lv = process_lv && select_match_lv(cmd, handle, vg, lvl->lv, &selected) && selected;
+		process_lv = process_lv && select_match_lv(cmd, handle, vg, lvl->lv) && _select_matches(handle);
 
 		if (sigint_caught()) {
 			ret_max = ECMD_FAILED;
@@ -2423,7 +2418,7 @@ int process_each_lv_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 				process_lv = 1;
 			}
 
-			process_lv = process_lv && select_match_lv(cmd, handle, vg, lvl->lv, &selected) && selected;
+			process_lv = process_lv && select_match_lv(cmd, handle, vg, lvl->lv) && _select_matches(handle);
 
 			if (sigint_caught()) {
 				ret_max = ECMD_FAILED;
@@ -2480,6 +2475,7 @@ out:
  */
 static int _get_arg_lvnames(struct cmd_context *cmd,
 			    int argc, char **argv,
+			    const char *one_vgname, const char *one_lvname,
 			    struct dm_list *arg_vgnames,
 			    struct dm_list *arg_lvnames,
 			    struct dm_list *arg_tags)
@@ -2493,6 +2489,34 @@ static int _get_arg_lvnames(struct cmd_context *cmd,
 	const char *tmp_lv_name;
 	const char *vgname_def;
 	unsigned dev_dir_found;
+
+	if (one_vgname) {
+		if (!str_list_add(cmd->mem, arg_vgnames,
+				  dm_pool_strdup(cmd->mem, one_vgname))) {
+			log_error("strlist allocation failed.");
+			return ECMD_FAILED;
+		}
+
+		if (!one_lvname) {
+			if (!str_list_add(cmd->mem, arg_lvnames,
+					  dm_pool_strdup(cmd->mem, one_vgname))) {
+				log_error("strlist allocation failed.");
+				return ECMD_FAILED;
+			}
+		} else {
+			vglv_sz = strlen(one_vgname) + strlen(one_lvname) + 2;
+			if (!(vglv = dm_pool_alloc(cmd->mem, vglv_sz)) ||
+			    dm_snprintf(vglv, vglv_sz, "%s/%s", one_vgname, one_lvname) < 0) {
+				log_error("vg/lv string alloc failed.");
+				return ECMD_FAILED;
+			}
+			if (!str_list_add(cmd->mem, arg_lvnames, vglv)) {
+				log_error("strlist allocation failed.");
+				return ECMD_FAILED;
+			}
+		}
+		return ret_max;
+	}
 
 	for (; opt < argc; opt++) {
 		lv_name = argv[opt];
@@ -2636,8 +2660,8 @@ static int _process_lv_vgnameid_list(struct cmd_context *cmd, uint32_t read_flag
 			}
 		}
 
-		if (vg_uuid)
-			id_write_format((const struct id*)vg_uuid, uuid, sizeof(uuid));
+		if (vg_uuid && !id_write_format((const struct id*)vg_uuid, uuid, sizeof(uuid)))
+			stack;
 
 		log_very_verbose("Processing VG %s %s", vg_name, vg_uuid ? uuid : "");
 
@@ -2678,8 +2702,12 @@ endvg:
 /*
  * Call process_single_lv() for each LV selected by the command line arguments.
  */
-int process_each_lv(struct cmd_context *cmd, int argc, char **argv, uint32_t read_flags,
-		    struct processing_handle *handle, process_single_lv_fn_t process_single_lv)
+int process_each_lv(struct cmd_context *cmd,
+		    int argc, char **argv,
+		    const char *one_vgname, const char *one_lvname,
+		    uint32_t read_flags,
+		    struct processing_handle *handle,
+		    process_single_lv_fn_t process_single_lv)
 {
 	int handle_supplied = handle != NULL;
 	struct dm_list arg_tags;		/* str_list */
@@ -2704,7 +2732,7 @@ int process_each_lv(struct cmd_context *cmd, int argc, char **argv, uint32_t rea
 	/*
 	 * Find any LVs, VGs or tags explicitly provided on the command line.
 	 */
-	if ((ret = _get_arg_lvnames(cmd, argc, argv, &arg_vgnames, &arg_lvnames, &arg_tags) != ECMD_PROCESSED)) {
+	if ((ret = _get_arg_lvnames(cmd, argc, argv, one_vgname, one_lvname, &arg_vgnames, &arg_lvnames, &arg_tags) != ECMD_PROCESSED)) {
 		ret_max = ret;
 		goto_out;
 	}
@@ -3076,7 +3104,11 @@ static int _process_duplicate_pvs(struct cmd_context *cmd,
 
 		log_very_verbose("Processing duplicate device %s.", dev_name(devl->dev));
 
-		info = lvmcache_info_from_pvid(devl->dev->pvid, 0);
+		/*
+		 * Don't pass dev to lvmcache_info_from_pvid because we looking
+		 * for the chosen/preferred dev for this pvid.
+		 */
+		info = lvmcache_info_from_pvid(devl->dev->pvid, NULL, 0);
 		if (info)
 			vgname = lvmcache_vgname_from_info(info);
 		if (vgname)
@@ -3122,7 +3154,6 @@ static int _process_pvs_in_vg(struct cmd_context *cmd,
 	struct pv_list *pvl;
 	struct device_id_list *dil;
 	const char *pv_name;
-	int selected;
 	int process_pv;
 	int ret_max = ECMD_PROCESSED;
 	int ret = 0;
@@ -3161,7 +3192,7 @@ static int _process_pvs_in_vg(struct cmd_context *cmd,
 		    str_list_match_list(arg_tags, &pv->tags, NULL))
 			process_pv = 1;
 
-		process_pv = process_pv && select_match_pv(cmd, handle, vg, pv, &selected) && selected;
+		process_pv = process_pv && select_match_pv(cmd, handle, vg, pv) && _select_matches(handle);
 
 		if (process_pv) {
 			if (skip)
@@ -3346,6 +3377,11 @@ int process_each_pv(struct cmd_context *cmd,
 	if ((ret = _get_arg_pvnames(cmd, argc, argv, &arg_pvnames, &arg_tags)) != ECMD_PROCESSED) {
 		stack;
 		return ret;
+	}
+
+	if ((cmd->command->flags & DISALLOW_TAG_ARGS) && !dm_list_empty(&arg_tags)) {
+		log_error("Tags cannot be used with this command.");
+		return ECMD_FAILED;
 	}
 
 	orphans_locked = lvmcache_vgname_is_locked(VG_ORPHANS);
@@ -3872,6 +3908,15 @@ static int _pvcreate_check_single(struct cmd_context *cmd,
 	}
 
 	/*
+	 * Don't allow using a device with duplicates.
+	 */
+	if (lvmcache_pvid_in_unchosen_duplicates(pd->dev->pvid)) {
+		log_error("Cannot use device %s with duplicates.", pd->name);
+		dm_list_move(&pp->arg_fail, &pd->list);
+		return 1;
+	}
+
+	/*
 	 * What kind of device is this: an orphan PV, an uninitialized/unused
 	 * device, a PV used in a VG.
 	 */
@@ -4199,6 +4244,7 @@ int pvcreate_each_device(struct cmd_context *cmd,
 	struct physical_volume *pv;
 	struct volume_group *orphan_vg;
 	struct lvmcache_info *info;
+	struct dm_list remove_duplicates;
 	struct dm_list arg_sort;
 	struct pv_list *pvl;
 	struct pv_list *vgpvl;
@@ -4210,6 +4256,7 @@ int pvcreate_each_device(struct cmd_context *cmd,
 
 	set_pv_notify(cmd);
 
+	dm_list_init(&remove_duplicates);
 	dm_list_init(&arg_sort);
 
 	handle->custom_handle = pp;
@@ -4295,6 +4342,23 @@ int pvcreate_each_device(struct cmd_context *cmd,
 		goto_bad;
 
 	/*
+	 * Special case: pvremove -ff is allowed to clear a duplicate device in
+	 * the unchosen duplicates list.  PVs in the unchosen duplicates list
+	 * won't be found by normal process_each searches -- they are not in
+	 * lvmcache and can't be processed normally.  We save them here and
+	 * erase them below without going through the normal processing code.
+	 */
+	if (pp->is_remove && (pp->force == DONT_PROMPT_OVERRIDE) &&
+	   !dm_list_empty(&pp->arg_devices) && lvmcache_found_duplicate_pvs()) {
+		dm_list_iterate_items_safe(pd, pd2, &pp->arg_devices) {
+			if (lvmcache_dev_is_unchosen_duplicate(pd->dev)) {
+				log_debug("Found pvremove arg %s: device is a duplicate.", pd->name);
+				dm_list_move(&remove_duplicates, &pd->list);
+			}
+		}
+	}
+
+	/*
 	 * Check if all arg_devices were found by process_each_pv.
 	 */
 	dm_list_iterate_items(pd, &pp->arg_devices)
@@ -4313,9 +4377,9 @@ int pvcreate_each_device(struct cmd_context *cmd,
 		goto_bad;
 
 	/*
-	 * The command cannot continue if there are no devices to create.
+	 * The command cannot continue if there are no devices to process.
 	 */
-	if (dm_list_empty(&pp->arg_process)) {
+	if (dm_list_empty(&pp->arg_process) && dm_list_empty(&remove_duplicates)) {
 		log_debug("No devices to process.");
 		goto bad;
 	}
@@ -4592,15 +4656,37 @@ do_command:
 			continue;
 		}
 
-		info = lvmcache_info_from_pvid(pd->pvid, 0);
+		info = lvmcache_info_from_pvid(pd->pvid, pd->dev, 0);
 		if (info)
 			lvmcache_del(info);
 
-		if (!lvmetad_pv_gone_by_dev(pd->dev, NULL)) {
+		if (!lvmetad_pv_gone_by_dev(pd->dev)) {
 			log_error("Failed to remove PV %s from lvmetad.", pd->name);
 			dm_list_move(&pp->arg_fail, &pd->list);
 			continue;
 		}
+
+		log_print_unless_silent("Labels on physical volume \"%s\" successfully wiped.",
+					pd->name);
+	}
+
+	/*
+	 * Special case: pvremove duplicate PVs (also see above).
+	 */
+	dm_list_iterate_items_safe(pd, pd2, &remove_duplicates) {
+		if (!label_remove(pd->dev)) {
+			log_error("Failed to wipe existing label(s) on %s.", pd->name);
+			dm_list_move(&pp->arg_fail, &pd->list);
+			continue;
+		}
+
+		if (!lvmetad_pv_gone_by_dev(pd->dev)) {
+			log_error("Failed to remove PV %s from lvmetad.", pd->name);
+			dm_list_move(&pp->arg_fail, &pd->list);
+			continue;
+		}
+
+		lvmcache_remove_unchosen_duplicate(pd->dev);
 
 		log_print_unless_silent("Labels on physical volume \"%s\" successfully wiped.",
 					pd->name);

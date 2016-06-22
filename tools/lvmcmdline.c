@@ -328,6 +328,19 @@ int activation_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_v
 	return 1;
 }
 
+int cachemode_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_values *av)
+{
+	cache_mode_t mode;
+
+	if (!set_cache_mode(&mode, av->value))
+		return_0;
+
+	av->i_value = mode;
+	av->ui_value = mode;
+
+	return 1;
+}
+
 int discards_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_values *av)
 {
 	thin_discards_t discards;
@@ -1668,7 +1681,7 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 	 */
 	if (lvmetad_used() && !(cmd->command->flags & NO_LVMETAD_AUTOSCAN)) {
 		if (cmd->include_foreign_vgs || !lvmetad_token_matches(cmd)) {
-			if (lvmetad_used() && !lvmetad_pvscan_all_devs(cmd, NULL, cmd->include_foreign_vgs ? 1 : 0)) {
+			if (lvmetad_used() && !lvmetad_pvscan_all_devs(cmd, cmd->include_foreign_vgs ? 1 : 0)) {
 				log_warn("WARNING: Not using lvmetad because cache update failed.");
 				lvmetad_make_unused(cmd);
 			}

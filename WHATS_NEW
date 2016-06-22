@@ -1,3 +1,44 @@
+Version 2.02.156 - 11th June 2016
+=================================
+  Don't allow duplicate orphan PVs to be used with vgcreate/vgextend/pvcreate.
+  Improve handling of lvmetad update failures.
+  Yes/No prompt accepts '^[ ^t]*([Yy]([Ee]([Ss]|)|)|[Nn]([Oo]|))[ ^t]*$'.
+  If available, also collect output from lsblk command when running lvmdump -s.
+
+Version 2.02.155 - 3rd June 2016
+================================
+  Reject PV tags on pvmove cmdline because only 1 PV is supported. (2.02.141)
+  Fix compilation error when building with configure --disable-devmapper.
+  Fix lvmconfig --type diff to display complete diff if config cascade used.
+  Automatically filter out partitioned loop devices with partscan (losetup -P).
+  Fix lvm devtypes internal error if -S used with field name from pvs/vgs/lvs.
+  When reporting Data%,Snap%,Meta%,Cpy%Sync use single ioctl per LV.
+  Add lvseg_percent_with_info_and_seg_status() for percent retrieval.
+  Enhance internal seg_status handling to understand snapshots better.
+  When refresh failed in suspend, call resume upon error path.
+  Support passthrough cache mode when waiting for clean cache.
+  Check cache status only for 'in-use' cache pools.
+  Extend setup_task() to preset flushing for dm_task object.
+  When checking LV is a merging COW, validate its a COW LV first.
+  Correcting value in copy_percent() for 100%.
+  Update vgreduce to use process_each_vg.
+  Update lvconvert to use process_each_lv.
+  Update pvscan to use process_each_vg for autoactivation.
+  Add basic support for --type raid0 using md.
+  Add support for lvchange --cachemode for cached LV.
+  Fix liblvm2app error handling when setting up context.
+  Delay liblvm2app init in python code until it is needed.
+  Simplify thread locking in lvmetad to fix locking problems.
+  Allow pvremove -ff to remove a duplicate PV.
+  Fix lvm2-activation-generator to read lvm.conf without full command setup.
+  Allow a minimal context to be used in lvm2app for reading lvm.conf.
+
+Version 2.02.154 - 14th May 2016
+================================
+  Fix liblvm segfault after failure initialising lvmetad connection.
+  Retry open without O_NOATIME if it fails (not file owner/CAP_FOWNER).
+  Split _report into one fn for options and arguments and one for processing.
+
 Version 2.02.153 - 7th May 2016
 ===============================
   Change warning messages related to duplicate PVs.

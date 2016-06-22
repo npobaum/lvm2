@@ -23,19 +23,19 @@
 #include "crc.h"
 #include "lvm-signal.h"
 #include "lvmlockd.h"
+#include "str_list.h"
 
 #include <time.h>
-
-#define SCAN_TIMEOUT_SECONDS	80
-#define MAX_RESCANS		10	/* Maximum number of times to scan all PVs and retry if the daemon returns a token mismatch error */
 
 static daemon_handle _lvmetad = { .error = 0 };
 static int _lvmetad_use = 0;
 static int _lvmetad_connected = 0;
+static int _lvmetad_daemon_pid = 0;
 
 static char *_lvmetad_token = NULL;
 static const char *_lvmetad_socket = NULL;
 static struct cmd_context *_lvmetad_cmd = NULL;
+static int64_t _lvmetad_update_timeout;
 
 static int _found_lvm1_metadata = 0;
 
@@ -134,6 +134,8 @@ int lvmetad_connect(struct cmd_context *cmd)
 		return 0;
 	}
 
+	_lvmetad_update_timeout = find_config_tree_int(cmd, global_lvmetad_update_wait_time_CFG, NULL);
+
 	_lvmetad = lvmetad_open(_lvmetad_socket);
 
 	if (_lvmetad.socket_fd >= 0 && !_lvmetad.error) {
@@ -178,7 +180,7 @@ int lvmetad_socket_present(void)
 	int r;
 
 	if ((r = access(socket, F_OK)) && errno != ENOENT)
-		log_sys_error("lvmetad_socket_present", "");
+		log_sys_error("access", socket);
 
 	return !r;
 }
@@ -247,13 +249,15 @@ int lvmetad_token_matches(struct cmd_context *cmd)
 	uint64_t now = 0, wait_start = 0;
 	int ret = 1;
 
-	wait_sec = (unsigned int)find_config_tree_int(cmd, global_lvmetad_update_wait_time_CFG, NULL);
+	wait_sec = (unsigned int)_lvmetad_update_timeout;
 
 retry:
-	log_debug_lvmetad("lvmetad send get_global_info");
+	log_debug_lvmetad("Sending lvmetad get_global_info");
 
 	reply = daemon_send_simple(_lvmetad, "get_global_info",
 				   "token = %s", "skip",
+				   "pid = " FMTd64, (int64_t)getpid(),
+				   "cmd = %s", get_cmd_name(),
 				   NULL);
 	if (reply.error) {
 		log_warn("WARNING: Not using lvmetad after send error (%d).", reply.error);
@@ -270,6 +274,8 @@ retry:
 		goto fail;
 	}
 
+	_lvmetad_daemon_pid = (int)daemon_reply_int(reply, "daemon_pid", 0);
+
 	/*
 	 * If lvmetad is being updated by another command, then sleep and retry
 	 * until the token shows the update is done, and go on to the token
@@ -277,22 +283,15 @@ retry:
 	 *
 	 * Between retries, sleep for a random period between 1 and 2 seconds.
 	 * Retry in this way for up to a configurable period of time.
-	 *
-	 * If lvmetad is still being updated after the timeout period,
-	 * then disable this command's use of lvmetad.
-	 *
-	 * FIXME: lvmetad could return the number of objects in its cache along with
-	 * the update message so that callers could detect when a rescan has
-	 * stalled while updating lvmetad.
 	 */
-	if (!strcmp(daemon_token, "update in progress")) {
+	if (!strcmp(daemon_token, LVMETAD_TOKEN_UPDATE_IN_PROGRESS)) {
 		if (!(now = _monotonic_seconds()))
 			goto fail;
 
 		if (!wait_start)
 			wait_start = now;
 
-		if (now - wait_start >= wait_sec) {
+		if (now - wait_start > wait_sec) {
 			log_warn("WARNING: Not using lvmetad after %u sec lvmetad_update_wait_time.", wait_sec);
 			goto fail;
 		}
@@ -353,12 +352,14 @@ static int _lvmetad_is_updating(struct cmd_context *cmd, int do_wait)
 	uint64_t now = 0, wait_start = 0;
 	int ret = 0;
 
-	wait_sec = (unsigned int)find_config_tree_int(cmd, global_lvmetad_update_wait_time_CFG, NULL);
+	wait_sec = (unsigned int)_lvmetad_update_timeout;
 retry:
-	log_debug_lvmetad("lvmetad send get_global_info");
+	log_debug_lvmetad("Sending lvmetad get_global_info");
 
 	reply = daemon_send_simple(_lvmetad, "get_global_info",
 				   "token = %s", "skip",
+				   "pid = " FMTd64, (int64_t)getpid(),
+				   "cmd = %s", get_cmd_name(),
 				   NULL);
 	if (reply.error)
 		goto out;
@@ -369,7 +370,7 @@ retry:
 	if (!(daemon_token = daemon_reply_str(reply, "token", NULL)))
 		goto out;
 
-	if (!strcmp(daemon_token, "update in progress")) {
+	if (!strcmp(daemon_token, LVMETAD_TOKEN_UPDATE_IN_PROGRESS)) {
 		ret = 1;
 
 		if (!do_wait)
@@ -399,31 +400,33 @@ out:
 	return ret;
 }
 
-static int _lvmetad_pvscan_all_devs(struct cmd_context *cmd, activation_handler handler,
-				    int ignore_obsolete, int do_wait);
-
 static daemon_reply _lvmetad_send(struct cmd_context *cmd, const char *id, ...)
 {
 	va_list ap;
 	daemon_reply reply = { 0 };
 	daemon_request req;
+	const char *token_expected;
 	unsigned int delay_usec;
 	unsigned int wait_sec = 0;
 	uint64_t now = 0, wait_start = 0;
+	int daemon_in_update;
+	int we_are_in_update;
 
 	if (!_lvmetad_connected || !_lvmetad_use) {
 		reply.error = ECONNRESET;
 		return reply;
 	}
 
-	if (cmd)
-		wait_sec = (unsigned int)find_config_tree_int(cmd, global_lvmetad_update_wait_time_CFG, NULL);
+	wait_sec = (unsigned int)_lvmetad_update_timeout;
 retry:
-	log_debug_lvmetad("lvmetad_send %s", id);
-
 	req = daemon_request_make(id);
 
-	if (_lvmetad_token && !daemon_request_extend(req, "token = %s", _lvmetad_token, NULL)) {
+	if (!daemon_request_extend(req,
+				   "token = %s", _lvmetad_token ?: "none",
+				   "update_timeout = " FMTd64, (int64_t)wait_sec,
+				   "pid = " FMTd64, (int64_t)getpid(),
+				   "cmd = %s", get_cmd_name(),
+				   NULL)) {
 		reply.error = ENOMEM;
 		return reply;
 	}
@@ -439,22 +442,40 @@ retry:
 	if (reply.error == ECONNRESET)
 		log_warn("WARNING: lvmetad connection failed, cannot reconnect."); 
 
+	/*
+	 * For the "token_update" message, the result is handled entirely
+	 * by the _token_update() function, so return the reply immediately.
+	 */
+	if (!strcmp(id, "token_update"))
+		return reply;
+
+	/*
+	 * For other messages it may be useful to retry and resend the
+	 * message, so check for that case before returning the reply.
+	 * The reply will be checked further in lvmetad_handle_reply.
+	 */
+
 	if (reply.error)
-		goto out;
+		return reply;
 
 	if (!strcmp(daemon_reply_str(reply, "response", ""), "token_mismatch")) {
-		if (!strcmp(daemon_reply_str(reply, "expected", ""), "update in progress")) {
+		token_expected = daemon_reply_str(reply, "expected", "");
+		daemon_in_update = !strcmp(token_expected, LVMETAD_TOKEN_UPDATE_IN_PROGRESS);
+		we_are_in_update = !strcmp(_lvmetad_token, LVMETAD_TOKEN_UPDATE_IN_PROGRESS);
+
+		if (daemon_in_update && !we_are_in_update) {
 			/*
-			 * Another command is updating the lvmetad cache, and
-			 * we cannot use lvmetad until the update is finished.
-			 * Retry our request for a while; the update should
-			 * finish shortly.  This should not usually happen
-			 * because this command already checked that the token
-			 * is usable in lvmetad_token_matches(), but it's
-			 * possible for another command's rescan to slip in
-			 * between the time we call lvmetad_token_matches()
-			 * and the time we get here to lvmetad_send().
+			 * Another command is updating lvmetad, and we cannot
+			 * use lvmetad until the update is finished.  Retry our
+			 * request for a while; the update should finish
+			 * shortly.  This should not usually happen because
+			 * this command already checked that the token is
+			 * usable in lvmetad_token_matches(), but it's possible
+			 * for another command's rescan to slip in between the
+			 * time we call lvmetad_token_matches() and the time we
+			 * get here to lvmetad_send().
 			 */
+
 			if (!(now = _monotonic_seconds()))
 				goto out;
 
@@ -474,61 +495,122 @@ retry:
 			usleep(delay_usec);
 			daemon_reply_destroy(reply);
 			goto retry;
+
 		} else {
-			/*
-			 * Another command has updated the lvmetad cache, and
-			 * has done so using a different device filter from our
-			 * own, which has made the lvmetad token and our token
-			 * not match.  This should not usually happen because
-			 * this command has already checked for a matching token
-			 * in lvmetad_token_matches(), but it's possible for
-			 * another command's rescan to slip in between the time
-			 * we call lvmetad_token_matches() and the time we get
-			 * here to lvmetad_send().  With a mismatched token
-			 * (different set of devices), we cannot use the lvmetad
-			 * cache.
-			 *
-			 * FIXME: it would be nice to have this command ignore
-			 * lvmetad at this point and revert to disk scanning,
-			 * but the layers above lvmetad_send are not yet able
-			 * to switch modes in the middle of processing.
-			 *
-			 * (The advantage of lvmetad_check_token is that it
-			 * can rescan to get the token in sync, or if that
-			 * fails it can make the command revert to scanning
-			 * from the start.)
-			 */
-			log_warn("WARNING: Cannot use lvmetad while it caches different devices.");
+			/* See lvmetad_handle_reply for handling other cases. */
 		}
 	}
 out:
 	return reply;
 }
 
+/*
+ * token_update happens when starting or ending an lvmetad update.
+ * When starting we set the token to "update in progress".
+ * When ending we set the token to our filter:<hash>.
+ *
+ * From the perspective of a command, the lvmetad state is one of:
+ * "none" - the lvmetad cache is not populated and an update is required.
+ * "filter:<matching_hash>" - the command with can use the lvmetad cache.
+ * "filter:<unmatching_hash>" - the lvmetad cache must be updated to be used.
+ * "update in progress" - a command is updating the lvmetad cache.
+ *
+ * . If none, the command will update (scan and populate lvmetad),
+ *   then use the cache.
+ *
+ * . If filter is matching, the command will use the cache.
+ *
+ * . If filter is unmatching, the command will update (scan and
+ *   populate lvmetad), then use the cache.
+ *
+ * . If update in progress, the command will wait for a while for the state
+ *   to become non-updating.  If it changes, see above, if it doesn't change,
+ *   then the command either reverts to not using lvmetad, or does an update
+ *   (scan and populate lvmetad) and then uses the cache.
+ *
+ * A command that is explicitly intended to update the cache will always do
+ * that (it may wait for a while first to allow a current update to complete).
+ * A command that is not explicitly intended to update the cache may choose
+ * to revert to scanning and not use lvmetad.
+ *
+ * Because two different updates from two commands can potentially overlap,
+ * lvmetad saves the pid of the latest update to start, so it can reject messages
+ * from preempted updates.  This prevents an invalid mix of two different updates.
+ * (The command makes use of the update_pid to print more informative messages.)
+ *
+ * If lvmetad detects that a command doing an update is taking too long, it will
+ * change the token from "update in progress" to "none", which means a new update
+ * is required, causing the next command to do an update.  This effectively
+ * cancels/preempts a slow/stuck update, and helps to automatically resolve
+ * some failure cases.
+ */
+
 static int _token_update(int *replaced_update)
 {
 	daemon_reply reply;
+	const char *token_expected;
 	const char *prev_token;
+	int update_pid;
+	int ending_our_update;
 
-	log_debug_lvmetad("Sending updated token to lvmetad: %s", _lvmetad_token ? : "<NONE>");
+	log_debug_lvmetad("Sending lvmetad token_update %s", _lvmetad_token);
 	reply = _lvmetad_send(NULL, "token_update", NULL);
 
 	if (replaced_update)
 		*replaced_update = 0;
 
-	if (reply.error || strcmp(daemon_reply_str(reply, "response", ""), "OK")) {
+	if (reply.error) {
+		log_warn("WARNING: lvmetad token update error: %s", strerror(reply.error));
+		daemon_reply_destroy(reply);
+		return 0;
+	}
+
+	update_pid = (int)daemon_reply_int(reply, "update_pid", 0);
+
+	/*
+	 * A mismatch can only happen when this command attempts to set the
+	 * token to filter:<hash> at the end of its update, but the update has
+	 * been preempted in lvmetad by a new one (from update_pid).
+	 */
+	if (!strcmp(daemon_reply_str(reply, "response", ""), "token_mismatch")) {
+		token_expected = daemon_reply_str(reply, "expected", "");
+
+		ending_our_update = strcmp(_lvmetad_token, LVMETAD_TOKEN_UPDATE_IN_PROGRESS);
+
+		log_debug_lvmetad("Received token update mismatch expected \"%s\" our token \"%s\" update_pid %d our pid %d",
+				  token_expected, _lvmetad_token, update_pid, getpid());
+
+		if (ending_our_update && (update_pid != getpid())) {
+			log_warn("WARNING: lvmetad was updated by another command (pid %d).", update_pid);
+		} else {
+			/*
+			 * Shouldn't happen.
+			 * If we're ending our update and our pid matches the update_pid,
+			 * then there would not be a mismatch.
+			 * If we're starting a new update, lvmetad never returns a
+			 * token mismatch.
+			 * In any case, it doesn't hurt to just return an error here.
+			 */
+			log_error(INTERNAL_ERROR "lvmetad token update mismatch pid %d matches our own pid %d", update_pid, getpid());
+		}
+
+		daemon_reply_destroy(reply);
+		return 0;
+	}
+
+	if (strcmp(daemon_reply_str(reply, "response", ""), "OK")) {
+		log_error("Failed response from lvmetad for token update.");
 		daemon_reply_destroy(reply);
 		return 0;
 	}
 
 	if ((prev_token = daemon_reply_str(reply, "prev_token", NULL))) {
-		if (!strcmp(prev_token, "update in progress"))
-			if (replaced_update)
+		if (!strcmp(prev_token, LVMETAD_TOKEN_UPDATE_IN_PROGRESS))
+			if (replaced_update && (update_pid != getpid()))
 				*replaced_update = 1;
 	}
 
 	daemon_reply_destroy(reply);
-
 	return 1;
 }
 
@@ -541,8 +623,12 @@ static int _token_update(int *replaced_update)
  */
 static int _lvmetad_handle_reply(daemon_reply reply, const char *id, const char *object, int *found)
 {
-	int action_modifies = 0;
+	const char *token_expected;
 	const char *action;
+	int action_modifies = 0;
+	int daemon_in_update;
+	int we_are_in_update;
+	int update_pid;
 
 	if (!id)
 		action = "<none>";
@@ -576,32 +662,110 @@ static int _lvmetad_handle_reply(daemon_reply reply, const char *id, const char 
 	}
 
 	if (reply.error) {
-		log_error("Request to %s %s%sin lvmetad gave response %s.",
-			  action, object, *object ? " " : "", strerror(reply.error));
+		log_warn("WARNING: lvmetad cannot be used due to error: %s", strerror(reply.error));
 		goto fail;
 	}
 
 	/*
-	 * See the description of the token mismatch errors in lvmetad_send.
+	 * Errors related to token mismatch.
 	 */
+
 	if (!strcmp(daemon_reply_str(reply, "response", ""), "token_mismatch")) {
-		if (!strcmp(daemon_reply_str(reply, "expected", ""), "update in progress")) {
+
+		token_expected = daemon_reply_str(reply, "expected", "");
+		update_pid = (int)daemon_reply_int(reply, "update_pid", 0);
+
+		log_debug("lvmetad token mismatch, expected \"%s\" our token \"%s\"",
+			  token_expected, _lvmetad_token);
+
+		daemon_in_update = !strcmp(token_expected, LVMETAD_TOKEN_UPDATE_IN_PROGRESS);
+		we_are_in_update = !strcmp(_lvmetad_token, LVMETAD_TOKEN_UPDATE_IN_PROGRESS);
+
+		if (daemon_in_update && we_are_in_update) {
+
 			/*
-			 * lvmetad_send retried up to the limit and eventually
-			 * printed a warning and gave up.
+			 * When we do not match the update_pid, it means our
+			 * update was cancelled and another process is now
+			 * updating the cache.
 			 */
-			log_error("Request to %s %s%sin lvmetad failed after lvmetad_update_wait_time expired.",
-				  action, object, *object ? " " : "");
-		} else {
+
+			if (update_pid != getpid()) {
+				log_warn("WARNING: lvmetad is being updated by another command (pid %d).", update_pid);
+			} else {
+				/* Shouldn't happen */
+				log_error(INTERNAL_ERROR "lvmetad update by pid %d matches our own pid %d", update_pid, getpid());
+			}
+			/* We don't care if the action was modifying during a token update. */
+			action_modifies = 0;
+			goto fail;
+
+		} else if (daemon_in_update && !we_are_in_update) {
+
 			/*
-			 * lvmetad is caching different devices based on a different
-			 * device filter which causes a token mismatch.
+			 * Another command is updating lvmetad, and we cannot
+			 * use lvmetad until the update is finished.
+			 * lvmetad_send resent this message up to the limit and
+			 * eventually gave up.  The caller may choose to not
+			 * use lvmetad at this point and revert to scanning.
 			 */
-			log_error("Request to %s %s%sin lvmetad failed after device filter mismatch.",
-				  action, object, *object ? " " : "");
+
+			log_warn("WARNING: lvmetad is being updated and cannot be used.");
+			goto fail;
+
+		} else if (!daemon_in_update && we_are_in_update) {
+
+			/*
+			 * We are updating lvmetad after setting the token to
+			 * "update in progress", but lvmetad has a non-update
+			 * token and is rejecting our update messages.  This
+			 * must mean that lvmetad cancelled our update (we were
+			 * probably too slow, taking longer than the timeout),
+			 * so another command completed an update and set the
+			 * token based on its filter.  Here we've attempt to
+			 * continue our cache update, and find we've been
+			 * preempted, so we should just abort our failed
+			 * update.
+			 */
+
+			log_warn("WARNING: lvmetad was updated by another command.");
+			/* We don't care if the action was modifying during a token update. */
+			action_modifies = 0;
+			goto fail;
+
+		} else if (!daemon_in_update && !we_are_in_update) {
+
+			/*
+			 * Another command has updated the lvmetad cache, and
+			 * has done so using a different device filter from our
+			 * own, which has made the lvmetad token and our token
+			 * not match.  This should not usually happen because
+			 * this command has already checked for a matching token
+			 * in lvmetad_token_matches(), but it's possible for
+			 * another command's rescan to slip in between the time
+			 * we call lvmetad_token_matches() and the time we get
+			 * here to lvmetad_send().  With a mismatched token
+			 * (different set of devices), we cannot use the lvmetad
+			 * cache.
+			 *
+			 * FIXME: it would be nice to have this command ignore
+			 * lvmetad at this point and revert to disk scanning,
+			 * but the layers above lvmetad_send are not yet able
+			 * to switch modes in the middle of processing.
+			 *
+			 * (The advantage of lvmetad_check_token is that it
+			 * can rescan to get the token in sync, or if that
+			 * fails it can make the command revert to scanning
+			 * from the start.)
+			 */
+
+			log_warn("WARNING: Cannot use lvmetad while it caches different devices.");
+			goto fail;
 		}
-		goto fail;
 	}
+
+	/*
+	 * Non-token-mismatch related error checking.
+	 */
 
 	/* All OK? */
 	if (!strcmp(daemon_reply_str(reply, "response", ""), "OK")) {
@@ -636,14 +800,20 @@ static int _lvmetad_handle_reply(daemon_reply reply, const char *id, const char 
 		  daemon_reply_str(reply, "reason", "<missing>"));
 fail:
 	/*
-	 * If the failed lvmetad message was updating lvmetad, it is important
-	 * to restart lvmetad (or at least rescan.)
-	 *
-	 * FIXME: attempt to set the disabled state in lvmetad here so that
-	 * commands will not use it until it's been properly repopulated.
+	 * If the failed lvmetad message was updating lvmetad with new metadata
+	 * that has been changed by this command, it is important to restart
+	 * lvmetad (or at least rescan.)  (An lvmetad update that is just
+	 * scanning disks to populate the cache is not a problem, so we try to
+	 * avoid printing a "corruption" warning in that case.)
 	 */
-	if (action_modifies)
+
+	if (action_modifies) {
+		/*
+		 * FIXME: experiment with killing the lvmetad process here, e.g.
+		 * kill(_lvmetad_daemon_pid, SIGKILL);
+		 */
 		log_warn("WARNING: To avoid corruption, restart lvmetad (or disable with use_lvmetad=0).");
+	}
 
 	return 0;
 }
@@ -767,7 +937,7 @@ static int _pv_update_struct_pv(struct physical_volume *pv, struct format_instan
 {
 	struct lvmcache_info *info;
 
-	if ((info = lvmcache_info_from_pvid((const char *)&pv->id, 0))) {
+	if ((info = lvmcache_info_from_pvid((const char *)&pv->id, pv->dev, 0))) {
 		pv->label_sector = lvmcache_get_label(info)->sector;
 		pv->dev = lvmcache_device(info);
 		if (!pv->dev)
@@ -1005,7 +1175,7 @@ int lvmetad_vg_update(struct volume_group *vg)
 		if ((num = strchr(mda_id, '_'))) {
 			*num = 0;
 			++num;
-			if ((info = lvmcache_info_from_pvid(mda_id, 0))) {
+			if ((info = lvmcache_info_from_pvid(mda_id, NULL, 0))) {
 				memset(&baton, 0, sizeof(baton));
 				baton.find = atoi(num);
 				baton.ignore = mda_is_ignored(mda);
@@ -1017,9 +1187,9 @@ int lvmetad_vg_update(struct volume_group *vg)
 
 	dm_list_iterate_items(pvl, &vg->pvs) {
 		/* NB. the PV fmt pointer is sometimes wrong during vgconvert */
-		if (pvl->pv->dev && !lvmetad_pv_found(&pvl->pv->id, pvl->pv->dev,
+		if (pvl->pv->dev && !lvmetad_pv_found(vg->cmd, &pvl->pv->id, pvl->pv->dev,
 						      vg->fid ? vg->fid->fmt : pvl->pv->fmt,
-						      pvl->pv->label_sector, NULL, NULL))
+						      pvl->pv->label_sector, NULL, NULL, NULL))
 			return 0;
 	}
 
@@ -1303,14 +1473,16 @@ static int _extract_mdas(struct lvmcache_info *info, struct dm_config_tree *cft,
 	return 1;
 }
 
-int lvmetad_pv_found(const struct id *pvid, struct device *dev, const struct format_type *fmt,
-		     uint64_t label_sector, struct volume_group *vg, activation_handler handler)
+int lvmetad_pv_found(struct cmd_context *cmd, const struct id *pvid, struct device *dev, const struct format_type *fmt,
+		     uint64_t label_sector, struct volume_group *vg,
+		     struct dm_list *found_vgnames,
+		     struct dm_list *changed_vgnames)
 {
 	char uuid[64];
 	daemon_reply reply;
 	struct lvmcache_info *info;
 	struct dm_config_tree *pvmeta, *vgmeta;
-	const char *status, *vgname, *vgid;
+	const char *status, *vgname;
 	int64_t changed;
 	int result;
 
@@ -1324,7 +1496,7 @@ int lvmetad_pv_found(const struct id *pvid, struct device *dev, const struct for
 	if (!pvmeta)
 		return_0;
 
-	info = lvmcache_info_from_pvid((const char *)pvid, 0);
+	info = lvmcache_info_from_pvid((const char *)pvid, dev, 0);
 
 	if (!(pvmeta->root = make_config_node(pvmeta, "pv", NULL, NULL))) {
 		dm_config_destroy(pvmeta);
@@ -1358,7 +1530,7 @@ int lvmetad_pv_found(const struct id *pvid, struct device *dev, const struct for
 		}
 
 		log_debug_lvmetad("Telling lvmetad to store PV %s (%s) in VG %s", dev_name(dev), uuid, vg->name);
-		reply = _lvmetad_send(vg->cmd, "pv_found",
+		reply = _lvmetad_send(cmd, "pv_found",
 				      "pvmeta = %t", pvmeta,
 				      "vgname = %s", vg->name,
 				      "metadata = %t", vgmeta,
@@ -1382,65 +1554,41 @@ int lvmetad_pv_found(const struct id *pvid, struct device *dev, const struct for
 	     daemon_reply_int(reply, "seqno_after", -1) != daemon_reply_int(reply, "seqno_before", -1)))
 		log_warn("WARNING: Inconsistent metadata found for VG %s", vg->name);
 
-	/*
-	 * pvscan --cache does not perform any lvmlockd locking, and
-	 * pvscan --cache -aay skips autoactivation in lockd VGs.
-	 *
-	 * pvscan --cache populates lvmetad with VG metadata from disk.
-	 * No lvmlockd locking is needed.  It is expected that lockd VG
-	 * metadata that is read by pvscan and populated in lvmetad may
-	 * be immediately stale due to changes to the VG from other hosts
-	 * during or after this pvscan.  This is normal and not a problem.
-	 * When a subsequent lvm command uses the VG, it will lock the VG
-	 * with lvmlockd, read the VG from lvmetad, and update the cached
-	 * copy from disk if necessary.
-	 *
-	 * pvscan --cache -aay does not activate LVs in lockd VGs because
-	 * activation requires locking, and a lock-start operation is needed
-	 * on a lockd VG before any locking can be performed in it.
-	 *
-	 * An equivalent of pvscan --cache -aay for lockd VGs is:
-	 * 1. pvscan --cache
-	 * 2. vgchange --lock-start
-	 * 3. vgchange -aay -S 'locktype=sanlock || locktype=dlm'
-	 *
-	 * [We could eventually add support for autoactivating lockd VGs
-	 * using pvscan by incorporating the lock start step (which can
-	 * take a long time), but there may be a better option than
-	 * continuing to overload pvscan.]
-	 * 
-	 * Stages of starting a lockd VG:
-	 *
-	 * . pvscan --cache populates lockd VGs in lvmetad without locks,
-	 *   and this initial cached copy may quickly become stale.
-	 *
-	 * . vgchange --lock-start VG reads the VG without the VG lock
-	 *   because no locks are available until the locking is started.
-	 *   It only uses the VG name and lock_type from the VG metadata,
-	 *   and then only uses it to start the VG lockspace in lvmlockd.
-	 *
-	 * . Further lvm commands, e.g. activation, can then lock the VG
-	 *   with lvmlockd and use current VG metdata.
-	 */
-	if (handler && vg && is_lockd_type(vg->lock_type)) {
-		log_debug_lvmetad("Skip pvscan activation for lockd type VG %s", vg->name);
-		handler = NULL;
+	if (result && found_vgnames) {
+		status = daemon_reply_str(reply, "status", NULL);
+		vgname = daemon_reply_str(reply, "vgname", NULL);
+		changed = daemon_reply_int(reply, "changed", 0);
 	}
 
-	if (result && handler) {
-		status = daemon_reply_str(reply, "status", "<missing>");
-		vgname = daemon_reply_str(reply, "vgname", "<missing>");
-		vgid = daemon_reply_str(reply, "vgid", "<missing>");
-		changed = daemon_reply_int(reply, "changed", 0);
-		if (!strcmp(status, "partial"))
-			handler(_lvmetad_cmd, vgname, vgid, 1, changed, CHANGE_AAY);
-		else if (!strcmp(status, "complete"))
-			handler(_lvmetad_cmd, vgname, vgid, 0, changed, CHANGE_AAY);
-		else if (!strcmp(status, "orphan"))
-			;
-		else
-			log_error("Request to %s %s in lvmetad gave status %s.",
-			  "update PV", uuid, status);
+	/*
+	 * If lvmetad now sees all PVs in the VG, it returned the
+	 * "complete" status string.  Add this VG name to the list
+	 * of found VGs so that the caller can do autoactivation.
+	 *
+	 * If there was a problem notifying lvmetad about the new
+	 * PV, e.g. lvmetad was disabled due to a duplicate, then
+	 * no autoactivation is attempted.
+	 *
+	 * FIXME: there was a previous fixme indicating that
+	 * autoactivation might also be done for VGs with the
+	 * "partial" status.
+	 *
+	 * If the VG has "changed" by finding the PV, lvmetad returns
+	 * the "changed" flag.  The names of "changed" VGs are saved
+	 * in the changed_vgnames lists, which is used during autoactivation.
+	 * If a VG is changed, then autoactivation refreshes LVs in the VG.
+	 */
+
+	if (found_vgnames && vgname && status && !strcmp(status, "complete")) {
+		log_debug("VG %s is complete in lvmetad with dev %s.", vgname, dev_name(dev));
+		if (!str_list_add(cmd->mem, found_vgnames, dm_pool_strdup(cmd->mem, vgname)))
+			log_error("str_list_add failed");
+
+		if (changed_vgnames && changed) {
+			log_debug("VG %s is changed in lvmetad.", vgname);
+			if (!str_list_add(cmd->mem, changed_vgnames, dm_pool_strdup(cmd->mem, vgname)))
+				log_error("str_list_add failed");
+		}
 	}
 
 	daemon_reply_destroy(reply);
@@ -1448,7 +1596,7 @@ int lvmetad_pv_found(const struct id *pvid, struct device *dev, const struct for
 	return result;
 }
 
-int lvmetad_pv_gone(dev_t devno, const char *pv_name, activation_handler handler)
+int lvmetad_pv_gone(dev_t devno, const char *pv_name)
 {
 	daemon_reply reply;
 	int result;
@@ -1475,9 +1623,9 @@ int lvmetad_pv_gone(dev_t devno, const char *pv_name, activation_handler handler
 	return result;
 }
 
-int lvmetad_pv_gone_by_dev(struct device *dev, activation_handler handler)
+int lvmetad_pv_gone_by_dev(struct device *dev)
 {
-	return lvmetad_pv_gone(dev->dev, dev_name(dev), handler);
+	return lvmetad_pv_gone(dev->dev, dev_name(dev));
 }
 
 /*
@@ -1534,7 +1682,7 @@ static struct volume_group *lvmetad_pvscan_vg(struct cmd_context *cmd, struct vo
 		if (!pvl->pv->dev)
 			continue;
 
-		if (!(info = lvmcache_info_from_pvid((const char *)&pvl->pv->id, 0))) {
+		if (!(info = lvmcache_info_from_pvid((const char *)&pvl->pv->id, pvl->pv->dev, 0))) {
 			log_error("Failed to find cached info for PV %s.", pv_dev_name(pvl->pv));
 			return NULL;
 		}
@@ -1546,10 +1694,8 @@ static struct volume_group *lvmetad_pvscan_vg(struct cmd_context *cmd, struct vo
 			return NULL;
 
 		if (baton.fid->fmt->features & FMT_OBSOLETE) {
-			log_error("WARNING: Ignoring obsolete format of metadata (%s) on device %s when using lvmetad",
-			  	baton.fid->fmt->name, dev_name(pvl->pv->dev));
 			lvmcache_fmt(info)->ops->destroy_instance(baton.fid);
-			log_warn("WARNING: Disabling lvmetad cache which does not support obsolete metadata.");
+			log_warn("WARNING: Disabling lvmetad cache which does not support obsolete (lvm1) metadata.");
 			lvmetad_set_disabled(cmd, LVMETAD_DISABLE_REASON_LVM1);
 			_found_lvm1_metadata = 1;
 			return NULL;
@@ -1635,14 +1781,14 @@ out:
 }
 
 int lvmetad_pvscan_single(struct cmd_context *cmd, struct device *dev,
-			  activation_handler handler, int ignore_obsolete)
+			  struct dm_list *found_vgnames,
+			  struct dm_list *changed_vgnames)
 {
 	struct label *label;
 	struct lvmcache_info *info;
 	struct _lvmetad_pvscan_baton baton;
 	/* Create a dummy instance. */
 	struct format_instance_ctx fic = { .type = 0 };
-	struct metadata_area *mda;
 
 	if (!lvmetad_used()) {
 		log_error("Cannot proceed since lvmetad is not active.");
@@ -1651,7 +1797,7 @@ int lvmetad_pvscan_single(struct cmd_context *cmd, struct device *dev,
 
 	if (!label_read(dev, &label, 0)) {
 		log_print_unless_silent("No PV label found on %s.", dev_name(dev));
-		if (!lvmetad_pv_gone_by_dev(dev, handler))
+		if (!lvmetad_pv_gone_by_dev(dev))
 			goto_bad;
 		return 1;
 	}
@@ -1665,43 +1811,24 @@ int lvmetad_pvscan_single(struct cmd_context *cmd, struct device *dev,
 		goto_bad;
 
 	if (baton.fid->fmt->features & FMT_OBSOLETE) {
-		if (ignore_obsolete)
-			log_warn("WARNING: Ignoring obsolete format of metadata (%s) on device %s when using lvmetad",
-				  baton.fid->fmt->name, dev_name(dev));
-		else
-			log_error("Ignoring obsolete format of metadata (%s) on device %s when using lvmetad.",
-				  baton.fid->fmt->name, dev_name(dev));
 		lvmcache_fmt(info)->ops->destroy_instance(baton.fid);
-
-		log_warn("WARNING: Disabling lvmetad cache which does not support obsolete metadata.");
+		log_warn("WARNING: Disabling lvmetad cache which does not support obsolete (lvm1) metadata.");
 		lvmetad_set_disabled(cmd, LVMETAD_DISABLE_REASON_LVM1);
 		_found_lvm1_metadata = 1;
-
-		if (ignore_obsolete)
-			return 1;
-		return 0;
+		/*
+		 * return 1 (success) so that we'll continue to populate lvmetad
+		 * instead of leaving the update incomplete.
+		 */
+		return 1;
 	}
 
 	lvmcache_foreach_mda(info, _lvmetad_pvscan_single, &baton);
 
-	/*
-	 * LVM1 VGs have no MDAs and lvmcache_foreach_mda isn't worth fixing
-	 * to use pseudo-mdas for PVs.
-	 * Note that the single_device parameter also gets ignored and this code
-	 * can scan further devices.
-	 */
-	if (!baton.vg && !(baton.fid->fmt->features & FMT_MDAS)) {
-		/* This code seems to be unreachable */
-		if ((mda = (struct metadata_area *)dm_list_first(&baton.fid->metadata_areas_in_use)))
-			baton.vg = mda->ops->vg_read(baton.fid, lvmcache_vgname_from_info(info),
-						     mda, NULL, NULL, 1);
-	}
-
 	if (!baton.vg)
 		lvmcache_fmt(info)->ops->destroy_instance(baton.fid);
 
-	if (!lvmetad_pv_found((const struct id *) &dev->pvid, dev, lvmcache_fmt(info),
-			      label->sector, baton.vg, handler)) {
+	if (!lvmetad_pv_found(cmd, (const struct id *) &dev->pvid, dev, lvmcache_fmt(info),
+			      label->sector, baton.vg, found_vgnames, changed_vgnames)) {
 		release_vg(baton.vg);
 		goto_bad;
 	}
@@ -1738,8 +1865,7 @@ bad:
  * generally revert disk scanning and not use lvmetad.
  */
 
-static int _lvmetad_pvscan_all_devs(struct cmd_context *cmd, activation_handler handler,
-				    int ignore_obsolete, int do_wait)
+int lvmetad_pvscan_all_devs(struct cmd_context *cmd, int do_wait)
 {
 	struct dev_iter *iter;
 	struct device *dev;
@@ -1775,7 +1901,7 @@ static int _lvmetad_pvscan_all_devs(struct cmd_context *cmd, activation_handler 
 	}
 
 	future_token = _lvmetad_token;
-	_lvmetad_token = (char *) "update in progress";
+	_lvmetad_token = (char *) LVMETAD_TOKEN_UPDATE_IN_PROGRESS;
 
 	if (!_token_update(&replaced_update)) {
 		log_error("Failed to update lvmetad which had an update in progress.");
@@ -1794,12 +1920,12 @@ static int _lvmetad_pvscan_all_devs(struct cmd_context *cmd, activation_handler 
 	if (!replacing_other_update && replaced_update) {
 		if (do_wait && !retries) {
 			retries = 1;
-			log_warn("WARNING: lvmetad update in progress, retry update.");
+			log_warn("WARNING: lvmetad update in progress, retrying update.");
 			dev_iter_destroy(iter);
 			_lvmetad_token = future_token;
 			goto retry;
 		}
-		log_error("Concurrent lvmetad updates failed.");
+		log_warn("WARNING: lvmetad update in progress, skipping update.");
 		dev_iter_destroy(iter);
 		_lvmetad_token = future_token;
 		return 0;
@@ -1820,18 +1946,30 @@ static int _lvmetad_pvscan_all_devs(struct cmd_context *cmd, activation_handler 
 			stack;
 			break;
 		}
-		if (!lvmetad_pvscan_single(cmd, dev, handler, ignore_obsolete))
+
+		if (!lvmetad_pvscan_single(cmd, dev, NULL, NULL)) {
 			ret = 0;
+			stack;
+			break;
+		}
 	}
 
 	init_silent(was_silent);
 
 	dev_iter_destroy(iter);
 
-	if (!ret)
-		lvmetad_set_disabled(cmd, LVMETAD_DISABLE_REASON_SCANERROR);
-
 	_lvmetad_token = future_token;
+
+	/*
+	 * If we failed to fully and successfully populate lvmetad just leave
+	 * the existing "update in progress" token in place so lvmetad will
+	 * time out our update and force another command to do it.
+	 * (We could try to set the token to empty here, but that doesn't
+	 * help much.)
+	 */
+	if (!ret)
+		return 0;
+
 	if (!_token_update(NULL)) {
 		log_error("Failed to update lvmetad token after device scan.");
 		return 0;
@@ -1841,27 +1979,13 @@ static int _lvmetad_pvscan_all_devs(struct cmd_context *cmd, activation_handler 
 	 * If lvmetad is disabled, and no lvm1 metadata was seen and no
 	 * duplicate PVs were seen, then re-enable lvmetad.
 	 */
-	if (ret && lvmetad_is_disabled(cmd, &reason) &&
+	if (lvmetad_is_disabled(cmd, &reason) &&
 	    !lvmcache_found_duplicate_pvs() && !_found_lvm1_metadata) {
 		log_debug_lvmetad("Enabling lvmetad which was previously disabled.");
 		lvmetad_clear_disabled(cmd);
 	}
 
 	return ret;
-}
-
-int lvmetad_pvscan_all_devs(struct cmd_context *cmd, activation_handler handler, int do_wait)
-{
-	return _lvmetad_pvscan_all_devs(cmd, handler, 0, do_wait);
-}
-
-/* 
- * FIXME Implement this function, skipping PVs known to belong to local or clustered,
- * non-exported VGs.
- */
-int lvmetad_pvscan_foreign_vgs(struct cmd_context *cmd, activation_handler handler)
-{
-	return _lvmetad_pvscan_all_devs(cmd, handler, 1, 1);
 }
 
 int lvmetad_vg_clear_outdated_pvs(struct volume_group *vg)
@@ -1873,6 +1997,7 @@ int lvmetad_vg_clear_outdated_pvs(struct volume_group *vg)
 	if (!id_write_format(&vg->id, uuid, sizeof(uuid)))
 		return_0;
 
+	log_debug_lvmetad("Sending lvmetad vg_clear_outdated_pvs");
 	reply = _lvmetad_send(vg->cmd, "vg_clear_outdated_pvs", "vgid = %s", uuid, NULL);
 	result = _lvmetad_handle_reply(reply, "vg_clear_outdated_pvs", vg->name, NULL);
 	daemon_reply_destroy(reply);
@@ -2110,6 +2235,8 @@ void lvmetad_validate_global_cache(struct cmd_context *cmd, int force)
 
 	reply = daemon_send_simple(_lvmetad, "get_global_info",
 				   "token = %s", "skip",
+				   "pid = " FMTd64, (int64_t)getpid(),
+				   "cmd = %s", get_cmd_name(),
 				   NULL);
 
 	if (reply.error) {
@@ -2145,7 +2272,7 @@ void lvmetad_validate_global_cache(struct cmd_context *cmd, int force)
 	 * we rescanned for the token, and the time we acquired the global
 	 * lock.)
 	 */
-	if (!lvmetad_pvscan_all_devs(cmd, NULL, 1)) {
+	if (!lvmetad_pvscan_all_devs(cmd, 1)) {
 		log_warn("WARNING: Not using lvmetad because cache update failed.");
 		lvmetad_make_unused(cmd);
 		return;
@@ -2168,6 +2295,8 @@ void lvmetad_validate_global_cache(struct cmd_context *cmd, int force)
 	reply = daemon_send_simple(_lvmetad, "set_global_info",
 				   "token = %s", "skip",
 				   "global_invalid = " FMTd64, INT64_C(0),
+				   "pid = " FMTd64, (int64_t)getpid(),
+				   "cmd = %s", get_cmd_name(),
 				   NULL);
 	if (reply.error)
 		log_error("lvmetad_validate_global_cache set_global_info error %d", reply.error);
@@ -2214,6 +2343,7 @@ int lvmetad_vg_is_foreign(struct cmd_context *cmd, const char *vgname, const cha
 	if (!id_write_format((const struct id*)vgid, uuid, sizeof(uuid)))
 		return_0;
 
+	log_debug_lvmetad("Sending lvmetad vg_clear_outdated_pvs");
 	reply = _lvmetad_send(cmd, "vg_lookup",
 			      "uuid = %s", uuid,
 			      "name = %s", vgname,
@@ -2374,12 +2504,14 @@ void lvmetad_set_disabled(struct cmd_context *cmd, const char *reason)
 	if (!_lvmetad_use)
 		return;
 
-	log_debug_lvmetad("lvmetad send disabled %s", reason);
+	log_debug_lvmetad("Sending lvmetad disabled %s", reason);
 
 	reply = daemon_send_simple(_lvmetad, "set_global_info",
 				   "token = %s", "skip",
 				   "global_disable = " FMTd64, (int64_t)1,
 				   "disable_reason = %s", reason,
+				   "pid = " FMTd64, (int64_t)getpid(),
+				   "cmd = %s", get_cmd_name(),
 				   NULL);
 	if (reply.error)
 		log_error("Failed to send message to lvmetad %d", reply.error);
@@ -2397,11 +2529,13 @@ void lvmetad_clear_disabled(struct cmd_context *cmd)
 	if (!_lvmetad_use)
 		return;
 
-	log_debug_lvmetad("lvmetad send disabled 0");
+	log_debug_lvmetad("Sending lvmetad disabled 0");
 
 	reply = daemon_send_simple(_lvmetad, "set_global_info",
 				   "token = %s", "skip",
 				   "global_disable = " FMTd64, (int64_t)0,
+				   "pid = " FMTd64, (int64_t)getpid(),
+				   "cmd = %s", get_cmd_name(),
 				   NULL);
 	if (reply.error)
 		log_error("Failed to send message to lvmetad %d", reply.error);
@@ -2420,6 +2554,8 @@ int lvmetad_is_disabled(struct cmd_context *cmd, const char **reason)
 
 	reply = daemon_send_simple(_lvmetad, "get_global_info",
 				   "token = %s", "skip",
+				   "pid = " FMTd64, (int64_t)getpid(),
+				   "cmd = %s", get_cmd_name(),
 				   NULL);
 
 	if (reply.error) {
@@ -2450,9 +2586,6 @@ int lvmetad_is_disabled(struct cmd_context *cmd, const char **reason)
 
 		} else if (strstr(reply_reason, LVMETAD_DISABLE_REASON_DUPLICATES)) {
 			*reason = "duplicate PVs were found";
-
-		} else if (strstr(reply_reason, LVMETAD_DISABLE_REASON_SCANERROR)) {
-			*reason = "scanning devices failed";
 
 		} else {
 			*reason = "<unknown>";

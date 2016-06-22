@@ -20,7 +20,8 @@ Build-Depends:
  libudev-dev,
  python-all-dev,
  python3-all-dev,
- pkg-config
+ pkg-config,
+ systemd
 Standards-Version: 3.9.6
 Homepage: http://sources.redhat.com/lvm2/
 Vcs-Git: git://anonscm.debian.org/pkg-lvm/lvm2.git
@@ -57,14 +58,14 @@ Description: Linux Logical Volume Manager
 Package: clvm
 Priority: extra
 Architecture: linux-any
-Depends: ${shlibs:Depends}, ${misc:Depends}, lvm2 (= ${binary:Version}), lsb-base
-Recommends: corosync | openais | cman
+Depends: ${shlibs:Depends}, ${misc:Depends}, lvm2 (= ${binary:Version}), dlm-controld
+Suggests: pacemaker, resource-agents
 Multi-Arch: foreign
-Description: Cluster LVM Daemon for lvm2
+Description: Cluster extensions for userland logical volume management tools
  This package provides the clustering interface for lvm2, when used with
- Red Hat's "cman" or corosync based (eg Pacemaker) cluster infrastructure.
- It allows logical volumes to be created on shared storage devices
- (eg Fibre Channel, or iSCSI).
+ corosync based (eg Pacemaker) cluster infrastructure.  It allows
+ logical volumes to be created on shared storage devices (eg Fibre
+ Channel, or iSCSI).
 
 Package: libdevmapper-dev
 Section: libdevel

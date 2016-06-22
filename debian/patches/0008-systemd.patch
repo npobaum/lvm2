@@ -1,17 +1,19 @@
-From 310b8e1b30571b88b000fb4fe97653667accd098 Mon Sep 17 00:00:00 2001
+From 29c9bfb5a832c6a6537ad8449b7bbbbb72b3d64f Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 30 Jun 2015 11:46:12 +0200
 Subject: systemd
 
 ---
- scripts/lvm2_activation_generator_systemd_red_hat.c | 2 +-
- 1 file changed, 1 insertion(+), 1 deletion(-)
+ scripts/lvm2_activation_generator_systemd_red_hat.c        | 2 +-
+ scripts/lvm2_cluster_activation_systemd_red_hat.service.in | 2 +-
+ scripts/lvm2_clvmd_systemd_red_hat.service.in              | 4 ++--
+ 3 files changed, 4 insertions(+), 4 deletions(-)
 
 diff --git a/scripts/lvm2_activation_generator_systemd_red_hat.c b/scripts/lvm2_activation_generator_systemd_red_hat.c
-index 62467bd..b75bf80 100644
+index d83e721..dbad1c7 100644
 --- a/scripts/lvm2_activation_generator_systemd_red_hat.c
 +++ b/scripts/lvm2_activation_generator_systemd_red_hat.c
-@@ -137,7 +137,7 @@ static int generate_unit(const char *dir, int unit, int sysinit_needed)
+@@ -131,7 +131,7 @@ static int generate_unit(const char *dir, int unit, int sysinit_needed)
  		fprintf(f, "After=%s iscsi.service fcoe.service\n"
  			"Before=remote-fs-pre.target shutdown.target\n\n"
  			"[Service]\n"
@@ -20,3 +22,31 @@ index 62467bd..b75bf80 100644
  	} else {
  		if (unit == UNIT_EARLY) {
  			fputs("After=systemd-udev-settle.service\n"
+diff --git a/scripts/lvm2_cluster_activation_systemd_red_hat.service.in b/scripts/lvm2_cluster_activation_systemd_red_hat.service.in
+index 970e93a..5f8b415 100644
+--- a/scripts/lvm2_cluster_activation_systemd_red_hat.service.in
++++ b/scripts/lvm2_cluster_activation_systemd_red_hat.service.in
+@@ -9,7 +9,7 @@ Conflicts=shutdown.target
+ [Service]
+ Type=simple
+ RemainAfterExit=yes
+-EnvironmentFile=-@sysconfdir@/sysconfig/clvmd
++EnvironmentFile=-/etc/default/clvmd
+ ExecStart=@systemdutildir@/lvm2-cluster-activation activate
+ ExecStop=@systemdutildir@/lvm2-cluster-activation deactivate
+ 
+diff --git a/scripts/lvm2_clvmd_systemd_red_hat.service.in b/scripts/lvm2_clvmd_systemd_red_hat.service.in
+index f506fa8..ddf9853 100644
+--- a/scripts/lvm2_clvmd_systemd_red_hat.service.in
++++ b/scripts/lvm2_clvmd_systemd_red_hat.service.in
+@@ -13,8 +13,8 @@ Conflicts=shutdown.target
+ [Service]
+ Type=forking
+ Environment=CLVMD_OPTS=-T30
+-EnvironmentFile=-@sysconfdir@/sysconfig/clvmd
+-ExecStart=@sbindir@/clvmd $CLVMD_OPTS
++EnvironmentFile=-/etc/default/clvmd
++ExecStart=/usr/sbin/clvmd $CLVMD_OPTS
+ SuccessExitStatus=5
+ TimeoutStartSec=30
+ TimeoutStopSec=10
