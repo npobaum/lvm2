@@ -457,18 +457,15 @@ int lvm_lv_resize(const lv_t lv, uint64_t new_size)
 {
 	int rc = 0;
 	struct lvresize_params lp = {
-		.lv_name = lv->name,
 		.sign = SIGN_NONE,
 		.percent = PERCENT_NONE,
 		.resize = LV_ANY,
 		.size = new_size >> SECTOR_SHIFT,
-		.ac_force = 1,	/* Assume the user has a good backup? */
-		.sizeargs = 1,
+		.force = 1,	/* Assume the user has a good backup? */
 	};
 	struct saved_env e = store_user_env(lv->vg->cmd);
 
-	if (!lv_resize_prepare(lv->vg->cmd, lv, &lp, &lv->vg->pvs) ||
-	    !lv_resize(lv->vg->cmd, lv, &lp, &lv->vg->pvs)) {
+	if (!lv_resize(lv, &lp, &lv->vg->pvs)) {
 		/* FIXME Improve msg */
 		log_error("LV resize failed.");
 		/* FIXME Define consistent symbolic return codes */

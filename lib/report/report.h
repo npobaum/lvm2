@@ -21,16 +21,18 @@
 #include "activate.h"
 
 typedef enum {
-	LVS		= 1,
-	LVSINFO		= 2,
-	LVSSTATUS	= 4,
-	LVSINFOSTATUS   = 8,
-	PVS		= 16,
-	VGS		= 32,
-	SEGS		= 64,
-	PVSEGS		= 128,
-	LABEL		= 256,
-	DEVTYPES	= 512
+	CMDLOG		= 1,
+	FULL		= 2,
+	LVS		= 4,
+	LVSINFO		= 8,
+	LVSSTATUS	= 16,
+	LVSINFOSTATUS   = 32,
+	PVS		= 64,
+	VGS		= 128,
+	SEGS		= 256,
+	PVSEGS		= 512,
+	LABEL		= 1024,
+	DEVTYPES	= 2048
 } report_type_t;
 
 /*
@@ -58,6 +60,20 @@ struct selection_handle {
 	int selected;
 };
 
+struct cmd_log_item {
+	uint32_t seq_num;
+	const char *type;
+	const char *context;
+	const char *object_type_name;
+	const char *object_name;
+	const char *object_id;
+	const char *object_group;
+	const char *object_group_id;
+	const char *msg;
+	int current_errno;
+	int ret_code;
+};
+
 struct field;
 struct report_handle;
 struct processing_handle;
@@ -65,13 +81,21 @@ struct processing_handle;
 typedef int (*field_report_fn) (struct report_handle * dh, struct field * field,
 				const void *data);
 
+int report_format_init(struct cmd_context *cmd, dm_report_group_type_t *report_group_type,
+		       struct dm_report_group **report_group, struct dm_report **log_rh,
+		       int *log_only, log_report_t *saved_log_report_state);
+
 void *report_init(struct cmd_context *cmd, const char *format, const char *keys,
 		  report_type_t *report_type, const char *separator,
 		  int aligned, int buffered, int headings, int field_prefixes,
-		  int quoted, int columns_as_rows, const char *selection);
+		  int quoted, int columns_as_rows, const char *selection,
+		  int multiple_output);
+int report_get_single_selection(struct cmd_context *cmd, report_type_t report_type, const char **selection);
 void *report_init_for_selection(struct cmd_context *cmd, report_type_t *report_type,
 				const char *selection);
-const char *report_get_field_prefix(report_type_t report_type);
+int report_get_prefix_and_desc(report_type_t report_type_id,
+			       const char **report_prefix,
+			       const char **report_desc);
 int report_for_selection(struct cmd_context *cmd,
 			 struct processing_handle *parent_handle,
 			 struct physical_volume *pv,
@@ -84,6 +108,15 @@ int report_object(void *handle, int selection_only, const struct volume_group *v
 		  const struct lv_with_info_and_seg_status *lvdm,
 		  const struct label *label);
 int report_devtypes(void *handle);
+int report_cmdlog(void *handle, const char *type, const char *context,
+		  const char *object_type_name, const char *object_name,
+		  const char *object_id, const char *object_group,
+		  const char *object_group_id, const char *msg,
+		  int current_errno, int ret_code);
+#define REPORT_OBJECT_CMDLOG_NAME "status"
+#define REPORT_OBJECT_CMDLOG_SUCCESS "success"
+#define REPORT_OBJECT_CMDLOG_FAILURE "failure"
+int report_current_object_cmdlog(const char *type, const char *msg, int32_t ret_code);
 int report_output(void *handle);
 
 #endif

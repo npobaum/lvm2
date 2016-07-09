@@ -202,8 +202,9 @@ struct vg_info {
 #define GLFL_DISABLE_REASON_DIRECT     0x00000004
 #define GLFL_DISABLE_REASON_LVM1       0x00000008
 #define GLFL_DISABLE_REASON_DUPLICATES 0x00000010
+#define GLFL_DISABLE_REASON_VGRESTORE  0x00000020
 
-#define GLFL_DISABLE_REASON_ALL (GLFL_DISABLE_REASON_DIRECT | GLFL_DISABLE_REASON_LVM1 | GLFL_DISABLE_REASON_DUPLICATES)
+#define GLFL_DISABLE_REASON_ALL (GLFL_DISABLE_REASON_DIRECT | GLFL_DISABLE_REASON_LVM1 | GLFL_DISABLE_REASON_DUPLICATES | GLFL_DISABLE_REASON_VGRESTORE)
 
 #define VGFL_INVALID 0x00000001
 
@@ -2347,6 +2348,8 @@ static response set_global_info(lvmetad_state *s, request r)
 			reason_flags |= GLFL_DISABLE_REASON_LVM1;
 		if (strstr(reason, LVMETAD_DISABLE_REASON_DUPLICATES))
 			reason_flags |= GLFL_DISABLE_REASON_DUPLICATES;
+		if (strstr(reason, LVMETAD_DISABLE_REASON_VGRESTORE))
+			reason_flags |= GLFL_DISABLE_REASON_VGRESTORE;
 	}
 
 	if (global_invalid != -1) {
@@ -2404,10 +2407,11 @@ static response get_global_info(lvmetad_state *s, request r)
 	pid = (int)daemon_request_int(r, "pid", 0);
 
 	if (s->flags & GLFL_DISABLE) {
-		snprintf(reason, REASON_BUF_SIZE - 1, "%s%s%s",
+		snprintf(reason, REASON_BUF_SIZE - 1, "%s%s%s%s",
 			 (s->flags & GLFL_DISABLE_REASON_DIRECT)     ? LVMETAD_DISABLE_REASON_DIRECT "," : "",
 			 (s->flags & GLFL_DISABLE_REASON_LVM1)       ? LVMETAD_DISABLE_REASON_LVM1 "," : "",
-			 (s->flags & GLFL_DISABLE_REASON_DUPLICATES) ? LVMETAD_DISABLE_REASON_DUPLICATES "," : "");
+			 (s->flags & GLFL_DISABLE_REASON_DUPLICATES) ? LVMETAD_DISABLE_REASON_DUPLICATES "," : "",
+			 (s->flags & GLFL_DISABLE_REASON_VGRESTORE)  ? LVMETAD_DISABLE_REASON_VGRESTORE "," : "");
 	}
 
 	if (!reason[0])
@@ -2460,10 +2464,10 @@ static response set_vg_info(lvmetad_state *s, request r)
 {
 	struct dm_config_tree *vg;
 	struct vg_info *info;
-	const char *name;
-	const char *uuid;
+	const char *name = NULL;
+	const char *uuid = NULL;
 	const int64_t new_version = daemon_request_int(r, "version", -1);
-	int64_t cache_version;
+	int64_t cache_version = -1;
 
 	if (new_version == -1)
 		goto out;
@@ -2496,6 +2500,9 @@ vers:
 	if (cache_version != -1 && new_version != -1 && cache_version >= new_version)
 		goto out;
 inval:
+	DEBUGLOG(s, "set info VG name %s uuid %s cache_version %d new_version %d",
+		 name ?: "none", uuid ?: "none", (int)cache_version, (int)new_version);
+
 	info = dm_hash_lookup(s->vgid_to_info, uuid);
 	if (!info) {
 		info = malloc(sizeof(struct vg_info));
@@ -2639,7 +2646,7 @@ static response dump(lvmetad_state *s)
 
 static response handler(daemon_state s, client_handle h, request r)
 {
-	response res = { 0 };
+	response res;
 	lvmetad_state *state = s.private;
 	char prev_token[128] = { 0 };
 	const char *rq;

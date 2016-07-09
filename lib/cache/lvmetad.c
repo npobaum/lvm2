@@ -644,13 +644,13 @@ static int _lvmetad_handle_reply(daemon_reply reply, const char *id, const char 
 		action = "clear info about all PVs";
 	else if (!strcmp(id, "vg_clear_outdated_pvs"))
 		action = "clear the list of outdated PVs";
-	else if (!strcmp(id, "vg_update")) {
+	else if (!strcmp(id, "set_vg_info"))
+		action = "set VG info";
+	else if (!strcmp(id, "vg_update"))
 		action = "update VG";
-		action_modifies = 1;
-	} else if (!strcmp(id, "vg_remove")) {
+	else if (!strcmp(id, "vg_remove"))
 		action = "remove VG";
-		action_modifies = 1;
-	} else if (!strcmp(id, "pv_found")) {
+	else if (!strcmp(id, "pv_found")) {
 		action = "update PV";
 		action_modifies = 1;
 	} else if (!strcmp(id, "pv_gone")) {
@@ -879,7 +879,8 @@ static int _pv_populate_lvmcache(struct cmd_context *cmd,
 		if (!id_read_format(&vgid, vgid_txt))
 			return_0;
 	} else
-		strcpy((char*)&vgid, fmt->orphan_vg_name);
+		/* NB uuid is short and NUL-terminated. */
+		(void) dm_strncpy((char*)&vgid, fmt->orphan_vg_name, sizeof(vgid));
 
 	if (!vgname)
 		vgname = fmt->orphan_vg_name;
@@ -955,7 +956,7 @@ struct volume_group *lvmetad_vg_lookup(struct cmd_context *cmd, const char *vgna
 {
 	struct volume_group *vg = NULL;
 	struct volume_group *vg2 = NULL;
-	daemon_reply reply = { 0 };
+	daemon_reply reply;
 	int found;
 	char uuid[64];
 	struct format_instance *fid = NULL;
@@ -1073,7 +1074,13 @@ struct volume_group *lvmetad_vg_lookup(struct cmd_context *cmd, const char *vgna
 			log_debug_lvmetad("Rescan VG %s because no lvmlockd lock is held", vgname);
 			rescan = 1;
 		} else if (dm_config_find_node(reply.cft->root, "vg_invalid")) {
-			log_debug_lvmetad("Rescan VG %s because lvmetad returned invalid", vgname);
+			if (!is_lockd_type(vg->lock_type)) {
+				/* Can happen if a previous command failed/crashed without updating lvmetad. */
+				log_warn("WARNING: Reading VG %s from disk because lvmetad metadata is invalid.", vgname);
+			} else {
+				/* This is normal when the VG was modified by another host. */
+				log_debug_lvmetad("Rescan VG %s because lvmetad returned invalid", vgname);
+			}
 			rescan = 1;
 		}
 
@@ -1085,6 +1092,8 @@ struct volume_group *lvmetad_vg_lookup(struct cmd_context *cmd, const char *vgna
 			if (!(vg2 = lvmetad_pvscan_vg(cmd, vg))) {
 				log_debug_lvmetad("VG %s from lvmetad not found during rescan.", vgname);
 				fid = NULL;
+				release_vg(vg);
+				vg = NULL;
 				goto out;
 			}
 			release_vg(vg);
@@ -1135,32 +1144,98 @@ static int _fixup_ignored(struct metadata_area *mda, void *baton) {
 	return 1;
 }
 
-int lvmetad_vg_update(struct volume_group *vg)
-{
-	daemon_reply reply;
-	struct dm_hash_node *n;
-	struct metadata_area *mda;
-	char mda_id[128], *num;
-	struct pv_list *pvl;
-	struct lvmcache_info *info;
-	struct _fixup_baton baton;
+/*
+ * After the VG is written to disk, but before it's committed,
+ * lvmetad is told the new seqno.  lvmetad sets the INVALID
+ * flag on the cached VG and saves the new seqno.
+ *
+ * After the VG is committed on disk, the command sends the
+ * new VG metadata, containing the new seqno.  lvmetad sees
+ * that it has the updated metadata and clears the INVALID
+ * flag on the cached VG.
+ *
+ * If the command fails after committing the metadata on disk
+ * but before sending the new metadata to lvmetad, then the
+ * next command that asks lvmetad for the metadata will get
+ * back the INVALID flag.  That command will then read the
+ * VG metadata from disk to use, and will send the latest
+ * metadata from disk to lvmetad which will clear the
+ * INVALID flag.
+ */
 
-	if (!vg)
-		return 0;
+int lvmetad_vg_update_pending(struct volume_group *vg)
+{
+	char uuid[64] __attribute__((aligned(8)));
+	daemon_reply reply;
 
 	if (!lvmetad_used() || test_mode())
 		return 1; /* fake it */
 
-	if (!vg->cft_precommitted) {
-		log_error(INTERNAL_ERROR "VG update without precommited");
+	if (!id_write_format(&vg->id, uuid, sizeof(uuid)))
+		return_0;
+
+	log_debug_lvmetad("Sending lvmetad pending VG %s (seqno %" PRIu32 ")", vg->name, vg->seqno);
+	reply = _lvmetad_send(vg->cmd, "set_vg_info",
+			      "name = %s", vg->name,
+			      "uuid = %s", uuid,
+			      "version = %"PRId64, (int64_t)vg->seqno,
+			      NULL);
+
+	if (!_lvmetad_handle_reply(reply, "set_vg_info", vg->name, NULL)) {
+		daemon_reply_destroy(reply);
+		return_0;
+	}
+
+	vg->lvmetad_update_pending = 1;
+
+	daemon_reply_destroy(reply);
+	return 1;
+}
+
+int lvmetad_vg_update_finish(struct volume_group *vg)
+{
+	char uuid[64] __attribute__((aligned(8)));
+	daemon_reply reply;
+	struct dm_hash_node *n;
+	struct metadata_area *mda;
+	char mda_id[128], *num;
+	struct dm_config_tree *vgmeta;
+	struct pv_list *pvl;
+	struct lvmcache_info *info;
+	struct _fixup_baton baton;
+
+	if (!vg->lvmetad_update_pending)
+		return 1;
+
+	if (!(vg->fid->fmt->features & FMT_PRECOMMIT))
+		return 1;
+
+	if (!lvmetad_used() || test_mode())
+		return 1; /* fake it */
+
+	if (!id_write_format(&vg->id, uuid, sizeof(uuid)))
+		return_0;
+
+	if (!(vgmeta = export_vg_to_config_tree(vg))) {
+		log_error("Failed to export VG to config tree.");
 		return 0;
 	}
 
-	log_debug_lvmetad("Sending lvmetad updated metadata for VG %s (seqno %" PRIu32 ")", vg->name, vg->seqno);
-	reply = _lvmetad_send(vg->cmd, "vg_update", "vgname = %s", vg->name,
-			      "metadata = %t", vg->cft_precommitted, NULL);
+	log_debug_lvmetad("Sending lvmetad updated VG %s (seqno %" PRIu32 ")", vg->name, vg->seqno);
+	reply = _lvmetad_send(vg->cmd, "vg_update",
+			      "vgname = %s", vg->name,
+			      "metadata = %t", vgmeta,
+			      NULL);
+
+	dm_config_destroy(vgmeta);
 
 	if (!_lvmetad_handle_reply(reply, "vg_update", vg->name, NULL)) {
+		/*
+		 * In this failure case, the VG cached in lvmetad remains in
+		 * the INVALID state (from lvmetad_vg_update_pending).
+		 * A subsequent command will see INVALID, ignore the cached
+		 * copy, read the VG from disk, and update the cached copy.
+		 */
 		daemon_reply_destroy(reply);
 		return 0;
 	}
@@ -1171,7 +1246,7 @@ int lvmetad_vg_update(struct volume_group *vg)
 		dm_hash_get_first(vg->fid->metadata_areas_index) : NULL;
 	while (n) {
 		mda = dm_hash_get_data(vg->fid->metadata_areas_index, n);
-		strcpy(mda_id, dm_hash_get_key(vg->fid->metadata_areas_index, n));
+		(void) dm_strncpy(mda_id, dm_hash_get_key(vg->fid->metadata_areas_index, n), sizeof(mda_id));
 		if ((num = strchr(mda_id, '_'))) {
 			*num = 0;
 			++num;
@@ -1193,10 +1268,40 @@ int lvmetad_vg_update(struct volume_group *vg)
 			return 0;
 	}
 
+	vg->lvmetad_update_pending = 0;
 	return 1;
 }
 
-int lvmetad_vg_remove(struct volume_group *vg)
+int lvmetad_vg_remove_pending(struct volume_group *vg)
+{
+	char uuid[64] __attribute__((aligned(8)));
+	daemon_reply reply;
+
+	if (!lvmetad_used() || test_mode())
+		return 1; /* fake it */
+
+	if (!id_write_format(&vg->id, uuid, sizeof(uuid)))
+		return_0;
+
+	/* Sending version/seqno 0 in set_vg_info will set the INVALID flag. */
+
+	log_debug_lvmetad("Sending lvmetad pending remove VG %s", vg->name);
+	reply = _lvmetad_send(vg->cmd, "set_vg_info",
+			      "name = %s", vg->name,
+			      "uuid = %s", uuid,
+			      "version = %d", 0,
+			      NULL);
+
+	if (!_lvmetad_handle_reply(reply, "set_vg_info", vg->name, NULL)) {
+		daemon_reply_destroy(reply);
+		return_0;
+	}
+
+	daemon_reply_destroy(reply);
+	return 1;
+}
+
+int lvmetad_vg_remove_finish(struct volume_group *vg)
 {
 	char uuid[64];
 	daemon_reply reply;
@@ -1204,6 +1309,8 @@ int lvmetad_vg_remove(struct volume_group *vg)
 
 	if (!lvmetad_used() || test_mode())
 		return 1; /* just fake it */
+
+	vg->lvmetad_update_pending = 0;
 
 	if (!id_write_format(&vg->id, uuid, sizeof(uuid)))
 		return_0;
@@ -1482,8 +1589,8 @@ int lvmetad_pv_found(struct cmd_context *cmd, const struct id *pvid, struct devi
 	daemon_reply reply;
 	struct lvmcache_info *info;
 	struct dm_config_tree *pvmeta, *vgmeta;
-	const char *status, *vgname;
-	int64_t changed;
+	const char *status = NULL, *vgname = NULL;
+	int64_t changed = 0;
 	int result;
 
 	if (!lvmetad_used() || test_mode())
@@ -1666,41 +1773,92 @@ static int _lvmetad_pvscan_single(struct metadata_area *mda, void *baton)
 
 static struct volume_group *lvmetad_pvscan_vg(struct cmd_context *cmd, struct volume_group *vg)
 {
+	char pvid_s[ID_LEN + 1] __attribute__((aligned(8)));
+	char uuid[64] __attribute__((aligned(8)));
+	struct label *label;
 	struct volume_group *vg_ret = NULL;
 	struct dm_config_tree *vgmeta_ret = NULL;
 	struct dm_config_tree *vgmeta;
-	struct pv_list *pvl;
+	struct pv_list *pvl, *pvl_new;
+	struct device_list *devl, *devl_new, *devlsafe;
+	struct dm_list pvs_scan;
+	struct dm_list pvs_drop;
+	struct dm_list pvs_new;
 	struct lvmcache_info *info;
 	struct format_instance *fid;
 	struct format_instance_ctx fic = { .type = 0 };
 	struct _lvmetad_pvscan_baton baton;
 	struct device *save_dev = NULL;
 	uint32_t save_seqno = 0;
+	int missing_devs = 0;
+	int check_new_pvs = 0;
+	int found;
 
+	dm_list_init(&pvs_scan);
+	dm_list_init(&pvs_drop);
+	dm_list_init(&pvs_new);
+
+	log_debug_lvmetad("Rescanning VG %s (seqno %u).", vg->name, vg->seqno);
+
+	/*
+	 * Another host may have added a PV to the VG, and some
+	 * commands do not always populate their lvmcache with
+	 * all devs from lvmetad, so they would fail to find
+	 * the new PV when scanning the VG.  So make sure this
+	 * command knows about all PVs from lvmetad.
+	 */
+	lvmcache_seed_infos_from_lvmetad(cmd);
+
+	/*
+	 * Start with the list of PVs that we last saw in the VG.
+	 * Some may now be gone, and some new PVs may have been added.
+	 */
 	dm_list_iterate_items(pvl, &vg->pvs) {
-		/* missing pv */
-		if (!pvl->pv->dev)
+		if (!(devl = dm_pool_zalloc(cmd->mem, sizeof(*devl))))
+			return_NULL;
+		devl->dev = pvl->pv->dev;
+		dm_list_add(&pvs_scan, &devl->list);
+	}
+
+scan_more:
+
+	/*
+	 * Run the equivalent of lvmetad_pvscan_single on each dev in the VG.
+	 */
+	dm_list_iterate_items_safe(devl, devlsafe, &pvs_scan) {
+		if (!devl->dev)
 			continue;
 
-		if (!(info = lvmcache_info_from_pvid((const char *)&pvl->pv->id, pvl->pv->dev, 0))) {
-			log_error("Failed to find cached info for PV %s.", pv_dev_name(pvl->pv));
-			return NULL;
+		log_debug_lvmetad("Rescan VG %s scanning %s.", vg->name, dev_name(devl->dev));
+
+		if (!label_read(devl->dev, &label, 0)) {
+			/* Another host removed this PV from the VG. */
+			log_debug_lvmetad("Rescan VG %s found %s was removed.", vg->name, dev_name(devl->dev));
+
+			if ((info = lvmcache_info_from_pvid(devl->dev->pvid, NULL, 0)))
+				lvmcache_del(info);
+
+			dm_list_move(&pvs_drop, &devl->list);
+			continue;
 		}
+
+		info = (struct lvmcache_info *) label->info;
 
 		baton.vg = NULL;
 		baton.fid = lvmcache_fmt(info)->ops->create_instance(lvmcache_fmt(info), &fic);
-
 		if (!baton.fid)
-			return NULL;
+			return_NULL;
 
 		if (baton.fid->fmt->features & FMT_OBSOLETE) {
+			log_debug_lvmetad("Ignoring obsolete format on PV %s in VG %s.", dev_name(devl->dev), vg->name);
 			lvmcache_fmt(info)->ops->destroy_instance(baton.fid);
-			log_warn("WARNING: Disabling lvmetad cache which does not support obsolete (lvm1) metadata.");
-			lvmetad_set_disabled(cmd, LVMETAD_DISABLE_REASON_LVM1);
-			_found_lvm1_metadata = 1;
-			return NULL;
+			dm_list_move(&pvs_drop, &devl->list);
+			continue;
 		}
 
+		/*
+		 * Read VG metadata from this dev's mdas.
+		 */
 		lvmcache_foreach_mda(info, _lvmetad_pvscan_single, &baton);
 
 		/*
@@ -1708,8 +1866,9 @@ static struct volume_group *lvmetad_pvscan_vg(struct cmd_context *cmd, struct vo
 		 * since we last read the VG.
 		 */
 		if (!baton.vg) {
-			log_debug_lvmetad("Did not find VG %s in scan of PV %s", vg->name, dev_name(pvl->pv->dev));
+			log_debug_lvmetad("Rescan VG %s did not find %s.", vg->name, dev_name(devl->dev));
 			lvmcache_fmt(info)->ops->destroy_instance(baton.fid);
+			dm_list_move(&pvs_drop, &devl->list);
 			continue;
 		}
 
@@ -1718,11 +1877,18 @@ static struct volume_group *lvmetad_pvscan_vg(struct cmd_context *cmd, struct vo
 		 * different VG since we last read the VG.
 		 */
 		if (strcmp(baton.vg->name, vg->name)) {
-			log_debug_lvmetad("Did not find VG %s in scan of PV %s which is now VG %s",
-					  vg->name, dev_name(pvl->pv->dev), baton.vg->name);
+			log_debug_lvmetad("Rescan VG %s found different VG %s on PV %s.",
+					  vg->name, baton.vg->name, dev_name(devl->dev));
 			release_vg(baton.vg);
+			dm_list_move(&pvs_drop, &devl->list);
 			continue;
 		}
+
+		/*
+		 * The VG metadata read from each dev should match.  Save the
+		 * metadata from the first dev, and compare it to the metadata
+		 * read from each other dev.
+		 */
 
 		if (!save_seqno)
 			save_seqno = baton.vg->seqno;
@@ -1735,11 +1901,11 @@ static struct volume_group *lvmetad_pvscan_vg(struct cmd_context *cmd, struct vo
 
 		if (!vgmeta_ret) {
 			vgmeta_ret = vgmeta;
-			save_dev = pvl->pv->dev;
+			save_dev = devl->dev;
 		} else {
 			if (compare_config(vgmeta_ret->root, vgmeta->root)) {
 				log_error("VG %s metadata comparison failed for device %s vs %s",
-					  vg->name, dev_name(pvl->pv->dev), save_dev ? dev_name(save_dev) : "none");
+					  vg->name, dev_name(devl->dev), save_dev ? dev_name(save_dev) : "none");
 				_log_debug_inequality(vg->name, vgmeta_ret->root, vgmeta->root);
 				dm_config_destroy(vgmeta);
 				dm_config_destroy(vgmeta_ret);
@@ -1749,9 +1915,73 @@ static struct volume_group *lvmetad_pvscan_vg(struct cmd_context *cmd, struct vo
 			dm_config_destroy(vgmeta);
 		}
 
+		/*
+		 * Look for any new PVs in the VG metadata that were not in our
+		 * previous version of the VG.  Add them to pvs_new to be
+		 * scanned in this loop just like the old PVs.
+		 */
+		if (!check_new_pvs) {
+			check_new_pvs = 1;
+			dm_list_iterate_items(pvl_new, &baton.vg->pvs) {
+				found = 0;
+				dm_list_iterate_items(pvl, &vg->pvs) {
+					if (pvl_new->pv->dev != pvl->pv->dev)
+						continue;
+					found = 1;
+					break;
+				}
+				if (found)
+					continue;
+				if (!pvl_new->pv->dev) {
+					strncpy(pvid_s, (char *) &pvl_new->pv->id, sizeof(pvid_s) - 1);
+					if (!id_write_format((const struct id *)&pvid_s, uuid, sizeof(uuid)))
+						stack;
+					log_error("Device not found for PV %s in VG %s", uuid, vg->name);
+					missing_devs++;
+					continue;
+				}
+				if (!(devl_new = dm_pool_zalloc(cmd->mem, sizeof(*devl_new))))
+					return_NULL;
+				devl_new->dev = pvl_new->pv->dev;
+				dm_list_add(&pvs_new, &devl_new->list);
+				log_debug_lvmetad("Rescan VG %s found %s was added.", vg->name, dev_name(devl_new->dev));
+			}
+		}
+
 		release_vg(baton.vg);
 	}
 
+	/*
+	 * Do the same scanning above for any new PVs.
+	 */
+	if (!dm_list_empty(&pvs_new)) {
+		dm_list_init(&pvs_scan);
+		dm_list_splice(&pvs_scan, &pvs_new);
+		dm_list_init(&pvs_new);
+		log_debug_lvmetad("Rescan VG %s found new PVs to scan.", vg->name);
+		goto scan_more;
+	}
+
+	if (missing_devs) {
+		if (vgmeta_ret)
+			dm_config_destroy(vgmeta_ret);
+		return_NULL;
+	}
+
+	/*
+	 * Remove pvs_drop entries from lvmetad.
+	 */
+	dm_list_iterate_items(devl, &pvs_drop) {
+		if (!devl->dev)
+			continue;
+		log_debug_lvmetad("Rescan VG %s dropping %s.", vg->name, dev_name(devl->dev));
+		if (!lvmetad_pv_gone_by_dev(devl->dev))
+			return_NULL;
+	}
+
+	/*
+	 * Update the VG in lvmetad.
+	 */
 	if (vgmeta_ret) {
 		fid = lvmcache_fmt(info)->ops->create_instance(lvmcache_fmt(info), &fic);
 		if (!(vg_ret = import_vg_from_config_tree(vgmeta_ret, fid))) {
@@ -1762,21 +1992,32 @@ static struct volume_group *lvmetad_pvscan_vg(struct cmd_context *cmd, struct vo
 
 		/*
 		 * Update lvmetad with the newly read version of the VG.
-		 * The "precommitted" name is a misnomer in this case,
-		 * but that is the field which lvmetad_vg_update() uses
-		 * to send the metadata cft to lvmetad.
+		 * When the seqno is unchanged the cached VG can be left.
 		 */
 		if (save_seqno != vg->seqno) {
-			log_debug_lvmetad("Update lvmetad from seqno %u to seqno %u for VG %s",
-					  vg->seqno, save_seqno, vg->name);
-			vg_ret->cft_precommitted = vgmeta_ret;
-			if (!lvmetad_vg_update(vg_ret))
+			dm_list_iterate_items(devl, &pvs_scan) {
+				if (!devl->dev)
+					continue;
+				log_debug_lvmetad("Rescan VG %s dropping to replace %s.", vg->name, dev_name(devl->dev));
+				if (!lvmetad_pv_gone_by_dev(devl->dev))
+					return_NULL;
+			}
+
+			log_debug_lvmetad("Rescan VG %s updating lvmetad from seqno %u to seqno %u.",
+					  vg->name, vg->seqno, save_seqno);
+
+			/*
+			 * If this vg_update fails the cached metadata in
+			 * lvmetad will remain invalid.
+			 */
+			vg_ret->lvmetad_update_pending = 1;
+			if (!lvmetad_vg_update_finish(vg_ret))
 				log_error("Failed to update lvmetad with new VG meta");
-			vg_ret->cft_precommitted = NULL;
 		}
 		dm_config_destroy(vgmeta_ret);
 	}
 out:
+	log_debug_lvmetad("Rescan VG %s done (seqno %u).", vg_ret->name, vg_ret->seqno);
 	return vg_ret;
 }
 
@@ -2330,6 +2571,8 @@ void lvmetad_validate_global_cache(struct cmd_context *cmd, int force)
 		_lvmetad_get_pv_cache_list(cmd, &pvc_after);
 		_update_changed_pvs_in_udev(cmd, &pvc_before, &pvc_after);
 	}
+
+	log_debug_lvmetad("Validating global lvmetad cache finished");
 }
 
 int lvmetad_vg_is_foreign(struct cmd_context *cmd, const char *vgname, const char *vgid)
@@ -2586,6 +2829,9 @@ int lvmetad_is_disabled(struct cmd_context *cmd, const char **reason)
 
 		} else if (strstr(reply_reason, LVMETAD_DISABLE_REASON_DUPLICATES)) {
 			*reason = "duplicate PVs were found";
+
+		} else if (strstr(reply_reason, LVMETAD_DISABLE_REASON_VGRESTORE)) {
+			*reason = "vgcfgrestore is restoring VG metadata";
 
 		} else {
 			*reason = "<unknown>";

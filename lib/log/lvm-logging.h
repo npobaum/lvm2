@@ -20,6 +20,10 @@ __attribute__ ((format(printf, 5, 6)))
 void print_log(int level, const char *file, int line, int dm_errno_or_class,
 	       const char *format, ...);
 
+__attribute__ ((format(printf, 5, 6)))
+void print_log_libdm(int level, const char *file, int line, int dm_errno_or_class,
+		     const char *format, ...);
+
 #define LOG_LINE(l, x...) \
     print_log(l, __FILE__, __LINE__ , 0, ## x)
 
@@ -64,5 +68,44 @@ int log_suppress(int suppress);
 
 /* Suppress messages to syslog */
 void syslog_suppress(int suppress);
+
+/* Hooks to handle logging through report. */
+typedef enum {
+	LOG_REPORT_CONTEXT_NULL,
+	LOG_REPORT_CONTEXT_PROCESSING,
+	LOG_REPORT_CONTEXT_COUNT
+} log_report_context_t;
+
+typedef enum {
+	LOG_REPORT_OBJECT_TYPE_NULL,
+	LOG_REPORT_OBJECT_TYPE_ORPHAN,
+	LOG_REPORT_OBJECT_TYPE_PV,
+	LOG_REPORT_OBJECT_TYPE_LABEL,
+	LOG_REPORT_OBJECT_TYPE_VG,
+	LOG_REPORT_OBJECT_TYPE_LV,
+	LOG_REPORT_OBJECT_TYPE_COUNT
+} log_report_object_type_t;
+
+typedef struct log_report {
+	struct dm_report *report;
+	log_report_context_t context;
+	log_report_object_type_t object_type;
+	const char *object_name;
+	const char *object_id;
+	const char *object_group;
+	const char *object_group_id;
+} log_report_t;
+
+log_report_t log_get_report_state(void);
+void log_restore_report_state(log_report_t log_report);
+
+void log_set_report(struct dm_report *report);
+void log_set_report_context(log_report_context_t context);
+void log_set_report_object_type(log_report_object_type_t object_type);
+void log_set_report_object_group_and_group_id(const char *group, const char *group_id);
+void log_set_report_object_name_and_id(const char *name, const char *id);
+
+const char *log_get_report_context_name(log_report_context_t context);
+const char *log_get_report_object_type_name(log_report_object_type_t object_type);
 
 #endif

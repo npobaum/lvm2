@@ -365,7 +365,7 @@ static void _init_logging(struct cmd_context *cmd)
 	/* Tell device-mapper about our logging */
 #ifdef DEVMAPPER_SUPPORT
 	if (!dm_log_is_non_default())
-		dm_log_with_errno_init(print_log);
+		dm_log_with_errno_init(print_log_libdm);
 #endif
 	reset_log_duplicated();
 	reset_lvm_errno(1);
@@ -1053,7 +1053,7 @@ static int _init_dev_cache(struct cmd_context *cmd)
 	return 1;
 }
 
-#define MAX_FILTERS 8
+#define MAX_FILTERS 9
 
 static struct dev_filter *_init_lvmetad_filter_chain(struct cmd_context *cmd)
 {
@@ -1077,6 +1077,13 @@ static struct dev_filter *_init_lvmetad_filter_chain(struct cmd_context *cmd)
 		if ((filters[nr_filt] = sysfs_filter_create()))
 			nr_filt++;
 	}
+
+	/* internal filter used by command processing. */
+	if (!(filters[nr_filt] = internal_filter_create())) {
+		log_error("Failed to create internal device filter");
+		goto bad;
+	}
+	nr_filt++;
 
 	/* global regex filter. Optional. */
 	if ((cn = find_config_tree_node(cmd, devices_global_filter_CFG, NULL))) {
@@ -1159,7 +1166,7 @@ bad:
  * If lvmetad is used, there are three filter chains:
  *
  *   - cmd->lvmetad_filter - the lvmetad filter chain used when scanning devs for lvmetad update:
- *     sysfs filter -> global regex filter -> type filter ->
+ *     sysfs filter -> internal filter -> global regex filter -> type filter ->
  *     usable device filter(FILTER_MODE_PRE_LVMETAD) ->
  *     mpath component filter -> partitioned filter ->
  *     md component filter -> fw raid filter
@@ -1173,7 +1180,7 @@ bad:
  * If lvmetad is not used, there's just one filter chain:
  *
  *   - cmd->filter == cmd->full_filter:
- *     persistent filter -> sysfs filter -> global regex filter ->
+ *     persistent filter -> sysfs filter -> internal filter -> global regex filter ->
  *     regex_filter -> type filter -> usable device filter(FILTER_MODE_NO_LVMETAD) ->
  *     mpath component filter -> partitioned filter -> md component filter -> fw raid filter
  *
@@ -2246,6 +2253,9 @@ void destroy_toolcontext(struct cmd_context *cmd)
 
 	if (cmd->cft_def_hash)
 		dm_hash_destroy(cmd->cft_def_hash);
+
+	if (cmd->log_rh)
+		dm_report_free(cmd->log_rh);
 
 	if (cmd->libmem)
 		dm_pool_destroy(cmd->libmem);

@@ -131,7 +131,7 @@ static int _lvcreate_name_params(struct cmd_context *cmd,
 				  "in one command is not yet supported.");
 			return 0;
 		}
-	} else if (lp->snapshot && !arg_count(cmd, virtualsize_ARG)) {
+	} else if (lp->snapshot && !arg_is_set(cmd, virtualsize_ARG)) {
 		/* argv[0] might be [vg/]origin */
 		if (!argc) {
 			log_error("Please specify a logical volume to act as "
@@ -414,14 +414,14 @@ static int _read_size_params(struct cmd_context *cmd,
 
 	lcp->virtual_size = arg_uint64_value(cmd, virtualsize_ARG, UINT64_C(0));
 
-	if (arg_count(cmd, extents_ARG)) {
-		if (arg_count(cmd, size_ARG)) {
+	if (arg_is_set(cmd, extents_ARG)) {
+		if (arg_is_set(cmd, size_ARG)) {
 			log_error("Please specify either size or extents (not both).");
 			return 0;
 		}
 		lp->extents = arg_uint_value(cmd, extents_ARG, 0);
 		lcp->percent = arg_percent_value(cmd, extents_ARG, PERCENT_NONE);
-	} else if (arg_count(cmd, size_ARG)) {
+	} else if (arg_is_set(cmd, size_ARG)) {
 		lcp->size = arg_uint64_value(cmd, size_ARG, UINT64_C(0));
 		lcp->percent = PERCENT_NONE;
 	} else if (!lp->snapshot && !seg_is_thin_volume(lp)) {
@@ -459,7 +459,7 @@ static int _read_raid_params(struct cmd_context *cmd,
 			     struct lvcreate_params *lp)
 {
 	if ((lp->stripes < 2) && segtype_is_raid10(lp->segtype)) {
-		if (arg_count(cmd, stripes_ARG)) {
+		if (arg_is_set(cmd, stripes_ARG)) {
 			/* User supplied the bad argument */
 			log_error("Segment type 'raid10' requires 2 or more stripes.");
 			return 0;
@@ -479,7 +479,7 @@ static int _read_raid_params(struct cmd_context *cmd,
 		return 0;
 	}
 
-	if (arg_count(cmd, mirrors_ARG) && segtype_is_raid(lp->segtype) &&
+	if (arg_is_set(cmd, mirrors_ARG) && segtype_is_raid(lp->segtype) &&
 	    !segtype_is_raid1(lp->segtype) && !segtype_is_raid10(lp->segtype)) {
 		log_error("Mirror argument cannot be used with segment type, %s",
 			  lp->segtype->name);
@@ -509,7 +509,7 @@ static int _read_mirror_and_raid_params(struct cmd_context *cmd,
 	const char *segtype_name;
 
 	/* Common mirror and raid params */
-	if (arg_count(cmd, mirrors_ARG)) {
+	if (arg_is_set(cmd, mirrors_ARG)) {
 		lp->mirrors = arg_uint_value(cmd, mirrors_ARG, 0) + 1;
 		if (segtype_is_raid1(lp->segtype)) {
 			segtype_name = SEG_TYPE_NAME_RAID1;
@@ -547,6 +547,13 @@ static int _read_mirror_and_raid_params(struct cmd_context *cmd,
 		/* Default to 2 mirrored areas if '--type mirror|raid1|raid10' */
 		lp->mirrors = seg_is_mirrored(lp) ? 2 : 1;
 
+	if (lp->stripes < 2 && segtype_is_any_raid0(lp->segtype))
+		if (arg_count(cmd, stripes_ARG)) {
+			/* User supplied the bad argument */
+			log_error("Segment type %s requires 2 or more stripes.", lp->segtype->name);
+			return 0;
+		}
+
 	lp->nosync = arg_is_set(cmd, nosync_ARG);
 
 	if (!(lp->region_size = arg_uint_value(cmd, regionsize_ARG, 0)) &&
@@ -555,7 +562,7 @@ static int _read_mirror_and_raid_params(struct cmd_context *cmd,
 		return 0;
 	}
 
-	if (lp->region_size & (lp->region_size - 1)) {
+	if (!is_power_of_2(lp->region_size)) {
 		log_error("Region size (%" PRIu32 ") must be a power of 2",
 			  lp->region_size);
 		return 0;
@@ -1036,7 +1043,7 @@ static int _lvcreate_params(struct cmd_context *cmd,
 	if (lp->snapshot && (lp->extents || lcp->size)) {
 		lp->chunk_size = arg_uint_value(cmd, chunksize_ARG, 8);
 		if (lp->chunk_size < 8 || lp->chunk_size > 1024 ||
-		    (lp->chunk_size & (lp->chunk_size - 1))) {
+		    !is_power_of_2(lp->chunk_size)) {
 			log_error("Chunk size must be a power of 2 in the "
 				  "range 4K to 512K.");
 			return 0;
@@ -1228,7 +1235,7 @@ static int _check_raid_parameters(struct volume_group *vg,
 		 * If number of devices was not supplied, we can infer from
 		 * the PVs given.
 		 */
-		if (!arg_count(cmd, stripes_ARG) &&
+		if (!arg_is_set(cmd, stripes_ARG) &&
 		    (devs > 2 * lp->segtype->parity_devs))
 			lp->stripes = devs - lp->segtype->parity_devs;
 
@@ -1238,12 +1245,13 @@ static int _check_raid_parameters(struct volume_group *vg,
 				  lp->segtype->name);
 			return 0;
 		}
-	} else if (segtype_is_raid10(lp->segtype)) {
-		if (!arg_count(cmd, stripes_ARG))
+	} else if (segtype_is_any_raid0(lp->segtype) ||
+		   segtype_is_raid10(lp->segtype)) {
+		if (!arg_is_set(cmd, stripes_ARG))
 			lp->stripes = devs / lp->mirrors;
 		if (lp->stripes < 2) {
-			log_error("Unable to create RAID10 LV,"
-				  " insufficient number of devices.");
+			log_error("Unable to create RAID(1)0 LV: "
+				  "insufficient number of devices.");
 			return 0;
 		}
 	}
@@ -1557,14 +1565,14 @@ int lvcreate(struct cmd_context *cmd, int argc, char **argv)
 	pp.lp = &lp;
 	pp.lcp = &lcp;
 
-        if (!(handle = init_processing_handle(cmd))) {
+        if (!(handle = init_processing_handle(cmd, NULL))) {
 		log_error("Failed to initialize processing handle.");
 		return ECMD_FAILED;
 	}
 
 	handle->custom_handle = &pp;
 
-	ret = process_each_vg(cmd, 0, NULL, lp.vg_name, NULL, READ_FOR_UPDATE, handle,
+	ret = process_each_vg(cmd, 0, NULL, lp.vg_name, NULL, READ_FOR_UPDATE, 0, handle,
 			      &_lvcreate_single);
 
 	_destroy_lvcreate_params(&lp);

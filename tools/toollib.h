@@ -69,9 +69,15 @@ int become_daemon(struct cmd_context *cmd, int skip_lvm);
  * a part of that reporting for display (dm_report_object).
  */
 struct processing_handle {
+	struct processing_handle *parent;
 	int internal_report_for_select;
 	int include_historical_lvs;
 	struct selection_handle *selection_handle;
+	dm_report_group_type_t report_group_type;
+	struct dm_report_group *report_group;
+	struct dm_report *log_rh;
+	int log_only;
+	log_report_t saved_log_report_state;
 	void *custom_handle;
 };
 
@@ -102,6 +108,7 @@ int process_each_vg(struct cmd_context *cmd,
 		    const char *one_vgname,
 		    struct dm_list *use_vgnames,
 		    uint32_t flags,
+		    int include_internal,
 		    struct processing_handle *handle,
 		    process_single_vg_fn_t process_single_vg);
 
@@ -141,7 +148,7 @@ int process_each_lv_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 			  int stop_on_error, struct processing_handle *handle,
 			  process_single_lv_fn_t process_single_lv);
 
-struct processing_handle *init_processing_handle(struct cmd_context *cmd);
+struct processing_handle *init_processing_handle(struct cmd_context *cmd, struct processing_handle *parent_handle);
 int init_selection_handle(struct cmd_context *cmd, struct processing_handle *handle,
 			  report_type_t initial_report_type);
 void destroy_processing_handle(struct cmd_context *cmd, struct processing_handle *handle);

@@ -28,7 +28,6 @@
 #include "str_list.h"
 #include "defaults.h"
 #include "lvm-exec.h"
-#include "lvm-signal.h"
 #include "memlock.h"
 #include "lvmlockd.h"
 
@@ -115,6 +114,7 @@ enum {
 	LV_TYPE_SPARE,
 	LV_TYPE_VIRTUAL,
 	LV_TYPE_RAID0,
+	LV_TYPE_RAID0_META,
 	LV_TYPE_RAID1,
 	LV_TYPE_RAID10,
 	LV_TYPE_RAID4,
@@ -164,6 +164,7 @@ static const char *_lv_type_names[] = {
 	[LV_TYPE_SPARE] =				"spare",
 	[LV_TYPE_VIRTUAL] =				"virtual",
 	[LV_TYPE_RAID0] =				SEG_TYPE_NAME_RAID0,
+	[LV_TYPE_RAID0_META] =				SEG_TYPE_NAME_RAID0_META,
 	[LV_TYPE_RAID1] =				SEG_TYPE_NAME_RAID1,
 	[LV_TYPE_RAID10] =				SEG_TYPE_NAME_RAID10,
 	[LV_TYPE_RAID4] =				SEG_TYPE_NAME_RAID4,
@@ -712,7 +713,7 @@ int get_default_region_size(struct cmd_context *cmd)
 {
 	int region_size = _get_default_region_size(cmd);
 
-	if (region_size & (region_size - 1)) {
+	if (!is_power_of_2(region_size)) {
 		region_size = _round_down_pow2(region_size);
 		log_verbose("Reducing region size to %u kiB (power of 2).",
 			    region_size / 2);
@@ -929,6 +930,7 @@ struct lv_segment *alloc_lv_segment(const struct segment_type *segtype,
 	}
 
 	if (segtype_is_raid(segtype) &&
+	    !segtype_is_raid0(segtype) &&
 	    !(seg->meta_areas = dm_pool_zalloc(mem, areas_sz))) {
 		dm_pool_free(mem, seg); /* frees everything alloced since seg */
 		return_NULL;
@@ -3301,7 +3303,8 @@ static struct alloc_handle *_alloc_init(struct cmd_context *cmd,
 
 void alloc_destroy(struct alloc_handle *ah)
 {
-	dm_pool_destroy(ah->mem);
+	if (ah)
+		dm_pool_destroy(ah->mem);
 }
 
 /*
@@ -3808,7 +3811,7 @@ static int _lv_extend_layered_lv(struct alloc_handle *ah,
 	if (seg_is_raid(seg)) {
 		stripes = 1;
 		stripe_size = 0;
-		if (seg_is_raid0(seg))
+		if (seg_is_any_raid0(seg))
 			area_multiple = seg->area_count;
 	}
 
@@ -3959,14 +3962,19 @@ int lv_extend(struct logical_volume *lv,
 	if (segtype_is_virtual(segtype))
 		return lv_add_virtual_segment(lv, 0u, extents, segtype);
 
-	if (!lv->le_count && segtype_is_pool(segtype)) {
-		/*
-		 * Pool allocations treat the metadata device like a mirror log.
-		 */
-		/* FIXME Support striped metadata pool */
-		log_count = 1;
-	} else if (segtype_is_raid(segtype) && !segtype_is_raid0(segtype) && !lv->le_count)
-		log_count = mirrors * stripes;
+	if (!lv->le_count) {
+		if (segtype_is_pool(segtype))
+			/*
+			 * Pool allocations treat the metadata device like a mirror log.
+			 */
+			/* FIXME Support striped metadata pool */
+			log_count = 1;
+		else if (segtype_is_raid0_meta(segtype))
+			/* Extend raid0 metadata LVs too */
+			log_count = stripes;
+		else if (segtype_is_raid(segtype) && !segtype_is_raid0(segtype))
+			log_count = mirrors * stripes;
+	}
 	/* FIXME log_count should be 1 for mirrors */
 
 	if (!(ah = allocate_extents(lv->vg, lv, segtype, stripes, mirrors,
@@ -4314,25 +4322,21 @@ int lv_rename(struct cmd_context *cmd, struct logical_volume *lv,
 static int _validate_stripesize(const struct volume_group *vg,
 				struct lvresize_params *lp)
 {
-
-	if (lp->ac_stripesize_value > (STRIPE_SIZE_LIMIT * 2)) {
+	if (lp->stripe_size > (STRIPE_SIZE_LIMIT * 2)) {
 		log_error("Stripe size cannot be larger than %s.",
 			  display_size(vg->cmd, (uint64_t) STRIPE_SIZE_LIMIT));
 		return 0;
 	}
 
-	if (!(vg->fid->fmt->features & FMT_SEGMENTS))
-		log_print_unless_silent("Varied stripesize not supported. Ignoring.");
-	else if (lp->ac_stripesize_value > vg->extent_size) {
+	if (lp->stripe_size > vg->extent_size) {
 		log_print_unless_silent("Reducing stripe size %s to maximum, "
 					"physical extent size %s.",
-					display_size(vg->cmd, lp->ac_stripesize_value),
+					display_size(vg->cmd, lp->stripe_size),
 					display_size(vg->cmd, vg->extent_size));
 		lp->stripe_size = vg->extent_size;
-	} else
-		lp->stripe_size = lp->ac_stripesize_value;
+	}
 
-	if (lp->stripe_size & (lp->stripe_size - 1)) {
+	if (!is_power_of_2(lp->stripe_size)) {
 		log_error("Stripe size must be power of 2.");
 		return 0;
 	}
@@ -4340,14 +4344,14 @@ static int _validate_stripesize(const struct volume_group *vg,
 	return 1;
 }
 
-static int _request_confirmation(const struct volume_group *vg,
-				 const struct logical_volume *lv,
+static int _request_confirmation(const struct logical_volume *lv,
 				 const struct lvresize_params *lp)
 {
+	const struct volume_group *vg = lv->vg;
 	struct lvinfo info = { 0 };
 
 	if (!lv_info(vg->cmd, lv, 0, &info, 1, 0) && driver_version(NULL, 0)) {
-		log_error("lv_info failed: aborting");
+		log_error("lv_info failed: aborting.");
 		return 0;
 	}
 
@@ -4370,15 +4374,13 @@ static int _request_confirmation(const struct volume_group *vg,
 
 	log_warn("THIS MAY DESTROY YOUR DATA (filesystem etc.)");
 
-	if (!lp->ac_force) {
+	if (!lp->force) {
 		if (yes_no_prompt("Do you really want to reduce %s? [y/n]: ",
 				  display_lvname(lv)) == 'n') {
-			log_error("Logical volume %s NOT reduced",
+			log_error("Logical volume %s NOT reduced.",
 				  display_lvname(lv));
 			return 0;
 		}
-		if (sigint_caught())
-			return_0;
 	}
 
 	return 1;
@@ -4393,12 +4395,14 @@ enum fsadm_cmd_e { FSADM_CMD_CHECK, FSADM_CMD_RESIZE };
  * FSADM_CMD --dry-run --verbose --force check lv_path
  * FSADM_CMD --dry-run --verbose --force resize lv_path size
  */
-static int _fsadm_cmd(struct cmd_context *cmd,
-		      const struct volume_group *vg,
-		      const struct lvresize_params *lp,
-		      enum fsadm_cmd_e fcmd,
+static int _fsadm_cmd(enum fsadm_cmd_e fcmd,
+		      struct logical_volume *lv,
+		      uint32_t extents,
+		      int force,
 		      int *status)
 {
+	struct volume_group *vg = lv->vg;
+	struct cmd_context *cmd = vg->cmd;
 	char lv_path[PATH_MAX];
 	char size_buf[SIZE_BUF];
 	const char *argv[FSADM_CMD_MAX_ARGS + 2];
@@ -4412,7 +4416,7 @@ static int _fsadm_cmd(struct cmd_context *cmd,
 	if (verbose_level() >= _LOG_NOTICE)
 		argv[i++] = "--verbose";
 
-	if (lp->ac_force)
+	if (force)
 		argv[i++] = "--force";
 
 	argv[i++] = (fcmd == FSADM_CMD_RESIZE) ? "resize" : "check";
@@ -4421,8 +4425,8 @@ static int _fsadm_cmd(struct cmd_context *cmd,
 		*status = -1;
 
 	if (dm_snprintf(lv_path, sizeof(lv_path), "%s%s/%s", cmd->dev_dir,
-			vg->name, lp->lv_name) < 0) {
-		log_error("Couldn't create LV path for %s", lp->lv_name);
+			vg->name, lv->name) < 0) {
+		log_error("Couldn't create LV path for %s.", display_lvname(lv));
 		return 0;
 	}
 
@@ -4430,8 +4434,8 @@ static int _fsadm_cmd(struct cmd_context *cmd,
 
 	if (fcmd == FSADM_CMD_RESIZE) {
 		if (dm_snprintf(size_buf, sizeof(size_buf), FMTu64 "K",
-				(uint64_t) lp->extents * (vg->extent_size / 2)) < 0) {
-			log_error("Couldn't generate new LV size string");
+				(uint64_t) extents * (vg->extent_size / 2)) < 0) {
+			log_error("Couldn't generate new LV size string.");
 			return 0;
 		}
 
@@ -4443,7 +4447,7 @@ static int _fsadm_cmd(struct cmd_context *cmd,
 	return exec_cmd(cmd, argv, status, 1);
 }
 
-static int _adjust_amount(dm_percent_t percent, int policy_threshold, int *policy_amount)
+static uint32_t _adjust_amount(dm_percent_t percent, int policy_threshold, int policy_amount)
 {
 	if (!(DM_PERCENT_0 < percent && percent <= DM_PERCENT_100) ||
 	    percent <= (policy_threshold * DM_PERCENT_1))
@@ -4456,17 +4460,17 @@ static int _adjust_amount(dm_percent_t percent, int policy_threshold, int *polic
 	percent = (percent / policy_threshold + (DM_PERCENT_1 - 1) / 100) / (DM_PERCENT_1 / 100) - 100;
 
 	/* Use it if current policy amount is smaller */
-	if (*policy_amount < percent)
-		*policy_amount = percent;
-
-	return 1;
+	return (policy_amount < percent) ? (uint32_t) percent : (uint32_t) policy_amount;
 }
 
-static int _adjust_policy_params(struct logical_volume *lv, struct lvresize_params *lp)
+static int _lvresize_adjust_policy(const struct logical_volume *lv,
+				   uint32_t *amount, uint32_t *meta_amount)
 {
 	struct cmd_context *cmd = lv->vg->cmd;
 	dm_percent_t percent;
 	int policy_threshold, policy_amount;
+
+	*amount = *meta_amount = 0;
 
 	if (lv_is_thin_pool(lv)) {
 		policy_threshold =
@@ -4492,11 +4496,8 @@ static int _adjust_policy_params(struct logical_volume *lv, struct lvresize_para
 		}
 	}
 
-	if (policy_threshold >= 100) {
-		lp->extents = lp->poolmetadatasize = 0;
-		lp->sizeargs = 0;
+	if (policy_threshold >= 100)
 		return 1; /* nothing to do */
-	}
 
 	if (!policy_amount) {
 		log_error("Can't extend %s with %s autoextend percent set to 0%%.",
@@ -4513,16 +4514,9 @@ static int _adjust_policy_params(struct logical_volume *lv, struct lvresize_para
 	if (lv_is_thin_pool(lv)) {
 		if (!lv_thin_pool_percent(lv, 1, &percent))
 			return_0;
-		if (_adjust_amount(percent, policy_threshold, &policy_amount)) {
-			if (!thin_pool_feature_supported(lv, THIN_FEATURE_METADATA_RESIZE)) {
-				log_error_once("Online metadata resize for %s is not supported.",
-					       display_lvname(lv));
-				return 0;
-			}
-			lp->poolmetadatasize = (first_seg(lv)->metadata_lv->size *
-						policy_amount + 99) / 100;
-			lp->poolmetadatasign = SIGN_PLUS;
-		}
+
+		*meta_amount = _adjust_amount(percent, policy_threshold, policy_amount);
+
 		if (!lv_thin_pool_percent(lv, 0, &percent))
 			return_0;
 	} else {
@@ -4530,11 +4524,7 @@ static int _adjust_policy_params(struct logical_volume *lv, struct lvresize_para
 			return_0;
 	}
 
-	if (!_adjust_amount(percent, policy_threshold, &policy_amount))
-		return 1; /* nothing to do */
-
-	lp->extents = policy_amount;
-	lp->sizeargs = (lp->extents) ? 1 : 0;
+	*amount = _adjust_amount(percent, policy_threshold, policy_amount);
 
 	return 1;
 }
@@ -4567,91 +4557,8 @@ static uint32_t lvseg_get_stripes(struct lv_segment *seg, uint32_t *stripesize)
 	return 0;
 }
 
-static int _lvresize_poolmetadata_prepare(struct logical_volume *pool_lv,
-					  struct lvresize_params *lp)
-{
-	uint32_t extents;
-	struct logical_volume *lv = first_seg(pool_lv)->metadata_lv;
-	struct volume_group *vg = pool_lv->vg;
-
-	lp->poolmetadataextents = 0;
-
-	if (!thin_pool_feature_supported(pool_lv, THIN_FEATURE_METADATA_RESIZE)) {
-		log_error("Support for online metadata resize not detected.");
-		return 0;
-	}
-
-	if (lp->poolmetadatasize % vg->extent_size) {
-		lp->poolmetadatasize += vg->extent_size -
-			(lp->poolmetadatasize % vg->extent_size);
-		log_print_unless_silent("Rounding pool metadata size to boundary between physical extents: %s",
-					display_size(vg->cmd, lp->poolmetadatasize));
-	}
-
-	if (!(extents = extents_from_size(vg->cmd, lp->poolmetadatasize,
-					  vg->extent_size)))
-		return_0;
-
-	if (lp->poolmetadatasign == SIGN_PLUS) {
-		if (extents >= (MAX_EXTENT_COUNT - lv->le_count)) {
-			log_error("Unable to extend %s by %u extents, exceeds limit (%u).",
-				  lv->name, lv->le_count, MAX_EXTENT_COUNT);
-			return 0;
-		}
-		extents += lv->le_count;
-	}
-
-	if ((uint64_t)extents * vg->extent_size > DM_THIN_MAX_METADATA_SIZE) {
-		log_print_unless_silent("Rounding size to maximum supported size 16GiB "
-					"for metadata volume %s.", lv->name);
-		extents = (DM_THIN_MAX_METADATA_SIZE + vg->extent_size - 1) /
-			vg->extent_size;
-	}
-
-	/* FIXME Split here and move validation code earlier alongside rest of validation code */
-	if (extents == lv->le_count) {
-		log_print_unless_silent("Metadata volume %s has already %s.",
-					display_lvname(lv), display_size(vg->cmd, lv->size));
-		return 2;
-	}
-
-	lp->poolmetadataextents = extents;
-
-	return 1;
-}
-
-static int _lvresize_poolmetadata(struct logical_volume *pool_lv,
-				  struct lvresize_params *lp,
-				  struct dm_list *pvh)
-{
-	struct logical_volume *lv = first_seg(pool_lv)->metadata_lv;
-	struct volume_group *vg = lv->vg;
-	alloc_policy_t alloc = lp->ac_alloc ? : lv->alloc;
-	struct lv_segment *mseg = last_seg(lv);
-	uint32_t seg_mirrors = lv_mirror_count(lv);
-
-	if (!archive(vg))
-		return_0;
-
-	log_print_unless_silent("Extending logical volume %s to %s.",
-				display_lvname(lv),
-				display_size(vg->cmd, (uint64_t) lp->poolmetadataextents *
-					     vg->extent_size));
-	if (!lv_extend(lv,
-		       mseg->segtype,
-		       mseg->area_count / seg_mirrors,
-		       mseg->stripe_size,
-		       seg_mirrors,
-		       mseg->region_size,
-		       lp->poolmetadataextents - lv->le_count,
-		       pvh, alloc, 0))
-		return_0;
-
-	return 1;
-}
-
-static int _lvresize_check_lv(struct logical_volume *lv,
-			      struct lvresize_params *lp)
+static int _lvresize_check(struct logical_volume *lv,
+			   struct lvresize_params *lp)
 {
 	struct volume_group *vg = lv->vg;
 
@@ -4678,7 +4585,7 @@ static int _lvresize_check_lv(struct logical_volume *lv,
 		return 0;
 	}
 
-	if (lp->ac_policy && !lv_is_cow(lv) && !lv_is_thin_pool(lv)) {
+	if (lp->use_policies && !lv_is_cow(lv) && !lv_is_thin_pool(lv)) {
 		log_error("Policy-based resize is supported only for snapshot and thin pool volumes.");
 		return 0;
 	}
@@ -4701,26 +4608,40 @@ static int _lvresize_check_lv(struct logical_volume *lv,
 		return 0;
 	}
 
-	if (!lv_is_thin_pool(lv) && lp->poolmetadatasize) {
+	if (!lv_is_thin_pool(lv) && lp->poolmetadata_size) {
 		log_error("--poolmetadatasize can be used only with thin pools.");
 		return 0;
 	}
 
-	if (lp->ac_stripesize && !_validate_stripesize(vg, lp))
-		return_0;
-
-	if (lp->ac_stripes) {
-		if (!(vg->fid->fmt->features & FMT_SEGMENTS))
-			log_print_unless_silent("Varied striping not supported. Ignoring.");
-		else
-			lp->stripes = lp->ac_stripes_value;
+	if (lp->stripe_size) {
+		if (!(vg->fid->fmt->features & FMT_SEGMENTS)) {
+			log_print_unless_silent("Varied stripesize not supported. Ignoring.");
+			lp->stripe_size = lp->stripes = 0;
+		} else if (!_validate_stripesize(vg, lp))
+			return_0;
 	}
 
-	if (lp->ac_mirrors) {
-		if (!(vg->fid->fmt->features & FMT_SEGMENTS))
-			log_print_unless_silent("Mirrors not supported. Ignoring.");
-		else
-			lp->mirrors = lp->ac_mirrors_value;
+	if (lp->resizefs &&
+	    (lv_is_thin_pool(lv) ||
+	     lv_is_thin_pool_data(lv) ||
+	     lv_is_thin_pool_metadata(lv) ||
+	     lv_is_pool_metadata_spare(lv) ||
+	     lv_is_lockd_sanlock_lv(lv))) {
+		log_print_unless_silent("Ignoring --resizefs as volume %s does not have a filesystem.",
+					display_lvname(lv));
+		lp->resizefs = 0;
+	}
+
+	if (lp->stripes &&
+	    !(vg->fid->fmt->features & FMT_SEGMENTS)) {
+		log_print_unless_silent("Varied striping not supported. Ignoring.");
+		lp->stripes = 0;
+	}
+
+	if (lp->mirrors &&
+	    !(vg->fid->fmt->features & FMT_SEGMENTS)) {
+		log_print_unless_silent("Mirrors not supported. Ignoring.");
+		lp->mirrors = 0;
 	}
 
 	return 1;
@@ -4756,10 +4677,11 @@ static int _lvresize_adjust_size(struct volume_group *vg,
 /*
  * If percent options were used, convert them into actual numbers of extents.
  */
-static int _lvresize_extents_from_percent(struct logical_volume *lv, struct lvresize_params *lp,
+static int _lvresize_extents_from_percent(const struct logical_volume *lv,
+					  struct lvresize_params *lp,
 					  struct dm_list *pvh)
 {
-	struct volume_group *vg = lv->vg;
+	const struct volume_group *vg = lv->vg;
 	uint32_t pv_extent_count;
 	uint32_t old_extents = lp->extents;
 
@@ -4777,7 +4699,7 @@ static int _lvresize_extents_from_percent(struct logical_volume *lv, struct lvre
 							 (lp->sign != SIGN_MINUS));
 			break;
 		case PERCENT_PVS:
-			if (lp->argc) {
+			if (pvh != &vg->pvs) {
 				pv_extent_count = pv_list_extents_free(pvh);
 				lp->extents = percent_of_extents(lp->extents, pv_extent_count,
 								 (lp->sign != SIGN_MINUS));
@@ -4849,10 +4771,12 @@ static uint32_t _lv_pe_count(struct logical_volume *lv)
 }
 
 /* FIXME Avoid having variables like lp->extents mean different things at different places */
-static int _lvresize_adjust_extents(struct cmd_context *cmd, struct logical_volume *lv, 
-				    struct lvresize_params *lp, struct dm_list *pvh)
+static int _lvresize_adjust_extents(struct logical_volume *lv,
+				    struct lvresize_params *lp,
+				    struct dm_list *pvh)
 {
 	struct volume_group *vg = lv->vg;
+	struct cmd_context *cmd = vg->cmd;
 	uint32_t logical_extents_used = 0;
 	uint32_t physical_extents_used = 0;
 	uint32_t seg_stripes = 0, seg_stripesize = 0;
@@ -4871,19 +4795,16 @@ static int _lvresize_adjust_extents(struct cmd_context *cmd, struct logical_volu
 	uint32_t new_extents;
 	int reducing = 0;
 
-	if (lv_is_thin_pool(lv))
-		/* Manipulate the thin data layer underneath */
-		lv = seg_lv(first_seg(lv), 0);
-
 	seg_last = last_seg(lv);
-	/* Use segment type of last segment */
-	lp->segtype = seg_last->segtype;
 
 	/* FIXME Support LVs with mixed segment types */
-	if (lp->segtype != get_segtype_from_string(cmd, lp->ac_type ? : lp->segtype->name)) {
-		log_error("VolumeType does not match (%s)", lp->segtype->name);
+	if (lp->segtype && (lp->segtype != seg_last->segtype)) {
+		log_error("VolumeType does not match (%s).", lp->segtype->name);
 		return 0;
 	}
+
+	/* Use segment type of last segment */
+	lp->segtype = seg_last->segtype;
 
 	/* For virtual devices, just pretend the physical size matches. */
 	existing_physical_extents = saved_existing_physical_extents = _lv_pe_count(lv);
@@ -4904,10 +4825,10 @@ static int _lvresize_adjust_extents(struct cmd_context *cmd, struct logical_volu
 	if (!reducing) {
 		seg_mirrors = seg_is_mirrored(seg_last) ? lv_mirror_count(lv) : 0;
 
-		if (!lp->ac_mirrors && seg_mirrors) {
+		if (!lp->mirrors && seg_mirrors) {
 			log_print_unless_silent("Extending %" PRIu32 " mirror images.", seg_mirrors);
 			lp->mirrors = seg_mirrors;
-		} else if ((lp->ac_mirrors || seg_mirrors) && (lp->mirrors != seg_mirrors)) {
+		} else if ((lp->mirrors || seg_mirrors) && (lp->mirrors != seg_mirrors)) {
 			log_error("Cannot vary number of mirrors in LV yet.");
 			return 0;
 		}
@@ -4991,7 +4912,7 @@ static int _lvresize_adjust_extents(struct cmd_context *cmd, struct logical_volu
 
 		if (seg_size >= (MAX_EXTENT_COUNT - existing_logical_extents)) {
 			log_error("Unable to extend %s by %u logical extents: exceeds limit (%u).",
-				  lp->lv_name, seg_size, MAX_EXTENT_COUNT);
+				  display_lvname(lv), seg_size, MAX_EXTENT_COUNT);
 			return 0;
 		}
 
@@ -5008,19 +4929,19 @@ static int _lvresize_adjust_extents(struct cmd_context *cmd, struct logical_volu
 				seg_size = lp->extents - existing_logical_extents;	// Recalculate
 				if (lp->extents == existing_logical_extents) {
 					/* Signal that normal resizing is not required */
-					lp->sizeargs = 0;
 					return 1;
 				}
 			}
 		}
 	} else {  /* If reducing, find stripes, stripesize & size of last segment */
-		if (lp->ac_stripes || lp->ac_stripesize || lp->ac_mirrors)
+		if (lp->stripes || lp->stripe_size || lp->mirrors)
 			log_print_unless_silent("Ignoring stripes, stripesize and mirrors "
 						"arguments when reducing.");
 
 		if (lp->sign == SIGN_MINUS)  {
 			if (lp->extents >= existing_extents) {
-				log_error("Unable to reduce %s below 1 extent.", lp->lv_name);
+				log_error("Unable to reduce %s below 1 extent.",
+					  display_lvname(lv));
 				return 0;
 			}
 			new_extents = existing_extents - lp->extents;
@@ -5047,7 +4968,7 @@ static int _lvresize_adjust_extents(struct cmd_context *cmd, struct logical_volu
 						seg_size /= seg_mirrors;
 					lp->extents = logical_extents_used + seg_size;
 					break;
-				}
+			}
 			} else if (new_extents <= logical_extents_used + seg_logical_extents) {
 				seg_size = new_extents - logical_extents_used;
 				lp->extents = new_extents;
@@ -5071,12 +4992,6 @@ static int _lvresize_adjust_extents(struct cmd_context *cmd, struct logical_volu
 	}
 
 	if (lp->extents == existing_logical_extents) {
-		if (lp->poolmetadatasize || lp->ac_policy) {
-			/* Signal that normal resizing is not required */
-			lp->sizeargs = 0;
-			return 1;
-		}
-
 		if (!lp->resizefs) {
 			log_error("New size (%d extents) matches existing size "
 				  "(%d extents)", lp->extents, existing_logical_extents);
@@ -5136,7 +5051,7 @@ static int _lvresize_adjust_extents(struct cmd_context *cmd, struct logical_volu
 			return 0;
 		}
 		lp->resize = LV_EXTEND;
-	} else if ((lp->extents == existing_logical_extents) && !lp->ac_policy) {
+	} else if ((lp->extents == existing_logical_extents) && !lp->use_policies) {
 		if (!lp->resizefs) {
 			log_error("New size (%d extents) matches existing size "
 				  "(%d extents)", lp->extents, existing_logical_extents);
@@ -5150,7 +5065,7 @@ static int _lvresize_adjust_extents(struct cmd_context *cmd, struct logical_volu
 	 * extents of a mirror not to have an initial sync?
 	 */
 	if ((lp->extents > existing_logical_extents)) {
-		if (seg_is_mirrored(first_seg(lv)) && lp->ac_no_sync)
+		if (seg_is_mirrored(first_seg(lv)) && lp->nosync)
 			lv->status |= LV_NOTSYNCED;
 	}
 
@@ -5161,12 +5076,11 @@ static int _lvresize_adjust_extents(struct cmd_context *cmd, struct logical_volu
 }
 
 static int _lvresize_check_type(const struct logical_volume *lv,
-				struct lvresize_params *lp)
+				const struct lvresize_params *lp)
 {
 	if (lv_is_origin(lv)) {
 		if (lp->resize == LV_REDUCE) {
-			log_error("Snapshot origin volumes cannot be reduced "
-				  "in size yet.");
+			log_error("Snapshot origin volumes cannot be reduced in size yet.");
 			return 0;
 		}
 
@@ -5178,8 +5092,9 @@ static int _lvresize_check_type(const struct logical_volume *lv,
 	}
 
 	if (lp->resize == LV_REDUCE) {
-		if (lv_is_thin_pool(lv)) {
-			log_error("Thin pool volumes cannot be reduced in size yet.");
+		if (lv_is_thin_pool_data(lv)) {
+			log_error("Thin pool volumes %s cannot be reduced in size yet.",
+				  display_lvname(lv));
 			return 0;
 		}
 		if (lv_is_thin_pool_metadata(lv)) {
@@ -5187,6 +5102,13 @@ static int _lvresize_check_type(const struct logical_volume *lv,
 			return 0;
 		}
 	} else if (lp->resize == LV_EXTEND)  {
+		if (lv_is_thin_pool_metadata(lv) &&
+		    !thin_pool_feature_supported(find_pool_seg(first_seg(lv))->lv, THIN_FEATURE_METADATA_RESIZE)) {
+			log_error("Support for online metadata resize of %s not detected.",
+				  display_lvname(lv));
+			return 0;
+		}
+
 		/* Validate thin target supports bigger size of thin volume then external origin */
 		if (lv_is_thin_volume(lv) && first_seg(lv)->external_lv &&
 		    (lv->size > first_seg(lv)->external_lv->size) &&
@@ -5199,58 +5121,44 @@ static int _lvresize_check_type(const struct logical_volume *lv,
 	return 1;
 }
 
-static struct logical_volume *_lvresize_volume(struct cmd_context *cmd,
-					       struct logical_volume *lv,
-					       struct lvresize_params *lp,
-					       struct dm_list *pvh)
+static int _lvresize_volume(struct logical_volume *lv,
+			    struct lvresize_params *lp,
+			    struct dm_list *pvh)
 {
 	struct volume_group *vg = lv->vg;
-	struct logical_volume *lock_lv = NULL;
-	struct lv_segment *seg = NULL;
+	struct cmd_context *cmd = vg->cmd;
 	uint32_t old_extents;
 	int status;
-	alloc_policy_t alloc;
+	alloc_policy_t alloc = lp->alloc ? : lv->alloc;
 
-	if (lv_is_thin_pool(lv)) {
-		if (lp->resizefs) {
-			log_print_unless_silent("Ignoring --resizefs as thin pool volumes do not have filesystem.");
-			lp->resizefs = 0;
-		}
-		lock_lv = lv;
-		seg = first_seg(lv);
-		/* Switch to layered LV resizing */
-		lv = seg_lv(seg, 0);
-	}
-	alloc = lp->ac_alloc ? : lv->alloc;
-
-	if ((lp->resize == LV_REDUCE) && lp->argc)
+	if ((lp->resize == LV_REDUCE) && (pvh != &vg->pvs))
 		log_print_unless_silent("Ignoring PVs on command line when reducing.");
 
 	/* Request confirmation before operations that are often mistakes. */
 	if ((lp->resizefs || (lp->resize == LV_REDUCE)) &&
-	    !_request_confirmation(vg, lv, lp))
-		return_NULL;
+	    !_request_confirmation(lv, lp))
+		return_0;
 
 	if (lp->resizefs) {
 		if (!lp->nofsck &&
-		    !_fsadm_cmd(cmd, vg, lp, FSADM_CMD_CHECK, &status)) {
+		    !_fsadm_cmd(FSADM_CMD_CHECK, lv, 0, lp->force, &status)) {
 			if (status != FSADM_CHECK_FAILS_FOR_MOUNTED) {
 				log_error("Filesystem check failed.");
-				return NULL;
+				return 0;
 			}
 			/* some filesystems support online resize */
 		}
 
 		/* FIXME forks here */
 		if ((lp->resize == LV_REDUCE) &&
-		    !_fsadm_cmd(cmd, vg, lp, FSADM_CMD_RESIZE, NULL)) {
+		    !_fsadm_cmd(FSADM_CMD_RESIZE, lv, lp->extents, lp->force, NULL)) {
 			log_error("Filesystem resize failed.");
-			return NULL;
+			return 0;
 		}
 	}
 
 	if (!archive(vg))
-		return_NULL;
+		return_0;
 
 	old_extents = lv->le_count;
 	log_verbose("%sing logical volume %s to %s%s",
@@ -5260,16 +5168,18 @@ static struct logical_volume *_lvresize_volume(struct cmd_context *cmd,
 
 	if (lp->resize == LV_REDUCE) {
 		if (!lv_reduce(lv, lv->le_count - lp->extents))
-			return_NULL;
+			return_0;
 	} else if ((lp->extents > lv->le_count) && /* Ensure we extend */
 		   !lv_extend(lv, lp->segtype,
 			      lp->stripes, lp->stripe_size,
 			      lp->mirrors, first_seg(lv)->region_size,
 			      lp->extents - lv->le_count,
 			      pvh, alloc, lp->approx_alloc))
-		return_NULL;
+		return_0;
+	/* Check for over provisioning only when lv_extend() passed,
+	 * ATM this check does not fail */
 	else if (!pool_check_overprovisioning(lv))
-		return_NULL;
+		return_0;
 
 	if (old_extents == lv->le_count)
 		log_print_unless_silent("Size of logical volume %s unchanged from %s (%" PRIu32 " extents).",
@@ -5281,90 +5191,112 @@ static struct logical_volume *_lvresize_volume(struct cmd_context *cmd,
 					display_size(cmd, (uint64_t) old_extents * vg->extent_size), old_extents,
 					display_size(cmd, (uint64_t) lv->le_count * vg->extent_size), lv->le_count);
 
-	if (lock_lv) {
-	/* If thin metadata, must suspend thin pool */
-	} else if (lv_is_thin_pool_metadata(lv)) {
-		if (!(lock_lv = find_pool_lv(lv)))
-			return_NULL;
-	/* If snapshot, must suspend all associated devices */
-	} else if (lv_is_cow(lv))
-		lock_lv = origin_from_cow(lv);
-	else
-		lock_lv = lv;
-
-	return lock_lv;
+	return 1;
 }
 
-int lv_resize_prepare(struct cmd_context *cmd, struct logical_volume *lv,
-		      struct lvresize_params *lp, struct dm_list *pvh)
+static int _lvresize_prepare(struct logical_volume **lv,
+			     struct lvresize_params *lp,
+			     struct dm_list *pvh)
 {
-	if (!_lvresize_check_lv(lv, lp))
+	struct volume_group *vg = (*lv)->vg;
+
+	if (lv_is_thin_pool(*lv))
+		*lv = seg_lv(first_seg(*lv), 0); /* switch to data LV */
+
+	/* Resolve extents from size */
+	if (lp->size && !_lvresize_adjust_size(vg, lp->size, lp->sign, &lp->extents))
+		return_0;
+	else if (lp->extents && !_lvresize_extents_from_percent(*lv, lp, pvh))
 		return_0;
 
-	if (lp->ac_policy && !_adjust_policy_params(lv, lp))
+	if (lp->extents && !_lvresize_adjust_extents(*lv, lp, pvh))
 		return_0;
 
-	if (lp->size && !_lvresize_adjust_size(lv->vg, lp->size, lp->sign,
-					       &lp->extents))
-		return_0;
-	else if (lp->extents && !_lvresize_extents_from_percent(lv, lp, pvh))
-		return_0;
-
-	if (lp->extents && !_lvresize_adjust_extents(cmd, lv, lp, pvh))
-		return_0;
-
-	if ((lp->extents == lv->le_count) && lp->ac_policy) {
-		/* Nothing to do. */
-		lp->sizeargs = 0;
-		lp->poolmetadatasize = 0;
-	}
-
-	if (lp->extents && !_lvresize_check_type(lv, lp))
-		return_0;
-
-	if (lp->poolmetadatasize &&
-	    !_lvresize_poolmetadata_prepare(lv, lp))
+	if (lp->extents && !_lvresize_check_type(*lv, lp))
 		return_0;
 
 	return 1;
 }
 
-/* lv_resize_prepare MUST be called before this */
-int lv_resize(struct cmd_context *cmd, struct logical_volume *lv,
-	      struct lvresize_params *lp, struct dm_list *pvh)
+/* Set aux LV properties, we can't use those from command line */
+static struct logical_volume *_lvresize_setup_aux(struct logical_volume *lv,
+						  struct lvresize_params *lp)
+{
+	struct lv_segment *mseg = last_seg(lv);
+
+	lp->alloc = lv->alloc;
+	lp->mirrors = seg_is_mirrored(mseg) ? lv_mirror_count(lv) : 0;
+	lp->resizefs = 0;
+	lp->stripes = lp->mirrors ? mseg->area_count / lp->mirrors : 0;
+	lp->stripe_size = mseg->stripe_size;
+
+	return lv;
+}
+
+int lv_resize(struct logical_volume *lv,
+	      struct lvresize_params *lp,
+	      struct dm_list *pvh)
 {
 	struct volume_group *vg = lv->vg;
-	struct logical_volume *lock_lv = NULL;
-	int inactive = 0;
+	struct cmd_context *cmd = vg->cmd;
+	struct logical_volume *lock_lv = (struct logical_volume*) lv_lock_holder(lv);
+	struct logical_volume *aux_lv = NULL; /* Note: aux_lv never resizes fs */
+	struct lvresize_params aux_lp;
+	int activated = 0;
+	int ret = 0;
 
-	if (lv_is_cache_type(lv)) {
-		log_error("Unable to resize logical volumes of cache type.");
-		return 0;
-	}
-
-	/*
-	 * If the LV is locked from activation, this lock call is a no-op.
-	 * Otherwise, this acquires a transient lock on the lv (not PERSISTENT).
-	 */
-	if (!lockd_lv(cmd, lv, "ex", 0))
+	if (!_lvresize_check(lv, lp))
 		return_0;
 
-	if (lp->extents &&
-	    !(lock_lv = _lvresize_volume(cmd, lv, lp, pvh)))
-		return_0;
+	if (lp->use_policies) {
+		lp->extents = 0;
+		lp->sign = SIGN_PLUS;
+		lp->percent = PERCENT_LV;
 
-	if (lp->poolmetadataextents) {
-		if (!_lvresize_poolmetadata(lv, lp, pvh))
+		aux_lp = *lp;
+		if (!_lvresize_adjust_policy(lv, &lp->extents, &aux_lp.extents))
 			return_0;
-		lock_lv = lv;
+
+		if (!lp->extents) {
+			if (!aux_lp.extents)
+				return 1;  /* Nothing to do */
+			/* Resize thin-pool metadata as mainlv */
+			lv = first_seg(lv)->metadata_lv; /* metadata LV */
+			lp->extents = aux_lp.extents;
+		} else if (aux_lp.extents) {
+			/* Also resize thin-pool metadata */
+			aux_lv = _lvresize_setup_aux(first_seg(lv)->metadata_lv, &aux_lp);
+		}
+	} else if (lp->poolmetadata_size) {
+		if (!lp->extents && !lp->size) {
+			/* When only --poolmetadatasize give and not --size
+			 * swith directly to resize metadata LV */
+			lv = first_seg(lv)->metadata_lv;
+			lp->size = lp->poolmetadata_size;
+			lp->sign = lp->poolmetadata_sign;
+		} else {
+			aux_lp = *lp;
+			aux_lv = _lvresize_setup_aux(first_seg(lv)->metadata_lv, &aux_lp);
+			aux_lp.size = lp->poolmetadata_size;
+			aux_lp.sign = lp->poolmetadata_sign;
+		}
 	}
 
-	if (!lock_lv)
-		return 1; /* Nothing to do */
+	if (aux_lv && !_lvresize_prepare(&aux_lv, &aux_lp, pvh))
+		return_0;
 
-	if (lv_is_thin_pool(lock_lv) &&
-	    pool_is_active(lock_lv) &&
+	if (!_lvresize_prepare(&lv, lp, pvh))
+		return_0;
+
+	if (lv_is_thin_pool(lock_lv) &&  /* Lock holder is thin-pool */
 	    !lv_is_active(lock_lv)) {
+
+		if (!activation()) {
+			log_error("Cannot resize %s without using "
+				  "device-mapper kernel driver.",
+				  display_lvname(lock_lv));
+			return 0;
+		}
 		/*
 		 * Active 'hidden' -tpool can be waiting for resize, but the
 		 * pool LV itself might be inactive.
@@ -5373,12 +5305,32 @@ int lv_resize(struct cmd_context *cmd, struct logical_volume *lv,
 		 * then use suspend and resume and deactivate pool LV,
 		 * instead of searching for an active thin volume.
 		 */
-		inactive = 1;
 		if (!activate_lv_excl(cmd, lock_lv)) {
 			log_error("Failed to activate %s.", display_lvname(lock_lv));
 			return 0;
 		}
+
+		activated = 1;
 	}
+
+	/*
+	 * If the LV is locked from activation, this lock call is a no-op.
+	 * Otherwise, this acquires a transient lock on the lv (not PERSISTENT).
+	 */
+	if (!lockd_lv(cmd, lock_lv, "ex", 0))
+		return_0;
+
+	if (aux_lv) {
+		if (!_lvresize_volume(aux_lv, &aux_lp, pvh))
+			goto_bad;
+
+		/* store vg on disk(s) */
+		if (!lv_update_and_reload(lock_lv))
+			goto_bad;
+	}
+
+	if (!_lvresize_volume(lv, lp, pvh))
+		goto_bad;
 
 	/* store vg on disk(s) */
 	if (!lv_update_and_reload(lock_lv))
@@ -5394,25 +5346,23 @@ int lv_resize(struct cmd_context *cmd, struct logical_volume *lv,
 			goto_bad;
 
 		backup(vg);
-
-		if (inactive && !deactivate_lv(cmd, lock_lv)) {
-			log_error("Problem deactivating %s.", display_lvname(lock_lv));
-			return 0;
-		}
 	}
 
-	log_print_unless_silent("Logical volume %s successfully resized.", lp->lv_name);
+	log_print_unless_silent("Logical volume %s successfully resized.",
+				display_lvname(lv));
 
 	if (lp->resizefs && (lp->resize == LV_EXTEND) &&
-	    !_fsadm_cmd(cmd, vg, lp, FSADM_CMD_RESIZE, NULL))
+	    !_fsadm_cmd(FSADM_CMD_RESIZE, lv, lp->extents, lp->force, NULL))
 		return_0;
 
-	return 1;
+	ret = 1;
 bad:
-	if (inactive && !deactivate_lv(cmd, lock_lv))
+	if (activated && !deactivate_lv(cmd, lock_lv)) {
 		log_error("Problem deactivating %s.", display_lvname(lock_lv));
+		ret = 0;
+	}
 
-	return 0;
+	return ret;
 }
 
 char *generate_lv_name(struct volume_group *vg, const char *format,
@@ -6062,19 +6012,22 @@ int lv_remove_with_dependencies(struct cmd_context *cmd, struct logical_volume *
 			if (lv_info(lv->vg->cmd, lv, 0, &info, 1, 0) &&
 			    info.exists && info.live_table) {
 				if (!lv_snapshot_percent(lv, &snap_percent)) {
-					log_error("Failed to obtain merging snapshot progress percentage for logical volume %s.",
-						  lv->name);
+					log_error("Failed to obtain merging snapshot progress "
+						  "percentage for logical volume %s.",
+						  display_lvname(lv));
 					return 0;
 				}
 				if ((snap_percent != DM_PERCENT_INVALID) &&
 				     (snap_percent != LVM_PERCENT_MERGE_FAILED)) {
-					log_error("Can't remove merging snapshot logical volume \"%s\"",
-						  lv->name);
+					log_error("Can't remove merging snapshot logical volume %s.",
+						  display_lvname(lv));
 					return 0;
 				} else if ((snap_percent == LVM_PERCENT_MERGE_FAILED) &&
-					 (force == PROMPT) &&
-					 yes_no_prompt("Removing snapshot \"%s\" that failed to merge may leave origin \"%s\" inconsistent. "
-						       "Proceed? [y/n]: ", lv->name, origin_from_cow(lv)->name) == 'n')
+					   (force == PROMPT) &&
+					   yes_no_prompt("Removing snapshot %s that failed to merge "
+							 "may leave origin %s inconsistent. Proceed? [y/n]: ",
+							 display_lvname(lv),
+							 display_lvname(origin_from_cow(lv))) == 'n')
                                         goto no_remove;
 			}
 		} else if (!level && lv_is_virtual_origin(origin = origin_from_cow(lv)))
@@ -6102,22 +6055,22 @@ int lv_remove_with_dependencies(struct cmd_context *cmd, struct logical_volume *
 
 	if (lv_is_merging_origin(lv)) {
 		if (!deactivate_lv(cmd, lv)) {
-			log_error("Unable to fully deactivate merging origin \"%s\".",
-				  lv->name);
+			log_error("Unable to fully deactivate merging origin %s.",
+				  display_lvname(lv));
 			return 0;
 		}
 		if (!lv_remove_with_dependencies(cmd, find_snapshot(lv)->lv,
 						 force, level + 1)) {
-			log_error("Unable to remove merging origin \"%s\".",
-				  lv->name);
+			log_error("Unable to remove merging origin %s.",
+				  display_lvname(lv));
 			return 0;
 		}
 	}
 
 	if (!level && lv_is_merging_thin_snapshot(lv)) {
 		/* Merged snapshot LV is no longer available for the user */
-		log_error("Unable to remove \"%s\", volume is merged to \"%s\".",
-			  lv->name, first_seg(lv)->merge_lv->name);
+		log_error("Unable to remove %s, volume is merged to %s.",
+			  display_lvname(lv), display_lvname(first_seg(lv)->merge_lv));
 		return 0;
 	}
 
@@ -6133,10 +6086,10 @@ int lv_remove_with_dependencies(struct cmd_context *cmd, struct logical_volume *
 	    (force == PROMPT)) {
 		dm_list_iterate_items(lvl, &lv->vg->lvs)
 			if (lv_is_pool_metadata(lvl->lv)) {
-				if (yes_no_prompt("Removal of pool metadata spare logical volume"
-						  " \"%s\" disables automatic recovery attempts"
-						  " after damage to a thin or cache pool."
-						  " Proceed? [y/n]: ", lv->name) == 'n')
+				if (yes_no_prompt("Removal of pool metadata spare logical volume "
+						  "%s disables automatic recovery attempts "
+						  "after damage to a thin or cache pool. "
+						  "Proceed? [y/n]: ", display_lvname(lv)) == 'n')
 					goto no_remove;
 				break;
 			}
@@ -6145,7 +6098,7 @@ int lv_remove_with_dependencies(struct cmd_context *cmd, struct logical_volume *
 	return lv_remove_single(cmd, lv, force, 0);
 
 no_remove:
-	log_error("Logical volume \"%s\" not removed.", lv->name);
+	log_error("Logical volume %s not removed.", display_lvname(lv));
 
 	return 0;
 }
@@ -6223,16 +6176,16 @@ static int _split_parent_area(struct lv_segment *seg, uint32_t s,
 	while (parent_area_len > 0) {
 		/* Find the layer segment pointed at */
 		if (!(spvs = _find_seg_pvs_by_le(layer_seg_pvs, layer_le))) {
-			log_error("layer segment for %s:%" PRIu32 " not found",
-				  seg->lv->name, parent_le);
+			log_error("layer segment for %s:" FMTu32 " not found.",
+				  display_lvname(seg->lv), parent_le);
 			return 0;
 		}
 
 		if (spvs->le != layer_le) {
 			log_error("Incompatible layer boundary: "
-				  "%s:%" PRIu32 "[%" PRIu32 "] on %s:%" PRIu32,
-				  seg->lv->name, parent_le, s,
-				  seg_lv(seg, s)->name, layer_le);
+				  "%s:" FMTu32 "[" FMTu32 "] on %s:" FMTu32 ".",
+				  display_lvname(seg->lv), parent_le, s,
+				  display_lvname(seg_lv(seg, s)), layer_le);
 			return 0;
 		}
 

@@ -1,4 +1,4 @@
-From 83dee632da2ea3bbd40d2aa24a596c1bc9c7b89d Mon Sep 17 00:00:00 2001
+From f56b4902cf12e3599275b8e140c7129da022b103 Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 30 Jun 2015 11:46:10 +0200
 Subject: dm-event-api

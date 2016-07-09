@@ -599,26 +599,18 @@ struct pvcreate_params {
 };
 
 struct lvresize_params {
+	int argc;
+	char **argv;
+
 	const char *vg_name; /* only-used when VG is not yet opened (in /tools) */
 	const char *lv_name;
 
-	uint32_t stripes;
-	uint32_t stripe_size;
-	uint32_t mirrors;
-
 	const struct segment_type *segtype;
 
-	/* size */
-	uint32_t extents;
-	uint64_t size;
-	int sizeargs;
-	sign_t sign;
-	uint64_t poolmetadatasize;
-	sign_t poolmetadatasign;
-	uint32_t poolmetadataextents;
-	int approx_alloc;
-	int extents_are_pes;	/* Is 'extents' counting PEs or LEs? */
-	percent_type_t percent;
+	uint64_t poolmetadata_size;
+	sign_t poolmetadata_sign;
+
+	/* Per LV applied parameters */
 
 	enum {
 		LV_ANY = 0,
@@ -626,25 +618,25 @@ struct lvresize_params {
 		LV_EXTEND = 2
 	} resize;
 
-	int resizefs;
+	int use_policies;
+
+	alloc_policy_t alloc;
+	int force;
+	int nosync;
 	int nofsck;
+	int resizefs;
 
-	int argc;
-	char **argv;
+	unsigned mirrors;
+	uint32_t stripes;
+	uint64_t stripe_size;
 
-	/* FIXME Deal with meaningless 'ac' */
-	/* Arg counts & values */
-	alloc_policy_t ac_alloc;
-	unsigned ac_force;
-	unsigned ac_mirrors;
-	uint32_t ac_mirrors_value;
-	unsigned ac_no_sync;
-	unsigned ac_policy;
-	unsigned ac_stripes;
-	uint32_t ac_stripes_value;
-	unsigned ac_stripesize;
-	uint64_t ac_stripesize_value;
-	const char *ac_type;
+	uint32_t extents;
+	uint64_t size;
+	sign_t sign;
+	percent_type_t percent;
+
+	int approx_alloc;
+	int extents_are_pes;	/* Is 'extents' counting PEs or LEs? */
 };
 
 void pvcreate_params_set_defaults(struct pvcreate_params *pp);
@@ -699,10 +691,9 @@ int vgs_are_compatible(struct cmd_context *cmd,
 		       struct volume_group *vg_to);
 uint32_t vg_lock_newname(struct cmd_context *cmd, const char *vgname);
 
-int lv_resize_prepare(struct cmd_context *cmd, struct logical_volume *lv,
-		      struct lvresize_params *lp, struct dm_list *pvh);
-int lv_resize(struct cmd_context *cmd, struct logical_volume *lv,
-	      struct lvresize_params *lp, struct dm_list *pvh);
+int lv_resize(struct logical_volume *lv,
+	      struct lvresize_params *lp,
+	      struct dm_list *pvh);
 
 /*
  * Return a handle to VG metadata.
@@ -1202,8 +1193,12 @@ int lv_raid_split(struct logical_volume *lv, const char *split_name,
 int lv_raid_split_and_track(struct logical_volume *lv,
 			    struct dm_list *splittable_pvs);
 int lv_raid_merge(struct logical_volume *lv);
-int lv_raid_reshape(struct logical_volume *lv,
-		    const struct segment_type *new_segtype);
+int lv_raid_convert(struct logical_volume *lv,
+		    const struct segment_type *new_segtype,
+		    int yes, int force,
+		    const unsigned stripes,
+		    const unsigned new_stripe_size,
+		    struct dm_list *allocate_pvs);
 int lv_raid_replace(struct logical_volume *lv, struct dm_list *remove_pvs,
 		    struct dm_list *allocate_pvs);
 int lv_raid_remove_missing(struct logical_volume *lv);
