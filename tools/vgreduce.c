@@ -107,7 +107,7 @@ static int _make_vg_consistent(struct cmd_context *cmd, struct volume_group *vg)
 				goto restart;
 			}
 
-			if (arg_count(cmd, mirrorsonly_ARG) && !lv_is_mirrored(lv)) {
+			if (arg_is_set(cmd, mirrorsonly_ARG) && !lv_is_mirrored(lv)) {
 				log_error("Non-mirror-image LV %s found: can't remove.", lv->name);
 				continue;
 			}
@@ -177,7 +177,7 @@ int vgreduce(struct cmd_context *cmd, int argc, char **argv)
 	struct processing_handle *handle;
 	struct vgreduce_params vp = { 0 };
 	const char *vg_name;
-	int repairing = arg_count(cmd, removemissing_ARG);
+	int repairing = arg_is_set(cmd, removemissing_ARG);
 	int saved_ignore_suspended_devices = ignore_suspended_devices();
 	int ret;
 
@@ -192,17 +192,17 @@ int vgreduce(struct cmd_context *cmd, int argc, char **argv)
 		return EINVALID_CMD_LINE;
 	}
 
-	if (arg_count(cmd, mirrorsonly_ARG) && !repairing) {
+	if (arg_is_set(cmd, mirrorsonly_ARG) && !repairing) {
 		log_error("--mirrorsonly requires --removemissing");
 		return EINVALID_CMD_LINE;
 	}
 
-	if (argc == 1 && !arg_count(cmd, all_ARG) && !repairing) {
+	if (argc == 1 && !arg_is_set(cmd, all_ARG) && !repairing) {
 		log_error("Please enter physical volume paths or option -a");
 		return EINVALID_CMD_LINE;
 	}
 
-	if (argc > 1 && arg_count(cmd, all_ARG)) {
+	if (argc > 1 && arg_is_set(cmd, all_ARG)) {
 		log_error("Option -a and physical volume paths mutually "
 			  "exclusive");
 		return EINVALID_CMD_LINE;
@@ -217,7 +217,12 @@ int vgreduce(struct cmd_context *cmd, int argc, char **argv)
 	argv++;
 	argc--;
 
-	if (!(handle = init_processing_handle(cmd))) {
+	/* Needed to change the set of orphan PVs. */
+	if (!lockd_gl(cmd, "ex", 0))
+		return_ECMD_FAILED;
+	cmd->lockd_gl_disable = 1;
+
+	if (!(handle = init_processing_handle(cmd, NULL))) {
 		log_error("Failed to initialize processing handle.");
 		return ECMD_FAILED;
 	}
@@ -236,18 +241,13 @@ int vgreduce(struct cmd_context *cmd, int argc, char **argv)
 
 	vp.force = arg_count(cmd, force_ARG);
 
-	/* Needed to change the set of orphan PVs. */
-	if (!lockd_gl(cmd, "ex", 0))
-		return_ECMD_FAILED;
-	cmd->lockd_gl_disable = 1;
-
 	cmd->handles_missing_pvs = 1;
 
 	init_ignore_suspended_devices(1);
 
 	process_each_vg(cmd, 0, NULL, vg_name, NULL,
 			READ_FOR_UPDATE | READ_ALLOW_EXPORTED,
-			handle, &_vgreduce_repair_single);
+			0, handle, &_vgreduce_repair_single);
 
 	if (vp.already_consistent) {
 		log_print_unless_silent("Volume group \"%s\" is already consistent", vg_name);
@@ -259,6 +259,7 @@ int vgreduce(struct cmd_context *cmd, int argc, char **argv)
 		ret = ECMD_FAILED;
 out:
 	init_ignore_suspended_devices(saved_ignore_suspended_devices);
+	destroy_processing_handle(cmd, handle);
 
 	return ret;
 }

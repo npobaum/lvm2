@@ -3622,6 +3622,16 @@ static void *_obj_get_devtypes(void *obj)
 	return obj;
 }
 
+static void *_obj_get_cmdlog(void *obj)
+{
+	return obj;
+}
+
+static const struct dm_report_object_type _log_report_types[] = {
+	{ CMDLOG, "Command Log", "log_", _obj_get_cmdlog },
+	{ 0, "", "", NULL },
+};
+
 static const struct dm_report_object_type _report_types[] = {
 	{ VGS, "Volume Group", "vg_", _obj_get_vg },
 	{ LVS, "Logical Volume", "lv_", _obj_get_lv },
@@ -3656,6 +3666,8 @@ static const struct dm_report_object_type _devtypes_report_types[] = {
 	{type, sorttype, offsetof(type_ ## strct, field), width ? : sizeof(head) - 1, \
 	 #id, head, &_ ## func ## _disp, desc},
 
+typedef struct cmd_log_item type_cmd_log_item;
+
 typedef struct physical_volume type_pv;
 typedef struct logical_volume type_lv;
 typedef struct volume_group type_vg;
@@ -3675,6 +3687,11 @@ static const struct dm_report_field_type _devtypes_fields[] = {
 {0, 0, 0, 0, "", "", NULL, NULL},
 };
 
+static const struct dm_report_field_type _log_fields[] = {
+#include "columns-cmdlog.h"
+{0, 0, 0, 0, "", "", NULL, NULL},
+};
+
 #undef STR
 #undef NUM
 #undef BIN
@@ -3686,7 +3703,8 @@ static const struct dm_report_field_type _devtypes_fields[] = {
 void *report_init(struct cmd_context *cmd, const char *format, const char *keys,
 		  report_type_t *report_type, const char *separator,
 		  int aligned, int buffered, int headings, int field_prefixes,
-		  int quoted, int columns_as_rows, const char *selection)
+		  int quoted, int columns_as_rows, const char *selection,
+		  int multiple_output)
 {
 	uint32_t report_flags = 0;
 	const struct dm_report_object_type *types;
@@ -3712,7 +3730,14 @@ void *report_init(struct cmd_context *cmd, const char *format, const char *keys,
 	if (columns_as_rows)
 		report_flags |= DM_REPORT_OUTPUT_COLUMNS_AS_ROWS;
 
-	if (*report_type & DEVTYPES) {
+	if (multiple_output)
+		report_flags |= DM_REPORT_OUTPUT_MULTIPLE_TIMES;
+
+	if (*report_type & CMDLOG) {
+		types = _log_report_types;
+		fields = _log_fields;
+		reserved_values = NULL;
+	} else if (*report_type & DEVTYPES) {
 		types = _devtypes_report_types;
 		fields = _devtypes_fields;
 		reserved_values = NULL;
@@ -3744,19 +3769,29 @@ void *report_init_for_selection(struct cmd_context *cmd,
 					     cmd);
 }
 
-const char *report_get_field_prefix(report_type_t report_type_id)
+int report_get_prefix_and_desc(report_type_t report_type_id,
+			       const char **report_prefix,
+			       const char **report_desc)
 {
 	const struct dm_report_object_type *report_types, *report_type;
 
-	report_types = report_type_id & DEVTYPES ? _devtypes_report_types
-						 : _report_types;
+	if (report_type_id & CMDLOG)
+		report_types = _log_report_types;
+	else if (report_type_id & DEVTYPES)
+		report_types = _devtypes_report_types;
+	else
+		report_types = _report_types;
 
 	for (report_type = report_types; report_type->id; report_type++) {
-		if (report_type_id & report_type->id)
-			return report_type->prefix;
+		if (report_type_id & report_type->id) {
+			*report_prefix = report_type->prefix;
+			*report_desc = report_type->desc;
+			return 1;
+		}
 	}
 
-	return "";
+	*report_prefix = *report_desc = "";
+	return 0;
 }
 
 /*
@@ -3824,4 +3859,34 @@ int report_devtypes(void *handle)
 			return 0;
 
 	return 1;
+}
+
+int report_cmdlog(void *handle, const char *type, const char *context,
+		  const char *object_type_name, const char *object_name,
+		  const char *object_id, const char *object_group,
+		  const char *object_group_id, const char *msg,
+		  int current_errno, int ret_code)
+{
+	static uint32_t seq_num = 1;
+
+	struct cmd_log_item log_item = {seq_num++, type, context, object_type_name,
+					object_name ? : "", object_id ? : "",
+					object_group ? : "", object_group_id ? : "",
+					msg ? : "", current_errno, ret_code};
+
+	if (handle)
+		return dm_report_object(handle, &log_item);
+
+	return 1;
+}
+
+int report_current_object_cmdlog(const char *type, const char *msg, int32_t ret_code)
+{
+	log_report_t log_state = log_get_report_state();
+
+	return report_cmdlog(log_state.report, type, log_get_report_context_name(log_state.context),
+			     log_get_report_object_type_name(log_state.object_type),
+			     log_state.object_name, log_state.object_id,
+			     log_state.object_group, log_state.object_group_id,
+			     msg, stored_errno(), ret_code);
 }

@@ -156,12 +156,13 @@ enum {
 	READ_ONLY = 0,
 	ADD_NODE_ON_CREATE_ARG,
 	ADD_NODE_ON_RESUME_ARG,
+	ALIAS_ARG,
 	ALL_DEVICES_ARG,
 	ALL_PROGRAMS_ARG,
 	ALL_REGIONS_ARG,
+	AREA_ARG,
 	AREAS_ARG,
 	AREA_SIZE_ARG,
-	AUX_DATA_ARG,
 	BOUNDS_ARG,
 	CHECKS_ARG,
 	CLEAR_ARG,
@@ -172,6 +173,8 @@ enum {
 	EXEC_ARG,
 	FORCE_ARG,
 	GID_ARG,
+	GROUP_ARG,
+	GROUP_ID_ARG,
 	HELP_ARG,
 	HISTOGRAM_ARG,
 	INACTIVE_ARG,
@@ -179,6 +182,7 @@ enum {
 	LENGTH_ARG,
 	MANGLENAME_ARG,
 	MAJOR_ARG,
+	REGIONS_ARG,
 	MINOR_ARG,
 	MODE_ARG,
 	NAMEPREFIXES_ARG,
@@ -197,6 +201,7 @@ enum {
 	PROGRAM_ID_ARG,
 	RAW_ARG,
 	READAHEAD_ARG,
+	REGION_ARG,
 	REGION_ID_ARG,
 	RELATIVE_ARG,
 	RETRY_ARG,
@@ -214,6 +219,7 @@ enum {
 	UNBUFFERED_ARG,
 	UNITS_ARG,
 	UNQUOTED_ARG,
+	USER_DATA_ARG,
 	UUID_ARG,
 	VERBOSE_ARG,
 	VERIFYUDEV_ARG,
@@ -261,7 +267,16 @@ static struct dm_timestamp *_initial_timestamp = NULL;
 static uint64_t _disp_factor = 512; /* display sizes in sectors */
 static char _disp_units = 's';
 const char *_program_id = DM_STATS_PROGRAM_ID; /* program_id used for reports. */
-static int _stats_report_by_areas = 1; /* output per-area info for stats reports. */
+static uint64_t _statstype = 0; /* stats objects to report */
+
+/* string names for stats object types */
+const char *_stats_types[] = {
+	"all",
+	"area",
+	"region",
+	"group",
+	NULL
+};
 
 /* report timekeeping */
 static struct dm_timestamp *_cycle_timestamp = NULL;
@@ -703,13 +718,16 @@ static int _update_interval_times(void)
 {
 	static struct dm_timestamp *this_timestamp = NULL;
 	uint64_t delta_t, interval_num = _interval_num();
-	int r = 0;
+	int r = 1;
 
 	/*
 	 * Clock shutdown for exit - nothing to do.
 	 */
-	if (_timer_fd == TIMER_STOPPED && !_cycle_timestamp)
-		return 1;
+	if ((_timer_fd == TIMER_STOPPED) && !_cycle_timestamp)
+		goto out;
+
+	/* clock is running */
+	r = 0;
 
 	/*
          * Current timestamp. If _new_interval is set this is used as
@@ -780,7 +798,8 @@ static int _update_interval_times(void)
 	r = 1;
 
 out:
-	if (!r || _timer_fd == TIMER_STOPPED) {
+	/* timer stopped or never started */
+	if (!r || _timer_fd < 0) {
 		/* The _cycle_timestamp has not yet been allocated if we
 		 * fail to obtain this_timestamp on the first interval.
 		 */
@@ -797,7 +816,7 @@ out:
 static int _display_info_cols(struct dm_task *dmt, struct dm_info *info)
 {
 	struct dmsetup_report_obj obj;
-
+	uint64_t walk_flags = _statstype;
 	int r = 0;
 
 	if (!info->exists) {
@@ -828,6 +847,13 @@ static int _display_info_cols(struct dm_task *dmt, struct dm_info *info)
 						       dm_task_get_name(dmt), '-')))
 			goto_out;
 
+	if (!(_report_type & (DR_STATS | DR_STATS_META))) {
+		if (!dm_report_object(_report, &obj))
+			goto_out;
+		r = 1;
+		goto out;
+	}
+
 	/*
 	 * Obtain statistics for the current reporting object and set
 	 * the interval estimate used for stats rate conversion.
@@ -847,10 +873,9 @@ static int _display_info_cols(struct dm_task *dmt, struct dm_info *info)
 		log_debug("Adjusted sample interval duration: %12"PRIu64"ns", _last_interval);
 		/* use measured approximation for calculations */
 		dm_stats_set_sampling_interval_ns(obj.stats, _last_interval);
-	}
-
-	/* Only a dm_stats_list is needed for DR_STATS_META reports. */
-	if (!obj.stats && (_report_type & DR_STATS_META)) {
+	} else if (!obj.stats && (_report_type & DR_STATS_META)
+		/* Only a dm_stats_list is needed for DR_STATS_META reports. */
+		    && !(_report_type & DR_STATS)) {
 		if (!(obj.stats = dm_stats_create(DM_STATS_PROGRAM_ID)))
 			goto_out;
 
@@ -859,25 +884,23 @@ static int _display_info_cols(struct dm_task *dmt, struct dm_info *info)
 		if (!dm_stats_list(obj.stats, _program_id))
 			goto_out;
 
-		/* No regions to report */
+		/* No regions to report is not an error */
 		if (!dm_stats_get_nr_regions(obj.stats))
-			goto_out;
+			goto out;
 	}
 
-	/*
-	 * Walk any statistics regions contained in the current
-	 * reporting object: for objects with a NULL stats handle,
-	 * or a handle containing no registered regions, this loop
-	 * always executes exactly once.
-	 */
+	/* group report with no groups? */
+	if ((walk_flags == DM_STATS_WALK_GROUP)
+	    && !dm_stats_get_nr_groups(obj.stats))
+		goto out;
+
+	dm_stats_walk_init(obj.stats, walk_flags);
 	dm_stats_walk_do(obj.stats) {
 		if (!dm_report_object(_report, &obj))
 			goto_out;
-		if (_stats_report_by_areas)
-			dm_stats_walk_next(obj.stats);
-		else
-			dm_stats_walk_next_region(obj.stats);
+		dm_stats_walk_next(obj.stats);
 	} dm_stats_walk_while(obj.stats);
+
 	r = 1;
 
 out:
@@ -3243,7 +3266,19 @@ static int _dm_stats_region_id_disp(struct dm_report *rh,
 				    void *private __attribute__((unused)))
 {
 	const struct dm_stats *dms = (const struct dm_stats *) data;
-	uint64_t region_id = dm_stats_get_current_region(dms);
+	uint64_t group_id, region_id = dm_stats_get_current_region(dms);
+	char *group_buf = NULL, *repstr;
+
+	if (dm_stats_current_object_type(dms) == DM_STATS_OBJECT_TYPE_GROUP) {
+		group_id = dm_stats_get_group_id(dms, dm_stats_get_current_region(dms));
+		if (!dm_stats_get_group_descriptor(dms, group_id, &group_buf))
+			return 0;
+		/* group_buf will disappear with the current handle */
+		repstr = dm_pool_strdup(mem, group_buf);
+		dm_report_field_set_value(field, repstr, &group_id);
+		return 1;
+	}
+
 	return dm_report_field_uint64(rh, field, &region_id);
 }
 
@@ -3310,6 +3345,10 @@ static int _dm_stats_area_id_disp(struct dm_report *rh,
 {
 	const struct dm_stats *dms = (const struct dm_stats *) data;
 	uint64_t area_id = dm_stats_get_current_area(dms);
+
+	if (dm_stats_current_object_type(dms) == DM_STATS_OBJECT_TYPE_GROUP)
+		area_id = 0;
+
 	return dm_report_field_uint64(rh, field, &area_id);
 }
 
@@ -3412,6 +3451,25 @@ static int _dm_stats_area_count_disp(struct dm_report *rh,
 	return dm_report_field_uint64(rh, field, &area_count);
 }
 
+static int _dm_stats_group_id_disp(struct dm_report *rh,
+				   struct dm_pool *mem __attribute__((unused)),
+				   struct dm_report_field *field, const void *data,
+				   void *private __attribute__((unused)))
+{
+	const struct dm_stats *dms = (const struct dm_stats *) data;
+	uint64_t group_id;
+
+	group_id = dm_stats_get_group_id(dms,
+					 dm_stats_get_current_region(dms));
+
+	if (!dm_stats_group_present(dms, group_id)) {
+		dm_report_field_set_value(field, "-", &group_id);
+		return 1;
+	}
+
+	return dm_report_field_uint64(rh, field, &group_id);
+}
+
 static int _dm_stats_program_id_disp(struct dm_report *rh,
 				     struct dm_pool *mem __attribute__((unused)),
 				     struct dm_report_field *field, const void *data,
@@ -3424,16 +3482,40 @@ static int _dm_stats_program_id_disp(struct dm_report *rh,
 	return dm_report_field_string(rh, field, (const char * const *) &program_id);
 }
 
-static int _dm_stats_aux_data_disp(struct dm_report *rh,
+static int _dm_stats_user_data_disp(struct dm_report *rh,
+				    struct dm_pool *mem __attribute__((unused)),
+				    struct dm_report_field *field, const void *data,
+				    void *private __attribute__((unused)))
+{
+	const struct dm_stats *dms = (const struct dm_stats *) data;
+	const char *user_data;
+	if (!(user_data = dm_stats_get_current_region_aux_data(dms)))
+		return_0;
+	return dm_report_field_string(rh, field, (const char * const *) &user_data);
+}
+
+static int _dm_stats_name_disp(struct dm_report *rh,
+			       struct dm_pool *mem __attribute__((unused)),
+			       struct dm_report_field *field, const void *data,
+			       void *private __attribute__((unused)))
+{
+	const struct dm_stats *dms = (const struct dm_stats *) data;
+	const char *stats_name;
+	if (!(stats_name = dm_stats_get_alias(dms, DM_STATS_REGION_CURRENT)))
+		return_0;
+
+	return dm_report_field_string(rh, field, (const char * const *) &stats_name);
+}
+
+static int _dm_stats_object_type_disp(struct dm_report *rh,
 				     struct dm_pool *mem __attribute__((unused)),
 				     struct dm_report_field *field, const void *data,
 				     void *private __attribute__((unused)))
 {
 	const struct dm_stats *dms = (const struct dm_stats *) data;
-	const char *aux_data;
-	if (!(aux_data = dm_stats_get_current_region_aux_data(dms)))
-		return_0;
-	return dm_report_field_string(rh, field, (const char * const *) &aux_data);
+	int type = dm_stats_current_object_type(dms);
+
+	return dm_report_field_string(rh, field, (const char * const *) &_stats_types[type]);
 }
 
 static int _dm_stats_precise_disp(struct dm_report *rh,
@@ -4189,19 +4271,22 @@ FIELD_F(STATS, NUM, "Interval", 8, dm_stats_sample_interval, "interval", "Sampli
 
 /* Stats report meta-fields */
 FIELD_F(STATS_META, NUM, "RgID", 4, dm_stats_region_id, "region_id", "Region ID.")
-FIELD_F(STATS_META, SIZ, "RgStart", 5, dm_stats_region_start, "region_start", "Region start.")
-FIELD_F(STATS_META, SIZ, "RgSize", 5, dm_stats_region_len, "region_len", "Region length.")
+FIELD_F(STATS_META, SIZ, "RgStart", 7, dm_stats_region_start, "region_start", "Region start.")
+FIELD_F(STATS_META, SIZ, "RgSize", 6, dm_stats_region_len, "region_len", "Region length.")
 FIELD_F(STATS_META, NUM, "ArID", 4, dm_stats_area_id, "area_id", "Area ID.")
 FIELD_F(STATS_META, SIZ, "ArStart", 7, dm_stats_area_start, "area_start", "Area offset from start of device.")
 FIELD_F(STATS_META, SIZ, "ArSize", 6, dm_stats_area_len, "area_len", "Area length.")
 FIELD_F(STATS_META, SIZ, "ArOff", 5, dm_stats_area_offset, "area_offset", "Area offset from start of region.")
 FIELD_F(STATS_META, NUM, "#Areas", 6, dm_stats_area_count, "area_count", "Area count.")
+FIELD_F(STATS_META, NUM, "GrpID", 5, dm_stats_group_id, "group_id", "Group ID.")
 FIELD_F(STATS_META, STR, "ProgID", 6, dm_stats_program_id, "program_id", "Program ID.")
-FIELD_F(STATS_META, STR, "AuxDat", 6, dm_stats_aux_data, "aux_data", "Auxiliary data.")
+FIELD_F(STATS_META, STR, "UserData", 8, dm_stats_user_data, "user_data", "Auxiliary data.")
 FIELD_F(STATS_META, STR, "Precise", 7, dm_stats_precise, "precise", "Set if nanosecond precision counters are enabled.")
 FIELD_F(STATS_META, STR, "#Bins", 9, dm_stats_hist_bins, "hist_bins", "The number of histogram bins configured.")
 FIELD_F(STATS_META, STR, "Histogram Bounds", 16, dm_stats_hist_bounds, "hist_bounds", "Latency histogram bin boundaries.")
 FIELD_F(STATS_META, STR, "Histogram Ranges", 16, dm_stats_hist_ranges, "hist_ranges", "Latency histogram bin ranges.")
+FIELD_F(STATS_META, STR, "Name", 16, dm_stats_name, "stats_name", "Stats name of current object.")
+FIELD_F(STATS_META, STR, "ObjType", 7, dm_stats_object_type, "obj_type", "Type of stats object being reported.")
 {0, 0, 0, 0, "", "", NULL, NULL},
 /* *INDENT-ON* */
 };
@@ -4229,7 +4314,7 @@ static const char *splitname_report_options = "vg_name,lv_name,lv_layer";
 		"await,read_await,write_await"
 
 /* Device, region and area metadata. */
-#define STATS_DEV_INFO "name,region_id"
+#define STATS_DEV_INFO "statsname,group_id,region_id,obj_type"
 #define STATS_AREA_INFO "area_id,area_start,area_len"
 #define STATS_AREA_INFO_FULL STATS_DEV_INFO ",region_start,region_len,area_count,area_id,area_start,area_len"
 #define STATS_REGION_INFO STATS_DEV_INFO ",region_start,region_len,area_count,area_len"
@@ -4526,6 +4611,22 @@ static int _bind_stats_device(struct dm_stats *dms, const char *name)
 	return 1;
 }
 
+static int _stats_clear_one_region(struct dm_stats *dms, uint64_t region_id)
+{
+
+	if (!dm_stats_region_present(dms, region_id)) {
+		log_error("No such region: %"PRIu64".", region_id);
+		return 0;
+	}
+	if (!dm_stats_clear_region(dms, region_id)) {
+		log_error("Clearing statistics region %"PRIu64" failed.",
+			  region_id);
+		return 0;
+	}
+	log_info("Cleared statistics region %"PRIu64".", region_id);
+	return 1;
+}
+
 static int _stats_clear_regions(struct dm_stats *dms, uint64_t region_id)
 {
 	int allregions = (region_id == DM_STATS_REGIONS_ALL);
@@ -4536,22 +4637,14 @@ static int _stats_clear_regions(struct dm_stats *dms, uint64_t region_id)
 	if (!dm_stats_get_nr_regions(dms))
 		return 1;
 
-	dm_stats_walk_do(dms) {
-		if (allregions)
-			region_id = dm_stats_get_current_region(dms);
+	if (!allregions)
+		return _stats_clear_one_region(dms, region_id);
 
-		if (!dm_stats_region_present(dms, region_id)) {
-			log_error("No such region: %"PRIu64".", region_id);
-			return 0;
-		}
-		if (!dm_stats_clear_region(dms, region_id)) {
-			log_error("Clearing statistics region %"PRIu64" failed.",
-				  region_id);
-			return 0;
-		}
-		log_info("Cleared statistics region %"PRIu64".", region_id);
-		dm_stats_walk_next_region(dms);
-	} dm_stats_walk_while(dms);
+	dm_stats_foreach_region(dms) {
+		region_id = dm_stats_get_current_region(dms);
+		if (!_stats_clear_one_region(dms, region_id))
+			return_0;
+	}
 
 	return 1;
 }
@@ -4652,7 +4745,7 @@ static uint64_t _nr_areas_from_step(uint64_t len, int64_t step)
 		return (uint64_t)(-step);
 
 	/* --areasize - cast step to unsigned as it cannot be -ve here. */
-	return (len / (step ? : len)) + !!(len % (uint64_t) step);
+	return (len / step) + !!(len % (uint64_t) step);
 }
 
 /*
@@ -4667,7 +4760,7 @@ static int _do_stats_create_regions(struct dm_stats *dms,
 				    uint64_t len, int64_t step,
 				    int segments,
 				    const char *program_id,
-				    const char *aux_data)
+				    const char *user_data)
 {
 	uint64_t this_start = 0, this_len = len, region_id = UINT64_C(0);
 	const char *devname = NULL, *histogram = _string_args[BOUNDS_ARG];
@@ -4728,7 +4821,7 @@ static int _do_stats_create_regions(struct dm_stats *dms,
 			if (!dm_stats_create_region(dms, &region_id,
 						    this_start, this_len, step,
 						    precise, bounds,
-						    program_id, aux_data)) {
+						    program_id, user_data)) {
 				log_error("%s: Could not create statistics region.",
 					  devname);
 				goto out;
@@ -4751,7 +4844,7 @@ out:
 static int _stats_create(CMD_ARGS)
 {
 	struct dm_stats *dms;
-	const char *name, *aux_data = "", *program_id = DM_STATS_PROGRAM_ID;
+	const char *name, *user_data = "", *program_id = DM_STATS_PROGRAM_ID;
 	uint64_t start = 0, len = 0, areas = 0, area_size = 0;
 	int64_t step = 0;
 
@@ -4832,8 +4925,8 @@ static int _stats_create(CMD_ARGS)
 	if (!strlen(program_id) && !_switches[FORCE_ARG])
 		program_id = DM_STATS_PROGRAM_ID;
 
-	if (_switches[AUX_DATA_ARG])
-		aux_data = _string_args[AUX_DATA_ARG];
+	if (_switches[USER_DATA_ARG])
+		user_data = _string_args[USER_DATA_ARG];
 
 	if (!(dms = dm_stats_create(DM_STATS_PROGRAM_ID)))
 		return_0;
@@ -4863,7 +4956,7 @@ static int _stats_create(CMD_ARGS)
 
 	return _do_stats_create_regions(dms, name, start, len, step,
 					_switches[SEGMENTS_ARG],
-					program_id, aux_data);
+					program_id, user_data);
 
 bad:
 	dm_stats_destroy(dms);
@@ -4873,7 +4966,7 @@ bad:
 static int _stats_delete(CMD_ARGS)
 {
 	struct dm_stats *dms;
-	uint64_t region_id;
+	uint64_t region_id, group_id;
 	char *name = NULL;
 	const char *program_id = DM_STATS_PROGRAM_ID;
 	int allregions = _switches[ALL_REGIONS_ARG];
@@ -4885,8 +4978,13 @@ static int _stats_delete(CMD_ARGS)
 		_report = NULL;
 	}
 
-	if (!_switches[REGION_ID_ARG] && !allregions) {
-		err("Please specify a --regionid or use --allregions.");
+	if (_switches[REGION_ID_ARG] && _switches[GROUP_ID_ARG]) {
+		err("Please use one of --regionid and --groupid.");
+		return 0;
+	}
+
+	if (!_switches[REGION_ID_ARG] && !allregions && !_switches[GROUP_ID_ARG]) {
+		err("Please specify a --regionid or --groupid, or use --allregions.");
 		return 0;
 	}
 
@@ -4908,6 +5006,7 @@ static int _stats_delete(CMD_ARGS)
 		program_id = DM_STATS_ALL_PROGRAMS;
 
 	region_id = (uint64_t) _int_args[REGION_ID_ARG];
+	group_id = (uint64_t) _int_args[GROUP_ID_ARG];
 
 	if (!(dms = dm_stats_create(program_id)))
 		return_0;
@@ -4915,7 +5014,9 @@ static int _stats_delete(CMD_ARGS)
 	if (!_bind_stats_device(dms, name))
 		goto_out;
 
-	if (allregions && !dm_stats_list(dms, program_id))
+	/* allregions and group delete require a listed handle */
+	if ((allregions || _switches[GROUP_ID_ARG])
+	    && !dm_stats_list(dms, program_id))
 		goto_out;
 
 	if (allregions && !dm_stats_get_nr_regions(dms)) {
@@ -4924,22 +5025,47 @@ static int _stats_delete(CMD_ARGS)
 		goto out;
 	}
 
-	dm_stats_walk_do(dms) {
-		if (_switches[ALL_REGIONS_ARG])
-			region_id = dm_stats_get_current_region(dms);
-		if (!dm_stats_delete_region(dms, region_id)) {
-			log_error("Could not delete statistics region.");
+	if (_switches[GROUP_ID_ARG]) {
+		if (!dm_stats_delete_group(dms, group_id, 1)) {
+			log_error("Could not delete statistics group.");
 			goto out;
 		}
-		log_info("Deleted statistics region %" PRIu64, region_id);
-		dm_stats_walk_next_region(dms);
-	} dm_stats_walk_while(dms);
+	} else if (_switches[ALL_REGIONS_ARG]) {
+		dm_stats_foreach_region(dms) {
+			region_id = dm_stats_get_current_region(dms);
+			if (!dm_stats_delete_region(dms, region_id)) {
+				log_error("Could not delete statistics region.");
+				goto out;
+			}
+			log_info("Deleted statistics region %" PRIu64, region_id);
+		}
+	} else {
+		dm_stats_delete_region(dms, region_id);
+		log_info("Deleted statistics region " FMTu64 ".\n", region_id);
+	}
 
 	r = 1;
 
 out:
 	dm_stats_destroy(dms);
 	return r;
+}
+
+static int _stats_print_one_region(struct dm_stats *dms, int clear,
+				   uint64_t region_id)
+{
+	char *stbuff = NULL;
+
+	/*FIXME: line control for large regions */
+	if (!(stbuff = dm_stats_print_region(dms, region_id, 0, 0, clear))) {
+		log_error("Could not print statistics region.");
+		return 0;
+	}
+
+	printf("%s", stbuff);
+	dm_stats_buffer_destroy(dms, stbuff);
+
+	return 1;
 }
 
 static int _stats_print(CMD_ARGS)
@@ -4970,8 +5096,6 @@ static int _stats_print(CMD_ARGS)
 		name = argv[0];
 	}
 
-	region_id = (uint64_t) _int_args[REGION_ID_ARG];
-
 	if (!(dms = dm_stats_create(DM_STATS_PROGRAM_ID)))
 		return_0;
 
@@ -4986,14 +5110,18 @@ static int _stats_print(CMD_ARGS)
 		goto out;
 	}
 
-	dm_stats_walk_do(dms) {
-		if (_switches[ALL_REGIONS_ARG])
-			region_id = dm_stats_get_current_region(dms);
+	if (!allregions) {
+		region_id = (uint64_t) _int_args[REGION_ID_ARG];
+		if (!_stats_print_one_region(dms, clear, region_id))
+			goto_out;
+		r = 1;
+		goto out;
+	}
 
-		if (!dm_stats_region_present(dms, region_id)) {
-			log_error("No such region: %"PRIu64".", region_id);
-			goto out;
-		}
+	dm_stats_foreach_region(dms) {
+		region_id = dm_stats_get_current_region(dms);
+		if (!_stats_print_one_region(dms, clear, region_id))
+			goto_out;
 
 		/*FIXME: line control for large regions */
 		if (!(stbuff = dm_stats_print_region(dms, region_id, 0, 0, clear))) {
@@ -5002,11 +5130,8 @@ static int _stats_print(CMD_ARGS)
 		}
 
 		printf("%s", stbuff);
-
 		dm_stats_buffer_destroy(dms, stbuff);
-		dm_stats_walk_next_region(dms);
-
-	} dm_stats_walk_while(dms);
+	}
 
 	r = 1;
 
@@ -5017,10 +5142,14 @@ out:
 
 static int _stats_report(CMD_ARGS)
 {
-	int r = 0;
+	int r = 0, objtype_args;
 
 	struct dm_task *dmt;
 	char *name = NULL;
+
+	objtype_args = (_switches[AREA_ARG]
+			|| _switches[REGION_ARG]
+			|| _switches[GROUP_ARG]);
 
 	if (_switches[PROGRAM_ID_ARG])
 		_program_id = _string_args[PROGRAM_ID_ARG];
@@ -5028,8 +5157,15 @@ static int _stats_report(CMD_ARGS)
 	if (_switches[ALL_PROGRAMS_ARG])
 		_program_id = "";
 
-	if (!_switches[VERBOSE_ARG] && !strcmp(subcommand, "list"))
-		_stats_report_by_areas = 0;
+	if (_switches[VERBOSE_ARG] && !strcmp(subcommand, "list"))
+		_statstype |= (DM_STATS_WALK_ALL
+			       | DM_STATS_WALK_SKIP_SINGLE_AREA);
+
+	/* suppress duplicates unless the user has requested all regions */
+	if (!strcmp(subcommand, "report") && !objtype_args)
+		/* suppress duplicate rows of output */
+		_statstype |= (DM_STATS_WALK_ALL
+			       | DM_STATS_WALK_SKIP_SINGLE_AREA);
 
 	if (names)
 		name = names->name;
@@ -5064,6 +5200,121 @@ out:
 	return r;
 }
 
+static int _stats_group(CMD_ARGS)
+{
+	char *name, *alias = NULL, *regions = NULL;
+	struct dm_stats *dms;
+	uint64_t group_id;
+	int r = 0;
+
+	/* group does not use a report */
+	if (_report) {
+		dm_report_free(_report);
+		_report = NULL;
+	}
+
+	if (!_switches[REGIONS_ARG]) {
+		err("Group requires --regions.");
+		return 0;
+	}
+
+	regions = _string_args[REGIONS_ARG];
+
+	if (names)
+		name = names->name;
+	else {
+		if (!argc && !_switches[UUID_ARG] && !_switches[MAJOR_ARG]) {
+			if (!_switches[ALL_DEVICES_ARG]) {
+				log_error("Please specify device(s) or use "
+					  "--alldevices.");
+				return 0;
+			}
+			return _process_all(cmd, subcommand, argc, argv, 0, _stats_group);
+		}
+		name = argv[0];
+	}
+
+	if (_switches[ALIAS_ARG])
+		alias = _string_args[ALIAS_ARG];
+
+	if (!(dms = dm_stats_create(DM_STATS_PROGRAM_ID)))
+		return_0;
+
+	if (!_bind_stats_device(dms, name))
+		goto_out;
+
+	if (!dm_stats_list(dms, NULL))
+		goto_out;
+
+	if(!dm_stats_create_group(dms, regions, alias, &group_id)) {
+		log_error("Could not create group on %s: %s", name, regions);
+		goto out;
+	}
+
+	printf("Grouped regions %s as group ID " FMTu64 " on %s\n",
+	       regions, group_id, name);
+
+	r = 1;
+
+out:
+	dm_stats_destroy(dms);
+	return r;
+}
+
+static int _stats_ungroup(CMD_ARGS)
+{
+	struct dm_stats *dms;
+	uint64_t group_id;
+	char *name;
+	int r = 0;
+
+	/* ungroup does not use a report */
+	if (_report) {
+		dm_report_free(_report);
+		_report = NULL;
+	}
+
+	if (!_switches[GROUP_ID_ARG]) {
+		err("Please specify group id.");
+		return 0;
+	}
+
+	group_id = (uint64_t) _int_args[GROUP_ID_ARG];
+
+	if (names)
+		name = names->name;
+	else {
+		if (!argc && !_switches[UUID_ARG] && !_switches[MAJOR_ARG]) {
+			if (!_switches[ALL_DEVICES_ARG]) {
+				log_error("Please specify device(s) or use "
+					  "--alldevices.");
+				return 0;
+			}
+			return _process_all(cmd, subcommand, argc, argv, 0, _stats_ungroup);
+		}
+		name = argv[0];
+	}
+
+	if (!(dms = dm_stats_create(DM_STATS_PROGRAM_ID)))
+		return_0;
+
+	if (!_bind_stats_device(dms, name))
+		goto_out;
+
+	if (!dm_stats_list(dms, NULL))
+		goto_out;
+
+	if (!(r = dm_stats_delete_group(dms, group_id, 0)))
+		log_error("Could not delete group " FMTu64 " on %s.",
+			  group_id, name);
+
+	printf("Removed group ID "FMTu64" on %s\n", group_id, name);
+
+out:
+	dm_stats_destroy(dms);
+	return r;
+}
+
 /*
  * Command dispatch tables and usage.
  */
@@ -5076,30 +5327,35 @@ static int _stats_help(CMD_ARGS);
  *    clear [--regionid id] <device_name>
  *    create [--areas nr_areas] [--areasize size]
  *           [ [--start start] [--length len] | [--segments]]
- *           [--auxdata data] [--programid id] [<device_name>]
+ *           [--userdata data] [--programid id] [<device_name>]
  *    delete [--regionid] <device_name>
  *    delete_all [--programid id]
+ *    group [--alias name] [--alldevices] [--regions <regions>] [<device_name>]
  *    list [--programid id] [<device_name>]
  *    print [--clear] [--programid id] [--regionid id] [<device_name>]
  *    report [--interval seconds] [--count count] [--units units] [--regionid id]
  *           [--programid id] [<device>]
+ *    ungroup [--alldevices] [--groupid id] [<device_name>]
  */
 
 #define AREA_OPTS "[--areas <nr_areas>] [--areasize <size>] "
 #define CREATE_OPTS "[--start <start> [--length <len>]]\n\t\t" AREA_OPTS
-#define ID_OPTS "[--programid <id>] [--auxdata <data> ] "
+#define ID_OPTS "[--programid <id>] [--userdata <data> ] "
 #define SELECT_OPTS "[--programid <id>] [--regionid <id>] "
 #define PRINT_OPTS "[--clear] " SELECT_OPTS
 #define REPORT_OPTS "[--interval <seconds>] [--count <cnt>]\n\t\t[--units <u>]" SELECT_OPTS
+#define GROUP_OPTS "[--alias NAME] --regions <regions>"
 
 static struct command _stats_subcommands[] = {
 	{"help", "", 0, 0, 0, 0, _stats_help},
 	{"clear", "--regionid <id> [<device>]", 0, -1, 1, 0, _stats_clear},
 	{"create", CREATE_OPTS "\n\t\t" ID_OPTS "[<device>]", 0, -1, 1, 0, _stats_create},
 	{"delete", "--regionid <id> <device>", 1, -1, 1, 0, _stats_delete},
+	{"group", GROUP_OPTS, 1, -1, 1, 0, _stats_group},
 	{"list", "[--programid <id>] [<device>]", 0, -1, 1, 0, _stats_report},
 	{"print", PRINT_OPTS "[<device>]", 0, -1, 1, 0, _stats_print},
 	{"report", REPORT_OPTS "[<device>]", 0, -1, 1, 0, _stats_report},
+	{"ungroup", "--groupid <id> [device]", 1, -1, 1, 0, _stats_ungroup},
 	{"version", "", 0, -1, 1, 0, _version},
 	{NULL, NULL, 0, 0, 0, 0, NULL}
 };
@@ -5173,7 +5429,7 @@ static void _stats_usage(FILE *out)
 	fprintf(out, "        [-h|--help]\n");
 	fprintf(out, "        [-v|--verbose [-v|--verbose ...]]\n");
 	fprintf(out, "        [--areas <nr_areas>] [--areasize <size>]\n");
-	fprintf(out, "        [--auxdata <data>] [--clear]\n");
+	fprintf(out, "        [--userdata <data>] [--clear]\n");
 	fprintf(out, "        [--count <count>] [--interval <seconds>]\n");
 	fprintf(out, "        [-o <fields>] [-O|--sort <sort_fields>]\n");
 	fprintf(out, "	      [--programid <id>]\n");
@@ -5314,6 +5570,18 @@ static const struct command *_find_stats_subcommand(const char *name)
 static int _stats(CMD_ARGS)
 {
 	const struct command *stats_cmd;
+
+	if (_switches[AREA_ARG] || _switches[REGION_ARG] || _switches[GROUP_ARG])
+		_statstype = 0; /* switches will OR flags in */
+	else
+		_statstype = DM_STATS_WALK_REGION | DM_STATS_WALK_GROUP;
+
+	if (_switches[AREA_ARG])
+		_statstype |= DM_STATS_WALK_AREA;
+	if (_switches[REGION_ARG])
+		_statstype |= DM_STATS_WALK_REGION;
+	if (_switches[GROUP_ARG])
+		_statstype |= DM_STATS_WALK_GROUP;
 
 	if (!(stats_cmd = _find_stats_subcommand(subcommand))) {
 		log_error("Unknown stats command.");
@@ -5698,12 +5966,13 @@ static int _process_switches(int *argcp, char ***argvp, const char *dev_dir)
 #ifdef HAVE_GETOPTLONG
 	static struct option long_options[] = {
 		{"readonly", 0, &ind, READ_ONLY},
+		{"alias", 1, &ind, ALIAS_ARG},
 		{"alldevices", 0, &ind, ALL_DEVICES_ARG},
 		{"allprograms", 0, &ind, ALL_PROGRAMS_ARG},
 		{"allregions", 0, &ind, ALL_REGIONS_ARG},
+		{"area", 0, &ind, AREA_ARG},
 		{"areas", 1, &ind, AREAS_ARG},
 		{"areasize", 1, &ind, AREA_SIZE_ARG},
-		{"auxdata", 1, &ind, AUX_DATA_ARG},
 		{"bounds", 1, &ind, BOUNDS_ARG},
 		{"checks", 0, &ind, CHECKS_ARG},
 		{"clear", 0, &ind, CLEAR_ARG},
@@ -5714,6 +5983,8 @@ static int _process_switches(int *argcp, char ***argvp, const char *dev_dir)
 		{"exec", 1, &ind, EXEC_ARG},
 		{"force", 0, &ind, FORCE_ARG},
 		{"gid", 1, &ind, GID_ARG},
+		{"group", 0, &ind, GROUP_ARG},
+		{"groupid", 1, &ind, GROUP_ID_ARG},
 		{"help", 0, &ind, HELP_ARG},
 		{"histogram", 0, &ind, HISTOGRAM_ARG},
 		{"inactive", 0, &ind, INACTIVE_ARG},
@@ -5739,6 +6010,8 @@ static int _process_switches(int *argcp, char ***argvp, const char *dev_dir)
 		{"programid", 1, &ind, PROGRAM_ID_ARG},
 		{"raw", 0, &ind, RAW_ARG},
 		{"readahead", 1, &ind, READAHEAD_ARG},
+		{"region", 0, &ind, REGION_ARG},
+		{"regions", 1, &ind, REGIONS_ARG},
 		{"regionid", 1, &ind, REGION_ID_ARG},
 		{"relative", 0, &ind, RELATIVE_ARG},
 		{"retry", 0, &ind, RETRY_ARG},
@@ -5757,6 +6030,7 @@ static int _process_switches(int *argcp, char ***argvp, const char *dev_dir)
 		{"uuid", 1, &ind, UUID_ARG},
 		{"unbuffered", 0, &ind, UNBUFFERED_ARG},
 		{"unquoted", 0, &ind, UNQUOTED_ARG},
+		{"userdata", 1, &ind, USER_DATA_ARG},
 		{"verbose", 1, &ind, VERBOSE_ARG},
 		{"verifyudev", 0, &ind, VERIFYUDEV_ARG},
 		{"version", 0, &ind, VERSION_ARG},
@@ -5834,12 +6108,18 @@ static int _process_switches(int *argcp, char ***argvp, const char *dev_dir)
 	optind = OPTIND_INIT;
 	while ((ind = -1, c = GETOPTLONG_FN(*argcp, *argvp, "cCfG:hj:m:M:no:O:rS:u:U:vy",
 					    long_options, NULL)) != -1) {
+		if (ind == ALIAS_ARG) {
+			_switches[ALIAS_ARG]++;
+			_string_args[ALIAS_ARG] = optarg;
+		}
 		if (ind == ALL_DEVICES_ARG)
 			_switches[ALL_DEVICES_ARG]++;
 		if (ind == ALL_PROGRAMS_ARG)
 			_switches[ALL_PROGRAMS_ARG]++;
 		if (ind == ALL_REGIONS_ARG)
 			_switches[ALL_REGIONS_ARG]++;
+		if (ind == AREA_ARG)
+			_switches[AREA_ARG]++;
 		if (ind == AREAS_ARG) {
 			_switches[AREAS_ARG]++;
 			_int_args[AREAS_ARG] = atoi(optarg);
@@ -5848,9 +6128,9 @@ static int _process_switches(int *argcp, char ***argvp, const char *dev_dir)
 			_switches[AREA_SIZE_ARG]++;
 			_string_args[AREA_SIZE_ARG] = optarg;
 		}
-		if (ind == AUX_DATA_ARG) {
-			_switches[AUX_DATA_ARG]++;
-			_string_args[AUX_DATA_ARG] = optarg;
+		if (ind == USER_DATA_ARG) {
+			_switches[USER_DATA_ARG]++;
+			_string_args[USER_DATA_ARG] = optarg;
 		}
 		if (c == ':' || c == '?')
 			return_0;
@@ -5878,6 +6158,10 @@ static int _process_switches(int *argcp, char ***argvp, const char *dev_dir)
 			_switches[MAJOR_ARG]++;
 			_int_args[MAJOR_ARG] = atoi(optarg);
 		}
+		if (ind == REGIONS_ARG) {
+			_switches[REGIONS_ARG]++;
+			_string_args[REGIONS_ARG] = optarg;
+		}
 		if (c == 'm' || ind == MINOR_ARG) {
 			_switches[MINOR_ARG]++;
 			_int_args[MINOR_ARG] = atoi(optarg);
@@ -5900,6 +6184,8 @@ static int _process_switches(int *argcp, char ***argvp, const char *dev_dir)
 			_switches[PRECISE_ARG]++;
 		if (ind == RAW_ARG)
 			_switches[RAW_ARG]++;
+		if (ind == REGION_ARG)
+			_switches[REGION_ARG]++;
 		if (ind == REGION_ID_ARG) {
 			_switches[REGION_ID_ARG]++;
 			_int_args[REGION_ID_ARG] = atoi(optarg);
@@ -5961,6 +6247,12 @@ static int _process_switches(int *argcp, char ***argvp, const char *dev_dir)
 		if (c == 'G' || ind == GID_ARG) {
 			_switches[GID_ARG]++;
 			_int_args[GID_ARG] = atoi(optarg);
+		}
+		if (ind == GROUP_ARG)
+			_switches[GROUP_ARG]++;
+		if (ind == GROUP_ID_ARG) {
+			_switches[GROUP_ID_ARG]++;
+			_int_args[GROUP_ID_ARG] = atoi(optarg);
 		}
 		if (c == 'U' || ind == UID_ARG) {
 			_switches[UID_ARG]++;

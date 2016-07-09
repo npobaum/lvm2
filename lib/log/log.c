@@ -17,6 +17,7 @@
 #include "device.h"
 #include "memlock.h"
 #include "defaults.h"
+#include "report.h"
 
 #include <stdio.h>
 #include <stdarg.h>
@@ -46,6 +47,15 @@ static char *_lvm_errmsg = NULL;
 static size_t _lvm_errmsg_size = 0;
 static size_t _lvm_errmsg_len = 0;
 #define MAX_ERRMSG_LEN (512 * 1024)  /* Max size of error buffer 512KB */
+
+static log_report_t _log_report = {
+	.report = NULL,
+	.context = LOG_REPORT_CONTEXT_NULL,
+	.object_type = LOG_REPORT_OBJECT_TYPE_NULL,
+	.object_id = NULL,
+	.object_name = NULL,
+	.object_group = NULL
+};
 
 void init_log_fn(lvm2_log_fn_t log_fn)
 {
@@ -260,8 +270,45 @@ void reset_log_duplicated(void) {
 	}
 }
 
-void print_log(int level, const char *file, int line, int dm_errno_or_class,
-	       const char *format, ...)
+static const char *_get_log_level_name(int use_stderr, int level)
+{
+	static const char *log_level_names[] = {"",      /* unassigned */
+						"",      /* unassigned */
+						"fatal", /* _LOG_FATAL */
+						"error", /* _LOG_ERROR */
+						"warn",  /* _LOG_WARN */
+						"notice",/* _LOG_NOTICE */
+						"info",  /* _LOG_INFO */
+						"debug"  /* _LOG_DEBUG */
+						};
+	if (level == _LOG_WARN && !use_stderr)
+		return "print";
+
+	return log_level_names[level];
+}
+
+const char *log_get_report_context_name(log_report_context_t context)
+{
+	static const char *log_context_names[LOG_REPORT_CONTEXT_COUNT] = {[LOG_REPORT_CONTEXT_NULL] = "",
+									  [LOG_REPORT_CONTEXT_PROCESSING] = "processing"};
+	return log_context_names[context];
+}
+
+
+const char *log_get_report_object_type_name(log_report_object_type_t object_type)
+{
+	static const char *log_object_type_names[LOG_REPORT_OBJECT_TYPE_COUNT] = {[LOG_REPORT_OBJECT_TYPE_NULL] = "",
+										  [LOG_REPORT_OBJECT_TYPE_ORPHAN] = "orphan",
+										  [LOG_REPORT_OBJECT_TYPE_PV] = "pv",
+										  [LOG_REPORT_OBJECT_TYPE_LABEL] = "label",
+										  [LOG_REPORT_OBJECT_TYPE_VG] = "vg",
+										  [LOG_REPORT_OBJECT_TYPE_LV] = "lv"};
+	return log_object_type_names[object_type];
+}
+
+__attribute__ ((format(printf, 5, 0)))
+static void _vprint_log(int level, const char *file, int line, int dm_errno_or_class,
+			const char *format, va_list orig_ap)
 {
 	va_list ap;
 	char buf[1024], message[4096];
@@ -270,6 +317,7 @@ void print_log(int level, const char *file, int line, int dm_errno_or_class,
 	char *newbuf;
 	int use_stderr = level & _LOG_STDERR;
 	int log_once = level & _LOG_ONCE;
+	int log_bypass_report = level & _LOG_BYPASS_REPORT;
 	int fatal_internal_error = 0;
 	size_t msglen;
 	const char *indent_spaces = "";
@@ -277,8 +325,10 @@ void print_log(int level, const char *file, int line, int dm_errno_or_class,
 	static int _abort_on_internal_errors_env_present = -1;
 	static int _abort_on_internal_errors_env = 0;
 	char *env_str;
+	struct dm_report *orig_report;
+	int logged_via_report = 0;
 
-	level &= ~(_LOG_STDERR|_LOG_ONCE);
+	level &= ~(_LOG_STDERR|_LOG_ONCE|_LOG_BYPASS_REPORT);
 
 	if (_abort_on_internal_errors_env_present < 0) {
 		if ((env_str = getenv("DM_ABORT_ON_INTERNAL_ERRORS"))) {
@@ -309,8 +359,9 @@ void print_log(int level, const char *file, int line, int dm_errno_or_class,
 
 	if (_lvm2_log_fn ||
 	    (_store_errmsg && (level <= _LOG_ERR)) ||
+	    (_log_report.report && !log_bypass_report && (use_stderr || (level <=_LOG_WARN))) ||
 	    log_once) {
-		va_start(ap, format);
+		va_copy(ap, orig_ap);
 		n = vsnprintf(message, sizeof(message), trformat, ap);
 		va_end(ap);
 
@@ -356,6 +407,22 @@ void print_log(int level, const char *file, int line, int dm_errno_or_class,
 		}
 	}
 
+	if (_log_report.report && !log_bypass_report && (use_stderr || (level <= _LOG_WARN))) {
+		orig_report = _log_report.report;
+		_log_report.report = NULL;
+		if (!report_cmdlog(orig_report, _get_log_level_name(use_stderr, level),
+				   log_get_report_context_name(_log_report.context),
+				   log_get_report_object_type_name(_log_report.object_type),
+				   _log_report.object_name, _log_report.object_id,
+				   _log_report.object_group, _log_report.object_group_id,
+				   message, _lvm_errno, 0))
+			fprintf(stderr, _("failed to report cmdstatus"));
+		else
+			logged_via_report = 1;
+
+		_log_report.report = orig_report;
+	}
+
 	if (_lvm2_log_fn) {
 		_lvm2_log_fn(level, file, line, 0, message);
 		if (fatal_internal_error)
@@ -364,7 +431,7 @@ void print_log(int level, const char *file, int line, int dm_errno_or_class,
 	}
 
       log_it:
-	if ((verbose_level() >= level) && !_log_suppress) {
+	if (!logged_via_report && ((verbose_level() >= level) && !_log_suppress)) {
 		if (verbose_level() > _LOG_DEBUG) {
 			(void) dm_snprintf(buf, sizeof(buf), "#%s:%d ",
 					   file, line);
@@ -379,7 +446,7 @@ void print_log(int level, const char *file, int line, int dm_errno_or_class,
 			default: /* nothing to do */;
 			}
 
-		va_start(ap, format);
+		va_copy(ap, orig_ap);
 		switch (level) {
 		case _LOG_DEBUG:
 			if (verbose_level() < _LOG_DEBUG)
@@ -414,7 +481,7 @@ void print_log(int level, const char *file, int line, int dm_errno_or_class,
 		fprintf(_log_file, "%s:%d %s%s", file, line, log_command_name(),
 			_msg_prefix);
 
-		va_start(ap, format);
+		va_copy(ap, orig_ap);
 		vfprintf(_log_file, trformat, ap);
 		va_end(ap);
 
@@ -423,7 +490,7 @@ void print_log(int level, const char *file, int line, int dm_errno_or_class,
 	}
 
 	if (_syslog && (_log_while_suspended || !critical_section())) {
-		va_start(ap, format);
+		va_copy(ap, orig_ap);
 		vsyslog(level, trformat, ap);
 		va_end(ap);
 	}
@@ -443,7 +510,7 @@ void print_log(int level, const char *file, int line, int dm_errno_or_class,
 
 		bufused += n;		/* n does not include '\0' */
 
-		va_start(ap, format);
+		va_copy(ap, orig_ap);
 		n = vsnprintf(buf + bufused, sizeof(buf) - bufused,
 			      trformat, ap);
 		va_end(ap);
@@ -461,4 +528,70 @@ void print_log(int level, const char *file, int line, int dm_errno_or_class,
 		dev_append(&_log_dev, sizeof(buf), buf);
 		_already_logging = 0;
 	}
+}
+
+void print_log(int level, const char *file, int line, int dm_errno_or_class,
+	       const char *format, ...)
+{
+	va_list ap;
+
+	va_start(ap, format);
+	_vprint_log(level, file, line, dm_errno_or_class, format, ap);
+	va_end(ap);
+}
+
+void print_log_libdm(int level, const char *file, int line, int dm_errno_or_class,
+		     const char *format, ...)
+{
+	va_list ap;
+
+	/*
+	 * Bypass report if printing output from libdm and if we have
+	 * LOG_WARN level and it's not going to stderr (so we're
+	 * printing common message that is not an error/warning).
+	*/
+	if (!(level & _LOG_STDERR) &&
+	    ((level & ~(_LOG_STDERR|_LOG_ONCE|_LOG_BYPASS_REPORT)) == _LOG_WARN))
+		level |= _LOG_BYPASS_REPORT;
+
+	va_start(ap, format);
+	_vprint_log(level, file, line, dm_errno_or_class, format, ap);
+	va_end(ap);
+}
+
+log_report_t log_get_report_state(void)
+{
+	return _log_report;
+}
+
+void log_restore_report_state(log_report_t log_report)
+{
+	_log_report = log_report;
+}
+
+void log_set_report(struct dm_report *report)
+{
+	_log_report.report = report;
+}
+
+void log_set_report_context(log_report_context_t context)
+{
+	_log_report.context = context;
+}
+
+void log_set_report_object_type(log_report_object_type_t object_type)
+{
+	_log_report.object_type = object_type;
+}
+
+void log_set_report_object_group_and_group_id(const char *group, const char *id)
+{
+	_log_report.object_group = group;
+	_log_report.object_group_id = id;
+}
+
+void log_set_report_object_name_and_id(const char *name, const char *id)
+{
+	_log_report.object_name = name;
+	_log_report.object_id = id;
 }

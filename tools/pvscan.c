@@ -46,7 +46,7 @@ static int _pvscan_display_single(struct cmd_context *cmd,
 	const char *pvdevname = pv_dev_name(pv);
 
 	/* short listing? */
-	if (arg_count(cmd, short_ARG) > 0) {
+	if (arg_is_set(cmd, short_ARG)) {
 		log_print_unless_silent("%s", pvdevname);
 		return ECMD_PROCESSED;
 	}
@@ -65,7 +65,7 @@ static int _pvscan_display_single(struct cmd_context *cmd,
 	pv_len = params->pv_max_name_len;
 	memset(params->pv_tmp_name, 0, params->pv_tmp_namelen);
 
-	if (arg_count(cmd, uuid_ARG)) {
+	if (arg_is_set(cmd, uuid_ARG)) {
 		if (!id_write_format(&pv->id, uuid, sizeof(uuid))) {
 			stack;
 			return ECMD_FAILED;
@@ -106,8 +106,8 @@ static int _pvscan_single(struct cmd_context *cmd, struct volume_group *vg,
 {
 	struct pvscan_params *params = (struct pvscan_params *)handle->custom_handle;
 
-	if ((arg_count(cmd, exported_ARG) && !(pv_status(pv) & EXPORTED_VG)) ||
-	    (arg_count(cmd, novolumegroup_ARG) && (!is_orphan(pv)))) {
+	if ((arg_is_set(cmd, exported_ARG) && !(pv_status(pv) & EXPORTED_VG)) ||
+	    (arg_is_set(cmd, novolumegroup_ARG) && (!is_orphan(pv)))) {
 		return ECMD_PROCESSED;
 
 	}
@@ -273,7 +273,7 @@ static int _pvscan_autoactivate(struct cmd_context *cmd, struct pvscan_aa_params
 	if (!lvmetad_used())
 		log_warn("WARNING: Autoactivation reading from disk instead of lvmetad.");
 
-	if (!(handle = init_processing_handle(cmd))) {
+	if (!(handle = init_processing_handle(cmd, NULL))) {
 		log_error("Failed to initialize processing handle.");
 		return ECMD_FAILED;
 	}
@@ -287,7 +287,7 @@ static int _pvscan_autoactivate(struct cmd_context *cmd, struct pvscan_aa_params
 
 	dev_cache_full_scan(cmd->full_filter);
 
-	ret = process_each_vg(cmd, 0, NULL, NULL, vgnames, 0, handle, _pvscan_autoactivate_single);
+	ret = process_each_vg(cmd, 0, NULL, NULL, vgnames, 0, 0, handle, _pvscan_autoactivate_single);
 
 	destroy_processing_handle(cmd, handle);
 
@@ -306,7 +306,7 @@ static int _pvscan_cache(struct cmd_context *cmd, int argc, char **argv)
 	int devno_args = 0;
 	struct arg_value_group_list *current_group;
 	dev_t devno;
-	int do_activate = 0;
+	int do_activate;
 	int all_vgs = 0;
 	int remove_errors = 0;
 	int add_errors = 0;
@@ -315,23 +315,27 @@ static int _pvscan_cache(struct cmd_context *cmd, int argc, char **argv)
 	dm_list_init(&found_vgnames);
 	dm_list_init(&pp.changed_vgnames);
 
-	if (!lvmetad_used()) {
-		log_verbose("Ignoring pvscan --cache command because lvmetad is not in use.");
+	do_activate = arg_is_set(cmd, activate_ARG);
+
+	if (!lvmetad_used() && !do_activate) {
+		log_verbose("Ignoring pvscan --cache because lvmetad is not in use.");
 		return ret;
 	}
 
-	if (arg_is_set(cmd, activate_ARG)) {
-		if (arg_uint_value(cmd, activate_ARG, CHANGE_AAY) != CHANGE_AAY) {
-			log_error("Only --activate ay allowed with pvscan.");
-			return 0;
-		}
-		do_activate = 1;
+	if (do_activate && (arg_uint_value(cmd, activate_ARG, CHANGE_AAY) != CHANGE_AAY)) {
+		log_error("Only --activate ay allowed with pvscan.");
+		return 0;
 	}
 
-	if (arg_count(cmd, major_ARG) + arg_count(cmd, minor_ARG))
+	if (!lvmetad_used() && do_activate && !find_config_tree_bool(cmd, global_use_lvmetad_CFG, NULL)) {
+		log_verbose("Ignoring pvscan --cache -aay because lvmetad is not in use.");
+		return ret;
+	}
+
+	if (arg_is_set(cmd, major_ARG) + arg_is_set(cmd, minor_ARG))
 		devno_args = 1;
 
-	if (devno_args && (!arg_count(cmd, major_ARG) || !arg_count(cmd, minor_ARG))) {
+	if (devno_args && (!arg_is_set(cmd, major_ARG) || !arg_is_set(cmd, minor_ARG))) {
 		log_error("Both --major and --minor required to identify devices.");
 		return EINVALID_CMD_LINE;
 	}
@@ -339,6 +343,18 @@ static int _pvscan_cache(struct cmd_context *cmd, int argc, char **argv)
 	if (!lock_vol(cmd, VG_GLOBAL, LCK_VG_READ, NULL)) {
 		log_error("Unable to obtain global lock.");
 		return ECMD_FAILED;
+	}
+
+	/*
+	 * This a special case where use_lvmetad=1 in lvm.conf but pvscan
+	 * cannot use lvmetad for some reason.  In this case pvscan should
+	 * still activate LVs even though it's not updating the cache.
+	 */
+	if (do_activate && !lvmetad_used()) {
+		log_verbose("Activating all VGs without lvmetad.");
+		all_vgs = 1;
+		devno_args = 0;
+		goto activate;
 	}
 
 	/*
@@ -520,7 +536,7 @@ out:
 
 	if (!sync_local_dev_names(cmd))
 		stack;
-	unlock_vg(cmd, VG_GLOBAL);
+	unlock_vg(cmd, NULL, VG_GLOBAL);
 	return ret;
 }
 
@@ -571,7 +587,7 @@ int pvscan(struct cmd_context *cmd, int argc, char **argv)
 	const char *reason = NULL;
 	int ret;
 
-	if (arg_count(cmd, cache_long_ARG))
+	if (arg_is_set(cmd, cache_long_ARG))
 		return _pvscan_cache(cmd, argc, argv);
 
 	if (argc) {
@@ -579,24 +595,24 @@ int pvscan(struct cmd_context *cmd, int argc, char **argv)
 		return EINVALID_CMD_LINE;
 	}
 
-	if (arg_count(cmd, activate_ARG)) {
+	if (arg_is_set(cmd, activate_ARG)) {
 		log_error("--activate is only valid with --cache.");
 		return EINVALID_CMD_LINE;
 	}
 
-	if (arg_count(cmd, major_ARG) || arg_count(cmd, minor_ARG)) {
+	if (arg_is_set(cmd, major_ARG) || arg_is_set(cmd, minor_ARG)) {
 		log_error("--major and --minor are only valid with --cache.");
 		return EINVALID_CMD_LINE;
 	}
 
-	if (arg_count(cmd, novolumegroup_ARG) && arg_count(cmd, exported_ARG)) {
+	if (arg_is_set(cmd, novolumegroup_ARG) && arg_is_set(cmd, exported_ARG)) {
 		log_error("Options -e and -n are incompatible");
 		return EINVALID_CMD_LINE;
 	}
 
-	if (arg_count(cmd, exported_ARG) || arg_count(cmd, novolumegroup_ARG))
+	if (arg_is_set(cmd, exported_ARG) || arg_is_set(cmd, novolumegroup_ARG))
 		log_warn("WARNING: only considering physical volumes %s",
-			  arg_count(cmd, exported_ARG) ?
+			  arg_is_set(cmd, exported_ARG) ?
 			  "of exported volume group(s)" : "in no volume group");
 
 	/* Needed because this command has NO_LVMETAD_AUTOSCAN. */
@@ -617,11 +633,7 @@ int pvscan(struct cmd_context *cmd, int argc, char **argv)
 		return ECMD_FAILED;
 	}
 
-	/* Needed for a current listing of the global VG namespace. */
-	if (!lockd_gl(cmd, "sh", 0))
-		return_ECMD_FAILED;
-
-	if (!(handle = init_processing_handle(cmd))) {
+	if (!(handle = init_processing_handle(cmd, NULL))) {
 		log_error("Failed to initialize processing handle.");
 		ret = ECMD_FAILED;
 		goto out;
@@ -642,7 +654,8 @@ int pvscan(struct cmd_context *cmd, int argc, char **argv)
 					params.new_pvs_found, display_size(cmd, params.size_new));
 
 out:
-	unlock_vg(cmd, VG_GLOBAL);
+	unlock_vg(cmd, NULL, VG_GLOBAL);
+	destroy_processing_handle(cmd, handle);
 
 	return ret;
 }

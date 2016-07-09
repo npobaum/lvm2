@@ -25,12 +25,16 @@
  */
 #define RH_SORT_REQUIRED	0x00000100
 #define RH_HEADINGS_PRINTED	0x00000200
-#define RH_ALREADY_REPORTED	0x00000400
+#define RH_FIELD_CALC_NEEDED	0x00000400
+#define RH_ALREADY_REPORTED	0x00000800
 
 struct selection {
 	struct dm_pool *mem;
 	struct selection_node *selection_root;
+	int add_new_fields;
 };
+
+struct report_group_item;
 
 struct dm_report {
 	struct dm_pool *mem;
@@ -71,6 +75,29 @@ struct dm_report {
 	/* Null-terminated array of reserved values */
 	const struct dm_report_reserved_value *reserved_values;
 	struct dm_hash_table *value_cache;
+
+	struct report_group_item *group_item;
+};
+
+struct dm_report_group {
+	dm_report_group_type_t type;
+	struct dm_pool *mem;
+	struct dm_list items;
+	int indent;
+};
+
+struct report_group_item {
+	struct dm_list list;
+	struct dm_report_group *group;
+	struct dm_report *report;
+	union {
+		uint32_t orig_report_flags;
+		uint32_t finished_count;
+	} store;
+	struct report_group_item *parent;
+	int output_done:1;
+	int needs_closing:1;
+	void *data;
 };
 
 /*
@@ -229,6 +256,7 @@ struct row {
 	struct dm_list fields;			  /* Fields in display order */
 	struct dm_report_field *(*sort_fields)[]; /* Fields in sort order */
 	int selected;
+	struct dm_report_field *field_sel_status;
 };
 
 /*
@@ -1255,6 +1283,8 @@ struct dm_report *dm_report_init(uint32_t *report_types,
 	if (output_flags & DM_REPORT_OUTPUT_BUFFERED)
 		rh->flags |= RH_SORT_REQUIRED;
 
+	rh->flags |= RH_FIELD_CALC_NEEDED;
+
 	dm_list_init(&rh->field_props);
 	dm_list_init(&rh->rows);
 
@@ -1874,7 +1904,7 @@ static int _check_selection(struct dm_report *rh, struct selection_node *sn,
 
 static int _check_report_selection(struct dm_report *rh, struct dm_list *fields)
 {
-	if (!rh->selection)
+	if (!rh->selection || !rh->selection->selection_root)
 		return 1;
 
 	return _check_selection(rh, rh->selection->selection_root, fields);
@@ -1885,9 +1915,8 @@ static int _do_report_object(struct dm_report *rh, void *object, int do_output, 
 	const struct dm_report_field_type *fields;
 	struct field_properties *fp;
 	struct row *row = NULL;
-	struct dm_report_field *field, *field_sel_status = NULL;
+	struct dm_report_field *field;
 	void *data = NULL;
-	int len;
 	int r = 0;
 
 	if (!rh) {
@@ -1937,7 +1966,7 @@ static int _do_report_object(struct dm_report *rh, void *object, int do_output, 
 		if (fp->implicit) {
 			fields = _implicit_report_fields;
 			if (!strcmp(fields[fp->field_num].id, SPECIAL_FIELD_SELECTED_ID))
-				field_sel_status = field;
+				row->field_sel_status = field;
 		} else
 			fields = rh->fields;
 
@@ -1969,42 +1998,41 @@ static int _do_report_object(struct dm_report *rh, void *object, int do_output, 
 	if (!_check_report_selection(rh, &row->fields)) {
 		row->selected = 0;
 
-		if (!field_sel_status)
+		/*
+		 * If the row is not selected, we still keep it for output if either:
+		 *   - we're displaying special "selected" field in the row,
+		 *   - or the report is supposed to be on output multiple times
+		 *     where each output can have a new selection defined.
+		 */
+		if (!row->field_sel_status && !(rh->flags & DM_REPORT_OUTPUT_MULTIPLE_TIMES))
 			goto out;
 
-		/*
-		 * If field with id "selected" is reported,
-		 * report the row although it does not pass
-		 * the selection criteria.
-		 * The "selected" field reports the result
-		 * of the selection.
-		 */
-		_implicit_report_fields[field_sel_status->props->field_num].report_fn(rh,
-						rh->mem, field_sel_status, row, rh->private);
-		/*
-		 * If the "selected" field is not displayed, e.g.
-		 * because it is part of the sort field list,
-		 * skip the display of the row as usual.
-		 */
-		if (field_sel_status->props->flags & FLD_HIDDEN)
-			goto out;
+		if (row->field_sel_status) {
+			/*
+			 * If field with id "selected" is reported,
+			 * report the row although it does not pass
+			 * the selection criteria.
+			 * The "selected" field reports the result
+			 * of the selection.
+			 */
+			_implicit_report_fields[row->field_sel_status->props->field_num].report_fn(rh,
+							rh->mem, row->field_sel_status, row, rh->private);
+			/*
+			 * If the "selected" field is not displayed, e.g.
+			 * because it is part of the sort field list,
+			 * skip the display of the row as usual unless
+			 * we plan to do the output multiple times.
+			 */
+			if ((row->field_sel_status->props->flags & FLD_HIDDEN) &&
+			    !(rh->flags & DM_REPORT_OUTPUT_MULTIPLE_TIMES))
+				goto out;
+		}
 	}
 
 	if (!do_output)
 		goto out;
 
 	dm_list_add(&rh->rows, &row->list);
-
-	dm_list_iterate_items(field, &row->fields) {
-		len = (int) strlen(field->report_string);
-		if ((len > field->props->width))
-			field->props->width = len;
-
-		if ((rh->flags & RH_SORT_REQUIRED) &&
-		    (field->props->flags & FLD_SORT_KEY)) {
-			(*row->sort_fields)[field->props->sort_posn] = field;
-		}
-	}
 
 	if (!(rh->flags & DM_REPORT_OUTPUT_BUFFERED))
 		return dm_report_output(rh);
@@ -3398,9 +3426,17 @@ static struct field_selection *_create_field_selection(struct dm_report *rh,
 
 	/* The field is neither used in display options nor sort keys. */
 	if (!found) {
-		if (!(found = _add_field(rh, field_num, implicit, FLD_HIDDEN)))
+		if (rh->selection->add_new_fields) {
+			if (!(found = _add_field(rh, field_num, implicit, FLD_HIDDEN)))
+				return NULL;
+			rh->report_types |= fields[field_num].type;
+		} else {
+			log_error("Unable to create selection with field \'%s\' "
+				  "which is not included in current report.",
+				  implicit ? _implicit_report_fields[field_num].id
+					   : rh->fields[field_num].id);
 			return NULL;
-		rh->report_types |= fields[field_num].type;
+		}
 	}
 
 	field_id = fields[found->field_num].id;
@@ -3938,6 +3974,89 @@ error:
 	return NULL;
 }
 
+static int _alloc_rh_selection(struct dm_report *rh)
+{
+	if (!(rh->selection = dm_pool_zalloc(rh->mem, sizeof(struct selection))) ||
+	    !(rh->selection->mem = dm_pool_create("report selection", 10 * 1024))) {
+		log_error("Failed to allocate report selection structure.");
+		if (rh->selection)
+			dm_pool_free(rh->mem, rh->selection);
+		return 0;
+	}
+
+	return 1;
+}
+
+#define SPECIAL_SELECTION_ALL "all"
+
+static int _report_set_selection(struct dm_report *rh, const char *selection, int add_new_fields)
+{
+	struct selection_node *root = NULL;
+	const char *fin, *next;
+
+	if (rh->selection) {
+		if (rh->selection->selection_root)
+			/* Trash any previous selection. */
+			dm_pool_free(rh->selection->mem, rh->selection->selection_root);
+		rh->selection->selection_root = NULL;
+	} else {
+		if (!_alloc_rh_selection(rh))
+			goto_bad;
+	}
+
+	if (!selection || !selection[0] || !strcasecmp(selection, SPECIAL_SELECTION_ALL))
+		return 1;
+
+	rh->selection->add_new_fields = add_new_fields;
+
+	if (!(root = _alloc_selection_node(rh->selection->mem, SEL_OR)))
+		return 0;
+
+	if (!_parse_or_ex(rh, selection, &fin, root))
+		goto_bad;
+
+	next = _skip_space(fin);
+	if (*next) {
+		log_error("Expecting logical operator");
+		log_error(_sel_syntax_error_at_msg, next);
+		log_error(_sel_help_ref_msg);
+		goto bad;
+	}
+
+	rh->selection->selection_root = root;
+	return 1;
+bad:
+	dm_pool_free(rh->selection->mem, root);
+	return 0;
+}
+
+static void _reset_field_props(struct dm_report *rh)
+{
+	struct field_properties *fp;
+	dm_list_iterate_items(fp, &rh->field_props)
+		fp->width = fp->initial_width;
+	rh->flags |= RH_FIELD_CALC_NEEDED;
+}
+
+int dm_report_set_selection(struct dm_report *rh, const char *selection)
+{
+	struct row *row;
+
+	if (!_report_set_selection(rh, selection, 0))
+		return_0;
+
+	_reset_field_props(rh);
+
+	dm_list_iterate_items(row, &rh->rows) {
+		row->selected = _check_report_selection(rh, &row->fields);
+		if (row->field_sel_status)
+			_implicit_report_fields[row->field_sel_status->props->field_num].report_fn(rh,
+							rh->mem, row->field_sel_status, row, rh->private);
+	}
+
+	return 1;
+}
+
 struct dm_report *dm_report_init_with_selection(uint32_t *report_types,
 						const struct dm_report_object_type *types,
 						const struct dm_report_field_type *fields,
@@ -3950,8 +4069,6 @@ struct dm_report *dm_report_init_with_selection(uint32_t *report_types,
 						void *private_data)
 {
 	struct dm_report *rh;
-	struct selection_node *root = NULL;
-	const char *fin, *next;
 
 	_implicit_report_fields = _implicit_special_report_fields_with_selection;
 
@@ -3981,29 +4098,11 @@ struct dm_report *dm_report_init_with_selection(uint32_t *report_types,
 		return rh;
 	}
 
-	if (!(rh->selection = dm_pool_zalloc(rh->mem, sizeof(struct selection))) ||
-	    !(rh->selection->mem = dm_pool_create("report selection", 10 * 1024))) {
-		log_error("Failed to allocate report selection structure.");
-		goto bad;
-	}
-
-	if (!(root = _alloc_selection_node(rh->selection->mem, SEL_OR)))
+	if (!_report_set_selection(rh, selection, 1))
 		goto_bad;
-
-	if (!_parse_or_ex(rh, selection, &fin, root))
-		goto_bad;
-
-	next = _skip_space(fin);
-	if (*next) {
-		log_error("Expecting logical operator");
-		log_error(_sel_syntax_error_at_msg, next);
-		log_error(_sel_help_ref_msg);
-		goto bad;
-	}
 
 	_dm_report_init_update_types(rh, report_types);
 
-	rh->selection->selection_root = root;
 	return rh;
 bad:
 	dm_report_free(rh);
@@ -4093,11 +4192,45 @@ static int _report_headings(struct dm_report *rh)
 	return 0;
 }
 
+static int _should_display_row(struct row *row)
+{
+	return row->field_sel_status || row->selected;
+}
+
+static void _recalculate_fields(struct dm_report *rh)
+{
+	struct row *row;
+	struct dm_report_field *field;
+	size_t len;
+
+	dm_list_iterate_items(row, &rh->rows) {
+		dm_list_iterate_items(field, &row->fields) {
+			if ((rh->flags & RH_SORT_REQUIRED) &&
+			    (field->props->flags & FLD_SORT_KEY)) {
+				(*row->sort_fields)[field->props->sort_posn] = field;
+			}
+
+			if (_should_display_row(row)) {
+				len = (int) strlen(field->report_string);
+				if ((len > field->props->width))
+					field->props->width = len;
+
+			}
+		}
+	}
+
+	rh->flags &= ~RH_FIELD_CALC_NEEDED;
+}
+
 int dm_report_column_headings(struct dm_report *rh)
 {
 	/* Columns-as-rows does not use _report_headings. */
 	if (rh->flags & DM_REPORT_OUTPUT_COLUMNS_AS_ROWS)
 		return 1;
+
+	if (rh->flags & RH_FIELD_CALC_NEEDED)
+		_recalculate_fields(rh);
+
 	return _report_headings(rh);
 }
 
@@ -4178,7 +4311,29 @@ static int _sort_rows(struct dm_report *rh)
 #define STANDARD_QUOTE		"\'"
 #define STANDARD_PAIR		"="
 
+#define JSON_INDENT_UNIT       4
+#define JSON_SPACE             " "
+#define JSON_QUOTE             "\""
+#define JSON_PAIR              ":"
+#define JSON_SEPARATOR         ","
+#define JSON_OBJECT_START      "{"
+#define JSON_OBJECT_END        "}"
+#define JSON_ARRAY_START       "["
+#define JSON_ARRAY_END         "]"
+
 #define UNABLE_TO_EXTEND_OUTPUT_LINE_MSG "dm_report: Unable to extend output line"
+
+static int _is_basic_report(struct dm_report *rh)
+{
+	return rh->group_item &&
+	       (rh->group_item->group->type == DM_REPORT_GROUP_BASIC);
+}
+
+static int _is_json_report(struct dm_report *rh)
+{
+	return rh->group_item &&
+	       (rh->group_item->group->type == DM_REPORT_GROUP_JSON);
+}
 
 /*
  * Produce report output
@@ -4194,7 +4349,16 @@ static int _output_field(struct dm_report *rh, struct dm_report_field *field)
 	char *buf = NULL;
 	size_t buf_size = 0;
 
-	if (rh->flags & DM_REPORT_OUTPUT_FIELD_NAME_PREFIX) {
+	if (_is_json_report(rh)) {
+		if (!dm_pool_grow_object(rh->mem, JSON_QUOTE, 1) ||
+		    !dm_pool_grow_object(rh->mem, fields[field->props->field_num].id, 0) ||
+		    !dm_pool_grow_object(rh->mem, JSON_QUOTE, 1) ||
+		    !dm_pool_grow_object(rh->mem, JSON_PAIR, 1) ||
+		    !dm_pool_grow_object(rh->mem, JSON_QUOTE, 1)) {
+			log_error("dm_report: Unable to extend output line");
+			return 0;
+		}
+	} else if (rh->flags & DM_REPORT_OUTPUT_FIELD_NAME_PREFIX) {
 		if (!(field_id = dm_strdup(fields[field->props->field_num].id))) {
 			log_error("dm_report: Failed to copy field name");
 			return 0;
@@ -4269,12 +4433,19 @@ static int _output_field(struct dm_report *rh, struct dm_report_field *field)
 		}
 	}
 
-	if ((rh->flags & DM_REPORT_OUTPUT_FIELD_NAME_PREFIX) &&
-	    !(rh->flags & DM_REPORT_OUTPUT_FIELD_UNQUOTED))
-		if (!dm_pool_grow_object(rh->mem, STANDARD_QUOTE, 1)) {
+	if (rh->flags & DM_REPORT_OUTPUT_FIELD_NAME_PREFIX) {
+		if (!(rh->flags & DM_REPORT_OUTPUT_FIELD_UNQUOTED)) {
+			if (!dm_pool_grow_object(rh->mem, STANDARD_QUOTE, 1)) {
+				log_error(UNABLE_TO_EXTEND_OUTPUT_LINE_MSG);
+				goto bad;
+			}
+		}
+	} else if (_is_json_report(rh)) {
+		if (!dm_pool_grow_object(rh->mem, JSON_QUOTE, 1)) {
 			log_error(UNABLE_TO_EXTEND_OUTPUT_LINE_MSG);
 			goto bad;
 		}
+	}
 
 	dm_free(buf);
 	return 1;
@@ -4282,13 +4453,6 @@ static int _output_field(struct dm_report *rh, struct dm_report_field *field)
 bad:
 	dm_free(buf);
 	return 0;
-}
-
-static void _reset_field_props(struct dm_report *rh)
-{
-	struct field_properties *fp;
-	dm_list_iterate_items(fp, &rh->field_props)
-		fp->width = fp->initial_width;
 }
 
 static void _destroy_rows(struct dm_report *rh)
@@ -4376,43 +4540,89 @@ static int _output_as_columns(struct dm_report *rh)
 	struct dm_list *fh, *rowh, *ftmp, *rtmp;
 	struct row *row = NULL;
 	struct dm_report_field *field;
+	struct dm_list *last_row;
+	int do_field_delim;
+	char *line;
 
 	/* If headings not printed yet, calculate field widths and print them */
 	if (!(rh->flags & RH_HEADINGS_PRINTED))
 		_report_headings(rh);
 
 	/* Print and clear buffer */
+	last_row = dm_list_last(&rh->rows);
 	dm_list_iterate_safe(rowh, rtmp, &rh->rows) {
+		row = dm_list_item(rowh, struct row);
+
+		if (!_should_display_row(row))
+			continue;
+
 		if (!dm_pool_begin_object(rh->mem, 512)) {
 			log_error("dm_report: Unable to allocate output line");
 			return 0;
 		}
-		row = dm_list_item(rowh, struct row);
+
+		if (_is_json_report(rh)) {
+			if (!dm_pool_grow_object(rh->mem, JSON_OBJECT_START, 0)) {
+				log_error(UNABLE_TO_EXTEND_OUTPUT_LINE_MSG);
+				goto bad;
+			}
+		}
+
+		do_field_delim = 0;
+
 		dm_list_iterate_safe(fh, ftmp, &row->fields) {
 			field = dm_list_item(fh, struct dm_report_field);
 			if (field->props->flags & FLD_HIDDEN)
 				continue;
 
+			if (do_field_delim) {
+				if (_is_json_report(rh)) {
+					if (!dm_pool_grow_object(rh->mem, JSON_SEPARATOR, 0) ||
+					    !dm_pool_grow_object(rh->mem, JSON_SPACE, 0)) {
+						log_error(UNABLE_TO_EXTEND_OUTPUT_LINE_MSG);
+						goto bad;
+					}
+				} else {
+					if (!dm_pool_grow_object(rh->mem, rh->separator, 0)) {
+						log_error(UNABLE_TO_EXTEND_OUTPUT_LINE_MSG);
+						goto bad;
+					}
+				}
+			} else
+				do_field_delim = 1;
+
 			if (!_output_field(rh, field))
 				goto bad;
 
-			if (!dm_list_end(&row->fields, fh))
-				if (!dm_pool_grow_object(rh->mem, rh->separator, 0)) {
-					log_error(UNABLE_TO_EXTEND_OUTPUT_LINE_MSG);
-					goto bad;
-				}
-
-			dm_list_del(&field->list);
+			if (!(rh->flags & DM_REPORT_OUTPUT_MULTIPLE_TIMES))
+				dm_list_del(&field->list);
 		}
+
+		if (_is_json_report(rh)) {
+			if (!dm_pool_grow_object(rh->mem, JSON_OBJECT_END, 0)) {
+				log_error(UNABLE_TO_EXTEND_OUTPUT_LINE_MSG);
+				goto bad;
+			}
+			if (rowh != last_row &&
+			    !dm_pool_grow_object(rh->mem, JSON_SEPARATOR, 0)) {
+				log_error(UNABLE_TO_EXTEND_OUTPUT_LINE_MSG);
+				goto bad;
+			}
+		}
+
 		if (!dm_pool_grow_object(rh->mem, "\0", 1)) {
 			log_error("dm_report: Unable to terminate output line");
 			goto bad;
 		}
-		log_print("%s", (char *) dm_pool_end_object(rh->mem));
-		dm_list_del(&row->list);
+
+		line = (char *) dm_pool_end_object(rh->mem);
+		log_print("%*s", rh->group_item ? rh->group_item->group->indent + (int) strlen(line) : 0, line);
+		if (!(rh->flags & DM_REPORT_OUTPUT_MULTIPLE_TIMES))
+			dm_list_del(&row->list);
 	}
 
-	_destroy_rows(rh);
+	if (!(rh->flags & DM_REPORT_OUTPUT_MULTIPLE_TIMES))
+		_destroy_rows(rh);
 
 	return 1;
 
@@ -4426,16 +4636,440 @@ int dm_report_is_empty(struct dm_report *rh)
 	return dm_list_empty(&rh->rows) ? 1 : 0;
 }
 
+static struct report_group_item *_get_topmost_report_group_item(struct dm_report_group *group)
+{
+	struct report_group_item *item;
+
+	if (group && !dm_list_empty(&group->items))
+		item = dm_list_item(dm_list_first(&group->items), struct report_group_item);
+	else
+		item = NULL;
+
+	return item;
+}
+
+static int _json_output_array_start(struct dm_pool *mem, struct report_group_item *item)
+{
+	const char *name = (const char *) item->data;
+	char *output;
+
+	if (!dm_pool_begin_object(mem, 32)) {
+		log_error(UNABLE_TO_EXTEND_OUTPUT_LINE_MSG);
+		return 0;
+	}
+
+	if (!dm_pool_grow_object(mem, JSON_QUOTE, 1) ||
+	    !dm_pool_grow_object(mem, name, 0) ||
+	    !dm_pool_grow_object(mem, JSON_QUOTE JSON_PAIR JSON_SPACE JSON_ARRAY_START, 0) ||
+	    !dm_pool_grow_object(mem, "\0", 1) ||
+	    !(output = dm_pool_end_object(mem))) {
+		log_error(UNABLE_TO_EXTEND_OUTPUT_LINE_MSG);
+		goto bad;
+	}
+
+	if (item->parent->store.finished_count > 0)
+		log_print("%*s", item->group->indent + (int) sizeof(JSON_SEPARATOR) - 1, JSON_SEPARATOR);
+
+	if (item->parent->parent && item->parent->data) {
+		log_print("%*s", item->group->indent + (int) sizeof(JSON_OBJECT_START) - 1, JSON_OBJECT_START);
+		item->group->indent += JSON_INDENT_UNIT;
+	}
+
+	log_print("%*s", item->group->indent + (int) strlen(output), output);
+	item->group->indent += JSON_INDENT_UNIT;
+
+	dm_pool_free(mem, output);
+	return 1;
+bad:
+	dm_pool_abandon_object(mem);
+	return 0;
+}
+
+static int _prepare_json_report_output(struct dm_report *rh)
+{
+	if (rh->group_item->output_done && dm_list_empty(&rh->rows))
+		return 1;
+
+	/*
+	 * If this report is in JSON group, it must be at the
+	 * top of the stack of reports so the output from
+	 * different reports do not interleave with each other.
+	 */
+	if (_get_topmost_report_group_item(rh->group_item->group) != rh->group_item) {
+		log_error("dm_report: dm_report_output: interleaved reports detected for JSON output");
+		return 0;
+	}
+
+	if (rh->group_item->needs_closing) {
+		log_error("dm_report: dm_report_output: unfinished JSON output detected");
+		return 0;
+	}
+
+	if (!_json_output_array_start(rh->mem, rh->group_item))
+		return_0;
+
+	rh->group_item->needs_closing = 1;
+	return 1;
+}
+
+static int _print_basic_report_header(struct dm_report *rh)
+{
+	const char *report_name = (const char *) rh->group_item->data;
+	size_t len = strlen(report_name);
+	char *underline;
+
+	if (!(underline = dm_pool_zalloc(rh->mem, len + 1)))
+		return_0;
+
+	memset(underline, '=', len);
+
+	if (rh->group_item->parent->store.finished_count > 0)
+		log_print("%s", "");
+	log_print("%s", report_name);
+	log_print("%s", underline);
+
+	dm_pool_free(rh->mem, underline);
+	return 1;
+}
+
 int dm_report_output(struct dm_report *rh)
 {
-	if (dm_list_empty(&rh->rows))
-		return 1;
+	int r = 0;
+
+	if (_is_json_report(rh) &&
+	    !_prepare_json_report_output(rh))
+		return_0;
+
+	if (dm_list_empty(&rh->rows)) {
+		r = 1;
+		goto out;
+	}
+
+	if (rh->flags & RH_FIELD_CALC_NEEDED)
+		_recalculate_fields(rh);
 
 	if ((rh->flags & RH_SORT_REQUIRED))
 		_sort_rows(rh);
 
+	if (_is_basic_report(rh) && !_print_basic_report_header(rh))
+		goto_out;
+
 	if ((rh->flags & DM_REPORT_OUTPUT_COLUMNS_AS_ROWS))
-		return _output_as_rows(rh);
+		r = _output_as_rows(rh);
 	else
-		return _output_as_columns(rh);
+		r = _output_as_columns(rh);
+out:
+	if (r && rh->group_item)
+		rh->group_item->output_done = 1;
+	return r;
+}
+
+static int _report_group_create_single(struct dm_report_group *group)
+{
+	return 1;
+}
+
+static int _report_group_create_basic(struct dm_report_group *group)
+{
+	return 1;
+}
+
+static int _report_group_create_json(struct dm_report_group *group)
+{
+	log_print(JSON_OBJECT_START);
+	group->indent += JSON_INDENT_UNIT;
+	return 1;
+}
+
+struct dm_report_group *dm_report_group_create(dm_report_group_type_t type, void *data)
+{
+	struct dm_report_group *group;
+	struct dm_pool *mem;
+	struct report_group_item *item;
+
+	if (!(mem = dm_pool_create("report_group", 1024))) {
+		log_error("dm_report: dm_report_init_group: failed to allocate mem pool");
+		return NULL;
+	}
+
+	if (!(group = dm_pool_zalloc(mem, sizeof(*group)))) {
+		log_error("dm_report: failed to allocate report group structure");
+		goto bad;
+	}
+
+	group->mem = mem;
+	group->type = type;
+	dm_list_init(&group->items);
+
+	if (!(item = dm_pool_zalloc(mem, sizeof(*item)))) {
+		log_error("dm_report: faile to allocate root report group item");
+		goto bad;
+	}
+
+	dm_list_add_h(&group->items, &item->list);
+
+	switch (type) {
+		case DM_REPORT_GROUP_SINGLE:
+			if (!_report_group_create_single(group))
+				goto_bad;
+			break;
+		case DM_REPORT_GROUP_BASIC:
+			if (!_report_group_create_basic(group))
+				goto_bad;
+			break;
+		case DM_REPORT_GROUP_JSON:
+			if (!_report_group_create_json(group))
+				goto_bad;
+			break;
+		default:
+			goto_bad;
+	}
+
+	return group;
+bad:
+	dm_pool_destroy(mem);
+	return NULL;
+}
+
+static int _report_group_push_single(struct report_group_item *item, void *data)
+{
+	struct report_group_item *item_iter;
+	unsigned count = 0;
+
+	dm_list_iterate_items(item_iter, &item->group->items) {
+		if (item_iter->report)
+			count++;
+	}
+
+	if (count > 1) {
+		log_error("dm_report: unable to add more than one report "
+			  "to current report group");
+		return 0;
+	}
+
+	return 1;
+}
+
+static int _report_group_push_basic(struct report_group_item *item, const char *name)
+{
+	if (item->report) {
+		if (!(item->report->flags & DM_REPORT_OUTPUT_BUFFERED))
+			item->report->flags &= ~(DM_REPORT_OUTPUT_MULTIPLE_TIMES);
+	} else {
+		if (!name && item->parent->store.finished_count > 0)
+			log_print("%s", "");
+	}
+
+	return 1;
+}
+
+static int _report_group_push_json(struct report_group_item *item, const char *name)
+{
+	if (name && !(item->data = dm_pool_strdup(item->group->mem, name))) {
+		log_error("dm_report: failed to duplicate json item name");
+		return 0;
+	}
+
+	if (item->report) {
+		item->report->flags &= ~(DM_REPORT_OUTPUT_ALIGNED |
+					 DM_REPORT_OUTPUT_HEADINGS |
+					 DM_REPORT_OUTPUT_COLUMNS_AS_ROWS);
+		item->report->flags |= DM_REPORT_OUTPUT_BUFFERED;
+	} else {
+		if (name) {
+			if (!_json_output_array_start(item->group->mem, item))
+				return_0;
+		} else {
+			if (!item->parent->parent) {
+				log_error("dm_report: can't use unnamed object at top level of JSON output");
+				return 0;
+			}
+			if (item->parent->store.finished_count > 0)
+				log_print("%*s", item->group->indent + (int) sizeof(JSON_SEPARATOR) - 1, JSON_SEPARATOR);
+			log_print("%*s", item->group->indent + (int) sizeof(JSON_OBJECT_START) - 1, JSON_OBJECT_START);
+			item->group->indent += JSON_INDENT_UNIT;
+		}
+
+		item->output_done = 1;
+		item->needs_closing = 1;
+	}
+
+	return 1;
+}
+
+int dm_report_group_push(struct dm_report_group *group, struct dm_report *report, void *data)
+{
+	struct report_group_item *item, *tmp_item;
+
+	if (!group)
+		return 1;
+
+	if (!(item = dm_pool_zalloc(group->mem, sizeof(*item)))) {
+		log_error("dm_report: dm_report_group_push: group item allocation failed");
+		return 0;
+	}
+
+	if ((item->report = report)) {
+		item->store.orig_report_flags = report->flags;
+		report->group_item = item;
+	}
+
+	item->group = group;
+	item->data = data;
+
+	dm_list_iterate_items(tmp_item, &group->items) {
+		if (!tmp_item->report) {
+			item->parent = tmp_item;
+			break;
+		}
+	}
+
+	dm_list_add_h(&group->items, &item->list);
+
+	switch (group->type) {
+		case DM_REPORT_GROUP_SINGLE:
+			if (!_report_group_push_single(item, data))
+				goto_bad;
+			break;
+		case DM_REPORT_GROUP_BASIC:
+			if (!_report_group_push_basic(item, data))
+				goto_bad;
+			break;
+		case DM_REPORT_GROUP_JSON:
+			if (!_report_group_push_json(item, data))
+				goto_bad;
+			break;
+		default:
+			goto_bad;
+	}
+
+	return 1;
+bad:
+	dm_list_del(&item->list);
+	dm_pool_free(group->mem, item);
+	return 0;
+}
+
+static int _report_group_pop_single(struct report_group_item *item)
+{
+	return 1;
+}
+
+static int _report_group_pop_basic(struct report_group_item *item)
+{
+	return 1;
+}
+
+static int _report_group_pop_json(struct report_group_item *item)
+{
+	if (item->output_done && item->needs_closing) {
+		if (item->data) {
+			item->group->indent -= JSON_INDENT_UNIT;
+			log_print("%*s", item->group->indent + (int) sizeof(JSON_ARRAY_END) - 1, JSON_ARRAY_END);
+		}
+		if (item->parent->data && item->parent->parent) {
+			item->group->indent -= JSON_INDENT_UNIT;
+			log_print("%*s", item->group->indent + (int) sizeof(JSON_OBJECT_END) - 1, JSON_OBJECT_END);
+		}
+		item->needs_closing = 0;
+	}
+
+	return 1;
+}
+
+int dm_report_group_pop(struct dm_report_group *group)
+{
+	struct report_group_item *item;
+
+	if (!group)
+		return 1;
+
+	if (!(item = _get_topmost_report_group_item(group))) {
+		log_error("dm_report: dm_report_group_pop: group has no items");
+		return 0;
+	}
+
+	switch (group->type) {
+		case DM_REPORT_GROUP_SINGLE:
+			if (!_report_group_pop_single(item))
+				return_0;
+			break;
+		case DM_REPORT_GROUP_BASIC:
+			if (!_report_group_pop_basic(item))
+				return_0;
+			break;
+		case DM_REPORT_GROUP_JSON:
+			if (!_report_group_pop_json(item))
+				return_0;
+			break;
+		default:
+			return 0;
+        }
+
+	dm_list_del(&item->list);
+
+	if (item->report) {
+		item->report->flags = item->store.orig_report_flags;
+		item->report->group_item = NULL;
+	}
+
+	if (item->parent)
+		item->parent->store.finished_count++;
+
+	dm_pool_free(group->mem, item);
+	return 1;
+}
+
+static int _report_group_destroy_single(void)
+{
+	return 1;
+}
+
+static int _report_group_destroy_basic(void)
+{
+	return 1;
+}
+
+static int _report_group_destroy_json(void)
+{
+	log_print(JSON_OBJECT_END);
+	return 1;
+}
+
+int dm_report_group_destroy(struct dm_report_group *group)
+{
+	struct report_group_item *item, *tmp_item;
+	int r = 0;
+
+	if (!group)
+		return 1;
+
+	dm_list_iterate_items_safe(item, tmp_item, &group->items) {
+		if (item->report && !dm_report_output(item->report))
+			goto_out;
+		if (!dm_report_group_pop(group))
+			goto_out;
+	}
+
+	switch (group->type) {
+		case DM_REPORT_GROUP_SINGLE:
+			if (!_report_group_destroy_single())
+				goto_out;
+			break;
+		case DM_REPORT_GROUP_BASIC:
+			if (!_report_group_destroy_basic())
+				goto_out;
+			break;
+		case DM_REPORT_GROUP_JSON:
+			if (!_report_group_destroy_json())
+				goto_out;
+			break;
+		default:
+			goto_out;
+        }
+
+	r = 1;
+out:
+	dm_pool_destroy(group->mem);
+	return r;
 }

@@ -113,6 +113,7 @@ struct cmd_context {
 	 * Switches.
 	 */
 	unsigned is_long_lived:1;		/* optimises persistent_filter handling */
+	unsigned is_interactive:1;
 	unsigned check_pv_dev_sizes:1;
 	unsigned handles_missing_pvs:1;
 	unsigned handles_unknown_segments:1;
@@ -183,6 +184,11 @@ struct cmd_context {
 	char system_dir[PATH_MAX];
 	char dev_dir[PATH_MAX];
 	char proc_dir[PATH_MAX];
+
+	/*
+	 * Command log reporting.
+	 */
+	struct dm_report *log_rh;		/* keep log report of last cmd for further queries if cmd line is interactive (e.g. lvm shell) */
 
 	/*
 	 * Buffers.

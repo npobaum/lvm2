@@ -22,6 +22,10 @@
 #include <sys/wait.h>
 #include <sys/utsname.h>
 
+#define report_log_ret_code(ret_code) report_current_object_cmdlog(REPORT_OBJECT_CMDLOG_NAME, \
+					ret_code == ECMD_PROCESSED ? REPORT_OBJECT_CMDLOG_SUCCESS \
+								   : REPORT_OBJECT_CMDLOG_FAILURE, ret_code)
+
 struct device_id_list {
 	struct dm_list list;
 	struct device *dev;
@@ -797,10 +801,10 @@ int vgcreate_params_set_from_args(struct cmd_context *cmd,
 		return 0;
 	}
 
-	if (arg_count(cmd, metadatacopies_ARG))
+	if (arg_is_set(cmd, metadatacopies_ARG))
 		vp_new->vgmetadatacopies = arg_int_value(cmd, metadatacopies_ARG,
 							DEFAULT_VGMETADATACOPIES);
-	else if (arg_count(cmd, vgmetadatacopies_ARG))
+	else if (arg_is_set(cmd, vgmetadatacopies_ARG))
 		vp_new->vgmetadatacopies = arg_int_value(cmd, vgmetadatacopies_ARG,
 							DEFAULT_VGMETADATACOPIES);
 	else
@@ -1171,18 +1175,18 @@ int get_activation_monitoring_mode(struct cmd_context *cmd,
 {
 	*monitoring_mode = DEFAULT_DMEVENTD_MONITOR;
 
-	if (arg_count(cmd, monitor_ARG) &&
-	    (arg_count(cmd, ignoremonitoring_ARG) ||
-	     arg_count(cmd, sysinit_ARG))) {
+	if (arg_is_set(cmd, monitor_ARG) &&
+	    (arg_is_set(cmd, ignoremonitoring_ARG) ||
+	     arg_is_set(cmd, sysinit_ARG))) {
 		log_error("--ignoremonitoring or --sysinit option not allowed with --monitor option.");
 		return 0;
 	}
 
-	if (arg_count(cmd, monitor_ARG))
+	if (arg_is_set(cmd, monitor_ARG))
 		*monitoring_mode = arg_int_value(cmd, monitor_ARG,
 						 DEFAULT_DMEVENTD_MONITOR);
-	else if (is_static() || arg_count(cmd, ignoremonitoring_ARG) ||
-		 arg_count(cmd, sysinit_ARG) ||
+	else if (is_static() || arg_is_set(cmd, ignoremonitoring_ARG) ||
+		 arg_is_set(cmd, sysinit_ARG) ||
 		 !find_config_tree_bool(cmd, activation_monitoring_CFG, NULL))
 		*monitoring_mode = DMEVENTD_MONITOR_IGNORE;
 
@@ -1242,13 +1246,13 @@ int get_pool_params(struct cmd_context *cmd,
 				 display_size(cmd, *chunk_size));
 	}
 
-	if (arg_count(cmd, poolmetadatasize_ARG)) {
+	if (arg_is_set(cmd, poolmetadatasize_ARG)) {
 		if (arg_sign_value(cmd, poolmetadatasize_ARG, SIGN_NONE) == SIGN_MINUS) {
 			log_error("Negative pool metadata size is invalid.");
 			return 0;
 		}
 
-		if (arg_count(cmd, poolmetadata_ARG)) {
+		if (arg_is_set(cmd, poolmetadata_ARG)) {
 			log_error("Please specify either metadata logical volume or its size.");
 			return 0;
 		}
@@ -1256,7 +1260,7 @@ int get_pool_params(struct cmd_context *cmd,
 		*passed_args |= PASS_ARG_POOL_METADATA_SIZE;
 		*pool_metadata_size = arg_uint64_value(cmd, poolmetadatasize_ARG,
 						       UINT64_C(0));
-	} else if (arg_count(cmd, poolmetadata_ARG))
+	} else if (arg_is_set(cmd, poolmetadata_ARG))
 		*passed_args |= PASS_ARG_POOL_METADATA_SIZE; /* fixed size */
 
 	/* TODO: default in lvm.conf ? */
@@ -1290,7 +1294,7 @@ static int _validate_stripe_params(struct cmd_context *cmd, uint32_t *stripes,
 	}
 
 	if (*stripes > 1 && (*stripe_size < STRIPE_SIZE_MIN ||
-			     *stripe_size & (*stripe_size - 1))) {
+			     !is_power_of_2(*stripe_size))) {
 		log_error("Invalid stripe size %s.",
 			  display_size(cmd, (uint64_t) *stripe_size));
 		return 0;
@@ -1308,7 +1312,7 @@ static int _validate_stripe_params(struct cmd_context *cmd, uint32_t *stripes,
 int get_stripe_params(struct cmd_context *cmd, uint32_t *stripes, uint32_t *stripe_size)
 {
 	/* stripes_long_ARG takes precedence (for lvconvert) */
-	*stripes = arg_uint_value(cmd, arg_count(cmd, stripes_long_ARG) ? stripes_long_ARG : stripes_ARG, 1);
+	*stripes = arg_uint_value(cmd, arg_is_set(cmd, stripes_long_ARG) ? stripes_long_ARG : stripes_ARG, 1);
 
 	*stripe_size = arg_uint_value(cmd, stripesize_ARG, 0);
 	if (*stripe_size) {
@@ -1452,6 +1456,7 @@ int process_each_label(struct cmd_context *cmd, int argc, char **argv,
 		       struct processing_handle *handle,
 		       process_single_label_fn_t process_single_label)
 {
+	log_report_t saved_log_report_state = log_get_report_state();
 	struct label *label;
 	struct dev_iter *iter;
 	struct device *dev;
@@ -1459,6 +1464,8 @@ int process_each_label(struct cmd_context *cmd, int argc, char **argv,
 	int ret_max = ECMD_PROCESSED;
 	int ret;
 	int opt = 0;
+
+	log_set_report_object_type(LOG_REPORT_OBJECT_TYPE_LABEL);
 
 	if (argc) {
 		for (; opt < argc; opt++) {
@@ -1469,6 +1476,8 @@ int process_each_label(struct cmd_context *cmd, int argc, char **argv,
 				continue;
 			}
 
+			log_set_report_object_name_and_id(dev_name(dev), NULL);
+
 			if (!label_read(dev, &label, 0)) {
 				log_error("No physical volume label read from %s.",
 					  argv[opt]);
@@ -1477,20 +1486,24 @@ int process_each_label(struct cmd_context *cmd, int argc, char **argv,
 			}
 
 			ret = process_single_label(cmd, label, handle);
+			report_log_ret_code(ret);
 
 			if (ret > ret_max)
 				ret_max = ret;
+
+			log_set_report_object_name_and_id(NULL, NULL);
 
 			if (sigint_caught())
 				break;
 		}
 
-		return ret_max;
+		goto out;
 	}
 
 	if (!(iter = dev_iter_create(cmd->full_filter, 1))) {
 		log_error("dev_iter creation failed.");
-		return ECMD_FAILED;
+		ret_max = ECMD_FAILED;
+		goto out;
 	}
 
 	while ((dev = dev_iter_get(iter)))
@@ -1498,17 +1511,23 @@ int process_each_label(struct cmd_context *cmd, int argc, char **argv,
 		if (!label_read(dev, &label, 0))
 			continue;
 
+		log_set_report_object_name_and_id(dev_name(label->dev), NULL);
+
 		ret = process_single_label(cmd, label, handle);
+		report_log_ret_code(ret);
 
 		if (ret > ret_max)
 			ret_max = ret;
+
+		log_set_report_object_name_and_id(NULL, NULL);
 
 		if (sigint_caught())
 			break;
 	}
 
 	dev_iter_destroy(iter);
-
+out:
+	log_restore_report_state(saved_log_report_state);
 	return ret_max;
 }
 
@@ -1636,7 +1655,7 @@ int validate_restricted_lvname_param(struct cmd_context *cmd, const char **vg_na
 	if (lv_name && *lv_name && !apply_lvname_restrictions(*lv_name))
 		return_0;
 
-	return -1;
+	return 1;
 }
 
 /*
@@ -1705,7 +1724,7 @@ static int _get_arg_vgnames(struct cmd_context *cmd,
 	return ret_max;
 }
 
-struct processing_handle *init_processing_handle(struct cmd_context *cmd)
+struct processing_handle *init_processing_handle(struct cmd_context *cmd, struct processing_handle *parent_handle)
 {
 	struct processing_handle *handle;
 
@@ -1713,6 +1732,8 @@ struct processing_handle *init_processing_handle(struct cmd_context *cmd)
 		log_error("_init_processing_handle: failed to allocate memory for processing handle");
 		return NULL;
 	}
+
+	handle->parent = parent_handle;
 
 	/*
 	 * For any reporting tool, the internal_report_for_select is reset to 0
@@ -1725,6 +1746,17 @@ struct processing_handle *init_processing_handle(struct cmd_context *cmd)
 	handle->internal_report_for_select = arg_is_set(cmd, select_ARG);
 	handle->include_historical_lvs = cmd->include_historical_lvs;
 
+	if (!parent_handle) {
+		if (!report_format_init(cmd, &handle->report_group_type, &handle->report_group,
+					&handle->log_rh, &handle->log_only,
+					&handle->saved_log_report_state)) {
+			dm_pool_free(cmd->mem, handle);
+			return NULL;
+		}
+	} else
+		handle->saved_log_report_state = log_get_report_state();
+
+	log_set_report_context(LOG_REPORT_CONTEXT_PROCESSING);
 	return handle;
 }
 
@@ -1732,15 +1764,18 @@ int init_selection_handle(struct cmd_context *cmd, struct processing_handle *han
 			  report_type_t initial_report_type)
 {
 	struct selection_handle *sh;
+	const char *selection;
 
 	if (!(sh = dm_pool_zalloc(cmd->mem, sizeof(struct selection_handle)))) {
 		log_error("_init_selection_handle: failed to allocate memory for selection handle");
 		return 0;
 	}
 
+	if (!report_get_single_selection(cmd, initial_report_type, &selection))
+		return_0;
+
 	sh->report_type = initial_report_type;
-	if (!(sh->selection_rh = report_init_for_selection(cmd, &sh->report_type,
-					arg_str_value(cmd, select_ARG, NULL)))) {
+	if (!(sh->selection_rh = report_init_for_selection(cmd, &sh->report_type, selection))) {
 		dm_pool_free(cmd->mem, sh);
 		return_0;
 	}
@@ -1754,6 +1789,21 @@ void destroy_processing_handle(struct cmd_context *cmd, struct processing_handle
 	if (handle) {
 		if (handle->selection_handle && handle->selection_handle->selection_rh)
 			dm_report_free(handle->selection_handle->selection_rh);
+
+		log_restore_report_state(handle->saved_log_report_state);
+
+		if (!dm_report_group_destroy(handle->report_group))
+			stack;
+		if (handle->log_rh) {
+			if (cmd->is_interactive) {
+				/*
+				 * Keep log report if we're interactive so
+				 * we can do further queries on this report.
+				 */
+				cmd->log_rh = handle->log_rh;
+			} else
+				dm_report_free(handle->log_rh);
+		}
 		/*
 		 * TODO: think about better alternatives:
 		 * handle mempool, dm_alloc for handle memory...
@@ -1826,6 +1876,7 @@ static int _process_vgnameid_list(struct cmd_context *cmd, uint32_t read_flags,
 				  struct processing_handle *handle,
 				  process_single_vg_fn_t process_single_vg)
 {
+	log_report_t saved_log_report_state = log_get_report_state();
 	char uuid[64] __attribute__((aligned(8)));
 	struct volume_group *vg;
 	struct vgnameid_list *vgnl;
@@ -1839,6 +1890,9 @@ static int _process_vgnameid_list(struct cmd_context *cmd, uint32_t read_flags,
 	int notfound;
 	int process_all = 0;
 	int already_locked;
+	int do_report_ret_code = 1;
+
+	log_set_report_object_type(LOG_REPORT_OBJECT_TYPE_VG);
 
 	/*
 	 * If no VG names or tags were supplied, then process all VGs.
@@ -1850,21 +1904,31 @@ static int _process_vgnameid_list(struct cmd_context *cmd, uint32_t read_flags,
 	 * FIXME If one_vgname, only proceed if exactly one VG matches tags or selection.
 	 */
 	dm_list_iterate_items(vgnl, vgnameids_to_process) {
-		if (sigint_caught())
-			return_ECMD_FAILED;
-
 		vg_name = vgnl->vg_name;
 		vg_uuid = vgnl->vgid;
 		skip = 0;
 		notfound = 0;
 
-		if (vg_uuid && !id_write_format((const struct id*)vg_uuid, uuid, sizeof(uuid)))
-			stack;
+		uuid[0] = '\0';
+		if (is_orphan_vg(vg_name)) {
+			log_set_report_object_type(LOG_REPORT_OBJECT_TYPE_ORPHAN);
+			log_set_report_object_name_and_id(vg_name + sizeof(VG_ORPHANS), uuid);
+		} else {
+			if (vg_uuid && !id_write_format((const struct id*)vg_uuid, uuid, sizeof(uuid)))
+				stack;
+			log_set_report_object_name_and_id(vg_name, uuid);
+		}
 
-		log_very_verbose("Processing VG %s %s", vg_name, vg_uuid ? uuid : "");
+		if (sigint_caught()) {
+			ret_max = ECMD_FAILED;
+			goto_out;
+		}
+
+		log_very_verbose("Processing VG %s %s", vg_name, uuid);
 
 		if (!lockd_vg(cmd, vg_name, NULL, 0, &lockd_state)) {
 			ret_max = ECMD_FAILED;
+			report_log_ret_code(ret_max);
 			continue;
 		}
 
@@ -1874,6 +1938,7 @@ static int _process_vgnameid_list(struct cmd_context *cmd, uint32_t read_flags,
 		if (_ignore_vg(vg, vg_name, arg_vgnames, read_flags, &skip, &notfound)) {
 			stack;
 			ret_max = ECMD_FAILED;
+			report_log_ret_code(ret_max);
 			goto endvg;
 		}
 		if (skip || notfound)
@@ -1891,20 +1956,27 @@ static int _process_vgnameid_list(struct cmd_context *cmd, uint32_t read_flags,
 			_update_selection_result(handle, &whole_selected);
 			if (ret != ECMD_PROCESSED)
 				stack;
+			report_log_ret_code(ret);
 			if (ret > ret_max)
 				ret_max = ret;
 		}
 
 		if (!vg_read_error(vg) && !already_locked)
-			unlock_vg(cmd, vg_name);
+			unlock_vg(cmd, vg, vg_name);
 endvg:
 		release_vg(vg);
 		if (!lockd_vg(cmd, vg_name, "un", 0, &lockd_state))
 			stack;
-	}
 
+		log_set_report_object_name_and_id(NULL, NULL);
+	}
 	/* the VG is selected if at least one LV is selected */
 	_set_final_selection_result(handle, whole_selected);
+	do_report_ret_code = 0;
+out:
+	if (do_report_ret_code)
+		report_log_ret_code(ret_max);
+	log_restore_report_state(saved_log_report_state);
 	return ret_max;
 }
 
@@ -2074,9 +2146,11 @@ int process_each_vg(struct cmd_context *cmd,
 		    const char *one_vgname,
 		    struct dm_list *use_vgnames,
 		    uint32_t read_flags,
+		    int include_internal,
 		    struct processing_handle *handle,
 		    process_single_vg_fn_t process_single_vg)
 {
+	log_report_t saved_log_report_state = log_get_report_state();
 	int handle_supplied = handle != NULL;
 	struct dm_list arg_tags;		/* str_list */
 	struct dm_list arg_vgnames;		/* str_list */
@@ -2087,6 +2161,7 @@ int process_each_vg(struct cmd_context *cmd,
 	int ret_max = ECMD_PROCESSED;
 	int ret;
 
+	log_set_report_object_type(LOG_REPORT_OBJECT_TYPE_VG);
 	log_debug("Processing each VG");
 
 	/* Disable error in vg_read so we can print it from ignore_vg. */
@@ -2141,7 +2216,7 @@ int process_each_vg(struct cmd_context *cmd,
 	 */
 	log_debug("Get list of VGs on system");
 
-	if (!get_vgnameids(cmd, &vgnameids_on_system, NULL, 0)) {
+	if (!get_vgnameids(cmd, &vgnameids_on_system, NULL, include_internal)) {
 		ret_max = ECMD_FAILED;
 		goto_out;
 	}
@@ -2179,7 +2254,7 @@ int process_each_vg(struct cmd_context *cmd,
 	else
 		_choose_vgs_to_process(cmd, &arg_vgnames, &vgnameids_on_system, &vgnameids_to_process);
 
-	if (!handle && !(handle = init_processing_handle(cmd))) {
+	if (!handle && !(handle = init_processing_handle(cmd, NULL))) {
 		ret_max = ECMD_FAILED;
 		goto_out;
 	}
@@ -2198,6 +2273,7 @@ out:
 	if (!handle_supplied)
 		destroy_processing_handle(cmd, handle);
 
+	log_restore_report_state(saved_log_report_state);
 	return ret_max;
 }
 
@@ -2249,6 +2325,9 @@ int process_each_lv_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 			  struct processing_handle *handle,
 			  process_single_lv_fn_t process_single_lv)
 {
+	log_report_t saved_log_report_state = log_get_report_state();
+	char lv_uuid[64] __attribute__((aligned(8)));
+	char vg_uuid[64] __attribute__((aligned(8)));
 	int ret_max = ECMD_PROCESSED;
 	int ret = 0;
 	int whole_selected = 0;
@@ -2262,6 +2341,13 @@ int process_each_lv_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 	struct dm_list final_lvs;
 	struct lv_list *final_lvl;
 	struct glv_list *glvl, *tglvl;
+	int do_report_ret_code = 1;
+
+	log_set_report_object_type(LOG_REPORT_OBJECT_TYPE_LV);
+
+	vg_uuid[0] = '\0';
+	if (!id_write_format(&vg->id, vg_uuid, sizeof(vg_uuid)))
+		stack;
 
 	dm_list_init(&final_lvs);
 
@@ -2276,7 +2362,7 @@ int process_each_lv_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 	if (arg_lvnames && !dm_list_empty(arg_lvnames))
 		lvargs_supplied = 1;
 
-	if (!handle && !(handle = init_processing_handle(cmd))) {
+	if (!handle && !(handle = init_processing_handle(cmd, NULL))) {
 		ret_max = ECMD_FAILED;
 		goto_out;
 	}
@@ -2293,7 +2379,15 @@ int process_each_lv_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 	    (tags_supplied && str_list_match_list(tags_in, &vg->tags, NULL)))
 		process_all = 1;
 
+	log_set_report_object_group_and_group_id(vg->name, vg_uuid);
+
 	dm_list_iterate_items(lvl, &vg->lvs) {
+		lv_uuid[0] = '\0';
+		if (!id_write_format(&lvl->lv->lvid.id[1], lv_uuid, sizeof(lv_uuid)))
+			stack;
+
+		log_set_report_object_name_and_id(lvl->lv->name, lv_uuid);
+
 		if (sigint_caught()) {
 			ret_max = ECMD_FAILED;
 			goto_out;
@@ -2304,11 +2398,11 @@ int process_each_lv_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 
 		/* Skip availability change for non-virt snaps when processing all LVs */
 		/* FIXME: pass process_all to process_single_lv() */
-		if (process_all && arg_count(cmd, activate_ARG) &&
+		if (process_all && arg_is_set(cmd, activate_ARG) &&
 		    lv_is_cow(lvl->lv) && !lv_is_virtual_origin(origin_from_cow(lvl->lv)))
 			continue;
 
-		if (lv_is_virtual_origin(lvl->lv) && !arg_count(cmd, all_ARG)) {
+		if (lv_is_virtual_origin(lvl->lv) && !arg_is_set(cmd, all_ARG)) {
 			if (lvargs_supplied &&
 			    str_list_match_item(arg_lvnames, lvl->lv->name))
 				log_print_unless_silent("Ignoring virtual origin logical volume %s.",
@@ -2320,7 +2414,7 @@ int process_each_lv_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 		 * Only let hidden LVs through if --all was used or the LVs 
 		 * were specifically named on the command line.
 		 */
-		if (!lvargs_supplied && !lv_is_visible(lvl->lv) && !arg_count(cmd, all_ARG))
+		if (!lvargs_supplied && !lv_is_visible(lvl->lv) && !arg_is_set(cmd, all_ARG))
 			continue;
 
 		/*
@@ -2328,7 +2422,7 @@ int process_each_lv_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 		 * it is named on the command line.
 		 */
 		if (lv_is_lockd_sanlock_lv(lvl->lv)) {
-			if (arg_count(cmd, all_ARG) ||
+			if (arg_is_set(cmd, all_ARG) ||
 			    (lvargs_supplied && str_list_match_item(arg_lvnames, lvl->lv->name))) {
 				log_very_verbose("Processing lockd_sanlock_lv %s/%s.", vg->name, lvl->lv->name);
 			} else {
@@ -2375,8 +2469,15 @@ int process_each_lv_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 		final_lvl->lv = lvl->lv;
 		dm_list_add(&final_lvs, &final_lvl->list);
 	}
+	log_set_report_object_name_and_id(NULL, NULL);
 
 	dm_list_iterate_items(lvl, &final_lvs) {
+		lv_uuid[0] = '\0';
+		if (!id_write_format(&lvl->lv->lvid.id[1], lv_uuid, sizeof(lv_uuid)))
+			stack;
+
+		log_set_report_object_name_and_id(lvl->lv->name, lv_uuid);
+
 		if (sigint_caught()) {
 			ret_max = ECMD_FAILED;
 			goto_out;
@@ -2396,12 +2497,16 @@ int process_each_lv_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 			_update_selection_result(handle, &whole_selected);
 		if (ret != ECMD_PROCESSED)
 			stack;
+		report_log_ret_code(ret);
 		if (ret > ret_max)
 			ret_max = ret;
 
-		if (stop_on_error && ret != ECMD_PROCESSED)
+		if (stop_on_error && ret != ECMD_PROCESSED) {
+			do_report_ret_code = 0;
 			goto_out;
+		}
 	}
+	log_set_report_object_name_and_id(NULL, NULL);
 
 	if (handle->include_historical_lvs && !tags_supplied) {
 		if (!dm_list_size(&_historical_lv.segments))
@@ -2409,6 +2514,12 @@ int process_each_lv_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 		_historical_lv.vg = vg;
 
 		dm_list_iterate_items_safe(glvl, tglvl, &vg->historical_lvs) {
+			lv_uuid[0] = '\0';
+			if (!id_write_format(&glvl->glv->historical->lvid.id[1], lv_uuid, sizeof(lv_uuid)))
+				stack;
+
+			log_set_report_object_name_and_id(glvl->glv->historical->name, lv_uuid);
+
 			process_lv = process_all;
 
 			if (lvargs_supplied &&
@@ -2437,12 +2548,16 @@ int process_each_lv_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 				_update_selection_result(handle, &whole_selected);
 			if (ret != ECMD_PROCESSED)
 				stack;
+			report_log_ret_code(ret);
 			if (ret > ret_max)
 				ret_max = ret;
 
-			if (stop_on_error && ret != ECMD_PROCESSED)
+			if (stop_on_error && ret != ECMD_PROCESSED) {
+				do_report_ret_code = 0;
 				goto_out;
+			}
 		}
+		log_set_report_object_name_and_id(NULL, NULL);
 	}
 
 	if (lvargs_supplied) {
@@ -2451,17 +2566,26 @@ int process_each_lv_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 		 * this leads to miscalculation that depends on the order of args.
 		 */
 		dm_list_iterate_items(sl, arg_lvnames) {
+			log_set_report_object_name_and_id(sl->str, NULL);
 			log_error("Failed to find logical volume \"%s/%s\"",
 				  vg->name, sl->str);
 			if (ret_max < ECMD_FAILED)
 				ret_max = ECMD_FAILED;
+			report_log_ret_code(ret_max);
 		}
 	}
+	do_report_ret_code = 0;
 out:
+	if (do_report_ret_code)
+		report_log_ret_code(ret_max);
+	log_set_report_object_name_and_id(NULL, NULL);
+	log_set_report_object_group_and_group_id(NULL, NULL);
 	if (!handle_supplied)
 		destroy_processing_handle(cmd, handle);
 	else
 		_set_final_selection_result(handle, whole_selected);
+	log_restore_report_state(saved_log_report_state);
+
 	return ret_max;
 }
 
@@ -2604,6 +2728,7 @@ static int _process_lv_vgnameid_list(struct cmd_context *cmd, uint32_t read_flag
 				     struct processing_handle *handle,
 				     process_single_lv_fn_t process_single_lv)
 {
+	log_report_t saved_log_report_state = log_get_report_state();
 	char uuid[64] __attribute__((aligned(8)));
 	struct volume_group *vg;
 	struct vgnameid_list *vgnl;
@@ -2620,15 +2745,26 @@ static int _process_lv_vgnameid_list(struct cmd_context *cmd, uint32_t read_flag
 	int skip;
 	int notfound;
 	int already_locked;
+	int do_report_ret_code = 1;
+
+	log_set_report_object_type(LOG_REPORT_OBJECT_TYPE_VG);
 
 	dm_list_iterate_items(vgnl, vgnameids_to_process) {
-		if (sigint_caught())
-			return_ECMD_FAILED;
-
 		vg_name = vgnl->vg_name;
 		vg_uuid = vgnl->vgid;
 		skip = 0;
 		notfound = 0;
+
+		uuid[0] = '\0';
+		if (vg_uuid && !id_write_format((const struct id*)vg_uuid, uuid, sizeof(uuid)))
+			stack;
+
+		log_set_report_object_name_and_id(vg_name, uuid);
+
+		if (sigint_caught()) {
+			ret_max = ECMD_FAILED;
+			goto_out;
+		}
 
 		/*
 		 * arg_lvnames contains some elements that are just "vgname"
@@ -2655,18 +2791,17 @@ static int _process_lv_vgnameid_list(struct cmd_context *cmd, uint32_t read_flag
 				if (!str_list_add(cmd->mem, &lvnames,
 						  dm_pool_strdup(cmd->mem, lvn + 1))) {
 					log_error("strlist allocation failed.");
-					return ECMD_FAILED;
+					ret_max = ECMD_FAILED;
+					goto out;
 				}
 			}
 		}
-
-		if (vg_uuid && !id_write_format((const struct id*)vg_uuid, uuid, sizeof(uuid)))
-			stack;
 
 		log_very_verbose("Processing VG %s %s", vg_name, vg_uuid ? uuid : "");
 
 		if (!lockd_vg(cmd, vg_name, NULL, 0, &lockd_state)) {
 			ret_max = ECMD_FAILED;
+			report_log_ret_code(ret_max);
 			continue;
 		}
 
@@ -2676,6 +2811,7 @@ static int _process_lv_vgnameid_list(struct cmd_context *cmd, uint32_t read_flag
 		if (_ignore_vg(vg, vg_name, arg_vgnames, read_flags, &skip, &notfound)) {
 			stack;
 			ret_max = ECMD_FAILED;
+			report_log_ret_code(ret_max);
 			goto endvg;
 		}
 		if (skip || notfound)
@@ -2685,17 +2821,23 @@ static int _process_lv_vgnameid_list(struct cmd_context *cmd, uint32_t read_flag
 					    handle, process_single_lv);
 		if (ret != ECMD_PROCESSED)
 			stack;
+		report_log_ret_code(ret);
 		if (ret > ret_max)
 			ret_max = ret;
 
 		if (!already_locked)
-			unlock_vg(cmd, vg_name);
+			unlock_vg(cmd, vg, vg_name);
 endvg:
 		release_vg(vg);
 		if (!lockd_vg(cmd, vg_name, "un", 0, &lockd_state))
 			stack;
+		log_set_report_object_name_and_id(NULL, NULL);
 	}
-
+	do_report_ret_code = 0;
+out:
+	if (do_report_ret_code)
+		report_log_ret_code(ret_max);
+	log_restore_report_state(saved_log_report_state);
 	return ret_max;
 }
 
@@ -2709,6 +2851,7 @@ int process_each_lv(struct cmd_context *cmd,
 		    struct processing_handle *handle,
 		    process_single_lv_fn_t process_single_lv)
 {
+	log_report_t saved_log_report_state = log_get_report_state();
 	int handle_supplied = handle != NULL;
 	struct dm_list arg_tags;		/* str_list */
 	struct dm_list arg_vgnames;		/* str_list */
@@ -2719,6 +2862,8 @@ int process_each_lv(struct cmd_context *cmd,
 	int process_all_vgs_on_system = 0;
 	int ret_max = ECMD_PROCESSED;
 	int ret;
+
+	log_set_report_object_type(LOG_REPORT_OBJECT_TYPE_LV);
 
 	/* Disable error in vg_read so we can print it from ignore_vg. */
 	cmd->vg_read_print_access_error = 0;
@@ -2737,7 +2882,7 @@ int process_each_lv(struct cmd_context *cmd,
 		goto_out;
 	}
 
-	if (!handle && !(handle = init_processing_handle(cmd))) {
+	if (!handle && !(handle = init_processing_handle(cmd, NULL))) {
 		ret_max = ECMD_FAILED;
 		goto_out;
 	}
@@ -2827,6 +2972,7 @@ out:
 	if (!handle_supplied)
 		destroy_processing_handle(cmd, handle);
 
+	log_restore_report_state(saved_log_report_state);
 	return ret_max;
 }
 
@@ -3149,16 +3295,26 @@ static int _process_pvs_in_vg(struct cmd_context *cmd,
 			      struct processing_handle *handle,
 			      process_single_pv_fn_t process_single_pv)
 {
+	log_report_t saved_log_report_state = log_get_report_state();
+	char pv_uuid[64] __attribute__((aligned(8)));
+	char vg_uuid[64] __attribute__((aligned(8)));
 	int handle_supplied = handle != NULL;
 	struct physical_volume *pv;
 	struct pv_list *pvl;
 	struct device_id_list *dil;
 	const char *pv_name;
 	int process_pv;
+	int do_report_ret_code = 1;
 	int ret_max = ECMD_PROCESSED;
 	int ret = 0;
 
-	if (!handle && (!(handle = init_processing_handle(cmd)))) {
+	log_set_report_object_type(LOG_REPORT_OBJECT_TYPE_PV);
+
+	vg_uuid[0] = '\0';
+	if (!id_write_format(&vg->id, vg_uuid, sizeof(vg_uuid)))
+		stack;
+
+	if (!handle && (!(handle = init_processing_handle(cmd, NULL)))) {
 		ret_max = ECMD_FAILED;
 		goto_out;
 	}
@@ -3169,14 +3325,22 @@ static int _process_pvs_in_vg(struct cmd_context *cmd,
 		goto_out;
 	}
 
+	if (!is_orphan_vg(vg->name))
+		log_set_report_object_group_and_group_id(vg->name, vg_uuid);
+
 	dm_list_iterate_items(pvl, &vg->pvs) {
+		pv = pvl->pv;
+		pv_name = pv_dev_name(pv);
+		pv_uuid[0]='\0';
+		if (!id_write_format(&pv->id, pv_uuid, sizeof(pv_uuid)))
+			stack;
+
+		log_set_report_object_name_and_id(pv_name, pv_uuid);
+
 		if (sigint_caught()) {
 			ret_max = ECMD_FAILED;
 			goto_out;
 		}
-
-		pv = pvl->pv;
-		pv_name = pv_dev_name(pv);
 
 		process_pv = process_all_pvs;
 
@@ -3216,6 +3380,7 @@ static int _process_pvs_in_vg(struct cmd_context *cmd,
 				ret = process_single_pv(cmd, vg, pv, handle);
 				if (ret != ECMD_PROCESSED)
 					stack;
+				report_log_ret_code(ret);
 				if (ret > ret_max)
 					ret_max = ret;
 			}
@@ -3226,10 +3391,18 @@ static int _process_pvs_in_vg(struct cmd_context *cmd,
 	 	 */
 		if (!process_all_pvs && dm_list_empty(arg_tags) && dm_list_empty(arg_devices))
 			break;
+		log_set_report_object_name_and_id(NULL, NULL);
 	}
+	do_report_ret_code = 0;
 out:
+	if (do_report_ret_code)
+		report_log_ret_code(ret_max);
+	log_set_report_object_name_and_id(NULL, NULL);
+	log_set_report_object_group_and_group_id(NULL, NULL);
 	if (!handle_supplied)
 		destroy_processing_handle(cmd, handle);
+	log_restore_report_state(saved_log_report_state);
+
 	return ret_max;
 }
 
@@ -3254,6 +3427,8 @@ static int _process_pvs_in_vgs(struct cmd_context *cmd, uint32_t read_flags,
 			       struct processing_handle *handle,
 			       process_single_pv_fn_t process_single_pv)
 {
+	log_report_t saved_log_report_state = log_get_report_state();
+	char uuid[64] __attribute__((aligned(8)));
 	struct volume_group *vg;
 	struct vgnameid_list *vgnl;
 	const char *vg_name;
@@ -3264,18 +3439,34 @@ static int _process_pvs_in_vgs(struct cmd_context *cmd, uint32_t read_flags,
 	int skip;
 	int notfound;
 	int already_locked;
+	int do_report_ret_code = 1;
+
+	log_set_report_object_type(LOG_REPORT_OBJECT_TYPE_VG);
 
 	dm_list_iterate_items(vgnl, all_vgnameids) {
-		if (sigint_caught())
-			return_ECMD_FAILED;
-
 		vg_name = vgnl->vg_name;
 		vg_uuid = vgnl->vgid;
 		skip = 0;
 		notfound = 0;
 
+		uuid[0] = '\0';
+		if (is_orphan_vg(vg_name)) {
+			log_set_report_object_type(LOG_REPORT_OBJECT_TYPE_ORPHAN);
+			log_set_report_object_name_and_id(vg_name + sizeof(VG_ORPHANS), uuid);
+		} else {
+			if (vg_uuid && !id_write_format((const struct id*)vg_uuid, uuid, sizeof(uuid)))
+				stack;
+			log_set_report_object_name_and_id(vg_name, uuid);
+		}
+
+		if (sigint_caught()) {
+			ret_max = ECMD_FAILED;
+			goto_out;
+		}
+
 		if (!lockd_vg(cmd, vg_name, NULL, 0, &lockd_state)) {
 			ret_max = ECMD_FAILED;
+			report_log_ret_code(ret_max);
 			continue;
 		}
 
@@ -3287,6 +3478,7 @@ static int _process_pvs_in_vgs(struct cmd_context *cmd, uint32_t read_flags,
 		if (_ignore_vg(vg, vg_name, NULL, read_flags, &skip, &notfound)) {
 			stack;
 			ret_max = ECMD_FAILED;
+			report_log_ret_code(ret_max);
 			if (!skip)
 				goto endvg;
 			/* Drop through to eliminate a clustered VG's PVs from the devices list */
@@ -3304,21 +3496,30 @@ static int _process_pvs_in_vgs(struct cmd_context *cmd, uint32_t read_flags,
 					 handle, process_single_pv);
 		if (ret != ECMD_PROCESSED)
 			stack;
+		report_log_ret_code(ret);
 		if (ret > ret_max)
 			ret_max = ret;
 
 		if (!skip && !already_locked)
-			unlock_vg(cmd, vg->name);
+			unlock_vg(cmd, vg, vg->name);
 endvg:
 		release_vg(vg);
 		if (!lockd_vg(cmd, vg_name, "un", 0, &lockd_state))
 			stack;
 
 		/* Quit early when possible. */
-		if (!process_all_pvs && dm_list_empty(arg_tags) && dm_list_empty(arg_devices))
-			return ret_max;
-	}
+		if (!process_all_pvs && dm_list_empty(arg_tags) && dm_list_empty(arg_devices)) {
+			do_report_ret_code = 0;
+			goto_out;
+		}
 
+		log_set_report_object_name_and_id(NULL, NULL);
+	}
+	do_report_ret_code = 0;
+out:
+	if (do_report_ret_code)
+		report_log_ret_code(ret_max);
+	log_restore_report_state(saved_log_report_state);
 	return ret_max;
 }
 
@@ -3328,6 +3529,7 @@ int process_each_pv(struct cmd_context *cmd,
 		    struct processing_handle *handle,
 		    process_single_pv_fn_t process_single_pv)
 {
+	log_report_t saved_log_report_state = log_get_report_state();
 	struct dm_list arg_tags;	/* str_list */
 	struct dm_list arg_pvnames;	/* str_list */
 	struct dm_list arg_devices;	/* device_id_list */
@@ -3341,6 +3543,7 @@ int process_each_pv(struct cmd_context *cmd,
 	int ret_max = ECMD_PROCESSED;
 	int ret;
 
+	log_set_report_object_type(LOG_REPORT_OBJECT_TYPE_PV);
 	log_debug("Processing each PV");
 
 	/*
@@ -3375,8 +3578,8 @@ int process_each_pv(struct cmd_context *cmd,
 	 * names/paths into arg_devices which can be used to match below.
 	 */
 	if ((ret = _get_arg_pvnames(cmd, argc, argv, &arg_pvnames, &arg_tags)) != ECMD_PROCESSED) {
-		stack;
-		return ret;
+		ret_max = ret;
+		goto_out;
 	}
 
 	if ((cmd->command->flags & DISALLOW_TAG_ARGS) && !dm_list_empty(&arg_tags)) {
@@ -3391,8 +3594,10 @@ int process_each_pv(struct cmd_context *cmd,
 	process_all_devices = process_all_pvs && (cmd->command->flags & ENABLE_ALL_DEVS) && all_is_set;
 
 	/* Needed for a current listing of the global VG namespace. */
-	if (!only_this_vgname && !lockd_gl(cmd, "sh", 0))
-		return_ECMD_FAILED;
+	if (!only_this_vgname && !lockd_gl(cmd, "sh", 0)) {
+		ret_max = ECMD_FAILED;
+		goto_out;
+	}
 
 	/*
 	 * This full scan would be done by _get_all_devices() if
@@ -3408,8 +3613,8 @@ int process_each_pv(struct cmd_context *cmd,
 	}
 
 	if (!get_vgnameids(cmd, &all_vgnameids, only_this_vgname, 1)) {
-		stack;
-		return ret;
+		ret_max = ret;
+		goto_out;
 	}
 
 	/*
@@ -3418,8 +3623,8 @@ int process_each_pv(struct cmd_context *cmd,
 	 * any devs remaining in all_devices are processed.
 	 */
 	if ((ret = _get_all_devices(cmd, &all_devices) != ECMD_PROCESSED)) {
-		stack;
-		return ret;
+		ret_max = ret;
+		goto_out;
 	}
 
 	if ((ret = _get_arg_devices(cmd, &arg_pvnames, &arg_devices)) != ECMD_PROCESSED)
@@ -3545,6 +3750,7 @@ skip_missed:
 	if (ret > ret_max)
 		ret_max = ret;
 out:
+	log_restore_report_state(saved_log_report_state);
 	return ret_max;
 }
 
@@ -3552,24 +3758,53 @@ int process_each_pv_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 			  struct processing_handle *handle,
 			  process_single_pv_fn_t process_single_pv)
 {
+	log_report_t saved_log_report_state = log_get_report_state();
+	char pv_uuid[64] __attribute__((aligned(8)));
+	char vg_uuid[64] __attribute__((aligned(8)));
 	int whole_selected = 0;
 	int ret_max = ECMD_PROCESSED;
 	int ret;
+	int do_report_ret_code = 1;
 	struct pv_list *pvl;
 
+	log_set_report_object_type(LOG_REPORT_OBJECT_TYPE_PV);
+
+	vg_uuid[0] = '\0';
+	if (!id_write_format(&vg->id, vg_uuid, sizeof(vg_uuid)))
+		stack;
+
+	if (!is_orphan_vg(vg->name))
+		log_set_report_object_group_and_group_id(vg->name, vg_uuid);
+
 	dm_list_iterate_items(pvl, &vg->pvs) {
-		if (sigint_caught())
-			return_ECMD_FAILED;
+		pv_uuid[0] = '\0';
+		if (!id_write_format(&pvl->pv->id, pv_uuid, sizeof(pv_uuid)))
+			stack;
+
+		log_set_report_object_name_and_id(pv_dev_name(pvl->pv), pv_uuid);
+
+		if (sigint_caught()) {
+			ret_max = ECMD_FAILED;
+			goto_out;
+		}
 
 		ret = process_single_pv(cmd, vg, pvl->pv, handle);
 		_update_selection_result(handle, &whole_selected);
 		if (ret != ECMD_PROCESSED)
 			stack;
+		report_log_ret_code(ret);
 		if (ret > ret_max)
 			ret_max = ret;
+
+		log_set_report_object_name_and_id(NULL, NULL);
 	}
 
 	_set_final_selection_result(handle, whole_selected);
+	do_report_ret_code = 0;
+out:
+	if (do_report_ret_code)
+		report_log_ret_code(ret_max);
+	log_restore_report_state(saved_log_report_state);
 	return ret_max;
 }
 
@@ -3605,29 +3840,29 @@ int pvcreate_params_from_args(struct cmd_context *cmd, struct pvcreate_params *p
 	}
 
 	if (!(cmd->fmt->features & FMT_MDAS) &&
-	    (arg_count(cmd, pvmetadatacopies_ARG) ||
-	     arg_count(cmd, metadatasize_ARG)   ||
-	     arg_count(cmd, dataalignment_ARG)  ||
-	     arg_count(cmd, dataalignmentoffset_ARG))) {
+	    (arg_is_set(cmd, pvmetadatacopies_ARG) ||
+	     arg_is_set(cmd, metadatasize_ARG)   ||
+	     arg_is_set(cmd, dataalignment_ARG)  ||
+	     arg_is_set(cmd, dataalignmentoffset_ARG))) {
 		log_error("Metadata and data alignment parameters only "
 			  "apply to text format.");
 		return 0;
 	}
 
 	if (!(cmd->fmt->features & FMT_BAS) &&
-	    arg_count(cmd, bootloaderareasize_ARG)) {
+	    arg_is_set(cmd, bootloaderareasize_ARG)) {
 		log_error("Bootloader area parameters only "
 			  "apply to text format.");
 		return 0;
 	}
 
-	if (arg_count(cmd, metadataignore_ARG))
+	if (arg_is_set(cmd, metadataignore_ARG))
 		pp->pva.metadataignore = arg_int_value(cmd, metadataignore_ARG,
 						   DEFAULT_PVMETADATAIGNORE);
 	else
 		pp->pva.metadataignore = find_config_tree_bool(cmd, metadata_pvmetadataignore_CFG, NULL);
 
-	if (arg_count(cmd, pvmetadatacopies_ARG) &&
+	if (arg_is_set(cmd, pvmetadatacopies_ARG) &&
 	    !arg_int_value(cmd, pvmetadatacopies_ARG, -1) &&
 	    pp->pva.metadataignore) {
 		log_error("metadataignore only applies to metadatacopies > 0");
@@ -4419,7 +4654,7 @@ int pvcreate_each_device(struct cmd_context *cmd,
 	 * the questions, reacquire the orphans lock, verify that the PVs were
 	 * not used during the questions, then do the create steps.
 	 */
-	unlock_vg(cmd, VG_ORPHANS);
+	unlock_vg(cmd, NULL, VG_ORPHANS);
 
 	/*
 	 * Process prompts that require asking the user.  The orphans lock is
@@ -4706,7 +4941,7 @@ do_command:
 	return 1;
 
 bad:
-	unlock_vg(cmd, VG_ORPHANS);
+	unlock_vg(cmd, NULL, VG_ORPHANS);
 out:
 	return 0;
 }

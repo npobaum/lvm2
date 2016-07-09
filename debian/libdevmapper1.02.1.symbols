@@ -14,6 +14,8 @@ libdevmapper.so.1.02.1 libdevmapper1.02.1 #MINVER#
  *@DM_1_02_110 2:1.02.110
  *@DM_1_02_113 2:1.02.113
  *@DM_1_02_124 2:1.02.124
+ *@DM_1_02_128 2:1.02.128
+ *@DM_1_02_129 2:1.02.129
  dm_asprintf@Base 2:1.02.20
  dm_basename@Base 2:1.02.20
  dm_bit_and@Base 2:1.02.47

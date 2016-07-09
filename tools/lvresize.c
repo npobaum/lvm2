@@ -18,25 +18,31 @@
 static int _lvresize_params(struct cmd_context *cmd, int argc, char **argv,
 			    struct lvresize_params *lp)
 {
-	const char *cmd_name;
-	char *st;
-	int use_policy = arg_count(cmd, usepolicies_ARG);
+	const char *cmd_name = command_name(cmd);
+	const char *type_str = arg_str_value(cmd, type_ARG, NULL);
 
-	lp->sign = SIGN_NONE;
-	lp->poolmetadatasign = SIGN_NONE;
-	lp->resize = LV_ANY;
+	if (type_str && (lp->segtype = get_segtype_from_string(cmd, type_str)))
+		return_0;
 
-	cmd_name = command_name(cmd);
 	if (!strcmp(cmd_name, "lvreduce"))
 		lp->resize = LV_REDUCE;
-	if (!strcmp(cmd_name, "lvextend"))
+	else if (!strcmp(cmd_name, "lvextend"))
 		lp->resize = LV_EXTEND;
+	else
+		lp->resize = LV_ANY;
 
-	if (use_policy) {
-		/* do nothing; _lvresize will handle --use-policies itself */
-		lp->extents = 0;
-		lp->sign = SIGN_PLUS;
-		lp->percent = PERCENT_LV;
+	lp->sign = lp->poolmetadata_sign = SIGN_NONE;
+
+	if ((lp->use_policies = arg_is_set(cmd, usepolicies_ARG))) {
+		/* do nothing; lv_resize will handle --use-policies itself */
+		if (arg_from_list_is_set(cmd, NULL,
+					 chunksize_ARG, extents_ARG,
+					 poolmetadatasize_ARG,
+					 regionsize_ARG,
+					 size_ARG,
+					 stripes_ARG, stripesize_ARG,
+					 -1))
+			log_print_unless_silent("Ignoring size parameters with --use-policies.");
 	} else {
 		/*
 		 * Allow omission of extents and size if the user has given us
@@ -45,7 +51,10 @@ static int _lvresize_params(struct cmd_context *cmd, int argc, char **argv,
 		 * If only --poolmetadatasize is specified with list of PVs,
 		 * then metadata will be extended there.
 		 */
-		lp->sizeargs = arg_count(cmd, extents_ARG) + arg_count(cmd, size_ARG);
+		if ((lp->extents = arg_uint_value(cmd, extents_ARG, 0))) {
+			lp->sign = arg_sign_value(cmd, extents_ARG, SIGN_NONE);
+			lp->percent = arg_percent_value(cmd, extents_ARG, PERCENT_NONE);
+		}
 
 		if (arg_from_list_is_zero(cmd, "may not be zero",
 					  chunksize_ARG, extents_ARG,
@@ -57,119 +66,88 @@ static int _lvresize_params(struct cmd_context *cmd, int argc, char **argv,
 					  -1))
 			return_0;
 
-		if (arg_count(cmd, poolmetadatasize_ARG)) {
-			lp->poolmetadatasize = arg_uint64_value(cmd, poolmetadatasize_ARG, 0);
-			lp->poolmetadatasign = arg_sign_value(cmd, poolmetadatasize_ARG, SIGN_NONE);
-			if (lp->poolmetadatasign == SIGN_MINUS) {
+		if ((lp->poolmetadata_size = arg_uint64_value(cmd, poolmetadatasize_ARG, 0))) {
+			lp->poolmetadata_sign = arg_sign_value(cmd, poolmetadatasize_ARG, SIGN_NONE);
+			if (lp->poolmetadata_sign == SIGN_MINUS) {
 				log_error("Can't reduce pool metadata size.");
 				return 0;
 			}
 		}
 
-		if ((lp->sizeargs == 0) && (argc >= 2)) {
-			lp->extents = 100;
-			lp->percent = PERCENT_PVS;
-			lp->sign = SIGN_PLUS;
-			lp->sizeargs = !lp->poolmetadatasize ? 1 : 0;
-		} else if ((lp->sizeargs != 1) &&
-			   ((lp->sizeargs == 2) ||
-			    !arg_count(cmd, poolmetadatasize_ARG))) {
-			log_error("Please specify either size or extents but not "
-				  "both.");
+		if ((lp->size = arg_uint64_value(cmd, size_ARG, 0))) {
+			lp->sign = arg_sign_value(cmd, size_ARG, SIGN_NONE);
+			lp->percent = PERCENT_NONE;
+		}
+
+		if (lp->size && lp->extents) {
+			log_error("Please specify either size or extents but not both.");
 			return 0;
 		}
 
-		if (arg_count(cmd, extents_ARG)) {
-			lp->extents = arg_uint_value(cmd, extents_ARG, 0);
-			lp->sign = arg_sign_value(cmd, extents_ARG, SIGN_NONE);
-			lp->percent = arg_percent_value(cmd, extents_ARG, PERCENT_NONE);
-		}
-
-		/* Size returned in kilobyte units; held in sectors */
-		if (arg_count(cmd, size_ARG)) {
-			lp->size = arg_uint64_value(cmd, size_ARG, 0);
-			lp->sign = arg_sign_value(cmd, size_ARG, SIGN_NONE);
-			lp->percent = PERCENT_NONE;
+		if (!lp->extents &&
+		    !lp->size &&
+		    !lp->poolmetadata_size &&
+		    (argc >= 2)) {
+			lp->extents = 100;
+			lp->percent = PERCENT_PVS;
+			lp->sign = SIGN_PLUS;
 		}
 	}
 
 	if (lp->resize == LV_EXTEND && lp->sign == SIGN_MINUS) {
-		log_error("Negative argument not permitted - use lvreduce");
+		log_error("Negative argument not permitted - use lvreduce.");
 		return 0;
 	}
 
 	if (lp->resize == LV_REDUCE &&
-	    ((lp->sign == SIGN_PLUS) || (lp->poolmetadatasign == SIGN_PLUS))) {
-		log_error("Positive sign not permitted - use lvextend");
+	    ((lp->sign == SIGN_PLUS) ||
+	     (lp->poolmetadata_sign == SIGN_PLUS))) {
+		log_error("Positive sign not permitted - use lvextend.");
 		return 0;
 	}
 
-	lp->resizefs = arg_is_set(cmd, resizefs_ARG);
-	lp->nofsck = arg_is_set(cmd, nofsck_ARG);
-
 	if (!argc) {
-		log_error("Please provide the logical volume name");
+		log_error("Please provide the logical volume name.");
 		return 0;
 	}
 
 	lp->lv_name = argv[0];
-	argv++;
-	argc--;
 
-	if (!(lp->lv_name = skip_dev_dir(cmd, lp->lv_name, NULL)) ||
-	    !(lp->vg_name = extract_vgname(cmd, lp->lv_name))) {
-		log_error("Please provide a volume group name");
+	if (!validate_lvname_param(cmd, &lp->vg_name, &lp->lv_name))
+		return_0;
+
+	/* Check for $LVM_VG_NAME */
+	if (!lp->vg_name && !(lp->vg_name = extract_vgname(cmd, NULL))) {
+		log_error("Please specify a logical volume path.");
 		return 0;
 	}
 
-	if (!validate_name(lp->vg_name)) {
-		log_error("Volume group name %s has invalid characters",
-			  lp->vg_name);
+	if ((lp->mirrors = arg_count(cmd, mirrors_ARG)) &&
+	    (arg_sign_value(cmd, mirrors_ARG, SIGN_NONE) == SIGN_MINUS)) {
+		log_error("Mirrors argument may not be signed.");
 		return 0;
 	}
 
-	if ((st = strrchr(lp->lv_name, '/')))
-		lp->lv_name = st + 1;
-
-	lp->argc = argc;
-	lp->argv = argv;
-
-	lp->ac_policy = arg_count(cmd, usepolicies_ARG);
-	lp->ac_stripes = arg_count(cmd, stripes_ARG);
-	if (lp->ac_stripes) {
-		lp->ac_stripes_value = arg_uint_value(cmd, stripes_ARG, 1);
-	} else {
-		lp->ac_stripes_value = 0;
+	if ((lp->stripes = arg_uint_value(cmd, stripes_ARG, 0)) &&
+	    (arg_sign_value(cmd, stripes_ARG, SIGN_NONE) == SIGN_MINUS)) {
+		log_error("Stripes argument may not be negative.");
+		return 0;
 	}
 
-	lp->ac_mirrors = arg_count(cmd, mirrors_ARG);
-
-	if (lp->ac_mirrors) {
-		if (arg_sign_value(cmd, mirrors_ARG, SIGN_NONE) == SIGN_MINUS) {
-			log_error("Mirrors argument may not be negative");
-			return 0;
-		}
-
-		lp->ac_mirrors_value = arg_uint_value(cmd, mirrors_ARG, 1) + 1;
-	} else {
-		lp->ac_mirrors_value = 0;
+	if ((lp->stripe_size = arg_uint64_value(cmd, stripesize_ARG, 0)) &&
+	    (arg_sign_value(cmd, stripesize_ARG, SIGN_NONE) == SIGN_MINUS)) {
+		log_error("Stripesize may not be negative.");
+		return 0;
 	}
 
-	lp->ac_stripesize = arg_count(cmd, stripesize_ARG);
-	if (lp->ac_stripesize) {
-		if (arg_sign_value(cmd, stripesize_ARG, SIGN_NONE) == SIGN_MINUS) {
-			log_error("Stripesize may not be negative.");
-			return 0;
-		}
+	lp->argc = --argc;
+	lp->argv = ++argv;
 
-		lp->ac_stripesize_value = arg_uint64_value(cmd, stripesize_ARG, 0);
-	}
-
-	lp->ac_no_sync = arg_count(cmd, nosync_ARG);
-	lp->ac_alloc = (alloc_policy_t) arg_uint_value(cmd, alloc_ARG, 0);
-
-	lp->ac_type = arg_str_value(cmd, type_ARG, NULL);
-	lp->ac_force = arg_count(cmd, force_ARG);
+	lp->alloc = (alloc_policy_t) arg_uint_value(cmd, alloc_ARG, 0);
+	lp->force = arg_is_set(cmd, force_ARG);
+	lp->nofsck = arg_is_set(cmd, nofsck_ARG);
+	lp->nosync = arg_is_set(cmd, nosync_ARG);
+	lp->resizefs = arg_is_set(cmd, resizefs_ARG);
 
 	return 1;
 }
@@ -184,20 +162,15 @@ static int _lvresize_single(struct cmd_context *cmd, const char *vg_name,
 
 	/* Does LV exist? */
 	if (!(lv = find_lv(vg, lp->lv_name))) {
-		log_error("Logical volume %s not found in volume group %s",
-			  lp->lv_name, lp->vg_name);
+		log_error("Logical volume %s not found in volume group %s.",
+			  lp->lv_name, vg->name);
 		goto out;
 	}
 
 	if (!(pvh = lp->argc ? create_pv_list(cmd->mem, vg, lp->argc, lp->argv, 1) : &vg->pvs))
 		goto_out;
 
-	if (!lv_resize_prepare(cmd, lv, lp, pvh)) {
-		ret = EINVALID_CMD_LINE;
-		goto_out;
-	}
-
-	if (!lv_resize(cmd, lv, lp, pvh))
+	if (!lv_resize(lv, lp, pvh))
 		goto_out;
 
 	ret = ECMD_PROCESSED;
@@ -216,14 +189,14 @@ int lvresize(struct cmd_context *cmd, int argc, char **argv)
 		return EINVALID_CMD_LINE;
 	}
 
-	if (!(handle = init_processing_handle(cmd))) {
+	if (!(handle = init_processing_handle(cmd, NULL))) {
 		log_error("Failed to initialize processing handle.");
 		return ECMD_FAILED;
 	}
 
 	handle->custom_handle = &lp;
 
-	ret = process_each_vg(cmd, 0, NULL, lp.vg_name, NULL, READ_FOR_UPDATE, handle,
+	ret = process_each_vg(cmd, 0, NULL, lp.vg_name, NULL, READ_FOR_UPDATE, 0, handle,
 			      &_lvresize_single);
 
 	destroy_processing_handle(cmd, handle);

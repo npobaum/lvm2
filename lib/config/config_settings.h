@@ -124,7 +124,7 @@ cfg_section(devices_CFG_SECTION, "devices", root_CFG_SECTION, 0, vsn(1, 0, 0), 0
 cfg_section(allocation_CFG_SECTION, "allocation", root_CFG_SECTION, CFG_PROFILABLE, vsn(2, 2, 77), 0, NULL,
 	"How LVM selects space and applies properties to LVs.\n")
 
-cfg_section(log_CFG_SECTION, "log", root_CFG_SECTION, 0, vsn(1, 0, 0), 0, NULL,
+cfg_section(log_CFG_SECTION, "log", root_CFG_SECTION, CFG_PROFILABLE, vsn(1, 0, 0), 0, NULL,
 	"How LVM log information is reported.\n")
 
 cfg_section(backup_CFG_SECTION, "backup", root_CFG_SECTION, 0, vsn(1, 0, 0), 0, NULL,
@@ -546,6 +546,47 @@ cfg_runtime(allocation_thin_pool_chunk_size_CFG, "thin_pool_chunk_size", allocat
 
 cfg(allocation_physical_extent_size_CFG, "physical_extent_size", allocation_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_EXTENT_SIZE, vsn(2, 2, 112), NULL, 0, NULL,
 	"Default physical extent size in KiB to use for new VGs.\n")
+
+cfg(log_report_command_log_CFG, "report_command_log", log_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED, CFG_TYPE_BOOL, DEFAULT_COMMAND_LOG_REPORT, vsn(2, 2, 158), NULL, 0, NULL,
+	"Enable or disable LVM log reporting.\n"
+	"If enabled, LVM will collect a log of operations, messages,\n"
+	"per-object return codes with object identification and associated\n"
+	"error numbers (errnos) during LVM command processing. Then the\n"
+	"log is either reported solely or in addition to any existing\n"
+	"reports, depending on LVM command used. If it is a reporting command\n"
+	"(e.g. pvs, vgs, lvs, lvm fullreport), then the log is reported in\n"
+	"addition to any existing reports. Otherwise, there's only log report\n"
+	"on output. For all applicable LVM commands, you can request that\n"
+	"the output has only log report by using --logonly command line\n"
+	"option. Use log/command_log_cols and log/command_log_sort settings\n"
+	"to define fields to display and sort fields for the log report.\n"
+	"You can also use log/command_log_selection to define selection\n"
+	"criteria used each time the log is reported.\n")
+
+cfg(log_command_log_sort_CFG, "command_log_sort", log_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_COMMAND_LOG_SORT, vsn(2, 2, 158), NULL, 0, NULL,
+	"List of columns to sort by when reporting command log.\n"
+	"See <lvm command> --logonly --configreport log -o help\n"
+	"for the list of possible fields.\n")
+
+cfg(log_command_log_cols_CFG, "command_log_cols", log_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_COMMAND_LOG_COLS, vsn(2, 2, 158), NULL, 0, NULL,
+	"List of columns to report when reporting command log.\n"
+	"See <lvm command> --logonly --configreport log -o help\n"
+	"for the list of possible fields.\n")
+
+cfg(log_command_log_selection_CFG, "command_log_selection", log_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_COMMAND_LOG_SELECTION, vsn(2, 2, 158), NULL, 0, NULL,
+	"Selection criteria used when reporting command log.\n"
+	"You can define selection criteria that are applied each\n"
+	"time log is reported. This way, it is possible to control the\n"
+	"amount of log that is displayed on output and you can select\n"
+	"only parts of the log that are important for you. To define\n"
+	"selection criteria, use fields from log report. See also\n"
+	"<lvm command> --logonly --configreport log -S help for the\n"
+	"list of possible fields and selection operators. You can also\n"
+	"define selection criteria for log report on command line directly\n"
+	"using <lvm command> --configreport log -S <selection criteria>\n"
+	"which has precedence over log/command_log_selection setting.\n"
+	"For more information about selection criteria in general, see\n"
+	"lvm(8) man page.\n")
 
 cfg(log_verbose_CFG, "verbose", log_CFG_SECTION, 0, CFG_TYPE_INT, DEFAULT_VERBOSE, vsn(1, 0, 0), NULL, 0, NULL,
 	"Controls the messages sent to stdout or stderr.\n")
@@ -1462,6 +1503,20 @@ cfg(disk_area_start_sector_CFG, "start_sector", disk_area_CFG_SUBSECTION, CFG_UN
 cfg(disk_area_size_CFG, "size", disk_area_CFG_SUBSECTION, CFG_UNSUPPORTED | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, 0, vsn(1, 0, 0), NULL, 0, NULL, NULL)
 cfg(disk_area_id_CFG, "id", disk_area_CFG_SUBSECTION, CFG_UNSUPPORTED | CFG_DEFAULT_UNDEFINED, CFG_TYPE_STRING, NULL, vsn(1, 0, 0), NULL, 0, NULL, NULL)
 
+cfg(report_output_format_CFG, "output_format", report_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_REP_OUTPUT_FORMAT, vsn(2, 2, 158), NULL, 0, NULL,
+	"Format of LVM command's report output.\n"
+	"If there is more than one report per command, then the format\n"
+	"is applied for all reports. You can also change output format\n"
+	"directly on command line using --reportformat option which\n"
+	"has precedence over log/output_format setting.\n"
+	"Accepted values:\n"
+	"  basic\n"
+	"    Original format with columns and rows. If there is more than\n"
+	"    one report per command, each report is prefixed with report's\n"
+	"    name for identification.\n"
+	"  json\n"
+	"    JSON format.\n")
+
 cfg(report_compact_output_CFG, "compact_output", report_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED, CFG_TYPE_BOOL, DEFAULT_REP_COMPACT_OUTPUT, vsn(2, 2, 115), NULL, 0, NULL,
 	"Do not print empty values for all report fields.\n"
 	"If enabled, all fields that don't have a value set for any of the\n"
@@ -1717,6 +1772,46 @@ cfg(report_pvsegs_cols_CFG, "pvsegs_cols", report_CFG_SECTION, CFG_PROFILABLE | 
 cfg(report_pvsegs_cols_verbose_CFG, "pvsegs_cols_verbose", report_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_PVSEGS_COLS_VERB, vsn(1, 1, 3), NULL, 0, NULL,
 	"List of columns to sort by when reporting 'pvs --segments' command in verbose mode.\n"
 	"See 'pvs --segments -o help' for the list of possible fields.\n")
+
+cfg(report_vgs_cols_full_CFG, "vgs_cols_full", report_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_VGS_COLS_FULL, vsn(2, 2, 158), NULL, 0, NULL,
+	"List of columns to report for lvm fullreport's 'vgs' subreport.\n"
+	"See 'vgs -o help' for the list of possible fields.\n")
+
+cfg(report_pvs_cols_full_CFG, "pvs_cols_full", report_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_PVS_COLS_FULL, vsn(2, 2, 158), NULL, 0, NULL,
+	"List of columns to report for lvm fullreport's 'vgs' subreport.\n"
+	"See 'pvs -o help' for the list of possible fields.\n")
+
+cfg(report_lvs_cols_full_CFG, "lvs_cols_full", report_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_LVS_COLS_FULL, vsn(2, 2, 158), NULL, 0, NULL,
+	"List of columns to report for lvm fullreport's 'lvs' subreport.\n"
+	"See 'lvs -o help' for the list of possible fields.\n")
+
+cfg(report_pvsegs_cols_full_CFG, "pvsegs_cols_full", report_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_PVSEGS_COLS_FULL, vsn(2, 2, 158), NULL, 0, NULL,
+	"List of columns to report for lvm fullreport's 'pvseg' subreport.\n"
+	"See 'pvs --segments -o help' for the list of possible fields.\n")
+
+cfg(report_segs_cols_full_CFG, "segs_cols_full", report_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_SEGS_COLS_FULL, vsn(2, 2, 158), NULL, 0, NULL,
+	"List of columns to report for lvm fullreport's 'seg' subreport.\n"
+	"See 'lvs --segments -o help' for the list of possible fields.\n")
+
+cfg(report_vgs_sort_full_CFG, "vgs_sort_full", report_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_VGS_SORT_FULL, vsn(2, 2, 158), NULL, 0, NULL,
+	"List of columns to sort by when reporting lvm fullreport's 'vgs' subreport.\n"
+	"See 'vgs -o help' for the list of possible fields.\n")
+
+cfg(report_pvs_sort_full_CFG, "pvs_sort_full", report_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_PVS_SORT_FULL, vsn(2, 2, 158), NULL, 0, NULL,
+	"List of columns to sort by when reporting lvm fullreport's 'vgs' subreport.\n"
+	"See 'pvs -o help' for the list of possible fields.\n")
+
+cfg(report_lvs_sort_full_CFG, "lvs_sort_full", report_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_LVS_SORT_FULL, vsn(2, 2, 158), NULL, 0, NULL,
+	"List of columns to sort by when reporting lvm fullreport's 'lvs' subreport.\n"
+	"See 'lvs -o help' for the list of possible fields.\n")
+
+cfg(report_pvsegs_sort_full_CFG, "pvsegs_sort_full", report_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_PVSEGS_SORT_FULL, vsn(2, 2, 158), NULL, 0, NULL,
+	"List of columns to sort by when reporting for lvm fullreport's 'pvseg' subreport.\n"
+	"See 'pvs --segments -o help' for the list of possible fields.\n")
+
+cfg(report_segs_sort_full_CFG, "segs_sort_full", report_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_SEGS_SORT_FULL, vsn(2, 2, 158), NULL, 0, NULL,
+	"List of columns to sort by when reporting lvm fullreport's 'seg' subreport.\n"
+	"See 'lvs --segments -o help' for the list of possible fields.\n")
 
 cfg(report_mark_hidden_devices_CFG, "mark_hidden_devices", report_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED, CFG_TYPE_BOOL, 1, vsn(2, 2, 140), NULL, 0, NULL,
 	"Use brackets [] to mark hidden devices.\n")
