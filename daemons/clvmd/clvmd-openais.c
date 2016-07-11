@@ -34,6 +34,7 @@
 #include "clvmd-comms.h"
 #include "lvm-functions.h"
 #include "clvmd.h"
+#include "lib.h"
 
 /* Timeout value for several openais calls */
 #define TIMEOUT 10
