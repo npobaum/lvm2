@@ -805,6 +805,10 @@ int dm_stats_get_region_nr_histogram_bins(const struct dm_stats *dms,
  * magnitude is one milisecond: attempting to use a histogram with a
  * boundary less than one milisecond when creating a region will cause
  * the region to be created with the precise_timestamps feature enabled.
+ *
+ * On sucess a pointer to the struct dm_histogram representing the
+ * bounds values is returned, or NULL in the case of error. The returned
+ * pointer should be freed using dm_free() when no longer required.
  */
 struct dm_histogram *dm_histogram_bounds_from_string(const char *bounds_str);
 
@@ -1146,15 +1150,17 @@ for (dm_stats_walk_init((dms), DM_STATS_WALK_GROUP),		\
  * empty.
  */
 #define dm_stats_walk_do(dms)					\
-dm_stats_walk_start((dms));					\
-do
+do {								\
+	dm_stats_walk_start((dms));				\
+	do
 
 /*
  * Start a 'while' style loop or end a 'do..while' loop iterating over the
  * regions contained in dm_stats handle 'dms'.
  */
 #define dm_stats_walk_while(dms)				\
-while(!dm_stats_walk_end((dms)))
+	while(!dm_stats_walk_end((dms)));			\
+} while (0)
 
 /*
  * Cursor relative property methods
@@ -1282,6 +1288,35 @@ uint64_t dm_stats_get_group_id(const struct dm_stats *dms, uint64_t region_id);
  */
 int dm_stats_get_group_descriptor(const struct dm_stats *dms,
 				  uint64_t group_id, char **buf);
+
+/*
+ * Create regions that correspond to the extents of a file in the
+ * filesystem and optionally place them into a group.
+ *
+ * File descriptor fd must reference a regular file, open for reading,
+ * in a local file system that supports the FIEMAP ioctl and that
+ * returns data describing the physical location of extents.
+ *
+ * The file descriptor can be closed by the caller following the call
+ * to dm_stats_create_regions_from_fd().
+ *
+ * The function returns a pointer to an array of uint64_t containing
+ * the IDs of the newly created regions. The array is terminated by the
+ * value DM_STATS_REGIONS_ALL and should be freed using dm_free() when
+ * no longer required.
+ *
+ * Unless nogroup is non-zero the regions will be placed into a group
+ * and the group alias is set to the value supplied.
+ *
+ * The group_id for the new group is equal to the region_id value in
+ * the first array element.
+ *
+ * File mapped histograms will be supported in a future version.
+ */
+uint64_t *dm_stats_create_regions_from_fd(struct dm_stats *dms, int fd,
+					  int group, int precise,
+					  struct dm_histogram *bounds,
+					  const char *alias);
 
 /*
  * Call this to actually run the ioctl.
@@ -2872,6 +2907,11 @@ int dm_report_compact_given_fields(struct dm_report *rh, const char *fields);
  */
 int dm_report_is_empty(struct dm_report *rh);
 
+/*
+ * Destroy report content without doing output.
+ */
+void dm_report_destroy_rows(struct dm_report *rh);
+
 int dm_report_output(struct dm_report *rh);
 
 /*
@@ -2934,6 +2974,7 @@ typedef enum {
 struct dm_report_group *dm_report_group_create(dm_report_group_type_t type, void *data);
 int dm_report_group_push(struct dm_report_group *group, struct dm_report *report, void *data);
 int dm_report_group_pop(struct dm_report_group *group);
+int dm_report_group_output_and_pop_all(struct dm_report_group *group);
 int dm_report_group_destroy(struct dm_report_group *group);
 
 /*

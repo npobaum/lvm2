@@ -23,6 +23,11 @@
  * - define a configuration array of one or more types:
  *   cfg_array(id, name, parent, flags, types, default_value, since_version, unconfigured_default_value, deprecated_since_version, deprecation_comment, comment)
  *
+ * - define a configuration setting where the default value is evaluated in runtime
+ *   cfg_runtime(id, name, parent, flags, type, since_version, deprecated_since_version, deprecation_comment, comment)
+ *   (for each cfg_runtime, you need to define 'get_default_<name>(struct cmd_context *cmd, struct profile *profile)' function
+ *    to get the default value in runtime - usually, these functions are placed in config.[ch] file)
+ *
  *
  * If default value can't be assigned statically because it depends on some
  * run-time checks or if it depends on other settings already defined,
@@ -52,6 +57,7 @@
  *                                 CFG_DISABLED - configuration is disabled (defaults always used)
  *                                 CFG_FORMAT_INT_OCTAL - print integer number in octal form (also prefixed by "0")
  *                                 CFG_SECTION_NO_CHECK - do not check content of the section at all - use with care!!!
+ *                                 CFG_DISALLOW_INTERACTIVE - disallow configuration node for use in interactive environment (e.g. cmds run in lvm shell)
  *
  * type:		       Allowed type for the value of simple configuation setting, one of:
  *                                 CFG_TYPE_BOOL
@@ -166,7 +172,7 @@ cfg(config_checks_CFG, "checks", config_CFG_SECTION, 0, CFG_TYPE_BOOL, 1, vsn(2,
 cfg(config_abort_on_errors_CFG, "abort_on_errors", config_CFG_SECTION, 0, CFG_TYPE_BOOL, 0, vsn(2,2,99), NULL, 0, NULL,
 	"Abort the LVM process if a configuration mismatch is found.\n")
 
-cfg_runtime(config_profile_dir_CFG, "profile_dir", config_CFG_SECTION, 0, CFG_TYPE_STRING, vsn(2, 2, 99), 0, NULL,
+cfg_runtime(config_profile_dir_CFG, "profile_dir", config_CFG_SECTION, CFG_DISALLOW_INTERACTIVE, CFG_TYPE_STRING, vsn(2, 2, 99), 0, NULL,
 	"Directory where LVM looks for configuration profiles.\n")
 
 cfg(devices_dir_CFG, "dir", devices_CFG_SECTION, CFG_ADVANCED, CFG_TYPE_STRING, DEFAULT_DEV_DIR, vsn(1, 0, 0), NULL, 0, NULL,
@@ -461,6 +467,12 @@ cfg(allocation_mirror_logs_require_separate_pvs_CFG, "mirror_logs_require_separa
 	"Mirror logs and images will always use different PVs.\n"
 	"The default setting changed in version 2.02.85.\n")
 
+cfg(allocation_raid_stripe_all_devices_CFG, "raid_stripe_all_devices", allocation_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_BOOL, DEFAULT_ALLOCATION_STRIPE_ALL_DEVICES, vsn(2, 2, 162), NULL, 0, NULL,
+	"Stripe across all PVs when RAID stripes are not specified.\n"
+	"If enabled, all PVs in the VG or on the command line are used for raid0/4/5/6/10\n"
+	"when the command does not specify the number of stripes to use.\n"
+	"This was the default behaviour until release 2.02.162.\n")
+
 cfg(allocation_cache_pool_metadata_require_separate_pvs_CFG, "cache_pool_metadata_require_separate_pvs", allocation_CFG_SECTION, 0, CFG_TYPE_BOOL, DEFAULT_CACHE_POOL_METADATA_REQUIRE_SEPARATE_PVS, vsn(2, 2, 106), NULL, 0, NULL,
 	"Cache pool metadata and data will always use different PVs.\n")
 
@@ -547,7 +559,7 @@ cfg_runtime(allocation_thin_pool_chunk_size_CFG, "thin_pool_chunk_size", allocat
 cfg(allocation_physical_extent_size_CFG, "physical_extent_size", allocation_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_EXTENT_SIZE, vsn(2, 2, 112), NULL, 0, NULL,
 	"Default physical extent size in KiB to use for new VGs.\n")
 
-cfg(log_report_command_log_CFG, "report_command_log", log_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED, CFG_TYPE_BOOL, DEFAULT_COMMAND_LOG_REPORT, vsn(2, 2, 158), NULL, 0, NULL,
+cfg(log_report_command_log_CFG, "report_command_log", log_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED | CFG_DISALLOW_INTERACTIVE, CFG_TYPE_BOOL, DEFAULT_COMMAND_LOG_REPORT, vsn(2, 2, 158), NULL, 0, NULL,
 	"Enable or disable LVM log reporting.\n"
 	"If enabled, LVM will collect a log of operations, messages,\n"
 	"per-object return codes with object identification and associated\n"
@@ -563,17 +575,17 @@ cfg(log_report_command_log_CFG, "report_command_log", log_CFG_SECTION, CFG_PROFI
 	"You can also use log/command_log_selection to define selection\n"
 	"criteria used each time the log is reported.\n")
 
-cfg(log_command_log_sort_CFG, "command_log_sort", log_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_COMMAND_LOG_SORT, vsn(2, 2, 158), NULL, 0, NULL,
+cfg(log_command_log_sort_CFG, "command_log_sort", log_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED | CFG_DISALLOW_INTERACTIVE, CFG_TYPE_STRING, DEFAULT_COMMAND_LOG_SORT, vsn(2, 2, 158), NULL, 0, NULL,
 	"List of columns to sort by when reporting command log.\n"
 	"See <lvm command> --logonly --configreport log -o help\n"
 	"for the list of possible fields.\n")
 
-cfg(log_command_log_cols_CFG, "command_log_cols", log_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_COMMAND_LOG_COLS, vsn(2, 2, 158), NULL, 0, NULL,
+cfg(log_command_log_cols_CFG, "command_log_cols", log_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED | CFG_DISALLOW_INTERACTIVE, CFG_TYPE_STRING, DEFAULT_COMMAND_LOG_COLS, vsn(2, 2, 158), NULL, 0, NULL,
 	"List of columns to report when reporting command log.\n"
 	"See <lvm command> --logonly --configreport log -o help\n"
 	"for the list of possible fields.\n")
 
-cfg(log_command_log_selection_CFG, "command_log_selection", log_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_COMMAND_LOG_SELECTION, vsn(2, 2, 158), NULL, 0, NULL,
+cfg(log_command_log_selection_CFG, "command_log_selection", log_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED | CFG_DISALLOW_INTERACTIVE, CFG_TYPE_STRING, DEFAULT_COMMAND_LOG_SELECTION, vsn(2, 2, 158), NULL, 0, NULL,
 	"Selection criteria used when reporting command log.\n"
 	"You can define selection criteria that are applied each\n"
 	"time log is reported. This way, it is possible to control the\n"
@@ -1503,7 +1515,7 @@ cfg(disk_area_start_sector_CFG, "start_sector", disk_area_CFG_SUBSECTION, CFG_UN
 cfg(disk_area_size_CFG, "size", disk_area_CFG_SUBSECTION, CFG_UNSUPPORTED | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, 0, vsn(1, 0, 0), NULL, 0, NULL, NULL)
 cfg(disk_area_id_CFG, "id", disk_area_CFG_SUBSECTION, CFG_UNSUPPORTED | CFG_DEFAULT_UNDEFINED, CFG_TYPE_STRING, NULL, vsn(1, 0, 0), NULL, 0, NULL, NULL)
 
-cfg(report_output_format_CFG, "output_format", report_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_REP_OUTPUT_FORMAT, vsn(2, 2, 158), NULL, 0, NULL,
+cfg(report_output_format_CFG, "output_format", report_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED | CFG_DISALLOW_INTERACTIVE, CFG_TYPE_STRING, DEFAULT_REP_OUTPUT_FORMAT, vsn(2, 2, 158), NULL, 0, NULL,
 	"Format of LVM command's report output.\n"
 	"If there is more than one report per command, then the format\n"
 	"is applied for all reports. You can also change output format\n"

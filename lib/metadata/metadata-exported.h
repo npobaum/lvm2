@@ -218,6 +218,7 @@
 #define lv_is_mirror_log(lv)	(((lv)->status & MIRROR_LOG) ? 1 : 0)
 #define lv_is_mirror(lv)	(((lv)->status & MIRROR) ? 1 : 0)
 #define lv_is_mirror_type(lv)	(((lv)->status & (MIRROR | MIRROR_LOG | MIRROR_IMAGE)) ? 1 : 0)
+#define lv_is_not_synced(lv)	(((lv)->status & LV_NOTSYNCED) ? 1 : 0)
 
 #define lv_is_pending_delete(lv) (((lv)->status & LV_PENDING_DELETE) ? 1 : 0)
 #define lv_is_error_when_full(lv) (((lv)->status & LV_ERROR_WHEN_FULL) ? 1 : 0)
@@ -462,7 +463,7 @@ struct lv_segment {
 	struct logical_volume *cow;
 	struct dm_list origin_list;
 	uint32_t region_size;	/* For mirrors, replicators - in sectors */
-	uint32_t extents_copied;
+	uint32_t extents_copied;/* Number of extents synced for raids/mirrors */
 	struct logical_volume *log_lv;
 	struct lv_segment *pvmove_source_seg;
 	void *segtype_private;
@@ -637,6 +638,7 @@ struct lvresize_params {
 
 	int approx_alloc;
 	int extents_are_pes;	/* Is 'extents' counting PEs or LEs? */
+	int size_changed;	/* Was there actually a size change */
 };
 
 void pvcreate_params_set_defaults(struct pvcreate_params *pp);
@@ -920,6 +922,7 @@ struct lvcreate_params {
 #define THIN_CHUNK_SIZE_CALC_METHOD_GENERIC 0x01
 #define THIN_CHUNK_SIZE_CALC_METHOD_PERFORMANCE 0x02
 	int thin_chunk_size_calc_policy;
+	unsigned suppress_zero_warn : 1;
 	unsigned needs_lockd_init : 1;
 
 	const char *vg_name; /* only-used when VG is not yet opened (in /tools) */
@@ -1187,7 +1190,7 @@ struct logical_volume *first_replicator_dev(const struct logical_volume *lv);
 int lv_is_raid_with_tracking(const struct logical_volume *lv);
 uint32_t lv_raid_image_count(const struct logical_volume *lv);
 int lv_raid_change_image_count(struct logical_volume *lv,
-			       uint32_t new_count, struct dm_list *pvs);
+			       uint32_t new_count, struct dm_list *allocate_pvs);
 int lv_raid_split(struct logical_volume *lv, const char *split_name,
 		  uint32_t new_count, struct dm_list *splittable_pvs);
 int lv_raid_split_and_track(struct logical_volume *lv,
@@ -1197,8 +1200,11 @@ int lv_raid_convert(struct logical_volume *lv,
 		    const struct segment_type *new_segtype,
 		    int yes, int force,
 		    const unsigned stripes,
+		    const unsigned new_stripe_size_supplied,
 		    const unsigned new_stripe_size,
+		    const uint32_t new_region_size,
 		    struct dm_list *allocate_pvs);
+int lv_raid_rebuild(struct logical_volume *lv, struct dm_list *rebuild_pvs);
 int lv_raid_replace(struct logical_volume *lv, struct dm_list *remove_pvs,
 		    struct dm_list *allocate_pvs);
 int lv_raid_remove_missing(struct logical_volume *lv);

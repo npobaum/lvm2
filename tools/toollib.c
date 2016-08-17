@@ -1273,30 +1273,37 @@ int get_pool_params(struct cmd_context *cmd,
 /*
  * Generic stripe parameter checks.
  */
-static int _validate_stripe_params(struct cmd_context *cmd, uint32_t *stripes,
-				   uint32_t *stripe_size)
+static int _validate_stripe_params(struct cmd_context *cmd, const struct segment_type *segtype,
+				   uint32_t *stripes, uint32_t *stripe_size)
 {
-	if (*stripes == 1 && *stripe_size) {
+	int stripe_size_required = segtype_supports_stripe_size(segtype);
+
+	if (!stripe_size_required && *stripe_size) {
+		log_print_unless_silent("Ignoring stripesize argument for %s devices.", segtype->name);
+		*stripe_size = 0;
+	} else if (segtype_is_striped(segtype) && *stripes == 1 && *stripe_size) {
 		log_print_unless_silent("Ignoring stripesize argument with single stripe.");
+		stripe_size_required = 0;
 		*stripe_size = 0;
 	}
 
-	if (*stripes > 1 && !*stripe_size) {
-		*stripe_size = find_config_tree_int(cmd, metadata_stripesize_CFG, NULL) * 2;
-		log_print_unless_silent("Using default stripesize %s.",
-			  display_size(cmd, (uint64_t) *stripe_size));
+	if (stripe_size_required) {
+		if (!*stripe_size) {
+			*stripe_size = find_config_tree_int(cmd, metadata_stripesize_CFG, NULL) * 2;
+			log_print_unless_silent("Using default stripesize %s.",
+						display_size(cmd, (uint64_t) *stripe_size));
+		}
+
+		if (*stripe_size < STRIPE_SIZE_MIN || !is_power_of_2(*stripe_size)) {
+			log_error("Invalid stripe size %s.",
+				  display_size(cmd, (uint64_t) *stripe_size));
+			return 0;
+		}
 	}
 
 	if (*stripes < 1 || *stripes > MAX_STRIPES) {
 		log_error("Number of stripes (%d) must be between %d and %d.",
 			  *stripes, 1, MAX_STRIPES);
-		return 0;
-	}
-
-	if (*stripes > 1 && (*stripe_size < STRIPE_SIZE_MIN ||
-			     !is_power_of_2(*stripe_size))) {
-		log_error("Invalid stripe size %s.",
-			  display_size(cmd, (uint64_t) *stripe_size));
 		return 0;
 	}
 
@@ -1309,9 +1316,10 @@ static int _validate_stripe_params(struct cmd_context *cmd, uint32_t *stripes,
  * power of 2, we must divide UINT_MAX by four and add 1 (to round it
  * up to the power of 2)
  */
-int get_stripe_params(struct cmd_context *cmd, uint32_t *stripes, uint32_t *stripe_size)
+int get_stripe_params(struct cmd_context *cmd, const struct segment_type *segtype, uint32_t *stripes, uint32_t *stripe_size)
 {
 	/* stripes_long_ARG takes precedence (for lvconvert) */
+	/* FIXME Cope with relative +/- changes for lvconvert. */
 	*stripes = arg_uint_value(cmd, arg_is_set(cmd, stripes_long_ARG) ? stripes_long_ARG : stripes_ARG, 1);
 
 	*stripe_size = arg_uint_value(cmd, stripesize_ARG, 0);
@@ -1328,7 +1336,7 @@ int get_stripe_params(struct cmd_context *cmd, uint32_t *stripes, uint32_t *stri
 		}
 	}
 
-	return _validate_stripe_params(cmd, stripes, stripe_size);
+	return _validate_stripe_params(cmd, segtype, stripes, stripe_size);
 }
 
 static int _validate_cachepool_params(const char *name,
@@ -1746,15 +1754,13 @@ struct processing_handle *init_processing_handle(struct cmd_context *cmd, struct
 	handle->internal_report_for_select = arg_is_set(cmd, select_ARG);
 	handle->include_historical_lvs = cmd->include_historical_lvs;
 
-	if (!parent_handle) {
-		if (!report_format_init(cmd, &handle->report_group_type, &handle->report_group,
-					&handle->log_rh, &handle->log_only,
-					&handle->saved_log_report_state)) {
+	if (!parent_handle && !cmd->cmd_report.report_group) {
+		if (!report_format_init(cmd)) {
 			dm_pool_free(cmd->mem, handle);
 			return NULL;
 		}
 	} else
-		handle->saved_log_report_state = log_get_report_state();
+		cmd->cmd_report.saved_log_report_state = log_get_report_state();
 
 	log_set_report_context(LOG_REPORT_CONTEXT_PROCESSING);
 	return handle;
@@ -1790,19 +1796,17 @@ void destroy_processing_handle(struct cmd_context *cmd, struct processing_handle
 		if (handle->selection_handle && handle->selection_handle->selection_rh)
 			dm_report_free(handle->selection_handle->selection_rh);
 
-		log_restore_report_state(handle->saved_log_report_state);
+		log_restore_report_state(cmd->cmd_report.saved_log_report_state);
 
-		if (!dm_report_group_destroy(handle->report_group))
-			stack;
-		if (handle->log_rh) {
-			if (cmd->is_interactive) {
-				/*
-				 * Keep log report if we're interactive so
-				 * we can do further queries on this report.
-				 */
-				cmd->log_rh = handle->log_rh;
-			} else
-				dm_report_free(handle->log_rh);
+		if (!cmd->is_interactive) {
+			if (!dm_report_group_destroy(cmd->cmd_report.report_group))
+				stack;
+			cmd->cmd_report.report_group = NULL;
+
+			if (cmd->cmd_report.log_rh) {
+				dm_report_free(cmd->cmd_report.log_rh);
+				cmd->cmd_report.log_rh = NULL;
+			}
 		}
 		/*
 		 * TODO: think about better alternatives:

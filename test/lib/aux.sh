@@ -169,7 +169,7 @@ prepare_clvmd() {
 	rm -f "$CLVMD_PIDFILE"
 	echo "<======== Starting CLVMD ========>"
 	# lvs is executed from clvmd - use our version
-	LVM_LOG_FILE_EPOCH=CLVMD LVM_BINARY=$(which lvm) $run_valgrind clvmd -Isinglenode -d 1 -f &
+	LVM_LOG_FILE_EPOCH=CLVMD LVM_LOG_FILE_MAX_LINES=1000000 LVM_BINARY=$(which lvm) $run_valgrind clvmd -Isinglenode -d 1 -f &
 	echo $! > LOCAL_CLVMD
 
 	for i in {1..100} ; do
@@ -1262,6 +1262,12 @@ wait_for_sync() {
 	done
 
 	echo "Sync is taking too long - assume stuck"
+	return 1
+}
+
+# aux check_status_chars $vg $lv "Aaaaa"
+check_status_chars() {
+	[ `dmsetup status $1-$2|awk '{print $6}'` = $3 ] && return
 	return 1
 }
 

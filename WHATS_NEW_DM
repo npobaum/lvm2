@@ -1,3 +1,25 @@
+Version 1.02.133 - 10th August 2016
+===================================
+  Add dm_report_destroy_rows/dm_report_group_output_and_pop_all for lvm shell.
+  Adjust group handling and json production for lvm shell.
+
+Version 1.02.132 - 28th July 2016
+=================================
+  Fix json reporting to escape '"' character that may appear in reported string.
+
+Version 1.02.131 - 15th July 2016
+=================================
+  Disable queueing on mpath devs in blk-availability systemd service/initscript.
+  Add new -m|--mpathoption disablequeueing to blkdeactivate.
+  Automatically group regions with 'create --segments' unless --nogroup.
+  Fix resource leak when deleting the first member of a group.
+  Allow --bounds with 'create --filemap' for dmstats.
+  Enable creation of filemap regions with histograms.
+  Enable histogram aggregation for regions with more than one area.
+  Enable histogram aggregation for groups of regions.
+  Add a --filemap option to 'dmstats create' to allow mapping of files.
+  Add dm_stats_create_regions_from_fd() to map file extents to regions.
+
 Version 1.02.130 - 6th July 2016
 ================================
   Minor fixes from coverity.

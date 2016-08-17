@@ -16,6 +16,8 @@
 #ifndef _LVM_LOGGING_H
 #define _LVM_LOGGING_H
 
+#include "lvm-file.h"
+
 __attribute__ ((format(printf, 5, 6)))
 void print_log(int level, const char *file, int line, int dm_errno_or_class,
 	       const char *format, ...);
@@ -34,6 +36,9 @@ void print_log_libdm(int level, const char *file, int line, int dm_errno_or_clas
     print_log(l, __FILE__, __LINE__ , c, ## x)
 
 #include "log.h"
+
+int init_custom_log_streams(struct custom_fds *custom_fds);
+int reopen_standard_stream(FILE **stream, const char *mode);
 
 typedef void (*lvm2_log_fn_t) (int level, const char *file, int line,
 			       int dm_errno_or_class, const char *message);
@@ -72,12 +77,14 @@ void syslog_suppress(int suppress);
 /* Hooks to handle logging through report. */
 typedef enum {
 	LOG_REPORT_CONTEXT_NULL,
+	LOG_REPORT_CONTEXT_SHELL,
 	LOG_REPORT_CONTEXT_PROCESSING,
 	LOG_REPORT_CONTEXT_COUNT
 } log_report_context_t;
 
 typedef enum {
 	LOG_REPORT_OBJECT_TYPE_NULL,
+	LOG_REPORT_OBJECT_TYPE_CMD,
 	LOG_REPORT_OBJECT_TYPE_ORPHAN,
 	LOG_REPORT_OBJECT_TYPE_PV,
 	LOG_REPORT_OBJECT_TYPE_LABEL,
@@ -95,6 +102,10 @@ typedef struct log_report {
 	const char *object_group;
 	const char *object_group_id;
 } log_report_t;
+
+#define LOG_STATUS_NAME "status"
+#define LOG_STATUS_SUCCESS "success"
+#define LOG_STATUS_FAILURE "failure"
 
 log_report_t log_get_report_state(void);
 void log_restore_report_state(log_report_t log_report);

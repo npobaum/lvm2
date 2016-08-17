@@ -73,11 +73,6 @@ struct processing_handle {
 	int internal_report_for_select;
 	int include_historical_lvs;
 	struct selection_handle *selection_handle;
-	dm_report_group_type_t report_group_type;
-	struct dm_report_group *report_group;
-	struct dm_report *log_rh;
-	int log_only;
-	log_report_t saved_log_report_state;
 	void *custom_handle;
 };
 
@@ -201,8 +196,8 @@ int get_pool_params(struct cmd_context *cmd,
 		    thin_discards_t *discards,
 		    int *zero);
 
-int get_stripe_params(struct cmd_context *cmd, uint32_t *stripes,
-		      uint32_t *stripe_size);
+int get_stripe_params(struct cmd_context *cmd, const struct segment_type *segtype,
+		      uint32_t *stripes, uint32_t *stripe_size);
 
 int get_cache_params(struct cmd_context *cmd,
 		     cache_mode_t *cache_mode,

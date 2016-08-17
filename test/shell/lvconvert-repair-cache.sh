@@ -57,7 +57,7 @@ aux enable_dev "$dev1"
 ##################
 
 lvcreate --type cache-pool -L10 $vg/cpool "$dev1"
-lvconvert -H --cachemode writethrough --cachepool $vg/cpool $lv1
+lvconvert -H --cachemode writethrough --cachepool $vg/cpool -Zy $lv1
 
 aux disable_dev "$dev2"
 
@@ -100,6 +100,9 @@ sync
 
 # Seriously damage cache metadata
 aux error_dev "$dev1" 2054:2
+
+# flushing status
+dmsetup status $vg-$lv1
 
 # On fixed kernel we get instant Fail here
 get lv_field  $vg/$lv1 lv_attr | tee out

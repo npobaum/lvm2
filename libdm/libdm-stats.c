@@ -1,5 +1,8 @@
 /*
- * Copyright (C) 2015 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2016 Red Hat, Inc. All rights reserved.
+ *
+ * _stats_get_extents_for_file() based in part on filefrag_fiemap() from
+ * e2fsprogs/misc/filefrag.c. Copyright 2003 by Theodore Ts'o.
  *
  * This file is part of the device-mapper userspace tools.
  *
@@ -16,6 +19,21 @@
 
 #include "math.h" /* log10() */
 
+#include <sys/ioctl.h>
+#include <sys/vfs.h> /* fstatfs */
+
+#ifdef __linux__
+  #include <linux/fs.h> /* FS_IOC_FIEMAP */
+#endif
+
+#ifdef HAVE_LINUX_FIEMAP_H
+  #include <linux/fiemap.h> /* fiemap */
+#endif
+
+#ifdef HAVE_LINUX_MAGIC_H
+  #include <linux/magic.h> /* BTRFS_SUPER_MAGIC */
+#endif
+
 #define DM_STATS_REGION_NOT_PRESENT UINT64_MAX
 #define DM_STATS_GROUP_NOT_PRESENT DM_STATS_GROUP_NONE
 
@@ -28,6 +46,9 @@
 
 #define STATS_ROW_BUF_LEN 4096
 #define STATS_MSG_BUF_LEN 1024
+#define STATS_FIE_BUF_LEN 2048
+
+#define SECTOR_SHIFT 9L
 
 /* Histogram bin */
 struct dm_histogram_bin {
@@ -76,6 +97,7 @@ struct dm_stats_region {
 	char *aux_data;
 	uint64_t timescale; /* precise_timestamps is per-region */
 	struct dm_histogram *bounds; /* histogram configuration */
+	struct dm_histogram *histogram; /* aggregate cache */
 	struct dm_stats_counters *counters;
 };
 
@@ -83,6 +105,7 @@ struct dm_stats_group {
 	uint64_t group_id;
 	const char *alias;
 	dm_bitset_t regions;
+	struct dm_histogram *histogram;
 };
 
 struct dm_stats {
@@ -329,6 +352,8 @@ static void _stats_group_destroy(struct dm_stats_group *group)
 {
 	if (!_stats_group_present(group))
 		return;
+
+	group->histogram = NULL;
 
 	if (group->alias) {
 		dm_free((char *) group->alias);
@@ -889,6 +914,9 @@ static int _stats_parse_list_region(struct dm_stats *dms,
 			return_0;
 	} else
 		region->bounds = NULL;
+
+	/* clear aggregate cache */
+	region->histogram = NULL;
 
 	region->group_id = DM_STATS_GROUP_NOT_PRESENT;
 
@@ -1980,7 +2008,6 @@ static int _stats_remove_region_id_from_group(struct dm_stats *dms,
 
 	/* removing group leader? */
 	if (region_id == group_id) {
-		dms->groups[group_id].group_id = DM_STATS_GROUP_NOT_PRESENT;
 		_stats_clear_group_regions(dms, group_id);
 		_stats_group_destroy(&dms->groups[group_id]);
 	}
@@ -3106,6 +3133,7 @@ int dm_stats_set_alias(struct dm_stats *dms, uint64_t group_id, const char *alia
 	return 1;
 
 bad:
+	dm_free((char *) group->alias);
 	group->alias = old_alias;
 	return 0;
 }
@@ -3168,20 +3196,131 @@ int dm_stats_get_current_region_precise_timestamps(const struct dm_stats *dms)
  * Histogram access methods.
  */
 
+static void _sum_histogram_bins(const struct dm_stats *dms,
+				struct dm_histogram *dmh_aggr,
+				uint64_t region_id, uint64_t area_id)
+{
+	struct dm_stats_region *region;
+	struct dm_histogram_bin *bins;
+	struct dm_histogram *dmh_cur;
+	uint64_t bin;
+
+	region = &dms->regions[region_id];
+	dmh_cur = region->counters[area_id].histogram;
+	bins = dmh_aggr->bins;
+
+	for (bin = 0; bin < dmh_aggr->nr_bins; bin++)
+		bins[bin].count += dmh_cur->bins[bin].count;
+}
+
+/*
+ * Create an aggregate histogram for a sub-divided region or a group.
+ */
+static struct dm_histogram *_aggregate_histogram(const struct dm_stats *dms,
+						 uint64_t region_id,
+						 uint64_t area_id)
+{
+	struct dm_histogram *dmh_aggr, *dmh_cur, **dmh_cachep;
+	int bin, nr_bins, group = 1;
+	uint64_t group_id;
+	size_t hist_size;
+
+	if (area_id == DM_STATS_WALK_REGION) {
+		/* region aggregation */
+		group = 0;
+		if (!_stats_region_present(&dms->regions[region_id]))
+			return_NULL;
+
+		if (!dms->regions[region_id].bounds)
+			return_NULL;
+
+		if (!dms->regions[region_id].counters)
+			return dms->regions[region_id].bounds;
+
+		if (dms->regions[region_id].histogram)
+			return dms->regions[region_id].histogram;
+
+		dmh_cur = dms->regions[region_id].counters[0].histogram;
+		dmh_cachep = &dms->regions[region_id].histogram;
+		nr_bins = dms->regions[region_id].bounds->nr_bins;
+	} else {
+		/* group aggregation */
+		group_id = region_id;
+		area_id = DM_STATS_WALK_GROUP;
+		if (!_stats_group_id_present(dms, group_id))
+			return_NULL;
+
+		if (!dms->regions[group_id].bounds)
+			return_NULL;
+
+		if (!dms->regions[group_id].counters)
+			return dms->regions[group_id].bounds;
+
+		if (dms->groups[group_id].histogram)
+			return dms->groups[group_id].histogram;
+
+		dmh_cur = dms->regions[group_id].counters[0].histogram;
+		dmh_cachep = &dms->groups[group_id].histogram;
+		nr_bins = dms->regions[group_id].bounds->nr_bins;
+	}
+
+	hist_size = sizeof(*dmh_aggr)
+		     + nr_bins * sizeof(struct dm_histogram_bin);
+
+	if (!(dmh_aggr = dm_pool_zalloc(dms->hist_mem, hist_size))) {
+		log_error("Could not allocate group histogram");
+		return 0;
+	}
+
+	dmh_aggr->nr_bins = dmh_cur->nr_bins;
+	dmh_aggr->dms = dms;
+
+	if (!group)
+		_foreach_region_area(dms, region_id, area_id) {
+			_sum_histogram_bins(dms, dmh_aggr, region_id, area_id);
+		}
+	else {
+		_foreach_group_area(dms, group_id, region_id, area_id) {
+			_sum_histogram_bins(dms, dmh_aggr, region_id, area_id);
+		}
+	}
+
+	for (bin = 0; bin < nr_bins; bin++) {
+		dmh_aggr->sum += dmh_aggr->bins[bin].count;
+		dmh_aggr->bins[bin].upper = dmh_cur->bins[bin].upper;
+	}
+
+	/* cache aggregate histogram for subsequent access */
+	*dmh_cachep = dmh_aggr;
+
+	return dmh_aggr;
+}
+
 struct dm_histogram *dm_stats_get_histogram(const struct dm_stats *dms,
 					    uint64_t region_id,
 					    uint64_t area_id)
 {
-	region_id = (region_id == DM_STATS_REGION_CURRENT)
-		     ? dms->cur_region : region_id ;
-	area_id = (area_id == DM_STATS_AREA_CURRENT)
-		     ? dms->cur_area : area_id ;
+	int aggr = 0;
 
-	/* FIXME return histogram sum? Requires bounds check at group time */
-	if (region_id & DM_STATS_WALK_GROUP) {
-		log_err_once("Group histogram data is not supported");
-		return NULL;
+	if (region_id == DM_STATS_REGION_CURRENT) {
+		region_id = dms->cur_region;
+		if (region_id & DM_STATS_WALK_GROUP) {
+			region_id = dms->cur_group;
+			aggr = 1;
+		}
+	} else if (region_id & DM_STATS_WALK_GROUP) {
+		region_id &= ~DM_STATS_WALK_GROUP;
+		aggr = 1;
 	}
+
+	area_id = (area_id == DM_STATS_AREA_CURRENT)
+		   ? dms->cur_area : area_id ;
+
+	if (area_id == DM_STATS_WALK_REGION)
+		aggr = 1;
+
+	if (aggr)
+		return _aggregate_histogram(dms, region_id, area_id);
 
 	if (region_id & DM_STATS_WALK_REGION)
 		region_id &= ~DM_STATS_WALK_REGION;
@@ -3685,6 +3824,7 @@ static int _stats_group_check_overlap(const struct dm_stats *dms,
 		return 0;
 	}
 
+	/* build a table of extents in order of region_id */
 	for (id = dm_bit_get_first(regions); id >= 0;
 	     id = dm_bit_get_next(regions, id)) {
 		dm_list_init(&map[i].list);
@@ -3694,6 +3834,7 @@ static int _stats_group_check_overlap(const struct dm_stats *dms,
 		i++;
 	}
 
+	/* sort by extent.start */
 	qsort(map, count, sizeof(*map), _extent_start_compare);
 
 	for (i = 0; i < count; i++)
@@ -3723,11 +3864,45 @@ merge:
 			overlap = merged = 1;
 		}
 	}
+	/* continue until no merge candidates remain */
 	if (merged)
 		goto merge;
 
 	dm_pool_free(dms->mem, map);
 	return overlap;
+}
+
+static void _stats_copy_histogram_bounds(struct dm_histogram *to,
+					 struct dm_histogram *from)
+{
+	uint64_t i;
+
+	to->nr_bins = from->nr_bins;
+
+	for (i = 0; i < to->nr_bins; i++)
+		to->bins[i].upper = from->bins[i].upper;
+}
+
+/*
+ * Compare histogram bounds h1 and h2, and return 1 if they match (i.e.
+ * have the same number of bins and identical bin boundary values), or 0
+ * otherwise.
+ */
+static int _stats_check_histogram_bounds(struct dm_histogram *h1,
+					 struct dm_histogram *h2)
+{
+	uint64_t i;
+
+	if (!h1 || !h2)
+		return 0;
+
+	if (h1->nr_bins != h2->nr_bins)
+		return 0;
+
+	for (i = 0; i < h1->nr_bins; i++)
+		if (h1->bins[i].upper != h2->bins[i].upper)
+			return 0;
+	return 1;
 }
 
 /*
@@ -3737,6 +3912,7 @@ merge:
 int dm_stats_create_group(struct dm_stats *dms, const char *members,
 			  const char *alias, uint64_t *group_id)
 {
+	struct dm_histogram *check = NULL, *bounds;
 	int i, count = 0, precise = 0;
 	dm_bitset_t regions;
 
@@ -3747,6 +3923,11 @@ int dm_stats_create_group(struct dm_stats *dms, const char *members,
 
 	if (!(regions = dm_bitset_parse_list(members, NULL))) {
 		log_error("Could not parse list: '%s'", members);
+		return 0;
+	}
+
+	if (!(check = dm_pool_zalloc(dms->hist_mem, sizeof(*check)))) {
+		log_error("Could not allocate memory for bounds check");
 		goto bad;
 	}
 
@@ -3756,6 +3937,11 @@ int dm_stats_create_group(struct dm_stats *dms, const char *members,
 		goto bad;
 	}
 
+	/*
+	 * Check that each region_id in the bitmap meets the group
+	 * constraints: present, not already grouped, and if any
+	 * histogram is present that they all have the same bounds.
+	 */
 	for (i = dm_bit_get_first(regions); i >= 0;
 	     i = dm_bit_get_next(regions, i)) {
 		if (!dm_stats_region_present(dms, i)) {
@@ -3767,14 +3953,20 @@ int dm_stats_create_group(struct dm_stats *dms, const char *members,
 				  FMTu64, i, dms->regions[i].group_id);
 			goto bad;
 		}
-		if (dms->regions[i].bounds) {
-			log_error("Region ID %d: grouping regions with "
-				  "histograms is not yet supported", i);
-			goto bad;
-		}
 		if (dms->regions[i].timescale == 1)
 			precise++;
 
+		/* check for matching histogram bounds */
+		bounds = dms->regions[i].bounds;
+		if (bounds && !check->nr_bins)
+			_stats_copy_histogram_bounds(check, bounds);
+		else if (bounds) {
+			if (!_stats_check_histogram_bounds(check, bounds)) {
+				log_error("All region histogram bounds "
+					  "must match exactly");
+				goto bad;
+			}
+		}
 		count++;
 	}
 
@@ -3788,8 +3980,11 @@ int dm_stats_create_group(struct dm_stats *dms, const char *members,
 	if (!_stats_create_group(dms, regions, alias, group_id))
 		goto bad;
 
+	dm_pool_free(dms->hist_mem, check);
 	return 1;
+
 bad:
+	dm_pool_free(dms->hist_mem, check);
 	dm_bitset_destroy(regions);
 	return 0;
 }
@@ -3827,9 +4022,11 @@ int dm_stats_delete_group(struct dm_stats *dms, uint64_t group_id,
 		}
 	}
 
+	/* clear group and mark as not present */
 	_stats_clear_group_regions(dms, group_id);
 	_stats_group_destroy(&dms->groups[group_id]);
 
+	/* delete leader or clear aux_data */
 	if (remove_regions)
 		return dm_stats_delete_region(dms, group_id);
 	else if (!_stats_set_aux(dms, group_id, leader->aux_data))
@@ -3875,6 +4072,319 @@ int dm_stats_get_group_descriptor(const struct dm_stats *dms,
 
 	return 1;
 }
+
+#ifdef HAVE_LINUX_FIEMAP_H
+/*
+ * Group a table of region_ids corresponding to the extents of a file.
+ */
+static int _stats_group_file_regions(struct dm_stats *dms, uint64_t *region_ids,
+				     uint64_t count, const char *alias)
+{
+	dm_bitset_t regions = dm_bitset_create(NULL, dms->nr_regions);
+	uint64_t i, group_id = DM_STATS_GROUP_NOT_PRESENT;
+	char *members = NULL;
+	int buflen;
+
+	if (!regions) {
+		log_error("Cannot map file: failed to allocate group bitmap.");
+		return 0;
+	}
+
+	for (i = 0; i < count; i++)
+		dm_bit_set(regions, region_ids[i]);
+
+	buflen = _stats_group_tag_len(dms, regions);
+	members = dm_malloc(buflen);
+
+	if (!members) {
+		log_error("Cannot map file: failed to allocate group "
+			  "descriptor.");
+		dm_bitset_destroy(regions);
+		return 0;
+	}
+
+	if (!_stats_group_tag_fill(dms, regions, members, buflen))
+		goto bad;
+
+	/*
+	 * overlaps should not be possible: overlapping file extents
+	 * returned by FIEMAP imply a kernel bug or a corrupt fs.
+	 */
+	if (!_stats_group_check_overlap(dms, regions, count))
+		log_info("Creating group with overlapping regions.");
+
+	if (!_stats_create_group(dms, regions, alias, &group_id))
+		goto bad;
+
+	dm_free(members);
+	return 1;
+bad:
+	dm_bitset_destroy(regions);
+	dm_free(members);
+	return 0;
+}
+
+static int _stats_add_extent(struct dm_pool *mem, struct fiemap_extent *fm_ext,
+			     uint64_t id)
+{
+	struct _extent extent;
+
+	/* final address of list is unknown */
+	memset(&extent.list, 0, sizeof(extent.list));
+
+	/* convert bytes to dm (512b) sectors */
+	extent.start = fm_ext->fe_physical >> SECTOR_SHIFT;
+	extent.len = fm_ext->fe_length >> SECTOR_SHIFT;
+
+	extent.id = id;
+
+	if (!dm_pool_grow_object(mem, &extent,
+				 sizeof(extent))) {
+		log_error("Cannot map file: failed to grow extent map.");
+		return 0;
+	}
+	return 1;
+
+}
+
+/* test for the boundary of an extent */
+#define ext_boundary(ext, exp, exp_dense)	\
+(((ext).fe_logical != 0) &&			\
+((ext).fe_physical != (exp)) &&			\
+((ext).fe_physical != (exp_dense)))
+
+/*
+ * Read the extents of an open file descriptor into a table of struct _extent.
+ *
+ * Based on e2fsprogs/misc/filefrag.c::filefrag_fiemap().
+ *
+ * Copyright 2003 by Theodore Ts'o.
+ *
+ */
+static struct _extent *_stats_get_extents_for_file(struct dm_pool *mem, int fd,
+						   uint64_t *count)
+{
+	uint64_t buf[STATS_FIE_BUF_LEN];
+	struct fiemap *fiemap = (struct fiemap *)buf;
+	struct fiemap_extent *fm_ext = &fiemap->fm_extents[0];
+	struct fiemap_extent fm_last = {0};
+	struct _extent *extents;
+	unsigned long long expected = 0;
+	unsigned long long expected_dense = 0;
+	unsigned long flags = 0;
+	unsigned int i, num = 0;
+	int tot_extents = 0, n = 0;
+	int last = 0;
+	int rc;
+
+	memset(buf, 0, sizeof(buf));
+
+	/* space available per ioctl */
+	*count = (sizeof(buf) - sizeof(*fiemap))
+		  / sizeof(struct fiemap_extent);
+
+	/* grow temporary extent table in the pool */
+	if (!dm_pool_begin_object(mem, sizeof(*extents)))
+		return NULL;
+
+	flags |= FIEMAP_FLAG_SYNC;
+
+	do {
+		/* start of ioctl loop - zero size and set count to bufsize */
+		fiemap->fm_length = ~0ULL;
+		fiemap->fm_flags = flags;
+		fiemap->fm_extent_count = *count;
+
+		/* get count-sized chunk of extents */
+		rc = ioctl(fd, FS_IOC_FIEMAP, (unsigned long) fiemap);
+		if (rc < 0) {
+			rc = -errno;
+			if (rc == -EBADR)
+				log_err_once("FIEMAP failed with unknown "
+					     "flags %x.", fiemap->fm_flags);
+			goto bad;
+		}
+
+		/* If 0 extents are returned, then more ioctls are not needed */
+		if (fiemap->fm_mapped_extents == 0)
+			break;
+
+		for (i = 0; i < fiemap->fm_mapped_extents; i++) {
+			expected_dense = fm_last.fe_physical +
+					 fm_last.fe_length;
+			expected = fm_last.fe_physical +
+				   fm_ext[i].fe_logical - fm_last.fe_logical;
+			if (ext_boundary(fm_ext[i], expected, expected_dense)) {
+				tot_extents++;
+				if (!_stats_add_extent(mem, fm_ext + i,
+						       tot_extents - 1))
+					goto_bad;
+			} else {
+				expected = 0;
+				if (!tot_extents)
+					tot_extents = 1;
+				if (fm_ext[i].fe_logical == 0)
+					if (!_stats_add_extent(mem, fm_ext + i,
+							       tot_extents - 1))
+						goto_bad;
+			}
+			num += tot_extents;
+			if (fm_ext[i].fe_flags & FIEMAP_EXTENT_LAST)
+				last = 1;
+			fm_last = fm_ext[i];
+			n++;
+		}
+
+		fiemap->fm_start = (fm_ext[i - 1].fe_logical +
+				    fm_ext[i - 1].fe_length);
+	} while (last == 0);
+
+	if (!tot_extents) {
+		log_error("Cannot map file: no allocated extents.");
+		goto bad;
+	}
+
+	/* return total number of extents */
+	*count = tot_extents;
+	return dm_pool_end_object(mem);
+bad:
+	dm_pool_abandon_object(mem);
+	return NULL;
+}
+
+/*
+ * Create a set of regions representing the extents of a file and
+ * return a table of uint64_t region_id values. The number of regions
+ * created is returned in the memory pointed to by count (which must be
+ * non-NULL).
+ */
+static uint64_t *_stats_create_file_regions(struct dm_stats *dms, int fd,
+					    struct dm_histogram *bounds,
+					    int precise, uint64_t *count)
+{
+	struct _extent *extents = NULL;
+	uint64_t *regions = NULL, i;
+	char *hist_arg = NULL;
+	struct statfs fsbuf;
+	struct stat buf;
+
+#ifdef BTRFS_SUPER_MAGIC
+	if (fstatfs(fd, &fsbuf)) {
+		log_error("fstatfs failed for fd %d", fd);
+		return 0;
+	}
+
+	if (fsbuf.f_type == BTRFS_SUPER_MAGIC) {
+		log_error("Cannot map file: btrfs does not provide "
+			  "physical FIEMAP extent data.");
+		return 0;
+	}
+#endif
+
+	if (fstat(fd, &buf)) {
+		log_error("fstat failed for fd %d", fd);
+		return 0;
+	}
+
+	if (!(buf.st_mode & S_IFREG)) {
+		log_error("Not a regular file");
+		return 0;
+	}
+
+	if (!dm_is_dm_major(major(buf.st_dev))) {
+		log_error("Cannot map file: not a device-mapper device.");
+		return 0;
+	}
+
+	if (!(extents = _stats_get_extents_for_file(dms->mem, fd, count)))
+		return_0;
+
+        if (bounds) {
+                /* _build_histogram_arg enables precise if vals < 1ms. */
+                if (!(hist_arg = _build_histogram_arg(bounds, &precise)))
+                        goto_out;
+        }
+
+	/* make space for end-of-table marker */
+	if (!(regions = dm_malloc((1 + *count) * sizeof(*regions)))) {
+		log_error("Could not allocate memory for region IDs.");
+		goto out;
+	}
+
+	for (i = 0; i < *count; i++) {
+		if (!_stats_create_region(dms, regions + i, extents[i].start,
+					  extents[i].len, -1, precise, hist_arg,
+					  dms->program_id, "")) {
+			log_error("Failed to create region " FMTu64 " of "
+				  FMTu64 " at " FMTu64 ".", i, *count,
+				  extents[i].start);
+			goto out_remove;
+		}
+	}
+	regions[*count] = DM_STATS_REGION_NOT_PRESENT;
+
+	if (bounds)
+		dm_free(hist_arg);
+	dm_pool_free(dms->mem, extents);
+	return regions;
+
+out_remove:
+	/* clean up regions after create failure */
+	for (--i; i != DM_STATS_REGION_NOT_PRESENT; i--) {
+		if (!dm_stats_delete_region(dms, i))
+			log_error("Could not delete region " FMTu64 ".", i);
+	}
+
+out:
+	dm_pool_free(dms->mem, extents);
+	dm_free(hist_arg);
+	dm_free(regions);
+	return NULL;
+}
+
+
+uint64_t *dm_stats_create_regions_from_fd(struct dm_stats *dms, int fd,
+					  int group, int precise,
+					  struct dm_histogram *bounds,
+					  const char *alias)
+{
+	uint64_t *regions, count = 0;
+
+	if (alias && !group) {
+		log_error("Cannot set alias without grouping regions.");
+		return NULL;
+	}
+
+	regions = _stats_create_file_regions(dms, fd, bounds, precise, &count);
+	if (!regions)
+		return_0;
+
+	if (!group)
+		return regions;
+
+	/* refresh handle */
+	if (!dm_stats_list(dms, NULL))
+		goto_out;
+
+	if (!_stats_group_file_regions(dms, regions, count, alias))
+		goto_out;
+
+	return regions;
+out:
+	dm_free(regions);
+	return NULL;
+}
+
+#else /* HAVE_LINUX_FIEMAP */
+uint64_t *dm_stats_create_regions_from_fd(struct dm_stats *dms, int fd,
+					  int group, int precise,
+					  struct dm_histogram *bounds,
+					  const char *alias)
+{
+	log_error("File mapping requires FIEMAP ioctl support.");
+	return 0;
+}
+#endif /* HAVE_LINUX_FIEMAP */
 
 /*
  * Backward compatible dm_stats_create_region() implementations.
