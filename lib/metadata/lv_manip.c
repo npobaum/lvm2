@@ -119,6 +119,7 @@ enum {
 	LV_TYPE_RAID10,
 	LV_TYPE_RAID4,
 	LV_TYPE_RAID5,
+	LV_TYPE_RAID5_N,
 	LV_TYPE_RAID5_LA,
 	LV_TYPE_RAID5_RA,
 	LV_TYPE_RAID5_LS,
@@ -169,6 +170,7 @@ static const char *_lv_type_names[] = {
 	[LV_TYPE_RAID10] =				SEG_TYPE_NAME_RAID10,
 	[LV_TYPE_RAID4] =				SEG_TYPE_NAME_RAID4,
 	[LV_TYPE_RAID5] =				SEG_TYPE_NAME_RAID5,
+	[LV_TYPE_RAID5_N] =				SEG_TYPE_NAME_RAID5_N,
 	[LV_TYPE_RAID5_LA] =				SEG_TYPE_NAME_RAID5_LA,
 	[LV_TYPE_RAID5_RA] =				SEG_TYPE_NAME_RAID5_RA,
 	[LV_TYPE_RAID5_LS] =				SEG_TYPE_NAME_RAID5_LS,
@@ -949,6 +951,7 @@ struct lv_segment *alloc_lv_segment(const struct segment_type *segtype,
 	seg->extents_copied = extents_copied;
 	seg->pvmove_source_seg = pvmove_source_seg;
 	dm_list_init(&seg->tags);
+	dm_list_init(&seg->origin_list);
 	dm_list_init(&seg->thin_messages);
 
 	if (log_lv && !attach_mirror_log(seg, log_lv))
@@ -3278,7 +3281,7 @@ static struct alloc_handle *_alloc_init(struct cmd_context *cmd,
 	log_debug("Adjusted allocation request to %" PRIu32 " logical extents. Existing size %" PRIu32 ". New size %" PRIu32 ".",
 		  total_extents, existing_extents, total_extents + existing_extents);
 	if (ah->log_len)
-		log_debug("Mirror log of %" PRIu32 " extents of size %" PRIu32 "sectors needed for region size %" PRIu32  ".",
+		log_debug("Mirror log of %" PRIu32 " extents of size %" PRIu32 " sectors needed for region size %" PRIu32  ".",
 			  ah->log_len, extent_size, ah->region_size);
 
 	if (mirrors || stripes)
@@ -3921,14 +3924,16 @@ static int _lv_extend_layered_lv(struct alloc_handle *ah,
 
 	/*
 	 * The MD bitmap is limited to being able to track 2^21 regions.
-	 * The region_size must be adjusted to meet that criteria.
+	 * The region_size must be adjusted to meet that criteria
+	 * unless raid0/raid0_meta, which doesn't have a bitmap.
 	 */
-	while (seg_is_raid(seg) && (seg->region_size < (lv->size / (1 << 21)))) {
-		seg->region_size *= 2;
-		log_very_verbose("Adjusting RAID region_size from %uS to %uS"
-				 " to support large LV size",
-				 seg->region_size/2, seg->region_size);
-	}
+	if (seg_is_raid(seg) && !seg_is_any_raid0(seg))
+		while (seg->region_size < (lv->size / (1 << 21))) {
+			seg->region_size *= 2;
+			log_very_verbose("Adjusting RAID region_size from %uS to %uS"
+					 " to support large LV size",
+					 seg->region_size/2, seg->region_size);
+		}
 
 	return 1;
 }
@@ -4025,7 +4030,7 @@ int lv_extend(struct logical_volume *lv,
 		 */
 		if (old_extents &&
 		    segtype_is_mirrored(segtype) &&
-		    (lv->status & LV_NOTSYNCED)) {
+		    (lv_is_not_synced(lv))) {
 			dm_percent_t sync_percent = DM_PERCENT_INVALID;
 
 			if (!lv_is_active_locally(lv)) {
@@ -4987,14 +4992,14 @@ static int _lvresize_adjust_extents(struct logical_volume *lv,
 	/* At this point, lp->extents should hold the correct NEW logical size required. */
 
 	if (!lp->extents) {
-		log_error("New size of 0 not permitted");
+		log_error("New size of 0 not permitted.");
 		return 0;
 	}
 
 	if (lp->extents == existing_logical_extents) {
 		if (!lp->resizefs) {
-			log_error("New size (%d extents) matches existing size "
-				  "(%d extents)", lp->extents, existing_logical_extents);
+			log_error("New size (%d extents) matches existing size (%d extents).",
+				  lp->extents, existing_logical_extents);
 			return 0;
 		}
 		lp->resize = LV_EXTEND; /* lets pretend zero size extension */
@@ -5003,7 +5008,7 @@ static int _lvresize_adjust_extents(struct logical_volume *lv,
 	/* Perform any rounding to produce complete stripes. */
 	if (lp->stripes > 1) {
 		if (lp->stripe_size < STRIPE_SIZE_MIN) {
-			log_error("Invalid stripe size %s",
+			log_error("Invalid stripe size %s.",
 				  display_size(cmd, (uint64_t) lp->stripe_size));
 			return 0;
 		}
@@ -5022,7 +5027,7 @@ static int _lvresize_adjust_extents(struct logical_volume *lv,
 		     (vg->free_count >= (lp->extents - existing_logical_extents - size_rest +
 					 stripes_extents)))) {
 			log_print_unless_silent("Rounding size (%d extents) up to stripe "
-						"boundary size for segment (%d extents)",
+						"boundary size for segment (%d extents).",
 						lp->extents,
 						lp->extents - size_rest + stripes_extents);
 			lp->extents = lp->extents - size_rest + stripes_extents;
@@ -5086,7 +5091,7 @@ static int _lvresize_check_type(const struct logical_volume *lv,
 
 		if (lv_is_active(lv)) {
 			log_error("Snapshot origin volumes can be resized "
-				  "only while inactive: try lvchange -an");
+				  "only while inactive: try lvchange -an.");
 			return 0;
 		}
 	}
@@ -5128,37 +5133,7 @@ static int _lvresize_volume(struct logical_volume *lv,
 	struct volume_group *vg = lv->vg;
 	struct cmd_context *cmd = vg->cmd;
 	uint32_t old_extents;
-	int status;
 	alloc_policy_t alloc = lp->alloc ? : lv->alloc;
-
-	if ((lp->resize == LV_REDUCE) && (pvh != &vg->pvs))
-		log_print_unless_silent("Ignoring PVs on command line when reducing.");
-
-	/* Request confirmation before operations that are often mistakes. */
-	if ((lp->resizefs || (lp->resize == LV_REDUCE)) &&
-	    !_request_confirmation(lv, lp))
-		return_0;
-
-	if (lp->resizefs) {
-		if (!lp->nofsck &&
-		    !_fsadm_cmd(FSADM_CMD_CHECK, lv, 0, lp->force, &status)) {
-			if (status != FSADM_CHECK_FAILS_FOR_MOUNTED) {
-				log_error("Filesystem check failed.");
-				return 0;
-			}
-			/* some filesystems support online resize */
-		}
-
-		/* FIXME forks here */
-		if ((lp->resize == LV_REDUCE) &&
-		    !_fsadm_cmd(FSADM_CMD_RESIZE, lv, lp->extents, lp->force, NULL)) {
-			log_error("Filesystem resize failed.");
-			return 0;
-		}
-	}
-
-	if (!archive(vg))
-		return_0;
 
 	old_extents = lv->le_count;
 	log_verbose("%sing logical volume %s to %s%s",
@@ -5185,11 +5160,13 @@ static int _lvresize_volume(struct logical_volume *lv,
 		log_print_unless_silent("Size of logical volume %s unchanged from %s (%" PRIu32 " extents).",
 					display_lvname(lv),
 					display_size(cmd, (uint64_t) old_extents * vg->extent_size), old_extents);
-	else
+	else {
+		lp->size_changed = 1;
 		log_print_unless_silent("Size of logical volume %s changed from %s (%" PRIu32 " extents) to %s (%" PRIu32 " extents).",
 					display_lvname(lv),
 					display_size(cmd, (uint64_t) old_extents * vg->extent_size), old_extents,
 					display_size(cmd, (uint64_t) lv->le_count * vg->extent_size), lv->le_count);
+	}
 
 	return 1;
 }
@@ -5209,10 +5186,10 @@ static int _lvresize_prepare(struct logical_volume **lv,
 	else if (lp->extents && !_lvresize_extents_from_percent(*lv, lp, pvh))
 		return_0;
 
-	if (lp->extents && !_lvresize_adjust_extents(*lv, lp, pvh))
+	if (!_lvresize_adjust_extents(*lv, lp, pvh))
 		return_0;
 
-	if (lp->extents && !_lvresize_check_type(*lv, lp))
+	if (!_lvresize_check_type(*lv, lp))
 		return_0;
 
 	return 1;
@@ -5244,6 +5221,7 @@ int lv_resize(struct logical_volume *lv,
 	struct lvresize_params aux_lp;
 	int activated = 0;
 	int ret = 0;
+	int status;
 
 	if (!_lvresize_check(lv, lp))
 		return_0;
@@ -5269,8 +5247,8 @@ int lv_resize(struct logical_volume *lv,
 		}
 	} else if (lp->poolmetadata_size) {
 		if (!lp->extents && !lp->size) {
-			/* When only --poolmetadatasize give and not --size
-			 * swith directly to resize metadata LV */
+			/* When only --poolmetadatasize given and not --size
+			 * switch directly to resize metadata LV */
 			lv = first_seg(lv)->metadata_lv;
 			lp->size = lp->poolmetadata_size;
 			lp->sign = lp->poolmetadata_sign;
@@ -5285,8 +5263,43 @@ int lv_resize(struct logical_volume *lv,
 	if (aux_lv && !_lvresize_prepare(&aux_lv, &aux_lp, pvh))
 		return_0;
 
+	/* Always should have lp->size or lp->extents */
 	if (!_lvresize_prepare(&lv, lp, pvh))
 		return_0;
+
+	if (((lp->resize == LV_REDUCE) ||
+	     (aux_lv && aux_lp.resize == LV_REDUCE)) &&
+	    (pvh != &vg->pvs))
+		log_print_unless_silent("Ignoring PVs on command line when reducing.");
+
+	/* Request confirmation before operations that are often mistakes. */
+	/* aux_lv never resize fs */
+	if ((lp->resizefs || (lp->resize == LV_REDUCE)) &&
+	    !_request_confirmation(lv, lp))
+		return_0;
+
+	if (lp->resizefs) {
+		if (!lp->nofsck &&
+		    !_fsadm_cmd(FSADM_CMD_CHECK, lv, 0, lp->force, &status)) {
+			if (status != FSADM_CHECK_FAILS_FOR_MOUNTED) {
+				log_error("Filesystem check failed.");
+				return 0;
+			}
+			/* some filesystems support online resize */
+		}
+
+		/* FIXME forks here */
+		if ((lp->resize == LV_REDUCE) &&
+		    !_fsadm_cmd(FSADM_CMD_RESIZE, lv, lp->extents, lp->force, NULL)) {
+			log_error("Filesystem resize failed.");
+			return 0;
+		}
+	}
+
+	if (!lp->extents && (!aux_lv || !aux_lp.extents)) {
+		lp->extents = lv->le_count;
+		goto out; /* Nothing to do */
+	}
 
 	if (lv_is_thin_pool(lock_lv) &&  /* Lock holder is thin-pool */
 	    !lv_is_active(lock_lv)) {
@@ -5320,12 +5333,15 @@ int lv_resize(struct logical_volume *lv,
 	if (!lockd_lv(cmd, lock_lv, "ex", 0))
 		return_0;
 
+	if (!archive(vg))
+		return_0;
+
 	if (aux_lv) {
 		if (!_lvresize_volume(aux_lv, &aux_lp, pvh))
 			goto_bad;
 
 		/* store vg on disk(s) */
-		if (!lv_update_and_reload(lock_lv))
+		if (aux_lp.size_changed && !lv_update_and_reload(lock_lv))
 			goto_bad;
 	}
 
@@ -5333,6 +5349,9 @@ int lv_resize(struct logical_volume *lv,
 		goto_bad;
 
 	/* store vg on disk(s) */
+	if (!lp->size_changed)
+		goto out; /* No table reload needed */
+
 	if (!lv_update_and_reload(lock_lv))
 		goto_bad;
 
@@ -5347,7 +5366,7 @@ int lv_resize(struct logical_volume *lv,
 
 		backup(vg);
 	}
-
+out:
 	log_print_unless_silent("Logical volume %s successfully resized.",
 				display_lvname(lv));
 
@@ -7576,7 +7595,7 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 		goto deactivate_and_revert_new_lv;
 	}
 
-	if (_should_wipe_lv(lp, lv, 1)) {
+	if (_should_wipe_lv(lp, lv, !lp->suppress_zero_warn)) {
 		if (!wipe_lv(lv, (struct wipe_params)
 			     {
 				     .do_zero = lp->zero,

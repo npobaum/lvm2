@@ -171,6 +171,7 @@ enum {
 	DEFERRED_ARG,
 	SELECT_ARG,
 	EXEC_ARG,
+	FILEMAP_ARG,
 	FORCE_ARG,
 	GID_ARG,
 	GROUP_ARG,
@@ -187,6 +188,7 @@ enum {
 	MODE_ARG,
 	NAMEPREFIXES_ARG,
 	NOFLUSH_ARG,
+	NOGROUP_ARG,
 	NOHEADINGS_ARG,
 	NOLOCKFS_ARG,
 	NOOPENCOUNT_ARG,
@@ -4611,6 +4613,24 @@ static int _bind_stats_device(struct dm_stats *dms, const char *name)
 	return 1;
 }
 
+static int _bind_stats_from_fd(struct dm_stats *dms, int fd)
+{
+	int major, minor;
+	struct stat buf;
+
+	if (fstat(fd, &buf)) {
+		log_error("fstat failed for fd %d.", fd);
+		return 0;
+	}
+
+	major = (int) MAJOR(buf.st_dev);
+	minor = (int) MINOR(buf.st_dev);
+
+	if (!dm_stats_bind_devno(dms, major, minor))
+		return_0;
+	return 1;
+}
+
 static int _stats_clear_one_region(struct dm_stats *dms, uint64_t region_id)
 {
 
@@ -4748,6 +4768,56 @@ static uint64_t _nr_areas_from_step(uint64_t len, int64_t step)
 	return (len / step) + !!(len % (uint64_t) step);
 }
 
+/* maximum length of a string representation of an integer */
+#define max_int_strlen(i) (strlen(#i))
+#define MAX_UINT64_STRLEN max_int_strlen(UINT64_MAX)
+static int _stats_group_segments(struct dm_stats *dms, uint64_t *region_ids,
+				 int count, const char *alias)
+{
+	/* NULL, commas, and count * region_id */
+	size_t bufsize = 1 + count + count * MAX_UINT64_STRLEN;
+	char *this_region, *regions = NULL;
+	uint64_t group_id;
+	int r, i;
+
+	this_region = regions = dm_malloc(bufsize);
+
+	if (!regions) {
+		log_error("Could not allocate memory for region_id table.");
+		return 0;
+	}
+
+	for (i = 0; i < count; i++) {
+		/*
+		 * We don't expect large numbers of segments (compared to e.g.
+		 * --filemap): use a fixed-size buffer based on the number of
+		 *  region identifiers and do not collapse continuous ranges
+		 *  of identifiers in the group descriptor argument.
+		 */
+		r = dm_snprintf(this_region, bufsize, FMTu64 "%s", region_ids[i],
+				(i < (count - 1)) ? "," : "");
+		if (r < 0)
+			goto_bad;
+		this_region += r;
+		bufsize -= r;
+	}
+
+	/* refresh handle */
+	if (!(r = dm_stats_list(dms, NULL)))
+		goto bad;
+
+	if ((r = dm_stats_create_group(dms, regions, alias, &group_id)))
+		printf("Grouped regions %s as group ID " FMTu64 "%s%s\n",
+		       regions, group_id, (alias) ? " with alias " : "",
+		       (alias) ? : "");
+	else
+		log_error("Failed to create group for regions %s", regions);
+
+bad:
+	dm_free(regions);
+	return r;
+}
+
 /*
  * Create a single region starting at start and spanning len sectors,
  * or, if the segments argument is no-zero create one region for each
@@ -4764,12 +4834,19 @@ static int _do_stats_create_regions(struct dm_stats *dms,
 {
 	uint64_t this_start = 0, this_len = len, region_id = UINT64_C(0);
 	const char *devname = NULL, *histogram = _string_args[BOUNDS_ARG];
-	int r = 0, precise = _switches[PRECISE_ARG];
+	int r = 0, count = 0, precise = _switches[PRECISE_ARG];
 	struct dm_histogram *bounds = NULL; /* histogram bounds */
+	uint64_t *region_ids = NULL; /* segments */
 	char *target_type, *params; /* unused */
 	struct dm_task *dmt;
 	struct dm_info info;
 	void *next = NULL;
+
+	if (_switches[ALIAS_ARG] && _switches[NOGROUP_ARG]) {
+		log_error("Cannot set alias with --nogroup.");
+		dm_stats_destroy(dms);
+		return 0;
+	}
 
 	if (histogram && !(bounds = dm_histogram_bounds_from_string(histogram)))
 		return_0;
@@ -4798,6 +4875,11 @@ static int _do_stats_create_regions(struct dm_stats *dms,
 	if (!(devname = dm_task_get_name(dmt)))
 		goto_out;
 
+	if (!segments || (info.target_count == 1))
+		region_ids = &region_id;
+	else
+		region_ids = dm_malloc(info.target_count * sizeof(*region_ids));
+
 	do {
 		uint64_t segment_start, segment_len;
 		next = dm_get_next_target(dmt, next, &segment_start, &segment_len,
@@ -4818,10 +4900,10 @@ static int _do_stats_create_regions(struct dm_stats *dms,
 			 */
 			this_start = (segments) ? segment_start : start;
 			this_len = (segments) ? segment_len : this_len;
-			if (!dm_stats_create_region(dms, &region_id,
-						    this_start, this_len, step,
-						    precise, bounds,
-						    program_id, user_data)) {
+			if (!(r = dm_stats_create_region(dms, &region_ids[count],
+							 this_start, this_len, step,
+							 precise, bounds,
+							 program_id, user_data))) {
 				log_error("%s: Could not create statistics region.",
 					  devname);
 				goto out;
@@ -4829,16 +4911,193 @@ static int _do_stats_create_regions(struct dm_stats *dms,
 
 			printf("%s: Created new region with "FMTu64" area(s) as "
 			       "region ID "FMTu64"\n", devname,
-			       _nr_areas_from_step(this_len, step), region_id);
+			       _nr_areas_from_step(this_len, step),
+			       region_ids[count++]);
 		}
 	} while (next);
-	r = 1;
+
+	if (!_switches[NOGROUP_ARG] && segments)
+		r = _stats_group_segments(dms, region_ids, count,
+					  _string_args[ALIAS_ARG]);
 
 out:
+	if (region_ids != &region_id)
+		dm_free(region_ids);
+
 	dm_task_destroy(dmt);
 	dm_stats_destroy(dms);
 	dm_histogram_bounds_destroy(bounds);
 	return r;
+}
+
+/*
+ * Returns the full absolute path, or NULL if the path could
+ * not be resolved.
+ */
+static char *_get_abspath(const char *path)
+{
+	char *_path;
+
+#ifdef HAVE_CANONICALIZE_FILE_NAME
+	_path = canonicalize_file_name(path);
+#else
+	/* FIXME Provide alternative */
+	log_error(INTERNAL_ERROR "Unimplemented _get_abspath.");
+	_path = NULL;
+#endif
+	return _path;
+}
+
+static int _stats_create_file(CMD_ARGS)
+{
+	const char *alias, *program_id = DM_STATS_PROGRAM_ID;
+	const char *histogram = _string_args[BOUNDS_ARG];
+	uint64_t *regions, *region, count = 0;
+	struct dm_histogram *bounds = NULL;
+	char *path, *abspath = NULL;
+	int group, fd, precise;
+	struct dm_stats *dms;
+
+	if (_switches[AREAS_ARG] || _switches[AREA_SIZE_ARG]) {
+		log_error("--filemap is incompatible with --areas and --area-size.");
+		return 0;
+	}
+
+	if (_switches[START_ARG] || _switches[LENGTH_ARG]) {
+		log_error("--filemap is incompatible with --start and --length.");
+		return 0;
+	}
+
+	if (_switches[SEGMENTS_ARG]) {
+		log_error("--filemap and --segments are incompatible.");
+		return 0;
+	}
+
+	if (_switches[USER_DATA_ARG]) {
+		log_error("--userdata is not yet supported with --filemap.");
+		return 0;
+	}
+
+	if (_switches[UUID_ARG] || _switches[MAJOR_ARG]) {
+		log_error("--uuid and --major are incompatible with --filemap.");
+		return 0;
+	}
+
+	if (_switches[ALL_DEVICES_ARG]) {
+		log_error("--alldevices is incompatible with --filemap.");
+		return 0;
+	}
+
+	/* _stats_create_file does not use _process_all() */
+	if (!argc) {
+		log_error("--filemap requires a file path argument");
+		return 0;
+	}
+
+	path = argv[0];
+
+	if (_switches[PRECISE_ARG]) {
+		if (!dm_stats_driver_supports_precise()) {
+			log_error("Using --precise requires driver version "
+				  "4.32.0 or later.");
+			return 0;
+		}
+	}
+
+	if (_switches[BOUNDS_ARG]) {
+		if (!dm_stats_driver_supports_histogram()) {
+			log_error("Using --bounds requires driver version "
+				  "4.32.0 or later.");
+			return 0;
+		}
+	}
+
+	if (!(abspath = _get_abspath(path))) {
+		log_error("Could not canonicalize file name: %s", path);
+		return 0;
+	}
+
+	if (histogram && !(bounds = dm_histogram_bounds_from_string(histogram))) {
+		dm_free(abspath);
+		return_0;
+	}
+
+	if (_switches[PROGRAM_ID_ARG])
+		program_id = _string_args[PROGRAM_ID_ARG];
+	if (!strlen(program_id) && !_switches[FORCE_ARG])
+		program_id = DM_STATS_PROGRAM_ID;
+
+	precise = _int_args[PRECISE_ARG];
+	group = !_switches[NOGROUP_ARG];
+
+	if (!(dms = dm_stats_create(DM_STATS_PROGRAM_ID)))
+		return_0;
+
+	fd = open(abspath, O_RDONLY);
+
+	if (fd < 0) {
+		log_error("Could not open %s for reading", abspath);
+		goto bad;
+	}
+
+	if (!_bind_stats_from_fd(dms, fd))
+		goto_bad;
+
+	if (!strlen(program_id))
+		/* force creation of a region with no id */
+		dm_stats_set_program_id(dms, 1, NULL);
+
+	if (group && !_switches[ALIAS_ARG])
+		alias = dm_basename(abspath);
+	else if (group)
+		alias = _string_args[ALIAS_ARG];
+	else if (!_switches[ALIAS_ARG])
+		alias = NULL;
+	else {
+		log_error("Cannot set alias with --nogroup.");
+		goto bad;
+	}
+
+	regions = dm_stats_create_regions_from_fd(dms, fd, group, precise,
+						  bounds, alias);
+
+	if (close(fd))
+		log_error("Error closing %s", abspath);
+
+	fd = -1;
+
+	if (!regions) {
+		log_error("Could not create regions from file %s", abspath);
+		goto bad;
+	}
+
+	for (region = regions; *region != DM_STATS_REGIONS_ALL; region++)
+		count++;
+
+	if (group) {
+		printf("%s: Created new group with "FMTu64" region(s) as "
+		       "group ID "FMTu64".\n", path, count, regions[0]);
+	} else {
+		region = regions;
+		do
+			printf("%s: Created new region with 1 area as "
+			       "region ID "FMTu64".\n", path, *region);
+		while (*(++region) != DM_STATS_REGIONS_ALL);
+	}
+
+	dm_free(regions);
+	dm_free(abspath);
+	dm_stats_destroy(dms);
+	return 1;
+
+bad:
+	dm_free(abspath);
+
+	if ((fd > -1) && close(fd))
+		log_error("Error closing %s", path);
+
+	dm_stats_destroy(dms);
+	return 0;
 }
 
 static int _stats_create(CMD_ARGS)
@@ -4875,6 +5134,10 @@ static int _stats_create(CMD_ARGS)
 			  "id requires --force.");
 			return 0;
 	}
+
+	if (_switches[FILEMAP_ARG])
+		return _stats_create_file(cmd, subcommand, argc, argv,
+					  names, multiple_devices);
 
 	if (names)
 		name = names->name;
@@ -5030,6 +5293,7 @@ static int _stats_delete(CMD_ARGS)
 			log_error("Could not delete statistics group.");
 			goto out;
 		}
+		printf("Deleted statistics group " FMTu64 ".\n", group_id);
 	} else if (_switches[ALL_REGIONS_ARG]) {
 		dm_stats_foreach_region(dms) {
 			region_id = dm_stats_get_current_region(dms);
@@ -5040,7 +5304,10 @@ static int _stats_delete(CMD_ARGS)
 			log_info("Deleted statistics region %" PRIu64, region_id);
 		}
 	} else {
-		dm_stats_delete_region(dms, region_id);
+		if (!dm_stats_delete_region(dms, region_id)) {
+			log_error("Could not delete statistics region");
+			goto out;
+		}
 		log_info("Deleted statistics region " FMTu64 ".\n", region_id);
 	}
 
@@ -5679,24 +5946,6 @@ static int _process_tree_options(const char *options)
 	return 1;
 }
 
-/*
- * Returns the full absolute path, or NULL if the path could
- * not be resolved.
- */
-static char *_get_abspath(const char *path)
-{
-	char *_path;
-
-#ifdef HAVE_CANONICALIZE_FILE_NAME
-	_path = canonicalize_file_name(path);
-#else
-	/* FIXME Provide alternative */
-	log_error(INTERNAL_ERROR "Unimplemented _get_abspath.");
-	_path = NULL;
-#endif
-	return _path;
-}
-
 static char *parse_loop_device_name(const char *dev, const char *dev_dir)
 {
 	char *buf;
@@ -5981,6 +6230,7 @@ static int _process_switches(int *argcp, char ***argvp, const char *dev_dir)
 		{"deferred", 0, &ind, DEFERRED_ARG},
 		{"select", 1, &ind, SELECT_ARG},
 		{"exec", 1, &ind, EXEC_ARG},
+		{"filemap", 0, &ind, FILEMAP_ARG},
 		{"force", 0, &ind, FORCE_ARG},
 		{"gid", 1, &ind, GID_ARG},
 		{"group", 0, &ind, GROUP_ARG},
@@ -5995,6 +6245,7 @@ static int _process_switches(int *argcp, char ***argvp, const char *dev_dir)
 		{"minor", 1, &ind, MINOR_ARG},
 		{"mode", 1, &ind, MODE_ARG},
 		{"nameprefixes", 0, &ind, NAMEPREFIXES_ARG},
+		{"nogroup", 0, &ind, NOGROUP_ARG},
 		{"noflush", 0, &ind, NOFLUSH_ARG},
 		{"noheadings", 0, &ind, NOHEADINGS_ARG},
 		{"nolockfs", 0, &ind, NOLOCKFS_ARG},
@@ -6144,6 +6395,8 @@ static int _process_switches(int *argcp, char ***argvp, const char *dev_dir)
 			_switches[CLEAR_ARG]++;
 		if (c == 'c' || c == 'C' || ind == COLS_ARG)
 			_switches[COLS_ARG]++;
+		if (ind == FILEMAP_ARG)
+			_switches[FILEMAP_ARG]++;
 		if (c == 'f' || ind == FORCE_ARG)
 			_switches[FORCE_ARG]++;
 		if (c == 'r' || ind == READ_ONLY)
@@ -6303,6 +6556,8 @@ static int _process_switches(int *argcp, char ***argvp, const char *dev_dir)
 			_switches[NAMEPREFIXES_ARG]++;
 		if (ind == NOFLUSH_ARG)
 			_switches[NOFLUSH_ARG]++;
+		if (ind == NOGROUP_ARG)
+			_switches[NOGROUP_ARG]++;
 		if (ind == NOHEADINGS_ARG)
 			_switches[NOHEADINGS_ARG]++;
 		if (ind == NOLOCKFS_ARG)

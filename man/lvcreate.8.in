@@ -329,19 +329,20 @@ is specified.
 .IR LogicalExtentsNumber \c
 .RB [ % { VG | PVS | FREE | ORIGIN }]
 .br
-Gives the number of logical extents to allocate for the new
-logical volume.  The total number of physical extents allocated will be
-greater than this, for example, if the volume is mirrored.
-The number can also be expressed as a percentage of the total space
-in the Volume Group with the suffix \fB%VG\fP, as a percentage of the
-remaining free space in the Volume Group with the suffix \fB%FREE\fP, as a
-percentage of the remaining free space for the specified
-PhysicalVolume(s) with the suffix \fB%PVS\fP, or (for a snapshot) as a
-percentage of the total space in the Origin Logical Volume with the
-suffix \fB%ORIGIN\fP (i.e. \fB100%ORIGIN\fP provides space for the whole origin).
-When expressed as a percentage, the number is treated
-as an approximate upper limit for the number of physical extents
-to be allocated (including extents used by any mirrors, for example).
+Specifies the size of the new LV in logical extents.  The number of
+physical extents allocated may be different, and depends on the LV type.
+Certain LV types require more physical extents for data redundancy or
+metadata.  An alternate syntax allows the size to be determined indirectly
+as a percentage of the size of a related VG, LV, or set of PVs.  The
+suffix \fB%VG\fP denotes the total size of the VG, the suffix \fB%FREE\fP
+the remaining free space in the VG, and the suffix \fB%PVS\fP the free
+space in the specified Physical Volumes.  For a snapshot, the size
+can be expressed as a percentage of the total size of the Origin Logical
+Volume with the suffix \fB%ORIGIN\fP (\fB100%ORIGIN\fP provides space for
+the whole origin).
+When expressed as a percentage, the size defines an upper limit for the
+number of logical extents in the new LV. The precise number of logical
+extents in the new LV is not determined until the command has completed.
 .
 .HP
 .BR \-j | \-\-major
@@ -380,10 +381,11 @@ would result in a mirror with two-sides; that is,
 a linear volume plus one copy.
 
 Specifying the optional argument \fB\-\-nosync\fP will cause the creation
-of the mirror to skip the initial resynchronization.  Any data written
-afterwards will be mirrored, but the original contents will not be
-copied.  This is useful for skipping a potentially long and resource
-intensive initial sync of an empty device.
+of the mirror LV to skip the initial resynchronization.  Any data written
+afterwards will be mirrored, but the original contents will not be copied.
+
+This is useful for skipping a potentially long and resource intensive initial
+sync of an empty mirrored RaidLV.
 
 There are two implementations of mirroring which can be used and correspond
 to the "\fIraid1\fP" and "\fImirror\fP" segment types.
@@ -397,6 +399,9 @@ to configure default mirror segment type.
 The options
 \fB\-\-mirrorlog\fP and \fB\-\-corelog\fP apply
 to the legacy "\fImirror\fP" segment type only.
+
+Note the current maxima for mirrors are 7 for "mirror" providing
+8 mirror legs and 9 for "raid1" providing 10 legs.
 .
 .HP
 .BR \-\-mirrorlog
@@ -439,7 +444,21 @@ Without this option a default name of "lvol#" will be generated where
 .HP
 .BR \-\-nosync
 .br
-Causes the creation of the mirror to skip the initial resynchronization.
+Causes the creation of mirror, raid1, raid4, raid5 and raid10 to skip the
+initial resynchronization.  In case of mirror, raid1 and raid10, any data
+written afterwards will be mirrored, but the original contents will not be
+copied.  In case of raid4 and raid5, no parity blocks will be written,
+though any data written afterwards will cause parity blocks to be stored.
+.br
+This is useful for skipping a potentially long and resource intensive initial
+sync of an empty mirror/raid1/raid4/raid5 and raid10 LV.
+.br
+This option is not valid for raid6, because raid6 relies on proper parity
+(P and Q Syndromes) being created during initial synchronization in order
+to reconstruct proper user date in case of device failures.
+
+raid0 and raid0_meta don't provide any data copies or parity support
+and thus don't support initial resynchronization.
 .
 .HP
 .BR \-\-noudevsync
@@ -602,20 +621,36 @@ for online conversion to thin volumes with external origin.
 .br
 Gives the number of stripes.
 This is equal to the number of physical volumes to scatter
-the logical volume.  When creating a RAID 4/5/6 logical volume,
+the logical volume data.  When creating a RAID 4/5/6 logical volume,
 the extra devices which are necessary for parity are
 internally accounted for.  Specifying \fB\-i 3\fP
-would use 3 devices for striped logical volumes,
-4 devices for RAID 4/5, and 5 devices for RAID 6.  Alternatively,
-RAID 4/5/6 will stripe across all PVs in the volume group or
-all of the PVs specified if the \fB\-i\fP
-argument is omitted.
+would cause 3 devices for striped and RAID 0 logical volumes,
+4 devices for RAID 4/5, 5 devices for RAID 6 and 6 devices for RAID 10.
+Alternatively, RAID 0 will stripe across 2 devices,
+RAID 4/5 across 3 PVs, RAID 6 across 5 PVs and RAID 10 across
+4 PVs in the volume group if the \fB\-i\fP argument is omitted.
+In order to stripe across all PVs of the VG if the \fB\-i\fP argument is
+omitted, set raid_stripe_all_devices=1 in the allocation
+section of \fBlvm.conf (5)\fP or add
+.br
+\fB\-\-config allocation/raid_stripe_all_devices=1\fP
+.br
+to the command.
+
+Note the current maxima for stripes depend on the created RAID type.
+For raid10, the maximum of stripes is 32,
+for raid0, it is 64,
+for raid4/5, it is 63
+and for raid6 it is 62.
+
+See the \fB\-\-nosync\fP option to optionally avoid initial syncrhonization of RaidLVs.
+
 Two implementations of basic striping are available in the kernel.
 The original device-mapper implementation is the default and should
 normally be used.  The alternative implementation using MD, available
 since version 1.7 of the RAID device-mapper kernel target (kernel
 version 4.2) is provided to facilitate the development of new RAID
-features.  It may be accessed with \fB--type raid0\fP, but is best
+features.  It may be accessed with \fB--type raid0[_meta]\fP, but is best
 avoided at present because of assorted restrictions on resizing and converting
 such devices.
 .HP
@@ -719,16 +754,17 @@ device sizes (GiB), thin provisioning should be used for this case.
 .BR \-W | \-\-wipesignatures
 .RB { y | n }
 .br
-Controls wiping of detected signatures on newly created Logical Volume.
-If this option is not specified, then by default signature wiping is done
-each time the zeroing (
-.BR \-Z | \-\-zero
-) is done. This default behaviour
+Controls detection and subsequent wiping of signatures on newly created
+Logical Volume. There's a prompt for each signature detected to confirm
+its wiping (unless \fB--yes\fP is used where LVM assumes 'yes' answer
+for each prompt automatically). If this option is not specified, then by
+default \fB-W\fP | \fB--wipesignatures y\fP is assumed each time the
+zeroing is done (\fB\-Z\fP | \fB\-\-zero y\fP). This default behaviour
 can be controlled by \fB\%allocation/wipe_signatures_when_zeroing_new_lvs\fP
 setting found in
 .BR lvm.conf (5).
 .br
-If blkid wiping is used \fBallocation/use_blkid_wiping\fP setting in
+If blkid wiping is used (\fBallocation/use_blkid_wiping\fP setting in
 .BR lvm.conf (5))
 and LVM2 is compiled with blkid wiping support, then \fBblkid\fP(8) library is used
 to detect the signatures (use \fBblkid \-k\fP command to list the signatures that are recognized).
@@ -799,9 +835,12 @@ a parity drive for a total of 4 devices) and a stripesize of 64KiB:
 .B lvcreate \-\-type raid5 \-L 5G \-i 3 \-I 64 \-n my_lv vg00
 
 Creates a RAID5 logical volume "vg00/my_lv", using all of the free
-space in the VG and spanning all the PVs in the VG:
+space in the VG and spanning all the PVs in the VG (note that the command
+will fail if there's more than 8 PVs in the VG in which case \fB\-i 7\fP
+has to be used to get to the currently possible maximum of
+8 devices including parity for RaidLVs):
 .sp
-.B lvcreate \-\-type raid5 \-l 100%FREE \-n my_lv vg00
+.B lvcreate \-\-config allocation/raid_stripe_all_devices=1 \-\-type raid5 \-l 100%FREE \-n my_lv vg00
 
 Creates a 5GiB RAID10 logical volume "vg00/my_lv", with 2 stripes on
 2 2-way mirrors.  Note that the \fB-i\fP and \fB-m\fP arguments behave

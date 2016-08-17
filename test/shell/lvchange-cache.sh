@@ -33,6 +33,10 @@ not lvchange --cachesettings foo=bar $vg/noncache
 lvchange --cachepolicy cleaner $vg/corigin
 check lv_field  $vg/corigin kernel_cache_policy "cleaner"
 
+# Skip these test on older cache driver as it shows errors with these lvchanges
+# device-mapper: space map common: index_check failed: blocknr 17179869216 != wanted 11
+if aux have_cache 1 5 0 ; then
+
 lvchange --cachepolicy mq --cachesettings migration_threshold=333 $vg/corigin
 
 # TODO once mq->smq happens we will get here some 0 for mq settings
@@ -85,5 +89,7 @@ else
 # So just skip testing of param changes when sequential_threshold=0
 grep 'sequential_threshold=0' out
 fi
+
+fi  # have_cache 1 5 0
 
 vgremove -f $vg

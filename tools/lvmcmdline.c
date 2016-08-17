@@ -63,12 +63,12 @@ static struct cmdline_context _cmdline;
 /* Command line args */
 unsigned arg_count(const struct cmd_context *cmd, int a)
 {
-	return cmd->arg_values[a].count;
+	return cmd->arg_values ? cmd->arg_values[a].count : 0;
 }
 
 unsigned grouped_arg_count(const struct arg_values *av, int a)
 {
-	return av[a].count;
+	return av ? av[a].count : 0;
 }
 
 unsigned arg_is_set(const struct cmd_context *cmd, int a)
@@ -182,7 +182,7 @@ const char *arg_long_option_name(int a)
 
 const char *arg_value(const struct cmd_context *cmd, int a)
 {
-	return cmd->arg_values[a].value;
+	return cmd->arg_values ? cmd->arg_values[a].value : NULL;
 }
 
 const char *arg_str_value(const struct cmd_context *cmd, int a, const char *def)
@@ -1167,6 +1167,7 @@ static int _get_settings(struct cmd_context *cmd)
 	    !_merge_synonym(cmd, allocation_ARG, resizeable_ARG) ||
 	    !_merge_synonym(cmd, virtualoriginsize_ARG, virtualsize_ARG) ||
 	    !_merge_synonym(cmd, available_ARG, activate_ARG) ||
+	    !_merge_synonym(cmd, raidrebuild_ARG, rebuild_ARG) ||
 	    !_merge_synonym(cmd, raidsyncaction_ARG, syncaction_ARG) ||
 	    !_merge_synonym(cmd, raidwritemostly_ARG, writemostly_ARG) ||
 	    !_merge_synonym(cmd, raidminrecoveryrate_ARG, minrecoveryrate_ARG) ||
@@ -1394,6 +1395,7 @@ static int _prepare_profiles(struct cmd_context *cmd)
 			cmd->profile_params->global_metadata_profile = profile;
 		}
 
+		remove_config_tree_by_source(cmd, source);
 		if (!override_config_tree_from_profile(cmd, profile)) {
 			log_error(_failed_to_apply_profile_msg, source_name, name);
 			return 0;
@@ -1419,6 +1421,8 @@ static int _prepare_profiles(struct cmd_context *cmd)
 			log_error(_failed_to_add_profile_msg, source_name, name);
 			return 0;
 		}
+
+		remove_config_tree_by_source(cmd, CONFIG_PROFILE_COMMAND);
 		if (!override_config_tree_from_profile(cmd, profile)) {
 			log_error(_failed_to_apply_profile_msg, source_name, name);
 			return 0;
@@ -1426,6 +1430,9 @@ static int _prepare_profiles(struct cmd_context *cmd)
 
 		log_debug(_setting_global_profile_msg, _command_profile_source_name, profile->name);
 		cmd->profile_params->global_command_profile = profile;
+
+		if (!cmd->arg_values)
+			cmd->profile_params->shell_profile = profile;
 	}
 
 
@@ -1437,6 +1444,7 @@ static int _prepare_profiles(struct cmd_context *cmd)
 			log_error(_failed_to_add_profile_msg, source_name, name);
 			return 0;
 		}
+		remove_config_tree_by_source(cmd, CONFIG_PROFILE_METADATA);
 		if (!override_config_tree_from_profile(cmd, profile)) {
 			log_error(_failed_to_apply_profile_msg, source_name, name);
 			return 0;
@@ -1733,9 +1741,12 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 	config_profile_metadata_cft = remove_config_tree_by_source(cmd, CONFIG_PROFILE_METADATA);
 	cmd->profile_params->global_metadata_profile = NULL;
 
-	if (config_string_cft || config_profile_command_cft || config_profile_metadata_cft) {
+	if (config_string_cft) {
 		/* Move this? */
 		if (!refresh_toolcontext(cmd))
+			stack;
+	} else if (config_profile_command_cft || config_profile_metadata_cft) {
+		if (!process_profilable_config(cmd))
 			stack;
 	}
 
@@ -1834,6 +1845,39 @@ static int _check_standard_fds(void)
 	return 1;
 }
 
+#define LVM_OUT_FD_ENV_VAR_NAME    "LVM_OUT_FD"
+#define LVM_ERR_FD_ENV_VAR_NAME    "LVM_ERR_FD"
+#define LVM_REPORT_FD_ENV_VAR_NAME "LVM_REPORT_FD"
+
+static int _do_get_custom_fd(const char *env_var_name, int *fd)
+{
+	const char *str;
+	char *endptr;
+	long int tmp_fd;
+
+	*fd = -1;
+
+	if (!(str = getenv(env_var_name)))
+		return 1;
+
+	errno = 0;
+	tmp_fd = strtol(str, &endptr, 10);
+	if (errno || *endptr || (tmp_fd < 0) || (tmp_fd > INT_MAX)) {
+		log_error("%s: invalid file descriptor.", env_var_name);
+		return 0;
+	}
+
+	*fd = tmp_fd;
+	return 1;
+}
+
+static int _get_custom_fds(struct custom_fds *custom_fds)
+{
+	return _do_get_custom_fd(LVM_OUT_FD_ENV_VAR_NAME, &custom_fds->out) &&
+	       _do_get_custom_fd(LVM_ERR_FD_ENV_VAR_NAME, &custom_fds->err) &&
+	       _do_get_custom_fd(LVM_REPORT_FD_ENV_VAR_NAME, &custom_fds->report);
+}
+
 static const char *_get_cmdline(pid_t pid)
 {
 	static char _proc_cmdline[32];
@@ -1901,7 +1945,7 @@ static void _close_descriptor(int fd, unsigned suppress_warnings,
 	fprintf(stderr, " Parent PID %" PRIpid_t ": %s\n", ppid, parent_cmdline);
 }
 
-static int _close_stray_fds(const char *command)
+static int _close_stray_fds(const char *command, struct custom_fds *custom_fds)
 {
 #ifndef VALGRIND_POOL
 	struct rlimit rlim;
@@ -1935,17 +1979,27 @@ static int _close_stray_fds(const char *command)
 			return 1;
 		}
 
-		for (fd = 3; fd < (int)rlim.rlim_cur; fd++)
-			_close_descriptor(fd, suppress_warnings, command, ppid,
-					  parent_cmdline);
+		for (fd = 3; fd < (int)rlim.rlim_cur; fd++) {
+			if ((fd != custom_fds->out) &&
+			    (fd != custom_fds->err) &&
+			    (fd != custom_fds->report)) {
+				_close_descriptor(fd, suppress_warnings, command, ppid,
+						  parent_cmdline);
+			}
+		}
 		return 1;
 	}
 
 	while ((dirent = readdir(d))) {
 		fd = atoi(dirent->d_name);
-		if (fd > 2 && fd != dirfd(d))
+		if ((fd > 2) &&
+		    (fd != dirfd(d)) &&
+		    (fd != custom_fds->out) &&
+		    (fd != custom_fds->err) &&
+		    (fd != custom_fds->report)) {
 			_close_descriptor(fd, suppress_warnings,
 					  command, ppid, parent_cmdline);
+		}
 	}
 
 	if (closedir(d))
@@ -2107,6 +2161,7 @@ int lvm2_main(int argc, char **argv)
 {
 	const char *base;
 	int ret, alias = 0;
+	struct custom_fds custom_fds;
 	struct cmd_context *cmd;
 
 	if (!argv)
@@ -2120,7 +2175,13 @@ int lvm2_main(int argc, char **argv)
 	if (!_check_standard_fds())
 		return -1;
 
-	if (!_close_stray_fds(base))
+	if (!_get_custom_fds(&custom_fds))
+		return -1;
+
+	if (!_close_stray_fds(base, &custom_fds))
+		return -1;
+
+	if (!init_custom_log_streams(&custom_fds))
 		return -1;
 
 	if (is_static() && strcmp(base, "lvm.static") &&
@@ -2163,6 +2224,10 @@ int lvm2_main(int argc, char **argv)
 #ifdef READLINE_SUPPORT
 	if (!alias && argc == 1) {
 		_nonroot_warning();
+		if (!_prepare_profiles(cmd)) {
+			ret = ECMD_FAILED;
+			goto out;
+		}
 		ret = lvm_shell(cmd, &_cmdline);
 		goto out;
 	}

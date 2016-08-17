@@ -458,25 +458,43 @@ static int _read_mirror_params(struct cmd_context *cmd,
 static int _read_raid_params(struct cmd_context *cmd,
 			     struct lvcreate_params *lp)
 {
-	if ((lp->stripes < 2) && segtype_is_raid10(lp->segtype)) {
-		if (arg_is_set(cmd, stripes_ARG)) {
-			/* User supplied the bad argument */
-			log_error("Segment type 'raid10' requires 2 or more stripes.");
+	if (seg_is_mirrored(lp)) {
+		if (segtype_is_raid10(lp->segtype)) {
+			if (lp->stripes < 2) {
+				/*
+				 * RAID10 needs at least 4 stripes
+				 */
+				log_warn("Adjusting stripes to the minimum of 2 for %s.",
+					 lp->segtype->name);
+				lp->stripes = 2;
+			}
+
+			/*
+			 * FIXME: _check_raid_parameters devides by 2, which
+			 *	  needs to change if we start supporting
+			 *	  odd numbers of stripes with raid10
+			 */
+			lp->stripes *= 2;
+
+		} else if (lp->stripes > 1) {
+			/*
+			 * RAID1 does not take a stripe arg
+			 */
+			log_error("Stripe argument cannot be used with segment type, %s",
+				  lp->segtype->name);
 			return 0;
 		}
-		/* No stripe argument was given - default to 2 */
-		lp->stripes = 2;
-		lp->stripe_size = find_config_tree_int(cmd, metadata_stripesize_CFG, NULL) * 2;
-	}
 
-	/*
-	 * RAID1 does not take a stripe arg
-	 */
-	if ((lp->stripes > 1) && seg_is_mirrored(lp) &&
-	    !segtype_is_raid10(lp->segtype)) {
-		log_error("Stripe argument cannot be used with segment type, %s",
-			  lp->segtype->name);
-		return 0;
+	} else if (lp->stripes < 2)
+		/* No stripes argument was given */
+		lp->stripes = seg_is_any_raid6(lp) ? 3 : 2;
+
+	if (seg_is_raid1(lp)) {
+		if (lp->stripe_size) {
+			log_error("Stripe size argument cannot be used with segment type, %s",
+				  lp->segtype->name);
+			return 0;
+		}
 	}
 
 	if (arg_is_set(cmd, mirrors_ARG) && segtype_is_raid(lp->segtype) &&
@@ -486,13 +504,17 @@ static int _read_raid_params(struct cmd_context *cmd,
 		return 0;
 	}
 
-	/* Rates are recorded in kiB/sec/disk, not sectors/sec/disk */
-	lp->min_recovery_rate = arg_uint_value(cmd, minrecoveryrate_ARG, 0) / 2;
-	lp->max_recovery_rate = arg_uint_value(cmd, maxrecoveryrate_ARG, 0) / 2;
+	if (seg_is_any_raid0(lp))
+		lp->region_size = 0;
+	else {
+		/* Rates are recorded in kiB/sec/disk, not sectors/sec/disk */
+		lp->min_recovery_rate = arg_uint_value(cmd, minrecoveryrate_ARG, 0) / 2;
+		lp->max_recovery_rate = arg_uint_value(cmd, maxrecoveryrate_ARG, 0) / 2;
 
-	if (lp->min_recovery_rate > lp->max_recovery_rate) {
-		log_error("Minimum recovery rate cannot be higher than maximum.");
-		return 0;
+		if (lp->min_recovery_rate > lp->max_recovery_rate) {
+			log_error("Minimum recovery rate cannot be higher than maximum.");
+			return 0;
+		}
 	}
 
 	return 1;
@@ -506,24 +528,24 @@ static int _read_mirror_and_raid_params(struct cmd_context *cmd,
 {
 	int pagesize = lvm_getpagesize();
 	unsigned max_images;
-	const char *segtype_name;
+
+	if (seg_is_raid(lp)) {
+		if (seg_is_raid1(lp))
+			max_images = DEFAULT_RAID1_MAX_IMAGES;
+		else {
+			max_images = DEFAULT_RAID_MAX_IMAGES;
+			if (seg_is_raid4(lp) ||
+			    seg_is_any_raid5(lp))
+				max_images--;
+			else if (seg_is_any_raid6(lp))
+				max_images -= 2;
+		}
+	} else
+		max_images = DEFAULT_MIRROR_MAX_IMAGES;
 
 	/* Common mirror and raid params */
 	if (arg_is_set(cmd, mirrors_ARG)) {
 		lp->mirrors = arg_uint_value(cmd, mirrors_ARG, 0) + 1;
-		if (segtype_is_raid1(lp->segtype)) {
-			segtype_name = SEG_TYPE_NAME_RAID1;
-			max_images = DEFAULT_RAID_MAX_IMAGES;
-		} else {
-			segtype_name = SEG_TYPE_NAME_MIRROR;
-			max_images = DEFAULT_MIRROR_MAX_IMAGES;
-		}
-
-		if (lp->mirrors > max_images) {
-			log_error("Only up to %u images in %s supported currently.",
-				  max_images, segtype_name);
-			return 0;
-		}
 
 		if ((lp->mirrors > 2) && segtype_is_raid10(lp->segtype)) {
 			/*
@@ -547,14 +569,27 @@ static int _read_mirror_and_raid_params(struct cmd_context *cmd,
 		/* Default to 2 mirrored areas if '--type mirror|raid1|raid10' */
 		lp->mirrors = seg_is_mirrored(lp) ? 2 : 1;
 
-	if (lp->stripes < 2 && segtype_is_any_raid0(lp->segtype))
-		if (arg_count(cmd, stripes_ARG)) {
-			/* User supplied the bad argument */
-			log_error("Segment type %s requires 2 or more stripes.", lp->segtype->name);
+	/* FIMXE: raid10 check has to change once we support data copies and odd numbers of stripes */
+	if (seg_is_raid10(lp) && lp->mirrors * lp->stripes > max_images) {
+		log_error("Only up to %u stripes in %s supported currently.",
+			  max_images, lp->segtype->name);
+		return 0;
+	} else if (seg_is_mirrored(lp)) {
+		if (lp->mirrors > max_images) {
+			log_error("Only up to %u mirrors in %s supported currently.",
+				  max_images, lp->segtype->name);
 			return 0;
 		}
+	} else if (lp->stripes > max_images) {
+		log_error("Only up to %u stripes in %s supported currently.",
+			  max_images, lp->segtype->name);
+		return 0;
+	}
 
-	lp->nosync = arg_is_set(cmd, nosync_ARG);
+	if ((lp->nosync = arg_is_set(cmd, nosync_ARG)) && seg_is_any_raid6(lp)) {
+		log_error("nosync option prohibited on RAID6");
+		return 0;
+	}
 
 	if (!(lp->region_size = arg_uint_value(cmd, regionsize_ARG, 0)) &&
 	    ((lp->region_size = get_default_region_size(cmd)) <= 0)) {
@@ -1026,7 +1061,7 @@ static int _lvcreate_params(struct cmd_context *cmd,
 
 	if (!_lvcreate_name_params(cmd, &argc, &argv, lp) ||
 	    !_read_size_params(cmd, lp, lcp) ||
-	    !get_stripe_params(cmd, &lp->stripes, &lp->stripe_size) ||
+	    !get_stripe_params(cmd, lp->segtype, &lp->stripes, &lp->stripe_size) ||
 	    (lp->create_pool &&
 	     !get_pool_params(cmd, lp->segtype, &lp->passed_args,
 			      &lp->pool_metadata_size, &lp->pool_metadata_spare,
@@ -1221,37 +1256,42 @@ static int _check_raid_parameters(struct volume_group *vg,
 {
 	unsigned devs = lcp->pv_count ? : dm_list_size(&vg->pvs);
 	struct cmd_context *cmd = vg->cmd;
+	int old_stripes = !arg_is_set(cmd, stripes_ARG) &&
+			  find_config_tree_bool(cmd, allocation_raid_stripe_all_devices_CFG, NULL);
 
-	if (!seg_is_mirrored(lp) && !lp->stripe_size)
-		lp->stripe_size = find_config_tree_int(cmd, metadata_stripesize_CFG, NULL) * 2;
+	/*
+	 * If we requested the previous behaviour by setting
+	 * "allocation/raid_stripe_all_devices = 1" and the
+	 * number of devices was not supplied, we can infer
+	 * from the PVs given.
+	 */
+	if (old_stripes && seg_is_raid(lp) && !seg_is_raid1(lp))
+		lp->stripes = devs;
 
-	if (seg_is_any_raid0(lp)) {
-		if (lp->stripes < 2) {
-			log_error("Segment type 'raid0' requires 2 or more stripes.");
-			return 0;
-		}
-	} else if (!seg_is_mirrored(lp)) {
-		/*
-		 * If number of devices was not supplied, we can infer from
-		 * the PVs given.
-		 */
-		if (!arg_is_set(cmd, stripes_ARG) &&
-		    (devs > 2 * lp->segtype->parity_devs))
-			lp->stripes = devs - lp->segtype->parity_devs;
+	if (seg_is_raid10(lp)) {
+		lp->stripes /= lp->mirrors;
 
-		if (lp->stripes <= lp->segtype->parity_devs) {
-			log_error("Number of stripes must be at least %d for %s",
-				  lp->segtype->parity_devs + 1,
-				  lp->segtype->name);
-			return 0;
-		}
-	} else if (segtype_is_any_raid0(lp->segtype) ||
-		   segtype_is_raid10(lp->segtype)) {
-		if (!arg_is_set(cmd, stripes_ARG))
-			lp->stripes = devs / lp->mirrors;
 		if (lp->stripes < 2) {
 			log_error("Unable to create RAID(1)0 LV: "
 				  "insufficient number of devices.");
+			return 0;
+		}
+
+	} else if (!seg_is_mirrored(lp)) {
+		if (old_stripes &&
+		    lp->segtype->parity_devs &&
+		    devs > 2 * lp->segtype->parity_devs)
+			lp->stripes -= lp->segtype->parity_devs;
+
+		if (seg_is_any_raid0(lp)) {
+			if (lp->stripes < 2) {
+				log_error("Segment type 'raid0' requires 2 or more stripes.");
+				return 0;
+			}
+		} else if (lp->stripes <= lp->segtype->parity_devs) {
+			log_error("Number of stripes must be at least %d for %s",
+				  lp->segtype->parity_devs + 1,
+				  lp->segtype->name);
 			return 0;
 		}
 	}

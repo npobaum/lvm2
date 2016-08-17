@@ -1,4 +1,4 @@
-From 7f5d1677149a5f8cc98ffc3e3113e97e64fd6f94 Mon Sep 17 00:00:00 2001
+From ce5138133d9fa3b06c6d0f090047796290246a39 Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 30 Jun 2015 11:46:05 +0200
 Subject: libs-cleanup
@@ -8,7 +8,7 @@ Subject: libs-cleanup
  1 file changed, 7 insertions(+), 60 deletions(-)
 
 diff --git a/configure.in b/configure.in
-index b87f8ff..05eb0a7 100644
+index 33b5c76..68728f7 100644
 --- a/configure.in
 +++ b/configure.in
 @@ -668,7 +668,7 @@ dnl -- Disable readline
