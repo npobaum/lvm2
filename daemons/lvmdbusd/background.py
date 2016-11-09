@@ -7,17 +7,12 @@
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-import threading
 import subprocess
 from . import cfg
-import time
 from .cmdhandler import options_to_cli_args
 import dbus
 from .utils import pv_range_append, pv_dest_ranges, log_error, log_debug
-import traceback
-
-_rlock = threading.RLock()
-_thread_list = list()
+import os
 
 
 def pv_move_lv_cmd(move_options, lv_full_name,
@@ -41,15 +36,40 @@ def lv_merge_cmd(merge_options, lv_full_name):
 	return cmd
 
 
-def _move_merge(interface_name, cmd, job_state):
-	add(cmd, job_state)
+def _move_merge(interface_name, command, job_state):
+	# We need to execute these command stand alone by forking & exec'ing
+	# the command always as we will be getting periodic output from them on
+	# the status of the long running operation.
+	command.insert(0, cfg.LVM_CMD)
+	process = subprocess.Popen(command, stdout=subprocess.PIPE,
+								env=os.environ,
+								stderr=subprocess.PIPE, close_fds=True)
 
-	done = job_state.Wait(-1)
-	if not done:
-		ec, err_msg = job_state.GetError
+	log_debug("Background process for %s is %d" %
+				(str(command), process.pid))
+
+	lines_iterator = iter(process.stdout.readline, b"")
+	for line in lines_iterator:
+		line_str = line.decode("utf-8")
+
+		# Check to see if the line has the correct number of separators
+		try:
+			if line_str.count(':') == 2:
+				(device, ignore, percentage) = line_str.split(':')
+				job_state.Percent = round(
+					float(percentage.strip()[:-1]), 1)
+		except ValueError:
+			log_error("Trying to parse percentage which failed for %s" %
+				line_str)
+
+	out = process.communicate()
+
+	if process.returncode == 0:
+		job_state.Percent = 100
+	else:
 		raise dbus.exceptions.DBusException(
 			interface_name,
-			'Exit code %s, stderr = %s' % (str(ec), err_msg))
+			'Exit code %s, stderr = %s' % (str(process.returncode), out[1]))
 
 	cfg.load()
 	return '/'
@@ -84,8 +104,6 @@ def move(interface_name, lv_name, pv_src_obj, pv_source_range,
 
 				pv_dests.append((pv_dbus_obj.lvm_id, pr[1], pr[2]))
 
-		# Generate the command line for this command, but don't
-		# execute it.
 		cmd = pv_move_lv_cmd(move_options,
 								lv_name,
 								pv_src.lvm_id,
@@ -108,94 +126,3 @@ def merge(interface_name, lv_uuid, lv_name, merge_options, job_state):
 		raise dbus.exceptions.DBusException(
 			interface_name,
 			'LV with uuid %s and name %s not present!' % (lv_uuid, lv_name))
-
-
-def background_reaper():
-	while cfg.run.value != 0:
-		with _rlock:
-			num_threads = len(_thread_list) - 1
-			if num_threads >= 0:
-				for i in range(num_threads, -1, -1):
-					_thread_list[i].join(0)
-					if not _thread_list[i].is_alive():
-						log_debug("Removing thread: %s" % _thread_list[i].name)
-						_thread_list.pop(i)
-
-		time.sleep(3)
-
-
-def background_execute(command, background_job):
-
-	# Wrap this whole operation in an exception handler, otherwise if we
-	# hit a code bug we will silently exit this thread without anyone being
-	# the wiser.
-	try:
-		process = subprocess.Popen(command, stdout=subprocess.PIPE,
-									stderr=subprocess.PIPE, close_fds=True)
-		lines_iterator = iter(process.stdout.readline, b"")
-		for line in lines_iterator:
-			line_str = line.decode("utf-8")
-
-			# Check to see if the line has the correct number of separators
-			try:
-				if line_str.count(':') == 2:
-					(device, ignore, percentage) = line_str.split(':')
-					background_job.Percent = \
-						round(float(percentage.strip()[:-1]), 1)
-			except ValueError:
-				log_error("Trying to parse percentage which failed for %s" %
-					line_str)
-
-		out = process.communicate()
-
-		if process.returncode == 0:
-			background_job.Percent = 100
-
-		background_job.set_result(process.returncode, out[1])
-
-	except Exception:
-		# In the unlikely event that we blow up, we need to unblock caller which
-		# is waiting on an answer.
-		st = traceback.format_exc()
-		error = "Exception in background thread: \n%s" % st
-		log_error(error)
-		background_job.set_result(1, error)
-
-
-def add(command, reporting_job):
-	# Create the thread, get it running and then add it to the list
-	t = threading.Thread(
-		target=background_execute,
-		name="thread: " + ' '.join(command),
-		args=(command, reporting_job))
-	t.start()
-
-	with _rlock:
-		_thread_list.append(t)
-
-
-def wait_thread(job, timeout, cb, cbe):
-	# We need to put the wait on it's own thread, so that we don't block the
-	# entire dbus queue processing thread
-	try:
-		cb(job.state.Wait(timeout))
-	except Exception as e:
-		cbe("Wait exception: %s" % str(e))
-	return 0
-
-
-def add_wait(job, timeout, cb, cbe):
-
-	if timeout == 0:
-		# Users are basically polling, do not create thread
-		cb(job.Complete)
-	else:
-		t = threading.Thread(
-			target=wait_thread,
-			name="thread job.Wait: %s" % job.dbus_object_path(),
-			args=(job, timeout, cb, cbe)
-		)
-
-		t.start()
-		with _rlock:
-			_thread_list.append(t)

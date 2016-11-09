@@ -239,7 +239,7 @@ struct dm_config_tree *config_open(config_source_t source, const char *filename,
 int config_file_read_fd(struct dm_config_tree *cft, struct device *dev,
 			off_t offset, size_t size, off_t offset2, size_t size2,
 			checksum_fn_t checksum_fn, uint32_t checksum,
-			int skip_parse);
+			int skip_parse, int no_dup_node_check);
 int config_file_read(struct dm_config_tree *cft);
 struct dm_config_tree *config_file_open_and_read(const char *config_file, config_source_t source,
 						 struct cmd_context *cmd);
@@ -307,5 +307,6 @@ int get_default_allocation_cache_pool_chunk_size_CFG(struct cmd_context *cmd, st
 #define get_default_unconfigured_allocation_cache_pool_chunk_size_CFG NULL
 const char *get_default_allocation_cache_policy_CFG(struct cmd_context *cmd, struct profile *profile);
 #define get_default_unconfigured_allocation_cache_policy_CFG NULL
+uint64_t get_default_allocation_cache_pool_max_chunks_CFG(struct cmd_context *cmd, struct profile *profile);
 
 #endif

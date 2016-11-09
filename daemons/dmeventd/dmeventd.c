@@ -99,13 +99,28 @@ static time_t _idle_since = 0;
 static char **_initial_registrations = 0;
 
 /* FIXME Make configurable at runtime */
-__attribute__((format(printf, 4, 5)))
-static void _dmeventd_log(int level, const char *file, int line,
-			  const char *format, ...)
+
+/* All libdm messages */
+__attribute__((format(printf, 5, 6)))
+static void _libdm_log(int level, const char *file, int line,
+		       int dm_errno_or_class, const char *format, ...)
 {
 	va_list ap;
 	va_start(ap, format);
-	dm_event_log("dm", level, file, line, 0, format, ap);
+	dm_event_log("#dm", level, file, line, dm_errno_or_class, format, ap);
+	va_end(ap);
+}
+
+/* All dmeventd messages */
+#undef LOG_MESG
+#define LOG_MESG(l, f, ln, e, x...) _dmeventd_log(l, f, ln, e, ## x)
+__attribute__((format(printf, 5, 6)))
+static void _dmeventd_log(int level, const char *file, int line,
+			  int dm_errno_or_class, const char *format, ...)
+{
+	va_list ap;
+	va_start(ap, format);
+	dm_event_log("dmeventd", level, file, line, dm_errno_or_class, format, ap);
 	va_end(ap);
 }
 
@@ -829,17 +844,6 @@ static void _print_sigset(const char *prefix, const sigset_t *sigset)
 }
 #endif
 
-static sigset_t _unblock_sigalrm(void)
-{
-	sigset_t set, old;
-
-	sigemptyset(&set);
-	sigaddset(&set, SIGALRM);
-	pthread_sigmask(SIG_UNBLOCK, &set, &old);
-
-	return old;
-}
-
 enum {
 	DM_WAIT_RETRY,
 	DM_WAIT_INTR,
@@ -849,7 +853,7 @@ enum {
 /* Wait on a device until an event occurs. */
 static int _event_wait(struct thread_status *thread)
 {
-	sigset_t set;
+	sigset_t set, old;
 	int ret = DM_WAIT_RETRY;
 	struct dm_info info;
 
@@ -859,7 +863,12 @@ static int _event_wait(struct thread_status *thread)
 	 * This is so that you can break out of waiting on an event,
 	 * either for a timeout event, or to cancel the thread.
 	 */
-	set = _unblock_sigalrm();
+	sigemptyset(&set);
+	sigaddset(&set, SIGALRM);
+	if (pthread_sigmask(SIG_UNBLOCK, &set, &old) != 0) {
+		log_sys_error("pthread_sigmask", "unblock alarm");
+		return ret; /* What better */
+	}
 
 	if (dm_task_run(thread->wait_task)) {
 		thread->current_events |= DM_EVENT_DEVICE_ERROR;
@@ -883,10 +892,11 @@ static int _event_wait(struct thread_status *thread)
 		}
 	}
 
-	pthread_sigmask(SIG_SETMASK, &set, NULL);
+	if (pthread_sigmask(SIG_SETMASK, &old, NULL) != 0)
+		log_sys_error("pthread_sigmask", "block alarm");
 
 #ifdef DEBUG_SIGNALS
-	_print_sigset("dmeventd blocking ", &set);
+	_print_sigset("dmeventd blocking ", &old);
 #endif
 	DEBUGLOG("Completed waitevent task for %s.", thread->device.name);
 
@@ -2196,7 +2206,7 @@ int main(int argc, char *argv[])
 		openlog("dmeventd", LOG_PID, LOG_DAEMON);
 
 	dm_event_log_set(_debug_level, _use_syslog);
-	dm_log_init(_dmeventd_log);
+	dm_log_with_errno_init(_libdm_log);
 
 	(void) dm_prepare_selinux_context(DMEVENTD_PIDFILE, S_IFREG);
 	if (dm_create_lockfile(DMEVENTD_PIDFILE) == 0)

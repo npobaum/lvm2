@@ -81,6 +81,24 @@ check lv_field $vg/pool7 segtype "cache-pool"
 lvremove -f $vg
 
 
+# Check the percentage values are reported for both cache and cache-pool
+lvcreate --type cache-pool  -L1 $vg/cpool
+lvcreate -H -L4 -n $lv1 $vg/cpool
+
+check lv_field $vg/$lv1 origin "[${lv1}_corig]"
+check lv_field $vg/$lv1 copy_percent "0.00"
+# there should be something present (value differs per policy version)
+test -n "$(get lv_field $vg/$lv1 data_percent)"
+test -n "$(get lv_field $vg/$lv1 metadata_percent)"
+check lv_field $vg/cpool copy_percent "0.00"
+test -n "$(get lv_field $vg/cpool data_percent)"
+test -n "$(get lv_field $vg/cpool metadata_percent)"
+# check we also display percent value for segmented output (-o+devices)
+lvs -a -o+devices $vg/cpool | tee out
+grep "0.00" out
+lvremove -f $vg
+
+
 # Validate ambiguous pool name is detected
 invalid lvcreate -l 1 --type cache-pool --cachepool pool1 $vg/pool2
 invalid lvcreate -l 1 --type cache-pool --name pool3 --cachepool pool4 $vg

@@ -73,8 +73,10 @@ static int _get_mirror_event(struct dso_state *state, char *params)
 	unsigned i;
 	struct dm_status_mirror *ms;
 
-	if (!dm_get_status_mirror(state->mem, params, &ms))
-		goto_out;
+	if (!dm_get_status_mirror(state->mem, params, &ms)) {
+		log_error("Unable to parse mirror status string.");
+		return ME_IGNORE;
+	}
 
 	/* Check for bad mirror devices */
 	for (i = 0; i < ms->dev_count; ++i)
@@ -95,27 +97,23 @@ static int _get_mirror_event(struct dso_state *state, char *params)
 	dm_pool_free(state->mem, ms);
 
 	return r;
-
-out:
-	log_error("Unable to parse mirror status string.");
-
-	return ME_IGNORE;
 }
 
-static int _remove_failed_devices(const char *cmd_lvscan, const char *cmd_lvconvert)
+static int _remove_failed_devices(const char *cmd_lvscan, const char *cmd_lvconvert,
+				  const char *device)
 {
-	int r;
-
 	if (!dmeventd_lvm2_run_with_lock(cmd_lvscan))
-		log_info("Re-scan of mirrored device failed.");
+		log_warn("WARNING: Re-scan of mirrored device %s failed.", device);
 
 	/* if repair goes OK, report success even if lvscan has failed */
-	r = dmeventd_lvm2_run_with_lock(cmd_lvconvert);
+	if (!dmeventd_lvm2_run_with_lock(cmd_lvconvert)) {
+		log_error("Repair of mirrored device %s failed.", device);
+		return 0;
+	}
 
-	log_info("Repair of mirrored device %s.",
-		 (r) ? "finished successfully" : "failed");
+	log_info("Repair of mirrored device %s finished successfully.", device);
 
-	return r;
+	return 1;
 }
 
 void process_event(struct dm_task *dmt,
@@ -154,7 +152,8 @@ void process_event(struct dm_task *dmt,
 		case ME_FAILURE:
 			log_error("Device failure in %s.", device);
 			if (!_remove_failed_devices(state->cmd_lvscan,
-						    state->cmd_lvconvert))
+						    state->cmd_lvconvert,
+						    device))
 				/* FIXME Why are all the error return codes unused? Get rid of them? */
 				log_error("Failed to remove faulty devices in %s.",
 					  device);
@@ -168,7 +167,7 @@ void process_event(struct dm_task *dmt,
 			break;
 		default:
 			/* FIXME Provide value then! */
-			log_info("Unknown event received.");
+			log_warn("WARNING: %s received unknown event.", device);
 		}
 	} while (next);
 }

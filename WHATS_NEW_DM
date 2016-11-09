@@ -1,3 +1,29 @@
+Version 1.02.136 - 5th November 2016
+====================================
+  Log failure of raid device with log_error level.
+  Use dm_log_with_errno and translate runtime to dm_log only when needed.
+  Make log messages from dm and lvm library different from dmeventd.
+  Notice and Info messages are again logged from dmeventd and its plugins.
+  Dmeventd now also respects DM_ABORT_ON_INTERNAL_ERRORS as libdm based tool.
+  Report as non default dm logging also when logging with errno was changed.
+  Use log_level() macro to consistently decode message log level in dmeventd.
+  Still produce output when dmsetup dependency tree building finds dev missing.
+  Check and report pthread_sigmask() failure in dmeventd.
+  Check mem alloc fail in _canonicalize_field_ids().
+  Use unsigned math when checking more then 31 legs of raid.
+  Fix 'dmstats delete' with dmsetup older than v1.02.129
+  Fix stats walk segfault with dmsetup older than v1.02.129
+
+Version 1.02.135 - 26th September 2016
+======================================
+  Fix man entry for dmsetup status.
+  Introduce new dm_config_parse_without_dup_node_check().
+  Don't omit last entry in dmstats list --group.
+
+Version 1.02.134 - 7th September 2016
+=====================================
+  Improve explanation of udev fallback in libdevmapper.h.
+
 Version 1.02.133 - 10th August 2016
 ===================================
   Add dm_report_destroy_rows/dm_report_group_output_and_pop_all for lvm shell.

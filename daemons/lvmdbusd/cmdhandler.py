@@ -12,6 +12,8 @@ import time
 import threading
 from itertools import chain
 import collections
+import traceback
+import os
 
 try:
 	from . import cfg
@@ -35,10 +37,6 @@ total_count = 0
 # We need to prevent different threads from using the same lvm shell
 # at the same time.
 cmd_lock = threading.RLock()
-
-# The actual method which gets called to invoke the lvm command, can vary
-# from forking a new process to using lvm shell
-_t_call = None
 
 
 class LvmExecutionMeta(object):
@@ -100,7 +98,8 @@ def call_lvm(command, debug=False):
 	# in different locations on the same box
 	command.insert(0, cfg.LVM_CMD)
 
-	process = Popen(command, stdout=PIPE, stderr=PIPE, close_fds=True)
+	process = Popen(command, stdout=PIPE, stderr=PIPE, close_fds=True,
+					env=os.environ)
 	out = process.communicate()
 
 	stdout_text = bytes(out[0]).decode("utf-8")
@@ -109,37 +108,47 @@ def call_lvm(command, debug=False):
 	if debug or process.returncode != 0:
 		_debug_c(command, process.returncode, (stdout_text, stderr_text))
 
-	if process.returncode == 0:
-		if cfg.DEBUG and out[1] and len(out[1]) and 'help' not in command:
-			log_error('WARNING: lvm is out-putting text to STDERR on success!')
-			_debug_c(command, process.returncode, (stdout_text, stderr_text))
-
 	return process.returncode, stdout_text, stderr_text
+
+# The actual method which gets called to invoke the lvm command, can vary
+# from forking a new process to using lvm shell
+_t_call = call_lvm
 
 
 def _shell_cfg():
 	global _t_call
-	log_debug('Using lvm shell!')
-	lvm_shell = LVMShellProxy()
-	_t_call = lvm_shell.call_lvm
-
-
-if cfg.USE_SHELL:
-	_shell_cfg()
-else:
-	_t_call = call_lvm
+	try:
+		lvm_shell = LVMShellProxy()
+		_t_call = lvm_shell.call_lvm
+		cfg.SHELL_IN_USE = lvm_shell
+		return True
+	except Exception:
+		_t_call = call_lvm
+		cfg.SHELL_IN_USE = None
+		log_error(traceback.format_exc())
+		log_error("Unable to utilize lvm shell, dropping back to fork & exec")
+		return False
 
 
 def set_execution(shell):
 	global _t_call
 	with cmd_lock:
-		_t_call = None
-		if shell:
-			log_debug('Using lvm shell!')
-			lvm_shell = LVMShellProxy()
-			_t_call = lvm_shell.call_lvm
+		# If the user requested lvm shell and we are currently setup that
+		# way, just return
+		if cfg.SHELL_IN_USE and shell:
+			return True
 		else:
-			_t_call = call_lvm
+			if not shell and cfg.SHELL_IN_USE:
+				cfg.SHELL_IN_USE.exit_shell()
+				cfg.SHELL_IN_USE = None
+
+		_t_call = call_lvm
+		if shell:
+			if cfg.args.use_json:
+				return _shell_cfg()
+			else:
+				return False
+		return True
 
 
 def time_wrapper(command, debug=False):
@@ -219,6 +228,10 @@ def pv_remove(device, remove_options):
 	return call(cmd)
 
 
+def _qt(tag_name):
+	return '@%s' % tag_name
+
+
 def _tag(operation, what, add, rm, tag_options):
 	cmd = [operation]
 	cmd.extend(options_to_cli_args(tag_options))
@@ -229,9 +242,11 @@ def _tag(operation, what, add, rm, tag_options):
 		cmd.append(what)
 
 	if add:
-		cmd.extend(list(chain.from_iterable(('--addtag', x) for x in add)))
+		cmd.extend(list(chain.from_iterable(
+			('--addtag', _qt(x)) for x in add)))
 	if rm:
-		cmd.extend(list(chain.from_iterable(('--deltag', x) for x in rm)))
+		cmd.extend(list(chain.from_iterable(
+			('--deltag', _qt(x)) for x in rm)))
 
 	return call(cmd, False)
 
@@ -435,8 +450,11 @@ def supports_json():
 	cmd = ['help']
 	rc, out, err = call(cmd)
 	if rc == 0:
-		if 'fullreport' in err:
+		if cfg.SHELL_IN_USE:
 			return True
+		else:
+			if 'fullreport' in err:
+				return True
 	return False
 
 
@@ -445,7 +463,7 @@ def lvm_full_report_json():
 					'pv_used', 'dev_size', 'pv_mda_size', 'pv_mda_free',
 					'pv_ba_start', 'pv_ba_size', 'pe_start', 'pv_pe_count',
 					'pv_pe_alloc_count', 'pv_attr', 'pv_tags', 'vg_name',
-					'vg_uuid']
+					'vg_uuid', 'pv_missing']
 
 	pv_seg_columns = ['pvseg_start', 'pvseg_size', 'segtype',
 						'pv_uuid', 'lv_uuid', 'pv_name']
@@ -461,7 +479,9 @@ def lvm_full_report_json():
 				'vg_name', 'pool_lv_uuid', 'pool_lv', 'origin_uuid',
 				'origin', 'data_percent',
 				'lv_attr', 'lv_tags', 'vg_uuid', 'lv_active', 'data_lv',
-				'metadata_lv', 'lv_parent', 'lv_role', 'lv_layout']
+				'metadata_lv', 'lv_parent', 'lv_role', 'lv_layout',
+				'snap_percent', 'metadata_percent', 'copy_percent',
+				'sync_percent', 'lv_metadata_size', 'move_pv', 'move_pv_uuid']
 
 	lv_seg_columns = ['seg_pe_ranges', 'segtype', 'lv_uuid']
 
@@ -477,7 +497,14 @@ def lvm_full_report_json():
 
 	rc, out, err = call(cmd)
 	if rc == 0:
-		return json.loads(out)
+		# With the current implementation, if we are using the shell then we
+		# are using JSON and JSON is returned back to us as it was parsed to
+		# figure out if we completed OK or not
+		if cfg.SHELL_IN_USE:
+			assert(type(out) == dict)
+			return out
+		else:
+			return json.loads(out)
 	return None
 
 
@@ -491,7 +518,7 @@ def pv_retrieve_with_segs(device=None):
 				'pv_used', 'dev_size', 'pv_mda_size', 'pv_mda_free',
 				'pv_ba_start', 'pv_ba_size', 'pe_start', 'pv_pe_count',
 				'pv_pe_alloc_count', 'pv_attr', 'pv_tags', 'vg_name',
-				'vg_uuid', 'pvseg_start', 'pvseg_size', 'segtype']
+				'vg_uuid', 'pvseg_start', 'pvseg_size', 'segtype', 'pv_missing']
 
 	# Lvm has some issues where it returns failure when querying pvs when other
 	# operations are in process, see:
@@ -704,7 +731,9 @@ def lv_retrieve_with_segments():
 				'origin', 'data_percent',
 				'lv_attr', 'lv_tags', 'vg_uuid', 'lv_active', 'data_lv',
 				'metadata_lv', 'seg_pe_ranges', 'segtype', 'lv_parent',
-				'lv_role', 'lv_layout']
+				'lv_role', 'lv_layout',
+			    'snap_percent', 'metadata_percent', 'copy_percent',
+			    'sync_percent', 'lv_metadata_size', 'move_pv', 'move_pv_uuid']
 
 	cmd = _dc('lvs', ['-a', '-o', ','.join(columns)])
 	rc, out, err = call(cmd)

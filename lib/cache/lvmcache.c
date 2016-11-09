@@ -858,7 +858,7 @@ static void _choose_preferred_devs(struct cmd_context *cmd,
 				   struct dm_list *add_cache_devs)
 {
 	char uuid[64] __attribute__((aligned(8)));
-	const char *reason = "none";
+	const char *reason;
 	struct dm_list altdevs;
 	struct dm_list new_unused;
 	struct dev_types *dt = cmd->dev_types;
@@ -1275,7 +1275,7 @@ struct volume_group *lvmcache_get_vg(struct cmd_context *cmd, const char *vgname
 	/* Build config tree from vgmetadata, if not yet cached */
 	if (!vginfo->cft &&
 	    !(vginfo->cft =
-	      dm_config_from_string(vginfo->vgmetadata)))
+	      config_tree_from_string_without_dup_node_check(vginfo->vgmetadata)))
 		goto_bad;
 
 	if (!(vg = import_vg_from_config_tree(vginfo->cft, fid)))

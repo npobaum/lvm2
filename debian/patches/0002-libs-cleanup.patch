@@ -1,4 +1,4 @@
-From ce5138133d9fa3b06c6d0f090047796290246a39 Mon Sep 17 00:00:00 2001
+From 8ec4e01f96c0d0c599b2a64784c8b6c5cf9774d7 Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 30 Jun 2015 11:46:05 +0200
 Subject: libs-cleanup
@@ -8,7 +8,7 @@ Subject: libs-cleanup
  1 file changed, 7 insertions(+), 60 deletions(-)
 
 diff --git a/configure.in b/configure.in
-index 33b5c76..68728f7 100644
+index cc77aab..f67f004 100644
 --- a/configure.in
 +++ b/configure.in
 @@ -668,7 +668,7 @@ dnl -- Disable readline
@@ -105,7 +105,7 @@ index 33b5c76..68728f7 100644
  fi
  
  if test "$BUILD_CMIRRORD" = yes; then
-@@ -2094,6 +2040,7 @@ AC_SUBST(SACKPT_LIBS)
+@@ -2095,6 +2041,7 @@ AC_SUBST(SACKPT_LIBS)
  AC_SUBST(SALCK_CFLAGS)
  AC_SUBST(SALCK_LIBS)
  AC_SUBST(SELINUX_LIBS)
