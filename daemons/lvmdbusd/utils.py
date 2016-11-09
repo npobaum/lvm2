@@ -13,15 +13,13 @@ import inspect
 import ctypes
 import os
 import string
+import datetime
 
 import dbus
-import dbus.service
-import dbus.mainloop.glib
+from lvmdbusd import cfg
+from gi.repository import GLib
+import threading
 
-try:
-	from . import cfg
-except SystemError:
-	import cfg
 
 STDOUT_TTY = os.isatty(sys.stdout.fileno())
 
@@ -149,17 +147,27 @@ def add_properties(xml, interface, props):
 	:param props:       Output from get_properties
 	:return: updated XML string
 	"""
-	root = Et.fromstring(xml)
-
 	if props:
+		root = Et.fromstring(xml)
+		interface_element = None
 
+		# Check to see if interface is present
 		for c in root:
-			# print c.attrib['name']
 			if c.attrib['name'] == interface:
-				for p in props:
-					temp = '<property type="%s" name="%s" access="%s"/>\n' % \
-						(p['p_t'], p['p_name'], p['p_access'])
-					c.append(Et.fromstring(temp))
+				interface_element = c
+				break
+
+		# Interface is not present, lets create it so we have something to
+		# attach the properties too
+		if interface_element is None:
+			interface_element = Et.Element("interface", name=interface)
+			root.append(interface_element)
+
+		# Add the properties
+		for p in props:
+			temp = '<property type="%s" name="%s" access="%s"/>\n' % \
+				(p['p_t'], p['p_name'], p['p_access'])
+			interface_element.append(Et.fromstring(temp))
 
 		return Et.tostring(root, encoding='utf8')
 	return xml
@@ -235,7 +243,7 @@ def parse_tags(tags):
 	if len(tags):
 		if ',' in tags:
 			return tags.split(',')
-		return sorted([tags])
+		return dbus.Array(sorted([tags]), signature='s')
 	return dbus.Array([], signature='s')
 
 
@@ -243,7 +251,13 @@ def _common_log(msg, *attributes):
 	cfg.stdout_lock.acquire()
 	tid = ctypes.CDLL('libc.so.6').syscall(186)
 
-	msg = "%d:%d - %s" % (os.getpid(), tid, msg)
+	if STDOUT_TTY:
+		msg = "%s: %d:%d - %s" % \
+			(datetime.datetime.now().strftime("%b %d %H:%M:%S.%f"),
+			os.getpid(), tid, msg)
+
+	else:
+		msg = "%d:%d - %s" % (os.getpid(), tid, msg)
 
 	if STDOUT_TTY and attributes:
 		print(color(msg, *attributes))
@@ -258,7 +272,7 @@ def _common_log(msg, *attributes):
 # @param msg    Message to output to stdout
 # @return None
 def log_debug(msg, *attributes):
-	if cfg.DEBUG:
+	if cfg.args and cfg.args.debug:
 		_common_log(msg, *attributes)
 
 
@@ -482,3 +496,64 @@ def validate_tag(interface, tag):
 		raise dbus.exceptions.DBusException(
 			interface, 'tag (%s) contains invalid character, allowable set(%s)'
 			% (tag, _ALLOWABLE_TAG_CH))
+
+
+# The methods below which start with mt_* are used to execute the desired code
+# on the the main thread of execution to alleviate any issues the dbus-python
+# library with regards to multi-threaded access.  Essentially, we are trying to
+# ensure all dbus library interaction is done from the same thread!
+
+
+def _async_result(call_back, results):
+	log_debug('Results = %s' % str(results))
+	call_back(results)
+
+# Return result in main thread
+def mt_async_result(call_back, results):
+	GLib.idle_add(_async_result, call_back, results)
+
+
+# Run the supplied function and arguments on the main thread and wait for them
+# to complete while allowing the ability to get the return value too.
+#
+# Example:
+# result = MThreadRunner(foo, arg1, arg2).done()
+#
+class MThreadRunner(object):
+
+	@staticmethod
+	def runner(obj):
+		obj._run()
+		with obj.cond:
+			obj.function_complete = True
+			obj.cond.notify_all()
+
+	def __init__(self, function, *args):
+		self.f = function
+		self.rc = None
+		self.args = args
+		self.function_complete = False
+		self.cond = threading.Condition(threading.Lock())
+
+	def done(self):
+		GLib.idle_add(MThreadRunner.runner, self)
+		with self.cond:
+			if not self.function_complete:
+				self.cond.wait()
+		return self.rc
+
+	def _run(self):
+		if len(self.args):
+			self.rc = self.f(*self.args)
+		else:
+			self.rc = self.f()
+
+
+def _remove_objects(dbus_objects_rm):
+	for o in dbus_objects_rm:
+		cfg.om.remove_object(o, emit_signal=True)
+
+
+# Remove dbus objects from main thread
+def mt_remove_dbus_objects(objs):
+	MThreadRunner(_remove_objects, objs).done()

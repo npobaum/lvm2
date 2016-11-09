@@ -17,11 +17,12 @@ from . import cmdhandler
 from .fetch import load_pvs, load_vgs
 from .request import RequestEntry
 from .refresh import event_add
+from . import udevwatch
 
 
 # noinspection PyPep8Naming
 class Manager(AutomatedProperties):
-	_Version_meta = ("t", MANAGER_INTERFACE)
+	_Version_meta = ("s", MANAGER_INTERFACE)
 
 	def __init__(self, object_path):
 		super(Manager, self).__init__(object_path)
@@ -29,25 +30,22 @@ class Manager(AutomatedProperties):
 
 	@property
 	def Version(self):
-		return '1.0.0'
+		return dbus.String('1.0.0')
 
 	@staticmethod
 	def _pv_create(device, create_options):
 
 		# Check to see if we are already trying to create a PV for an existing
 		# PV
-		pv = cfg.om.get_object_path_by_uuid_lvm_id(
-			device, device, None, False)
+		pv = cfg.om.get_object_path_by_uuid_lvm_id(device, device)
 		if pv:
 			raise dbus.exceptions.DBusException(
 				MANAGER_INTERFACE, "PV Already exists!")
 
-		created_pv = []
 		rc, out, err = cmdhandler.pv_create(create_options, [device])
 		if rc == 0:
-			pvs = load_pvs([device], emit_signal=True)[0]
-			for p in pvs:
-				created_pv = p.dbus_object_path()
+			cfg.load()
+			created_pv = cfg.om.get_object_path_by_lvm_id(device)
 		else:
 			raise dbus.exceptions.DBusException(
 				MANAGER_INTERFACE,
@@ -80,20 +78,14 @@ class Manager(AutomatedProperties):
 					MANAGER_INTERFACE, 'object path = %s not found' % p)
 
 		rc, out, err = cmdhandler.vg_create(create_options, pv_devices, name)
-		created_vg = "/"
 
 		if rc == 0:
-			vgs = load_vgs([name], emit_signal=True)[0]
-			for v in vgs:
-				created_vg = v.dbus_object_path()
-
-			# Update the PVS
-			load_pvs(refresh=True, emit_signal=True, cache_refresh=False)
+			cfg.load()
+			return cfg.om.get_object_path_by_lvm_id(name)
 		else:
 			raise dbus.exceptions.DBusException(
 				MANAGER_INTERFACE,
 				'Exit code %s, stderr = %s' % (str(rc), err))
-		return created_vg
 
 	@dbus.service.method(
 		dbus_interface=MANAGER_INTERFACE,
@@ -114,6 +106,10 @@ class Manager(AutomatedProperties):
 
 		# This is a diagnostic and should not be run in normal operation, so
 		# lets remove the log entries for refresh as it's implied.
+
+		# Run an internal diagnostic on the object manager look up tables
+		lc = cfg.om.validate_lookups()
+
 		rc = cfg.load(log=False)
 
 		if rc != 0:
@@ -121,7 +117,7 @@ class Manager(AutomatedProperties):
 							'bg_black', 'fg_light_red')
 		else:
 			utils.log_debug('Manager.Refresh - exit %d' % (rc))
-		return rc
+		return rc + lc
 
 	@dbus.service.method(
 		dbus_interface=MANAGER_INTERFACE,
@@ -159,28 +155,34 @@ class Manager(AutomatedProperties):
 		:param key: The lookup value
 		:return: Return the object path.  If object not found you will get '/'
 		"""
-		p = cfg.om.get_object_path_by_uuid_lvm_id(
-			key, key, gen_new=False)
+		p = cfg.om.get_object_path_by_uuid_lvm_id(key, key)
 		if p:
 			return p
 		return '/'
 
 	@dbus.service.method(
 		dbus_interface=MANAGER_INTERFACE,
-		in_signature='b')
+		in_signature='b', out_signature='b')
 	def UseLvmShell(self, yes_no):
 		"""
 		Allow the client to enable/disable lvm shell, used for testing
 		:param yes_no:
 		:return: Nothing
 		"""
-		cmdhandler.set_execution(yes_no)
+		return dbus.Boolean(cmdhandler.set_execution(yes_no))
 
 	@dbus.service.method(
 		dbus_interface=MANAGER_INTERFACE,
 		in_signature='s', out_signature='i')
 	def ExternalEvent(self, command):
 
+		# If a user didn't explicitly specify udev, we will turn it off now.
+		if not cfg.args.use_udev:
+			if udevwatch.remove():
+				utils.log_debug("ExternalEvent received, disabling "
+								"udev monitoring")
+				# We are dependent on external events now to stay current!
+				cfg.ee = True
 		event_add((command,))
 		return dbus.Int32(0)
 

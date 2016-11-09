@@ -1,4 +1,4 @@
-From bc00905e1f06998f76cf26e49c602f6353b16802 Mon Sep 17 00:00:00 2001
+From 9bc012aeeb56137f18aff033620a4d8f16a2e28d Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 30 Jun 2015 11:46:10 +0200
 Subject: dm-event-api
@@ -22,10 +22,10 @@ index fab74dc..46c14fb 100644
 +dm_event_daemon_talk
  dm_event_get_version
 diff --git a/daemons/dmeventd/dmeventd.c b/daemons/dmeventd/dmeventd.c
-index 25b34a7..998ca52 100644
+index 58922ac..1565b80 100644
 --- a/daemons/dmeventd/dmeventd.c
 +++ b/daemons/dmeventd/dmeventd.c
-@@ -1957,7 +1957,7 @@ static int _reinstate_registrations(struct dm_event_fifos *fifos)
+@@ -1967,7 +1967,7 @@ static int _reinstate_registrations(struct dm_event_fifos *fifos)
  	unsigned long mask_value, timeout_value;
  	int i, ret;
  
@@ -34,7 +34,7 @@ index 25b34a7..998ca52 100644
  	dm_free(msg.data);
  	msg.data = NULL;
  
-@@ -1990,7 +1990,7 @@ static int _reinstate_registrations(struct dm_event_fifos *fifos)
+@@ -2000,7 +2000,7 @@ static int _reinstate_registrations(struct dm_event_fifos *fifos)
  			continue;
  		}
  
@@ -43,7 +43,7 @@ index 25b34a7..998ca52 100644
  				dso_name,
  				dev_name,
  				(enum dm_event_mask) mask_value,
-@@ -2017,7 +2017,7 @@ static void _restart_dmeventd(void)
+@@ -2027,7 +2027,7 @@ static void _restart_dmeventd(void)
  	const char *e;
  
  	/* Get the list of registrations from the running daemon. */
@@ -52,7 +52,7 @@ index 25b34a7..998ca52 100644
  		fprintf(stderr, "WARNING: Could not initiate communication with existing dmeventd.\n");
  		exit(EXIT_FAILURE);
  	}
-@@ -2034,7 +2034,7 @@ static void _restart_dmeventd(void)
+@@ -2044,7 +2044,7 @@ static void _restart_dmeventd(void)
  		goto bad;
  	}
  
@@ -61,7 +61,7 @@ index 25b34a7..998ca52 100644
  		goto bad;
  
  	message = strchr(msg.data, ' ') + 1;
-@@ -2059,7 +2059,7 @@ static void _restart_dmeventd(void)
+@@ -2069,7 +2069,7 @@ static void _restart_dmeventd(void)
  	_initial_registrations[count] = NULL;
  
  	if (version >= 2) {
@@ -70,7 +70,7 @@ index 25b34a7..998ca52 100644
  			fprintf(stderr, "Failed to acquire parameters from old dmeventd.\n");
  			goto bad;
  		}
-@@ -2079,7 +2079,7 @@ static void _restart_dmeventd(void)
+@@ -2089,7 +2089,7 @@ static void _restart_dmeventd(void)
  	}
  #endif
  
@@ -79,7 +79,7 @@ index 25b34a7..998ca52 100644
  		fprintf(stderr, "Old dmeventd refused to die.\n");
  		goto bad;
  	}
-@@ -2095,13 +2095,13 @@ static void _restart_dmeventd(void)
+@@ -2105,13 +2105,13 @@ static void _restart_dmeventd(void)
  	}
  
  	if (!_systemd_activation) {
@@ -96,7 +96,7 @@ index 25b34a7..998ca52 100644
  		fprintf(stderr, "Could not initiate communication with new instance of dmeventd.\n");
  		exit(EXIT_FAILURE);
  	}
-@@ -2111,10 +2111,10 @@ static void _restart_dmeventd(void)
+@@ -2121,10 +2121,10 @@ static void _restart_dmeventd(void)
  		goto bad;
  	}
  
@@ -110,7 +110,7 @@ index 25b34a7..998ca52 100644
  }
  
 diff --git a/daemons/dmeventd/libdevmapper-event.c b/daemons/dmeventd/libdevmapper-event.c
-index d395ed3..cdb5c62 100644
+index b23b6c1..6f7af9e 100644
 --- a/daemons/dmeventd/libdevmapper-event.c
 +++ b/daemons/dmeventd/libdevmapper-event.c
 @@ -341,7 +341,7 @@ static int _daemon_write(struct dm_event_fifos *fifos,

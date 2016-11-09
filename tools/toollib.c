@@ -1281,10 +1281,12 @@ static int _validate_stripe_params(struct cmd_context *cmd, const struct segment
 	if (!stripe_size_required && *stripe_size) {
 		log_print_unless_silent("Ignoring stripesize argument for %s devices.", segtype->name);
 		*stripe_size = 0;
-	} else if (segtype_is_striped(segtype) && *stripes == 1 && *stripe_size) {
-		log_print_unless_silent("Ignoring stripesize argument with single stripe.");
+	} else if (*stripes == 1 && (segtype_is_striped_target(segtype) || segtype_is_mirror(segtype))) {
 		stripe_size_required = 0;
-		*stripe_size = 0;
+		if (*stripe_size) {
+			log_print_unless_silent("Ignoring stripesize argument with single stripe.");
+			*stripe_size = 0;
+		}
 	}
 
 	if (stripe_size_required) {
@@ -1316,13 +1318,17 @@ static int _validate_stripe_params(struct cmd_context *cmd, const struct segment
  * power of 2, we must divide UINT_MAX by four and add 1 (to round it
  * up to the power of 2)
  */
-int get_stripe_params(struct cmd_context *cmd, const struct segment_type *segtype, uint32_t *stripes, uint32_t *stripe_size)
+int get_stripe_params(struct cmd_context *cmd, const struct segment_type *segtype,
+		      uint32_t *stripes, uint32_t *stripe_size,
+		      unsigned *stripes_supplied, unsigned *stripe_size_supplied)
 {
 	/* stripes_long_ARG takes precedence (for lvconvert) */
 	/* FIXME Cope with relative +/- changes for lvconvert. */
 	*stripes = arg_uint_value(cmd, arg_is_set(cmd, stripes_long_ARG) ? stripes_long_ARG : stripes_ARG, 1);
+	*stripes_supplied = arg_is_set(cmd, stripes_long_ARG) ? : arg_is_set(cmd, stripes_ARG);
 
 	*stripe_size = arg_uint_value(cmd, stripesize_ARG, 0);
+	*stripe_size_supplied = arg_is_set(cmd, stripesize_ARG);
 	if (*stripe_size) {
 		if (arg_sign_value(cmd, stripesize_ARG, SIGN_NONE) == SIGN_MINUS) {
 			log_error("Negative stripesize is invalid.");
@@ -1380,7 +1386,7 @@ int get_cache_params(struct cmd_context *cmd,
 						  NULL)))
 			goto_out;
 
-		if (!dm_config_parse(current, str, str + strlen(str)))
+		if (!dm_config_parse_without_dup_node_check(current, str, str + strlen(str)))
 			goto_out;
 	}
 
@@ -3258,9 +3264,12 @@ static int _process_duplicate_pvs(struct cmd_context *cmd,
 		 * Don't pass dev to lvmcache_info_from_pvid because we looking
 		 * for the chosen/preferred dev for this pvid.
 		 */
-		info = lvmcache_info_from_pvid(devl->dev->pvid, NULL, 0);
-		if (info)
-			vgname = lvmcache_vgname_from_info(info);
+		if (!(info = lvmcache_info_from_pvid(devl->dev->pvid, NULL, 0))) {
+			log_error(INTERNAL_ERROR "No info for pvid");
+			return_ECMD_FAILED;
+		}
+
+		vgname = lvmcache_vgname_from_info(info);
 		if (vgname)
 			vgid = lvmcache_vgid_from_vgname(cmd, vgname);
 		if (vgid)

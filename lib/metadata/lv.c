@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2013 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2016 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -366,8 +366,9 @@ dm_percent_t lvseg_percent_with_info_and_seg_status(const struct lv_with_info_an
 		else {
 			switch (type) {
 			case PERCENT_GET_DIRTY:
-				p = dm_make_percent(s->cache->dirty_blocks,
-						    s->cache->used_blocks);
+				p = (s->cache->used_blocks) ?
+					dm_make_percent(s->cache->dirty_blocks,
+							s->cache->used_blocks) : DM_PERCENT_0;
 				break;
 			case PERCENT_GET_METADATA:
 				p = dm_make_percent(s->cache->metadata_used_blocks,
@@ -536,8 +537,8 @@ struct logical_volume *lv_origin_lv(const struct logical_volume *lv)
 
 	if (lv_is_cow(lv))
 		origin = origin_from_cow(lv);
-	else if (lv_is_cache(lv) && first_seg(lv)->origin)
-		origin = first_seg(lv)->origin;
+	else if (lv_is_cache(lv) && !lv_is_pending_delete(lv))
+		origin = seg_lv(first_seg(lv), 0);
 	else if (lv_is_thin_volume(lv) && first_seg(lv)->origin)
 		origin = first_seg(lv)->origin;
 	else if (lv_is_thin_volume(lv) && first_seg(lv)->external_lv)
@@ -987,7 +988,6 @@ int lv_mirror_image_in_sync(const struct logical_volume *lv)
 int lv_raid_image_in_sync(const struct logical_volume *lv)
 {
 	unsigned s;
-	dm_percent_t percent;
 	char *raid_health;
 	struct lv_segment *seg, *raid_seg = NULL;
 
@@ -1016,12 +1016,6 @@ int lv_raid_image_in_sync(const struct logical_volume *lv)
 			  raid_seg->lv->name, lv->name);
 		return 0;
 	}
-
-	if (!lv_raid_percent(raid_seg->lv, &percent))
-		return_0;
-
-	if (percent == DM_PERCENT_100)
-		return 1;
 
 	/* Find out which sub-LV this is. */
 	for (s = 0; s < raid_seg->area_count; s++)
@@ -1424,6 +1418,7 @@ int lv_active_change(struct cmd_context *cmd, struct logical_volume *lv,
 		     enum activation_change activate, int needs_exclusive)
 {
 	const char *ay_with_mode = NULL;
+	struct lv_segment *seg = first_seg(lv);
 
 	if (activate == CHANGE_ASY)
 		ay_with_mode = "sh";
@@ -1460,6 +1455,9 @@ deactivate:
 		break;
 	case CHANGE_ALY:
 	case CHANGE_AAY:
+		if (!raid4_is_supported(cmd, seg->segtype))
+			goto no_raid4;
+
 		if (needs_exclusive || _lv_is_exclusive(lv)) {
 			log_verbose("Activating logical volume %s exclusively locally.",
 				    display_lvname(lv));
@@ -1474,6 +1472,9 @@ deactivate:
 		break;
 	case CHANGE_AEY:
 exclusive:
+		if (!raid4_is_supported(cmd, seg->segtype))
+			goto no_raid4;
+
 		log_verbose("Activating logical volume %s exclusively.",
 			    display_lvname(lv));
 		if (!activate_lv_excl(cmd, lv))
@@ -1482,6 +1483,9 @@ exclusive:
 	case CHANGE_ASY:
 	case CHANGE_AY:
 	default:
+		if (!raid4_is_supported(cmd, seg->segtype))
+			goto no_raid4;
+
 		if (needs_exclusive || _lv_is_exclusive(lv))
 			goto exclusive;
 		log_verbose("Activating logical volume %s.", display_lvname(lv));
@@ -1494,6 +1498,10 @@ exclusive:
 		log_error("Failed to unlock logical volume %s.", display_lvname(lv));
 
 	return 1;
+
+no_raid4:
+	log_error("Failed to activate %s LV %s", lvseg_name(seg), display_lvname(lv));
+	return 0;
 }
 
 char *lv_active_dup(struct dm_pool *mem, const struct logical_volume *lv)
@@ -1546,7 +1554,7 @@ const struct logical_volume *lv_lock_holder(const struct logical_volume *lv)
 	if (lv_is_cow(lv))
 		return lv_lock_holder(origin_from_cow(lv));
 
-	if (lv_is_thin_pool(lv))
+	if (lv_is_thin_pool(lv)) {
 		/* Find any active LV from the pool */
 		dm_list_iterate_items(sl, &lv->segs_using_this_lv)
 			if (lv_is_active(sl->seg->lv)) {
@@ -1554,6 +1562,8 @@ const struct logical_volume *lv_lock_holder(const struct logical_volume *lv)
 						     display_lvname(lv));
 				return sl->seg->lv;
 			}
+		return lv;
+	}
 
 	/* RAID changes visibility of splitted LVs but references them still as leg/meta */
 	if ((lv_is_raid_image(lv) || lv_is_raid_metadata(lv)) && lv_is_visible(lv))

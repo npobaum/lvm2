@@ -325,11 +325,10 @@ prepare_lvmdbusd() {
 		daemon="$(which lvmdbusd || :)"
 	fi
 	[[ -n $daemon && -x $daemon ]] || skip "The daemon is missing"
-
 	which python3 >/dev/null || skip "Missing python3"
+
 	python3 -c "import pyudev, dbus, gi.repository" || skip "Missing python modules"
 
-        # TODO: Tests should use session bus instead of system bus
 	# Copy the needed file to run on the system bus if it doesn't
 	# already exist
 	if [ ! -f /etc/dbus-1/system.d/com.redhat.lvmdbus1.conf ]; then
@@ -337,7 +336,9 @@ prepare_lvmdbusd() {
 	fi
 
 	echo "preparing lvmdbusd..."
-	"$daemon" --debug --udev > debug.log_LVMDBUSD_out 2>&1 &
+	lvmconf "global/notify_dbus = 1"
+
+	"$daemon" --debug  > debug.log_LVMDBUSD_out 2>&1 &
 	local pid=$!
 
 	sleep 1
@@ -1080,6 +1081,7 @@ devices/global_filter = [ "a|$DM_DEV_DIR/mapper/.*pv[0-9_]*$|", "r|.*|" ]
 devices/md_component_detection  = 0
 devices/scan = "$DM_DEV_DIR"
 devices/sysfs_scan = 1
+devices/write_cache_state = 0
 global/abort_on_internal_errors = 1
 global/cache_check_executable = "$LVM_TEST_CACHE_CHECK_CMD"
 global/cache_dump_executable = "$LVM_TEST_CACHE_DUMP_CMD"
@@ -1089,6 +1091,7 @@ global/fallback_to_local_locking = 0
 global/library_dir = "$TESTDIR/lib"
 global/locking_dir = "$TESTDIR/var/lock/lvm"
 global/locking_type=$LVM_TEST_LOCKING
+global/notify_dbus = 0
 global/si_unit_consistency = 1
 global/thin_check_executable = "$LVM_TEST_THIN_CHECK_CMD"
 global/thin_dump_executable = "$LVM_TEST_THIN_DUMP_CMD"
@@ -1265,12 +1268,6 @@ wait_for_sync() {
 	return 1
 }
 
-# aux check_status_chars $vg $lv "Aaaaa"
-check_status_chars() {
-	[ `dmsetup status $1-$2|awk '{print $6}'` = $3 ] && return
-	return 1
-}
-
 # Check if tests are running on 64bit architecture
 can_use_16T() {
 	test "$(getconf LONG_BIT)" -eq 64
@@ -1377,6 +1374,15 @@ have_raid() {
 	case "$(uname -r)" in
 	  4.[12].*fc24*) return 1 ;;
 	esac
+}
+
+have_raid4 () {
+	local r=1
+
+	have_raid 1 8 0 && r=0
+	have_raid 1 9 1 && r=1
+
+	return $r
 }
 
 have_cache() {

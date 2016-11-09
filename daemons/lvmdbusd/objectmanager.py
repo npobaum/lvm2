@@ -12,8 +12,9 @@ import threading
 import traceback
 import dbus
 import os
+import copy
 from . import cfg
-from .utils import log_debug
+from .utils import log_debug, pv_obj_path_generate, log_error
 from .automatedproperties import AutomatedProperties
 
 
@@ -70,12 +71,37 @@ class ObjectManager(AutomatedProperties):
 		log_debug(('SIGNAL: InterfacesRemoved(%s, %s)' %
 			(str(object_path), str(interface_list))))
 
+	def validate_lookups(self):
+		with self.rlock:
+			tmp_lookups = copy.deepcopy(self._id_to_object_path)
+
+			# iterate over all we know, removing from the copy.  If all is well
+			# we will have zero items left over
+			for path, md in self._objects.items():
+				obj, lvm_id, uuid = md
+
+				if lvm_id:
+					assert path == tmp_lookups[lvm_id]
+					del tmp_lookups[lvm_id]
+
+				if uuid:
+					assert path == tmp_lookups[uuid]
+					del tmp_lookups[uuid]
+
+			rc = len(tmp_lookups)
+			if rc:
+				# Error condition
+				log_error("_id_to_object_path has extraneous lookups!")
+				for key, path in tmp_lookups.items():
+					log_error("Key= %s, path= %s" % (key, path))
+		return rc
+
 	def _lookup_add(self, obj, path, lvm_id, uuid):
 		"""
 		Store information about what we added to the caches so that we
 		can remove it cleanly
 		:param obj:     The dbus object we are storing
-		:param lvm_id:  The user name for the asset
+		:param lvm_id:  The lvm id for the asset
 		:param uuid:    The uuid for the asset
 		:return:
 		"""
@@ -85,7 +111,12 @@ class ObjectManager(AutomatedProperties):
 		self._lookup_remove(path)
 
 		self._objects[path] = (obj, lvm_id, uuid)
-		self._id_to_object_path[lvm_id] = path
+
+		# Make sure we have one or the other
+		assert lvm_id or uuid
+
+		if lvm_id:
+			self._id_to_object_path[lvm_id] = path
 
 		if uuid:
 			self._id_to_object_path[uuid] = path
@@ -94,8 +125,13 @@ class ObjectManager(AutomatedProperties):
 		# Note: Only called internally, lock implied
 		if obj_path in self._objects:
 			(obj, lvm_id, uuid) = self._objects[obj_path]
-			del self._id_to_object_path[lvm_id]
-			del self._id_to_object_path[uuid]
+
+			if lvm_id in self._id_to_object_path:
+				del self._id_to_object_path[lvm_id]
+
+			if uuid in self._id_to_object_path:
+				del self._id_to_object_path[uuid]
+
 			del self._objects[obj_path]
 
 	def lookup_update(self, dbus_obj, new_uuid, new_lvm_id):
@@ -125,7 +161,7 @@ class ObjectManager(AutomatedProperties):
 			path, props = dbus_object.emit_data()
 
 			# print('Registering object path %s for %s' %
-			#		(path, dbus_object.lvm_id))
+			# (path, dbus_object.lvm_id))
 
 			# We want fast access to the object by a number of different ways
 			# so we use multiple hashs with different keys
@@ -173,7 +209,7 @@ class ObjectManager(AutomatedProperties):
 	def get_object_by_uuid_lvm_id(self, uuid, lvm_id):
 		with self.rlock:
 			return self.get_object_by_path(
-				self.get_object_path_by_uuid_lvm_id(uuid, lvm_id, None, False))
+				self.get_object_path_by_uuid_lvm_id(uuid, lvm_id))
 
 	def get_object_by_lvm_id(self, lvm_id):
 		"""
@@ -206,78 +242,111 @@ class ObjectManager(AutomatedProperties):
 		:return: None
 		"""
 		# This gets called when we found an object based on lvm_id, ensure
-		# uuid is correct too, as they can change
+		# uuid is correct too, as they can change. There is no durable
+		# non-changeable name in lvm
 		if lvm_id != uuid:
-			if uuid not in self._id_to_object_path:
+			if uuid and uuid not in self._id_to_object_path:
 				obj = self.get_object_by_path(path)
 				self._lookup_add(obj, path, lvm_id, uuid)
 
-	def _return_lookup(self, uuid, lvm_identifier):
+	def _lvm_id_verify(self, path, uuid, lvm_id):
 		"""
-		We found an identifier, so lets return the path to the found object
-		:param uuid:	The lvm uuid
-		:param lvm_identifier: The lvm_id used to find object
-		:return:
+		Ensure lvm_id is present for a successful uuid lookup
+		NOTE: Internal call, assumes under object manager lock
+		:param path: 		Path to object we looked up
+		:param uuid: 		uuid used to find object
+		:param lvm_id:		lvm_id to verify
+		:return: None
 		"""
-		path = self._id_to_object_path[lvm_identifier]
-		self._uuid_verify(path, uuid, lvm_identifier)
+		# This gets called when we found an object based on uuid, ensure
+		# lvm_id is correct too, as they can change.  There is no durable
+		# non-changeable name in lvm
+		if lvm_id != uuid:
+			if lvm_id and lvm_id not in self._id_to_object_path:
+				obj = self.get_object_by_path(path)
+				self._lookup_add(obj, path, lvm_id, uuid)
+
+	def _id_lookup(self, the_id):
+		path = None
+
+		if the_id:
+			# The _id_to_object_path contains hash keys for everything, so
+			# uuid and lvm_id
+			if the_id in self._id_to_object_path:
+				path = self._id_to_object_path[the_id]
+			else:
+				if "/" in the_id:
+					if the_id.startswith('/'):
+						# We could have a pv device path lookup that failed,
+						# lets try canonical form and try again.
+						canonical = os.path.realpath(the_id)
+						if canonical in self._id_to_object_path:
+							path = self._id_to_object_path[canonical]
+					else:
+						vg, lv = the_id.split("/", 1)
+						int_lvm_id = vg + "/" + ("[%s]" % lv)
+						if int_lvm_id in self._id_to_object_path:
+							path = self._id_to_object_path[int_lvm_id]
 		return path
 
-	def get_object_path_by_uuid_lvm_id(self, uuid, lvm_id, path_create=None,
-										gen_new=True):
+	def get_object_path_by_uuid_lvm_id(self, uuid, lvm_id, path_create=None):
 		"""
-		For a given lvm asset return the dbus object registered to it.  If the
-		object is not found and gen_new == True and path_create is a valid
-		function we will create a new path, register it and return it.
-		:param uuid: The uuid for the lvm object
-		:param lvm_id: The lvm name
-		:param path_create: If true create an object path if not found
-		:param gen_new: The function used to create the new path
+		For a given lvm asset return the dbus object path registered for it.
+		This method first looks up by uuid and then by lvm_id.  You
+		can search by just one by setting uuid == lvm_id (uuid or lvm_id).
+		If the object is not found and path_create is a not None, the
+		path_create function will be called to create a new object path and
+		register it with the object manager for the specified uuid & lvm_id.
+		Note: If path create is not None, uuid and lvm_id cannot be equal
+		:param uuid: The uuid for the lvm object we are searching for
+		:param lvm_id: The lvm name (eg. pv device path, vg name, lv full name)
+		:param path_create: If not None, create the path using this function if
+				we fail to find the object by uuid or lvm_id.
+		:returns None if lvm asset not found and path_create == None otherwise
+				a valid dbus object path
 		"""
 		with self.rlock:
 			assert lvm_id
 			assert uuid
 
-			if gen_new:
-				assert path_create
+			if path_create:
+				assert uuid != lvm_id
 
-			path = None
-
-			if lvm_id in self._id_to_object_path:
-				self._return_lookup(uuid, lvm_id)
-
-			if "/" in lvm_id:
-				vg, lv = lvm_id.split("/", 1)
-				int_lvm_id = vg + "/" + ("[%s]" % lv)
-				if int_lvm_id in self._id_to_object_path:
-					self._return_lookup(uuid, int_lvm_id)
-				elif lvm_id.startswith('/'):
-					# We could have a pv device path lookup that failed,
-					# lets try canonical form and try again.
-					canonical = os.path.realpath(lvm_id)
-					if canonical in self._id_to_object_path:
-						self._return_lookup(uuid, canonical)
-
-			if uuid and uuid in self._id_to_object_path:
-				# If we get here it indicates that we found the object, but
-				# the lvm_id lookup failed.  In the case of a rename, the uuid
-				# will be correct, but the lvm_id will be wrong and vise versa.
-				# If the lvm_id does not equal the uuid, lets fix up the table
-				# so that lookups will be handled correctly.
-				path = self._id_to_object_path[uuid]
-
-				# In some cases we are looking up by one or the other, don't
-				# update when they are the same.
-				if uuid != lvm_id:
-					obj = self.get_object_by_path(path)
-					self._lookup_add(obj, path, lvm_id, uuid)
+			# Check for Manager.LookUpByLvmId query, we cannot
+			# check/verify/update the uuid and lvm_id lookups so don't!
+			if uuid == lvm_id:
+				path = self._id_lookup(lvm_id)
 			else:
-				if gen_new:
-					path = path_create()
-					self._lookup_add(None, path, lvm_id, uuid)
+				# We have a uuid and a lvm_id we can do sanity checks to ensure
+				# that they are consistent
 
-			# pprint('get_object_path_by_lvm_id(%s, %s, %s, %s: return %s' %
-			#       (uuid, lvm_id, str(path_create), str(gen_new), path))
+				# If a PV is missing it's device path is '[unknown]' or some
+				# other text derivation of unknown.  When we find that a PV is
+				# missing we will clear out the lvm_id as it's likely not unique
+				# and thus not useful and potentially harmful for lookups.
+				if path_create == pv_obj_path_generate and \
+						cfg.db.pv_missing(uuid):
+					lvm_id = None
+
+				# Lets check for the uuid first
+				path = self._id_lookup(uuid)
+				if path:
+					# Verify the lvm_id is sane
+					self._lvm_id_verify(path, uuid, lvm_id)
+				else:
+					# Unable to find by UUID, lets lookup by lvm_id
+					path = self._id_lookup(lvm_id)
+					if path:
+						# Verify the uuid is sane
+						self._uuid_verify(path, uuid, lvm_id)
+					else:
+						# We have exhausted all lookups, let's create if we can
+						if path_create:
+							path = path_create()
+							self._lookup_add(None, path, lvm_id, uuid)
+
+			# print('get_object_path_by_lvm_id(%s, %s, %s, %s: return %s' %
+			# 	   (uuid, lvm_id, str(path_create), str(gen_new), path))
 
 			return path
 

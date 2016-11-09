@@ -21,7 +21,7 @@ from .utils import n, n32
 from .loader import common
 from .state import State
 from . import background
-from .utils import round_size
+from .utils import round_size, mt_remove_dbus_objects
 from .job import JobState
 
 
@@ -81,7 +81,14 @@ def lvs_state_retrieve(selection, cache_refresh=True):
 			n32(l['data_percent']), l['lv_attr'],
 			l['lv_tags'], l['lv_active'], l['data_lv'],
 			l['metadata_lv'], l['segtype'], l['lv_role'],
-			l['lv_layout']))
+			l['lv_layout'],
+			n32(l['snap_percent']),
+			n32(l['metadata_percent']),
+			n32(l['copy_percent']),
+			n32(l['sync_percent']),
+			n(l['lv_metadata_size']),
+			l['move_pv'],
+			l['move_pv_uuid']))
 	return rc
 
 
@@ -101,9 +108,15 @@ class LvState(State):
 		rc = []
 		for pv in sorted(cfg.db.lv_contained_pv(uuid)):
 			(pv_uuid, pv_name, pv_segs) = pv
-			pv_obj = cfg.om.get_object_path_by_uuid_lvm_id(
-				pv_uuid, pv_name, gen_new=False)
-			rc.append((pv_obj, pv_segs))
+			pv_obj = cfg.om.get_object_path_by_uuid_lvm_id(pv_uuid, pv_name)
+
+			segs_decorate = []
+			for i in pv_segs:
+				segs_decorate.append((dbus.UInt64(i[0]),
+									dbus.UInt64(i[1]),
+									dbus.String(i[2])))
+
+			rc.append((dbus.ObjectPath(pv_obj), segs_decorate))
 
 		return dbus.Array(rc, signature="(oa(tts))")
 
@@ -124,25 +137,26 @@ class LvState(State):
 
 		for l in cfg.db.hidden_lvs(self.Uuid):
 			full_name = "%s/%s" % (vg_name, l[1])
-			op = cfg.om.get_object_path_by_uuid_lvm_id(
-				l[0], full_name, gen_new=False)
+			op = cfg.om.get_object_path_by_uuid_lvm_id(l[0], full_name)
 			assert op
-			rc.append(op)
+			rc.append(dbus.ObjectPath(op))
 		return rc
 
 	def __init__(self, Uuid, Name, Path, SizeBytes,
 			vg_name, vg_uuid, pool_lv_uuid, PoolLv,
 			origin_uuid, OriginLv, DataPercent, Attr, Tags, active,
-			data_lv, metadata_lv, segtypes, role, layout):
+			data_lv, metadata_lv, segtypes, role, layout, SnapPercent,
+			MetaDataPercent, CopyPercent, SyncPercent, MetaDataSizeBytes,
+			move_pv, move_pv_uuid):
 		utils.init_class_from_arguments(self)
 
 		# The segtypes is possibly an array with potentially dupes or a single
 		# value
 		self._segs = dbus.Array([], signature='s')
 		if not isinstance(segtypes, list):
-			self._segs.append(segtypes)
+			self._segs.append(dbus.String(segtypes))
 		else:
-			self._segs.extend(set(segtypes))
+			self._segs.extend([dbus.String(x) for x in set(segtypes)])
 
 		self.Vg = cfg.om.get_object_path_by_uuid_lvm_id(
 			vg_uuid, vg_name, vg_obj_path_generate)
@@ -153,8 +167,7 @@ class LvState(State):
 			gen = utils.lv_object_path_method(Name, (Attr, layout, role))
 
 			self.PoolLv = cfg.om.get_object_path_by_uuid_lvm_id(
-				pool_lv_uuid, '%s/%s' % (vg_name, PoolLv),
-				gen)
+				pool_lv_uuid, '%s/%s' % (vg_name, PoolLv), gen)
 		else:
 			self.PoolLv = '/'
 
@@ -210,13 +223,20 @@ class LvState(State):
 @utils.dbus_property(LV_COMMON_INTERFACE, 'Name', 's')
 @utils.dbus_property(LV_COMMON_INTERFACE, 'Path', 's')
 @utils.dbus_property(LV_COMMON_INTERFACE, 'SizeBytes', 't')
-@utils.dbus_property(LV_COMMON_INTERFACE, 'DataPercent', 'u')
 @utils.dbus_property(LV_COMMON_INTERFACE, 'SegType', 'as')
 @utils.dbus_property(LV_COMMON_INTERFACE, 'Vg', 'o')
 @utils.dbus_property(LV_COMMON_INTERFACE, 'OriginLv', 'o')
 @utils.dbus_property(LV_COMMON_INTERFACE, 'PoolLv', 'o')
 @utils.dbus_property(LV_COMMON_INTERFACE, 'Devices', "a(oa(tts))")
 @utils.dbus_property(LV_COMMON_INTERFACE, 'HiddenLvs', "ao")
+@utils.dbus_property(LV_COMMON_INTERFACE, 'Attr', 's')
+@utils.dbus_property(LV_COMMON_INTERFACE, 'DataPercent', 'u')
+@utils.dbus_property(LV_COMMON_INTERFACE, 'SnapPercent', 'u')
+@utils.dbus_property(LV_COMMON_INTERFACE, 'DataPercent', 'u')
+@utils.dbus_property(LV_COMMON_INTERFACE, 'MetaDataPercent', 'u')
+@utils.dbus_property(LV_COMMON_INTERFACE, 'CopyPercent', 'u')
+@utils.dbus_property(LV_COMMON_INTERFACE, 'SyncPercent', 'u')
+@utils.dbus_property(LV_COMMON_INTERFACE, 'MetaDataSizeBytes', 't')
 class LvCommon(AutomatedProperties):
 	_Tags_meta = ("as", LV_COMMON_INTERFACE)
 	_Roles_meta = ("as", LV_COMMON_INTERFACE)
@@ -232,12 +252,25 @@ class LvCommon(AutomatedProperties):
 	_FixedMinor_meta = ('b', LV_COMMON_INTERFACE)
 	_ZeroBlocks_meta = ('b', LV_COMMON_INTERFACE)
 	_SkipActivation_meta = ('b', LV_COMMON_INTERFACE)
+	_MovePv_meta = ('o', LV_COMMON_INTERFACE)
+
+	def _get_move_pv(self):
+		path = None
+
+		# It's likely that the move_pv is empty
+		if self.state.move_pv_uuid and self.state.move_pv:
+			path = cfg.om.get_object_path_by_uuid_lvm_id(
+				self.state.move_pv_uuid, self.state.move_pv)
+		if not path:
+			path = '/'
+		return path
 
 	# noinspection PyUnusedLocal,PyPep8Naming
 	def __init__(self, object_path, object_state):
 		super(LvCommon, self).__init__(object_path, lvs_state_retrieve)
 		self.set_interface(LV_COMMON_INTERFACE)
 		self.state = object_state
+		self._move_pv = self._get_move_pv()
 
 	@property
 	def VolumeType(self):
@@ -252,14 +285,16 @@ class LvCommon(AutomatedProperties):
 					'V': 'thin Volume', 't': 'thin pool', 'T': 'Thin pool data',
 					'e': 'raid or pool metadata or pool metadata spare',
 					'-': 'Unspecified'}
-		return (self.state.Attr[0], type_map[self.state.Attr[0]])
+		return dbus.Struct((self.state.Attr[0], type_map[self.state.Attr[0]]),
+						signature="as")
 
 	@property
 	def Permissions(self):
 		type_map = {'w': 'writable', 'r': 'read-only',
 					'R': 'Read-only activation of non-read-only volume',
 					'-': 'Unspecified'}
-		return (self.state.Attr[1], type_map[self.state.Attr[1]])
+		return dbus.Struct((self.state.Attr[1], type_map[self.state.Attr[1]]),
+						signature="(ss)")
 
 	@property
 	def AllocationPolicy(self):
@@ -268,11 +303,12 @@ class LvCommon(AutomatedProperties):
 					'i': 'inherited', 'I': 'inherited locked',
 					'l': 'cling', 'L': 'cling locked',
 					'n': 'normal', 'N': 'normal locked', '-': 'Unspecified'}
-		return (self.state.Attr[2], type_map[self.state.Attr[2]])
+		return dbus.Struct((self.state.Attr[2], type_map[self.state.Attr[2]]),
+						signature="(ss)")
 
 	@property
 	def FixedMinor(self):
-		return self.state.Attr[3] == 'm'
+		return dbus.Boolean(self.state.Attr[3] == 'm')
 
 	@property
 	def State(self):
@@ -283,29 +319,32 @@ class LvCommon(AutomatedProperties):
 					'd': 'mapped device present without  tables',
 					'i': 'mapped device present with inactive table',
 					'X': 'unknown', '-': 'Unspecified'}
-		return (self.state.Attr[4], type_map[self.state.Attr[4]])
+		return dbus.Struct((self.state.Attr[4], type_map[self.state.Attr[4]]),
+						signature="(ss)")
 
 	@property
 	def TargetType(self):
 		type_map = {'C': 'Cache', 'm': 'mirror', 'r': 'raid',
 					's': 'snapshot', 't': 'thin', 'u': 'unknown',
 					'v': 'virtual', '-': 'Unspecified'}
-		return (self.state.Attr[6], type_map[self.state.Attr[6]])
+		return dbus.Struct((self.state.Attr[6], type_map[self.state.Attr[6]]),
+						signature="(ss)")
 
 	@property
 	def ZeroBlocks(self):
-		return self.state.Attr[7] == 'z'
+		return dbus.Boolean(self.state.Attr[7] == 'z')
 
 	@property
 	def Health(self):
 		type_map = {'p': 'partial', 'r': 'refresh',
 					'm': 'mismatches', 'w': 'writemostly',
 					'X': 'X unknown', '-': 'Unspecified'}
-		return (self.state.Attr[8], type_map[self.state.Attr[8]])
+		return dbus.Struct((self.state.Attr[8], type_map[self.state.Attr[8]]),
+					signature="(ss)")
 
 	@property
 	def SkipActivation(self):
-		return self.state.Attr[9] == 'k'
+		return dbus.Boolean(self.state.Attr[9] == 'k')
 
 	def vg_name_lookup(self):
 		return self.state.vg_name_lookup()
@@ -331,22 +370,19 @@ class LvCommon(AutomatedProperties):
 
 	@property
 	def IsThinVolume(self):
-		return self.state.Attr[0] == 'V'
+		return dbus.Boolean(self.state.Attr[0] == 'V')
 
 	@property
 	def IsThinPool(self):
-		return self.state.Attr[0] == 't'
+		return dbus.Boolean(self.state.Attr[0] == 't')
 
 	@property
 	def Active(self):
-		return self.state.active == "active"
+		return dbus.Boolean(self.state.active == "active")
 
-	@dbus.service.method(
-		dbus_interface=LV_COMMON_INTERFACE,
-		in_signature='ia{sv}',
-		out_signature='o')
-	def _Future(self, tmo, open_options):
-		raise dbus.exceptions.DBusException(LV_COMMON_INTERFACE, 'Do not use!')
+	@property
+	def MovePv(self):
+		return dbus.ObjectPath(self._move_pv)
 
 
 # noinspection PyPep8Naming
@@ -379,7 +415,6 @@ class Lv(LvCommon):
 			rc, out, err = cmdhandler.lv_remove(lv_name, remove_options)
 
 			if rc == 0:
-				cfg.om.remove_object(dbo, True)
 				cfg.load()
 			else:
 				# Need to work on error handling, need consistent
@@ -479,15 +514,9 @@ class Lv(LvCommon):
 			rc, out, err = cmdhandler.vg_lv_snapshot(
 				lv_name, snapshot_options, name, optional_size)
 			if rc == 0:
-				return_path = '/'
+				cfg.load()
 				full_name = "%s/%s" % (dbo.vg_name_lookup(), name)
-				lvs = load_lvs([full_name], emit_signal=True)[0]
-				for l in lvs:
-					return_path = l.dbus_object_path()
-
-				# Refresh self and all included PVs
-				cfg.load(cache_refresh=False)
-				return return_path
+				return cfg.om.get_object_path_by_lvm_id(full_name)
 			else:
 				raise dbus.exceptions.DBusException(
 					LV_INTERFACE,
@@ -698,11 +727,11 @@ class LvThinPool(Lv):
 
 	@property
 	def DataLv(self):
-		return self._data_lv
+		return dbus.ObjectPath(self._data_lv)
 
 	@property
 	def MetaDataLv(self):
-		return self._metadata_lv
+		return dbus.ObjectPath(self._metadata_lv)
 
 	@staticmethod
 	def _lv_create(lv_uuid, lv_name, name, size_bytes, create_options):
@@ -716,9 +745,8 @@ class LvThinPool(Lv):
 				lv_name, create_options, name, size_bytes)
 			if rc == 0:
 				full_name = "%s/%s" % (dbo.vg_name_lookup(), name)
-				lvs = load_lvs([full_name], emit_signal=True)[0]
-				for l in lvs:
-					lv_created = l.dbus_object_path()
+				cfg.load()
+				lv_created = cfg.om.get_object_path_by_lvm_id(full_name)
 			else:
 				raise dbus.exceptions.DBusException(
 					LV_INTERFACE,
@@ -757,11 +785,11 @@ class LvCachePool(Lv):
 
 	@property
 	def DataLv(self):
-		return self._data_lv
+		return dbus.ObjectPath(self._data_lv)
 
 	@property
 	def MetaDataLv(self):
-		return self._metadata_lv
+		return dbus.ObjectPath(self._metadata_lv)
 
 	@staticmethod
 	def _cache_lv(lv_uuid, lv_name, lv_object_path, cache_options):
@@ -780,8 +808,7 @@ class LvCachePool(Lv):
 				# When we cache an LV, the cache pool and the lv that is getting
 				# cached need to be removed from the object manager and
 				# re-created as their interfaces have changed!
-				cfg.om.remove_object(dbo, emit_signal=True)
-				cfg.om.remove_object(lv_to_cache, emit_signal=True)
+				mt_remove_dbus_objects((dbo, lv_to_cache))
 				cfg.load()
 
 				lv_converted = cfg.om.get_object_path_by_lvm_id(fcn)
@@ -826,7 +853,7 @@ class LvCacheLv(Lv):
 
 	@property
 	def CachePool(self):
-		return self.state.PoolLv
+		return dbus.ObjectPath(self.state.PoolLv)
 
 	@staticmethod
 	def _detach_lv(lv_uuid, lv_name, detach_options, destroy_cache):
@@ -843,8 +870,7 @@ class LvCacheLv(Lv):
 			if rc == 0:
 				# The cache pool gets removed as hidden and put back to
 				# visible, so lets delete
-				cfg.om.remove_object(cache_pool, emit_signal=True)
-				cfg.om.remove_object(dbo, emit_signal=True)
+				mt_remove_dbus_objects((cache_pool, dbo))
 				cfg.load()
 
 				uncached_lv_path = cfg.om.get_object_path_by_lvm_id(lv_name)

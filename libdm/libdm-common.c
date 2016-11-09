@@ -114,9 +114,9 @@ static void _default_log_line(int level,
 	    const char *f, va_list ap)
 {
 	static int _abort_on_internal_errors = -1;
-	FILE *out = (level & _LOG_STDERR) ? stderr : stdout;
+	FILE *out = log_stderr(level) ? stderr : stdout;
 
-	level &= ~(_LOG_STDERR | _LOG_BYPASS_REPORT);
+	level = log_level(level);
 
 	if (level <= _LOG_WARN || _verbose) {
 		if (level < _LOG_WARN)
@@ -137,8 +137,7 @@ static void _default_log_line(int level,
 
 __attribute__((format(printf, 5, 6)))
 static void _default_log_with_errno(int level,
-	    const char *file __attribute__((unused)),
-	    int line __attribute__((unused)), int dm_errno_or_class,
+	    const char *file, int line, int dm_errno_or_class,
 	    const char *f, ...)
 {
 	va_list ap;
@@ -162,29 +161,75 @@ static void _default_log(int level, const char *file,
 dm_log_fn dm_log = _default_log;
 dm_log_with_errno_fn dm_log_with_errno = _default_log_with_errno;
 
+/*
+ * Wrapper function to reformat new messages to and
+ * old style logging which had not used errno parameter
+ *
+ * As we cannot simply pass '...' to old function we
+ * need to process arg list locally and just pass '%s' + buffer
+ */
+__attribute__((format(printf, 5, 6)))
+static void _log_to_default_log(int level,
+	    const char *file, int line, int dm_errno_or_class,
+	    const char *f, ...)
+{
+	va_list ap;
+	char buf[2 * PATH_MAX + 256]; /* big enough for most messages */
+
+	va_start(ap, f);
+	vsnprintf(buf, sizeof(buf), f, ap);
+	va_end(ap);
+
+	dm_log(level, file, line, "%s", buf);
+}
+
+/*
+ * Wrapper function take 'old' style message without errno
+ * and log it via new logging function with errno arg
+ *
+ * This minor case may happen if new libdm is used with old
+ * recompiled tool that would decided to use new logging,
+ * but still would like to use old binary plugins.
+ */
+__attribute__((format(printf, 4, 5)))
+static void _log_to_default_log_with_errno(int level,
+	    const char *file, int line, const char *f, ...)
+{
+	va_list ap;
+	char buf[2 * PATH_MAX + 256]; /* big enough for most messages */
+
+	va_start(ap, f);
+	vsnprintf(buf, sizeof(buf), f, ap);
+	va_end(ap);
+
+	dm_log_with_errno(level, file, line, 0, "%s", buf);
+}
+
 void dm_log_init(dm_log_fn fn)
 {
-	if (fn)
+	if (fn)  {
 		dm_log = fn;
-	else
+		dm_log_with_errno = _log_to_default_log;
+	} else {
 		dm_log = _default_log;
-
-	dm_log_with_errno = _default_log_with_errno;
+		dm_log_with_errno = _default_log_with_errno;
+	}
 }
 
 int dm_log_is_non_default(void)
 {
-	return (dm_log == _default_log) ? 0 : 1;
+	return (dm_log == _default_log && dm_log_with_errno == _default_log_with_errno) ? 0 : 1;
 }
 
 void dm_log_with_errno_init(dm_log_with_errno_fn fn)
 {
-	if (fn)
+	if (fn) {
+		dm_log = _log_to_default_log_with_errno;
 		dm_log_with_errno = fn;
-	else
+	} else {
+		dm_log = _default_log;
 		dm_log_with_errno = _default_log_with_errno;
-
-	dm_log = _default_log;
+	}
 }
 
 void dm_log_init_verbose(int level)

@@ -370,6 +370,11 @@ void activation_exit(void)
 {
 }
 
+int raid4_is_supported(struct cmd_context *cmd, const struct segment_type *segtype)
+{
+	return 1;
+}
+
 int lv_is_active(const struct logical_volume *lv)
 {
 	return 0;
@@ -1489,6 +1494,26 @@ out:
 	return r || l;
 }
 
+/*
+ * Check if "raid4" @segtype is supported by kernel.
+ *
+ * if segment type is not raid4, return 1.
+ */
+int raid4_is_supported(struct cmd_context *cmd, const struct segment_type *segtype)
+{
+	unsigned attrs;
+
+	if (segtype_is_raid4(segtype) &&
+	    (!segtype->ops->target_present ||
+             !segtype->ops->target_present(cmd, NULL, &attrs) ||
+             !(attrs & RAID_FEATURE_RAID4))) {
+		log_error("RAID module does not support RAID4.");
+		return 0;
+	}
+
+	return 1;
+}
+
 int lv_is_active(const struct logical_volume *lv)
 {
 	return _lv_is_active(lv, NULL, NULL, NULL);
@@ -1548,7 +1573,7 @@ static struct dm_event_handler *_create_dm_event_handler(struct cmd_context *cmd
 	if (dm_event_handler_set_dmeventd_path(dmevh, find_config_tree_str(cmd, dmeventd_executable_CFG, NULL)))
 		goto_bad;
 
-	if (dm_event_handler_set_dso(dmevh, dso))
+	if (dso && dm_event_handler_set_dso(dmevh, dso))
 		goto_bad;
 
 	if (dm_event_handler_set_uuid(dmevh, dmuuid))
@@ -1590,6 +1615,39 @@ static char *_build_target_uuid(struct cmd_context *cmd, const struct logical_vo
 		layer = NULL;
 
 	return build_dm_uuid(cmd->mem, lv, layer);
+}
+
+static int _device_registered_with_dmeventd(struct cmd_context *cmd, const struct logical_volume *lv, int *pending, const char **dso)
+{
+	char *uuid;
+	enum dm_event_mask evmask = 0;
+	struct dm_event_handler *dmevh;
+
+	*pending = 0;
+
+	if (!(uuid = _build_target_uuid(cmd, lv)))
+		return_0;
+
+	if (!(dmevh = _create_dm_event_handler(cmd, uuid, NULL, 0, DM_EVENT_ALL_ERRORS)))
+		return_0;
+
+	if (dm_event_get_registered_device(dmevh, 0)) {
+		dm_event_handler_destroy(dmevh);
+		return 0;
+	}
+
+	evmask = dm_event_handler_get_event_mask(dmevh);
+	if (evmask & DM_EVENT_REGISTRATION_PENDING) {
+		*pending = 1;
+		evmask &= ~DM_EVENT_REGISTRATION_PENDING;
+	}
+
+	if (dso && (*dso = dm_event_handler_get_dso(dmevh)) && !(*dso = dm_pool_strdup(cmd->mem, *dso)))
+		log_error("Failed to duplicate dso name.");
+
+	dm_event_handler_destroy(dmevh);
+
+	return evmask;
 }
 
 int target_registered_with_dmeventd(struct cmd_context *cmd, const char *dso,
@@ -1650,7 +1708,7 @@ int target_register_events(struct cmd_context *cmd, const char *dso, const struc
 	if (!r)
 		return_0;
 
-	log_info("%s %s for events", set ? "Monitored" : "Unmonitored", uuid);
+	log_very_verbose("%s %s for events", set ? "Monitored" : "Unmonitored", uuid);
 
 	return 1;
 }
@@ -1674,6 +1732,8 @@ int monitor_dev_for_events(struct cmd_context *cmd, const struct logical_volume 
 	uint32_t s;
 	static const struct lv_activate_opts zlaopts = { 0 };
 	struct lvinfo info;
+	const char *dso = NULL;
+	int new_unmonitor;
 
 	if (!laopts)
 		laopts = &zlaopts;
@@ -1687,6 +1747,23 @@ int monitor_dev_for_events(struct cmd_context *cmd, const struct logical_volume 
 	 */
 	if (monitor && !dmeventd_monitor_mode())
 		return 1;
+
+	/*
+	 * Activation of unused cache-pool activates metadata device as
+	 * a public LV  for clearing purpose.
+	 * FIXME:
+	 *  As VG lock is held across whole operation unmonitored volume
+	 *  is usually OK since dmeventd couldn't do anything.
+	 *  However in case command would have crashed, such LV is
+	 *  left unmonitored and may potentially require dmeventd.
+	 */
+	if ((lv_is_cache_pool_data(lv) || lv_is_cache_pool_metadata(lv)) &&
+	    !lv_is_used_cache_pool((find_pool_seg(first_seg(lv))->lv))) {
+		log_debug_activation("Skipping %smonitor of %s.%s",
+				     (monitor) ? "" : "un", display_lvname(lv),
+				     (monitor) ? " Cache pool activation for clearing only." : "");
+		return 1;
+	}
 
 	/*
 	 * Allow to unmonitor thin pool via explicit pool unmonitor
@@ -1722,7 +1799,8 @@ int monitor_dev_for_events(struct cmd_context *cmd, const struct logical_volume 
 	/*
 	 * In case this LV is a snapshot origin, we instead monitor
 	 * each of its respective snapshots.  The origin itself may
-	 * also need to be monitored if it is a mirror, for example.
+	 * also need to be monitored if it is a mirror, for example,
+	 * so fall through to process it afterwards.
 	 */
 	if (!laopts->origin_only && lv_is_origin(lv))
 		dm_list_iterate_safe(snh, snht, &lv->snapshot_segs)
@@ -1781,42 +1859,58 @@ int monitor_dev_for_events(struct cmd_context *cmd, const struct logical_volume 
 		    !seg->segtype->ops->target_monitored) /* doesn't support registration */
 			continue;
 
-		monitored = seg->segtype->ops->target_monitored(seg, &pending);
+		if (!monitor)
+			/* When unmonitoring, obtain existing dso being used. */
+			monitored = _device_registered_with_dmeventd(cmd, seg_is_snapshot(seg) ? seg->cow : seg->lv, &pending, &dso);
+		else
+			monitored = seg->segtype->ops->target_monitored(seg, &pending);
 
 		/* FIXME: We should really try again if pending */
 		monitored = (pending) ? 0 : monitored;
 
 		monitor_fn = NULL;
+		new_unmonitor = 0;
 
 		if (monitor) {
 			if (monitored)
 				log_verbose("%s already monitored.", display_lvname(lv));
-			else if (seg->segtype->ops->target_monitor_events)
+			else if (seg->segtype->ops->target_monitor_events) {
+				log_verbose("Monitoring %s%s", display_lvname(lv), test_mode() ? " [Test mode: skipping this]" : "");
 				monitor_fn = seg->segtype->ops->target_monitor_events;
+			}
 		} else {
 			if (!monitored)
 				log_verbose("%s already not monitored.", display_lvname(lv));
-			else if (seg->segtype->ops->target_unmonitor_events)
-				monitor_fn = seg->segtype->ops->target_unmonitor_events;
+			else if (dso && *dso) {
+				/*
+				 * Divert unmonitor away from code that depends on the new segment
+				 * type instead of the existing one if it's changing.
+				 */
+				log_verbose("Not monitoring %s with %s%s", display_lvname(lv), dso, test_mode() ? " [Test mode: skipping this]" : "");
+				new_unmonitor = 1;
+			}
 		}
-
-		/* Do [un]monitor */
-		if (!monitor_fn)
-			continue;
-
-		log_verbose("%sonitoring %s%s", monitor ? "M" : "Not m", display_lvname(lv),
-			    test_mode() ? " [Test mode: skipping this]" : "");
 
 		/* FIXME Test mode should really continue a bit further. */
 		if (test_mode())
 			continue;
 
-		/* FIXME specify events */
-		if (!monitor_fn(seg, 0)) {
-			log_error("%s: %s segment monitoring function failed.",
-				  display_lvname(lv), seg->segtype->name);
-			return 0;
-		}
+		if (new_unmonitor) {
+			if (!target_register_events(cmd, dso, seg_is_snapshot(seg) ? seg->cow : lv, 0, 0, 10)) {
+				log_error("%s: segment unmonitoring failed.",
+					  display_lvname(lv));
+ 
+				return 0;
+			}
+		} else if (monitor_fn) {
+			/* FIXME specify events */
+			if (!monitor_fn(seg, 0)) {
+				log_error("%s: %s segment monitoring function failed.",
+					  display_lvname(lv), seg->segtype->name);
+				return 0;
+			}
+		} else
+			continue;
 
 		/* Check [un]monitor results */
 		/* Try a couple times if pending, but not forever... */

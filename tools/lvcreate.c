@@ -464,8 +464,13 @@ static int _read_raid_params(struct cmd_context *cmd,
 				/*
 				 * RAID10 needs at least 4 stripes
 				 */
-				log_warn("Adjusting stripes to the minimum of 2 for %s.",
-					 lp->segtype->name);
+				if (lp->stripes_supplied) {
+					log_error("Minimum of 2 stripes required for %s.",
+						  lp->segtype->name);
+					return 0;
+				}
+
+				log_verbose("Using 2 stripes for %s.", lp->segtype->name);
 				lp->stripes = 2;
 			}
 
@@ -480,14 +485,28 @@ static int _read_raid_params(struct cmd_context *cmd,
 			/*
 			 * RAID1 does not take a stripe arg
 			 */
-			log_error("Stripe argument cannot be used with segment type, %s",
+			log_error("Stripes argument cannot be used with segment type, %s",
 				  lp->segtype->name);
 			return 0;
 		}
 
-	} else if (lp->stripes < 2)
-		/* No stripes argument was given */
-		lp->stripes = seg_is_any_raid6(lp) ? 3 : 2;
+	} else if (seg_is_any_raid6(lp) && lp->stripes < 3) {
+		if (lp->stripes_supplied) {
+			log_error("Minimum of 3 stripes required for %s.", lp->segtype->name);
+			return 0;
+		}
+
+		log_verbose("Using 3 stripes for %s.", lp->segtype->name);
+		lp->stripes = 3;
+	} else if (lp->stripes < 2) {
+		if (lp->stripes_supplied) {
+			log_error("Minimum of 2 stripes required for %s.", lp->segtype->name);
+			return 0;
+		}
+
+		log_verbose("Using 2 stripes for %s.", lp->segtype->name);
+		lp->stripes = 2;
+	}
 
 	if (seg_is_raid1(lp)) {
 		if (lp->stripe_size) {
@@ -572,7 +591,7 @@ static int _read_mirror_and_raid_params(struct cmd_context *cmd,
 	/* FIMXE: raid10 check has to change once we support data copies and odd numbers of stripes */
 	if (seg_is_raid10(lp) && lp->mirrors * lp->stripes > max_images) {
 		log_error("Only up to %u stripes in %s supported currently.",
-			  max_images, lp->segtype->name);
+			  max_images / lp->mirrors, lp->segtype->name);
 		return 0;
 	} else if (seg_is_mirrored(lp)) {
 		if (lp->mirrors > max_images) {
@@ -1035,6 +1054,12 @@ static int _lvcreate_params(struct cmd_context *cmd,
 			return 0;
 		}
 
+		if (segtype_is_raid4(lp->segtype) &&
+		    !(lp->target_attr & RAID_FEATURE_RAID4)) {
+			log_error("RAID module does not support RAID4.");
+			return 0;
+		}
+
 		if (segtype_is_raid10(lp->segtype) && !(lp->target_attr & RAID_FEATURE_RAID10)) {
 			log_error("RAID module does not support RAID10.");
 			return 0;
@@ -1061,7 +1086,7 @@ static int _lvcreate_params(struct cmd_context *cmd,
 
 	if (!_lvcreate_name_params(cmd, &argc, &argv, lp) ||
 	    !_read_size_params(cmd, lp, lcp) ||
-	    !get_stripe_params(cmd, lp->segtype, &lp->stripes, &lp->stripe_size) ||
+	    !get_stripe_params(cmd, lp->segtype, &lp->stripes, &lp->stripe_size, &lp->stripes_supplied, &lp->stripe_size_supplied) ||
 	    (lp->create_pool &&
 	     !get_pool_params(cmd, lp->segtype, &lp->passed_args,
 			      &lp->pool_metadata_size, &lp->pool_metadata_spare,
@@ -1255,9 +1280,16 @@ static int _check_raid_parameters(struct volume_group *vg,
 				  struct lvcreate_cmdline_params *lcp)
 {
 	unsigned devs = lcp->pv_count ? : dm_list_size(&vg->pvs);
+	uint64_t page_sectors = lvm_getpagesize() >> SECTOR_SHIFT;
 	struct cmd_context *cmd = vg->cmd;
 	int old_stripes = !arg_is_set(cmd, stripes_ARG) &&
 			  find_config_tree_bool(cmd, allocation_raid_stripe_all_devices_CFG, NULL);
+
+	if (vg->extent_size < page_sectors) {
+		log_error("Unable to create RAID LV: requires minimum VG extent size %s",
+			  display_size(vg->cmd, page_sectors));
+		return 0;
+	}
 
 	/*
 	 * If we requested the previous behaviour by setting

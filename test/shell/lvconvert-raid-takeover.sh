@@ -16,6 +16,9 @@ SKIP_WITH_LVMPOLLD=1
 
 aux have_raid 1 9 0 || skip
 
+correct_raid4_layout=0
+aux have_raid 1 9 1 && correct_raid4_layout=1
+
 aux prepare_vg 9 288
 
 # Delay 1st leg so that rebuilding status characters
@@ -23,7 +26,7 @@ aux prepare_vg 9 288
 # aux delay_dev "$dev1" 0 1
 
 # Create 3-way mirror
-lvcreate --yes --type mirror -m 2 -L 256M -n $lv1 $vg
+lvcreate --yes -aey --type mirror -m 2 -L 64M -n $lv1 $vg
 check lv_field $vg/$lv1 segtype "mirror"
 check lv_field $vg/$lv1 stripes 3
 echo y | mkfs -t ext4 /dev/mapper/$vg-$lv1
@@ -78,21 +81,60 @@ aux wait_for_sync $vg $lv1
 # Clean up
 lvremove --yes $vg/$lv1
 
-# Create 3-way raid0
-lvcreate -y --type raid0 -i 3 -L 256M -n $lv1 $vg
-check lv_field $vg/$lv1 segtype "raid0"
+# Create 3-way striped
+lvcreate -y -aey --type striped -i 3 -L 64M -n $lv1 $vg
+check lv_field $vg/$lv1 segtype "striped"
 check lv_field $vg/$lv1 stripes 3
 echo y | mkfs -t ext4 /dev/mapper/$vg-$lv1
 fsck -fn  /dev/mapper/$vg-$lv1
 
-# Convert raid0 -> raid4
+# Create 3-way raid0
+lvcreate -y -aey --type raid0 -i 3 -L 64M -n $lv2 $vg
+check lv_field $vg/$lv2 segtype "raid0"
+check lv_field $vg/$lv2 stripes 3
+echo y | mkfs -t ext4 /dev/mapper/$vg-$lv2
+fsck -fn  /dev/mapper/$vg-$lv2
+
+# Create 3-way raid0_meta
+lvcreate -y -aey --type raid0_meta -i 3 -L 64M -n $lv3 $vg
+check lv_field $vg/$lv3 segtype "raid0_meta"
+check lv_field $vg/$lv3 stripes 3
+echo y | mkfs -t ext4 /dev/mapper/$vg-$lv3
+fsck -fn  /dev/mapper/$vg-$lv3
+
+if [ $correct_raid4_layout -eq 1 ]
+then
+
+# Create 3-way raid4
+lvcreate -y -aey --type raid4 -i 3 -L 64M -n $lv4 $vg
+check lv_field $vg/$lv4 segtype "raid4"
+check lv_field $vg/$lv4 stripes 4
+echo y | mkfs -t ext4 /dev/mapper/$vg-$lv4
+fsck -fn  /dev/mapper/$vg-$lv4
+aux wait_for_sync $vg $lv4
+fsck -fn  /dev/mapper/$vg-$lv4
+
+# Convert raid4 -> striped (correct raid4 mapping test!)
+lvconvert -y --ty striped $vg/$lv4
+check lv_field $vg/$lv4 segtype "striped"
+check lv_field $vg/$lv4 stripes 3
+fsck -fn  /dev/mapper/$vg-$lv4
+
+# Convert striped -> raid4
 lvconvert -y --ty raid4 $vg/$lv1
-lvchange --refresh $vg/$lv1
 check lv_field $vg/$lv1 segtype "raid4"
 check lv_field $vg/$lv1 stripes 4
 fsck -fn  /dev/mapper/$vg-$lv1
 aux wait_for_sync $vg $lv1
 fsck -fn  /dev/mapper/$vg-$lv1
+
+# Convert raid0 -> raid4
+lvconvert -y --ty raid4 $vg/$lv2
+check lv_field $vg/$lv2 segtype "raid4"
+check lv_field $vg/$lv2 stripes 4
+fsck -fn  /dev/mapper/$vg-$lv2
+aux wait_for_sync $vg $lv2
+fsck -fn  /dev/mapper/$vg-$lv2
 
 # Convert raid4 -> raid0_meta
 lvconvert -y --ty raid0_meta $vg/$lv1
@@ -116,11 +158,24 @@ fsck -fn  /dev/mapper/$vg-$lv1
 
 # Convert raid0 -> raid4
 lvconvert -y --ty raid4 $vg/$lv1
-lvchange --refresh $vg/$lv1
 check lv_field $vg/$lv1 segtype "raid4"
 check lv_field $vg/$lv1 stripes 4
 fsck -fn  /dev/mapper/$vg-$lv1
 aux wait_for_sync $vg $lv1
 fsck -fn  /dev/mapper/$vg-$lv1
+
+# Convert raid4 -> striped
+lvconvert -y --ty striped $vg/$lv1
+check lv_field $vg/$lv1 segtype "striped"
+check lv_field $vg/$lv1 stripes 3
+fsck -fn  /dev/mapper/$vg-$lv1
+
+else
+
+not lvcreate -y -aey --type raid4 -i 3 -L 64M -n $lv4 $vg
+not lvconvert -y --ty raid4 $vg/$lv1
+not lvconvert -y --ty raid4 $vg/$lv2
+
+fi
 
 vgremove -ff $vg

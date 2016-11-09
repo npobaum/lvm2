@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copyright (C) 2013 Red Hat, Inc. All rights reserved.
+# Copyright (C) 2013-2016 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
 # modify, copy, or redistribute it subject to the terms and conditions
@@ -23,7 +23,52 @@ aux prepare_pvs 3
 vgcreate -s 128k $vg  "$dev1" "$dev2"
 vgcreate -s 128k $vg2 "$dev3"
 
-lvcreate -V10M -L10M -T $vg/pool -n $lv1
+lvcreate -L10M -T $vg/pool
+
+# When PV does not support discard
+# tests for checking thin-pool discard passdown are skipped
+pvmajor=$(get pv_field "$dev1" major)
+pvminor=$(get pv_field "$dev1" minor)
+test "$(< /sys/dev/block/$pvmajor\:$pvminor/queue/discard_granularity)" -ne "0" || \
+        no_discard=1
+
+#
+# Check change operations on a thin-pool without any thin LV
+#
+# discards_ARG  (default is passdown)
+test -n "$no_discard" || check grep_dmsetup status $vg-pool " discard_passdown" || {
+	# trace device layout
+	grep -r "" /sys/block/*
+	die "Device was expected to support passdown"
+}
+
+lvchange --discards nopassdown $vg/pool
+check grep_dmsetup table $vg-pool " no_discard_passdown"
+test -n "$no_discard" || check grep_dmsetup status $vg-pool " no_discard_passdown"
+
+lvchange --discards passdown $vg/pool
+check grep_dmsetup table $vg-pool -v "passdown"
+test -n "$no_discard" || check grep_dmsetup status $vg-pool " discard_passdown"
+exit
+# zero_ARG  (default is 'yes')
+check grep_dmsetup table $vg-pool -v "zeroing"
+lvchange --zero n $vg/pool
+check grep_dmsetup table $vg-pool " skip_block_zeroing"
+lvchange --zero y $vg/pool
+check grep_dmsetup table $vg-pool -v "zeroing"
+
+# errorwhenfull_ARG  (default is 'no')
+check grep_dmsetup status $vg-pool "queue_if_no_space"
+lvchange --errorwhenfull y $vg/pool
+check grep_dmsetup status $vg-pool "error_if_no_space"
+check grep_dmsetup table $vg-pool "error_if_no_space"
+lvchange --errorwhenfull n $vg/pool
+check grep_dmsetup status $vg-pool "queue_if_no_space"
+check grep_dmsetup table $vg-pool -v "error_if_no_space"
+
+
+# Attach thin volume
+lvcreate -V10M -n $lv1 $vg/pool
 lvcreate -L10M -n $lv2 $vg
 
 lvchange -an $vg/$lv1
@@ -73,11 +118,26 @@ lvchange --deltag foo $vg/pool
 
 # discards_ARG
 lvchange --discards nopassdown $vg/pool
+check grep_dmsetup table $vg-pool-tpool " no_discard_passdown"
+test -n "$no_discard" || check grep_dmsetup status $vg-pool-tpool " no_discard_passdown"
 lvchange --discards passdown $vg/pool
+check grep_dmsetup table $vg-pool-tpool -v "passdown"
+test -n "$no_discard" || check grep_dmsetup status $vg-pool-tpool " discard_passdown"
 
 # zero_ARG
 lvchange --zero n $vg/pool
+check grep_dmsetup table $vg-pool-tpool " skip_block_zeroing"
 lvchange --zero y $vg/pool
+check grep_dmsetup table $vg-pool-tpool -v "zeroing"
+
+
+lvchange --errorwhenfull y $vg/pool
+check grep_dmsetup status $vg-pool-tpool "error_if_no_space"
+check grep_dmsetup table $vg-pool-tpool "error_if_no_space"
+lvchange --errorwhenfull n $vg/pool
+check grep_dmsetup status $vg-pool-tpool "queue_if_no_space"
+check grep_dmsetup table $vg-pool-tpool -v "error_if_no_space"
+
 
 #
 # Test for disallowed metadata changes

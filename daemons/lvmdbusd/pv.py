@@ -18,7 +18,7 @@ from .utils import vg_obj_path_generate, n, pv_obj_path_generate, \
 from .loader import common
 from .request import RequestEntry
 from .state import State
-from .utils import round_size
+from .utils import round_size, mt_remove_dbus_objects
 
 
 # noinspection PyUnusedLocal
@@ -55,9 +55,6 @@ class PvState(State):
 		return self.lvm_path
 
 	def _lv_object_list(self, vg_name):
-
-		# Note we are returning "a(oa(tts))"
-
 		rc = []
 		if vg_name:
 			for lv in sorted(cfg.db.pv_contained_lv(self.lvm_id)):
@@ -69,7 +66,7 @@ class PvState(State):
 					lv_uuid, full_name, path_create)
 
 				rc.append((lv_path, segs))
-		return dbus.Array(rc, signature="(oa(tts))")
+		return rc
 
 	# noinspection PyUnusedLocal,PyPep8Naming
 	def __init__(self, lvm_path, Uuid, Name,
@@ -143,7 +140,7 @@ class Pv(AutomatedProperties):
 		if dbo:
 			rc, out, err = cmdhandler.pv_remove(pv_name, remove_options)
 			if rc == 0:
-				cfg.om.remove_object(dbo, True)
+				mt_remove_dbus_objects((dbo,))
 			else:
 				# Need to work on error handling, need consistent
 				raise dbus.exceptions.DBusException(
@@ -177,7 +174,7 @@ class Pv(AutomatedProperties):
 			rc, out, err = cmdhandler.pv_resize(pv_name, new_size_bytes,
 												resize_options)
 			if rc == 0:
-				dbo.refresh()
+				cfg.load()
 			else:
 				raise dbus.exceptions.DBusException(
 					PV_INTERFACE,
@@ -241,26 +238,20 @@ class Pv(AutomatedProperties):
 	@property
 	def PeSegments(self):
 		if len(self.state.pe_segments):
-			return self.state.pe_segments
+			return dbus.Array(self.state.pe_segments, signature='(tt)')
 		return dbus.Array([], '(tt)')
 
 	@property
 	def Exportable(self):
-		if self.state.attr[1] == 'x':
-			return True
-		return False
+		return dbus.Boolean(self.state.attr[1] == 'x')
 
 	@property
 	def Allocatable(self):
-		if self.state.attr[0] == 'a':
-			return True
-		return False
+		return dbus.Boolean(self.state.attr[0] == 'a')
 
 	@property
 	def Missing(self):
-		if self.state.attr[2] == 'm':
-			return True
-		return False
+		return dbus.Boolean(self.state.attr[2] == 'm')
 
 	def object_path(self):
 		return self._object_path
@@ -275,8 +266,8 @@ class Pv(AutomatedProperties):
 
 	@property
 	def Lv(self):
-		return self.state.lv
+		return dbus.Array(self.state.lv, signature="(oa(tts))")
 
 	@property
 	def Vg(self):
-		return self.state.vg_path
+		return dbus.ObjectPath(self.state.vg_path)

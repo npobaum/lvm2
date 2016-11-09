@@ -16,18 +16,19 @@ from . import cmdhandler
 import time
 import signal
 import dbus
+import dbus.mainloop.glib
 from . import lvmdb
 # noinspection PyUnresolvedReferences
 from gi.repository import GLib
 from .fetch import load
 from .manager import Manager
-from .background import background_reaper
 import traceback
 import queue
 from . import udevwatch
-from .utils import log_debug
+from .utils import log_debug, log_error
 import argparse
 import os
+import sys
 from .refresh import handle_external_event, event_complete
 
 
@@ -62,6 +63,7 @@ def _discard_pending_refreshes():
 
 def process_request():
 	while cfg.run.value != 0:
+		# noinspection PyBroadException
 		try:
 			req = cfg.worker_q.get(True, 5)
 
@@ -83,7 +85,7 @@ def process_request():
 					log_debug(
 						"Inspect method %s for too many refreshes" %
 						(str(req.method)))
-			log_debug("Complete ")
+			log_debug("Method complete ")
 		except queue.Empty:
 			pass
 		except Exception:
@@ -92,32 +94,43 @@ def process_request():
 
 
 def main():
+	start = time.time()
 	# Add simple command line handling
 	parser = argparse.ArgumentParser()
-	parser.add_argument("--udev", action='store_true',
-						help="Use udev for updating state", default=False,
-						dest='use_udev')
-	parser.add_argument("--debug", action='store_true',
-						help="Dump debug messages", default=False,
-						dest='debug')
-
-	parser.add_argument("--nojson", action='store_false',
-						help="Do not use LVM JSON output", default=None,
-						dest='use_json')
+	parser.add_argument(
+		"--udev", action='store_true',
+		help="Use udev for updating state",
+		default=False,
+		dest='use_udev')
+	parser.add_argument(
+		"--debug", action='store_true',
+		help="Dump debug messages", default=False,
+		dest='debug')
+	parser.add_argument(
+		"--nojson", action='store_false',
+		help="Do not use LVM JSON output (disables lvmshell)", default=True,
+		dest='use_json')
+	parser.add_argument(
+		"--lvmshell", action='store_true',
+		help="Use the lvm shell, not fork & exec lvm",
+		default=False,
+		dest='use_lvm_shell')
 
 	use_session = os.getenv('LVMDBUSD_USE_SESSION', False)
 
 	# Ensure that we get consistent output for parsing stdout/stderr
 	os.environ["LC_ALL"] = "C"
 
-	args = parser.parse_args()
+	cfg.args = parser.parse_args()
 
-	cfg.DEBUG = args.debug
+	if cfg.args.use_lvm_shell and not cfg.args.use_json:
+		log_error("You cannot specify --lvmshell and --nojson")
+		sys.exit(1)
+
+	cmdhandler.set_execution(cfg.args.use_lvm_shell)
 
 	# List of threads that we start up
 	thread_list = []
-
-	start = time.time()
 
 	# Install signal handlers
 	for s in [signal.SIGHUP, signal.SIGINT]:
@@ -141,39 +154,38 @@ def main():
 
 	cfg.load = load
 
-	cfg.db = lvmdb.DataStore(args.use_json)
+	cfg.db = lvmdb.DataStore(cfg.args.use_json)
 
-	# Start up thread to monitor pv moves
-	thread_list.append(
-		threading.Thread(target=background_reaper, name="pv_move_reaper"))
-
-	# Using a thread to process requests.
+	# Using a thread to process requests, we cannot hang the dbus library
+	# thread that is handling the dbus interface
 	thread_list.append(threading.Thread(target=process_request))
 
-	cfg.load(refresh=False, emit_signal=False)
+	cfg.load(refresh=False, emit_signal=False, need_main_thread=False)
 	cfg.loop = GLib.MainLoop()
 
 	for process in thread_list:
 		process.damon = True
 		process.start()
 
+	# Add udev watching
+	if cfg.args.use_udev:
+		log_debug('Utilizing udev to trigger updates')
+
+	# In all cases we are going to monitor for udev until we get an
+	# ExternalEvent.  In the case where we get an external event and the user
+	# didn't specify --udev we will stop monitoring udev
+	udevwatch.add()
+
 	end = time.time()
 	log_debug(
-		'Service ready! total time= %.2f, lvm time= %.2f count= %d' %
+		'Service ready! total time= %.4f, lvm time= %.4f count= %d' %
 		(end - start, cmdhandler.total_time, cmdhandler.total_count),
 		'bg_black', 'fg_light_green')
-
-	# Add udev watching
-	if args.use_udev:
-		log_debug('Utilizing udev to trigger updates')
-		udevwatch.add()
 
 	try:
 		if cfg.run.value != 0:
 			cfg.loop.run()
-
-			if args.use_udev:
-				udevwatch.remove()
+			udevwatch.remove()
 
 			for process in thread_list:
 				process.join()

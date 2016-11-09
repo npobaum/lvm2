@@ -496,7 +496,7 @@ int override_config_tree_from_profile(struct cmd_context *cmd,
 int config_file_read_fd(struct dm_config_tree *cft, struct device *dev,
 			off_t offset, size_t size, off_t offset2, size_t size2,
 			checksum_fn_t checksum_fn, uint32_t checksum,
-			int checksum_only)
+			int checksum_only, int no_dup_node_check)
 {
 	char *fb, *fe;
 	int r = 0;
@@ -547,8 +547,13 @@ int config_file_read_fd(struct dm_config_tree *cft, struct device *dev,
 
 	if (!checksum_only) {
 		fe = fb + size + size2;
-		if (!dm_config_parse(cft, fb, fe))
-			goto_out;
+		if (no_dup_node_check) {
+			if (!dm_config_parse_without_dup_node_check(cft, fb, fe))
+				goto_out;
+		} else {
+			if (!dm_config_parse(cft, fb, fe))
+				goto_out;
+		}
 	}
 
 	r = 1;
@@ -596,7 +601,7 @@ int config_file_read(struct dm_config_tree *cft)
 	}
 
 	r = config_file_read_fd(cft, cf->dev, 0, (size_t) info.st_size, 0, 0,
-				(checksum_fn_t) NULL, 0, 0);
+				(checksum_fn_t) NULL, 0, 0, 0);
 
 	if (!cf->keep_open) {
 		if (!dev_close(cf->dev))
@@ -2460,4 +2465,26 @@ int get_default_allocation_thin_pool_chunk_size_CFG(struct cmd_context *cmd, str
 int get_default_allocation_cache_pool_chunk_size_CFG(struct cmd_context *cmd, struct profile *profile)
 {
 	return DEFAULT_CACHE_POOL_CHUNK_SIZE * 2;
+}
+
+uint64_t get_default_allocation_cache_pool_max_chunks_CFG(struct cmd_context *cmd, struct profile *profile)
+{
+	static int _warn_max_chunks = 0;
+	/*
+	 * TODO: In future may depend on the cache target version,
+	 *       newer targets may scale better.
+	 */
+	uint64_t default_max_chunks = DEFAULT_CACHE_POOL_MAX_CHUNKS;
+	uint64_t max_chunks = find_config_tree_int(cmd, allocation_cache_pool_max_chunks_CFG, profile);
+
+	if (!max_chunks)
+		max_chunks = default_max_chunks;
+	else if (max_chunks > default_max_chunks)
+		/* Still warn the user when the value is tweaked above recommended level */
+		/* Maybe drop to log_verbose... */
+		log_warn_suppress(_warn_max_chunks++, "WARNING: Configured cache_pool_max_chunks value "
+				  FMTu64 " is higher then recommended " FMTu64 ".",
+				  max_chunks, default_max_chunks);
+
+	return max_chunks;
 }
