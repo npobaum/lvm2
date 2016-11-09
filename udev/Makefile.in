@@ -17,10 +17,10 @@ top_builddir = @top_builddir@
 
 include $(top_builddir)/make.tmpl
 
-DM_RULES=10-dm.rules 13-dm-disk.rules 95-dm-notify.rules
-LVM_RULES=11-dm-lvm.rules
+DM_RULES=55-dm.rules 60-persistent-storage-dm.rules
+LVM_RULES=56-lvm.rules
 ifeq ("@BUILD_LVMETAD@", "yes")
-LVM_RULES+=69-dm-lvm-metad.rules
+LVM_RULES+=69-lvm-metad.rules
 endif
 
 DM_DIR=$(shell grep "\#define DM_DIR" $(top_srcdir)/libdm/misc/dm-ioctl.h | awk '{print $$3}')
@@ -53,6 +53,18 @@ endif
 
 %.rules: $(srcdir)/%.rules.in
 	$(SED) -e "s+(DM_DIR)+$(DM_DIR)+;s+(BLKID_RULE)+$(BLKID_RULE)+;s+(PVSCAN_RULE)+$(PVSCAN_RULE)+;s+(DM_EXEC_RULE)+$(DM_EXEC_RULE)+;s+(DM_EXEC)+$(DM_EXEC)+;s+(LVM_EXEC_RULE)+$(LVM_EXEC_RULE)+;s+(LVM_EXEC)+$(LVM_EXEC)+;" $< >$@
+
+55-dm.rules: 10-dm.rules
+	ln -s $< $@
+
+56-lvm.rules: 11-dm-lvm.rules
+	ln -s $< $@
+
+60-persistent-storage-dm.rules: 13-dm-disk.rules
+	ln -s $< $@
+
+69-lvm-metad.rules: 69-dm-lvm-metad.rules
+	ln -s $< $@
 
 %_install: %.rules
 	$(INSTALL_DATA) -D $< $(udevdir)/$(<F)
