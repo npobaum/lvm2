@@ -1,7 +1,8 @@
 Source: lvm2
 Section: admin
 Priority: optional
-Maintainer: Debian LVM Team <pkg-lvm-maintainers@lists.alioth.debian.org>
+Maintainer: Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>
+XSBC-Original-Maintainer: Debian LVM Team <pkg-lvm-maintainers@lists.alioth.debian.org>
 Uploaders: Bastian Blank <waldi@debian.org>
 Build-Depends:
  debhelper (>> 9),
@@ -58,7 +59,7 @@ Description: Linux Logical Volume Manager
 Package: clvm
 Priority: extra
 Architecture: linux-any
-Depends: ${shlibs:Depends}, ${misc:Depends}, lvm2 (= ${binary:Version}), dlm-controld
+Depends: ${shlibs:Depends}, ${misc:Depends}, lvm2 (= ${binary:Version}), dlm
 Suggests: pacemaker, resource-agents
 Multi-Arch: foreign
 Description: Cluster extensions for userland logical volume management tools
@@ -88,7 +89,8 @@ Section: libs
 Priority: optional
 Architecture: linux-any
 Pre-Depends: ${misc:Pre-Depends}
-Depends: ${shlibs:Depends}, ${misc:Depends}, dmsetup (>= ${binary:Version})
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Recommends: dmsetup (>= ${binary:Version})
 Breaks: lvm2 (<< 2.02.122), liblvm2app2.2 (<< 2.02.122)
 Conflicts: libdevmapper1.02
 Multi-Arch: same
@@ -108,6 +110,7 @@ Package-Type: udeb
 Section: debian-installer
 Architecture: linux-any
 Depends: ${shlibs:Depends}, ${misc:Depends}
+Recommends: dmsetup-udeb
 Description: Linux Kernel Device Mapper userspace library
  This is a udeb, or a microdeb, for the debian-installer.
  .
