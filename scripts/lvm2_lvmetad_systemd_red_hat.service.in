@@ -5,6 +5,7 @@ Requires=lvm2-lvmetad.socket
 After=lvm2-lvmetad.socket
 DefaultDependencies=no
 Conflicts=shutdown.target
+ConditionVirtualization=!container
 
 [Service]
 Type=simple

@@ -7,5 +7,7 @@
 0007-udev.patch
 0008-systemd.patch
 0009-clvmd-openais-format.patch
+0010-no-metad-in-container.patch
 udev-md.patch
 systemd-pvscan-background.patch
+enable-issue-discards.patch
