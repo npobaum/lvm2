@@ -1,3 +1,8 @@
+Version 1.02.137 - 30th November 2016
+=====================================
+  Document raid status values.
+  Always exit dmsetup with success when asked to display help/version.
+
 Version 1.02.136 - 5th November 2016
 ====================================
   Log failure of raid device with log_error level.

@@ -14,9 +14,7 @@ from .cfg import MANAGER_INTERFACE
 import dbus
 from . import cfg
 from . import cmdhandler
-from .fetch import load_pvs, load_vgs
 from .request import RequestEntry
-from .refresh import event_add
 from . import udevwatch
 
 
@@ -160,16 +158,24 @@ class Manager(AutomatedProperties):
 			return p
 		return '/'
 
+	@staticmethod
+	def _use_lvm_shell(yes_no):
+		return dbus.Boolean(cmdhandler.set_execution(yes_no))
+
 	@dbus.service.method(
 		dbus_interface=MANAGER_INTERFACE,
-		in_signature='b', out_signature='b')
-	def UseLvmShell(self, yes_no):
+		in_signature='b', out_signature='b',
+		async_callbacks=('cb', 'cbe'))
+	def UseLvmShell(self, yes_no, cb, cbe):
 		"""
 		Allow the client to enable/disable lvm shell, used for testing
 		:param yes_no:
+		:param cb:	dbus python call back parameter, not client visible
+		:param cbe:	dbus python error call back parameter, not client visible
 		:return: Nothing
 		"""
-		return dbus.Boolean(cmdhandler.set_execution(yes_no))
+		r = RequestEntry(-1, Manager._use_lvm_shell, (yes_no,), cb, cbe, False)
+		cfg.worker_q.put(r)
 
 	@dbus.service.method(
 		dbus_interface=MANAGER_INTERFACE,
@@ -183,7 +189,8 @@ class Manager(AutomatedProperties):
 								"udev monitoring")
 				# We are dependent on external events now to stay current!
 				cfg.ee = True
-		event_add((command,))
+		utils.log_debug("ExternalEvent %s" % command)
+		cfg.event()
 		return dbus.Int32(0)
 
 	@staticmethod

@@ -15,14 +15,9 @@ import collections
 import traceback
 import os
 
-try:
-	from . import cfg
-	from .utils import pv_dest_ranges, log_debug, log_error
-	from .lvm_shell_proxy import LVMShellProxy
-except SystemError:
-	import cfg
-	from utils import pv_dest_ranges, log_debug, log_error
-	from lvm_shell_proxy import LVMShellProxy
+from lvmdbusd import cfg
+from lvmdbusd.utils import pv_dest_ranges, log_debug, log_error
+from lvmdbusd.lvm_shell_proxy import LVMShellProxy
 
 try:
 	import simplejson as json
@@ -60,18 +55,19 @@ class LvmExecutionMeta(object):
 
 class LvmFlightRecorder(object):
 
-	def __init__(self):
-		self.queue = collections.deque(maxlen=16)
+	def __init__(self, size=16):
+		self.queue = collections.deque(maxlen=size)
 
 	def add(self, lvm_exec_meta):
 		self.queue.append(lvm_exec_meta)
 
 	def dump(self):
 		with cmd_lock:
-			log_error("LVM dbus flight recorder START")
-			for c in self.queue:
-				log_error(str(c))
-			log_error("LVM dbus flight recorder END")
+			if len(self.queue):
+				log_error("LVM dbus flight recorder START")
+				for c in self.queue:
+					log_error(str(c))
+				log_error("LVM dbus flight recorder END")
 
 
 cfg.blackbox = LvmFlightRecorder()
@@ -117,6 +113,7 @@ _t_call = call_lvm
 
 def _shell_cfg():
 	global _t_call
+	# noinspection PyBroadException
 	try:
 		lvm_shell = LVMShellProxy()
 		_t_call = lvm_shell.call_lvm
@@ -357,7 +354,8 @@ def vg_lv_create_raid(vg_name, create_options, name, raid_type, size_bytes,
 								size_bytes, num_stripes, stripe_size_kb)
 
 
-def vg_lv_create_mirror(vg_name, create_options, name, size_bytes, num_copies):
+def vg_lv_create_mirror(
+		vg_name, create_options, name, size_bytes, num_copies):
 	cmd = ['lvcreate']
 	cmd.extend(options_to_cli_args(create_options))
 
@@ -732,8 +730,8 @@ def lv_retrieve_with_segments():
 				'lv_attr', 'lv_tags', 'vg_uuid', 'lv_active', 'data_lv',
 				'metadata_lv', 'seg_pe_ranges', 'segtype', 'lv_parent',
 				'lv_role', 'lv_layout',
-			    'snap_percent', 'metadata_percent', 'copy_percent',
-			    'sync_percent', 'lv_metadata_size', 'move_pv', 'move_pv_uuid']
+				'snap_percent', 'metadata_percent', 'copy_percent',
+				'sync_percent', 'lv_metadata_size', 'move_pv', 'move_pv_uuid']
 
 	cmd = _dc('lvs', ['-a', '-o', ','.join(columns)])
 	rc, out, err = call(cmd)
@@ -750,4 +748,4 @@ if __name__ == '__main__':
 	pv_data = pv_retrieve_with_segs()
 
 	for p in pv_data:
-		log_debug(str(p))
+		print(str(p))

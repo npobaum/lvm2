@@ -1,4 +1,4 @@
-From d5aafeff99b728811033372670cf7575dbb98bc7 Mon Sep 17 00:00:00 2001
+From b37895a4dedbc165d845214f614abc0dc7a17255 Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 30 Jun 2015 11:46:07 +0200
 Subject: dirs
@@ -22,7 +22,7 @@ index b1a2a9c..736b4bd 100644
  	# Configuration option devices/cache_file_prefix.
  	# A prefix used before the .cache file name. See devices/cache_dir.
 diff --git a/lib/config/config.c b/lib/config/config.c
-index 6ad04e5..3c57542 100644
+index 3e30951..d5a5e3c 100644
 --- a/lib/config/config.c
 +++ b/lib/config/config.c
 @@ -2344,10 +2344,8 @@ const char *get_default_devices_cache_CFG(struct cmd_context *cmd, struct profil

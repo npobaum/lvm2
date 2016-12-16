@@ -89,6 +89,7 @@ $(STAMPS_DIR)/setup_deb: $(STAMPS_DIR)/source
 		--enable-applib \
 		--enable-blkid_wiping \
 		--enable-cmdlib \
+		--enable-cmirrord \
 		--enable-dmeventd \
 		--enable-lvmetad \
 		--enable-lvmpolld \

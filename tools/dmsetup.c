@@ -691,9 +691,11 @@ static int _do_usleep_wait(void)
 	if (usleep(this_interval / NSEC_PER_USEC)) {
 		if (errno == EINTR)
 			log_error("Report interval interrupted by signal.");
-		if (errno == EINVAL)
+		else if (errno == EINVAL)
 			log_error("Report interval too short.");
-		return_0;
+		else
+			stack; /* other reason */
+		return 0;
 	}
 
 	if (_count == 2) {
@@ -6798,7 +6800,7 @@ unknown:
 	if (_switches[COLS_ARG]) {
 		if (!_report_init(cmd, subcommand))
 			ret = 1;
- 		if (!_report)
+		if (ret || !_report)
 			goto_out;
 	}
 
@@ -6864,5 +6866,5 @@ out:
 	if (_initial_timestamp)
 		dm_timestamp_destroy(_initial_timestamp);
 
-	return ret;
+	return (_switches[HELP_ARG] || _switches[VERSION_ARG]) ? 0 : ret;
 }

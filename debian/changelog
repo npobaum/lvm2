@@ -1,3 +1,10 @@
+lvm2 (2.02.168-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Install but not start cmirrord. (closes: #570232)
+
+ -- Bastian Blank <waldi@debian.org>  Fri, 16 Dec 2016 15:29:17 +0100
+
 lvm2 (2.02.167-1) unstable; urgency=medium
 
   * New upstream release.

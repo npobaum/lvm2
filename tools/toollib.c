@@ -451,17 +451,16 @@ static int _add_pe_range(struct dm_pool *mem, const char *pvname,
 {
 	struct pe_range *per;
 
-	log_debug("Adding PE range: start PE %" PRIu32 " length %" PRIu32
-		  " on %s.", start, count, pvname);
+	log_debug("Adding PE range: start PE " FMTu32 " length " FMTu32 " on %s.",
+		  start, count, pvname);
 
 	/* Ensure no overlap with existing areas */
 	dm_list_iterate_items(per, pe_ranges) {
 		if (((start < per->start) && (start + count - 1 >= per->start)) ||
 		    ((start >= per->start) &&
 			(per->start + per->count - 1) >= start)) {
-			log_error("Overlapping PE ranges specified (%" PRIu32
-				  "-%" PRIu32 ", %" PRIu32 "-%" PRIu32 ")"
-				  " on %s.",
+			log_error("Overlapping PE ranges specified (" FMTu32
+				  "-" FMTu32 ", " FMTu32 "-" FMTu32 ") on %s.",
 				  start, start + count - 1, per->start,
 				  per->start + per->count - 1, pvname);
 			return 0;
@@ -579,18 +578,18 @@ static int _create_pv_entry(struct dm_pool *mem, struct pv_list *pvl,
 
 	pvname = pv_dev_name(pvl->pv);
 	if (allocatable_only && !(pvl->pv->status & ALLOCATABLE_PV)) {
-		log_warn("Physical volume %s not allocatable.", pvname);
+		log_warn("WARNING: Physical volume %s not allocatable.", pvname);
 		return 1;
 	}
 
 	if (allocatable_only && is_missing_pv(pvl->pv)) {
-		log_warn("Physical volume %s is missing.", pvname);
+		log_warn("WARNING: Physical volume %s is missing.", pvname);
 		return 1;
 	}
 
 	if (allocatable_only &&
 	    (pvl->pv->pe_count == pvl->pv->pe_alloc_count)) {
-		log_warn("No free extents on physical volume \"%s\".", pvname);
+		log_warn("WARNING: No free extents on physical volume \"%s\".", pvname);
 		return 1;
 	}
 
@@ -637,7 +636,7 @@ struct dm_list *create_pv_list(struct dm_pool *mem, struct volume_group *vg, int
 
 	/* Build up list of PVs */
 	if (!(r = dm_pool_alloc(mem, sizeof(*r)))) {
-		log_error("Allocation of list failed");
+		log_error("Allocation of list failed.");
 		return NULL;
 	}
 	dm_list_init(r);
@@ -2474,7 +2473,7 @@ int process_each_lv_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 		if (!(final_lvl = dm_pool_zalloc(cmd->mem, sizeof(struct lv_list)))) {
 			log_error("Failed to allocate final LV list item.");
 			ret_max = ECMD_FAILED;
-			goto_out;
+			goto out;
 		}
 		final_lvl->lv = lvl->lv;
 		dm_list_add(&final_lvs, &final_lvl->list);
@@ -4710,7 +4709,7 @@ int pvcreate_each_device(struct cmd_context *cmd,
 
 	if (!lock_vol(cmd, VG_ORPHANS, LCK_VG_WRITE, NULL)) {
 		log_error("Can't get lock for orphan PVs.");
-		goto_out;
+		goto out;
 	}
 
 	/*
@@ -4742,7 +4741,7 @@ int pvcreate_each_device(struct cmd_context *cmd,
 
 	if (dm_list_empty(&pp->arg_process)) {
 		log_debug("No devices to process.");
-		goto_bad;
+		goto bad;
 	}
 
 do_command:
@@ -4789,7 +4788,7 @@ do_command:
 
 		if (!(orphan_vg = vg_read_internal(cmd, pp->orphan_vg_name, NULL, 0, &consistent))) {
 			log_error("Cannot read orphans VG %s.", pp->orphan_vg_name);
-			goto_bad;
+			goto bad;
 		}
 
 		dm_list_iterate_items_safe(pd, pd2, &pp->arg_create) {
