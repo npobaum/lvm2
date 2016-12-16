@@ -17,6 +17,7 @@ import datetime
 
 import dbus
 from lvmdbusd import cfg
+# noinspection PyUnresolvedReferences
 from gi.repository import GLib
 import threading
 
@@ -508,10 +509,16 @@ def _async_result(call_back, results):
 	log_debug('Results = %s' % str(results))
 	call_back(results)
 
+
 # Return result in main thread
 def mt_async_result(call_back, results):
 	GLib.idle_add(_async_result, call_back, results)
 
+
+# Take the supplied function and run it on the main thread and not wait for
+# a result!
+def mt_run_no_wait(function, param):
+	GLib.idle_add(function, param)
 
 # Run the supplied function and arguments on the main thread and wait for them
 # to complete while allowing the ability to get the return value too.
@@ -523,6 +530,7 @@ class MThreadRunner(object):
 
 	@staticmethod
 	def runner(obj):
+		# noinspection PyProtectedMember
 		obj._run()
 		with obj.cond:
 			obj.function_complete = True

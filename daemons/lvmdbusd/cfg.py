@@ -38,12 +38,12 @@ SHELL_IN_USE = None
 # Lock used by pprint
 stdout_lock = multiprocessing.Lock()
 
-kick_q = multiprocessing.Queue()
 worker_q = queue.Queue()
 
 # Main event loop
 loop = None
 
+BUS_NAME = os.getenv('LVM_DBUS_NAME', 'com.redhat.lvmdbus1')
 BASE_INTERFACE = 'com.redhat.lvmdbus1'
 PV_INTERFACE = BASE_INTERFACE + '.Pv'
 VG_INTERFACE = BASE_INTERFACE + '.Vg'
@@ -77,6 +77,7 @@ hidden_lv = itertools.count()
 
 # Used to prevent circular imports...
 load = None
+event = None
 
 # Global cached state
 db = None

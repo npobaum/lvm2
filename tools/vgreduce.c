@@ -26,19 +26,19 @@ static int _remove_pv(struct volume_group *vg, struct pv_list *pvl, int silent)
 	char uuid[64] __attribute__((aligned(8)));
 
 	if (vg->pv_count == 1) {
-		log_error("Volume Groups must always contain at least one PV");
+		log_error("Volume Groups must always contain at least one PV.");
 		return 0;
 	}
 
 	if (!id_write_format(&pvl->pv->id, uuid, sizeof(uuid)))
 		return_0;
 
-	log_verbose("Removing PV with UUID %s from VG %s", uuid, vg->name);
+	log_verbose("Removing PV with UUID %s from VG %s.", uuid, vg->name);
 
 	if (pvl->pv->pe_alloc_count) {
 		if (!silent)
 			log_error("LVs still present on PV with UUID %s: "
-				  "Can't remove from VG %s", uuid, vg->name);
+				  "Can't remove from VG %s.", uuid, vg->name);
 		return 0;
 	}
 
@@ -67,7 +67,7 @@ static int _consolidate_vg(struct cmd_context *cmd, struct volume_group *vg)
 		cmd->handles_missing_pvs = 1;
 		log_error("There are still partial LVs in VG %s.", vg->name);
 		log_error("To remove them unconditionally use: vgreduce --removemissing --force.");
-		log_warn("Proceeding to remove empty missing PVs.");
+		log_warn("WARNING: Proceeding to remove empty missing PVs.");
 	}
 
 	dm_list_iterate_items(pvl, &vg->pvs) {
@@ -114,7 +114,9 @@ static int _make_vg_consistent(struct cmd_context *cmd, struct volume_group *vg)
 
 			if (!lv_is_visible(lv))
 				continue;
-			log_warn("Removing partial LV %s.", lv->name);
+
+			log_warn("WARNING: Removing partial LV %s.", display_lvname(lv));
+
 			if (!lv_remove_with_dependencies(cmd, lv, DONT_PROMPT, 0))
 				return_0;
 			goto restart;
@@ -183,33 +185,33 @@ int vgreduce(struct cmd_context *cmd, int argc, char **argv)
 
 	if (!argc && !repairing) {
 		log_error("Please give volume group name and "
-			  "physical volume paths");
+			  "physical volume paths.");
 		return EINVALID_CMD_LINE;
 	}
 	
 	if (!argc) { /* repairing */
-		log_error("Please give volume group name");
+		log_error("Please give volume group name.");
 		return EINVALID_CMD_LINE;
 	}
 
 	if (arg_is_set(cmd, mirrorsonly_ARG) && !repairing) {
-		log_error("--mirrorsonly requires --removemissing");
+		log_error("--mirrorsonly requires --removemissing.");
 		return EINVALID_CMD_LINE;
 	}
 
 	if (argc == 1 && !arg_is_set(cmd, all_ARG) && !repairing) {
-		log_error("Please enter physical volume paths or option -a");
+		log_error("Please enter physical volume paths or option -a.");
 		return EINVALID_CMD_LINE;
 	}
 
 	if (argc > 1 && arg_is_set(cmd, all_ARG)) {
 		log_error("Option -a and physical volume paths mutually "
-			  "exclusive");
+			  "exclusive.");
 		return EINVALID_CMD_LINE;
 	}
 
 	if (argc > 1 && repairing) {
-		log_error("Please only specify the volume group");
+		log_error("Please only specify the volume group.");
 		return EINVALID_CMD_LINE;
 	}
 
@@ -250,10 +252,10 @@ int vgreduce(struct cmd_context *cmd, int argc, char **argv)
 			0, handle, &_vgreduce_repair_single);
 
 	if (vp.already_consistent) {
-		log_print_unless_silent("Volume group \"%s\" is already consistent", vg_name);
+		log_print_unless_silent("Volume group \"%s\" is already consistent.", vg_name);
 		ret = ECMD_PROCESSED;
 	} else if (vp.fixed) {
-		log_print_unless_silent("Wrote out consistent volume group %s", vg_name);
+		log_print_unless_silent("Wrote out consistent volume group %s.", vg_name);
 		ret = ECMD_PROCESSED;
 	} else
 		ret = ECMD_FAILED;

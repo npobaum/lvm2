@@ -42,65 +42,92 @@ def _quote_arg(arg):
 
 
 class LVMShellProxy(object):
-	def _read_until_prompt(self):
+
+	@staticmethod
+	def _read(stream):
+		tmp = stream.read()
+		if tmp:
+			return tmp.decode("utf-8")
+		return ''
+
+	# Read until we get prompt back and a result
+	# @param: no_output	Caller expects no output to report FD
+	# Returns stdout, report, stderr (report is JSON!)
+	def _read_until_prompt(self, no_output=False):
 		stdout = ""
 		report = ""
 		stderr = ""
+		keep_reading = True
+		extra_passes = 3
+		report_json = {}
+		prev_report_len = 0
 
 		# Try reading from all FDs to prevent one from filling up and causing
-		# a hang.  We are also assuming that we won't get the lvm prompt back
-		# until we have already received all the output from stderr and the
-		# report descriptor too.
-		while not stdout.endswith(SHELL_PROMPT):
+		# a hang.  Keep reading until we get the prompt back and the report
+		# FD does not contain valid JSON
+		while keep_reading:
 			try:
 				rd_fd = [
 					self.lvm_shell.stdout.fileno(),
-					self.report_r,
+					self.report_stream.fileno(),
 					self.lvm_shell.stderr.fileno()]
 				ready = select.select(rd_fd, [], [], 2)
 
 				for r in ready[0]:
 					if r == self.lvm_shell.stdout.fileno():
-						while True:
-							tmp = self.lvm_shell.stdout.read()
-							if tmp:
-								stdout += tmp.decode("utf-8")
-							else:
-								break
-
-					elif r == self.report_r:
-						while True:
-							tmp = os.read(self.report_r, 16384)
-							if tmp:
-								report += tmp.decode("utf-8")
-								if len(tmp) != 16384:
-									break
-							else:
-								break
-
+						stdout += LVMShellProxy._read(self.lvm_shell.stdout)
+					elif r == self.report_stream.fileno():
+						report += LVMShellProxy._read(self.report_stream)
 					elif r == self.lvm_shell.stderr.fileno():
-						while True:
-							tmp = self.lvm_shell.stderr.read()
-							if tmp:
-								stderr += tmp.decode("utf-8")
-							else:
-								break
+						stderr += LVMShellProxy._read(self.lvm_shell.stderr)
 
 				# Check to see if the lvm process died on us
 				if self.lvm_shell.poll():
 					raise Exception(self.lvm_shell.returncode, "%s" % stderr)
 
+				if stdout.endswith(SHELL_PROMPT):
+					if no_output:
+						keep_reading = False
+					else:
+						cur_report_len = len(report)
+						if cur_report_len != 0:
+							# Only bother to parse if we have more data
+							if prev_report_len != cur_report_len:
+								prev_report_len = cur_report_len
+								# Parse the JSON if it's good we are done,
+								# if not we will try to read some more.
+								try:
+									report_json = json.loads(report)
+									keep_reading = False
+								except ValueError:
+									pass
+
+						if keep_reading:
+							extra_passes -= 1
+							if extra_passes <= 0:
+								if len(report):
+									raise ValueError("Invalid json: %s" %
+														report)
+								else:
+									raise ValueError(
+										"lvm returned no JSON output!")
+
 			except IOError as ioe:
 				log_debug(str(ioe))
 				pass
 
-		return stdout, report, stderr
+		return stdout, report_json, stderr
 
 	def _write_cmd(self, cmd):
 		cmd_bytes = bytes(cmd, "utf-8")
 		num_written = self.lvm_shell.stdin.write(cmd_bytes)
 		assert (num_written == len(cmd_bytes))
 		self.lvm_shell.stdin.flush()
+
+	@staticmethod
+	def _make_non_block(stream):
+		flags = fcntl(stream, F_GETFL)
+		fcntl(stream, F_SETFL, flags | os.O_NONBLOCK)
 
 	def __init__(self):
 
@@ -114,7 +141,10 @@ class LVMShellProxy(object):
 		except FileExistsError:
 			pass
 
-		self.report_r = os.open(tmp_file, os.O_NONBLOCK)
+		# We have to open non-blocking as the other side isn't open until
+		# we actually fork the process.
+		self.report_fd = os.open(tmp_file, os.O_NONBLOCK)
+		self.report_stream = os.fdopen(self.report_fd, 'rb', 0)
 
 		# Setup the environment for using our own socket for reporting
 		local_env = copy.deepcopy(os.environ)
@@ -125,9 +155,6 @@ class LVMShellProxy(object):
 		# when utilizing the lvm shell.
 		local_env["LVM_LOG_FILE_MAX_LINES"] = "0"
 
-		flags = fcntl(self.report_r, F_GETFL)
-		fcntl(self.report_r, F_SETFL, flags | os.O_NONBLOCK)
-
 		# run the lvm shell
 		self.lvm_shell = subprocess.Popen(
 			[LVM_CMD + " 32>%s" % tmp_file],
@@ -135,20 +162,18 @@ class LVMShellProxy(object):
 			stderr=subprocess.PIPE, close_fds=True, shell=True)
 
 		try:
-			flags = fcntl(self.lvm_shell.stdout, F_GETFL)
-			fcntl(self.lvm_shell.stdout, F_SETFL, flags | os.O_NONBLOCK)
-			flags = fcntl(self.lvm_shell.stderr, F_GETFL)
-			fcntl(self.lvm_shell.stderr, F_SETFL, flags | os.O_NONBLOCK)
+			LVMShellProxy._make_non_block(self.lvm_shell.stdout)
+			LVMShellProxy._make_non_block(self.lvm_shell.stderr)
 
 			# wait for the first prompt
-			errors = self._read_until_prompt()[2]
+			errors = self._read_until_prompt(no_output=True)[2]
 			if errors and len(errors):
 				raise RuntimeError(errors)
 		except:
 			raise
 		finally:
-			# These will get deleted when the FD count goes to zero so we can be
-			# sure to clean up correctly no matter how we finish
+			# These will get deleted when the FD count goes to zero so we
+			# can be sure to clean up correctly no matter how we finish
 			os.unlink(tmp_file)
 			os.rmdir(tmp_dir)
 
@@ -157,33 +182,24 @@ class LVMShellProxy(object):
 		self._write_cmd('lastlog\n')
 
 		# read everything from the STDOUT to the next prompt
-		stdout, report, stderr = self._read_until_prompt()
+		stdout, report_json, stderr = self._read_until_prompt()
+		if 'log' in report_json:
+			error_msg = ""
+			# Walk the entire log array and build an error string
+			for log_entry in report_json['log']:
+				if log_entry['log_type'] == "error":
+					if error_msg:
+						error_msg += ', ' + log_entry['log_message']
+					else:
+						error_msg = log_entry['log_message']
 
-		try:
-			log = json.loads(report)
+			return error_msg
 
-			if 'log' in log:
-				error_msg = ""
-				# Walk the entire log array and build an error string
-				for log_entry in log['log']:
-					if log_entry['log_type'] == "error":
-						if error_msg:
-							error_msg += ', ' + log_entry['log_message']
-						else:
-							error_msg = log_entry['log_message']
-
-				return error_msg
-
-			return 'No error reason provided! (missing "log" section)'
-		except ValueError:
-			log_error("Invalid JSON returned from LVM")
-			log_error("BEGIN>>\n%s\n<<END" % report)
-			return "Invalid JSON returned from LVM when retrieving exit code"
+		return 'No error reason provided! (missing "log" section)'
 
 	def call_lvm(self, argv, debug=False):
 		rc = 1
 		error_msg = ""
-		json_result = ""
 
 		if self.lvm_shell.poll():
 			raise Exception(
@@ -198,23 +214,21 @@ class LVMShellProxy(object):
 		self._write_cmd(cmd)
 
 		# read everything from the STDOUT to the next prompt
-		stdout, report, stderr = self._read_until_prompt()
+		stdout, report_json, stderr = self._read_until_prompt()
 
 		# Parse the report to see what happened
-		if report and len(report):
-			json_result = json.loads(report)
-			if 'log' in json_result:
-				if json_result['log'][-1:][0]['log_ret_code'] == '1':
-					rc = 0
-				else:
-					error_msg = self.get_error_msg()
+		if 'log' in report_json:
+			if report_json['log'][-1:][0]['log_ret_code'] == '1':
+				rc = 0
+			else:
+				error_msg = self.get_error_msg()
 
 		if debug or rc != 0:
 			log_error(('CMD: %s' % cmd))
 			log_error(("EC = %d" % rc))
 			log_error(("ERROR_MSG=\n %s\n" % error_msg))
 
-		return rc, json_result, error_msg
+		return rc, report_json, error_msg
 
 	def exit_shell(self):
 		try:
@@ -251,5 +265,3 @@ if __name__ == "__main__":
 		pass
 	except Exception:
 		traceback.print_exc(file=sys.stdout)
-	finally:
-		print()
