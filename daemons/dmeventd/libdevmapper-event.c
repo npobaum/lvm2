@@ -341,7 +341,7 @@ static int _daemon_write(struct dm_event_fifos *fifos,
 	return bytes == size;
 }
 
-int dm_event_daemon_talk(struct dm_event_fifos *fifos,
+int daemon_talk(struct dm_event_fifos *fifos,
 		struct dm_event_daemon_message *msg, int cmd,
 		const char *dso_name, const char *dev_name,
 		enum dm_event_mask evmask, uint32_t timeout)
@@ -490,7 +490,7 @@ start_server:
 	return ret;
 }
 
-int dm_event_daemon_init_fifos(struct dm_event_fifos *fifos)
+int init_fifos(struct dm_event_fifos *fifos)
 {
 	/* FIXME? Is fifo the most suitable method? Why not share
 	   comms/daemon code with something else e.g. multipath? */
@@ -528,10 +528,10 @@ static int _init_client(char *dmeventd_path, struct dm_event_fifos *fifos)
 	if (!_start_daemon(dmeventd_path, fifos))
 		return_0;
 
-	return dm_event_daemon_init_fifos(fifos);
+	return init_fifos(fifos);
 }
 
-void dm_event_daemon_fini_fifos(struct dm_event_fifos *fifos)
+void fini_fifos(struct dm_event_fifos *fifos)
 {
 	if (fifos->client >= 0 && close(fifos->client))
 		log_sys_debug("close", fifos->client_path);
@@ -618,16 +618,16 @@ static int _do_event(int cmd, char *dmeventd_path, struct dm_event_daemon_messag
 		goto_out;
 	}
 
-	ret = dm_event_daemon_talk(&fifos, msg, DM_EVENT_CMD_HELLO, NULL, NULL, 0, 0);
+	ret = daemon_talk(&fifos, msg, DM_EVENT_CMD_HELLO, NULL, NULL, 0, 0);
 
 	dm_free(msg->data);
 	msg->data = 0;
 
 	if (!ret)
-		ret = dm_event_daemon_talk(&fifos, msg, cmd, dso_name, dev_name, evmask, timeout);
+		ret = daemon_talk(&fifos, msg, cmd, dso_name, dev_name, evmask, timeout);
 out:
 	/* what is the opposite of init? */
-	dm_event_daemon_fini_fifos(&fifos);
+	fini_fifos(&fifos);
 
 	return ret;
 }
@@ -840,7 +840,7 @@ int dm_event_get_version(struct dm_event_fifos *fifos, int *version) {
 	char *p;
 	struct dm_event_daemon_message msg = { 0 };
 
-	if (dm_event_daemon_talk(fifos, &msg, DM_EVENT_CMD_HELLO, NULL, NULL, 0, 0))
+	if (daemon_talk(fifos, &msg, DM_EVENT_CMD_HELLO, NULL, NULL, 0, 0))
 		return 0;
 	p = msg.data;
 	*version = 0;

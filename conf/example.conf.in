@@ -158,7 +158,7 @@ devices {
 	# tools regenerate it. If obtain_device_list_from_udev is enabled, the
 	# list of devices is obtained from udev and any existing .cache file
 	# is removed.
-	cache_dir = "@DEFAULT_RUN_DIR@"
+	cache_dir = "@DEFAULT_SYS_DIR@/@DEFAULT_CACHE_SUBDIR@"
 
 	# Configuration option devices/cache_file_prefix.
 	# A prefix used before the .cache file name. See devices/cache_dir.

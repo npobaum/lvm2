@@ -1,9 +1,9 @@
 0001-install.patch
 0002-libs-cleanup.patch
-0003-dirs.patch
+#0003-dirs.patch
 0004-force-paths.patch
 0005-implicit-pointer.patch
-0006-dm-event-api.patch
+#0006-dm-event-api.patch
 0007-udev.patch
 0008-systemd.patch
 0009-clvmd-openais-format.patch
