@@ -1,3 +1,10 @@
+lvm2 (2.02.167-1ubuntu2) zesty; urgency=medium
+
+  * Add a patch to fix crashes on 32bit platforms:
+    - 0011-fix-lvmetad-32bit.patch
+
+ -- Stéphane Graber <stgraber@ubuntu.com>  Fri, 10 Mar 2017 14:22:35 -0500
+
 lvm2 (2.02.167-1ubuntu1) zesty; urgency=low
 
   * Merge from Debian unstable.  Remaining changes:

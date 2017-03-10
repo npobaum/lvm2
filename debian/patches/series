@@ -11,3 +11,4 @@
 udev-md.patch
 systemd-pvscan-background.patch
 enable-issue-discards.patch
+0011-fix-lvmetad-32bit.patch
