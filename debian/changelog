@@ -1,3 +1,11 @@
+lvm2 (2.02.168-2) unstable; urgency=medium
+
+  * Don't try to disable cluster locking on clvm purge. (closes: #856696)
+  * Drop symlinks for private libs. (closes: #857954)
+  * Deny writemostly/writebehind during raid1 resync. (closes: #855895)
+
+ -- Bastian Blank <waldi@debian.org>  Fri, 17 Mar 2017 17:29:47 +0100
+
 lvm2 (2.02.168-1) unstable; urgency=medium
 
   * New upstream release.

@@ -10,7 +10,7 @@ Subject: systemd
  3 files changed, 4 insertions(+), 4 deletions(-)
 
 diff --git a/scripts/lvm2_activation_generator_systemd_red_hat.c b/scripts/lvm2_activation_generator_systemd_red_hat.c
-index 0f7f89c..269edd3 100644
+index 0f7f89c86..269edd32d 100644
 --- a/scripts/lvm2_activation_generator_systemd_red_hat.c
 +++ b/scripts/lvm2_activation_generator_systemd_red_hat.c
 @@ -131,7 +131,7 @@ static int generate_unit(const char *dir, int unit, int sysinit_needed)
@@ -23,7 +23,7 @@ index 0f7f89c..269edd3 100644
  		if (unit == UNIT_EARLY) {
  			fputs("After=systemd-udev-settle.service\n"
 diff --git a/scripts/lvm2_cluster_activation_systemd_red_hat.service.in b/scripts/lvm2_cluster_activation_systemd_red_hat.service.in
-index 970e93a..5f8b415 100644
+index 970e93ad3..5f8b4159d 100644
 --- a/scripts/lvm2_cluster_activation_systemd_red_hat.service.in
 +++ b/scripts/lvm2_cluster_activation_systemd_red_hat.service.in
 @@ -9,7 +9,7 @@ Conflicts=shutdown.target
@@ -36,7 +36,7 @@ index 970e93a..5f8b415 100644
  ExecStop=@systemdutildir@/lvm2-cluster-activation deactivate
  
 diff --git a/scripts/lvm2_clvmd_systemd_red_hat.service.in b/scripts/lvm2_clvmd_systemd_red_hat.service.in
-index f506fa8..ddf9853 100644
+index f506fa87f..ddf985303 100644
 --- a/scripts/lvm2_clvmd_systemd_red_hat.service.in
 +++ b/scripts/lvm2_clvmd_systemd_red_hat.service.in
 @@ -13,8 +13,8 @@ Conflicts=shutdown.target

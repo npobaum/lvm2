@@ -8,7 +8,7 @@ Subject: install
  1 file changed, 7 insertions(+), 26 deletions(-)
 
 diff --git a/make.tmpl.in b/make.tmpl.in
-index d418cfb..a78ef08 100644
+index d418cfba2..a78ef0857 100644
 --- a/make.tmpl.in
 +++ b/make.tmpl.in
 @@ -17,20 +17,10 @@ SHELL = /bin/sh

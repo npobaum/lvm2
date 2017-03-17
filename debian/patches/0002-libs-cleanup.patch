@@ -8,7 +8,7 @@ Subject: libs-cleanup
  1 file changed, 7 insertions(+), 60 deletions(-)
 
 diff --git a/configure.in b/configure.in
-index cc77aab..f67f004 100644
+index cc77aaba9..f67f00434 100644
 --- a/configure.in
 +++ b/configure.in
 @@ -668,7 +668,7 @@ dnl -- Disable readline

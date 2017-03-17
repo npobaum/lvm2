@@ -10,7 +10,7 @@ Subject: dm-event-api
  3 files changed, 22 insertions(+), 22 deletions(-)
 
 diff --git a/daemons/dmeventd/.exported_symbols b/daemons/dmeventd/.exported_symbols
-index fab74dc..46c14fb 100644
+index fab74dc1d..46c14fb5a 100644
 --- a/daemons/dmeventd/.exported_symbols
 +++ b/daemons/dmeventd/.exported_symbols
 @@ -1,4 +1,4 @@
@@ -22,7 +22,7 @@ index fab74dc..46c14fb 100644
 +dm_event_daemon_talk
  dm_event_get_version
 diff --git a/daemons/dmeventd/dmeventd.c b/daemons/dmeventd/dmeventd.c
-index 58922ac..1565b80 100644
+index 58922ac84..1565b8063 100644
 --- a/daemons/dmeventd/dmeventd.c
 +++ b/daemons/dmeventd/dmeventd.c
 @@ -1967,7 +1967,7 @@ static int _reinstate_registrations(struct dm_event_fifos *fifos)
@@ -110,7 +110,7 @@ index 58922ac..1565b80 100644
  }
  
 diff --git a/daemons/dmeventd/libdevmapper-event.c b/daemons/dmeventd/libdevmapper-event.c
-index b23b6c1..6f7af9e 100644
+index b23b6c152..6f7af9e15 100644
 --- a/daemons/dmeventd/libdevmapper-event.c
 +++ b/daemons/dmeventd/libdevmapper-event.c
 @@ -341,7 +341,7 @@ static int _daemon_write(struct dm_event_fifos *fifos,
