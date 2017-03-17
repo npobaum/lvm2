@@ -821,6 +821,21 @@ static int _lvchange_writemostly(struct logical_volume *lv)
 		return 0;
 	}
 
+	/*
+	 * Prohibit writebehind and writebehind during synchronization.
+	 *
+	 * FIXME: we can do better once we can distingush between
+	 *        an initial sync after a linear -> raid1 upconversion
+	 *        and any later additions of legs, requested resyncs
+	 *        via lvchange or leg repairs/replacements.
+	 */
+	if (!lv_raid_in_sync(lv)) {
+		log_error("Unable to change write%s on %s while it is not in-sync.",
+			  arg_is_set(cmd, writemostly_ARG) ? "mostly" : "behind",
+			  display_lvname(lv));
+		return 0;
+	}
+
 	if (arg_is_set(cmd, writebehind_ARG))
 		raid_seg->writebehind = arg_uint_value(cmd, writebehind_ARG, 0);
 
