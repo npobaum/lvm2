@@ -9,7 +9,7 @@ Patch-Name: systemd-pvscan-background.patch
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/udev/Makefile.in b/udev/Makefile.in
-index 04e2338..0b84f7f 100644
+index 04e233842..0b84f7fa3 100644
 --- a/udev/Makefile.in
 +++ b/udev/Makefile.in
 @@ -48,7 +48,7 @@ endif

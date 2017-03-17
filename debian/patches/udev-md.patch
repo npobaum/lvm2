@@ -11,7 +11,7 @@ Patch-Name: udev-md.patch
  1 file changed, 7 insertions(+), 2 deletions(-)
 
 diff --git a/udev/69-dm-lvm-metad.rules.in b/udev/69-dm-lvm-metad.rules.in
-index bd75fc8..9318e2a 100644
+index bd75fc8ef..9318e2ae6 100644
 --- a/udev/69-dm-lvm-metad.rules.in
 +++ b/udev/69-dm-lvm-metad.rules.in
 @@ -19,6 +19,11 @@ SUBSYSTEM!="block", GOTO="lvm_end"

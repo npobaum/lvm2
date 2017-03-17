@@ -8,7 +8,7 @@ Subject: implicit-pointer
  1 file changed, 4 deletions(-)
 
 diff --git a/tools/lvm.c b/tools/lvm.c
-index b3af020..21fb753 100644
+index b3af0206b..21fb753ca 100644
 --- a/tools/lvm.c
 +++ b/tools/lvm.c
 @@ -26,10 +26,6 @@ int main(int argc, char **argv)
