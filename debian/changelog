@@ -1,3 +1,10 @@
+lvm2 (2.02.167-1ubuntu5) zesty; urgency=medium
+
+  * d/p/fix-strips-limit.patch: Fix regression limiting number of
+    stripes to 8 (LP: #1675770)
+
+ -- Christian Ehrhardt <christian.ehrhardt@canonical.com>  Mon, 27 Mar 2017 09:23:51 +0200
+
 lvm2 (2.02.167-1ubuntu2) zesty; urgency=medium
 
   * Add a patch to fix crashes on 32bit platforms:
