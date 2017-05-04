@@ -59,7 +59,7 @@ Description: Linux Logical Volume Manager
 Package: clvm
 Priority: extra
 Architecture: linux-any
-Depends: ${shlibs:Depends}, ${misc:Depends}, lvm2 (= ${binary:Version}), dlm
+Depends: ${shlibs:Depends}, ${misc:Depends}, lvm2 (= ${binary:Version}), dlm-controld
 Suggests: pacemaker, resource-agents
 Multi-Arch: foreign
 Description: Cluster extensions for userland logical volume management tools

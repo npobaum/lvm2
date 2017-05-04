@@ -1,3 +1,13 @@
+lvm2 (2.02.167-1ubuntu6) artful; urgency=medium
+
+  * Drop:
+    - Depend on 'dlm' rather than 'dlm-controld', the package is named
+      differently in Ubuntu.
+      + LP: #1669133
+      [ Package is renamed to dlm-controld in line with Debian ]
+
+ -- Nishanth Aravamudan <nish.aravamudan@canonical.com>  Wed, 03 May 2017 17:14:00 -0700
+
 lvm2 (2.02.167-1ubuntu5) zesty; urgency=medium
 
   * d/p/fix-strips-limit.patch: Fix regression limiting number of
