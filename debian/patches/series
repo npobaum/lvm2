@@ -7,6 +7,11 @@
 0007-udev.patch
 0008-systemd.patch
 0009-clvmd-openais-format.patch
+0010-no-metad-in-container.patch
 udev-md.patch
 systemd-pvscan-background.patch
 0012-lvchange-reject-writemostly-writebehind-on-raid1-dur.patch
+enable-issue-discards.patch
+0013-fix-lvmetad-32bit.patch
+fix-strips-limit.patch
+0014-no-lvm2-monitor-in-containers.patch

@@ -6,3 +6,4 @@ usr/sbin/clvmd
 usr/sbin/cmirrord
 usr/share/man/man8/clvmd*
 usr/share/man/man8/cmirrord*
+usr/lib/ocf/resource.d/lvm2/clvmd
