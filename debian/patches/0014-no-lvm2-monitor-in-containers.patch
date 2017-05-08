@@ -1,0 +1,17 @@
+Description: Do not start lvmetad in containers
+Author: Balint Reczey <rbalint@ubuntu.com>
+Bug-Ubuntu: https://bugs.launchpad.net/ubuntu/+source/lvm2/+bug/1576341
+Forwarded: no
+---
+This patch header follows DEP-3: http://dep.debian.net/deps/dep3/
+
+--- lvm2-2.02.167.orig/scripts/lvm2_monitoring_systemd_red_hat.service.in
++++ lvm2-2.02.167/scripts/lvm2_monitoring_systemd_red_hat.service.in
+@@ -6,6 +6,7 @@ After=dm-event.socket dm-event.service l
+ Before=local-fs-pre.target
+ DefaultDependencies=no
+ Conflicts=shutdown.target
++ConditionVirtualization=!container
+ 
+ [Service]
+ Type=oneshot

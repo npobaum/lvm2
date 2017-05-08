@@ -1,0 +1,25 @@
+From 5d7407119bc7289ada84de819651d27a187e76c3 Mon Sep 17 00:00:00 2001
+From: Christian Brauner <christian.brauner@ubuntu.com>
+Date: Fri, 10 Mar 2017 19:57:53 +0100
+Subject: [PATCH] make sure we send correctly aligned int
+
+Signed-off-by: Christian Brauner <christian.brauner@ubuntu.com>
+---
+ lib/cache/lvmetad.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/lib/cache/lvmetad.c b/lib/cache/lvmetad.c
+index 8e9bb1fd3..843e1c3e8 100644
+--- a/lib/cache/lvmetad.c
++++ b/lib/cache/lvmetad.c
+@@ -1304,7 +1304,7 @@ int lvmetad_vg_remove_pending(struct volume_group *vg)
+ 	reply = _lvmetad_send(vg->cmd, "set_vg_info",
+ 			      "name = %s", vg->name,
+ 			      "uuid = %s", uuid,
+-			      "version = %d", 0,
++			      "version = %"PRId64, (int64_t)0,
+ 			      NULL);
+ 
+ 	if (!_lvmetad_handle_reply(reply, "set_vg_info", vg->name, NULL)) {
+-- 
+2.11.0

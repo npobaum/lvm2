@@ -1,0 +1,33 @@
+Description: Fix regression limiting number of stripes to 8
+
+commit 2fcbe34fe85fa57e1e2835dfba95fa21387377b6
+Author: Heinz Mauelshagen <heinzm@redhat.com>
+Date:   Fri Mar 10 18:57:06 2017 +0100
+
+    lvcreate: fix "striped" limit
+
+    Fix regression limiting number of stripes to 8.
+    Raise back to 128 as before.
+
+    Resolves: rhbz1389546
+
+Forwarded: n/a backport from upstream 2fcbe34fe85fa57e1e2835dfba95fa21387377b6
+Original-Author: Heinz Mauelshagen <heinzm@redhat.com>
+Author: Christian Ehrhardt <christian.ehrhardt@canonical.com>
+Bug-Ubuntu: https://bugs.launchpad.net/ubuntu/+source/dpdk/+bug/1675770
+Last-Update: 2017-03-27
+
+--- a/tools/lvcreate.c
++++ b/tools/lvcreate.c
+@@ -559,8 +559,10 @@
+ 			else if (seg_is_any_raid6(lp))
+ 				max_images -= 2;
+ 		}
+-	} else
++	} else if (seg_is_mirrored(lp))
+ 		max_images = DEFAULT_MIRROR_MAX_IMAGES;
++	else
++		max_images = MAX_STRIPES;
+ 
+ 	/* Common mirror and raid params */
+ 	if (arg_is_set(cmd, mirrors_ARG)) {
