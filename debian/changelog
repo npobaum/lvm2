@@ -1,3 +1,9 @@
+lvm2 (2.02.168-2ubuntu2) artful; urgency=medium
+
+  * No change rebuild to add Python 3.6 support.
+
+ -- Michael Hudson-Doyle <michael.hudson@ubuntu.com>  Mon, 15 May 2017 15:32:22 +1200
+
 lvm2 (2.02.168-2ubuntu1) artful; urgency=medium
 
   * Merge with Debian unstable. Remaining changes:
