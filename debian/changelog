@@ -1,3 +1,9 @@
+lvm2 (2.02.168-2ubuntu3) artful; urgency=medium
+
+  * No-change rebuild to build to drop python3.5.
+
+ -- Matthias Klose <doko@ubuntu.com>  Sat, 05 Aug 2017 16:25:53 +0000
+
 lvm2 (2.02.168-2ubuntu2) artful; urgency=medium
 
   * No change rebuild to add Python 3.6 support.
