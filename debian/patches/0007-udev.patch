@@ -1,4 +1,4 @@
-From 880999303a52620db0e1c1a7ddb8673c0ad1821b Mon Sep 17 00:00:00 2001
+From 26c0f37ceca6168ff44fecaddb0415885168db0e Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 30 Jun 2015 11:46:11 +0200
 Subject: udev
@@ -100,7 +100,7 @@ index 91cb991df..089489321 100644
  
  # Use DM name and split it up into its VG/LV/layer constituents.
 diff --git a/udev/13-dm-disk.rules.in b/udev/13-dm-disk.rules.in
-index 4b64dd69e..b5cc790c3 100644
+index 535581070..28faf16a7 100644
 --- a/udev/13-dm-disk.rules.in
 +++ b/udev/13-dm-disk.rules.in
 @@ -11,7 +11,7 @@
@@ -113,7 +113,7 @@ index 4b64dd69e..b5cc790c3 100644
  
  SYMLINK+="disk/by-id/dm-name-$env{DM_NAME}"
 diff --git a/udev/Makefile.in b/udev/Makefile.in
-index cb968dfe1..04e233842 100644
+index c498aa838..bc61c5dca 100644
 --- a/udev/Makefile.in
 +++ b/udev/Makefile.in
 @@ -17,10 +17,10 @@ top_builddir = @top_builddir@
@@ -129,7 +129,7 @@ index cb968dfe1..04e233842 100644
 +LVM_RULES+=69-lvm-metad.rules
  endif
  
- DM_DIR=$(shell grep "\#define DM_DIR" $(top_srcdir)/libdm/misc/dm-ioctl.h | awk '{print $$3}')
+ DM_DIR=$(shell $(GREP) "\#define DM_DIR" $(top_srcdir)/libdm/misc/dm-ioctl.h | $(AWK) '{print $$3}')
 @@ -54,6 +54,18 @@ endif
  %.rules: $(srcdir)/%.rules.in
  	$(SED) -e "s+(DM_DIR)+$(DM_DIR)+;s+(BLKID_RULE)+$(BLKID_RULE)+;s+(PVSCAN_RULE)+$(PVSCAN_RULE)+;s+(DM_EXEC_RULE)+$(DM_EXEC_RULE)+;s+(DM_EXEC)+$(DM_EXEC)+;s+(LVM_EXEC_RULE)+$(LVM_EXEC_RULE)+;s+(LVM_EXEC)+$(LVM_EXEC)+;" $< >$@

@@ -468,7 +468,7 @@ static int _pthread_create_smallstack(pthread_t *t, void *(*fun)(void *), void *
 	/*
 	 * We use a smaller stack since it gets preallocated in its entirety
 	 */
-	pthread_attr_setstacksize(&attr, THREAD_STACK_SIZE);
+	pthread_attr_setstacksize(&attr, THREAD_STACK_SIZE + getpagesize());
 
 	/*
 	 * If no-one will be waiting, we need to detach.
@@ -2252,7 +2252,8 @@ int main(int argc, char *argv[])
 					 "for %ld second(s), exiting.",
 					 (long) (time(NULL) - _idle_since));
 				break;
-			} else if (idle_exit_timeout) {
+			}
+			if (idle_exit_timeout) {
 				now = time(NULL);
 				if (now < _idle_since)
 					_idle_since = now; /* clock change? */

@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2014 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -23,9 +24,7 @@ aux have_thin 1 2 0 || skip
 # Pretend we miss the external_origin_extend feature
 aux lvmconf 'global/thin_disabled_features = [ "external_origin_extend" ]'
 
-aux prepare_pvs 2
-
-vgcreate -s 1M $vg $(cat DEVICES)
+aux prepare_vg 2
 
 lvcreate -L10 -n $lv1 $vg
 
@@ -50,3 +49,5 @@ check lv_field $vg/$lv1 lv_size "5.00" --units m --nosuffix
 # Try to resize again back up to the size of external origin
 lvresize -L+5 -f $vg/$lv1
 check lv_field $vg/$lv1 lv_size "10.00" --units m --nosuffix
+
+vgremove -ff $vg

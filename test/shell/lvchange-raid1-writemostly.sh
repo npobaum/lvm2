@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2017 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -18,24 +19,26 @@ which mkfs.ext4 || skip
 aux have_raid 1 3 5 || skip
 
 aux prepare_vg 4
+get_devs
 
-for d in $dev1 $dev2 $dev3 $dev4
+for d in "$dev1" "$dev2" "$dev3" "$dev4"
 do
-	aux delay_dev $d 1
+	aux delay_dev "$d" 0 20 "$(get first_extent_sector "$d")"
 done
 
 #
-# Test writemostly prohibited on resyncrhonizing raid1
+# Test writemostly prohibited on resynchronizing raid1
 #
 
-# Create 4-way striped LV
-lvcreate -aey --ty raid1 -m 3 -L 32M -n $lv1 $vg
-not lvchange -y --writemostly $dev1 $vg/$lv1
+# Create 4-way raid1 LV
+lvcreate -aey --ty raid1 -m 3 -Zn -L16M -n $lv1 $vg
+not lvchange -y --writemostly "$dev1" "$vg/$lv1"
 check lv_field $vg/$lv1 segtype "raid1"
 check lv_field $vg/$lv1 stripes 4
 check lv_attr_bit health $vg/${lv1}_rimage_0 "-"
+aux enable_dev "${DEVICES[@]}"
 aux wait_for_sync $vg $lv1
-lvchange -y --writemostly $dev1 $vg/$lv1
+lvchange -y --writemostly "$dev1" "$vg/$lv1"
 check lv_attr_bit health $vg/${lv1}_rimage_0 "w"
 
 vgremove -ff $vg

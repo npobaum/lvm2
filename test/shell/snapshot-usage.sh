@@ -1,4 +1,5 @@
-#!/bin/bash
+#!/usr/bin/env bash
+
 # Copyright (C) 2013 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -22,16 +23,6 @@ which $MKFS || skip
 fill() {
 	dd if=/dev/zero of="$DM_DEV_DIR/${2:-$vg1/lvol0}" bs=$1 count=1 oflag=direct || \
 		die "Snapshot does not fit $1"
-}
-
-# Wait until device is opened
-wait_for_open_() {
-	for i in $(seq 1 50) ; do
-		test $(dmsetup info --noheadings -c -o open $1) -ne 0 && return
-		sleep 0.1
-	done
-
-	die "$1 expected to be openned, but it's not!"
 }
 
 cleanup_tail()
@@ -66,7 +57,9 @@ if aux target_at_least dm-snapshot 1 10 0 ; then
 fi
 
 aux prepare_pvs 1
-vgcreate -s 4M $vg $(cat DEVICES)
+get_devs
+
+vgcreate -s 4M "$vg" "${DEVICES[@]}"
 
 # Play with 1 extent
 lvcreate -aey -l1 -n $lv $vg
@@ -88,7 +81,7 @@ aux lvmconf "activation/snapshot_autoextend_percent = 20" \
             "activation/snapshot_autoextend_threshold = 50"
 
 # Check usability with smallest (1k) extent size ($lv has 15P)
-pvcreate --setphysicalvolumesize 4T "$DM_DEV_DIR/$vg/$lv"
+pvcreate --yes --setphysicalvolumesize 4T "$DM_DEV_DIR/$vg/$lv"
 trap 'cleanup_tail' EXIT
 vgcreate -s 1K $vg1 "$DM_DEV_DIR/$vg/$lv"
 
@@ -125,10 +118,7 @@ lvchange -ay $vg1
 check lv_field $vg1/$lv1 lv_active "$CHECK_ACTIVE"
 
 # Test removal of opened (but unmounted) snapshot (device busy) for a while
-sleep 120 < "$DM_DEV_DIR/$vg1/$lv1" &
-SLEEP_PID=$!
-
-wait_for_open_ "$vg1-$lv1"
+SLEEP_PID=$(aux hold_device_open $vg1 $lv1 60)
 
 # Opened virtual snapshot device is not removable
 # it should retry device removal for a few seconds

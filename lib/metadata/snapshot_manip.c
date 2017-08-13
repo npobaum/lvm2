@@ -121,7 +121,7 @@ int lv_is_visible(const struct logical_volume *lv)
 	if (lv_is_historical(lv))
 		return 1;
 
-	if (lv->status & SNAPSHOT)
+	if (lv_is_snapshot(lv))
 		return 0;
 
 	if (lv_is_cow(lv)) {
@@ -238,8 +238,8 @@ static struct lv_segment *_alloc_snapshot_seg(struct logical_volume *lv)
 		return NULL;
 	}
 
-	if (!(seg = alloc_lv_segment(segtype, lv, 0, lv->le_count, 0, 0,
-				     NULL, 0, lv->le_count, 0, 0, 0, NULL))) {
+	if (!(seg = alloc_lv_segment(segtype, lv, 0, lv->le_count, 0, 0, 0,
+				     NULL, 0, lv->le_count, 0, 0, 0, 0, NULL))) {
 		log_error("Couldn't allocate new snapshot segment.");
 		return NULL;
 	}

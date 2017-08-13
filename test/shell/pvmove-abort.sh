@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2015 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -22,7 +23,7 @@ pvcreate --metadatacopies 0 "$dev3"
 vgextend $vg "$dev3"
 
 # Slowdown read/writes
-aux delay_dev "$dev3" 0 800 $(get first_extent_sector "$dev3"):
+aux delay_dev "$dev3" 0 800 "$(get first_extent_sector "$dev3"):"
 
 for mode in "--atomic" "" ;
 do
@@ -53,8 +54,8 @@ pvmove --abort "$dev1"
 
 # check if proper pvmove was canceled
 get lv_field $vg name -a | tee out
-not egrep "^\[?pvmove0" out
-egrep "^\[?pvmove1" out
+not grep -E "^\[?pvmove0" out
+grep -E "^\[?pvmove1" out
 
 fi
 

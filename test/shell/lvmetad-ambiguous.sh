@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2012 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -18,12 +19,13 @@ SKIP_WITH_LVMPOLLD=1
 aux prepare_pvs 2
 
 # flip the devices around
-aux init_udev_transaction
-dmsetup remove -f "$dev1"
-dmsetup remove -f "$dev2"
-dmsetup create -u TEST-${PREFIX}pv2 ${PREFIX}pv2 ${PREFIX}pv2.table
-dmsetup create -u TEST-${PREFIX}pv1 ${PREFIX}pv1 ${PREFIX}pv1.table
-aux finish_udev_transaction
+init_udev_transaction
+dmsetup remove "$dev1"
+dmsetup remove "$dev2"
+dmsetup create -u TEST-${PREFIX}pv1 ${PREFIX}pv2 ${PREFIX}pv2.table
+dmsetup create -u TEST-${PREFIX}pv2 ${PREFIX}pv1 ${PREFIX}pv1.table
+finish_udev_transaction
+dmsetup info -c
 
 # re-scan them
 pvscan --cache "$dev1" || true
@@ -34,3 +36,38 @@ pvs -a -o name | tee out
 grep "$dev1" out
 grep "$dev2" out
 
+aux lvmetad_dump
+
+# flip the devices 2nd. time around
+init_udev_transaction
+dmsetup remove "$dev1"
+dmsetup remove "$dev2"
+dmsetup create -u TEST-${PREFIX}pv2 ${PREFIX}pv2 ${PREFIX}pv2.table
+dmsetup create -u TEST-${PREFIX}pv1 ${PREFIX}pv1 ${PREFIX}pv1.table
+finish_udev_transaction
+
+# re-scan them
+pvscan --cache "$dev1" || true
+pvscan --cache "$dev2" || true
+
+# expect both to be there
+pvs -a -o name | tee out
+grep "$dev1" out
+grep "$dev2" out
+
+aux lvmetad_dump
+
+# flip the devices 2nd. time around
+dmsetup remove -f "$dev1"
+dmsetup remove -f "$dev2"
+dmsetup create -u TEST-${PREFIX}pv1 ${PREFIX}pv2 ${PREFIX}pv2.table
+dmsetup create -u TEST-${PREFIX}pv2 ${PREFIX}pv1 ${PREFIX}pv1.table
+
+# re-scan them
+pvscan --cache "$dev1" || true
+pvscan --cache "$dev2" || true
+
+# expect both to be there
+pvs -a -o name | tee out
+grep "$dev1" out
+grep "$dev2" out

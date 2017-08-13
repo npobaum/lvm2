@@ -173,14 +173,16 @@ static void _log_to_default_log(int level,
 	    const char *file, int line, int dm_errno_or_class,
 	    const char *f, ...)
 {
+	int n;
 	va_list ap;
 	char buf[2 * PATH_MAX + 256]; /* big enough for most messages */
 
 	va_start(ap, f);
-	vsnprintf(buf, sizeof(buf), f, ap);
+	n = vsnprintf(buf, sizeof(buf), f, ap);
 	va_end(ap);
 
-	dm_log(level, file, line, "%s", buf);
+	if (n > 0) /* Could be truncated */
+		dm_log(level, file, line, "%s", buf);
 }
 
 /*
@@ -195,14 +197,16 @@ __attribute__((format(printf, 4, 5)))
 static void _log_to_default_log_with_errno(int level,
 	    const char *file, int line, const char *f, ...)
 {
+	int n;
 	va_list ap;
 	char buf[2 * PATH_MAX + 256]; /* big enough for most messages */
 
 	va_start(ap, f);
-	vsnprintf(buf, sizeof(buf), f, ap);
+	n = vsnprintf(buf, sizeof(buf), f, ap);
 	va_end(ap);
 
-	dm_log_with_errno(level, file, line, 0, "%s", buf);
+	if (n > 0) /* Could be truncated */
+		dm_log_with_errno(level, file, line, 0, "%s", buf);
 }
 
 void dm_log_init(dm_log_fn fn)
@@ -1133,13 +1137,12 @@ static int _rename_dev_node(const char *old_name, const char *new_name,
 				 errno == ENOENT)
 				/* assume udev already deleted this */
 				return 1;
-			else {
-				log_warn("The node %s should have been renamed to %s "
-					 "by udev but old node is still present. "
-					 "Falling back to direct old node removal.",
-					 oldpath, newpath);
-				return _rm_dev_node(old_name, 0);
-			}
+
+			log_warn("The node %s should have been renamed to %s "
+				 "by udev but old node is still present. "
+				 "Falling back to direct old node removal.",
+				 oldpath, newpath);
+			return _rm_dev_node(old_name, 0);
 		}
 
 		if (unlink(newpath) < 0) {

@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2009-2011 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -28,7 +29,8 @@ diff -u dmstats-version lib/dm-version-expected
 
 # ensure we can create devices (uses dmsetup, etc)
 aux prepare_devs 5
+get_devs
 
 # ensure we do not crash on a bug in config file
 aux lvmconf 'log/prefix = 1""'
-not lvs $(cat DEVICES)
+not lvs "${DEVICES[@]}"

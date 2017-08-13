@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2014-2015 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -62,7 +63,7 @@ sel() {
 
 	# the number of lines on output must match
 	test "$items_found" -eq $# || {
-		echo "  >>> NUMBER OF ITEMS EXPECTED: $# ($@)"
+		echo "  >>> NUMBER OF ITEMS EXPECTED: $#" "$@"
 		echo "  >>> NUMBER OF ITEMS FOUND: $items_found ($(< $OUT_LOG_FILE))"
 		return 1
 	}
@@ -218,3 +219,5 @@ sel lv '(lv_name=vol1 || lv_name=vol2) && lv_size < 8m' vol2
 sel lv '(lv_name=vol1 && lv_size=8m) && vg_tags=vg_tag2' vol1
 # negation of clause grouped by ( )
 sel lv '!(lv_name=vol1 || lv_name=vol2)' abc xyz orig snap
+
+vgremove -ff $vg1 $vg2 $vg3

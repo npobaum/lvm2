@@ -1,4 +1,4 @@
-From e4009bd1efcd6a8eca9d6546c5eb674f2ad17f10 Mon Sep 17 00:00:00 2001
+From 49ff4e9c768426528e00a717c63f46b21e51f1c1 Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 30 Jun 2015 11:46:10 +0200
 Subject: dm-event-api
@@ -22,7 +22,7 @@ index fab74dc1d..46c14fb5a 100644
 +dm_event_daemon_talk
  dm_event_get_version
 diff --git a/daemons/dmeventd/dmeventd.c b/daemons/dmeventd/dmeventd.c
-index 58922ac84..1565b8063 100644
+index 3a92ab6cc..f7e11e78e 100644
 --- a/daemons/dmeventd/dmeventd.c
 +++ b/daemons/dmeventd/dmeventd.c
 @@ -1967,7 +1967,7 @@ static int _reinstate_registrations(struct dm_event_fifos *fifos)
@@ -110,10 +110,10 @@ index 58922ac84..1565b8063 100644
  }
  
 diff --git a/daemons/dmeventd/libdevmapper-event.c b/daemons/dmeventd/libdevmapper-event.c
-index b23b6c152..6f7af9e15 100644
+index 210e384f8..50ab028f2 100644
 --- a/daemons/dmeventd/libdevmapper-event.c
 +++ b/daemons/dmeventd/libdevmapper-event.c
-@@ -341,7 +341,7 @@ static int _daemon_write(struct dm_event_fifos *fifos,
+@@ -339,7 +339,7 @@ static int _daemon_write(struct dm_event_fifos *fifos,
  	return bytes == size;
  }
  
@@ -122,7 +122,7 @@ index b23b6c152..6f7af9e15 100644
  		struct dm_event_daemon_message *msg, int cmd,
  		const char *dso_name, const char *dev_name,
  		enum dm_event_mask evmask, uint32_t timeout)
-@@ -490,7 +490,7 @@ start_server:
+@@ -489,7 +489,7 @@ start_server:
  	return ret;
  }
  
@@ -131,7 +131,7 @@ index b23b6c152..6f7af9e15 100644
  {
  	/* FIXME? Is fifo the most suitable method? Why not share
  	   comms/daemon code with something else e.g. multipath? */
-@@ -528,10 +528,10 @@ static int _init_client(char *dmeventd_path, struct dm_event_fifos *fifos)
+@@ -527,10 +527,10 @@ static int _init_client(char *dmeventd_path, struct dm_event_fifos *fifos)
  	if (!_start_daemon(dmeventd_path, fifos))
  		return_0;
  
@@ -144,7 +144,7 @@ index b23b6c152..6f7af9e15 100644
  {
  	if (fifos->client >= 0 && close(fifos->client))
  		log_sys_debug("close", fifos->client_path);
-@@ -618,16 +618,16 @@ static int _do_event(int cmd, char *dmeventd_path, struct dm_event_daemon_messag
+@@ -617,16 +617,16 @@ static int _do_event(int cmd, char *dmeventd_path, struct dm_event_daemon_messag
  		goto_out;
  	}
  
@@ -164,7 +164,7 @@ index b23b6c152..6f7af9e15 100644
  
  	return ret;
  }
-@@ -840,7 +840,7 @@ int dm_event_get_version(struct dm_event_fifos *fifos, int *version) {
+@@ -839,7 +839,7 @@ int dm_event_get_version(struct dm_event_fifos *fifos, int *version) {
  	char *p;
  	struct dm_event_daemon_message msg = { 0 };
  

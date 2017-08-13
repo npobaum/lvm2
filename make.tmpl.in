@@ -13,7 +13,7 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
-SHELL = /bin/sh
+SHELL = @SHELL@
 
 @SET_MAKE@
 
@@ -30,6 +30,13 @@ SED = @SED@
 CFLOW_CMD = @CFLOW_CMD@
 AWK = @AWK@
 CHMOD = @CHMOD@
+EGREP = @EGREP@
+GREP = @GREP@
+SORT = @SORT@
+WC = @WC@
+AR = @AR@
+RM = rm -f
+
 PYTHON2 = @PYTHON2@
 PYTHON3 = @PYTHON3@
 PYCOMPILE = $(top_srcdir)/autoconf/py-compile
@@ -66,6 +73,7 @@ sysconfdir = @sysconfdir@
 rootdir = $(DESTDIR)/
 bindir = $(DESTDIR)@bindir@
 confdir = $(DESTDIR)@CONFDIR@/lvm
+profiledir = $(confdir)/@DEFAULT_PROFILE_SUBDIR@
 includedir = $(DESTDIR)@includedir@
 libdir = $(DESTDIR)@libdir@
 libexecdir = $(DESTDIR)@libexecdir@
@@ -132,6 +140,7 @@ INSTALL_ROOT_DIR = $(INSTALL) -m 700 -d
 INSTALL_ROOT_DATA = $(INSTALL) -m 600
 INSTALL_SCRIPT = $(INSTALL_PROGRAM)
 
+.SUFFIXES:
 .SUFFIXES: .c .cpp .d .o .so .a .po .pot .mo .dylib
 
 WFLAGS +=\
@@ -386,8 +395,10 @@ cflow: $(CFLOW_TARGET).cflow $(CFLOW_TARGET).tree $(CFLOW_TARGET).rxref $(CFLOW_
 endif
 endif
 
+.LIBPATTERNS = lib%.so lib%.a
+
 %.o: %.c
-	$(CC) -c $(INCLUDES) $(DEFS) $(WFLAGS) $(WCFLAGS) $(CFLAGS) $(CFLAGS_$@) $< -o $@
+	$(CC) -c $(INCLUDES) $(DEFS) $(DEFS_$@) $(WFLAGS) $(WCFLAGS) $(CFLAGS) $(CFLAGS_$@) $< -o $@
 
 %.o: %.cpp
 	$(CXX) -c $(INCLUDES) $(DEFS) $(WFLAGS) $(CXXFLAGS) $(CXXFLAGS_$@) $< -o $@
@@ -437,7 +448,7 @@ endif
 
 $(LIB_STATIC): $(OBJECTS)
 	$(RM) $@
-	$(AR) rs $@ $(OBJECTS)
+	$(AR) rsv $@ $(OBJECTS)
 
 %.d: %.c $(INC_LNS)
 	$(MKDIR_P) $(dir $@); \
@@ -493,9 +504,9 @@ ifeq (,$(firstword $(EXPORTED_SYMBOLS)))
 		 ) > $@
 else
 	set -e;\
-	R=$$(sort $^ | uniq -u);\
+	R=$$($(SORT) $^ | uniq -u);\
 	test -z "$$R" || { echo "Mismatch between symbols in shared library and lists in .exported_symbols.* files: $$R"; false; } ;\
-	( for i in $$(echo $(EXPORTED_SYMBOLS) | tr ' ' '\n' | sort -rnt_ -k5 ); do\
+	( for i in $$(echo $(EXPORTED_SYMBOLS) | tr ' ' '\n' | $(SORT) -rnt_ -k5 ); do\
 		echo "$${i##*.} {"; echo "	global:";\
 		$(SED) "s/^/		/;s/$$/;/" $$i;\
 		echo "};";\

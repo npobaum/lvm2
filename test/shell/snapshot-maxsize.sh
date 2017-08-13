@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2014 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -18,8 +19,9 @@ SKIP_WITH_LVMPOLLD=1
 . lib/inittest
 
 aux prepare_pvs 1
+get_devs
 
-vgcreate -s 1K $vg $(cat DEVICES)
+vgcreate -s 1K "$vg" "${DEVICES[@]}"
 
 lvcreate -aey -L1 -n $lv1 $vg
 # Snapshot should be large enough to handle any writes

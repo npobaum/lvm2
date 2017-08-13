@@ -13,22 +13,22 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#define unimplemented \
-	log_error("Command not implemented yet."); return ECMD_FAILED
-
-/*int e2fsadm(struct cmd_context *cmd, int argc, char **argv) unimplemented*/
 int lvmsadc(struct cmd_context *cmd __attribute__((unused)),
 	    int argc __attribute__((unused)),
 	    char **argv __attribute__((unused)))
 {
-	unimplemented;
+	log_error("There's no 'lvmsadc' command in LVM2.");
+	log_error("Please use the superior 'dmstats' facilities instead.");
+	return ECMD_FAILED;
 }
 
 int lvmsar(struct cmd_context *cmd __attribute__((unused)),
 	   int argc __attribute__((unused)),
 	   char **argv __attribute__((unused)))
 {
-	unimplemented;
+	log_error("There's no 'lvmsar' command in LVM2.");
+	log_error("Please use the superior 'dmstats' facilities instead.");
+	return ECMD_FAILED;
 }
 
 int pvdata(struct cmd_context *cmd __attribute__((unused)),
@@ -41,3 +41,11 @@ int pvdata(struct cmd_context *cmd __attribute__((unused)),
 	return ECMD_FAILED;
 }
 
+int lvmchange(struct cmd_context *cmd __attribute__((unused)),
+	      int argc __attribute__((unused)),
+	      char **argv __attribute__((unused)))
+{
+	log_error("There's no 'lvmchange' command in LVM2.");
+	log_error("Use 'dmsetup' commands to reset the kernel device-mapper driver.");
+	return ECMD_FAILED;
+}

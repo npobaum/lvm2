@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 
 # Copyright (C) 2011-2014 Red Hat, Inc. All rights reserved.
 #
@@ -25,7 +25,7 @@ check_lv_field_modules_()
 	mod=$1
 	shift
 
-	for d in $*; do
+	for d in "$@"; do
 		check lv_field $vg/$d modules $mod
 	done
 }
@@ -37,8 +37,9 @@ aux have_thin 1 0 0 || skip
 which mkfs.ext4 || skip
 
 aux prepare_pvs 2 64
+get_devs
 
-vgcreate $vg -s 64K $(cat DEVICES)
+vgcreate -s 64K "$vg" "${DEVICES[@]}"
 
 # Create named pool only
 lvcreate -l1 -T $vg/pool1

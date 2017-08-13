@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2016 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -12,12 +13,10 @@
 SKIP_WITH_LVMLOCKD=1
 SKIP_WITH_LVMPOLLD=1
 
-MKFS=mkfs.ext3
-MOUNT_DIR=mnt
-
 . lib/inittest
 
-which "$MKFS" || skp
+MOUNT_DIR=mnt
+MKFS=$(which mkfs.ext3) || skip
 
 cleanup_mounted_and_teardown()
 {
@@ -39,8 +38,8 @@ lvcreate -aey --type mirror -L10 --regionsize 1M -m1 -n $lv1 $vg "$dev1" "$dev2"
 "$MKFS" "$DM_DEV_DIR/$vg/$lv1"
 mkdir "$MOUNT_DIR"
 
-aux delay_dev "$dev2" 0 500 $(get first_extent_sector "$dev2"):
-aux delay_dev "$dev4" 0 500 $(get first_extent_sector "$dev4"):
+aux delay_dev "$dev2" 0 500 "$(get first_extent_sector "$dev2"):"
+aux delay_dev "$dev4" 0 500 "$(get first_extent_sector "$dev4"):"
 #
 # Enforce syncronization
 # ATM requires unmounted/unused LV??

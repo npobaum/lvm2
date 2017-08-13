@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2012 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -20,7 +21,7 @@ aux prepare_pvs 2
 vgcreate $vg1 "$dev1" "$dev2"
 vgs | grep $vg1
 
-kill $(< LOCAL_LVMETAD)
+kill "$(< LOCAL_LVMETAD)"
 aux prepare_lvmetad
 
 vgs | grep $vg1

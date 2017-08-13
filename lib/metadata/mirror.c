@@ -157,7 +157,8 @@ struct lv_segment *find_mirror_seg(struct lv_segment *seg)
  *
  * For internal use only log only in verbose mode
  */
-uint32_t adjusted_mirror_region_size(uint32_t extent_size, uint32_t extents,
+uint32_t adjusted_mirror_region_size(struct cmd_context *cmd,
+				     uint32_t extent_size, uint32_t extents,
 				     uint32_t region_size, int internal, int clustered)
 {
 	uint64_t region_max;
@@ -168,11 +169,11 @@ uint32_t adjusted_mirror_region_size(uint32_t extent_size, uint32_t extents,
 	if (region_max < UINT32_MAX && region_size > region_max) {
 		region_size = (uint32_t) region_max;
 		if (!internal)
-			log_print_unless_silent("Using reduced mirror region size of %"
-						PRIu32 " sectors.", region_size);
+			log_print_unless_silent("Using reduced mirror region size of %s",
+						display_size(cmd, region_size));
                 else
-			log_verbose("Using reduced mirror region size of %"
-				    PRIu32 " sectors.", region_size);
+			log_verbose("Using reduced mirror region size of %s",
+				    display_size(cmd, region_size));
 	}
 
 #ifdef CMIRROR_REGION_COUNT_LIMIT
@@ -199,13 +200,13 @@ uint32_t adjusted_mirror_region_size(uint32_t extent_size, uint32_t extents,
 
 		if (region_size < region_min_pow2) {
 			if (internal)
-				log_print_unless_silent("Increasing mirror region size from %"
-							PRIu32 " to %" PRIu64 " sectors.",
-							region_size, region_min_pow2);
+				log_print_unless_silent("Increasing mirror region size from %s to %s",
+							display_size(cmd, region_size),
+							display_size(cmd, region_min_pow2));
 			else
-				log_verbose("Increasing mirror region size from %"
-					    PRIu32 " to %" PRIu64 " sectors.",
-					    region_size, region_min_pow2);
+				log_verbose("Increasing mirror region size from %s to %s",
+					    display_size(cmd, region_size),
+					    display_size(cmd, region_min_pow2));
 			region_size = region_min_pow2;
 		}
 	}
@@ -661,6 +662,7 @@ static int _split_mirror_images(struct logical_volume *lv,
 	struct dm_list split_images;
 	struct lv_list *lvl;
 	struct cmd_context *cmd = lv->vg->cmd;
+	char layer_name[NAME_LEN], format[NAME_LEN];
 
 	if (!lv_is_mirrored(lv)) {
 		log_error("Unable to split non-mirrored LV %s.",
@@ -728,9 +730,6 @@ static int _split_mirror_images(struct logical_volume *lv,
 	}
 
 	if (!dm_list_empty(&split_images)) {
-		size_t len = strlen(new_lv->name) + 32;
-		char *layer_name, format[len];
-
 		/*
 		 * A number of images have been split and
 		 * a new mirror layer must be formed
@@ -747,23 +746,21 @@ static int _split_mirror_images(struct logical_volume *lv,
 		dm_list_iterate_items(lvl, &split_images) {
 			sub_lv = lvl->lv;
 
-			if (dm_snprintf(format, len, "%s_mimage_%%d",
+			if (dm_snprintf(format, sizeof(format), "%s_mimage_%%d",
 					new_lv->name) < 0) {
 				log_error("Failed to build new image name for %s.",
 					  display_lvname(new_lv));
 				return 0;
 			}
-			if (!(layer_name = dm_pool_alloc(lv->vg->vgmem, len))) {
-				log_error("Unable to allocate memory.");
-				return 0;
-			}
-			if (!generate_lv_name(lv->vg, format, layer_name, len)||
-			    sscanf(layer_name, format, &i) != 1) {
+			if (!generate_lv_name(lv->vg, format, layer_name, sizeof(layer_name))) {
 				log_error("Failed to generate new image names for %s.",
 					  display_lvname(new_lv));
 				return 0;
 			}
-			sub_lv->name = layer_name;
+			if (!(sub_lv->name = dm_pool_strdup(lv->vg->vgmem, layer_name))) {
+				log_error("Unable to allocate memory.");
+				return 0;
+			}
 		}
 
 		if (!_merge_mirror_images(new_lv, &split_images)) {
@@ -1403,15 +1400,11 @@ static int _create_mimage_lvs(struct alloc_handle *ah,
 			      int log)
 {
 	uint32_t m, first_area;
-	char *img_name;
-	size_t len;
-	
-	len = strlen(lv->name) + 32;
-	img_name = alloca(len);
+	char img_name[NAME_LEN];
 
-	if (dm_snprintf(img_name, len, "%s_mimage_%%d", lv->name) < 0) {
-		log_error("img_name allocation failed. "
-			  "Remove new LV and retry.");
+	if (dm_snprintf(img_name, sizeof(img_name), "%s_mimage_%%d", lv->name) < 0) {
+		log_error("Failed to build new mirror image name for %s.",
+			  display_lvname(lv));
 		return 0;
 	}
 
@@ -1466,7 +1459,8 @@ int remove_mirrors_from_segments(struct logical_volume *lv,
 			log_error("Segment is not mirrored: %s:%" PRIu32,
 				  lv->name, seg->le);
 			return 0;
-		} if ((seg->status & status_mask) != status_mask) {
+		}
+		if ((seg->status & status_mask) != status_mask) {
 			log_error("Segment status does not match: %s:%" PRIu32
 				  " status:0x%" PRIx64 "/0x%" PRIx64, lv->name, seg->le,
 				  seg->status, status_mask);
@@ -1538,8 +1532,8 @@ const char *get_pvmove_pvname_from_lv(const struct logical_volume *lv)
 
 	if (pvmove_lv)
 		return get_pvmove_pvname_from_lv_mirr(pvmove_lv);
-	else
-		return NULL;
+
+	return NULL;
 }
 
 struct logical_volume *find_pvmove_lv(struct volume_group *vg,
@@ -1673,7 +1667,8 @@ static int _add_mirrors_that_preserve_segments(struct logical_volume *lv,
 	if (!(segtype = get_segtype_from_string(cmd, SEG_TYPE_NAME_MIRROR)))
 		return_0;
 
-	adjusted_region_size = adjusted_mirror_region_size(lv->vg->extent_size,
+	adjusted_region_size = adjusted_mirror_region_size(cmd,
+							   lv->vg->extent_size,
 							   lv->le_count,
 							   region_size, 1,
 							   vg_is_clustered(lv->vg));
@@ -1784,14 +1779,10 @@ static struct logical_volume *_create_mirror_log(struct logical_volume *lv,
 						 const char *suffix)
 {
 	struct logical_volume *log_lv;
-	char *log_name;
-	size_t len;
+	char log_name[NAME_LEN];
 
-	len = strlen(lv_name) + 32;
-	log_name = alloca(len); /* alloca never fails */
-
-	if (dm_snprintf(log_name, len, "%s%s", lv_name, suffix) < 0) {
-		log_error("log_name allocation failed.");
+	if (dm_snprintf(log_name, sizeof(log_name), "%s%s", lv_name, suffix) < 0) {
+		log_error("Failed to build new mirror log name for %s.", lv_name);
 		return NULL;
 	}
 
@@ -1910,6 +1901,49 @@ int attach_mirror_log(struct lv_segment *seg, struct logical_volume *log_lv)
 	log_lv->status |= MIRROR_LOG;
 	lv_set_hidden(log_lv);
 	return add_seg_to_segs_using_this_lv(log_lv, seg);
+}
+
+/* Prepare disk mirror log for raid1->mirror conversion */
+struct logical_volume *prepare_mirror_log(struct logical_volume *lv,
+					  int in_sync, uint32_t region_size,
+					  struct dm_list *allocatable_pvs,
+					  alloc_policy_t alloc)
+{
+	struct cmd_context *cmd = lv->vg->cmd;
+	const struct segment_type *segtype;
+	struct dm_list *parallel_areas;
+	struct alloc_handle *ah;
+	struct logical_volume *log_lv;
+
+	if (!(parallel_areas = build_parallel_areas_from_lv(lv, 0, 0)))
+		return_NULL;
+
+	if (!(segtype = get_segtype_from_string(cmd, SEG_TYPE_NAME_MIRROR)))
+		return_NULL;
+
+	/* Allocate destination extents */
+	if (!(ah = allocate_extents(lv->vg, NULL, segtype,
+				    0, 0, 1, region_size,
+				    lv->le_count, allocatable_pvs,
+				    alloc, 0, parallel_areas))) {
+		log_error("Unable to allocate extents for mirror log.");
+		return NULL;
+	}
+
+	if (!(log_lv = _create_mirror_log(lv, ah, alloc, lv->name, "_mlog"))) {
+		log_error("Failed to create mirror log.");
+		goto out;
+	}
+
+	if (!_init_mirror_log(cmd, log_lv, in_sync, &lv->tags, 1)) {
+		log_error("Failed to initialise mirror log.");
+		log_lv = NULL;
+		goto out;
+	}
+out:
+	alloc_destroy(ah);
+
+	return log_lv;
 }
 
 int add_mirror_log(struct cmd_context *cmd, struct logical_volume *lv,
@@ -2136,7 +2170,9 @@ int lv_add_mirrors(struct cmd_context *cmd, struct logical_volume *lv,
 		return _add_mirrors_that_preserve_segments(lv, MIRROR_BY_SEG,
 							   mirrors, region_size,
 							   pvs, alloc);
-	} else if (flags & MIRROR_BY_SEGMENTED_LV) {
+	}
+
+	if (flags & MIRROR_BY_SEGMENTED_LV) {
 		if (stripes > 1) {
 			log_error("Striped-mirroring is not supported on "
 				  "segment-by-segment mirroring.");
@@ -2146,7 +2182,9 @@ int lv_add_mirrors(struct cmd_context *cmd, struct logical_volume *lv,
 		return _add_mirrors_that_preserve_segments(lv, MIRROR_BY_SEGMENTED_LV,
 							   mirrors, region_size,
 							   pvs, alloc);
-	} else if (flags & MIRROR_BY_LV) {
+	}
+
+	if (flags & MIRROR_BY_LV) {
 		if (!mirrors)
 			return add_mirror_log(cmd, lv, log_count,
 					      region_size, pvs, alloc);

@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2014-2016 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -23,7 +24,6 @@ aux prepare_vg 5 80
 lvcreate --type cache-pool -an -v -L 2 -n cpool $vg
 lvcreate -H -L 4 -n corigin --cachepool $vg/cpool
 
-fail lvcreate -s -L2 $vg/corigin
 fail lvcreate -s -L2 $vg/cpool
 fail lvcreate -s -L2 $vg/cpool_cdata
 fail lvcreate -s -L2 $vg/cpool_cmeta
@@ -64,6 +64,10 @@ UUID=$(get lv_field $vg/$lv5 uuid)
 lvconvert --yes --cachepool $vg/$lv3 --poolmetadata $lv5
 check lv_field $vg/${lv3}_cmeta uuid "$UUID"
 
+# Check swap of cache pool metadata with --swapmetadata
+# (should swap back to lv5)
+lvconvert --yes --swapmetadata $vg/$lv3 --poolmetadata $lv5
+check lv_field $vg/$lv5 uuid "$UUID"
 
 #fail lvconvert --cachepool $vg/$lv1 --poolmetadata $vg/$lv2
 #lvconvert --yes --type cache-pool --poolmetadata $vg/$lv2 $vg/$lv1
@@ -116,20 +120,22 @@ invalid lvconvert --type cache --thin --poolmetadata $vg/$lv2 $vg/$lv1
 invalid lvconvert --type cache --cachepool $vg/$lv1
 invalid lvconvert --cache --cachepool $vg/$lv1
 
+# FIXME: temporarily we return error code 5
+INVALID=not
 # Single vg is required
-invalid lvconvert --type cache --cachepool $vg/$lv1 --poolmetadata $vg1/$lv2 $vg/$lv3
-invalid lvconvert --type cache --cachepool $vg/$lv1 --poolmetadata $lv2 $vg1/$lv3
-invalid lvconvert --type cache --cachepool $vg1/$lv1 --poolmetadata $vg2/$lv2 $vg/$lv3
-invalid lvconvert --type cache-pool --poolmetadata $vg2/$lv2 $vg1/$lv1
+$INVALID lvconvert --type cache --cachepool $vg/$lv1 --poolmetadata $vg1/$lv2 $vg/$lv3
+$INVALID lvconvert --type cache --cachepool $vg/$lv1 --poolmetadata $lv2 $vg1/$lv3
+$INVALID lvconvert --type cache --cachepool $vg1/$lv1 --poolmetadata $vg2/$lv2 $vg/$lv3
+$INVALID lvconvert --type cache-pool --poolmetadata $vg2/$lv2 $vg1/$lv1
 
-invalid lvconvert --cachepool $vg1/$lv1 --poolmetadata $vg2/$lv2
+$INVALID lvconvert --cachepool $vg1/$lv1 --poolmetadata $vg2/$lv2
 
 # Invalid syntax, vg is unknown
-invalid lvconvert --yes --cachepool $lv3 --poolmetadata $lv4
+$INVALID lvconvert --yes --cachepool $lv3 --poolmetadata $lv4
 
 # Invalid chunk size is <32KiB >1GiB
-invalid lvconvert --type cache-pool --chunksize 16 --poolmetadata $lv2 $vg/$lv1
-invalid lvconvert --type cache-pool --chunksize 2G --poolmetadata $lv2 $vg/$lv1
+$INVALID lvconvert --type cache-pool --chunksize 16 --poolmetadata $lv2 $vg/$lv1
+$INVALID lvconvert --type cache-pool --chunksize 2G --poolmetadata $lv2 $vg/$lv1
 
 # Invalid chunk size is bigger then data size, needs to open VG
 fail lvconvert --yes --type cache-pool --chunksize 16M --poolmetadata $lv2 $vg/$lv1

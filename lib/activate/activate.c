@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2016 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2017 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -150,15 +150,15 @@ static int _lv_passes_volumes_filter(struct cmd_context *cmd, const struct logic
 				    || str_list_match_list(&cmd->tags,
 							   &lv->vg->tags, NULL))
 					    return 1;
-				else
-					continue;
+
+				continue;
 			}
 			/* If supplied tag matches LV or VG tag, activate */
 			if (str_list_match_item(&lv->tags, str) ||
 			    str_list_match_item(&lv->vg->tags, str))
 				return 1;
-			else
-				continue;
+
+			continue;
 		}
 
 		/* If supplied name is vgname[/lvname] */
@@ -272,7 +272,15 @@ int lv_raid_percent(const struct logical_volume *lv, dm_percent_t *percent)
 {
 	return 0;
 }
+int lv_raid_data_offset(const struct logical_volume *lv, uint64_t *data_offset)
+{
+	return 0;
+}
 int lv_raid_dev_health(const struct logical_volume *lv, char **dev_health)
+{
+	return 0;
+}
+int lv_raid_dev_count(const struct logical_volume *lv, uint32_t *dev_cnt)
 {
 	return 0;
 }
@@ -355,6 +363,10 @@ int lv_activate_with_filter(struct cmd_context *cmd, const char *lvid_s, int exc
 	return 1;
 }
 int lv_mknodes(struct cmd_context *cmd, const struct logical_volume *lv)
+{
+	return 1;
+}
+int lv_deactivate_any_missing_subdevs(const struct logical_volume *lv)
 {
 	return 1;
 }
@@ -655,6 +667,10 @@ int target_present(struct cmd_context *cmd, const char *target_name,
 				      &maj, &min, &patchlevel);
 }
 
+/*
+ * When '*info' is NULL, returns 1 only when LV is active.
+ * When '*info' != NULL, returns 1 when info structure is populated.
+ */
 static int _lv_info(struct cmd_context *cmd, const struct logical_volume *lv,
 		    int use_layer, struct lvinfo *info,
 		    const struct lv_segment *seg,
@@ -688,32 +704,6 @@ static int _lv_info(struct cmd_context *cmd, const struct logical_volume *lv,
 	if (seg_status) {
 		/* TODO: for now it's mess with seg_status */
 		seg_status->seg = seg;
-		if (lv_is_merging_cow(lv)) {
-			if (lv_has_target_type(cmd->mem, origin_from_cow(lv), NULL, TARGET_NAME_SNAPSHOT_MERGE)) {
-				/*
-				 * When the snapshot-merge has not yet started, query COW LVs as is.
-				 * When merge is in progress, query merging origin LV instead.
-				 * COW volume is already mapped as error target in this case.
-				 */
-				lv = origin_from_cow(lv);
-				seg_status->seg = first_seg(lv);
-				log_debug_activation("Snapshot merge is in progress, querying status of %s instead.",
-						     display_lvname(lv));
-			}
-		} else if (!use_layer && lv_is_origin(lv) && !lv_is_external_origin(lv)) {
-			/*
-			 * Query status for 'layered' (-real) device most of the time,
-			 * only when snapshot merge started, query its progress.
-			 * TODO: single LV may need couple status to be exposed at once....
-			 *       but this needs more logical background
-			 */
-			if (!lv_is_merging_origin(lv) ||
-			    !lv_has_target_type(cmd->mem, origin_from_cow(lv), NULL, TARGET_NAME_SNAPSHOT_MERGE))
-				use_layer = 1;
-		} else if (lv_is_cow(lv)) {
-			/* Hadle fictional lvm2 snapshot and query snapshotX volume */
-			seg_status->seg = find_snapshot(lv);
-		}
 	}
 
 	if (!dev_manager_info(cmd, lv,
@@ -767,44 +757,102 @@ int lv_info_by_lvid(struct cmd_context *cmd, const char *lvid_s, int use_layer,
 }
 
 /*
- * Returns 1 if lv_seg_status structure populated,
- * else 0 on failure or if device not active locally.
- */
-int lv_status(struct cmd_context *cmd, const struct lv_segment *lv_seg,
-	      int use_layer, struct lv_seg_status *lv_seg_status)
-{
-	if (!activation())
-		return 0;
-
-	return _lv_info(cmd, lv_seg->lv, use_layer, NULL, lv_seg, lv_seg_status, 0, 0);
-}
-
-/*
- * Returns 1 if lv_with_info_and_seg_status structure populated,
+ * Returns 1 if lv_with_info_and_seg_status info structure populated,
  * else 0 on failure or if device not active locally.
  *
- * This is the same as calling lv_info and lv_status,
- * but* it's done in one go with one ioctl if possible!                                                             ]
+ * When seg_status parsing had troubles it will set type to SEG_STATUS_UNKNOWN.
+ *
+ * Using usually one ioctl to obtain info and status.
+ * More complex segment do collect info from one device,
+ * but status from another device.
+ *
+ * TODO: further improve with more statuses (i.e. snapshot's origin/merge)
  */
-int lv_info_with_seg_status(struct cmd_context *cmd, const struct logical_volume *lv,
-			    const struct lv_segment *lv_seg, int use_layer,
+int lv_info_with_seg_status(struct cmd_context *cmd,
+			    const struct lv_segment *lv_seg,
 			    struct lv_with_info_and_seg_status *status,
 			    int with_open_count, int with_read_ahead)
 {
+	const struct logical_volume *olv, *lv = status->lv = lv_seg->lv;
+
 	if (!activation())
 		return 0;
 
-	if (lv == lv_seg->lv)
-		return _lv_info(cmd, lv, use_layer, &status->info, lv_seg, &status->seg_status,
-				with_open_count, with_read_ahead);
+	if (lv_is_used_cache_pool(lv)) {
+		/* INFO is not set as cache-pool cannot be active.
+		 * STATUS is collected from cache LV */
+		if (!(lv_seg = get_only_segment_using_this_lv(lv)))
+			return_0;
+		(void) _lv_info(cmd, lv_seg->lv, 1, NULL, lv_seg, &status->seg_status, 0, 0);
+		return 1;
+	}
 
-	/*
-	 * If the info is requested for an LV and segment
-	 * status for segment that belong to another LV,
-	 * we need to acquire info and status separately!
-	 */
-	return _lv_info(cmd, lv, use_layer, &status->info, NULL, NULL, with_open_count, with_read_ahead) &&
-	       _lv_info(cmd, lv_seg->lv, use_layer, NULL, lv_seg, &status->seg_status, 0, 0);
+	if (lv_is_thin_pool(lv)) {
+		/* Always collect status for '-tpool' */
+		if (_lv_info(cmd, lv, 1, &status->info, lv_seg, &status->seg_status, 0, 0) &&
+		    (status->seg_status.type == SEG_STATUS_THIN_POOL)) {
+			/* There is -tpool device, but query 'active' state of 'fake' thin-pool */
+			if (!_lv_info(cmd, lv, 0, NULL, NULL, NULL, 0, 0) &&
+			    !status->seg_status.thin_pool->needs_check)
+				status->info.exists = 0; /* So pool LV is not active */
+		}
+		return 1;
+	}
+
+	if (lv_is_external_origin(lv)) {
+		if (!_lv_info(cmd, lv, 0, &status->info, NULL, NULL,
+			      with_open_count, with_read_ahead))
+			return_0;
+
+		(void) _lv_info(cmd, lv, 1, NULL, lv_seg, &status->seg_status, 0, 0);
+		return 1;
+	}
+
+	if (lv_is_origin(lv)) {
+		/* Query segment status for 'layered' (-real) device most of the time,
+		 * only for merging snapshot, query its progress.
+		 * TODO: single LV may need couple status to be exposed at once....
+		 *       but this needs more logical background
+		 */
+		/* Show INFO for actual origin and grab status for merging origin */
+		if (!_lv_info(cmd, lv, 0, &status->info, lv_seg,
+			      lv_is_merging_origin(lv) ? &status->seg_status : NULL,
+			      with_open_count, with_read_ahead))
+			return_0;
+
+		if (status->info.exists &&
+		    (status->seg_status.type != SEG_STATUS_SNAPSHOT)) /* Not merging */
+			/* Grab STATUS from layered -real */
+			(void) _lv_info(cmd, lv, 1, NULL, lv_seg, &status->seg_status, 0, 0);
+		return 1;
+	}
+
+	if (lv_is_cow(lv)) {
+		if (lv_is_merging_cow(lv)) {
+			olv = origin_from_cow(lv);
+
+			if (!_lv_info(cmd, olv, 0, &status->info, first_seg(olv), &status->seg_status,
+				      with_open_count, with_read_ahead))
+				return_0;
+
+			if (status->seg_status.type == SEG_STATUS_SNAPSHOT) {
+				log_debug_activation("Snapshot merge is in progress, querying status of %s instead.",
+						     display_lvname(lv));
+				/*
+				 * When merge is in progress, query merging origin LV instead.
+				 * COW volume is already mapped as error target in this case.
+				 */
+				return 1;
+			}
+
+			/* Merge not yet started, still a snapshot... */
+		}
+		/* Hadle fictional lvm2 snapshot and query snapshotX volume */
+		lv_seg = find_snapshot(lv);
+	}
+
+	return _lv_info(cmd, lv, 0, &status->info, lv_seg, &status->seg_status,
+			with_open_count, with_read_ahead);
 }
 
 #define OPEN_COUNT_CHECK_RETRIES 25
@@ -950,6 +998,30 @@ int lv_raid_percent(const struct logical_volume *lv, dm_percent_t *percent)
 	return lv_mirror_percent(lv->vg->cmd, lv, 0, percent, NULL);
 }
 
+int lv_raid_data_offset(const struct logical_volume *lv, uint64_t *data_offset)
+{
+	int r;
+	struct dev_manager *dm;
+	struct dm_status_raid *status;
+
+	if (!lv_info(lv->vg->cmd, lv, 0, NULL, 0, 0))
+		return 0;
+
+	log_debug_activation("Checking raid data offset and dev sectors for LV %s/%s",
+			     lv->vg->name, lv->name);
+	if (!(dm = dev_manager_create(lv->vg->cmd, lv->vg->name, 1)))
+		return_0;
+
+	if (!(r = dev_manager_raid_status(dm, lv, &status)))
+		stack;
+
+	*data_offset = status->data_offset;
+
+	dev_manager_destroy(dm);
+
+	return r;
+}
+
 int lv_raid_dev_health(const struct logical_volume *lv, char **dev_health)
 {
 	int r;
@@ -977,6 +1049,32 @@ int lv_raid_dev_health(const struct logical_volume *lv, char **dev_health)
 	dev_manager_destroy(dm);
 
 	return r;
+}
+
+int lv_raid_dev_count(const struct logical_volume *lv, uint32_t *dev_cnt)
+{
+	struct dev_manager *dm;
+	struct dm_status_raid *status;
+
+	*dev_cnt = 0;
+
+	if (!lv_info(lv->vg->cmd, lv, 0, NULL, 0, 0))
+		return 0;
+
+	log_debug_activation("Checking raid device count for LV %s/%s",
+			     lv->vg->name, lv->name);
+	if (!(dm = dev_manager_create(lv->vg->cmd, lv->vg->name, 1)))
+		return_0;
+
+	if (!dev_manager_raid_status(dm, lv, &status)) {
+		dev_manager_destroy(dm);
+		return_0;
+	}
+	*dev_cnt = status->dev_count;
+
+	dev_manager_destroy(dm);
+
+	return 1;
 }
 
 int lv_raid_mismatch_count(const struct logical_volume *lv, uint64_t *cnt)
@@ -1141,7 +1239,7 @@ int lv_cache_status(const struct logical_volume *cache_lv,
 		return 0;
 	}
 
-	if (!lv_info(cache_lv->vg->cmd, cache_lv, 0, NULL, 0, 0)) {
+	if (!lv_info(cache_lv->vg->cmd, cache_lv, 1, NULL, 0, 0)) {
 		log_error("Cannot check status for locally inactive cache volume %s.",
 			  display_lvname(cache_lv));
 		return 0;
@@ -1757,12 +1855,15 @@ int monitor_dev_for_events(struct cmd_context *cmd, const struct logical_volume 
 	 *  However in case command would have crashed, such LV is
 	 *  left unmonitored and may potentially require dmeventd.
 	 */
-	if ((lv_is_cache_pool_data(lv) || lv_is_cache_pool_metadata(lv)) &&
-	    !lv_is_used_cache_pool((find_pool_seg(first_seg(lv))->lv))) {
-		log_debug_activation("Skipping %smonitor of %s.%s",
-				     (monitor) ? "" : "un", display_lvname(lv),
-				     (monitor) ? " Cache pool activation for clearing only." : "");
-		return 1;
+	if (lv_is_cache_pool_data(lv) || lv_is_cache_pool_metadata(lv)) {
+		if (!(seg = find_pool_seg(first_seg(lv))))
+			return_0;
+		if (!lv_is_used_cache_pool(seg->lv)) {
+			log_debug_activation("Skipping %smonitor of %s.%s",
+					     (monitor) ? "" : "un", display_lvname(lv),
+					     (monitor) ? " Cache pool activation for clearing only." : "");
+			return 1;
+		}
 	}
 
 	/*
@@ -1906,7 +2007,7 @@ int monitor_dev_for_events(struct cmd_context *cmd, const struct logical_volume 
 			/* FIXME specify events */
 			if (!monitor_fn(seg, 0)) {
 				log_error("%s: %s segment monitoring function failed.",
-					  display_lvname(lv), seg->segtype->name);
+					  display_lvname(lv), lvseg_name(seg));
 				return 0;
 			}
 		} else
@@ -1914,16 +2015,13 @@ int monitor_dev_for_events(struct cmd_context *cmd, const struct logical_volume 
 
 		/* Check [un]monitor results */
 		/* Try a couple times if pending, but not forever... */
-		for (i = 0; i < 40; i++) {
+		for (i = 0;; i++) {
 			pending = 0;
 			monitored = seg->segtype->ops->target_monitored(seg, &pending);
-			if (pending ||
-			    (!monitored && monitor) ||
-			    (monitored && !monitor))
-				log_very_verbose("%s %smonitoring still pending: waiting...",
-						 display_lvname(lv), monitor ? "" : "un");
-			else
+			if (!pending || i >= 40)
 				break;
+			log_very_verbose("%s %smonitoring still pending: waiting...",
+					 display_lvname(lv), monitor ? "" : "un");
 			usleep(10000 * i);
 		}
 
@@ -2541,6 +2639,77 @@ int lv_mknodes(struct cmd_context *cmd, const struct logical_volume *lv)
 	fs_unlock();
 
 	return r;
+}
+
+/* Remove any existing, closed mapped device by @name */
+static int _remove_dm_dev_by_name(const char *name)
+{
+	int r = 0;
+	struct dm_task *dmt;
+	struct dm_info info;
+
+	if (!(dmt = dm_task_create(DM_DEVICE_INFO)))
+		return_0;
+
+	/* Check, if the device exists. */
+	if (dm_task_set_name(dmt, name) && dm_task_run(dmt) && dm_task_get_info(dmt, &info)) {
+		dm_task_destroy(dmt);
+
+		/* Ignore non-existing or open dm devices */
+		if (!info.exists || info.open_count)
+			return 1;
+
+		if (!(dmt = dm_task_create(DM_DEVICE_REMOVE)))
+			return_0;
+
+		if (dm_task_set_name(dmt, name))
+			r = dm_task_run(dmt);
+	}
+
+	dm_task_destroy(dmt);
+
+	return r;
+}
+
+/* Work all segments of @lv removing any existing, closed "*-missing_N_0" sub devices. */
+static int _lv_remove_any_missing_subdevs(struct logical_volume *lv)
+{
+	if (lv) {
+		uint32_t seg_no = 0;
+		char name[257];
+		struct lv_segment *seg;
+
+		dm_list_iterate_items(seg, &lv->segments) {
+			if (seg->area_count != 1)
+				return_0;
+			if (dm_snprintf(name, sizeof(name), "%s-%s-missing_%u_0", seg->lv->vg->name, seg->lv->name, seg_no) < 0)
+				return 0;
+			if (!_remove_dm_dev_by_name(name))
+				return 0;
+
+			seg_no++;
+		}
+	}
+
+	return 1;
+}
+
+/* Remove any "*-missing_*" sub devices added by the activation layer for an rmate/rimage missing PV mapping */
+int lv_deactivate_any_missing_subdevs(const struct logical_volume *lv)
+{
+	uint32_t s;
+	struct lv_segment *seg = first_seg(lv);
+
+	for (s = 0; s < seg->area_count; s++) {
+		if (seg_type(seg, s) == AREA_LV &&
+		    !_lv_remove_any_missing_subdevs(seg_lv(seg, s)))
+			return 0;
+		if (seg->meta_areas && seg_metatype(seg, s) == AREA_LV &&
+		    !_lv_remove_any_missing_subdevs(seg_metalv(seg, s)))
+			return 0;
+	}
+
+	return 1;
 }
 
 /*

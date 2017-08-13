@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2012 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -17,7 +18,7 @@ SKIP_WITH_LVMPOLLD=1
 
 aux prepare_devs 2
 
-kill $(< LOCAL_LVMETAD)
+kill "$(< LOCAL_LVMETAD)"
 while test -e "$TESTDIR/lvmetad.socket"; do echo -n .; sleep .1; done # wait for the socket close
 test ! -e "$LVM_LVMETAD_PIDFILE"
 

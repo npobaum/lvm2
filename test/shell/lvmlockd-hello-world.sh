@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2008-2012 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -13,7 +14,7 @@ test_description='Hello world for vgcreate with lvmlockd and sanlock'
 
 . lib/inittest
 
-[ -z "$LVM_TEST_LVMLOCKD" ] && skip;
+[ -z "$LVM_TEST_LVMLOCKD" ] && skip
 
 aux prepare_pvs 1
 

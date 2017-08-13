@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2016 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2005-2017 Red Hat, Inc. All rights reserved.
  *
  * This file is part of the device-mapper userspace tools.
  *
@@ -47,13 +47,19 @@ enum {
 	SEG_RAID1,
 	SEG_RAID10,
 	SEG_RAID4,
+	SEG_RAID5_N,
 	SEG_RAID5_LA,
 	SEG_RAID5_RA,
 	SEG_RAID5_LS,
 	SEG_RAID5_RS,
+	SEG_RAID6_N_6,
 	SEG_RAID6_ZR,
 	SEG_RAID6_NR,
 	SEG_RAID6_NC,
+	SEG_RAID6_LS_6,
+	SEG_RAID6_RS_6,
+	SEG_RAID6_LA_6,
+	SEG_RAID6_RA_6,
 };
 
 /* FIXME Add crypt and multipath support */
@@ -81,13 +87,20 @@ static const struct {
 	{ SEG_RAID1, "raid1"},
 	{ SEG_RAID10, "raid10"},
 	{ SEG_RAID4, "raid4"},
+	{ SEG_RAID5_N,  "raid5_n"},
 	{ SEG_RAID5_LA, "raid5_la"},
 	{ SEG_RAID5_RA, "raid5_ra"},
 	{ SEG_RAID5_LS, "raid5_ls"},
 	{ SEG_RAID5_RS, "raid5_rs"},
+	{ SEG_RAID6_N_6,"raid6_n_6"},
 	{ SEG_RAID6_ZR, "raid6_zr"},
 	{ SEG_RAID6_NR, "raid6_nr"},
 	{ SEG_RAID6_NC, "raid6_nc"},
+	{ SEG_RAID6_LS_6, "raid6_ls_6"},
+	{ SEG_RAID6_RS_6, "raid6_rs_6"},
+	{ SEG_RAID6_LA_6, "raid6_la_6"},
+	{ SEG_RAID6_RA_6, "raid6_ra_6"},
+
 
 	/*
 	 * WARNING: Since 'raid' target overloads this 1:1 mapping table
@@ -95,6 +108,7 @@ static const struct {
 	 */
 	{ SEG_RAID5_LS, "raid5"}, /* same as "raid5_ls" (default for MD also) */
 	{ SEG_RAID6_ZR, "raid6"}, /* same as "raid6_zr" */
+	{ SEG_RAID10, "raid10_near"}, /* same as "raid10" */
 };
 
 /* Some segment types have a list of areas of other devices attached */
@@ -192,11 +206,14 @@ struct load_segment {
 	struct dm_tree_node *replicator;/* Replicator-dev */
 	uint64_t rdevice_index;		/* Replicator-dev */
 
-	uint64_t rebuilds;		/* raid */
-	uint64_t writemostly;		/* raid */
+	int delta_disks;		/* raid reshape number of disks */
+	int data_offset;		/* raid reshape data offset on disk to set */
+	uint64_t rebuilds[RAID_BITMAP_SIZE];	/* raid */
+	uint64_t writemostly[RAID_BITMAP_SIZE];	/* raid */
 	uint32_t writebehind;		/* raid */
 	uint32_t max_recovery_rate;	/* raid kB/sec/disk */
 	uint32_t min_recovery_rate;	/* raid kB/sec/disk */
+	uint32_t data_copies;		/* raid10 data_copies */
 
 	struct dm_tree_node *metadata;	/* Thin_pool + Cache */
 	struct dm_tree_node *pool;	/* Thin_pool, Thin */
@@ -1718,9 +1735,11 @@ static int _dm_tree_deactivate_children(struct dm_tree_node *dnode,
 		    !child->callback(child, DM_NODE_CALLBACK_DEACTIVATED,
 				     child->callback_data))
 			stack;
-			// FIXME: We need to let lvremove pass,
-			// so for now deactivation ignores check result
-			//r = 0; // FIXME: _node_clear_table() without callback ?
+			/* FIXME Deactivation must currently ignore failure
+			 * here so that lvremove can continue: we need an
+			 * alternative way to handle this state without 
+			 * setting r=0.  Or better, skip calling thin_check
+			 * entirely if the device is about to be removed. */
 
 		if (dm_tree_node_num_children(child, 0) &&
 		    !_dm_tree_deactivate_children(child, uuid_prefix, uuid_prefix_len, level + 1))
@@ -2140,13 +2159,19 @@ static int _emit_areas_line(struct dm_task *dmt __attribute__((unused)),
 		case SEG_RAID1:
 		case SEG_RAID10:
 		case SEG_RAID4:
+		case SEG_RAID5_N:
 		case SEG_RAID5_LA:
 		case SEG_RAID5_RA:
 		case SEG_RAID5_LS:
 		case SEG_RAID5_RS:
+		case SEG_RAID6_N_6:
 		case SEG_RAID6_ZR:
 		case SEG_RAID6_NR:
 		case SEG_RAID6_NC:
+		case SEG_RAID6_LS_6:
+		case SEG_RAID6_RS_6:
+		case SEG_RAID6_LA_6:
+		case SEG_RAID6_RA_6:
 			if (!area->dev_node) {
 				EMIT_PARAMS(*pos, " -");
 				break;
@@ -2334,16 +2359,65 @@ static int _mirror_emit_segment_line(struct dm_task *dmt, struct load_segment *s
 	return 1;
 }
 
-/* Is parameter non-zero? */
-#define PARAM_IS_SET(p) ((p) ? 1 : 0)
+static int _2_if_value(unsigned p)
+{
+	return p ? 2 : 0;
+}
 
-/* Return number of bits assuming 4 * 64 bit size */
-static int _get_params_count(uint64_t bits)
+/* Return number of bits passed in @bits assuming 2 * 64 bit size */
+static int _get_params_count(const uint64_t *bits)
 {
 	int r = 0;
+	int i = RAID_BITMAP_SIZE;
 
-	r += 2 * hweight32(bits & 0xFFFFFFFF);
-	r += 2 * hweight32(bits >> 32);
+	while (i--) {
+		r += 2 * hweight32(bits[i] & 0xFFFFFFFF);
+		r += 2 * hweight32(bits[i] >> 32);
+	}
+
+	return r;
+}
+
+/*
+ * Get target version (major, minor and patchlevel) for @target_name
+ *
+ * FIXME: this function is derived from liblvm.
+ *        Integrate with move of liblvm functions
+ *        to libdm in future library layer purge
+ *        (e.g. expose as API dm_target_version()?)
+ */
+static int _target_version(const char *target_name, uint32_t *maj,
+			   uint32_t *min, uint32_t *patchlevel)
+{
+	int r = 0;
+	struct dm_task *dmt;
+	struct dm_versions *target, *last_target = NULL;
+
+	log_very_verbose("Getting target version for %s", target_name);
+	if (!(dmt = dm_task_create(DM_DEVICE_LIST_VERSIONS)))
+		return_0;
+
+	if (!dm_task_run(dmt)) {
+		log_debug_activation("Failed to get %s target versions", target_name);
+		/* Assume this was because LIST_VERSIONS isn't supported */
+		*maj = *min = *patchlevel = 0;
+		r = 1;
+	} else
+		for (target = dm_task_get_versions(dmt);
+		     target != last_target;
+		     last_target = target, target = (struct dm_versions *)((char *) target + target->next))
+			if (!strcmp(target_name, target->name)) {
+				*maj = target->version[0];
+				*min = target->version[1];
+				*patchlevel = target->version[2];
+				log_very_verbose("Found %s target "
+						 "v%" PRIu32 ".%" PRIu32 ".%" PRIu32 ".",
+						 target_name, *maj, *min, *patchlevel);
+				r = 1;
+				break;
+			}
+
+	dm_task_destroy(dmt);
 
 	return r;
 }
@@ -2354,61 +2428,129 @@ static int _raid_emit_segment_line(struct dm_task *dmt, uint32_t major,
 				   size_t paramsize)
 {
 	uint32_t i;
+	uint32_t area_count = seg->area_count / 2;
+	uint32_t maj, min, patchlevel;
 	int param_count = 1; /* mandatory 'chunk size'/'stripe size' arg */
 	int pos = 0;
-	unsigned type = seg->type;
+	unsigned type;
+
+	if (seg->area_count % 2)
+		return 0;
 
 	if ((seg->flags & DM_NOSYNC) || (seg->flags & DM_FORCESYNC))
 		param_count++;
 
-	param_count += 2 * (PARAM_IS_SET(seg->region_size) +
-			    PARAM_IS_SET(seg->writebehind) +
-			    PARAM_IS_SET(seg->min_recovery_rate) +
-			    PARAM_IS_SET(seg->max_recovery_rate));
+	param_count += _2_if_value(seg->data_offset) +
+		       _2_if_value(seg->delta_disks) +
+		       _2_if_value(seg->region_size) +
+		       _2_if_value(seg->writebehind) +
+		       _2_if_value(seg->min_recovery_rate) +
+		       _2_if_value(seg->max_recovery_rate) +
+		       _2_if_value(seg->data_copies > 1);
 
-	/* rebuilds and writemostly are 64 bits */
+	/* rebuilds and writemostly are BITMAP_SIZE * 64 bits */
 	param_count += _get_params_count(seg->rebuilds);
 	param_count += _get_params_count(seg->writemostly);
 
-	if ((type == SEG_RAID1) && seg->stripe_size)
-		log_error("WARNING: Ignoring RAID1 stripe size");
+	if ((seg->type == SEG_RAID1) && seg->stripe_size)
+		log_info("WARNING: Ignoring RAID1 stripe size");
 
 	/* Kernel only expects "raid0", not "raid0_meta" */
+	type = seg->type;
 	if (type == SEG_RAID0_META)
 		type = SEG_RAID0;
 
-	EMIT_PARAMS(pos, "%s %d %u", _dm_segtypes[type].target,
+	EMIT_PARAMS(pos, "%s %d %u",
+		    type == SEG_RAID10 ? "raid10" : _dm_segtypes[type].target,
 		    param_count, seg->stripe_size);
 
-	if (seg->flags & DM_NOSYNC)
-		EMIT_PARAMS(pos, " nosync");
-	else if (seg->flags & DM_FORCESYNC)
-		EMIT_PARAMS(pos, " sync");
+	if (!_target_version("raid", &maj, &min, &patchlevel))
+		return_0;
 
-	if (seg->region_size)
-		EMIT_PARAMS(pos, " region_size %u", seg->region_size);
+	/*
+	 * Target version prior to 1.9.0 and >= 1.11.0 emit
+	 * order of parameters as of kernel target documentation
+	 */
+	if (maj > 1 || (maj == 1 && (min < 9 || min >= 11))) {
+		if (seg->flags & DM_NOSYNC)
+			EMIT_PARAMS(pos, " nosync");
+		else if (seg->flags & DM_FORCESYNC)
+			EMIT_PARAMS(pos, " sync");
 
-	for (i = 0; i < (seg->area_count / 2); i++)
-		if (seg->rebuilds & (1ULL << i))
-			EMIT_PARAMS(pos, " rebuild %u", i);
+		for (i = 0; i < area_count; i++)
+			if (seg->rebuilds[i/64] & (1ULL << (i%64)))
+				EMIT_PARAMS(pos, " rebuild %u", i);
 
-	if (seg->min_recovery_rate)
-		EMIT_PARAMS(pos, " min_recovery_rate %u",
-			    seg->min_recovery_rate);
+		if (seg->min_recovery_rate)
+			EMIT_PARAMS(pos, " min_recovery_rate %u",
+				    seg->min_recovery_rate);
 
-	if (seg->max_recovery_rate)
-		EMIT_PARAMS(pos, " max_recovery_rate %u",
-			    seg->max_recovery_rate);
+		if (seg->max_recovery_rate)
+			EMIT_PARAMS(pos, " max_recovery_rate %u",
+				    seg->max_recovery_rate);
 
-	for (i = 0; i < (seg->area_count / 2); i++)
-		if (seg->writemostly & (1ULL << i))
-			EMIT_PARAMS(pos, " write_mostly %u", i);
+		for (i = 0; i < area_count; i++)
+			if (seg->writemostly[i/64] & (1ULL << (i%64)))
+				EMIT_PARAMS(pos, " write_mostly %u", i);
 
-	if (seg->writebehind)
-		EMIT_PARAMS(pos, " max_write_behind %u", seg->writebehind);
+		if (seg->writebehind)
+			EMIT_PARAMS(pos, " max_write_behind %u", seg->writebehind);
+
+		if (seg->region_size)
+			EMIT_PARAMS(pos, " region_size %u", seg->region_size);
+
+		if (seg->data_copies > 1 && type == SEG_RAID10)
+			EMIT_PARAMS(pos, " raid10_copies %u", seg->data_copies);
+
+		if (seg->delta_disks)
+			EMIT_PARAMS(pos, " delta_disks %d", seg->delta_disks);
+
+		/* If seg-data_offset == 1, kernel needs a zero offset to adjust to it */
+		if (seg->data_offset)
+			EMIT_PARAMS(pos, " data_offset %d", seg->data_offset == 1 ? 0 : seg->data_offset);
+
+	/* Target version >= 1.9.0 && < 1.11.0 had a table line parameter ordering flaw */
+	} else {
+		if (seg->data_copies > 1 && type == SEG_RAID10)
+			EMIT_PARAMS(pos, " raid10_copies %u", seg->data_copies);
+
+		if (seg->flags & DM_NOSYNC)
+			EMIT_PARAMS(pos, " nosync");
+		else if (seg->flags & DM_FORCESYNC)
+			EMIT_PARAMS(pos, " sync");
+
+		if (seg->region_size)
+			EMIT_PARAMS(pos, " region_size %u", seg->region_size);
+
+		/* If seg-data_offset == 1, kernel needs a zero offset to adjust to it */
+		if (seg->data_offset)
+			EMIT_PARAMS(pos, " data_offset %d", seg->data_offset == 1 ? 0 : seg->data_offset);
+
+		if (seg->delta_disks)
+			EMIT_PARAMS(pos, " delta_disks %d", seg->delta_disks);
+
+		for (i = 0; i < area_count; i++)
+			if (seg->rebuilds[i/64] & (1ULL << (i%64)))
+				EMIT_PARAMS(pos, " rebuild %u", i);
+
+		for (i = 0; i < area_count; i++)
+			if (seg->writemostly[i/64] & (1ULL << (i%64)))
+				EMIT_PARAMS(pos, " write_mostly %u", i);
+
+		if (seg->writebehind)
+			EMIT_PARAMS(pos, " max_write_behind %u", seg->writebehind);
+
+		if (seg->max_recovery_rate)
+			EMIT_PARAMS(pos, " max_recovery_rate %u",
+				    seg->max_recovery_rate);
+
+		if (seg->min_recovery_rate)
+			EMIT_PARAMS(pos, " min_recovery_rate %u",
+				    seg->min_recovery_rate);
+	}
 
 	/* Print number of metadata/data device pairs */
-	EMIT_PARAMS(pos, " %u", seg->area_count/2);
+	EMIT_PARAMS(pos, " %u", area_count);
 
 	if (_emit_areas_line(dmt, seg, params, paramsize, &pos) <= 0)
 		return_0;
@@ -2448,12 +2590,17 @@ static int _cache_emit_segment_line(struct dm_task *dmt,
 	/* Features */
 	/* feature_count = hweight32(seg->flags); */
 	/* EMIT_PARAMS(pos, " %u", feature_count); */
+	if (seg->flags & DM_CACHE_FEATURE_METADATA2)
+		EMIT_PARAMS(pos, " 2 metadata2 ");
+	else
+		EMIT_PARAMS(pos, " 1 ");
+
 	if (seg->flags & DM_CACHE_FEATURE_PASSTHROUGH)
-		EMIT_PARAMS(pos, " 1 passthrough");
-	else if (seg->flags & DM_CACHE_FEATURE_WRITETHROUGH)
-		EMIT_PARAMS(pos, " 1 writethrough");
-	else if (seg->flags & DM_CACHE_FEATURE_WRITEBACK)
-		EMIT_PARAMS(pos, " 1 writeback");
+		EMIT_PARAMS(pos, "passthrough");
+        else if (seg->flags & DM_CACHE_FEATURE_WRITEBACK)
+		EMIT_PARAMS(pos, "writeback");
+	else
+		EMIT_PARAMS(pos, "writethrough");
 
 	/* Cache Policy */
 	name = seg->policy_name ? : "default";
@@ -2588,13 +2735,19 @@ static int _emit_segment_line(struct dm_task *dmt, uint32_t major,
 	case SEG_RAID1:
 	case SEG_RAID10:
 	case SEG_RAID4:
+	case SEG_RAID5_N:
 	case SEG_RAID5_LA:
 	case SEG_RAID5_RA:
 	case SEG_RAID5_LS:
 	case SEG_RAID5_RS:
+	case SEG_RAID6_N_6:
 	case SEG_RAID6_ZR:
 	case SEG_RAID6_NR:
 	case SEG_RAID6_NC:
+	case SEG_RAID6_LS_6:
+	case SEG_RAID6_RS_6:
+	case SEG_RAID6_LA_6:
+	case SEG_RAID6_RA_6:
 		target_type_is_raid = 1;
 		r = _raid_emit_segment_line(dmt, major, minor, seg, seg_start,
 					    params, paramsize);
@@ -2665,7 +2818,7 @@ static int _emit_segment(struct dm_task *dmt, uint32_t major, uint32_t minor,
 			 struct load_segment *seg, uint64_t *seg_start)
 {
 	char *params;
-	size_t paramsize = 4096;
+	size_t paramsize = 4096; /* FIXME: too small for long RAID lines when > 64 devices supported */
 	int ret;
 
 	do {
@@ -2778,6 +2931,10 @@ static int _dm_tree_revert_activated(struct dm_tree_node *parent)
 
 	dm_list_iterate_items_gen(child, &parent->activated, activated_list) {
 		log_debug_activation("Reverting %s.", child->name);
+		if (child->callback) {
+			log_debug_activation("Dropping callback for %s.", child->name);
+			child->callback = NULL;
+		}
 		if (!_deactivate_node(child->name, child->info.major, child->info.minor,
 				      &child->dtree->cookie, child->udev_flags, 0)) {
 			log_error("Unable to deactivate %s (%" PRIu32
@@ -2845,8 +3002,8 @@ int dm_tree_preload_children(struct dm_tree_node *dnode,
 		else if (child->props.size_changed < 0)
 			dnode->props.size_changed = -1;
 
-		/* Resume device immediately if it has parents and its size changed */
-		if (!dm_tree_node_num_children(child, 1) || !child->props.size_changed)
+		/* No resume for a device without parents or with unchanged or smaller size */
+		if (!dm_tree_node_num_children(child, 1) || (child->props.size_changed <= 0))
 			continue;
 
 		if (!node_created && (dm_list_size(&child->props.segs) == 1)) {
@@ -3238,8 +3395,10 @@ int dm_tree_node_add_raid_target_with_params(struct dm_tree_node *node,
 	seg->region_size = p->region_size;
 	seg->stripe_size = p->stripe_size;
 	seg->area_count = 0;
-	seg->rebuilds = p->rebuilds;
-	seg->writemostly = p->writemostly;
+	memset(seg->rebuilds, 0, sizeof(seg->rebuilds));
+	seg->rebuilds[0] = p->rebuilds;
+	memset(seg->writemostly, 0, sizeof(seg->writemostly));
+	seg->writemostly[0] = p->writemostly;
 	seg->writebehind = p->writebehind;
 	seg->min_recovery_rate = p->min_recovery_rate;
 	seg->max_recovery_rate = p->max_recovery_rate;
@@ -3267,6 +3426,47 @@ int dm_tree_node_add_raid_target(struct dm_tree_node *node,
 	return dm_tree_node_add_raid_target_with_params(node, size, &params);
 }
 
+/*
+ * Version 2 of dm_tree_node_add_raid_target() allowing for:
+ *
+ * - maximum 253 legs in a raid set (MD kernel limitation)
+ * - delta_disks for disk add/remove reshaping
+ * - data_offset for out-of-place reshaping
+ * - data_copies to cope witth odd numbers of raid10 disks
+ */
+int dm_tree_node_add_raid_target_with_params_v2(struct dm_tree_node *node,
+					        uint64_t size,
+						const struct dm_tree_node_raid_params_v2 *p)
+{
+	unsigned i;
+	struct load_segment *seg = NULL;
+
+	for (i = 0; i < DM_ARRAY_SIZE(_dm_segtypes) && !seg; ++i)
+		if (!strcmp(p->raid_type, _dm_segtypes[i].target))
+			if (!(seg = _add_segment(node,
+						 _dm_segtypes[i].type, size)))
+				return_0;
+	if (!seg) {
+		log_error("Unsupported raid type %s.", p->raid_type);
+		return 0;
+	}
+
+	seg->region_size = p->region_size;
+	seg->stripe_size = p->stripe_size;
+	seg->area_count = 0;
+	seg->delta_disks = p->delta_disks;
+	seg->data_offset = p->data_offset;
+	memcpy(seg->rebuilds, p->rebuilds, sizeof(seg->rebuilds));
+	memcpy(seg->writemostly, p->writemostly, sizeof(seg->writemostly));
+	seg->writebehind = p->writebehind;
+	seg->data_copies = p->data_copies;
+	seg->min_recovery_rate = p->min_recovery_rate;
+	seg->max_recovery_rate = p->max_recovery_rate;
+	seg->flags = p->flags;
+
+	return 1;
+}
+
 int dm_tree_node_add_cache_target(struct dm_tree_node *node,
 				  uint64_t size,
 				  uint64_t feature_flags, /* DM_CACHE_FEATURE_* */
@@ -3279,19 +3479,33 @@ int dm_tree_node_add_cache_target(struct dm_tree_node *node,
 {
 	struct dm_config_node *cn;
 	struct load_segment *seg;
+	static const uint64_t _modemask =
+		DM_CACHE_FEATURE_PASSTHROUGH |
+		DM_CACHE_FEATURE_WRITETHROUGH |
+		DM_CACHE_FEATURE_WRITEBACK;
 
-	switch (feature_flags &
-		(DM_CACHE_FEATURE_PASSTHROUGH |
-		 DM_CACHE_FEATURE_WRITETHROUGH |
-		 DM_CACHE_FEATURE_WRITEBACK)) {
-		 case DM_CACHE_FEATURE_PASSTHROUGH:
-		 case DM_CACHE_FEATURE_WRITETHROUGH:
-		 case DM_CACHE_FEATURE_WRITEBACK:
-			 break;
-		 default:
-			 log_error("Invalid cache's feature flag " FMTu64 ".",
-				   feature_flags);
-			 return 0;
+	/* Detect unknown (bigger) feature bit */
+	if (feature_flags >= (DM_CACHE_FEATURE_METADATA2 * 2)) {
+		log_error("Unsupported cache's feature flags set " FMTu64 ".",
+			  feature_flags);
+		return 0;
+	}
+
+	switch (feature_flags & _modemask) {
+	case DM_CACHE_FEATURE_PASSTHROUGH:
+	case DM_CACHE_FEATURE_WRITEBACK:
+		if (strcmp(policy_name, "cleaner") == 0) {
+			/* Enforce writethrough mode for cleaner policy */
+			feature_flags = ~_modemask;
+			feature_flags |= DM_CACHE_FEATURE_WRITETHROUGH;
+		}
+                /* Fall through */
+	case DM_CACHE_FEATURE_WRITETHROUGH:
+		break;
+	default:
+		log_error("Invalid cache's feature flag " FMTu64 ".",
+			  feature_flags);
+		return 0;
 	}
 
 	if (data_block_size < DM_CACHE_MIN_DATA_BLOCK_SIZE) {
@@ -3337,8 +3551,7 @@ int dm_tree_node_add_cache_target(struct dm_tree_node *node,
 		return_0;
 
 	seg->data_block_size = data_block_size;
-	/* Enforce WriteThough mode for cleaner policy */
-	seg->flags = (strcmp(policy_name, "cleaner") == 0) ? DM_CACHE_FEATURE_WRITETHROUGH : feature_flags;
+	seg->flags = feature_flags;
 	seg->policy_name = policy_name;
 
 	/* FIXME: better validation missing */
@@ -3865,13 +4078,19 @@ int dm_tree_node_add_null_area(struct dm_tree_node *node, uint64_t offset)
 	case SEG_RAID0_META:
 	case SEG_RAID1:
 	case SEG_RAID4:
+	case SEG_RAID5_N:
 	case SEG_RAID5_LA:
 	case SEG_RAID5_RA:
 	case SEG_RAID5_LS:
 	case SEG_RAID5_RS:
+	case SEG_RAID6_N_6:
 	case SEG_RAID6_ZR:
 	case SEG_RAID6_NR:
 	case SEG_RAID6_NC:
+	case SEG_RAID6_LS_6:
+	case SEG_RAID6_RS_6:
+	case SEG_RAID6_LA_6:
+	case SEG_RAID6_RA_6:
 		break;
 	default:
 		log_error("dm_tree_node_add_null_area() called on an unsupported segment type");
@@ -3891,18 +4110,59 @@ void dm_tree_node_set_callback(struct dm_tree_node *dnode,
 	dnode->callback_data = data;
 }
 
-/*
- * Backward compatible dm_tree_node_size_changed() implementations.
- *
- * Keep these at the end of the file to avoid adding clutter around the
- * current dm_tree_node_size_changed() version.
- */
 #if defined(__GNUC__)
+/*
+ * Backward compatible implementations.
+ *
+ * Keep these at the end of the file to make sure that
+ * no code in this file accidentally calls it.
+ */
+
+/* Backward compatible dm_tree_node_size_changed() implementations. */
 int dm_tree_node_size_changed_base(const struct dm_tree_node *dnode);
 DM_EXPORT_SYMBOL_BASE(dm_tree_node_size_changed);
 int dm_tree_node_size_changed_base(const struct dm_tree_node *dnode)
 {
 	/* Base does not make difference between smaller and bigger */
 	return dm_tree_node_size_changed(dnode) ? 1 : 0;
+}
+
+/*
+ * Retain ABI compatibility after adding the DM_CACHE_FEATURE_METADATA2
+ * in version 1.02.138.
+ *
+ * Binaries compiled against version 1.02.138 onwards will use
+ * the new function dm_tree_node_add_cache_target which detects unknown
+ * feature flags and returns error for them.
+ */
+int dm_tree_node_add_cache_target_base(struct dm_tree_node *node,
+				       uint64_t size,
+				       uint64_t feature_flags, /* DM_CACHE_FEATURE_* */
+				       const char *metadata_uuid,
+				       const char *data_uuid,
+				       const char *origin_uuid,
+				       const char *policy_name,
+				       const struct dm_config_node *policy_settings,
+				       uint32_t data_block_size);
+DM_EXPORT_SYMBOL_BASE(dm_tree_node_add_cache_target);
+int dm_tree_node_add_cache_target_base(struct dm_tree_node *node,
+				       uint64_t size,
+				       uint64_t feature_flags,
+				       const char *metadata_uuid,
+				       const char *data_uuid,
+				       const char *origin_uuid,
+				       const char *policy_name,
+				       const struct dm_config_node *policy_settings,
+				       uint32_t data_block_size)
+{
+	/* Old version supported only these FEATURE bits, others were ignored so masked them */
+	static const uint64_t _mask =
+		DM_CACHE_FEATURE_WRITEBACK |
+		DM_CACHE_FEATURE_WRITETHROUGH |
+		DM_CACHE_FEATURE_PASSTHROUGH;
+
+	return dm_tree_node_add_cache_target(node, size, feature_flags & _mask,
+					     metadata_uuid, data_uuid, origin_uuid,
+					     policy_name, policy_settings, data_block_size);
 }
 #endif

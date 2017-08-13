@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2014 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -34,7 +35,7 @@ pvs -o+uuid 2>&1 | tee out
 grep    WARNING out > warn || true
 grep -v WARNING out > main || true
 
-test $(grep $UUID1 main | wc -l) -eq 1
+test "$(grep -c $UUID1 main)" -eq 1
 
 COUNT=$(grep --count "was already found" warn)
 [ "$COUNT" -eq 2 ]

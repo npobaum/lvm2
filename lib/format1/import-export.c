@@ -128,8 +128,8 @@ int import_pv(const struct format_type *fmt, struct dm_pool *mem,
 int generate_lvm1_system_id(struct cmd_context *cmd, char *s, const char *prefix)
 {
 
-	if (dm_snprintf(s, NAME_LEN, "%s%s%lu",
-			 prefix, cmd->hostname, time(NULL)) < 0) {
+	if (dm_snprintf(s, NAME_LEN, "%s%s" FMTu64,
+			prefix, cmd->hostname, (uint64_t)time(NULL)) < 0) {
 		log_error("Generated LVM1 format system_id too long");
 		return 0;
 	}
@@ -398,7 +398,7 @@ int export_extents(struct disk_list *dl, uint32_t lv_num,
 			if (!(seg->segtype->flags & SEG_FORMAT1_SUPPORT)) {
 				log_error("Segment type %s in LV %s: "
 					  "unsupported by format1",
-					  seg->segtype->name, lv->name);
+					  lvseg_name(seg), lv->name);
 				return 0;
 			}
 			if (seg_type(seg, s) != AREA_PV) {
@@ -510,7 +510,7 @@ int export_lvs(struct disk_list *dl, struct volume_group *vg,
 		goto_out;
 
 	dm_list_iterate_items(ll, &vg->lvs) {
-		if (ll->lv->status & SNAPSHOT)
+		if (lv_is_snapshot(ll->lv))
 			continue;
 
 		if (!(lvdl = dm_pool_alloc(dl->mem, sizeof(*lvdl))))

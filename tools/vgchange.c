@@ -107,11 +107,11 @@ static int _activate_lvs_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 			lv = origin_from_cow(lv);
 
 		/* Only request activation of snapshot origin devices */
-		if ((lv->status & SNAPSHOT) || lv_is_cow(lv))
+		if (lv_is_snapshot(lv) || lv_is_cow(lv))
 			continue;
 
 		/* Only request activation of mirror LV */
-		if ((lv->status & MIRROR_IMAGE) || (lv->status & MIRROR_LOG))
+		if (lv_is_mirror_image(lv) || lv_is_mirror_log(lv))
 			continue;
 
 		/* Only request activation of the first replicator-dev LV */
@@ -482,6 +482,9 @@ static int _vgchange_metadata_copies(struct cmd_context *cmd,
 {
 	uint32_t mda_copies = arg_uint_value(cmd, vgmetadatacopies_ARG, DEFAULT_VGMETADATACOPIES);
 
+	log_warn("vgchange_metadata_copies new %u vg_mda_copies %u D %u",
+		 mda_copies, vg_mda_copies(vg), DEFAULT_VGMETADATACOPIES);
+
 	if (mda_copies == vg_mda_copies(vg)) {
 		if (vg_mda_copies(vg) == VGMETADATACOPIES_UNMANAGED)
 			log_warn("Number of metadata copies for VG %s is already unmanaged.",
@@ -532,6 +535,11 @@ static int _vgchange_locktype(struct cmd_context *cmd,
 	struct lv_list *lvl;
 	struct logical_volume *lv;
 	int lv_lock_count = 0;
+
+	if (!lock_type) {
+		log_error(INTERNAL_ERROR "No locktype_ARG.");
+		return 0;
+	}
 
 	/*
 	 * This is a special/forced exception to change the lock type to none.
@@ -1087,7 +1095,7 @@ static int _lockd_vgchange(struct cmd_context *cmd, int argc, char **argv)
 	 */
 
 	if (arg_is_set(cmd, systemid_ARG) || arg_is_set(cmd, locktype_ARG))
-		cmd->command->flags &= ~ALL_VGS_IS_DEFAULT;
+		cmd->cname->flags &= ~ALL_VGS_IS_DEFAULT;
 
 	if (arg_is_set(cmd, systemid_ARG) || arg_is_set(cmd, locktype_ARG)) {
 		/*

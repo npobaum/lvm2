@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 
 # Copyright (C) 2015 Red Hat, Inc. All rights reserved.
 #
@@ -29,9 +29,10 @@ which cmp || skip
 aux have_thin 1 13 0 || skip
 
 aux prepare_pvs 2 640
+get_devs
 
 # Use 8K extent size
-vgcreate $vg -s 8K $(cat DEVICES)
+vgcreate -s 8K "$vg" "${DEVICES[@]}"
 
 # Prepare some numeric pattern with ~64K size
 seq -s ' ' -w 0 10922 > 64K
