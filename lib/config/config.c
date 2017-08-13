@@ -2347,10 +2347,8 @@ const char *get_default_devices_cache_CFG(struct cmd_context *cmd, struct profil
 
 	if (cache_dir || cache_file_prefix) {
 		if (dm_snprintf(buf, sizeof(buf),
-				"%s%s%s/%s.cache",
-				cache_dir ? "" : cmd->system_dir,
-				cache_dir ? "" : "/",
-				cache_dir ? : DEFAULT_CACHE_SUBDIR,
+				"%s/%s.cache",
+				cache_dir ? : DEFAULT_RUN_DIR,
 				cache_file_prefix ? : DEFAULT_CACHE_FILE_PREFIX) < 0) {
 			log_error("Persistent cache filename too long.");
 			return NULL;
@@ -2358,8 +2356,8 @@ const char *get_default_devices_cache_CFG(struct cmd_context *cmd, struct profil
 		return dm_pool_strdup(cmd->mem, buf);
 	}
 
-	if (dm_snprintf(buf, sizeof(buf), "%s/%s/%s.cache", cmd->system_dir,
-			DEFAULT_CACHE_SUBDIR, DEFAULT_CACHE_FILE_PREFIX) < 0) {
+	if (dm_snprintf(buf, sizeof(buf), "%s/%s.cache",
+			DEFAULT_RUN_DIR, DEFAULT_CACHE_FILE_PREFIX) < 0) {
 		log_error("Persistent cache filename too long.");
 		return NULL;
 	}
