@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2008-2011 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -32,3 +33,4 @@ grep "Logical volume bogus not found." err
 # 'run the offending pvmove command'
 not pvmove -v -n$lv "$dev1":4294967296 "$dev2"
 
+vgremove -ff $vg

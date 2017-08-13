@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2012 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -15,13 +16,11 @@ SKIP_WITH_LVMPOLLD=1
 
 . lib/inittest
 
-aux prepare_pvs 2
-vgcreate $vg1 "$dev1" "$dev2"
-lvcreate -n bar -l 1 $vg1
+aux prepare_vg 2
+lvcreate -n bar -l 1 $vg
 
-(echo | aux lvmetad_talk) || skip
 aux lvmetad_dump | tee lvmetad.txt
 
-grep $vg1 lvmetad.txt
+grep $vg lvmetad.txt
 
-vgremove -ff $vg1
+vgremove -ff $vg

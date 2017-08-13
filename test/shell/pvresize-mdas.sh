@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2016 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -21,7 +22,7 @@ check pv_field "$dev1" pv_size 8.00m
 check pv_field "$dev1" pv_mda_count 2
 pvs "$dev1"
 
-pvresize --setphysicalvolumesize 4m "$dev1"
+pvresize --setphysicalvolumesize 4m -y "$dev1"
 check pv_field "$dev1" pv_size 4.00m
 check pv_field "$dev1" pv_mda_count 2
 pvs "$dev1"

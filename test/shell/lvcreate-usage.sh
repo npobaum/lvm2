@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2008-2013 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -16,16 +17,29 @@ SKIP_WITH_LVMLOCKD=1
 . lib/inittest
 
 aux prepare_pvs 4
+get_devs
+
 aux pvcreate --metadatacopies 0 "$dev1"
-vgcreate $vg $(cat DEVICES)
+aux vgcreate "$vg" "${DEVICES[@]}"
 
 invalid lvcreate --type free -l1 -n $lv1 $vg 2>err
 grep "Invalid argument for --type" err
 invalid lvcreate --type $RANDOM -l1 -n $lv1 $vg
 invalid lvcreate --type unknown -l1 -n $lv1 $vg
 
+invalid lvcreate -L10000000000000000000 -n $lv $vg 2>&1 | tee err
+grep "Size is too big" err
+invalid lvcreate -L+-10 -n $lv $vg 2>&1 | tee err
+grep "Multiple sign" err
+invalid lvcreate -L-.1 -n $lv $vg  2>&1 | tee err
+grep "Size may not be negative" err
+invalid lvcreate -L..1 -n $lv $vg  2>&1 | tee err
+grep "Can't parse size" err
+
 lvcreate --type linear -aey -m0 -l1 -n $lv1 $vg
 lvcreate --type snapshot -l1 -n $lv2 $vg/$lv1
+# Supporting decimal point with size
+lvcreate -L.1 -n $lv3 $vg
 
 # Reject repeated invocation (run 2 times) (bz178216)
 lvcreate -n $lv -l 4 $vg

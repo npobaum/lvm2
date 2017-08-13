@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2017 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -56,7 +56,7 @@ static struct dm_hash_table *_create_lv_maps(struct dm_pool *mem,
 	}
 
 	dm_list_iterate_items(ll, &vg->lvs) {
-		if (ll->lv->status & SNAPSHOT)
+		if (lv_is_snapshot(ll->lv))
 			continue;
 
 		if (!(lvm = dm_pool_alloc(mem, sizeof(*lvm))))
@@ -134,37 +134,35 @@ static int _fill_maps(struct dm_hash_table *maps, struct volume_group *vg,
 			if (lv_num == UNMAPPED_EXTENT)
 				continue;
 
-			else {
-				lv_num--;
-				lvm = lvms[lv_num];
+			lv_num--;
+			lvm = lvms[lv_num];
 
-				if (!lvm) {
-					log_error("Invalid LV in extent map "
-						  "(PV %s, PE %" PRIu32
-						  ", LV %" PRIu32
-						  ", LE %" PRIu32 ")",
-						  dev_name(pv->dev), i,
-						  lv_num, e[i].le_num);
-					return 0;
-				}
-
-				le = e[i].le_num;
-
-				if (le >= lvm->lv->le_count) {
-					log_error("logical extent number "
-						  "out of bounds");
-					return 0;
-				}
-
-				if (lvm->map[le].pv) {
-					log_error("logical extent (%u) "
-						  "already mapped.", le);
-					return 0;
-				}
-
-				lvm->map[le].pv = pv;
-				lvm->map[le].pe = i;
+			if (!lvm) {
+				log_error("Invalid LV in extent map "
+					  "(PV %s, PE %" PRIu32
+					  ", LV %" PRIu32
+					  ", LE %" PRIu32 ")",
+					  dev_name(pv->dev), i,
+					  lv_num, e[i].le_num);
+				return 0;
 			}
+
+			le = e[i].le_num;
+
+			if (le >= lvm->lv->le_count) {
+				log_error("logical extent number "
+					  "out of bounds");
+				return 0;
+			}
+
+			if (lvm->map[le].pv) {
+				log_error("logical extent (%u) "
+					  "already mapped.", le);
+				return 0;
+			}
+
+			lvm->map[le].pv = pv;
+			lvm->map[le].pe = i;
 		}
 	}
 
@@ -225,8 +223,8 @@ static int _read_linear(struct cmd_context *cmd, struct lv_map *lvm)
 	while (le < lvm->lv->le_count) {
 		len = _area_length(lvm, le);
 
-		if (!(seg = alloc_lv_segment(segtype, lvm->lv, le, len, 0, 0,
-					     NULL, 1, len, 0, 0, 0, NULL))) {
+		if (!(seg = alloc_lv_segment(segtype, lvm->lv, le, len, 0, 0, 0,
+					     NULL, 1, len, 0, 0, 0, 0, NULL))) {
 			log_error("Failed to allocate linear segment.");
 			return 0;
 		}
@@ -297,10 +295,10 @@ static int _read_stripes(struct cmd_context *cmd, struct lv_map *lvm)
 
 		if (!(seg = alloc_lv_segment(segtype, lvm->lv,
 					     lvm->stripes * first_area_le,
-					     lvm->stripes * area_len,
+					     lvm->stripes * area_len, 0,
 					     0, lvm->stripe_size, NULL,
 					     lvm->stripes,
-					     area_len, 0, 0, 0, NULL))) {
+					     area_len, 0, 0, 0, 0, NULL))) {
 			log_error("Failed to allocate striped segment.");
 			return 0;
 		}

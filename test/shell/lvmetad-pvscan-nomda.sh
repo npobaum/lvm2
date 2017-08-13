@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2012 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -15,7 +16,7 @@ SKIP_WITH_LVMPOLLD=1
 
 . lib/inittest
 
-kill $(< LOCAL_LVMETAD)
+kill "$(< LOCAL_LVMETAD)"
 rm LOCAL_LVMETAD
 
 aux prepare_devs 2

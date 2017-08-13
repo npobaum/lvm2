@@ -65,8 +65,7 @@ const char *lvm_lv_get_name(const lv_t lv)
 {
 	const char *rc;
 	struct saved_env e = store_user_env(lv->vg->cmd);
-	rc = dm_pool_strndup(lv->vg->vgmem, (const char *)lv->name,
-			       NAME_LEN+1);
+	rc = dm_pool_strndup(lv->vg->vgmem, lv->name, NAME_LEN+1);
 	restore_user_env(&e);
 	return rc;
 }
@@ -507,7 +506,7 @@ static int _lv_set_pool_params(struct lvcreate_params *lp,
 		pool_metadata_size = extents * vg->extent_size /
 			(lp->chunk_size * (SECTOR_SIZE / 64));
 		while ((pool_metadata_size >
-			(2 * DEFAULT_THIN_POOL_OPTIMAL_SIZE / SECTOR_SIZE)) &&
+			(DEFAULT_THIN_POOL_OPTIMAL_METADATA_SIZE * 2)) &&
 		       lp->chunk_size < DM_THIN_MAX_DATA_BLOCK_SIZE) {
 			lp->chunk_size <<= 1;
 			pool_metadata_size >>= 1;
@@ -566,7 +565,21 @@ static lv_create_params_t _lvm_lv_params_create_thin_pool(vg_t vg,
 
 	if (lvcp) {
 		lvcp->vg = vg;
-		lvcp->lvp.discards = (thin_discards_t) discard;
+		switch (discard) {
+		case LVM_THIN_DISCARDS_IGNORE:
+			lvcp->lvp.discards = THIN_DISCARDS_IGNORE;
+			break;
+		case LVM_THIN_DISCARDS_NO_PASSDOWN:
+			lvcp->lvp.discards = THIN_DISCARDS_NO_PASSDOWN;
+			break;
+		case LVM_THIN_DISCARDS_PASSDOWN:
+			lvcp->lvp.discards = THIN_DISCARDS_PASSDOWN;
+			break;
+		default:
+			log_error("Invalid discard argument %d for thin pool creation.", discard);
+			return NULL;
+		}
+		lvcp->lvp.zero_new_blocks = THIN_ZERO_YES;
 
 		if (chunk_size)
 			lvcp->lvp.chunk_size = chunk_size;

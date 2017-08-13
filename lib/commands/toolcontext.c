@@ -192,6 +192,9 @@ static int _get_env_vars(struct cmd_context *cmd)
 		}
 	}
 
+	if (strcmp((getenv("LVM_RUN_BY_DMEVENTD") ? : "0"), "1") == 0)
+		init_run_by_dmeventd(cmd);
+
 	return 1;
 }
 
@@ -1752,6 +1755,15 @@ int init_connections(struct cmd_context *cmd)
 	return 1;
 bad:
 	cmd->initialized.connections = 0;
+	return 0;
+}
+
+int init_run_by_dmeventd(struct cmd_context *cmd)
+{
+	init_dmeventd_monitor(DMEVENTD_MONITOR_IGNORE);
+	init_ignore_suspended_devices(1);
+	init_disable_dmeventd_monitoring(1); /* Lock settings */
+
 	return 0;
 }
 

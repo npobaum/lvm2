@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2008-2013 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -45,3 +46,5 @@ vgcreate $vg "$created"
 # 'no parse errors and VG really exists'
 vgs $vg 2>err
 not grep "Parse error" err
+
+dmsetup remove "${PREFIX}${pv_ugly}"

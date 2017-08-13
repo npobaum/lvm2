@@ -49,7 +49,7 @@ static int _vgextend_restoremissing(struct cmd_context *cmd __attribute__((unuse
 	struct vgextend_params *vp = (struct vgextend_params *) handle->custom_handle;
 	struct pvcreate_params *pp = &vp->pp;
 	int fixed = 0;
-	int i;
+	unsigned i;
 
 	if (!archive(vg))
 		return_0;
@@ -133,12 +133,6 @@ int vgextend(struct cmd_context *cmd, int argc, char **argv)
 	if (!argc) {
 		log_error("Please enter volume group name and "
 			  "physical volume(s)");
-		return EINVALID_CMD_LINE;
-	}
-
-	if (arg_is_set(cmd, metadatacopies_ARG)) {
-		log_error("Invalid option --metadatacopies, "
-			  "use --pvmetadatacopies instead.");
 		return EINVALID_CMD_LINE;
 	}
 

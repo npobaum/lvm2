@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2013 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -22,7 +23,9 @@ aux have_thin 1 8 0 || skip
 aux have_raid 1 3 5 || skip
 
 aux prepare_pvs 5 20
-vgcreate -c n -s 128k $vg $(cat DEVICES)
+get_devs
+
+vgcreate -c n -s 128k "$vg" "${DEVICES[@]}" 
 
 for mode in "--atomic" ""
 do

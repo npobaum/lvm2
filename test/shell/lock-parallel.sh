@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2014-2015 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -27,7 +28,7 @@ lvcreate -l1 -n $lv2 $vg
 mkfs.ext3 "$DM_DEV_DIR/$vg/$lv1"
 
 # Slowdown PV for resized LV
-aux delay_dev "$dev1" 50 50 $(get first_extent_sector "$dev1"):
+aux delay_dev "$dev1" 50 50 "$(get first_extent_sector "$dev1"):"
 
 lvresize -L-5 -r $vg/$lv1 &
 

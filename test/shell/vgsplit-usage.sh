@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2007-2011 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -17,6 +18,7 @@ SKIP_WITH_LVMPOLLD=1
 . lib/inittest
 
 aux prepare_devs 5
+get_devs
 
 if test -n "$LVM_TEST_LVM1" ; then
 mdatypes='1 2'
@@ -27,21 +29,21 @@ fi
 for mdatype in $mdatypes
 do
 
-pvcreate -M$mdatype $(cat DEVICES)
+pvcreate -M$mdatype "${DEVICES[@]}"
 
 # ensure name order does not matter
 # NOTE: if we're using lvm1, we must use -M on vgsplit
-vgcreate -M$mdatype $vg1 $(cat DEVICES)
+vgcreate -M$mdatype "$vg1" "${DEVICES[@]}"
 vgsplit -M$mdatype $vg1 $vg2 "$dev1"
 vgremove $vg1 $vg2
 
-vgcreate -M$mdatype $vg2 $(cat DEVICES)
+vgcreate -M$mdatype "$vg2" "${DEVICES[@]}"
 vgsplit -M$mdatype $vg2 $vg1 "$dev1"
 vgremove $vg1 $vg2
 
 # vgsplit accepts new vg as destination of split
 # lvm1 -- bz244792
-vgcreate -M$mdatype $vg1 $(cat DEVICES)
+vgcreate -M$mdatype "$vg1" "${DEVICES[@]}"
 vgsplit $vg1 $vg2 "$dev1" 1>err
 grep "New volume group \"$vg2\" successfully split from \"$vg1\"" err
 vgremove $vg1 $vg2
@@ -156,7 +158,7 @@ vgremove -f $vg2 $vg1
 # Restart clvm because using the same
 # devs as lvm1 and then lvm2 causes problems.
 if test -e LOCAL_CLVMD ; then
-	kill $(< LOCAL_CLVMD)
+	kill "$(< LOCAL_CLVMD)"
 	for i in $(seq 1 100) ; do
 		test $i -eq 100 && die "Shutdown of clvmd is too slow."
 		pgrep clvmd || break

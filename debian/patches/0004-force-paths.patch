@@ -1,4 +1,4 @@
-From ea980746dd4908458bfbe6731a280b0f7b7624b5 Mon Sep 17 00:00:00 2001
+From 06702fb9d015eb3d02a88582fc0a3afc48071d7c Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 30 Jun 2015 11:46:08 +0200
 Subject: force-paths
@@ -8,10 +8,10 @@ Subject: force-paths
  1 file changed, 1 insertion(+), 5 deletions(-)
 
 diff --git a/configure.in b/configure.in
-index f67f00434..48f4bf753 100644
+index c7766b921..9864847d7 100644
 --- a/configure.in
 +++ b/configure.in
-@@ -1799,11 +1799,7 @@ if test "$UDEV_SYNC" = yes; then
+@@ -1821,11 +1821,7 @@ if test "$BUILD_DMFILEMAPD" = yes; then
  fi
  
  ################################################################################

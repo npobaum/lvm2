@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2016 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2017 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -137,7 +137,16 @@
 									e.g. to prohibit allocation of a RAID image
 									on a PV already holing an image of the RAID set */
 #define LOCKD_SANLOCK_LV	UINT64_C(0x0080000000000000)	/* LV - Internal use only */
-/* Next unused flag:		UINT64_C(0x0100000000000000)    */
+#define LV_RESHAPE_DELTA_DISKS_PLUS		UINT64_C(0x0100000000000000)    /* LV reshape flag delta disks plus image(s) */
+#define LV_RESHAPE_DELTA_DISKS_MINUS		UINT64_C(0x0200000000000000)    /* LV reshape flag delta disks minus image(s) */
+
+#define LV_REMOVE_AFTER_RESHAPE	UINT64_C(0x0400000000000000)	/* LV needs to be removed after a shrinking reshape */
+#define LV_METADATA_FORMAT	UINT64_C(0x0800000000000000)    /* LV has segments with metadata format */
+
+#define LV_RESHAPE		UINT64_C(0x1000000000000000)    /* Ongoing reshape (number of stripes, stripesize or raid algorithm change):
+								   used as SEGTYPE_FLAG to prevent activation on old runtime */
+#define LV_RESHAPE_DATA_OFFSET	UINT64_C(0x2000000000000000)    /* LV reshape flag data offset (out of place reshaping) */
+/* Next unused flag:		UINT64_C(0x4000000000000000)    */
 
 /* Format features flags */
 #define FMT_SEGMENTS		0x00000001U	/* Arbitrary segment params? */
@@ -198,7 +207,7 @@
 #define lv_is_partial(lv)	(((lv)->status & PARTIAL_LV) ? 1 : 0)
 #define lv_is_virtual(lv)	(((lv)->status & VIRTUAL) ? 1 : 0)
 #define lv_is_merging(lv)	(((lv)->status & MERGING) ? 1 : 0)
-#define lv_is_merging_origin(lv) (lv_is_merging(lv))
+#define lv_is_merging_origin(lv) (lv_is_merging(lv) && (lv)->snapshot)
 #define lv_is_snapshot(lv)	(((lv)->status & SNAPSHOT) ? 1 : 0)
 #define lv_is_converting(lv)	(((lv)->status & CONVERTING) ? 1 : 0)
 #define lv_is_external_origin(lv)	(((lv)->external_count > 0) ? 1 : 0)
@@ -226,6 +235,7 @@
 
 #define lv_is_raid(lv)		(((lv)->status & RAID) ? 1 : 0)
 #define lv_is_raid_image(lv)	(((lv)->status & RAID_IMAGE) ? 1 : 0)
+#define lv_is_raid_image_with_tracking(lv)	((lv_is_raid_image(lv) && !((lv)->status & LVM_WRITE)) ? 1 : 0)
 #define lv_is_raid_metadata(lv)	(((lv)->status & RAID_META) ? 1 : 0)
 #define lv_is_raid_type(lv)	(((lv)->status & (RAID | RAID_IMAGE | RAID_META)) ? 1 : 0)
 
@@ -270,17 +280,31 @@ enum {
 };
 
 typedef enum {
+	THIN_ZERO_UNSELECTED = 0,
+	THIN_ZERO_NO,
+	THIN_ZERO_YES,
+} thin_zero_t;
+
+typedef enum {
+	THIN_DISCARDS_UNSELECTED = 0,
 	THIN_DISCARDS_IGNORE,
 	THIN_DISCARDS_NO_PASSDOWN,
 	THIN_DISCARDS_PASSDOWN,
 } thin_discards_t;
 
 typedef enum {
-	CACHE_MODE_UNDEFINED = 0,
+	CACHE_MODE_UNSELECTED = 0,
 	CACHE_MODE_WRITETHROUGH,
 	CACHE_MODE_WRITEBACK,
 	CACHE_MODE_PASSTHROUGH,
 } cache_mode_t;
+
+/* ATM used for cache only */
+typedef enum {
+	CACHE_METADATA_FORMAT_UNSELECTED = 0,  /* On input means 'auto' */
+	CACHE_METADATA_FORMAT_1,
+	CACHE_METADATA_FORMAT_2,
+} cache_metadata_format_t;
 
 typedef enum {
 	LOCK_TYPE_INVALID = -1,
@@ -445,6 +469,7 @@ struct lv_segment {
 	const struct segment_type *segtype;
 	uint32_t le;
 	uint32_t len;
+	uint32_t reshape_len;   /* For RAID: user hidden additional out of place reshaping length off area_len and len */
 
 	uint64_t status;
 
@@ -453,6 +478,7 @@ struct lv_segment {
 	uint32_t writebehind;   /* For RAID (RAID1 only) */
 	uint32_t min_recovery_rate; /* For RAID */
 	uint32_t max_recovery_rate; /* For RAID */
+	uint32_t data_offset;	/* For RAID: data offset in sectors on each data component image */
 	uint32_t area_count;
 	uint32_t area_len;
 	uint32_t chunk_size;	/* For snapshots/thin_pool.  In sectors. */
@@ -463,6 +489,7 @@ struct lv_segment {
 	struct logical_volume *cow;
 	struct dm_list origin_list;
 	uint32_t region_size;	/* For mirrors, replicators - in sectors */
+	uint32_t data_copies;	/* For RAID: number of data copies (e.g. 3 for RAID 6 */
 	uint32_t extents_copied;/* Number of extents synced for raids/mirrors */
 	struct logical_volume *log_lv;
 	struct lv_segment *pvmove_source_seg;
@@ -474,13 +501,14 @@ struct lv_segment {
 	struct lv_segment_area *meta_areas;	/* For RAID */
 	struct logical_volume *metadata_lv;	/* For thin_pool */
 	uint64_t transaction_id;		/* For thin_pool, thin */
-	unsigned zero_new_blocks;		/* For thin_pool */
+	thin_zero_t zero_new_blocks;		/* For thin_pool */
 	thin_discards_t discards;		/* For thin_pool */
 	struct dm_list thin_messages;		/* For thin_pool */
 	struct logical_volume *external_lv;	/* For thin */
 	struct logical_volume *pool_lv;		/* For thin, cache */
 	uint32_t device_id;			/* For thin, 24bit */
 
+	cache_metadata_format_t cache_metadata_format;/* For cache_pool */
 	cache_mode_t cache_mode;		/* For cache_pool */
 	const char *policy_name;		/* For cache_pool */
 	struct dm_config_node *policy_settings;	/* For cache_pool */
@@ -622,6 +650,7 @@ struct lvresize_params {
 	int use_policies;
 
 	alloc_policy_t alloc;
+	int yes;
 	int force;
 	int nosync;
 	int nofsck;
@@ -724,7 +753,8 @@ int pvremove_many(struct cmd_context *cmd, struct dm_list *pv_names,
 int pv_resize_single(struct cmd_context *cmd,
 			     struct volume_group *vg,
 			     struct physical_volume *pv,
-			     const uint64_t new_size);
+			     const uint64_t new_size,
+			     int yes);
 
 int pv_analyze(struct cmd_context *cmd, const char *pv_name,
 	       uint64_t label_sector);
@@ -837,26 +867,22 @@ int pool_is_active(const struct logical_volume *pool_lv);
 int pool_supports_external_origin(const struct lv_segment *pool_seg, const struct logical_volume *external_lv);
 int thin_pool_feature_supported(const struct logical_volume *pool_lv, int feature);
 int recalculate_pool_chunk_size_with_dev_hints(struct logical_volume *pool_lv,
-					       int passed_args,
 					       int chunk_size_calc_policy);
+int validate_cache_chunk_size(struct cmd_context *cmd, uint32_t chunk_size);
+int validate_thin_pool_chunk_size(struct cmd_context *cmd, uint32_t chunk_size);
 int validate_pool_chunk_size(struct cmd_context *cmd, const struct segment_type *segtype, uint32_t chunk_size);
 int update_pool_lv(struct logical_volume *lv, int activate);
-int update_pool_params(const struct segment_type *segtype,
-		       struct volume_group *vg, unsigned target_attr,
-		       int passed_args, uint32_t pool_data_extents,
-		       uint32_t *pool_metadata_extents,
-		       int *chunk_size_calc_policy, uint32_t *chunk_size,
-		       thin_discards_t *discards, int *zero);
-int update_profilable_pool_params(struct cmd_context *cmd, struct profile *profile,
-				  int passed_args, int *chunk_size_calc_method,
-				  uint32_t *chunk_size, thin_discards_t *discards,
-				  int *zero);
-int update_thin_pool_params(const struct segment_type *segtype,
-			    struct volume_group *vg, unsigned attr,
-			    int passed_args, uint32_t pool_data_extents,
+int get_default_allocation_thin_pool_chunk_size(struct cmd_context *cmd, struct profile *profile,
+						uint32_t *chunk_size, int *chunk_size_calc_method);
+int update_thin_pool_params(struct cmd_context *cmd,
+			    struct profile *profile,
+			    uint32_t extent_size,
+			    const struct segment_type *segtype,
+			    unsigned attr,
+			    uint32_t pool_data_extents,
 			    uint32_t *pool_metadata_extents,
 			    int *chunk_size_calc_method, uint32_t *chunk_size,
-			    thin_discards_t *discards, int *zero);
+			    thin_discards_t *discards, thin_zero_t *zero_new_blocks);
 const char *get_pool_discards_name(thin_discards_t discards);
 int set_pool_discards(thin_discards_t *discards, const char *str);
 struct logical_volume *alloc_pool_metadata(struct logical_volume *pool_lv,
@@ -908,8 +934,8 @@ struct lvcreate_params {
 	int wipe_signatures; /* all */
 	int32_t major; /* all */
 	int32_t minor; /* all */
-	int log_count; /* mirror */
-	int nosync; /* mirror */
+	int log_count; /* mirror/RAID */
+	int nosync; /* mirror/RAID */
 	int pool_metadata_spare; /* pools */
 	int type;   /* type arg is given */
 	int temporary; /* temporary LV */
@@ -919,6 +945,7 @@ struct lvcreate_params {
 	int activation_skip; /* activation skip flags */
 	activation_change_t activate; /* non-snapshot, non-mirror */
 	thin_discards_t discards;     /* thin */
+	thin_zero_t zero_new_blocks;
 #define THIN_CHUNK_SIZE_CALC_METHOD_GENERIC 0x01
 #define THIN_CHUNK_SIZE_CALC_METHOD_PERFORMANCE 0x02
 	int thin_chunk_size_calc_policy;
@@ -932,27 +959,20 @@ struct lvcreate_params {
 
 	const char *lock_args;
 
-	/* Keep args given by the user on command line */
-	/* FIXME: create some more universal solution here */
-#define PASS_ARG_CHUNK_SIZE		0x01
-#define PASS_ARG_DISCARDS		0x02
-#define PASS_ARG_POOL_METADATA_SIZE	0x04
-#define PASS_ARG_ZERO			0x08
-	int passed_args;
-
-	uint32_t stripes; /* striped */
-	uint32_t stripe_size; /* striped */
+	uint32_t stripes; /* striped/RAID */
+	uint32_t stripe_size; /* striped/RAID */
 	uint32_t chunk_size; /* snapshot */
-	uint32_t region_size; /* mirror */
+	uint32_t region_size; /* mirror/RAID */
 
-	unsigned stripes_supplied; /* striped */
-	unsigned stripe_size_supplied; /* striped */
+	unsigned stripes_supplied; /* striped/RAID */
+	unsigned stripe_size_supplied; /* striped/RAID */
 
-	uint32_t mirrors; /* mirror */
+	uint32_t mirrors; /* mirror/RAID */
 
 	uint32_t min_recovery_rate; /* RAID */
 	uint32_t max_recovery_rate; /* RAID */
 
+	cache_metadata_format_t cache_metadata_format; /* cache */
 	cache_mode_t cache_mode; /* cache */
 	const char *policy_name; /* cache */
 	struct dm_config_tree *policy_settings; /* cache */
@@ -1066,9 +1086,16 @@ struct lv_segment *get_only_segment_using_this_lv(const struct logical_volume *l
 * Useful functions for managing snapshots.
 */
 int lv_is_origin(const struct logical_volume *lv);
+#define lv_is_thick_origin lv_is_origin
+
 int lv_is_thin_origin(const struct logical_volume *lv, unsigned *snap_count);
-int lv_is_cache_origin(const struct logical_volume *lv);
+int lv_is_thin_snapshot(const struct logical_volume *lv);
+
 int lv_is_cow(const struct logical_volume *lv);
+#define lv_is_thick_snapshot lv_is_cow
+
+int lv_is_cache_origin(const struct logical_volume *lv);
+
 int lv_is_merging_cow(const struct logical_volume *cow);
 uint32_t cow_max_extents(const struct logical_volume *origin, uint32_t chunk_size);
 int cow_has_min_chunks(const struct volume_group *vg, uint32_t cow_extents, uint32_t chunk_size);
@@ -1137,7 +1164,8 @@ uint32_t lv_mirror_count(const struct logical_volume *lv);
 
 /* Remove CMIRROR_REGION_COUNT_LIMIT when http://bugzilla.redhat.com/682771 is fixed */
 #define CMIRROR_REGION_COUNT_LIMIT (256*1024 * 8)
-uint32_t adjusted_mirror_region_size(uint32_t extent_size, uint32_t extents,
+uint32_t adjusted_mirror_region_size(struct cmd_context *cmd,
+				     uint32_t extent_size, uint32_t extents,
 				     uint32_t region_size, int internal, int clustered);
 
 int remove_mirrors_from_segments(struct logical_volume *lv,
@@ -1157,6 +1185,10 @@ struct logical_volume *detach_mirror_log(struct lv_segment *seg);
 int attach_mirror_log(struct lv_segment *seg, struct logical_volume *lv);
 int remove_mirror_log(struct cmd_context *cmd, struct logical_volume *lv,
 		      struct dm_list *removable_pvs, int force);
+struct logical_volume *prepare_mirror_log(struct logical_volume *lv,
+					  int in_sync, uint32_t region_size,
+					  struct dm_list *allocatable_pvs,
+					  alloc_policy_t alloc);
 int add_mirror_log(struct cmd_context *cmd, struct logical_volume *lv,
 		   uint32_t log_count, uint32_t region_size,
 		   struct dm_list *allocatable_pvs, alloc_policy_t alloc);
@@ -1193,10 +1225,14 @@ struct logical_volume *first_replicator_dev(const struct logical_volume *lv);
 int lv_is_raid_with_tracking(const struct logical_volume *lv);
 uint32_t lv_raid_image_count(const struct logical_volume *lv);
 int lv_raid_change_image_count(struct logical_volume *lv,
-			       uint32_t new_count, struct dm_list *allocate_pvs);
-int lv_raid_split(struct logical_volume *lv, const char *split_name,
+			       int yes,
+			       uint32_t new_count,
+			       uint32_t new_region_size,
+			       struct dm_list *allocate_pvs);
+int lv_raid_split(struct logical_volume *lv, int yes, const char *split_name,
 		  uint32_t new_count, struct dm_list *splittable_pvs);
 int lv_raid_split_and_track(struct logical_volume *lv,
+			    int yes,
 			    struct dm_list *splittable_pvs);
 int lv_raid_merge(struct logical_volume *lv);
 int lv_raid_convert(struct logical_volume *lv,
@@ -1212,6 +1248,17 @@ int lv_raid_replace(struct logical_volume *lv, int force,
 		    struct dm_list *remove_pvs, struct dm_list *allocate_pvs);
 int lv_raid_remove_missing(struct logical_volume *lv);
 int partial_raid_lv_supports_degraded_activation(const struct logical_volume *lv);
+uint32_t raid_rmeta_extents_delta(struct cmd_context *cmd,
+				  uint32_t rimage_extents_cur, uint32_t rimage_extents_new,
+				  uint32_t region_size, uint32_t extent_size);
+uint32_t raid_rimage_extents(const struct segment_type *segtype,
+			     uint32_t extents, uint32_t stripes, uint32_t data_copies);
+uint32_t raid_ensure_min_region_size(const struct logical_volume *lv, uint64_t raid_size, uint32_t region_size);
+int lv_raid_change_region_size(struct logical_volume *lv,
+                               int yes, int force, uint32_t new_region_size);
+int lv_raid_in_sync(const struct logical_volume *lv);
+uint32_t lv_raid_data_copies(const struct segment_type *segtype, uint32_t area_count);
+int lv_raid_free_reshape_space(const struct logical_volume *lv);
 /* --  metadata/raid_manip.c */
 
 /* ++  metadata/cache_manip.c */
@@ -1227,17 +1274,22 @@ const char *display_cache_mode(const struct lv_segment *seg);
 const char *get_cache_mode_name(const struct lv_segment *cache_seg);
 int set_cache_mode(cache_mode_t *mode, const char *cache_mode);
 int cache_set_cache_mode(struct lv_segment *cache_seg, cache_mode_t mode);
+int cache_set_metadata_format(struct lv_segment *cache_seg, cache_metadata_format_t format);
 int cache_set_policy(struct lv_segment *cache_seg, const char *name,
 		     const struct dm_config_tree *settings);
 int cache_set_params(struct lv_segment *seg,
+		     uint32_t chunk_size,
+		     cache_metadata_format_t format,
 		     cache_mode_t mode,
 		     const char *policy_name,
-		     const struct dm_config_tree *policy_settings,
-		     uint32_t chunk_size);
+		     const struct dm_config_tree *policy_settings);
 void cache_check_for_warns(const struct lv_segment *seg);
-int update_cache_pool_params(const struct segment_type *segtype,
-			     struct volume_group *vg, unsigned attr,
-			     int passed_args, uint32_t pool_data_extents,
+int update_cache_pool_params(struct cmd_context *cmd,
+			     struct profile *profile,
+			     uint32_t extent_size,
+			     const struct segment_type *segtype,
+			     unsigned attr,
+			     uint32_t pool_data_extents,
 			     uint32_t *pool_metadata_extents,
 			     int *chunk_size_calc_method, uint32_t *chunk_size);
 int validate_lv_cache_chunk_size(struct logical_volume *pool_lv, uint32_t chunk_size);

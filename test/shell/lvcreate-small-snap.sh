@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2010-2014 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -15,8 +16,9 @@ SKIP_WITH_LVMPOLLD=1
 . lib/inittest
 
 aux prepare_pvs
+get_devs
 
-vgcreate -s 1k $vg $(cat DEVICES)
+vgcreate -s 1k "$vg" "${DEVICES[@]}"
 
 # 3 Chunks
 lvcreate -aey -n one -l 10 $vg
@@ -32,3 +34,5 @@ grep "smaller" lvcreate.out
 not lvcreate -s -l 4 -n snapB $vg/one 2>&1 | tee lvcreate.out
 not grep "suspend origin one" lvcreate.out
 grep "smaller" lvcreate.out
+
+vgremove -ff $vg

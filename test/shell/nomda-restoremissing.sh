@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2010 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -32,3 +33,5 @@ not lvcreate -aey --type mirror -m 1 -l 1 -n mirror $vg # write operations fail
 aux enable_dev "$dev1"
 lvcreate -aey --type mirror -m 1 -l 1 -n mirror $vg # no MDA => automatically restored
 vgck $vg
+
+vgremove -ff $vg

@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2008-2013 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -294,7 +295,7 @@ vgchange --addtag V5  $vg5
 lvremove $vg1/$lv1 @V35
 check lv_not_exists $vg1 $lv1
 check lv_not_exists $vg3 $lv1 $lv2 $lv3
-check lv_not_exists $vg5 $lv1 $lv2 $lv3not $lv4 $lv5
+check lv_not_exists $vg5 $lv1 $lv2 $lv3 $lv4 $lv5
 # verify unremoved exist
 check lv_exists $vg2 $lv1 $lv2
 

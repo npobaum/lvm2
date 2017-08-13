@@ -203,8 +203,9 @@ struct vg_info {
 #define GLFL_DISABLE_REASON_LVM1       0x00000008
 #define GLFL_DISABLE_REASON_DUPLICATES 0x00000010
 #define GLFL_DISABLE_REASON_VGRESTORE  0x00000020
+#define GLFL_DISABLE_REASON_REPAIR     0x00000040
 
-#define GLFL_DISABLE_REASON_ALL (GLFL_DISABLE_REASON_DIRECT | GLFL_DISABLE_REASON_LVM1 | GLFL_DISABLE_REASON_DUPLICATES | GLFL_DISABLE_REASON_VGRESTORE)
+#define GLFL_DISABLE_REASON_ALL (GLFL_DISABLE_REASON_DIRECT | GLFL_DISABLE_REASON_REPAIR | GLFL_DISABLE_REASON_LVM1 | GLFL_DISABLE_REASON_DUPLICATES | GLFL_DISABLE_REASON_VGRESTORE)
 
 #define VGFL_INVALID 0x00000001
 
@@ -256,6 +257,21 @@ static void destroy_metadata_hashes(lvmetad_state *s)
 
 	dm_hash_iterate(n, s->pvid_to_pvmeta)
 		dm_config_destroy(dm_hash_get_data(s->pvid_to_pvmeta, n));
+
+	dm_hash_iterate(n, s->vgid_to_vgname)
+		dm_free(dm_hash_get_data(s->vgid_to_vgname, n));
+
+	dm_hash_iterate(n, s->vgname_to_vgid)
+		dm_free(dm_hash_get_data(s->vgname_to_vgid, n));
+
+	dm_hash_iterate(n, s->vgid_to_info)
+		dm_free(dm_hash_get_data(s->vgid_to_info, n));
+
+	dm_hash_iterate(n, s->device_to_pvid)
+		dm_free(dm_hash_get_data(s->device_to_pvid, n));
+
+	dm_hash_iterate(n, s->pvid_to_vgid)
+		dm_free(dm_hash_get_data(s->pvid_to_vgid, n));
 
 	dm_hash_destroy(s->pvid_to_pvmeta);
 	dm_hash_destroy(s->vgid_to_metadata);
@@ -792,7 +808,8 @@ static int _update_pvid_to_vgid(lvmetad_state *s, struct dm_config_tree *vg,
 
 		if ((mode == REMOVE_EMPTY) && vgid_old) {
 			/* This copies the vgid_old string, doesn't reference it. */
-			if (!dm_hash_insert(to_check, vgid_old, (void*) 1)) {
+			if ((dm_hash_lookup(to_check, vgid_old) != (void*) 1) &&
+			    !dm_hash_insert(to_check, vgid_old, (void*) 1)) {
 				ERROR(s, "update_pvid_to_vgid out of memory for hash insert vgid_old %s", vgid_old);
 				goto abort_daemon;
 			}
@@ -868,16 +885,13 @@ static int remove_metadata(lvmetad_state *s, const char *vgid, int update_pvids)
 
 	/* free the unmapped data */
 
-	if (info_lookup)
-		dm_free(info_lookup);
 	if (meta_lookup)
 		dm_config_destroy(meta_lookup);
-	if (name_lookup)
-		dm_free(name_lookup);
 	if (outdated_pvs_lookup)
 		dm_config_destroy(outdated_pvs_lookup);
-	if (vgid_lookup)
-		dm_free(vgid_lookup);
+	dm_free(info_lookup);
+	dm_free(name_lookup);
+	dm_free(vgid_lookup);
 	return 1;
 }
 
@@ -1204,10 +1218,8 @@ static int _update_metadata_add_new(lvmetad_state *s, const char *new_name, cons
 out:
 out_free:
 	if (!new_name_dup || !new_vgid_dup || abort_daemon) {
-		if (new_name_dup)
-			dm_free(new_name_dup);
-		if (new_vgid_dup)
-			dm_free(new_vgid_dup);
+		dm_free(new_name_dup);
+		dm_free(new_vgid_dup);
 		ERROR(s, "lvmetad could not be updated and is aborting.");
 		exit(EXIT_FAILURE);
 	}
@@ -1797,8 +1809,7 @@ static response pv_gone(lvmetad_state *s, request r)
 	}
 
 	dm_config_destroy(pvmeta);
-	if (old_pvid)
-		dm_free(old_pvid);
+	dm_free(old_pvid);
 
 	return daemon_reply_simple("OK", NULL );
 }
@@ -1911,7 +1922,7 @@ static response pv_found(lvmetad_state *s, request r)
 	const char *arg_pvid = NULL;
 	const char *arg_pvid_lookup = NULL;
 	const char *new_pvid = NULL;
-	const char *new_pvid_dup = NULL;
+	char *new_pvid_dup = NULL;
 	const char *arg_name = NULL;
 	const char *arg_vgid = NULL;
 	const char *arg_vgid_lookup = NULL;
@@ -2074,7 +2085,7 @@ static response pv_found(lvmetad_state *s, request r)
 		if (!(new_pvid_dup = dm_strdup(new_pvid)))
 			goto nomem_free1;
 
-		if (!dm_hash_insert_binary(s->device_to_pvid, &new_device, sizeof(new_device), (char *)new_pvid_dup))
+		if (!dm_hash_insert_binary(s->device_to_pvid, &new_device, sizeof(new_device), new_pvid_dup))
 			goto nomem_free2;
 
 		if (!dm_hash_insert(s->pvid_to_pvmeta, new_pvid, new_pvmeta))
@@ -2110,6 +2121,8 @@ static response pv_found(lvmetad_state *s, request r)
 				DEBUGLOG(s, "pv_found ignore duplicate device %" PRIu64 " of existing PV for pvid %s",
 				         arg_device, arg_pvid);
 				dm_config_destroy(new_pvmeta);
+				/* device_to_pvid no longer references prev_pvid_lookup */
+				dm_free((void*)prev_pvid_on_dev);
 				s->flags |= GLFL_DISABLE;
 				s->flags |= GLFL_DISABLE_REASON_DUPLICATES;
 				return reply_fail("Ignore duplicate PV");
@@ -2120,7 +2133,7 @@ static response pv_found(lvmetad_state *s, request r)
 		if (!(new_pvid_dup = dm_strdup(new_pvid)))
 			goto nomem_free1;
 
-		if (!dm_hash_insert_binary(s->device_to_pvid, &arg_device, sizeof(arg_device), (char *)new_pvid_dup))
+		if (!dm_hash_insert_binary(s->device_to_pvid, &arg_device, sizeof(arg_device), new_pvid_dup))
 			goto nomem_free2;
 
 		if (!dm_hash_insert(s->pvid_to_pvmeta, new_pvid, new_pvmeta))
@@ -2220,8 +2233,7 @@ static response pv_found(lvmetad_state *s, request r)
 	}
 
 	/* This was unhashed from device_to_pvid above. */
-	if (prev_pvid_on_dev)
-		dm_free((void *)prev_pvid_on_dev);
+	dm_free((void *)prev_pvid_on_dev);
 
 	return daemon_reply_simple("OK",
 				   "status = %s", vg_status,
@@ -2233,7 +2245,7 @@ static response pv_found(lvmetad_state *s, request r)
 				   NULL);
 
  nomem_free2:
-	dm_free((char *)new_pvid_dup);
+	dm_free(new_pvid_dup);
  nomem_free1:
 	dm_config_destroy(new_pvmeta);
  nomem:
@@ -2355,6 +2367,8 @@ static response set_global_info(lvmetad_state *s, request r)
 	if ((reason = daemon_request_str(r, "disable_reason", NULL))) {
 		if (strstr(reason, LVMETAD_DISABLE_REASON_DIRECT))
 			reason_flags |= GLFL_DISABLE_REASON_DIRECT;
+		if (strstr(reason, LVMETAD_DISABLE_REASON_REPAIR))
+			reason_flags |= GLFL_DISABLE_REASON_REPAIR;
 		if (strstr(reason, LVMETAD_DISABLE_REASON_LVM1))
 			reason_flags |= GLFL_DISABLE_REASON_LVM1;
 		if (strstr(reason, LVMETAD_DISABLE_REASON_DUPLICATES))
@@ -2418,8 +2432,9 @@ static response get_global_info(lvmetad_state *s, request r)
 	pid = (int)daemon_request_int(r, "pid", 0);
 
 	if (s->flags & GLFL_DISABLE) {
-		snprintf(reason, REASON_BUF_SIZE - 1, "%s%s%s%s",
+		snprintf(reason, REASON_BUF_SIZE - 1, "%s%s%s%s%s",
 			 (s->flags & GLFL_DISABLE_REASON_DIRECT)     ? LVMETAD_DISABLE_REASON_DIRECT "," : "",
+			 (s->flags & GLFL_DISABLE_REASON_REPAIR)     ? LVMETAD_DISABLE_REASON_REPAIR "," : "",
 			 (s->flags & GLFL_DISABLE_REASON_LVM1)       ? LVMETAD_DISABLE_REASON_LVM1 "," : "",
 			 (s->flags & GLFL_DISABLE_REASON_DUPLICATES) ? LVMETAD_DISABLE_REASON_DUPLICATES "," : "",
 			 (s->flags & GLFL_DISABLE_REASON_VGRESTORE)  ? LVMETAD_DISABLE_REASON_VGRESTORE "," : "");
@@ -2557,14 +2572,12 @@ static void _dump_pairs(struct buffer *buf, struct dm_hash_table *ht, const char
 	dm_hash_iterate(n, ht) {
 		const char *key = dm_hash_get_key(ht, n),
 			   *val = dm_hash_get_data(ht, n);
-		buffer_append(buf, "    ");
 		if (int_key)
-			(void) dm_asprintf(&append, "%d = \"%s\"", *(const int*)key, val);
+			(void) dm_asprintf(&append, "    %d = \"%s\"\n", *(const int*)key, val);
 		else
-			(void) dm_asprintf(&append, "%s = \"%s\"", key, val);
+			(void) dm_asprintf(&append, "    %s = \"%s\"\n", key, val);
 		if (append)
 			buffer_append(buf, append);
-		buffer_append(buf, "\n");
 		dm_free(append);
 	}
 	buffer_append(buf, "}\n");
@@ -2582,11 +2595,9 @@ static void _dump_info_version(struct buffer *buf, struct dm_hash_table *ht, con
 	while (n) {
 		const char *key = dm_hash_get_key(ht, n);
 		info = dm_hash_get_data(ht, n);
-		buffer_append(buf, "    ");
-		(void) dm_asprintf(&append, "%s = %lld", key, (long long)info->external_version);
+		(void) dm_asprintf(&append, "    %s = %lld\n", key, (long long)info->external_version);
 		if (append)
 			buffer_append(buf, append);
-		buffer_append(buf, "\n");
 		dm_free(append);
 		n = dm_hash_get_next(ht, n);
 	}
@@ -2605,11 +2616,9 @@ static void _dump_info_flags(struct buffer *buf, struct dm_hash_table *ht, const
 	while (n) {
 		const char *key = dm_hash_get_key(ht, n);
 		info = dm_hash_get_data(ht, n);
-		buffer_append(buf, "    ");
-		(void) dm_asprintf(&append, "%s = %llx", key, (long long)info->flags);
+		(void) dm_asprintf(&append, "    %s = %llx\n", key, (long long)info->flags);
 		if (append)
 			buffer_append(buf, append);
-		buffer_append(buf, "\n");
 		dm_free(append);
 		n = dm_hash_get_next(ht, n);
 	}
@@ -2745,7 +2754,8 @@ static response handler(daemon_state s, client_handle h, request r)
 							   "expected = %s", state->token,
 							   "received = %s", token,
 							   "update_pid = " FMTd64, (int64_t)state->update_pid,
-							   "reason = %s", "another command has populated the cache");
+							   "reason = %s", "another command has populated the cache",
+							   NULL);
 			}
 
 			DEBUGLOG(state, "token_update end len %d pid %d new token %s",
@@ -2778,7 +2788,8 @@ static response handler(daemon_state s, client_handle h, request r)
 					   "expected = %s", state->token,
 					   "received = %s", token,
 					   "update_pid = " FMTd64, (int64_t)state->update_pid,
-					   "reason = %s", "another command has populated the cache");
+					   "reason = %s", "another command has populated the cache",
+					   NULL);
 	}
 
 	/* If a pid doing update was cancelled, ignore its update messages. */
@@ -2793,7 +2804,8 @@ static response handler(daemon_state s, client_handle h, request r)
 					   "expected = %s", state->token,
 					   "received = %s", token,
 					   "update_pid = " FMTd64, (int64_t)state->update_pid,
-					   "reason = %s", "another command has populated the lvmetad cache");
+					   "reason = %s", "another command has populated the lvmetad cache",
+					   NULL);
 	}
 
 	pthread_mutex_unlock(&state->token_lock);

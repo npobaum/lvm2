@@ -76,7 +76,7 @@ struct dev_types *create_dev_types(const char *proc_dir,
 			i++;
 
 		/* If it's not a number it may be name of section */
-		line_maj = atoi(((char *) (line + i)));
+		line_maj = atoi(line + i);
 
 		if (line_maj < 0 || line_maj >= NUMBER_OF_MAJORS) {
 			/*
@@ -124,6 +124,10 @@ struct dev_types *create_dev_types(const char *proc_dir,
 		/* Look for EMC powerpath */
 		if (!strncmp("emcpower", line + i, 8) && isspace(*(line + i + 8)))
 			dt->emcpower_major = line_maj;
+
+		/* Look for Veritas Dynamic Multipathing */
+		if (!strncmp("VxDMP", line + i, 5) && isspace(*(line + i + 5)))
+			dt->vxdmp_major = line_maj;
 
 		if (!strncmp("loop", line + i, 4) && isspace(*(line + i + 4)))
 			dt->loop_major = line_maj;
@@ -218,6 +222,9 @@ int dev_subsystem_part_major(struct dev_types *dt, struct device *dev)
 	if (MAJOR(dev->dev) == dt->power2_major)
 		return 1;
 
+	if (MAJOR(dev->dev) == dt->vxdmp_major)
+		return 1;
+
 	if ((MAJOR(dev->dev) == dt->blkext_major) &&
 	    dev_get_primary_dev(dt, dev, &primary_dev) &&
 	    (MAJOR(primary_dev) == dt->md_major))
@@ -245,6 +252,9 @@ const char *dev_subsystem_name(struct dev_types *dt, struct device *dev)
 
 	if (MAJOR(dev->dev) == dt->power2_major)
 		return "POWER2";
+
+	if (MAJOR(dev->dev) == dt->vxdmp_major)
+		return "VXDMP";
 
 	if (MAJOR(dev->dev) == dt->blkext_major)
 		return "BLKEXT";
@@ -605,38 +615,38 @@ static int _blkid_wipe(blkid_probe probe, struct device *dev, const char *name,
 			if (force < DONT_PROMPT) {
 				log_error(MSG_FAILED_SIG_OFFSET, type, name);
 				return 0;
-			} else {
-				log_error("WARNING: " MSG_FAILED_SIG_OFFSET MSG_WIPING_SKIPPED, type, name);
-				return 2;
 			}
+
+			log_error("WARNING: " MSG_FAILED_SIG_OFFSET MSG_WIPING_SKIPPED, type, name);
+			return 2;
 		}
 		if (blkid_probe_lookup_value(probe, "SBMAGIC", &magic, &len)) {
 			if (force < DONT_PROMPT) {
 				log_error(MSG_FAILED_SIG_LENGTH, type, name);
 				return 0;
-			} else {
-				log_warn("WARNING: " MSG_FAILED_SIG_LENGTH MSG_WIPING_SKIPPED, type, name);
-				return 2;
 			}
+
+			log_warn("WARNING: " MSG_FAILED_SIG_LENGTH MSG_WIPING_SKIPPED, type, name);
+			return 2;
 		}
 	} else if (!blkid_probe_lookup_value(probe, "PTTYPE", &type, NULL)) {
 		if (blkid_probe_lookup_value(probe, "PTMAGIC_OFFSET", &offset, NULL)) {
 			if (force < DONT_PROMPT) {
 				log_error(MSG_FAILED_SIG_OFFSET, type, name);
 				return 0;
-			} else {
-				log_warn("WARNING: " MSG_FAILED_SIG_OFFSET MSG_WIPING_SKIPPED, type, name);
-				return 2;
 			}
+
+			log_warn("WARNING: " MSG_FAILED_SIG_OFFSET MSG_WIPING_SKIPPED, type, name);
+			return 2;
 		}
 		if (blkid_probe_lookup_value(probe, "PTMAGIC", &magic, &len)) {
 			if (force < DONT_PROMPT) {
 				log_error(MSG_FAILED_SIG_LENGTH, type, name);
 				return 0;
-			} else {
-				log_warn("WARNING: " MSG_FAILED_SIG_LENGTH MSG_WIPING_SKIPPED, type, name);
-				return 2;
 			}
+
+			log_warn("WARNING: " MSG_FAILED_SIG_LENGTH MSG_WIPING_SKIPPED, type, name);
+			return 2;
 		}
 		usage = "partition table";
 	} else

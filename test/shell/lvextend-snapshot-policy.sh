@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2010 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -42,11 +43,11 @@ mkdir mnt
 write 1 4096
 pre=$(percent)
 extend 50
-test $pre -eq $(percent)
+test "$pre" -eq "$(percent)"
 
 write 2 4096
 pre=$(percent)
 extend 50
-test $pre -gt $(percent)
+test "$pre" -gt "$(percent)"
 
 vgremove -f $vg

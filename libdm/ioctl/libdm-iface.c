@@ -208,8 +208,9 @@ static int _get_proc_number(const char *file, const char *name,
 		if (require_module_loaded) {
 			log_error("%s: No entry for %s found", file, name);
 			return 0;
-		} else
-			return 2;
+		}
+
+		return 2;
 	}
 
 	return 1;
@@ -368,11 +369,11 @@ int dm_is_dm_major(uint32_t major)
 			return 0;
 		return dm_bit(_dm_bitset, major) ? 1 : 0;
 	}
-	else {
-		if (!_dm_device_major)
-			return 0;
-		return (major == _dm_device_major) ? 1 : 0;
-	}
+
+	if (!_dm_device_major)
+		return 0;
+
+	return (major == _dm_device_major) ? 1 : 0;
 }
 
 static void _close_control_fd(void)
@@ -467,7 +468,7 @@ static void _dm_zfree_dmi(struct dm_ioctl *dmi)
 	}
 }
 
-void dm_task_destroy(struct dm_task *dmt)
+static void _dm_task_free_targets(struct dm_task *dmt)
 {
 	struct target *t, *n;
 
@@ -478,6 +479,12 @@ void dm_task_destroy(struct dm_task *dmt)
 		dm_free(t);
 	}
 
+	dmt->head = dmt->tail = NULL;
+}
+
+void dm_task_destroy(struct dm_task *dmt)
+{
+	_dm_task_free_targets(dmt);
 	_dm_zfree_dmi(dmt->dmi.v4);
 	dm_free(dmt->dev_name);
 	dm_free(dmt->mangled_dev_name);
@@ -651,6 +658,8 @@ static int _unmarshal_status(struct dm_task *dmt, struct dm_ioctl *dmi)
 	char *outptr = outbuf;
 	uint32_t i;
 	struct dm_target_spec *spec;
+
+	_dm_task_free_targets(dmt);
 
 	for (i = 0; i < dmi->target_count; i++) {
 		spec = (struct dm_target_spec *) outptr;
@@ -1696,7 +1705,9 @@ static int _do_dm_ioctl_unmangle_string(char *str, const char *str_name,
 		log_debug_activation("_do_dm_ioctl_unmangle_string: failed to "
 				     "unmangle %s \"%s\"", str_name, str);
 		return 0;
-	} else if (r)
+	}
+
+	if (r)
 		memcpy(str, buf, strlen(buf) + 1);
 
 	return 1;
@@ -1851,10 +1862,10 @@ static struct dm_ioctl *_do_dm_ioctl(struct dm_task *dmt, unsigned command,
 			dmi->flags &= ~DM_EXISTS_FLAG;	/* FIXME */
 		else {
 			if (_log_suppress || dmt->ioctl_errno == EINTR)
-				log_verbose("device-mapper: %s ioctl on %s%s%s%.0d%s%.0d%s%s "
+				log_verbose("device-mapper: %s ioctl on %s %s%s%.0d%s%.0d%s%s "
 					    "failed: %s",
-				    	    _cmd_data_v4[dmt->type].name,
-					    dmi->name, dmi->uuid, 
+					    _cmd_data_v4[dmt->type].name,
+					    dmi->name, dmi->uuid,
 					    dmt->major > 0 ? "(" : "",
 					    dmt->major > 0 ? dmt->major : 0,
 					    dmt->major > 0 ? ":" : "",
@@ -1863,10 +1874,10 @@ static struct dm_ioctl *_do_dm_ioctl(struct dm_task *dmt, unsigned command,
 					    dmt->major > 0 ? ")" : "",
 					    strerror(dmt->ioctl_errno));
 			else
-				log_error("device-mapper: %s ioctl on %s%s%s%.0d%s%.0d%s%s "
+				log_error("device-mapper: %s ioctl on %s %s%s%.0d%s%.0d%s%s "
 					  "failed: %s",
 					  _cmd_data_v4[dmt->type].name,
-					  dmi->name, dmi->uuid, 
+					  dmi->name, dmi->uuid,
 					  dmt->major > 0 ? "(" : "",
 					  dmt->major > 0 ? dmt->major : 0,
 					  dmt->major > 0 ? ":" : "",

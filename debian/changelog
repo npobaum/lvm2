@@ -1,3 +1,9 @@
+lvm2 (2.02.173-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Bastian Blank <waldi@debian.org>  Sun, 13 Aug 2017 14:17:51 +0200
+
 lvm2 (2.02.168-2) unstable; urgency=medium
 
   * Don't try to disable cluster locking on clvm purge. (closes: #856696)

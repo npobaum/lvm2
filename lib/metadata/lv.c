@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2016 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2017 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -220,19 +220,35 @@ char *lvseg_segtype_dup(struct dm_pool *mem, const struct lv_segment *seg)
 
 char *lvseg_discards_dup(struct dm_pool *mem, const struct lv_segment *seg)
 {
-	return  dm_pool_strdup(mem, get_pool_discards_name(seg->discards));
+	if (lv_is_thin_pool(seg->lv))
+		return  dm_pool_strdup(mem, get_pool_discards_name(seg->discards));
+
+	log_error("Cannot query non thin-pool segment of LV %s for discards property.",
+		  display_lvname(seg->lv));
+	return NULL;
 }
 
 char *lvseg_kernel_discards_dup_with_info_and_seg_status(struct dm_pool *mem, const struct lv_with_info_and_seg_status *lvdm)
 {
 	const char *s = "";
 	char *ret;
+	thin_discards_t d;
 
-	if (lvdm->seg_status.type == SEG_STATUS_THIN_POOL)
-		s = get_pool_discards_name(lvdm->seg_status.thin_pool->discards);
+	if (lvdm->seg_status.type == SEG_STATUS_THIN_POOL) {
+		switch (lvdm->seg_status.thin_pool->discards) {
+		case DM_THIN_DISCARDS_IGNORE: d = THIN_DISCARDS_IGNORE; break;
+		case DM_THIN_DISCARDS_NO_PASSDOWN: d = THIN_DISCARDS_NO_PASSDOWN; break;
+		case DM_THIN_DISCARDS_PASSDOWN: d = THIN_DISCARDS_PASSDOWN; break;
+		default:
+			log_error("Kernel reports unknown discards status %u.",
+				  lvdm->seg_status.thin_pool->discards);
+			return 0;
+		}
+		s = get_pool_discards_name(d);
+	}
 
 	if (!(ret = dm_pool_strdup(mem, s))) {
-		log_error("lvseg_kernel_discards_dup_with_info_and_seg_status: dm_pool_strdup failed");
+		log_error("lvseg_kernel_discards_dup_with_info_and_seg_status: dm_pool_strdup failed.");
 		return NULL;
 	}
 
@@ -243,10 +259,7 @@ char *lvseg_kernel_discards_dup(struct dm_pool *mem, const struct lv_segment *se
 {
 	char *ret = NULL;
 	struct lv_with_info_and_seg_status status = {
-		.seg_status = {
-			.type = SEG_STATUS_NONE,
-			.seg = seg
-		},
+		.seg_status.type = SEG_STATUS_NONE
 	};
 
 	if (!lv_is_thin_pool(seg->lv))
@@ -255,12 +268,14 @@ char *lvseg_kernel_discards_dup(struct dm_pool *mem, const struct lv_segment *se
 	if (!(status.seg_status.mem = dm_pool_create("reporter_pool", 1024)))
 		return_NULL;
 
-	if (!(status.info_ok = lv_info_with_seg_status(seg->lv->vg->cmd, seg->lv, seg, 1, &status, 0, 0)))
+	if (!(status.info_ok = lv_info_with_seg_status(seg->lv->vg->cmd, seg, &status, 0, 0)))
 		goto_bad;
 
-	ret = lvseg_kernel_discards_dup_with_info_and_seg_status(mem, &status);
+	if (!(ret = lvseg_kernel_discards_dup_with_info_and_seg_status(mem, &status)))
+		stack;
 bad:
 	dm_pool_destroy(status.seg_status.mem);
+
 	return ret;
 }
 
@@ -380,6 +395,15 @@ dm_percent_t lvseg_percent_with_info_and_seg_status(const struct lv_with_info_an
 			}
 		}
 		break;
+	case SEG_STATUS_RAID:
+		switch (type) {
+		case PERCENT_GET_DIRTY:
+			p = dm_make_percent(s->raid->insync_regions, s->raid->total_regions);
+			break;
+		default:
+			p = DM_PERCENT_INVALID;
+		}
+		break;
 	case SEG_STATUS_SNAPSHOT:
 		if (s->snapshot->merge_failed)
 			p = DM_PERCENT_INVALID;
@@ -407,7 +431,7 @@ dm_percent_t lvseg_percent_with_info_and_seg_status(const struct lv_with_info_an
 			/* TODO: expose highest mapped sector */
 			p = DM_PERCENT_INVALID;
 		else {
-			seg = first_seg(lvdm->lv);
+			seg = lvdm->seg_status.seg;
 			/* Pool allocates whole chunk so round-up to nearest one */
 			csize = first_seg(seg->pool_lv)->chunk_size;
 			csize = ((seg->lv->size + csize - 1) / csize) * csize;
@@ -416,8 +440,8 @@ dm_percent_t lvseg_percent_with_info_and_seg_status(const struct lv_with_info_an
 			else {
 				log_warn("WARNING: Thin volume %s maps %s while the size is only %s.",
 					 display_lvname(seg->lv),
-					 display_size(lvdm->lv->vg->cmd, s->thin->mapped_sectors),
-					 display_size(lvdm->lv->vg->cmd, csize));
+					 display_size(seg->lv->vg->cmd, s->thin->mapped_sectors),
+					 display_size(seg->lv->vg->cmd, csize));
 				/* Don't show nonsense numbers like i.e. 1000% full */
 				p = DM_PERCENT_100;
 			}
@@ -557,8 +581,8 @@ static char *_do_lv_origin_dup(struct dm_pool *mem, const struct logical_volume 
 
 	if (uuid)
 		return lv_uuid_dup(mem, origin_lv);
-	else
-		return lv_name_dup(mem, origin_lv);
+
+	return lv_name_dup(mem, origin_lv);
 }
 
 char *lv_origin_dup(struct dm_pool *mem, const struct logical_volume *lv)
@@ -626,6 +650,7 @@ char *lv_modules_dup(struct dm_pool *mem, const struct logical_volume *lv)
 
 	if (!list_lv_modules(mem, lv, modules))
 		return_NULL;
+
 	return tags_format_and_copy(mem, modules);
 }
 
@@ -651,8 +676,8 @@ static char *_do_lv_mirror_log_dup(struct dm_pool *mem, const struct logical_vol
 
 	if (uuid)
 		return lv_uuid_dup(mem, mirror_log_lv);
-	else
-		return lv_name_dup(mem, mirror_log_lv);
+
+	return lv_name_dup(mem, mirror_log_lv);
 }
 
 char *lv_mirror_log_dup(struct dm_pool *mem, const struct logical_volume *lv)
@@ -684,8 +709,8 @@ static char *_do_lv_pool_lv_dup(struct dm_pool *mem, const struct logical_volume
 
 	if (uuid)
 		return lv_uuid_dup(mem, pool_lv);
-	else
-		return lv_name_dup(mem, pool_lv);
+
+	return lv_name_dup(mem, pool_lv);
 }
 
 char *lv_pool_lv_dup(struct dm_pool *mem, const struct logical_volume *lv)
@@ -717,8 +742,8 @@ static char *_do_lv_data_lv_dup(struct dm_pool *mem, const struct logical_volume
 
 	if (uuid)
 		return lv_uuid_dup(mem, data_lv);
-	else
-		return lv_name_dup(mem, data_lv);
+
+	return lv_name_dup(mem, data_lv);
 }
 
 char *lv_data_lv_dup(struct dm_pool *mem, const struct logical_volume *lv)
@@ -750,8 +775,8 @@ static char *_do_lv_metadata_lv_dup(struct dm_pool *mem, const struct logical_vo
 
 	if (uuid)
 		return lv_uuid_dup(mem, metadata_lv);
-	else
-		return lv_name_dup(mem, metadata_lv);
+
+	return lv_name_dup(mem, metadata_lv);
 }
 
 char *lv_metadata_lv_dup(struct dm_pool *mem, const struct logical_volume *lv)
@@ -768,7 +793,8 @@ const char *lv_layer(const struct logical_volume *lv)
 {
 	if (lv_is_thin_pool(lv))
 		return "tpool";
-	else if (lv_is_origin(lv) || lv_is_external_origin(lv))
+
+	if (lv_is_origin(lv) || lv_is_external_origin(lv))
 		return "real";
 
 	return NULL;
@@ -817,8 +843,8 @@ static char *_do_lv_convert_lv_dup(struct dm_pool *mem, const struct logical_vol
 
 	if (uuid)
 		return lv_uuid_dup(mem, convert_lv);
-	else
-		return lv_name_dup(mem, convert_lv);
+
+	return lv_name_dup(mem, convert_lv);
 }
 
 char *lv_convert_lv_dup(struct dm_pool *mem, const struct logical_volume *lv)
@@ -853,8 +879,8 @@ static char *_do_lv_move_pv_dup(struct dm_pool *mem, const struct logical_volume
 
 			if (uuid)
 				return pv_uuid_dup(mem, pvseg->pv);
-			else
-				return pv_name_dup(mem, pvseg->pv);
+
+			return pv_name_dup(mem, pvseg->pv);
 		}
 	}
 
@@ -972,7 +998,7 @@ int lv_mirror_image_in_sync(const struct logical_volume *lv)
 	struct lv_segment *seg = first_seg(lv);
 	struct lv_segment *mirror_seg;
 
-	if (!(lv->status & MIRROR_IMAGE) || !seg ||
+	if (!lv_is_mirror_image(lv) || !seg ||
 	    !(mirror_seg = find_mirror_seg(seg))) {
 		log_error(INTERNAL_ERROR "Cannot find mirror segment.");
 		return 0;
@@ -1072,7 +1098,7 @@ int lv_raid_healthy(const struct logical_volume *lv)
 	}
 
 	if (!seg_is_raid(raid_seg)) {
-		log_error("%s on %s is not a RAID segment",
+		log_error(INTERNAL_ERROR "%s on %s is not a RAID segment.",
 			  raid_seg->lv->name, lv->name);
 		return 0;
 	}
@@ -1080,12 +1106,8 @@ int lv_raid_healthy(const struct logical_volume *lv)
 	if (!lv_raid_dev_health(raid_seg->lv, &raid_health))
 		return_0;
 
-	if (lv_is_raid(lv)) {
-		if (strchr(raid_health, 'D'))
-			return 0;
-		else
-			return 1;
-	}
+	if (lv_is_raid(lv))
+		return (strchr(raid_health, 'D')) ? 0 : 1;
 
 	/* Find out which sub-LV this is. */
 	for (s = 0; s < raid_seg->area_count; s++)
@@ -1103,6 +1125,19 @@ int lv_raid_healthy(const struct logical_volume *lv)
 		return 0;
 
 	return 1;
+}
+
+/* Helper: check for any sub LVs after a disk removing reshape */
+static int _sublvs_remove_after_reshape(const struct logical_volume *lv)
+{
+	uint32_t s;
+	struct lv_segment *seg = first_seg(lv);
+
+	for (s = seg->area_count -1; s; s--)
+		if (seg_lv(seg, s)->status & LV_REMOVE_AFTER_RESHAPE)
+			return 1;
+
+	return 0;
 }
 
 char *lv_attr_dup_with_info_and_seg_status(struct dm_pool *mem, const struct lv_with_info_and_seg_status *lvdm)
@@ -1184,7 +1219,8 @@ char *lv_attr_dup_with_info_and_seg_status(struct dm_pool *mem, const struct lv_
 	if (lv_is_historical(lv)) {
 		repstr[4] = 'h';
 		repstr[5] = '-';
-	} else if (!activation() || !lvdm->info_ok) {
+	} else if (!activation() || !lvdm->info_ok ||
+		   (lvdm->seg_status.type == SEG_STATUS_UNKNOWN)) {
 		repstr[4] = 'X';		/* Unknown */
 		repstr[5] = 'X';		/* Unknown */
 	} else if (lvdm->info.exists) {
@@ -1216,8 +1252,10 @@ char *lv_attr_dup_with_info_and_seg_status(struct dm_pool *mem, const struct lv_
 		/* 'c' when cache/thin-pool is active with needs_check flag
 		 * 'C' for suspend */
 		if ((lv_is_thin_pool(lv) &&
+		     (lvdm->seg_status.type == SEG_STATUS_THIN_POOL) &&
 		     lvdm->seg_status.thin_pool->needs_check) ||
 		    (lv_is_cache(lv) &&
+		     (lvdm->seg_status.type == SEG_STATUS_CACHE) &&
 		     lvdm->seg_status.cache->needs_check))
 			repstr[4] = lvdm->info.suspended ? 'C' : 'c';
 
@@ -1253,16 +1291,22 @@ char *lv_attr_dup_with_info_and_seg_status(struct dm_pool *mem, const struct lv_
 
 	if (((lv_is_thin_volume(lv) && (seg = first_seg(lv)) && seg->pool_lv && (seg = first_seg(seg->pool_lv))) ||
 	     (lv_is_thin_pool(lv) && (seg = first_seg(lv)))) &&
-	    seg->zero_new_blocks)
+	    (seg->zero_new_blocks == THIN_ZERO_YES))
 		repstr[7] = 'z';
 	else
 		repstr[7] = '-';
 
 	repstr[8] = '-';
+	/* TODO: also convert raid health
+	 * lv_is_raid_type() is to wide
+	 * NOTE: snapshot origin is 'mostly' showing it's layered status
+	 */
 	if (lv_is_partial(lv))
 		repstr[8] = 'p';
 	else if (lv_is_raid_type(lv)) {
 		uint64_t n;
+		char *sync_action;
+
 		if (!activation())
 			repstr[8] = 'X';	/* Unknown */
 		else if (!lv_raid_healthy(lv))
@@ -1270,33 +1314,34 @@ char *lv_attr_dup_with_info_and_seg_status(struct dm_pool *mem, const struct lv_
 		else if (lv_is_raid(lv)) {
 			if (lv_raid_mismatch_count(lv, &n) && n)
 				repstr[8] = 'm';  /* RAID has 'm'ismatches */
+			else if (lv_raid_sync_action(lv, &sync_action) &&
+				 !strcmp(sync_action, "reshape"))
+				repstr[8] = 's';  /* LV is re(s)haping */
+			else if (_sublvs_remove_after_reshape(lv))
+				repstr[8] = 'R';  /* sub-LV got freed from raid set by reshaping
+						     and has to be 'R'emoved */
 		} else if (lv->status & LV_WRITEMOSTLY)
 			repstr[8] = 'w';  /* sub-LV has 'w'ritemostly */
-	} else if (lv_is_cache(lv) &&
-		   (lvdm->seg_status.type != SEG_STATUS_NONE)) {
-		if (lvdm->seg_status.type == SEG_STATUS_UNKNOWN)
-			repstr[8] = 'X'; /* Unknown */
-		else if (lvdm->seg_status.cache->fail)
+		else if (lv->status & LV_REMOVE_AFTER_RESHAPE)
+			repstr[8] = 'R';  /* sub-LV got freed from raid set by reshaping
+					     and has to be 'R'emoved */
+	} else if (lvdm->seg_status.type == SEG_STATUS_CACHE) {
+		if (lvdm->seg_status.cache->fail)
 			repstr[8] = 'F';
 		else if (lvdm->seg_status.cache->read_only)
 			repstr[8] = 'M';
-	} else if (lv_is_thin_pool(lv) &&
-		   (lvdm->seg_status.type != SEG_STATUS_NONE)) {
-		if (lvdm->seg_status.type == SEG_STATUS_UNKNOWN)
-			repstr[8] = 'X'; /* Unknown */
-		else if (lvdm->seg_status.thin_pool->fail)
+	} else if (lvdm->seg_status.type == SEG_STATUS_THIN_POOL) {
+		if (lvdm->seg_status.thin_pool->fail)
 			repstr[8] = 'F';
 		else if (lvdm->seg_status.thin_pool->out_of_data_space)
 			repstr[8] = 'D';
 		else if (lvdm->seg_status.thin_pool->read_only)
 			repstr[8] = 'M';
-	} else if (lv_is_thin_volume(lv) &&
-		   (lvdm->seg_status.type != SEG_STATUS_NONE)) {
-		if (lvdm->seg_status.type == SEG_STATUS_UNKNOWN)
-			repstr[8] = 'X'; /* Unknown */
-		else if (lvdm->seg_status.thin->fail)
+	} else if (lvdm->seg_status.type == SEG_STATUS_THIN) {
+		if (lvdm->seg_status.thin->fail)
 			repstr[8] = 'F';
-	}
+	} else if (lvdm->seg_status.type == SEG_STATUS_UNKNOWN)
+		repstr[8] = 'X'; /* Unknown */
 
 	if (lv->status & LV_ACTIVATION_SKIP)
 		repstr[9] = 'k';
@@ -1313,13 +1358,12 @@ char *lv_attr_dup(struct dm_pool *mem, const struct logical_volume *lv)
 	char *ret = NULL;
 	struct lv_with_info_and_seg_status status = {
 		.seg_status.type = SEG_STATUS_NONE,
-		.lv = lv
 	};
 
 	if (!(status.seg_status.mem = dm_pool_create("reporter_pool", 1024)))
 		return_0;
 
-	if (!(status.info_ok = lv_info_with_seg_status(lv->vg->cmd, lv, first_seg(lv), 1, &status, 1, 1)))
+	if (!(status.info_ok = lv_info_with_seg_status(lv->vg->cmd, first_seg(lv), &status, 1, 1)))
 		goto_bad;
 
 	ret = lv_attr_dup_with_info_and_seg_status(mem, &status);
@@ -1554,14 +1598,19 @@ const struct logical_volume *lv_lock_holder(const struct logical_volume *lv)
 	if (lv_is_cow(lv))
 		return lv_lock_holder(origin_from_cow(lv));
 
-	if (lv_is_thin_pool(lv)) {
-		/* Find any active LV from the pool */
-		dm_list_iterate_items(sl, &lv->segs_using_this_lv)
-			if (lv_is_active(sl->seg->lv)) {
-				log_debug_activation("Thin volume %s is active.",
-						     display_lvname(lv));
-				return sl->seg->lv;
-			}
+	if (lv_is_thin_pool(lv) ||
+	    lv_is_external_origin(lv)) {
+		/* FIXME: Ensure cluster keeps thin-pool active exlusively.
+		 * External origin can be activated on more nodes (depends on type).
+		 */
+		if (!lv_is_active(lv))
+			/* Find any active LV from the pool or external origin */
+			dm_list_iterate_items(sl, &lv->segs_using_this_lv)
+				if (lv_is_active(sl->seg->lv)) {
+					log_debug_activation("Thin volume %s is active.",
+							     display_lvname(lv));
+					return sl->seg->lv;
+				}
 		return lv;
 	}
 
@@ -1576,9 +1625,6 @@ const struct logical_volume *lv_lock_holder(const struct logical_volume *lv)
 		    lv_is_thin_volume(sl->seg->lv) &&
 		    first_seg(lv)->pool_lv == sl->seg->pool_lv)
 			continue; /* Skip thin snaphost */
-		if (lv_is_external_origin(lv) &&
-		    lv_is_thin_volume(sl->seg->lv))
-			continue; /* Skip external origin */
 		if (lv_is_pending_delete(sl->seg->lv))
 			continue; /* Skip deleted LVs */
 		return lv_lock_holder(sl->seg->lv);
