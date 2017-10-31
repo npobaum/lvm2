@@ -1,1 +1,1 @@
-sbin/dmsetup
+../install_udeb/sbin/dmsetup sbin

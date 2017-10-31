@@ -1,3 +1,13 @@
+lvm2 (2.02.173-2) unstable; urgency=medium
+
+  * Use dh.
+  * Install all lvm2 config files.
+  * Install and enable blk-availability service.
+  * Add lvm2-dbus package.
+  * Add lvm2-lockd package (dlm only). (closes: #879780)
+
+ -- Bastian Blank <waldi@debian.org>  Tue, 31 Oct 2017 15:04:08 +0100
+
 lvm2 (2.02.173-1) unstable; urgency=medium
 
   * New upstream release.
