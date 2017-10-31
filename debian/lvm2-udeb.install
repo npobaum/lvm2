@@ -1,4 +1,4 @@
-etc/lvm/lvm.conf
-sbin/lv*
-sbin/pv*
-sbin/vg*
+../install_udeb/etc/lvm/lvm.conf etc/lvm2
+../install_udeb/sbin/lv* sbin
+../install_udeb/sbin/pv* sbin
+../install_udeb/sbin/vg* sbin

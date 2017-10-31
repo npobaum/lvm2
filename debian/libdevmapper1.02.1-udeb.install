@@ -1,1 +1,1 @@
-lib/libdevmapper.so.*
+../install_udeb/lib/libdevmapper.so.* lib

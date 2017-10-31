@@ -1,0 +1,6 @@
+lib/systemd/system/lvm2-lvmlockd.service
+lib/systemd/system/lvm2-lvmlocking.service
+sbin/lvmlockctl
+sbin/lvmlockd
+usr/share/man/man8/lvmlockctl.8
+usr/share/man/man8/lvmlockd.8
