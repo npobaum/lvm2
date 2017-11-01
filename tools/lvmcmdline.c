@@ -103,8 +103,13 @@ static const struct command_function command_functions[CMD_COUNT] = {
 	{ lvchange_poll_CMD, lvchange_monitor_poll_cmd },
 	{ lvchange_persistent_CMD, lvchange_persistent_cmd },
 
+	{ vgchange_locktype_CMD, vgchange_locktype_cmd },
+	{ vgchange_lockstart_CMD, vgchange_lock_start_stop_cmd },
+	{ vgchange_lockstop_CMD, vgchange_lock_start_stop_cmd },
+	{ vgchange_systemid_CMD, vgchange_systemid_cmd },
+
 	/* lvconvert utilities related to repair. */
-	{ lvconvert_repair_pvs_or_thinpool_CMD,	lvconvert_repair_pvs_or_thinpool_cmd },
+	{ lvconvert_repair_CMD,	lvconvert_repair_cmd },
 	{ lvconvert_replace_pv_CMD, lvconvert_replace_pv_cmd },
 
 	/* lvconvert utilities related to snapshots. */
@@ -2872,7 +2877,7 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 		lvmetad_make_unused(cmd);
 	}
 
-	if (cmd->command->command_enum == lvconvert_repair_pvs_or_thinpool_CMD) {
+	if (cmd->command->command_enum == lvconvert_repair_CMD) {
 		log_warn("WARNING: Disabling lvmetad cache for repair command.");
 		lvmetad_set_disabled(cmd, LVMETAD_DISABLE_REASON_REPAIR);
 		log_warn("WARNING: Not using lvmetad because of repair.");
@@ -3415,7 +3420,7 @@ int lvm2_main(int argc, char **argv)
 	const char *run_command_name = NULL;
 
 	if (!argv)
-		return -1;
+		return EINIT_FAILED;
 
 	base = last_path_component(argv[0]);
 	if (strcmp(base, "lvm") && strcmp(base, "lvm.static") &&
@@ -3423,16 +3428,16 @@ int lvm2_main(int argc, char **argv)
 		alias = 1;
 
 	if (!_check_standard_fds())
-		return -1;
+		return EINIT_FAILED;
 
 	if (!_get_custom_fds(&custom_fds))
-		return -1;
+		return EINIT_FAILED;
 
 	if (!_close_stray_fds(base, &custom_fds))
-		return -1;
+		return EINIT_FAILED;
 
 	if (!init_custom_log_streams(&custom_fds))
-		return -1;
+		return EINIT_FAILED;
 
 	if (is_static() && strcmp(base, "lvm.static") &&
 	    path_exists(LVM_PATH) &&
@@ -3450,18 +3455,24 @@ int lvm2_main(int argc, char **argv)
 		if (!strcmp(argv[1], "version"))
 			return lvm_return_code(version(NULL, argc, argv));
 
-		/* turn 'lvm -h' and 'lvm --help' into 'lvm help' */
-		if (!strcmp(argv[1], "-h") || !strcmp(argv[1], "--help"))
+		/* turn 'lvm -h', 'lvm --help', 'lvm -?' into 'lvm help' */
+		if (!strcmp(argv[1], "-h") || !strcmp(argv[1], "--help") || !strcmp(argv[1], "-?"))
 			argv[1] = (char *)"help";
 
 		if (*argv[1] == '-') {
 			log_error("Specify options after a command: lvm [command] [options].");
-			return -1;
+			return EINVALID_CMD_LINE;
 		}
 	}
 
+	/* turn command -? into command -h and lvm command -? into lvm command -h */
+	if (alias && (argc > 1) && !strcmp(argv[1], "-?"))
+		argv[1] = (char *)"-h";
+	if (!alias && (argc > 2) && !strcmp(argv[2], "-?"))
+		argv[2] = (char *)"-h";
+
 	if (!(cmd = init_lvm(0, 0)))
-		return -1;
+		return EINIT_FAILED;
 
 	/* Store original argv location so we may customise it if we become a daemon */
 	cmd->argv = argv;

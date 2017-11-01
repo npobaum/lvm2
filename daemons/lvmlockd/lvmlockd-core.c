@@ -2652,10 +2652,16 @@ out_act:
 	ls->drop_vg = drop_vg;
 	if (ls->lm_type == LD_LM_DLM && !strcmp(ls->name, gl_lsname_dlm))
 		global_dlm_lockspace_exists = 0;
-	/* Avoid a name collision of the same lockspace is added again before this thread is cleaned up. */
-	memset(tmp_name, 0, sizeof(tmp_name));
-	snprintf(tmp_name, MAX_NAME, "REM:%s", ls->name);
-	memcpy(ls->name, tmp_name, MAX_NAME);
+
+	/*
+	 * Avoid a name collision of the same lockspace is added again before
+	 * this thread is cleaned up.  We just set ls->name to a "junk" value
+	 * for the short period until the struct is freed.  We could make it
+	 * blank or fill it with garbage, but instead set it to REM:<name>
+	 * to make it easier to follow progress of freeing is via log_debug.
+	 */
+	dm_strncpy(tmp_name, ls->name, sizeof(tmp_name));
+	snprintf(ls->name, sizeof(ls->name), "REM:%s", tmp_name);
 	pthread_mutex_unlock(&lockspaces_mutex);
 
 	/* worker_thread will join this thread, and free the ls */
@@ -3304,7 +3310,6 @@ static int work_init_lv(struct action *act)
 		lm_type = ls->lm_type;
 		memcpy(vg_args, ls->vg_args, MAX_ARGS);
 		free_offset = ls->free_lock_offset;
-		ls->free_lock_offset = 0;
 	}
 	pthread_mutex_unlock(&lockspaces_mutex);
 
@@ -3534,11 +3539,15 @@ static int setup_worker_thread(void)
 
 static void close_worker_thread(void)
 {
+	int perrno;
+
 	pthread_mutex_lock(&worker_mutex);
 	worker_stop = 1;
 	pthread_cond_signal(&worker_cond);
 	pthread_mutex_unlock(&worker_mutex);
-	pthread_join(worker_thread, NULL);
+
+	if ((perrno = pthread_join(worker_thread, NULL)))
+		log_error("pthread_join worker_thread error %d", perrno);
 }
 
 /* client_mutex is locked */
@@ -3667,7 +3676,17 @@ static int client_send_result(struct client *cl, struct action *act)
 			if (!gl_lsname_dlm[0])
 				strcat(result_flags, "NO_GL_LS,");
 		} else {
-			strcat(result_flags, "NO_GL_LS,");
+			int found_lm = 0;
+
+			if (lm_support_dlm() && lm_is_running_dlm())
+				found_lm++;
+			if (lm_support_sanlock() && lm_is_running_sanlock())
+				found_lm++;
+
+			if (!found_lm)
+				strcat(result_flags, "NO_GL_LS,NO_LM");
+			else
+				strcat(result_flags, "NO_GL_LS");
 		}
 	}
 
@@ -3764,7 +3783,8 @@ static int client_send_result(struct client *cl, struct action *act)
 	if (dump_fd >= 0) {
 		/* To avoid deadlock, send data here after the reply. */
 		send_dump_buf(dump_fd, dump_len);
-		close(dump_fd);
+		if (close(dump_fd))
+			log_error("failed to close dump socket %d", dump_fd);
 	}
 
 	return rv;
@@ -3837,8 +3857,9 @@ static int add_lock_action(struct action *act)
 	pthread_mutex_lock(&lockspaces_mutex);
 	if (ls_name[0])
 		ls = find_lockspace_name(ls_name);
-	pthread_mutex_unlock(&lockspaces_mutex);
 	if (!ls) {
+		pthread_mutex_unlock(&lockspaces_mutex);
+
 		if (act->op == LD_OP_UPDATE && act->rt == LD_RT_VG) {
 			log_debug("lockspace \"%s\" not found ignored for vg update", ls_name);
 			return -ENOLS;
@@ -4755,8 +4776,8 @@ static void *client_thread_main(void *arg_in)
 			} else {
 				pthread_mutex_unlock(&cl->mutex);
 			}
-		}
-		pthread_mutex_unlock(&client_mutex);
+		} else
+			pthread_mutex_unlock(&client_mutex);
 	}
 out:
 	return NULL;
@@ -4780,11 +4801,15 @@ static int setup_client_thread(void)
 
 static void close_client_thread(void)
 {
+	int perrno;
+
 	pthread_mutex_lock(&client_mutex);
 	client_stop = 1;
 	pthread_cond_signal(&client_cond);
 	pthread_mutex_unlock(&client_mutex);
-	pthread_join(client_thread, NULL);
+
+	if ((perrno = pthread_join(client_thread, NULL)))
+		log_error("pthread_join client_thread error %d", perrno);
 }
 
 /*
@@ -5176,20 +5201,17 @@ static void adopt_locks(void)
 	 * Get list of lockspaces from lock managers.
 	 * Get list of VGs from lvmetad with a lockd type.
 	 * Get list of active lockd type LVs from /dev.
-	 *
-	 * ECONNREFUSED means the lock manager is not running.
-	 * This is expected for at least one of them.
 	 */
 
-	if (lm_support_dlm()) {
+	if (lm_support_dlm() && lm_is_running_dlm()) {
 		rv = lm_get_lockspaces_dlm(&ls_found);
-		if ((rv < 0) && (rv != -ECONNREFUSED))
+		if (rv < 0)
 			goto fail;
 	}
 
-	if (lm_support_sanlock()) {
+	if (lm_support_sanlock() && lm_is_running_sanlock()) {
 		rv = lm_get_lockspaces_sanlock(&ls_found);
-		if ((rv < 0) && (rv != -ECONNREFUSED))
+		if (rv < 0)
 			goto fail;
 	}
 
@@ -5266,7 +5288,7 @@ static void adopt_locks(void)
 	list_for_each_entry_safe(ls1, l1safe, &ls_found, list) {
 
 		/* The dlm global lockspace is special and doesn't match a VG. */
-		if (!strcmp(ls1->name, gl_lsname_dlm)) {
+		if ((ls1->lm_type == LD_LM_DLM) && !strcmp(ls1->name, gl_lsname_dlm)) {
 			list_del(&ls1->list);
 			free(ls1);
 			continue;

@@ -273,7 +273,7 @@ static int _create_control(const char *control, uint32_t major, uint32_t minor)
 	 */
 	ret = _control_exists(control, major, minor);
 	if (ret == -1)
-		return 0;	/* Failed to unlink existing incorrect node */
+		return_0;	/* Failed to unlink existing incorrect node */
 	if (ret)
 		return 1;	/* Already exists and correct */
 
@@ -284,7 +284,7 @@ static int _create_control(const char *control, uint32_t major, uint32_t minor)
 	(void) dm_prepare_selinux_context(NULL, 0);
 
 	if (!ret)
-		return 0;
+		return_0;
 
 	log_verbose("Creating device %s (%u, %u)", control, major, minor);
 
@@ -293,13 +293,12 @@ static int _create_control(const char *control, uint32_t major, uint32_t minor)
 	if (mknod(control, S_IFCHR | S_IRUSR | S_IWUSR,
 		  MKDEV((dev_t)major, (dev_t)minor)) < 0)  {
 		log_sys_error("mknod", control);
-		(void) dm_prepare_selinux_context(NULL, 0);
-		return 0;
+		ret = 0;
 	}
 	umask(old_umask);
 	(void) dm_prepare_selinux_context(NULL, 0);
 
-	return 1;
+	return ret;
 }
 #endif
 
@@ -1172,17 +1171,17 @@ static struct dm_ioctl *_flatten(struct dm_task *dmt, unsigned repeat_count)
 	dmi->data_start = sizeof(struct dm_ioctl);
 
 	if (dmt->minor >= 0) {
-		if (dmt->major <= 0) {
-			log_error("Missing major number for persistent device.");
-			goto bad;
-		}
-
 		if (!_dm_multiple_major_support && dmt->allow_default_major_fallback &&
 		    dmt->major != (int) _dm_device_major) {
 			log_verbose("Overriding major number of %d "
 				    "with %u for persistent device.",
 				    dmt->major, _dm_device_major);
 			dmt->major = _dm_device_major;
+		}
+
+		if (dmt->major <= 0) {
+			log_error("Missing major number for persistent device.");
+			goto bad;
 		}
 
 		dmi->flags |= DM_PERSISTENT_DEV_FLAG;

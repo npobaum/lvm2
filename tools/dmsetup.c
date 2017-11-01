@@ -163,6 +163,7 @@ enum {
 	AREA_ARG,
 	AREAS_ARG,
 	AREA_SIZE_ARG,
+	CONCISE_ARG,
 	BOUNDS_ARG,
 	CHECKS_ARG,
 	CLEAR_ARG,
@@ -273,6 +274,9 @@ static uint64_t _disp_factor = 512; /* display sizes in sectors */
 static char _disp_units = 's';
 const char *_program_id = DM_STATS_PROGRAM_ID; /* program_id used for reports. */
 static uint64_t _statstype = 0; /* stats objects to report */
+static int _concise_output_produced = 0; /* Was any concise output already printed? */
+struct command;
+static const struct command *_selection_cmd = NULL; /* Command to run against each device select with -S */
 
 /* string names for stats object types */
 const char *_stats_types[] = {
@@ -306,7 +310,6 @@ static uint64_t _last_interval = 0; /* approx. measured interval in nsecs */
  * Commands
  */
 
-struct command;
 #define CMD_ARGS const struct command *cmd, const char *subcommand, int argc, char **argv, struct dm_names *names, int multiple_devices
 typedef int (*command_fn) (CMD_ARGS);
 
@@ -316,6 +319,7 @@ struct command {
 	int min_args;
 	int max_args;
 	int repeatable_cmd;	/* Repeat to process device list? */
+				/* 2 means --select is also supported */
 	int has_subcommands;	/* Command implements sub-commands. */
 	command_fn fn;
 };
@@ -357,6 +361,23 @@ static int _parse_line(struct dm_task *dmt, char *buffer, const char *file,
 	return 1;
 }
 
+/* Parse multiple lines of table */
+static int _parse_table_lines(struct dm_task *dmt)
+{
+	char *pos = _table, *next_pos;
+	int line = 0;
+
+	do {
+		/* Identify and terminate each line */
+		if ((next_pos = strchr(_table, '\n')))
+			*next_pos++ = '\0';
+		if (!_parse_line(dmt, pos, "", ++line))
+			return_0;
+	} while ((pos = next_pos));
+
+	return 1;
+}
+
 static int _parse_file(struct dm_task *dmt, const char *file)
 {
 	char *buffer = NULL;
@@ -364,9 +385,9 @@ static int _parse_file(struct dm_task *dmt, const char *file)
 	FILE *fp;
 	int r = 0, line = 0;
 
-	/* one-line table on cmdline */
+	/* Table on cmdline or from stdin with --concise */
 	if (_table)
-		return _parse_line(dmt, _table, "", ++line);
+		return _parse_table_lines(dmt);
 
 	/* OK for empty stdin */
 	if (file) {
@@ -842,6 +863,8 @@ static int _display_info_cols(struct dm_task *dmt, struct dm_info *info)
 	struct dmsetup_report_obj obj;
 	uint64_t walk_flags = _statstype;
 	int r = 0;
+	int selected;
+	char *device_name;
 
 	if (!info->exists) {
 		fprintf(stderr, "Device does not exist.\n");
@@ -872,8 +895,17 @@ static int _display_info_cols(struct dm_task *dmt, struct dm_info *info)
 			goto_out;
 
 	if (!(_report_type & (DR_STATS | DR_STATS_META))) {
-		if (!dm_report_object(_report, &obj))
+		/*
+		 * If _selection_cmd is set we are applying -S to some other command, so suppress 
+		 * output and run that other command if the device matches the criteria.
+		 */
+		if (!dm_report_object_is_selected(_report, &obj, _selection_cmd ? 0 : 1, &selected))
 			goto_out;
+		if (_selection_cmd && selected) {
+			device_name = dm_task_get_name(dmt);
+			if (!_selection_cmd->fn(_selection_cmd, NULL, 1, &device_name, NULL, 1))
+				goto_out;
+		}
 		r = 1;
 		goto out;
 	}
@@ -1096,21 +1128,17 @@ out:
 	return r;
 }
 
-static int _create(CMD_ARGS)
+static int _create_one_device(const char *name, const char *file)
 {
 	int r = 0;
 	struct dm_task *dmt;
-	const char *file = NULL;
 	uint32_t cookie = 0;
 	uint16_t udev_flags = 0;
-
-	if (argc == 2)
-		file = argv[1];
 
 	if (!(dmt = dm_task_create(DM_DEVICE_CREATE)))
 		return_0;
 
-	if (!dm_task_set_name(dmt, argv[0]))
+	if (!dm_task_set_name(dmt, name))
 		goto_out;
 
 	if (_switches[UUID_ARG] && !dm_task_set_uuid(dmt, _uuid))
@@ -1183,6 +1211,221 @@ out:
 	dm_task_destroy(dmt);
 
 	return r;
+}
+
+#define DEFAULT_BUF_SIZE 4096
+
+static char *_slurp_stdin(void)
+{
+	char *buf, *pos;
+	size_t bufsize = DEFAULT_BUF_SIZE;
+	size_t total = 0;
+	ssize_t n = 0;
+
+	if (!(buf = dm_malloc(bufsize))) {
+		log_error("Buffer memory allocation failed.");
+		return NULL;
+	}
+
+	pos = buf;
+	do  {
+		do
+			n = read(STDIN_FILENO, pos, (size_t) bufsize - total - 1);
+		while ((n < 0) && ((errno == EINTR) || (errno == EAGAIN)));
+
+		if (n < 0) {
+			log_error("Read from stdin aborted: %s", strerror(errno));
+			dm_free(buf);
+			return NULL;
+		}
+
+		if (!n)
+			break;
+
+		total += n;
+		pos += n;
+		if (total == bufsize - 1) {
+			bufsize *= 2;
+			if (!(buf = dm_realloc(buf, bufsize))) {
+				log_error("Buffer memory extension to %" PRIsize_t " bytes failed.", bufsize);
+				return NULL;
+			}
+		}
+	} while (1);
+
+	buf[total] = '\0';
+
+	return buf;
+}
+
+static int _create_concise(const struct command *cmd, int argc, char **argv)
+{
+	char *concise_format;
+	char *c, *n;
+	char *fields[5] = { NULL };	/* name,uuid,minor,flags,table */
+	int f = 0;
+
+	if (_switches[TABLE_ARG] || _switches[MINOR_ARG] || _switches[UUID_ARG] ||
+	    _switches[NOTABLE_ARG] || _switches[INACTIVE_ARG]){
+		log_error("--concise is incompatible with --[no]table, --minor, --uuid and --inactive.");
+		return 0;
+	}
+
+	if (argc)
+		concise_format = argv[0];
+	else if (!(concise_format = _slurp_stdin()))
+		return_0;
+
+	/* Work through input string c, parsing into sets of 5 fields. */
+	/* Strip out any characters quoted by backslashes in-place. */
+	/* Read characters from c and prepare them in situ for final processing at n */
+	c = n = fields[f] = concise_format;
+
+	while (*c) {
+		/* Quoted character?  Skip past quote. */
+		if (*c == '\\') {
+			if (!*(++c)) {
+				log_error("Backslash must be followed by another character at end of string.");
+				*n = '\0';
+				log_error("Parsed %d fields: name: %s uuid: %s minor: %s flags: %s table: %s",
+					  f + 1, fields[0], fields[1], fields[2], fields[3], fields[4]);
+				goto out;
+			}
+
+			/* Don't interpret next character */
+			*n++ = *c++;
+
+			continue;
+		} 
+
+		/* Comma marking end of field? */
+		if (*c == ',' && f < 4) {
+			/* Terminate string */
+			*n++ = '\0', c++;
+
+			/* Store start of next field */
+			fields[++f] = n;
+
+			/* Skip any whitespace after field-separating commas */
+			while(isspace(*c))
+				c++;
+
+			continue;
+		} 
+
+		/* Comma marking end of a table line? */
+		if (*c == ',' && f >= 4) {
+			/* Replace comma with newline to match standard table input format */
+			*n++ = '\n', c++;
+
+			continue;
+		} 
+
+		/* Semi-colon marking end of device? */
+		if (*c == ';' || *(c + 1) == '\0') {
+			/* End of input? */
+			if (*c != ';')
+				/* Copy final character */
+				*n++ = *c;
+
+			/* Terminate string */
+			*n++ = '\0', c++;
+
+			if (f != 4) {
+				log_error("Five comma-separated fields are required for each device");
+				log_error("Parsed %d fields: name: %s uuid: %s minor: %s flags: %s table: %s",
+					  f + 1, fields[0], fields[1], fields[2], fields[3], fields[4]);
+				goto out;
+			}
+
+			/* Set up parameters the same way as when specified directly on command line */
+			if (*fields[1]) {
+				_switches[UUID_ARG] = 1;
+				_uuid = fields[1];
+			}
+
+			if (*fields[2]) {
+				_switches[MINOR_ARG] = 1;
+				_int_args[MINOR_ARG] = atoi(fields[2]);
+			}
+
+			if (!strcmp(fields[3], "ro"))
+				_switches[READ_ONLY] = 1;
+			else if (*fields[3] && strcmp(fields[3], "rw")) {
+				log_error("Invalid flags parameter '%s' must be 'ro' or 'rw' or empty.", fields[3]);
+				_uuid = NULL;
+				goto out;
+			}
+
+			_table = fields[4];
+
+			/* Create the device */
+			if (!_create_one_device(fields[0], NULL)) {
+				_uuid = _table = NULL;
+				goto out;
+			}
+
+			/* Clear parameters ready for any further devices */
+			_switches[UUID_ARG] = 0;
+			_switches[MINOR_ARG] = 0;
+			_switches[READ_ONLY] = 0;
+			_uuid = _table = NULL;
+
+			f = 0;
+			fields[0] = n;
+			fields[1] = fields[2] = fields[3] = fields[4] = NULL;
+
+			/* Skip any whitespace after semi-colons */
+			while(isspace(*c))
+				c++;
+
+			continue;
+		} 
+
+		/* Normal character */
+		*n++ = *c++;
+	}
+
+	if (fields[0] != n) {
+		*n = '\0';
+		log_error("Incomplete entry: five comma-separated fields are required for each device");
+		log_error("Parsed %d fields: name: %s uuid: %s minor: %s flags: %s table: %s",
+			  f + 1, fields[0], fields[1], fields[2], fields[3], fields[4]);
+		goto out;
+	}
+
+	return 1;
+
+out:
+	if (!argc)
+		dm_free(concise_format);
+
+	return 0;
+}
+
+static int _create(CMD_ARGS)
+{
+	const char *name;
+	const char *file = NULL;
+
+	if (_switches[CONCISE_ARG]) {
+		if (argc > 1) {
+			log_error("dmsetup create --concise takes at most one argument");
+			return 0;
+		}
+		return _create_concise(cmd, argc, argv);
+	}
+
+	if (!argc) {
+		log_error("Please provide a name for the new device.");
+		return 0;
+	}
+
+	name = argv[0];
+	if (argc == 2)
+		file = argv[1];
+
+	return _create_one_device(name, file);
 }
 
 static int _do_rename(const char *name, const char *new_name, const char *new_uuid) {
@@ -1947,6 +2190,11 @@ static int _error_device(CMD_ARGS)
 
 	name = names ? names->name : argv[0];
 
+	if (!name || !*name) {
+		printf("No device specified\n");
+		return_0;
+	}
+		
 	size = _get_device_size(name);
 
 	if (!(dmt = dm_task_create(DM_DEVICE_RELOAD)))
@@ -2114,6 +2362,19 @@ static int _exec_command(const char *name)
 	return 1;
 }
 
+/*
+ * Print string s using a backslash to quote each character that has a special
+ * meaning in the concise format - comma, semi-colon and backslash.
+ */
+static void _print_string_quoted(const char *s)
+{
+	while (*s) {
+		if (strchr(",;\\", *s))
+			putchar('\\');
+		putchar(*s++);
+	}
+}
+
 static int _status(CMD_ARGS)
 {
 	int r = 0;
@@ -2126,19 +2387,24 @@ static int _status(CMD_ARGS)
 	const char *name = NULL;
 	int matched = 0;
 	int ls_only = 0;
+	int use_concise = 0;
 	struct dm_info info;
 
 	if (names)
 		name = names->name;
 	else {
 		if (!argc && !_switches[UUID_ARG] && !_switches[MAJOR_ARG])
+			/* FIXME Respect deps in concise mode, so they are correctly ordered for recreation */
 			return _process_all(cmd, NULL, argc, argv, 0, _status);
 		name = argv[0];
 	}
 
-	if (!strcmp(cmd->name, "table"))
+	if (!strcmp(cmd->name, "table")) {
 		cmdno = DM_DEVICE_TABLE;
-	else
+		/* --concise only applies to 'table' */
+		if (_switches[CONCISE_ARG])
+			use_concise = 1;
+	} else
 		cmdno = DM_DEVICE_STATUS;
 
 	if (!strcmp(cmd->name, "ls"))
@@ -2179,6 +2445,7 @@ static int _status(CMD_ARGS)
 		if (_switches[TARGET_ARG] &&
 		    (!target_type || strcmp(target_type, _target)))
 			continue;
+
 		if (ls_only) {
 			if (!_switches[EXEC_ARG] || !_command_to_exec ||
 			    _switches[VERBOSE_ARG])
@@ -2186,10 +2453,27 @@ static int _status(CMD_ARGS)
 			next = NULL;
 		} else if (!_switches[EXEC_ARG] || !_command_to_exec ||
 			   _switches[VERBOSE_ARG]) {
-			if (!matched && _switches[VERBOSE_ARG])
-				_display_info(dmt);
-			if (multiple_devices && !_switches[VERBOSE_ARG])
-				printf("%s: ", name);
+			if (!use_concise) {
+				if (!matched && _switches[VERBOSE_ARG])
+					_display_info(dmt);
+				if (multiple_devices && !_switches[VERBOSE_ARG])
+					printf("%s: ", name);
+			} else if (!matched) {
+				/*
+ 				 * Before first target of device in concise output,
+				 * print basic device information in the appropriate format.
+				 * Separate devices by a semi-colon.
+				 */
+				if (_concise_output_produced)
+					putchar(';');
+				_concise_output_produced = 1;
+
+				_print_string_quoted(name);
+				putchar(',');
+				_print_string_quoted(dm_task_get_uuid(dmt));
+				printf(",%u,%s", info.minor, info.read_only ? "ro" : "rw");
+			}
+			/* Next print any target-specific information */
 			if (target_type) {
 				/* Suppress encryption key */
 				if (!_switches[SHOWKEYS_ARG] &&
@@ -2210,15 +2494,22 @@ static int _status(CMD_ARGS)
 						while (*c && *c != ' ')
 							*c++ = '0';
 				}
-				printf(FMTu64 " " FMTu64 " %s %s",
-				       start, length, target_type, params);
+				if (use_concise)
+					putchar(',');
+				printf(FMTu64 " " FMTu64 " %s ", start, length, target_type);
+				if (use_concise)
+					_print_string_quoted(params);
+				else
+					printf("%s", params);
 			}
-			putchar('\n');
+			/* --concise places all devices on a single output line */
+			if (!use_concise)
+				putchar('\n');
 		}
 		matched = 1;
 	} while (next);
 
-	if (multiple_devices && _switches[VERBOSE_ARG] && matched && !ls_only)
+	if (multiple_devices && _switches[VERBOSE_ARG] && matched && !ls_only && (!use_concise || _switches[VERBOSE_ARG] > 1))
 		putchar('\n');
 
 	if (matched && _switches[EXEC_ARG] && _command_to_exec && !_exec_command(name))
@@ -5884,27 +6175,28 @@ static struct command _dmsetup_commands[] = {
 	{"create", "<dev_name>\n"
 	  "\t    [-j|--major <major> -m|--minor <minor>]\n"
 	  "\t    [-U|--uid <uid>] [-G|--gid <gid>] [-M|--mode <octal_mode>]\n"
-	  "\t    [-u|uuid <uuid>] [--addnodeonresume|--addnodeoncreate]\n"
+	  "\t    [-u|--uuid <uuid>] [--addnodeonresume|--addnodeoncreate]\n"
 	  "\t    [--readahead {[+]<sectors>|auto|none}]\n"
-	  "\t    [-n|--notable|--table {<table>|<table_file>}]", 1, 2, 0, 0, _create},
-	{"remove", "[--deferred] [-f|--force] [--retry] <device>...", 0, -1, 1, 0, _remove},
+	  "\t    [-n|--notable|--table {<table>|<table_file>}]\n"
+	  "\tcreate --concise [<concise_device_spec_list>]", 0, 2, 0, 0, _create},
+	{"remove", "[--deferred] [-f|--force] [--retry] <device>...", 0, -1, 2, 0, _remove},
 	{"remove_all", "[-f|--force]", 0, 0, 0, 0, _remove_all},
-	{"suspend", "[--noflush] [--nolockfs] <device>...", 0, -1, 1, 0, _suspend},
+	{"suspend", "[--noflush] [--nolockfs] <device>...", 0, -1, 2, 0, _suspend},
 	{"resume", "[--noflush] [--nolockfs] <device>...\n"
 	  "\t       [--addnodeonresume|--addnodeoncreate]\n"
-	  "\t       [--readahead {[+]<sectors>|auto|none}]", 0, -1, 1, 0, _resume},
+	  "\t       [--readahead {[+]<sectors>|auto|none}]", 0, -1, 2, 0, _resume},
 	  {"load", "<device> [<table>|<table_file>]", 0, 2, 0, 0, _load},
-	{"clear", "<device>", 0, -1, 1, 0, _clear},
+	{"clear", "<device>", 0, -1, 2, 0, _clear},
 	{"reload", "<device> [<table>|<table_file>]", 0, 2, 0, 0, _load},
-	{"wipe_table", "[-f|--force] [--noflush] [--nolockfs] <device>...", 1, -1, 1, 0, _error_device},
+	{"wipe_table", "[-f|--force] [--noflush] [--nolockfs] <device>...", 0, -1, 2, 0, _error_device},
 	{"rename", "<device> [--setuuid] <new_name_or_uuid>", 1, 2, 0, 0, _rename},
 	{"message", "<device> <sector> <message>", 2, -1, 0, 0, _message},
 	{"ls", "[--target <target_type>] [--exec <command>] [-o <options>] [--tree]", 0, 0, 0, 0, _ls},
 	{"info", "[<device>...]", 0, -1, 1, 0, _info},
-	{"deps", "[-o <options>] [<device>...]", 0, -1, 1, 0, _deps},
+	{"deps", "[-o <options>] [<device>...]", 0, -1, 2, 0, _deps},
 	{"stats", "<command> [<options>] [<device>...]", 1, -1, 1, 1, _stats},
-	{"status", "[<device>...] [--noflush] [--target <target_type>]", 0, -1, 1, 0, _status},
-	{"table", "[<device>...] [--target <target_type>] [--showkeys]", 0, -1, 1, 0, _status},
+	{"status", "[<device>...] [--noflush] [--target <target_type>]", 0, -1, 2, 0, _status},
+	{"table", "[<device>...] [--concise] [--target <target_type>] [--showkeys]", 0, -1, 2, 0, _status},
 	{"wait", "<device> [<event_nr>] [--noflush]", 0, 2, 0, 0, _wait},
 	{"mknodes", "[<device>...]", 0, -1, 1, 0, _mknodes},
 	{"mangle", "[<device>...]", 0, -1, 1, 0, _mangle},
@@ -5978,6 +6270,11 @@ static void _dmsetup_usage(FILE *out)
 		     "-j <major> -m <minor>\n");
 	fprintf(out, "<mangling_mode> is one of 'none', 'auto' and 'hex'.\n");
 	fprintf(out, "<fields> are comma-separated.  Use 'help -c' for list.\n");
+	fprintf(out, "<concise_device_specification> has single-device entries separated by semi-colons:\n"
+		     "    <name>,<uuid>,<minor>,<flags>,<table>\n"
+		     "        where <flags> is 'ro' or 'rw' (the default) and any of <uuid>, <minor>\n"
+		     "        and <flags> may be empty. Separate extra table lines with commas.\n"
+		     "    E.g.: dev1,,,,0 100 linear 253:1 0,100 100 error;dev2,,,ro,0 1 error\n");
 	fprintf(out, "Table_file contents may be supplied on stdin.\n");
 	fprintf(out, "Options are: devno, devname, blkdevname.\n");
 	fprintf(out, "Tree specific options are: ascii, utf, vt100; compact, inverted, notrunc;\n"
@@ -6473,6 +6770,7 @@ static int _process_switches(int *argcp, char ***argvp, const char *dev_dir)
 		{"checks", 0, &ind, CHECKS_ARG},
 		{"clear", 0, &ind, CLEAR_ARG},
 		{"columns", 0, &ind, COLS_ARG},
+		{"concise", 0, &ind, CONCISE_ARG},
 		{"count", 1, &ind, COUNT_ARG},
 		{"deferred", 0, &ind, DEFERRED_ARG},
 		{"select", 1, &ind, SELECT_ARG},
@@ -6637,6 +6935,8 @@ static int _process_switches(int *argcp, char ***argvp, const char *dev_dir)
 			return_0;
 		if (c == 'h' || ind == HELP_ARG)
 			_switches[HELP_ARG]++;
+		if (ind == CONCISE_ARG)
+			_switches[CONCISE_ARG]++;
 		if (ind == BOUNDS_ARG) {
 			_switches[BOUNDS_ARG]++;
 			_string_args[BOUNDS_ARG] = optarg;
@@ -6772,7 +7072,13 @@ static int _process_switches(int *argcp, char ***argvp, const char *dev_dir)
 		if (c == 'M' || ind == MODE_ARG) {
 			_switches[MODE_ARG]++;
 			/* FIXME Accept modes as per chmod */
-			_int_args[MODE_ARG] = (int) strtol(optarg, NULL, 8);
+			errno = 0;
+			_int_args[MODE_ARG] = (int) strtol(optarg, &s, 8);
+			if (errno || !s || *s || !_int_args[MODE_ARG]) {
+				log_error("Invalid argument for --mode: %s. %s",
+					  optarg, errno ? strerror(errno) : "");
+				return 0;
+			}
 		}
 		if (ind == DEFERRED_ARG)
 			_switches[DEFERRED_ARG]++;
@@ -7038,6 +7344,16 @@ unknown:
 	/* Default to success */
 	ret = 0;
 
+	/* When -S is given, store the real command for later and run "info -c" first */
+	if (_switches[SELECT_ARG] && (cmd->repeatable_cmd == 2)) {
+		_selection_cmd = cmd;
+		_switches[COLS_ARG] = 1;
+		if (!(cmd = _find_dmsetup_command("info"))) {
+			fprintf(stderr, "Internal error finding dmsetup info command struct.\n");
+			goto out;
+		}
+	}
+
 	if (_switches[COLS_ARG]) {
 		if (!_report_init(cmd, subcommand))
 			ret = 1;
@@ -7073,6 +7389,10 @@ doit:
 
 	do {
 		r = _perform_command_for_all_repeatable_args(cmd, subcommand, argc, argv, NULL, multiple_devices);
+		if (_concise_output_produced) {
+			putchar('\n');
+			fflush(stdout);
+		}
 		if (_report) {
 			/* only output headings for repeating reports */
 			if (_int_args[COUNT_ARG] != 1 && !dm_report_is_empty(_report))

@@ -54,9 +54,9 @@ EXPORTED_FN_PREFIX = dm
 
 include $(top_builddir)/make.tmpl
 
-CFLAGS += $(UDEV_CFLAGS) $(VALGRIND_CFLAGS)
+PROGS_CFLAGS = $(UDEV_CFLAGS)
 
-LIBS += $(SELINUX_LIBS) $(UDEV_LIBS) $(PTHREAD_LIBS) $(M_LIBS)
+LIBS += $(RT_LIBS) $(SELINUX_LIBS) $(UDEV_LIBS) $(PTHREAD_LIBS) $(M_LIBS)
 
 device-mapper: all
 
