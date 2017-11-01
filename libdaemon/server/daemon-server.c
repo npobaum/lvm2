@@ -334,6 +334,11 @@ static void _daemonise(daemon_state s)
 	struct timeval tval;
 	sigset_t my_sigset;
 
+	if ((fd = open("/dev/null", O_RDWR)) == -1) {
+		fprintf(stderr, "Unable to open /dev/null.\n");
+		exit(EXIT_FAILURE);
+	}
+
 	sigemptyset(&my_sigset);
 	if (sigprocmask(SIG_SETMASK, &my_sigset, NULL) < 0) {
 		fprintf(stderr, "Unable to restore signals.\n");
@@ -350,6 +355,7 @@ static void _daemonise(daemon_state s)
 		break;
 
 	default:
+		(void) close(fd);
 		/* Wait for response from child */
 		while (!waitpid(pid, &child_status, WNOHANG) && !_shutdown_requested) {
 			tval.tv_sec = 0;
@@ -371,15 +377,30 @@ static void _daemonise(daemon_state s)
 		exit(WEXITSTATUS(child_status));
 	}
 
-	if (chdir("/"))
+	if (chdir("/")) {
+		perror("Cannot chdir to /");
 		exit(1);
+	}
 
+	if ((dup2(fd, STDIN_FILENO) == -1) ||
+	    (dup2(fd, STDOUT_FILENO) == -1) ||
+	    (dup2(fd, STDERR_FILENO) == -1)) {
+		perror("Error setting terminal FDs to /dev/null");
+		exit(2);
+	}
+
+	if ((fd > STDERR_FILENO) && close(fd)) {
+		perror("Failed to close /dev/null descriptor");
+		exit(3);
+	}
+
+	/* Switch to sysconf(_SC_OPEN_MAX) ?? */
 	if (getrlimit(RLIMIT_NOFILE, &rlim) < 0)
 		fd = 256; /* just have to guess */
 	else
 		fd = rlim.rlim_cur;
 
-	for (--fd; fd >= 0; fd--) {
+	for (--fd; fd > STDERR_FILENO; fd--) {
 #ifdef __linux__
 		/* Do not close fds preloaded by systemd! */
 		if (_systemd_activation && fd == SD_FD_SOCKET_SERVER)
@@ -387,11 +408,6 @@ static void _daemonise(daemon_state s)
 #endif
 		(void) close(fd);
 	}
-
-	if ((open("/dev/null", O_RDONLY) < 0) ||
-	    (open("/dev/null", O_WRONLY) < 0) ||
-	    (open("/dev/null", O_WRONLY) < 0))
-		exit(1);
 
 	setsid();
 }

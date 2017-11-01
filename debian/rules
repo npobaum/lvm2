@@ -27,7 +27,7 @@ CFLAGS_OPT_UDEB = -Os
 endif
 
 %:
-	dh $@ --parallel --with systemd,python2,python3
+	dh $@ --parallel --with python2,python3
 
 override_dh_auto_configure: SOURCE_FILES = $(filter-out debian, $(wildcard * .[^.]*))
 override_dh_auto_configure:
@@ -105,6 +105,10 @@ override_dh_auto_install:
 		--destdir=debian/build/install_deb \
 		--buildsystem=pybuild
 
+override_dh_auto_clean:
+	rm -rf .pybuild/
+	rm -rf debian/build
+
 override_dh_gencontrol:
 	dh_gencontrol \
 		-pdmsetup \
@@ -115,14 +119,7 @@ override_dh_gencontrol:
 		-plibdevmapper$(DEVMAPPER_ABINAME)-udeb \
 		-plibdevmapper-event$(DEVMAPPER_ABINAME) \
 		-- -v$(DEVMAPPER_VERSION_DEBIAN)
-	dh_gencontrol \
-		-Ndmsetup \
-		-Ndmsetup-udeb \
-		-Ndmeventd \
-		-Nlibdevmapper-dev \
-		-Nlibdevmapper$(DEVMAPPER_ABINAME) \
-		-Nlibdevmapper$(DEVMAPPER_ABINAME)-udeb \
-		-Nlibdevmapper-event$(DEVMAPPER_ABINAME)
+	dh_gencontrol --remaining-packages
 
 override_dh_missing:
 	dh_missing --sourcedir=debian/build/install_deb --fail-missing
@@ -133,7 +130,7 @@ override_dh_install:
 override_dh_installchangelogs:
 	dh_installchangelogs -pdmeventd WHATS_NEW_DM
 	dh_installchangelogs -plvm2 WHATS_NEW
-	dh_installchangelogs -Ndmeventd -Nlvm2
+	dh_installchangelogs --remaining-packages
 
 override_dh_installinit:
 	dh_installinit -plvm2 --no-start
@@ -148,44 +145,24 @@ override_dh_makeshlibs:
 	dh_makeshlibs -plibdevmapper-event$(DEVMAPPER_ABINAME) \
 		"-Vlibdevmapper-event$(DEVMAPPER_ABINAME) (>= $(DEVMAPPER_VERSION))" \
 		-- "-v$(DEVMAPPER_VERSION_DEBIAN)" -c2
-	dh_makeshlibs -Nlibdevmapper$(DEVMAPPER_ABINAME) -Nlibdevmapper-event$(DEVMAPPER_ABINAME) -V \
+	dh_makeshlibs --remaining-packages -V \
 		-- -c2
 
-override_dh_systemd_enable:
-	dh_systemd_enable -pclvm --no-enable lvm2-cluster-activation.service
-	dh_systemd_enable -pdmeventd --no-enable dm-event.service
-	dh_systemd_enable -pdmeventd dm-event.socket
-	dh_systemd_enable -plvm2 \
+override_dh_installsystemd:
+	dh_installsystemd -pclvm --no-enable --no-start lvm2-cluster-activation.service
+	dh_installsystemd -pdmeventd \
+		dm-event.service \
+		dm-event.socket
+	dh_installsystemd -plvm2 \
 		blk-availability.service \
 		lvm2-monitor.service \
 		lvm2-lvmetad.socket \
 		lvm2-lvmpolld.socket
-	dh_systemd_enable -plvm2 --no-enable \
+	dh_installsystemd -plvm2 --no-enable \
 		lvm2-lvmetad.service \
 		lvm2-lvmpolld.service
-	dh_systemd_enable -plvm2-dbusd \
+	dh_installsystemd -plvm2-dbusd \
 		lvm2-lvmdbusd.service
-	dh_systemd_enable -plvm2-lockd \
+	dh_installsystemd -plvm2-lockd \
 		lvm2-lvmlockd.service \
 		lvm2-lvmlocking.service
-
-override_dh_systemd_start:
-	dh_systemd_start -pclvm --no-start --no-restart-after-upgrade lvm2-cluster-activation.service
-	dh_systemd_start -pdmeventd --restart-after-upgrade dm-event.socket
-	dh_systemd_start -plvm2 --restart-after-upgrade \
-		blk-availability.service \
-		lvm2-lvmetad.service \
-		lvm2-lvmpolld.service
-	dh_systemd_start -plvm2 --no-restart-on-upgrade \
-		lvm2-lvmetad.socket \
-		lvm2-lvmpolld.socket
-	dh_systemd_start -plvm2-dbusd \
-		lvm2-lvmdbusd.service
-	dh_systemd_start -plvm2-lockd \
-		lvm2-lvmlockd.service \
-		lvm2-lvmlocking.service
-
-clean:
-	dh_testdir
-	rm -rf debian/build
-	dh_clean

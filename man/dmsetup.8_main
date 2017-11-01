@@ -36,6 +36,17 @@ dmsetup \(em low level logical volume management
 .
 .HP
 .B dmsetup
+.de CMD_CREATE_CONCISE
+.  ad l
+.  BR create
+.  BR --concise
+.  RI [ concise_device_specification ]
+.  ad b
+..
+.CMD_CREATE_CONCISE
+.
+.HP
+.B dmsetup
 .de CMD_DEPS
 .  ad l
 .  BR deps
@@ -269,6 +280,7 @@ dmsetup \(em low level logical volume management
 .de CMD_TABLE
 .  ad l
 .  BR table
+.  RB [ --concise ]
 .  RB [ --target
 .  IR target_type ]
 .  RB [ --showkeys ]
@@ -547,14 +559,14 @@ Set the table being loaded read-only.
 .BR -S | --select
 .IR selection
 .br
-Display only rows that match \fIselection\fP criteria. All rows are displayed
-with the additional "selected" column (\fB-o selected\fP) showing 1 if the row
-matches the \fIselection\fP and 0 otherwise. The selection criteria are defined
-by specifying column names and their valid values while making use of
-supported comparison operators. As a quick help and to see full list of
-column names that can be used in selection and the set of supported
-selection operators, check the output of \fBdmsetup\ info\ -c\ -S\ help\fP
-command.
+Process only items that match \fIselection\fP criteria.  If the command is
+producing report output, adding the "selected" column (\fB-o
+selected\fP) displays all rows and shows 1 if the row matches the
+\fIselection\fP and 0 otherwise. The selection criteria are defined by
+specifying column names and their valid values while making use of supported
+comparison operators. As a quick help and to see full list of column names that
+can be used in selection and the set of supported selection operators, check
+the output of \fBdmsetup\ info\ -c\ -S\ help\fP command.
 .
 .HP
 .BR --table
@@ -619,6 +631,16 @@ If successful the device will appear in table and for live
 device the node \fI/dev/mapper/device_name\fP is created.
 See below for more information on the table format.
 .
+.HP
+.CMD_CREATE_CONCISE
+.br
+Creates one or more devices from a concise device specification.
+Each device is specified by a comma-separated list: name, uuid, minor number, flags, comma-separated table lines.
+Flags defaults to read-write (rw) or may be read-only (ro).
+Uuid, minor number and flags are optional so those fields may be empty.
+A semi-colon separates specifications of different devices.
+Use a backslash to escape the following character, for example a comma or semi-colon in a name or table. See also CONCISE FORMAT below.
+. 
 .HP
 .CMD_DEPS
 .br
@@ -824,6 +846,10 @@ Real encryption keys are suppressed in the table output for the crypt
 target unless the \fB--showkeys\fP parameter is supplied. Kernel key
 references prefixed with \fB:\fP are not affected by the parameter and get
 displayed always.
+With \fB--concise\fP, the output is presented concisely on a single line.
+Commas then separate the name, uuid, minor device number, flags ('ro' or 'rw')
+and the table (if present). Semi-colons separate devices. Backslashes escape
+any commas, semi-colons or backslashes.  See CONCISE FORMAT below.
 .
 .HP
 .CMD_TARGETS
@@ -995,6 +1021,55 @@ documentation directory for the device-mapper package.)
 0 2056320 striped 2 32 /dev/hda 0 /dev/hdb 0
 .br
 2056320 2875602 linear /dev/hdb 1028160
+.
+.SH CONCISE FORMAT
+.
+A concise representation of one of more devices.
+.sp
+.br
+- A comma separates the fields of each device.
+.br
+- A semi-colon separates devices.
+.TP
+The representation of a device takes the form:
+.sp
+<name>,<uuid>,<minor>,<flags>,<table>[,<table>+][;<dev_name>,<uuid>,<minor>,<flags>,<table>[,<table>+]]
+.TP
+The fields are:
+.
+.TP
+.B name
+The name of the device.
+.TP
+.B uuid
+The UUID of the device (or empty).
+.TP
+.B minor
+The minor number of the device.  If empty, the kernel assigns a suitable minor number.
+.TP
+.B flags
+Supported flags are:
+.sp
+.B ro
+Sets the table being loaded for the device read-only
+.br
+.B rw
+Sets the table being loaded for the device read-write (default)
+.TP
+.B table
+One line of the table. See TABLE FORMAT above.
+.
+.SH EXAMPLES
+.
+# A simple linear read-only device
+.br
+test-linear-small,,,ro,0 2097152 linear /dev/loop0 0, 2097152 2097152 linear /dev/loop1 0
+.br
+.sp
+# Two linear devices
+.br
+test-linear-small,,,,0 2097152 linear /dev/loop0 0;test-linear-large,,,, 0 2097152 linear /dev/loop1 0, 2097152 2097152 linear /dev/loop2 0
+.br
 .
 .SH ENVIRONMENT VARIABLES
 .

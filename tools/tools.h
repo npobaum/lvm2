@@ -223,6 +223,10 @@ int vgchange_activate(struct cmd_context *cmd, struct volume_group *vg,
 
 int vgchange_background_polling(struct cmd_context *cmd, struct volume_group *vg);
 
+int vgchange_locktype_cmd(struct cmd_context *cmd, int argc, char **argv);
+int vgchange_lock_start_stop_cmd(struct cmd_context *cmd, int argc, char **argv);
+int vgchange_systemid_cmd(struct cmd_context *cmd, int argc, char **argv);
+
 struct lv_prop *get_lv_prop(int lvp_enum);
 struct lv_type *get_lv_type(int lvt_enum);
 struct command *get_command(int cmd_enum);
@@ -236,7 +240,7 @@ int lvchange_rebuild_cmd(struct cmd_context *cmd, int argc, char **argv);
 int lvchange_monitor_poll_cmd(struct cmd_context *cmd, int argc, char **argv);
 int lvchange_persistent_cmd(struct cmd_context *cmd, int argc, char **argv);
 
-int lvconvert_repair_pvs_or_thinpool_cmd(struct cmd_context *cmd, int argc, char **argv);
+int lvconvert_repair_cmd(struct cmd_context *cmd, int argc, char **argv);
 int lvconvert_replace_pv_cmd(struct cmd_context *cmd, int argc, char **argv);
 
 int lvconvert_merge_snapshot_cmd(struct cmd_context *cmd, int argc, char **argv);

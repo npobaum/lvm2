@@ -1,4 +1,4 @@
-From 06702fb9d015eb3d02a88582fc0a3afc48071d7c Mon Sep 17 00:00:00 2001
+From 01ef17e87dc7084d7fec44a07eb77f8d9e422f76 Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 30 Jun 2015 11:46:08 +0200
 Subject: force-paths
@@ -8,10 +8,10 @@ Subject: force-paths
  1 file changed, 1 insertion(+), 5 deletions(-)
 
 diff --git a/configure.in b/configure.in
-index c7766b921..9864847d7 100644
+index 4591891..37fae1c 100644
 --- a/configure.in
 +++ b/configure.in
-@@ -1821,11 +1821,7 @@ if test "$BUILD_DMFILEMAPD" = yes; then
+@@ -1829,11 +1829,7 @@ if test "$BUILD_DMFILEMAPD" = yes; then
  fi
  
  ################################################################################

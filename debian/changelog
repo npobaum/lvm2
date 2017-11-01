@@ -1,3 +1,11 @@
+lvm2 (2.02.175-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Enable sanlock support in lvmlockd.
+  * Use debhelper compat 11 for dh_installsystemd.
+
+ -- Bastian Blank <waldi@debian.org>  Wed, 01 Nov 2017 19:21:34 +0100
+
 lvm2 (2.02.173-2) unstable; urgency=medium
 
   * Use dh.

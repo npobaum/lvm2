@@ -1,4 +1,4 @@
-From d11d60fb03b13b40f78590817d01fe98663dfd40 Mon Sep 17 00:00:00 2001
+From 82b9275b49359e40754ff1de7e695f676b65620e Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 30 Jun 2015 11:46:04 +0200
 Subject: install
@@ -8,7 +8,7 @@ Subject: install
  1 file changed, 7 insertions(+), 26 deletions(-)
 
 diff --git a/make.tmpl.in b/make.tmpl.in
-index cb5953a8a..095b10744 100644
+index 65362d8..5683676 100644
 --- a/make.tmpl.in
 +++ b/make.tmpl.in
 @@ -17,20 +17,10 @@ SHELL = @SHELL@
@@ -34,7 +34,7 @@ index cb5953a8a..095b10744 100644
  MKDIR_P = @MKDIR_P@
  MSGFMT = @MSGFMT@
  LCOV = @LCOV@
-@@ -112,8 +102,7 @@ pythonprefix = $(DESTDIR)$(prefix)
+@@ -114,8 +104,7 @@ pythonprefix = $(DESTDIR)$(prefix)
  python2dir = @PYTHON2DIR@
  python3dir = @PYTHON3DIR@
  
@@ -44,7 +44,7 @@ index cb5953a8a..095b10744 100644
  
  SYSTEMD_GENERATOR_DIR = @systemdutildir@/system-generators
  DEFAULT_SYS_DIR = @DEFAULT_SYS_DIR@
-@@ -142,22 +131,14 @@ MAKEFLAGS = @JOBS@
+@@ -145,22 +134,14 @@ MAKEFLAGS = @JOBS@
  endif
  
  # Handle installation of files

@@ -31,6 +31,7 @@ AS_IF([test -z "$CFLAGS"], [COPTIMISE_FLAG="-O2"])
 case "$host_os" in
 	linux*)
 		CLDFLAGS="$CLDFLAGS -Wl,--version-script,.export.sym"
+		# equivalent to -rdynamic
 		ELDFLAGS="-Wl,--export-dynamic"
 		# FIXME Generate list and use --dynamic-list=.dlopen.sym
 		CLDWHOLEARCHIVE="-Wl,-whole-archive"
@@ -1301,7 +1302,7 @@ AC_MSG_RESULT($NOTIFYDBUS_SUPPORT)
 
 if test "$NOTIFYDBUS_SUPPORT" = yes; then
 	AC_DEFINE([NOTIFYDBUS_SUPPORT], 1, [Define to 1 to include code that uses dbus notification.])
-	LIBS="-lsystemd $LIBS"
+	SYSTEMD_LIBS="-lsystemd"
 fi
 
 ################################################################################
@@ -1463,6 +1464,8 @@ AC_SUBST([LVM2APP_LIB])
 test "$APPLIB" = yes \
   && LVM2APP_LIB=-llvm2app \
   || LVM2APP_LIB=
+AS_IF([test "$APPLIB"],
+      [AC_MSG_WARN([Python bindings are deprecated. Use D-Bus API])])
 
 ################################################################################
 dnl -- Enable cmdlib
@@ -1483,6 +1486,8 @@ AC_ARG_ENABLE(dbus-service,
 	      AC_HELP_STRING([--enable-dbus-service], [install D-Bus support]),
 	      BUILD_LVMDBUSD=$enableval, BUILD_LVMDBUSD=no)
 AC_MSG_RESULT($BUILD_LVMDBUSD)
+AS_IF([test "$NOTIFYDBUS_SUPPORT" = yes && test "BUILD_LVMDBUSD" = yes],
+      [AC_MSG_WARN([Building D-Bus support without D-Bus notifications.])])
 
 ################################################################################
 dnl -- Enable Python liblvm2app bindings
@@ -1545,6 +1550,7 @@ if test "$BUILD_LVMDBUSD" = yes; then
 fi
 
 if test "$PYTHON_BINDINGS" = yes -o "$PYTHON2_BINDINGS" = yes -o "$PYTHON3_BINDINGS" = yes; then
+	AC_MSG_WARN([Python bindings are deprecated. Use D-Bus API])
 	test "$APPLIB" != yes && AC_MSG_ERROR([Python_bindings require --enable-applib])
 fi
 
@@ -1580,13 +1586,11 @@ dnl -- enable dmeventd handling
 AC_MSG_CHECKING(whether to use dmeventd)
 AC_ARG_ENABLE(dmeventd, AC_HELP_STRING([--enable-dmeventd],
 				       [enable the device-mapper event daemon]),
-	      DMEVENTD=$enableval)
-AC_MSG_RESULT($DMEVENTD)
-
-BUILD_DMEVENTD=$DMEVENTD
+	      BUILD_DMEVENTD=$enableval, BUILD_DMEVENTD=no)
+AC_MSG_RESULT($BUILD_DMEVENTD)
 
 dnl -- dmeventd currently requires internal mirror support
-if test "$DMEVENTD" = yes; then
+if test "$BUILD_DMEVENTD" = yes; then
    if test "$MIRRORS" != internal; then
       AC_MSG_ERROR([--enable-dmeventd currently requires --with-mirrors=internal])
    fi
@@ -1658,13 +1662,16 @@ fi
 
 ################################################################################
 dnl -- Check for realtime clock support
+RT_LIBS=
+HAVE_REALTIME=no
 if test "$REALTIME" = yes; then
-	AC_CHECK_LIB(rt, clock_gettime, HAVE_REALTIME=yes, HAVE_REALTIME=no)
+	AC_CHECK_FUNCS([clock_gettime], HAVE_REALTIME=yes)
+
+	AS_IF([test "$HAVE_REALTIME" != yes], [ # try again with -lrt
+	      AC_CHECK_LIB([rt], [clock_gettime], RT_LIBS="-lrt"; HAVE_REALTIME=yes)])
 
 	if test "$HAVE_REALTIME" = yes; then
 		AC_DEFINE([HAVE_REALTIME], 1, [Define to 1 to include support for realtime clock.])
-		LIBS="-lrt $LIBS"
-		RT_LIB="-lrt"
 	else
 		AC_MSG_WARN(Disabling realtime clock)
 	fi
@@ -1780,7 +1787,8 @@ if test "$BUILD_CMIRRORD" = yes; then
 fi
 
 if test "$BUILD_LVMLOCKD" = yes; then
-	AC_CHECK_FUNCS(clock_gettime strtoull,,hard_bailout)
+	AS_IF([test "$HAVE_REALTIME" != yes], [AC_MSG_ERROR([Realtime clock support is mandatory for lvmlockd.])])
+	AC_CHECK_FUNCS(strtoull,,hard_bailout)
 fi
 
 if test "$BUILD_LVMPOLLD" = yes; then
@@ -1800,7 +1808,7 @@ if test "$CLUSTER" != none; then
 	AC_CHECK_FUNCS(socket,,hard_bailout)
 fi
 
-if test "$DMEVENTD" = yes; then
+if test "$BUILD_DMEVENTD" = yes; then
 	AC_CHECK_HEADERS(arpa/inet.h,,hard_bailout)
 fi
 
@@ -2008,7 +2016,6 @@ AC_SUBST(DEVMAPPER)
 AC_SUBST(DLM_CFLAGS)
 AC_SUBST(DLM_LIBS)
 AC_SUBST(DL_LIBS)
-AC_SUBST(DMEVENTD)
 AC_SUBST(DMEVENTD_PATH)
 AC_SUBST(DM_LIB_PATCHLEVEL)
 AC_SUBST(ELDFLAGS)
@@ -2058,7 +2065,7 @@ AC_SUBST(PYTHON3DIR)
 AC_SUBST(QUORUM_CFLAGS)
 AC_SUBST(QUORUM_LIBS)
 AC_SUBST(RAID)
-AC_SUBST(RT_LIB)
+AC_SUBST(RT_LIBS)
 AC_SUBST(READLINE_LIBS)
 AC_SUBST(REPLICATORS)
 AC_SUBST(SACKPT_CFLAGS)
@@ -2068,6 +2075,7 @@ AC_SUBST(SALCK_LIBS)
 AC_SUBST(SELINUX_LIBS)
 AC_SUBST(SELINUX_LIBS_STATIC)
 AC_SUBST(SELINUX_PC)
+AC_SUBST(SYSTEMD_LIBS)
 AC_SUBST(SNAPSHOTS)
 AC_SUBST(STATICDIR)
 AC_SUBST(STATIC_LINK)

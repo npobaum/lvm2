@@ -71,6 +71,9 @@ LVM_DO_WHOLE_VG=0
 # Do not retry LV deactivation by default.
 LVM_CONFIG="activation{retry_deactivation=0}"
 
+# Do not wait for MD RAID device resync, recovery or reshape.
+MDRAID_DO_WAIT=0
+
 # Do not disable queueing if set on multipath devices.
 MPATHD_DO_DISABLEQUEUEING=0
 
@@ -94,7 +97,7 @@ declare -A SKIP_VG_LIST=()
 # listed here will be added to SKIP_DEVICE_LIST (and SKIP_VG_LIST) automatically.
 # (list is an associative array!)
 #
-declare -A SKIP_UMOUNT_LIST=(["/"]=1 ["/boot"]=1 \
+declare -A SKIP_UMOUNT_LIST=(["/"]=1 \
                              ["/lib"]=1 ["/lib64"]=1 \
                              ["/bin"]=1 ["/sbin"]=1 \
                              ["/var"]=1 ["/var/log"]=1 \
@@ -113,13 +116,14 @@ usage() {
 	echo "      If devices are specified, deactivate only supplied devices and their holders."
 	echo
 	echo "  Options:"
-	echo "    -e | --errors                    Show errors reported from tools"
-	echo "    -h | --help                      Show this help message"
-	echo "    -d | --dmoption    DM_OPTIONS    Comma separated DM specific options"
-	echo "    -l | --lvmoption   LVM_OPTIONS   Comma separated LVM specific options"
-	echo "    -m | --mpathoption MPATH_OPTIONS Comma separated DM-multipath specific options"
-	echo "    -u | --umount                    Unmount the device if mounted"
-	echo "    -v | --verbose                   Verbose mode (also implies -e)"
+	echo "    -e | --errors                       Show errors reported from tools"
+	echo "    -h | --help                         Show this help message"
+	echo "    -d | --dmoptions     DM_OPTIONS     Comma separated DM specific options"
+	echo "    -l | --lvmoptions    LVM_OPTIONS    Comma separated LVM specific options"
+	echo "    -m | --mpathoptions  MPATH_OPTIONS  Comma separated DM-multipath specific options"
+	echo "    -r | --mdraidoptions MDRAID_OPTIONS Comma separated MD RAID specific options"
+	echo "    -u | --umount                       Unmount the device if mounted"
+	echo "    -v | --verbose                      Verbose mode (also implies -e)"
 	echo
 	echo "  Device specific options:"
 	echo "    DM_OPTIONS:"
@@ -128,6 +132,8 @@ usage() {
 	echo "    LVM_OPTIONS:"
 	echo "      retry           retry removal several times in case of failure"
 	echo "      wholevg         deactivate the whole VG when processing an LV"
+	echo "    MDRAID_OPTIONS:"
+	echo "      wait            wait for resync, recovery or reshape to complete first"
 	echo "    MPATH_OPTIONS:"
 	echo "      disablequeueing disable queueing on all DM-multipath devices first"
 
@@ -205,16 +211,15 @@ deactivate_holders () {
 }
 
 deactivate_dm () {
-	local name
-
-	name=$(printf "%s" "$name")
-	test -b "$DEV_DIR/mapper/$name" || return 0
+	local xname
+	xname=$(printf "%s" "$name")
+	test -b "$DEV_DIR/mapper/$xname" || return 0
 	test -z "${SKIP_DEVICE_LIST["$kname"]}" || return 1
 
-	deactivate_holders "$DEV_DIR/mapper/$name" || return 1
+	deactivate_holders "$DEV_DIR/mapper/$xname" || return 1
 
-	echo -n "  [DM]: deactivating $devtype device $name ($kname)... "
-	if eval "$DMSETUP" $DMSETUP_OPTS remove "$name" "$OUT" "$ERR"; then
+	echo -n "  [DM]: deactivating $devtype device $xname ($kname)... "
+	if eval "$DMSETUP" $DMSETUP_OPTS remove "$xname" "$OUT" "$ERR"; then
 		echo "done"
 	else
 		echo "skipping"
@@ -276,10 +281,10 @@ deactivate_lvm () {
 }
 
 deactivate_md () {
-	local name
-
-	name=$(printf "%s" "$name")
-	test -b "$DEV_DIR/$name" || return 0
+	local xname
+	xname=$(printf "%s" "$name")
+	local sync_action
+	test -b "$DEV_DIR/$xname" || return 0
 	test -z "${SKIP_DEVICE_LIST["$kname"]}" || return 1
 
 	# Skip MD device deactivation if MD tools missing.
@@ -288,10 +293,23 @@ deactivate_md () {
 		return 1
 	}
 
-	deactivate_holders "$DEV_DIR/$name" || return 1
+	deactivate_holders "$DEV_DIR/$xname" || return 1
 
 	echo -n "  [MD]: deactivating $devtype device $kname... "
-	if eval "$MDADM" $MDADM_OPTS -S "$name" "$OUT" "$ERR"; then
+
+	test "$MDRAID_DO_WAIT" -eq 1 && {
+		sync_action="$(cat $SYS_BLK_DIR/$kname/md/sync_action)"
+		test "$sync_action" != "idle" && {
+			echo -n "$sync_action action in progress... "
+			if eval "$MDADM" $MDADM_OPTS -W "$DEV_DIR/$kname" "$OUT" "$ERR"; then
+				echo -n "complete... "
+			else
+				test $? -ne 1 && echo -n "failed to wait for $sync_action action... "
+			fi
+		}
+	}
+
+	if eval "$MDADM" $MDADM_OPTS -S "$xname" "$OUT" "$ERR"; then
 		echo "done"
 	else
 		echo "skipping"
@@ -431,6 +449,20 @@ get_lvmopts() {
 	IFS=$ORIG_IFS
 }
 
+get_mdraidopts() {
+	ORIG_IFS=$IFS; IFS=','
+
+	for opt in $1; do
+		case "$opt" in
+			"") ;;
+			"wait") MDRAID_DO_WAIT=1 ;;
+			*) echo "$opt: unknown MD RAID option"
+		esac
+	done
+
+	IFS=$ORIG_IFS
+}
+
 get_mpathopts() {
 	ORIG_IFS=$IFS; IFS=','
 
@@ -490,9 +522,10 @@ while test $# -ne 0; do
 		"") ;;
 		"-e"|"--errors") ERRORS=1 ;;
 		"-h"|"--help") usage ;;
-		"-d"|"--dmoption ") get_dmopts "$2" ; shift ;;
-		"-l"|"--lvmoption ") get_lvmopts "$2" ; shift ;;
-		"-m"|"--mpathoption ") get_mpathopts "$2" ; shift ;;
+		"-d"|"--dmoptions") get_dmopts "$2" ; shift ;;
+		"-l"|"--lvmoptions") get_lvmopts "$2" ; shift ;;
+		"-m"|"--mpathoptions") get_mpathopts "$2" ; shift ;;
+		"-r"|"--mdraidoptions") get_mdraidopts "$2"; shift ;;
 		"-u"|"--umount") DO_UMOUNT=1 ;;
 		"-v"|"--verbose") VERBOSE=1 ; ERRORS=1 ;;
 		"-vv") VERBOSE=1 ; ERRORS=1 ; set -x ;;
