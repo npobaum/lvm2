@@ -939,12 +939,20 @@ static int _insert_udev_dir(struct udev *udev, const char *dir)
 	struct udev_device *device;
 	int r = 1;
 
-	if (!(udev_enum = udev_enumerate_new(udev)))
-		goto bad;
+	if (!(udev_enum = udev_enumerate_new(udev))) {
+		log_error("Failed to udev_enumerate_new.");
+		return 0;
+	}
 
-	if (udev_enumerate_add_match_subsystem(udev_enum, "block") ||
-	    udev_enumerate_scan_devices(udev_enum))
-		goto bad;
+	if (udev_enumerate_add_match_subsystem(udev_enum, "block")) {
+		log_error("Failed to udev_enumerate_add_match_subsystem.");
+		goto out;
+	}
+
+	if (udev_enumerate_scan_devices(udev_enum)) {
+		log_error("Failed to udev_enumerate_scan_devices.");
+		goto out;
+	}
 
 	/*
 	 * Report any missing information as "log_very_verbose" only, do not
@@ -981,13 +989,10 @@ static int _insert_udev_dir(struct udev *udev, const char *dir)
 		udev_device_unref(device);
 	}
 
+out:
 	udev_enumerate_unref(udev_enum);
-	return r;
 
-bad:
-	log_error("Failed to enumerate udev device list.");
-	udev_enumerate_unref(udev_enum);
-	return 0;
+	return r;
 }
 
 static void _insert_dirs(struct dm_list *dirs)
@@ -1368,6 +1373,19 @@ const char *dev_name_confirmed(struct device *dev, int quiet)
 	}
 
 	return dev_name(dev);
+}
+
+/* Provide a custom reason when a device is ignored */
+const char *dev_cache_filtered_reason(const char *name)
+{
+	const char *reason = "not found";
+	struct device *d = (struct device *) dm_hash_lookup(_cache.names, name);
+
+	if (d)
+		/* FIXME Record which filter caused the exclusion */
+		reason = "excluded by a filter";
+
+	return reason;
 }
 
 struct device *dev_cache_get(const char *name, struct dev_filter *f)

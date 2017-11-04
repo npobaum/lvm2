@@ -1,16 +1,31 @@
-From 671a42919ec2d19cbf79a7c82c588496d3144afc Mon Sep 17 00:00:00 2001
+From 2e2038e189cb4ce6c3f1495df1896a5550ad8427 Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 30 Jun 2015 11:46:12 +0200
-Subject: systemd
+Subject: Adopt systemd services
 
+Patch-Name: systemd.patch
 ---
+ scripts/blk_availability_systemd_red_hat.service.in        | 2 +-
  scripts/lvm2_activation_generator_systemd_red_hat.c        | 2 +-
  scripts/lvm2_cluster_activation_systemd_red_hat.service.in | 2 +-
- scripts/lvm2_clvmd_systemd_red_hat.service.in              | 4 ++--
- 3 files changed, 4 insertions(+), 4 deletions(-)
+ scripts/lvm2_clvmd_systemd_red_hat.service.in              | 2 +-
+ 4 files changed, 4 insertions(+), 4 deletions(-)
 
+diff --git a/scripts/blk_availability_systemd_red_hat.service.in b/scripts/blk_availability_systemd_red_hat.service.in
+index 1198baa2a..54564be5b 100644
+--- a/scripts/blk_availability_systemd_red_hat.service.in
++++ b/scripts/blk_availability_systemd_red_hat.service.in
+@@ -6,7 +6,7 @@ Conflicts=shutdown.target
+ 
+ [Service]
+ Type=oneshot
+-ExecStart=/usr/bin/true
++ExecStart=@bindir@/true
+ ExecStop=@SBINDIR@/blkdeactivate -u -l wholevg -m disablequeueing -r wait
+ RemainAfterExit=yes
+ 
 diff --git a/scripts/lvm2_activation_generator_systemd_red_hat.c b/scripts/lvm2_activation_generator_systemd_red_hat.c
-index 0f7f89c..269edd3 100644
+index 0f7f89c86..269edd32d 100644
 --- a/scripts/lvm2_activation_generator_systemd_red_hat.c
 +++ b/scripts/lvm2_activation_generator_systemd_red_hat.c
 @@ -131,7 +131,7 @@ static int generate_unit(const char *dir, int unit, int sysinit_needed)
@@ -23,30 +38,28 @@ index 0f7f89c..269edd3 100644
  		if (unit == UNIT_EARLY) {
  			fputs("After=systemd-udev-settle.service\n"
 diff --git a/scripts/lvm2_cluster_activation_systemd_red_hat.service.in b/scripts/lvm2_cluster_activation_systemd_red_hat.service.in
-index 970e93a..5f8b415 100644
+index bf4aa1eca..5f8b4159d 100644
 --- a/scripts/lvm2_cluster_activation_systemd_red_hat.service.in
 +++ b/scripts/lvm2_cluster_activation_systemd_red_hat.service.in
 @@ -9,7 +9,7 @@ Conflicts=shutdown.target
  [Service]
  Type=simple
  RemainAfterExit=yes
--EnvironmentFile=-@sysconfdir@/sysconfig/clvmd
+-EnvironmentFile=-@SYSCONFDIR@/sysconfig/clvmd
 +EnvironmentFile=-/etc/default/clvmd
  ExecStart=@systemdutildir@/lvm2-cluster-activation activate
  ExecStop=@systemdutildir@/lvm2-cluster-activation deactivate
  
 diff --git a/scripts/lvm2_clvmd_systemd_red_hat.service.in b/scripts/lvm2_clvmd_systemd_red_hat.service.in
-index f506fa8..ddf9853 100644
+index ced27744e..e34bbcfa8 100644
 --- a/scripts/lvm2_clvmd_systemd_red_hat.service.in
 +++ b/scripts/lvm2_clvmd_systemd_red_hat.service.in
-@@ -13,8 +13,8 @@ Conflicts=shutdown.target
+@@ -13,7 +13,7 @@ Conflicts=shutdown.target
  [Service]
  Type=forking
  Environment=CLVMD_OPTS=-T30
--EnvironmentFile=-@sysconfdir@/sysconfig/clvmd
--ExecStart=@sbindir@/clvmd $CLVMD_OPTS
+-EnvironmentFile=-@SYSCONFDIR@/sysconfig/clvmd
 +EnvironmentFile=-/etc/default/clvmd
-+ExecStart=/usr/sbin/clvmd $CLVMD_OPTS
+ ExecStart=@USRSBINDIR@/clvmd $CLVMD_OPTS
  SuccessExitStatus=5
  TimeoutStartSec=30
- TimeoutStopSec=10

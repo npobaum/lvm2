@@ -36,6 +36,7 @@ override_dh_auto_configure:
 	cp -al $(SOURCE_FILES) debian/build/build_udeb/
 	dh_auto_configure --sourcedirectory=debian/build/build_deb -- \
 		--exec-prefix= \
+		--bindir=/bin \
 		--libdir=/lib/$(DEB_HOST_MULTIARCH) \
 		--sbindir=/sbin \
 		--with-usrlibdir=/usr/lib/$(DEB_HOST_MULTIARCH) \
@@ -67,10 +68,10 @@ override_dh_auto_configure:
 		--enable-pkgconfig \
 		--enable-readline \
 		--enable-udev_rules \
-		--enable-udev_sync \
-		--disable-udev-systemd-background-jobs
+		--enable-udev_sync
 	dh_auto_configure --sourcedirectory=debian/build/build_udeb -- \
 		--exec-prefix= \
+		--bindir=/bin \
 		--libdir=/lib \
 		--sbindir=/sbin \
 		--with-usrlibdir=/usr/lib \
@@ -150,19 +151,10 @@ override_dh_makeshlibs:
 
 override_dh_installsystemd:
 	dh_installsystemd -pclvm --no-enable --no-start lvm2-cluster-activation.service
-	dh_installsystemd -pdmeventd \
-		dm-event.service \
-		dm-event.socket
-	dh_installsystemd -plvm2 \
+	dh_installsystemd -plvm2 --no-restart-after-upgrade --no-stop-on-upgrade \
 		blk-availability.service \
-		lvm2-monitor.service \
+		lvm2-monitor.service
+	dh_installsystemd -plvm2 \
 		lvm2-lvmetad.socket \
 		lvm2-lvmpolld.socket
-	dh_installsystemd -plvm2 --no-enable \
-		lvm2-lvmetad.service \
-		lvm2-lvmpolld.service
-	dh_installsystemd -plvm2-dbusd \
-		lvm2-lvmdbusd.service
-	dh_installsystemd -plvm2-lockd \
-		lvm2-lvmlockd.service \
-		lvm2-lvmlocking.service
+	dh_installsystemd --remaining-packages

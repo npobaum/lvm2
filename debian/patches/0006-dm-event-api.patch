@@ -1,4 +1,4 @@
-From ba23cbe79793a14421006318970e985bed86ec06 Mon Sep 17 00:00:00 2001
+From 02156fab808d9821c3990a9d6b312eda8526ce54 Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 30 Jun 2015 11:46:10 +0200
 Subject: dm-event-api
@@ -10,7 +10,7 @@ Subject: dm-event-api
  3 files changed, 22 insertions(+), 22 deletions(-)
 
 diff --git a/daemons/dmeventd/.exported_symbols b/daemons/dmeventd/.exported_symbols
-index fab74dc..46c14fb 100644
+index fab74dc1d..46c14fb5a 100644
 --- a/daemons/dmeventd/.exported_symbols
 +++ b/daemons/dmeventd/.exported_symbols
 @@ -1,4 +1,4 @@
@@ -22,7 +22,7 @@ index fab74dc..46c14fb 100644
 +dm_event_daemon_talk
  dm_event_get_version
 diff --git a/daemons/dmeventd/dmeventd.c b/daemons/dmeventd/dmeventd.c
-index cc520d3..6dbe1c3 100644
+index cc520d38f..6dbe1c3f4 100644
 --- a/daemons/dmeventd/dmeventd.c
 +++ b/daemons/dmeventd/dmeventd.c
 @@ -1969,7 +1969,7 @@ static int _reinstate_registrations(struct dm_event_fifos *fifos)
@@ -110,7 +110,7 @@ index cc520d3..6dbe1c3 100644
  }
  
 diff --git a/daemons/dmeventd/libdevmapper-event.c b/daemons/dmeventd/libdevmapper-event.c
-index 210e384..50ab028 100644
+index 210e384f8..50ab028f2 100644
 --- a/daemons/dmeventd/libdevmapper-event.c
 +++ b/daemons/dmeventd/libdevmapper-event.c
 @@ -339,7 +339,7 @@ static int _daemon_write(struct dm_event_fifos *fifos,

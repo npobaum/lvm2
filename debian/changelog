@@ -1,3 +1,17 @@
+lvm2 (2.02.176-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Drop obsolte build-depends on dh-systemd.
+  * Drop extra priorities from packages.
+  * Update Standards-Version to 4.1.1, no changes.
+  * Make lvm2-dbusd depend manually on required modules. (closes: #880543)
+  * Make lvm2 recommend thin-provisioning-tools. (closes: #857142)
+  * Run pvscan as systemd background job.
+  * Don't try to restart special systemd services.
+  * Really use debhelper compat 11.
+
+ -- Bastian Blank <waldi@debian.org>  Sat, 04 Nov 2017 13:25:00 +0100
+
 lvm2 (2.02.175-1) unstable; urgency=medium
 
   * New upstream release.
