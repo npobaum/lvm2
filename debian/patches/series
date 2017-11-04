@@ -5,7 +5,7 @@
 0005-implicit-pointer.patch
 0006-dm-event-api.patch
 0007-udev.patch
-0008-systemd.patch
+systemd.patch
 0009-clvmd-openais-format.patch
 udev-md.patch
 systemd-pvscan-background.patch

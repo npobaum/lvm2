@@ -43,6 +43,9 @@ run_writemostly_check() {
 
 	printf "#\n#\n#\n# %s/%s (%s): run_writemostly_check\n#\n#\n#\n" \
 		$vg $lv $segtype
+
+	# I've seen this sync fail.  when it does, it looks like sync
+	# thread has not been started... haven't repo'ed yet.
 	aux wait_for_sync $vg $lv
 
 	# No writemostly flag should be there yet.
@@ -169,19 +172,20 @@ run_syncaction_check() {
 	dd if=/dev/urandom of="$device" bs=1k count=$size seek=$seek
 	sync
 
+	# Cycle the LV so we don't grab stripe cache buffers instead
+	#  of reading disk.  This can happen with RAID 4/5/6.  You
+	#  may think this is bad because those buffers could prevent
+	#  us from seeing bad disk blocks, however, the stripe cache
+	#  is not long lived.  (RAID1/10 are immediately checked.)
+	lvchange -an $vg/$lv
+	lvchange -ay $vg/$lv
+
 	# "check" should find discrepancies but not change them
 	# 'lvs' should show results
 	lvchange --syncaction check $vg/$lv
 	aux wait_for_sync $vg $lv
-        # FIXME: this needs kernel fix in md-raid
-        # currently let just this test to cause 'warning'
-	if ! get lv_field $vg/$lv lv_attr -a | grep '.*m.$'; then
-		dmsetup status | grep $vg
-		# false
-	fi
-        # FIXME: with fixed kernel this should not fail
-        # add 'wrapper' detecting kernel for this
-	should not check lv_field $vg/$lv raid_mismatch_count "0"
+	check lv_attr_bit health $vg/$lv "m"
+	not check lv_field $vg/$lv raid_mismatch_count "0"
 
 	# "repair" will fix discrepancies
 	lvchange --syncaction repair $vg/$lv
@@ -191,7 +195,7 @@ run_syncaction_check() {
 	# 'lvs' should show results
 	lvchange --syncaction check $vg/$lv
 	aux wait_for_sync $vg $lv
-	check lv_attr_bit health $vg/$lv "-" || check lv_attr_bit health $vg/$lv "m"
+	check lv_attr_bit health $vg/$lv "-"
 	check lv_field $vg/$lv raid_mismatch_count "0"
 }
 

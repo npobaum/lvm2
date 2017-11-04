@@ -54,7 +54,7 @@
 #  include <malloc.h>
 #endif
 
-static const size_t linebuffer_size = 4096;
+static const size_t _linebuffer_size = 4096;
 
 /*
  * Copy the input string, removing invalid characters.
@@ -1501,11 +1501,6 @@ static int _init_segtypes(struct cmd_context *cmd)
 		dm_list_add(&cmd->segtypes, &segtype->list);
 	}
 
-#ifdef REPLICATOR_INTERNAL
-	if (!init_replicator_segtype(cmd, &seglib))
-		return 0;
-#endif
-
 #ifdef RAID_INTERNAL
 	if (!init_raid_segtypes(cmd, &seglib))
 		return 0;
@@ -1878,7 +1873,7 @@ struct cmd_context *create_toolcontext(unsigned is_long_lived,
 	/* Set in/out stream buffering before glibc */
 	if (set_buffering) {
 		/* Allocate 2 buffers */
-		if (!(cmd->linebuffer = dm_malloc(2 * linebuffer_size))) {
+		if (!(cmd->linebuffer = dm_malloc(2 * _linebuffer_size))) {
 			log_error("Failed to allocate line buffer.");
 			goto out;
 		}
@@ -1889,7 +1884,7 @@ struct cmd_context *create_toolcontext(unsigned is_long_lived,
 		    (flags & O_ACCMODE) != O_WRONLY) {
 			if (!reopen_standard_stream(&stdin, "r"))
 				goto_out;
-			if (setvbuf(stdin, cmd->linebuffer, _IOLBF, linebuffer_size)) {
+			if (setvbuf(stdin, cmd->linebuffer, _IOLBF, _linebuffer_size)) {
 				log_sys_error("setvbuf", "");
 				goto out;
 			}
@@ -1900,8 +1895,8 @@ struct cmd_context *create_toolcontext(unsigned is_long_lived,
 		    (flags & O_ACCMODE) != O_RDONLY) {
 			if (!reopen_standard_stream(&stdout, "w"))
 				goto_out;
-			if (setvbuf(stdout, cmd->linebuffer + linebuffer_size,
-				     _IOLBF, linebuffer_size)) {
+			if (setvbuf(stdout, cmd->linebuffer + _linebuffer_size,
+				     _IOLBF, _linebuffer_size)) {
 				log_sys_error("setvbuf", "");
 				goto out;
 			}

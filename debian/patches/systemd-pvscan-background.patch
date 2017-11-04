@@ -1,4 +1,4 @@
-From 35fcc0ddc6ba0e9c813a79094228379c91f89e7c Mon Sep 17 00:00:00 2001
+From 68c0712f3ee6ef7208f91ff012dd1712c4bc8fdf Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 11 Aug 2015 22:06:54 +0200
 Subject: Don't run pvscan in background
@@ -9,7 +9,7 @@ Patch-Name: systemd-pvscan-background.patch
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/udev/Makefile.in b/udev/Makefile.in
-index bc61c5d..cfc7bfc 100644
+index bc61c5dca..cfc7bfc37 100644
 --- a/udev/Makefile.in
 +++ b/udev/Makefile.in
 @@ -48,7 +48,7 @@ endif

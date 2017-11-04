@@ -31,14 +31,16 @@ shopt -s dotglob nullglob
 
 TOOL=blkdeactivate
 
-DEV_DIR='/dev'
-SYS_BLK_DIR='/sys/block'
+sbindir="@SBINDIR@"
+
+DEV_DIR="/dev"
+SYS_BLK_DIR="/sys/block"
 
 MOUNTPOINT="/bin/mountpoint"
 UMOUNT="/bin/umount"
-DMSETUP="@sbindir@/dmsetup"
-LVM="@sbindir@/lvm"
-MDADM="@sbindir@/mdadm"
+DMSETUP="$sbindir/dmsetup"
+LVM="$sbindir/lvm"
+MDADM="$sbindir/mdadm"
 MPATHD="/sbin/multipathd"
 
 if "$UMOUNT" --help | grep -- "--all-targets" >"$DEV_DIR/null"; then
@@ -298,7 +300,7 @@ deactivate_md () {
 	echo -n "  [MD]: deactivating $devtype device $kname... "
 
 	test "$MDRAID_DO_WAIT" -eq 1 && {
-		sync_action="$(cat $SYS_BLK_DIR/$kname/md/sync_action)"
+		sync_action=$(cat "$SYS_BLK_DIR/$kname/md/sync_action")
 		test "$sync_action" != "idle" && {
 			echo -n "$sync_action action in progress... "
 			if eval "$MDADM" $MDADM_OPTS -W "$DEV_DIR/$kname" "$OUT" "$ERR"; then

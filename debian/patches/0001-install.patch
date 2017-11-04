@@ -1,4 +1,4 @@
-From 82b9275b49359e40754ff1de7e695f676b65620e Mon Sep 17 00:00:00 2001
+From adb115c86279f3fb1bf05d6ef8755ea62cf29ad5 Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 30 Jun 2015 11:46:04 +0200
 Subject: install
@@ -8,7 +8,7 @@ Subject: install
  1 file changed, 7 insertions(+), 26 deletions(-)
 
 diff --git a/make.tmpl.in b/make.tmpl.in
-index 65362d8..5683676 100644
+index 65362d87c..5683676d5 100644
 --- a/make.tmpl.in
 +++ b/make.tmpl.in
 @@ -17,20 +17,10 @@ SHELL = @SHELL@

@@ -119,7 +119,7 @@ static void _check_raid0_seg(struct lv_segment *seg, int *error_count)
 		raid_seg_error_val("non-zero min recovery rate", seg->min_recovery_rate);
 	if (seg->max_recovery_rate)
 		raid_seg_error_val("non-zero max recovery rate", seg->max_recovery_rate);
-	if ((seg->lv->status & LV_RESHAPE_DATA_OFFSET) || seg->data_offset)
+	if ((seg->lv->status & LV_RESHAPE_DATA_OFFSET) || seg->data_offset > 1)
 		raid_seg_error_val("data_offset", seg->data_offset);
 }
 
@@ -143,7 +143,7 @@ static void _check_raid1_seg(struct lv_segment *seg, int *error_count)
 		raid_seg_error("no meta areas");
 	if (seg->stripe_size)
 		raid_seg_error_val("non-zero stripe size", seg->stripe_size);
-	if ((seg->lv->status & LV_RESHAPE_DATA_OFFSET) || seg->data_offset)
+	if ((seg->lv->status & LV_RESHAPE_DATA_OFFSET) || seg->data_offset > 1)
 		raid_seg_error_val("data_offset", seg->data_offset);
 	_check_raid_region_recovery(seg, error_count);
 }
@@ -169,11 +169,13 @@ static void _check_raid45610_seg(struct lv_segment *seg, int *error_count)
 	_check_raid_region_recovery(seg, error_count);
 	/* END: checks applying to any raid4/5/6/10 */
 
-	if (seg->lv->status & LV_RESHAPE_DATA_OFFSET) {
-		if (seg->data_offset & (seg->lv->vg->extent_size - 1))
+	if (seg->data_offset > 1) {
+		if (seg->lv->status & LV_RESHAPE_DATA_OFFSET) {
+			if (seg->data_offset & (seg->lv->vg->extent_size - 1))
+				raid_seg_error_val("data_offset", seg->data_offset);
+		} else
 			raid_seg_error_val("data_offset", seg->data_offset);
-	} else if (seg->data_offset)
-		raid_seg_error_val("data_offset", seg->data_offset);
+	}
 
 	/* Specific checks per raid level */
 	if (seg_is_raid4(seg) ||
@@ -217,17 +219,6 @@ static void _check_non_raid_seg_members(struct lv_segment *seg, int *error_count
 		raid_seg_error("non-zero cow LV");
 	if (!dm_list_empty(&seg->origin_list)) /* snap */
 		raid_seg_error("non-zero origin_list");
-	/* replicator members (deprecated) */
-	if (seg->replicator)
-		raid_seg_error("non-zero replicator");
-	if (seg->rlog_lv)
-		raid_seg_error("non-zero rlog LV");
-	if (seg->rlog_type)
-		raid_seg_error("non-zero rlog type");
-	if (seg->rdevice_index_highest)
-		raid_seg_error("non-zero rdevice_index_highests");
-	if (seg->rsite_index_highest)
-		raid_seg_error("non-zero rsite_index_highests");
 	/* .... more members? */
 }
 
@@ -511,8 +502,6 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 	struct seg_list *sl;
 	struct glv_list *glvl;
 	int error_count = 0;
-	struct replicator_site *rsite;
-	struct replicator_device *rdev;
 
 	dm_list_iterate_items(seg, &lv->segments) {
 		seg_count++;
@@ -548,9 +537,6 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 				inc_error_count;
 			}
 		}
-
-		if (seg_is_replicator(seg) && !check_replicator_segment(seg))
-			inc_error_count;
 
 		if (complete_vg)
 			_check_lv_segment(lv, seg, seg_count, &error_count);
@@ -642,6 +628,11 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 		inc_error_count;
 	}
 
+	if (!le) {
+		log_error("LV %s: has no segment.", lv->name);
+		inc_error_count;
+	}
+
 	dm_list_iterate_items(sl, &lv->segs_using_this_lv) {
 		seg = sl->seg;
 		seg_found = 0;
@@ -653,18 +644,6 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 			if (seg->meta_areas && seg_is_raid_with_meta(seg) && (lv == seg_metalv(seg, s)))
 				seg_found++;
 		}
-		if (seg_is_replicator_dev(seg)) {
-			dm_list_iterate_items(rsite, &seg->replicator->rsites) {
-				dm_list_iterate_items(rdev, &rsite->rdevices) {
-					if (lv == rdev->lv || lv == rdev->slog)
-						seg_found++;
-				}
-			}
-			if (lv == seg->replicator)
-				seg_found++;
-		}
-		if (seg_is_replicator(seg) && lv == seg->rlog_lv)
-			seg_found++;
 		if (seg->log_lv == lv)
 			seg_found++;
 		if (seg->metadata_lv == lv || seg->pool_lv == lv)

@@ -502,7 +502,6 @@ static int _reset_flags_passed_to_kernel(struct logical_volume *lv, int *flags_r
 			return 0;
 
 		if (slv->status & LV_RESHAPE_DELTA_DISKS_MINUS) {
-			*flags_reset = 1;
 			slv->status |= LV_REMOVE_AFTER_RESHAPE;
 			seg_metalv(seg, s)->status |= LV_REMOVE_AFTER_RESHAPE;
 		}
@@ -1321,7 +1320,7 @@ static int _cmp_level(const struct segment_type *t1, const struct segment_type *
  *
  * Return 1 if same, else != 1
  */
-static int is_same_level(const struct segment_type *t1, const struct segment_type *t2)
+static int _is_same_level(const struct segment_type *t1, const struct segment_type *t2)
 {
 	return _cmp_level(t1, t2);
 }
@@ -1692,10 +1691,10 @@ static int _lv_alloc_reshape_space(struct logical_volume *lv,
 static int _lv_free_reshape_space_with_status(struct logical_volume *lv, enum alloc_where *where_it_was)
 {
 	uint32_t total_reshape_len;
+	enum alloc_where where;
 	struct lv_segment *seg = first_seg(lv);
 
 	if ((total_reshape_len = _reshape_len_per_lv(lv))) {
-		enum alloc_where where;
 		/*
 		 * raid10:
 		 *
@@ -1743,9 +1742,11 @@ static int _lv_free_reshape_space_with_status(struct logical_volume *lv, enum al
 			return_0;
 
 		lv->status &= ~LV_RESHAPE_DATA_OFFSET;
+	} else
+		where = alloc_none;
 
-	} else if (where_it_was)
-		*where_it_was = alloc_none;
+	if (where_it_was)
+		*where_it_was = where;
 
 	lv->status &= ~LV_RESHAPE;
 
@@ -2329,7 +2330,7 @@ static int _raid_reshape(struct logical_volume *lv,
 	if (!seg_is_reshapable_raid(seg))
 		return_0;
 
-	if (!is_same_level(seg->segtype, new_segtype))
+	if (!_is_same_level(seg->segtype, new_segtype))
 		return_0;
 
 	if (!(old_image_count = seg->area_count))
@@ -2508,7 +2509,7 @@ static int _reshape_requested(const struct logical_volume *lv, const struct segm
 		return 0;
 
 	/* Switching raid levels is a takeover, no reshape */
-	if (!is_same_level(seg->segtype, segtype))
+	if (!_is_same_level(seg->segtype, segtype))
 		return 0;
 
 	/* Possible takeover in case #data_copies == #stripes */
@@ -6040,7 +6041,7 @@ static int _set_convenient_raid145610_segtype_to(const struct lv_segment *seg_fr
 	const struct segment_type *segtype_sav = *segtype;
 
 	/* Bail out if same RAID level is requested. */
-	if (is_same_level(seg_from->segtype, *segtype))
+	if (_is_same_level(seg_from->segtype, *segtype))
 		return 1;
 
 	log_debug("Checking LV %s requested %s segment type for convenience",
@@ -6291,10 +6292,21 @@ static int _conversion_options_allowed(const struct lv_segment *seg_from,
 		r = 0;
 	}
 
+	/* Can't reshape stripes or stripe size when performing a takeover! */
+	if (!_is_same_level(seg_from->segtype, *segtype_to)) {
+		if (stripes && stripes != _data_rimages_count(seg_from, seg_from->area_count))
+			log_warn("WARNING: ignoring --stripes option on takeover of %s (reshape afterwards).",
+				 display_lvname(seg_from->lv));
+
+		if (!seg_is_raid1(seg_from) && new_stripe_size_supplied)
+			log_warn("WARNING: ignoring --stripesize option on takeover of %s (reshape afterwards).",
+				 display_lvname(seg_from->lv));
+	}
+
 	if (r &&
 	    !yes &&
 	    strcmp((*segtype_to)->name, SEG_TYPE_NAME_MIRROR) && /* "mirror" is prompted for later */
-	    !is_same_level(seg_from->segtype, *segtype_to)) { /* Prompt here for takeover */
+	    !_is_same_level(seg_from->segtype, *segtype_to)) { /* Prompt here for takeover */
 		const char *basic_fmt = "Are you sure you want to convert %s LV %s";
 		const char *type_fmt = " to %s type";
 		const char *question_fmt = "? [y/n]: ";
@@ -6463,11 +6475,20 @@ int lv_raid_convert(struct logical_volume *lv,
 		return 0;
 	}
 
+	/*
+	 * stripes and stripe_size can only be changed via reshape, not in a takeover!
+	 *
+	 * Ignore any of them here unless a takeover from raid1 to
+	 * raid4/5 is requested when stripe size may be defined.
+	 */
+	stripes = _data_rimages_count(seg, seg->area_count);
+	stripe_size = seg_is_raid1(seg) ? stripe_size : seg->stripe_size;
+
 	takeover_fn = _get_takeover_fn(first_seg(lv), new_segtype, new_image_count);
 
 	/* Exit without doing activation checks if the combination isn't possible */
 	if (_takeover_not_possible(takeover_fn))
-		return takeover_fn(lv, new_segtype, yes, force, new_image_count, 0, new_stripes, stripe_size,
+		return takeover_fn(lv, new_segtype, yes, force, new_image_count, 0, stripes, stripe_size,
 			   region_size, allocate_pvs);
 
 	/*
@@ -6496,7 +6517,7 @@ int lv_raid_convert(struct logical_volume *lv,
 
 	lv->status &= ~LV_RESHAPE;
 
-	return takeover_fn(lv, new_segtype, yes, force, new_image_count, 0, new_stripes, stripe_size,
+	return takeover_fn(lv, new_segtype, yes, force, new_image_count, 0, stripes, stripe_size,
 			   region_size, allocate_pvs);
 }
 

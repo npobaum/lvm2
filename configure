@@ -643,6 +643,7 @@ LVMETAD_PIDFILE
 DMEVENTD_PIDFILE
 WRITE_INSTALL
 VALGRIND_POOL
+USRSBINDIR
 USE_TRACKING
 UDEV_HAS_BUILTIN_BLKID
 UDEV_RULE_EXEC_DETECTION
@@ -656,8 +657,10 @@ TESTING
 STATIC_LINK
 STATICDIR
 SNAPSHOTS
+SYSCONFDIR
 SELINUX_PC
 SELINUX_LIBS
+SBINDIR
 REPLICATORS
 READLINE_LIBS
 RT_LIBS
@@ -710,6 +713,7 @@ DEFAULT_USE_LVMLOCKD
 DEFAULT_USE_LVMPOLLD
 DEFAULT_USE_LVMETAD
 DEFAULT_USE_BLKID_WIPING
+DEFAULT_SYS_LOCK_DIR
 DEFAULT_SYS_DIR
 DEFAULT_SPARSE_SEGTYPE
 DEFAULT_RUN_DIR
@@ -920,7 +924,6 @@ with_mirrors
 with_raid
 with_default_mirror_segtype
 with_default_raid10_segtype
-with_replicators
 with_default_sparse_segtype
 with_thin
 with_thin_check
@@ -1755,7 +1758,6 @@ Optional Packages:
                           default mirror segtype: raid1/mirror [raid1]
   --with-default-raid10-segtype=TYPE
                           default mirror segtype: raid10/mirror [raid10]
-  --with-replicators=TYPE replicator support: internal/shared/none [none]
   --with-default-sparse-segtype=TYPE
                           default sparse segtype: thin/snapshot [thin]
   --with-thin=TYPE        thin provisioning support: internal/shared/none
@@ -8240,9 +8242,14 @@ $as_echo "$ac_cv_flag_HAVE_FULL_RELRO" >&6; }
 
 ################################################################################
 
-if test "$prefix" = NONE; then
-  datarootdir=${ac_default_prefix}/share
-fi
+
+################################################################################
+test "$exec_prefix" = NONE -a "$prefix" = NONE && exec_prefix=""
+
+test "x$prefix" = xNONE && prefix=$ac_default_prefix
+# Let make expand exec_prefix.
+test "x$exec_prefix" = xNONE && exec_prefix='${prefix}'
+
 
 ################################################################################
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking file owner" >&5
@@ -8566,28 +8573,6 @@ _ACEOF
 
 
 ################################################################################
-{ $as_echo "$as_me:${as_lineno-$LINENO}: checking whether to include replicators" >&5
-$as_echo_n "checking whether to include replicators... " >&6; }
-
-# Check whether --with-replicators was given.
-if test "${with_replicators+set}" = set; then :
-  withval=$with_replicators; REPLICATORS=$withval
-else
-  REPLICATORS=none
-fi
-
-{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $REPLICATORS" >&5
-$as_echo "$REPLICATORS" >&6; }
-
-case "$REPLICATORS" in
-  none|shared) ;;
-  internal)
-$as_echo "#define REPLICATOR_INTERNAL 1" >>confdefs.h
- ;;
-  *) as_fn_error $? "--with-replicators parameter invalid ($REPLICATORS)" "$LINENO" 5 ;;
-esac
-
-
 
 # Check whether --with-default-sparse-segtype was given.
 if test "${with_default_sparse_segtype+set}" = set; then :
@@ -12914,7 +12899,7 @@ if ${am_cv_pathless_PYTHON+:} false; then :
   $as_echo_n "(cached) " >&6
 else
 
-	for am_cv_pathless_PYTHON in python python2 python3 python3.3 python3.2 python3.1 python3.0 python2.7  python2.6 python2.5 python2.4 python2.3 python2.2 python2.1 python2.0 none; do
+	for am_cv_pathless_PYTHON in python python2 python3 python3.5 python3.4 python3.3 python3.2 python3.1 python3.0 python2.7  python2.6 python2.5 python2.4 python2.3 python2.2 python2.1 python2.0 none; do
 	  test "$am_cv_pathless_PYTHON" = none && break
 	  prog="import sys
 # split strings by '.' and convert to numeric.  Append some zeros
@@ -13482,7 +13467,7 @@ if ${am_cv_pathless_PYTHON+:} false; then :
   $as_echo_n "(cached) " >&6
 else
 
-	for am_cv_pathless_PYTHON in python python2 python3 python3.3 python3.2 python3.1 python3.0 python2.7  python2.6 python2.5 python2.4 python2.3 python2.2 python2.1 python2.0 none; do
+	for am_cv_pathless_PYTHON in python python2 python3 python3.5 python3.4 python3.3 python3.2 python3.1 python3.0 python2.7  python2.6 python2.5 python2.4 python2.3 python2.2 python2.1 python2.0 none; do
 	  test "$am_cv_pathless_PYTHON" = none && break
 	  prog="import sys
 # split strings by '.' and convert to numeric.  Append some zeros
@@ -14036,9 +14021,6 @@ $as_echo "#define HAVE_CANONICALIZE_FILE_NAME 1" >>confdefs.h
 
 fi
 
-
-################################################################################
-test "$exec_prefix" = NONE -a "$prefix" = NONE && exec_prefix=""
 
 ################################################################################
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for dlopen in -ldl" >&5
@@ -15421,28 +15403,25 @@ _ACEOF
 
 fi
 
+SYSCONFDIR="$(eval echo $(eval echo $sysconfdir))"
 
-lvm_exec_prefix=$exec_prefix
-test "$lvm_exec_prefix" = NONE && lvm_exec_prefix=$prefix
-test "$lvm_exec_prefix" = NONE && lvm_exec_prefix=$ac_default_prefix
-LVM_PATH="$lvm_exec_prefix/sbin/lvm"
+SBINDIR="$(eval echo $(eval echo $sbindir))"
+LVM_PATH="$SBINDIR/lvm"
 
 cat >>confdefs.h <<_ACEOF
 #define LVM_PATH "$LVM_PATH"
 _ACEOF
 
 
-clvmd_prefix=$ac_default_prefix
-test "$prefix" != NONE && clvmd_prefix=$prefix
-CLVMD_PATH="$clvmd_prefix/sbin/clvmd"
+USRSBINDIR="$(eval echo $(eval echo $usrsbindir))"
+CLVMD_PATH="$USRSBINDIR/clvmd"
 
 cat >>confdefs.h <<_ACEOF
 #define CLVMD_PATH "$CLVMD_PATH"
 _ACEOF
 
 
-
-FSADM_PATH="$lvm_exec_prefix/sbin/fsadm"
+FSADM_PATH="$SBINDIR/fsadm"
 
 cat >>confdefs.h <<_ACEOF
 #define FSADM_PATH "$FSADM_PATH"
@@ -15472,7 +15451,7 @@ if test "$BUILD_DMEVENTD" = yes; then
 if test "${with_dmeventd_path+set}" = set; then :
   withval=$with_dmeventd_path; DMEVENTD_PATH=$withval
 else
-  DMEVENTD_PATH="$lvm_exec_prefix/sbin/dmeventd"
+  DMEVENTD_PATH="$SBINDIR/dmeventd"
 fi
 
 
@@ -15553,6 +15532,11 @@ cat >>confdefs.h <<_ACEOF
 _ACEOF
 
 
+# Select default system locking dir, prefer /run/lock over /var/lock
+DEFAULT_SYS_LOCK_DIR="$RUN_DIR/lock"
+test -d "$DEFAULT_SYS_LOCK_DIR" || DEFAULT_SYS_LOCK_DIR="/var/lock"
+
+# Support configurable locking subdir for lvm
 
 # Check whether --with-default-locking-dir was given.
 if test "${with_default_locking_dir+set}" = set; then :
@@ -15560,8 +15544,7 @@ if test "${with_default_locking_dir+set}" = set; then :
 else
   { $as_echo "$as_me:${as_lineno-$LINENO}: checking for default lock directory" >&5
 $as_echo_n "checking for default lock directory... " >&6; }
-	     DEFAULT_LOCK_DIR="$RUN_DIR/lock/lvm"
-	     test -d "$RUN_DIR/lock" || DEFAULT_LOCK_DIR="/var/lock/lvm"
+	     DEFAULT_LOCK_DIR="$DEFAULT_SYS_LOCK_DIR/lvm"
 	     { $as_echo "$as_me:${as_lineno-$LINENO}: result: $DEFAULT_LOCK_DIR" >&5
 $as_echo "$DEFAULT_LOCK_DIR" >&6; }
 fi
@@ -15790,8 +15773,12 @@ _ACEOF
 
 
 
+
+
+
+
 ################################################################################
-ac_config_files="$ac_config_files Makefile make.tmpl daemons/Makefile daemons/clvmd/Makefile daemons/cmirrord/Makefile daemons/dmeventd/Makefile daemons/dmeventd/libdevmapper-event.pc daemons/dmeventd/plugins/Makefile daemons/dmeventd/plugins/lvm2/Makefile daemons/dmeventd/plugins/raid/Makefile daemons/dmeventd/plugins/mirror/Makefile daemons/dmeventd/plugins/snapshot/Makefile daemons/dmeventd/plugins/thin/Makefile daemons/dmfilemapd/Makefile daemons/lvmdbusd/Makefile daemons/lvmdbusd/path.py daemons/lvmetad/Makefile daemons/lvmpolld/Makefile daemons/lvmlockd/Makefile conf/Makefile conf/example.conf conf/lvmlocal.conf conf/command_profile_template.profile conf/metadata_profile_template.profile include/.symlinks include/Makefile lib/Makefile lib/format1/Makefile lib/format_pool/Makefile lib/locking/Makefile lib/mirror/Makefile lib/replicator/Makefile include/lvm-version.h lib/raid/Makefile lib/snapshot/Makefile lib/thin/Makefile lib/cache_segtype/Makefile libdaemon/Makefile libdaemon/client/Makefile libdaemon/server/Makefile libdm/Makefile libdm/libdevmapper.pc liblvm/Makefile liblvm/liblvm2app.pc man/Makefile po/Makefile python/Makefile python/setup.py scripts/blkdeactivate.sh scripts/blk_availability_init_red_hat scripts/blk_availability_systemd_red_hat.service scripts/clvmd_init_red_hat scripts/cmirrord_init_red_hat scripts/com.redhat.lvmdbus1.service scripts/dm_event_systemd_red_hat.service scripts/dm_event_systemd_red_hat.socket scripts/lvm2_cluster_activation_red_hat.sh scripts/lvm2_cluster_activation_systemd_red_hat.service scripts/lvm2_clvmd_systemd_red_hat.service scripts/lvm2_cmirrord_systemd_red_hat.service scripts/lvm2_lvmdbusd_systemd_red_hat.service scripts/lvm2_lvmetad_init_red_hat scripts/lvm2_lvmetad_systemd_red_hat.service scripts/lvm2_lvmetad_systemd_red_hat.socket scripts/lvm2_lvmpolld_init_red_hat scripts/lvm2_lvmpolld_systemd_red_hat.service scripts/lvm2_lvmpolld_systemd_red_hat.socket scripts/lvm2_lvmlockd_systemd_red_hat.service scripts/lvm2_lvmlocking_systemd_red_hat.service scripts/lvm2_monitoring_init_red_hat scripts/lvm2_monitoring_systemd_red_hat.service scripts/lvm2_pvscan_systemd_red_hat@.service scripts/lvm2_tmpfiles_red_hat.conf scripts/lvmdump.sh scripts/Makefile test/Makefile test/api/Makefile test/unit/Makefile tools/Makefile udev/Makefile unit-tests/datastruct/Makefile unit-tests/regex/Makefile unit-tests/mm/Makefile"
+ac_config_files="$ac_config_files Makefile make.tmpl daemons/Makefile daemons/clvmd/Makefile daemons/cmirrord/Makefile daemons/dmeventd/Makefile daemons/dmeventd/libdevmapper-event.pc daemons/dmeventd/plugins/Makefile daemons/dmeventd/plugins/lvm2/Makefile daemons/dmeventd/plugins/raid/Makefile daemons/dmeventd/plugins/mirror/Makefile daemons/dmeventd/plugins/snapshot/Makefile daemons/dmeventd/plugins/thin/Makefile daemons/dmfilemapd/Makefile daemons/lvmdbusd/Makefile daemons/lvmdbusd/path.py daemons/lvmetad/Makefile daemons/lvmpolld/Makefile daemons/lvmlockd/Makefile conf/Makefile conf/example.conf conf/lvmlocal.conf conf/command_profile_template.profile conf/metadata_profile_template.profile include/.symlinks include/Makefile lib/Makefile lib/format1/Makefile lib/format_pool/Makefile lib/locking/Makefile lib/mirror/Makefile include/lvm-version.h lib/raid/Makefile lib/snapshot/Makefile lib/thin/Makefile lib/cache_segtype/Makefile libdaemon/Makefile libdaemon/client/Makefile libdaemon/server/Makefile libdm/Makefile libdm/libdevmapper.pc liblvm/Makefile liblvm/liblvm2app.pc man/Makefile po/Makefile python/Makefile python/setup.py scripts/blkdeactivate.sh scripts/blk_availability_init_red_hat scripts/blk_availability_systemd_red_hat.service scripts/clvmd_init_red_hat scripts/cmirrord_init_red_hat scripts/com.redhat.lvmdbus1.service scripts/dm_event_systemd_red_hat.service scripts/dm_event_systemd_red_hat.socket scripts/lvm2_cluster_activation_red_hat.sh scripts/lvm2_cluster_activation_systemd_red_hat.service scripts/lvm2_clvmd_systemd_red_hat.service scripts/lvm2_cmirrord_systemd_red_hat.service scripts/lvm2_lvmdbusd_systemd_red_hat.service scripts/lvm2_lvmetad_init_red_hat scripts/lvm2_lvmetad_systemd_red_hat.service scripts/lvm2_lvmetad_systemd_red_hat.socket scripts/lvm2_lvmpolld_init_red_hat scripts/lvm2_lvmpolld_systemd_red_hat.service scripts/lvm2_lvmpolld_systemd_red_hat.socket scripts/lvm2_lvmlockd_systemd_red_hat.service scripts/lvm2_lvmlocking_systemd_red_hat.service scripts/lvm2_monitoring_init_red_hat scripts/lvm2_monitoring_systemd_red_hat.service scripts/lvm2_pvscan_systemd_red_hat@.service scripts/lvm2_tmpfiles_red_hat.conf scripts/lvmdump.sh scripts/Makefile test/Makefile test/api/Makefile test/unit/Makefile tools/Makefile udev/Makefile unit-tests/datastruct/Makefile unit-tests/regex/Makefile unit-tests/mm/Makefile"
 
 cat >confcache <<\_ACEOF
 # This file is a shell script that caches the results of configure
@@ -16517,7 +16504,6 @@ do
     "lib/format_pool/Makefile") CONFIG_FILES="$CONFIG_FILES lib/format_pool/Makefile" ;;
     "lib/locking/Makefile") CONFIG_FILES="$CONFIG_FILES lib/locking/Makefile" ;;
     "lib/mirror/Makefile") CONFIG_FILES="$CONFIG_FILES lib/mirror/Makefile" ;;
-    "lib/replicator/Makefile") CONFIG_FILES="$CONFIG_FILES lib/replicator/Makefile" ;;
     "include/lvm-version.h") CONFIG_FILES="$CONFIG_FILES include/lvm-version.h" ;;
     "lib/raid/Makefile") CONFIG_FILES="$CONFIG_FILES lib/raid/Makefile" ;;
     "lib/snapshot/Makefile") CONFIG_FILES="$CONFIG_FILES lib/snapshot/Makefile" ;;

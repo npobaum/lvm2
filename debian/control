@@ -6,7 +6,6 @@ Uploaders: Bastian Blank <waldi@debian.org>
 Build-Depends:
  debhelper (>= 10.9.2),
  dh-python,
- dh-systemd,
  autoconf-archive,
  automake,
  libblkid-dev,
@@ -26,7 +25,7 @@ Build-Depends:
  python3-pyudev,
  pkg-config,
  systemd
-Standards-Version: 3.9.6
+Standards-Version: 4.1.1
 Homepage: http://sources.redhat.com/lvm2/
 Vcs-Git: https://gitlab.com/debian-lvm/lvm2.git
 Vcs-Browser: https://gitlab.com/debian-lvm/lvm2
@@ -36,7 +35,7 @@ X-Python3-Version: >= 3.4
 Package: lvm2
 Architecture: linux-any
 Depends: ${shlibs:Depends}, ${misc:Depends}, lsb-base, dmsetup, dmeventd
-Suggests: thin-provisioning-tools
+Recommends: thin-provisioning-tools
 Multi-Arch: foreign
 Description: Linux Logical Volume Manager
  This is LVM2, the rewrite of The Linux Logical Volume Manager.  LVM
@@ -61,7 +60,10 @@ Description: Linux Logical Volume Manager
 
 Package: lvm2-dbusd
 Architecture: linux-any
-Depends: ${shlibs:Depends}, ${python3:Depends}, ${misc:Depends}, lvm2 (= ${binary:Version}), dbus
+Depends: ${shlibs:Depends}, ${python3:Depends}, ${misc:Depends}, lvm2 (= ${binary:Version}), dbus,
+ python3-dbus,
+ python3-gi,
+ python3-pyudev,
 Multi-Arch: foreign
 Description: LVM2 D-Bus daemon
  This is LVM2, the rewrite of The Linux Logical Volume Manager.  LVM
@@ -86,7 +88,6 @@ Description: LVM locking daemon
  LVM commands use lvmlockd to coordinate access to shared storage.
 
 Package: clvm
-Priority: extra
 Architecture: linux-any
 Depends: ${shlibs:Depends}, ${misc:Depends}, lvm2 (= ${binary:Version}), dlm-controld
 Suggests: pacemaker, resource-agents
@@ -115,7 +116,6 @@ Description: Linux Kernel Device Mapper header files
 
 Package: libdevmapper1.02.1
 Section: libs
-Priority: optional
 Architecture: linux-any
 Pre-Depends: ${misc:Pre-Depends}
 Depends: ${shlibs:Depends}, ${misc:Depends}, dmsetup (>= ${binary:Version})

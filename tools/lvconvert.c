@@ -1909,13 +1909,7 @@ static int _lvconvert_snapshot(struct cmd_context *cmd,
 	uint32_t chunk_size;
 	int zero;
 
-	if (!(org = find_lv(lv->vg, origin_name))) {
-		log_error("Couldn't find origin volume %s in Volume group %s.",
-			  origin_name, lv->vg->name);
-		return 0;
-	}
-
-	if (org == lv) {
+	if (strcmp(lv->name, origin_name) == 0) {
 		log_error("Unable to use %s as both snapshot and origin.", snap_name);
 		return 0;
 	}
@@ -1925,33 +1919,29 @@ static int _lvconvert_snapshot(struct cmd_context *cmd,
 		log_error("Chunk size must be a power of 2 in the range 4K to 512K.");
 		return 0;
 	}
-	log_verbose("Setting chunk size to %s.", display_size(cmd, chunk_size));
 
 	if (!cow_has_min_chunks(lv->vg, lv->le_count, chunk_size))
 		return_0;
+
+	log_verbose("Setting chunk size to %s.", display_size(cmd, chunk_size));
+
+	if (!(org = find_lv(lv->vg, origin_name))) {
+		log_error("Couldn't find origin volume %s in Volume group %s.",
+			  origin_name, lv->vg->name);
+		return 0;
+	}
 
 	/*
 	 * check_lv_rules() checks cannot be done via command definition
 	 * rules because this LV is not processed by process_each_lv.
 	 */
-	if (lv_is_locked(org) || lv_is_pvmove(org)) {
-		log_error("Unable to use LV %s as snapshot origin: LV is %s.",
-			  display_lvname(lv), lv_is_locked(org) ? "locked" : "pvmove");
-		return 0;
-	}
 
 	/*
 	 * check_lv_types() checks cannot be done via command definition
 	 * LV_foo specification because this LV is not processed by process_each_lv.
 	 */
-	if ((lv_is_cache_type(org) && !lv_is_cache(org)) ||
-	    lv_is_thin_type(org) ||
-	    lv_is_mirrored(org) ||
-	    lv_is_cow(org)) {
-		log_error("Unable to use LV %s as snapshot origin: invald LV type.",
-			  display_lvname(lv));
-		return 0;
-	}
+	if (!validate_snapshot_origin(org))
+                return_0;
 
 	log_warn("WARNING: Converting logical volume %s to snapshot exception store.",
 		 snap_name);
@@ -2108,7 +2098,7 @@ static int _lvconvert_merge_old_snapshot(struct cmd_context *cmd,
 static int _lvconvert_merge_thin_snapshot(struct cmd_context *cmd,
 					  struct logical_volume *lv)
 {
-	int origin_is_active = 0, r = 0;
+	int origin_is_active = 0;
 	struct lv_segment *snap_seg = first_seg(lv);
 	struct logical_volume *origin = snap_seg->origin;
 
@@ -2161,16 +2151,18 @@ static int _lvconvert_merge_thin_snapshot(struct cmd_context *cmd,
 		 * replace the origin LV with its snapshot LV.
 		 */
 		if (!thin_merge_finish(cmd, origin, lv))
-			goto_out;
+			return_0;
+
+		log_print_unless_silent("Volume %s replaced origin %s.",
+					display_lvname(origin), display_lvname(lv));
 
 		if (origin_is_active && !activate_lv(cmd, lv)) {
 			log_error("Failed to reactivate origin %s.",
 				  display_lvname(lv));
-			goto out;
+			return 0;
 		}
 
-		r = 1;
-		goto out;
+		return 1;
 	}
 
 	init_snapshot_merge(snap_seg, origin);
@@ -2179,16 +2171,12 @@ static int _lvconvert_merge_thin_snapshot(struct cmd_context *cmd,
 	if (!vg_write(lv->vg) || !vg_commit(lv->vg))
 		return_0;
 
-	r = 1;
-out:
+	log_print_unless_silent("Merging of thin snapshot %s will occur on "
+				"next activation of %s.",
+				display_lvname(lv), display_lvname(origin));
 	backup(lv->vg);
 
-	if (r)
-		log_print_unless_silent("Merging of thin snapshot %s will occur on "
-					"next activation of %s.",
-					display_lvname(lv), display_lvname(origin));
-
-	return r;
+	return 1;
 }
 
 static int _lvconvert_thin_pool_repair(struct cmd_context *cmd,
@@ -2272,7 +2260,7 @@ static int _lvconvert_thin_pool_repair(struct cmd_context *cmd,
 	argv[++args] = NULL;
 
 	if (pool_is_active(pool_lv)) {
-		log_error("Only inactive pool can be repaired.");
+		log_error("Active pools cannot be repaired.  Use lvchange -an first.");
 		return 0;
 	}
 
@@ -2377,11 +2365,12 @@ deactivate_pmslv:
 	if (!vg_write(pool_lv->vg) || !vg_commit(pool_lv->vg))
 		return_0;
 
-	log_warn("WARNING: If everything works, remove %s volume.",
+	log_warn("WARNING: LV %s holds a backup of the unrepaired metadata. Use lvremove when no longer required.",
 		 display_lvname(mlv));
 
-	log_warn("WARNING: Use pvmove command to move %s on the best fitting PV.",
-		 display_lvname(first_seg(pool_lv)->metadata_lv));
+	if (dm_list_size(&pool_lv->vg->pvs) > 1)
+		log_warn("WARNING: New metadata LV %s might use different PVs.  Move it with pvmove if required.",
+			 display_lvname(first_seg(pool_lv)->metadata_lv));
 
 	return 1;
 }
@@ -2863,6 +2852,7 @@ static int _lvconvert_to_pool(struct cmd_context *cmd,
 	const char *pool_name;                      /* name of original lv arg */
 	char meta_name[NAME_LEN];                   /* generated sub lv name */
 	char data_name[NAME_LEN];                   /* generated sub lv name */
+	char converted_names[3*NAME_LEN];	    /* preserve names of converted lv */
 	struct segment_type *pool_segtype;          /* thinpool or cachepool */
 	struct lv_segment *seg;
 	unsigned int target_attr = ~0;
@@ -3051,14 +3041,16 @@ static int _lvconvert_to_pool(struct cmd_context *cmd,
 
 	log_verbose("Pool metadata extents %u chunk_size %u", meta_extents, chunk_size);
 
+	(void) dm_snprintf(converted_names, sizeof(converted_names), "%s%s%s",
+			   display_lvname(lv),
+			   metadata_lv ? " and " : "",
+			   metadata_lv ? display_lvname(metadata_lv) : "");
+
 	/*
 	 * Verify that user wants to use these LVs.
 	 */
-
-	log_warn("WARNING: Converting logical volume %s%s%s to %s pool's data%s %s metadata wiping.",
-		 display_lvname(lv),
-		 metadata_lv ? " and " : "",
-		 metadata_lv ? display_lvname(metadata_lv) : "",
+	log_warn("WARNING: Converting %s to %s pool's data%s %s metadata wiping.",
+		 converted_names,
 		 to_cachepool ? "cache" : "thin",
 		 metadata_lv ? " and metadata volumes" : " volume",
 		 zero_metadata ? "with" : "WITHOUT");
@@ -3069,10 +3061,8 @@ static int _lvconvert_to_pool(struct cmd_context *cmd,
 		log_warn("WARNING: Using mismatched cache pool metadata MAY DESTROY YOUR DATA!");
 
 	if (!arg_count(cmd, yes_ARG) &&
-	    yes_no_prompt("Do you really want to convert %s%s%s? [y/n]: ",
-			  display_lvname(lv),
-			  metadata_lv ? " and " : "",
-			  metadata_lv ? display_lvname(metadata_lv) : "") == 'n') {
+	    yes_no_prompt("Do you really want to convert %s? [y/n]: ",
+			  converted_names) == 'n') {
 		log_error("Conversion aborted.");
 		goto bad;
 	}
@@ -3288,8 +3278,7 @@ out:
 
 	if (r)
 		log_print_unless_silent("Converted %s to %s pool.",
-					display_lvname(lv),
-					to_cachepool ? "cache" : "thin");
+					converted_names, to_cachepool ? "cache" : "thin");
 
 	/*
 	 * Unlock and free the locks from existing LVs that became pool data

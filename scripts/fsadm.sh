@@ -17,7 +17,7 @@
 # Script for resizing devices (usable for LVM resize)
 #
 # Needed utilities:
-#   mount, umount, grep, readlink, blockdev, blkid, fsck, xfs_check
+#   mount, umount, grep, readlink, blockdev, blkid, fsck, xfs_check, cryptsetup
 #
 # ext2/ext3/ext4: resize2fs, tune2fs
 # reiserfs: resize_reiserfs, reiserfstune
@@ -56,6 +56,7 @@ FSCK=fsck
 XFS_CHECK=xfs_check
 # XFS_REPAIR -n is used when XFS_CHECK is not found
 XFS_REPAIR=xfs_repair
+CRYPTSETUP=cryptsetup
 
 # user may override lvm location by setting LVM_BINARY
 LVM=${LVM_BINARY:-lvm}
@@ -101,6 +102,7 @@ tool_usage() {
 	echo "    -f | --force        Bypass sanity checks"
 	echo "    -n | --dry-run      Print commands without running them"
 	echo "    -l | --lvresize     Resize given device (if it is LVM device)"
+	echo "    -c | --cryptresize  Resize given crypt device"
 	echo "    -y | --yes          Answer \"yes\" at any prompts"
 	echo
 	echo "  new_size - Absolute number of filesystem blocks to be in the filesystem,"
@@ -152,7 +154,7 @@ cleanup() {
 		export _FSADM_YES _FSADM_EXTOFF
 		unset FSADM_RUNNING
 		test -n "$LVM_BINARY" && PATH=$_SAVEPATH
-		dry exec "$LVM" lvresize $VERB $FORCE -r -L"${NEWSIZE}b" "$VOLUME_ORIG"
+		dry exec "$LVM" lvresize $VERB $FORCE -r -L"${NEWSIZE_ORIG}b" "$VOLUME_ORIG"
 	fi
 
 	# error exit status for break
@@ -196,7 +198,7 @@ decode_major_minor() {
 # detect filesystem on the given device
 # dereference device name if it is symbolic link
 detect_fs() {
-	VOLUME_ORIG=$1
+	test -n "$VOLUME_ORIG" || VOLUME_ORIG=$1
 	VOLUME=${1/#"${DM_DEV_DIR}/"/}
 	VOLUME=$("$READLINK" $READLINK_E "$DM_DEV_DIR/$VOLUME")
 	test -n "$VOLUME" || error "Cannot get readlink \"$1\"."
@@ -520,6 +522,138 @@ resize_xfs() {
 	fi
 }
 
+# Find active LUKS device on original volume
+# 1) look for LUKS device with well-known UUID format (CRYPT-LUKS[12]-<uuid>-<dmname>)
+# 2) the dm-crypt device has to be on top of original device (dont't support detached LUKS headers)
+detect_luks_device() {
+	local _LUKS_VERSION
+	local _LUKS_UUID
+
+	CRYPT_NAME=""
+	CRYPT_DATA_OFFSET=""
+
+	_LUKS_VERSION=$($CRYPTSETUP luksDump $VOLUME 2> /dev/null | $GREP "Version:")
+
+	if [ -z "$_LUKS_VERSION" ]; then
+		verbose "Failed to parse LUKS version on volume \"$VOLUME\""
+		return
+	fi
+
+	_LUKS_VERSION=${_LUKS_VERSION//[Version:[:space:]]/}
+
+	_LUKS_UUID=$($CRYPTSETUP luksDump $VOLUME 2> /dev/null | $GREP "UUID:")
+
+	if [ -z "$_LUKS_UUID" ]; then
+		verbose "Failed to parse LUKS UUID on volume \"$VOLUME\""
+		return
+	fi
+
+	_LUKS_UUID="CRYPT-LUKS$_LUKS_VERSION-${_LUKS_UUID//[UID:[:space:]-]/}-"
+
+	CRYPT_NAME=$(dmsetup info -c --noheadings -S "UUID=~^$_LUKS_UUID&&segments=1&&devnos_used='$MAJOR:$MINOR'" -o name)
+	test -z "$CRYPT_NAME" || CRYPT_DATA_OFFSET=$(dmsetup table $CRYPT_NAME | cut -d ' ' -f 8)
+
+	# LUKS device must be active and mapped over volume where detected
+	if [ -z "$CRYPT_NAME" -o -z "$CRYPT_DATA_OFFSET" ]; then
+		error "Can not find active LUKS device. Unlock \"$VOLUME\" volume first."
+	fi
+}
+
+######################################
+# Resize active LUKS device
+# - LUKS must be active for fs resize
+######################################
+resize_luks() {
+	local L_NEWSIZE
+	local L_NEWBLOCKCOUNT
+	local NAME
+	local SHRINK=0
+
+	detect_luks_device
+
+	NAME=$CRYPT_NAME
+
+	verbose "Found active LUKS device \"$NAME\" for volume \"$VOLUME\""
+
+	decode_size "$1" 512
+
+	if [ $((NEWSIZE % 512)) -gt 0 ]; then
+		error "New size is not sector alligned"
+	fi
+
+	if [ $((NEWBLOCKCOUNT - CRYPT_DATA_OFFSET)) -lt 1 ]; then
+		error "New size is smaller than minimum ($(((CRYPT_DATA_OFFSET + 1) * 512)) bytes) for LUKS device $VOLUME"
+	fi
+
+	L_NEWBLOCKCOUNT=$((NEWBLOCKCOUNT - CRYPT_DATA_OFFSET))
+	L_NEWSIZE=$(( L_NEWBLOCKCOUNT * 512))
+
+	VOLUME="$DM_DEV_DIR/mapper/$NAME"
+	detect_device_size
+
+	test "$DEVSIZE" -le "$L_NEWSIZE" || SHRINK=1
+
+	if [ $SHRINK -eq 1 ]; then
+		# shrink fs on LUKS device first
+		resize "$DM_DEV_DIR/mapper/$NAME" "$L_NEWSIZE"b
+	fi
+
+	# resize LUKS device
+	dry $CRYPTSETUP resize $NAME --size $L_NEWBLOCKCOUNT || error "Failed to resize active LUKS device"
+
+	if [ $SHRINK -eq 0 ]; then
+		# grow fs on top of LUKS device
+		resize "$DM_DEV_DIR/mapper/$NAME" "$L_NEWSIZE"b
+	fi
+}
+
+detect_crypt_device() {
+	local CRYPT_TYPE
+	local L_NEWSIZE
+	local TMP
+
+	which $CRYPTSETUP > /dev/null 2>&1 || error "$CRYPTSETUP utility required to resize crypt device"
+
+	CRYPT_TYPE=$($CRYPTSETUP status $1 2> /dev/null | $GREP "type:")
+
+	test -n "$CRYPT_TYPE" || error "$CRYPTSETUP failed to detect device type on $1."
+
+	CRYPT_TYPE=${CRYPT_TYPE##*[[:space:]]}
+
+	case "$CRYPT_TYPE" in
+	 LUKS[12]|PLAIN)
+		verbose "\"$1\" crypt device is type $CRYPT_TYPE"
+		;;
+	 *)
+		error "Unsupported crypt type \"$CRYPT_TYPE\""
+	esac
+
+	TMP=$NEWSIZE
+	decode_size "$2" 512
+	L_NEWSIZE=$NEWSIZE
+	NEWSIZE=$TMP
+
+	if [ $((L_NEWSIZE % 512)) -ne 0 ]; then
+		error "New size is not sector alligned"
+	fi
+
+	CRYPT_RESIZE_BLOCKS=$NEWBLOCKCOUNT
+
+	if [ "$DEVSIZE" -ge "$L_NEWSIZE" ]; then
+		CRYPT_SHRINK=1
+	else
+		CRYPT_GROW=1
+	fi
+}
+
+#################################
+# Resize active crypt device
+#  (on direct user request only)
+#################################
+resize_crypt() {
+	dry $CRYPTSETUP resize "$1" --size $CRYPT_RESIZE_BLOCKS || error "$CRYPTSETUP failed to resize device $1"
+}
+
 ####################
 # Resize filesystem
 ####################
@@ -531,14 +665,20 @@ resize() {
 	# if the size parameter is missing use device size
 	#if [ -n "$NEWSIZE" -a $NEWSIZE <
 	test -z "$NEWSIZE" && NEWSIZE=${DEVSIZE}b
+	test -n "$NEWSIZE_ORIG" || NEWSIZE_ORIG=$NEWSIZE
 	IFS=$NL
+	test -z "$DO_CRYPTRESIZE" || detect_crypt_device "$VOLUME_ORIG" "$NEWSIZE_ORIG"
+	test -z "$CRYPT_GROW" || resize_crypt "$VOLUME_ORIG"
 	case "$FSTYPE" in
 	  "ext3"|"ext2"|"ext4") resize_ext $NEWSIZE ;;
 	  "reiserfs") resize_reiser $NEWSIZE ;;
 	  "xfs") resize_xfs $NEWSIZE ;;
+	  "crypto_LUKS")
+		which $CRYPTSETUP > /dev/null 2>&1 || error "$CRYPTSETUP utility required to resize LUKS volume"
+		resize_luks $NEWSIZE ;;
 	  *) error "Filesystem \"$FSTYPE\" on device \"$VOLUME\" is not supported by this tool." ;;
 	esac || error "Resize $FSTYPE failed."
-	cleanup 0
+	test -z "$CRYPT_SHRINK" || resize_crypt "$VOLUME_ORIG"
 }
 
 ####################################
@@ -548,6 +688,12 @@ resize() {
 ####################################
 diff_dates() {
          echo $(( $("$DATE" -u -d"$1" +%s 2>"$NULL") - $("$DATE" -u -d"$2" +%s 2>"$NULL") ))
+}
+
+check_luks() {
+	detect_luks_device
+
+	check "$DM_DEV_DIR/mapper/$CRYPT_NAME"
 }
 
 ###################
@@ -593,11 +739,17 @@ check() {
 			# Think about better way....
 			dry "$XFS_REPAIR" -n -o force_geometry "$VOLUME"
 		 fi ;;
-	  *)    # check if executed from interactive shell environment
+	  "ext2"|"ext3"|"ext4"|"reiserfs")
+	        # check if executed from interactive shell environment
 		case "$-" in
 		  *i*) dry "$FSCK" $YES $FORCE "$VOLUME" ;;
 		  *) dry "$FSCK" $FORCE -p "$VOLUME" ;;
-		esac
+		esac ;;
+	  "crypto_LUKS")
+		which $CRYPTSETUP > /dev/null 2>&1 || error "$CRYPTSETUP utility required."
+		check_luks ;;
+	  *)
+		error "Filesystem \"$FSTYPE\" on device \"$VOLUME\" is not supported by this tool." ;;
 	esac
 }
 
@@ -641,6 +793,7 @@ do
 	  "-e"|"--ext-offline") EXTOFF=1 ;;
 	  "-y"|"--yes") YES="-y" ;;
 	  "-l"|"--lvresize") DO_LVRESIZE=1 ;;
+	  "-c"|"--cryptresize") DO_CRYPTRESIZE=1 ;;
 	  "check") CHECK=$2 ; shift ;;
 	  "resize") RESIZE=$2 ; NEWSIZE=$3 ; shift 2 ;;
 	  *) error "Wrong argument \"$1\". (see: $TOOL --help)"
@@ -656,6 +809,7 @@ if [ -n "$CHECK" ]; then
 elif [ -n "$RESIZE" ]; then
 	export FSADM_RUNNING="fsadm"
 	resize "$RESIZE" "$NEWSIZE"
+	cleanup 0
 else
 	error "Missing command. (see: $TOOL --help)"
 fi
