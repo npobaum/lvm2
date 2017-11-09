@@ -17,7 +17,7 @@ top_builddir = @top_builddir@
 
 include $(top_builddir)/make.tmpl
 
-DM_RULES=55-dm.rules 60-persistent-storage-dm.rules
+DM_RULES=55-dm.rules 60-persistent-storage-dm.rules 95-dm-notify.rules
 LVM_RULES=56-lvm.rules
 ifeq ("@BUILD_LVMETAD@", "yes")
 LVM_RULES+=69-lvm-metad.rules

@@ -14,7 +14,7 @@
 
 # "add" event is processed on coldplug only!
 ACTION!="add|change", GOTO="lvm_end"
-ENV{DM_UDEV_RULES}!="?*", GOTO="lvm_end"
+ENV{DM_UDEV_RULES_VSN}!="?*", GOTO="lvm_end"
 ENV{DM_UUID}!="LVM-?*", GOTO="lvm_end"
 
 # Use DM name and split it up into its VG/LV/layer constituents.
