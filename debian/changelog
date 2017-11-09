@@ -1,3 +1,13 @@
+lvm2 (2.02.176-2) unstable; urgency=medium
+
+  * Drop changes for upgrades from before Wheezy.
+  * Drop deprecated python bindings.
+  * Enable udev rules in udeb. (closes: #504341)
+  * Drop some udev rules modifications.
+    - Pull in newer dmsetup for udev rules changes.
+
+ -- Bastian Blank <waldi@debian.org>  Thu, 09 Nov 2017 20:42:38 +0100
+
 lvm2 (2.02.176-1) unstable; urgency=medium
 
   * New upstream release.

@@ -1,4 +1,4 @@
-From 2e2038e189cb4ce6c3f1495df1896a5550ad8427 Mon Sep 17 00:00:00 2001
+From 0d8d4848e5e9a9ed465458cd6360aacb84ae8417 Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 30 Jun 2015 11:46:12 +0200
 Subject: Adopt systemd services

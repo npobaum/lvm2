@@ -27,7 +27,7 @@ CFLAGS_OPT_UDEB = -Os
 endif
 
 %:
-	dh $@ --parallel --with python2,python3
+	dh $@ --parallel --with python3
 
 override_dh_auto_configure: SOURCE_FILES = $(filter-out debian, $(wildcard * .[^.]*))
 override_dh_auto_configure:
@@ -80,16 +80,15 @@ override_dh_auto_configure:
 		--with-lvm1=none \
 		--with-pool=none \
 		--disable-readline \
-		--disable-selinux
+		--disable-selinux \
+		--enable-udev_rules \
+		--enable-udev_sync
 
 override_dh_auto_build:
 	dh_auto_build --sourcedirectory=debian/build/build_deb -- \
 		LIB_VERSION_DM=$(DEVMAPPER_ABINAME)
 	dh_auto_build --sourcedirectory=debian/build/build_udeb -- \
 		LIB_VERSION_DM=$(DEVMAPPER_ABINAME)
-	make -C debian/build/build_deb/python liblvm_python.c
-	dh_auto_build --sourcedirectory=debian/build/build_deb/python \
-		--buildsystem=pybuild
 
 override_dh_auto_install:
 	dh_auto_install --sourcedirectory=debian/build/build_deb \
@@ -102,12 +101,8 @@ override_dh_auto_install:
 	dh_auto_install --sourcedirectory=debian/build/build_udeb \
 		--destdir=debian/build/install_udeb -- \
 		LIB_VERSION_DM=$(DEVMAPPER_ABINAME)
-	dh_auto_install --sourcedirectory=debian/build/build_deb/python \
-		--destdir=debian/build/install_deb \
-		--buildsystem=pybuild
 
 override_dh_auto_clean:
-	rm -rf .pybuild/
 	rm -rf debian/build
 
 override_dh_gencontrol:
@@ -126,7 +121,12 @@ override_dh_missing:
 	dh_missing --sourcedir=debian/build/install_deb --fail-missing
 
 override_dh_install:
-	dh_install --sourcedir=debian/build/install_deb
+	dh_install --sourcedir=debian/build/install_udeb \
+		-pdmsetup-udeb \
+		-plibdevmapper$(DEVMAPPER_ABINAME)-udeb \
+		-plvm2-udeb
+	dh_install --sourcedir=debian/build/install_deb \
+		--remaining-packages
 
 override_dh_installchangelogs:
 	dh_installchangelogs -pdmeventd WHATS_NEW_DM
