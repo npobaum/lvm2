@@ -1,3 +1,18 @@
+lvm2 (2.02.176-4) unstable; urgency=medium
+
+  * Don't try to add dropped udev rules to initramfs.
+
+ -- Bastian Blank <waldi@debian.org>  Fri, 10 Nov 2017 11:38:46 +0100
+
+lvm2 (2.02.176-3) unstable; urgency=medium
+
+  * Actually add newly installed udev rules to initramfs.
+    (closes: #881314)
+  * Make initramfs hooks bail out if udev rules can't be found.
+  * Copy complete lvm config into initramfs.
+
+ -- Bastian Blank <waldi@debian.org>  Fri, 10 Nov 2017 08:42:56 +0100
+
 lvm2 (2.02.176-2) unstable; urgency=medium
 
   * Drop changes for upgrades from before Wheezy.
