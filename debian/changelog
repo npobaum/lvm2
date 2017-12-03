@@ -1,3 +1,13 @@
+lvm2 (2.02.176-4.1) unstable; urgency=high
+
+  * Non-maintainer upload.
+  * Revert uncoordinated addition of udev rules/sync support in udebs
+    which breaks LVM support in debian-installer instead of getting
+    debian-installer and installed systems to agree on device names.
+    (closes: #883361, reopens: #504341)
+
+ -- Cyril Brulebois <kibi@debian.org>  Sun, 03 Dec 2017 02:39:59 +0000
+
 lvm2 (2.02.176-4) unstable; urgency=medium
 
   * Don't try to add dropped udev rules to initramfs.

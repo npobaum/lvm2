@@ -80,9 +80,7 @@ override_dh_auto_configure:
 		--with-lvm1=none \
 		--with-pool=none \
 		--disable-readline \
-		--disable-selinux \
-		--enable-udev_rules \
-		--enable-udev_sync
+		--disable-selinux
 
 override_dh_auto_build:
 	dh_auto_build --sourcedirectory=debian/build/build_deb -- \
