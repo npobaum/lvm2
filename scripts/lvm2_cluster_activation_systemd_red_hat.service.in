@@ -9,7 +9,7 @@ Conflicts=shutdown.target
 [Service]
 Type=simple
 RemainAfterExit=yes
-EnvironmentFile=-@SYSCONFDIR@/sysconfig/clvmd
+EnvironmentFile=-/etc/default/clvmd
 ExecStart=@systemdutildir@/lvm2-cluster-activation activate
 ExecStop=@systemdutildir@/lvm2-cluster-activation deactivate
 
