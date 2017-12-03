@@ -1,5 +1,4 @@
 etc/lvm/lvm.conf
-lib/udev/rules.d/*-lvm*.rules
 sbin/lvchange
 sbin/lvconvert
 sbin/lvcreate
