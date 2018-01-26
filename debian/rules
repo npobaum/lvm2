@@ -81,6 +81,7 @@ override_dh_auto_configure:
 		--with-pool=none \
 		--disable-readline \
 		--disable-selinux
+	cp po/lvm2.po po/lvm2.pot
 
 override_dh_auto_build:
 	dh_auto_build --sourcedirectory=debian/build/build_deb -- \
@@ -99,9 +100,13 @@ override_dh_auto_install:
 	dh_auto_install --sourcedirectory=debian/build/build_udeb \
 		--destdir=debian/build/install_udeb -- \
 		LIB_VERSION_DM=$(DEVMAPPER_ABINAME)
+		
+	mkdir -p debian/build/install_deb/usr/lib/ocf/resource.d/lvm2
+	install -m 755 debian/clvmd.ra debian/build/install_deb/usr/lib/ocf/resource.d/lvm2/clvmd
 
 override_dh_auto_clean:
 	rm -rf debian/build
+	rm -f po/lvm2.pot
 
 override_dh_gencontrol:
 	dh_gencontrol \
