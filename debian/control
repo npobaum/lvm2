@@ -33,7 +33,7 @@ Vcs-Browser: https://gitlab.com/debian-lvm/lvm2
 Package: lvm2
 Architecture: linux-any
 Depends: ${shlibs:Depends}, ${misc:Depends}, lsb-base, dmsetup (>= 1.02.145-2~), dmeventd
-Recommends: thin-provisioning-tools
+Suggests: thin-provisioning-tools
 Multi-Arch: foreign
 Description: Linux Logical Volume Manager
  This is LVM2, the rewrite of The Linux Logical Volume Manager.  LVM

@@ -1,3 +1,10 @@
+lvm2 (2.02.176-4.1ubuntu2) bionic; urgency=medium
+
+  * Demote Recommends: thin-provisioning-tools to Suggests, as it's not
+    in main.
+
+ -- Julian Andres Klode <juliank@ubuntu.com>  Tue, 30 Jan 2018 08:31:47 +0100
+
 lvm2 (2.02.176-4.1ubuntu1) bionic; urgency=low
 
   * Merge with Debian unstable. Remaining changes:
