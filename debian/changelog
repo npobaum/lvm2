@@ -1,3 +1,9 @@
+lvm2 (2.02.176-4.1ubuntu3) bionic; urgency=medium
+
+  * scripts/blkdeactivate.sh.in: Refer to /usr/bin/sort, not /bin/sort
+
+ -- Julian Andres Klode <juliank@ubuntu.com>  Thu, 12 Apr 2018 10:35:07 +0200
+
 lvm2 (2.02.176-4.1ubuntu2) bionic; urgency=medium
 
   * Demote Recommends: thin-provisioning-tools to Suggests, as it's not
