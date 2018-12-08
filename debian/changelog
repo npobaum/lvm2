@@ -1,3 +1,21 @@
+lvm2 (2.03.01-1) experimental; urgency=medium
+
+  * New upstream release.
+  * Build-depend on libaio-dev.
+  * Bump ABI of liblvm2cmd.
+  * Drop not longer shipped liblvm2app.
+  * Drop not longer shipped lvmconf tool.
+  * Drop not longer shipped clvm stuff.
+  * Drop not longer shipped lvmetad.
+  * Disable not really useful cmirrord.
+  * Update symbols.
+  * Install new lvmlockd services.
+  * Update Vcs headers to reference salsa.debian.org.
+  * Set maintainer to team via tracker.debian.org. (closes: #899603)
+  * Purge lvm2-lvmetad.socket unit.
+
+ -- Bastian Blank <waldi@debian.org>  Sat, 08 Dec 2018 18:12:40 +0100
+
 lvm2 (2.02.176-4.1) unstable; urgency=high
 
   * Non-maintainer upload.

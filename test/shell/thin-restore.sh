@@ -12,7 +12,7 @@
 
 # test restore operation of thin pool metadata
 
-SKIP_WITH_LVMLOCKD=1
+
 SKIP_WITH_LVMPOLLD=1
 
 export LVM_TEST_THIN_REPAIR_CMD=${LVM_TEST_THIN_REPAIR_CMD-/bin/false}
@@ -33,7 +33,7 @@ vgcfgbackup -f backup $vg
 # use of --force is mandatory
 not vgcfgrestore -f backup $vg
 
-vgcfgrestore -f backup --force $vg
+vgcfgrestore -y -f backup --force $vg
 
 check lv_field $vg/pool transaction_id 1
 

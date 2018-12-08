@@ -12,16 +12,16 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include "lib.h"	/* using here lvm log */
+#include "lib/misc/lib.h"
 #include "dmeventd_lvm.h"
-#include "libdevmapper-event.h"
+#include "daemons/dmeventd/libdevmapper-event.h"
 
 #include <sys/wait.h>
 #include <stdarg.h>
 
 /* TODO - move this mountinfo code into library to be reusable */
 #ifdef __linux__
-#  include "kdev_t.h"
+#  include "libdm/misc/kdev_t.h"
 #else
 #  define MAJOR(x) major((x))
 #  define MINOR(x) minor((x))
@@ -62,27 +62,25 @@ struct dso_state {
 
 DM_EVENT_LOG_FN("thin")
 
-#define UUID_PREFIX "LVM-"
-
 static int _run_command(struct dso_state *state)
 {
-	char val[3][36];
-	char *env[] = { val[0], val[1], val[2], NULL };
+	char val[16];
 	int i;
 
 	/* Mark for possible lvm2 command we are running from dmeventd
 	 * lvm2 will not try to talk back to dmeventd while processing it */
-	(void) dm_snprintf(val[0], sizeof(val[0]), "LVM_RUN_BY_DMEVENTD=1");
+	(void) setenv("LVM_RUN_BY_DMEVENTD", "1", 1);
 
 	if (state->data_percent) {
 		/* Prepare some known data to env vars for easy use */
-		(void) dm_snprintf(val[1], sizeof(val[1]), "DMEVENTD_THIN_POOL_DATA=%d",
-				   state->data_percent / DM_PERCENT_1);
-		(void) dm_snprintf(val[2], sizeof(val[2]), "DMEVENTD_THIN_POOL_METADATA=%d",
-				   state->metadata_percent / DM_PERCENT_1);
+		if (dm_snprintf(val, sizeof(val), "%d",
+				state->data_percent / DM_PERCENT_1) != -1)
+			(void) setenv("DMEVENTD_THIN_POOL_DATA", val, 1);
+		if (dm_snprintf(val, sizeof(val), "%d",
+				state->metadata_percent / DM_PERCENT_1) != -1)
+			(void) setenv("DMEVENTD_THIN_POOL_METADATA", val, 1);
 	} else {
 		/* For an error event it's for a user to check status and decide */
-		env[1] = NULL;
 		log_debug("Error event processing.");
 	}
 
@@ -97,7 +95,7 @@ static int _run_command(struct dso_state *state)
 		/* child */
 		(void) close(0);
 		for (i = 3; i < 255; ++i) (void) close(i);
-		execve(state->argv[0], state->argv, env);
+		execvp(state->argv[0], state->argv);
 		_exit(errno);
 	} else if (state->pid == -1) {
 		log_error("Can't fork command %s.", state->cmd_str);
@@ -288,7 +286,7 @@ void process_event(struct dm_task *dmt,
 		if (state->fails++ <= state->max_fails) {
 			log_debug("Postponing frequently failing policy (%u <= %u).",
 				  state->fails - 1, state->max_fails);
-			return;
+			goto out;
 		}
 		if (state->max_fails < MAX_FAILS)
 			state->max_fails <<= 1;

@@ -12,17 +12,17 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include "lib.h"
-#include "metadata.h"
-#include "locking.h"
-#include "lvm-string.h"
-#include "toolcontext.h"
-#include "display.h"
-#include "segtype.h"
-#include "activate.h"
-#include "defaults.h"
-#include "lv_alloc.h"
-#include "lvm-signal.h"
+#include "lib/misc/lib.h"
+#include "lib/metadata/metadata.h"
+#include "lib/locking/locking.h"
+#include "lib/misc/lvm-string.h"
+#include "lib/commands/toolcontext.h"
+#include "lib/display/display.h"
+#include "lib/metadata/segtype.h"
+#include "lib/activate/activate.h"
+#include "lib/config/defaults.h"
+#include "lib/metadata/lv_alloc.h"
+#include "lib/misc/lvm-signal.h"
 
 /* https://github.com/jthornber/thin-provisioning-tools/blob/master/caching/cache_metadata_size.cc */
 #define DM_TRANSACTION_OVERHEAD		4096  /* KiB */
@@ -129,7 +129,7 @@ void cache_check_for_warns(const struct lv_segment *seg)
 
 	if (lv_is_raid(origin_lv) &&
 	    first_seg(seg->pool_lv)->cache_mode == CACHE_MODE_WRITEBACK)
-		log_warn("WARNING: Data redundancy is lost with writeback "
+		log_warn("WARNING: Data redundancy could be lost with writeback "
 			 "caching of raid logical volume!");
 
 	if (lv_is_thin_pool_data(seg->lv))
@@ -184,7 +184,7 @@ int update_cache_pool_params(struct cmd_context *cmd,
 			 * keep user informed he might be using things in untintended direction
 			 */
 			log_print_unless_silent("Using %s chunk size instead of default %s, "
-						"so cache pool has less then " FMTu64 " chunks.",
+						"so cache pool has less than " FMTu64 " chunks.",
 						display_size(cmd, min_chunk_size),
 						display_size(cmd, *chunk_size),
 						max_chunks);
@@ -193,7 +193,7 @@ int update_cache_pool_params(struct cmd_context *cmd,
 			log_verbose("Setting chunk size to %s.",
 				    display_size(cmd, *chunk_size));
 	} else if (*chunk_size < min_chunk_size) {
-		log_error("Chunk size %s is less then required minimal chunk size %s "
+		log_error("Chunk size %s is less than required minimal chunk size %s "
 			  "for a cache pool of %s size and limit " FMTu64 " chunks.",
 			  display_size(cmd, *chunk_size),
 			  display_size(cmd, min_chunk_size),
@@ -540,7 +540,7 @@ int lv_cache_remove(struct logical_volume *cache_lv)
 	}
 
 	if (lv_is_pending_delete(cache_lv)) {
-		log_error(INTERNAL_ERROR "LV %s is already dropped cache volume.",
+		log_debug(INTERNAL_ERROR "LV %s is already dropped cache volume.",
 			  display_lvname(cache_lv));
 		goto remove;  /* Already dropped */
 	}
@@ -548,11 +548,8 @@ int lv_cache_remove(struct logical_volume *cache_lv)
 	/* Localy active volume is needed for writeback */
 	if (!lv_info(cache_lv->vg->cmd, cache_lv, 1, NULL, 0, 0)) {
 		/* Give up any remote locks */
-		if (!deactivate_lv(cache_lv->vg->cmd, cache_lv)) {
-			log_error("Cannot deactivate remotely active cache volume %s.",
-				  display_lvname(cache_lv));
-			return 0;
-		}
+		if (!deactivate_lv_with_sub_lv(cache_lv))
+			return_0;
 
 		switch (first_seg(cache_seg->pool_lv)->cache_mode) {
 		case CACHE_MODE_WRITETHROUGH:
@@ -569,8 +566,8 @@ int lv_cache_remove(struct logical_volume *cache_lv)
 		default:
 			/* Otherwise localy activate volume to sync dirty blocks */
 			cache_lv->status |= LV_TEMPORARY;
-			if (!activate_lv_excl_local(cache_lv->vg->cmd, cache_lv) ||
-			    !lv_is_active_locally(cache_lv)) {
+			if (!activate_lv(cache_lv->vg->cmd, cache_lv) ||
+			    !lv_is_active(cache_lv)) {
 				log_error("Failed to active cache locally %s.",
 					  display_lvname(cache_lv));
 				return 0;
@@ -623,13 +620,12 @@ int lv_cache_remove(struct logical_volume *cache_lv)
 	if (!(cache_seg->segtype = get_segtype_from_string(corigin_lv->vg->cmd, SEG_TYPE_NAME_CACHE)))
 		return_0;
 
-	if (!(cache_seg->areas = dm_pool_zalloc(cache_lv->vg->vgmem, sizeof(*cache_seg->areas))))
+	if (!add_lv_segment_areas(cache_seg, 1))
 		return_0;
 
 	if (!set_lv_segment_area_lv(cache_seg, 0, cache_lv, 0, 0))
 		return_0;
 
-	cache_seg->area_count = 1;
 	corigin_lv->le_count = cache_lv->le_count;
 	corigin_lv->size = cache_lv->size;
 	corigin_lv->status |= LV_PENDING_DELETE;
@@ -844,6 +840,14 @@ int cache_set_metadata_format(struct lv_segment *seg, cache_metadata_format_t fo
 		return 0;
 	}
 
+	/*
+	 * If policy is unselected, but format 2 is selected, policy smq is enforced.
+	 */
+	if (!seg->policy_name) {
+		if (format == CACHE_METADATA_FORMAT_2)
+			seg->policy_name = "smq";
+	}
+
 	/* Check if we need to search for configured cache metadata format */
 	if (format == CACHE_METADATA_FORMAT_UNSELECTED) {
 		if (seg->cache_metadata_format != CACHE_METADATA_FORMAT_UNSELECTED)
@@ -897,13 +901,13 @@ int cache_set_params(struct lv_segment *seg,
 	struct lv_segment *pool_seg;
 	struct cmd_context *cmd = seg->lv->vg->cmd;
 
-	if (!cache_set_metadata_format(seg, format))
-		return_0;
-
 	if (!cache_set_cache_mode(seg, mode))
 		return_0;
 
 	if (!cache_set_policy(seg, policy_name, policy_settings))
+		return_0;
+
+	if (!cache_set_metadata_format(seg, format))
 		return_0;
 
 	pool_seg = seg_is_cache(seg) ? first_seg(seg->pool_lv) : seg;
@@ -960,7 +964,7 @@ int wipe_cache_pool(struct logical_volume *cache_pool_lv)
 	}
 
 	cache_pool_lv->status |= LV_TEMPORARY;
-	if (!activate_lv_local(cache_pool_lv->vg->cmd, cache_pool_lv)) {
+	if (!activate_lv(cache_pool_lv->vg->cmd, cache_pool_lv)) {
 		log_error("Aborting. Failed to activate cache pool %s.",
 			  display_lvname(cache_pool_lv));
 		return 0;

@@ -517,7 +517,7 @@ static struct volume_group *_vgsplit_from(struct cmd_context *cmd,
 		return NULL;
 	}
 
-	if (is_lockd_type(vg_from->lock_type)) {
+	if (vg_is_shared(vg_from)) {
 		log_error("vgsplit not allowed for lock_type %s", vg_from->lock_type);
 		unlock_and_release_vg(cmd, vg_from, vg_name_from);
 		return NULL;
@@ -581,6 +581,8 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 		return ECMD_FAILED;
 	}
 
+	lvmcache_label_scan(cmd);
+
 	if (strcmp(vg_name_to, vg_name_from) < 0)
 		lock_vg_from_first = 0;
 
@@ -643,7 +645,6 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 		    !vg_set_max_lv(vg_to, vp_new.max_lv) ||
 		    !vg_set_max_pv(vg_to, vp_new.max_pv) ||
 		    !vg_set_alloc_policy(vg_to, vp_new.alloc) ||
-		    !vg_set_clustered(vg_to, vp_new.clustered) ||
 		    !vg_set_system_id(vg_to, vp_new.system_id) ||
 		    !vg_set_mda_copies(vg_to, vp_new.vgmetadatacopies))
 			goto_bad;
@@ -726,8 +727,6 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 	if (!vg_write(vg_to) || !vg_commit(vg_to))
 		goto_bad;
 
-	lvmetad_vg_update_finish(vg_to);
-
 	backup(vg_to);
 
 	/*
@@ -739,15 +738,15 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 		if (!vg_write(vg_from) || !vg_commit(vg_from))
 			goto_bad;
 
-		lvmetad_vg_update_finish(vg_from);
-
 		backup(vg_from);
 	}
 
 	/*
 	 * Finally, remove the EXPORTED flag from the new VG and write it out.
+	 * We need to unlock vg_to because vg_read_for_update wants to lock it.
 	 */
 	if (!test_mode()) {
+		unlock_vg(cmd, NULL, vg_name_to);
 		release_vg(vg_to);
 		vg_to = vg_read_for_update(cmd, vg_name_to, NULL,
 					   READ_ALLOW_EXPORTED, 0);
@@ -762,8 +761,6 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 
 	if (!vg_write(vg_to) || !vg_commit(vg_to))
 		goto_bad;
-
-	lvmetad_vg_update_finish(vg_to);
 
 	backup(vg_to);
 

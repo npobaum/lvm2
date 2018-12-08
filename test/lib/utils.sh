@@ -39,7 +39,7 @@ rand_bytes() {
 
 	# Ensure that $data has length at least 50+$n
 	while :; do
-		len=$(echo "$data" | wc -c)
+		len=${#data} # number of chars in $data
 		test "$n_plus_50" -le "$len" && break;
 		data=$( (echo "$data"; eval "$cmds") 2>&1 | gzip )
 	done
@@ -112,7 +112,7 @@ stacktrace() {
 	# i=1 - ignoring innermost frame - it is always stacktrace function
 	local i=1 n=${#BASH_LINENO[*]}
 	# n-=1 - ignoring last frame as well - it is not interesting
-	let n-=1
+	n=$(( n - 1 ))
 
 	echo "## - $0:${BASH_LINENO[$((n-1))]}"
 	while [[ $i -lt $n ]]; do
@@ -180,7 +180,7 @@ STACKTRACE() {
 			echo "<======== Inactive table ========>"
 			dmsetup table --inactive  | grep "$PREFIX" | sed -e "s,^,## DMITABLE: ,"
 			echo "<======== Status ========>"
-			dmsetup status | grep "$PREFIX" | sed -e "s,^,## DMSTATUS: ,"
+			dmsetup status --noflush | grep "$PREFIX" | sed -e "s,^,## DMSTATUS: ,"
 			echo "<======== Tree ========>"
 			dmsetup ls --tree | sed -e "s,^,## DMTREE:   ,"
 			echo "<======== Recursive list of $DM_DEV_DIR ========>"
@@ -209,8 +209,8 @@ init_udev_transaction() {
 }
 
 finish_udev_transaction() {
-	if test "$DM_UDEV_SYNCHRONISATION" = 1 && test -n "$DM_UDEV_COOKIE" ; then
-		dmsetup udevreleasecookie
+	if test "$DM_UDEV_SYNCHRONISATION" = 1 && test -n "${DM_UDEV_COOKIE-}" ; then
+		dmsetup udevreleasecookie || true
 		unset DM_UDEV_COOKIE
 	fi
 }
@@ -228,6 +228,10 @@ dm_info() {
 	should dmsetup info --noheadings -c -o "$@"
 }
 
+dm_status() {
+	should dmsetup status --noheadings "$@"
+}
+
 dm_table() {
 	should dmsetup table "$@"
 }
@@ -237,7 +241,7 @@ skip() {
 	if test "$#" -eq 0; then
 		stacktrace
 	else
-		echo "TEST SKIPPED:" "$@"
+		echo -e "TEST SKIPPED:" "$@"
 	fi
 	touch SKIP_THIS_TEST
 	exit 200
@@ -272,7 +276,7 @@ if test -z "${installed_testsuite+varset}"; then
     *)
 	PATH="$abs_top_builddir/test/lib:$abs_top_builddir/test/api:$PATH"
 	LD_LIBRARY_PATH=$(find -L "$abs_top_builddir/libdm/" "$abs_top_builddir/tools/"\
-		"$abs_top_builddir/daemons/" "$abs_top_builddir/liblvm/"\
+		"$abs_top_builddir/daemons/" \
 		-name "*.so" -printf "%h:")"$LD_LIBRARY_PATH"
 	export PATH LD_LIBRARY_PATH ;;
     esac

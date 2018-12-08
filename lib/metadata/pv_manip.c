@@ -13,18 +13,14 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include "lib.h"
-#include "metadata.h"
-#include "pv_alloc.h"
-#include "toolcontext.h"
-#include "locking.h"
-#include "defaults.h"
-#include "lvmcache.h"
-#include "lvmetad.h"
-#include "display.h"
-#include "label.h"
-#include "archiver.h"
-#include "lvm-signal.h"
+#include "lib/misc/lib.h"
+#include "lib/metadata/metadata.h"
+#include "lib/metadata/pv_alloc.h"
+#include "lib/commands/toolcontext.h"
+#include "lib/locking/locking.h"
+#include "lib/config/defaults.h"
+#include "lib/display/display.h"
+#include "lib/format_text/archiver.h"
 
 static struct pv_segment *_alloc_pv_segment(struct dm_pool *mem,
 					    struct physical_volume *pv,
@@ -570,6 +566,7 @@ static int _pv_resize(struct physical_volume *pv, struct volume_group *vg, uint6
 		log_error("Size must exceed physical extent start "
 			  "of %" PRIu64 " sectors on PV %s.",
 			  pv_pe_start(pv), pv_dev_name(pv));
+		return 0;
 	}
 
 	old_pe_count = pv->pe_count;
@@ -649,7 +646,7 @@ int pv_resize_single(struct cmd_context *cmd,
 						  pv_name, display_size(cmd, new_size),
 						  display_size(cmd, size)) == 'n') {
 				log_error("Physical Volume %s not resized.", pv_name);
-				goto_out;
+				goto out;
 			}
 
 		}  else if (new_size < size)
@@ -657,7 +654,7 @@ int pv_resize_single(struct cmd_context *cmd,
 						  pv_name, display_size(cmd, new_size),
 						  display_size(cmd, size)) == 'n') {
 				log_error("Physical Volume %s not resized.", pv_name);
-				goto_out;
+				goto out;
 			}
 
 		if (new_size == size)

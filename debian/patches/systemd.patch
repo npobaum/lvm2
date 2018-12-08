@@ -1,18 +1,16 @@
-From 0d8d4848e5e9a9ed465458cd6360aacb84ae8417 Mon Sep 17 00:00:00 2001
+From 85c9b67ef7f2fb9a0aa40629402100706c1d8fbf Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 30 Jun 2015 11:46:12 +0200
 Subject: Adopt systemd services
 
 Patch-Name: systemd.patch
 ---
- scripts/blk_availability_systemd_red_hat.service.in        | 2 +-
- scripts/lvm2_activation_generator_systemd_red_hat.c        | 2 +-
- scripts/lvm2_cluster_activation_systemd_red_hat.service.in | 2 +-
- scripts/lvm2_clvmd_systemd_red_hat.service.in              | 2 +-
- 4 files changed, 4 insertions(+), 4 deletions(-)
+ scripts/blk_availability_systemd_red_hat.service.in | 2 +-
+ scripts/lvm2_activation_generator_systemd_red_hat.c | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
 
 diff --git a/scripts/blk_availability_systemd_red_hat.service.in b/scripts/blk_availability_systemd_red_hat.service.in
-index 1198baa2a..54564be5b 100644
+index 9462072ccc..29fd8efa80 100644
 --- a/scripts/blk_availability_systemd_red_hat.service.in
 +++ b/scripts/blk_availability_systemd_red_hat.service.in
 @@ -6,7 +6,7 @@ Conflicts=shutdown.target
@@ -25,41 +23,15 @@ index 1198baa2a..54564be5b 100644
  RemainAfterExit=yes
  
 diff --git a/scripts/lvm2_activation_generator_systemd_red_hat.c b/scripts/lvm2_activation_generator_systemd_red_hat.c
-index 0f7f89c86..269edd32d 100644
+index 5dc39ae03a..cfa611e78e 100644
 --- a/scripts/lvm2_activation_generator_systemd_red_hat.c
 +++ b/scripts/lvm2_activation_generator_systemd_red_hat.c
-@@ -131,7 +131,7 @@ static int generate_unit(const char *dir, int unit, int sysinit_needed)
- 		fprintf(f, "After=%s iscsi.service fcoe.service\n"
+@@ -163,7 +163,7 @@ static int generate_unit(struct generator *gen, int unit)
+ 		fprintf(f, "After=%s iscsi.service fcoe.service rbdmap.service\n"
  			"Before=remote-fs-pre.target shutdown.target\n\n"
  			"[Service]\n"
--			"ExecStartPre=/usr/bin/udevadm settle\n", unit_names[UNIT_MAIN]);
-+			"ExecStartPre=/bin/udevadm settle\n", unit_names[UNIT_MAIN]);
+-			"ExecStartPre=/usr/bin/udevadm settle\n", _unit_names[UNIT_MAIN]);
++			"ExecStartPre=/bin/udevadm settle\n", _unit_names[UNIT_MAIN]);
  	} else {
- 		if (unit == UNIT_EARLY) {
+ 		if (unit == UNIT_EARLY)
  			fputs("After=systemd-udev-settle.service\n"
-diff --git a/scripts/lvm2_cluster_activation_systemd_red_hat.service.in b/scripts/lvm2_cluster_activation_systemd_red_hat.service.in
-index bf4aa1eca..5f8b4159d 100644
---- a/scripts/lvm2_cluster_activation_systemd_red_hat.service.in
-+++ b/scripts/lvm2_cluster_activation_systemd_red_hat.service.in
-@@ -9,7 +9,7 @@ Conflicts=shutdown.target
- [Service]
- Type=simple
- RemainAfterExit=yes
--EnvironmentFile=-@SYSCONFDIR@/sysconfig/clvmd
-+EnvironmentFile=-/etc/default/clvmd
- ExecStart=@systemdutildir@/lvm2-cluster-activation activate
- ExecStop=@systemdutildir@/lvm2-cluster-activation deactivate
- 
-diff --git a/scripts/lvm2_clvmd_systemd_red_hat.service.in b/scripts/lvm2_clvmd_systemd_red_hat.service.in
-index ced27744e..e34bbcfa8 100644
---- a/scripts/lvm2_clvmd_systemd_red_hat.service.in
-+++ b/scripts/lvm2_clvmd_systemd_red_hat.service.in
-@@ -13,7 +13,7 @@ Conflicts=shutdown.target
- [Service]
- Type=forking
- Environment=CLVMD_OPTS=-T30
--EnvironmentFile=-@SYSCONFDIR@/sysconfig/clvmd
-+EnvironmentFile=-/etc/default/clvmd
- ExecStart=@USRSBINDIR@/clvmd $CLVMD_OPTS
- SuccessExitStatus=5
- TimeoutStartSec=30

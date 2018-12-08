@@ -1,4 +1,4 @@
-From 1c5bf716af880fb5b34a160dcd7b4ed27f927590 Mon Sep 17 00:00:00 2001
+From e328e8c9ad9b4dae9293098b913065ef9ffa0a81 Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 30 Jun 2015 11:46:11 +0200
 Subject: Rename udev rules and hardcode paths
@@ -11,7 +11,7 @@ Patch-Name: udev.patch
  3 files changed, 20 insertions(+), 7 deletions(-)
 
 diff --git a/udev/10-dm.rules.in b/udev/10-dm.rules.in
-index b4fa52ab7..69d2c47ec 100644
+index b4fa52ab76..69d2c47ecc 100644
 --- a/udev/10-dm.rules.in
 +++ b/udev/10-dm.rules.in
 @@ -32,7 +32,6 @@ KERNEL=="device-mapper", NAME="(DM_DIR)/control"
@@ -57,7 +57,7 @@ index b4fa52ab7..69d2c47ec 100644
  
  ENV{DM_UDEV_DISABLE_DM_RULES_FLAG}!="1", ENV{DM_NAME}=="?*", SYMLINK+="(DM_DIR)/$env{DM_NAME}"
 diff --git a/udev/95-dm-notify.rules.in b/udev/95-dm-notify.rules.in
-index 80d59d37d..d22abba1a 100644
+index 80d59d37d3..d22abba1a6 100644
 --- a/udev/95-dm-notify.rules.in
 +++ b/udev/95-dm-notify.rules.in
 @@ -9,4 +9,4 @@
@@ -67,7 +67,7 @@ index 80d59d37d..d22abba1a 100644
 -ENV{DM_COOKIE}=="?*", RUN+="(DM_EXEC)/dmsetup udevcomplete $env{DM_COOKIE}"
 +ENV{DM_COOKIE}=="?*", RUN+="/sbin/dmsetup udevcomplete $env{DM_COOKIE}"
 diff --git a/udev/Makefile.in b/udev/Makefile.in
-index c498aa838..a805c1fc4 100644
+index 6f57d46125..3a14fb5d89 100644
 --- a/udev/Makefile.in
 +++ b/udev/Makefile.in
 @@ -17,10 +17,10 @@ top_builddir = @top_builddir@
@@ -84,9 +84,9 @@ index c498aa838..a805c1fc4 100644
  endif
  
  DM_DIR=$(shell $(GREP) "\#define DM_DIR" $(top_srcdir)/libdm/misc/dm-ioctl.h | $(AWK) '{print $$3}')
-@@ -54,6 +54,18 @@ endif
+@@ -57,6 +57,18 @@ endif
  %.rules: $(srcdir)/%.rules.in
- 	$(SED) -e "s+(DM_DIR)+$(DM_DIR)+;s+(BLKID_RULE)+$(BLKID_RULE)+;s+(PVSCAN_RULE)+$(PVSCAN_RULE)+;s+(DM_EXEC_RULE)+$(DM_EXEC_RULE)+;s+(DM_EXEC)+$(DM_EXEC)+;s+(LVM_EXEC_RULE)+$(LVM_EXEC_RULE)+;s+(LVM_EXEC)+$(LVM_EXEC)+;" $< >$@
+ 	$(SED) -e "s+(DM_DIR)+$(DM_DIR)+;s+(BINDIR)+$(BINDIR)+;s+(BLKID_RULE)+$(BLKID_RULE)+;s+(PVSCAN_RULE)+$(PVSCAN_RULE)+;s+(PVSCAN_ACTION)+$(PVSCAN_ACTION)+;s+(DM_EXEC_RULE)+$(DM_EXEC_RULE)+;s+(DM_EXEC)+$(DM_EXEC)+;s+(LVM_EXEC_RULE)+$(LVM_EXEC_RULE)+;s+(LVM_EXEC)+$(LVM_EXEC)+;" $< >$@
  
 +55-dm.rules: 10-dm.rules
 +	ln -s $< $@

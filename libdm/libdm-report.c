@@ -13,7 +13,7 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include "dmlib.h"
+#include "libdm/misc/dmlib.h"
 
 #include <ctype.h>
 #include <math.h>  /* fabs() */
@@ -2380,7 +2380,7 @@ static const char *_get_reserved(struct dm_report *rh, unsigned type,
 {
 	const struct dm_report_reserved_value *iter = implicit ? NULL : rh->reserved_values;
 	const struct dm_report_field_reserved_value *frv;
-	const char *tmp_begin, *tmp_end, *tmp_s = s;
+	const char *tmp_begin = NULL, *tmp_end = NULL, *tmp_s = s;
 	const char *name = NULL;
 	char c;
 
@@ -2626,7 +2626,7 @@ static const char *_tok_value_string_list(const struct dm_report_field_type *ft,
 							    "for selection field %s.";
 	struct selection_str_list *ssl = NULL;
 	struct dm_str_list *item;
-	const char *begin_item, *end_item, *tmp;
+	const char *begin_item = NULL, *end_item = NULL, *tmp;
 	uint32_t op_flags, end_op_flag_expected, end_op_flag_hit = 0;
 	struct dm_str_list **arr;
 	size_t list_size;

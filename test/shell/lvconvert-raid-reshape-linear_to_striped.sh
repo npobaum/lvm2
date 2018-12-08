@@ -10,17 +10,15 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 51 Franklin Street, Fifth Floor, Boston, MA2110-1301 USA
 
-SKIP_WITH_LVMLOCKD=1
 SKIP_WITH_LVMPOLLD=1
 
 . lib/inittest
 
-which mkfs.ext4 || skip
-aux have_raid 1 12 0 || skip
+aux lvmconf 'activation/raid_region_size = 512'
 
-# Temporarily skip reshape tests on single-core CPUs until there's a fix for
-# https://bugzilla.redhat.com/1443999 - AGK 2017/04/20
-aux have_multi_core || skip
+which mkfs.ext4 || skip
+aux have_raid 1 14 0 || skip
+
 aux prepare_vg 5
 
 #

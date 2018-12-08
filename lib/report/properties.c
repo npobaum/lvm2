@@ -12,10 +12,10 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include "lib.h"
-#include "properties.h"
-#include "activate.h"
-#include "metadata.h"
+#include "lib/misc/lib.h"
+#include "lib/report/properties.h"
+#include "lib/activate/activate.h"
+#include "lib/metadata/metadata.h"
 
 
 #define GET_VG_NUM_PROPERTY_FN(NAME, VALUE) \
@@ -213,6 +213,8 @@ GET_PV_NUM_PROPERTY_FN(pv_ba_size, SECTOR_SIZE * pv->ba_size)
 #define _vg_allocation_policy_get prop_not_implemented_get
 #define _vg_clustered_set prop_not_implemented_set
 #define _vg_clustered_get prop_not_implemented_get
+#define _vg_shared_set prop_not_implemented_set
+#define _vg_shared_get prop_not_implemented_get
 
 #define _lv_layout_set prop_not_implemented_set
 #define _lv_layout_get prop_not_implemented_get

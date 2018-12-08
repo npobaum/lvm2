@@ -10,7 +10,7 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
-SKIP_WITH_LVMLOCKD=1
+
 SKIP_WITH_LVMPOLLD=1
 
 . lib/inittest
@@ -25,10 +25,12 @@ aux lvmconf 'allocation/maximise_cling = 0' \
 aux prepare_vg 8 80
 get_devs
 
+offset=$(get first_extent_sector $dev1)
+
 function delay
 {
 	for d in "${DEVICES[@]}"; do
-		aux delay_dev "$d" 0 $1 "$(get first_extent_sector "$d")"
+		aux delay_dev "$d" 0 $1 "$offset"
 	done
 }
 

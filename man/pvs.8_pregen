@@ -56,10 +56,6 @@ pvs produces formatted output about PVs.
 .ad b
 .br
 .ad l
-[    \fB--ignoreskippedcluster\fP ]
-.ad b
-.br
-.ad l
 [    \fB--logonly\fP ]
 .ad b
 .br
@@ -69,10 +65,6 @@ pvs produces formatted output about PVs.
 .br
 .ad l
 [    \fB--noheadings\fP ]
-.ad b
-.br
-.ad l
-[    \fB--nolocking\fP ]
 .ad b
 .br
 .ad l
@@ -162,7 +154,15 @@ Common options for lvm:
 .ad b
 .br
 .ad l
+[    \fB--lockopt\fP \fIString\fP ]
+.ad b
+.br
+.ad l
 [    \fB--longhelp\fP ]
+.ad b
+.br
+.ad l
+[    \fB--nolocking\fP ]
 .ad b
 .br
 .ad l
@@ -253,10 +253,10 @@ operations after locking failures.
 .ad b
 .HP
 .ad l
-\fB--ignoreskippedcluster\fP
+\fB--lockopt\fP \fIString\fP
 .br
-Use to avoid exiting with an non-zero status code if the command is run
-without clustered locking and clustered VGs are skipped.
+Used to pass options for special cases to lvmlockd.
+See \fBlvmlockd\fP(8) for more information.
 .ad b
 .HP
 .ad l

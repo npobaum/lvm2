@@ -77,7 +77,7 @@
  *
  * FIXME: are there some specialized or irrelevant
  * options included in the usage text below that should
- * be removed?  Should "lvm1" be removed?
+ * be removed?
  *
  * Size is a Number that takes an optional unit.
  * A full usage could be "Size[b|B|s|S|k|K|m|M|g|G|t|T|p|P|e|E]"
@@ -120,13 +120,13 @@ val(sizemb_VAL, size_mb_arg, "SizeMB", "Size[m|UNIT]")
 val(ssizemb_VAL, ssize_mb_arg, "SSizeMB", "[+|-]Size[m|UNIT]")
 val(psizemb_VAL, psize_mb_arg, "PSizeMB", "[+]Size[m|UNIT]")
 val(nsizemb_VAL, nsize_mb_arg, "NSizeMB", "[-]Size[m|UNIT]")
-val(regionsize_VAL, regionsize_arg, "RegionSize", "Size[m|UNIT]")
+val(regionsizemb_VAL, regionsize_mb_arg, "RegionSize", "Size[m|UNIT]")
 val(extents_VAL, extents_arg, "Extents", "Number[PERCENT]")
 val(sextents_VAL, sextents_arg, "SExtents", "[+|-]Number[PERCENT]")
 val(pextents_VAL, pextents_arg, "PExtents", "[+]Number[PERCENT]")
 val(nextents_VAL, nextents_arg, "NExtents", "[-]Number[PERCENT]")
 val(permission_VAL, permission_arg, "Permission", "rw|r")
-val(metadatatype_VAL, metadatatype_arg, "MetadataType", "lvm2|lvm1")
+val(metadatatype_VAL, metadatatype_arg, "MetadataType", "lvm2")
 val(units_VAL, string_arg, "Units", "r|R|h|H|b|B|s|S|k|K|m|M|g|G|t|T|p|P|e|E")
 val(segtype_VAL, segtype_arg, "SegType", "linear|striped|snapshot|mirror|raid|thin|cache|thin-pool|cache-pool")
 val(alloc_VAL, alloc_arg, "Alloc", "contiguous|cling|cling_by_tags|normal|anywhere|inherit")

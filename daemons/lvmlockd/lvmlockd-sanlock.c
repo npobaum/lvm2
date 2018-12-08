@@ -11,13 +11,13 @@
 #define _XOPEN_SOURCE 500  /* pthread */
 #define _ISOC99_SOURCE
 
-#include "tool.h"
+#include "tools/tool.h"
 
 #include "daemon-server.h"
-#include "xlate.h"
+#include "lib/mm/xlate.h"
 
 #include "lvmlockd-internal.h"
-#include "lvmlockd-client.h"
+#include "daemons/lvmlockd/lvmlockd-client.h"
 
 #include "sanlock.h"
 #include "sanlock_rv.h"
@@ -294,6 +294,36 @@ out:
 	return host_id;
 }
 
+/* Prepare valid /dev/mapper/vgname-lvname with all the mangling */
+static int build_dm_path(char *path, size_t path_len,
+			 const char *vg_name, const char *lv_name)
+{
+	struct dm_pool *mem;
+	char *dm_name;
+	int rv = 0;
+
+	if (!(mem = dm_pool_create("namepool", 1024))) {
+		log_error("Failed to create mempool.");
+		return -ENOMEM;
+	}
+
+	if (!(dm_name = dm_build_dm_name(mem, vg_name, lv_name, NULL))) {
+		log_error("Failed to build dm name for %s/%s.", vg_name, lv_name);
+		rv = -EINVAL;
+		goto fail;
+	}
+
+	if ((dm_snprintf(path, path_len, "%s/%s", dm_dir(), dm_name) < 0)) {
+		log_error("Failed to create path %s/%s.", dm_dir(), dm_name);
+		rv = -EINVAL;
+	}
+
+fail:
+	dm_pool_destroy(mem);
+
+	return rv;
+}
+
 /*
  * vgcreate
  *
@@ -336,7 +366,8 @@ int lm_init_vg_sanlock(char *ls_name, char *vg_name, uint32_t flags, char *vg_ar
 	if (strlen(lock_lv_name) + strlen(lock_args_version) + 2 > MAX_ARGS)
 		return -EARGS;
 
-	snprintf(disk.path, SANLK_PATH_LEN-1, "/dev/mapper/%s-%s", vg_name, lock_lv_name);
+	if ((rv = build_dm_path(disk.path, SANLK_PATH_LEN, vg_name, lock_lv_name)))
+		return rv;
 
 	log_debug("S %s init_vg_san path %s", ls_name, disk.path);
 
@@ -513,7 +544,8 @@ int lm_init_lv_sanlock(char *ls_name, char *vg_name, char *lv_name,
 
 	strncpy(rd.rs.lockspace_name, ls_name, SANLK_NAME_LEN);
 	rd.rs.num_disks = 1;
-	snprintf(rd.rs.disks[0].path, SANLK_PATH_LEN-1, "/dev/mapper/%s-%s", vg_name, lock_lv_name);
+	if ((rv = build_dm_path(rd.rs.disks[0].path, SANLK_PATH_LEN, vg_name, lock_lv_name)))
+		return rv;
 
 	align_size = sanlock_align(&rd.rs.disks[0]);
 	if (align_size <= 0) {
@@ -612,7 +644,8 @@ int lm_rename_vg_sanlock(char *ls_name, char *vg_name, uint32_t flags, char *vg_
 		return rv;
 	}
 
-	snprintf(disk.path, SANLK_PATH_LEN-1, "/dev/mapper/%s-%s", vg_name, lock_lv_name);
+	if ((rv = build_dm_path(disk.path, SANLK_PATH_LEN, vg_name, lock_lv_name)))
+		return rv;
 
 	log_debug("S %s rename_vg_san path %s", ls_name, disk.path);
 
@@ -1069,10 +1102,10 @@ int lm_prepare_lockspace_sanlock(struct lockspace *ls)
 	 * and appending "lockctl" to get /path/to/lvmlockctl.
 	 */
 	memset(killpath, 0, sizeof(killpath));
-	snprintf(killpath, SANLK_PATH_LEN - 1, "%slockctl", LVM_PATH);
+	snprintf(killpath, SANLK_PATH_LEN, "%slockctl", LVM_PATH);
 
 	memset(killargs, 0, sizeof(killargs));
-	snprintf(killargs, SANLK_PATH_LEN - 1, "--kill %s", ls->vg_name);
+	snprintf(killargs, SANLK_PATH_LEN, "--kill %s", ls->vg_name);
 
 	rv = check_args_version(ls->vg_args, VG_LOCK_ARGS_MAJOR);
 	if (rv < 0) {
@@ -1088,8 +1121,8 @@ int lm_prepare_lockspace_sanlock(struct lockspace *ls)
 		goto fail;
 	}
 
-	snprintf(disk_path, SANLK_PATH_LEN-1, "/dev/mapper/%s-%s",
-		 ls->vg_name, lock_lv_name);
+	if ((ret = build_dm_path(disk_path, SANLK_PATH_LEN, ls->vg_name, lock_lv_name)))
+		goto fail;
 
 	/*
 	 * When a vg is started, the internal sanlock lv should be
@@ -1460,6 +1493,12 @@ int lm_lock_sanlock(struct lockspace *ls, struct resource *r, int ld_mode,
 
 	rv = sanlock_acquire(lms->sock, -1, flags, 1, &rs, &opt);
 
+	/*
+	 * errors: translate the sanlock error number to an lvmlockd error.
+	 * We don't want to return an sanlock-specific error number from
+	 * this function to code that doesn't recognize sanlock error numbers.
+	 */
+
 	if (rv == -EAGAIN) {
 		/*
 		 * It appears that sanlock_acquire returns EAGAIN when we request
@@ -1528,6 +1567,26 @@ int lm_lock_sanlock(struct lockspace *ls, struct resource *r, int ld_mode,
 		return -EAGAIN;
 	}
 
+	if (rv == SANLK_AIO_TIMEOUT) {
+		/*
+		 * sanlock got an i/o timeout when trying to acquire the
+		 * lease on disk.
+		 */
+		log_debug("S %s R %s lock_san acquire mode %d rv %d", ls->name, r->name, ld_mode, rv);
+		*retry = 0;
+		return -EAGAIN;
+	}
+
+	if (rv == SANLK_DBLOCK_LVER || rv == SANLK_DBLOCK_MBAL) {
+		/*
+		 * There was contention with another host for the lease,
+		 * and we lost.
+		 */
+		log_debug("S %s R %s lock_san acquire mode %d rv %d", ls->name, r->name, ld_mode, rv);
+		*retry = 0;
+		return -EAGAIN;
+	}
+
 	if (rv == SANLK_ACQUIRE_OWNED_RETRY) {
 		/*
 		 * The lock is held by a failed host, and will eventually
@@ -1578,8 +1637,16 @@ int lm_lock_sanlock(struct lockspace *ls, struct resource *r, int ld_mode,
 		if (rv == -ENOSPC)
 			rv = -ELOCKIO;
 
-		return rv;
+		/*
+		 * generic error number for sanlock errors that we are not
+		 * catching above.
+		 */
+		return -ELMERR;
 	}
+
+	/*
+	 * sanlock acquire success (rv 0)
+	 */
 
 	if (rds->vb) {
 		rv = sanlock_get_lvb(0, rs, (char *)&vb, sizeof(vb));
@@ -1587,6 +1654,8 @@ int lm_lock_sanlock(struct lockspace *ls, struct resource *r, int ld_mode,
 			log_error("S %s R %s lock_san get_lvb error %d", ls->name, r->name, rv);
 			memset(rds->vb, 0, sizeof(struct val_blk));
 			memset(vb_out, 0, sizeof(struct val_blk));
+			/* the lock is still acquired, the vb values considered invalid */
+			rv = 0;
 			goto out;
 		}
 
@@ -1639,6 +1708,7 @@ int lm_convert_sanlock(struct lockspace *ls, struct resource *r,
 		if (rv < 0) {
 			log_error("S %s R %s convert_san set_lvb error %d",
 				  ls->name, r->name, rv);
+			return -ELMERR;
 		}
 	}
 
@@ -1651,14 +1721,35 @@ int lm_convert_sanlock(struct lockspace *ls, struct resource *r,
 	if (daemon_test)
 		return 0;
 
+	/*
+	 * Don't block waiting for a failed lease to expire since it causes
+	 * sanlock_convert to block for a long time, which would prevent this
+	 * thread from processing other lock requests.
+	 *
+	 * FIXME: SANLK_CONVERT_OWNER_NOWAIT is the same as SANLK_ACQUIRE_OWNER_NOWAIT.
+	 * Change to use the CONVERT define when the latest sanlock version has it.
+	 */
+	flags |= SANLK_ACQUIRE_OWNER_NOWAIT;
+
 	rv = sanlock_convert(lms->sock, -1, flags, rs);
-	if (rv == -EAGAIN) {
-		/* FIXME: When could this happen?  Should something different be done? */
-		log_error("S %s R %s convert_san EAGAIN", ls->name, r->name);
+	if (!rv)
+		return 0;
+
+	switch (rv) {
+	case -EAGAIN:
+	case SANLK_ACQUIRE_IDLIVE:
+	case SANLK_ACQUIRE_OWNED:
+	case SANLK_ACQUIRE_OWNED_RETRY:
+	case SANLK_ACQUIRE_OTHER:
+	case SANLK_AIO_TIMEOUT:
+	case SANLK_DBLOCK_LVER:
+	case SANLK_DBLOCK_MBAL:
+		/* expected errors from known/normal cases like lock contention or io timeouts */
+		log_debug("S %s R %s convert_san error %d", ls->name, r->name, rv);
 		return -EAGAIN;
-	}
-	if (rv < 0) {
+	default:
 		log_error("S %s R %s convert_san convert error %d", ls->name, r->name, rv);
+		rv = -ELMERR;
 	}
 
 	return rv;
@@ -1695,6 +1786,7 @@ static int release_rename(struct lockspace *ls, struct resource *r)
 	rv = sanlock_release(lms->sock, -1, SANLK_REL_RENAME, 2, res_args);
 	if (rv < 0) {
 		log_error("S %s R %s unlock_san release rename error %d", ls->name, r->name, rv);
+		rv = -ELMERR;
 	}
 
 	free(res_args);
@@ -1751,6 +1843,7 @@ int lm_unlock_sanlock(struct lockspace *ls, struct resource *r,
 		if (rv < 0) {
 			log_error("S %s R %s unlock_san set_lvb error %d",
 				  ls->name, r->name, rv);
+			return -ELMERR;
 		}
 	}
 
@@ -1769,6 +1862,8 @@ int lm_unlock_sanlock(struct lockspace *ls, struct resource *r,
 
 	if (rv == -EIO)
 		rv = -ELOCKIO;
+	else if (rv < 0)
+		rv = -ELMERR;
 
 	return rv;
 }

@@ -15,7 +15,7 @@
 
 #include "tools.h"
 
-#include "memlock.h"
+#include "lib/mm/memlock.h"
 
 /*
  * Passed back from callee to request caller to
@@ -70,13 +70,6 @@ static int _lvchange_permission(struct cmd_context *cmd,
 		}
 
 		log_error("Logical volume %s is already writable.",
-			  display_lvname(lv));
-		return 0;
-	}
-
-	if (lv_is_mirrored(lv) && vg_is_clustered(lv->vg) &&
-	    lv_info(cmd, lv, 0, &info, 0, 0) && info.exists) {
-		log_error("Cannot change permissions of mirror %s while active.",
 			  display_lvname(lv));
 		return 0;
 	}
@@ -301,9 +294,6 @@ static int _reactivate_lv(struct logical_volume *lv,
 	if (!active)
 		return 1;
 
-	if (exclusive)
-		return activate_lv_excl_local(cmd, lv);
-
 	return activate_lv(cmd, lv);
 }
 
@@ -325,7 +315,7 @@ static int _lvchange_resync(struct cmd_context *cmd, struct logical_volume *lv)
 
 	dm_list_init(&device_list);
 
-	if (lv_is_active_locally(lv)) {
+	if (lv_is_active(lv)) {
 		if (!lv_check_not_in_use(lv, 1)) {
 			log_error("Can't resync open logical volume %s.",
 				  display_lvname(lv));
@@ -342,7 +332,7 @@ static int _lvchange_resync(struct cmd_context *cmd, struct logical_volume *lv)
 		}
 
 		active = 1;
-		if (lv_is_active_exclusive_locally(lv))
+		if (lv_is_active(lv))
 			exclusive = 1;
 	}
 
@@ -359,12 +349,6 @@ static int _lvchange_resync(struct cmd_context *cmd, struct logical_volume *lv)
 
 	if (!deactivate_lv(cmd, lv)) {
 		log_error("Unable to deactivate %s for resync.", display_lvname(lv));
-		return 0;
-	}
-
-	if (vg_is_clustered(lv->vg) && lv_is_active(lv)) {
-		log_error("Can't get exclusive access to clustered volume %s.",
-			  display_lvname(lv));
 		return 0;
 	}
 
@@ -424,7 +408,7 @@ static int _lvchange_resync(struct cmd_context *cmd, struct logical_volume *lv)
 	memlock_unlock(lv->vg->cmd);
 
 	dm_list_iterate_items(lvl, &device_list) {
-		if (!activate_lv_excl_local(cmd, lvl->lv)) {
+		if (!activate_lv(cmd, lvl->lv)) {
 			log_error("Unable to activate %s for %s clearing.",
 				  display_lvname(lvl->lv), (seg_is_raid(seg)) ?
 				  "metadata area" : "mirror log");
@@ -617,16 +601,6 @@ static int _lvchange_persistent(struct cmd_context *cmd,
 			}
 
 			activate = CHANGE_AEY;
-			if (vg_is_clustered(lv->vg) &&
-			    locking_is_clustered() &&
-			    locking_supports_remote_queries() &&
-			    !lv_is_active_exclusive_locally(lv)) {
-				/* Reliable reactivate only locally */
-				log_print_unless_silent("Remotely active LV %s needs "
-							"individual reactivation.",
-							display_lvname(lv));
-				activate = CHANGE_ALY;
-			}
 		}
 
 		/* Ensuring LV is not active */
@@ -644,7 +618,7 @@ static int _lvchange_persistent(struct cmd_context *cmd,
 
 	if (activate != CHANGE_AN) {
 		log_verbose("Re-activating logical volume %s.", display_lvname(lv));
-		if (!lv_active_change(cmd, lv, activate, 0)) {
+		if (!lv_active_change(cmd, lv, activate)) {
 			log_error("%s: reactivation failed.", display_lvname(lv));
 			backup(lv->vg);
 			return 0;
@@ -960,6 +934,62 @@ static int _lvchange_activation_skip(struct logical_volume *lv, uint32_t *mr)
 	return 1;
 }
 
+static int _lvchange_compression(struct logical_volume *lv, uint32_t *mr)
+{
+	struct cmd_context *cmd = lv->vg->cmd;
+	unsigned compression = arg_uint_value(cmd, compression_ARG, 0);
+	struct lv_segment *seg = first_seg(lv);
+
+	if (lv_is_vdo(lv))
+		seg = first_seg(seg_lv(seg, 0));
+	else if (!lv_is_vdo_pool(lv)) {
+		log_error("Unable to change compression for non VDO volume %s.",
+			  display_lvname(lv));
+		return 0;
+	}
+
+	if (compression == seg->vdo_params.use_compression) {
+		log_error("Logical volume %s already uses --compression %c.",
+			  display_lvname(lv), compression ? 'y' : 'n');
+		return 0;
+	}
+
+	seg->vdo_params.use_compression = compression;
+
+	/* Request caller to commit and reload metadata */
+	*mr |= MR_RELOAD;
+
+	return 1;
+}
+
+static int _lvchange_deduplication(struct logical_volume *lv, uint32_t *mr)
+{
+	struct cmd_context *cmd = lv->vg->cmd;
+	unsigned deduplication = arg_uint_value(cmd, deduplication_ARG, 0);
+	struct lv_segment *seg = first_seg(lv);
+
+	if (lv_is_vdo(lv))
+		seg = first_seg(seg_lv(seg, 0));
+	else if (!lv_is_vdo_pool(lv)) {
+		log_error("Unable to change deduplication for non VDO volume %s.",
+			  display_lvname(lv));
+		return 0;
+	}
+
+	if (deduplication == seg->vdo_params.use_deduplication) {
+		log_error("Logical volume %s already uses --deduplication %c.",
+			  display_lvname(lv), deduplication ? 'y' : 'n');
+		return 0;
+	}
+
+	seg->vdo_params.use_deduplication = deduplication;
+
+	/* Request caller to commit and reload metadata */
+	*mr |= MR_RELOAD;
+
+	return 1;
+}
+
 /* Update and reload or commit and/or backup metadata for @lv as requested by @mr */
 static int _commit_reload(struct logical_volume *lv, uint32_t mr)
 {
@@ -992,6 +1022,8 @@ static int _option_allows_group_commit(int opt_enum)
 		permission_ARG,
 		alloc_ARG,
 		contiguous_ARG,
+		compression_ARG,
+		deduplication_ARG,
 		errorwhenfull_ARG,
 		readahead_ARG,
 		persistent_ARG,
@@ -1056,9 +1088,11 @@ static int _lvchange_properties_single(struct cmd_context *cmd,
 	int i, opt_enum;
 	uint32_t mr = 0;
 
-	/* If LV is inactive here, ensure it's not active elsewhere. */
-	if (!lockd_lv(cmd, lv, "ex", 0))
-		return_ECMD_FAILED;
+	/*
+	 * We do not acquire an lvmlockd lock on the LV here because these are
+	 * VG metadata changes that do not conflict with the LV being active on
+	 * another host.
+	 */
 
 	/* First group of options which allow for one metadata commit/update for the whole group */
 	for (i = 0; i < cmd->command->ro_count; i++) {
@@ -1139,6 +1173,16 @@ static int _lvchange_properties_single(struct cmd_context *cmd,
 		case setactivationskip_ARG:
 			docmds++;
 			doit += _lvchange_activation_skip(lv, &mr);
+			break;
+
+		case compression_ARG:
+			docmds++;
+			doit += _lvchange_compression(lv, &mr);
+			break;
+
+		case deduplication_ARG:
+			docmds++;
+			doit += _lvchange_deduplication(lv, &mr);
 			break;
 
 		default:
@@ -1253,18 +1297,17 @@ static int _lvchange_properties_check(struct cmd_context *cmd,
 		return 0;
 	}
 
-	if (vg_is_clustered(lv->vg) && lv_is_cache_origin(lv) && lv_is_raid(lv)) {
-		log_error("Unable to change internal LV %s directly in a cluster.",
-			  display_lvname(lv));
-		return 0;
-	}
-
 	return 1;
 }
 
 int lvchange_properties_cmd(struct cmd_context *cmd, int argc, char **argv)
 {
 	int ret;
+
+	if (cmd->activate_component) {
+		log_error("Cannot change LV properties when activating component LVs.");
+		return 0;
+	}
 
 	/*
 	 * A command def rule allows only some options when LV is partial,
@@ -1337,20 +1380,6 @@ static int _lvchange_activate_single(struct cmd_context *cmd,
 		}
 	}
 
-	/*
-	 * If --sysinit -aay is used and at the same time lvmetad is used,
-	 * we want to rely on autoactivation to take place. Also, we
-	 * need to take special care here as lvmetad service does
-	 * not neet to be running at this moment yet - it could be
-	 * just too early during system initialization time.
-	 */
-	if (arg_is_set(cmd, sysinit_ARG) && (arg_uint_value(cmd, activate_ARG, 0) == CHANGE_AAY)) {
-		if (lvmetad_used()) {
-			log_warn("WARNING: lvmetad is active, skipping direct activation during sysinit.");
-			return ECMD_PROCESSED;
-		}
-	}
-
 	if (!_lvchange_activate(cmd, lv))
 		return_ECMD_FAILED;
 
@@ -1362,11 +1391,17 @@ static int _lvchange_activate_check(struct cmd_context *cmd,
 				     struct processing_handle *handle,
 				     int lv_is_named_arg)
 {
-	if (!lv_is_visible(lv)) {
+	if (!lv_is_visible(lv) &&
+	    !cmd->activate_component && /* activation of named component LV */
+	    ((first_seg(lv)->status & MERGING) || /* merging already started */
+	     !cmd->process_component_lvs)) { /* deactivation of a component LV */
 		if (lv_is_named_arg)
 			log_error("Operation not permitted on hidden LV %s.", display_lvname(lv));
 		return 0;
 	}
+
+	if (lv_is_vdo_pool(lv) && !lv_is_named_arg)
+		return 0;	/* Skip VDO pool processing unless explicitely named */
 
 	return 1;
 }
@@ -1374,6 +1409,7 @@ static int _lvchange_activate_check(struct cmd_context *cmd,
 int lvchange_activate_cmd(struct cmd_context *cmd, int argc, char **argv)
 {
 	int ret;
+	int do_activate = is_change_activating((activation_change_t)arg_uint_value(cmd, activate_ARG, CHANGE_AY));
 
 	init_background_polling(arg_is_set(cmd, sysinit_ARG) ? 0 : arg_int_value(cmd, poll_ARG, DEFAULT_BACKGROUND_POLLING));
 	cmd->handles_missing_pvs = 1;
@@ -1387,10 +1423,27 @@ int lvchange_activate_cmd(struct cmd_context *cmd, int argc, char **argv)
 	cmd->include_active_foreign_vgs = 1;
 
 	/* Allow deactivating if locks fail. */
-	if (is_change_activating((activation_change_t)arg_uint_value(cmd, activate_ARG, CHANGE_AY)))
+	if (do_activate)
 		cmd->lockd_vg_enforce_sh = 1;
 
-	ret = process_each_lv(cmd, argc, argv, NULL, NULL, 0,
+	/* When activating, check if given LV is a component LV */
+	if (do_activate) {
+		if ((argc == 1) && is_component_lvname(argv[0])) {
+			/* With single arg with reserved name prompt for component activation */
+			if (arg_is_set(cmd, yes_ARG) ||
+			    (yes_no_prompt("Do you want to activate component LV "
+					   "in read-only mode? [y/n]: ") == 'y')) {
+				log_print_unless_silent("Allowing activation of component LV.");
+				cmd->activate_component = 1;
+			}
+
+			if (sigint_caught())
+				return_ECMD_FAILED;
+		}
+	} else /* Component LVs might be active, support easy deactivation */
+		cmd->process_component_lvs = 1;
+
+	ret = process_each_lv(cmd, argc, argv, NULL, NULL, READ_FOR_UPDATE,
 			      NULL, &_lvchange_activate_check, &_lvchange_activate_single);
 
 	if (ret != ECMD_PROCESSED)

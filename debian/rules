@@ -42,8 +42,6 @@ override_dh_auto_configure:
 		--with-usrlibdir=/usr/lib/$(DEB_HOST_MULTIARCH) \
 		--with-optimisation="$(CFLAGS_OPT_DEB)" \
 		--with-cache=internal \
-		--with-clvmd=corosync \
-		--with-cluster=internal \
 		--with-device-uid=0 \
 		--with-device-gid=6 \
 		--with-device-mode=0660 \
@@ -57,10 +55,8 @@ override_dh_auto_configure:
 		--enable-applib \
 		--enable-blkid_wiping \
 		--enable-cmdlib \
-		--enable-cmirrord \
 		--enable-dmeventd \
 		--enable-dbus-service \
-		--enable-lvmetad \
 		--enable-lvmlockd-dlm \
 		--enable-lvmlockd-sanlock \
 		--enable-lvmpolld \
@@ -76,7 +72,6 @@ override_dh_auto_configure:
 		--sbindir=/sbin \
 		--with-usrlibdir=/usr/lib \
 		--with-optimisation="$(CFLAGS_OPT_UDEB)" \
-		--with-cluster=none \
 		--with-lvm1=none \
 		--with-pool=none \
 		--disable-readline \
@@ -133,7 +128,6 @@ override_dh_installchangelogs:
 
 override_dh_installinit:
 	dh_installinit -plvm2 --no-start
-	dh_installinit -plvm2 --restart-after-upgrade --name lvm2-lvmetad
 	dh_installinit -plvm2 --restart-after-upgrade --name lvm2-lvmpolld
 
 override_dh_makeshlibs:
@@ -148,11 +142,9 @@ override_dh_makeshlibs:
 		-- -c2
 
 override_dh_installsystemd:
-	dh_installsystemd -pclvm --no-enable --no-start lvm2-cluster-activation.service
 	dh_installsystemd -plvm2 --no-restart-after-upgrade --no-stop-on-upgrade \
 		blk-availability.service \
 		lvm2-monitor.service
 	dh_installsystemd -plvm2 \
-		lvm2-lvmetad.socket \
 		lvm2-lvmpolld.socket
 	dh_installsystemd --remaining-packages
