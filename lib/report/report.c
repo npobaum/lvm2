@@ -13,17 +13,17 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include "lib.h"
-#include "metadata.h"
-#include "report.h"
-#include "toolcontext.h"
-#include "lvm-string.h"
-#include "display.h"
-#include "activate.h"
-#include "segtype.h"
-#include "lvmcache.h"
-#include "device-types.h"
-#include "str_list.h"
+#include "lib/misc/lib.h"
+#include "lib/metadata/metadata.h"
+#include "lib/report/report.h"
+#include "lib/commands/toolcontext.h"
+#include "lib/misc/lvm-string.h"
+#include "lib/display/display.h"
+#include "lib/activate/activate.h"
+#include "lib/metadata/segtype.h"
+#include "lib/cache/lvmcache.h"
+#include "lib/device/device-types.h"
+#include "lib/datastruct/str_list.h"
 
 #include <stddef.h> /* offsetof() */
 #include <float.h> /* DBL_MAX */
@@ -2845,7 +2845,7 @@ static int _vgsystemid_disp(struct dm_report *rh, struct dm_pool *mem,
 			    const void *data, void *private)
 {
 	const struct volume_group *vg = (const struct volume_group *) data;
-	const char *repstr = (vg->system_id && *vg->system_id) ? vg->system_id : vg->lvm1_system_id ? : "";
+	const char *repstr = (vg->system_id && *vg->system_id) ? vg->system_id : "";
 
 	return _field_string(rh, field, repstr);
 }
@@ -2855,8 +2855,14 @@ static int _vglocktype_disp(struct dm_report *rh, struct dm_pool *mem,
 			    const void *data, void *private)
 {
 	const struct volume_group *vg = (const struct volume_group *) data;
+	const char *locktype;
 
-	return _field_string(rh, field, vg->lock_type ? : "");
+	if (!vg->lock_type || !strcmp(vg->lock_type, "none"))
+		locktype = "";
+	else
+		locktype = vg->lock_type;
+
+	return _field_string(rh, field, locktype);
 }
 
 static int _vglockargs_disp(struct dm_report *rh, struct dm_pool *mem,
@@ -3385,6 +3391,14 @@ static int _vgclustered_disp(struct dm_report *rh, struct dm_pool *mem,
 	return _binary_disp(rh, mem, field, clustered, GET_FIRST_RESERVED_NAME(vg_clustered_y), private);
 }
 
+static int _vgshared_disp(struct dm_report *rh, struct dm_pool *mem,
+			  struct dm_report_field *field,
+			  const void *data, void *private)
+{
+	int shared = (vg_is_shared((const struct volume_group *) data)) != 0;
+	return _binary_disp(rh, mem, field, shared, GET_FIRST_RESERVED_NAME(vg_shared_y), private);
+}
+
 static int _lvlayout_disp(struct dm_report *rh, struct dm_pool *mem,
 				struct dm_report_field *field,
 				const void *data, void *private)
@@ -3551,11 +3565,7 @@ static int _lvactivelocally_disp(struct dm_report *rh, struct dm_pool *mem,
 	if (!activation())
 		return _binary_undef_disp(rh, mem, field, private);
 
-	if (vg_is_clustered(lv->vg)) {
-		lv = lv_lock_holder(lv);
-		active_locally = lv_is_active_locally(lv);
-	} else
-		active_locally = lv_is_active(lv);
+	active_locally = lv_is_active(lv);
 
 	return _binary_disp(rh, mem, field, active_locally, GET_FIRST_RESERVED_NAME(lv_active_locally_y), private);
 }
@@ -3564,38 +3574,12 @@ static int _lvactiveremotely_disp(struct dm_report *rh, struct dm_pool *mem,
 				  struct dm_report_field *field,
 				  const void *data, void *private)
 {
-	const struct logical_volume *lv = (const struct logical_volume *) data;
 	int active_remotely;
 
 	if (!activation())
 		return _binary_undef_disp(rh, mem, field, private);
 
-	if (vg_is_clustered(lv->vg)) {
-		lv = lv_lock_holder(lv);
-		/* FIXME: It seems we have no way to get this info correctly
-		 * 	  with current interface - we'd need to check number
-		 * 	  of responses from the cluster:
-		 * 	    - if number of nodes that responded == 1
-		 * 	    - and LV is active on local node
-		 * 	  ..then we may say that LV is *not* active remotely.
-		 *
-		 * 	  Otherwise ((responses > 1 && LV active locally) ||
-		 * 	  (responses == 1 && LV not active locally)), it's
-		 * 	  active remotely.
-		 *
-		 * 	  We have this info, but hidden underneath the
-		 * 	  locking interface (locking_type.query_resource fn).
-		 *
-		 * 	  For now, let's use 'unknown' for remote status if
-		 * 	  the LV is found active locally until we find a way to
-		 * 	  smuggle the proper information out of the interface.
-		 */
-		if (lv_is_active_locally(lv))
-			return _binary_undef_disp(rh, mem, field, private);
-
-		active_remotely = lv_is_active_but_not_locally(lv);
-	} else
-		active_remotely = 0;
+	active_remotely = 0;
 
 	return _binary_disp(rh, mem, field, active_remotely, GET_FIRST_RESERVED_NAME(lv_active_remotely_y), private);
 }
@@ -3610,11 +3594,7 @@ static int _lvactiveexclusively_disp(struct dm_report *rh, struct dm_pool *mem,
 	if (!activation())
 		return _binary_undef_disp(rh, mem, field, private);
 
-	if (vg_is_clustered(lv->vg)) {
-		lv = lv_lock_holder(lv);
-		active_exclusively = lv_is_active_exclusive(lv);
-	} else
-		active_exclusively = lv_is_active(lv);
+	active_exclusively = lv_is_active(lv);
 
 	return _binary_disp(rh, mem, field, active_exclusively, GET_FIRST_RESERVED_NAME(lv_active_exclusively_y), private);
 }
@@ -3822,7 +3802,6 @@ static struct volume_group _dummy_vg = {
 	.fid = &_dummy_fid,
 	.name = "",
 	.system_id = (char *) "",
-	.lvm1_system_id = (char *) "",
 	.pvs = DM_LIST_HEAD_INIT(_dummy_vg.pvs),
 	.lvs = DM_LIST_HEAD_INIT(_dummy_vg.lvs),
 	.historical_lvs = DM_LIST_HEAD_INIT(_dummy_vg.historical_lvs),
@@ -3833,7 +3812,6 @@ static struct volume_group _unknown_vg = {
 	.fid = &_dummy_fid,
 	.name = "[unknown]",
 	.system_id = (char *) "",
-	.lvm1_system_id = (char *) "",
 	.pvs = DM_LIST_HEAD_INIT(_unknown_vg.pvs),
 	.lvs = DM_LIST_HEAD_INIT(_unknown_vg.lvs),
 	.historical_lvs = DM_LIST_HEAD_INIT(_unknown_vg.historical_lvs),

@@ -51,9 +51,6 @@ do { \
 	printf(fmt "\n", ##args); \
 } while (0)
 
-#define dm_malloc malloc
-#define dm_strdup strdup
-#define dm_free free
 #define dm_snprintf snprintf
 
 static int dm_strncpy(char *dest, const char *src, size_t n)
@@ -115,7 +112,7 @@ static inline int segtype_arg(struct cmd_context *cmd, struct arg_values *av) { 
 static inline int alloc_arg(struct cmd_context *cmd, struct arg_values *av) { return 0; }
 static inline int locktype_arg(struct cmd_context *cmd, struct arg_values *av) { return 0; }
 static inline int readahead_arg(struct cmd_context *cmd, struct arg_values *av) { return 0; }
-static inline int regionsize_arg(struct cmd_context *cmd, struct arg_values *av) { return 0; }
+static inline int regionsize_mb_arg(struct cmd_context *cmd, struct arg_values *av) { return 0; }
 static inline int vgmetadatacopies_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_values *av) { return 0; }
 static inline int pvmetadatacopies_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_values *av) { return 0; }
 static inline int metadatacopies_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_values *av) { return 0; }
@@ -134,12 +131,11 @@ static inline int configtype_arg(struct cmd_context *cmd __attribute__((unused))
 #define ALLOW_UUID_AS_NAME      0x00000010
 #define LOCKD_VG_SH             0x00000020
 #define NO_METADATA_PROCESSING  0x00000040
-#define REQUIRES_FULL_LABEL_SCAN 0x00000080
 #define MUST_USE_ALL_ARGS        0x00000100
-#define NO_LVMETAD_AUTOSCAN      0x00000200
 #define ENABLE_DUPLICATE_DEVS    0x00000400
 #define DISALLOW_TAG_ARGS        0x00000800
 #define GET_VGNAME_FROM_OPTIONS  0x00001000
+#define CAN_USE_ONE_SCAN	 0x00002000
 
 /* create foo_CMD enums for command def ID's in command-lines.in */
 
@@ -333,13 +329,15 @@ static char *_split_line(char *buf, int *argc, char **argv, char sep)
 
 static int _val_str_to_num(char *str)
 {
-	char name[32];
+	char name[MAX_LINE_ARGC];
 	char *new;
 	int i;
 
 	/* compare the name before any suffix like _new or _<lvtype> */
 
-	dm_strncpy(name, str, sizeof(name));
+	if (!dm_strncpy(name, str, sizeof(name)))
+		return 0; /* Buffer is too short */
+
 	if ((new = strchr(name, '_')))
 		*new = '\0';
 
@@ -489,8 +487,7 @@ static uint64_t _lv_to_bits(struct command *cmd, char *name)
 	int argc;
 	int i;
 
-	memset(buf, 0, sizeof(buf));
-	strncpy(buf, name, LVTYPE_LEN-1);
+	(void) dm_strncpy(buf, name, LVTYPE_LEN);
 
 	_split_line(buf, &argc, argv, '_');
 
@@ -744,7 +741,7 @@ static void _add_oo_definition_line(const char *name, const char *line)
 
 	oo = &_oo_lines[_oo_line_count++];
 
-	if (!(oo->name = dm_strdup(name))) {
+	if (!(oo->name = strdup(name))) {
 		log_error("Failer to duplicate name %s.", name);
 		return; /* FIXME: return code */
 	}
@@ -757,7 +754,7 @@ static void _add_oo_definition_line(const char *name, const char *line)
 	}
 
 	start = strchr(line, ':') + 2;
-	if (!(oo->line = dm_strdup(start))) {
+	if (!(oo->line = strdup(start))) {
 		log_error("Failer to duplicate line %s.", start);
 		return;
 	}
@@ -778,14 +775,14 @@ static void _append_oo_definition_line(const char *new_line)
 
 	/* +2 = 1 space between old and new + 1 terminating \0 */
 	len = strlen(old_line) + strlen(new_line) + 2;
-	line = dm_malloc(len);
+	line = malloc(len);
 	if (!line) {
 		log_error("Parsing command defs: no memory.");
 		return;
 	}
 
 	(void) dm_snprintf(line, len, "%s %s", old_line, new_line);
-	dm_free(oo->line);
+	free(oo->line);
 	oo->line = line;
 }
 
@@ -832,14 +829,14 @@ static void _include_optional_opt_args(struct cmd_context *cmdtool, struct comma
 		return;
 	}
 
-	if (!(line = dm_strdup(oo_line))) {
+	if (!(line = strdup(oo_line))) {
 		cmd->cmd_flags |= CMD_FLAG_PARSE_ERROR;
 		return;
 	}
 
 	_split_line(line, &line_argc, line_argv, ' ');
 	__add_optional_opt_line(cmdtool, cmd, line_argc, line_argv);
-	dm_free(line);
+	free(line);
 }
 
 /*
@@ -1088,14 +1085,14 @@ static void _include_required_opt_args(struct cmd_context *cmdtool, struct comma
 		return;
 	}
 
-	if (!(line = dm_strdup(oo_line))) {
+	if (!(line = strdup(oo_line))) {
 		cmd->cmd_flags |= CMD_FLAG_PARSE_ERROR;
 		return;
 	}
 
 	_split_line(line, &line_argc, line_argv, ' ');
 	_add_required_opt_line(cmdtool, cmd, line_argc, line_argv);
-	dm_free(line);
+	free(line);
 }
 
 /* Process what follows command_name, which are required opt/pos args. */
@@ -1566,8 +1563,8 @@ int define_commands(struct cmd_context *cmdtool, const char *run_name)
 
 	for (i = 0; i < _oo_line_count; i++) {
 		struct oo_line *oo = &_oo_lines[i];
-		dm_free(oo->name);
-		dm_free(oo->line);
+		free(oo->name);
+		free(oo->line);
 	}
 	memset(&_oo_lines, 0, sizeof(_oo_lines));
 	_oo_line_count = 0;
@@ -2261,7 +2258,7 @@ static void _print_val_man(struct command_name *cname, int opt_enum, int val_enu
 		return;
 	}
 
-	if (val_enum == regionsize_VAL) {
+	if (val_enum == regionsizemb_VAL) {
 		printf("\\fISize\\fP[m|UNIT]");
 		return;
 	}
@@ -2296,7 +2293,7 @@ static void _print_val_man(struct command_name *cname, int opt_enum, int val_enu
 	}
 
 	if (strchr(str, '|')) {
-		line = dm_strdup(str);
+		line = strdup(str);
 		_split_line(line, &line_argc, line_argv, '|');
 		for (i = 0; i < line_argc; i++) {
 			if (i)
@@ -2306,7 +2303,7 @@ static void _print_val_man(struct command_name *cname, int opt_enum, int val_enu
 			else
 				printf("\\fB%s\\fP", line_argv[i]);
 		}
-		dm_free(line);
+		free(line);
 		return;
 	}
 
@@ -2924,7 +2921,8 @@ static void _print_man_option_desc(struct command_name *cname, int opt_enum)
 	char buf[DESC_LINE];
 	int started_cname = 0;
 	int line_count = 0;
-	int di, bi = 0;
+	int bi = 0;
+	unsigned di;
 
 	if (desc[0] != '#') {
 		printf("%s", desc);
@@ -3243,7 +3241,7 @@ static void _print_man_all_positions_desc(struct command_name *cname)
 static void _print_desc_man(const char *desc)
 {
 	char buf[DESC_LINE] = {0};
-	int di = 0;
+	unsigned di;
 	int bi = 0;
 
 	for (di = 0; di < strlen(desc); di++) {
@@ -3315,7 +3313,7 @@ static int _include_description_file(char *name, char *des_file)
 		goto out_close;
 	}
 
-	if (!(buf = dm_malloc(statbuf.st_size + 1))) {
+	if (!(buf = malloc(statbuf.st_size + 1))) {
 		log_error("Failed to allocate buffer for description file %s.", des_file);
 		goto out_close;
 	}
@@ -3330,7 +3328,7 @@ static int _include_description_file(char *name, char *des_file)
 	r = 1;
 
 out_free:
-	dm_free(buf);
+	free(buf);
 out_close:
 	(void) close(fd);
 
@@ -3517,7 +3515,7 @@ int main(int argc, char *argv[])
 
 	memset(&commands, 0, sizeof(commands));
 
-	if (!(stdout_buf = dm_malloc(sz)))
+	if (!(stdout_buf = malloc(sz)))
 		log_error("Failed to allocate stdout buffer; carrying on with default buffering.");
 	else
 		setbuffer(stdout, stdout_buf, sz);

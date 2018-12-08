@@ -59,17 +59,10 @@ static int _vgrename_single(struct cmd_context *cmd, const char *vg_name,
 	/*
 	 * Check if a VG already exists with the new VG name.
 	 *
-	 * When not using lvmetad, it's essential that a full scan has
-	 * been done to ensure we see all existing VG names, so we
-	 * do not use an existing name.  This has been done by
-	 * process_each_vg REQUIRES_FULL_LABEL_SCAN.
-	 *
 	 * (FIXME: We could look for the new name in the list of all
 	 * VGs that process_each_vg created, but we don't have access
-	 * to that list here, so we have to look in lvmcache.
-	 * This requires populating lvmcache when using lvmetad.)
+	 * to that list here, so we have to look in lvmcache.)
 	 */
-	lvmcache_seed_infos_from_lvmetad(cmd);
 
 	if (lvmcache_vginfo_from_vgname(vp->vg_name_new, NULL)) {
 		log_error("New VG name \"%s\" already exists", vp->vg_name_new);
@@ -104,23 +97,14 @@ static int _vgrename_single(struct cmd_context *cmd, const char *vg_name,
 	 *   this uuid-for-name case.
 	 */
 	if (vp->lock_vg_old_first || vp->old_name_is_uuid) {
-		if (vp->old_name_is_uuid)
-			lvmcache_lock_ordering(0);
-
 		if (!_lock_new_vg_for_rename(cmd, vp->vg_name_new))
 			return ECMD_FAILED;
-
-		lvmcache_lock_ordering(1);
 	}
 
 	dev_dir = cmd->dev_dir;
 
 	if (!archive(vg))
 		goto error;
-
-	/* Remove references based on old name */
-	if (!drop_cached_metadata(vg))
-		stack;
 
 	if (!lockd_rename_vg_before(cmd, vg)) {
 		stack;

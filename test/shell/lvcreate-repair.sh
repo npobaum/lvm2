@@ -10,7 +10,6 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
-SKIP_WITH_LVMLOCKD=1
 SKIP_WITH_LVMPOLLD=1
 
 . lib/inittest
@@ -23,7 +22,7 @@ for i in "$dev1" "$dev2" "$dev3" ; do
 		if test "$i" = "$j" ; then continue ; fi
 
 		vgremove -ff $vg
-		vgcreate $vg "$dev1" "$dev2" "$dev3"
+		vgcreate $SHARED $vg "$dev1" "$dev2" "$dev3"
 		# exit 1
 
 		lvcreate -l1 -n $lv1 $vg "$dev1"
@@ -49,7 +48,7 @@ for i in "$dev1" "$dev2" "$dev3" ; do
 done
 
 vgremove -ff $vg
-vgcreate $vg "$dev1" "$dev2" "$dev3"
+vgcreate $SHARED $vg "$dev1" "$dev2" "$dev3"
 
 # use tricky 'dd'
 for i in "$dev1" "$dev2" "$dev3" ; do
@@ -89,7 +88,6 @@ dd if=backup_i of="$dev1" bs=256K count=1
 
 # dirty game
 dd if=/dev/zero of="$dev3" bs=256K count=1
-aux notify_lvmetad "$dev3" # udev be watching you
 
 vgreduce --removemissing --force $vg
 

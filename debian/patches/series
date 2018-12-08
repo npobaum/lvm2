@@ -1,11 +1,12 @@
 0001-install.patch
 0002-libs-cleanup.patch
-0003-dirs.patch
-0004-force-paths.patch
-0005-implicit-pointer.patch
-0006-dm-event-api.patch
+0003-force-paths.patch
+0004-implicit-pointer.patch
+0005-dm-event-api.patch
 udev.patch
 systemd.patch
-0009-clvmd-openais-format.patch
 udev-md.patch
 systemd-pvscan-background.patch
+0010-lvm2-monitoring-service-shouldn-t-refer-to-lvmetad.patch
+0011-pvscan-systemd-service-for-event-based-activation.patch
+0012-udev-69-dm-lvm-metad.rules-is-still-needed.patch

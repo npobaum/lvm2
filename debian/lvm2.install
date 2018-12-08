@@ -1,7 +1,6 @@
 ../../initramfs-tools/lvm2/* usr/share/initramfs-tools
 etc/lvm
 lib/systemd/system/blk-availability*
-lib/systemd/system/lvm2-lvmetad*
 lib/systemd/system/lvm2-lvmpolld*
 lib/systemd/system/lvm2-monitor*
 lib/systemd/system/lvm2-pvscan*
@@ -14,11 +13,9 @@ sbin/lvcreate
 sbin/lvdisplay
 sbin/lvextend
 sbin/lvm
-sbin/lvmconf
 sbin/lvmconfig
 sbin/lvmdiskscan
 sbin/lvmdump
-sbin/lvmetad
 sbin/lvmpolld
 sbin/lvmsadc
 sbin/lvmsar
@@ -71,13 +68,11 @@ usr/share/man/man8/lvdisplay.8
 usr/share/man/man8/lvextend.8
 usr/share/man/man8/lvm2-activation-generator.8
 usr/share/man/man8/lvm.8
-usr/share/man/man8/lvmconf.8
 usr/share/man/man8/lvm-config.8
 usr/share/man/man8/lvmconfig.8
 usr/share/man/man8/lvmdiskscan.8
 usr/share/man/man8/lvmdump.8
 usr/share/man/man8/lvm-dumpconfig.8
-usr/share/man/man8/lvmetad.8
 usr/share/man/man8/lvm-fullreport.8
 usr/share/man/man8/lvm-lvpoll.8
 usr/share/man/man8/lvmpolld.8

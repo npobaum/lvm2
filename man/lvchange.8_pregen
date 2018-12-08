@@ -45,6 +45,10 @@ lvchange - Change the attributes of logical volume(s)
 .ad b
 .br
 .ad l
+    \fB--compression\fP \fBy\fP|\fBn\fP
+.ad b
+.br
+.ad l
     \fB--config\fP \fIString\fP
 .ad b
 .br
@@ -54,6 +58,10 @@ lvchange - Change the attributes of logical volume(s)
 .br
 .ad l
  \fB-d\fP|\fB--debug\fP
+.ad b
+.br
+.ad l
+    \fB--deduplication\fP \fBy\fP|\fBn\fP
 .ad b
 .br
 .ad l
@@ -97,7 +105,7 @@ lvchange - Change the attributes of logical volume(s)
 .ad b
 .br
 .ad l
-    \fB--ignoreskippedcluster\fP
+    \fB--lockopt\fP \fIString\fP
 .ad b
 .br
 .ad l
@@ -126,6 +134,10 @@ lvchange - Change the attributes of logical volume(s)
 .br
 .ad l
     \fB--monitor\fP \fBy\fP|\fBn\fP
+.ad b
+.br
+.ad l
+    \fB--nolocking\fP
 .ad b
 .br
 .ad l
@@ -158,6 +170,10 @@ lvchange - Change the attributes of logical volume(s)
 .br
 .ad l
  \fB-r\fP|\fB--readahead\fP \fBauto\fP|\fBnone\fP|\fINumber\fP
+.ad b
+.br
+.ad l
+    \fB--readonly\fP
 .ad b
 .br
 .ad l
@@ -265,6 +281,14 @@ required, after which the others are optional.
 .br
 .ad l
      \fB--alloc\fP \fBcontiguous\fP|\fBcling\fP|\fBcling_by_tags\fP|\fBnormal\fP|\fBanywhere\fP|\fBinherit\fP,
+.ad b
+.br
+.ad l
+     \fB--compression\fP \fBy\fP|\fBn\fP,
+.ad b
+.br
+.ad l
+     \fB--deduplication\fP \fBy\fP|\fBn\fP,
 .ad b
 .br
 .ad l
@@ -407,6 +431,10 @@ Activate or deactivate an LV.
 [    \fB--sysinit\fP ]
 .ad b
 .br
+.ad l
+[    \fB--readonly\fP ]
+.ad b
+.br
 [ COMMON_OPTIONS ]
 .RE
 .br
@@ -512,10 +540,6 @@ Common options for command:
 .ad b
 .br
 .ad l
-[    \fB--ignoreskippedcluster\fP ]
-.ad b
-.br
-.ad l
 [    \fB--noudevsync\fP ]
 .ad b
 .br
@@ -564,7 +588,15 @@ Common options for lvm:
 .ad b
 .br
 .ad l
+[    \fB--lockopt\fP \fIString\fP ]
+.ad b
+.br
+.ad l
 [    \fB--longhelp\fP ]
+.ad b
+.br
+.ad l
+[    \fB--nolocking\fP ]
 .ad b
 .br
 .ad l
@@ -695,6 +727,13 @@ See \fBlvm.conf\fP(5) for more information about profiles.
 .ad b
 .HP
 .ad l
+\fB--compression\fP \fBy\fP|\fBn\fP
+.br
+Controls whether compression is enabled or disable for VDO volume.
+See \fBlvmvdo\fP(7) for more information about VDO usage.
+.ad b
+.HP
+.ad l
 \fB--config\fP \fIString\fP
 .br
 Config settings for the command. These override lvm.conf settings.
@@ -718,6 +757,13 @@ are already contiguous.
 .br
 Set debug level. Repeat from 1 to 6 times to increase the detail of
 messages sent to the log file and/or syslog (if configured).
+.ad b
+.HP
+.ad l
+\fB--deduplication\fP \fBy\fP|\fBn\fP
+.br
+Controls whether deduplication is enabled or disable for VDO volume.
+See \fBlvmvdo\fP(7) for more information about VDO usage.
 .ad b
 .HP
 .ad l
@@ -802,10 +848,10 @@ Do not use this if dmeventd is already monitoring a device.
 .ad b
 .HP
 .ad l
-\fB--ignoreskippedcluster\fP
+\fB--lockopt\fP \fIString\fP
 .br
-Use to avoid exiting with an non-zero status code if the command is run
-without clustered locking and clustered VGs are skipped.
+Used to pass options for special cases to lvmlockd.
+See \fBlvmlockd\fP(8) for more information.
 .ad b
 .HP
 .ad l
@@ -858,6 +904,12 @@ Start (yes) or stop (no) monitoring an LV with dmeventd.
 dmeventd monitors kernel events for an LV, and performs
 automated maintenance for the LV in reponse to specific events.
 See \fBdmeventd\fP(8) for more information.
+.ad b
+.HP
+.ad l
+\fB--nolocking\fP
+.br
+Disable locking.
 .ad b
 .HP
 .ad l
@@ -923,6 +975,20 @@ Sets read ahead sector count of an LV.
 \fBauto\fP is the default which allows the kernel to choose
 a suitable value automatically.
 \fBnone\fP is equivalent to zero.
+.ad b
+.HP
+.ad l
+\fB--readonly\fP
+.br
+Run the command in a special read-only mode which will read on-disk
+metadata without needing to take any locks. This can be used to peek
+inside metadata used by a virtual machine image while the virtual
+machine is running.
+It can also be used to peek inside the metadata of clustered VGs
+when clustered locking is not configured or running. No attempt
+will be made to communicate with the device-mapper kernel driver, so
+this option is unable to report whether or not LVs are
+actually in use.
 .ad b
 .HP
 .ad l
@@ -1013,7 +1079,6 @@ available. As such, some functionality needs to be disabled and this option
 acts as a shortcut which selects an appropriate set of options. Currently,
 this is equivalent to using --ignorelockingfailure, --ignoremonitoring,
 --poll n, and setting env var LVM_SUPPRESS_LOCKING_FAILURE_MESSAGES.
-When used in conjunction with lvmetad enabled and running,
 vgchange/lvchange skip autoactivation, and defer to pvscan autoactivation.
 .ad b
 .HP

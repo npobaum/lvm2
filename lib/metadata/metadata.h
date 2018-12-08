@@ -22,9 +22,9 @@
 #define _LVM_METADATA_H
 
 #include "ctype.h"
-#include "dev-cache.h"
-#include "lvm-string.h"
-#include "metadata-exported.h"
+#include "lib/device/dev-cache.h"
+#include "lib/misc/lvm-string.h"
+#include "lib/metadata/metadata-exported.h"
 
 //#define MAX_STRIPES 128U
 //#define SECTOR_SHIFT 9L
@@ -80,8 +80,7 @@ struct metadata_area_ops {
 					 const char *vg_name,
 					 struct metadata_area * mda,
 					 struct cached_vg_fmtdata **vg_fmtdata,
-					 unsigned *use_previous_vg,
-					 int single_device);
+					 unsigned *use_previous_vg);
 	struct volume_group *(*vg_read_precommit) (struct format_instance * fi,
 					 const char *vg_name,
 					 struct metadata_area * mda,
@@ -162,6 +161,13 @@ struct metadata_area_ops {
 #define MDA_INCONSISTENT 0x00000002
 #define MDA_FAILED       0x00000004
 
+/* The primary metadata area on a device if the format supports more than one. */
+#define MDA_PRIMARY	 0x00000008
+
+#define mda_is_primary(mda) (((mda->status) & MDA_PRIMARY) ? 1 : 0)
+#define MDA_CONTENT_REASON(primary_mda) ((primary_mda) ? DEV_IO_MDA_CONTENT : DEV_IO_MDA_EXTRA_CONTENT)
+#define MDA_HEADER_REASON(primary_mda)  ((primary_mda) ? DEV_IO_MDA_HEADER : DEV_IO_MDA_EXTRA_HEADER)
+
 struct metadata_area {
 	struct dm_list list;
 	struct metadata_area_ops *ops;
@@ -175,6 +181,11 @@ unsigned mda_is_ignored(struct metadata_area *mda);
 void mda_set_ignored(struct metadata_area *mda, unsigned mda_ignored);
 unsigned mda_locns_match(struct metadata_area *mda1, struct metadata_area *mda2);
 struct device *mda_get_device(struct metadata_area *mda);
+
+/*
+ * fic is used to create an fid.  It's used to pass fmt/vgname/vgid args
+ * to create_instance() which creates an fid for the specified vg.
+ */
 
 struct format_instance_ctx {
 	uint32_t type;
@@ -360,22 +371,11 @@ uint32_t vg_bad_status_bits(const struct volume_group *vg, uint64_t status);
 int add_pv_to_vg(struct volume_group *vg, const char *pv_name,
 		 struct physical_volume *pv, int new_pv);
 
-
-/* Find a PV within a given VG */
-int get_pv_from_vg_by_id(const struct format_type *fmt, const char *vg_name,
-			 const char *vgid, const char *pvid,
-			 struct physical_volume *pv);
-
 struct logical_volume *find_lv_in_vg_by_lvid(struct volume_group *vg,
 					     const union lvid *lvid);
 
 struct lv_list *find_lv_in_lv_list(const struct dm_list *ll,
 				   const struct logical_volume *lv);
-
-/* Find LV with given lvid (used during activation) */
-struct logical_volume *lv_from_lvid(struct cmd_context *cmd,
-				    const char *lvid_s,
-				    unsigned precommitted);
 
 /* FIXME Merge these functions with ones above */
 struct physical_volume *find_pv(struct volume_group *vg, struct device *dev);
@@ -438,9 +438,6 @@ int add_glv_to_indirect_glvs(struct dm_pool *mem,
 int remove_glv_from_indirect_glvs(struct generic_logical_volume *origin_glv,
 				  struct generic_logical_volume *glv);
 
-int for_each_sub_lv_except_pools(struct logical_volume *lv,
-				 int (*fn)(struct logical_volume *lv, void *data),
-				 void *data);
 int for_each_sub_lv(struct logical_volume *lv,
 		    int (*fn)(struct logical_volume *lv, void *data),
 		    void *data);
@@ -448,6 +445,8 @@ int for_each_sub_lv(struct logical_volume *lv,
 int move_lv_segments(struct logical_volume *lv_to,
 		     struct logical_volume *lv_from,
 		     uint64_t set_status, uint64_t reset_status);
+/* Widen existing segment areas */
+int add_lv_segment_areas(struct lv_segment *seg, uint32_t new_area_count);
 
 /*
  * Calculate readahead from underlying PV devices
@@ -461,8 +460,6 @@ size_t export_vg_to_buffer(struct volume_group *vg, char **buf);
 struct dm_config_tree *export_vg_to_config_tree(struct volume_group *vg);
 struct volume_group *import_vg_from_config_tree(const struct dm_config_tree *cft,
 						struct format_instance *fid);
-struct volume_group *import_vg_from_lvmetad_config_tree(const struct dm_config_tree *cft,
-							struct format_instance *fid);
 
 /*
  * Mirroring functions

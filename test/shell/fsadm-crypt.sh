@@ -11,8 +11,12 @@
 # Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
 test_description='Exercise fsadm filesystem resize on crypt devices'
-SKIP_WITH_LVMLOCKD=1
+
 SKIP_WITH_LVMPOLLD=1
+
+# FIXME: cannot use brd (ramdisk)  - lsblk is NOT listing it
+# so lsblk usage should be replaced
+export LVM_TEST_PREFER_BRD=0
 
 . lib/inittest
 

@@ -14,15 +14,16 @@
  */
 
 
-#include "lib.h"
+#include "lib/misc/lib.h"
 
-#include "config.h"
-#include "crc.h"
-#include "device.h"
-#include "str_list.h"
-#include "toolcontext.h"
-#include "lvm-file.h"
-#include "memlock.h"
+#include "lib/config/config.h"
+#include "lib/misc/crc.h"
+#include "lib/device/device.h"
+#include "lib/datastruct/str_list.h"
+#include "lib/commands/toolcontext.h"
+#include "lib/misc/lvm-file.h"
+#include "lib/mm/memlock.h"
+#include "lib/label/label.h"
 
 #include <sys/stat.h>
 #include <sys/mman.h>
@@ -70,7 +71,7 @@ static struct cfg_def_item _cfg_def_items[CFG_COUNT + 1] = {
 #define cfg_runtime(id, name, parent, flags, type, since_version, deprecated_since_version, deprecation_comment, comment) {id, parent, name, type, {.fn_##type = get_default_##id}, (flags) | CFG_DEFAULT_RUN_TIME, since_version, {.fn_UNCONFIGURED = get_default_unconfigured_##id}, deprecated_since_version, (deprecation_comment), comment},
 #define cfg_array(id, name, parent, flags, types, default_value, since_version, unconfigured_value, deprecated_since_version, deprecation_comment, comment) {id, parent, name, CFG_TYPE_ARRAY | (types), {.v_CFG_TYPE_STRING = (default_value)}, (flags), (since_version), {.v_UNCONFIGURED = (unconfigured_value)}, deprecated_since_version, deprecation_comment, comment},
 #define cfg_array_runtime(id, name, parent, flags, types, since_version, deprecated_since_version, deprecation_comment, comment) {id, parent, name, CFG_TYPE_ARRAY | (types), {.fn_CFG_TYPE_STRING = get_default_##id}, (flags) | CFG_DEFAULT_RUN_TIME, (since_version), {.fn_UNCONFIGURED = get_default_unconfigured_##id}, deprecated_since_version, deprecation_comment, comment},
-#include "config_settings.h"
+#include "lib/config/config_settings.h"
 #undef cfg_section
 #undef cfg
 #undef cfg_runtime
@@ -494,7 +495,7 @@ int override_config_tree_from_profile(struct cmd_context *cmd,
  * and function avoids parsing of mda into config tree which
  * remains unmodified and should not be used.
  */
-int config_file_read_fd(struct dm_config_tree *cft, struct device *dev,
+int config_file_read_fd(struct dm_config_tree *cft, struct device *dev, dev_io_reason_t reason,
 			off_t offset, size_t size, off_t offset2, size_t size2,
 			checksum_fn_t checksum_fn, uint32_t checksum,
 			int checksum_only, int no_dup_node_check)
@@ -528,17 +529,28 @@ int config_file_read_fd(struct dm_config_tree *cft, struct device *dev,
 		}
 		fb = fb + mmap_offset;
 	} else {
-		if (!(buf = dm_malloc(size + size2))) {
+		if (!(buf = malloc(size + size2))) {
 			log_error("Failed to allocate circular buffer.");
 			return 0;
 		}
-		if (!dev_read_circular(dev, (uint64_t) offset, size,
-				       (uint64_t) offset2, size2, buf)) {
+
+		if (!dev_read_bytes(dev, offset, size, buf))
 			goto out;
+
+		if (size2) {
+			if (!dev_read_bytes(dev, offset2, size2, buf + size))
+				goto out;
 		}
+
 		fb = buf;
 	}
 
+	/*
+	 * The checksum passed in is the checksum from the mda_header
+	 * preceding this metadata.  They should always match.
+	 * FIXME: handle case where mda_header checksum is bad,
+	 * but the checksum calculated here is correct.
+	 */
 	if (checksum_fn && checksum !=
 	    (checksum_fn(checksum_fn(INITIAL_CRC, (const uint8_t *)fb, size),
 			 (const uint8_t *)(fb + size), size2))) {
@@ -561,7 +573,7 @@ int config_file_read_fd(struct dm_config_tree *cft, struct device *dev,
 
       out:
 	if (!use_mmap)
-		dm_free(buf);
+		free(buf);
 	else {
 		/* unmap the file */
 		if (munmap(fb - mmap_offset, size + mmap_offset)) {
@@ -601,7 +613,7 @@ int config_file_read(struct dm_config_tree *cft)
 		}
 	}
 
-	r = config_file_read_fd(cft, cf->dev, 0, (size_t) info.st_size, 0, 0,
+	r = config_file_read_fd(cft, cf->dev, DEV_IO_MDA_CONTENT, 0, (size_t) info.st_size, 0, 0,
 				(checksum_fn_t) NULL, 0, 0, 0);
 
 	if (!cf->keep_open) {
@@ -703,8 +715,8 @@ static struct dm_config_value *_get_def_array_values(struct cmd_context *cmd,
 		return array;
 	}
 
-	if (!(p = token = enc_value = dm_strdup(def_enc_value))) {
-		log_error("_get_def_array_values: dm_strdup failed");
+	if (!(p = token = enc_value = strdup(def_enc_value))) {
+		log_error("_get_def_array_values: strdup failed");
 		return NULL;
 	}
 	/* Proper value always starts with '#'. */
@@ -729,7 +741,7 @@ static struct dm_config_value *_get_def_array_values(struct cmd_context *cmd,
 
 		if (!(v = dm_config_create_value(cft))) {
 			log_error("Failed to create default config array value for %s.", def->name);
-			dm_free(enc_value);
+			free(enc_value);
 			return NULL;
 		}
 
@@ -758,7 +770,7 @@ static struct dm_config_value *_get_def_array_values(struct cmd_context *cmd,
 				break;
 			case 'S':
 				if (!(r = dm_pool_strdup(cft->mem, token + 1))) {
-					dm_free(enc_value);
+					free(enc_value);
 					log_error("Failed to duplicate token for default "
 						  "array value of %s.", def->name);
 					return NULL;
@@ -774,13 +786,13 @@ static struct dm_config_value *_get_def_array_values(struct cmd_context *cmd,
 		token = p;
 	}
 
-	dm_free(enc_value);
+	free(enc_value);
 	return array;
 bad:
 	log_error(INTERNAL_ERROR "Default array value malformed for \"%s\", "
 		  "value: \"%s\", token: \"%s\".", def->name,
 		  def->default_value.v_CFG_TYPE_STRING, token);
-	dm_free(enc_value);
+	free(enc_value);
 	return NULL;
 }
 
@@ -2353,8 +2365,10 @@ const char *get_default_devices_cache_CFG(struct cmd_context *cmd, struct profil
 
 	if (cache_dir || cache_file_prefix) {
 		if (dm_snprintf(buf, sizeof(buf),
-				"%s/%s.cache",
-				cache_dir ? : DEFAULT_RUN_DIR,
+				"%s%s%s/%s.cache",
+				cache_dir ? "" : cmd->system_dir,
+				cache_dir ? "" : "/",
+				cache_dir ? : DEFAULT_CACHE_SUBDIR,
 				cache_file_prefix ? : DEFAULT_CACHE_FILE_PREFIX) < 0) {
 			log_error("Persistent cache filename too long.");
 			return NULL;
@@ -2362,8 +2376,8 @@ const char *get_default_devices_cache_CFG(struct cmd_context *cmd, struct profil
 		return dm_pool_strdup(cmd->mem, buf);
 	}
 
-	if (dm_snprintf(buf, sizeof(buf), "%s/%s.cache",
-			DEFAULT_RUN_DIR, DEFAULT_CACHE_FILE_PREFIX) < 0) {
+	if (dm_snprintf(buf, sizeof(buf), "%s/%s/%s.cache", cmd->system_dir,
+			DEFAULT_CACHE_SUBDIR, DEFAULT_CACHE_FILE_PREFIX) < 0) {
 		log_error("Persistent cache filename too long.");
 		return NULL;
 	}

@@ -15,9 +15,9 @@
 
 #include "tools.h"
 
-#include "polldaemon.h"
+#include "lib/lvmpolld/polldaemon.h"
 #include "lvm2cmdline.h"
-#include "lvmpolld-client.h"
+#include "lib/lvmpolld/lvmpolld-client.h"
 
 #include <time.h>
 
@@ -80,6 +80,8 @@ static int _check_lv_status(struct cmd_context *cmd,
 	}
 
 	progress = parms->poll_fns->poll_progress(cmd, lv, name, parms);
+	fflush(stdout);
+
 	if (progress == PROGRESS_CHECK_FAILED)
 		return_0;
 
@@ -123,13 +125,19 @@ static void _nanosleep(unsigned secs, unsigned allow_zero_time)
 	while (!nanosleep(&wtime, &wtime) && errno == EINTR) {}
 }
 
-static void _sleep_and_rescan_devices(struct daemon_parms *parms)
+static void _sleep_and_rescan_devices(struct cmd_context *cmd, struct daemon_parms *parms)
 {
 	if (parms->interval && !parms->aborting) {
-		dev_close_all();
+		/*
+		 * FIXME: do we really need to drop everything and then rescan
+		 * everything between each iteration?  What change exactly does
+		 * each iteration check for, and does seeing that require
+		 * rescanning everything?
+		 */
+		lvmcache_destroy(cmd, 1, 0);
+		label_scan_destroy(cmd);
 		_nanosleep(parms->interval, 1);
-		/* Devices might have changed while we slept */
-		init_full_scan_done(0);
+		lvmcache_label_scan(cmd);
 	}
 }
 
@@ -142,10 +150,13 @@ int wait_for_single_lv(struct cmd_context *cmd, struct poll_operation_id *id,
 	uint32_t lockd_state = 0;
 	int ret;
 
+	if (!parms->wait_before_testing)
+		lvmcache_label_scan(cmd);
+
 	/* Poll for completion */
 	while (!finished) {
 		if (parms->wait_before_testing)
-			_sleep_and_rescan_devices(parms);
+			_sleep_and_rescan_devices(cmd, parms);
 
 		/*
 		 * An ex VG lock is needed because the check can call finish_copy
@@ -189,7 +200,7 @@ int wait_for_single_lv(struct cmd_context *cmd, struct poll_operation_id *id,
 		 * If the LV is not active locally, the kernel cannot be
 		 * queried for its status.  We must exit in this case.
 		 */
-		if (!lv_is_active_locally(lv)) {
+		if (!lv_is_active(lv)) {
 			log_print_unless_silent("%s: Interrupted: No longer active.", id->display_name);
 			ret = 1;
 			goto out;
@@ -218,7 +229,7 @@ int wait_for_single_lv(struct cmd_context *cmd, struct poll_operation_id *id,
 		 * continue polling an LV that doesn't have a "status".
 		 */
 		if (!parms->wait_before_testing && !finished)
-			_sleep_and_rescan_devices(parms);
+			_sleep_and_rescan_devices(cmd, parms);
 	}
 
 	return 1;
@@ -367,8 +378,6 @@ static void _poll_for_all_vgs(struct cmd_context *cmd,
 		process_each_vg(cmd, 0, NULL, NULL, NULL, READ_FOR_UPDATE, 0, handle, _poll_vg);
 		if (!parms->outstanding_count)
 			break;
-		if (parms->interval)
-			dev_close_all();
 		_nanosleep(parms->interval, 1);
 	}
 }
@@ -388,16 +397,13 @@ static int _report_progress(struct cmd_context *cmd, struct poll_operation_id *i
 	int ret;
 
 	/*
-	 * It's reasonable to expect a lockd_vg("sh") here, but it should
-	 * not actually be needed, because we only report the progress on
-	 * the same host where the pvmove/lvconvert is happening.  This means
-	 * that the local pvmove/lvconvert/lvpoll commands are updating the
-	 * local lvmetad with the latest info they have, and we just need to
-	 * read the latest info that they have put into lvmetad about their
-	 * progress.  No VG lock is needed to protect anything here (we're
-	 * just reading the VG), and no VG lock is needed to force a VG read
-	 * from disk to get changes from other hosts, because the only change
-	 * to the VG we're interested in is the change done locally.
+	 * It's reasonable to expect a lockd_vg("sh") here, but it should not
+	 * actually be needed, because we only report the progress on the same
+	 * host where the pvmove/lvconvert is happening.  No VG lock is needed
+	 * to protect anything here (we're just reading the VG), and no VG lock
+	 * is needed to force a VG read from disk to get changes from other
+	 * hosts, because the only change to the VG we're interested in is the
+	 * change done locally.
 	 */
 
 	vg = vg_read(cmd, id->vg_name, NULL, 0, lockd_state);
@@ -431,7 +437,7 @@ static int _report_progress(struct cmd_context *cmd, struct poll_operation_id *i
 		goto out;
 	}
 
-	if (!lv_is_active_locally(lv)) {
+	if (!lv_is_active(lv)) {
 		log_verbose("%s: Interrupted: No longer active.", id->display_name);
 		ret = 1;
 		goto out;
@@ -441,6 +447,7 @@ static int _report_progress(struct cmd_context *cmd, struct poll_operation_id *i
 		ret = 0;
 		goto out;
 	}
+	fflush(stdout);
 
 	ret = 1;
 
@@ -522,9 +529,6 @@ static void _lvmpolld_poll_for_all_vgs(struct cmd_context *cmd,
 				_report_progress(cmd, idl->id, lpdp.parms);
 		}
 
-		if (lpdp.parms->interval)
-			dev_close_all();
-
 		_nanosleep(lpdp.parms->interval, 0);
 	}
 
@@ -550,9 +554,6 @@ static int _lvmpoll_daemon(struct cmd_context *cmd, struct poll_operation_id *id
 				    finished ||
 				    (!parms->aborting && !(r = _report_progress(cmd, id, parms))))
 					break;
-
-				if (parms->interval)
-					dev_close_all();
 
 				_nanosleep(parms->interval, 0);
 			}
@@ -598,16 +599,16 @@ static int _poll_daemon(struct cmd_context *cmd, struct poll_operation_id *id,
 			parms->progress_display = 0; /* Child */
 		/* FIXME Use wait_event (i.e. interval = 0) and */
 		/*       fork one daemon per copy? */
-
-		if ((daemon_mode == 1) && find_config_tree_bool(cmd, global_use_lvmetad_CFG, NULL)) {
-			if (!lvmetad_connect(cmd))
-				log_warn("WARNING: lvm polling process %d cannot connect to lvmetad.", getpid());
-		}
 	}
 
 	/*
 	 * Process one specific task or all incomplete tasks?
 	 */
+
+	/* clear lvmcache/bcache/fds from the parent */
+	lvmcache_destroy(cmd, 1, 0);
+	label_scan_destroy(cmd);
+
 	if (id) {
 		if (!wait_for_single_lv(cmd, id, parms)) {
 			stack;
@@ -616,6 +617,7 @@ static int _poll_daemon(struct cmd_context *cmd, struct poll_operation_id *id,
 	} else {
 		if (!parms->interval)
 			parms->interval = find_config_tree_int(cmd, activation_polling_interval_CFG, NULL);
+
 		if (!(handle = init_processing_handle(cmd, NULL))) {
 			log_error("Failed to initialize processing handle.");
 			ret = ECMD_FAILED;

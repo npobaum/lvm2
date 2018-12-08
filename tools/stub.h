@@ -37,7 +37,6 @@ int pvdata(struct cmd_context *cmd __attribute__((unused)),
 {
 	log_error("There's no 'pvdata' command in LVM2.");
 	log_error("Use lvs, pvs, vgs instead; or use vgcfgbackup and read the text file backup.");
-	log_error("Metadata in LVM1 format can still be displayed using LVM1's pvdata command.");
 	return ECMD_FAILED;
 }
 
@@ -47,5 +46,14 @@ int lvmchange(struct cmd_context *cmd __attribute__((unused)),
 {
 	log_error("There's no 'lvmchange' command in LVM2.");
 	log_error("Use 'dmsetup' commands to reset the kernel device-mapper driver.");
+	return ECMD_FAILED;
+}
+
+int vgconvert(struct cmd_context *cmd __attribute__((unused)),
+	      int argc __attribute__((unused)),
+	      char **argv __attribute__((unused)))
+{
+	log_error("The vgconvert command has been removed along with the lvm1 format.");
+	log_error("Use a previous version of lvm to convert the lvm1 format to lvm2.");
 	return ECMD_FAILED;
 }

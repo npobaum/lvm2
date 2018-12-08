@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2013 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2013-2018 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -117,7 +117,7 @@
  * default values, the new defaults are used by LVM unless
  * the previous default value was set (uncommented) in lvm.conf.
  */
-#include "defaults.h"
+#include "lib/config/defaults.h"
 
 cfg_section(root_CFG_SECTION, "(root)", root_CFG_SECTION, 0, vsn(0, 0, 0), 0, NULL, NULL)
 
@@ -226,7 +226,7 @@ cfg(devices_dir_CFG, "dir", devices_CFG_SECTION, CFG_ADVANCED, CFG_TYPE_STRING, 
 cfg_array(devices_scan_CFG, "scan", devices_CFG_SECTION, CFG_ADVANCED, CFG_TYPE_STRING, "#S/dev", vsn(1, 0, 0), NULL, 0, NULL,
 	"Directories containing device nodes to use with LVM.\n")
 
-cfg_array(devices_loopfiles_CFG, "loopfiles", devices_CFG_SECTION, CFG_DEFAULT_UNDEFINED | CFG_UNSUPPORTED, CFG_TYPE_STRING, NULL, vsn(1, 2, 0), NULL, 0, NULL, NULL)
+cfg_array(devices_loopfiles_CFG, "loopfiles", devices_CFG_SECTION, CFG_DEFAULT_UNDEFINED | CFG_UNSUPPORTED, CFG_TYPE_STRING, NULL, vsn(1, 2, 0), NULL, vsn(3, 0, 0), NULL, NULL)
 
 cfg(devices_obtain_device_list_from_udev_CFG, "obtain_device_list_from_udev", devices_CFG_SECTION, 0, CFG_TYPE_BOOL, DEFAULT_OBTAIN_DEVICE_LIST_FROM_UDEV, vsn(2, 2, 85), NULL, 0, NULL,
 	"Obtain the list of available devices from udev.\n"
@@ -289,7 +289,6 @@ cfg_array(devices_filter_CFG, "filter", devices_CFG_SECTION, CFG_DEFAULT_COMMENT
 	"then the device is accepted. Be careful mixing 'a' and 'r' patterns,\n"
 	"as the combination might produce unexpected results (test changes.)\n"
 	"Run vgscan after changing the filter to regenerate the cache.\n"
-	"See the use_lvmetad comment for a special case regarding filters.\n"
 	"#\n"
 	"Example\n"
 	"Accept every block device:\n"
@@ -307,29 +306,22 @@ cfg_array(devices_filter_CFG, "filter", devices_CFG_SECTION, CFG_DEFAULT_COMMENT
 cfg_array(devices_global_filter_CFG, "global_filter", devices_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, "#Sa|.*/|", vsn(2, 2, 98), NULL, 0, NULL,
 	"Limit the block devices that are used by LVM system components.\n"
 	"Because devices/filter may be overridden from the command line, it is\n"
-	"not suitable for system-wide device filtering, e.g. udev and lvmetad.\n"
+	"not suitable for system-wide device filtering, e.g. udev.\n"
 	"Use global_filter to hide devices from these LVM system components.\n"
 	"The syntax is the same as devices/filter. Devices rejected by\n"
 	"global_filter are not opened by LVM.\n")
 
-cfg_runtime(devices_cache_CFG, "cache", devices_CFG_SECTION, 0, CFG_TYPE_STRING, vsn(1, 0, 0), vsn(1, 2, 19),
-	"This has been replaced by the devices/cache_dir setting.\n",
-	"Cache file path.\n")
+cfg_runtime(devices_cache_CFG, "cache", devices_CFG_SECTION, 0, CFG_TYPE_STRING, vsn(1, 0, 0), vsn(1, 2, 19), NULL,
+	"This setting is no longer used.\n")
 
-cfg_runtime(devices_cache_dir_CFG, "cache_dir", devices_CFG_SECTION, 0, CFG_TYPE_STRING, vsn(1, 2, 19), 0, NULL,
-	"Directory in which to store the device cache file.\n"
-	"The results of filtering are cached on disk to avoid rescanning dud\n"
-	"devices (which can take a very long time). By default this cache is\n"
-	"stored in a file named .cache. It is safe to delete this file; the\n"
-	"tools regenerate it. If obtain_device_list_from_udev is enabled, the\n"
-	"list of devices is obtained from udev and any existing .cache file\n"
-	"is removed.\n")
+cfg_runtime(devices_cache_dir_CFG, "cache_dir", devices_CFG_SECTION, 0, CFG_TYPE_STRING, vsn(1, 2, 19), vsn(3, 0, 0), NULL,
+	"This setting is no longer used.\n")
 
-cfg(devices_cache_file_prefix_CFG, "cache_file_prefix", devices_CFG_SECTION, CFG_ALLOW_EMPTY, CFG_TYPE_STRING, DEFAULT_CACHE_FILE_PREFIX, vsn(1, 2, 19), NULL, 0, NULL,
-	"A prefix used before the .cache file name. See devices/cache_dir.\n")
+cfg(devices_cache_file_prefix_CFG, "cache_file_prefix", devices_CFG_SECTION, CFG_ALLOW_EMPTY, CFG_TYPE_STRING, DEFAULT_CACHE_FILE_PREFIX, vsn(1, 2, 19), NULL, vsn(3, 0, 0), NULL,
+	"This setting is no longer used.\n")
 
-cfg(devices_write_cache_state_CFG, "write_cache_state", devices_CFG_SECTION, 0, CFG_TYPE_BOOL, 1, vsn(1, 0, 0), NULL, 0, NULL,
-	"Enable/disable writing the cache file. See devices/cache_dir.\n")
+cfg(devices_write_cache_state_CFG, "write_cache_state", devices_CFG_SECTION, 0, CFG_TYPE_BOOL, 1, vsn(1, 0, 0), NULL, vsn(3, 0, 0), NULL,
+	"This setting is no longer used.\n")
 
 cfg_array(devices_types_CFG, "types", devices_CFG_SECTION, CFG_DEFAULT_UNDEFINED | CFG_ADVANCED, CFG_TYPE_INT | CFG_TYPE_STRING, NULL, vsn(1, 0, 0), NULL, 0, NULL,
 	"List of additional acceptable block device types.\n"
@@ -344,6 +336,9 @@ cfg(devices_sysfs_scan_CFG, "sysfs_scan", devices_CFG_SECTION, 0, CFG_TYPE_BOOL,
 	"Restrict device scanning to block devices appearing in sysfs.\n"
 	"This is a quick way of filtering out block devices that are not\n"
 	"present on the system. sysfs must be part of the kernel and mounted.)\n")
+
+cfg(devices_scan_lvs_CFG, "scan_lvs", devices_CFG_SECTION, 0, CFG_TYPE_BOOL, DEFAULT_SCAN_LVS, vsn(2, 2, 182), NULL, 0, NULL,
+	"Scan LVM LVs for layered PVs.\n")
 
 cfg(devices_multipath_component_detection_CFG, "multipath_component_detection", devices_CFG_SECTION, 0, CFG_TYPE_BOOL, DEFAULT_MULTIPATH_COMPONENT_DETECTION, vsn(2, 2, 89), NULL, 0, NULL,
 	"Ignore devices that are components of DM multipath devices.\n")
@@ -417,12 +412,8 @@ cfg(devices_ignore_lvm_mirrors_CFG, "ignore_lvm_mirrors", devices_CFG_SECTION, 0
 	"apply to LVM RAID types like 'raid1' which handle failures in a\n"
 	"different way, making them a better choice for VG stacking.\n")
 
-cfg(devices_disable_after_error_count_CFG, "disable_after_error_count", devices_CFG_SECTION, 0, CFG_TYPE_INT, DEFAULT_DISABLE_AFTER_ERROR_COUNT, vsn(2, 2, 75), NULL, 0, NULL,
-	"Number of I/O errors after which a device is skipped.\n"
-	"During each LVM operation, errors received from each device are\n"
-	"counted. If the counter of a device exceeds the limit set here,\n"
-	"no further I/O is sent to that device for the remainder of the\n"
-	"operation. Setting this to 0 disables the counters altogether.\n")
+cfg(devices_disable_after_error_count_CFG, "disable_after_error_count", devices_CFG_SECTION, 0, CFG_TYPE_INT, 0, vsn(2, 2, 75), NULL, vsn(3, 0, 0), NULL,
+	"This setting is no longer used.\n")
 
 cfg(devices_require_restorefile_with_uuid_CFG, "require_restorefile_with_uuid", devices_CFG_SECTION, 0, CFG_TYPE_BOOL, DEFAULT_REQUIRE_RESTOREFILE_WITH_UUID, vsn(2, 2, 73), NULL, 0, NULL,
 	"Allow use of pvcreate --uuid without requiring --restorefile.\n")
@@ -483,7 +474,7 @@ cfg(allocation_maximise_cling_CFG, "maximise_cling", allocation_CFG_SECTION, 0, 
 	"and revert to the previous algorithm.\n")
 
 cfg(allocation_use_blkid_wiping_CFG, "use_blkid_wiping", allocation_CFG_SECTION, 0, CFG_TYPE_BOOL, DEFAULT_USE_BLKID_WIPING, vsn(2, 2, 105), "@DEFAULT_USE_BLKID_WIPING@", 0, NULL,
-	"Use blkid to detect existing signatures on new PVs and LVs.\n"
+	"Use blkid to detect and erase existing signatures on new PVs and LVs.\n"
 	"The blkid library can detect more signatures than the native LVM\n"
 	"detection code, but may take longer. LVM needs to be compiled with\n"
 	"blkid wiping support for this setting to apply. LVM native detection\n"
@@ -618,6 +609,112 @@ cfg_runtime(allocation_thin_pool_chunk_size_CFG, "thin_pool_chunk_size", allocat
 cfg(allocation_physical_extent_size_CFG, "physical_extent_size", allocation_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_EXTENT_SIZE, vsn(2, 2, 112), NULL, 0, NULL,
 	"Default physical extent size in KiB to use for new VGs.\n")
 
+#define VDO_1ST_VSN vsn(2, 3, 0)
+cfg(allocation_vdo_use_compression_CFG, "vdo_use_compression", allocation_CFG_SECTION, CFG_PROFILABLE | CFG_PROFILABLE_METADATA | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_VDO_USE_COMPRESSION, VDO_1ST_VSN, NULL, 0, NULL,
+	"Enables or disables compression when creating a VDO volume.\n"
+	"Compression may be disabled if necessary to maximize performance\n"
+	"or to speed processing of data that is unlikely to compress.\n")
+
+cfg(allocation_vdo_use_deduplication_CFG, "vdo_use_deduplication", allocation_CFG_SECTION, CFG_PROFILABLE | CFG_PROFILABLE_METADATA | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_VDO_USE_DEDUPLICATION, VDO_1ST_VSN, NULL, 0, NULL,
+	"Enables or disables deduplication when creating a VDO volume.\n"
+	"Deduplication may be disabled in instances where data is not expected\n"
+	"to have good deduplication rates but compression is still desired.")
+
+cfg(allocation_vdo_emulate_512_sectors_CFG, "vdo_emulate_512_sectors", allocation_CFG_SECTION, CFG_PROFILABLE | CFG_PROFILABLE_METADATA | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_VDO_EMULATE_512_SECTORS, VDO_1ST_VSN, NULL, 0, NULL,
+	"Specifies that the VDO volume is to emulate a 512 byte block device.\n")
+
+cfg(allocation_vdo_block_map_cache_size_mb_CFG, "vdo_block_map_cache_size_mb", allocation_CFG_SECTION, CFG_PROFILABLE | CFG_PROFILABLE_METADATA | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_VDO_BLOCK_MAP_CACHE_SIZE_MB, VDO_1ST_VSN, NULL, 0, NULL,
+	"Specifies the amount of memory in MiB allocated for caching block map\n"
+	"pages for VDO volume. The value must be a multiple of 4096 and must be\n"
+	"at least 128MiB and less than 16TiB. The cache must be at least 16MiB\n"
+	"per logical thread. Note that there is a memory overhead of 15%.\n")
+
+cfg(allocation_vdo_block_map_period_CFG, "vdo_block_map_period", allocation_CFG_SECTION, CFG_PROFILABLE | CFG_PROFILABLE_METADATA | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_VDO_BLOCK_MAP_PERIOD, VDO_1ST_VSN, NULL, 0, NULL,
+	"Tunes the quantity of block map updates that can accumulate\n"
+	"before cache pages are flushed to disk. The value must be\n"
+	"at least 1 and less then 16380.\n"
+	"A lower value means shorter recovery time but lower performance.\n")
+
+cfg(allocation_vdo_check_point_frequency_CFG, "vdo_check_point_frequency", allocation_CFG_SECTION, CFG_PROFILABLE | CFG_PROFILABLE_METADATA | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_VDO_CHECK_POINT_FREQUENCY, VDO_1ST_VSN, NULL, 0, NULL,
+	"The default check point frequency for VDO volume.\n")
+
+cfg(allocation_vdo_use_sparse_index_CFG, "vdo_use_sparse_index", allocation_CFG_SECTION, CFG_PROFILABLE | CFG_PROFILABLE_METADATA | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_VDO_USE_SPARSE_INDEX, VDO_1ST_VSN, NULL, 0, NULL,
+	"Enables sparse indexing for VDO volume.\n")
+
+cfg(allocation_vdo_index_memory_size_mb_CFG, "vdo_index_memory_size_mb", allocation_CFG_SECTION, CFG_PROFILABLE | CFG_PROFILABLE_METADATA | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_VDO_INDEX_MEMORY_SIZE_MB, VDO_1ST_VSN, NULL, 0, NULL,
+	"Specifies the amount of index memory in MiB for VDO volume.\n"
+	"The value must be at least 256MiB and at most 1TiB.\n")
+
+cfg(allocation_vdo_use_read_cache_CFG, "vdo_use_read_cache", allocation_CFG_SECTION, CFG_PROFILABLE | CFG_PROFILABLE_METADATA | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_VDO_USE_READ_CACHE, VDO_1ST_VSN, NULL, 0, NULL,
+	"Enables or disables the read cache within the VDO volume.\n"
+	"The cache should be enabled if write workloads are expected\n"
+	"to have high levels of deduplication, or for read intensive\n"
+	"workloads of highly compressible data.\n")
+
+cfg(allocation_vdo_read_cache_size_mb_CFG, "vdo_read_cache_size_mb", allocation_CFG_SECTION, CFG_PROFILABLE | CFG_PROFILABLE_METADATA | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_VDO_READ_CACHE_SIZE_MB, VDO_1ST_VSN, NULL, 0, NULL,
+	"Specifies the extra VDO volume read cache size in MiB.\n"
+	"This space is in addition to a system-defined minimum.\n"
+	"The value must be less then 16TiB and 1.12 MiB of memory\n"
+	"will be used per MiB of read cache specified, per bio thread.\n")
+
+cfg(allocation_vdo_slab_size_mb_CFG, "vdo_slab_size_mb", allocation_CFG_SECTION, CFG_PROFILABLE | CFG_PROFILABLE_METADATA | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_VDO_SLAB_SIZE_MB, VDO_1ST_VSN, NULL, 0, NULL,
+	"Specifies the size in MiB of the increment by which a VDO is grown.\n"
+	"Using a smaller size constrains the total maximum physical size\n"
+	"that can be accommodated. Must be a power of two between 128MiB and 32GiB.\n")
+
+cfg(allocation_vdo_ack_threads_CFG, "vdo_ack_threads", allocation_CFG_SECTION, CFG_PROFILABLE | CFG_PROFILABLE_METADATA | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_VDO_ACK_THREADS, VDO_1ST_VSN, NULL, 0, NULL,
+	"Specifies the number of threads to use for acknowledging\n"
+	"completion of requested VDO I/O operations.\n"
+	"The value must be at in range [0..100].\n")
+
+cfg(allocation_vdo_bio_threads_CFG, "vdo_bio_threads", allocation_CFG_SECTION, CFG_PROFILABLE | CFG_PROFILABLE_METADATA | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_VDO_BIO_THREADS, VDO_1ST_VSN, NULL, 0, NULL,
+	"Specifies the number of threads to use for submitting I/O\n"
+	"operations to the storage device of VDO volume.\n"
+	"The value must be in range [1..100]\n"
+	"Each additional thread after the first will use an additional 18MiB of RAM,\n"
+	"plus 1.12 MiB of RAM per megabyte of configured read cache size.\n")
+
+cfg(allocation_vdo_bio_rotation_CFG, "vdo_bio_rotation", allocation_CFG_SECTION, CFG_PROFILABLE | CFG_PROFILABLE_METADATA | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_VDO_BIO_ROTATION, VDO_1ST_VSN, NULL, 0, NULL,
+	"Specifies the number of I/O operations to enqueue for each bio-submission\n"
+	"thread before directing work to the next. The value must be in range [1..1024].\n")
+
+cfg(allocation_vdo_cpu_threads_CFG, "vdo_cpu_threads", allocation_CFG_SECTION, CFG_PROFILABLE | CFG_PROFILABLE_METADATA | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_VDO_CPU_THREADS, VDO_1ST_VSN, NULL, 0, NULL,
+	"Specifies the number of threads to use for CPU-intensive work such as\n"
+	"hashing or compression for VDO volume. The value must be in range [1..100]\n")
+
+cfg(allocation_vdo_hash_zone_threads_CFG, "vdo_hash_zone_threads", allocation_CFG_SECTION, CFG_PROFILABLE | CFG_PROFILABLE_METADATA | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_VDO_HASH_ZONE_THREADS, VDO_1ST_VSN, NULL, 0, NULL,
+	"Specifies the number of threads across which to subdivide parts of the VDO\n"
+	"processing based on the hash value computed from the block data.\n"
+	"The value must be at in range [0..100].\n"
+	"vdo_hash_zone_threads, vdo_logical_threads and vdo_physical_threads must be\n"
+	"either all zero or all non-zero.")
+
+cfg(allocation_vdo_logical_threads_CFG, "vdo_logical_threads", allocation_CFG_SECTION, CFG_PROFILABLE | CFG_PROFILABLE_METADATA | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_VDO_LOGICAL_THREADS, VDO_1ST_VSN, NULL, 0, NULL,
+	"Specifies the number of threads across which to subdivide parts of the VDO\n"
+	"processing based on the hash value computed from the block data.\n"
+	"A logical thread count of 9 or more will require explicitly specifying\n"
+	"a sufficiently large block map cache size, as well.\n"
+	"The value must be in range [0..100].\n"
+	"vdo_hash_zone_threads, vdo_logical_threads and vdo_physical_threads must be\n"
+	"either all zero or all non-zero.\n")
+
+cfg(allocation_vdo_physical_threads_CFG, "vdo_physical_threads", allocation_CFG_SECTION, CFG_PROFILABLE | CFG_PROFILABLE_METADATA | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_VDO_PHYSICAL_THREADS, VDO_1ST_VSN, NULL, 0, NULL,
+	"Specifies the number of threads across which to subdivide parts of the VDO\n"
+	"processing based on physical block addresses.\n"
+	"Each additional thread after the first will use an additional 10MiB of RAM.\n"
+	"The value must be in range [0..16].\n"
+	"vdo_hash_zone_threads, vdo_logical_threads and vdo_physical_threads must be\n"
+	"either all zero or all non-zero.\n")
+
+cfg(allocation_vdo_write_policy_CFG, "vdo_write_policy", allocation_CFG_SECTION, CFG_PROFILABLE | CFG_PROFILABLE_METADATA | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_VDO_WRITE_POLICY, VDO_1ST_VSN, NULL, 0, NULL,
+	"Specifies the write policy:\n"
+	"auto  - VDO will check the storage device and determine whether it supports flushes.\n"
+	"        If it does, VDO will run in async mode, otherwise it will run in sync mode.\n"
+	"sync  - Writes are acknowledged only after data is stably written.\n"
+	"        This policy is not supported if the underlying storage is not also synchronous.\n"
+	"async - Writes are acknowledged after data has been cached for writing to stable storage.\n"
+	"        Data which has not been flushed is not guaranteed to persist in this mode.\n")
+
 cfg(log_report_command_log_CFG, "report_command_log", log_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED | CFG_DISALLOW_INTERACTIVE, CFG_TYPE_BOOL, DEFAULT_COMMAND_LOG_REPORT, vsn(2, 2, 158), NULL, 0, NULL,
 	"Enable or disable LVM log reporting.\n"
 	"If enabled, LVM will collect a log of operations, messages,\n"
@@ -705,11 +802,11 @@ cfg(log_activation_CFG, "activation", log_CFG_SECTION, 0, CFG_TYPE_BOOL, 0, vsn(
 
 cfg(log_activate_file_CFG, "activate_file", log_CFG_SECTION, CFG_DEFAULT_UNDEFINED | CFG_UNSUPPORTED, CFG_TYPE_STRING, NULL, vsn(1, 0, 0), NULL, 0, NULL, NULL)
 
-cfg_array(log_debug_classes_CFG, "debug_classes", log_CFG_SECTION, CFG_ALLOW_EMPTY, CFG_TYPE_STRING, "#Smemory#Sdevices#Sactivation#Sallocation#Slvmetad#Smetadata#Scache#Slocking#Slvmpolld#Sdbus", vsn(2, 2, 99), NULL, 0, NULL,
+cfg_array(log_debug_classes_CFG, "debug_classes", log_CFG_SECTION, CFG_ALLOW_EMPTY, CFG_TYPE_STRING, "#Smemory#Sdevices#Sio#Sactivation#Sallocation#Smetadata#Scache#Slocking#Slvmpolld#Sdbus", vsn(2, 2, 99), NULL, 0, NULL,
 	"Select log messages by class.\n"
 	"Some debugging messages are assigned to a class and only appear in\n"
 	"debug output if the class is listed here. Classes currently\n"
-	"available: memory, devices, activation, allocation, lvmetad,\n"
+	"available: memory, devices, io, activation, allocation,\n"
 	"metadata, cache, locking, lvmpolld. Use \"all\" to see everything.\n")
 
 cfg(backup_backup_CFG, "backup", backup_CFG_SECTION, 0, CFG_TYPE_BOOL, DEFAULT_BACKUP_ENABLED, vsn(1, 0, 0), NULL, 0, NULL,
@@ -767,26 +864,14 @@ cfg(global_activation_CFG, "activation", global_CFG_SECTION, 0, CFG_TYPE_BOOL, D
 	"is not present in the kernel, disabling this should suppress\n"
 	"the error messages.\n")
 
-cfg(global_fallback_to_lvm1_CFG, "fallback_to_lvm1", global_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_BOOL, DEFAULT_FALLBACK_TO_LVM1, vsn(1, 0, 18), "@DEFAULT_FALLBACK_TO_LVM1@", 0, NULL,
-	"Try running LVM1 tools if LVM cannot communicate with DM.\n"
-	"This option only applies to 2.4 kernels and is provided to help\n"
-	"switch between device-mapper kernels and LVM1 kernels. The LVM1\n"
-	"tools need to be installed with .lvm1 suffices, e.g. vgscan.lvm1.\n"
-	"They will stop working once the lvm2 on-disk metadata format is used.\n")
+cfg(global_fallback_to_lvm1_CFG, "fallback_to_lvm1", global_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_BOOL, 0, vsn(1, 0, 18), NULL, vsn(3, 0, 0), NULL,
+	"This setting is no longer used.\n")
 
-cfg(global_format_CFG, "format", global_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_FORMAT, vsn(1, 0, 0), NULL, 0, NULL,
-	"The default metadata format that commands should use.\n"
-	"The -M 1|2 option overrides this setting.\n"
-	"#\n"
-	"Accepted values:\n"
-	"  lvm1\n"
-	"  lvm2\n"
-	"#\n")
+cfg(global_format_CFG, "format", global_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_FORMAT, vsn(1, 0, 0), NULL, vsn(3, 0, 0), NULL,
+	"This setting is no longer used.\n")
 
-cfg_array(global_format_libraries_CFG, "format_libraries", global_CFG_SECTION, CFG_DEFAULT_UNDEFINED, CFG_TYPE_STRING, NULL, vsn(1, 0, 0), NULL, 0, NULL,
-	"Shared libraries that process different metadata formats.\n"
-	"If support for LVM1 metadata was compiled as a shared library use\n"
-	"format_libraries = \"liblvm2format1.so\"\n")
+cfg_array(global_format_libraries_CFG, "format_libraries", global_CFG_SECTION, CFG_DEFAULT_UNDEFINED, CFG_TYPE_STRING, NULL, vsn(1, 0, 0), NULL, vsn(3, 0, 0), NULL,
+	"This setting is no longer used.")
 
 cfg_array(global_segment_libraries_CFG, "segment_libraries", global_CFG_SECTION, CFG_DEFAULT_UNDEFINED, CFG_TYPE_STRING, NULL, vsn(1, 0, 18), NULL, 0, NULL, NULL)
 
@@ -796,52 +881,17 @@ cfg(global_proc_CFG, "proc", global_CFG_SECTION, CFG_ADVANCED, CFG_TYPE_STRING, 
 cfg(global_etc_CFG, "etc", global_CFG_SECTION, 0, CFG_TYPE_STRING, DEFAULT_ETC_DIR, vsn(2, 2, 117), "@CONFDIR@", 0, NULL,
 	"Location of /etc system configuration directory.\n")
 
-cfg(global_locking_type_CFG, "locking_type", global_CFG_SECTION, 0, CFG_TYPE_INT, 1, vsn(1, 0, 0), NULL, 0, NULL,
-	"Type of locking to use.\n"
-	"#\n"
-	"Accepted values:\n"
-	"  0\n"
-	"    Turns off locking. Warning: this risks metadata corruption if\n"
-	"    commands run concurrently.\n"
-	"  1\n"
-	"    LVM uses local file-based locking, the standard mode.\n"
-	"  2\n"
-	"    LVM uses the external shared library locking_library.\n"
-	"  3\n"
-	"    LVM uses built-in clustered locking with clvmd.\n"
-	"    This is incompatible with lvmetad. If use_lvmetad is enabled,\n"
-	"    LVM prints a warning and disables lvmetad use.\n"
-	"  4\n"
-	"    LVM uses read-only locking which forbids any operations that\n"
-	"    might change metadata.\n"
-	"  5\n"
-	"    Offers dummy locking for tools that do not need any locks.\n"
-	"    You should not need to set this directly; the tools will select\n"
-	"    when to use it instead of the configured locking_type.\n"
-	"    Do not use lvmetad or the kernel device-mapper driver with this\n"
-	"    locking type. It is used by the --readonly option that offers\n"
-	"    read-only access to Volume Group metadata that cannot be locked\n"
-	"    safely because it belongs to an inaccessible domain and might be\n"
-	"    in use, for example a virtual machine image or a disk that is\n"
-	"    shared by a clustered machine.\n"
-	"#\n")
+cfg(global_locking_type_CFG, "locking_type", global_CFG_SECTION, 0, CFG_TYPE_INT, 1, vsn(1, 0, 0), NULL, vsn(3, 0, 0), NULL,
+	"This setting is no longer used.")
 
 cfg(global_wait_for_locks_CFG, "wait_for_locks", global_CFG_SECTION, 0, CFG_TYPE_BOOL, DEFAULT_WAIT_FOR_LOCKS, vsn(2, 2, 50), NULL, 0, NULL,
 	"When disabled, fail if a lock request would block.\n")
 
-cfg(global_fallback_to_clustered_locking_CFG, "fallback_to_clustered_locking", global_CFG_SECTION, 0, CFG_TYPE_BOOL, DEFAULT_FALLBACK_TO_CLUSTERED_LOCKING, vsn(2, 2, 42), NULL, 0, NULL,
-	"Attempt to use built-in cluster locking if locking_type 2 fails.\n"
-	"If using external locking (type 2) and initialisation fails, with\n"
-	"this enabled, an attempt will be made to use the built-in clustered\n"
-	"locking. Disable this if using a customised locking_library.\n")
+cfg(global_fallback_to_clustered_locking_CFG, "fallback_to_clustered_locking", global_CFG_SECTION, 0, CFG_TYPE_BOOL, DEFAULT_FALLBACK_TO_CLUSTERED_LOCKING, vsn(2, 2, 42), NULL, vsn(3, 0, 0), NULL,
+	"This setting is no longer used.\n")
 
-cfg(global_fallback_to_local_locking_CFG, "fallback_to_local_locking", global_CFG_SECTION, 0, CFG_TYPE_BOOL, DEFAULT_FALLBACK_TO_LOCAL_LOCKING, vsn(2, 2, 42), NULL, 0, NULL,
-	"Use locking_type 1 (local) if locking_type 2 or 3 fail.\n"
-	"If an attempt to initialise type 2 or type 3 locking failed, perhaps\n"
-	"because cluster components such as clvmd are not running, with this\n"
-	"enabled, an attempt will be made to use local file-based locking\n"
-	"(type 1). If this succeeds, only commands against local VGs will\n"
-	"proceed. VGs marked as clustered will be ignored.\n")
+cfg(global_fallback_to_local_locking_CFG, "fallback_to_local_locking", global_CFG_SECTION, 0, CFG_TYPE_BOOL, DEFAULT_FALLBACK_TO_LOCAL_LOCKING, vsn(2, 2, 42), NULL, vsn(3, 0, 0), NULL,
+	"This setting is no longer used.\n")
 
 cfg(global_locking_dir_CFG, "locking_dir", global_CFG_SECTION, 0, CFG_TYPE_STRING, DEFAULT_LOCK_DIR, vsn(1, 0, 0), "@DEFAULT_LOCK_DIR@", 0, NULL,
 	"Directory to use for LVM command file locks.\n"
@@ -860,19 +910,16 @@ cfg(global_prioritise_write_locks_CFG, "prioritise_write_locks", global_CFG_SECT
 cfg(global_library_dir_CFG, "library_dir", global_CFG_SECTION, CFG_DEFAULT_UNDEFINED, CFG_TYPE_STRING, NULL, vsn(1, 0, 0), NULL, 0, NULL,
 	"Search this directory first for shared libraries.\n")
 
-cfg(global_locking_library_CFG, "locking_library", global_CFG_SECTION, CFG_ALLOW_EMPTY | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_LOCKING_LIB, vsn(1, 0, 0), NULL, 0, NULL,
-	"The external locking library to use for locking_type 2.\n")
+cfg(global_locking_library_CFG, "locking_library", global_CFG_SECTION, CFG_ALLOW_EMPTY | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_LOCKING_LIB, vsn(1, 0, 0), NULL, vsn(3, 0, 0), NULL,
+	"This setting is no longer used.\n")
 
 cfg(global_abort_on_internal_errors_CFG, "abort_on_internal_errors", global_CFG_SECTION, 0, CFG_TYPE_BOOL, DEFAULT_ABORT_ON_INTERNAL_ERRORS, vsn(2, 2, 57), NULL, 0, NULL,
 	"Abort a command that encounters an internal error.\n"
 	"Treat any internal errors as fatal errors, aborting the process that\n"
 	"encountered the internal error. Please only enable for debugging.\n")
 
-cfg(global_detect_internal_vg_cache_corruption_CFG, "detect_internal_vg_cache_corruption", global_CFG_SECTION, 0, CFG_TYPE_BOOL, DEFAULT_DETECT_INTERNAL_VG_CACHE_CORRUPTION, vsn(2, 2, 96), NULL, 0, NULL,
-	"Internal verification of VG structures.\n"
-	"Check if CRC matches when a parsed VG is used multiple times. This\n"
-	"is useful to catch unexpected changes to cached VG structures.\n"
-	"Please only enable for debugging.\n")
+cfg(global_detect_internal_vg_cache_corruption_CFG, "detect_internal_vg_cache_corruption", global_CFG_SECTION, 0, CFG_TYPE_BOOL, 0, vsn(2, 2, 96), NULL, vsn(2, 2, 174), NULL,
+	"No longer used.\n")
 
 cfg(global_metadata_read_only_CFG, "metadata_read_only", global_CFG_SECTION, 0, CFG_TYPE_BOOL, DEFAULT_METADATA_READ_ONLY, vsn(2, 2, 75), NULL, 0, NULL,
 	"No operations that change on-disk metadata are permitted.\n"
@@ -950,38 +997,20 @@ cfg(global_lvdisplay_shows_full_device_path_CFG, "lvdisplay_shows_full_device_pa
 	"Previously this was always shown as /dev/vgname/lvname even when that\n"
 	"was never a valid path in the /dev filesystem.\n")
 
-cfg(global_use_lvmetad_CFG, "use_lvmetad", global_CFG_SECTION, 0, CFG_TYPE_BOOL, DEFAULT_USE_LVMETAD, vsn(2, 2, 93), "@DEFAULT_USE_LVMETAD@", 0, NULL,
-	"Use lvmetad to cache metadata and reduce disk scanning.\n"
-	"When enabled (and running), lvmetad provides LVM commands with VG\n"
-	"metadata and PV state. LVM commands then avoid reading this\n"
-	"information from disks which can be slow. When disabled (or not\n"
-	"running), LVM commands fall back to scanning disks to obtain VG\n"
-	"metadata. lvmetad is kept updated via udev rules which must be set\n"
-	"up for LVM to work correctly. (The udev rules should be installed\n"
-	"by default.) Without a proper udev setup, changes in the system's\n"
-	"block device configuration will be unknown to LVM, and ignored\n"
-	"until a manual 'pvscan --cache' is run. If lvmetad was running\n"
-	"while use_lvmetad was disabled, it must be stopped, use_lvmetad\n"
-	"enabled, and then started. When using lvmetad, LV activation is\n"
-	"switched to an automatic, event-based mode. In this mode, LVs are\n"
-	"activated based on incoming udev events that inform lvmetad when\n"
-	"PVs appear on the system. When a VG is complete (all PVs present),\n"
-	"it is auto-activated. The auto_activation_volume_list setting\n"
-	"controls which LVs are auto-activated (all by default.)\n"
-	"When lvmetad is updated (automatically by udev events, or directly\n"
-	"by pvscan --cache), devices/filter is ignored and all devices are\n"
-	"scanned by default. lvmetad always keeps unfiltered information\n"
-	"which is provided to LVM commands. Each LVM command then filters\n"
-	"based on devices/filter. This does not apply to other, non-regexp,\n"
-	"filtering settings: component filters such as multipath and MD\n"
-	"are checked during pvscan --cache. To filter a device and prevent\n"
-	"scanning from the LVM system entirely, including lvmetad, use\n"
-	"devices/global_filter.\n")
+cfg(global_event_activation_CFG, "event_activation", global_CFG_SECTION, 0, CFG_TYPE_BOOL, 1, vsn(2, 3, 1), 0, 0, NULL,
+	"Activate LVs based on system-generated device events.\n"
+	"When a device appears on the system, a system-generated event runs\n"
+	"the pvscan command to activate LVs if the new PV completes the VG.\n"
+	"Use auto_activation_volume_list to select which LVs should be\n"
+	"activated from these events (the default is all.)\n"
+	"When event_activation is disabled, the system will generally run\n"
+	"a direct activation command to activate LVs in complete VGs.\n")
 
-cfg(global_lvmetad_update_wait_time_CFG, "lvmetad_update_wait_time", global_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_LVMETAD_UPDATE_WAIT_TIME, vsn(2, 2, 151), NULL, 0, NULL,
-	"Number of seconds a command will wait for lvmetad update to finish.\n"
-	"After waiting for this period, a command will not use lvmetad, and\n"
-	"will revert to disk scanning.\n")
+cfg(global_use_lvmetad_CFG, "use_lvmetad", global_CFG_SECTION, 0, CFG_TYPE_BOOL, 0, vsn(2, 2, 93), 0, vsn(3, 0, 0), NULL,
+	"This setting is no longer used.\n")
+
+cfg(global_lvmetad_update_wait_time_CFG, "lvmetad_update_wait_time", global_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, 0, vsn(2, 2, 151), NULL, vsn(3, 0, 0), NULL,
+	"This setting is no longer used.\n")
 
 cfg(global_use_lvmlockd_CFG, "use_lvmlockd", global_CFG_SECTION, 0, CFG_TYPE_BOOL, 0, vsn(2, 2, 124), NULL, 0, NULL,
 	"Use lvmlockd for locking among hosts using LVM on shared storage.\n"
@@ -1079,6 +1108,13 @@ cfg_array(global_cache_check_options_CFG, "cache_check_options", global_CFG_SECT
 
 cfg_array(global_cache_repair_options_CFG, "cache_repair_options", global_CFG_SECTION, CFG_ALLOW_EMPTY | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_CACHE_REPAIR_OPTIONS_CONFIG, vsn(2, 2, 108), NULL, 0, NULL,
 	"List of options passed to the cache_repair command.\n")
+
+cfg(global_vdo_format_executable_CFG, "vdo_format_executable", global_CFG_SECTION, CFG_ALLOW_EMPTY | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, VDO_FORMAT_CMD, VDO_1ST_VSN, "@VDO_FORMAT_CMD@", 0, NULL,
+	"The full path to the vdoformat command.\n"
+	"LVM uses this command to initial data volume for VDO type logical volume\n")
+
+cfg_array(global_vdo_format_options_CFG, "vdo_format_options", global_CFG_SECTION, CFG_ALLOW_EMPTY | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_VDO_FORMAT_OPTIONS_CONFIG, VDO_1ST_VSN, NULL, 0, NULL,
+	"List of options passed added to standard vdoformat command.\n")
 
 cfg(global_fsadm_executable_CFG, "fsadm_executable", global_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_FSADM_PATH, vsn(2, 2, 170), "@FSADM_PATH@", 0, NULL,
 	"The full path to the fsadm command.\n"
@@ -1426,6 +1462,30 @@ cfg(activation_thin_pool_autoextend_percent_CFG, "thin_pool_autoextend_percent",
 	"thin_pool_autoextend_percent = 20\n"
 	"#\n")
 
+cfg(activation_vdo_pool_autoextend_threshold_CFG, "vdo_pool_autoextend_threshold", activation_CFG_SECTION, CFG_PROFILABLE | CFG_PROFILABLE_METADATA, CFG_TYPE_INT, DEFAULT_VDO_POOL_AUTOEXTEND_THRESHOLD, VDO_1ST_VSN, NULL, 0, NULL,
+	"Auto-extend a VDO pool when its usage exceeds this percent.\n"
+	"Setting this to 100 disables automatic extension.\n"
+	"The minimum value is 50 (a smaller value is treated as 50.)\n"
+	"Also see vdo_pool_autoextend_percent.\n"
+	"Automatic extension requires dmeventd to be monitoring the LV.\n"
+	"#\n"
+	"Example\n"
+	"Using 70% autoextend threshold and 20% autoextend size, when a 10G\n"
+	"VDO pool exceeds 7G, it is extended to 12G, and when it exceeds\n"
+	"8.4G, it is extended to 14.4G:\n"
+	"vdo_pool_autoextend_threshold = 70\n"
+	"#\n")
+
+cfg(activation_vdo_pool_autoextend_percent_CFG, "vdo_pool_autoextend_percent", activation_CFG_SECTION, CFG_PROFILABLE | CFG_PROFILABLE_METADATA | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_VDO_POOL_AUTOEXTEND_PERCENT, VDO_1ST_VSN, NULL, 0, NULL,
+	"Auto-extending a VDO pool adds this percent extra space.\n"
+	"The amount of additional space added to a VDO pool is this\n"
+	"percent of its current size.\n"
+	"#\n"
+	"Example\n"
+	"Using 70% autoextend threshold and 20% autoextend size, when a 10G\n"
+	"VDO pool exceeds 7G, it is extended to 12G, and when it exceeds\n"
+	"8.4G, it is extended to 14.4G:\n")
+
 cfg_array(activation_mlock_filter_CFG, "mlock_filter", activation_CFG_SECTION, CFG_DEFAULT_UNDEFINED | CFG_ADVANCED, CFG_TYPE_STRING, NULL, vsn(2, 2, 62), NULL, 0, NULL,
 	"Do not mlock these memory areas.\n"
 	"While activating devices, I/O to devices being (re)configured is\n"
@@ -1558,27 +1618,14 @@ cfg(metadata_pvmetadataignore_CFG, "pvmetadataignore", metadata_CFG_SECTION, CFG
 
 cfg(metadata_stripesize_CFG, "stripesize", metadata_CFG_SECTION, CFG_ADVANCED | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_STRIPESIZE, vsn(1, 0, 0), NULL, 0, NULL, NULL)
 
-cfg_array(metadata_dirs_CFG, "dirs", metadata_CFG_SECTION, CFG_ADVANCED | CFG_DEFAULT_UNDEFINED, CFG_TYPE_STRING, NULL, vsn(1, 0, 0), NULL, 0, NULL,
-	"Directories holding live copies of text format metadata.\n"
-	"These directories must not be on logical volumes!\n"
-	"It's possible to use LVM with a couple of directories here,\n"
-	"preferably on different (non-LV) filesystems, and with no other\n"
-	"on-disk metadata (pvmetadatacopies = 0). Or this can be in addition\n"
-	"to on-disk metadata areas. The feature was originally added to\n"
-	"simplify testing and is not supported under low memory situations -\n"
-	"the machine could lock up. Never edit any files in these directories\n"
-	"by hand unless you are absolutely sure you know what you are doing!\n"
-	"Use the supplied toolset to make changes (e.g. vgcfgrestore).\n"
-	"#\n"
-	"Example\n"
-	"dirs = [ \"/etc/lvm/metadata\", \"/mnt/disk2/lvm/metadata2\" ]\n"
-	"#\n")
+cfg_array(metadata_dirs_CFG, "dirs", metadata_CFG_SECTION, CFG_ADVANCED | CFG_DEFAULT_UNDEFINED, CFG_TYPE_STRING, NULL, vsn(1, 0, 0), NULL, vsn(3, 0, 0), NULL,
+	  "This setting is no longer used.\n")
 
-cfg_section(metadata_disk_areas_CFG_SUBSECTION, "disk_areas", metadata_CFG_SECTION, CFG_UNSUPPORTED | CFG_DEFAULT_COMMENTED, vsn(1, 0, 0), 0, NULL, NULL)
-cfg_section(disk_area_CFG_SUBSECTION, "disk_area", metadata_disk_areas_CFG_SUBSECTION, CFG_NAME_VARIABLE | CFG_UNSUPPORTED | CFG_DEFAULT_COMMENTED, vsn(1, 0, 0), 0, NULL, NULL)
-cfg(disk_area_start_sector_CFG, "start_sector", disk_area_CFG_SUBSECTION, CFG_UNSUPPORTED | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, 0, vsn(1, 0, 0), NULL, 0, NULL, NULL)
-cfg(disk_area_size_CFG, "size", disk_area_CFG_SUBSECTION, CFG_UNSUPPORTED | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, 0, vsn(1, 0, 0), NULL, 0, NULL, NULL)
-cfg(disk_area_id_CFG, "id", disk_area_CFG_SUBSECTION, CFG_UNSUPPORTED | CFG_DEFAULT_UNDEFINED, CFG_TYPE_STRING, NULL, vsn(1, 0, 0), NULL, 0, NULL, NULL)
+cfg_section(metadata_disk_areas_CFG_SUBSECTION, "disk_areas", metadata_CFG_SECTION, CFG_UNSUPPORTED | CFG_DEFAULT_COMMENTED, vsn(1, 0, 0), vsn(3, 0, 0), NULL, NULL)
+cfg_section(disk_area_CFG_SUBSECTION, "disk_area", metadata_disk_areas_CFG_SUBSECTION, CFG_NAME_VARIABLE | CFG_UNSUPPORTED | CFG_DEFAULT_COMMENTED, vsn(1, 0, 0), vsn(3, 0, 0), NULL, NULL)
+cfg(disk_area_start_sector_CFG, "start_sector", disk_area_CFG_SUBSECTION, CFG_UNSUPPORTED | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, 0, vsn(1, 0, 0), NULL, vsn(3, 0, 0), NULL, NULL)
+cfg(disk_area_size_CFG, "size", disk_area_CFG_SUBSECTION, CFG_UNSUPPORTED | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, 0, vsn(1, 0, 0), NULL, vsn(3, 0, 0), NULL, NULL)
+cfg(disk_area_id_CFG, "id", disk_area_CFG_SUBSECTION, CFG_UNSUPPORTED | CFG_DEFAULT_UNDEFINED, CFG_TYPE_STRING, NULL, vsn(1, 0, 0), NULL, vsn(3, 0, 0), NULL, NULL)
 
 cfg(report_output_format_CFG, "output_format", report_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED | CFG_DISALLOW_INTERACTIVE, CFG_TYPE_STRING, DEFAULT_REP_OUTPUT_FORMAT, vsn(2, 2, 158), NULL, 0, NULL,
 	"Format of LVM command's report output.\n"
@@ -1921,6 +1968,20 @@ cfg(dmeventd_thin_library_CFG, "thin_library", dmeventd_CFG_SECTION, 0, CFG_TYPE
 cfg(dmeventd_thin_command_CFG, "thin_command", dmeventd_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_DMEVENTD_THIN_COMMAND, vsn(2, 2, 169), NULL, 0, NULL,
 	"The plugin runs command with each 5% increment when thin-pool data volume\n"
 	"or metadata volume gets above 50%.\n"
+	"Command which starts with 'lvm ' prefix is internal lvm command.\n"
+	"You can write your own handler to customise behaviour in more details.\n"
+	"User handler is specified with the full path starting with '/'.\n")
+	/* TODO: systemd service handler */
+
+cfg(dmeventd_vdo_library_CFG, "vdo_library", dmeventd_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_DMEVENTD_VDO_LIB, VDO_1ST_VSN, NULL, 0, NULL,
+	"The library dmeventd uses when monitoring a VDO pool device.\n"
+	"libdevmapper-event-lvm2vdo.so monitors the filling of a pool\n"
+	"and emits a warning through syslog when the usage exceeds 80%. The\n"
+	"warning is repeated when 85%, 90% and 95% of the pool is filled.\n")
+
+cfg(dmeventd_vdo_command_CFG, "vdo_command", dmeventd_CFG_SECTION, CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_DMEVENTD_VDO_COMMAND, VDO_1ST_VSN, NULL, 0, NULL,
+	"The plugin runs command with each 5% increment when VDO pool volume\n"
+	"gets above 50%.\n"
 	"Command which starts with 'lvm ' prefix is internal lvm command.\n"
 	"You can write your own handler to customise behaviour in more details.\n"
 	"User handler is specified with the full path starting with '/'.\n")

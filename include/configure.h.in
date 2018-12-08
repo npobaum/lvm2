@@ -1,4 +1,4 @@
-/* include/configure.h.in.  Generated from configure.in by autoheader.  */
+/* include/configure.h.in.  Generated from configure.ac by autoheader.  */
 
 /* Define to 1 to use libblkid detection of signatures when wiping. */
 #undef BLKID_WIPING_SUPPORT
@@ -25,20 +25,8 @@
 /* Define to 1 if the `closedir' function returns void instead of `int'. */
 #undef CLOSEDIR_VOID
 
-/* Define to 1 to include built-in support for clustered LVM locking. */
-#undef CLUSTER_LOCKING_INTERNAL
-
-/* Path to clvmd binary. */
-#undef CLVMD_PATH
-
-/* Path to clvmd pidfile. */
-#undef CLVMD_PIDFILE
-
 /* Path to cmirrord pidfile. */
 #undef CMIRRORD_PIDFILE
-
-/* Define to 0 to exclude libSaCkpt. */
-#undef CMIRROR_HAS_CHECKPOINT
 
 /* Define to one of `_getb67', `GETB67', `getb67' for Cray-2 and Cray-YMP
    systems. This function is required for `alloca.c' support on those systems.
@@ -72,10 +60,6 @@
 /* Default system configuration directory. */
 #undef DEFAULT_ETC_DIR
 
-/* Fall back to LVM1 by default if device-mapper is missing from the kernel.
-   */
-#undef DEFAULT_FALLBACK_TO_LVM1
-
 /* Name of default locking directory. */
 #undef DEFAULT_LOCK_DIR
 
@@ -105,9 +89,6 @@
 
 /* Use blkid wiping by default. */
 #undef DEFAULT_USE_BLKID_WIPING
-
-/* Use lvmetad by default. */
-#undef DEFAULT_USE_LVMETAD
 
 /* Use lvmlockd by default. */
 #undef DEFAULT_USE_LVMLOCKD
@@ -182,12 +163,6 @@
 /* Define to 1 if you have the `clock_gettime' function. */
 #undef HAVE_CLOCK_GETTIME
 
-/* Define to 1 if you have the <corosync/cmap.h> header file. */
-#undef HAVE_COROSYNC_CMAP_H
-
-/* Define to 1 if you have the <corosync/confdb.h> header file. */
-#undef HAVE_COROSYNC_CONFDB_H
-
 /* Define to 1 if you have the <ctype.h> header file. */
 #undef HAVE_CTYPE_H
 
@@ -203,9 +178,6 @@
 
 /* Define to 1 if you don't have `vprintf' but do have `_doprnt.' */
 #undef HAVE_DOPRNT
-
-/* Define to 1 if you have the `dup2' function. */
-#undef HAVE_DUP2
 
 /* Define to 1 if you have the <errno.h> header file. */
 #undef HAVE_ERRNO_H
@@ -228,9 +200,6 @@
 /* Define to 1 if getline is available. */
 #undef HAVE_GETLINE
 
-/* Define to 1 if you have the `getmntent' function. */
-#undef HAVE_GETMNTENT
-
 /* Define to 1 if getopt_long is available. */
 #undef HAVE_GETOPTLONG
 
@@ -249,14 +218,11 @@
 /* Define to 1 if you have the <langinfo.h> header file. */
 #undef HAVE_LANGINFO_H
 
-/* Define to 1 if you have the <libcman.h> header file. */
-#undef HAVE_LIBCMAN_H
+/* Define to 1 if you have the <libaio.h> header file. */
+#undef HAVE_LIBAIO_H
 
 /* Define to 1 if dynamic libraries are available. */
 #undef HAVE_LIBDL
-
-/* Define to 1 if you have the <libdlm.h> header file. */
-#undef HAVE_LIBDLM_H
 
 /* Define to 1 if you have the <libgen.h> header file. */
 #undef HAVE_LIBGEN_H
@@ -302,9 +268,6 @@
 /* Define to 1 if you have the `memchr' function. */
 #undef HAVE_MEMCHR
 
-/* Define to 1 if you have the `memmove' function. */
-#undef HAVE_MEMMOVE
-
 /* Define to 1 if you have the <memory.h> header file. */
 #undef HAVE_MEMORY_H
 
@@ -320,20 +283,11 @@
 /* Define to 1 if you have a working `mmap' system call. */
 #undef HAVE_MMAP
 
-/* Define to 1 if you have the <mntent.h> header file. */
-#undef HAVE_MNTENT_H
-
 /* Define to 1 if you have the `munmap' function. */
 #undef HAVE_MUNMAP
 
 /* Define to 1 if you have the <ndir.h> header file, and it defines `DIR'. */
 #undef HAVE_NDIR_H
-
-/* Define to 1 if you have the <netdb.h> header file. */
-#undef HAVE_NETDB_H
-
-/* Define to 1 if you have the <netinet/in.h> header file. */
-#undef HAVE_NETINET_IN_H
 
 /* Define to 1 if you have the `nl_langinfo' function. */
 #undef HAVE_NL_LANGINFO
@@ -341,14 +295,8 @@
 /* Define to 1 if you have the <paths.h> header file. */
 #undef HAVE_PATHS_H
 
-/* Define to 1 if you have the <pthread.h> header file. */
-#undef HAVE_PTHREAD_H
-
 /* Define to 1 if the system has the type `ptrdiff_t'. */
 #undef HAVE_PTRDIFF_T
-
-/* Define to 1 if the compiler has the `__builtin_clz` builtin. */
-#undef HAVE___BUILTIN_CLZ
 
 /* Define to 1 if you have the <readline/history.h> header file. */
 #undef HAVE_READLINE_HISTORY_H
@@ -372,12 +320,6 @@
 /* Define to 1 if you have the `rmdir' function. */
 #undef HAVE_RMDIR
 
-/* Define to 1 if you have the <search.h> header file. */
-#undef HAVE_SEARCH_H
-
-/* Define to 1 if you have the `select' function. */
-#undef HAVE_SELECT
-
 /* Define to 1 to include support for selinux. */
 #undef HAVE_SELINUX
 
@@ -398,9 +340,6 @@
 
 /* Define to 1 if you have the <signal.h> header file. */
 #undef HAVE_SIGNAL_H
-
-/* Define to 1 if you have the `socket' function. */
-#undef HAVE_SOCKET
 
 /* Define to 1 if `stat' has the bug that it succeeds when given the
    zero-length file name argument. */
@@ -478,8 +417,15 @@
 /* Define to 1 if you have the `strtoull' function. */
 #undef HAVE_STRTOULL
 
+/* Define to 1 if `st_blocks' is a member of `struct stat'. */
+#undef HAVE_STRUCT_STAT_ST_BLOCKS
+
 /* Define to 1 if `st_rdev' is a member of `struct stat'. */
 #undef HAVE_STRUCT_STAT_ST_RDEV
+
+/* Define to 1 if your `struct stat' has `st_blocks'. Deprecated, use
+   `HAVE_STRUCT_STAT_ST_BLOCKS' instead. */
+#undef HAVE_ST_BLOCKS
 
 /* Define to 1 if you have the <syslog.h> header file. */
 #undef HAVE_SYSLOG_H
@@ -506,9 +452,6 @@
 /* Define to 1 if you have the <sys/mman.h> header file. */
 #undef HAVE_SYS_MMAN_H
 
-/* Define to 1 if you have the <sys/mount.h> header file. */
-#undef HAVE_SYS_MOUNT_H
-
 /* Define to 1 if you have the <sys/ndir.h> header file, and it defines `DIR'.
    */
 #undef HAVE_SYS_NDIR_H
@@ -519,14 +462,8 @@
 /* Define to 1 if you have the <sys/resource.h> header file. */
 #undef HAVE_SYS_RESOURCE_H
 
-/* Define to 1 if you have the <sys/select.h> header file. */
-#undef HAVE_SYS_SELECT_H
-
 /* Define to 1 if you have the <sys/sem.h> header file. */
 #undef HAVE_SYS_SEM_H
-
-/* Define to 1 if you have the <sys/socket.h> header file. */
-#undef HAVE_SYS_SOCKET_H
 
 /* Define to 1 if you have the <sys/statvfs.h> header file. */
 #undef HAVE_SYS_STATVFS_H
@@ -543,14 +480,11 @@
 /* Define to 1 if you have the <sys/types.h> header file. */
 #undef HAVE_SYS_TYPES_H
 
-/* Define to 1 if you have the <sys/uio.h> header file. */
-#undef HAVE_SYS_UIO_H
-
-/* Define to 1 if you have the <sys/un.h> header file. */
-#undef HAVE_SYS_UN_H
-
 /* Define to 1 if you have the <sys/utsname.h> header file. */
 #undef HAVE_SYS_UTSNAME_H
+
+/* Define to 1 if you have the <sys/vfs.h> header file. */
+#undef HAVE_SYS_VFS_H
 
 /* Define to 1 if you have the <sys/wait.h> header file. */
 #undef HAVE_SYS_WAIT_H
@@ -566,9 +500,6 @@
 
 /* Define to 1 if you have the <unistd.h> header file. */
 #undef HAVE_UNISTD_H
-
-/* Define to 1 if you have the <utmpx.h> header file. */
-#undef HAVE_UTMPX_H
 
 /* valgrind.h found */
 #undef HAVE_VALGRIND
@@ -591,6 +522,12 @@
 /* Define to 1 if the system has the type `_Bool'. */
 #undef HAVE__BOOL
 
+/* Define to 1 if the system has the `__builtin_clz' built-in function */
+#undef HAVE___BUILTIN_CLZ
+
+/* Define to 1 if the system has the `__builtin_clzll' built-in function */
+#undef HAVE___BUILTIN_CLZLL
+
 /* Internalization package */
 #undef INTL_PACKAGE
 
@@ -607,18 +544,8 @@
    slash. */
 #undef LSTAT_FOLLOWS_SLASHED_SYMLINK
 
-/* Define to 1 if 'lvm' should fall back to using LVM1 binaries if
-   device-mapper is missing from the kernel */
-#undef LVM1_FALLBACK
-
-/* Define to 1 to include built-in support for LVM1 metadata. */
-#undef LVM1_INTERNAL
-
-/* Path to lvmetad pidfile. */
-#undef LVMETAD_PIDFILE
-
-/* Define to 1 to include code that uses lvmetad. */
-#undef LVMETAD_SUPPORT
+/* Path to lvmconfig binary. */
+#undef LVMCONFIG_PATH
 
 /* Path to lvmlockd pidfile. */
 #undef LVMLOCKD_PIDFILE
@@ -676,9 +603,6 @@
 /* Define to the version of this package. */
 #undef PACKAGE_VERSION
 
-/* Define to 1 to include built-in support for GFS pool metadata. */
-#undef POOL_INTERNAL
-
 /* Define to 1 to include built-in support for raid. */
 #undef RAID_INTERNAL
 
@@ -687,15 +611,6 @@
 
 /* Define as the return type of signal handlers (`int' or `void'). */
 #undef RETSIGTYPE
-
-/* Define to the type of arg 1 for `select'. */
-#undef SELECT_TYPE_ARG1
-
-/* Define to the type of args 2, 3 and 4 for `select'. */
-#undef SELECT_TYPE_ARG234
-
-/* Define to the type of arg 5 for `select'. */
-#undef SELECT_TYPE_ARG5
 
 /* Define to 1 to include built-in support for snapshots. */
 #undef SNAPSHOT_INTERNAL
@@ -747,6 +662,12 @@
 
 /* Enable a valgrind aware build of pool */
 #undef VALGRIND_POOL
+
+/* The path to 'vdoformat', if available. */
+#undef VDO_FORMAT_CMD
+
+/* Define to 1 to include built-in support for vdo. */
+#undef VDO_INTERNAL
 
 /* Define for Solaris 2.5.1 so the uint32_t typedef from <sys/synch.h>,
    <pthread.h>, or <semaphore.h> is not used. If the typedef were allowed, the

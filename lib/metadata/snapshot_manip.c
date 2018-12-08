@@ -13,13 +13,13 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include "lib.h"
-#include "metadata.h"
-#include "segtype.h"
-#include "locking.h"
-#include "toolcontext.h"
-#include "lv_alloc.h"
-#include "activate.h"
+#include "lib/misc/lib.h"
+#include "lib/metadata/metadata.h"
+#include "lib/metadata/segtype.h"
+#include "lib/locking/locking.h"
+#include "lib/commands/toolcontext.h"
+#include "lib/metadata/lv_alloc.h"
+#include "lib/activate/activate.h"
 
 #define SNAPSHOT_MIN_CHUNKS	3       /* Minimum number of chunks in snapshot */
 
@@ -332,17 +332,6 @@ int vg_remove_snapshot(struct logical_volume *cow)
 	cow->snapshot = NULL;
 	lv_set_visible(cow);
 
-	/* format1 must do the change in one step, with the commit last. */
-	if (!(origin->vg->fid->fmt->features & FMT_MDAS)) {
-		/* Get the lock for COW volume */
-		if (is_origin_active && !activate_lv(cow->vg->cmd, cow)) {
-			log_error("Unable to activate logical volume \"%s\"",
-				  cow->name);
-			return 0;
-		}
-		return 1;
-	}
-
 	if (!vg_write(origin->vg))
 		return_0;
 
@@ -419,12 +408,6 @@ int validate_snapshot_origin(const struct logical_volume *origin_lv)
 
 	if (err) {
 		log_error("Snapshots of %s are not supported.", err);
-		return 0;
-	}
-
-	if (vg_is_clustered(origin_lv->vg) && lv_is_active(origin_lv) &&
-	    !lv_is_active_exclusive_locally(origin_lv)) {
-		log_error("Snapshot origin must be active exclusively.");
 		return 0;
 	}
 

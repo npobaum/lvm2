@@ -98,10 +98,6 @@ Common options for command:
 .ad b
 .br
 .ad l
-[    \fB--ignoreskippedcluster\fP ]
-.ad b
-.br
-.ad l
 [    \fB--reportformat\fP \fBbasic\fP|\fBjson\fP ]
 .ad b
 .RE
@@ -146,7 +142,15 @@ Common options for lvm:
 .ad b
 .br
 .ad l
+[    \fB--lockopt\fP \fIString\fP ]
+.ad b
+.br
+.ad l
 [    \fB--longhelp\fP ]
+.ad b
+.br
+.ad l
+[    \fB--nolocking\fP ]
 .ad b
 .br
 .ad l
@@ -236,10 +240,10 @@ Display help text.
 .ad b
 .HP
 .ad l
-\fB--ignoreskippedcluster\fP
+\fB--lockopt\fP \fIString\fP
 .br
-Use to avoid exiting with an non-zero status code if the command is run
-without clustered locking and clustered VGs are skipped.
+Used to pass options for special cases to lvmlockd.
+See \fBlvmlockd\fP(8) for more information.
 .ad b
 .HP
 .ad l
@@ -255,6 +259,12 @@ Specifies the metadataignore property of a PV.
 If yes, metadata areas on the PV are ignored, and lvm will
 not store metadata in the metadata areas of the PV.
 If no, lvm will store metadata on the PV.
+.ad b
+.HP
+.ad l
+\fB--nolocking\fP
+.br
+Disable locking.
 .ad b
 .HP
 .ad l

@@ -1,13 +1,14 @@
 Source: lvm2
 Section: admin
 Priority: optional
-Maintainer: Debian LVM Team <pkg-lvm-maintainers@lists.alioth.debian.org>
+Maintainer: Debian LVM Team <team+lvm@tracker.debian.org>
 Uploaders: Bastian Blank <waldi@debian.org>
 Build-Depends:
  debhelper (>= 10.9.2),
  dh-python,
  autoconf-archive,
  automake,
+ libaio-dev,
  libblkid-dev,
  libcmap-dev,
  libcorosync-common-dev,
@@ -26,13 +27,14 @@ Build-Depends:
  systemd
 Standards-Version: 4.1.1
 Homepage: http://sources.redhat.com/lvm2/
-Vcs-Git: https://gitlab.com/debian-lvm/lvm2.git
-Vcs-Browser: https://gitlab.com/debian-lvm/lvm2
+Vcs-Git: https://salsa.debian.org/lvm-team/lvm2.git
+Vcs-Browser: https://salsa.debian.org/lvm-team/lvm2
 
 Package: lvm2
 Architecture: linux-any
 Depends: ${shlibs:Depends}, ${misc:Depends}, lsb-base, dmsetup (>= 1.02.145-2~), dmeventd
 Recommends: thin-provisioning-tools
+Conflicts: clvm
 Multi-Arch: foreign
 Description: Linux Logical Volume Manager
  This is LVM2, the rewrite of The Linux Logical Volume Manager.  LVM
@@ -83,17 +85,6 @@ Description: LVM locking daemon
  regular block devices.
  .
  LVM commands use lvmlockd to coordinate access to shared storage.
-
-Package: clvm
-Architecture: linux-any
-Depends: ${shlibs:Depends}, ${misc:Depends}, lvm2 (= ${binary:Version}), dlm-controld
-Suggests: pacemaker, resource-agents
-Multi-Arch: foreign
-Description: Cluster extensions for userland logical volume management tools
- This package provides the clustering interface for lvm2, when used with
- corosync based (eg Pacemaker) cluster infrastructure.  It allows
- logical volumes to be created on shared storage devices (eg Fibre
- Channel, or iSCSI).
 
 Package: libdevmapper-dev
 Section: libdevel
@@ -200,18 +191,7 @@ Description: Linux Kernel Device Mapper event daemon
  .
  This package contains a daemon to monitor events of devmapper devices.
 
-Package: liblvm2app2.2
-Section: libs
-Architecture: linux-any
-Pre-Depends: ${misc:Pre-Depends}
-Depends: ${shlibs:Depends}, ${misc:Depends}
-Multi-Arch: same
-Description: LVM2 application library
- This package contains the lvm2app shared library. It allows easier access
- to the basic LVM objects and provides functions to enumerate, create or
- modify them.
-
-Package: liblvm2cmd2.02
+Package: liblvm2cmd2.03
 Section: libs
 Architecture: linux-any
 Pre-Depends: ${misc:Pre-Depends}

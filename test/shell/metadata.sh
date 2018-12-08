@@ -10,7 +10,6 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
-SKIP_WITH_LVMLOCKD=1
 SKIP_WITH_LVMPOLLD=1
 
 . lib/inittest
@@ -24,7 +23,7 @@ pvcreate --metadatacopies 0 "$dev3"
 pvcreate "$dev4"
 pvcreate --metadatacopies 0 "$dev5"
 
-vgcreate "$vg" "${DEVICES[@]}"
+vgcreate $SHARED "$vg" "${DEVICES[@]}"
 lvcreate -n $lv -l 1 -i5 -I256 $vg
 
 pvchange -x n "$dev1"
@@ -38,7 +37,7 @@ vgremove -f $vg
 for mdacp in 1 0; do
 	pvcreate --metadatacopies "$mdacp" "${DEVICES[@]}"
 	pvcreate "$dev1"
-	vgcreate "$vg" "${DEVICES[@]}"
+	vgcreate $SHARED "$vg" "${DEVICES[@]}"
 	lvcreate -n $lv1 -l 2 -i5 -I256 $vg
 	lvcreate -aey -n $lv2 --type mirror -m2 -l 2  $vg
 	lvchange -an $vg/$lv1 $vg/$lv2
@@ -47,41 +46,3 @@ for mdacp in 1 0; do
 	vgremove -f $vg
 done
 not grep "Cached VG .* incorrect PV list" out0
-
-# begin M1 metadata tests
-if test -n "$LVM_TEST_LVM1" ; then
-
-pvcreate -M1 "$dev1" "$dev2" "$dev3"
-pv3_uuid=$(get pv_field "$dev3" pv_uuid)
-vgcreate -M1 $vg "$dev1" "$dev2" "$dev3"
-pvchange --uuid "$dev1"
-
-# verify pe_start of all M1 PVs
-pv_align="128.00k"
-check pv_field "$dev1" pe_start $pv_align
-check pv_field "$dev2" pe_start $pv_align
-check pv_field "$dev3" pe_start $pv_align
-
-pvs --units k -o name,pe_start,vg_mda_size,vg_name "${DEVICES[@]}"
-
-# upgrade from v1 to v2 metadata
-vgconvert -M2 $vg
-
-# verify pe_start of all M2 PVs
-check pv_field "$dev1" pe_start $pv_align
-check pv_field "$dev2" pe_start $pv_align
-check pv_field "$dev3" pe_start $pv_align
-
-pvs --units k -o name,pe_start,vg_mda_size,vg_name "${DEVICES[@]}"
-
-# create backup and then restore $dev3
-vgcfgbackup -f "$TESTDIR/bak-%s" "$vg"
-pvcreate -ff -y --restorefile "$TESTDIR/bak-$vg" --uuid "$pv3_uuid" "$dev3"
-vgcfgrestore -f "$TESTDIR/bak-$vg" "$vg"
-
-# verify pe_start of $dev3
-check pv_field "$dev3" pe_start $pv_align
-
-fi
-# end M1 metadata tests
-

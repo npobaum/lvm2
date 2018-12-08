@@ -12,14 +12,15 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include "lib.h"
-#include "display.h"
-#include "metadata.h"
-#include "segtype.h"
-#include "text_export.h"
-#include "config.h"
-#include "activate.h"
-#include "str_list.h"
+#include "base/memory/zalloc.h"
+#include "lib/misc/lib.h"
+#include "lib/display/display.h"
+#include "lib/metadata/metadata.h"
+#include "lib/metadata/segtype.h"
+#include "lib/format_text/text_export.h"
+#include "lib/config/config.h"
+#include "lib/activate/activate.h"
+#include "lib/datastruct/str_list.h"
 
 /* Dm kernel module name for thin provisiong */
 static const char _thin_pool_module[] = "thin-pool";
@@ -431,17 +432,12 @@ static int _thin_pool_target_percent(void **target_state __attribute__((unused))
 }
 
 #  ifdef DMEVENTD
-static const char *_get_thin_dso_path(struct cmd_context *cmd)
-{
-	return get_monitor_dso_path(cmd, find_config_tree_str(cmd, dmeventd_thin_library_CFG, NULL));
-}
-
 /* FIXME Cache this */
-static int _target_registered(struct lv_segment *seg, int *pending)
+static int _target_registered(struct lv_segment *seg, int *pending, int *monitored)
 {
 	return target_registered_with_dmeventd(seg->lv->vg->cmd,
-					       _get_thin_dso_path(seg->lv->vg->cmd),
-					       seg->lv, pending);
+					       seg->segtype->dso,
+					       seg->lv, pending, monitored);
 }
 
 /* FIXME This gets run while suspended and performs banned operations. */
@@ -449,7 +445,7 @@ static int _target_set_events(struct lv_segment *seg, int evmask, int set)
 {
 	/* FIXME Make timeout (10) configurable */
 	return target_register_events(seg->lv->vg->cmd,
-				      _get_thin_dso_path(seg->lv->vg->cmd),
+				      seg->segtype->dso,
 				      seg->lv, evmask, set, 10);
 }
 
@@ -750,7 +746,8 @@ static int _thin_target_present(struct cmd_context *cmd,
 
 static void _thin_destroy(struct segment_type *segtype)
 {
-	dm_free(segtype);
+	free((void *) segtype->dso);
+	free(segtype);
 }
 
 static struct segtype_handler _thin_pool_ops = {
@@ -807,7 +804,7 @@ int init_multiple_segtypes(struct cmd_context *cmd, struct segtype_library *segl
 	unsigned i;
 
 	for (i = 0; i < DM_ARRAY_SIZE(reg_segtypes); ++i) {
-		segtype = dm_zalloc(sizeof(*segtype));
+		segtype = zalloc(sizeof(*segtype));
 
 		if (!segtype) {
 			log_error("Failed to allocate memory for %s segtype",
@@ -821,8 +818,10 @@ int init_multiple_segtypes(struct cmd_context *cmd, struct segtype_library *segl
 
 #ifdef DEVMAPPER_SUPPORT
 #  ifdef DMEVENTD
+		segtype->dso = get_monitor_dso_path(cmd, dmeventd_thin_library_CFG);
+
 		if ((reg_segtypes[i].flags & SEG_THIN_POOL) &&
-		    _get_thin_dso_path(cmd))
+		    segtype->dso)
 			segtype->flags |= SEG_MONITORED;
 #  endif /* DMEVENTD */
 #endif

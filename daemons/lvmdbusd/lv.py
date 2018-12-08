@@ -232,7 +232,6 @@ class LvState(State):
 @utils.dbus_property(LV_COMMON_INTERFACE, 'Attr', 's')
 @utils.dbus_property(LV_COMMON_INTERFACE, 'DataPercent', 'u')
 @utils.dbus_property(LV_COMMON_INTERFACE, 'SnapPercent', 'u')
-@utils.dbus_property(LV_COMMON_INTERFACE, 'DataPercent', 'u')
 @utils.dbus_property(LV_COMMON_INTERFACE, 'MetaDataPercent', 'u')
 @utils.dbus_property(LV_COMMON_INTERFACE, 'CopyPercent', 'u')
 @utils.dbus_property(LV_COMMON_INTERFACE, 'SyncPercent', 'u')
@@ -498,7 +497,7 @@ class Lv(LvCommon):
 		# it is a thin lv
 		if not dbo.IsThinVolume:
 			if optional_size == 0:
-				space = dbo.SizeBytes / 80
+				space = dbo.SizeBytes // 80
 				remainder = space % 512
 				optional_size = space + 512 - remainder
 

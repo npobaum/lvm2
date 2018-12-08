@@ -13,14 +13,14 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include "lib.h"
-#include "metadata.h"
-#include "display.h"
-#include "activate.h"
-#include "toolcontext.h"
-#include "segtype.h"
-#include "str_list.h"
-#include "lvmlockd.h"
+#include "lib/misc/lib.h"
+#include "lib/metadata/metadata.h"
+#include "lib/display/display.h"
+#include "lib/activate/activate.h"
+#include "lib/commands/toolcontext.h"
+#include "lib/metadata/segtype.h"
+#include "lib/datastruct/str_list.h"
+#include "lib/locking/lvmlockd.h"
 
 #include <time.h>
 #include <sys/utsname.h>
@@ -290,7 +290,7 @@ char *lvseg_cachemode_dup(struct dm_pool *mem, const struct lv_segment *seg)
 }
 
 #ifdef DMEVENTD
-#  include "libdevmapper-event.h"
+#  include "daemons/dmeventd/libdevmapper-event.h"
 #endif
 char *lvseg_monitor_dup(struct dm_pool *mem, const struct lv_segment *seg)
 {
@@ -298,10 +298,11 @@ char *lvseg_monitor_dup(struct dm_pool *mem, const struct lv_segment *seg)
 
 #ifdef DMEVENTD
 	struct lvinfo info;
-	int pending = 0, monitored;
+	int pending = 0, monitored = 0;
 	struct lv_segment *segm = (struct lv_segment *) seg;
 
-	if (lv_is_cow(seg->lv) && !lv_is_merging_cow(seg->lv))
+	if (lv_is_cow(seg->lv) && (!lv_is_merging_cow(seg->lv) ||
+				   lv_has_target_type(seg->lv->vg->cmd->mem, seg->lv, NULL, TARGET_NAME_SNAPSHOT)))
 		segm = first_seg(seg->lv->snapshot->lv);
 
 	// log_debug("Query LV:%s mon:%s segm:%s tgtm:%p  segmon:%d statusm:%d", seg->lv->name, segm->lv->name, segm->segtype->name, segm->segtype->ops->target_monitored, seg_monitored(segm), (int)(segm->status & PVMOVE));
@@ -314,11 +315,13 @@ char *lvseg_monitor_dup(struct dm_pool *mem, const struct lv_segment *seg)
 	else if (!seg_monitored(segm) || (segm->status & PVMOVE))
 		s = "not monitored";
 	else if (lv_info(seg->lv->vg->cmd, seg->lv, 1, &info, 0, 0) && info.exists) {
-		monitored = segm->segtype->ops->target_monitored(segm, &pending);
-		if (pending)
-			s = "pending";
-		else
-			s = (monitored) ? "monitored" : "not monitored";
+		if (segm->segtype->ops->target_monitored(segm, &pending, &monitored)) {
+			if (pending)
+				s = "pending";
+			else
+				s = (monitored) ? "monitored" : "not monitored";
+		} else
+			s = "not monitored";
 	} // else log_debug("Not active");
 #endif
 	return dm_pool_strdup(mem, s);
@@ -446,6 +449,12 @@ dm_percent_t lvseg_percent_with_info_and_seg_status(const struct lv_with_info_an
 				p = DM_PERCENT_100;
 			}
 		}
+		break;
+	case SEG_STATUS_VDO_POOL:
+		if (seg_is_vdo_pool(lvdm->seg_status.seg))
+			p = s->vdo_pool.usage;
+		else
+			p = s->vdo_pool.data_usage;
 		break;
 	default:
 		p = DM_PERCENT_INVALID;
@@ -692,11 +701,13 @@ char *lv_mirror_log_uuid_dup(struct dm_pool *mem, const struct logical_volume *l
 
 struct logical_volume *lv_pool_lv(const struct logical_volume *lv)
 {
-	struct lv_segment *seg = (lv_is_thin_volume(lv) || lv_is_cache(lv)) ?
-				  first_seg(lv) : NULL;
-	struct logical_volume *pool_lv = seg ? seg->pool_lv : NULL;
+	if (lv_is_thin_volume(lv) || lv_is_cache(lv))
+		return first_seg(lv)->pool_lv;
 
-	return pool_lv;
+	if (lv_is_vdo(lv))
+		return seg_lv(first_seg(lv), 0);
+
+	return NULL;
 }
 
 static char *_do_lv_pool_lv_dup(struct dm_pool *mem, const struct logical_volume *lv,
@@ -725,7 +736,9 @@ char *lv_pool_lv_uuid_dup(struct dm_pool *mem, const struct logical_volume *lv)
 
 struct logical_volume *lv_data_lv(const struct logical_volume *lv)
 {
-	struct lv_segment *seg = (lv_is_thin_pool(lv) || lv_is_cache_pool(lv)) ?
+	struct lv_segment *seg = (lv_is_cache_pool(lv) ||
+				  lv_is_thin_pool(lv) ||
+				  lv_is_vdo_pool(lv)) ?
 				  first_seg(lv) : NULL;
 	struct logical_volume *data_lv = seg ? seg_lv(seg, 0) : NULL;
 
@@ -793,6 +806,9 @@ const char *lv_layer(const struct logical_volume *lv)
 {
 	if (lv_is_thin_pool(lv))
 		return "tpool";
+
+	if (lv_is_vdo_pool(lv))
+		return "vpool";
 
 	if (lv_is_origin(lv) || lv_is_external_origin(lv))
 		return "real";
@@ -1021,7 +1037,7 @@ int lv_raid_image_in_sync(const struct logical_volume *lv)
 	 * If the LV is not active locally,
 	 * it doesn't make sense to check status
 	 */
-	if (!lv_is_active_locally(lv))
+	if (!lv_is_active(lv))
 		return 0;  /* Assume not in-sync */
 
 	if (!lv_is_raid_image(lv)) {
@@ -1079,7 +1095,7 @@ int lv_raid_healthy(const struct logical_volume *lv)
 	 * If the LV is not active locally,
 	 * it doesn't make sense to check status
 	 */
-	if (!lv_is_active_locally(lv))
+	if (!lv_is_active(lv))
 		return 1;  /* assume healthy */
 
 	if (!lv_is_raid_type(lv)) {
@@ -1175,6 +1191,13 @@ char *lv_attr_dup_with_info_and_seg_status(struct dm_pool *mem, const struct lv_
 	else if (lv_is_thin_volume(lv))
 		repstr[0] = lv_is_merging_origin(lv) ?
 			'O' : (lv_is_merging_thin_snapshot(lv) ? 'S' : 'V');
+	//else if (lv_is_vdo(lv))
+	//	repstr[0] = 'V'; // TODO: Show 'V' like Virtual Thin ?
+	// ATM shows 'v' as virtual target just like: error, zero
+	else if (lv_is_vdo_pool(lv))
+		repstr[0] = 'd';
+	else if (lv_is_vdo_pool_data(lv))
+		repstr[0] = 'D';
 	else if (lv_is_virtual(lv))
 		repstr[0] = 'v';
 	else if (lv_is_thin_pool(lv))
@@ -1444,25 +1467,10 @@ char *lv_host_dup(struct dm_pool *mem, const struct logical_volume *lv)
 	return dm_pool_strdup(mem, lv->hostname ? : "");
 }
 
-static int _lv_is_exclusive(struct logical_volume *lv)
-{
-	struct lv_segment *seg;
-
-	/* Some seg types require exclusive activation */
-	/* FIXME Scan recursively */
-	dm_list_iterate_items(seg, &lv->segments)
-		if (seg_only_exclusive(seg))
-			return 1;
-
-	/* Origin has no seg type require exlusiveness */
-	return lv_is_origin(lv);
-}
-
 int lv_active_change(struct cmd_context *cmd, struct logical_volume *lv,
-		     enum activation_change activate, int needs_exclusive)
+		     enum activation_change activate)
 {
 	const char *ay_with_mode = NULL;
-	struct lv_segment *seg = first_seg(lv);
 
 	if (activate == CHANGE_ASY)
 		ay_with_mode = "sh";
@@ -1477,64 +1485,22 @@ int lv_active_change(struct cmd_context *cmd, struct logical_volume *lv,
 
 	switch (activate) {
 	case CHANGE_AN:
-deactivate:
+	case CHANGE_ALN:
 		log_verbose("Deactivating logical volume %s.", display_lvname(lv));
 		if (!deactivate_lv(cmd, lv))
 			return_0;
 		break;
-	case CHANGE_ALN:
-		if (vg_is_clustered(lv->vg) && (needs_exclusive || _lv_is_exclusive(lv))) {
-			if (!lv_is_active_locally(lv)) {
-				log_error("Cannot deactivate remotely exclusive device %s locally.",
-					  display_lvname(lv));
-				return 0;
-			}
-			/* Unlock whole exclusive activation */
-			goto deactivate;
-		}
-		log_verbose("Deactivating logical volume %s locally.",
-			    display_lvname(lv));
-		if (!deactivate_lv_local(cmd, lv))
-			return_0;
-		break;
+
 	case CHANGE_ALY:
 	case CHANGE_AAY:
-		if (!raid4_is_supported(cmd, seg->segtype))
-			goto no_raid4;
-
-		if (needs_exclusive || _lv_is_exclusive(lv)) {
-			log_verbose("Activating logical volume %s exclusively locally.",
-				    display_lvname(lv));
-			if (!activate_lv_excl_local(cmd, lv))
-				return_0;
-		} else {
-			log_verbose("Activating logical volume %s locally.",
-				    display_lvname(lv));
-			if (!activate_lv_local(cmd, lv))
-				return_0;
-		}
-		break;
 	case CHANGE_AEY:
-exclusive:
-		if (!raid4_is_supported(cmd, seg->segtype))
-			goto no_raid4;
-
-		log_verbose("Activating logical volume %s exclusively.",
-			    display_lvname(lv));
-		if (!activate_lv_excl(cmd, lv))
-			return_0;
-		break;
 	case CHANGE_ASY:
 	case CHANGE_AY:
 	default:
-		if (!raid4_is_supported(cmd, seg->segtype))
-			goto no_raid4;
-
-		if (needs_exclusive || _lv_is_exclusive(lv))
-			goto exclusive;
 		log_verbose("Activating logical volume %s.", display_lvname(lv));
 		if (!activate_lv(cmd, lv))
 			return_0;
+		break;
 	}
 
 	if (!is_change_activating(activate) &&
@@ -1542,10 +1508,6 @@ exclusive:
 		log_error("Failed to unlock logical volume %s.", display_lvname(lv));
 
 	return 1;
-
-no_raid4:
-	log_error("Failed to activate %s LV %s", lvseg_name(seg), display_lvname(lv));
-	return 0;
 }
 
 char *lv_active_dup(struct dm_pool *mem, const struct logical_volume *lv)
@@ -1557,23 +1519,10 @@ char *lv_active_dup(struct dm_pool *mem, const struct logical_volume *lv)
 		goto out;
 	}
 
-	if (vg_is_clustered(lv->vg)) {
-		//const struct logical_volume *lvo = lv;
-		lv = lv_lock_holder(lv);
-		//log_debug("Holder for %s => %s.", lvo->name, lv->name);
-	}
-
 	if (!lv_is_active(lv))
 		s = ""; /* not active */
-	else if (!vg_is_clustered(lv->vg))
+	else
 		s = "active";
-	else if (lv_is_active_exclusive(lv))
-		/* exclusive cluster activation */
-		s = lv_is_active_exclusive_locally(lv) ?
-			"local exclusive" : "remote exclusive";
-	else /* locally active */
-		s = lv_is_active_but_not_locally(lv) ?
-			"remotely" : "locally";
 out:
 	return dm_pool_strdup(mem, s);
 }
@@ -1618,6 +1567,9 @@ const struct logical_volume *lv_lock_holder(const struct logical_volume *lv)
 	if ((lv_is_raid_image(lv) || lv_is_raid_metadata(lv)) && lv_is_visible(lv))
 		return lv;
 
+	if (lv_is_pvmove(lv))
+		return lv;
+
 	/* For other types, by default look for the first user */
 	dm_list_iterate_items(sl, &lv->segs_using_this_lv) {
 		/* FIXME: complete this exception list */
@@ -1627,6 +1579,9 @@ const struct logical_volume *lv_lock_holder(const struct logical_volume *lv)
 			continue; /* Skip thin snaphost */
 		if (lv_is_pending_delete(sl->seg->lv))
 			continue; /* Skip deleted LVs */
+		if (lv_is_cache_pool(sl->seg->lv) &&
+		    !lv_is_used_cache_pool(sl->seg->lv))
+			continue; /* Skip unused cache-pool */
 		return lv_lock_holder(sl->seg->lv);
 	}
 

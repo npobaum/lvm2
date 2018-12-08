@@ -11,7 +11,7 @@
 # Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
 test_description='Exercise fsadm operation on renamed device'
-SKIP_WITH_LVMLOCKD=1
+
 SKIP_WITH_LVMPOLLD=1
 
 . lib/inittest
@@ -43,6 +43,17 @@ cleanup_mounted_and_teardown()
 	aux teardown
 }
 
+check_mounted()
+{
+	mount | tee out
+	grep $vg out || {
+		# older versions of systemd sometimes umount volume by mistake
+		# skip further test when this case happens
+		systemctl --version | grep "systemd 222" && \
+			skip "System is running old racy systemd version."
+	}
+}
+
 # Test for block sizes != 1024 (rhbz #480022)
 trap 'cleanup_mounted_and_teardown' EXIT
 
@@ -59,7 +70,7 @@ lvcreate -n $lv1 -L20M $vg
 
 case "$i" in
 *ext3)		MKFS_ARGS="-b1024 -j" ;;
-*xfs)		MKFS_ARGS="-l internal,size=1000b -f" ;;
+*xfs)		MKFS_ARGS="-l internal,size=1700b -f" ;;
 *reiserfs)	MKFS_ARGS="-s 513 -f" ;;
 esac
 
@@ -81,11 +92,10 @@ aux udev_wait
 
 lvrename $vg_lv $vg_lv_ren
 
-mount | tee out
-grep $vg out
+check_mounted
 
 # fails on renamed LV
-fail lvresize -L+10M -r $vg_lv_ren
+fail lvresize -y -L+10M -r $vg_lv_ren
 
 # fails on unknown mountpoint  (FIXME: umount)
 not umount "$dev_vg_lv"
@@ -97,15 +107,13 @@ aux udev_wait
 
 mount "$dev_vg_lv" "$mount_dolar_dir"
 
-mount | tee out
-grep $vg out
+check_mounted
 
 not lvresize -L+10M -r $vg_lv_ren
 
 umount "$mount_dir"
 
-# FIXME:  lvresize  CANNOT handle/propagage '--yes' to fsadm
-echo y | lvresize -L+10M -r $vg_lv
+lvresize -y -L+10M -r $vg_lv
 
 aux udev_wait
 
