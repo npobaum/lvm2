@@ -163,7 +163,7 @@ static int generate_unit(struct generator *gen, int unit)
 		fprintf(f, "After=%s iscsi.service fcoe.service rbdmap.service\n"
 			"Before=remote-fs-pre.target shutdown.target\n\n"
 			"[Service]\n"
-			"ExecStartPre=/usr/bin/udevadm settle\n", _unit_names[UNIT_MAIN]);
+			"ExecStartPre=/bin/udevadm settle\n", _unit_names[UNIT_MAIN]);
 	} else {
 		if (unit == UNIT_EARLY)
 			fputs("After=systemd-udev-settle.service\n"
