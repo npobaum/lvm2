@@ -1430,11 +1430,7 @@ if test "$BUILD_DMFILEMAPD" = yes; then
 fi
 
 ################################################################################
-AC_PATH_TOOL(MODPROBE_CMD, modprobe, [], [$PATH_SBIN])
-
-if test -n "$MODPROBE_CMD"; then
-	AC_DEFINE_UNQUOTED([MODPROBE_CMD], ["$MODPROBE_CMD"], [The path to 'modprobe', if available.])
-fi
+AC_DEFINE_UNQUOTED([MODPROBE_CMD], ["/sbin/modprobe"], [The path to 'modprobe', if available.])
 
 SYSCONFDIR="$(eval echo $(eval echo $sysconfdir))"
 
