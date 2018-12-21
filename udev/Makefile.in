@@ -18,10 +18,7 @@ top_builddir = @top_builddir@
 include $(top_builddir)/make.tmpl
 
 DM_RULES=55-dm.rules 60-persistent-storage-dm.rules 95-dm-notify.rules
-LVM_RULES=56-lvm.rules
-ifeq ("@BUILD_LVMETAD@", "yes")
-LVM_RULES+=69-lvm-metad.rules
-endif
+LVM_RULES=56-lvm.rules 69-lvm-metad.rules
 
 DM_DIR=$(shell $(GREP) "\#define DM_DIR" $(top_srcdir)/libdm/misc/dm-ioctl.h | $(AWK) '{print $$3}')
 
