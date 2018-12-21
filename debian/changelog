@@ -1,3 +1,10 @@
+lvm2 (2.03.01-2) unstable; urgency=medium
+
+  * Upload to unstable.
+  * Rewrite copyright file. (closes: #915986)
+
+ -- Bastian Blank <waldi@debian.org>  Fri, 21 Dec 2018 20:05:26 +0100
+
 lvm2 (2.03.01-1) experimental; urgency=medium
 
   * New upstream release.
