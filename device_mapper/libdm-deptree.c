@@ -531,7 +531,7 @@ static struct dm_tree_node *_create_dm_tree_node(struct dm_tree *dtree,
 	dm_list_init(&node->activated);
 	dm_list_init(&node->props.segs);
 
-	dev = MKDEV((dev_t)info->major, (dev_t)info->minor);
+	dev = MKDEV(info->major, info->minor);
 
 	if (!dm_hash_insert_binary(dtree->devs, (const char *) &dev,
 				   sizeof(dev), node)) {
@@ -554,7 +554,7 @@ static struct dm_tree_node *_create_dm_tree_node(struct dm_tree *dtree,
 static struct dm_tree_node *_find_dm_tree_node(struct dm_tree *dtree,
 					       uint32_t major, uint32_t minor)
 {
-	dev_t dev = MKDEV((dev_t)major, (dev_t)minor);
+	dev_t dev = MKDEV(major, minor);
 
 	return dm_hash_lookup_binary(dtree->devs, (const char *) &dev,
 				     sizeof(dev));
@@ -1752,7 +1752,12 @@ static int _dm_tree_deactivate_children(struct dm_tree_node *dnode,
 
 		if (info.open_count) {
 			/* Skip internal non-toplevel opened nodes */
-			if (level)
+			/* On some old udev systems without corrrect udev rules
+			 * this hack avoids 'leaking' active _mimageX legs after
+			 * deactivation of mirror LV. Other suffixes are not added
+			 * since it's expected newer systems with wider range of
+			 * supported targets also use better udev */
+			if (level && !strstr(name, "_mimage"))
 				continue;
 
 			/* When retry is not allowed, error */
@@ -1792,7 +1797,7 @@ static int _dm_tree_deactivate_children(struct dm_tree_node *dnode,
 
 		if (!_deactivate_node(name, info.major, info.minor,
 				      &child->dtree->cookie, child->udev_flags,
-				      (level == 0) ? child->dtree->retry_remove : 0)) {
+				      child->dtree->retry_remove)) {
 			log_error("Unable to deactivate %s (" FMTu32 ":"
 				  FMTu32 ").", name, info.major, info.minor);
 			r = 0;
@@ -2639,7 +2644,7 @@ static int _vdo_emit_segment_line(struct dm_task *dmt,
 	/* Unlike normal targets, current VDO requires device path */
 	if (dm_snprintf(data_dev, sizeof(data_dev), "/dev/dm-%u", seg->vdo_data->info.minor) < 0) {
 		log_error("Can create VDO data volume path for %s.", data);
-		return_0;
+		return 0;
 	}
 
 	EMIT_PARAMS(pos, "%s %u %s " FMTu64 " " FMTu64 " %u on %s %s "

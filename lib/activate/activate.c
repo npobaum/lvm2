@@ -2031,8 +2031,6 @@ static int _lv_suspend(struct cmd_context *cmd, const char *lvid_s,
 	               const struct logical_volume *lv, const struct logical_volume *lv_pre)
 {
 	const struct logical_volume *pvmove_lv = NULL;
-	const struct logical_volume *lv_to_free = NULL;
-	const struct logical_volume *lv_pre_to_free = NULL;
 	struct logical_volume *lv_pre_tmp, *lv_tmp;
 	struct seg_list *sl;
 	struct lv_segment *snap_seg;
@@ -2223,10 +2221,6 @@ static int _lv_suspend(struct cmd_context *cmd, const char *lvid_s,
 out:
 	if (mem)
 		dm_pool_destroy(mem);
-	if (lv_pre_to_free)
-		release_vg(lv_pre_to_free->vg);
-	if (lv_to_free)
-		release_vg(lv_to_free->vg);
 
 	return r;
 }
@@ -2387,7 +2381,6 @@ static int _lv_has_open_snapshots(const struct logical_volume *lv)
 
 int lv_deactivate(struct cmd_context *cmd, const char *lvid_s, const struct logical_volume *lv)
 {
-	const struct logical_volume *lv_to_free = NULL;
 	struct lvinfo info;
 	static const struct lv_activate_opts laopts = { .skip_in_use = 1 };
 	struct dm_list *snh;
@@ -2457,27 +2450,25 @@ int lv_deactivate(struct cmd_context *cmd, const char *lvid_s, const struct logi
 		r = 0;
 	}
 out:
-	if (lv_to_free)
-		release_vg(lv_to_free->vg);
 
 	return r;
 }
 
 /* Test if LV passes filter */
 int lv_activation_filter(struct cmd_context *cmd, const char *lvid_s,
-			 int *activate_lv, const struct logical_volume *lv)
+			 int *activate, const struct logical_volume *lv)
 {
 	if (!activation()) {
-		*activate_lv = 1;
+		*activate = 1;
 		return 1;
 	}
 
 	if (!_passes_activation_filter(cmd, lv)) {
 		log_verbose("Not activating %s since it does not pass "
 			    "activation filter.", display_lvname(lv));
-		*activate_lv = 0;
+		*activate = 0;
 	} else
-		*activate_lv = 1;
+		*activate = 1;
 
 	return 1;
 }
@@ -2518,6 +2509,12 @@ static int _lv_activate(struct cmd_context *cmd, const char *lvid_s,
 	if (lv_has_unknown_segments(lv)) {
 		log_error("Refusing activation of LV %s containing "
 			  "an unrecognised segment.", display_lvname(lv));
+		goto out;
+	}
+
+	if (lv_raid_has_visible_sublvs(lv)) {
+		log_error("Refusing activation of RAID LV %s with "
+			  "visible SubLVs.", display_lvname(lv));
 		goto out;
 	}
 

@@ -42,18 +42,18 @@ static bool _open_child(struct child_process *child, const char *cmd, const char
 
 	child->pid = fork();
 	if (child->pid < 0) {
-		close(pipe_fd[0]);
-		close(pipe_fd[1]);
+		(void) close(pipe_fd[0]);
+		(void) close(pipe_fd[1]);
 		_error("call to fork() failed: %d\n", r);
 		return false;
 	}
 
 	if (child->pid == 0) {
 		// child
-		close(pipe_fd[0]);
+		(void) close(pipe_fd[0]);
 		if (pipe_fd[1] != STDOUT_FILENO) {
-			dup2(pipe_fd[1], STDOUT_FILENO);
-			close(pipe_fd[1]);
+			(void) dup2(pipe_fd[1], STDOUT_FILENO);
+			(void) close(pipe_fd[1]);
 		}
 
 		if (execv(cmd, (char *const *) argv) < 0)
@@ -62,7 +62,7 @@ static bool _open_child(struct child_process *child, const char *cmd, const char
 		exit(1);
 	} else {
 		// parent
-		close(pipe_fd[1]);
+		(void) close(pipe_fd[1]);
 		child->fp = fdopen(pipe_fd[0], "r");
 		if (!child->fp) {
 			_error("call to fdopen() failed\n");
@@ -78,7 +78,7 @@ static bool _close_child(struct child_process *child)
 {
 	int status;
 
-	fclose(child->fp);
+	(void) fclose(child->fp);
 
 	while (waitpid(child->pid, &status, 0) < 0)
 		if (errno != EINTR)
@@ -93,11 +93,11 @@ static bool _close_child(struct child_process *child)
 //----------------------------------------------------------------
 // Aquiring config from the lvmconfig process
 
-#define LVM_CONF_USE_LVMETAD	"global/use_lvmetad"
-#define LVM_CONF_USE_LVMPOLLD	"global/use_lvmpolld"
+#define LVM_CONF_EVENT_ACTIVATION "global/event_activation"
+#define LVM_CONF_USE_LVMPOLLD	  "global/use_lvmpolld"
 
 struct config {
-	bool use_lvmetad;
+	bool event_activation;
 	bool sysinit_needed;
 };
 
@@ -153,8 +153,8 @@ static bool _parse_line(const char *line, struct config *cfg)
 {
 	const char *val;
 
-	if (_begins_with(line, "use_lvmetad=", &val)) {
-		return _parse_bool(val, &cfg->use_lvmetad);
+	if (_begins_with(line, "event_activation=", &val)) {
+		return _parse_bool(val, &cfg->event_activation);
 
 	} else if (_begins_with(line, "use_lvmpolld=", &val)) {
 		bool r;
@@ -170,14 +170,14 @@ static bool _parse_line(const char *line, struct config *cfg)
 static bool _get_config(struct config *cfg, const char *lvmconfig_path)
 {
 	static const char *_argv[] = {
-		"lvmconfig", LVM_CONF_USE_LVMETAD, LVM_CONF_USE_LVMPOLLD, NULL
+		"lvmconfig", LVM_CONF_EVENT_ACTIVATION, LVM_CONF_USE_LVMPOLLD, NULL
 	};
 
 	bool r = true;
 	char buffer[256];
 	struct child_process child;
 
-	cfg->use_lvmetad = false;
+	cfg->event_activation = false;
 	cfg->sysinit_needed = true;
 
 	if (!_open_child(&child, lvmconfig_path, _argv)) {

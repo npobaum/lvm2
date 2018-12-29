@@ -18,6 +18,7 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 
 //----------------------------------------------------------------
 
@@ -354,6 +355,7 @@ static bool _insert_node16(struct radix_tree *rt, struct value *v, uint8_t *kb, 
 			return false;
 
 		n48->nr_entries = 17;
+		/* coverity[bad_memset] intentional use of '0' */
 		memset(n48->keys, 48, sizeof(n48->keys));
 
 		for (i = 0; i < 16; i++) {
@@ -623,15 +625,15 @@ static void _degrade_to_n48(struct node256 *n256, struct value *result)
 }
 
 // Removes an entry in an array by sliding the values above it down.
-static void _erase_elt(void *array, unsigned obj_size, unsigned count, unsigned index)
+static void _erase_elt(void *array, size_t obj_size, unsigned count, unsigned idx)
 {
-	if (index == (count - 1))
+	if (idx == (count - 1))
 		// The simple case
 		return;
 
-	memmove(((uint8_t *) array) + (obj_size * index),
-                ((uint8_t *) array) + (obj_size * (index + 1)),
-                obj_size * (count - index - 1));
+	memmove(((uint8_t *) array) + (obj_size * idx),
+                ((uint8_t *) array) + (obj_size * (idx + 1)),
+                obj_size * (count - idx - 1));
 
 	// Zero the now unused last elt (set's v.type to UNSET)
 	memset(((uint8_t *) array) + (count - 1) * obj_size, 0, obj_size);

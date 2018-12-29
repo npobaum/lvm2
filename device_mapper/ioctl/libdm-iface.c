@@ -15,6 +15,7 @@
 
 #include "base/memory/zalloc.h"
 #include "device_mapper/misc/dmlib.h"
+#include "device_mapper/misc/dm-ioctl.h"
 #include "device_mapper/ioctl/libdm-targets.h"
 #include "device_mapper/libdm-common.h"
 
@@ -32,10 +33,8 @@
 #else
 #  define MAJOR(x) major((x))
 #  define MINOR(x) minor((x))
-#  define MKDEV(x,y) makedev((x),(y))
+#  define MKDEV(x,y) makedev(((dev_t)x),((dev_t)y))
 #endif
-
-#include "device_mapper/misc/dm-ioctl.h"
 
 /*
  * Ensure build compatibility.  
@@ -116,6 +115,9 @@ static struct cmd_data _cmd_data_v4[] = {
 #endif
 #ifdef DM_DEV_SET_GEOMETRY
 	{"setgeometry",	DM_DEV_SET_GEOMETRY,	{4, 6, 0}},
+#endif
+#ifdef DM_DEV_ARM_POLL
+	{"armpoll",	DM_DEV_ARM_POLL,	{4, 36, 0}},
 #endif
 };
 /* *INDENT-ON* */
@@ -261,7 +263,7 @@ static int _control_exists(const char *control, uint32_t major, uint32_t minor)
 		return -1;
 	}
 
-	if (major && buf.st_rdev != MKDEV((dev_t)major, (dev_t)minor)) {
+	if (major && buf.st_rdev != MKDEV(major, minor)) {
 		log_verbose("%s: Wrong device number: (%u, %u) instead of "
 			    "(%u, %u)", control,
 			    MAJOR(buf.st_mode), MINOR(buf.st_mode),
@@ -304,7 +306,7 @@ static int _create_control(const char *control, uint32_t major, uint32_t minor)
 	(void) dm_prepare_selinux_context(control, S_IFCHR);
 	old_umask = umask(DM_CONTROL_NODE_UMASK);
 	if (mknod(control, S_IFCHR | S_IRUSR | S_IWUSR,
-		  MKDEV((dev_t)major, (dev_t)minor)) < 0)  {
+		  MKDEV(major, minor)) < 0)  {
 		log_sys_error("mknod", control);
 		ret = 0;
 	}
@@ -468,6 +470,7 @@ static void _dm_zfree_string(char *string)
 {
 	if (string) {
 		memset(string, 0, strlen(string));
+		asm volatile ("" ::: "memory"); /* Compiler barrier. */
 		free(string);
 	}
 }
@@ -476,6 +479,7 @@ static void _dm_zfree_dmi(struct dm_ioctl *dmi)
 {
 	if (dmi) {
 		memset(dmi, 0, dmi->data_size);
+		asm volatile ("" ::: "memory"); /* Compiler barrier. */
 		free(dmi);
 	}
 }
@@ -1082,6 +1086,22 @@ static int _lookup_dev_name(uint64_t dev, char *buf, size_t len)
 	return r;
 }
 
+static int _add_params(int type)
+{
+	switch (type) {
+	case DM_DEVICE_REMOVE_ALL:
+	case DM_DEVICE_CREATE:
+	case DM_DEVICE_REMOVE:
+	case DM_DEVICE_SUSPEND:
+	case DM_DEVICE_STATUS:
+	case DM_DEVICE_CLEAR:
+	case DM_DEVICE_ARM_POLL:
+		return 0; /* IOCTL_FLAGS_NO_PARAMS in drivers/md/dm-ioctl.c */
+	default:
+		return 1;
+	}
+}
+
 static struct dm_ioctl *_flatten(struct dm_task *dmt, unsigned repeat_count)
 {
 	const size_t min_size = 16 * 1024;
@@ -1094,11 +1114,15 @@ static struct dm_ioctl *_flatten(struct dm_task *dmt, unsigned repeat_count)
 	char *b, *e;
 	int count = 0;
 
-	for (t = dmt->head; t; t = t->next) {
-		len += sizeof(struct dm_target_spec);
-		len += strlen(t->params) + 1 + ALIGNMENT;
-		count++;
-	}
+	if (_add_params(dmt->type))
+		for (t = dmt->head; t; t = t->next) {
+			len += sizeof(struct dm_target_spec);
+			len += strlen(t->params) + 1 + ALIGNMENT;
+			count++;
+		}
+	else if (dmt->head)
+		log_debug_activation(INTERNAL_ERROR "dm '%s' ioctl should not define parameters.",
+				     _cmd_data_v4[dmt->type].name);
 
 	if (count && (dmt->sector || dmt->message)) {
 		log_error("targets and message are incompatible");
@@ -1182,7 +1206,7 @@ static struct dm_ioctl *_flatten(struct dm_task *dmt, unsigned repeat_count)
 		}
 
 		dmi->flags |= DM_PERSISTENT_DEV_FLAG;
-		dmi->dev = MKDEV((dev_t)dmt->major, (dev_t)dmt->minor);
+		dmi->dev = MKDEV(dmt->major, dmt->minor);
 	}
 
 	/* Does driver support device number referencing? */
@@ -1248,9 +1272,10 @@ static struct dm_ioctl *_flatten(struct dm_task *dmt, unsigned repeat_count)
 	b = (char *) (dmi + 1);
 	e = (char *) dmi + len;
 
-	for (t = dmt->head; t; t = t->next)
-		if (!(b = _add_target(t, b, e)))
-			goto_bad;
+	if (_add_params(dmt->type))
+		for (t = dmt->head; t; t = t->next)
+			if (!(b = _add_target(t, b, e)))
+				goto_bad;
 
 	if (dmt->newname)
 		strcpy(b, dmt->newname);
@@ -1454,6 +1479,7 @@ static int _create_and_load_v4(struct dm_task *dmt)
 	dmt->uuid = NULL;
 	free(dmt->mangled_uuid);
 	dmt->mangled_uuid = NULL;
+	_dm_task_free_targets(dmt);
 
 	if (dm_task_run(dmt))
 		return 1;
@@ -1464,6 +1490,7 @@ static int _create_and_load_v4(struct dm_task *dmt)
 	dmt->uuid = NULL;
 	free(dmt->mangled_uuid);
 	dmt->mangled_uuid = NULL;
+	_dm_task_free_targets(dmt);
 
 	/*
 	 * Also udev-synchronize "remove" dm task that is a part of this revert!

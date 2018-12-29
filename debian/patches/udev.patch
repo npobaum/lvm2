@@ -1,4 +1,4 @@
-From e328e8c9ad9b4dae9293098b913065ef9ffa0a81 Mon Sep 17 00:00:00 2001
+From b470b6b2c7b0372b63a1a480f8357cf142d60101 Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 30 Jun 2015 11:46:11 +0200
 Subject: Rename udev rules and hardcode paths
@@ -7,8 +7,8 @@ Patch-Name: udev.patch
 ---
  udev/10-dm.rules.in        |  7 ++++---
  udev/95-dm-notify.rules.in |  2 +-
- udev/Makefile.in           | 18 +++++++++++++++---
- 3 files changed, 20 insertions(+), 7 deletions(-)
+ udev/Makefile.in           | 16 ++++++++++++++--
+ 3 files changed, 19 insertions(+), 6 deletions(-)
 
 diff --git a/udev/10-dm.rules.in b/udev/10-dm.rules.in
 index b4fa52ab76..69d2c47ecc 100644
@@ -67,26 +67,23 @@ index 80d59d37d3..d22abba1a6 100644
 -ENV{DM_COOKIE}=="?*", RUN+="(DM_EXEC)/dmsetup udevcomplete $env{DM_COOKIE}"
 +ENV{DM_COOKIE}=="?*", RUN+="/sbin/dmsetup udevcomplete $env{DM_COOKIE}"
 diff --git a/udev/Makefile.in b/udev/Makefile.in
-index 6f57d46125..3a14fb5d89 100644
+index e32cba9210..4a4ef8795d 100644
 --- a/udev/Makefile.in
 +++ b/udev/Makefile.in
-@@ -17,10 +17,10 @@ top_builddir = @top_builddir@
+@@ -17,8 +17,8 @@ top_builddir = @top_builddir@
  
  include $(top_builddir)/make.tmpl
  
 -DM_RULES=10-dm.rules 13-dm-disk.rules 95-dm-notify.rules
--LVM_RULES=11-dm-lvm.rules
+-LVM_RULES=11-dm-lvm.rules 69-dm-lvm-metad.rules
 +DM_RULES=55-dm.rules 60-persistent-storage-dm.rules 95-dm-notify.rules
-+LVM_RULES=56-lvm.rules
- ifeq ("@BUILD_LVMETAD@", "yes")
--LVM_RULES+=69-dm-lvm-metad.rules
-+LVM_RULES+=69-lvm-metad.rules
- endif
++LVM_RULES=56-lvm.rules 69-lvm-metad.rules
  
  DM_DIR=$(shell $(GREP) "\#define DM_DIR" $(top_srcdir)/libdm/misc/dm-ioctl.h | $(AWK) '{print $$3}')
-@@ -57,6 +57,18 @@ endif
+ 
+@@ -54,6 +54,18 @@ endif
  %.rules: $(srcdir)/%.rules.in
- 	$(SED) -e "s+(DM_DIR)+$(DM_DIR)+;s+(BINDIR)+$(BINDIR)+;s+(BLKID_RULE)+$(BLKID_RULE)+;s+(PVSCAN_RULE)+$(PVSCAN_RULE)+;s+(PVSCAN_ACTION)+$(PVSCAN_ACTION)+;s+(DM_EXEC_RULE)+$(DM_EXEC_RULE)+;s+(DM_EXEC)+$(DM_EXEC)+;s+(LVM_EXEC_RULE)+$(LVM_EXEC_RULE)+;s+(LVM_EXEC)+$(LVM_EXEC)+;" $< >$@
+ 	$(Q) $(SED) -e "s+(DM_DIR)+$(DM_DIR)+;s+(BINDIR)+$(BINDIR)+;s+(BLKID_RULE)+$(BLKID_RULE)+;s+(PVSCAN_RULE)+$(PVSCAN_RULE)+;s+(PVSCAN_ACTION)+$(PVSCAN_ACTION)+;s+(DM_EXEC_RULE)+$(DM_EXEC_RULE)+;s+(DM_EXEC)+$(DM_EXEC)+;s+(LVM_EXEC_RULE)+$(LVM_EXEC_RULE)+;s+(LVM_EXEC)+$(LVM_EXEC)+;" $< >$@
  
 +55-dm.rules: 10-dm.rules
 +	ln -s $< $@
@@ -101,5 +98,5 @@ index 6f57d46125..3a14fb5d89 100644
 +	ln -s $< $@
 +
  %_install: %.rules
- 	$(INSTALL_DATA) -D $< $(udevdir)/$(<F)
- 
+ 	@echo "    [INSTALL] $<"
+ 	$(Q) $(INSTALL_DATA) -D $< $(udevdir)/$(<F)

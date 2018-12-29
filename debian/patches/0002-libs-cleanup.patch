@@ -1,4 +1,4 @@
-From 1f2313ef643bb4fd344eb852dea2d5ec72b66681 Mon Sep 17 00:00:00 2001
+From 301c46846cd0d828c43aba0382df6d8d9da8bdac Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 30 Jun 2015 11:46:05 +0200
 Subject: libs-cleanup
@@ -8,10 +8,10 @@ Subject: libs-cleanup
  1 file changed, 7 insertions(+), 61 deletions(-)
 
 diff --git a/configure.ac b/configure.ac
-index 70fd674b5f..faef7bae38 100644
+index 7fd0561e24..8df6fab0a4 100644
 --- a/configure.ac
 +++ b/configure.ac
-@@ -646,7 +646,7 @@ AC_DEFINE_UNQUOTED([VDO_FORMAT_CMD], ["$VDO_FORMAT_CMD"],
+@@ -651,7 +651,7 @@ AC_DEFINE_UNQUOTED([VDO_FORMAT_CMD], ["$VDO_FORMAT_CMD"],
  dnl -- Disable readline
  AC_ARG_ENABLE([readline],
  	      AC_HELP_STRING([--disable-readline], [disable readline support]),
@@ -20,7 +20,7 @@ index 70fd674b5f..faef7bae38 100644
  
  ################################################################################
  dnl -- Disable realtime clock support
-@@ -1268,21 +1268,9 @@ AC_MSG_RESULT($SELINUX)
+@@ -1272,21 +1272,9 @@ AC_MSG_RESULT($SELINUX)
  ################################################################################
  dnl -- Check for selinux
  if test "$SELINUX" = yes; then
@@ -45,7 +45,7 @@ index 70fd674b5f..faef7bae38 100644
  fi
  
  ################################################################################
-@@ -1318,50 +1306,6 @@ AC_IF_YES(ac_cv_stat_st_ctim,
+@@ -1322,50 +1310,6 @@ AC_IF_YES(ac_cv_stat_st_ctim,
  dnl -- Check for getopt
  AC_CHECK_HEADERS(getopt.h, AC_DEFINE([HAVE_GETOPTLONG], 1, [Define to 1 if getopt_long is available.]))
  
@@ -96,7 +96,7 @@ index 70fd674b5f..faef7bae38 100644
  ################################################################################
  dnl -- Internationalisation stuff
  AC_MSG_CHECKING(whether to enable internationalisation)
-@@ -1445,7 +1389,8 @@ AC_ARG_WITH(tmpfilesdir,
+@@ -1449,7 +1393,8 @@ AC_ARG_WITH(tmpfilesdir,
  ################################################################################
  dnl -- Ensure additional headers required
  if test "$READLINE" = yes; then
@@ -106,7 +106,7 @@ index 70fd674b5f..faef7bae38 100644
  fi
  AC_MSG_CHECKING(whether to enable readline)
  AC_MSG_RESULT($READLINE)
-@@ -1721,6 +1666,7 @@ AC_SUBST(SALCK_CFLAGS)
+@@ -1725,6 +1670,7 @@ AC_SUBST(SALCK_CFLAGS)
  AC_SUBST(SALCK_LIBS)
  AC_SUBST(SBINDIR)
  AC_SUBST(SELINUX_LIBS)

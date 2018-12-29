@@ -985,7 +985,12 @@ See \fBlvm\fP(8) for more information about allocation.
 .ad b
 .HP
 .ad l
-\fB-b\fP|\fB--background\fP.ad b
+\fB-b\fP|\fB--background\fP
+.br
+If the operation requires polling, this option causes the command to
+return before the operation is complete, and polling is done in the
+background.
+.ad b
 .HP
 .ad l
 \fB-H\fP|\fB--cache\fP
@@ -2019,11 +2024,9 @@ Detach and remove the cache pool from a cache LV.
 .BR lvmdump (8)
 
 .BR dmeventd (8)
-.BR lvmetad (8)
 .BR lvmpolld (8)
 .BR lvmlockd (8)
 .BR lvmlockctl (8)
-.BR clvmd (8)
 .BR cmirrord (8)
 .BR lvmdbusd (8)
 

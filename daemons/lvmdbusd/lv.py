@@ -10,7 +10,7 @@
 from .automatedproperties import AutomatedProperties
 
 from . import utils
-from .utils import vg_obj_path_generate
+from .utils import vg_obj_path_generate, log_error
 import dbus
 from . import cmdhandler
 from . import cfg
@@ -23,6 +23,8 @@ from .state import State
 from . import background
 from .utils import round_size, mt_remove_dbus_objects
 from .job import JobState
+
+import traceback
 
 
 # Try and build a key for a LV, so that we sort the LVs with least dependencies
@@ -291,6 +293,22 @@ class LvCommon(AutomatedProperties):
 				(lv_uuid, lv_name))
 		return dbo
 
+	def attr_struct(self, index, type_map, default='undisclosed'):
+		try:
+			if self.state.Attr[index] not in type_map:
+				log_error("LV %s %s with lv_attr %s, lv_attr[%d] = "
+					"'%s' is not known" %
+					(self.Uuid, self.Name, self.Attr, index,
+					self.state.Attr[index]))
+
+			return dbus.Struct((self.state.Attr[index],
+				type_map.get(self.state.Attr[index], default)),
+								signature="(ss)")
+		except BaseException:
+			st = traceback.format_exc()
+			log_error("attr_struct: \n%s" % st)
+			return dbus.Struct(('?', 'Unavailable'), signature="(ss)")
+
 	@property
 	def VolumeType(self):
 		type_map = {'C': 'Cache', 'm': 'mirrored',
@@ -304,16 +322,14 @@ class LvCommon(AutomatedProperties):
 					'V': 'thin Volume', 't': 'thin pool', 'T': 'Thin pool data',
 					'e': 'raid or pool metadata or pool metadata spare',
 					'-': 'Unspecified'}
-		return dbus.Struct((self.state.Attr[0], type_map[self.state.Attr[0]]),
-						signature="as")
+		return self.attr_struct(0, type_map)
 
 	@property
 	def Permissions(self):
 		type_map = {'w': 'writable', 'r': 'read-only',
 					'R': 'Read-only activation of non-read-only volume',
 					'-': 'Unspecified'}
-		return dbus.Struct((self.state.Attr[1], type_map[self.state.Attr[1]]),
-						signature="(ss)")
+		return self.attr_struct(1, type_map)
 
 	@property
 	def AllocationPolicy(self):
@@ -322,8 +338,7 @@ class LvCommon(AutomatedProperties):
 					'i': 'inherited', 'I': 'inherited locked',
 					'l': 'cling', 'L': 'cling locked',
 					'n': 'normal', 'N': 'normal locked', '-': 'Unspecified'}
-		return dbus.Struct((self.state.Attr[2], type_map[self.state.Attr[2]]),
-						signature="(ss)")
+		return self.attr_struct(2, type_map)
 
 	@property
 	def FixedMinor(self):
@@ -331,15 +346,20 @@ class LvCommon(AutomatedProperties):
 
 	@property
 	def State(self):
-		type_map = {'a': 'active', 's': 'suspended', 'I': 'Invalid snapshot',
+		type_map = {'a': 'active',
+					's': 'suspended',
+					'I': 'Invalid snapshot',
 					'S': 'invalid Suspended snapshot',
 					'm': 'snapshot merge failed',
 					'M': 'suspended snapshot (M)erge failed',
 					'd': 'mapped device present without  tables',
 					'i': 'mapped device present with inactive table',
-					'X': 'unknown', '-': 'Unspecified'}
-		return dbus.Struct((self.state.Attr[4], type_map[self.state.Attr[4]]),
-						signature="(ss)")
+					'h': 'historical',
+					'c': 'check needed suspended thin-pool',
+					'C': 'check needed',
+					'X': 'unknown',
+					'-': 'Unspecified'}
+		return self.attr_struct(4, type_map)
 
 	@property
 	def TargetType(self):
@@ -355,11 +375,18 @@ class LvCommon(AutomatedProperties):
 
 	@property
 	def Health(self):
-		type_map = {'p': 'partial', 'r': 'refresh',
-					'm': 'mismatches', 'w': 'writemostly',
-					'X': 'X unknown', '-': 'Unspecified'}
-		return dbus.Struct((self.state.Attr[8], type_map[self.state.Attr[8]]),
-					signature="(ss)")
+		type_map = {'p': 'partial',
+					'r': 'refresh needed',
+					'm': 'mismatches',
+					'w': 'writemostly',
+					'X': 'unknown',
+					'-': 'unspecified',
+					's': 'reshaping',
+					'F': 'failed',
+					'D': 'Data space',
+					'R': 'Remove',
+					'M': 'Metadata'}
+		return self.attr_struct(8, type_map)
 
 	@property
 	def SkipActivation(self):

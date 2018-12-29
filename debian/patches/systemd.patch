@@ -1,4 +1,4 @@
-From 85c9b67ef7f2fb9a0aa40629402100706c1d8fbf Mon Sep 17 00:00:00 2001
+From 388f952f5419517e433caaf557da352b32c0239d Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Tue, 30 Jun 2015 11:46:12 +0200
 Subject: Adopt systemd services
@@ -10,7 +10,7 @@ Patch-Name: systemd.patch
  2 files changed, 2 insertions(+), 2 deletions(-)
 
 diff --git a/scripts/blk_availability_systemd_red_hat.service.in b/scripts/blk_availability_systemd_red_hat.service.in
-index 9462072ccc..29fd8efa80 100644
+index da332c2430..6affb6e614 100644
 --- a/scripts/blk_availability_systemd_red_hat.service.in
 +++ b/scripts/blk_availability_systemd_red_hat.service.in
 @@ -6,7 +6,7 @@ Conflicts=shutdown.target
@@ -23,10 +23,10 @@ index 9462072ccc..29fd8efa80 100644
  RemainAfterExit=yes
  
 diff --git a/scripts/lvm2_activation_generator_systemd_red_hat.c b/scripts/lvm2_activation_generator_systemd_red_hat.c
-index 5dc39ae03a..cfa611e78e 100644
+index 0e6c05acc5..16e4125fde 100644
 --- a/scripts/lvm2_activation_generator_systemd_red_hat.c
 +++ b/scripts/lvm2_activation_generator_systemd_red_hat.c
-@@ -163,7 +163,7 @@ static int generate_unit(struct generator *gen, int unit)
+@@ -162,7 +162,7 @@ static int generate_unit(struct generator *gen, int unit)
  		fprintf(f, "After=%s iscsi.service fcoe.service rbdmap.service\n"
  			"Before=remote-fs-pre.target shutdown.target\n\n"
  			"[Service]\n"
