@@ -10,3 +10,4 @@ systemd-pvscan-background.patch
 0010-lvm2-monitoring-service-shouldn-t-refer-to-lvmetad.patch
 0011-pvscan-systemd-service-for-event-based-activation.patch
 0012-udev-69-dm-lvm-metad.rules-is-still-needed.patch
+0013-make-generate-config-update.patch
