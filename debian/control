@@ -203,7 +203,7 @@ Description: LVM2 command library
 Package: liblvm2-dev
 Section: libdevel
 Architecture: linux-any
-Depends: ${shlibs:Depends}, ${misc:Depends}, liblvm2app2.2 (= ${binary:Version}), liblvm2cmd2.02 (= ${binary:Version}), libdevmapper-dev
+Depends: ${shlibs:Depends}, ${misc:Depends}, liblvm2cmd2.03 (= ${binary:Version}), libdevmapper-dev
 Multi-Arch: same
 Description: LVM2 libraries - development files
  This package contains files needed to develop applications that use the
