@@ -28,9 +28,11 @@ LMLIBS += $(CPG_LIBS)
 CFLAGS += $(CPG_CFLAGS) $(EXTRA_EXEC_CFLAGS)
 LDFLAGS += $(EXTRA_EXEC_LDFLAGS) $(ELDFLAGS)
 
-cmirrord: $(OBJECTS) $(top_builddir)/lib/liblvm-internal.a
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(OBJECTS) \
-		$(LVMLIBS) $(LMLIBS) $(INTERNAL_LIBS) $(LIBS)
+cmirrord: $(OBJECTS)
+	@echo "    [CC] $@"
+	$(Q) $(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(OBJECTS) \
+		$(LMLIBS) -L$(top_builddir)/libdm -ldevmapper $(LIBS)
 
 install: $(TARGETS)
-	$(INSTALL_PROGRAM) -D cmirrord $(usrsbindir)/cmirrord
+	@echo "    [INSTALL] $<"
+	$(Q) $(INSTALL_PROGRAM) -D cmirrord $(usrsbindir)/cmirrord

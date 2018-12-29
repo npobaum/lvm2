@@ -479,7 +479,7 @@ static struct device *_get_device_for_sysfs_dev_name_using_devno(const char *dev
 		return NULL;
 	}
 
-	devno = MKDEV((dev_t)major, (dev_t)minor);
+	devno = MKDEV(major, minor);
 	if (!(dev = (struct device *) btree_lookup(_cache.devices, (uint32_t) devno))) {
 		/*
 		 * If we get here, it means the device is referenced in sysfs, but it's not yet in /dev.
@@ -666,10 +666,9 @@ struct dm_list *dev_cache_get_dev_list_for_lvid(const char *lvid)
 
 void dev_cache_failed_path(struct device *dev, const char *path)
 {
-	struct device *dev_by_path;
 	struct dm_str_list *strl;
 
-	if ((dev_by_path = (struct device *) dm_hash_lookup(_cache.names, path)))
+	if (dm_hash_lookup(_cache.names, path))
 		dm_hash_remove(_cache.names, path);
 
 	dm_list_iterate_items(strl, &dev->aliases) {
@@ -948,7 +947,7 @@ static int _dev_cache_iterate_sysfs_for_index(const char *path)
 			continue;
 		}
 
-		devno = MKDEV((dev_t)major, (dev_t)minor);
+		devno = MKDEV(major, minor);
 		if (!(dev = (struct device *) btree_lookup(_cache.devices, (uint32_t) devno)) &&
 		    !(dev = (struct device *) btree_lookup(_cache.sysfs_only_devices, (uint32_t) devno))) {
 			if (!dm_device_get_name(major, minor, 1, devname, sizeof(devname)) ||

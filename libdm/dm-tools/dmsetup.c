@@ -17,8 +17,6 @@
  */
 
 // For canonicalize_file_name()
-#define _GNU_SOURCE
-
 #include "configure.h"
 #include "libdm/misc/dm-logging.h"
 #include "libdm/dm-tools/util.h"
@@ -914,16 +912,12 @@ static int _display_info_cols(struct dm_task *dmt, struct dm_info *info)
 		if (!(obj.stats = dm_stats_create(DM_STATS_PROGRAM_ID)))
 			goto_out;
 
-		if (!dm_stats_get_nr_regions(obj.stats)) {
-			log_debug("Skipping %s with no regions.", dm_task_get_name(dmt));
+		dm_stats_bind_devno(obj.stats, info->major, info->minor);
+
+		if (!dm_stats_populate(obj.stats, _program_id, DM_STATS_REGIONS_ALL)) {
 			r = 1;
 			goto out;
 		}
-
-		dm_stats_bind_devno(obj.stats, info->major, info->minor);
-
-		if (!dm_stats_populate(obj.stats, _program_id, DM_STATS_REGIONS_ALL))
-			goto_out;
 
 		/* Update timestamps and handle end-of-interval accounting. */
 		_update_interval_times();
@@ -5249,6 +5243,7 @@ static int _do_stats_create_regions(struct dm_stats *dms,
 			 */
 			this_start = (segments) ? segment_start : start;
 			this_len = (segments) ? segment_len : this_len;
+			/* coverity[ptr_arith] intentional */
 			if (!(r = dm_stats_create_region(dms, &region_ids[count],
 							 this_start, this_len, step,
 							 precise, bounds,

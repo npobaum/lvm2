@@ -67,7 +67,6 @@ static DM_LIST_INIT(_vginfos);
 static DM_LIST_INIT(_found_duplicate_devs);
 static DM_LIST_INIT(_unused_duplicate_devs);
 static int _scanning_in_progress = 0;
-static int _has_scanned = 0;
 static int _vgs_locked = 0;
 static int _found_duplicate_pvs = 0;	/* If we never see a duplicate PV we can skip checking for them later. */
 
@@ -858,8 +857,8 @@ int lvmcache_label_scan(struct cmd_context *cmd)
 	_scanning_in_progress = 1;
 
 	/* FIXME: can this happen? */
-	if (!cmd->full_filter) {
-		log_error("label scan is missing full filter");
+	if (!cmd->filter) {
+		log_error("label scan is missing filter");
 		goto out;
 	}
 
@@ -1808,8 +1807,6 @@ void lvmcache_destroy(struct cmd_context *cmd, int retain_orphans, int reset)
 {
 	log_debug_cache("Dropping VG info");
 
-	_has_scanned = 0;
-
 	if (_vgid_hash) {
 		dm_hash_destroy(_vgid_hash);
 		_vgid_hash = NULL;
@@ -1851,7 +1848,8 @@ void lvmcache_destroy(struct cmd_context *cmd, int retain_orphans, int reset)
 	if (retain_orphans) {
 		struct format_type *fmt;
 
-		lvmcache_init(cmd);
+		if (!lvmcache_init(cmd))
+			stack;
 
 		dm_list_iterate_items(fmt, &cmd->formats) {
 			if (!lvmcache_add_orphan_vginfo(fmt->orphan_vg_name, fmt))

@@ -249,8 +249,6 @@ endif
 # end of fPIC protection
 endif
 
-DEFS += -D_BUILDING_LVM
-
 LDFLAGS += -L$(top_builddir)/libdm
 CLDFLAGS += -L$(top_builddir)/libdm
 
@@ -277,11 +275,11 @@ LIB_VERSION_LVM := $(shell $(AWK) -F '.' '{printf "%s.%s",$$1,$$2}' $(top_srcdir
 
 LIB_VERSION_DM := $(shell $(AWK) -F '.' '{printf "%s.%s",$$1,$$2}' $(top_srcdir)/VERSION_DM)
 
-INCLUDES += -I$(top_srcdir) -I$(srcdir) -I$(top_builddir)/include
+INCLUDES += -I$(srcdir) -I$(top_srcdir) -I$(top_builddir)/include
 
 
-DEPS = $(top_builddir)/make.tmpl $(top_srcdir)/VERSION \
-       $(top_builddir)/Makefile
+DEPS = $(top_builddir)/libdm/make.tmpl $(top_srcdir)/VERSION \
+       $(top_builddir)/libdm/Makefile
 
 OBJECTS = $(SOURCES:%.c=%.o) $(CXXSOURCES:%.cpp=%.o)
 POTFILES = $(SOURCES:%.c=%.pot)
@@ -484,18 +482,20 @@ CLEAN_TARGETS += \
 	$(POTFILES) $(CLEAN_CFLOW)
 
 cleandir:
+	@echo "    [CLEANDIR]"
 ifneq (,$(firstword $(CLEAN_DIRS)))
-	$(RM) -r $(CLEAN_DIRS)
+	$(Q) $(RM) -r $(CLEAN_DIRS)
 endif
-	$(RM) $(OBJECTS) $(TARGETS) $(CLEAN_TARGETS) core
+	$(Q) $(RM) $(OBJECTS) $(TARGETS) $(CLEAN_TARGETS) core
 
 clean: $(SUBDIRS.clean) cleandir
 
 distclean: cleandir $(SUBDIRS.distclean)
+	@echo "    [DISTCLEAN]"
 ifneq (,$(firstword $(DISTCLEAN_DIRS)))
-	$(RM) -r $(DISTCLEAN_DIRS)
+	$(Q) $(RM) -r $(DISTCLEAN_DIRS)
 endif
-	$(RM) $(DISTCLEAN_TARGETS) Makefile
+	$(Q) $(RM) $(DISTCLEAN_TARGETS) Makefile
 
 .exported_symbols_generated: $(EXPORTED_HEADER) .exported_symbols $(DEPS)
 	$(Q) set -e; \
@@ -531,7 +531,7 @@ endif
 
 ifeq ("@USE_TRACKING@","yes")
 ifeq (,$(findstring $(MAKECMDGOALS),cscope.out cflow clean distclean lcov \
- help check check_local check_cluster check_lvmetad check_lvmpolld))
+ help check check_local check_cluster check_lvmpolld))
     ifdef SOURCES
        -include $(SOURCES:.c=.d) $(CXXSOURCES:.cpp=.d)
     endif

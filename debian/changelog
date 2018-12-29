@@ -1,3 +1,9 @@
+lvm2 (2.03.02-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Bastian Blank <waldi@debian.org>  Sat, 29 Dec 2018 17:39:29 +0100
+
 lvm2 (2.03.01-3) unstable; urgency=medium
 
   * Update installed lvm.conf. (closes: #917164)

@@ -394,7 +394,6 @@ Create a shared VG using lvmlockd if LVM is compiled with lockd support.
 lvmlockd will select lock type sanlock or dlm depending on which lock
 manager is running. This allows multiple hosts to share a VG on shared
 devices. lvmlockd and a lock manager must be configured and running.
-(A shared VG using lvmlockd is different from a clustered VG using clvmd.)
 See \fBlvmlockd\fP(8) for more information about shared VGs.
 .ad b
 .HP
@@ -561,11 +560,9 @@ Create a VG with two PVs, using the default physical extent size.
 .BR lvmdump (8)
 
 .BR dmeventd (8)
-.BR lvmetad (8)
 .BR lvmpolld (8)
 .BR lvmlockd (8)
 .BR lvmlockctl (8)
-.BR clvmd (8)
 .BR cmirrord (8)
 .BR lvmdbusd (8)
 

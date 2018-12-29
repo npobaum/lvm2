@@ -256,40 +256,52 @@ static void _online_pvid_files_remove(void)
 		log_sys_debug("closedir", _pvs_online_dir);
 }
 
-static void _online_pvid_file_create(struct device *dev)
+static int _online_pvid_file_create(struct device *dev)
 {
 	char path[PATH_MAX];
 	char buf[32];
 	int major, minor;
 	int fd;
 	int rv;
-
-	memset(path, 0, sizeof(path));
+	int len;
 
 	major = (int)MAJOR(dev->dev);
 	minor = (int)MINOR(dev->dev);
 
-	snprintf(path, sizeof(path), "%s/%s", _pvs_online_dir, dev->pvid);
+	if (dm_snprintf(path, sizeof(path), "%s/%s", _pvs_online_dir, dev->pvid) < 0) {
+		log_error("Path %s/%s is too long.", _pvs_online_dir, dev->pvid);
+		return 0;
+	}
 
-	snprintf(buf, sizeof(buf), "%d:%d\n", major, minor);
+	if ((len = dm_snprintf(buf, sizeof(buf), "%d:%d\n", major, minor)) < 0) {
+		log_error("Device %d:%d is too long.", major, minor);
+		return 0;
+	}
 
 	log_debug("Create pv online: %s %d:%d %s", path, major, minor, dev_name(dev));
 
 	fd = open(path, O_CREAT | O_TRUNC | O_RDWR, S_IRUSR | S_IWUSR);
 	if (fd < 0) {
-		log_warn("Failed to open %s: %d", path, errno);
-		return;
+		log_error("Failed to open %s: %d", path, errno);
+		return 0;
 	}
 
-	rv = write(fd, buf, strlen(buf));
-	if (!rv || rv < 0)
-		log_warn("Failed to write fd %d buf %s dev %s to %s: %d",
-			 fd, buf, dev_name(dev), path, errno);
+	while (len > 0) {
+		rv = write(fd, buf, len);
+		if (rv < 0) {
+			log_error("Failed to write fd %d buf %s dev %s to %s: %d",
+				  fd, buf, dev_name(dev), path, errno);
+			return 0;
+		}
+		len -= rv;
+	}
 
 	/* We don't care about syncing, these files are not even persistent. */
 
 	if (close(fd))
 		log_sys_debug("close", path);
+
+	return 1;
 }
 
 static int _online_pvid_file_exists(const char *pvid)
@@ -364,7 +376,8 @@ static int _online_pv_found(struct cmd_context *cmd,
 	 * Create file named for pvid to record this PV is online.
 	 */
 
-	_online_pvid_file_create(dev);
+	if (!_online_pvid_file_create(dev))
+		return_0;
 
 	if (!vg || !found_vgnames)
 		return 1;
@@ -452,7 +465,6 @@ static int _online_pvscan_one(struct cmd_context *cmd, struct device *dev,
 			      int disable_remove,
 			      const char **pvid_without_metadata)
 {
-	struct label *label;
 	struct lvmcache_info *info;
 	struct _pvscan_baton baton;
 	const struct format_type *fmt;
@@ -474,7 +486,7 @@ static int _online_pvscan_one(struct cmd_context *cmd, struct device *dev,
 		return 1;
 	}
 
-	if (!(label = lvmcache_get_label(info))) {
+	if (!lvmcache_get_label(info)) {
 		log_debug("No PV label found for %s.", dev_name(dev));
 		if (!disable_remove)
 			_online_pvid_file_remove_devno((int)MAJOR(dev->dev), (int)MINOR(dev->dev));
@@ -527,7 +539,7 @@ static void _online_pvscan_all_devs(struct cmd_context *cmd,
 
 	label_scan(cmd);
 
-	if (!(iter = dev_iter_create(cmd->lvmetad_filter, 1))) {
+	if (!(iter = dev_iter_create(cmd->filter, 1))) {
 		log_error("dev_iter creation failed");
 		return;
 	}
@@ -668,7 +680,7 @@ int pvscan_cache_cmd(struct cmd_context *cmd, int argc, char **argv)
 	while (argc--) {
 		pv_name = *argv++;
 		if (pv_name[0] == '/') {
-			if (!(dev = dev_cache_get(cmd, pv_name, cmd->lvmetad_filter))) {
+			if (!(dev = dev_cache_get(cmd, pv_name, cmd->filter))) {
 				log_debug("pvscan arg %s not found.", pv_name);
 				if ((dev = dev_cache_get(cmd, pv_name, NULL))) {
 					/* nothing to do for this dev name */
@@ -693,9 +705,9 @@ int pvscan_cache_cmd(struct cmd_context *cmd, int argc, char **argv)
 				log_warn("WARNING: Failed to parse major:minor from %s, skipping.", pv_name);
 				continue;
 			}
-			devno = MKDEV((dev_t)major, (dev_t)minor);
+			devno = MKDEV(major, minor);
 
-			if (!(dev = dev_cache_get_by_devt(cmd, devno, cmd->lvmetad_filter))) {
+			if (!(dev = dev_cache_get_by_devt(cmd, devno, cmd->filter))) {
 				log_debug("pvscan arg %d:%d not found.", major, minor);
 				_online_pvid_file_remove_devno(major, minor);
 			} else {
@@ -719,7 +731,7 @@ int pvscan_cache_cmd(struct cmd_context *cmd, int argc, char **argv)
 	}
 
 	if (!dm_list_empty(&single_devs)) {
-		label_scan_devs(cmd, cmd->lvmetad_filter, &single_devs);
+		label_scan_devs(cmd, cmd->filter, &single_devs);
 
 		dm_list_iterate_items(devl, &single_devs) {
 			dev = devl->dev;
@@ -749,9 +761,9 @@ int pvscan_cache_cmd(struct cmd_context *cmd, int argc, char **argv)
 		if (major < 0 || minor < 0)
 			continue;
 
-		devno = MKDEV((dev_t)major, (dev_t)minor);
+		devno = MKDEV(major, minor);
 
-		if (!(dev = dev_cache_get_by_devt(cmd, devno, cmd->lvmetad_filter))) {
+		if (!(dev = dev_cache_get_by_devt(cmd, devno, cmd->filter))) {
 			log_debug("pvscan arg %d:%d not found.", major, minor);
 			_online_pvid_file_remove_devno(major, minor);
 		} else {
@@ -770,7 +782,7 @@ int pvscan_cache_cmd(struct cmd_context *cmd, int argc, char **argv)
 	}
 
 	if (!dm_list_empty(&single_devs)) {
-		label_scan_devs(cmd, cmd->lvmetad_filter, &single_devs);
+		label_scan_devs(cmd, cmd->filter, &single_devs);
 
 		dm_list_iterate_items(devl, &single_devs) {
 			dev = devl->dev;
