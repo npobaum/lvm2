@@ -1,3 +1,9 @@
+lvm2 (2.03.02-2) unstable; urgency=medium
+
+  * Remove lvm2-lvmetad init script as well. (closes: #917159)
+
+ -- Bastian Blank <waldi@debian.org>  Sun, 03 Feb 2019 14:55:09 +0100
+
 lvm2 (2.03.02-1) unstable; urgency=medium
 
   * New upstream release.
