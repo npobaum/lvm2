@@ -1,0 +1,17 @@
+Description: scripts/blkdeactivate.sh.in: Refer to /usr/bin/sort, not /bin/sort
+ We ship sort in /usr/bin, not in /bin
+Author: Julian Andres Klode <juliank@ubuntu.com>
+Forwarded: no
+Last-Update: 2018-04-12
+
+--- lvm2-2.02.176.orig/scripts/blkdeactivate.sh.in
++++ lvm2-2.02.176/scripts/blkdeactivate.sh.in
+@@ -58,7 +58,7 @@ MPATHD_OPTS=""
+ LSBLK="/bin/lsblk -r --noheadings -o TYPE,KNAME,NAME,MOUNTPOINT"
+ LSBLK_VARS="local devtype local kname local name local mnt"
+ LSBLK_READ="read -r devtype kname name mnt"
+-SORT_MNT="/bin/sort -r -u -k 4"
++SORT_MNT="/usr/bin/sort -r -u -k 4"
+ 
+ # Do not show tool errors by default (only done/skipping summary
+ # message provided by this script) and no verbose mode by default.
