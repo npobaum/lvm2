@@ -1,3 +1,9 @@
+lvm2 (2.03.02-2ubuntu2) eoan; urgency=medium
+
+  * Fix patch of systemd-run in 69-lvm-metad.rules (LP: #1830169)
+
+ -- Julian Andres Klode <juliank@ubuntu.com>  Thu, 23 May 2019 16:24:43 +0200
+
 lvm2 (2.03.02-2ubuntu1) eoan; urgency=low
 
   * Merge with Debian unstable. Remaining changes:
