@@ -1,3 +1,9 @@
+lvm2 (2.02.176-4.1ubuntu3.18.04.1) bionic; urgency=medium
+
+  * Fix patch of systemd-run in 69-lvm-metad.rules (LP: #1830169)
+
+ -- Julian Andres Klode <juliank@ubuntu.com>  Tue, 04 Jun 2019 11:59:58 +0200
+
 lvm2 (2.02.176-4.1ubuntu3) bionic; urgency=medium
 
   * scripts/blkdeactivate.sh.in: Refer to /usr/bin/sort, not /bin/sort
