@@ -1,3 +1,9 @@
+lvm2 (2.02.133-1ubuntu10.1) xenial; urgency=medium
+
+  * Fix patch of systemd-run in 69-lvm-metad.rules (LP: #1830169)
+
+ -- Julian Andres Klode <juliank@ubuntu.com>  Tue, 04 Jun 2019 12:02:16 +0200
+
 lvm2 (2.02.133-1ubuntu10) xenial; urgency=medium
 
   * Cherry-pick change from lvm2 2.02.133-2 in Debian to move event plugins

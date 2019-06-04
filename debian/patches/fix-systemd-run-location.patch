@@ -1,0 +1,19 @@
+Description: Fix location of systemd-run
+ systemd-run is installed into /usr/bin, not BINDIR aka /bin.
+Author: Julian Andres Klode <julian.klode@canonical.com>
+Origin: vendor
+Bug-Ubuntu: https://bugs.launchpad.net/ubuntu/+source/lvm2/+bug/1830169
+Forwarded: no
+---
+This patch header follows DEP-3: http://dep.debian.net/deps/dep3/
+--- a/udev/Makefile.in
++++ b/udev/Makefile.in
+@@ -46,7 +46,7 @@ BLKID_RULE=IMPORT{program}=\"${SBIN}\/bl
+ endif
+ 
+ ifeq ("@UDEV_SYSTEMD_BACKGROUND_JOBS@", "yes")
+-PVSCAN_RULE=ACTION\!=\"remove\", ENV{LVM_PV_GONE}==\"1\", RUN\+=\"@bindir@/systemd-run $(LVM_EXEC)\/lvm pvscan --cache \$$major\:\$$minor\", GOTO=\"lvm_end\"\nENV{SYSTEMD_ALIAS}=\"\/dev\/block\/\$$major:\$$minor\"\nENV{ID_MODEL}=\"LVM PV \$$env{ID_FS_UUID_ENC} on \/dev\/\$$name\"\nENV{SYSTEMD_WANTS}\+=\"lvm2-pvscan@\$$major:\$$minor.service\"
++PVSCAN_RULE=ACTION\!=\"remove\", ENV{LVM_PV_GONE}==\"1\", RUN\+=\"/usr/bin/systemd-run $(LVM_EXEC)\/lvm pvscan --cache \$$major\:\$$minor\", GOTO=\"lvm_end\"\nENV{SYSTEMD_ALIAS}=\"\/dev\/block\/\$$major:\$$minor\"\nENV{ID_MODEL}=\"LVM PV \$$env{ID_FS_UUID_ENC} on \/dev\/\$$name\"\nENV{SYSTEMD_WANTS}\+=\"lvm2-pvscan@\$$major:\$$minor.service\"
+ else
+ PVSCAN_RULE=RUN\+\=\"$(LVM_EXEC)/lvm pvscan --cache --activate ay --major \$$major --minor \$$minor\", ENV{LVM_SCANNED}=\"1\"
+ endif
