@@ -1,3 +1,9 @@
+lvm2 (2.02.176-4.1ubuntu4.1) disco; urgency=medium
+
+  * Fix patch of systemd-run in 69-lvm-metad.rules (LP: #1830169)
+
+ -- Julian Andres Klode <juliank@ubuntu.com>  Tue, 04 Jun 2019 11:49:12 +0200
+
 lvm2 (2.02.176-4.1ubuntu4) disco; urgency=medium
 
   * No-change rebuild to build for python3.7 as the default.
