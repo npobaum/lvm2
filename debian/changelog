@@ -1,3 +1,9 @@
+lvm2 (2.03.02-2ubuntu4) eoan; urgency=medium
+
+  * Ship correct udev rules in lvm2-udeb package.
+
+ -- Dimitri John Ledkov <xnox@ubuntu.com>  Thu, 20 Jun 2019 20:50:55 +0100
+
 lvm2 (2.03.02-2ubuntu3) eoan; urgency=medium
 
   * Enable udev-sync in udeb build as it is used by partman when
