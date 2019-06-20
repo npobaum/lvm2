@@ -651,7 +651,7 @@ AC_DEFINE_UNQUOTED([VDO_FORMAT_CMD], ["$VDO_FORMAT_CMD"],
 dnl -- Disable readline
 AC_ARG_ENABLE([readline],
 	      AC_HELP_STRING([--disable-readline], [disable readline support]),
-	      READLINE=$enableval, READLINE=maybe)
+	      READLINE=$enableval, READLINE=yes)
 
 ################################################################################
 dnl -- Disable realtime clock support
@@ -1272,21 +1272,9 @@ AC_MSG_RESULT($SELINUX)
 ################################################################################
 dnl -- Check for selinux
 if test "$SELINUX" = yes; then
-	AC_CHECK_LIB([sepol], [sepol_check_context], [
-		AC_DEFINE([HAVE_SEPOL], 1, [Define to 1 if sepol_check_context is available.])
-		SELINUX_LIBS="-lsepol"])
-
-	AC_CHECK_LIB([selinux], [is_selinux_enabled], [
-		AC_CHECK_HEADERS([selinux/selinux.h],, hard_bailout)
-		AC_CHECK_HEADERS([selinux/label.h])
-		AC_DEFINE([HAVE_SELINUX], 1, [Define to 1 to include support for selinux.])
-		SELINUX_LIBS="-lselinux $SELINUX_LIBS"
-		SELINUX_PC="libselinux"
-		HAVE_SELINUX=yes ], [
-		AC_MSG_WARN(Disabling selinux)
-		SELINUX_LIBS=
-		SELINUX_PC=
-		HAVE_SELINUX=no ])
+	AC_DEFINE([HAVE_SELINUX], 1, [Define to 1 to include support for selinux.])
+	SELINUX_LIBS="$(pkg-config --libs libselinux)"
+	SELINUX_LIBS_STATIC="$(pkg-config --libs --static libselinux)"
 fi
 
 ################################################################################
@@ -1321,50 +1309,6 @@ AC_IF_YES(ac_cv_stat_st_ctim,
 ################################################################################
 dnl -- Check for getopt
 AC_CHECK_HEADERS(getopt.h, AC_DEFINE([HAVE_GETOPTLONG], 1, [Define to 1 if getopt_long is available.]))
-
-################################################################################
-dnl -- Check for readline (Shamelessly copied from parted 1.4.17)
-if test "$READLINE" != no; then
-	lvm_saved_libs=$LIBS
-	AC_SEARCH_LIBS([tgetent], [tinfo ncurses curses termcap termlib],
-		READLINE_LIBS=$ac_cv_search_tgetent, [
-		if test "$READLINE" = yes; then
-			AC_MSG_ERROR(
-[termcap could not be found which is required for the
---enable-readline option (which is enabled by default).  Either disable readline
-support with --disable-readline or download and install termcap from:
-	ftp.gnu.org/gnu/termcap
-Note: if you are using precompiled packages you will also need the development
-  package as well (which may be called termcap-devel or something similar).
-Note: (n)curses also seems to work as a substitute for termcap.  This was
-  not found either - but you could try installing that as well.])
-		fi])
-	dnl -- Old systems may need extra termcap dependency explicitly in LIBS
-	AC_CHECK_LIB([readline], [readline], [
-		AC_DEFINE([READLINE_SUPPORT], 1,
-			[Define to 1 to include the LVM readline shell.])
-		dnl -- Try only with -lreadline and check for different symbol
-		READLINE=yes
-		LIBS=$lvm_saved_libs
-		AC_CHECK_LIB([readline], [rl_line_buffer],
-			[ READLINE_LIBS="-lreadline" ], [
-			  AC_MSG_RESULT([linking -lreadline with $READLINE_LIBS needed])
-			  READLINE_LIBS="-lreadline $READLINE_LIBS"
-			]) ], [
-		READLINE_LIBS=
-		if test "$READLINE" = yes; then
-			AC_MSG_ERROR(
-[GNU Readline could not be found which is required for the
---enable-readline option (which is enabled by default).  Either disable readline
-support with --disable-readline or download and install readline from:
-	ftp.gnu.org/gnu/readline
-Note: if you are using precompiled packages you will also need the development
-package as well (which may be called readline-devel or something similar).])
-		fi ])
-	LIBS="$READLINE_LIBS $lvm_saved_libs"
-	AC_CHECK_FUNCS([rl_completion_matches])
-	LIBS=$lvm_saved_libs
-fi
 
 ################################################################################
 dnl -- Internationalisation stuff
@@ -1449,7 +1393,8 @@ AC_ARG_WITH(tmpfilesdir,
 ################################################################################
 dnl -- Ensure additional headers required
 if test "$READLINE" = yes; then
-	AC_CHECK_HEADERS(readline/readline.h readline/history.h,,hard_bailout)
+	AC_CHECK_LIB([readline], [readline], [READLINE_LIBS="-lreadline"], AC_MSG_ERROR(bailing out))
+	AC_DEFINE([READLINE_SUPPORT], 1, [Define to 1 to include the LVM readline shell.])
 fi
 AC_MSG_CHECKING(whether to enable readline)
 AC_MSG_RESULT($READLINE)
@@ -1725,6 +1670,7 @@ AC_SUBST(SALCK_CFLAGS)
 AC_SUBST(SALCK_LIBS)
 AC_SUBST(SBINDIR)
 AC_SUBST(SELINUX_LIBS)
+AC_SUBST(SELINUX_LIBS_STATIC)
 AC_SUBST(SELINUX_PC)
 AC_SUBST(SYSCONFDIR)
 AC_SUBST(SYSTEMD_LIBS)
