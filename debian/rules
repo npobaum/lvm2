@@ -75,7 +75,11 @@ override_dh_auto_configure:
 		--with-lvm1=none \
 		--with-pool=none \
 		--disable-readline \
-		--disable-selinux
+		--disable-selinux \
+		--enable-udev_rules \
+		--enable-udev_sync \
+		--disable-udev-systemd-background-jobs
+
 	cp po/lvm2.po po/lvm2.pot
 
 override_dh_auto_build:
