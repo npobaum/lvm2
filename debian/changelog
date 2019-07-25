@@ -1,3 +1,9 @@
+lvm2 (2.03.02-2ubuntu5) eoan; urgency=medium
+
+  * Detect systemd in udev rule at runtime.
+
+ -- Julian Andres Klode <juliank@ubuntu.com>  Thu, 25 Jul 2019 16:11:11 -0300
+
 lvm2 (2.03.02-2ubuntu4) eoan; urgency=medium
 
   * Ship correct udev rules in lvm2-udeb package.

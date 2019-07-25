@@ -12,3 +12,4 @@ enable-issue-discards.patch
 blkdeactivate-use-usr-bin-sort.patch
 0010-make-generate-config-update.patch
 fix-systemd-run-location.patch
+Detect-systemd-at-run-time-in-69-dm-lvm-metad.rules.patch
