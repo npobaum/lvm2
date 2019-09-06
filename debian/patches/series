@@ -13,3 +13,6 @@ blkdeactivate-use-usr-bin-sort.patch
 0010-make-generate-config-update.patch
 fix-systemd-run-location.patch
 Detect-systemd-at-run-time-in-69-dm-lvm-metad.rules.patch
+lp-1842436-restrict-PVs-with-mixed-block-size.patch
+lp-1842436-tests-allow-mixed-block-sizes.patch
+lp-1842436-make-generate-example-config.patch
