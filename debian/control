@@ -34,7 +34,7 @@ Vcs-Browser: https://salsa.debian.org/lvm-team/lvm2
 Package: lvm2
 Architecture: linux-any
 Depends: ${shlibs:Depends}, ${misc:Depends}, lsb-base, dmsetup (>= 1.02.145-2~), dmeventd
-Suggests: thin-provisioning-tools
+Recommends: thin-provisioning-tools
 Conflicts: clvm
 Multi-Arch: foreign
 Description: Linux Logical Volume Manager
