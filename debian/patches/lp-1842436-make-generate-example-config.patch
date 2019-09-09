@@ -1,0 +1,37 @@
+From 08396b4bce45fb8311979250623f04ec0ddb628c Mon Sep 17 00:00:00 2001
+From: Zdenek Kabelac <zkabelac@redhat.com>
+Date: Fri, 9 Aug 2019 12:56:28 +0200
+Subject: [PATCH] make: generate
+
+Run make generate.
+
+Backport-Note: only take the snippet related to allow_mixed_block_sizes
+Origin: backport, https://sourceware.org/git/?p=lvm2.git;a=commit;h=08396b4bce45fb8311979250623f04ec0ddb628c
+Bug-Ubuntu: https://bugs.launchpad.net/bugs/1842436
+Last-Update: 2019-09-10
+
+---
+ conf/example.conf.in   | 18 ++++++-----
+ man/lvconvert.8_pregen | 70 +++++++++++++++++++++++-------------------
+ 2 files changed, 48 insertions(+), 40 deletions(-)
+
+diff --git a/conf/example.conf.in b/conf/example.conf.in
+index 154f621bc..91ce5bec6 100644
+--- a/conf/example.conf.in
++++ b/conf/example.conf.in
+@@ -347,6 +347,12 @@ devices {
+ 	# Enabling this setting allows the VG to be used as usual even with
+ 	# uncertain devices.
+ 	allow_changes_with_duplicate_pvs = 0
++
++	# Configuration option devices/allow_mixed_block_sizes.
++	# Allow PVs in the same VG with different logical block sizes.
++	# When allowed, the user is responsible to ensure that an LV is
++	# using PVs with matching block sizes when necessary.
++	allow_mixed_block_sizes = 0
+ }
+ 
+ # Configuration section allocation.
+-- 
+2.23.0
+
