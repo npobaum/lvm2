@@ -3,6 +3,8 @@ lvm2 (2.03.02-2ubuntu6) eoan; urgency=medium
   * d/control: stop dropping thin-provisioning-tools to Suggests as it
     is ready to be promoted via MIR LP 1828887. Fixes usability issues
     of thin-provisioning-tools not being installed by default (LP: #1657646).
+  * d/p/lp-1842436-*: Avoid creation of mixed-blocksize PV on LVM
+    volume groups as it can cause FS corruption (LP: #1842436)
 
  -- Christian Ehrhardt <christian.ehrhardt@canonical.com>  Fri, 06 Sep 2019 08:23:10 +0200
 
