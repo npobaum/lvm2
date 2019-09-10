@@ -25,7 +25,8 @@ Build-Depends:
  python3-dbus,
  python3-pyudev,
  pkg-config,
- systemd
+ systemd,
+ thin-provisioning-tools
 Standards-Version: 4.1.1
 Homepage: http://sources.redhat.com/lvm2/
 Vcs-Git: https://salsa.debian.org/lvm-team/lvm2.git
