@@ -1,3 +1,12 @@
+lvm2 (2.03.02-2ubuntu7) focal; urgency=medium
+
+  * Include raid1 in the list of modules installed by the initramfs hook,
+    as this is not a kernel module dependency of dm-raid but if the user's
+    root disk is configured as RAID1 it is definitely required.
+    Closes: #841423, LP: #1509717.
+
+ -- Steve Langasek <steve.langasek@ubuntu.com>  Fri, 22 Nov 2019 13:59:47 -0800
+
 lvm2 (2.03.02-2ubuntu6) eoan; urgency=medium
 
   * d/control: stop dropping thin-provisioning-tools to Suggests as it
