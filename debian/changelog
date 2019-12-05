@@ -1,3 +1,10 @@
+lvm2 (2.02.176-4.1ubuntu3.18.04.2) bionic; urgency=medium
+
+  * d/p/fix-auto-activation-at-boot.patch: (LP: #1854981)
+    Allow LV auto-activation (e.g. /usr on it's separate LV)
+
+ -- Eric Desrochers <eric.desrochers@canonical.com>  Thu, 05 Dec 2019 15:15:56 +0000
+
 lvm2 (2.02.176-4.1ubuntu3.18.04.1) bionic; urgency=medium
 
   * Fix patch of systemd-run in 69-lvm-metad.rules (LP: #1830169)
