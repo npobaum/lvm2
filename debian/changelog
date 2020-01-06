@@ -1,3 +1,9 @@
+lvm2 (2.03.02-4) unstable; urgency=medium
+
+  * Use new source format.
+
+ -- Bastian Blank <waldi@debian.org>  Mon, 06 Jan 2020 17:53:00 +0100
+
 lvm2 (2.03.02-3) unstable; urgency=medium
 
   * Stop lvm2-lvmetad on upgrade. (closes: #929080)
