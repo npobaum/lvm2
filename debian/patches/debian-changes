@@ -1,0 +1,622 @@
+diff --git a/conf/example.conf.in b/conf/example.conf.in
+index 6b8e0d4bd..0204f4b5a 100644
+--- a/conf/example.conf.in
++++ b/conf/example.conf.in
+@@ -185,19 +185,24 @@ devices {
+ 	fw_raid_component_detection = 0
+ 
+ 	# Configuration option devices/md_chunk_alignment.
+-	# Align PV data blocks with md device's stripe-width.
++	# Align the start of a PV data area with md device's stripe-width.
+ 	# This applies if a PV is placed directly on an md device.
++	# default_data_alignment will be overriden if it is not aligned
++	# with the value detected for this setting.
++	# This setting is overriden by data_alignment_detection,
++	# data_alignment, and the --dataalignment option.
+ 	md_chunk_alignment = 1
+ 
+ 	# Configuration option devices/default_data_alignment.
+-	# Default alignment of the start of a PV data area in MB.
+-	# If set to 0, a value of 64KiB will be used.
+-	# Set to 1 for 1MiB, 2 for 2MiB, etc.
++	# Align the start of a PV data area with this number of MiB.
++	# Set to 1 for 1MiB, 2 for 2MiB, etc. Set to 0 to disable.
++	# This setting is overriden by data_alignment and the --dataalignment
++	# option.
+ 	# This configuration option has an automatic default value.
+ 	# default_data_alignment = 1
+ 
+ 	# Configuration option devices/data_alignment_detection.
+-	# Detect PV data alignment based on sysfs device information.
++	# Align the start of a PV data area with sysfs io properties.
+ 	# The start of a PV data area will be a multiple of minimum_io_size or
+ 	# optimal_io_size exposed in sysfs. minimum_io_size is the smallest
+ 	# request the device can perform without incurring a read-modify-write
+@@ -205,27 +210,29 @@ devices {
+ 	# preferred unit of receiving I/O, e.g. MD stripe width.
+ 	# minimum_io_size is used if optimal_io_size is undefined (0).
+ 	# If md_chunk_alignment is enabled, that detects the optimal_io_size.
+-	# This setting takes precedence over md_chunk_alignment.
++	# default_data_alignment and md_chunk_alignment will be overriden
++	# if they are not aligned with the value detected for this setting.
++	# This setting is overriden by data_alignment and the --dataalignment
++	# option.
+ 	data_alignment_detection = 1
+ 
+ 	# Configuration option devices/data_alignment.
+-	# Alignment of the start of a PV data area in KiB.
+-	# If a PV is placed directly on an md device and md_chunk_alignment or
+-	# data_alignment_detection are enabled, then this setting is ignored.
+-	# Otherwise, md_chunk_alignment and data_alignment_detection are
+-	# disabled if this is set. Set to 0 to use the default alignment or the
+-	# page size, if larger.
++	# Align the start of a PV data area with this number of KiB.
++	# When non-zero, this setting overrides default_data_alignment.
++	# Set to 0 to disable, in which case default_data_alignment
++	# is used to align the first PE in units of MiB.
++	# This setting is overriden by the --dataalignment option.
+ 	data_alignment = 0
+ 
+ 	# Configuration option devices/data_alignment_offset_detection.
+-	# Detect PV data alignment offset based on sysfs device information.
+-	# The start of a PV aligned data area will be shifted by the
++	# Shift the start of an aligned PV data area based on sysfs information.
++	# After a PV data area is aligned, it will be shifted by the
+ 	# alignment_offset exposed in sysfs. This offset is often 0, but may
+ 	# be non-zero. Certain 4KiB sector drives that compensate for windows
+ 	# partitioning will have an alignment_offset of 3584 bytes (sector 7
+ 	# is the lowest aligned logical block, the 4KiB sectors start at
+ 	# LBA -1, and consequently sector 63 is aligned on a 4KiB boundary).
+-	# pvcreate --dataalignmentoffset will skip this detection.
++	# This setting is overriden by the --dataalignmentoffset option.
+ 	data_alignment_offset_detection = 1
+ 
+ 	# Configuration option devices/ignore_suspended_devices.
+@@ -1640,13 +1647,20 @@ activation {
+ 	# vgmetadatacopies = 0
+ 
+ 	# Configuration option metadata/pvmetadatasize.
+-	# Approximate number of sectors to use for each metadata copy.
+-	# VGs with large numbers of PVs or LVs, or VGs containing complex LV
+-	# structures, may need additional space for VG metadata. The metadata
+-	# areas are treated as circular buffers, so unused space becomes filled
+-	# with an archive of the most recent previous versions of the metadata.
++	# The default size of the metadata area in units of 512 byte sectors.
++	# The metadata area begins at an offset of the page size from the start
++	# of the device. The first PE is by default at 1 MiB from the start of
++	# the device. The space between these is the default metadata area size.
++	# The actual size of the metadata area may be larger than what is set
++	# here due to default_data_alignment making the first PE a MiB multiple.
++	# The metadata area begins with a 512 byte header and is followed by a
++	# circular buffer used for VG metadata text. The maximum size of the VG
++	# metadata is about half the size of the metadata buffer. VGs with large
++	# numbers of PVs or LVs, or VGs containing complex LV structures, may need
++	# additional space for VG metadata. The --metadatasize option overrides
++	# this setting.
++	# This configuration option does not have a default value defined.
+ 	# This configuration option has an automatic default value.
+-	# pvmetadatasize = 255
+ 
+ 	# Configuration option metadata/pvmetadataignore.
+ 	# Ignore metadata areas on a new PV.
+diff --git a/configure.ac b/configure.ac
+index 7fd0561e2..25c8e3d2d 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -651,7 +651,7 @@ AC_DEFINE_UNQUOTED([VDO_FORMAT_CMD], ["$VDO_FORMAT_CMD"],
+ dnl -- Disable readline
+ AC_ARG_ENABLE([readline],
+ 	      AC_HELP_STRING([--disable-readline], [disable readline support]),
+-	      READLINE=$enableval, READLINE=maybe)
++	      READLINE=$enableval, READLINE=yes)
+ 
+ ################################################################################
+ dnl -- Disable realtime clock support
+@@ -1272,21 +1272,9 @@ AC_MSG_RESULT($SELINUX)
+ ################################################################################
+ dnl -- Check for selinux
+ if test "$SELINUX" = yes; then
+-	AC_CHECK_LIB([sepol], [sepol_check_context], [
+-		AC_DEFINE([HAVE_SEPOL], 1, [Define to 1 if sepol_check_context is available.])
+-		SELINUX_LIBS="-lsepol"])
+-
+-	AC_CHECK_LIB([selinux], [is_selinux_enabled], [
+-		AC_CHECK_HEADERS([selinux/selinux.h],, hard_bailout)
+-		AC_CHECK_HEADERS([selinux/label.h])
+-		AC_DEFINE([HAVE_SELINUX], 1, [Define to 1 to include support for selinux.])
+-		SELINUX_LIBS="-lselinux $SELINUX_LIBS"
+-		SELINUX_PC="libselinux"
+-		HAVE_SELINUX=yes ], [
+-		AC_MSG_WARN(Disabling selinux)
+-		SELINUX_LIBS=
+-		SELINUX_PC=
+-		HAVE_SELINUX=no ])
++	AC_DEFINE([HAVE_SELINUX], 1, [Define to 1 to include support for selinux.])
++	SELINUX_LIBS="$(pkg-config --libs libselinux)"
++	SELINUX_LIBS_STATIC="$(pkg-config --libs --static libselinux)"
+ fi
+ 
+ ################################################################################
+@@ -1322,50 +1310,6 @@ AC_IF_YES(ac_cv_stat_st_ctim,
+ dnl -- Check for getopt
+ AC_CHECK_HEADERS(getopt.h, AC_DEFINE([HAVE_GETOPTLONG], 1, [Define to 1 if getopt_long is available.]))
+ 
+-################################################################################
+-dnl -- Check for readline (Shamelessly copied from parted 1.4.17)
+-if test "$READLINE" != no; then
+-	lvm_saved_libs=$LIBS
+-	AC_SEARCH_LIBS([tgetent], [tinfo ncurses curses termcap termlib],
+-		READLINE_LIBS=$ac_cv_search_tgetent, [
+-		if test "$READLINE" = yes; then
+-			AC_MSG_ERROR(
+-[termcap could not be found which is required for the
+---enable-readline option (which is enabled by default).  Either disable readline
+-support with --disable-readline or download and install termcap from:
+-	ftp.gnu.org/gnu/termcap
+-Note: if you are using precompiled packages you will also need the development
+-  package as well (which may be called termcap-devel or something similar).
+-Note: (n)curses also seems to work as a substitute for termcap.  This was
+-  not found either - but you could try installing that as well.])
+-		fi])
+-	dnl -- Old systems may need extra termcap dependency explicitly in LIBS
+-	AC_CHECK_LIB([readline], [readline], [
+-		AC_DEFINE([READLINE_SUPPORT], 1,
+-			[Define to 1 to include the LVM readline shell.])
+-		dnl -- Try only with -lreadline and check for different symbol
+-		READLINE=yes
+-		LIBS=$lvm_saved_libs
+-		AC_CHECK_LIB([readline], [rl_line_buffer],
+-			[ READLINE_LIBS="-lreadline" ], [
+-			  AC_MSG_RESULT([linking -lreadline with $READLINE_LIBS needed])
+-			  READLINE_LIBS="-lreadline $READLINE_LIBS"
+-			]) ], [
+-		READLINE_LIBS=
+-		if test "$READLINE" = yes; then
+-			AC_MSG_ERROR(
+-[GNU Readline could not be found which is required for the
+---enable-readline option (which is enabled by default).  Either disable readline
+-support with --disable-readline or download and install readline from:
+-	ftp.gnu.org/gnu/readline
+-Note: if you are using precompiled packages you will also need the development
+-package as well (which may be called readline-devel or something similar).])
+-		fi ])
+-	LIBS="$READLINE_LIBS $lvm_saved_libs"
+-	AC_CHECK_FUNCS([rl_completion_matches])
+-	LIBS=$lvm_saved_libs
+-fi
+-
+ ################################################################################
+ dnl -- Internationalisation stuff
+ AC_MSG_CHECKING(whether to enable internationalisation)
+@@ -1449,7 +1393,8 @@ AC_ARG_WITH(tmpfilesdir,
+ ################################################################################
+ dnl -- Ensure additional headers required
+ if test "$READLINE" = yes; then
+-	AC_CHECK_HEADERS(readline/readline.h readline/history.h,,hard_bailout)
++	AC_CHECK_LIB([readline], [readline], [READLINE_LIBS="-lreadline"], AC_MSG_ERROR(bailing out))
++	AC_DEFINE([READLINE_SUPPORT], 1, [Define to 1 to include the LVM readline shell.])
+ fi
+ AC_MSG_CHECKING(whether to enable readline)
+ AC_MSG_RESULT($READLINE)
+@@ -1489,11 +1434,7 @@ if test "$BUILD_DMFILEMAPD" = yes; then
+ fi
+ 
+ ################################################################################
+-AC_PATH_TOOL(MODPROBE_CMD, modprobe, [], [$PATH_SBIN])
+-
+-if test -n "$MODPROBE_CMD"; then
+-	AC_DEFINE_UNQUOTED([MODPROBE_CMD], ["$MODPROBE_CMD"], [The path to 'modprobe', if available.])
+-fi
++AC_DEFINE_UNQUOTED([MODPROBE_CMD], ["/sbin/modprobe"], [The path to 'modprobe', if available.])
+ 
+ SYSCONFDIR="$(eval echo $(eval echo $sysconfdir))"
+ 
+@@ -1725,6 +1666,7 @@ AC_SUBST(SALCK_CFLAGS)
+ AC_SUBST(SALCK_LIBS)
+ AC_SUBST(SBINDIR)
+ AC_SUBST(SELINUX_LIBS)
++AC_SUBST(SELINUX_LIBS_STATIC)
+ AC_SUBST(SELINUX_PC)
+ AC_SUBST(SYSCONFDIR)
+ AC_SUBST(SYSTEMD_LIBS)
+diff --git a/daemons/dmeventd/.exported_symbols b/daemons/dmeventd/.exported_symbols
+index fab74dc1d..46c14fb5a 100644
+--- a/daemons/dmeventd/.exported_symbols
++++ b/daemons/dmeventd/.exported_symbols
+@@ -1,4 +1,4 @@
+-init_fifos
+-fini_fifos
+-daemon_talk
++dm_event_daemon_init_fifos
++dm_event_daemon_fini_fifos
++dm_event_daemon_talk
+ dm_event_get_version
+diff --git a/daemons/dmeventd/dmeventd.c b/daemons/dmeventd/dmeventd.c
+index 4a5844981..782bf447b 100644
+--- a/daemons/dmeventd/dmeventd.c
++++ b/daemons/dmeventd/dmeventd.c
+@@ -1975,7 +1975,7 @@ static int _reinstate_registrations(struct dm_event_fifos *fifos)
+ 	unsigned long mask_value, timeout_value;
+ 	int i, ret;
+ 
+-	ret = daemon_talk(fifos, &msg, DM_EVENT_CMD_HELLO, NULL, NULL, 0, 0);
++	ret = dm_event_daemon_talk(fifos, &msg, DM_EVENT_CMD_HELLO, NULL, NULL, 0, 0);
+ 	free(msg.data);
+ 	msg.data = NULL;
+ 
+@@ -2008,7 +2008,7 @@ static int _reinstate_registrations(struct dm_event_fifos *fifos)
+ 			continue;
+ 		}
+ 
+-		if (daemon_talk(fifos, &msg, DM_EVENT_CMD_REGISTER_FOR_EVENT,
++		if (dm_event_daemon_talk(fifos, &msg, DM_EVENT_CMD_REGISTER_FOR_EVENT,
+ 				dso_name,
+ 				dev_name,
+ 				(enum dm_event_mask) mask_value,
+@@ -2035,7 +2035,7 @@ static void _restart_dmeventd(void)
+ 	const char *e;
+ 
+ 	/* Get the list of registrations from the running daemon. */
+-	if (!init_fifos(&fifos)) {
++	if (!dm_event_daemon_init_fifos(&fifos)) {
+ 		fprintf(stderr, "WARNING: Could not initiate communication with existing dmeventd.\n");
+ 		exit(EXIT_FAILURE);
+ 	}
+@@ -2052,7 +2052,7 @@ static void _restart_dmeventd(void)
+ 		goto bad;
+ 	}
+ 
+-	if (daemon_talk(&fifos, &msg, DM_EVENT_CMD_GET_STATUS, "-", "-", 0, 0))
++	if (dm_event_daemon_talk(&fifos, &msg, DM_EVENT_CMD_GET_STATUS, "-", "-", 0, 0))
+ 		goto bad;
+ 
+ 	message = strchr(msg.data, ' ') + 1;
+@@ -2077,7 +2077,7 @@ static void _restart_dmeventd(void)
+ 	_initial_registrations[count] = NULL;
+ 
+ 	if (version >= 2) {
+-		if (daemon_talk(&fifos, &msg, DM_EVENT_CMD_GET_PARAMETERS, "-", "-", 0, 0)) {
++		if (dm_event_daemon_talk(&fifos, &msg, DM_EVENT_CMD_GET_PARAMETERS, "-", "-", 0, 0)) {
+ 			fprintf(stderr, "Failed to acquire parameters from old dmeventd.\n");
+ 			goto bad;
+ 		}
+@@ -2097,7 +2097,7 @@ static void _restart_dmeventd(void)
+ 	}
+ #endif
+ 
+-	if (daemon_talk(&fifos, &msg, DM_EVENT_CMD_DIE, "-", "-", 0, 0)) {
++	if (dm_event_daemon_talk(&fifos, &msg, DM_EVENT_CMD_DIE, "-", "-", 0, 0)) {
+ 		fprintf(stderr, "Old dmeventd refused to die.\n");
+ 		goto bad;
+ 	}
+@@ -2113,13 +2113,13 @@ static void _restart_dmeventd(void)
+ 	}
+ 
+ 	if (!_systemd_activation) {
+-		fini_fifos(&fifos);
++		dm_event_daemon_fini_fifos(&fifos);
+ 		return;
+ 	}
+ 
+ 	/* Reopen fifos. */
+-	fini_fifos(&fifos);
+-	if (!init_fifos(&fifos)) {
++	dm_event_daemon_fini_fifos(&fifos);
++	if (!dm_event_daemon_init_fifos(&fifos)) {
+ 		fprintf(stderr, "Could not initiate communication with new instance of dmeventd.\n");
+ 		exit(EXIT_FAILURE);
+ 	}
+@@ -2129,10 +2129,10 @@ static void _restart_dmeventd(void)
+ 		goto bad;
+ 	}
+ 
+-	fini_fifos(&fifos);
++	dm_event_daemon_fini_fifos(&fifos);
+ 	exit(EXIT_SUCCESS);
+ bad:
+-	fini_fifos(&fifos);
++	dm_event_daemon_fini_fifos(&fifos);
+ 	exit(EXIT_FAILURE);
+ }
+ 
+diff --git a/daemons/dmeventd/libdevmapper-event.c b/daemons/dmeventd/libdevmapper-event.c
+index 6465f64bc..17af664e1 100644
+--- a/daemons/dmeventd/libdevmapper-event.c
++++ b/daemons/dmeventd/libdevmapper-event.c
+@@ -343,7 +343,7 @@ static int _daemon_write(struct dm_event_fifos *fifos,
+ 	return bytes == size;
+ }
+ 
+-int daemon_talk(struct dm_event_fifos *fifos,
++int dm_event_daemon_talk(struct dm_event_fifos *fifos,
+ 		struct dm_event_daemon_message *msg, int cmd,
+ 		const char *dso_name, const char *dev_name,
+ 		enum dm_event_mask evmask, uint32_t timeout)
+@@ -493,7 +493,7 @@ start_server:
+ 	return ret;
+ }
+ 
+-int init_fifos(struct dm_event_fifos *fifos)
++int dm_event_daemon_init_fifos(struct dm_event_fifos *fifos)
+ {
+ 	/* FIXME? Is fifo the most suitable method? Why not share
+ 	   comms/daemon code with something else e.g. multipath? */
+@@ -531,10 +531,10 @@ static int _init_client(char *dmeventd_path, struct dm_event_fifos *fifos)
+ 	if (!_start_daemon(dmeventd_path, fifos))
+ 		return_0;
+ 
+-	return init_fifos(fifos);
++	return dm_event_daemon_init_fifos(fifos);
+ }
+ 
+-void fini_fifos(struct dm_event_fifos *fifos)
++void dm_event_daemon_fini_fifos(struct dm_event_fifos *fifos)
+ {
+ 	if (fifos->client >= 0 && close(fifos->client))
+ 		log_sys_debug("close", fifos->client_path);
+@@ -621,16 +621,16 @@ static int _do_event(int cmd, char *dmeventd_path, struct dm_event_daemon_messag
+ 		goto_out;
+ 	}
+ 
+-	ret = daemon_talk(&fifos, msg, DM_EVENT_CMD_HELLO, NULL, NULL, 0, 0);
++	ret = dm_event_daemon_talk(&fifos, msg, DM_EVENT_CMD_HELLO, NULL, NULL, 0, 0);
+ 
+ 	free(msg->data);
+ 	msg->data = 0;
+ 
+ 	if (!ret)
+-		ret = daemon_talk(&fifos, msg, cmd, dso_name, dev_name, evmask, timeout);
++		ret = dm_event_daemon_talk(&fifos, msg, cmd, dso_name, dev_name, evmask, timeout);
+ out:
+ 	/* what is the opposite of init? */
+-	fini_fifos(&fifos);
++	dm_event_daemon_fini_fifos(&fifos);
+ 
+ 	return ret;
+ }
+@@ -843,7 +843,7 @@ int dm_event_get_version(struct dm_event_fifos *fifos, int *version) {
+ 	char *p;
+ 	struct dm_event_daemon_message msg = { 0 };
+ 
+-	if (daemon_talk(fifos, &msg, DM_EVENT_CMD_HELLO, NULL, NULL, 0, 0))
++	if (dm_event_daemon_talk(fifos, &msg, DM_EVENT_CMD_HELLO, NULL, NULL, 0, 0))
+ 		return 0;
+ 	p = msg.data;
+ 	*version = 0;
+diff --git a/make.tmpl.in b/make.tmpl.in
+index 9158f0e12..f068b4638 100644
+--- a/make.tmpl.in
++++ b/make.tmpl.in
+@@ -27,20 +27,10 @@ SHELL = @SHELL@
+ 
+ @SET_MAKE@
+ 
+-# Allow environment to override any built-in default value for CC.
+-# If there is a built-in default, CC is NOT set to @CC@ here.
+-CC ?= @CC@
+-
+-# If $(CC) holds the usual built-in default value of 'cc' then replace it with
+-# the configured value.
+-# (To avoid this and force the use of 'cc' from the environment, supply its
+-# full path.)
+-ifeq ($(CC), cc)
+-  CC = @CC@
+-endif
+-
++CC = @CC@
+ RANLIB = @RANLIB@
+ INSTALL = @INSTALL@
++INSTALL_DATA = @INSTALL@ -m 644
+ MKDIR_P = @MKDIR_P@
+ MSGFMT = @MSGFMT@
+ LCOV = @LCOV@
+@@ -123,8 +113,7 @@ pythonprefix = $(DESTDIR)$(prefix)
+ python2dir = @PYTHON2DIR@
+ python3dir = @PYTHON3DIR@
+ 
+-USRLIB_RELPATH = $(shell echo $(abspath $(usrlibdir) $(libdir)) | \
+-  $(AWK) -f $(top_srcdir)/scripts/relpath.awk)
++USRLIB_RELPATH = @libdir@/
+ 
+ SYSTEMD_GENERATOR_DIR = @systemdutildir@/system-generators
+ DEFAULT_SYS_DIR = @DEFAULT_SYS_DIR@
+@@ -153,22 +142,14 @@ MAKEFLAGS = @JOBS@
+ endif
+ 
+ # Handle installation of files
+-ifeq ("@WRITE_INSTALL@", "yes")
+-# leaving defaults
+-M_INSTALL_SCRIPT =
+-M_INSTALL_DATA = -m 644
+-else
+-M_INSTALL_PROGRAM = -m 555
+-M_INSTALL_DATA = -m 444
+-endif
+-INSTALL_PROGRAM = $(INSTALL) $(M_INSTALL_PROGRAM) $(STRIP)
+-INSTALL_DATA = $(INSTALL) -p $(M_INSTALL_DATA)
+-INSTALL_WDATA = $(INSTALL) -p -m 644
++INSTALL_PROGRAM = $(INSTALL)
++INSTALL_DATA = $(INSTALL) -m 644
++INSTALL_WDATA = $(INSTALL_DATA)
+ 
+ INSTALL_DIR = $(INSTALL) -m 755 -d
+ INSTALL_ROOT_DIR = $(INSTALL) -m 700 -d
+ INSTALL_ROOT_DATA = $(INSTALL) -m 600
+-INSTALL_SCRIPT = $(INSTALL) -p $(M_INSTALL_PROGRAM)
++INSTALL_SCRIPT = $(INSTALL_PROGRAM)
+ 
+ .SUFFIXES:
+ .SUFFIXES: .c .cpp .d .o .so .a .po .pot .mo .dylib
+diff --git a/scripts/blk_availability_systemd_red_hat.service.in b/scripts/blk_availability_systemd_red_hat.service.in
+index da332c243..6affb6e61 100644
+--- a/scripts/blk_availability_systemd_red_hat.service.in
++++ b/scripts/blk_availability_systemd_red_hat.service.in
+@@ -6,7 +6,7 @@ Conflicts=shutdown.target
+ 
+ [Service]
+ Type=oneshot
+-ExecStart=/usr/bin/true
++ExecStart=@bindir@/true
+ ExecStop=@SBINDIR@/blkdeactivate -u -l wholevg -m disablequeueing -r wait
+ RemainAfterExit=yes
+ 
+diff --git a/scripts/lvm2_activation_generator_systemd_red_hat.c b/scripts/lvm2_activation_generator_systemd_red_hat.c
+index 0e6c05acc..16e4125fd 100644
+--- a/scripts/lvm2_activation_generator_systemd_red_hat.c
++++ b/scripts/lvm2_activation_generator_systemd_red_hat.c
+@@ -162,7 +162,7 @@ static int generate_unit(struct generator *gen, int unit)
+ 		fprintf(f, "After=%s iscsi.service fcoe.service rbdmap.service\n"
+ 			"Before=remote-fs-pre.target shutdown.target\n\n"
+ 			"[Service]\n"
+-			"ExecStartPre=/usr/bin/udevadm settle\n", _unit_names[UNIT_MAIN]);
++			"ExecStartPre=/bin/udevadm settle\n", _unit_names[UNIT_MAIN]);
+ 	} else {
+ 		if (unit == UNIT_EARLY)
+ 			fputs("After=systemd-udev-settle.service\n"
+diff --git a/tools/lvm.c b/tools/lvm.c
+index 4bfa6f5c2..65bc88df4 100644
+--- a/tools/lvm.c
++++ b/tools/lvm.c
+@@ -26,10 +26,6 @@ int main(int argc, char **argv)
+ 
+ #  include <readline/readline.h>
+ #  include <readline/history.h>
+-#  ifndef HAVE_RL_COMPLETION_MATCHES
+-#    define rl_completion_matches(a, b) completion_matches((char *)a, b)
+-#    define rl_completion_func_t CPPFunction
+-#  endif
+ 
+ static struct cmdline_context *_cmdline;
+ 
+diff --git a/udev/10-dm.rules.in b/udev/10-dm.rules.in
+index b4fa52ab7..69d2c47ec 100644
+--- a/udev/10-dm.rules.in
++++ b/udev/10-dm.rules.in
+@@ -32,7 +32,6 @@ KERNEL=="device-mapper", NAME="(DM_DIR)/control"
+ 
+ SUBSYSTEM!="block", GOTO="dm_end"
+ KERNEL!="dm-[0-9]*", GOTO="dm_end"
+-(DM_EXEC_RULE)
+ 
+ # Device created, major and minor number assigned - "add" event generated.
+ # Table loaded - no event generated.
+@@ -50,7 +49,7 @@ ACTION!="add|change", GOTO="dm_end"
+ # These flags are encoded in DM_COOKIE variable that was introduced in
+ # kernel version 2.6.31. Therefore, we can use this feature with
+ # kernels >= 2.6.31 only. Cookie is not decoded for remove event.
+-ENV{DM_COOKIE}=="?*", IMPORT{program}="(DM_EXEC)/dmsetup udevflags $env{DM_COOKIE}"
++ENV{DM_COOKIE}=="?*", IMPORT{program}="/sbin/dmsetup udevflags $env{DM_COOKIE}"
+ 
+ # Rule out easy-to-detect inappropriate events first.
+ ENV{DISK_RO}=="1", GOTO="dm_disable"
+@@ -68,6 +67,7 @@ IMPORT{db}="DM_UDEV_LOW_PRIORITY_FLAG"
+ IMPORT{db}="DM_UDEV_DISABLE_LIBRARY_FALLBACK_FLAG"
+ IMPORT{db}="DM_UDEV_PRIMARY_SOURCE_FLAG"
+ IMPORT{db}="DM_UDEV_FLAG7"
++IMPORT{db}="DM_UDEV_RULES"
+ IMPORT{db}="DM_UDEV_RULES_VSN"
+ LABEL="dm_flags_done"
+ 
+@@ -84,7 +84,7 @@ LABEL="dm_flags_done"
+ # script to not remove the existing udev database so we can reuse the information
+ # stored at the time of device activation in the initrd.
+ ACTION!="add", GOTO="dm_no_coldplug"
+-ENV{DM_UDEV_RULES_VSN}!="1", ENV{DM_UDEV_PRIMARY_SOURCE_FLAG}!="1", GOTO="dm_disable"
++ENV{DM_UDEV_PRIMARY_SOURCE_FLAG}!="1", GOTO="dm_disable"
+ ENV{DM_ACTIVATION}="1"
+ LABEL="dm_no_coldplug"
+ 
+@@ -130,6 +130,7 @@ ENV{DM_SUSPENDED}=="Suspended", ENV{DM_SUSPENDED}="1"
+ # possible future changes.
+ # VSN 1 - original rules
+ # VSN 2 - add support for synthesized events
++ENV{DM_UDEV_RULES}="1"
+ ENV{DM_UDEV_RULES_VSN}="2"
+ 
+ ENV{DM_UDEV_DISABLE_DM_RULES_FLAG}!="1", ENV{DM_NAME}=="?*", SYMLINK+="(DM_DIR)/$env{DM_NAME}"
+diff --git a/udev/69-dm-lvm-metad.rules.in b/udev/69-dm-lvm-metad.rules.in
+index 2ff8ddc31..ca52c2289 100644
+--- a/udev/69-dm-lvm-metad.rules.in
++++ b/udev/69-dm-lvm-metad.rules.in
+@@ -19,6 +19,11 @@ SUBSYSTEM!="block", GOTO="lvm_end"
+ 
+ ENV{DM_UDEV_DISABLE_OTHER_RULES_FLAG}=="1", GOTO="lvm_end"
+ 
++# XXX: Properly call blkid on md devices. Workaround for #793631
++KERNEL!="md[0-9]*", GOTO="next"
++IMPORT{builtin}="blkid"
++LABEL="next"
++
+ # If the PV label got lost, inform lvmetad immediately.
+ # Detect the lost PV label by comparing previous ID_FS_TYPE value with current one.
+ ENV{.ID_FS_TYPE_NEW}="$env{ID_FS_TYPE}"
+@@ -55,7 +60,7 @@ LABEL="next"
+ KERNEL!="md[0-9]*", GOTO="next"
+ IMPORT{db}="LVM_MD_PV_ACTIVATED"
+ ACTION=="add", ENV{LVM_MD_PV_ACTIVATED}=="1", GOTO="lvm_scan"
+-ACTION=="change", ENV{LVM_MD_PV_ACTIVATED}!="1", TEST=="md/array_state", ENV{LVM_MD_PV_ACTIVATED}="1", GOTO="lvm_scan"
++ACTION=="change", ENV{LVM_MD_PV_ACTIVATED}!="1", ENV{LVM_MD_PV_ACTIVATED}="1", GOTO="lvm_scan"
+ ACTION=="add", KERNEL=="md[0-9]*p[0-9]*", GOTO="lvm_scan"
+ ENV{LVM_MD_PV_ACTIVATED}!="1", ENV{SYSTEMD_READY}="0"
+ GOTO="lvm_end"
+@@ -64,7 +69,7 @@ GOTO="lvm_end"
+ LABEL="next"
+ KERNEL!="loop[0-9]*", GOTO="next"
+ ACTION=="add", ENV{LVM_LOOP_PV_ACTIVATED}=="1", GOTO="lvm_scan"
+-ACTION=="change", ENV{LVM_LOOP_PV_ACTIVATED}!="1", TEST=="loop/backing_file", ENV{LVM_LOOP_PV_ACTIVATED}="1", GOTO="lvm_scan"
++ACTION=="change", ENV{LVM_LOOP_PV_ACTIVATED}!="1", ENV{LVM_LOOP_PV_ACTIVATED}="1", GOTO="lvm_scan"
+ ENV{LVM_LOOP_PV_ACTIVATED}!="1", ENV{SYSTEMD_READY}="0"
+ GOTO="lvm_end"
+ 
+@@ -131,6 +136,6 @@ LABEL="direct_pvscan"
+ #  MD    |          |      X      |       X*       |                   |
+ #  loop  |          |      X      |       X*       |                   |
+ #  other |    X     |             |       X        |                   |   X
+-RUN+="(LVM_EXEC)/lvm pvscan --background --cache --activate ay --major $major --minor $minor", ENV{LVM_SCANNED}="1"
++RUN+="(LVM_EXEC)/lvm pvscan --cache --activate ay --major $major --minor $minor", ENV{LVM_SCANNED}="1"
+ 
+ LABEL="lvm_end"
+diff --git a/udev/95-dm-notify.rules.in b/udev/95-dm-notify.rules.in
+index 80d59d37d..d22abba1a 100644
+--- a/udev/95-dm-notify.rules.in
++++ b/udev/95-dm-notify.rules.in
+@@ -9,4 +9,4 @@
+ # a cookie value sent within "change" and "remove" events (the cookie
+ # value is set before by that process for every action requested).
+ 
+-ENV{DM_COOKIE}=="?*", RUN+="(DM_EXEC)/dmsetup udevcomplete $env{DM_COOKIE}"
++ENV{DM_COOKIE}=="?*", RUN+="/sbin/dmsetup udevcomplete $env{DM_COOKIE}"
+diff --git a/udev/Makefile.in b/udev/Makefile.in
+index e32cba921..4a4ef8795 100644
+--- a/udev/Makefile.in
++++ b/udev/Makefile.in
+@@ -17,8 +17,8 @@ top_builddir = @top_builddir@
+ 
+ include $(top_builddir)/make.tmpl
+ 
+-DM_RULES=10-dm.rules 13-dm-disk.rules 95-dm-notify.rules
+-LVM_RULES=11-dm-lvm.rules 69-dm-lvm-metad.rules
++DM_RULES=55-dm.rules 60-persistent-storage-dm.rules 95-dm-notify.rules
++LVM_RULES=56-lvm.rules 69-lvm-metad.rules
+ 
+ DM_DIR=$(shell $(GREP) "\#define DM_DIR" $(top_srcdir)/libdm/misc/dm-ioctl.h | $(AWK) '{print $$3}')
+ 
+@@ -54,6 +54,18 @@ endif
+ %.rules: $(srcdir)/%.rules.in
+ 	$(Q) $(SED) -e "s+(DM_DIR)+$(DM_DIR)+;s+(BINDIR)+$(BINDIR)+;s+(BLKID_RULE)+$(BLKID_RULE)+;s+(PVSCAN_RULE)+$(PVSCAN_RULE)+;s+(PVSCAN_ACTION)+$(PVSCAN_ACTION)+;s+(DM_EXEC_RULE)+$(DM_EXEC_RULE)+;s+(DM_EXEC)+$(DM_EXEC)+;s+(LVM_EXEC_RULE)+$(LVM_EXEC_RULE)+;s+(LVM_EXEC)+$(LVM_EXEC)+;" $< >$@
+ 
++55-dm.rules: 10-dm.rules
++	ln -s $< $@
++
++56-lvm.rules: 11-dm-lvm.rules
++	ln -s $< $@
++
++60-persistent-storage-dm.rules: 13-dm-disk.rules
++	ln -s $< $@
++
++69-lvm-metad.rules: 69-dm-lvm-metad.rules
++	ln -s $< $@
++
+ %_install: %.rules
+ 	@echo "    [INSTALL] $<"
+ 	$(Q) $(INSTALL_DATA) -D $< $(udevdir)/$(<F)
