@@ -19,6 +19,11 @@ SUBSYSTEM!="block", GOTO="lvm_end"
 
 ENV{DM_UDEV_DISABLE_OTHER_RULES_FLAG}=="1", GOTO="lvm_end"
 
+# XXX: Properly call blkid on md devices. Workaround for #793631
+KERNEL!="md[0-9]*", GOTO="next"
+IMPORT{builtin}="blkid"
+LABEL="next"
+
 # If the PV label got lost, inform lvmetad immediately.
 # Detect the lost PV label by comparing previous ID_FS_TYPE value with current one.
 ENV{.ID_FS_TYPE_NEW}="$env{ID_FS_TYPE}"
@@ -55,7 +60,7 @@ LABEL="next"
 KERNEL!="md[0-9]*", GOTO="next"
 IMPORT{db}="LVM_MD_PV_ACTIVATED"
 ACTION=="add", ENV{LVM_MD_PV_ACTIVATED}=="1", GOTO="lvm_scan"
-ACTION=="change", ENV{LVM_MD_PV_ACTIVATED}!="1", TEST=="md/array_state", ENV{LVM_MD_PV_ACTIVATED}="1", GOTO="lvm_scan"
+ACTION=="change", ENV{LVM_MD_PV_ACTIVATED}!="1", ENV{LVM_MD_PV_ACTIVATED}="1", GOTO="lvm_scan"
 ACTION=="add", KERNEL=="md[0-9]*p[0-9]*", GOTO="lvm_scan"
 ENV{LVM_MD_PV_ACTIVATED}!="1", ENV{SYSTEMD_READY}="0"
 GOTO="lvm_end"
@@ -64,7 +69,7 @@ GOTO="lvm_end"
 LABEL="next"
 KERNEL!="loop[0-9]*", GOTO="next"
 ACTION=="add", ENV{LVM_LOOP_PV_ACTIVATED}=="1", GOTO="lvm_scan"
-ACTION=="change", ENV{LVM_LOOP_PV_ACTIVATED}!="1", TEST=="loop/backing_file", ENV{LVM_LOOP_PV_ACTIVATED}="1", GOTO="lvm_scan"
+ACTION=="change", ENV{LVM_LOOP_PV_ACTIVATED}!="1", ENV{LVM_LOOP_PV_ACTIVATED}="1", GOTO="lvm_scan"
 ENV{LVM_LOOP_PV_ACTIVATED}!="1", ENV{SYSTEMD_READY}="0"
 GOTO="lvm_end"
 
@@ -131,6 +136,6 @@ LABEL="direct_pvscan"
 #  MD    |          |      X      |       X*       |                   |
 #  loop  |          |      X      |       X*       |                   |
 #  other |    X     |             |       X        |                   |   X
-RUN+="(LVM_EXEC)/lvm pvscan --background --cache --activate ay --major $major --minor $minor", ENV{LVM_SCANNED}="1"
+RUN+="(LVM_EXEC)/lvm pvscan --cache --activate ay --major $major --minor $minor", ENV{LVM_SCANNED}="1"
 
 LABEL="lvm_end"
