@@ -30,7 +30,7 @@ AC_CANONICAL_TARGET([])
 AS_IF([test -z "$CFLAGS"], [COPTIMISE_FLAG="-O2"])
 case "$host_os" in
 	linux*)
-		CLDFLAGS="${CLDFLAGS:"$LDFLAGS"} -Wl,--version-script,.export.sym"
+		CLDFLAGS="${CLDFLAGS-"$LDFLAGS"} -Wl,--version-script,.export.sym"
 		# equivalent to -rdynamic
 		ELDFLAGS="-Wl,--export-dynamic"
 		# FIXME Generate list and use --dynamic-list=.dlopen.sym
@@ -42,6 +42,7 @@ case "$host_os" in
 		BUILD_LVMPOLLD=no
 		LOCKDSANLOCK=no
 		LOCKDDLM=no
+		LOCKDDLM_CONTROL=no
 		ODIRECT=yes
 		DM_IOCTLS=yes
 		SELINUX=yes
@@ -50,7 +51,7 @@ case "$host_os" in
 		;;
 	darwin*)
 		CFLAGS="$CFLAGS -no-cpp-precomp -fno-common"
-		CLDFLAGS="${CLDFLAGS:"$LDFLAGS"}"
+		CLDFLAGS="${CLDFLAGS-"$LDFLAGS"}"
 		ELDFLAGS=
 		CLDWHOLEARCHIVE="-all_load"
 		CLDNOWHOLEARCHIVE=
@@ -63,7 +64,7 @@ case "$host_os" in
 		BLKDEACTIVATE=no
 		;;
 	*)
-		CLDFLAGS="${CLDFLAGS:"$LDFLAGS"}"
+		CLDFLAGS="${CLDFLAGS-"$LDFLAGS"}"
 		;;
 esac
 
@@ -152,9 +153,10 @@ AC_DEFINE([_REENTRANT], 1, [Define to use re-entrant thread safe versions])
 ################################################################################
 dnl -- Check for functions
 AC_CHECK_FUNCS([ftruncate gethostname getpagesize gettimeofday localtime_r \
-  memchr memset mkdir mkfifo munmap nl_langinfo realpath rmdir setenv \
+  memchr memset mkdir mkfifo munmap nl_langinfo pselect realpath rmdir setenv \
   setlocale strcasecmp strchr strcspn strdup strerror strncasecmp strndup \
   strrchr strspn strstr strtol strtoul uname], , [AC_MSG_ERROR(bailing out)])
+AC_CHECK_FUNCS([prlimit])
 AC_FUNC_ALLOCA
 AC_FUNC_CLOSEDIR_VOID
 AC_FUNC_CHOWN
@@ -648,6 +650,24 @@ AC_DEFINE_UNQUOTED([VDO_FORMAT_CMD], ["$VDO_FORMAT_CMD"],
 #AC_MSG_RESULT($VDO_LIB)
 
 ################################################################################
+dnl -- writecache inclusion type
+AC_MSG_CHECKING(whether to include writecache)
+AC_ARG_WITH(writecache,
+	    AC_HELP_STRING([--with-writecache=TYPE],
+			   [writecache support: internal/none [none]]),
+			   WRITECACHE=$withval, WRITECACHE="none")
+
+AC_MSG_RESULT($WRITECACHE)
+
+case "$WRITECACHE" in
+ none) ;;
+ internal) 
+	AC_DEFINE([WRITECACHE_INTERNAL], 1, [Define to 1 to include built-in support for writecache.])
+	;;
+ *) AC_MSG_ERROR([--with-writecache parameter invalid]) ;;
+esac
+
+################################################################################
 dnl -- Disable readline
 AC_ARG_ENABLE([readline],
 	      AC_HELP_STRING([--disable-readline], [disable readline support]),
@@ -895,6 +915,24 @@ dnl -- Look for dlm libraries
 if test "$BUILD_LOCKDDLM" = yes; then
 	PKG_CHECK_MODULES(LOCKD_DLM, libdlm, [HAVE_LOCKD_DLM=yes], $bailout)
 	AC_DEFINE([LOCKDDLM_SUPPORT], 1, [Define to 1 to include code that uses lvmlockd dlm option.])
+	BUILD_LVMLOCKD=yes
+fi
+
+################################################################################
+dnl -- Build lvmlockddlmcontrol
+AC_MSG_CHECKING(whether to build lvmlockddlmcontrol)
+AC_ARG_ENABLE(lvmlockd-dlmcontrol,
+	      AC_HELP_STRING([--enable-lvmlockd-dlmcontrol],
+			     [enable lvmlockd remote refresh using libdlmcontrol]),
+	      LOCKDDLM_CONTROL=$enableval)
+AC_MSG_RESULT($LOCKDDLM_CONTROL)
+
+BUILD_LOCKDDLM_CONTROL=$LOCKDDLM_CONTROL
+
+dnl -- Look for libdlmcontrol libraries
+if test "$BUILD_LOCKDDLM_CONTROL" = yes; then
+	PKG_CHECK_MODULES(LOCKD_DLM_CONTROL, libdlmcontrol >= 3.2, [HAVE_LOCKD_DLM_CONTROL=yes], $bailout)
+	AC_DEFINE([LOCKDDLM_CONTROL_SUPPORT], 1, [Define to 1 to include code that uses lvmlockd dlm control option.])
 	BUILD_LVMLOCKD=yes
 fi
 
@@ -1526,15 +1564,6 @@ AC_DEFINE_UNQUOTED(DEFAULT_LOCK_DIR, ["$DEFAULT_LOCK_DIR"],
 		   [Name of default locking directory.])
 
 ################################################################################
-dnl -- Setup default data alignment
-AC_ARG_WITH(default-data-alignment,
-	    AC_HELP_STRING([--with-default-data-alignment=NUM],
-			   [set the default data alignment in MiB [1]]),
-	    DEFAULT_DATA_ALIGNMENT=$withval, DEFAULT_DATA_ALIGNMENT=1)
-AC_DEFINE_UNQUOTED(DEFAULT_DATA_ALIGNMENT, [$DEFAULT_DATA_ALIGNMENT],
-		   [Default data alignment.])
-
-################################################################################
 dnl -- which kernel interface to use (ioctl only)
 AC_MSG_CHECKING(for kernel interface choice)
 AC_ARG_WITH(interface,
@@ -1574,6 +1603,7 @@ AC_SUBST(BUILD_LVMPOLLD)
 AC_SUBST(BUILD_LVMLOCKD)
 AC_SUBST(BUILD_LOCKDSANLOCK)
 AC_SUBST(BUILD_LOCKDDLM)
+AC_SUBST(BUILD_LOCKDDLM_CONTROL)
 AC_SUBST(BUILD_DMFILEMAPD)
 AC_SUBST(CACHE)
 AC_SUBST(CFLAGS)
@@ -1594,7 +1624,6 @@ AC_SUBST(DEBUG)
 AC_SUBST(DEFAULT_ARCHIVE_SUBDIR)
 AC_SUBST(DEFAULT_BACKUP_SUBDIR)
 AC_SUBST(DEFAULT_CACHE_SUBDIR)
-AC_SUBST(DEFAULT_DATA_ALIGNMENT)
 AC_SUBST(DEFAULT_DM_RUN_DIR)
 AC_SUBST(DEFAULT_LOCK_DIR)
 AC_SUBST(DEFAULT_MIRROR_SEGTYPE)

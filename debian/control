@@ -6,7 +6,6 @@ Uploaders: Bastian Blank <waldi@debian.org>
 Build-Depends:
  debhelper (>= 10.9.2),
  dh-python,
- dpkg-source-gitarchive,
  autoconf-archive,
  automake,
  libaio-dev,
@@ -15,6 +14,7 @@ Build-Depends:
  libcorosync-common-dev,
  libcpg-dev,
  libdlm-dev (>> 2),
+ libdlmcontrol-dev,
  libquorum-dev,
  libreadline-gplv2-dev,
  libsanlock-dev,

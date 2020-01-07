@@ -44,10 +44,10 @@ cache.
 .nf
   $ lvcreate -n fast -L Size vg /dev/fast
 
-  $ lvs vg -o+devices
-  LV   VG  Attr       LSize   Devices
-  fast vg -wi-------  xx.00m /dev/fast(0)
-  main vg -wi------- yyy.00m /dev/slow(0)
+  $ lvs -a
+  LV   Attr       Type   Devices
+  fast -wi------- linear /dev/fast
+  main -wi------- linear /dev/slow
 .fi
 
 .B 3. Start caching the main LV
@@ -58,37 +58,51 @@ desired caching type, and specify the fast LV to use:
 .nf
 using dm-cache:
 
+  $ lvconvert --type cache --cachevol fast vg/main
+
+using dm-writecache:
+
+  $ lvconvert --type writecache --cachevol fast vg/main
+
+using dm-cache (with cachepool):
+
   $ lvconvert --type cache --cachepool fast vg/main
-
-or dm-writecache:
-
-  $ lvconvert --type writecache --cachepool fast vg/main
 .fi
 
 .B 4. Display LVs
 
 Once the fast LV has been attached to the main LV, lvm reports the main LV
 type as either \fBcache\fP or \fBwritecache\fP depending on the type used.
-While attached, the fast LV is hidden, and only displayed when lvs is
-given -a.  The _corig or _wcorig LV represents the original LV without the
-cache.
+While attached, the fast LV is hidden, and renamed with a _cvol or _cpool
+suffix.  It is displayed by lvs -a.  The _corig or _wcorig LV represents
+the original LV without the cache.
 
 .nf
 using dm-cache:
 
-  $ lvs -a -o name,vgname,lvattr,origin,segtype,devices vg
-  LV           VG Attr       Origin       Type   Devices       
-  [fast]       vg Cwi-aoC---                     linear /dev/fast(xx)
-  main         vg Cwi-a-C--- [main_corig] cache  main_corig(0) 
-  [main_corig] vg owi-aoC---                     linear /dev/slow(0) 
+  $ lvs -a
+  LV           Pool        Type   Devices       
+  main         [fast_cvol] cache  main_corig(0) 
+  [fast_cvol]              linear /dev/fast
+  [main_corig]             linear /dev/slow
 
-or dm-writecache:
+using dm-writecache:
 
-  $ lvs -a -o name,vgname,lvattr,origin,segtype,devices vg
-  LV            VG Attr       Origin        Type       Devices       
-  [fast]        vg -wi-ao----               linear     /dev/fast(xx)
-  main          vg Cwi-a----- [main_wcorig] writecache main_wcorig(0)
-  [main_wcorig] vg -wi-ao----               linear     /dev/slow(0)   
+  $ lvs -a
+  LV            Pool        Type       Devices       
+  main          [fast_cvol] writecache main_wcorig(0)
+  [fast_cvol]               linear     /dev/fast
+  [main_wcorig]             linear     /dev/slow
+
+using dm-cache (with cachepool):
+
+  $ lvs -a
+  LV                 Pool         Type       Devices        
+  main               [fast_cpool] cache      main_corig(0)  
+  [fast_cpool]                    cache-pool fast_pool_cdata(0)  
+  [fast_cpool_cdata]              linear     /dev/fast
+  [fast_cpool_cmeta]              linear     /dev/fast
+  [main_corig]                    linear     /dev/slow
 .fi
 
 .B 5. Use the main LV
@@ -102,13 +116,59 @@ changes the type of the main LV back to what it was before the cache was
 attached.
 
 .nf
-   $ lvconvert --splitcache vg/main
+  $ lvconvert --splitcache vg/main
+
+  $ lvs -a
+  LV   VG Attr       Type   Devices    
+  fast vg -wi------- linear /dev/fast
+  main vg -wi------- linear /dev/slow
 .fi
 
 
 .SH OPTIONS
 
 \&
+
+.SS option args
+
+\&
+
+.B --cachevol
+.I LV
+.br
+
+Pass this option a standard LV.  With a cachevol, cache data and metadata
+are contained within the single LV.  This is used with dm-writecache or
+dm-cache.
+
+.B --cachepool
+.IR CachePoolLV | LV
+.br
+
+Pass this option a cache pool object.  With a cache pool, lvm places cache
+data and cache metadata on different LVs.  The two LVs together are called
+a cache pool.  This permits specific placement of data and metadata.  A
+cache pool is represented as a special type of LV that cannot be used
+directly.  (If a standard LV is passed to this option, lvm will first
+convert it to a cache pool by combining it with another LV to use for
+metadata.)  This can be used with dm-cache.
+
+\&
+
+.SS dm-cache block size
+
+\&
+
+A cache pool will have a logical block size of 4096 bytes if it is created
+on a device with a logical block size of 4096 bytes.
+
+If a main LV has logical block size 512 (with an existing xfs file system
+using that size), then it cannot use a cache pool with a 4096 logical
+block size.  If the cache pool is attached, the main LV will likely fail
+to mount.
+
+To avoid this problem, use a mkfs option to specify a 4096 block size for
+the file system, or attach the cache pool before running mkfs.
 
 .SS dm-writecache block size
 
@@ -117,7 +177,7 @@ attached.
 The dm-writecache block size can be 4096 bytes (the default), or 512
 bytes.  The default 4096 has better performance and should be used except
 when 512 is necessary for compatibility.  The dm-writecache block size is
-specified with --writecacheblocksize 4096b|512b when caching is started.
+specified with --cachesettings block_size=4096|512 when caching is started.
 
 When a file system like xfs already exists on the main LV prior to
 caching, and the file system is using a block size of 512, then the
@@ -145,7 +205,7 @@ Tunable parameters can be passed to the dm-writecache kernel module using
 the --cachesettings option when caching is started, e.g.
 
 .nf
-$ lvconvert --type writecache --cachepool fast \\
+$ lvconvert --type writecache --cachevol fast \\
 	--cachesettings 'high_watermark=N writeback_jobs=N' vg/main
 .fi
 
@@ -201,35 +261,34 @@ Applicable only to persistent memory.
 \&
 
 When using dm-cache, the cache metadata and cache data can be stored on
-separate LVs.  To do this, a "cache-pool LV" is created, which is a
-special LV that references two sub LVs, one for data and one for metadata.
+separate LVs.  To do this, a "cache pool" is created, which is a special
+LV that references two sub LVs, one for data and one for metadata.
 
-To create a cache-pool LV from two separate LVs:
-
-.nf
-$ lvcreate -n fastpool -L DataSize vg /dev/fast1
-$ lvcreate -n fastpoolmeta -L MetadataSize vg /dev/fast2
-$ lvconvert --type cache-pool --poolmetadata fastpoolmeta vg/fastpool
-.fi
-
-Then use the cache-pool LV to start caching the main LV:
+To create a cache pool from two separate LVs:
 
 .nf
-$ lvconvert --type cache --cachepool fastpool vg/main
+$ lvcreate -n fast -L DataSize vg /dev/fast1
+$ lvcreate -n fastmeta -L MetadataSize vg /dev/fast2
+$ lvconvert --type cache-pool --poolmetadata fastmeta vg/fast
 .fi
 
-A variation of the same procedure automatically creates a cache-pool when
+Then use the cache pool LV to start caching the main LV:
+
+.nf
+$ lvconvert --type cache --cachepool fast vg/main
+.fi
+
+A variation of the same procedure automatically creates a cache pool when
 caching is started.  To do this, use a standard LV as the --cachepool
 (this will hold cache data), and use another standard LV as the
 --poolmetadata (this will hold cache metadata).  LVM will create a
-cache-pool LV from the two specified LVs, and use the cache-pool to start
+cache pool LV from the two specified LVs, and use the cache pool to start
 caching the main LV.
 
 .nf
-$ lvcreate -n fastpool -L DataSize vg /dev/fast1
-$ lvcreate -n fastpoolmeta -L MetadataSize vg /dev/fast2
-$ lvconvert --type cache --cachepool fastpool \\
-	--poolmetadata fastpoolmeta vg/main
+$ lvcreate -n fast -L DataSize vg /dev/fast1
+$ lvcreate -n fastmeta -L MetadataSize vg /dev/fast2
+$ lvconvert --type cache --cachepool fast --poolmetadata fastmeta vg/main
 .fi
 
 .SS dm-cache cache modes
@@ -257,7 +316,7 @@ mode can be displayed with the cache_mode reporting option:
 defines the default cache mode.
 
 .nf
-$ lvconvert --type cache --cachepool fast \\
+$ lvconvert --type cache --cachevol fast \\
 	--cachemode writethrough vg/main
 .nf
 
@@ -360,8 +419,34 @@ and metadata LVs, each of the sub-LVs can use raid1.)
 .nf
 $ lvcreate -n main -L Size vg /dev/slow
 $ lvcreate --type raid1 -m 1 -n fast -L Size vg /dev/fast1 /dev/fast2
-$ lvconvert --type cache --cachepool fast vg/main
+$ lvconvert --type cache --cachevol fast vg/main
 .fi
+
+.SS dm-cache command shortcut
+
+\&
+
+A single command can be used to create a cache pool and attach that new
+cache pool to a main LV:
+
+.nf
+$ lvcreate --type cache --name Name --size Size VG/LV [PV]
+.fi
+
+In this command, the specified LV already exists, and is the main LV to be
+cached.  The command creates a new cache pool with the given name and
+size, using the optionally specified PV (typically an ssd).  Then it
+attaches the new cache pool to the existing main LV to begin caching.
+
+(Note: ensure that the specified main LV is a standard LV.  If a cache
+pool LV is mistakenly specified, then the command does something
+different.)
+
+(Note: the type option is interpreted differently by this command than by
+normal lvcreate commands in which --type specifies the type of the newly
+created LV.  In this case, an LV with type cache-pool is being created,
+and the existing main LV is being converted to type cache.)
+
 
 .SH SEE ALSO
 .BR lvm.conf (5),

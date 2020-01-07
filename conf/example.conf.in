@@ -88,6 +88,22 @@ devices {
 	# 
 	external_device_info_source = "none"
 
+	# Configuration option devices/hints.
+	# Use a local file to remember which devices have PVs on them.
+	# Some commands will use this as an optimization to reduce device
+	# scanning, and will only scan the listed PVs. Removing the hint file
+	# will cause lvm to generate a new one. Disable hints if PVs will
+	# be copied onto devices using non-lvm commands, like dd.
+	# 
+	# Accepted values:
+	#   all
+	#     Use all hints.
+	#   none
+	#     Use no hints.
+	# 
+	# This configuration option has an automatic default value.
+	# hints = "all"
+
 	# Configuration option devices/preferred_names.
 	# Select which path name to display for a block device.
 	# If multiple path names exist for a block device, and LVM needs to
@@ -126,7 +142,7 @@ devices {
 	# 
 	# Example
 	# Accept every block device:
-	# filter = [ "a|.*/|" ]
+	# filter = [ "a|.*|" ]
 	# Reject the cdrom drive:
 	# filter = [ "r|/dev/cdrom|" ]
 	# Work with just loopback devices, e.g. for testing:
@@ -134,10 +150,10 @@ devices {
 	# Accept all loop devices and ide drives except hdc:
 	# filter = [ "a|loop|", "r|/dev/hdc|", "a|/dev/ide|", "r|.*|" ]
 	# Use anchors to be very specific:
-	# filter = [ "a|^/dev/hda8$|", "r|.*/|" ]
+	# filter = [ "a|^/dev/hda8$|", "r|.*|" ]
 	# 
 	# This configuration option has an automatic default value.
-	# filter = [ "a|.*/|" ]
+	# filter = [ "a|.*|" ]
 
 	# Configuration option devices/global_filter.
 	# Limit the block devices that are used by LVM system components.
@@ -147,7 +163,7 @@ devices {
 	# The syntax is the same as devices/filter. Devices rejected by
 	# global_filter are not opened by LVM.
 	# This configuration option has an automatic default value.
-	# global_filter = [ "a|.*/|" ]
+	# global_filter = [ "a|.*|" ]
 
 	# Configuration option devices/types.
 	# List of additional acceptable block device types.
@@ -167,16 +183,51 @@ devices {
 	sysfs_scan = 1
 
 	# Configuration option devices/scan_lvs.
-	# Scan LVM LVs for layered PVs.
-	scan_lvs = 1
+	# Scan LVM LVs for layered PVs, allowing LVs to be used as PVs.
+	# When 1, LVM will detect PVs layered on LVs, and caution must be
+	# taken to avoid a host accessing a layered VG that may not belong
+	# to it, e.g. from a guest image. This generally requires excluding
+	# the LVs with device filters. Also, when this setting is enabled,
+	# every LVM command will scan every active LV on the system (unless
+	# filtered), which can cause performance problems on systems with
+	# many active LVs. When this setting is 0, LVM will not detect or
+	# use PVs that exist on LVs, and will not allow a PV to be created on
+	# an LV. The LVs are ignored using a built in device filter that
+	# identifies and excludes LVs.
+	scan_lvs = 0
 
 	# Configuration option devices/multipath_component_detection.
 	# Ignore devices that are components of DM multipath devices.
 	multipath_component_detection = 1
 
 	# Configuration option devices/md_component_detection.
-	# Ignore devices that are components of software RAID (md) devices.
+	# Enable detection and exclusion of MD component devices.
+	# An MD component device is a block device that MD uses as part
+	# of a software RAID virtual device. When an LVM PV is created
+	# on an MD device, LVM must only use the top level MD device as
+	# the PV, and should ignore the underlying component devices.
+	# In cases where the MD superblock is located at the end of the
+	# component devices, it is more difficult for LVM to consistently
+	# identify an MD component, see the md_component_checks setting.
 	md_component_detection = 1
+
+	# Configuration option devices/md_component_checks.
+	# The checks LVM should use to detect MD component devices.
+	# MD component devices are block devices used by MD software RAID.
+	# 
+	# Accepted values:
+	#   auto
+	#     LVM will skip scanning the end of devices when it has other
+	#     indications that the device is not an MD component.
+	#   start
+	#     LVM will only scan the start of devices for MD superblocks.
+	#     This does not incur extra I/O by LVM.
+	#   full
+	#     LVM will scan the start and end of devices for MD superblocks.
+	#     This requires an extra read at the end of devices.
+	# 
+	# This configuration option has an automatic default value.
+	# md_component_checks = "auto"
 
 	# Configuration option devices/fw_raid_component_detection.
 	# Ignore devices that are components of firmware RAID devices.
@@ -296,6 +347,12 @@ devices {
 	# Enabling this setting allows the VG to be used as usual even with
 	# uncertain devices.
 	allow_changes_with_duplicate_pvs = 0
+
+	# Configuration option devices/allow_mixed_block_sizes.
+	# Allow PVs in the same VG with different logical block sizes.
+	# When allowed, the user is responsible to ensure that an LV is
+	# using PVs with matching block sizes when necessary.
+	allow_mixed_block_sizes = 0
 }
 
 # Configuration section allocation.
@@ -497,10 +554,19 @@ allocation {
 	# This configuration option has an automatic default value.
 	# vdo_use_deduplication = 1
 
-	# Configuration option allocation/vdo_emulate_512_sectors.
-	# Specifies that the VDO volume is to emulate a 512 byte block device.
+	# Configuration option allocation/vdo_use_metadata_hints.
+	# Enables or disables whether VDO volume should tag its latency-critical
+	# writes with the REQ_SYNC flag. Some device mapper targets such as dm-raid5
+	# process writes with this flag at a higher priority.
+	# Default is enabled.
 	# This configuration option has an automatic default value.
-	# vdo_emulate_512_sectors = 0
+	# vdo_use_metadata_hints = 1
+
+	# Configuration option allocation/vdo_minimum_io_size.
+	# The minimum IO size for VDO volume to accept, in bytes.
+	# Valid values are 512 or 4096. The recommended and default value is 4096.
+	# This configuration option has an automatic default value.
+	# vdo_minimum_io_size = 4096
 
 	# Configuration option allocation/vdo_block_map_cache_size_mb.
 	# Specifies the amount of memory in MiB allocated for caching block map
@@ -511,10 +577,10 @@ allocation {
 	# vdo_block_map_cache_size_mb = 128
 
 	# Configuration option allocation/vdo_block_map_period.
-	# Tunes the quantity of block map updates that can accumulate
-	# before cache pages are flushed to disk. The value must be
-	# at least 1 and less then 16380.
-	# A lower value means shorter recovery time but lower performance.
+	# The speed with which the block map cache writes out modified block map pages.
+	# A smaller era length is likely to reduce the amount time spent rebuilding,
+	# at the cost of increased block map writes during normal operation.
+	# The maximum and recommended value is 16380; the minimum value is 1.
 	# This configuration option has an automatic default value.
 	# vdo_block_map_period = 16380
 
@@ -533,22 +599,6 @@ allocation {
 	# The value must be at least 256MiB and at most 1TiB.
 	# This configuration option has an automatic default value.
 	# vdo_index_memory_size_mb = 256
-
-	# Configuration option allocation/vdo_use_read_cache.
-	# Enables or disables the read cache within the VDO volume.
-	# The cache should be enabled if write workloads are expected
-	# to have high levels of deduplication, or for read intensive
-	# workloads of highly compressible data.
-	# This configuration option has an automatic default value.
-	# vdo_use_read_cache = 0
-
-	# Configuration option allocation/vdo_read_cache_size_mb.
-	# Specifies the extra VDO volume read cache size in MiB.
-	# This space is in addition to a system-defined minimum.
-	# The value must be less then 16TiB and 1.12 MiB of memory
-	# will be used per MiB of read cache specified, per bio thread.
-	# This configuration option has an automatic default value.
-	# vdo_read_cache_size_mb = 0
 
 	# Configuration option allocation/vdo_slab_size_mb.
 	# Specifies the size in MiB of the increment by which a VDO is grown.
@@ -571,7 +621,7 @@ allocation {
 	# Each additional thread after the first will use an additional 18MiB of RAM,
 	# plus 1.12 MiB of RAM per megabyte of configured read cache size.
 	# This configuration option has an automatic default value.
-	# vdo_bio_threads = 1
+	# vdo_bio_threads = 4
 
 	# Configuration option allocation/vdo_bio_rotation.
 	# Specifies the number of I/O operations to enqueue for each bio-submission
@@ -625,6 +675,18 @@ allocation {
 	#         Data which has not been flushed is not guaranteed to persist in this mode.
 	# This configuration option has an automatic default value.
 	# vdo_write_policy = "auto"
+
+	# Configuration option allocation/vdo_max_discard.
+	# Specified te maximum size of discard bio accepted, in 4096 byte blocks.
+	# I/O requests to a VDO volume are normally split into 4096-byte blocks,
+	# and processed up to 2048 at a time. However, discard requests to a VDO volume
+	# can be automatically split to a larger size, up to <max discard> 4096-byte blocks
+	# in a single bio, and are limited to 1500 at a time.
+	# Increasing this value may provide better overall performance, at the cost of
+	# increased latency for the individual discard requests.
+	# The default and minimum is 1. The maximum is UINT_MAX / 4096.
+	# This configuration option has an automatic default value.
+	# vdo_max_discard = 1
 }
 
 # Configuration section log.
@@ -715,7 +777,8 @@ log {
 
 	# Configuration option log/indent.
 	# Indent messages according to their severity.
-	indent = 1
+	# This configuration option has an automatic default value.
+	# indent = 0
 
 	# Configuration option log/command_names.
 	# Display the command name on each line of output.
@@ -741,6 +804,20 @@ log {
 	# available: memory, devices, io, activation, allocation,
 	# metadata, cache, locking, lvmpolld. Use "all" to see everything.
 	debug_classes = [ "memory", "devices", "io", "activation", "allocation", "metadata", "cache", "locking", "lvmpolld", "dbus" ]
+
+	# Configuration option log/debug_file_fields.
+	# The fields included in debug output written to log file.
+	# Use "all" to include everything (the default).
+	# This configuration option is advanced.
+	# This configuration option has an automatic default value.
+	# debug_file_fields = [ "time", "command", "fileline", "message" ]
+
+	# Configuration option log/debug_output_fields.
+	# The fields included in debug output written to stderr.
+	# Use "all" to include everything (the default).
+	# This configuration option is advanced.
+	# This configuration option has an automatic default value.
+	# debug_output_fields = [ "time", "command", "fileline", "message" ]
 }
 
 # Configuration section backup.
@@ -828,9 +905,6 @@ global {
 	# the error messages.
 	activation = 1
 
-	# Configuration option global/segment_libraries.
-	# This configuration option does not have a default value defined.
-
 	# Configuration option global/proc.
 	# Location of proc filesystem.
 	# This configuration option is advanced.
@@ -903,6 +977,16 @@ global {
 	#     fashion in a cluster.
 	# 
 	mirror_segtype_default = "@DEFAULT_MIRROR_SEGTYPE@"
+
+	# Configuration option global/support_mirrored_mirror_log.
+	# Enable mirrored 'mirror' log type for testing.
+	# 
+	# This type is deprecated to create or convert to but can
+	# be enabled to test that activation of existing mirrored
+	# logs and conversion to disk/core works.
+	# 
+	# Not supported for regular operation!
+	support_mirrored_mirror_log = 0
 
 	# Configuration option global/raid10_segtype_default.
 	# The segment type used by the -i -m combination.
@@ -1159,6 +1243,16 @@ global {
 	# When enabled, an LVM command that changes PVs, changes VG metadata,
 	# or changes the activation state of an LV will send a notification.
 	notify_dbus = 1
+
+	# Configuration option global/io_memory_size.
+	# The amount of memory in KiB that LVM allocates to perform disk io.
+	# LVM performance may benefit from more io memory when there are many
+	# disks or VG metadata is large. Increasing this size may be necessary
+	# when a single copy of VG metadata is larger than the current setting.
+	# This value should usually not be decreased from the default; setting
+	# it too low can result in lvm failing to read VGs.
+	# This configuration option has an automatic default value.
+	# io_memory_size = 8192
 }
 
 # Configuration section activation.
@@ -1660,7 +1754,6 @@ activation {
 	# additional space for VG metadata. The --metadatasize option overrides
 	# this setting.
 	# This configuration option does not have a default value defined.
-	# This configuration option has an automatic default value.
 
 	# Configuration option metadata/pvmetadataignore.
 	# Ignore metadata areas on a new PV.

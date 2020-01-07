@@ -144,6 +144,13 @@ bool bcache_invalidate(struct bcache *cache, int fd, block_address index);
  */
 bool bcache_invalidate_fd(struct bcache *cache, int fd);
 
+/*
+ * Call this function if flush, or invalidate fail and you do not
+ * wish to retry the writes.  This will throw away any dirty data
+ * not written.  If any blocks for fd are held, then it will call
+ * abort().
+ */
+void bcache_abort_fd(struct bcache *cache, int fd);
 
 //----------------------------------------------------------------
 // The next four functions are utilities written in terms of the above api.
@@ -156,6 +163,7 @@ bool bcache_read_bytes(struct bcache *cache, int fd, uint64_t start, size_t len,
 bool bcache_write_bytes(struct bcache *cache, int fd, uint64_t start, size_t len, void *data);
 bool bcache_zero_bytes(struct bcache *cache, int fd, uint64_t start, size_t len);
 bool bcache_set_bytes(struct bcache *cache, int fd, uint64_t start, size_t len, uint8_t val);
+bool bcache_invalidate_bytes(struct bcache *cache, int fd, uint64_t start, size_t len);
 
 void bcache_set_last_byte(struct bcache *cache, int fd, uint64_t offset, int sector_size);
 void bcache_unset_last_byte(struct bcache *cache, int fd);

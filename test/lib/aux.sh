@@ -26,7 +26,7 @@ expect_failure() {
 check_daemon_in_builddir() {
 	# skip if we don't have our own deamon...
 	if test -z "${installed_testsuite+varset}"; then
-		(which "$1" 2>/dev/null | grep -q "$abs_builddir") || skip "$1 is not in executed path."
+		(which "$1" 2>/dev/null | grep "$abs_builddir" >/dev/null ) || skip "$1 is not in executed path."
 	fi
 	rm -f debug.log strace.log
 }
@@ -167,7 +167,7 @@ prepare_clvmd() {
 
 	test -e "$DM_DEV_DIR/control" || dmsetup table >/dev/null # create control node
 	# skip if singlenode is not compiled in
-	(clvmd --help 2>&1 | grep "Available cluster managers" | grep -q "singlenode") || \
+	(clvmd --help 2>&1 | grep "Available cluster managers" | grep "singlenode" >/dev/null) || \
 		skip "Compiled clvmd does not support singlenode for testing."
 
 #	lvmconf "activation/monitoring = 1"
@@ -421,8 +421,15 @@ teardown_devs() {
 	teardown_udev_cookies
 
 	test ! -f MD_DEV || cleanup_md_dev
+
+	test ! -f WAIT_MD_DEV || mddev=$(< WAIT_MD_DEV)
+	udev_wait
+	test ! -f WAIT_MD_DEV || mdadm --stop $mddev || true
+	udev_wait
 	test ! -f DEVICES || teardown_devs_prefixed "$PREFIX"
 	test ! -f RAMDISK || { modprobe -r brd || true ; }
+
+	test ! -f WAIT_MD_DEV || mdadm --stop $mddev || true
 
 	# NOTE: SCSI_DEBUG_DEV test must come before the LOOP test because
 	# prepare_scsi_debug_dev() also sets LOOP to short-circuit prepare_loop()
@@ -513,7 +520,7 @@ teardown() {
 
 	if test ! -f SKIP_THIS_TEST ; then
 		# Evaluate left devices only for non-skipped tests
-		TEST_LEAKED_DEVICES=$(dmsetup table | grep "$PREFIX" | grep -v "${PREFIX}pv") || true
+		TEST_LEAKED_DEVICES=$(dmsetup table | grep "$PREFIX" | grep -Ev "${PREFIX}(pv|[0-9])") || true
 	fi
 
 	kill_tagged_processes
@@ -531,7 +538,7 @@ teardown() {
 	dm_table | not grep -E -q "$vg|$vg1|$vg2|$vg3|$vg4" || {
 		# Avoid activation of dmeventd if there is no pid
 		cfg=$(test -s LOCAL_DMEVENTD || echo "--config activation{monitoring=0}")
-		if dm_info suspended,name | grep -q "^Suspended:.*$PREFIX" ; then
+		if dm_info suspended,name | grep "^Suspended:.*$PREFIX" >/dev/null ; then
 			echo "## skipping vgremove, suspended devices detected."
 		else
 			vgremove -ff "$cfg"  \
@@ -662,7 +669,7 @@ prepare_scsi_debug_dev() {
 
 	# Skip test if scsi_debug module is unavailable or is already in use
 	modprobe --dry-run scsi_debug || skip
-	lsmod | not grep -q scsi_debug || skip
+	lsmod | not grep scsi_debug >/dev/null || skip
 
 	# Create the scsi_debug device and determine the new scsi device's name
 	# NOTE: it will _never_ make sense to pass num_tgts param;
@@ -773,6 +780,33 @@ cleanup_md_dev() {
 		rm -f "$mddev"
 	fi
 	rm -f MD_DEV MD_DEVICES MD_DEV_PV
+}
+
+wait_md_create() {
+	local md=$1
+
+	while :; do
+		if ! grep `basename $md` /proc/mdstat; then
+			echo "$md not ready"
+			cat /proc/mdstat
+			sleep 2
+		else
+			break
+		fi
+	done
+	echo "$md" > WAIT_MD_DEV
+}
+
+wipefs_a() {
+	local dev=$1
+	shift
+
+	if wipefs -V >/dev/null; then
+		wipefs -a "$dev"
+	else
+		dd if=/dev/zero of="$dev" bs=4096 count=8 || true
+		mdadm --zero-superblock "$dev" || true
+	fi
 }
 
 prepare_backing_dev() {
@@ -1090,7 +1124,18 @@ extend_filter() {
 	for rx in "$@"; do
 		filter=$(echo "$filter" | sed -e "s:\\[:[ \"$rx\", :")
 	done
+	lvmconf "$filter" "devices/scan_lvs = 1"
+}
+
+extend_filter_md() {
+	local filter
+
+	filter=$(grep ^devices/global_filter CONFIG_VALUES | tail -n 1)
+	for rx in "$@"; do
+		filter=$(echo "$filter" | sed -e "s:\\[:[ \"$rx\", :")
+	done
 	lvmconf "$filter"
+	lvmconf "devices/scan = [ \"$DM_DEV_DIR\", \"/dev\" ]"
 }
 
 extend_filter_LVMTEST() {
@@ -1164,7 +1209,7 @@ devices/default_data_alignment = 1
 devices/dir = "$DM_DEV_DIR"
 devices/filter = "a|.*|"
 devices/global_filter = [ "a|$DM_DEV_DIR/mapper/${PREFIX}.*pv[0-9_]*$|", "r|.*|" ]
-devices/md_component_detection  = 0
+devices/md_component_detection = 0
 devices/scan = "$DM_DEV_DIR"
 devices/sysfs_scan = 1
 devices/write_cache_state = 0
@@ -1387,17 +1432,17 @@ version_at_least() {
 	IFS=".-" read -r major minor revision <<< "$1"
 	shift
 
-	test -z "$1" && return 0
+	test -n "${1:-}" || return 0
 	test -n "$major" || return 1
 	test "$major" -gt "$1" && return 0
 	test "$major" -eq "$1" || return 1
 
-	test -z "$2" && return 0
+	test -n "${2:-}" || return 0
 	test -n "$minor" || return 1
 	test "$minor" -gt "$2" && return 0
 	test "$minor" -eq "$2" || return 1
 
-	test -z "$3" && return 0
+	test -n "${3:-}" || return 0
 	test "$revision" -ge "$3" 2>/dev/null || return 1
 }
 #
@@ -1410,6 +1455,7 @@ version_at_least() {
 target_at_least() {
 	rm -f debug.log strace.log
 	case "$1" in
+	  dm-vdo) modprobe "kvdo" || true ;;
 	  dm-*) modprobe "$1" || true ;;
 	esac
 
@@ -1420,7 +1466,7 @@ target_at_least() {
 	fi
 
 	local version
-	version=$(dmsetup targets 2>/dev/null | grep "${1##dm-} " 2>/dev/null)
+	version=$(dmsetup targets 2>/dev/null | grep "^${1##dm-} " 2>/dev/null)
 	version=${version##* v}
 
 	version_at_least "$version" "${@:2}" || {
@@ -1446,7 +1492,7 @@ driver_at_least() {
 }
 
 have_thin() {
-	lvm segtypes 2>/dev/null | grep -q thin$ || {
+	lvm segtypes 2>/dev/null | grep thin$ >/dev/null || {
 		echo "Thin is not built-in." >&2
 		return 1
 	}
@@ -1470,11 +1516,19 @@ have_thin() {
 }
 
 have_vdo() {
-	lvm segtypes 2>/dev/null | grep -q vdo$ || {
+	lvm segtypes 2>/dev/null | grep vdo$ >/dev/null || {
 		echo "VDO is not built-in." >&2
 		return 1
 	}
 	target_at_least dm-vdo "$@"
+}
+
+have_writecache() {
+	lvm segtypes 2>/dev/null | grep -q writecache$ || {
+		echo "writecache is not built-in." >&2
+		return 1
+	}
+	target_at_least dm-writecache "$@"
 }
 
 have_raid() {
@@ -1498,7 +1552,7 @@ have_raid4 () {
 }
 
 have_cache() {
-	lvm segtypes 2>/dev/null | grep -q cache$ || {
+	lvm segtypes 2>/dev/null | grep cache$ >/dev/null || {
 		echo "Cache is not built-in." >&2
 		return 1
 	}
@@ -1598,6 +1652,10 @@ wait_pvmove_lv_ready() {
 			retries=$((retries-1))
 		done
 	fi
+
+	# Adding settle here, to avoid remove, before processing of 'add' is finished
+	# (masking systemd-udevd issue)
+	udevadm settle --timeout=2 || true
 }
 
 # Holds device open with sleep which automatically expires after given timeout

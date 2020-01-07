@@ -15,6 +15,7 @@
 
 #include "base/memory/zalloc.h"
 #include "lib/misc/lib.h"
+#include "lib/device/dev-type.h"
 #include "lib/datastruct/btree.h"
 #include "lib/config/config.h"
 #include "lib/commands/toolcontext.h"
@@ -63,8 +64,6 @@ static int _insert(const char *path, const struct stat *info,
 /* Setup non-zero members of passed zeroed 'struct device' */
 static void _dev_init(struct device *dev)
 {
-	dev->phys_block_size = -1;
-	dev->block_size = -1;
 	dev->fd = -1;
 	dev->read_ahead = -1;
 
@@ -1088,7 +1087,7 @@ out:
 static void _insert_dirs(struct dm_list *dirs)
 {
 	struct dir_list *dl;
-	struct udev *udev;
+	struct udev *udev = NULL;
 	int with_udev;
 
 	with_udev = obtain_device_list_from_udev() &&
@@ -1473,7 +1472,7 @@ struct device *dev_cache_get(struct cmd_context *cmd, const char *name, struct d
 		return d;
 
 	if (f && !(d->flags & DEV_REGULAR)) {
-		ret = f->passes_filter(cmd, f, d);
+		ret = f->passes_filter(cmd, f, d, NULL);
 
 		if (ret == -EAGAIN) {
 			log_debug_devs("get device by name defer filter %s", dev_name(d));
@@ -1505,13 +1504,16 @@ static struct device *_dev_cache_seek_devt(dev_t dev)
  * TODO This is very inefficient. We probably want a hash table indexed by
  * major:minor for keys to speed up these lookups.
  */
-struct device *dev_cache_get_by_devt(struct cmd_context *cmd, dev_t dev, struct dev_filter *f)
+struct device *dev_cache_get_by_devt(struct cmd_context *cmd, dev_t dev, struct dev_filter *f, int *filtered)
 {
 	char path[PATH_MAX];
 	const char *sysfs_dir;
 	struct stat info;
 	struct device *d = _dev_cache_seek_devt(dev);
 	int ret;
+
+	if (filtered)
+		*filtered = 0;
 
 	if (d && (d->flags & DEV_REGULAR))
 		return d;
@@ -1546,7 +1548,7 @@ struct device *dev_cache_get_by_devt(struct cmd_context *cmd, dev_t dev, struct 
 	if (!f)
 		return d;
 
-	ret = f->passes_filter(cmd, f, d);
+	ret = f->passes_filter(cmd, f, d, NULL);
 
 	if (ret == -EAGAIN) {
 		log_debug_devs("get device by number defer filter %s", dev_name(d));
@@ -1557,6 +1559,8 @@ struct device *dev_cache_get_by_devt(struct cmd_context *cmd, dev_t dev, struct 
 	if (ret)
 		return d;
 
+	if (filtered)
+		*filtered = 1;
 	return NULL;
 }
 
@@ -1603,7 +1607,7 @@ struct device *dev_iter_get(struct cmd_context *cmd, struct dev_iter *iter)
 		f = iter->filter;
 
 		if (f && !(d->flags & DEV_REGULAR)) {
-			ret = f->passes_filter(cmd, f, d);
+			ret = f->passes_filter(cmd, f, d, NULL);
 
 			if (ret == -EAGAIN) {
 				log_debug_devs("get device by iter defer filter %s", dev_name(d));
@@ -1629,3 +1633,21 @@ const char *dev_name(const struct device *dev)
 	return (dev && dev->aliases.n) ? dm_list_item(dev->aliases.n, struct dm_str_list)->str :
 	    unknown_device_name();
 }
+
+bool dev_cache_has_md_with_end_superblock(struct dev_types *dt)
+{
+	struct btree_iter *iter = btree_first(_cache.devices);
+	struct device *dev;
+
+	while (iter) {
+		dev = btree_get_data(iter);
+
+		if (dev_is_md_with_end_superblock(dt, dev))
+			return true;
+
+		iter = btree_next(iter);
+	}
+
+	return false;
+}
+

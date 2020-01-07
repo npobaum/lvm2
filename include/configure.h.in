@@ -45,9 +45,6 @@
 /* Name of default metadata cache subdirectory. */
 #undef DEFAULT_CACHE_SUBDIR
 
-/* Default data alignment. */
-#undef DEFAULT_DATA_ALIGNMENT
-
 /* Define default node creation behavior with dmsetup create */
 #undef DEFAULT_DM_ADD_NODE
 
@@ -295,6 +292,12 @@
 /* Define to 1 if you have the <paths.h> header file. */
 #undef HAVE_PATHS_H
 
+/* Define to 1 if you have the `prlimit' function. */
+#undef HAVE_PRLIMIT
+
+/* Define to 1 if you have the `pselect' function. */
+#undef HAVE_PSELECT
+
 /* Define to 1 if the system has the type `ptrdiff_t'. */
 #undef HAVE_PTRDIFF_T
 
@@ -533,6 +536,9 @@
 
 /* Locale-dependent data */
 #undef LOCALEDIR
+
+/* Define to 1 to include code that uses lvmlockd dlm control option. */
+#undef LOCKDDLM_CONTROL_SUPPORT
 
 /* Define to 1 to include code that uses lvmlockd dlm option. */
 #undef LOCKDDLM_SUPPORT

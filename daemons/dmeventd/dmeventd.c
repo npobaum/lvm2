@@ -17,7 +17,6 @@
  */
 
 
-#include "configure.h"
 #include "libdevmapper-event.h"
 #include "dmeventd.h"
 
@@ -1746,7 +1745,8 @@ static void _init_thread_signals(void)
 	sigdelset(&my_sigset, SIGHUP);
 	sigdelset(&my_sigset, SIGQUIT);
 
-	pthread_sigmask(SIG_BLOCK, &my_sigset, NULL);
+	if (pthread_sigmask(SIG_BLOCK, &my_sigset, NULL))
+		log_sys_error("pthread_sigmask", "SIG_BLOCK");
 }
 
 /*

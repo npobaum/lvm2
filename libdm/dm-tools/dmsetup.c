@@ -17,7 +17,6 @@
  */
 
 // For canonicalize_file_name()
-#include "configure.h"
 #include "libdm/misc/dm-logging.h"
 #include "libdm/dm-tools/util.h"
 
@@ -369,7 +368,7 @@ static int _parse_table_lines(struct dm_task *dmt)
 
 	do {
 		/* Identify and terminate each line */
-		if ((next_pos = strchr(_table, '\n')))
+		if ((next_pos = strchr(pos, '\n')))
 			*next_pos++ = '\0';
 		if (!_parse_line(dmt, pos, "", ++line))
 			return_0;
@@ -943,10 +942,12 @@ static int _display_info_cols(struct dm_task *dmt, struct dm_info *info)
 		}
 	}
 
-	/* group report with no groups? */
+	/* Group report with no groups is not an error */
 	if ((walk_flags == DM_STATS_WALK_GROUP)
-	    && !dm_stats_get_nr_groups(obj.stats))
+	    && !dm_stats_get_nr_groups(obj.stats)) {
+		r = 1;
 		goto out;
+	}
 
 	dm_stats_walk_init(obj.stats, walk_flags);
 	dm_stats_walk_do(obj.stats) {
@@ -1696,6 +1697,7 @@ static int _udevcomplete(CMD_ARGS)
 	if (!(cookie = _get_cookie_value(argv[0])))
 		return_0;
 
+	printf("DM_COOKIE_COMPLETED=0x%-10x\n", cookie);
 	/*
 	 * Strip flags from the cookie and use cookie magic instead.
 	 * If the cookie has non-zero prefix and the base is zero then
@@ -2579,6 +2581,33 @@ static int _targets(CMD_ARGS)
 
 		target = (struct dm_versions *)((char *) target + target->next);
 	} while (last_target != target);
+
+	r = 1;
+
+out:
+	dm_task_destroy(dmt);
+	return r;
+}
+
+/* Show target names and their version numbers */
+static int _target_version(CMD_ARGS)
+{
+	int r = 0;
+	struct dm_task *dmt;
+	struct dm_versions *target;
+
+	if (!(dmt = dm_task_create(DM_DEVICE_GET_TARGET_VERSION)))
+		return_0;
+
+	if (!dm_task_set_name(dmt, argv[0]))
+		goto_out;
+
+	if (!_task_run(dmt))
+		goto_out;
+
+	target = dm_task_get_versions(dmt);
+	printf("%-16s v%d.%d.%d\n", target->name, target->version[0],
+	       target->version[1], target->version[2]);
 
 	r = 1;
 
@@ -6239,6 +6268,7 @@ static struct command _dmsetup_commands[] = {
 	{"udevcomplete", "<cookie>", 1, 1, 0, 0, _udevcomplete},
 	{"udevcomplete_all", "[<age_in_minutes>]", 0, 1, 0, 0, _udevcomplete_all},
 	{"udevcookies", "", 0, 0, 0, 0, _udevcookies},
+	{"target-version", "[<target>...]", 1, -1, 1, 0, _target_version},
 	{"targets", "", 0, 0, 0, 0, _targets},
 	{"version", "", 0, 0, 0, 0, _version},
 	{"setgeometry", "<device> <cyl> <head> <sect> <start>", 5, 5, 0, 0, _setgeometry},

@@ -266,7 +266,6 @@ int pool_below_threshold(const struct lv_segment *pool_seg)
 	if (!lv_thin_pool_percent(pool_seg->lv, 1, &percent))
 		return_0;
 
-
 	if (percent >= min_threshold) {
 		log_warn("WARNING: Remaining free space in metadata of thin pool %s "
 			 "is too low (%s%% >= %s%%). "
@@ -276,7 +275,6 @@ int pool_below_threshold(const struct lv_segment *pool_seg)
 			 display_percent(cmd, min_threshold));
 		return 0;
 	}
-
 
 	if (percent > threshold) {
 		log_debug("Threshold configured for free metadata space in "
@@ -505,11 +503,11 @@ int update_pool_lv(struct logical_volume *lv, int activate)
 			 *   which Node has pool active.
 			 */
 			if (!activate_lv(lv->vg->cmd, lv)) {
-				init_dmeventd_monitor(monitored);
+				(void) init_dmeventd_monitor(monitored);
 				return_0;
 			}
 			if (!lv_is_active(lv)) {
-				init_dmeventd_monitor(monitored);
+				(void) init_dmeventd_monitor(monitored);
 				log_error("Cannot activate thin pool %s, perhaps skipped in lvm.conf volume_list?",
 					  display_lvname(lv));
 				return 0;
@@ -529,6 +527,12 @@ int update_pool_lv(struct logical_volume *lv, int activate)
 				log_error("Failed to resume %s.", display_lvname(lv));
 				ret = 0;
 			}
+		}
+
+		if (!sync_local_dev_names(lv->vg->cmd)) {
+			log_error("Failed to sync local devices LV %s.",
+				  display_lvname(lv));
+			return 0;
 		}
 
 		if (activate &&
@@ -579,21 +583,15 @@ static uint32_t _estimate_chunk_size(uint32_t data_extents, uint32_t extent_size
 				     uint64_t metadata_size, int attr)
 {
 	uint32_t chunk_size = _estimate_size(data_extents, extent_size, metadata_size);
+	const uint32_t BIG_CHUNK =  2 * DEFAULT_THIN_POOL_CHUNK_SIZE_ALIGNED - 1;
 
-	if (attr & THIN_FEATURE_BLOCK_SIZE) {
-		/* Round up to 64KB */
-		chunk_size += DM_THIN_MIN_DATA_BLOCK_SIZE - 1;
-		chunk_size &= ~(uint32_t)(DM_THIN_MIN_DATA_BLOCK_SIZE - 1);
-	} else {
-		/* Round up to nearest power of 2 */
-		chunk_size--;
-		chunk_size |= chunk_size >> 1;
-		chunk_size |= chunk_size >> 2;
-		chunk_size |= chunk_size >> 4;
-		chunk_size |= chunk_size >> 8;
-		chunk_size |= chunk_size >> 16;
-		chunk_size++;
-	}
+	if ((attr & THIN_FEATURE_BLOCK_SIZE) &&
+	    (chunk_size > BIG_CHUNK) &&
+	    (chunk_size < (UINT32_MAX - BIG_CHUNK)))
+		chunk_size = (chunk_size + BIG_CHUNK) & ~BIG_CHUNK;
+	else
+		/* Round up to nearest power of 2 of 32-bit */
+		chunk_size = 1 << (32 - clz(chunk_size - 1));
 
 	if (chunk_size < DM_THIN_MIN_DATA_BLOCK_SIZE)
 		chunk_size = DM_THIN_MIN_DATA_BLOCK_SIZE;
@@ -915,4 +913,16 @@ int validate_thin_pool_chunk_size(struct cmd_context *cmd, uint32_t chunk_size)
 	}
 
 	return r;
+}
+
+uint64_t estimate_thin_pool_metadata_size(uint32_t data_extents, uint32_t extent_size, uint32_t chunk_size)
+{
+	uint64_t sz = _estimate_metadata_size(data_extents, extent_size, chunk_size);
+
+	if (sz > (2 * DEFAULT_THIN_POOL_MAX_METADATA_SIZE))
+		sz = 2 * DEFAULT_THIN_POOL_MAX_METADATA_SIZE;
+	else if (sz < (2 * DEFAULT_THIN_POOL_MIN_METADATA_SIZE))
+		sz = 2 * DEFAULT_THIN_POOL_MIN_METADATA_SIZE;
+
+	return sz;
 }

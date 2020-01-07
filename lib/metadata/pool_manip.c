@@ -106,8 +106,20 @@ int attach_pool_lv(struct lv_segment *seg,
 	seg->origin = origin;
 	seg->lv->status |= seg_is_cache(seg) ? CACHE : THIN_VOLUME;
 
-	if (seg_is_cache(seg))
-		lv_set_hidden(pool_lv); /* Used cache-pool is hidden */
+	if (seg_is_cache(seg)) {
+		lv_set_hidden(pool_lv); /* Used cache-pool/cachevol is hidden */
+
+		if (lv_is_cache_vol(pool_lv))
+			/*
+			 * This flag is added to the segtype name so that old versions of lvm
+			 * (if they happen to be used with new metadata with a cache LV using a
+			 * cachevol) will report an error when they see the unknown
+			 * cache+CACHE_USES_CACHEVOL segment type.  Otherwise the old version
+			 * would expect to find a cache pool and fail.
+			 */
+			seg->lv->status |= LV_CACHE_USES_CACHEVOL;
+	}
+
 
 	if (origin && !add_seg_to_segs_using_this_lv(origin, seg))
 		return_0;
@@ -253,7 +265,9 @@ int detach_pool_lv(struct lv_segment *seg)
 		if (!remove_seg_from_segs_using_this_lv(seg->pool_lv, seg))
 			return_0;
 		seg->lv->status &= ~CACHE;
+		seg->lv->status &= ~LV_CACHE_USES_CACHEVOL;
 		lv_set_visible(seg->pool_lv);
+		seg->pool_lv->status &= ~LV_CACHE_VOL;
 		seg->pool_lv = NULL;
 		return 1;
 	}
@@ -790,7 +804,7 @@ int vg_remove_pool_metadata_spare(struct volume_group *vg)
 
 	log_print_unless_silent("Renaming existing pool metadata spare "
 				"logical volume \"%s\" to \"%s/%s\".",
-                                display_lvname(lv), vg->name, new_name);
+				display_lvname(lv), vg->name, new_name);
 
 	if (!lv_rename_update(vg->cmd, lv, new_name, 0))
 		return_0;
