@@ -278,6 +278,12 @@ static int _update_extents_params(struct volume_group *vg,
 	switch (lcp->percent) {
 		case PERCENT_VG:
 			extents = percent_of_extents(lp->extents, base_calc_extents = vg->extent_count, 0);
+			if (extents > vg->free_count) {
+				extents = vg->free_count;
+				log_print_unless_silent("Reducing %u%%VG to remaining free space %s in VG.",
+							lp->extents,
+							display_size(vg->cmd, (uint64_t)vg->extent_size * extents));
+			}
 			break;
 		case PERCENT_FREE:
 			extents = percent_of_extents(lp->extents, base_calc_extents = vg->free_count, 0);
@@ -569,6 +575,13 @@ static int _read_raid_params(struct cmd_context *cmd,
 			log_error("Minimum recovery rate cannot be higher than maximum.");
 			return 0;
 		}
+
+		if (lp->region_size < lp->stripe_size) {
+			log_print_unless_silent("Adjusting %s %s region size to required minimum of stripe size %s.",
+						lp->segtype->name, display_size(cmd, (uint64_t)lp->region_size),
+						display_size(cmd, (uint64_t)lp->stripe_size));
+			lp->region_size = lp->stripe_size;
+		}
 	}
 
 	return 1;
@@ -767,7 +780,7 @@ static int _lvcreate_params(struct cmd_context *cmd,
 		segtype_str = SEG_TYPE_NAME_CACHE;
 	else if (arg_is_set(cmd, thin_ARG) || arg_is_set(cmd, thinpool_ARG))
 		segtype_str = SEG_TYPE_NAME_THIN;
-	else if (arg_is_set(cmd, vdo_ARG))
+	else if (arg_is_set(cmd, vdo_ARG) || arg_is_set(cmd, vdopool_ARG))
 		segtype_str = SEG_TYPE_NAME_VDO;
 	else if (arg_is_set(cmd, virtualsize_ARG)) {
 		if (arg_is_set(cmd, virtualoriginsize_ARG))
@@ -856,6 +869,7 @@ static int _lvcreate_params(struct cmd_context *cmd,
 	thinpool_ARG
 
 #define VDO_POOL_ARGS \
+	vdopool_ARG,\
 	compression_ARG,\
 	deduplication_ARG
 

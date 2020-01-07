@@ -95,6 +95,7 @@
 #define MERGING			UINT64_C(0x0000000010000000)	/* LV SEG */
 
 #define UNLABELLED_PV		UINT64_C(0x0000000080000000)	/* PV -this PV had no label written yet */
+#define WRITECACHE		UINT64_C(0x0000000080000000)	/* LV - shared with UNLABELLED_PV */
 
 #define RAID			UINT64_C(0x0000000100000000)	/* LV - Internal use only */
 #define RAID_META		UINT64_C(0x0000000200000000)	/* LV - Internal use only */
@@ -151,6 +152,9 @@
 #define LV_VDO_POOL		UINT64_C(0x0000000040000000)    /* LV - Internal user only */
 #define LV_VDO_POOL_DATA	UINT64_C(0x8000000000000000)    /* LV - Internal user only */
 
+#define LV_CACHE_VOL		UINT64_C(0x0010000000000000)	/* LV - also a PV flag */
+#define LV_CACHE_USES_CACHEVOL	UINT64_C(0x4000000000000000)	/* LV - also a PV flag */
+
 
 /* Format features flags */
 #define FMT_SEGMENTS		0x00000001U	/* Arbitrary segment params? */
@@ -178,16 +182,15 @@
 #define MIRROR_SKIP_INIT_SYNC	0x00000010U	/* skip initial sync */
 
 /* vg_read and vg_read_for_update flags */
-#define READ_ALLOW_INCONSISTENT	0x00010000U
-#define READ_ALLOW_EXPORTED	0x00020000U
 #define READ_OK_NOTFOUND	0x00040000U
 #define READ_WARN_INCONSISTENT	0x00080000U
-#define READ_FOR_UPDATE		0x00100000U /* A meta-flag, useful with toollib for_each_* functions. */
-#define PROCESS_SKIP_SCAN	 0x00200000U /* skip lvmcache_label_scan in process_each_pv */
-#define PROCESS_SKIP_ORPHAN_LOCK 0x00400000U /* skip lock_vol(VG_ORPHAN) in vg_read */
+#define READ_FOR_UPDATE		0x00100000U /* command tells vg_read it plans to write the vg */
+#define PROCESS_SKIP_SCAN	0x00200000U /* skip lvmcache_label_scan in process_each_pv */
+#define READ_FOR_ACTIVATE	0x00400000U /* command tells vg_read it plans to activate the vg */
+#define READ_WITHOUT_LOCK	0x00800000U /* caller responsible for vg lock */
 
-/* vg's "read_status" field */
-#define FAILED_INCONSISTENT	0x00000001U
+/* vg_read returns these in error_flags */
+#define FAILED_NOT_ENABLED	0x00000001U
 #define FAILED_LOCKING		0x00000002U
 #define FAILED_NOTFOUND		0x00000004U
 #define FAILED_READ_ONLY	0x00000008U
@@ -200,6 +203,7 @@
 #define FAILED_SYSTEMID		0x00000400U
 #define FAILED_LOCK_TYPE	0x00000800U
 #define FAILED_LOCK_MODE	0x00001000U
+#define FAILED_INTERNAL_ERROR	0x00002000U
 #define SUCCESS			0x00000000U
 
 #define VGMETADATACOPIES_ALL UINT32_MAX
@@ -245,16 +249,18 @@
 
 #define lv_is_cache(lv)		(((lv)->status & CACHE) ? 1 : 0)
 #define lv_is_cache_pool(lv)	(((lv)->status & CACHE_POOL) ? 1 : 0)
+#define lv_is_cache_vol(lv)	(((lv)->status & LV_CACHE_VOL) ? 1 : 0)
 #define lv_is_used_cache_pool(lv)	(lv_is_cache_pool(lv) && !dm_list_empty(&(lv)->segs_using_this_lv))
 #define lv_is_cache_pool_data(lv)	(((lv)->status & CACHE_POOL_DATA) ? 1 : 0)
 #define lv_is_cache_pool_metadata(lv)	(((lv)->status & CACHE_POOL_METADATA) ? 1 : 0)
-#define lv_is_cache_type(lv)	(((lv)->status & (CACHE | CACHE_POOL | CACHE_POOL_DATA | CACHE_POOL_METADATA)) ? 1 : 0)
+#define lv_is_cache_type(lv)	(((lv)->status & (CACHE | CACHE_POOL | LV_CACHE_VOL | CACHE_POOL_DATA | CACHE_POOL_METADATA)) ? 1 : 0)
 
 #define lv_is_pool(lv)		(((lv)->status & (CACHE_POOL | THIN_POOL)) ? 1 : 0)
 #define lv_is_pool_data(lv)		(((lv)->status & (CACHE_POOL_DATA | THIN_POOL_DATA)) ? 1 : 0)
 #define lv_is_pool_metadata(lv)		(((lv)->status & (CACHE_POOL_METADATA | THIN_POOL_METADATA)) ? 1 : 0)
 #define lv_is_pool_metadata_spare(lv)	(((lv)->status & POOL_METADATA_SPARE) ? 1 : 0)
 #define lv_is_lockd_sanlock_lv(lv)	(((lv)->status & LOCKD_SANLOCK_LV) ? 1 : 0)
+#define lv_is_writecache(lv)   (((lv)->status & WRITECACHE) ? 1 : 0)
 
 #define lv_is_vdo(lv)		(((lv)->status & LV_VDO) ? 1 : 0)
 #define lv_is_vdo_pool(lv)	(((lv)->status & LV_VDO_POOL) ? 1 : 0)
@@ -264,16 +270,19 @@
 #define lv_is_removed(lv)	(((lv)->status & LV_REMOVED) ? 1 : 0)
 
 /* Recognize component LV (matching lib/misc/lvm-string.c _lvname_has_reserved_component_string()) */
-#define lv_is_component(lv) (lv_is_cache_origin(lv) || ((lv)->status & (\
-	CACHE_POOL_DATA |\
-	CACHE_POOL_METADATA |\
-	LV_VDO_POOL_DATA |\
-	MIRROR_IMAGE |\
-	MIRROR_LOG |\
-	RAID_IMAGE |\
-	RAID_META |\
-	THIN_POOL_DATA |\
-	THIN_POOL_METADATA)) ? 1 : 0)
+#define lv_is_component(lv) (lv_is_cache_origin(lv) || \
+			     lv_is_writecache_origin(lv) || \
+			     ((lv)->status & (\
+					      CACHE_POOL_DATA |\
+					      CACHE_POOL_METADATA |\
+					      LV_CACHE_VOL |\
+					      LV_VDO_POOL_DATA |\
+					      MIRROR_IMAGE |\
+					      MIRROR_LOG |\
+					      RAID_IMAGE |\
+					      RAID_META |\
+					      THIN_POOL_DATA |\
+					      THIN_POOL_METADATA)) ? 1 : 0)
 
 int lv_layout_and_role(struct dm_pool *mem, const struct logical_volume *lv,
 		       struct dm_list **layout, struct dm_list **role);
@@ -493,11 +502,22 @@ struct lv_segment {
 	struct logical_volume *pool_lv;		/* For thin, cache */
 	uint32_t device_id;			/* For thin, 24bit */
 
+	uint64_t metadata_start;		/* For cache */
+	uint64_t metadata_len;			/* For cache */
+	uint64_t data_start;			/* For cache */
+	uint64_t data_len;			/* For cache */
+	struct id *metadata_id;			/* For cache, when NULL uses CVOL id */
+	struct id *data_id;			/* For cache, when NULL uses CVOL id */
+
 	cache_metadata_format_t cache_metadata_format;/* For cache_pool */
 	cache_mode_t cache_mode;		/* For cache_pool */
 	const char *policy_name;		/* For cache_pool */
 	struct dm_config_node *policy_settings;	/* For cache_pool */
 	unsigned cleaner_policy;		/* For cache */
+
+	struct logical_volume *writecache;	/* For writecache */
+	uint32_t writecache_block_size;		/* For writecache */
+	struct writecache_settings writecache_settings; /* For writecache */
 
 	struct dm_vdo_target_params vdo_params;	/* For VDO-pool */
 	uint32_t vdo_pool_header_size;		/* For VDO-pool */
@@ -544,26 +564,32 @@ struct vgnameid_list {
 	const char *vgid;
 };
 
+struct device_id_list {
+	struct dm_list list;
+	struct device *dev;
+	char pvid[ID_LEN + 1];
+};
+
 #define PV_PE_START_CALC ((uint64_t) -1) /* Calculate pe_start value */
 
 /*
  * Values used by pv_create().
  */
 struct pv_create_args {
-	uint64_t size;
-	uint64_t data_alignment;
-	uint64_t data_alignment_offset;
+	uint64_t size; /* in sectors */
+	uint64_t data_alignment; /* in sectors */
+	uint64_t data_alignment_offset; /* in sectors */
 	uint64_t label_sector;
 	int pvmetadatacopies;
-	uint64_t pvmetadatasize;
+	uint64_t pvmetadatasize; /* in sectors */
 	unsigned metadataignore;
 
 	/* used when restoring */
 	struct id id;
 	struct id *idp;
-	uint64_t ba_start;
-	uint64_t ba_size;
-	uint64_t pe_start;
+	uint64_t ba_start; /* in sectors */
+	uint64_t ba_size; /* in sectors */
+	uint64_t pe_start; /* in sectors */
 	uint32_t extent_count;
 	uint32_t extent_size;
 };
@@ -608,6 +634,7 @@ struct pvcreate_params {
 	unsigned is_remove : 1;         /* is removing PVs, not creating */
 	unsigned preserve_existing : 1;
 	unsigned check_failed : 1;
+	unsigned check_consistent_block_size : 1;
 };
 
 struct lvresize_params {
@@ -651,6 +678,10 @@ struct lvresize_params {
 	int approx_alloc;
 	int extents_are_pes;	/* Is 'extents' counting PEs or LEs? */
 	int size_changed;	/* Was there actually a size change */
+
+	const char *lockopt;
+	char *lockd_lv_refresh_path; /* set during resize to use for refresh at the end */
+	char *lockd_lv_refresh_uuid; /* set during resize to use for refresh at the end */
 };
 
 void pvcreate_params_set_defaults(struct pvcreate_params *pp);
@@ -677,16 +708,12 @@ int unlink_lv_from_vg(struct logical_volume *lv);
 void lv_set_visible(struct logical_volume *lv);
 void lv_set_hidden(struct logical_volume *lv);
 
-int get_vgnameids(struct cmd_context *cmd, struct dm_list *vgnameids,
-		  const char *only_this_vgname, int include_internal);
-
 int pv_write(struct cmd_context *cmd, struct physical_volume *pv, int allow_non_orphan);
 int move_pv(struct volume_group *vg_from, struct volume_group *vg_to,
 	    const char *pv_name);
 int move_pvs_used_by_lv(struct volume_group *vg_from,
 			struct volume_group *vg_to,
 			const char *lv_name);
-int is_global_vg(const char *vg_name);
 int is_orphan_vg(const char *vg_name);
 int is_real_vg(const char *vg_name);
 int vg_missing_pv_count(const struct volume_group *vg);
@@ -699,24 +726,14 @@ int lv_resize(struct logical_volume *lv,
 	      struct lvresize_params *lp,
 	      struct dm_list *pvh);
 
-/*
- * Return a handle to VG metadata.
- */
-struct volume_group *vg_read_internal(struct cmd_context *cmd,
-                                      const char *vgname, const char *vgid,
-                                      uint32_t lockd_state, uint32_t warn_flags,
-                                      int enable_repair,
-                                      int *mdas_consistent);
-struct volume_group *vg_read(struct cmd_context *cmd, const char *vg_name,
-			     const char *vgid, uint32_t read_flags, uint32_t lockd_state);
+struct volume_group *vg_read(struct cmd_context *cmd, const char *vg_name, const char *vgid,
+			     uint32_t read_flags, uint32_t lockd_state,
+			     uint32_t *error_flags, struct volume_group **error_vg);
 struct volume_group *vg_read_for_update(struct cmd_context *cmd, const char *vg_name,
 			 const char *vgid, uint32_t read_flags, uint32_t lockd_state);
-struct volume_group *vg_read_orphans(struct cmd_context *cmd,
-                                             uint32_t warn_flags,
-                                             const char *orphan_vgname);
-/* 
- * Test validity of a VG handle.
- */
+struct volume_group *vg_read_orphans(struct cmd_context *cmd, const char *orphan_vgname);
+
+/* this is historical and being removed, don't use */
 uint32_t vg_read_error(struct volume_group *vg_handle);
 
 /* pe_start and pe_end relate to any existing data so that new metadata
@@ -739,7 +756,7 @@ uint32_t pv_list_extents_free(const struct dm_list *pvh);
 int validate_new_vg_name(struct cmd_context *cmd, const char *vg_name);
 int vg_validate(struct volume_group *vg);
 struct volume_group *vg_create(struct cmd_context *cmd, const char *vg_name);
-struct volume_group *vg_lock_and_create(struct cmd_context *cmd, const char *vg_name);
+struct volume_group *vg_lock_and_create(struct cmd_context *cmd, const char *vg_name, int *exists);
 int vg_remove_mdas(struct volume_group *vg);
 int vg_remove_check(struct volume_group *vg);
 void vg_remove_pvs(struct volume_group *vg);
@@ -828,6 +845,8 @@ int lv_rename(struct cmd_context *cmd, struct logical_volume *lv,
 	      const char *new_name);
 int lv_rename_update(struct cmd_context *cmd, struct logical_volume *lv,
 		     const char *new_name, int update_mda);
+int lv_uniq_rename_update(struct cmd_context *cmd, struct logical_volume *lv,
+			  const char *new_name, int update_mda);
 
 /* Updates and reloads metadata for given lv */
 int lv_update_and_reload(struct logical_volume *lv);
@@ -1064,6 +1083,8 @@ int lv_is_cow(const struct logical_volume *lv);
 #define lv_is_thick_snapshot lv_is_cow
 
 int lv_is_cache_origin(const struct logical_volume *lv);
+int lv_is_writecache_origin(const struct logical_volume *lv);
+int lv_is_writecache_cachevol(const struct logical_volume *lv);
 
 int lv_is_merging_cow(const struct logical_volume *cow);
 uint32_t cow_max_extents(const struct logical_volume *origin, uint32_t chunk_size);
@@ -1134,8 +1155,6 @@ int is_temporary_mirror_layer(const struct logical_volume *lv);
 struct logical_volume * find_temporary_mirror(const struct logical_volume *lv);
 uint32_t lv_mirror_count(const struct logical_volume *lv);
 
-/* Remove CMIRROR_REGION_COUNT_LIMIT when http://bugzilla.redhat.com/682771 is fixed */
-#define CMIRROR_REGION_COUNT_LIMIT (256*1024 * 8)
 uint32_t adjusted_mirror_region_size(struct cmd_context *cmd,
 				     uint32_t extent_size, uint32_t extents,
 				     uint32_t region_size, int internal, int clustered);
@@ -1224,8 +1243,9 @@ struct lv_status_cache {
 	dm_percent_t dirty_usage;
 };
 
+const char *cache_mode_num_to_str(cache_mode_t mode);
 const char *display_cache_mode(const struct lv_segment *seg);
-const char *get_cache_mode_name(const struct lv_segment *pool_seg);
+const char *get_cache_mode_name(const struct lv_segment *seg);
 int set_cache_mode(cache_mode_t *mode, const char *cache_mode);
 int cache_set_cache_mode(struct lv_segment *seg, cache_mode_t mode);
 int cache_set_metadata_format(struct lv_segment *seg, cache_metadata_format_t format);
@@ -1237,6 +1257,15 @@ int cache_set_params(struct lv_segment *seg,
 		     cache_mode_t mode,
 		     const char *policy_name,
 		     const struct dm_config_tree *policy_settings);
+int cache_vol_set_params(struct cmd_context *cmd,
+		     struct logical_volume *cache_lv,
+		     struct logical_volume *pool_lv,
+		     uint64_t poolmetadatasize,
+                     uint32_t chunk_size,
+                     cache_metadata_format_t format,
+                     cache_mode_t mode,
+                     const char *policy,
+                     const struct dm_config_tree *settings);
 void cache_check_for_warns(const struct lv_segment *seg);
 int update_cache_pool_params(struct cmd_context *cmd,
 			     struct profile *profile,
@@ -1253,6 +1282,7 @@ struct logical_volume *lv_cache_create(struct logical_volume *pool_lv,
 				       struct logical_volume *origin_lv);
 int lv_cache_wait_for_clean(struct logical_volume *cache_lv, int *is_clean);
 int lv_cache_remove(struct logical_volume *cache_lv);
+int lv_detach_writecache_cachevol(struct logical_volume *cache_lv, int noflush);
 int wipe_cache_pool(struct logical_volume *cache_pool_lv);
 /* --  metadata/cache_manip.c */
 
@@ -1271,13 +1301,15 @@ struct lv_status_vdo {
 const char *get_vdo_compression_state_name(enum dm_vdo_compression_state state);
 const char *get_vdo_index_state_name(enum dm_vdo_index_state state);
 const char *get_vdo_operating_mode_name(enum dm_vdo_operating_mode mode);
+const char *get_vdo_write_policy_name(enum dm_vdo_write_policy policy);
 uint64_t get_vdo_pool_virtual_size(const struct lv_segment *vdo_pool_seg);
+int update_vdo_pool_virtual_size(struct lv_segment *vdo_pool_seg);
 int parse_vdo_pool_status(struct dm_pool *mem, const struct logical_volume *vdo_pool_lv,
 			  const char *params, struct lv_status_vdo *status);
 struct logical_volume *convert_vdo_pool_lv(struct logical_volume *data_lv,
 					   const struct dm_vdo_target_params *vtp,
 					   uint32_t *virtual_extents);
-int get_vdo_write_policy(enum dm_vdo_write_policy *vwp, const char *policy);
+int set_vdo_write_policy(enum dm_vdo_write_policy *vwp, const char *policy);
 int fill_vdo_target_params(struct cmd_context *cmd,
 			   struct dm_vdo_target_params *vtp,
 			   struct profile *profile);
@@ -1346,5 +1378,11 @@ int vg_is_shared(const struct volume_group *vg);
 int is_system_id_allowed(struct cmd_context *cmd, const char *system_id);
 
 int vg_strip_outdated_historical_lvs(struct volume_group *vg);
+
+int lv_on_pmem(struct logical_volume *lv);
+
+int vg_is_foreign(struct volume_group *vg);
+
+void vg_write_commit_bad_mdas(struct cmd_context *cmd, struct volume_group *vg);
 
 #endif

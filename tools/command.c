@@ -122,6 +122,7 @@ static inline int syncaction_arg(struct cmd_context *cmd __attribute__((unused))
 static inline int reportformat_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_values *av) { return 0; }
 static inline int configreport_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_values *av) { return 0; }
 static inline int configtype_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_values *av) { return 0; }
+static inline int repairtype_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_values *av) { return 0; }
 
 /* needed to include commands.h when building man page generator */
 #define CACHE_VGMETADATA        0x00000001
@@ -136,6 +137,9 @@ static inline int configtype_arg(struct cmd_context *cmd __attribute__((unused))
 #define DISALLOW_TAG_ARGS        0x00000800
 #define GET_VGNAME_FROM_OPTIONS  0x00001000
 #define CAN_USE_ONE_SCAN	 0x00002000
+#define ALLOW_HINTS              0x00004000
+#define ALLOW_EXPORTED           0x00008000
+
 
 /* create foo_CMD enums for command def ID's in command-lines.in */
 
@@ -1068,7 +1072,7 @@ static void _add_required_opt_line(struct cmd_context *cmdtool, struct command *
  * (This is the special case of vgchange/lvchange where one
  * optional option is required, and others are then optional.)
  * The set of options from OO_FOO are saved in required_opt_args,
- * and flag CMD_FLAG_ONE_REQUIRED_OPT is set on the cmd indicating
+ * and flag CMD_FLAG_ANY_REQUIRED_OPT is set on the cmd indicating
  * this special case.
  */
  
@@ -1102,6 +1106,7 @@ static void _add_required_line(struct cmd_context *cmdtool, struct command *cmd,
 	int i;
 	int takes_arg;
 	int prev_was_opt = 0, prev_was_pos = 0;
+	int orig_ro_count = 0;
 
 	/* argv[0] is command name */
 
@@ -1126,9 +1131,19 @@ static void _add_required_line(struct cmd_context *cmdtool, struct command *cmd,
 			prev_was_pos = 1;
 
 		} else if (!strncmp(argv[i], "OO_", 3)) {
-			/* one required_opt_arg is required, special case lv/vgchange */
-			cmd->cmd_flags |= CMD_FLAG_ONE_REQUIRED_OPT;
+			/*
+			 * the first ro_count entries in required_opt_arg required,
+			 * after which one or more of the next any_ro_count entries
+			 * in required_opt_arg are required.  required_opt_arg
+			 * has a total of ro_count+any_ro_count entries.
+			 */
+			cmd->cmd_flags |= CMD_FLAG_ANY_REQUIRED_OPT;
+			orig_ro_count = cmd->ro_count;
+
 			_include_required_opt_args(cmdtool, cmd, argv[i]);
+
+			cmd->any_ro_count = cmd->ro_count - orig_ro_count;
+			cmd->ro_count = orig_ro_count;
 
 		} else if (prev_was_pos) {
 			/* set property for previous required_pos_arg */
@@ -1279,7 +1294,7 @@ void factor_common_options(void)
 				if (strcmp(cmd->name, command_names[cn].name))
 					continue;
 
-				if (cmd->ro_count)
+				if (cmd->ro_count || cmd->any_ro_count)
 					command_names[cn].variant_has_ro = 1;
 				if (cmd->rp_count)
 					command_names[cn].variant_has_rp = 1;
@@ -1288,7 +1303,7 @@ void factor_common_options(void)
 				if (cmd->op_count)
 					command_names[cn].variant_has_op = 1;
 
-				for (ro = 0; ro < cmd->ro_count; ro++) {
+				for (ro = 0; ro < cmd->ro_count + cmd->any_ro_count; ro++) {
 					command_names[cn].all_options[cmd->required_opt_args[ro].opt] = 1;
 
 					if ((cmd->required_opt_args[ro].opt == size_ARG) && !strncmp(cmd->name, "lv", 2))
@@ -1460,11 +1475,10 @@ int define_commands(struct cmd_context *cmdtool, const char *run_name)
 
 		if (_is_desc_line(line_argv[0]) && !skip && cmd) {
 			char *desc = dm_pool_strdup(cmdtool->libmem, line_orig);
-			if (cmd->desc) {
+			if (cmd->desc && desc) {
 				int newlen = strlen(cmd->desc) + strlen(desc) + 2;
 				char *newdesc = dm_pool_alloc(cmdtool->libmem, newlen);
 				if (newdesc) {
-					memset(newdesc, 0, newlen);
 					snprintf(newdesc, newlen, "%s %s", cmd->desc, desc);
 					cmd->desc = newdesc;
 				} else {
@@ -1772,7 +1786,7 @@ static void _print_usage_def(struct command *cmd, int opt_enum, struct arg_def *
 void print_usage(struct command *cmd, int longhelp, int desc_first)
 {
 	struct command_name *cname = _find_command_name(cmd->name);
-	int onereq = (cmd->cmd_flags & CMD_FLAG_ONE_REQUIRED_OPT) ? 1 : 0;
+	int any_req = (cmd->cmd_flags & CMD_FLAG_ANY_REQUIRED_OPT) ? 1 : 0;
 	int include_extents = 0;
 	int ro, rp, oo, op, opt_enum, first;
 
@@ -1787,19 +1801,30 @@ void print_usage(struct command *cmd, int longhelp, int desc_first)
 
 	printf("  %s", cmd->name);
 
-	if (onereq && cmd->ro_count) {
+	if (any_req) {
+		for (ro = 0; ro < cmd->ro_count; ro++) {
+			opt_enum = cmd->required_opt_args[ro].opt;
+
+			if (opt_names[opt_enum].short_opt)
+				printf(" -%c|%s", opt_names[opt_enum].short_opt, opt_names[opt_enum].long_opt);
+			else
+				printf(" %s", opt_names[opt_enum].long_opt);
+
+			if (cmd->required_opt_args[ro].def.val_bits) {
+				printf(" ");
+				_print_usage_def(cmd, opt_enum, &cmd->required_opt_args[ro].def);
+			}
+		}
+
 		/* one required option in a set */
 		first = 1;
 
 		/* options with short and long */
-		for (ro = 0; ro < cmd->ro_count; ro++) {
+		for (ro = cmd->ro_count; ro < cmd->ro_count + cmd->any_ro_count; ro++) {
 			opt_enum = cmd->required_opt_args[ro].opt;
 
 			if (!opt_names[opt_enum].short_opt)
 				continue;
-
-			if ((opt_enum == size_ARG) && command_has_alternate_extents(cmd->name))
-				include_extents = 1;
 
 			if (first)
 				printf("\n\t(");
@@ -1816,7 +1841,7 @@ void print_usage(struct command *cmd, int longhelp, int desc_first)
 		}
 
 		/* options with only long */
-		for (ro = 0; ro < cmd->ro_count; ro++) {
+		for (ro = cmd->ro_count; ro < cmd->ro_count + cmd->any_ro_count; ro++) {
 			opt_enum = cmd->required_opt_args[ro].opt;
 
 			if (opt_names[opt_enum].short_opt)
@@ -1842,7 +1867,7 @@ void print_usage(struct command *cmd, int longhelp, int desc_first)
 		printf(" )\n");
 	}
 
-	if (!onereq && cmd->ro_count) {
+	if (!any_req && cmd->ro_count) {
 		for (ro = 0; ro < cmd->ro_count; ro++) {
 			opt_enum = cmd->required_opt_args[ro].opt;
 
@@ -1862,7 +1887,7 @@ void print_usage(struct command *cmd, int longhelp, int desc_first)
 	}
 
 	if (cmd->rp_count) {
-		if (onereq)
+		if (any_req)
 			printf("\t");
 		for (rp = 0; rp < cmd->rp_count; rp++) {
 			if (cmd->required_pos_args[rp].def.val_bits) {
@@ -1911,7 +1936,7 @@ void print_usage(struct command *cmd, int longhelp, int desc_first)
 			 * see print_common_options_cmd()
 			 */
 
-			if ((cname->variants > 1) && cname->common_options[opt_enum])
+			if (cname && (cname->variants > 1) && cname->common_options[opt_enum])
 				continue;
 
 			printf("\n\t[");
@@ -1951,7 +1976,7 @@ void print_usage(struct command *cmd, int longhelp, int desc_first)
 			 * see print_common_options_cmd()
 			 */
 
-			if ((cname->variants > 1) && cname->common_options[opt_enum])
+			if (cname && (cname->variants > 1) && cname->common_options[opt_enum])
 				continue;
 
 			printf("\n\t[");
@@ -2402,7 +2427,7 @@ static const char *_man_long_opt_name(const char *cmdname, int opt_enum)
 static void _print_man_usage(char *lvmname, struct command *cmd)
 {
 	struct command_name *cname;
-	int onereq = (cmd->cmd_flags & CMD_FLAG_ONE_REQUIRED_OPT) ? 1 : 0;
+	int any_req = (cmd->cmd_flags & CMD_FLAG_ANY_REQUIRED_OPT) ? 1 : 0;
 	int sep, ro, rp, oo, op, opt_enum;
 	int need_ro_indent_end = 0;
 	int include_extents = 0;
@@ -2412,8 +2437,43 @@ static void _print_man_usage(char *lvmname, struct command *cmd)
 
 	printf("\\fB%s\\fP", lvmname);
 
-	if (!onereq)
+	if (!any_req)
 		goto ro_normal;
+
+	/*
+	 * required options that follow command name, all required
+	 */
+	if (cmd->ro_count) {
+		sep = 0;
+
+		for (ro = 0; ro < cmd->ro_count; ro++) {
+
+			/* avoid long line wrapping */
+			if ((cmd->ro_count > 2) && (sep == 2)) {
+				printf("\n.RS 5\n");
+				need_ro_indent_end = 1;
+			}
+
+			opt_enum = cmd->required_opt_args[ro].opt;
+
+			if ((opt_enum == size_ARG) && command_has_alternate_extents(cmd->name))
+				include_extents = 1;
+
+			if (opt_names[opt_enum].short_opt) {
+				printf(" \\fB-%c\\fP|\\fB%s\\fP",
+				       opt_names[opt_enum].short_opt,
+				       _man_long_opt_name(cmd->name, opt_enum));
+			} else
+				printf(" \\fB%s\\fP", opt_names[cmd->required_opt_args[ro].opt].long_opt);
+
+			if (cmd->required_opt_args[ro].def.val_bits) {
+				printf(" ");
+				_print_def_man(cname, opt_enum, &cmd->required_opt_args[ro].def, 1);
+			}
+
+			sep++;
+		}
+	}
 
 	/*
 	 * one required option in a set, print as:
@@ -2426,7 +2486,7 @@ static void _print_man_usage(char *lvmname, struct command *cmd)
 	 * and the second loop prints those without short opts.
 	 */
 
-	if (cmd->ro_count) {
+	if (cmd->any_ro_count) {
 		printf("\n");
 		printf(".RS 4\n");
 		printf("(");
@@ -2434,7 +2494,7 @@ static void _print_man_usage(char *lvmname, struct command *cmd)
 		sep = 0;
 
 		/* print required options with a short opt */
-		for (ro = 0; ro < cmd->ro_count; ro++) {
+		for (ro = cmd->ro_count; ro < cmd->ro_count + cmd->any_ro_count; ro++) {
 			opt_enum = cmd->required_opt_args[ro].opt;
 
 			if (!opt_names[opt_enum].short_opt)
@@ -2466,7 +2526,7 @@ static void _print_man_usage(char *lvmname, struct command *cmd)
 		}
 
 		/* print required options without a short opt */
-		for (ro = 0; ro < cmd->ro_count; ro++) {
+		for (ro = cmd->ro_count; ro < cmd->ro_count + cmd->any_ro_count; ro++) {
 			opt_enum = cmd->required_opt_args[ro].opt;
 
 			if (opt_names[opt_enum].short_opt)
@@ -2496,7 +2556,7 @@ static void _print_man_usage(char *lvmname, struct command *cmd)
 		printf(".RE\n");
 	}
 
-	/* print required position args on a new line after the onereq set */
+	/* print required position args on a new line after the any_req set */
 	if (cmd->rp_count) {
 		printf(".RS 4\n");
 		for (rp = 0; rp < cmd->rp_count; rp++) {
@@ -3379,7 +3439,7 @@ static int _print_man(char *name, char *des_file, int secondary)
 
 		if (!prev_cmd || strcmp(prev_cmd->name, cmd->name)) {
 			printf(".SH NAME\n");
-			if (cname->desc)
+			if (cname && cname->desc)
 				printf("%s - %s\n", lvmname, cname->desc);
 			else
 				printf("%s\n", lvmname);

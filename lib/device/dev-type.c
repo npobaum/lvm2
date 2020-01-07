@@ -34,6 +34,68 @@
 #include <libgen.h>
 #include <ctype.h>
 
+/*
+ * dev is pmem if /sys/dev/block/<major>:<minor>/queue/dax is 1
+ */
+
+int dev_is_pmem(struct device *dev)
+{
+	FILE *fp;
+	char path[PATH_MAX];
+	int is_pmem = 0;
+
+	if (dm_snprintf(path, sizeof(path), "%sdev/block/%d:%d/queue/dax",
+			dm_sysfs_dir(),
+			(int) MAJOR(dev->dev),
+			(int) MINOR(dev->dev)) < 0) {
+		log_warn("Sysfs path for %s dax is too long.", dev_name(dev));
+		return 0;
+	}
+
+	if (!(fp = fopen(path, "r")))
+		return 0;
+
+	if (fscanf(fp, "%d", &is_pmem) != 1)
+		log_warn("Failed to parse DAX %s.", path);
+
+	if (is_pmem)
+		log_debug("%s is pmem", dev_name(dev));
+
+	if (fclose(fp))
+		log_sys_debug("fclose", path);
+
+	return is_pmem ? 1 : 0;
+}
+
+int dev_is_lv(struct device *dev)
+{
+	FILE *fp;
+	char path[PATH_MAX];
+	char buffer[64];
+	int ret = 0;
+
+	if (dm_snprintf(path, sizeof(path), "%sdev/block/%d:%d/dm/uuid",
+			dm_sysfs_dir(),
+			(int) MAJOR(dev->dev),
+			(int) MINOR(dev->dev)) < 0) {
+		log_warn("Sysfs dm uuid path for %s is too long.", dev_name(dev));
+		return 0;
+	}
+
+	if (!(fp = fopen(path, "r")))
+		return 0;
+
+	if (!fgets(buffer, sizeof(buffer), fp))
+		log_warn("Failed to read %s.", path);
+	else if (!strncmp(buffer, "LVM-", 4))
+		ret = 1;
+
+	if (fclose(fp))
+		log_sys_debug("fclose", path);
+
+	return ret;
+}
+
 struct dev_types *create_dev_types(const char *proc_dir,
 				   const struct dm_config_node *cn)
 {
@@ -791,7 +853,7 @@ static int _wipe_known_signatures_with_lvm(struct device *dev, const char *name,
 		wiped = &wiped_tmp;
 	*wiped = 0;
 
-	if (!_wipe_signature(dev, "software RAID md superblock", name, 4, yes, force, wiped, dev_is_md) ||
+	if (!_wipe_signature(dev, "software RAID md superblock", name, 4, yes, force, wiped, dev_is_md_component) ||
 	    !_wipe_signature(dev, "swap signature", name, 10, yes, force, wiped, dev_is_swap) ||
 	    !_wipe_signature(dev, "LUKS signature", name, 8, yes, force, wiped, dev_is_luks))
 		return 0;
@@ -1043,6 +1105,9 @@ static struct udev_device *_udev_get_dev(struct device *dev)
 			   i + 1, UDEV_DEV_IS_COMPONENT_ITERATION_COUNT,
 			   i * UDEV_DEV_IS_COMPONENT_USLEEP);
 
+		if (!udev_sleeping())
+			break;
+
 		usleep(UDEV_DEV_IS_COMPONENT_USLEEP);
 		i++;
 	}
@@ -1062,6 +1127,9 @@ int udev_dev_is_mpath_component(struct device *dev)
 	struct udev_device *udev_device;
 	const char *value;
 	int ret = 0;
+
+	if (!obtain_device_list_from_udev())
+		return 0;
 
 	if (!(udev_device = _udev_get_dev(dev)))
 		return 0;
@@ -1092,6 +1160,11 @@ int udev_dev_is_md_component(struct device *dev)
 	const char *value;
 	int ret = 0;
 
+	if (!obtain_device_list_from_udev()) {
+		dev->flags |= DEV_UDEV_INFO_MISSING;
+		return 0;
+	}
+
 	if (!(udev_device = _udev_get_dev(dev)))
 		return 0;
 
@@ -1099,6 +1172,7 @@ int udev_dev_is_md_component(struct device *dev)
 	if (value && !strcmp(value, DEV_EXT_UDEV_BLKID_TYPE_SW_RAID)) {
 		log_debug("Device %s is md raid component based on blkid variable in udev db (%s=\"%s\").",
 			   dev_name(dev), DEV_EXT_UDEV_BLKID_TYPE, value);
+		dev->flags |= DEV_IS_MD_COMPONENT;
 		ret = 1;
 		goto out;
 	}
@@ -1116,6 +1190,7 @@ int udev_dev_is_mpath_component(struct device *dev)
 
 int udev_dev_is_md_component(struct device *dev)
 {
+	dev->flags |= DEV_UDEV_INFO_MISSING;
 	return 0;
 }
 

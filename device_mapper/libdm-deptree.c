@@ -37,6 +37,7 @@ enum {
 	SEG_SNAPSHOT_MERGE,
 	SEG_STRIPED,
 	SEG_ZERO,
+	SEG_WRITECACHE,
 	SEG_THIN_POOL,
 	SEG_THIN,
 	SEG_VDO,
@@ -76,6 +77,7 @@ static const struct {
 	{ SEG_SNAPSHOT_MERGE, "snapshot-merge" },
 	{ SEG_STRIPED, "striped" },
 	{ SEG_ZERO, "zero"},
+	{ SEG_WRITECACHE, "writecache"},
 	{ SEG_THIN_POOL, "thin-pool"},
 	{ SEG_THIN, "thin"},
 	{ SEG_VDO, "vdo" },
@@ -189,6 +191,11 @@ struct load_segment {
 	uint32_t min_recovery_rate;	/* raid kB/sec/disk */
 	uint32_t data_copies;		/* raid10 data_copies */
 
+	uint64_t metadata_start;	/* Cache */
+	uint64_t metadata_len;		/* Cache */
+	uint64_t data_start;		/* Cache */
+	uint64_t data_len;		/* Cache */
+
 	struct dm_tree_node *metadata;	/* Thin_pool + Cache */
 	struct dm_tree_node *pool;	/* Thin_pool, Thin */
 	struct dm_tree_node *external;	/* Thin */
@@ -196,6 +203,7 @@ struct load_segment {
 	uint64_t transaction_id;	/* Thin_pool */
 	uint64_t low_water_mark;	/* Thin_pool */
 	uint32_t data_block_size;       /* Thin_pool + cache */
+	uint32_t migration_threshold;   /* Cache */
 	unsigned skip_block_zeroing;	/* Thin_pool */
 	unsigned ignore_discard;	/* Thin_pool target vsn 1.1 */
 	unsigned no_discard_passdown;	/* Thin_pool target vsn 1.1 */
@@ -207,6 +215,12 @@ struct load_segment {
 	struct dm_tree_node *vdo_data;  /* VDO */
 	struct dm_vdo_target_params vdo_params; /* VDO */
 	const char *vdo_name;           /* VDO - device name is ALSO passed as table arg */
+	uint64_t vdo_data_size;		/* VDO - size of data storage device */
+
+	struct dm_tree_node *writecache_node;		/* writecache */
+	int writecache_pmem;				/* writecache, 1 if pmem, 0 if ssd */
+	uint32_t writecache_block_size;			/* writecache, in bytes */
+	struct writecache_settings writecache_settings;	/* writecache */
 };
 
 /* Per-device properties */
@@ -2549,7 +2563,7 @@ static int _cache_emit_segment_line(struct dm_task *dmt,
 				    char *params, size_t paramsize)
 {
 	int pos = 0;
-	/* unsigned feature_count; */
+	unsigned feature_count;
 	char data[DM_FORMAT_DEV_BUFSIZE];
 	char metadata[DM_FORMAT_DEV_BUFSIZE];
 	char origin[DM_FORMAT_DEV_BUFSIZE];
@@ -2574,29 +2588,119 @@ static int _cache_emit_segment_line(struct dm_task *dmt,
 	EMIT_PARAMS(pos, " %u", seg->data_block_size);
 
 	/* Features */
-	/* feature_count = hweight32(seg->flags); */
-	/* EMIT_PARAMS(pos, " %u", feature_count); */
+
+	feature_count = 1; /* One of passthrough|writeback|writethrough is always set. */
+
 	if (seg->flags & DM_CACHE_FEATURE_METADATA2)
-		EMIT_PARAMS(pos, " 2 metadata2 ");
-	else
-		EMIT_PARAMS(pos, " 1 ");
+		feature_count++;
+
+	EMIT_PARAMS(pos, " %u", feature_count);
+
+	if (seg->flags & DM_CACHE_FEATURE_METADATA2)
+		EMIT_PARAMS(pos, " metadata2");
 
 	if (seg->flags & DM_CACHE_FEATURE_PASSTHROUGH)
-		EMIT_PARAMS(pos, "passthrough");
+		EMIT_PARAMS(pos, " passthrough");
         else if (seg->flags & DM_CACHE_FEATURE_WRITEBACK)
-		EMIT_PARAMS(pos, "writeback");
+		EMIT_PARAMS(pos, " writeback");
 	else
-		EMIT_PARAMS(pos, "writethrough");
+		EMIT_PARAMS(pos, " writethrough");
 
 	/* Cache Policy */
 	name = seg->policy_name ? : "default";
 
 	EMIT_PARAMS(pos, " %s", name);
 
-	EMIT_PARAMS(pos, " %u", seg->policy_argc * 2);
+	/* Do not pass migration_threshold 2048 which is default */
+	EMIT_PARAMS(pos, " %u", (seg->policy_argc + (seg->migration_threshold != 2048) ? 1 : 0) * 2);
+	if (seg->migration_threshold != 2048)
+		    EMIT_PARAMS(pos, " migration_threshold %u", seg->migration_threshold);
 	if (seg->policy_settings)
 		for (cn = seg->policy_settings->child; cn; cn = cn->sib)
-			EMIT_PARAMS(pos, " %s %" PRIu64, cn->key, cn->v->v.i);
+			if (cn->v) /* Skip deleted entry */
+				EMIT_PARAMS(pos, " %s %" PRIu64, cn->key, cn->v->v.i);
+
+	return 1;
+}
+
+static int _writecache_emit_segment_line(struct dm_task *dmt,
+				    struct load_segment *seg,
+				    char *params, size_t paramsize)
+{
+	int pos = 0;
+	int count = 0;
+	uint32_t block_size;
+	char origin_dev[DM_FORMAT_DEV_BUFSIZE];
+	char cache_dev[DM_FORMAT_DEV_BUFSIZE];
+
+	if (!_build_dev_string(origin_dev, sizeof(origin_dev), seg->origin))
+		return_0;
+
+	if (!_build_dev_string(cache_dev, sizeof(cache_dev), seg->writecache_node))
+		return_0;
+
+	if (seg->writecache_settings.high_watermark_set)
+		count += 2;
+	if (seg->writecache_settings.low_watermark_set)
+		count += 2;
+	if (seg->writecache_settings.writeback_jobs_set)
+		count += 2;
+	if (seg->writecache_settings.autocommit_blocks_set)
+		count += 2;
+	if (seg->writecache_settings.autocommit_time_set)
+		count += 2;
+	if (seg->writecache_settings.fua_set)
+		count += 1;
+	if (seg->writecache_settings.nofua_set)
+		count += 1;
+	if (seg->writecache_settings.new_key)
+		count += 2;
+
+	if (!(block_size = seg->writecache_block_size))
+		block_size = 4096;
+
+	EMIT_PARAMS(pos, "%s %s %s %u %d",
+		    seg->writecache_pmem ? "p" : "s",
+		    origin_dev, cache_dev, block_size, count);
+
+	if (seg->writecache_settings.high_watermark_set) {
+		EMIT_PARAMS(pos, " high_watermark %llu",
+			(unsigned long long)seg->writecache_settings.high_watermark);
+	}
+
+	if (seg->writecache_settings.low_watermark_set) {
+		EMIT_PARAMS(pos, " low_watermark %llu",
+			(unsigned long long)seg->writecache_settings.low_watermark);
+	}
+
+	if (seg->writecache_settings.writeback_jobs_set) {
+		EMIT_PARAMS(pos, " writeback_jobs %llu",
+			(unsigned long long)seg->writecache_settings.writeback_jobs);
+	}
+
+	if (seg->writecache_settings.autocommit_blocks_set) {
+		EMIT_PARAMS(pos, " autocommit_blocks %llu",
+			(unsigned long long)seg->writecache_settings.autocommit_blocks);
+	}
+
+	if (seg->writecache_settings.autocommit_time_set) {
+		EMIT_PARAMS(pos, " autocommit_time %llu",
+			(unsigned long long)seg->writecache_settings.autocommit_time);
+	}
+
+	if (seg->writecache_settings.fua_set) {
+		EMIT_PARAMS(pos, " fua");
+	}
+
+	if (seg->writecache_settings.nofua_set) {
+		EMIT_PARAMS(pos, " nofua");
+	}
+
+	if (seg->writecache_settings.new_key) {
+		EMIT_PARAMS(pos, " %s %s",
+			seg->writecache_settings.new_key,
+			seg->writecache_settings.new_val);
+	}
 
 	return 1;
 }
@@ -2647,17 +2751,18 @@ static int _vdo_emit_segment_line(struct dm_task *dmt,
 		return 0;
 	}
 
-	EMIT_PARAMS(pos, "%s %u %s " FMTu64 " " FMTu64 " %u on %s %s "
-		    "ack=%u,bio=%u,bioRotationInterval=%u,cpu=%u,hash=%u,logical=%u,physical=%u",
+	EMIT_PARAMS(pos, "V2 %s " FMTu64 " %u " FMTu64 " %u %s %s %s "
+		    "maxDiscard %u ack %u bio %u bioRotationInterval %u cpu %u hash %u logical %u physical %u",
 		    data_dev,
-		    (seg->vdo_params.emulate_512_sectors == 0) ? 4096 : 512,
-		    seg->vdo_params.use_read_cache ? "enabled" : "disabled",
-		    seg->vdo_params.read_cache_size_mb * UINT64_C(256),		// 1MiB -> 4KiB units
+		    seg->vdo_data_size / 8, // this parameter is in 4K units
+		    seg->vdo_params.minimum_io_size * UINT32_C(512), //  sector to byte units
 		    seg->vdo_params.block_map_cache_size_mb * UINT64_C(256),	// 1MiB -> 4KiB units
-		    seg->vdo_params.block_map_period,
+		    seg->vdo_params.block_map_era_length,
+		    seg->vdo_params.use_metadata_hints ? "on" : "off" ,
 		    (seg->vdo_params.write_policy == DM_VDO_WRITE_POLICY_SYNC) ? "sync" :
 			(seg->vdo_params.write_policy == DM_VDO_WRITE_POLICY_ASYNC) ? "async" : "auto", // policy
 		    seg->vdo_name,
+		    seg->vdo_params.max_discard,
 		    seg->vdo_params.ack_threads,
 		    seg->vdo_params.bio_threads,
 		    seg->vdo_params.bio_rotation,
@@ -2780,6 +2885,10 @@ static int _emit_segment_line(struct dm_task *dmt, uint32_t major,
 		if (!_cache_emit_segment_line(dmt, seg, params, paramsize))
 			return_0;
 		break;
+	case SEG_WRITECACHE:
+		if (!_writecache_emit_segment_line(dmt, seg, params, paramsize))
+			return_0;
+		break;
 	}
 
 	switch(seg->type) {
@@ -2791,6 +2900,7 @@ static int _emit_segment_line(struct dm_task *dmt, uint32_t major,
 	case SEG_THIN_POOL:
 	case SEG_THIN:
 	case SEG_CACHE:
+	case SEG_WRITECACHE:
 		break;
 	case SEG_CRYPT:
 	case SEG_LINEAR:
@@ -3474,6 +3584,10 @@ int dm_tree_node_add_cache_target(struct dm_tree_node *node,
 				  const char *origin_uuid,
 				  const char *policy_name,
 				  const struct dm_config_node *policy_settings,
+				  uint64_t metadata_start,
+				  uint64_t metadata_len,
+				  uint64_t data_start,
+				  uint64_t data_len,
 				  uint32_t data_block_size)
 {
 	struct dm_config_node *cn;
@@ -3549,9 +3663,14 @@ int dm_tree_node_add_cache_target(struct dm_tree_node *node,
 	if (!_link_tree_nodes(node, seg->origin))
 		return_0;
 
+	seg->metadata_start = metadata_start;
+	seg->metadata_len = metadata_len;
+	seg->data_start = data_start;
+	seg->data_len = data_len;
 	seg->data_block_size = data_block_size;
 	seg->flags = feature_flags;
 	seg->policy_name = policy_name;
+	seg->migration_threshold = 2048; /* Default migration threshold 1MiB */
 
 	/* FIXME: better validation missing */
 	if (policy_settings) {
@@ -3564,8 +3683,56 @@ int dm_tree_node_add_cache_target(struct dm_tree_node *node,
 				log_error("Cache policy parameter %s is without integer value.", cn->key);
 				return 0;
 			}
-			seg->policy_argc++;
+			if (strcmp(cn->key, "migration_threshold") == 0) {
+				seg->migration_threshold = cn->v->v.i;
+				cn->v = NULL; /* skip this entry */
+			} else
+				seg->policy_argc++;
 		}
+	}
+
+	/* Always some throughput available for cache to proceed */
+	if (seg->migration_threshold < data_block_size * 8)
+		seg->migration_threshold = data_block_size * 8;
+
+	return 1;
+}
+
+int dm_tree_node_add_writecache_target(struct dm_tree_node *node,
+				  uint64_t size,
+				  const char *origin_uuid,
+				  const char *cache_uuid,
+				  int pmem,
+				  uint32_t writecache_block_size,
+				  struct writecache_settings *settings)
+{
+	struct load_segment *seg;
+
+	if (!(seg = _add_segment(node, SEG_WRITECACHE, size)))
+		return_0;
+
+	seg->writecache_pmem = pmem;
+	seg->writecache_block_size = writecache_block_size;
+
+	if (!(seg->writecache_node = dm_tree_find_node_by_uuid(node->dtree, cache_uuid))) {
+		log_error("Missing writecache's cache uuid %s.", cache_uuid);
+		return 0;
+	}
+	if (!_link_tree_nodes(node, seg->writecache_node))
+		return_0;
+
+	if (!(seg->origin = dm_tree_find_node_by_uuid(node->dtree, origin_uuid))) {
+		log_error("Missing writecache's origin uuid %s.", origin_uuid);
+		return 0;
+	}
+	if (!_link_tree_nodes(node, seg->origin))
+		return_0;
+
+	memcpy(&seg->writecache_settings, settings, sizeof(struct writecache_settings));
+
+	if (settings->new_key && settings->new_val) {
+		seg->writecache_settings.new_key = dm_pool_strdup(node->dtree->mem, settings->new_key);
+		seg->writecache_settings.new_val = dm_pool_strdup(node->dtree->mem, settings->new_val);
 	}
 
 	return 1;
@@ -4027,13 +4194,14 @@ int dm_tree_node_add_cache_target_base(struct dm_tree_node *node,
 
 	return dm_tree_node_add_cache_target(node, size, feature_flags & _mask,
 					     metadata_uuid, data_uuid, origin_uuid,
-					     policy_name, policy_settings, data_block_size);
+					     policy_name, policy_settings, 0, 0, 0, 0, data_block_size);
 }
 #endif
 
 int dm_tree_node_add_vdo_target(struct dm_tree_node *node,
 				uint64_t size,
 				const char *data_uuid,
+				uint64_t data_size,
 				const struct dm_vdo_target_params *vtp)
 {
 	struct load_segment *seg;
@@ -4054,6 +4222,7 @@ int dm_tree_node_add_vdo_target(struct dm_tree_node *node,
 
 	seg->vdo_params = *vtp;
 	seg->vdo_name = node->name;
+	seg->vdo_data_size = data_size;
 
 	node->props.send_messages = 2;
 

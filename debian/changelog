@@ -1,3 +1,12 @@
+lvm2 (2.03.07-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Add instructions on how to handle source.
+  * Build-depend on libdlmcontrol-dev.
+  * Install new files.
+
+ -- Bastian Blank <waldi@debian.org>  Tue, 07 Jan 2020 14:44:41 +0100
+
 lvm2 (2.03.02-4) unstable; urgency=medium
 
   * Use new source format.

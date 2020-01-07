@@ -19,6 +19,7 @@ top_builddir = @top_builddir@
 SOURCES =\
 	activate/activate.c \
 	cache/lvmcache.c \
+	writecache/writecache.c \
 	cache_segtype/cache.c \
 	commands/toolcontext.c \
 	config/config.c \
@@ -60,10 +61,12 @@ SOURCES =\
 	format_text/text_label.c \
 	freeseg/freeseg.c \
 	label/label.c \
+	label/hints.c \
 	locking/file_locking.c \
 	locking/locking.c \
 	log/log.c \
 	metadata/cache_manip.c \
+	metadata/writecache_manip.c \
 	metadata/lv.c \
 	metadata/lv_manip.c \
 	metadata/merge.c \

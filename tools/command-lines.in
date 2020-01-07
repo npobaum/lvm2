@@ -198,7 +198,7 @@ OO_REPORT: --aligned, --all, --binary, --configreport ConfigReport, --foreign,
 --nameprefixes, --noheadings, --nosuffix,
 --options String, --readonly, --reportformat ReportFmt, --rows,
 --select String, --separator String, --shared, --sort String,
---trustcache, --unbuffered, --units Units, --unquoted
+--unbuffered, --units Units, --unquoted
 
 #
 # options for config, dumpconfig, lvmconfig
@@ -261,6 +261,7 @@ OO: --activate Active, OO_LVCHANGE
 IO: --ignoreskippedcluster
 ID: lvchange_resync
 DESC: Resyncronize a mirror or raid LV.
+DESC: Use to reset 'R' attribute on a not initially synchronized LV.
 RULE: all not lv_is_pvmove lv_is_locked
 RULE: all not LV_raid0
 
@@ -343,13 +344,11 @@ DESC: Convert LV to striped.
 RULE: all not lv_is_locked lv_is_pvmove
 
 lvconvert --type mirror LV
-OO: --mirrors SNumber, --regionsize RegionSize, --interval Number, --mirrorlog MirrorLog, OO_LVCONVERT
+OO: --mirrors SNumber, --stripes_long Number, --stripesize SizeKB, --regionsize RegionSize, --interval Number, --mirrorlog MirrorLog, OO_LVCONVERT
 OP: PV ...
 ID: lvconvert_raid_types
 DESC: Convert LV to type mirror (also see type raid1),
-DESC: (also see lvconvert --mirrors).
 RULE: all not lv_is_locked lv_is_pvmove
-FLAGS: SECONDARY_SYNTAX
 
 # When LV is already raid, this changes the raid layout
 # (changing layout of raid0 and raid1 not allowed.)
@@ -451,20 +450,44 @@ RULE: --poolmetadata not --readahead --stripesize --stripes_long
 
 ---
 
-lvconvert --type cache --cachepool LV LV_linear_striped_raid_thinpool
+lvconvert --type cache --cachepool LV LV_linear_striped_raid_thinpool_vdo_vdopool_vdopooldata
 OO: --cache, OO_LVCONVERT_CACHE, OO_LVCONVERT_POOL, OO_LVCONVERT
-ID: lvconvert_to_cache_vol
-DESC: Convert LV to type cache.
+ID: lvconvert_to_cache_with_cachepool
+DESC: Attach a cache pool to an LV, converts the LV to type cache.
 RULE: all and lv_is_visible
 RULE: --poolmetadata not --readahead --stripesize --stripes_long
 
 # alternate form of lvconvert --type cache
-lvconvert --cache --cachepool LV LV_linear_striped_raid_thinpool
+lvconvert --cache --cachepool LV LV_linear_striped_raid_thinpool_vdo_vdopool_vdopooldata
 OO: --type cache, OO_LVCONVERT_CACHE, OO_LVCONVERT_POOL, OO_LVCONVERT
-ID: lvconvert_to_cache_vol
-DESC: Convert LV to type cache (infers --type cache).
+ID: lvconvert_to_cache_with_cachepool
+DESC: Attach a cache pool to an LV (infers --type cache).
 RULE: all and lv_is_visible
 RULE: --poolmetadata not --readahead --stripesize --stripes_long
+FLAGS: SECONDARY_SYNTAX
+
+---
+
+lvconvert --type writecache --cachevol LV LV_linear_striped_raid
+OO: OO_LVCONVERT, --cachesettings String
+ID: lvconvert_to_writecache
+DESC: Attach a writecache to an LV, converts the LV to type writecache.
+RULE: all and lv_is_visible
+
+---
+
+lvconvert --type cache --cachevol LV LV_linear_striped_raid_thinpool
+OO: --cache, OO_LVCONVERT_CACHE, OO_LVCONVERT, --poolmetadatasize SizeMB, --chunksize SizeKB
+ID: lvconvert_to_cache_with_cachevol
+DESC: Attach a cache to an LV, converts the LV to type cache.
+RULE: all and lv_is_visible
+
+# alternate form of lvconvert --type cache
+lvconvert --cache --cachevol LV LV_linear_striped_raid_thinpool
+OO: OO_LVCONVERT_CACHE, OO_LVCONVERT, --poolmetadatasize SizeMB, --chunksize SizeKB
+ID: lvconvert_to_cache_with_cachevol
+DESC: Attach a cache to an LV, converts the LV to type cache.
+RULE: all and lv_is_visible
 FLAGS: SECONDARY_SYNTAX
 
 ---
@@ -573,17 +596,17 @@ FLAGS: SECONDARY_SYNTAX
 
 ---
 
-lvconvert --splitcache LV_cachepool_cache_thinpool
+lvconvert --splitcache LV_cachepool_cache_thinpool_vdopool_writecache
 OO: OO_LVCONVERT
-ID: lvconvert_split_and_keep_cachepool
-DESC: Separate and keep the cache pool from a cache LV.
+ID: lvconvert_split_and_keep_cache
+DESC: Detach a cache from an LV.
 
 ---
 
-lvconvert --uncache LV_cache_thinpool
+lvconvert --uncache LV_cache_thinpool_vdopool_writecache
 OO: OO_LVCONVERT
-ID: lvconvert_split_and_remove_cachepool
-DESC: Separate and delete the cache pool from a cache LV.
+ID: lvconvert_split_and_remove_cache
+DESC: Detach and delete a cache from an LV.
 FLAGS: SECONDARY_SYNTAX
 
 ---
@@ -757,31 +780,6 @@ lvcreate --type error --size SizeMB VG
 OO: OO_LVCREATE
 ID: lvcreate_error_vol
 DESC: Create an LV that returns errors when used.
-FLAGS: SECONDARY_SYNTAX
-
----
-
-lvcreate --type vdo --size SizeMB VG
-OO: --vdo, OO_LVCREATE, OO_LVCREATE_VDO, --virtualsize SizeMB, --stripes Number, --stripesize SizeKB,
-OP: PV ...
-IO: --mirrors 0
-ID: lvcreate_vdo_vol
-DESC: Create an LV that returns VDO when used.
-
-lvcreate --vdo --size SizeMB VG
-OO: OO_LVCREATE, OO_LVCREATE_VDO, --virtualsize SizeMB, --stripes Number, --stripesize SizeKB
-OP: PV ...
-IO: --mirrors 0
-ID: lvcreate_vdo_vol
-DESC: Create an VDO LV with VDO pool.
-FLAGS: SECONDARY_SYNTAX
-
-lvcreate --vdopool LV --virtualsize SizeMB VG
-OO: --vdo, --type vdo
-OP: PV ...
-IO: --mirrors 0
-ID: lvcreate_vdo_vol
-DESC: Create an VDO LV using existing VDO pool.
 FLAGS: SECONDARY_SYNTAX
 
 ---
@@ -1056,6 +1054,34 @@ IO: --mirrors 0
 ID: lvcreate_thin_snapshot_of_external
 DESC: Create a thin LV that is a snapshot of an external origin LV
 DESC: (infers --type thin).
+FLAGS: SECONDARY_SYNTAX
+
+---
+
+lvcreate --type vdo --size SizeMB VG
+OO: --vdo, --vdopool LV_new, OO_LVCREATE, OO_LVCREATE_VDO,
+--virtualsize SizeMB, --stripes Number, --stripesize SizeKB,
+OP: PV ...
+IO: --mirrors 0
+ID: lvcreate_vdo_vol
+DESC: Create a LV that returns VDO when used.
+
+lvcreate --vdo --size SizeMB VG
+OO: --vdopool LV_new, OO_LVCREATE, OO_LVCREATE_VDO,
+--virtualsize SizeMB, --stripes Number, --stripesize SizeKB
+OP: PV ...
+IO: --mirrors 0
+ID: lvcreate_vdo_vol
+DESC: Create a VDO LV with VDO pool.
+FLAGS: SECONDARY_SYNTAX
+
+lvcreate --vdopool LV_new --size SizeMB VG
+OO: --vdo, --type vdo, OO_LVCREATE, OO_LVCREATE_VDO,
+--virtualsize SizeMB, --stripes Number, --stripesize SizeKB
+OP: PV ...
+IO: --mirrors 0
+ID: lvcreate_vdo_vol
+DESC: Create a VDO LV with VDO pool.
 FLAGS: SECONDARY_SYNTAX
 
 ---
@@ -1365,7 +1391,7 @@ DESC: Resize a pool metadata SubLV by a specified size.
 lvs
 OO: --history, --segments, OO_REPORT
 OP: VG|LV|Tag ...
-IO: --partial, --ignoreskippedcluster
+IO: --partial, --ignoreskippedcluster, --trustcache
 ID: lvs_general
 
 ---
@@ -1385,7 +1411,7 @@ OO_PVCHANGE: --autobackup Bool, --force, --reportformat ReportFmt, --uuid
 OO_PVCHANGE_META: --allocatable Bool, --addtag Tag, --deltag Tag,
 --uuid, --metadataignore Bool
 
-pvchange OO_PVCHANGE_META --all
+pvchange --all OO_PVCHANGE_META
 OO: OO_PVCHANGE
 IO: --ignoreskippedcluster
 ID: pvchange_properties_all
@@ -1408,6 +1434,23 @@ ID: pvresize_general
 pvck PV ...
 OO: --labelsector Number
 ID: pvck_general
+DESC: Check for metadata on a device
+
+pvck --dump String PV
+OO: --settings String, --file String,
+--pvmetadatacopies MetadataCopiesPV, --labelsector Number
+ID: pvck_dump
+DESC: Check and print LVM headers and metadata on a device
+
+pvck --repairtype RepairType PV
+OO: --settings String, --file String, --labelsector Number
+ID: pvck_repair_type
+DESC: Repair LVM headers or metadata on a device
+
+pvck --repair --file String PV
+OO: --settings String, --labelsector Number
+ID: pvck_repair
+DESC: Repair LVM headers and metadata on a device
 
 ---
 
@@ -1461,7 +1504,7 @@ ID: pvremove_general
 pvs
 OO: --segments, OO_REPORT
 OP: PV|Tag ...
-IO: --partial, --ignoreskippedcluster
+IO: --partial, --ignoreskippedcluster, --trustcache
 ID: pvs_general
 
 ---
@@ -1474,7 +1517,7 @@ DESC: Display PV information.
 
 pvscan --cache_long
 OO: --ignorelockingfailure, --reportformat ReportFmt,
---activate ay, --major Number, --minor Number
+--activate ay, --major Number, --minor Number, --noudevsync
 OP: PV|String ...
 IO: --background
 ID: pvscan_cache
@@ -1599,6 +1642,11 @@ vgck
 OO: --reportformat ReportFmt
 OP: VG|Tag ...
 ID: vgck_general
+DESC: Read and display information about a VG.
+
+vgck --updatemetadata VG
+ID: vgck_update_metadata
+DESC: Rewrite VG metadata to correct problems.
 
 ---
 
@@ -1722,7 +1770,7 @@ DESC: Rename a VG by specifying the VG UUID.
 vgs
 OO: OO_REPORT
 OP: VG|Tag ...
-IO: --partial, --ignoreskippedcluster
+IO: --partial, --ignoreskippedcluster, --trustcache
 ID: vgs_general
 
 ---
@@ -1777,7 +1825,7 @@ ID: devtypes_general
 fullreport
 OO: OO_REPORT
 OP: VG ...
-IO: --partial, --ignoreskippedcluster
+IO: --partial, --ignoreskippedcluster, --trustcache
 ID: fullreport_general
 
 lastlog

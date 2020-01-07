@@ -169,6 +169,7 @@ static bool _async_issue(struct io_engine *ioe, enum dir d, int fd,
 	sector_t offset;
 	sector_t nbytes;
 	sector_t limit_nbytes;
+	sector_t orig_nbytes;
 	sector_t extra_nbytes = 0;
 
 	if (((uintptr_t) data) & e->page_mask) {
@@ -191,10 +192,40 @@ static bool _async_issue(struct io_engine *ioe, enum dir d, int fd,
 			return false;
 		}
 
+		/*
+		 * If the bcache block offset+len goes beyond where lvm is
+		 * intending to write, then reduce the len being written
+		 * (which is the bcache block size) so we don't write past
+		 * the limit set by lvm.  If after applying the limit, the
+		 * resulting size is not a multiple of the sector size (512
+		 * or 4096) then extend the reduced size to be a multiple of
+		 * the sector size (we don't want to write partial sectors.)
+		 */
 		if (offset + nbytes > _last_byte_offset) {
 			limit_nbytes = _last_byte_offset - offset;
-			if (limit_nbytes % _last_byte_sector_size)
+
+			if (limit_nbytes % _last_byte_sector_size) {
 				extra_nbytes = _last_byte_sector_size - (limit_nbytes % _last_byte_sector_size);
+
+				/*
+				 * adding extra_nbytes to the reduced nbytes (limit_nbytes)
+				 * should make the final write size a multiple of the
+				 * sector size.  This should never result in a final size
+				 * larger than the bcache block size (as long as the bcache
+				 * block size is a multiple of the sector size).
+				 */
+				if (limit_nbytes + extra_nbytes > nbytes) {
+					log_warn("Skip extending write at %llu len %llu limit %llu extra %llu sector_size %llu",
+						 (unsigned long long)offset,
+						 (unsigned long long)nbytes,
+						 (unsigned long long)limit_nbytes,
+						 (unsigned long long)extra_nbytes,
+						 (unsigned long long)_last_byte_sector_size);
+					extra_nbytes = 0;
+				}
+			}
+
+			orig_nbytes = nbytes;
 
 			if (extra_nbytes) {
 				log_debug("Limit write at %llu len %llu to len %llu rounded to %llu",
@@ -209,6 +240,22 @@ static bool _async_issue(struct io_engine *ioe, enum dir d, int fd,
 					  (unsigned long long)nbytes,
 					  (unsigned long long)limit_nbytes);
 				nbytes = limit_nbytes;
+			}
+
+			/*
+			 * This shouldn't happen, the reduced+extended
+			 * nbytes value should never be larger than the
+			 * bcache block size.
+			 */
+			if (nbytes > orig_nbytes) {
+				log_error("Invalid adjusted write at %llu len %llu adjusted %llu limit %llu extra %llu sector_size %llu",
+					  (unsigned long long)offset,
+					  (unsigned long long)orig_nbytes,
+					  (unsigned long long)nbytes,
+					  (unsigned long long)limit_nbytes,
+					  (unsigned long long)extra_nbytes,
+					  (unsigned long long)_last_byte_sector_size);
+				return false;
 			}
 		}
 	}
@@ -403,19 +450,42 @@ static bool _sync_issue(struct io_engine *ioe, enum dir d, int fd,
 		uint64_t nbytes = len;
 		sector_t limit_nbytes = 0;
 		sector_t extra_nbytes = 0;
+		sector_t orig_nbytes = 0;
 
 		if (offset > _last_byte_offset) {
 			log_error("Limit write at %llu len %llu beyond last byte %llu",
 				  (unsigned long long)offset,
 				  (unsigned long long)nbytes,
 				  (unsigned long long)_last_byte_offset);
+			free(io);
 			return false;
 		}
 
 		if (offset + nbytes > _last_byte_offset) {
 			limit_nbytes = _last_byte_offset - offset;
-			if (limit_nbytes % _last_byte_sector_size)
+
+			if (limit_nbytes % _last_byte_sector_size) {
 				extra_nbytes = _last_byte_sector_size - (limit_nbytes % _last_byte_sector_size);
+
+				/*
+				 * adding extra_nbytes to the reduced nbytes (limit_nbytes)
+				 * should make the final write size a multiple of the
+				 * sector size.  This should never result in a final size
+				 * larger than the bcache block size (as long as the bcache
+				 * block size is a multiple of the sector size).
+				 */
+				if (limit_nbytes + extra_nbytes > nbytes) {
+					log_warn("Skip extending write at %llu len %llu limit %llu extra %llu sector_size %llu",
+						 (unsigned long long)offset,
+						 (unsigned long long)nbytes,
+						 (unsigned long long)limit_nbytes,
+						 (unsigned long long)extra_nbytes,
+						 (unsigned long long)_last_byte_sector_size);
+					extra_nbytes = 0;
+				}
+			}
+
+			orig_nbytes = nbytes;
 
 			if (extra_nbytes) {
 				log_debug("Limit write at %llu len %llu to len %llu rounded to %llu",
@@ -430,6 +500,22 @@ static bool _sync_issue(struct io_engine *ioe, enum dir d, int fd,
 					  (unsigned long long)nbytes,
 					  (unsigned long long)limit_nbytes);
 				nbytes = limit_nbytes;
+			}
+
+			/*
+			 * This shouldn't happen, the reduced+extended
+			 * nbytes value should never be larger than the
+			 * bcache block size.
+			 */
+			if (nbytes > orig_nbytes) {
+				log_error("Invalid adjusted write at %llu len %llu adjusted %llu limit %llu extra %llu sector_size %llu",
+					  (unsigned long long)offset,
+					  (unsigned long long)orig_nbytes,
+					  (unsigned long long)nbytes,
+					  (unsigned long long)limit_nbytes,
+					  (unsigned long long)extra_nbytes,
+					  (unsigned long long)_last_byte_sector_size);
+				return false;
 			}
 		}
 
@@ -871,7 +957,7 @@ static struct block *_new_block(struct bcache *cache, int fd, block_address i, b
 					_writeback(cache, 16);  // FIXME: magic number
 				_wait_io(cache);
 			} else {
-				log_error("bcache no new blocks for fd %d index %u",
+				log_debug("bcache no new blocks for fd %d index %u",
 					  fd, (uint32_t) i);
 				return NULL;
 			}
@@ -1290,8 +1376,44 @@ bool bcache_invalidate_fd(struct bcache *cache, int fd)
 	it.success = true;
 	it.it.visit = _invalidate_v;
 	radix_tree_iterate(cache->rtree, k.bytes, k.bytes + sizeof(k.parts.fd), &it.it);
-	radix_tree_remove_prefix(cache->rtree, k.bytes, k.bytes + sizeof(k.parts.fd));
+
+	if (it.success)
+		radix_tree_remove_prefix(cache->rtree, k.bytes, k.bytes + sizeof(k.parts.fd));
+
 	return it.success;
+}
+
+//----------------------------------------------------------------
+
+static bool _abort_v(struct radix_tree_iterator *it,
+                     uint8_t *kb, uint8_t *ke, union radix_value v)
+{
+	struct block *b = v.ptr;
+
+	if (b->ref_count) {
+		log_fatal("bcache_abort: block (%d, %llu) still held",
+			 b->fd, (unsigned long long) b->index);
+		return true;
+	}
+
+	_unlink_block(b);
+	_free_block(b);
+
+	// We can't remove the block from the radix tree yet because
+	// we're in the middle of an iteration.
+	return true;
+}
+
+void bcache_abort_fd(struct bcache *cache, int fd)
+{
+        union key k;
+	struct radix_tree_iterator it;
+
+	k.parts.fd = fd;
+
+	it.visit = _abort_v;
+	radix_tree_iterate(cache->rtree, k.bytes, k.bytes + sizeof(k.parts.fd), &it);
+	radix_tree_remove_prefix(cache->rtree, k.bytes, k.bytes + sizeof(k.parts.fd));
 }
 
 //----------------------------------------------------------------

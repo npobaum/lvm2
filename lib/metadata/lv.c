@@ -245,6 +245,11 @@ char *lvseg_kernel_discards_dup_with_info_and_seg_status(struct dm_pool *mem, co
 			return 0;
 		}
 		s = get_pool_discards_name(d);
+	} else if (lvdm->seg_status.type == SEG_STATUS_CACHE) {
+		if (lvdm->seg_status.cache->feature_flags &
+		    DM_CACHE_FEATURE_NO_DISCARD_PASSDOWN) {
+			s = "nopassdown";
+		}
 	}
 
 	if (!(ret = dm_pool_strdup(mem, s))) {
@@ -333,6 +338,8 @@ uint64_t lvseg_chunksize(const struct lv_segment *seg)
 
 	if (lv_is_cow(seg->lv))
 		size = (uint64_t) find_snapshot(seg->lv)->chunk_size;
+	else if (seg_is_cache(seg) && lv_is_cache_vol(seg->pool_lv))
+		size = (uint64_t) seg->chunk_size;
 	else if (seg_is_pool(seg))
 		size = (uint64_t) seg->chunk_size;
 	else if (seg_is_cache(seg))
@@ -576,6 +583,8 @@ struct logical_volume *lv_origin_lv(const struct logical_volume *lv)
 		origin = first_seg(lv)->origin;
 	else if (lv_is_thin_volume(lv) && first_seg(lv)->external_lv)
 		origin = first_seg(lv)->external_lv;
+	else if (lv_is_writecache(lv) && first_seg(lv)->origin)
+		origin = first_seg(lv)->origin;
 
 	return origin;
 }
@@ -706,6 +715,9 @@ struct logical_volume *lv_pool_lv(const struct logical_volume *lv)
 
 	if (lv_is_vdo(lv))
 		return seg_lv(first_seg(lv), 0);
+
+	if (lv_is_writecache(lv))
+		return first_seg(lv)->writecache;
 
 	return NULL;
 }
@@ -932,10 +944,18 @@ uint64_t lv_origin_size(const struct logical_volume *lv)
 
 uint64_t lv_metadata_size(const struct logical_volume *lv)
 {
-	struct lv_segment *seg = (lv_is_thin_pool(lv) || lv_is_cache_pool(lv)) ?
-		first_seg(lv) : NULL;
+	struct lv_segment *seg;
 
-	return seg ? seg->metadata_lv->size : 0;
+	if (!(seg = first_seg(lv)))
+		return 0;
+
+	if (seg_is_cache(seg) && lv_is_cache_vol(seg->pool_lv))
+		return seg->metadata_len;
+
+	if (lv_is_thin_pool(lv) || lv_is_cache_pool(lv))
+		return seg->metadata_lv->size;
+
+	return 0;
 }
 
 char *lv_path_dup(struct dm_pool *mem, const struct logical_volume *lv)
@@ -1182,7 +1202,7 @@ char *lv_attr_dup_with_info_and_seg_status(struct dm_pool *mem, const struct lv_
 		 lv_is_pool_metadata_spare(lv) ||
 		 lv_is_raid_metadata(lv))
 		repstr[0] = 'e';
-	else if (lv_is_cache_type(lv))
+	else if (lv_is_cache_type(lv) || lv_is_writecache(lv))
 		repstr[0] = 'C';
 	else if (lv_is_raid(lv))
 		repstr[0] = (lv_is_not_synced(lv)) ? 'R' : 'r';
@@ -1218,7 +1238,7 @@ char *lv_attr_dup_with_info_and_seg_status(struct dm_pool *mem, const struct lv_
 		repstr[0] = 'l';
 	else if (lv_is_cow(lv))
 		repstr[0] = (lv_is_merging_cow(lv)) ? 'S' : 's';
-	else if (lv_is_cache_origin(lv))
+	else if (lv_is_cache_origin(lv) || lv_is_writecache_origin(lv))
 		repstr[0] = 'o';
 	else
 		repstr[0] = '-';
@@ -1297,7 +1317,12 @@ char *lv_attr_dup_with_info_and_seg_status(struct dm_pool *mem, const struct lv_
 
 	if (lv_is_thin_pool(lv) || lv_is_thin_volume(lv))
 		repstr[6] = 't';
-	else if (lv_is_cache_pool(lv) || lv_is_cache(lv) || lv_is_cache_origin(lv))
+	else if (lv_is_cache_pool(lv) ||
+		 lv_is_cache_vol(lv) ||
+		 lv_is_cache(lv) ||
+		 lv_is_cache_origin(lv) ||
+		 lv_is_writecache(lv) ||
+		 lv_is_writecache_origin(lv))
 		repstr[6] = 'C';
 	else if (lv_is_raid_type(lv))
 		repstr[6] = 'r';

@@ -728,7 +728,6 @@ DEFAULT_PID_DIR
 DEFAULT_MIRROR_SEGTYPE
 DEFAULT_LOCK_DIR
 DEFAULT_DM_RUN_DIR
-DEFAULT_DATA_ALIGNMENT
 DEFAULT_CACHE_SUBDIR
 DEFAULT_BACKUP_SUBDIR
 DEFAULT_ARCHIVE_SUBDIR
@@ -743,6 +742,7 @@ CLDNOWHOLEARCHIVE
 CLDFLAGS
 CACHE
 BUILD_DMFILEMAPD
+BUILD_LOCKDDLM_CONTROL
 BUILD_LOCKDDLM
 BUILD_LOCKDSANLOCK
 BUILD_LVMLOCKD
@@ -772,6 +772,8 @@ BLKID_LIBS
 BLKID_CFLAGS
 NOTIFY_DBUS_LIBS
 NOTIFY_DBUS_CFLAGS
+LOCKD_DLM_CONTROL_LIBS
+LOCKD_DLM_CONTROL_CFLAGS
 LOCKD_DLM_LIBS
 LOCKD_DLM_CFLAGS
 LOCKD_SANLOCK_LIBS
@@ -915,6 +917,7 @@ with_cache_restore
 enable_cache_check_needs_check
 with_vdo
 with_vdo_format
+with_writecache
 enable_readline
 enable_realtime
 enable_ocf
@@ -932,6 +935,7 @@ enable_devmapper
 enable_lvmpolld
 enable_lvmlockd_sanlock
 enable_lvmlockd_dlm
+enable_lvmlockd_dlmcontrol
 enable_use_lvmlockd
 with_lvmlockd_pidfile
 enable_use_lvmpolld
@@ -973,7 +977,6 @@ with_default_archive_subdir
 with_default_backup_subdir
 with_default_cache_subdir
 with_default_locking_dir
-with_default_data_alignment
 with_interface
 '
       ac_precious_vars='build_alias
@@ -1001,6 +1004,8 @@ LOCKD_SANLOCK_CFLAGS
 LOCKD_SANLOCK_LIBS
 LOCKD_DLM_CFLAGS
 LOCKD_DLM_LIBS
+LOCKD_DLM_CONTROL_CFLAGS
+LOCKD_DLM_CONTROL_LIBS
 NOTIFY_DBUS_CFLAGS
 NOTIFY_DBUS_LIBS
 BLKID_CFLAGS
@@ -1644,6 +1649,8 @@ Optional Features:
   --enable-lvmlockd-sanlock
                           enable the LVM lock daemon using sanlock
   --enable-lvmlockd-dlm   enable the LVM lock daemon using dlm
+  --enable-lvmlockd-dlmcontrol
+                          enable lvmlockd remote refresh using libdlmcontrol
   --disable-use-lvmlockd  disable usage of LVM lock daemon
   --disable-use-lvmpolld  disable usage of LVM Poll Daemon
   --enable-dmfilemapd     enable the dmstats filemap daemon
@@ -1708,6 +1715,7 @@ Optional Packages:
                           cache_restore tool: [autodetect]
   --with-vdo=TYPE         vdo support: internal/none [internal]
   --with-vdo-format=PATH  vdoformat tool: [autodetect]
+  --with-writecache=TYPE  writecache support: internal/none [none]
   --with-ocfdir=DIR       install OCF files in
                           [PREFIX/lib/ocf/resource.d/lvm2]
   --with-default-pid-dir=PID_DIR
@@ -1752,8 +1760,6 @@ Optional Packages:
                           default metadata cache subdir [cache]
   --with-default-locking-dir=DIR
                           default locking directory [autodetect_lock_dir/lvm]
-  --with-default-data-alignment=NUM
-                          set the default data alignment in MiB [1]
   --with-interface=IFACE  choose kernel interface (ioctl) [ioctl]
 
 Some influential environment variables:
@@ -1790,6 +1796,10 @@ Some influential environment variables:
               C compiler flags for LOCKD_DLM, overriding pkg-config
   LOCKD_DLM_LIBS
               linker flags for LOCKD_DLM, overriding pkg-config
+  LOCKD_DLM_CONTROL_CFLAGS
+              C compiler flags for LOCKD_DLM_CONTROL, overriding pkg-config
+  LOCKD_DLM_CONTROL_LIBS
+              linker flags for LOCKD_DLM_CONTROL, overriding pkg-config
   NOTIFY_DBUS_CFLAGS
               C compiler flags for NOTIFY_DBUS, overriding pkg-config
   NOTIFY_DBUS_LIBS
@@ -3067,7 +3077,7 @@ if test -z "$CFLAGS"; then :
 fi
 case "$host_os" in
 	linux*)
-		CLDFLAGS="${CLDFLAGS:"$LDFLAGS"} -Wl,--version-script,.export.sym"
+		CLDFLAGS="${CLDFLAGS-"$LDFLAGS"} -Wl,--version-script,.export.sym"
 		# equivalent to -rdynamic
 		ELDFLAGS="-Wl,--export-dynamic"
 		# FIXME Generate list and use --dynamic-list=.dlopen.sym
@@ -3079,6 +3089,7 @@ case "$host_os" in
 		BUILD_LVMPOLLD=no
 		LOCKDSANLOCK=no
 		LOCKDDLM=no
+		LOCKDDLM_CONTROL=no
 		ODIRECT=yes
 		DM_IOCTLS=yes
 		SELINUX=yes
@@ -3087,7 +3098,7 @@ case "$host_os" in
 		;;
 	darwin*)
 		CFLAGS="$CFLAGS -no-cpp-precomp -fno-common"
-		CLDFLAGS="${CLDFLAGS:"$LDFLAGS"}"
+		CLDFLAGS="${CLDFLAGS-"$LDFLAGS"}"
 		ELDFLAGS=
 		CLDWHOLEARCHIVE="-all_load"
 		CLDNOWHOLEARCHIVE=
@@ -3100,7 +3111,7 @@ case "$host_os" in
 		BLKDEACTIVATE=no
 		;;
 	*)
-		CLDFLAGS="${CLDFLAGS:"$LDFLAGS"}"
+		CLDFLAGS="${CLDFLAGS-"$LDFLAGS"}"
 		;;
 esac
 
@@ -6636,7 +6647,7 @@ $as_echo "#define _REENTRANT 1" >>confdefs.h
 
 ################################################################################
 for ac_func in ftruncate gethostname getpagesize gettimeofday localtime_r \
-  memchr memset mkdir mkfifo munmap nl_langinfo realpath rmdir setenv \
+  memchr memset mkdir mkfifo munmap nl_langinfo pselect realpath rmdir setenv \
   setlocale strcasecmp strchr strcspn strdup strerror strncasecmp strndup \
   strrchr strspn strstr strtol strtoul uname
 do :
@@ -6649,6 +6660,17 @@ _ACEOF
 
 else
   as_fn_error $? "bailing out" "$LINENO" 5
+fi
+done
+
+for ac_func in prlimit
+do :
+  ac_fn_c_check_func "$LINENO" "prlimit" "ac_cv_func_prlimit"
+if test "x$ac_cv_func_prlimit" = xyes; then :
+  cat >>confdefs.h <<_ACEOF
+#define HAVE_PRLIMIT 1
+_ACEOF
+
 fi
 done
 
@@ -9715,6 +9737,31 @@ _ACEOF
 #AC_MSG_RESULT($VDO_LIB)
 
 ################################################################################
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking whether to include writecache" >&5
+$as_echo_n "checking whether to include writecache... " >&6; }
+
+# Check whether --with-writecache was given.
+if test "${with_writecache+set}" = set; then :
+  withval=$with_writecache; WRITECACHE=$withval
+else
+  WRITECACHE="none"
+fi
+
+
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $WRITECACHE" >&5
+$as_echo "$WRITECACHE" >&6; }
+
+case "$WRITECACHE" in
+ none) ;;
+ internal)
+
+$as_echo "#define WRITECACHE_INTERNAL 1" >>confdefs.h
+
+	;;
+ *) as_fn_error $? "--with-writecache parameter invalid" "$LINENO" 5 ;;
+esac
+
+################################################################################
 # Check whether --enable-readline was given.
 if test "${enable_readline+set}" = set; then :
   enableval=$enable_readline; READLINE=$enableval
@@ -10931,6 +10978,97 @@ $as_echo "yes" >&6; }
 fi
 
 $as_echo "#define LOCKDDLM_SUPPORT 1" >>confdefs.h
+
+	BUILD_LVMLOCKD=yes
+fi
+
+################################################################################
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking whether to build lvmlockddlmcontrol" >&5
+$as_echo_n "checking whether to build lvmlockddlmcontrol... " >&6; }
+# Check whether --enable-lvmlockd-dlmcontrol was given.
+if test "${enable_lvmlockd_dlmcontrol+set}" = set; then :
+  enableval=$enable_lvmlockd_dlmcontrol; LOCKDDLM_CONTROL=$enableval
+fi
+
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $LOCKDDLM_CONTROL" >&5
+$as_echo "$LOCKDDLM_CONTROL" >&6; }
+
+BUILD_LOCKDDLM_CONTROL=$LOCKDDLM_CONTROL
+
+if test "$BUILD_LOCKDDLM_CONTROL" = yes; then
+
+pkg_failed=no
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for LOCKD_DLM_CONTROL" >&5
+$as_echo_n "checking for LOCKD_DLM_CONTROL... " >&6; }
+
+if test -n "$LOCKD_DLM_CONTROL_CFLAGS"; then
+    pkg_cv_LOCKD_DLM_CONTROL_CFLAGS="$LOCKD_DLM_CONTROL_CFLAGS"
+ elif test -n "$PKG_CONFIG"; then
+    if test -n "$PKG_CONFIG" && \
+    { { $as_echo "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"libdlmcontrol >= 3.2\""; } >&5
+  ($PKG_CONFIG --exists --print-errors "libdlmcontrol >= 3.2") 2>&5
+  ac_status=$?
+  $as_echo "$as_me:${as_lineno-$LINENO}: \$? = $ac_status" >&5
+  test $ac_status = 0; }; then
+  pkg_cv_LOCKD_DLM_CONTROL_CFLAGS=`$PKG_CONFIG --cflags "libdlmcontrol >= 3.2" 2>/dev/null`
+		      test "x$?" != "x0" && pkg_failed=yes
+else
+  pkg_failed=yes
+fi
+ else
+    pkg_failed=untried
+fi
+if test -n "$LOCKD_DLM_CONTROL_LIBS"; then
+    pkg_cv_LOCKD_DLM_CONTROL_LIBS="$LOCKD_DLM_CONTROL_LIBS"
+ elif test -n "$PKG_CONFIG"; then
+    if test -n "$PKG_CONFIG" && \
+    { { $as_echo "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"libdlmcontrol >= 3.2\""; } >&5
+  ($PKG_CONFIG --exists --print-errors "libdlmcontrol >= 3.2") 2>&5
+  ac_status=$?
+  $as_echo "$as_me:${as_lineno-$LINENO}: \$? = $ac_status" >&5
+  test $ac_status = 0; }; then
+  pkg_cv_LOCKD_DLM_CONTROL_LIBS=`$PKG_CONFIG --libs "libdlmcontrol >= 3.2" 2>/dev/null`
+		      test "x$?" != "x0" && pkg_failed=yes
+else
+  pkg_failed=yes
+fi
+ else
+    pkg_failed=untried
+fi
+
+
+
+if test $pkg_failed = yes; then
+   	{ $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+
+if $PKG_CONFIG --atleast-pkgconfig-version 0.20; then
+        _pkg_short_errors_supported=yes
+else
+        _pkg_short_errors_supported=no
+fi
+        if test $_pkg_short_errors_supported = yes; then
+	        LOCKD_DLM_CONTROL_PKG_ERRORS=`$PKG_CONFIG --short-errors --print-errors --cflags --libs "libdlmcontrol >= 3.2" 2>&1`
+        else
+	        LOCKD_DLM_CONTROL_PKG_ERRORS=`$PKG_CONFIG --print-errors --cflags --libs "libdlmcontrol >= 3.2" 2>&1`
+        fi
+	# Put the nasty error message in config.log where it belongs
+	echo "$LOCKD_DLM_CONTROL_PKG_ERRORS" >&5
+
+	$bailout
+elif test $pkg_failed = untried; then
+     	{ $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+$as_echo "no" >&6; }
+	$bailout
+else
+	LOCKD_DLM_CONTROL_CFLAGS=$pkg_cv_LOCKD_DLM_CONTROL_CFLAGS
+	LOCKD_DLM_CONTROL_LIBS=$pkg_cv_LOCKD_DLM_CONTROL_LIBS
+        { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+$as_echo "yes" >&6; }
+	HAVE_LOCKD_DLM_CONTROL=yes
+fi
+
+$as_echo "#define LOCKDDLM_CONTROL_SUPPORT 1" >>confdefs.h
 
 	BUILD_LVMLOCKD=yes
 fi
@@ -13568,21 +13706,6 @@ fi
 
 cat >>confdefs.h <<_ACEOF
 #define DEFAULT_LOCK_DIR "$DEFAULT_LOCK_DIR"
-_ACEOF
-
-
-################################################################################
-
-# Check whether --with-default-data-alignment was given.
-if test "${with_default_data_alignment+set}" = set; then :
-  withval=$with_default_data_alignment; DEFAULT_DATA_ALIGNMENT=$withval
-else
-  DEFAULT_DATA_ALIGNMENT=1
-fi
-
-
-cat >>confdefs.h <<_ACEOF
-#define DEFAULT_DATA_ALIGNMENT $DEFAULT_DATA_ALIGNMENT
 _ACEOF
 
 
