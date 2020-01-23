@@ -1,3 +1,13 @@
+lvm2 (2.02.176-4.1ubuntu3.18.04.3) bionic; urgency=medium
+
+  [ Steve Langasek ]
+  * Include raid1 in the list of modules installed by the initramfs hook,
+    as this is not a kernel module dependency of dm-raid but if the user's
+    root disk is configured as RAID1 it is definitely required.
+    Closes: #841423, LP: #1509717.
+
+ -- Julian Andres Klode <juliank@ubuntu.com>  Thu, 23 Jan 2020 16:45:10 +0100
+
 lvm2 (2.02.176-4.1ubuntu3.18.04.2) bionic; urgency=medium
 
   * d/p/fix-auto-activation-at-boot.patch: (LP: #1854981)
