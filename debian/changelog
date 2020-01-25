@@ -1,3 +1,9 @@
+lvm2 (2.03.02-2ubuntu8) focal; urgency=medium
+
+  * No-change rebuild to build with python3.8.
+
+ -- Matthias Klose <doko@ubuntu.com>  Sat, 25 Jan 2020 04:35:13 +0000
+
 lvm2 (2.03.02-2ubuntu7) focal; urgency=medium
 
   * Include raid1 in the list of modules installed by the initramfs hook,
