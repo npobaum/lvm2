@@ -36,6 +36,6 @@ esac
 
 . /scripts/functions
 
-add_mountroot_fail_hook "20-lvm2"
+add_mountroot_fail_hook "/scripts/init-premount/lvm2"
 
 exit 0
