@@ -113,7 +113,7 @@ LABEL="systemd_background"
 #  MD    |          |      X      |       X*       |                   |
 #  loop  |          |      X      |       X*       |                   |
 #  other |    X     |      X      |       X        |                   |   X
-ACTION!="remove", ENV{LVM_PV_GONE}=="1", RUN+="(BINDIR)/systemd-run (LVM_EXEC)/lvm pvscan --cache $major:$minor", GOTO="lvm_end"
+ACTION!="remove", ENV{LVM_PV_GONE}=="1", RUN+="/usr/bin/systemd-run (LVM_EXEC)/lvm pvscan --cache $major:$minor", GOTO="lvm_end"
 ENV{SYSTEMD_ALIAS}="/dev/block/$major:$minor"
 ENV{SYSTEMD_WANTS}+="lvm2-pvscan@$major:$minor.service"
 GOTO="lvm_end"
