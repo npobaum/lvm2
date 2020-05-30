@@ -6,6 +6,7 @@ After=dm-event.socket dm-event.service lvm2-activation.service
 Before=local-fs-pre.target shutdown.target
 DefaultDependencies=no
 Conflicts=shutdown.target
+ConditionVirtualization=!container
 
 [Service]
 Type=oneshot
