@@ -1,3 +1,10 @@
+lvm2 (2.03.07-1ubuntu3) groovy; urgency=medium
+
+  * Revert "Fix incorrect path to mountroot fail hook. LP: #1871154"
+    regression is in the initramfs-tools package.
+
+ -- Dimitri John Ledkov <xnox@ubuntu.com>  Sat, 30 May 2020 15:02:01 +0100
+
 lvm2 (2.03.07-1ubuntu2) groovy; urgency=medium
 
   * Fix incorrect path to mountroot fail hook. LP: #1871154
