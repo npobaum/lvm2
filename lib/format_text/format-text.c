@@ -985,8 +985,8 @@ static int _vg_write_file(struct format_instance *fid __attribute__((unused)),
 	if (lvm_fclose(fp, tc->path_edit))
 		return_0;
 
+	log_debug_metadata("Renaming %s to %s", temp_file, tc->path_edit);
 	if (rename(temp_file, tc->path_edit)) {
-		log_debug_metadata("Renaming %s to %s", temp_file, tc->path_edit);
 		log_error("%s: rename to %s failed: %s", temp_file,
 			  tc->path_edit, strerror(errno));
 		return 0;
@@ -1153,7 +1153,6 @@ int vgname_from_mda(const struct format_type *fmt,
 	uint32_t wrap = 0;
 	unsigned int len = 0;
 	char buf[NAME_LEN + 1] __attribute__((aligned(8)));
-	char uuid[64] __attribute__((aligned(8)));
 	uint64_t buffer_size, current_usage;
 	unsigned used_cached_metadata = 0;
 
@@ -1210,7 +1209,7 @@ int vgname_from_mda(const struct format_type *fmt,
 		used_cached_metadata = 1;
 
 	/* FIXME 64-bit */
-	if (!text_vgname_import(fmt, dev_area->dev,
+	if (!text_vgsummary_import(fmt, dev_area->dev,
 				(off_t) (dev_area->start + rlocn->offset),
 				(uint32_t) (rlocn->size - wrap),
 				(off_t) (dev_area->start + MDA_HEADER_SIZE),
@@ -1222,16 +1221,14 @@ int vgname_from_mda(const struct format_type *fmt,
 	if (!validate_name(vgsummary->vgname))
 		return_0;
 
-	if (!id_write_format((struct id *)&vgsummary->vgid, uuid, sizeof(uuid)))
-		return_0;
-
 	log_debug_metadata("%s: %s metadata at %" PRIu64 " size %" PRIu64
 			   " (in area at %" PRIu64 " size %" PRIu64
-			   ") for %s (%s)",
+			   ") for %s (" FMTVGID ")",
 			   dev_name(dev_area->dev),
 			   used_cached_metadata ? "Using cached" : "Found",
 			   dev_area->start + rlocn->offset,
-			   rlocn->size, dev_area->start, dev_area->size, vgsummary->vgname, uuid);
+			   rlocn->size, dev_area->start, dev_area->size, vgsummary->vgname,
+			   (char *)&vgsummary->vgid);
 
 	if (mda_free_sectors) {
 		current_usage = (rlocn->size + SECTOR_SIZE - UINT64_C(1)) -
@@ -1528,7 +1525,7 @@ static int _text_pv_read(const struct format_type *fmt, const char *pv_name,
 	if (!(dev = dev_cache_get(pv_name, fmt->cmd->filter)))
 		return_0;
 
-	if (lvmetad_active()) {
+	if (lvmetad_used()) {
 		info = lvmcache_info_from_pvid(dev->pvid, 0);
 		if (!info && !lvmetad_pv_lookup_by_dev(fmt->cmd, dev, NULL))
 			return 0;

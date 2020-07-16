@@ -234,8 +234,6 @@ static int _pvscan_lvmetad(struct cmd_context *cmd, int argc, char **argv)
 	dev_t devno;
 	activation_handler handler = NULL;
 
-	cmd->include_foreign_vgs = 1;
-
 	/*
 	 * Return here immediately if lvmetad is not used.
 	 * Also return if locking_type=3 (clustered) as we
@@ -273,9 +271,27 @@ static int _pvscan_lvmetad(struct cmd_context *cmd, int argc, char **argv)
 
 	/* Scan everything? */
 	if (!argc && !devno_args) {
-		if (!lvmetad_pvscan_all_devs(cmd, handler))
+		if (!lvmetad_pvscan_all_devs(cmd, handler, 1)) {
+			log_error("Failed to update cache.");
 			ret = ECMD_FAILED;
+		}
 		goto out;
+	}
+
+	/*
+	 * FIXME: when specific devs are named, we generally don't
+	 * want to scan any other devs, but if lvmetad is not yet
+	 * populated, the first 'pvscan --cache dev' does need to
+	 * do a full scan.  We want to remove the need for this
+	 * case so that 'pvscan --cache dev' is guaranteed to never
+	 * scan any devices other than those specified.
+	 */
+	if (lvmetad_used() && !lvmetad_token_matches(cmd)) {
+		if (lvmetad_used() && !lvmetad_pvscan_all_devs(cmd, NULL, 0)) {
+			log_error("Failed to update cache.");
+			ret = ECMD_FAILED;
+			goto out;
+		}
 	}
 
 	log_verbose("Using physical volume(s) on command line");
@@ -370,10 +386,51 @@ out:
 	return ret;
 }
 
+/*
+ * Three main pvscan cases related to lvmetad usage:
+ * 1. pvscan
+ * 2. pvscan --cache
+ * 3. pvscan --cache <dev>
+ *
+ * 1. The 'pvscan' command (without --cache) may or may not attempt to
+ * repopulate the lvmetad cache, and may or may not use the lvmetad
+ * cache to display PV info:
+ *
+ * i. If lvmetad is being used and is in a normal state, then 'pvscan'
+ * will simply read and display PV info from the lvmetad cache.
+ *
+ * ii. If lvmetad is not being used, 'pvscan' will read all devices to
+ * display the PV info.
+ *
+ * iii. If lvmetad is being used, but has been disabled (because of
+ * duplicate devs or lvm1 metadata), or has a non-matching token
+ * (because the device filter is different from the device filter last
+ * used to populate lvmetad), then 'pvscan' will begin by rescanning
+ * devices to repopulate lvmetad.  If lvmetad is enabled after the
+ * rescan, then 'pvscan' will simply read and display PV info from the
+ * lvmetad cache (like case i).  If lvmetad is disabled after the
+ * rescan, then 'pvscan' will read all devices to display PV info
+ * (like case ii).
+ *
+ * 2. The 'pvscan --cache' command (without named devs) will always
+ * attempt to repopulate the lvmetad cache by rescanning all devs
+ * (regardless of whether lvmetad was previously disabled or had an
+ * unmatching token.)  lvmetad may be enabled or disabled after the
+ * rescan (depending on whether duplicate devs or lvm1 metadata was
+ * found).
+ *
+ * 3. The 'pvscan --cache <dev>' command will attempt to repopulate the
+ * lvmetad cache by rescanning all devs if lvmetad has a non-matching
+ * token (e.g. because it has not yet been populated, see FIXME above).
+ * Otherwise, the command will only rescan the named <dev> and send
+ * their metadata to lvmetad.
+ */
+
 int pvscan(struct cmd_context *cmd, int argc, char **argv)
 {
 	struct pvscan_params params = { 0 };
 	struct processing_handle *handle = NULL;
+	const char *reason = NULL;
 	int ret;
 
 	if (arg_count(cmd, cache_long_ARG))
@@ -403,6 +460,19 @@ int pvscan(struct cmd_context *cmd, int argc, char **argv)
 		log_warn("WARNING: only considering physical volumes %s",
 			  arg_count(cmd, exported_ARG) ?
 			  "of exported volume group(s)" : "in no volume group");
+
+	/* Needed because this command has NO_LVMETAD_AUTOSCAN. */
+	if (lvmetad_used() && (!lvmetad_token_matches(cmd) || lvmetad_is_disabled(cmd, &reason))) {
+		if (lvmetad_used() && !lvmetad_pvscan_all_devs(cmd, NULL, 0)) {
+			log_warn("WARNING: Not using lvmetad because cache update failed.");
+			lvmetad_make_unused(cmd);
+		}
+
+		if (lvmetad_used() && lvmetad_is_disabled(cmd, &reason)) {
+			log_warn("WARNING: Not using lvmetad because %s.", reason);
+			lvmetad_make_unused(cmd);
+		}
+	}
 
 	if (!lock_vol(cmd, VG_GLOBAL, LCK_VG_WRITE, NULL)) {
 		log_error("Unable to obtain global lock.");

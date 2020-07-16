@@ -28,15 +28,18 @@ typedef int (*activation_handler) (struct cmd_context *cmd,
 				   enum activation_change activate);
 
 #ifdef LVMETAD_SUPPORT
-/*
- * Sets up a global handle for our process.
- */
-void lvmetad_init(struct cmd_context *);
 
 /*
- * Override the use of lvmetad for retrieving scan results and metadata.
+ * lvmetad_connect: connect to lvmetad
+ * lvmetad_disconnect: disconnect from lvmetad
+ * lvmetad_make_unused: disconnect from lvmetad and refresh cmd filter
+ * lvmetad_used: check if lvmetad is being used (i.e. is connected)
  */
-void lvmetad_set_active(struct cmd_context *, int);
+int lvmetad_connect(struct cmd_context *cmd);
+void lvmetad_disconnect(void);
+void lvmetad_make_unused(struct cmd_context *cmd);
+int lvmetad_used(void);
+
 
 /*
  * Configure the socket that lvmetad_init will use to connect to the daemon.
@@ -44,38 +47,16 @@ void lvmetad_set_active(struct cmd_context *, int);
 void lvmetad_set_socket(const char *);
 
 /*
- * Check whether lvmetad is used.
- */
-int lvmetad_used(void);
-
-/*
  * Check if lvmetad socket is present (either the one set by lvmetad_set_socket
- * or the default one if not set). For example, this may be used before calling
- * lvmetad_active() check that does connect to the socket - this would produce
- * various connection errors if the socket is not present.
+ * or the default one if not set).
  */
 int lvmetad_socket_present(void);
 
 /*
- * Check whether lvmetad is active (where active means both that it is running
- * and that we have a working connection with it). It opens new connection
- * with lvmetad in the process when lvmetad is supposed to be used and the
- * connection is not open yet.
+ * Check if lvmetad pidfile is present, indicating that the lvmetad
+ * process is running or not.
  */
-int lvmetad_active(void);
-
-/* 
- * Connect to lvmetad unless the connection is already open or lvmetad is
- * not configured to be used.  If we fail to connect, print a warning.
- */
-void lvmetad_connect_or_warn(void);
-
-/*
- * Drop connection to lvmetad. A subsequent lvmetad_connect_or_warn or
- * lvmetad_active will re-establish the connection (possibly at a
- * different socket path).
- */
-void lvmetad_disconnect(void);
+int lvmetad_pidfile_present(void);
 
 /*
  * Set the "lvmetad validity token" (currently only consists of the lvmetad
@@ -163,24 +144,28 @@ struct volume_group *lvmetad_vg_lookup(struct cmd_context *cmd,
 int lvmetad_pvscan_single(struct cmd_context *cmd, struct device *dev,
 			  activation_handler handler, int ignore_obsolete);
 
-int lvmetad_pvscan_all_devs(struct cmd_context *cmd, activation_handler handler);
+int lvmetad_pvscan_all_devs(struct cmd_context *cmd, activation_handler handler, int do_wait);
 int lvmetad_pvscan_foreign_vgs(struct cmd_context *cmd, activation_handler handler);
 
 int lvmetad_vg_clear_outdated_pvs(struct volume_group *vg);
 void lvmetad_validate_global_cache(struct cmd_context *cmd, int force);
+int lvmetad_token_matches(struct cmd_context *cmd);
 
 int lvmetad_vg_is_foreign(struct cmd_context *cmd, const char *vgname, const char *vgid);
 
+int lvmetad_is_disabled(struct cmd_context *cmd, const char **reason);
+void lvmetad_set_disabled(struct cmd_context *cmd, const char *reason);
+void lvmetad_clear_disabled(struct cmd_context *cmd);
+
 #  else		/* LVMETAD_SUPPORT */
 
-#    define lvmetad_init(cmd)	do { } while (0)
 #    define lvmetad_disconnect()	do { } while (0)
-#    define lvmetad_set_active(cmd, a)	do { } while (0)
+#    define lvmetad_connect(cmd)	(0)
+#    define lvmetad_make_unused(cmd)	do { } while (0)
+#    define lvmetad_used()		(0)
 #    define lvmetad_set_socket(a)	do { } while (0)
-#    define lvmetad_used()	(0)
 #    define lvmetad_socket_present()	(0)
-#    define lvmetad_active()	(0)
-#    define lvmetad_connect_or_warn()	do { } while (0)
+#    define lvmetad_pidfile_present()   (0)
 #    define lvmetad_set_token(a)	do { } while (0)
 #    define lvmetad_release_token()	do { } while (0)
 #    define lvmetad_vg_update(vg)	(1)
@@ -195,11 +180,15 @@ int lvmetad_vg_is_foreign(struct cmd_context *cmd, const char *vgname, const cha
 #    define lvmetad_get_vgnameids(cmd, vgnameids)       do { } while (0)
 #    define lvmetad_vg_lookup(cmd, vgname, vgid)	(NULL)
 #    define lvmetad_pvscan_single(cmd, dev, handler, ignore_obsolete)	(0)
-#    define lvmetad_pvscan_all_devs(cmd, handler)	(0)
+#    define lvmetad_pvscan_all_devs(cmd, handler, do_wait)	(0)
 #    define lvmetad_pvscan_foreign_vgs(cmd, handler)	(0)
-#    define lvmetad_vg_clear_outdated_pvs(vg)           (1)
+#    define lvmetad_vg_clear_outdated_pvs(vg)           do { } while (0)
 #    define lvmetad_validate_global_cache(cmd, force)	do { } while (0)
 #    define lvmetad_vg_is_foreign(cmd, vgname, vgid) (0)
+#    define lvmetad_token_matches(cmd) (1)
+#    define lvmetad_is_disabled(cmd, reason) (0)
+#    define lvmetad_set_disabled(cmd, reason) do { } while (0)
+#    define lvmetad_clear_disabled(cmd) do { } while (0)
 
 #  endif	/* LVMETAD_SUPPORT */
 

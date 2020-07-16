@@ -54,7 +54,7 @@ int become_daemon(struct cmd_context *cmd, int skip_lvm)
 		.sa_flags = SA_NOCLDSTOP,
 	};
 
-	log_verbose("Forking background process: %s", cmd->cmd_line);
+	log_verbose("Forking background process from command: %s", cmd->cmd_line);
 
 	sigaction(SIGCHLD, &act, NULL);
 
@@ -1022,6 +1022,7 @@ int lv_change_activate(struct cmd_context *cmd, struct logical_volume *lv,
 		       activation_change_t activate)
 {
 	int r = 1;
+	struct logical_volume *snapshot_lv;
 
 	if (lv_is_cache_pool(lv)) {
 		if (is_change_activating(activate)) {
@@ -1053,15 +1054,18 @@ int lv_change_activate(struct cmd_context *cmd, struct logical_volume *lv,
 		 * User could retry to deactivate it with another
 		 * deactivation of origin, which is the only visible LV
 		 */
-		if (!deactivate_lv(cmd, find_snapshot(lv)->lv)) {
+		snapshot_lv = find_snapshot(lv)->lv;
+		if (lv_is_thin_type(snapshot_lv) && !deactivate_lv(cmd, snapshot_lv)) {
 			if (is_change_activating(activate)) {
-				log_error("Refusing to activate merging \"%s\" while snapshot \"%s\" is still active.",
-					  lv->name, find_snapshot(lv)->lv->name);
+				log_error("Refusing to activate merging volume %s while "
+					  "snapshot volume %s is still active.",
+					  display_lvname(lv), display_lvname(snapshot_lv));
 				return 0;
 			}
 
-			log_error("Cannot fully deactivate merging origin \"%s\" while snapshot \"%s\" is still active.",
-				  lv->name, find_snapshot(lv)->lv->name);
+			log_error("Cannot fully deactivate merging origin volume %s while "
+				  "snapshot volume %s is still active.",
+				  display_lvname(lv), display_lvname(snapshot_lv));
 			r = 0; /* and continue to deactivate origin... */
 		}
 	}
@@ -1076,6 +1080,16 @@ int lv_change_activate(struct cmd_context *cmd, struct logical_volume *lv,
 
 int lv_refresh(struct cmd_context *cmd, struct logical_volume *lv)
 {
+	struct logical_volume *snapshot_lv;
+
+	if (lv_is_merging_origin(lv)) {
+		snapshot_lv = find_snapshot(lv)->lv;
+		if (lv_is_thin_type(snapshot_lv) && !deactivate_lv(cmd, snapshot_lv))
+			log_print_unless_silent("Delaying merge for origin volume %s since "
+						"snapshot volume %s is still active.",
+						display_lvname(lv), display_lvname(snapshot_lv));
+	}
+
 	if (!lv_refresh_suspend_resume(cmd, lv))
 		return_0;
 
@@ -3357,12 +3371,6 @@ int process_each_pv(struct cmd_context *cmd,
 		lvmcache_destroy(cmd, 1, 0);
 		dev_cache_full_scan(cmd->full_filter);
 	}
-
-	/*
-	 * Need pvid's set on all PVs before processing so that pvid's
-	 * can be compared to find duplicates while processing.
-	 */
-	lvmcache_seed_infos_from_lvmetad(cmd);
 
 	if (!get_vgnameids(cmd, &all_vgnameids, only_this_vgname, 1)) {
 		stack;
