@@ -32,11 +32,10 @@ static int vgconvert_single(struct cmd_context *cmd, const char *vg_name,
 	struct lvinfo info;
 	int active = 0;
 
-	if (vg_read_error(vg))
+	if (!vg_check_status(vg, LVM_WRITE | EXPORTED_VG)) {
+		stack;
 		return ECMD_FAILED;
-
-	if (!vg_check_status(vg, LVM_WRITE | EXPORTED_VG))
-		return ECMD_FAILED;
+	}
 
 	if (vg->fid->fmt == cmd->fmt) {
 		log_error("Volume group \"%s\" already uses format %s",
@@ -111,8 +110,10 @@ static int vgconvert_single(struct cmd_context *cmd, const char *vg_name,
 		}
 	}
 
-	if (active)
+	if (active) {
+		stack;
 		return ECMD_FAILED;
+	}
 
 	dm_list_iterate_items(pvl, &vg->pvs) {
 		existing_pv = pvl->pv;
@@ -167,7 +168,7 @@ static int vgconvert_single(struct cmd_context *cmd, const char *vg_name,
 	}
 
 	log_verbose("Deleting existing metadata for VG %s", vg_name);
-	if (!vg_remove(vg)) {
+	if (!vg_remove_mdas(vg)) {
 		log_error("Removal of existing metadata for %s failed.",
 			  vg_name);
 		log_error("Use pvcreate and vgcfgrestore to repair "

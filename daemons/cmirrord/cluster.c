@@ -1,3 +1,14 @@
+/*
+ * Copyright (C) 2004-2009 Red Hat, Inc. All rights reserved.
+ *
+ * This copyrighted material is made available to anyone wishing to use,
+ * modify, copy, or redistribute it subject to the terms and conditions
+ * of the GNU Lesser General Public License v.2.1.
+ *
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with this program; if not, write to the Free Software Foundation,
+ * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ */
 #include <errno.h>
 #include <string.h>
 #include <sys/types.h>
@@ -10,12 +21,13 @@
 #include <sys/un.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <corosync/corotypes.h>
+#include <corosync/cpg.h>
 #include <openais/saAis.h>
-#include <openais/cpg.h>
 #include <openais/saCkpt.h>
 
-#include "linux/dm-log-userspace.h"
-#include <libdevmapper.h>
+#include "dm-log-userspace.h"
+#include "libdevmapper.h"
 #include "functions.h"
 #include "local.h"
 #include "common.h"
@@ -133,7 +145,7 @@ int cluster_send(struct clog_request *rq)
 	int count=0;
 	int found;
 	struct iovec iov;
-	struct clog_cpg *entry, *tmp;
+	struct clog_cpg *entry;
 
 	dm_list_iterate_items(entry, &clog_cpg_list)
 		if (!strncmp(entry->name.value, rq->u_rq.uuid,
@@ -263,7 +275,7 @@ static int handle_cluster_response(struct clog_cpg *entry,
 				   struct clog_request *rq)
 {
 	int r = 0;
-	struct clog_request *orig_rq, *n;
+	struct clog_request *orig_rq;
 
 	/*
 	 * If I didn't send it, then I don't care about the response
@@ -317,7 +329,7 @@ static int handle_cluster_response(struct clog_cpg *entry,
 
 static struct clog_cpg *find_clog_cpg(cpg_handle_t handle)
 {
-	struct clog_cpg *match, *tmp;
+	struct clog_cpg *match;
 
 	dm_list_iterate_items(match, &clog_cpg_list)
 		if (match->handle == handle)
@@ -852,7 +864,7 @@ static int resend_requests(struct clog_cpg *entry)
 static int do_cluster_work(void *data)
 {
 	int r = SA_AIS_OK;
-	struct clog_cpg *entry, *tmp;
+	struct clog_cpg *entry;
 
 	dm_list_iterate_items(entry, &clog_cpg_list) {
 		r = cpg_dispatch(entry->handle, CPG_DISPATCH_ALL);
@@ -921,16 +933,16 @@ static int flush_startup_list(struct clog_cpg *entry)
 	return 0;
 }
 
-static void cpg_message_callback(cpg_handle_t handle, struct cpg_name *gname,
+static void cpg_message_callback(cpg_handle_t handle, const struct cpg_name *gname,
 				 uint32_t nodeid, uint32_t pid,
-				 void *msg, int msg_len)
+				 void *msg, size_t msg_len)
 {
 	int i;
 	int r = 0;
 	int i_am_server;
 	int response = 0;
 	struct clog_request *rq = msg;
-	struct clog_request *tmp_rq, *n;
+	struct clog_request *tmp_rq;
 	struct clog_cpg *match;
 
 	match = find_clog_cpg(handle);
@@ -1143,9 +1155,9 @@ out:
 }
 
 static void cpg_join_callback(struct clog_cpg *match,
-			      struct cpg_address *joined,
-			      struct cpg_address *member_list,
-			      int member_list_entries)
+			      const struct cpg_address *joined,
+			      const struct cpg_address *member_list,
+			      size_t member_list_entries)
 {
 	int i;
 	int my_pid = getpid();
@@ -1222,9 +1234,9 @@ out:
 }
 
 static void cpg_leave_callback(struct clog_cpg *match,
-			       struct cpg_address *left,
-			       struct cpg_address *member_list,
-			       int member_list_entries)
+			       const struct cpg_address *left,
+			       const struct cpg_address *member_list,
+			       size_t member_list_entries)
 {
 	int i, j, fd;
 	uint32_t lowest = match->lowest_id;
@@ -1355,15 +1367,15 @@ static void cpg_leave_callback(struct clog_cpg *match,
 	}
 }
 
-static void cpg_config_callback(cpg_handle_t handle, struct cpg_name *gname,
-				struct cpg_address *member_list,
-				int member_list_entries,
-				struct cpg_address *left_list,
-				int left_list_entries,
-				struct cpg_address *joined_list,
-				int joined_list_entries)
+static void cpg_config_callback(cpg_handle_t handle, const struct cpg_name *gname,
+				const struct cpg_address *member_list,
+				size_t member_list_entries,
+				const struct cpg_address *left_list,
+				size_t left_list_entries,
+				const struct cpg_address *joined_list,
+				size_t joined_list_entries)
 {
-	struct clog_cpg *match, *tmp;
+	struct clog_cpg *match;
 	int found = 0;
 
 	dm_list_iterate_items(match, &clog_cpg_list)
@@ -1448,7 +1460,7 @@ int create_cluster_cpg(char *uuid, uint64_t luid)
 	int r;
 	int size;
 	struct clog_cpg *new = NULL;
-	struct clog_cpg *tmp, *tmp2;
+	struct clog_cpg *tmp;
 
 	dm_list_iterate_items(tmp, &clog_cpg_list)
 		if (!strncmp(tmp->name.value, uuid, CPG_MAX_NAME_LENGTH)) {
@@ -1603,8 +1615,8 @@ void cleanup_cluster(void)
 void cluster_debug(void)
 {
 	struct checkpoint_data *cp;
-	struct clog_cpg *entry, *tmp;
-	struct clog_request *rq, *n;
+	struct clog_cpg *entry;
+	struct clog_request *rq;
 	int i;
 
 	LOG_ERROR("");

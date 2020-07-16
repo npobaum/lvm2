@@ -261,6 +261,13 @@ int init_locking(int type, struct cmd_context *cmd)
 		return 1;
 #endif
 
+	case 4:
+		log_verbose("Read-only locking selected. "
+			    "Only read operations permitted.");
+		if (!init_readonly_locking(&_locking, cmd))
+			break;
+		return 1;
+
 	default:
 		log_error("Unknown locking type requested.");
 		return 0;
@@ -280,7 +287,6 @@ int init_locking(int type, struct cmd_context *cmd)
 	if (!ignorelockingfailure())
 		return 0;
 
-	/* FIXME Ensure only read ops are permitted */
 	log_verbose("Locking disabled - only read operations permitted.");
 	init_readonly_locking(&_locking, cmd);
 
@@ -386,6 +392,12 @@ int lock_vol(struct cmd_context *cmd, const char *vol, uint32_t flags)
 		 */
 		if (!_blocking_supported || vgs_locked())
 			flags |= LCK_NONBLOCK;
+
+		if (vol[0] != '#' &&
+		    ((flags & LCK_TYPE_MASK) != LCK_UNLOCK) &&
+		    (!(flags & LCK_CACHE)) &&
+		    !lvmcache_verify_lock_order(vol))
+			return 0;
 
 		/* Lock VG to change on-disk metadata. */
 		/* If LVM1 driver knows about the VG, it can't be accessed. */

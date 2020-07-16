@@ -1,14 +1,20 @@
-/******************************************************************************
-*******************************************************************************
-**
-**  Copyright (C) 2009 Red Hat, Inc. All rights reserved.
-**
-*******************************************************************************
-******************************************************************************/
-
-/* This provides the interface between clvmd and corosync/DLM as the cluster
- * and lock manager.
+/*
+ * Copyright (C) 2009 Red Hat, Inc. All rights reserved.
  *
+ * This file is part of LVM2.
+ *
+ * This copyrighted material is made available to anyone wishing to use,
+ * modify, copy, or redistribute it subject to the terms and conditions
+ * of the GNU Lesser General Public License v.2.1.
+ *
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with this program; if not, write to the Free Software Foundation,
+ * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ */
+
+/*
+ * This provides the interface between clvmd and corosync/DLM as the cluster
+ * and lock manager.
  */
 
 #define _GNU_SOURCE
@@ -55,13 +61,13 @@
 /* Timeout value for several corosync calls */
 #define LOCKSPACE_NAME "clvmd"
 
-static void cpg_deliver_callback (cpg_handle_t handle,
+static void corosync_cpg_deliver_callback (cpg_handle_t handle,
 				  const struct cpg_name *groupName,
 				  uint32_t nodeid,
 				  uint32_t pid,
 				  void *msg,
 				  size_t msg_len);
-static void cpg_confchg_callback(cpg_handle_t handle,
+static void corosync_cpg_confchg_callback(cpg_handle_t handle,
 				 const struct cpg_name *groupName,
 				 const struct cpg_address *member_list, size_t member_list_entries,
 				 const struct cpg_address *left_list, size_t left_list_entries,
@@ -87,9 +93,9 @@ static dlm_lshandle_t *lockspace;
 static struct cpg_name cpg_group_name;
 
 /* Corosync callback structs */
-cpg_callbacks_t cpg_callbacks = {
-	.cpg_deliver_fn =            cpg_deliver_callback,
-	.cpg_confchg_fn =            cpg_confchg_callback,
+cpg_callbacks_t corosync_cpg_callbacks = {
+	.cpg_deliver_fn =            corosync_cpg_deliver_callback,
+	.cpg_confchg_fn =            corosync_cpg_confchg_callback,
 };
 
 quorum_callbacks_t quorum_callbacks = {
@@ -205,7 +211,7 @@ static char *print_corosync_csid(const char *csid)
 	return buf;
 }
 
-static void cpg_deliver_callback (cpg_handle_t handle,
+static void corosync_cpg_deliver_callback (cpg_handle_t handle,
 				  const struct cpg_name *groupName,
 				  uint32_t nodeid,
 				  uint32_t pid,
@@ -225,7 +231,7 @@ static void cpg_deliver_callback (cpg_handle_t handle,
 					msg_len-COROSYNC_CSID_LEN, (char*)&nodeid);
 }
 
-static void cpg_confchg_callback(cpg_handle_t handle,
+static void corosync_cpg_confchg_callback(cpg_handle_t handle,
 				 const struct cpg_name *groupName,
 				 const struct cpg_address *member_list, size_t member_list_entries,
 				 const struct cpg_address *left_list, size_t left_list_entries,
@@ -294,7 +300,7 @@ static int _init_cluster(void)
 	node_hash = dm_hash_create(100);
 
 	err = cpg_initialize(&cpg_handle,
-			     &cpg_callbacks);
+			     &corosync_cpg_callbacks);
 	if (err != CS_OK) {
 		syslog(LOG_ERR, "Cannot initialise Corosync CPG service: %d",
 		       err);
