@@ -17,6 +17,7 @@
 #include <signal.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <syslog.h>
 #include <sys/wait.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -26,24 +27,21 @@ static int info = 0;
 static int dump = 0;
 static int wait_opt = 0;
 static int force_opt = 0;
+static int kill_vg = 0;
+static int drop_vg = 0;
 static int gl_enable = 0;
 static int gl_disable = 0;
 static int stop_lockspaces = 0;
-static char *able_vg_name = NULL;
+static char *arg_vg_name = NULL;
 
 #define DUMP_SOCKET_NAME "lvmlockd-dump.sock"
 #define DUMP_BUF_SIZE (1024 * 1024)
-static char dump_buf[DUMP_BUF_SIZE];
+static char dump_buf[DUMP_BUF_SIZE+1];
 static int dump_len;
 static struct sockaddr_un dump_addr;
 static socklen_t dump_addrlen;
 
 daemon_handle _lvmlockd;
-
-#define log_debug(fmt, args...) \
-do { \
-	printf(fmt "\n", ##args); \
-} while (0)
 
 #define log_error(fmt, args...) \
 do { \
@@ -102,6 +100,8 @@ static void find_client_info(uint32_t client_id, uint32_t *pid, char *cl_name)
 	}
 }
 
+static int first_ls = 1;
+
 static void format_info_ls(char *line)
 {
 	char ls_name[MAX_NAME+1] = { 0 };
@@ -114,7 +114,9 @@ static void format_info_ls(char *line)
 	sscanf(line, "info=ls ls_name=%s vg_name=%s vg_uuid=%s vg_sysid=%s vg_args=%s lm_type=%s",
 	       ls_name, vg_name, vg_uuid, vg_sysid, lock_args, lock_type);
 
-	printf("\n");
+	if (!first_ls)
+		printf("\n");
+	first_ls = 0;
 
 	printf("VG %s lock_type=%s %s\n", vg_name, lock_type, vg_uuid);
 
@@ -160,10 +162,10 @@ static void format_info_r(char *line, char *r_name_out, char *r_type_out)
 	/* when mode is un, there will be no lk lines, so print now */
 
 	if (!strcmp(r_type, "gl")) {
-		printf("LK GL un ver %4u\n", ver);
+		printf("LK GL un ver %u\n", ver);
 
 	} else if (!strcmp(r_type, "vg")) {
-		printf("LK VG un ver %4u\n", ver);
+		printf("LK VG un ver %u\n", ver);
 
 	} else if (!strcmp(r_type, "lv")) {
 		printf("LK LV un %s\n", r_name);
@@ -191,10 +193,10 @@ static void format_info_lk(char *line, char *r_name, char *r_type)
 	find_client_info(client_id, &pid, cl_name);
 
 	if (!strcmp(r_type, "gl")) {
-		printf("LK GL %s ver %4u pid %u (%s)\n", mode, ver, pid, cl_name);
+		printf("LK GL %s ver %u pid %u (%s)\n", mode, ver, pid, cl_name);
 
 	} else if (!strcmp(r_type, "vg")) {
-		printf("LK VG %s ver %4u pid %u (%s)\n", mode, ver, pid, cl_name);
+		printf("LK VG %s ver %u pid %u (%s)\n", mode, ver, pid, cl_name);
 
 	} else if (!strcmp(r_type, "lv")) {
 		printf("LK LV %s %s\n", mode, r_name);
@@ -232,10 +234,10 @@ static void format_info_r_action(char *line, char *r_name, char *r_type)
 	}
 
 	if (!strcmp(r_type, "gl")) {
-		printf("LW GL %s ver %4u pid %u (%s)\n", mode, 0, pid, cl_name);
+		printf("LW GL %s ver %u pid %u (%s)\n", mode, 0, pid, cl_name);
 
 	} else if (!strcmp(r_type, "vg")) {
-		printf("LW VG %s ver %4u pid %u (%s)\n", mode, 0, pid, cl_name);
+		printf("LW VG %s ver %u pid %u (%s)\n", mode, 0, pid, cl_name);
 
 	} else if (!strcmp(r_type, "lv")) {
 		printf("LW LV %s %s\n", mode, r_name);
@@ -245,7 +247,7 @@ static void format_info_r_action(char *line, char *r_name, char *r_type)
 static void format_info_line(char *line, char *r_name, char *r_type)
 {
 	if (!strncmp(line, "info=structs ", strlen("info=structs "))) {
-		printf("%s", line);
+		/* only print this in the raw info dump */
 
 	} else if (!strncmp(line, "info=client ", strlen("info=client "))) {
 		save_client_info(line);
@@ -325,8 +327,6 @@ static daemon_reply _lvmlockd_send(const char *req_name, ...)
 static int _lvmlockd_result(daemon_reply reply, int *result)
 {
 	int reply_result;
-	const char *reply_flags;
-	const char *lock_type;
 
 	if (reply.error) {
 		log_error("lvmlockd_result reply error %d", reply.error);
@@ -344,14 +344,8 @@ static int _lvmlockd_result(daemon_reply reply, int *result)
 		return 0;
 	}
 
-	/* The lock_type that lvmlockd used for locking. */
-	lock_type = daemon_reply_str(reply, "lock_type", "none");
-
 	*result = reply_result;
 
-	reply_flags = daemon_reply_str(reply, "result_flags", NULL);
-
-	log_debug("lvmlockd_result %d %s lm %s", reply_result, reply_flags, lock_type);
 	return 1;
 }
 
@@ -455,9 +449,9 @@ static int do_able(const char *req_name)
 	int rv;
 
 	reply = _lvmlockd_send(req_name,
-				"cmd = %s", "lvmlock",
+				"cmd = %s", "lvmlockctl",
 				"pid = %d", getpid(),
-				"vg_name = %s", able_vg_name,
+				"vg_name = %s", arg_vg_name,
 				NULL);
 
 	if (!_lvmlockd_result(reply, &result)) {
@@ -486,9 +480,90 @@ static int do_stop_lockspaces(void)
 		strcat(opts, "force ");
 
 	reply = _lvmlockd_send("stop_all",
-				"cmd = %s", "lvmlock",
+				"cmd = %s", "lvmlockctl",
 				"pid = %d", getpid(),
 				"opts = %s", opts[0] ? opts : "none",
+				NULL);
+
+	if (!_lvmlockd_result(reply, &result)) {
+		log_error("lvmlockd result %d", result);
+		rv = result;
+	} else {
+		rv = 0;
+	}
+
+	daemon_reply_destroy(reply);
+	return rv;
+}
+
+static int do_kill(void)
+{
+	daemon_reply reply;
+	int result;
+	int rv;
+
+	syslog(LOG_EMERG, "Lost access to sanlock lease storage in VG %s.", arg_vg_name);
+	/* These two lines explain the manual alternative to the FIXME below. */
+	syslog(LOG_EMERG, "Immediately deactivate LVs in VG %s.", arg_vg_name);
+	syslog(LOG_EMERG, "Once VG is unused, run lvmlockctl --drop %s.", arg_vg_name);
+
+	/*
+	 * It may not be strictly necessary to notify lvmlockd of the kill, but
+	 * lvmlockd can use this information to avoid attempting any new lock
+	 * requests in the VG (which would fail anyway), and can return an
+	 * error indicating that the VG has been killed.
+	 */
+
+	reply = _lvmlockd_send("kill_vg",
+				"cmd = %s", "lvmlockctl",
+				"pid = %d", getpid(),
+				"vg_name = %s", arg_vg_name,
+				NULL);
+
+	if (!_lvmlockd_result(reply, &result)) {
+		log_error("lvmlockd result %d", result);
+		rv = result;
+	} else {
+		rv = 0;
+	}
+
+	daemon_reply_destroy(reply);
+
+	/*
+	 * FIXME: here is where we should implement a strong form of
+	 * blkdeactivate, and if it completes successfully, automatically call
+	 * do_drop() afterward.  (The drop step may not always be necessary
+	 * if the lvm commands run while shutting things down release all the
+	 * leases.)
+	 *
+	 * run_strong_blkdeactivate();
+	 * do_drop();
+	 */
+
+	return rv;
+}
+
+static int do_drop(void)
+{
+	daemon_reply reply;
+	int result;
+	int rv;
+
+	syslog(LOG_WARNING, "Dropping locks for VG %s.", arg_vg_name);
+
+	/*
+	 * Check for misuse by looking for any active LVs in the VG
+	 * and refusing this operation if found?  One possible way
+	 * to kill LVs (e.g. if fs cannot be unmounted) is to suspend
+	 * them, or replace them with the error target.  In that
+	 * case the LV will still appear to be active, but it is
+	 * safe to release the lock.
+	 */
+
+	reply = _lvmlockd_send("drop_vg",
+				"cmd = %s", "lvmlockctl",
+				"pid = %d", getpid(),
+				"vg_name = %s", arg_vg_name,
 				NULL);
 
 	if (!_lvmlockd_result(reply, &result)) {
@@ -518,12 +593,16 @@ static void print_usage(void)
 	printf("      Wait option for other commands.\n");
 	printf("--force | -f 0|1>\n");
 	printf("      Force option for other commands.\n");
-	printf("--stop-lockspaces | -S\n");
-	printf("      Stop all lockspaces.\n");
+	printf("--kill | -k <vg_name>\n");
+	printf("      Kill access to the vg when sanlock cannot renew lease.\n");
+	printf("--drop | -r <vg_name>\n");
+	printf("      Clear locks for the vg after it has been killed and is no longer used.\n");
 	printf("--gl-enable <vg_name>\n");
 	printf("      Tell lvmlockd to enable the global lock in a sanlock vg.\n");
 	printf("--gl-disable <vg_name>\n");
 	printf("      Tell lvmlockd to disable the global lock in a sanlock vg.\n");
+	printf("--stop-lockspaces | -S\n");
+	printf("      Stop all lockspaces.\n");
 }
 
 static int read_options(int argc, char *argv[])
@@ -538,6 +617,8 @@ static int read_options(int argc, char *argv[])
 		{"dump",            no_argument,       0,  'd' },
 		{"wait",            required_argument, 0,  'w' },
 		{"force",           required_argument, 0,  'f' },
+		{"kill",            required_argument, 0,  'k' },
+		{"drop",            required_argument, 0,  'r' },
 		{"gl-enable",       required_argument, 0,  'E' },
 		{"gl-disable",      required_argument, 0,  'D' },
 		{"stop-lockspaces", no_argument,       0,  'S' },
@@ -550,7 +631,7 @@ static int read_options(int argc, char *argv[])
 	}
 
 	while (1) {
-		c = getopt_long(argc, argv, "hqidE:D:w:S", long_options, &option_index);
+		c = getopt_long(argc, argv, "hqidE:D:w:k:r:S", long_options, &option_index);
 		if (c == -1)
 			break;
 
@@ -574,13 +655,21 @@ static int read_options(int argc, char *argv[])
 		case 'w':
 			wait_opt = atoi(optarg);
 			break;
+		case 'k':
+			kill_vg = 1;
+			arg_vg_name = strdup(optarg);
+			break;
+		case 'r':
+			drop_vg = 1;
+			arg_vg_name = strdup(optarg);
+			break;
 		case 'E':
 			gl_enable = 1;
-			able_vg_name = strdup(optarg);
+			arg_vg_name = strdup(optarg);
 			break;
 		case 'D':
 			gl_disable = 1;
-			able_vg_name = strdup(optarg);
+			arg_vg_name = strdup(optarg);
 			break;
 		case 'S':
 			stop_lockspaces = 1;
@@ -606,7 +695,7 @@ int main(int argc, char **argv)
 	_lvmlockd = lvmlockd_open(NULL);
 
 	if (_lvmlockd.socket_fd < 0 || _lvmlockd.error) {
-		log_error("lvmlockd open error %d", _lvmlockd.error);
+		log_error("Cannot connect to lvmlockd.");
 		return -1;
 	}
 
@@ -622,6 +711,16 @@ int main(int argc, char **argv)
 
 	if (dump) {
 		rv = do_dump("dump");
+		goto out;
+	}
+
+	if (kill_vg) {
+		rv = do_kill();
+		goto out;
+	}
+
+	if (drop_vg) {
+		rv = do_drop();
 		goto out;
 	}
 
