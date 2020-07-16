@@ -1101,6 +1101,9 @@ static int _get_settings(struct cmd_context *cmd)
 	cmd->ignore_clustered_vgs = arg_is_set(cmd, ignoreskippedcluster_ARG);
 	cmd->include_foreign_vgs = arg_is_set(cmd, foreign_ARG) ? 1 : 0;
 	cmd->include_shared_vgs = arg_is_set(cmd, shared_ARG) ? 1 : 0;
+	cmd->include_historical_lvs = arg_is_set(cmd, history_ARG) ? 1 : 0;
+	cmd->record_historical_lvs = find_config_tree_bool(cmd, metadata_record_lvs_history_CFG, NULL) ?
+							  (arg_is_set(cmd, nohistory_ARG) ? 0 : 1) : 0;
 
 	/*
 	 * This is set to zero by process_each which wants to print errors
@@ -1656,6 +1659,9 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 
 	lvmlockd_disconnect();
 	fin_locking();
+
+	if (!_cmd_no_meta_proc(cmd) && find_config_tree_bool(cmd, global_notify_dbus_CFG, NULL))
+		lvmnotify_send(cmd);
 
       out:
 	if (test_mode()) {

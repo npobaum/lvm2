@@ -197,28 +197,28 @@ xx(lvchange,
    test_ARG, writebehind_ARG, writemostly_ARG, zero_ARG)
 
 #define COMMON_OPTS \
-	"\t[--commandprofile ProfileName] [-d|--debug] [-h|-?|--help]\n" \
+	"\t[--commandprofile <ProfileName>] [-d|--debug] [-h|-?|--help]\n" \
 	"\t[--noudevsync] [-t|--test] [-v|--verbose] [--version] [-y|--yes]\n"
 
 xx(lvconvert,
    "Change logical volume layout",
    0,
    "lvconvert "
-   "[-m|--mirrors Mirrors [{--mirrorlog {disk|core|mirrored}|--corelog}]]\n"
-   "\t[--type SegmentType]\n"
+   "[-m|--mirrors <Mirrors> [--mirrorlog {disk|core|mirrored}|--corelog]]\n"
+   "\t[--type <SegmentType>]\n"
    "\t[--repair [--use-policies]]\n"
    "\t[--replace PhysicalVolume]\n"
-   "\t[-R|--regionsize MirrorLogRegionSize]\n"
-   "\t[--alloc AllocationPolicy]\n"
+   "\t[-R|--regionsize <MirrorLogRegionSize>]\n"
+   "\t[--alloc <AllocationPolicy>]\n"
    "\t[-b|--background]\n"
    "\t[-f|--force]\n"
-   "\t[-i|--interval seconds]\n"
-   "\t[--stripes Stripes [-I|--stripesize StripeSize]]\n"
+   "\t[-i|--interval <Seconds>]\n"
+   "\t[--stripes <Stripes> [-I|--stripesize <StripeSize>]]\n"
    COMMON_OPTS
    "\tLogicalVolume[Path] [PhysicalVolume[Path]...]\n\n"
 
    "lvconvert "
-   "[--splitmirrors Images --trackchanges]\n"
+   "[--splitmirrors <Images> --trackchanges]\n"
    "\t[--splitmirrors Images --name SplitLogicalVolumeName]\n"
    COMMON_OPTS
    "\tLogicalVolume[Path] [SplittablePhysicalVolume[Path]...]\n\n"
@@ -246,7 +246,7 @@ xx(lvconvert,
 
    "lvconvert "
    "[--type snapshot|-s|--snapshot]\n"
-   "\t[-c|--chunksize]\n"
+   "\t[-c|--chunksize <ChunkSize>]\n"
    "\t[-Z|--zero {y|n}]\n"
    COMMON_OPTS
    "\tOriginalLogicalVolume[Path] SnapshotLogicalVolume[Path]\n\n"
@@ -254,20 +254,20 @@ xx(lvconvert,
    "lvconvert "
    "--merge\n"
    "\t[-b|--background]\n"
-   "\t[-i|--interval seconds]\n"
+   "\t[-i|--interval <Seconds>]\n"
    COMMON_OPTS
    "\tLogicalVolume[Path]\n\n"
 
    "lvconvert "
    "[--type thin[-pool]|-T|--thin]\n"
    "\t[--thinpool ThinPoolLogicalVolume[Path]]\n"
-   "\t[--chunksize size]\n"
+   "\t[--chunksize <ChunkSize>]\n"
    "\t[--discards {ignore|nopassdown|passdown}]\n"
    "\t[--poolmetadataspare {y|n}]\n"
-   "\t[{--poolmetadata ThinMetadataLogicalVolume[Path] |\n"
-   "\t --poolmetadatasize size}]\n"
-   "\t[-r|--readahead ReadAheadSectors|auto|none]\n"
-   "\t[--stripes Stripes [-I|--stripesize StripeSize]]]\n"
+   "\t[--poolmetadata ThinMetadataLogicalVolume[Path] |\n"
+   "\t --poolmetadatasize <MetadataSize>]\n"
+   "\t[-r|--readahead <ReadAheadSectors>|auto|none]\n"
+   "\t[--stripes <Stripes> [-I|--stripesize <StripeSize>]]]\n"
    "\t[--originname NewExternalOriginVolumeName]]\n"
    "\t[-Z|--zero {y|n}]\n"
    COMMON_OPTS
@@ -276,13 +276,13 @@ xx(lvconvert,
    "lvconvert "
    "[--type cache[-pool]|-H|--cache]\n"
    "\t[--cachepool CacheDataLogicalVolume[Path]]\n"
-   "\t[--cachemode CacheMode]\n"
-   "\t[--cachepolicy policy]\n"
-   "\t[--cachesettings key=value]\n"
-   "\t[--chunksize size]\n"
+   "\t[--cachemode <CacheMode>]\n"
+   "\t[--cachepolicy <CachePolicy>]\n"
+   "\t[--cachesettings <Key>=<Value>]\n"
+   "\t[--chunksize <ChunkSize>]\n"
+   "\t[--poolmetadata CacheMetadataLogicalVolume[Path] |\n"
+   "\t --poolmetadatasize <MetadataSize>]\n"
    "\t[--poolmetadataspare {y|n}]]\n"
-   "\t[{--poolmetadata CacheMetadataLogicalVolume[Path] |\n"
-   "\t --poolmetadatasize size}]\n"
    COMMON_OPTS
    "\t[Cache|CacheDataPool]LogicalVolume[Path] [PhysicalVolumePath...]\n\n",
 
@@ -409,6 +409,7 @@ xx(lvdisplay,
    "\t[-d|--debug]\n"
    "\t[--foreign]\n"
    "\t[-h|--help]\n"
+   "\t[-H|--history]\n"
    "\t[--ignorelockingfailure]\n"
    "\t[--ignoreskippedcluster]\n"
    "\t[-m|--maps]\n"
@@ -429,6 +430,7 @@ xx(lvdisplay,
    "\t[-d|--debug]\n"
    "\t[--foreign]\n"
    "\t[-h|--help]\n"
+   "\t[-H|--history]\n"
    "\t[--ignorelockingfailure]\n"
    "\t[--ignoreskippedcluster]\n"
    "\t[--noheadings]\n"
@@ -447,10 +449,10 @@ xx(lvdisplay,
    "\t[LogicalVolume[Path] [LogicalVolume[Path]...]]\n",
 
     aligned_ARG, all_ARG, binary_ARG, colon_ARG, columns_ARG, foreign_ARG,
-    ignorelockingfailure_ARG, ignoreskippedcluster_ARG, maps_ARG,
-    noheadings_ARG, nosuffix_ARG, options_ARG, sort_ARG, partial_ARG,
-    readonly_ARG, segments_ARG, select_ARG, separator_ARG, shared_ARG,
-    unbuffered_ARG, units_ARG)
+    history_ARG, ignorelockingfailure_ARG, ignoreskippedcluster_ARG,
+    maps_ARG, noheadings_ARG, nosuffix_ARG, options_ARG, sort_ARG,
+    partial_ARG, readonly_ARG, segments_ARG, select_ARG, separator_ARG,
+    shared_ARG, unbuffered_ARG, units_ARG)
 
 xx(lvextend,
    "Add space to a logical volume",
@@ -598,6 +600,7 @@ xx(lvremove,
    "\t[-d|--debug]\n"
    "\t[-f|--force]\n"
    "\t[-h|--help]\n"
+   "\t[--nohistory]\n"
    "\t[--noudevsync]\n"
    "\t[-S|--select Selection]\n"
    "\t[-t|--test]\n"
@@ -605,7 +608,8 @@ xx(lvremove,
    "\t[--version]\n"
    "\tLogicalVolume[Path] [LogicalVolume[Path]...]\n",
 
-   autobackup_ARG, force_ARG, noudevsync_ARG, select_ARG, test_ARG)
+   autobackup_ARG, force_ARG, nohistory_ARG, noudevsync_ARG,
+   select_ARG, test_ARG)
 
 xx(lvrename,
    "Rename a logical volume",
@@ -663,6 +667,7 @@ xx(lvs,
    "\t[-d|--debug]\n"
    "\t[--foreign]\n"
    "\t[-h|--help]\n"
+   "\t[-H|--history]\n"
    "\t[--ignorelockingfailure]\n"
    "\t[--ignoreskippedcluster]\n"
    "\t[--nameprefixes]\n"
@@ -684,11 +689,12 @@ xx(lvs,
    "\t[--version]\n"
    "\t[LogicalVolume[Path] [LogicalVolume[Path]...]]\n",
 
-   aligned_ARG, all_ARG, binary_ARG, foreign_ARG, ignorelockingfailure_ARG,
-   ignoreskippedcluster_ARG, nameprefixes_ARG, noheadings_ARG,
-   nolocking_ARG, nosuffix_ARG, options_ARG, partial_ARG,
-   readonly_ARG, rows_ARG, segments_ARG, select_ARG, separator_ARG, shared_ARG,
-   sort_ARG, trustcache_ARG, unbuffered_ARG, units_ARG, unquoted_ARG)
+   aligned_ARG, all_ARG, binary_ARG, foreign_ARG, history_ARG,
+   ignorelockingfailure_ARG, ignoreskippedcluster_ARG, nameprefixes_ARG,
+   noheadings_ARG, nolocking_ARG, nosuffix_ARG, options_ARG, partial_ARG,
+   readonly_ARG, rows_ARG, segments_ARG, select_ARG, separator_ARG,
+   shared_ARG, sort_ARG, trustcache_ARG, unbuffered_ARG, units_ARG,
+   unquoted_ARG)
 
 xx(lvscan,
    "List all logical volumes in all volume groups",
@@ -766,7 +772,7 @@ xx(pvck,
 
 xx(pvcreate,
    "Initialize physical volume(s) for use by LVM",
-   0,
+   ENABLE_ALL_DEVS,
    "pvcreate\n"
    "\t[--norestorefile]\n"
    "\t[--restorefile file]\n"
@@ -911,7 +917,7 @@ xx(lvpoll,
 
 xx(pvremove,
    "Remove LVM label(s) from physical volume(s)",
-   0,
+   ENABLE_ALL_DEVS,
    "pvremove\n"
    "\t[--commandprofile ProfileName]\n"
    "\t[-d|--debug]\n"
@@ -1119,7 +1125,7 @@ xx(vgconvert,
 
 xx(vgcreate,
    "Create a volume group",
-   0,
+   MUST_USE_ALL_ARGS | ENABLE_ALL_DEVS,
    "vgcreate\n"
    "\t[-A|--autobackup {y|n}]\n"
    "\t[--addtag Tag]\n"
@@ -1214,7 +1220,7 @@ xx(vgexport,
 
 xx(vgextend,
    "Add physical volumes to a volume group",
-   0,
+   MUST_USE_ALL_ARGS | ENABLE_ALL_DEVS,
    "vgextend\n"
    "\t[-A|--autobackup y|n]\n"
    "\t[--restoremissing]\n"
@@ -1384,11 +1390,12 @@ xx(vgscan,
    "\t[-h|--help]\n"
    "\t[--ignorelockingfailure]\n"
    "\t[--mknodes]\n"
+   "\t[--notifydbus]\n"
    "\t[-P|--partial]\n"
    "\t[-v|--verbose]\n"
    "\t[--version]\n",
 
-   cache_long_ARG, ignorelockingfailure_ARG, mknodes_ARG, partial_ARG)
+   cache_long_ARG, ignorelockingfailure_ARG, mknodes_ARG, notifydbus_ARG, partial_ARG)
 
 xx(vgsplit,
    "Move physical volumes into a new or existing volume group",

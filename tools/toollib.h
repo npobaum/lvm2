@@ -70,6 +70,7 @@ int become_daemon(struct cmd_context *cmd, int skip_lvm);
  */
 struct processing_handle {
 	int internal_report_for_select;
+	int include_historical_lvs;
 	struct selection_handle *selection_handle;
 	void *custom_handle;
 };
@@ -101,8 +102,8 @@ int process_each_vg(struct cmd_context *cmd, int argc, char **argv,
 		    struct processing_handle *handle,
 		    process_single_vg_fn_t process_single_vg);
 
-int process_each_pv(struct cmd_context *cmd, int argc, char **argv,
-		    const char *vg_name, uint32_t read_flags,
+int process_each_pv(struct cmd_context *cmd, int argc, char **argv, const char *vg_name,
+		    int all_is_set, uint32_t read_flags,
 		    struct processing_handle *handle,
 		    process_single_pv_fn_t process_single_pv);
 
@@ -152,6 +153,9 @@ const char *extract_vgname(struct cmd_context *cmd, const char *lv_name);
 const char *skip_dev_dir(struct cmd_context *cmd, const char *vg_name,
 			 unsigned *dev_dir_found);
 
+int pvcreate_params_from_args(struct cmd_context *cmd, struct pvcreate_params *pp);
+int pvcreate_each_device(struct cmd_context *cmd, struct processing_handle *handle, struct pvcreate_params *pp);
+
 /*
  * Builds a list of pv's from the names in argv.  Used in
  * lvcreate/extend.
@@ -173,8 +177,6 @@ int lv_refresh(struct cmd_context *cmd, struct logical_volume *lv);
 int vg_refresh_visible(struct cmd_context *cmd, struct volume_group *vg);
 void lv_spawn_background_polling(struct cmd_context *cmd,
 				 struct logical_volume *lv);
-int pvcreate_params_validate(struct cmd_context *cmd, int argc,
-			     struct pvcreate_params *pp);
 
 int get_activation_monitoring_mode(struct cmd_context *cmd,
 				   int *monitoring_mode);

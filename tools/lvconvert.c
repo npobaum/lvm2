@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2015 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2005-2016 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -28,6 +28,7 @@ struct lvconvert_params {
 	int merge;
 	int merge_mirror;
 	int poolmetadataspare;
+	int repair;
 	int thin;
 	int uncache;
 	int yes;
@@ -90,7 +91,7 @@ struct convert_poll_id_list {
 
 static int _lvconvert_validate_names(struct lvconvert_params *lp)
 {
-	int i, j;
+	unsigned i, j;
 	const char *names[] = {
 		(lp->lv_name == lp->pool_data_name) ? NULL : lp->lv_name, "converted",
 		lp->pool_data_name, "pool",
@@ -114,9 +115,6 @@ static int _lvconvert_name_params(struct lvconvert_params *lp,
 				  struct cmd_context *cmd,
 				  int *pargc, char ***pargv)
 {
-	char *ptr;
-	const char *vg_name = NULL;
-
 	if (lp->merge) {
 		if (!*pargc) {
 			log_error("Please specify a logical volume path.");
@@ -173,29 +171,26 @@ static int _lvconvert_name_params(struct lvconvert_params *lp,
 	if (!validate_restricted_lvname_param(cmd, &lp->vg_name, &lp->lv_split_name))
 		return_0;
 
-	if (strchr(lp->lv_name_full, '/') &&
-	    (vg_name = extract_vgname(cmd, lp->lv_name_full)) &&
-	    lp->vg_name && strcmp(vg_name, lp->vg_name)) {
-		log_error("Please use a single volume group name "
-			  "(\"%s\" or \"%s\")", vg_name, lp->vg_name);
-		return 0;
+	if (!lp->vg_name && !strchr(lp->lv_name_full, '/')) {
+		/* Check for $LVM_VG_NAME */
+		if (!(lp->vg_name = extract_vgname(cmd, NULL))) {
+			log_error("Please specify a logical volume path.");
+			return 0;
+		}
 	}
 
-	if (!lp->vg_name)
-		lp->vg_name = vg_name;
+	if (!validate_lvname_param(cmd, &lp->vg_name, &lp->lv_name_full))
+		return_0;
+
+	lp->lv_name = lp->lv_name_full;
 
 	if (!validate_name(lp->vg_name)) {
 		log_error("Please provide a valid volume group name");
 		return 0;
 	}
 
-	if ((ptr = strrchr(lp->lv_name_full, '/')))
-		lp->lv_name = ptr + 1;
-	else
-		lp->lv_name = lp->lv_name_full;
-
 	if (!lp->merge_mirror &&
-	    !arg_count(cmd, repair_ARG) &&
+	    !lp->repair &&
 	    !arg_count(cmd, splitmirrors_ARG) &&
 	    !strstr(lp->lv_name, "_tdata") &&
 	    !strstr(lp->lv_name, "_tmeta") &&
@@ -384,33 +379,26 @@ static int _read_params(struct cmd_context *cmd, int argc, char **argv,
 	if (!_check_conversion_type(cmd, type_str))
 		return_0;
 
-	if (arg_count(cmd, repair_ARG) &&
-	    arg_outside_list_is_set(cmd, "cannot be used with --repair",
-				    repair_ARG,
-				    alloc_ARG, usepolicies_ARG,
-				    stripes_long_ARG, stripesize_ARG,
-				    force_ARG, noudevsync_ARG, test_ARG,
-				    -1))
-		return_0;
+	if (arg_count(cmd, repair_ARG)) {
+		if (arg_outside_list_is_set(cmd, "cannot be used with --repair",
+					    repair_ARG,
+					    alloc_ARG, usepolicies_ARG,
+					    stripes_long_ARG, stripesize_ARG,
+					    force_ARG, noudevsync_ARG, test_ARG,
+					    -1))
+			return_0;
+		lp->repair = 1;
+	}
 
 	if (arg_is_set(cmd, mirrorlog_ARG) && arg_is_set(cmd, corelog_ARG)) {
 		log_error("--mirrorlog and --corelog are incompatible.");
 		return 0;
 	}
 
-	if (arg_is_set(cmd, splitsnapshot_ARG)) {
-		if (arg_outside_list_is_set(cmd, "cannot be used with --splitsnapshot",
-					    splitsnapshot_ARG,
-					    force_ARG, noudevsync_ARG, test_ARG,
-					    -1))
-			return_0;
-		lp->splitsnapshot = 1;
-	}
-
 	if (arg_is_set(cmd, split_ARG)) {
 		if (arg_outside_list_is_set(cmd, "cannot be used with --split",
 					    split_ARG,
-                                            name_ARG,
+					    name_ARG,
 					    force_ARG, noudevsync_ARG, test_ARG,
 					    -1))
 			return_0;
@@ -426,6 +414,15 @@ static int _read_params(struct cmd_context *cmd, int argc, char **argv,
 		lp->splitcache = 1;
 	}
 
+	if (arg_is_set(cmd, splitsnapshot_ARG)) {
+		if (arg_outside_list_is_set(cmd, "cannot be used with --splitsnapshot",
+					    splitsnapshot_ARG,
+					    force_ARG, noudevsync_ARG, test_ARG,
+					    -1))
+			return_0;
+		lp->splitsnapshot = 1;
+	}
+
 	if (arg_is_set(cmd, uncache_ARG)) {
 		if (arg_outside_list_is_set(cmd, "cannot be used with --uncache",
 					    uncache_ARG,
@@ -437,7 +434,7 @@ static int _read_params(struct cmd_context *cmd, int argc, char **argv,
 
 	if ((_snapshot_type_requested(cmd, type_str) || arg_count(cmd, merge_ARG)) &&
 	    (arg_count(cmd, mirrorlog_ARG) || _mirror_or_raid_type_requested(cmd, type_str) ||
-	     arg_count(cmd, repair_ARG) || arg_count(cmd, thinpool_ARG))) {
+	     lp->repair || arg_count(cmd, thinpool_ARG))) {
 		log_error("--snapshot/--type snapshot or --merge argument "
 			  "cannot be mixed with --mirrors/--type mirror/--type raid*, "
 			  "--mirrorlog, --repair or --thinpool.");
@@ -446,7 +443,7 @@ static int _read_params(struct cmd_context *cmd, int argc, char **argv,
 
 	if ((arg_count(cmd, stripes_long_ARG) || arg_count(cmd, stripesize_ARG)) &&
 	    !(_mirror_or_raid_type_requested(cmd, type_str) ||
-	      arg_count(cmd, repair_ARG) ||
+	      lp->repair ||
 	      arg_count(cmd, thinpool_ARG))) {
 		log_error("--stripes or --stripesize argument is only valid "
 			  "with --mirrors/--type mirror/--type raid*, --repair and --thinpool");
@@ -720,42 +717,39 @@ static struct poll_functions _lvconvert_thin_merge_fns = {
 	.finish_copy = lvconvert_merge_finish,
 };
 
-static void _destroy_id(struct cmd_context *cmd, struct poll_operation_id *id)
-{
-	if (!id)
-		return;
-
-	dm_pool_free(cmd->mem, (void *)id);
-}
-
 static struct poll_operation_id *_create_id(struct cmd_context *cmd,
 					    const char *vg_name,
 					    const char *lv_name,
 					    const char *uuid)
 {
+	struct poll_operation_id *id;
 	char lv_full_name[NAME_LEN];
-	struct poll_operation_id *id = dm_pool_alloc(cmd->mem, sizeof(struct poll_operation_id));
-	if (!id) {
-		log_error("Poll operation ID allocation failed.");
+
+	if (!vg_name || !lv_name || !uuid) {
+		log_error(INTERNAL_ERROR "Wrong params for lvconvert _create_id.");
 		return NULL;
 	}
 
 	if (dm_snprintf(lv_full_name, sizeof(lv_full_name), "%s/%s", vg_name, lv_name) < 0) {
 		log_error(INTERNAL_ERROR "Name \"%s/%s\" is too long.", vg_name, lv_name);
-		_destroy_id(cmd, id);
 		return NULL;
 	}
 
-	id->display_name = dm_pool_strdup(cmd->mem, lv_full_name);
-	id->vg_name = vg_name ? dm_pool_strdup(cmd->mem, vg_name) : NULL;
-	id->lv_name = id->display_name ? strchr(id->display_name, '/') + 1 : NULL;
-	id->uuid = uuid ? dm_pool_strdup(cmd->mem, uuid) : NULL;
-
-	if (!id->vg_name || !id->lv_name || !id->display_name || !id->uuid) {
-		log_error("Failed to copy one or more poll operation ID members.");
-		_destroy_id(cmd, id);
-		id = NULL;
+	if (!(id = dm_pool_alloc(cmd->mem, sizeof(*id)))) {
+		log_error("Poll operation ID allocation failed.");
+		return NULL;
 	}
+
+	if (!(id->display_name = dm_pool_strdup(cmd->mem, lv_full_name)) ||
+	    !(id->lv_name = strchr(id->display_name, '/')) ||
+	    !(id->vg_name = dm_pool_strdup(cmd->mem, vg_name)) ||
+	    !(id->uuid = dm_pool_strdup(cmd->mem, uuid))) {
+		log_error("Failed to copy one or more poll operation ID members.");
+		dm_pool_free(cmd->mem, id);
+		return NULL;
+	}
+
+	id->lv_name++; /* skip over '/' */
 
 	return id;
 }
@@ -798,8 +792,6 @@ int lvconvert_poll(struct cmd_context *cmd, struct logical_volume *lv,
 	}
 
 	r = _lvconvert_poll_by_id(cmd, id, background, is_merging_origin, is_merging_origin_thin);
-
-	_destroy_id(cmd, id);
 
 	return r;
 }
@@ -857,7 +849,7 @@ static int _failed_mirrors_count(struct logical_volume *lv)
 			if (seg_type(lvseg, s) == AREA_LV) {
 				if (is_temporary_mirror_layer(seg_lv(lvseg, s)))
 					ret += _failed_mirrors_count(seg_lv(lvseg, s));
-				else if (seg_lv(lvseg, s)->status & PARTIAL_LV)
+				else if (lv_is_partial(seg_lv(lvseg, s)))
 					++ ret;
 			}
 			else if (seg_type(lvseg, s) == AREA_PV &&
@@ -874,7 +866,7 @@ static int _failed_logs_count(struct logical_volume *lv)
 	int ret = 0;
 	unsigned s;
 	struct logical_volume *log_lv = first_seg(lv)->log_lv;
-	if (log_lv && (log_lv->status & PARTIAL_LV)) {
+	if (log_lv && lv_is_partial(log_lv)) {
 		if (lv_is_mirrored(log_lv))
 			ret += _failed_mirrors_count(log_lv);
 		else
@@ -929,7 +921,7 @@ static struct dm_list *_failed_pv_list(struct volume_group *vg)
 static int _is_partial_lv(struct logical_volume *lv,
 			  void *baton __attribute__((unused)))
 {
-	return lv->status & PARTIAL_LV;
+	return lv_is_partial(lv);
 }
 
 /*
@@ -1144,7 +1136,6 @@ static int _lvconvert_mirrors_parse_params(struct cmd_context *cmd,
 					   uint32_t *new_mimage_count,
 					   uint32_t *new_log_count)
 {
-	int repair = arg_count(cmd, repair_ARG);
 	*old_mimage_count = lv_mirror_count(lv);
 	*old_log_count = _get_log_count(lv);
 
@@ -1161,7 +1152,7 @@ static int _lvconvert_mirrors_parse_params(struct cmd_context *cmd,
 	 */
 	if (!arg_count(cmd, mirrors_ARG) && !arg_count(cmd, mirrorlog_ARG) &&
 	    !arg_count(cmd, corelog_ARG) && !arg_count(cmd, regionsize_ARG) &&
-	    !arg_count(cmd, splitmirrors_ARG) && !repair) {
+	    !arg_count(cmd, splitmirrors_ARG) && !lp->repair) {
 		*new_mimage_count = *old_mimage_count;
 		*new_log_count = *old_log_count;
 
@@ -1447,7 +1438,7 @@ int mirror_remove_missing(struct cmd_context *cmd,
 		return_0;
 
 	if (force && _failed_mirrors_count(lv) == (int)lv_mirror_count(lv)) {
-		log_error("No usable images left in %s.", lv->name);
+		log_error("No usable images left in %s.", display_lvname(lv));
 		return lv_remove_with_dependencies(cmd, lv, DONT_PROMPT, 0);
         }
 
@@ -1503,8 +1494,9 @@ static int _lvconvert_mirrors_repair(struct cmd_context *cmd,
 
 	lv_check_transient(lv); /* TODO check this in lib for all commands? */
 
-	if (!(lv->status & PARTIAL_LV)) {
-		log_print_unless_silent("%s is consistent. Nothing to repair.", lv->name);
+	if (!lv_is_partial(lv)) {
+		log_print_unless_silent("Volume %s is consistent. Nothing to repair.",
+					display_lvname(lv));
 		return 1;
 	}
 
@@ -1559,11 +1551,13 @@ static int _lvconvert_mirrors_repair(struct cmd_context *cmd,
 	}
 
 	if (replace_mimages && lv_mirror_count(lv) != original_mimages)
-		log_warn("WARNING: Failed to replace %d of %d images in volume %s",
-			 original_mimages - lv_mirror_count(lv), original_mimages, lv->name);
+		log_warn("WARNING: Failed to replace %d of %d images in volume %s.",
+			 original_mimages - lv_mirror_count(lv), original_mimages,
+			 display_lvname(lv));
 	if (replace_logs && _get_log_count(lv) != original_logs)
-		log_warn("WARNING: Failed to replace %d of %d logs in volume %s",
-			 original_logs - _get_log_count(lv), original_logs, lv->name);
+		log_warn("WARNING: Failed to replace %d of %d logs in volume %s.",
+			 original_logs - _get_log_count(lv), original_logs,
+			 display_lvname(lv));
 
 	/* if (!arg_count(cmd, use_policies_ARG) && (lp->mirrors != old_mimage_count
 						  || log_count != old_log_count))
@@ -1578,18 +1572,18 @@ static int _lvconvert_validate_thin(struct logical_volume *lv,
 	if (!lv_is_thin_pool(lv) && !lv_is_thin_volume(lv))
 		return 1;
 
-	log_error("Converting thin%s segment type for \"%s/%s\" to %s is not supported.",
+	log_error("Converting thin%s segment type for %s to %s is not supported.",
 		  lv_is_thin_pool(lv) ? " pool" : "",
-		  lv->vg->name, lv->name, lp->segtype->name);
+		  display_lvname(lv), lp->segtype->name);
 
 	if (lv_is_thin_volume(lv))
 		return 0;
 
 	/* Give advice for thin pool conversion */
-	log_error("For pool data volume conversion use \"%s/%s\".",
-		  lv->vg->name, seg_lv(first_seg(lv), 0)->name);
-	log_error("For pool metadata volume conversion use \"%s/%s\".",
-		  lv->vg->name, first_seg(lv)->metadata_lv->name);
+	log_error("For pool data volume conversion use %s.",
+		  display_lvname(seg_lv(first_seg(lv), 0)));
+	log_error("For pool metadata volume conversion use %s.",
+		  display_lvname(first_seg(lv)->metadata_lv));
 	return 0;
 }
 
@@ -1603,7 +1597,6 @@ static int _lvconvert_mirrors(struct cmd_context *cmd,
 			      struct logical_volume *lv,
 			      struct lvconvert_params *lp)
 {
-	int repair = arg_count(cmd, repair_ARG);
 	uint32_t old_mimage_count;
 	uint32_t old_log_count;
 	uint32_t new_mimage_count;
@@ -1649,10 +1642,10 @@ static int _lvconvert_mirrors(struct cmd_context *cmd,
 
 	/* Nothing to do?  (Probably finishing collapse.) */
 	if ((old_mimage_count == new_mimage_count) &&
-	    (old_log_count == new_log_count) && !repair)
+	    (old_log_count == new_log_count) && !lp->repair)
 		return 1;
 
-	if (repair)
+	if (lp->repair)
 		return _lvconvert_mirrors_repair(cmd, lv, lp);
 
 	if (!_lvconvert_mirrors_aux(cmd, lv, lp, NULL,
@@ -1776,7 +1769,7 @@ static int _lvconvert_raid(struct logical_volume *lv, struct lvconvert_params *l
 	if (arg_count(cmd, replace_ARG))
 		return lv_raid_replace(lv, lp->replace_pvh, lp->pvh);
 
-	if (arg_count(cmd, repair_ARG)) {
+	if (lp->repair) {
 		if (!lv_is_active_exclusive_locally(lv_lock_holder(lv))) {
 			log_error("%s/%s must be active %sto perform this"
 				  " operation.", lv->vg->name, lv->name,
@@ -1836,34 +1829,35 @@ static int _lvconvert_splitsnapshot(struct cmd_context *cmd, struct logical_volu
 				    struct lvconvert_params *lp)
 {
 	struct volume_group *vg = cow->vg;
+	const char *cow_name = display_lvname(cow);
 
 	if (!lv_is_cow(cow)) {
-		log_error("%s/%s is not a snapshot.", vg->name, cow->name);
+		log_error("%s is not a snapshot.", cow_name);
 		return 0;
 	}
 
 	if (lv_is_origin(cow) || lv_is_external_origin(cow)) {
-		log_error("Unable to split LV %s/%s that is a snapshot origin.", vg->name, cow->name);
+		log_error("Unable to split LV %s that is a snapshot origin.", cow_name);
 		return 0;
 	}
 
 	if (lv_is_merging_cow(cow)) {
-		log_error("Unable to split off snapshot %s/%s being merged into its origin.", vg->name, cow->name);
+		log_error("Unable to split off snapshot %s being merged into its origin.", cow_name);
 		return 0;
 	}
 
 	if (lv_is_virtual_origin(origin_from_cow(cow))) {
-		log_error("Unable to split off snapshot %s/%s with virtual origin.", vg->name, cow->name);
+		log_error("Unable to split off snapshot %s with virtual origin.", cow_name);
 		return 0;
 	}
 
 	if (lv_is_thin_pool(cow) || lv_is_pool_metadata_spare(cow)) {
-		log_error("Unable to split off LV %s/%s needed by thin volume(s).", vg->name, cow->name);
+		log_error("Unable to split off LV %s needed by thin volume(s).", cow_name);
 		return 0;
 	}
 
 	if (!(vg->fid->fmt->features & FMT_MDAS)) {
-		log_error("Unable to split off snapshot %s/%s using old LVM1-style metadata.", vg->name, cow->name);
+		log_error("Unable to split off snapshot %s using old LVM1-style metadata.", cow_name);
 		return 0;
 	}
 
@@ -1877,7 +1871,7 @@ static int _lvconvert_splitsnapshot(struct cmd_context *cmd, struct logical_volu
 		return_0;
 
 	if (lv_is_pvmove(cow) || lv_is_mirror_type(cow) || lv_is_raid_type(cow) || lv_is_thin_type(cow)) {
-		log_error("LV %s/%s type is unsupported with --splitsnapshot.", vg->name, cow->name);
+		log_error("LV %s type is unsupported with --splitsnapshot.", cow_name);
 		return 0;
 	}
 
@@ -1889,8 +1883,8 @@ static int _lvconvert_splitsnapshot(struct cmd_context *cmd, struct logical_volu
 		    lv_is_visible(cow) &&
 		    lv_is_active(cow)) {
 			if (yes_no_prompt("Do you really want to split off active "
-					  "logical volume %s? [y/n]: ", cow->name) == 'n') {
-				log_error("Logical volume %s not split.", cow->name);
+					  "logical volume %s? [y/n]: ", cow_name) == 'n') {
+				log_error("Logical volume %s not split.", cow_name);
 				return 0;
 			}
 		}
@@ -1899,14 +1893,14 @@ static int _lvconvert_splitsnapshot(struct cmd_context *cmd, struct logical_volu
 	if (!archive(vg))
 		return_0;
 
-	log_verbose("Splitting snapshot %s/%s from its origin.", vg->name, cow->name);
+	log_verbose("Splitting snapshot %s from its origin.", cow_name);
 
 	if (!vg_remove_snapshot(cow))
 		return_0;
 
 	backup(vg);
 
-	log_print_unless_silent("Logical Volume %s/%s split from its origin.", vg->name, cow->name);
+	log_print_unless_silent("Logical Volume %s split from its origin.", cow_name);
 
 	return 1;
 }
@@ -1999,6 +1993,9 @@ static int _lvconvert_uncache(struct cmd_context *cmd,
 			      struct logical_volume *lv,
 			      struct lvconvert_params *lp)
 {
+	struct lv_segment *seg;
+	struct logical_volume *remove_lv;
+
 	if (lv_is_thin_pool(lv))
 		lv = seg_lv(first_seg(lv), 0); /* cached _tdata ? */
 
@@ -2008,10 +2005,49 @@ static int _lvconvert_uncache(struct cmd_context *cmd,
 		return 0;
 	}
 
-	if (!lv_remove_single(cmd, first_seg(lv)->pool_lv, (force_t) lp->force, 0))
+	seg = first_seg(lv);
+
+	if (lv_is_partial(seg_lv(seg, 0))) {
+		log_warn("WARNING: Cache origin logical volume %s is missing.",
+			 display_lvname(seg_lv(seg, 0)));
+		remove_lv = lv; /* When origin is missing, drop everything */
+	} else
+		remove_lv = seg->pool_lv;
+
+	if (lv_is_partial(seg_lv(first_seg(seg->pool_lv), 0)))
+		log_warn("WARNING: Cache pool data logical volume %s is missing.",
+			 display_lvname(seg_lv(first_seg(seg->pool_lv), 0)));
+
+	if (lv_is_partial(first_seg(seg->pool_lv)->metadata_lv))
+		log_warn("WARNING: Cache pool metadata logical volume %s is missing.",
+			 display_lvname(first_seg(seg->pool_lv)->metadata_lv));
+
+	/* TODO: Check for failed cache as well to get prompting? */
+	if (lv_is_partial(lv)) {
+		if (strcmp("writethrough", get_cache_mode_name(first_seg(seg->pool_lv)))) {
+			if (!lp->force) {
+				log_error("Conversion aborted.");
+				log_error("Cannot uncache writethrough cache volume %s without --force.",
+					  display_lvname(lv));
+				return 0;
+			}
+			log_warn("WARNING: Uncaching of partially missing writethrough cache volume %s might destroy your data.",
+				 display_lvname(first_seg(seg->pool_lv)->metadata_lv));
+		}
+
+		if (!lp->yes &&
+		    yes_no_prompt("Do you really want to uncache %s? with missing LVs [y/n]: ",
+				  display_lvname(lv)) == 'n') {
+			log_error("Conversion aborted.");
+			return 0;
+		}
+	}
+
+	if (!lvremove_single(cmd, remove_lv, NULL))
 		return_0;
 
-	log_print_unless_silent("Logical volume %s is not cached.", display_lvname(lv));
+	if (remove_lv != lv)
+		log_print_unless_silent("Logical volume %s is not cached.", display_lvname(lv));
 
 	return 1;
 }
@@ -2021,27 +2057,27 @@ static int _lvconvert_snapshot(struct cmd_context *cmd,
 			       struct lvconvert_params *lp)
 {
 	struct logical_volume *org;
+	const char *snap_name = display_lvname(lv);
 
 	if (lv_is_cache_type(lv)) {
 		log_error("Snapshots are not yet supported with cache type LVs %s.",
-			  display_lvname(lv));
+			  snap_name);
 		return 0;
 	}
 
 	if (lv_is_mirrored(lv)) {
-		log_error("Unable to convert mirrored LV \"%s\" into a snapshot.", lv->name);
+		log_error("Unable to convert mirrored LV %s into a snapshot.", snap_name);
 		return 0;
 	}
 
 	if (lv_is_origin(lv)) {
 		/* Unsupported stack */
-		log_error("Unable to convert origin \"%s\" into a snapshot.", lv->name);
+		log_error("Unable to convert origin %s into a snapshot.", snap_name);
 		return 0;
 	}
 
 	if (lv_is_pool(lv)) {
-		log_error("Unable to convert pool LVs %s into a snapshot.",
-			  display_lvname(lv));
+		log_error("Unable to convert pool LVs %s into a snapshot.", snap_name);
 		return 0;
 	}
 
@@ -2052,8 +2088,7 @@ static int _lvconvert_snapshot(struct cmd_context *cmd,
 	}
 
 	if (org == lv) {
-		log_error("Unable to use %s as both snapshot and origin.",
-			  display_lvname(lv));
+		log_error("Unable to use %s as both snapshot and origin.", snap_name);
 		return 0;
 	}
 
@@ -2077,23 +2112,23 @@ static int _lvconvert_snapshot(struct cmd_context *cmd,
 	}
 
 	log_warn("WARNING: Converting logical volume %s to snapshot exception store.",
-		 display_lvname(lv));
+		 snap_name);
 	log_warn("THIS WILL DESTROY CONTENT OF LOGICAL VOLUME (filesystem etc.)");
 
 	if (!lp->yes &&
 	    yes_no_prompt("Do you really want to convert %s? [y/n]: ",
-			  display_lvname(lv)) == 'n') {
+			  snap_name) == 'n') {
 		log_error("Conversion aborted.");
 		return 0;
 	}
 
 	if (!deactivate_lv(cmd, lv)) {
-		log_error("Couldn't deactivate LV %s.", lv->name);
+		log_error("Couldn't deactivate logical volume %s.", snap_name);
 		return 0;
 	}
 
 	if (!lp->zero || !(lv->status & LVM_WRITE))
-		log_warn("WARNING: \"%s\" not zeroed", lv->name);
+		log_warn("WARNING: %s not zeroed", snap_name);
 	else {
 		lv->status |= LV_TEMPORARY;
 		if (!activate_lv_local(cmd, lv) ||
@@ -2121,7 +2156,7 @@ static int _lvconvert_snapshot(struct cmd_context *cmd,
 	if (!lv_update_and_reload(org))
 		return_0;
 
-	log_print_unless_silent("Logical volume %s converted to snapshot.", lv->name);
+	log_print_unless_silent("Logical volume %s converted to snapshot.", snap_name);
 
 	return 1;
 }
@@ -3218,18 +3253,19 @@ static int _lvconvert_single(struct cmd_context *cmd, struct logical_volume *lv,
 	struct dm_list *failed_pvs;
 
 	if (lv_is_locked(lv)) {
-		log_error("Cannot convert locked LV %s", lv->name);
+		log_error("Cannot convert locked LV %s.", display_lvname(lv));
 		return ECMD_FAILED;
 	}
 
 	if (lv_is_cow(lv) && !lp->merge && !lp->splitsnapshot) {
-		log_error("Can't convert snapshot logical volume \"%s\"",
-			  lv->name);
+		log_error("Cannot convert snapshot logical volume %s.",
+			  display_lvname(lv));
 		return ECMD_FAILED;
 	}
 
 	if (lv_is_pvmove(lv)) {
-		log_error("Unable to convert pvmove LV %s", lv->name);
+		log_error("Unable to convert pvmove LV %s.",
+			  display_lvname(lv));
 		return ECMD_FAILED;
 	}
 
@@ -3274,7 +3310,7 @@ static int _lvconvert_single(struct cmd_context *cmd, struct logical_volume *lv,
 		}
 	}
 
-	if (arg_count(cmd, repair_ARG)) {
+	if (lp->repair) {
 		if (lv_is_pool(lv)) {
 			if (lv_is_cache_pool(lv)) {
 				log_error("Repair for cache pool %s not yet implemented.",
@@ -3288,8 +3324,8 @@ static int _lvconvert_single(struct cmd_context *cmd, struct logical_volume *lv,
 		if (!lv_is_mirrored(lv) && !lv_is_raid(lv)) {
 			if (arg_count(cmd, usepolicies_ARG))
 				return ECMD_PROCESSED; /* nothing to be done here */
-			log_error("Can't repair LV \"%s\" of segtype %s.",
-				  lv->name, lvseg_name(first_seg(lv)));
+			log_error("Cannot repair logical volume %s of segtype %s.",
+				  display_lvname(lv), lvseg_name(first_seg(lv)));
 			return ECMD_FAILED;
 		}
 	}
@@ -3299,7 +3335,8 @@ static int _lvconvert_single(struct cmd_context *cmd, struct logical_volume *lv,
 	if (arg_count(cmd, splitmirrors_ARG) && lv_is_cache_type(lv)
 	    && (origin = seg_lv(first_seg(lv), 0)) && lv_is_cache_origin(origin)) {
 		log_warn("WARNING: Selected operation does not work with cache-type LVs.");
-		log_warn("Proceeding using the cache origin LV %s instead", origin->name);
+		log_warn("WARNING: Proceeding using the cache origin volume %s instead.",
+			 display_lvname(origin));
 		lv = origin;
 	}
 
@@ -3320,7 +3357,8 @@ static int _lvconvert_single(struct cmd_context *cmd, struct logical_volume *lv,
 	if (lp->merge) {
 		if ((lv_is_thin_volume(lv) && !_lvconvert_merge_thin_snapshot(cmd, lv, lp)) ||
 		    (!lv_is_thin_volume(lv) && !_lvconvert_merge_old_snapshot(cmd, lv, lp))) {
-			log_print_unless_silent("Unable to merge LV \"%s\" into its origin.", lv->name);
+			log_print_unless_silent("Unable to merge volume %s into its origin.",
+						display_lvname(lv));
 			return ECMD_FAILED;
 		}
 	} else if (lp->snapshot) {
@@ -3345,7 +3383,7 @@ static int _lvconvert_single(struct cmd_context *cmd, struct logical_volume *lv,
 			return_ECMD_FAILED;
 
 		/* If repairing and using policies, remove missing PVs from VG */
-		if (arg_count(cmd, repair_ARG) && arg_count(cmd, usepolicies_ARG))
+		if (lp->repair && arg_count(cmd, usepolicies_ARG))
 			_remove_missing_empty_pv(lv->vg, failed_pvs);
 	} else if (arg_count(cmd, mirrors_ARG) ||
 		   arg_count(cmd, splitmirrors_ARG) ||
@@ -3360,7 +3398,7 @@ static int _lvconvert_single(struct cmd_context *cmd, struct logical_volume *lv,
 			return_ECMD_FAILED;
 
 		/* If repairing and using policies, remove missing PVs from VG */
-		if (arg_count(cmd, repair_ARG) && arg_count(cmd, usepolicies_ARG))
+		if (lp->repair && arg_count(cmd, usepolicies_ARG))
 			_remove_missing_empty_pv(lv->vg, failed_pvs);
 	}
 
@@ -3420,7 +3458,7 @@ static int lvconvert_single(struct cmd_context *cmd, struct lvconvert_params *lp
 	int saved_ignore_suspended_devices = ignore_suspended_devices();
 	uint32_t lockd_state = 0;
 
-	if (arg_count(cmd, repair_ARG)) {
+	if (lp->repair || lp->uncache) {
 		init_ignore_suspended_devices(1);
 		cmd->handles_missing_pvs = 1;
 	}
@@ -3504,15 +3542,13 @@ int lvconvert(struct cmd_context * cmd, int argc, char **argv)
 	struct convert_poll_id_list *idl;
 	struct lvconvert_params lp = {
 		.target_attr = ~0,
+		.idls = DM_LIST_HEAD_INIT(lp.idls),
 	};
-	struct processing_handle *handle = NULL;
+	struct processing_handle *handle = init_processing_handle(cmd);
 
-	dm_list_init(&lp.idls);
-
-	if (!(handle = init_processing_handle(cmd))) {
+	if (!handle) {
 		log_error("Failed to initialize processing handle.");
-		ret = ECMD_FAILED;
-		goto out;
+		return ECMD_FAILED;
 	}
 
 	handle->custom_handle = &lp;
@@ -3538,10 +3574,10 @@ int lvconvert(struct cmd_context * cmd, int argc, char **argv)
 	}
 
 out:
-	if (!dm_list_empty(&lp.idls))
-		dm_pool_free(cmd->mem, dm_list_item(dm_list_first(&lp.idls), struct convert_poll_id_list));
 	if (lp.policy_settings)
 		dm_config_destroy(lp.policy_settings);
+
 	destroy_processing_handle(cmd, handle);
+
 	return ret;
 }

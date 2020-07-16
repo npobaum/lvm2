@@ -453,7 +453,7 @@ static int _stats_parse_histogram_spec(struct dm_stats *dms,
 				       struct dm_stats_region *region,
 				       const char *histogram)
 {
-	static const char *_valid_chars = "0123456789,";
+	static const char _valid_chars[] = "0123456789,";
 	uint64_t scale = region->timescale, this_val = 0;
 	struct dm_pool *mem = dms->hist_mem;
 	struct dm_histogram_bin cur;
@@ -740,9 +740,11 @@ static int _stats_parse_histogram(struct dm_pool *mem, char *hist_str,
 				  struct dm_histogram **histogram,
 				  struct dm_stats_region *region)
 {
-	struct dm_histogram hist, *bounds = region->bounds;
-	static const char *_valid_chars = "0123456789:";
-	int nr_bins = region->bounds->nr_bins;
+	static const char _valid_chars[] = "0123456789:";
+	struct dm_histogram *bounds = region->bounds;
+	struct dm_histogram hist = {
+		.nr_bins = region->bounds->nr_bins
+	};
 	const char *c, *v, *val_start;
 	struct dm_histogram_bin cur;
 	uint64_t sum = 0, this_val;
@@ -753,8 +755,6 @@ static int _stats_parse_histogram(struct dm_pool *mem, char *hist_str,
 
 	if (!dm_pool_begin_object(mem, sizeof(cur)))
 		return_0;
-
-	hist.nr_bins = nr_bins;
 
 	if (!dm_pool_grow_object(mem, &hist, sizeof(hist)))
 		goto_bad;
@@ -800,7 +800,7 @@ static int _stats_parse_histogram(struct dm_pool *mem, char *hist_str,
 		}
 	} while (*c && (*c != '\n'));
 
-	log_debug("Added region histogram data with %d entries.", nr_bins);
+	log_debug("Added region histogram data with %d entries.", hist.nr_bins);
 
 	*histogram = dm_pool_end_object(mem);
 	(*histogram)->sum = sum;
@@ -957,13 +957,13 @@ bad:
 static void _stats_walk_next(const struct dm_stats *dms, int region,
 			     uint64_t *cur_r, uint64_t *cur_a)
 {
-	struct dm_stats_region *cur = NULL;
+	struct dm_stats_region *cur;
 	int present;
 
 	if (!dms || !dms->regions)
 		return;
 
-	cur = &dms->regions[*cur_r];
+	cur = dms->regions + *cur_r;
 	present = _stats_region_present(cur);
 
 	if (region && present)
@@ -1314,7 +1314,7 @@ static int _dm_stats_populate_region(struct dm_stats *dms, uint64_t region_id,
 	if (!_stats_bound(dms))
 		return_0;
 
-	if (!_stats_parse_region(dms, resp, region, region->timescale)) {
+	if (!region || !_stats_parse_region(dms, resp, region, region->timescale)) {
 		log_error("Could not parse @stats_print message response.");
 		return 0;
 	}
@@ -1998,7 +1998,7 @@ static struct dm_histogram *_alloc_dm_histogram(int nr_bins)
  */
 struct dm_histogram *dm_histogram_bounds_from_string(const char *bounds_str)
 {
-	static const char *_valid_chars = "0123456789,muns";
+	static const char _valid_chars[] = "0123456789,muns";
 	uint64_t this_val = 0, mult = 1;
 	const char *c, *v, *val_start;
 	struct dm_histogram_bin *cur;

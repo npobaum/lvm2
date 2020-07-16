@@ -49,11 +49,61 @@ struct logical_volume {
 	struct dm_list segments;
 	struct dm_list tags;
 	struct dm_list segs_using_this_lv;
+	struct dm_list indirect_glvs; /* For keeping track of historical LVs in ancestry chain */
+
+	/*
+	 * this_glv variable is used as a helper for handling historical LVs.
+	 * If this LVs has no role at all in keeping track of historical LVs,
+	 * the this_glv variable is NULL. See also comments for struct
+	 * generic_logical_volume and struct historical_logical_volume below.
+	 */
+	struct generic_logical_volume *this_glv;
 
 	uint64_t timestamp;
 	unsigned new_lock_args:1;
 	const char *hostname;
 	const char *lock_args;
+};
+
+/*
+ * With the introduction of tracking historical LVs, we need to make
+ * a difference between live LV (struct logical_volume) and historical LV
+ * (struct historical_logical_volume). To minimize the impact of this change
+ * and to minimize the changes needed in the existing  code, we use a
+ * little trick here - when processing LVs (e.g. while reporting LV
+ * properties), each historical LV is represented as dummy LV which is
+ * an instance of struct logical_volume with all its properties set to
+ * blank (hence "dummy LV") and with this_glv pointing to the struct
+ * historical_logical_volume. This way all the existing code working with
+ * struct logical_volume will see this historical LV as dummy live LV while
+ * the code that needs to recognize between live and historical LV will
+ * check this_glv first and then it will work either with the live
+ * or historical LV properties appropriately.
+ */
+struct generic_logical_volume;
+
+/*
+ * historical logical volume is an LV that has been removed already.
+ * This is used to keep track of LV history.
+ */
+struct historical_logical_volume {
+	union lvid lvid;
+	const char *name;
+	struct volume_group *vg;
+	uint64_t timestamp;
+	uint64_t timestamp_removed;
+	struct generic_logical_volume *indirect_origin;
+	struct dm_list indirect_glvs; /* list of struct generic_logical_volume */
+	int checked:1; /* set if this historical LV has been checked for validity */
+	int valid:1;   /* historical LV is valid if there's at least one live LV among ancestors */
+};
+
+struct generic_logical_volume {
+	int is_historical;
+	union {
+		struct logical_volume *live;			/* is_historical=0 */
+		struct historical_logical_volume *historical;	/* is_historical=1 */
+	};
 };
 
 struct lv_with_info_and_seg_status;
@@ -139,10 +189,12 @@ char *lvseg_discards_dup(struct dm_pool *mem, const struct lv_segment *seg);
 char *lvseg_cachemode_dup(struct dm_pool *mem, const struct lv_segment *seg);
 char *lvseg_monitor_dup(struct dm_pool *mem, const struct lv_segment *seg);
 char *lvseg_tags_dup(const struct lv_segment *seg);
-char *lv_time_dup(struct dm_pool *mem, const struct logical_volume *lv, int iso_mode);
+char *lv_creation_time_dup(struct dm_pool *mem, const struct logical_volume *lv, int iso_mode);
+char *lv_removal_time_dup(struct dm_pool *mem, const struct logical_volume *lv, int iso_mode);
 char *lv_host_dup(struct dm_pool *mem, const struct logical_volume *lv);
 char *lv_active_dup(struct dm_pool *mem, const struct logical_volume *lv);
 char *lv_profile_dup(struct dm_pool *mem, const struct logical_volume *lv);
 char *lv_lock_args_dup(struct dm_pool *mem, const struct logical_volume *lv);
 char *lvseg_kernel_discards_dup_with_info_and_seg_status(struct dm_pool *mem, const struct lv_with_info_and_seg_status *lvdm);
+char *lv_time_dup(struct dm_pool *mem, const struct logical_volume *lv, int iso_mode);
 #endif /* _LVM_LV_H */

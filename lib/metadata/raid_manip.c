@@ -339,6 +339,7 @@ static char *_generate_raid_name(struct logical_volume *lv,
 	const char *format = (count >= 0) ? "%s_%s_%u" : "%s_%s";
 	size_t len = strlen(lv->name) + strlen(suffix) + ((count >= 0) ? 5 : 2);
 	char *name;
+	int historical;
 
 	if (!(name = dm_pool_alloc(lv->vg->vgmem, len))) {
 		log_error("Failed to allocate new name.");
@@ -353,9 +354,9 @@ static char *_generate_raid_name(struct logical_volume *lv,
 		return NULL;
 	}
 
-	if (find_lv_in_vg(lv->vg, name)) {
-		log_error("Logical volume %s already exists in volume group %s.",
-			  name, lv->vg->name);
+	if (lv_name_is_used_in_vg(lv->vg, name, &historical)) {
+		log_error("%sLogical Volume %s already exists in volume group %s.",
+			  historical ? "historical " : "", name, lv->vg->name);
 		return NULL;
 	}
 
@@ -864,7 +865,7 @@ static int _raid_extract_images(struct logical_volume *lv, uint32_t new_count,
 	log_verbose("Extracting %u %s from %s/%s", extract,
 		    (extract > 1) ? "images" : "image",
 		    lv->vg->name, lv->name);
-	if (dm_list_size(target_pvs) < extract) {
+	if ((int) dm_list_size(target_pvs) < extract) {
 		log_error("Unable to remove %d images:  Only %d device%s given.",
 			  extract, dm_list_size(target_pvs),
 			  (dm_list_size(target_pvs) == 1) ? "" : "s");
@@ -913,7 +914,7 @@ static int _raid_extract_images(struct logical_volume *lv, uint32_t new_count,
 				  display_lvname(seg_lv(seg, s)));
 		} else {
 			/* Conditions for second pass */
-			if (!lv_is_on_pvs(seg_lv(seg, s), target_pvs) ||
+			if (!lv_is_on_pvs(seg_lv(seg, s), target_pvs) &&
 			    !lv_is_on_pvs(seg_metalv(seg, s), target_pvs))
 				continue;
 
@@ -1093,6 +1094,7 @@ int lv_raid_split(struct logical_volume *lv, const char *split_name,
 	uint32_t old_count = lv_raid_image_count(lv);
 	struct logical_volume *tracking;
 	struct dm_list tracking_pvs;
+	int historical;
 
 	dm_list_init(&removal_list);
 	dm_list_init(&data_list);
@@ -1116,9 +1118,9 @@ int lv_raid_split(struct logical_volume *lv, const char *split_name,
 		return 0;
 	}
 
-	if (find_lv_in_vg(lv->vg, split_name)) {
-		log_error("Logical Volume \"%s\" already exists in %s",
-			  split_name, lv->vg->name);
+	if (lv_name_is_used_in_vg(lv->vg, split_name, &historical)) {
+		log_error("%sLogical Volume \"%s\" already exists in %s",
+			  historical ? "historical " : "", split_name, lv->vg->name);
 		return 0;
 	}
 
@@ -1500,18 +1502,18 @@ static int _remove_partial_multi_segment_image(struct logical_volume *lv,
 	struct logical_volume *rm_image = NULL;
 	struct physical_volume *pv;
 
-	if (!(lv->status & PARTIAL_LV))
+	if (!lv_is_partial(lv))
 		return_0;
 
 	for (s = 0; s < raid_seg->area_count; s++) {
 		extents_needed = 0;
-		if ((seg_lv(raid_seg, s)->status & PARTIAL_LV) &&
+		if (lv_is_partial(seg_lv(raid_seg, s)) &&
 		    lv_is_on_pvs(seg_lv(raid_seg, s), remove_pvs) &&
 		    (dm_list_size(&(seg_lv(raid_seg, s)->segments)) > 1)) {
 			rm_image = seg_lv(raid_seg, s);
 
 			/* First, how many damaged extents are there */
-			if (seg_metalv(raid_seg, s)->status & PARTIAL_LV)
+			if (lv_is_partial(seg_metalv(raid_seg, s)))
 				extents_needed += seg_metalv(raid_seg, s)->le_count;
 			dm_list_iterate_items(rm_seg, &rm_image->segments) {
 				/*
@@ -1576,8 +1578,7 @@ static int _avoid_pvs_of_lv(struct logical_volume *lv, void *data)
 	struct pv_list *pvl;
 
 	dm_list_iterate_items(pvl, allocate_pvs)
-		if (!(lv->status & PARTIAL_LV) &&
-		    lv_is_on_pv(lv, pvl->pv))
+		if (!lv_is_partial(lv) && lv_is_on_pv(lv, pvl->pv))
 			pvl->pv->status |= PV_ALLOCATION_PROHIBITED;
 
 	return 1;
@@ -1617,7 +1618,7 @@ int lv_raid_replace(struct logical_volume *lv,
 	dm_list_init(&new_meta_lvs);
 	dm_list_init(&new_data_lvs);
 
-	if (lv->status & PARTIAL_LV)
+	if (lv_is_partial(lv))
 		lv->vg->cmd->partial_activation = 1;
 
 	if (!lv_is_active_exclusive_locally(lv_lock_holder(lv))) {
@@ -1708,7 +1709,7 @@ int lv_raid_replace(struct logical_volume *lv,
 try_again:
 	if (!_alloc_image_components(lv, allocate_pvs, match_count,
 				     &new_meta_lvs, &new_data_lvs)) {
-		if (!(lv->status & PARTIAL_LV)) {
+		if (!lv_is_partial(lv)) {
 			log_error("LV %s in not partial.", display_lvname(lv));
 			return 0;
 		}
@@ -1853,7 +1854,7 @@ int lv_raid_remove_missing(struct logical_volume *lv)
 	uint32_t s;
 	struct lv_segment *seg = first_seg(lv);
 
-	if (!(lv->status & PARTIAL_LV)) {
+	if (!lv_is_partial(lv)) {
 		log_error(INTERNAL_ERROR "%s/%s is not a partial LV",
 			  lv->vg->name, lv->name);
 		return 0;
@@ -1870,8 +1871,8 @@ int lv_raid_remove_missing(struct logical_volume *lv)
 	 */
 
 	for (s = 0; s < seg->area_count; s++) {
-		if (!(seg_lv(seg, s)->status & PARTIAL_LV) &&
-		    !(seg_metalv(seg, s)->status & PARTIAL_LV))
+		if (!lv_is_partial(seg_lv(seg, s)) &&
+		    !lv_is_partial(seg_metalv(seg, s)))
 			continue;
 
 		log_debug("Replacing %s and %s segments with error target",
@@ -1911,8 +1912,8 @@ static int _partial_raid_lv_is_redundant(const struct logical_volume *lv)
 			if (!(i % copies))
 				rebuilds_per_group = 0;
 
-			if ((seg_lv(raid_seg, s)->status & PARTIAL_LV) ||
-			    (seg_metalv(raid_seg, s)->status & PARTIAL_LV) ||
+			if (lv_is_partial(seg_lv(raid_seg, s)) ||
+			    lv_is_partial(seg_metalv(raid_seg, s)) ||
 			    lv_is_virtual(seg_lv(raid_seg, s)) ||
 			    lv_is_virtual(seg_metalv(raid_seg, s)))
 				rebuilds_per_group++;
@@ -1928,8 +1929,8 @@ static int _partial_raid_lv_is_redundant(const struct logical_volume *lv)
 	}
 
 	for (s = 0; s < raid_seg->area_count; s++) {
-		if ((seg_lv(raid_seg, s)->status & PARTIAL_LV) ||
-		    (seg_metalv(raid_seg, s)->status & PARTIAL_LV) ||
+		if (lv_is_partial(seg_lv(raid_seg, s)) ||
+		    lv_is_partial(seg_metalv(raid_seg, s)) ||
 		    lv_is_virtual(seg_lv(raid_seg, s)) ||
 		    lv_is_virtual(seg_metalv(raid_seg, s)))
 			failed_components++;
@@ -1961,7 +1962,7 @@ static int _lv_may_be_activated_in_degraded_mode(struct logical_volume *lv, void
 	if (*not_capable)
 		return 1;	/* No further checks needed */
 
-	if (!(lv->status & PARTIAL_LV))
+	if (!lv_is_partial(lv))
 		return 1;
 
 	if (lv_is_raid(lv)) {

@@ -65,6 +65,10 @@ static int _do_info_and_status(struct cmd_context *cmd,
 	unsigned use_layer = lv_is_thin_pool(lv) ? 1 : 0;
 
 	status->lv = lv;
+
+	if (lv_is_historical(lv))
+		return 1;
+
 	if (do_status) {
 		if (!(status->seg_status.mem = dm_pool_create("reporter_pool", 1024)))
 			return_0;
@@ -244,6 +248,7 @@ static int _do_pvsegs_sub_single(struct cmd_context *cmd,
 		.name = "",
 		.pvs = DM_LIST_HEAD_INIT(_free_vg.pvs),
 		.lvs = DM_LIST_HEAD_INIT(_free_vg.lvs),
+		.historical_lvs = DM_LIST_HEAD_INIT(_free_vg.historical_lvs),
 		.tags = DM_LIST_HEAD_INIT(_free_vg.tags),
 	};
 
@@ -256,6 +261,7 @@ static int _do_pvsegs_sub_single(struct cmd_context *cmd,
 		.tags = DM_LIST_HEAD_INIT(_free_logical_volume.tags),
 		.segments = DM_LIST_HEAD_INIT(_free_logical_volume.segments),
 		.segs_using_this_lv = DM_LIST_HEAD_INIT(_free_logical_volume.segs_using_this_lv),
+		.indirect_glvs = DM_LIST_HEAD_INIT(_free_logical_volume.indirect_glvs),
 		.snapshot_segs = DM_LIST_HEAD_INIT(_free_logical_volume.snapshot_segs),
 	};
 
@@ -864,6 +870,7 @@ static int _report(struct cmd_context *cmd, int argc, char **argv,
 	}
 
 	handle.internal_report_for_select = 0;
+	handle.include_historical_lvs = cmd->include_historical_lvs;
 	handle.custom_handle = report_handle;
 
 	switch (report_type) {
@@ -893,7 +900,8 @@ static int _report(struct cmd_context *cmd, int argc, char **argv,
 		break;
 	case PVS:
 		if (args_are_pvs)
-			r = process_each_pv(cmd, argc, argv, NULL, 0,
+			r = process_each_pv(cmd, argc, argv, NULL,
+					    arg_is_set(cmd, all_ARG), 0,
 					    &handle, &_pvs_single);
 		else
 			r = process_each_vg(cmd, argc, argv, NULL, 0,
@@ -910,7 +918,8 @@ static int _report(struct cmd_context *cmd, int argc, char **argv,
 		break;
 	case PVSEGS:
 		if (args_are_pvs)
-			r = process_each_pv(cmd, argc, argv, NULL, 0,
+			r = process_each_pv(cmd, argc, argv, NULL,
+					    arg_is_set(cmd, all_ARG), 0,
 					    &handle,
 					    lv_info_needed && !lv_segment_status_needed ? &_pvsegs_with_lv_info_single :
 					    !lv_info_needed && lv_segment_status_needed ? &_pvsegs_with_lv_status_single :

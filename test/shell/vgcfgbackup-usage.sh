@@ -9,6 +9,7 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
+SKIP_WITH_LVMLOCKD=1
 SKIP_WITH_LVMPOLLD=1
 
 . lib/inittest
@@ -77,6 +78,7 @@ vgremove -f $vg
 # vgcfgbackup correctly stores metadata LVM1 with missing PVs
 # FIXME: clvmd seems to have problem with metadata format change here
 # fix it and remove this vgscan
+if test -n "$LVM_TEST_LVM1" ; then
 vgscan
 pvcreate -M1 $(cat DEVICES)
 vgcreate -M1 -c n $vg $(cat DEVICES)
@@ -84,3 +86,5 @@ lvcreate -l1 -n $lv1 $vg "$dev1"
 pvremove -ff -y "$dev2"
 not lvcreate -l1 -n $lv1 $vg "$dev3"
 vgcfgbackup -f "backup.$$" $vg
+fi
+

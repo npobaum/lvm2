@@ -9,6 +9,7 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
+SKIP_WITH_LVMLOCKD=1
 SKIP_WITH_LVMPOLLD=1
 
 . lib/inittest
@@ -19,6 +20,11 @@ lvm pvmove --version|sed -n "1s/.*: *\([0-9][^ ]*\) .*/\1/p" | tee version
 
 # ensure they are the same
 diff -u version lib/version-expected
+
+dmstats version |sed -n "1s/.*: *\([0-9][^ ]*\) .*/\1/p" | tee dmstats-version
+
+# ensure dmstats version matches build
+diff -u dmstats-version lib/dm-version-expected
 
 # ensure we can create devices (uses dmsetup, etc)
 aux prepare_devs 5

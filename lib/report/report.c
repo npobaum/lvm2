@@ -1209,6 +1209,11 @@ static const struct dm_report_reserved_value _report_reserved_values[] = {
 #undef FIELD_RESERVED_VALUE
 #undef FIELD_RESERVED_BINARY_VALUE
 
+static int _field_string(struct dm_report *rh, struct dm_report_field *field, const char *data)
+{
+	return dm_report_field_string(rh, field, &data);
+}
+
 static int _field_set_value(struct dm_report_field *field, const void *data, const void *sort)
 {
 	dm_report_field_set_value(field, data, sort);
@@ -1269,7 +1274,7 @@ static int _chars_disp(struct dm_report *rh, struct dm_pool *mem __attribute__((
 		       struct dm_report_field *field,
 		       const void *data, void *private __attribute__((unused)))
 {
-	return dm_report_field_string(rh, field, (const char * const *) &data);
+	return _field_string(rh, field, data);
 }
 
 static int _uuid_disp(struct dm_report *rh, struct dm_pool *mem,
@@ -1288,9 +1293,7 @@ static int _dev_name_disp(struct dm_report *rh, struct dm_pool *mem,
 			  struct dm_report_field *field,
 			  const void *data, void *private)
 {
-	const char *name = dev_name(*(const struct device * const *) data);
-
-	return _string_disp(rh, mem, field, &name, private);
+	return _field_string(rh, field, dev_name(*(const struct device * const *) data));
 }
 
 static int _devices_disp(struct dm_report *rh, struct dm_pool *mem,
@@ -1446,7 +1449,8 @@ static int _do_get_kernel_cache_settings_list(struct dm_pool *mem,
 		buf_len = strlen(key) + strlen(value) + 2;
 		if (!(buf = dm_pool_alloc(mem, buf_len)))
 			return_0;
-		dm_snprintf(buf, buf_len, "%s=%s", key, value);
+		if (dm_snprintf(buf, buf_len, "%s=%s", key, value) < 0)
+			return_0;
 		if (!str_list_add_no_dup_check(mem, result, buf))
 			return_0;
 	}
@@ -1498,6 +1502,20 @@ out:
 	return r;
 }
 
+static int _kernel_cache_policy_disp(struct dm_report *rh, struct dm_pool *mem,
+				     struct dm_report_field *field,
+				     const void *data, void *private)
+{
+	const struct lv_with_info_and_seg_status *lvdm = (const struct lv_with_info_and_seg_status *) data;
+
+	if ((lvdm->seg_status.type == SEG_STATUS_CACHE) &&
+	    lvdm->seg_status.cache->policy_name)
+		return _field_string(rh, field, lvdm->seg_status.cache->policy_name);
+
+	return _field_set_value(field, GET_FIRST_RESERVED_NAME(cache_policy_undef),
+				GET_FIELD_RESERVED_VALUE(cache_policy_undef));
+}
+
 static int _cache_policy_disp(struct dm_report *rh, struct dm_pool *mem,
 			      struct dm_report_field *field,
 			      const void *data, void *private)
@@ -1515,7 +1533,7 @@ static int _cache_policy_disp(struct dm_report *rh, struct dm_pool *mem,
 		return 0;
 	}
 
-	return _string_disp(rh, mem, field, &seg->policy_name, private);
+	return _field_string(rh, field, seg->policy_name);
 }
 
 static int _modules_disp(struct dm_report *rh, struct dm_pool *mem,
@@ -1543,7 +1561,7 @@ static int _lvprofile_disp(struct dm_report *rh, struct dm_pool *mem,
 	const struct logical_volume *lv = (const struct logical_volume *) data;
 
 	if (lv->profile)
-		return _string_disp(rh, mem, field, &lv->profile->name, private);
+		return _field_string(rh, field, lv->profile->name);
 
 	return _field_set_value(field, "", NULL);
 }
@@ -1553,9 +1571,8 @@ static int _lvlockargs_disp(struct dm_report *rh, struct dm_pool *mem,
 			    const void *data, void *private)
 {
 	const struct logical_volume *lv = (const struct logical_volume *) data;
-	const char *repstr = lv->lock_args ? lv->lock_args : "";
 
-	return _string_disp(rh, mem, field, &repstr, private);
+	return _field_string(rh, field, lv->lock_args ? : "");
 }
 
 static int _vgfmt_disp(struct dm_report *rh, struct dm_pool *mem,
@@ -1565,7 +1582,7 @@ static int _vgfmt_disp(struct dm_report *rh, struct dm_pool *mem,
 	const struct volume_group *vg = (const struct volume_group *) data;
 
 	if (vg->fid && vg->fid->fmt)
-		return _string_disp(rh, mem, field, &vg->fid->fmt->name, private);
+		return _field_string(rh, field, vg->fid->fmt->name);
 
 	return _field_set_value(field, "", NULL);
 }
@@ -1574,13 +1591,12 @@ static int _pvfmt_disp(struct dm_report *rh, struct dm_pool *mem,
 		       struct dm_report_field *field,
 		       const void *data, void *private)
 {
-	const struct label *l =
-	    (const struct label *) data;
+	const struct label *l = (const struct label *) data;
 
-	if (!l->labeller || !l->labeller->fmt)
-		return _field_set_value(field, "", NULL);
+	if (l->labeller && l->labeller->fmt)
+		return _field_string(rh, field, l->labeller->fmt->name);
 
-	return _string_disp(rh, mem, field, &l->labeller->fmt->name, private);
+	return _field_set_value(field, "", NULL);
 }
 
 static int _lvkmaj_disp(struct dm_report *rh, struct dm_pool *mem __attribute__((unused)),
@@ -1669,24 +1685,36 @@ static int _lvname_disp(struct dm_report *rh, struct dm_pool *mem,
 {
 	struct cmd_context *cmd = (struct cmd_context *) private;
 	const struct logical_volume *lv = (const struct logical_volume *) data;
+	int is_historical = lv_is_historical(lv);
+	const char *tmp_lvname;
 	char *repstr, *lvname;
 	size_t len;
 
-	if (lv_is_visible(lv) || !cmd->report_mark_hidden_devices)
-		return _string_disp(rh, mem, field, &lv->name, private);
+	if (!is_historical && (lv_is_visible(lv) || !cmd->report_mark_hidden_devices))
+		return _field_string(rh, field, lv->name);
 
-	len = strlen(lv->name) + 3;
+	if (is_historical) {
+		tmp_lvname = lv->this_glv->historical->name;
+		len = strlen(tmp_lvname) + strlen(HISTORICAL_LV_PREFIX) + 1;
+	} else {
+		tmp_lvname = lv->name;
+		len = strlen(tmp_lvname) + 3;
+	}
+
 	if (!(repstr = dm_pool_zalloc(mem, len))) {
 		log_error("dm_pool_alloc failed");
 		return 0;
 	}
 
-	if (dm_snprintf(repstr, len, "[%s]", lv->name) < 0) {
+	if (dm_snprintf(repstr, len, "%s%s%s",
+			is_historical ? HISTORICAL_LV_PREFIX : "[",
+			tmp_lvname,
+			is_historical ? "" : "]") < 0) {
 		log_error("lvname snprintf failed");
 		return 0;
 	}
 
-	if (!(lvname = dm_pool_strdup(mem, lv->name))) {
+	if (!(lvname = dm_pool_strdup(mem, tmp_lvname))) {
 		log_error("dm_pool_strdup failed");
 		return 0;
 	}
@@ -1901,26 +1929,52 @@ static int _originuuid_disp(struct dm_report *rh, struct dm_pool *mem,
 	return _do_origin_disp(rh, mem, field, data, private, 1);
 }
 
-static int _find_ancestors(struct _str_list_append_baton *ancestors,
-			   struct logical_volume *lv)
+static const char *_get_glv_str(char *buf, size_t buf_len,
+				struct generic_logical_volume *glv)
 {
-	struct logical_volume *ancestor_lv = NULL;
-	struct lv_segment *seg;
+	if (!glv->is_historical)
+		return glv->live->name;
 
-	if (lv_is_cow(lv)) {
-		ancestor_lv = origin_from_cow(lv);
-	} else 	if (lv_is_thin_volume(lv)) {
-		seg = first_seg(lv);
-		if (seg->origin)
-			ancestor_lv = seg->origin;
-		else if (seg->external_lv)
-			ancestor_lv = seg->external_lv;
+	if (dm_snprintf(buf, buf_len, "%s%s", HISTORICAL_LV_PREFIX, glv->historical->name) < 0) {
+		log_error("_get_glv_str: dm_snprintf failed");
+		return NULL;
 	}
 
-	if (ancestor_lv) {
-		if (!_str_list_append(ancestor_lv->name, ancestors))
+	return buf;
+}
+
+static int _find_ancestors(struct _str_list_append_baton *ancestors,
+			   struct generic_logical_volume glv,
+			   int full, int include_historical_lvs)
+{
+	struct lv_segment *seg;
+	void *orig_p = glv.live;
+	const char *ancestor_str;
+	char buf[NAME_LEN + strlen(HISTORICAL_LV_PREFIX) + 1];
+
+	if (glv.is_historical) {
+		if (full && glv.historical->indirect_origin)
+			glv = *glv.historical->indirect_origin;
+	} else if (lv_is_cow(glv.live)) {
+		glv.live = origin_from_cow(glv.live);
+	} else if (lv_is_thin_volume(glv.live)) {
+		seg = first_seg(glv.live);
+		if (seg->origin)
+			glv.live = seg->origin;
+		else if (seg->external_lv)
+			glv.live = seg->external_lv;
+		else if (full && seg->indirect_origin)
+			glv = *seg->indirect_origin;
+	}
+
+	if (orig_p != glv.live) {
+		if (!(ancestor_str = _get_glv_str(buf, sizeof(buf), &glv)))
 			return_0;
-		if (!_find_ancestors(ancestors, ancestor_lv))
+		if (!glv.is_historical || include_historical_lvs) {
+			if (!_str_list_append(ancestor_str, ancestors))
+				return_0;
+		}
+		if (!_find_ancestors(ancestors, glv, full, include_historical_lvs))
 			return_0;
 	}
 
@@ -1931,14 +1985,21 @@ static int _lvancestors_disp(struct dm_report *rh, struct dm_pool *mem,
 			   struct dm_report_field *field,
 			   const void *data, void *private)
 {
+	struct cmd_context *cmd = (struct cmd_context *) private;
 	struct logical_volume *lv = (struct logical_volume *) data;
 	struct _str_list_append_baton ancestors;
+	struct generic_logical_volume glv;
 
 	ancestors.mem = mem;
 	if (!(ancestors.result = str_list_create(mem)))
 		return_0;
 
-	if (!_find_ancestors(&ancestors, lv)) {
+	if ((glv.is_historical = lv_is_historical(lv)))
+		glv.historical = lv->this_glv->historical;
+	else
+		glv.live = lv;
+
+	if (!_find_ancestors(&ancestors, glv, 0, cmd->include_historical_lvs)) {
 		dm_pool_free(ancestors.mem, ancestors.result);
 		return_0;
 	}
@@ -1946,34 +2007,97 @@ static int _lvancestors_disp(struct dm_report *rh, struct dm_pool *mem,
 	return _field_set_string_list(rh, field, ancestors.result, private, 0, NULL);
 }
 
-static int _find_descendants(struct _str_list_append_baton *descendants,
-			     struct logical_volume *lv)
+static int _lvfullancestors_disp(struct dm_report *rh, struct dm_pool *mem,
+				 struct dm_report_field *field,
+				 const void *data, void *private)
 {
-	struct logical_volume *descendant_lv = NULL;
+	struct cmd_context *cmd = (struct cmd_context *) private;
+	struct logical_volume *lv = (struct logical_volume *) data;
+	struct _str_list_append_baton full_ancestors;
+	struct generic_logical_volume glv;
+
+	full_ancestors.mem = mem;
+	if (!(full_ancestors.result = str_list_create(mem)))
+		return_0;
+
+	if ((glv.is_historical = lv_is_historical(lv)))
+		glv.historical = lv->this_glv->historical;
+	else
+		glv.live = lv;
+
+	if (!_find_ancestors(&full_ancestors, glv, 1, cmd->include_historical_lvs)) {
+		dm_pool_free(full_ancestors.mem, full_ancestors.result);
+		return_0;
+	}
+
+	return _field_set_string_list(rh, field, full_ancestors.result, private, 0, NULL);
+}
+
+static int _find_descendants(struct _str_list_append_baton *descendants,
+			     struct generic_logical_volume glv,
+			     int full, int include_historical_lvs)
+{
+	struct generic_logical_volume glv_next = {0};
 	const struct seg_list *sl;
 	struct lv_segment *seg;
+	struct glv_list *glvl;
+	struct dm_list *list;
+	const char *descendant_str;
+	char buf[64];
 
-	if (lv_is_origin(lv)) {
-		dm_list_iterate_items_gen(seg, &lv->snapshot_segs, origin_list) {
-			if ((descendant_lv = seg->cow)) {
-				if (!_str_list_append(descendant_lv->name, descendants))
+	if (glv.is_historical) {
+		if (full) {
+			list = &glv.historical->indirect_glvs;
+			dm_list_iterate_items(glvl, list) {
+				if (!glvl->glv->is_historical || include_historical_lvs) {
+					if (!(descendant_str = _get_glv_str(buf, sizeof(buf), glvl->glv)))
+						return_0;
+					if (!_str_list_append(descendant_str, descendants))
+						return_0;
+				}
+				if (!_find_descendants(descendants, *glvl->glv, full, include_historical_lvs))
 					return_0;
-				if (!_find_descendants(descendants, descendant_lv))
+			}
+		}
+	} else if (lv_is_origin(glv.live)) {
+		list = &glv.live->snapshot_segs;
+		dm_list_iterate_items_gen(seg, list, origin_list) {
+			if ((glv.live = seg->cow)) {
+				if (!(descendant_str = _get_glv_str(buf, sizeof(buf), &glv)))
+					return_0;
+				if (!_str_list_append(descendant_str, descendants))
+					return_0;
+				if (!_find_descendants(descendants, glv, full, include_historical_lvs))
 					return_0;
 			}
 		}
 	} else {
-		dm_list_iterate_items(sl, &lv->segs_using_this_lv) {
+		list = &glv.live->segs_using_this_lv;
+		dm_list_iterate_items(sl, list) {
 			if (lv_is_thin_volume(sl->seg->lv)) {
 				seg = first_seg(sl->seg->lv);
-				if ((seg->origin == lv) || (seg->external_lv == lv))
-					descendant_lv = sl->seg->lv;
+				if ((seg->origin == glv.live) || (seg->external_lv == glv.live)) {
+					glv_next.live = sl->seg->lv;
+					if (!(descendant_str = _get_glv_str(buf, sizeof(buf), &glv_next)))
+						return_0;
+					if (!_str_list_append(descendant_str, descendants))
+						return_0;
+					if (!_find_descendants(descendants, glv_next, full, include_historical_lvs))
+						return_0;
+				}
 			}
+		}
 
-			if (descendant_lv) {
-				if (!_str_list_append(descendant_lv->name, descendants))
-					return_0;
-				if (!_find_descendants(descendants, descendant_lv))
+		if (full) {
+			list = &glv.live->indirect_glvs;
+			dm_list_iterate_items(glvl, list) {
+				if (!glvl->glv->is_historical || include_historical_lvs) {
+					if (!(descendant_str = _get_glv_str(buf, sizeof(buf), glvl->glv)))
+						return_0;
+					if (!_str_list_append(descendant_str, descendants))
+						return_0;
+				}
+				if (!_find_descendants(descendants, *glvl->glv, full, include_historical_lvs))
 					return_0;
 			}
 		}
@@ -1986,14 +2110,47 @@ static int _lvdescendants_disp(struct dm_report *rh, struct dm_pool *mem,
 			     struct dm_report_field *field,
 			     const void *data, void *private)
 {
+	struct cmd_context *cmd = (struct cmd_context *) private;
 	struct logical_volume *lv = (struct logical_volume *) data;
 	struct _str_list_append_baton descendants;
+	struct generic_logical_volume glv;
 
 	descendants.mem = mem;
 	if (!(descendants.result = str_list_create(mem)))
 		return_0;
 
-	if (!_find_descendants(&descendants, lv)) {
+	if ((glv.is_historical = lv_is_historical(lv)))
+		glv.historical = lv->this_glv->historical;
+	else
+		glv.live = lv;
+
+	if (!_find_descendants(&descendants, glv, 0, cmd->include_historical_lvs)) {
+		dm_pool_free(descendants.mem, descendants.result);
+		return_0;
+	}
+
+	return _field_set_string_list(rh, field, descendants.result, private, 0, NULL);
+}
+
+static int _lvfulldescendants_disp(struct dm_report *rh, struct dm_pool *mem,
+				   struct dm_report_field *field,
+				   const void *data, void *private)
+{
+	struct cmd_context *cmd = (struct cmd_context *) private;
+	struct logical_volume *lv = (struct logical_volume *) data;
+	struct _str_list_append_baton descendants;
+	struct generic_logical_volume glv;
+
+	descendants.mem = mem;
+	if (!(descendants.result = str_list_create(mem)))
+		return_0;
+
+	if ((glv.is_historical = lv_is_historical(lv)))
+		glv.historical = lv->this_glv->historical;
+	else
+		glv.live = lv;
+
+	if (!_find_descendants(&descendants, glv, 1, cmd->include_historical_lvs)) {
 		dm_pool_free(descendants.mem, descendants.result);
 		return_0;
 	}
@@ -2015,7 +2172,7 @@ static int _do_movepv_disp(struct dm_report *rh, struct dm_pool *mem,
 		repstr = lv_move_pv_dup(mem, lv);
 
 	if (repstr)
-		return _string_disp(rh, mem, field, &repstr, private);
+		return _field_string(rh, field, repstr);
 
 	return _field_set_value(field, "", NULL);
 }
@@ -2301,7 +2458,7 @@ static int _discards_disp(struct dm_report *rh, struct dm_pool *mem,
 
 	if (seg_is_thin_pool(seg)) {
 		discards_str = get_pool_discards_name(seg->discards);
-		return _string_disp(rh, mem, field, &discards_str, private);
+		return _field_string(rh, field, discards_str);
 	}
 
 	return _field_set_value(field, "", NULL);
@@ -2338,7 +2495,7 @@ static int _cachemode_disp(struct dm_report *rh, struct dm_pool *mem,
 		if (!(cachemode_str = get_cache_mode_name(seg)))
 			return_0;
 
-		return _string_disp(rh, mem, field, &cachemode_str, private);
+		return _field_string(rh, field, cachemode_str);
 	}
 
 	return _field_set_value(field, "", NULL);
@@ -2363,6 +2520,7 @@ static int _pvused_disp(struct dm_report *rh, struct dm_pool *mem,
 {
 	const struct physical_volume *pv =
 	    (const struct physical_volume *) data;
+
 	uint64_t used = pv_used(pv);
 
 	return _size64_disp(rh, mem, field, &used, private);
@@ -2374,7 +2532,12 @@ static int _pvfree_disp(struct dm_report *rh, struct dm_pool *mem,
 {
 	const struct physical_volume *pv =
 	    (const struct physical_volume *) data;
-	uint64_t freespace = pv_free(pv);
+	uint64_t freespace;
+
+	if (is_orphan(pv) && is_used_pv(pv))
+		freespace = 0;
+	else
+		freespace = pv_free(pv);
 
 	return _size64_disp(rh, mem, field, &freespace, private);
 }
@@ -2420,7 +2583,7 @@ static int _vgsystemid_disp(struct dm_report *rh, struct dm_pool *mem,
 	const struct volume_group *vg = (const struct volume_group *) data;
 	const char *repstr = (vg->system_id && *vg->system_id) ? vg->system_id : vg->lvm1_system_id ? : "";
 
-	return _string_disp(rh, mem, field, &repstr, private);
+	return _field_string(rh, field, repstr);
 }
 
 static int _vglocktype_disp(struct dm_report *rh, struct dm_pool *mem,
@@ -2428,9 +2591,8 @@ static int _vglocktype_disp(struct dm_report *rh, struct dm_pool *mem,
 			    const void *data, void *private)
 {
 	const struct volume_group *vg = (const struct volume_group *) data;
-	const char *repstr = vg->lock_type ? vg->lock_type : "";
 
-	return _string_disp(rh, mem, field, &repstr, private);
+	return _field_string(rh, field, vg->lock_type ? : "");
 }
 
 static int _vglockargs_disp(struct dm_report *rh, struct dm_pool *mem,
@@ -2438,9 +2600,27 @@ static int _vglockargs_disp(struct dm_report *rh, struct dm_pool *mem,
 			    const void *data, void *private)
 {
 	const struct volume_group *vg = (const struct volume_group *) data;
-	const char *repstr = vg->lock_args ? vg->lock_args : "";
 
-	return _string_disp(rh, mem, field, &repstr, private);
+	return _field_string(rh, field, vg->lock_args ? : "");
+}
+
+static int _lvuuid_disp(struct dm_report *rh __attribute__((unused)), struct dm_pool *mem,
+			struct dm_report_field *field,
+			const void *data, void *private __attribute__((unused)))
+{
+	const struct logical_volume *lv = (const struct logical_volume *) data;
+	const union lvid *lvid;
+	char *repstr;
+
+	if (lv_is_historical(lv))
+		lvid = &lv->this_glv->historical->lvid;
+	else
+		lvid = &lv->lvid;
+
+	if (!(repstr = id_format_and_copy(mem, &lvid->id[1])))
+		return_0;
+
+	return _field_set_value(field, repstr, NULL);
 }
 
 static int _pvuuid_disp(struct dm_report *rh __attribute__((unused)), struct dm_pool *mem,
@@ -2518,7 +2698,7 @@ static int _vgprofile_disp(struct dm_report *rh, struct dm_pool *mem,
 	const struct volume_group *vg = (const struct volume_group *) data;
 
 	if (vg->profile)
-		return _string_disp(rh, mem, field, &vg->profile->name, private);
+		return _field_string(rh, field, vg->profile->name);
 
 	return _field_set_value(field, "", NULL);
 }
@@ -2553,6 +2733,23 @@ static int _pvmdasize_disp(struct dm_report *rh, struct dm_pool *mem,
 
 	return _size64_disp(rh, mem, field, &min_mda_size, private);
 }
+
+static int _pvextvsn_disp(struct dm_report *rh, struct dm_pool *mem,
+			  struct dm_report_field *field,
+			  const void *data, void *private)
+{
+	const struct label *label = (const struct label *) data;
+	struct lvmcache_info *info = label->info;
+	uint32_t ext_version;
+
+	if (info) {
+		ext_version = lvmcache_ext_version(info);
+		return _uint32_disp(rh, mem, field, &ext_version, private);
+	}
+
+	return _field_set_value(field, "", &GET_TYPE_RESERVED_VALUE(num_undef_64));
+}
+
 
 static int _vgmdasize_disp(struct dm_report *rh, struct dm_pool *mem,
 			   struct dm_report_field *field,
@@ -2665,7 +2862,7 @@ static int _raidsyncaction_disp(struct dm_report *rh __attribute__((unused)),
 	char *sync_action;
 
 	if (lv_is_raid(lv) && lv_raid_sync_action(lv, &sync_action))
-		return _string_disp(rh, mem, field, &sync_action, private);
+		return _field_string(rh, field, sync_action);
 
 	return _field_set_value(field, "", NULL);
 }
@@ -2814,14 +3011,31 @@ static int _lvtime_disp(struct dm_report *rh, struct dm_pool *mem,
 	char *repstr;
 	uint64_t *sortval;
 
-	if (!(repstr = lv_time_dup(mem, lv, 0)) ||
+	if (!(repstr = lv_creation_time_dup(mem, lv, 0)) ||
 	    !(sortval = dm_pool_alloc(mem, sizeof(uint64_t)))) {
 		log_error("Failed to allocate buffer for time.");
 		return 0;
 	}
 
-	*sortval = lv->timestamp;
+	*sortval = lv_is_historical(lv) ? lv->this_glv->historical->timestamp : lv->timestamp;
+	return _field_set_value(field, repstr, sortval);
+}
 
+static int _lvtimeremoved_disp(struct dm_report *rh, struct dm_pool *mem,
+			       struct dm_report_field *field,
+			       const void *data, void *private)
+{
+	const struct logical_volume *lv = (const struct logical_volume *) data;
+	char *repstr;
+	uint64_t *sortval;
+
+	if (!(repstr = lv_removal_time_dup(mem, lv, 0)) ||
+	    !(sortval = dm_pool_alloc(mem, sizeof(uint64_t)))) {
+		log_error("Failed to allocate buffer for time.");
+		return 0;
+	}
+
+	*sortval = lv_is_historical(lv) ? lv->this_glv->historical->timestamp_removed : 0;
 	return _field_set_value(field, repstr, sortval);
 }
 
@@ -2866,13 +3080,26 @@ static int _pvmissing_disp(struct dm_report *rh, struct dm_pool *mem,
 	return _binary_disp(rh, mem, field, missing, GET_FIRST_RESERVED_NAME(pv_missing_y), private);
 }
 
+static int _pvinuse_disp(struct dm_report *rh, struct dm_pool *mem,
+			 struct dm_report_field *field,
+			 const void *data, void *private)
+{
+	const struct physical_volume *pv = (const struct physical_volume *) data;
+	int used = is_used_pv(pv);
+
+	if (used < 0)
+		return _binary_undef_disp(rh, mem, field, private);
+
+	return _binary_disp(rh, mem, field, used, GET_FIRST_RESERVED_NAME(pv_in_use_y), private);
+}
+
 static int _vgpermissions_disp(struct dm_report *rh, struct dm_pool *mem,
 			       struct dm_report_field *field,
 			       const void *data, void *private)
 {
 	const char *perms = ((const struct volume_group *) data)->status & LVM_WRITE ? GET_FIRST_RESERVED_NAME(vg_permissions_rw)
 										     : GET_FIRST_RESERVED_NAME(vg_permissions_r);
-	return _string_disp(rh, mem, field, &perms, private);
+	return _field_string(rh, field, perms);
 }
 
 static int _vgextendable_disp(struct dm_report *rh, struct dm_pool *mem,
@@ -2904,7 +3131,7 @@ static int _vgallocationpolicy_disp(struct dm_report *rh, struct dm_pool *mem,
 				    const void *data, void *private)
 {
 	const char *alloc_policy = get_alloc_string(((const struct volume_group *) data)->alloc) ? : _str_unknown;
-	return _string_disp(rh, mem, field, &alloc_policy, private);
+	return _field_string(rh, field, alloc_policy);
 }
 
 static int _vgclustered_disp(struct dm_report *rh, struct dm_pool *mem,
@@ -3028,7 +3255,7 @@ static int _lvpermissions_disp(struct dm_report *rh, struct dm_pool *mem,
 			perms = _str_unknown;
 	}
 
-	return _string_disp(rh, mem, field, &perms, private);
+	return _field_string(rh, field, perms);
 }
 
 static int _lvallocationpolicy_disp(struct dm_report *rh, struct dm_pool *mem,
@@ -3036,7 +3263,7 @@ static int _lvallocationpolicy_disp(struct dm_report *rh, struct dm_pool *mem,
 				    const void *data, void *private)
 {
 	const char *alloc_policy = get_alloc_string(((const struct logical_volume *) data)->alloc) ? : _str_unknown;
-	return _string_disp(rh, mem, field, &alloc_policy, private);
+	return _field_string(rh, field, alloc_policy);
 }
 
 static int _lvallocationlocked_disp(struct dm_report *rh, struct dm_pool *mem,
@@ -3158,7 +3385,7 @@ static int _lvmergefailed_disp(struct dm_report *rh, struct dm_pool *mem,
 	int merge_failed;
 
 	if (!lv_is_cow(lv) || !lv_snapshot_percent(lv, &snap_percent))
-		return _field_set_value(field, _str_unknown, &GET_TYPE_RESERVED_VALUE(num_undef_64));
+		return _binary_undef_disp(rh, mem, field, private);
 
 	merge_failed = snap_percent == LVM_PERCENT_MERGE_FAILED;
 	return _binary_disp(rh, mem, field, merge_failed, GET_FIRST_RESERVED_NAME(lv_merge_failed_y), private);
@@ -3173,7 +3400,7 @@ static int _lvsnapshotinvalid_disp(struct dm_report *rh, struct dm_pool *mem,
 	int snap_invalid;
 
 	if (!lv_is_cow(lv))
-		return _field_set_value(field, _str_unknown, &GET_TYPE_RESERVED_VALUE(num_undef_64));
+		return _binary_undef_disp(rh, mem, field, private);
 
 	snap_invalid = !lv_snapshot_percent(lv, &snap_percent) || snap_percent == DM_PERCENT_INVALID;
 	return _binary_disp(rh, mem, field, snap_invalid, GET_FIRST_RESERVED_NAME(lv_snapshot_invalid_y), private);
@@ -3248,7 +3475,7 @@ static int _lvhealthstatus_disp(struct dm_report *rh, struct dm_pool *mem,
 	const char *health = "";
 	uint64_t n;
 
-	if (lv->status & PARTIAL_LV)
+	if (lv_is_partial(lv))
 		health = "partial";
 	else if (lv_is_raid_type(lv)) {
 		if (!activation())
@@ -3260,6 +3487,14 @@ static int _lvhealthstatus_disp(struct dm_report *rh, struct dm_pool *mem,
 				health = "mismatches exist";
 		} else if (lv->status & LV_WRITEMOSTLY)
 			health = "writemostly";
+	} else if (lv_is_cache(lv) && (lvdm->seg_status.type != SEG_STATUS_NONE)) {
+		if (lvdm->seg_status.type != SEG_STATUS_CACHE)
+			return _field_set_value(field, GET_FIRST_RESERVED_NAME(health_undef),
+						GET_FIELD_RESERVED_VALUE(health_undef));
+		else if (lvdm->seg_status.cache->fail)
+			health = "failed";
+		else if (lvdm->seg_status.cache->read_only)
+			health = "metadata_read_only";
 	} else if (lv_is_thin_pool(lv) && (lvdm->seg_status.type != SEG_STATUS_NONE)) {
 		if (lvdm->seg_status.type != SEG_STATUS_THIN_POOL)
 			return _field_set_value(field, GET_FIRST_RESERVED_NAME(health_undef),
@@ -3272,7 +3507,24 @@ static int _lvhealthstatus_disp(struct dm_report *rh, struct dm_pool *mem,
 			health = "metadata_read_only";
 	}
 
-	return _string_disp(rh, mem, field, &health, private);
+	return _field_string(rh, field, health);
+}
+
+static int _lvcheckneeded_disp(struct dm_report *rh, struct dm_pool *mem,
+			       struct dm_report_field *field,
+			       const void *data, void *private)
+{
+	const struct lv_with_info_and_seg_status *lvdm = (const struct lv_with_info_and_seg_status *) data;
+
+	if (lv_is_thin_pool(lvdm->lv) && lvdm->seg_status.type == SEG_STATUS_THIN_POOL)
+		return _binary_disp(rh, mem, field, lvdm->seg_status.thin_pool->needs_check,
+				    GET_FIRST_RESERVED_NAME(lv_check_needed_y), private);
+
+	if (lv_is_cache(lvdm->lv) && lvdm->seg_status.type == SEG_STATUS_CACHE)
+		return _binary_disp(rh, mem, field, lvdm->seg_status.cache->needs_check,
+				    GET_FIRST_RESERVED_NAME(lv_check_needed_y), private);
+
+	return _binary_undef_disp(rh, mem, field, private);
 }
 
 static int _lvskipactivation_disp(struct dm_report *rh, struct dm_pool *mem,
@@ -3281,6 +3533,14 @@ static int _lvskipactivation_disp(struct dm_report *rh, struct dm_pool *mem,
 {
 	int skip_activation = (((const struct logical_volume *) data)->status & LV_ACTIVATION_SKIP) != 0;
 	return _binary_disp(rh, mem, field, skip_activation, "skip activation", private);
+}
+
+static int _lvhistorical_disp(struct dm_report *rh, struct dm_pool *mem,
+			      struct dm_report_field *field,
+			      const void *data, void *private)
+{
+	const struct logical_volume *lv = (const struct logical_volume *) data;
+	return _binary_disp(rh, mem, field, lv_is_historical(lv), "historical", private);
 }
 
 /*
@@ -3323,7 +3583,19 @@ static struct volume_group _dummy_vg = {
 	.lvm1_system_id = (char *) "",
 	.pvs = DM_LIST_HEAD_INIT(_dummy_vg.pvs),
 	.lvs = DM_LIST_HEAD_INIT(_dummy_vg.lvs),
+	.historical_lvs = DM_LIST_HEAD_INIT(_dummy_vg.historical_lvs),
 	.tags = DM_LIST_HEAD_INIT(_dummy_vg.tags),
+};
+
+static struct volume_group _unknown_vg = {
+	.fid = &_dummy_fid,
+	.name = "[unknown]",
+	.system_id = (char *) "",
+	.lvm1_system_id = (char *) "",
+	.pvs = DM_LIST_HEAD_INIT(_unknown_vg.pvs),
+	.lvs = DM_LIST_HEAD_INIT(_unknown_vg.lvs),
+	.historical_lvs = DM_LIST_HEAD_INIT(_unknown_vg.historical_lvs),
+	.tags = DM_LIST_HEAD_INIT(_unknown_vg.tags),
 };
 
 static void *_obj_get_vg(void *obj)
@@ -3400,7 +3672,7 @@ static const struct dm_report_object_type _devtypes_report_types[] = {
 #define STR_LIST DM_REPORT_FIELD_TYPE_STRING_LIST
 #define SNUM DM_REPORT_FIELD_TYPE_NUMBER
 #define FIELD(type, strct, sorttype, head, field, width, func, id, desc, writeable) \
-	{type, sorttype, offsetof(type_ ## strct, field), width, \
+	{type, sorttype, offsetof(type_ ## strct, field), width ? : sizeof(head) - 1, \
 	 #id, head, &_ ## func ## _disp, desc},
 
 typedef struct physical_volume type_pv;
@@ -3532,12 +3804,17 @@ int report_object(void *handle, int selection_only, const struct volume_group *v
 	}
 
 	/* Never report orphan VGs. */
-	if (vg && is_orphan_vg(vg->name))
-		obj.vg = NULL;
+	if (vg && is_orphan_vg(vg->name)) {
+		obj.vg = &_dummy_vg;
+		if (pv)
+			_dummy_fid.fmt = pv->fmt;
+	}
 
-	/* The two format fields might as well match. */
-	if (!obj.vg && pv)
-		_dummy_fid.fmt = pv->fmt;
+	if (vg && is_orphan_vg(vg->name) && is_used_pv(pv)) {
+		obj.vg = &_unknown_vg;
+		if (pv)
+			_dummy_fid.fmt = pv->fmt;
+	}
 
 	return sh ? dm_report_object_is_selected(sh->selection_rh, &obj, 0, &sh->selected)
 		  : dm_report_object(handle, &obj);

@@ -36,6 +36,11 @@ static int _pvresize_single(struct cmd_context *cmd,
 	}
 	params->total++;
 
+	if (vg && vg_is_exported(vg)) {
+		log_error("Volume group %s is exported", vg->name);
+		return ECMD_FAILED;
+	}
+
 	/*
 	 * Needed to change a property on an orphan PV.
 	 * i.e. the global lock is only needed for orphans.
@@ -79,6 +84,8 @@ int pvresize(struct cmd_context *cmd, int argc, char **argv)
 	params.done = 0;
 	params.total = 0;
 
+	set_pv_notify(cmd);
+
 	if (!(handle = init_processing_handle(cmd))) {
 		log_error("Failed to initialize processing handle.");
 		ret = ECMD_FAILED;
@@ -87,8 +94,7 @@ int pvresize(struct cmd_context *cmd, int argc, char **argv)
 
 	handle->custom_handle = &params;
 
-	ret = process_each_pv(cmd, argc, argv, NULL, READ_FOR_UPDATE, handle,
-			      _pvresize_single);
+	ret = process_each_pv(cmd, argc, argv, NULL, 0, READ_FOR_UPDATE | READ_ALLOW_EXPORTED, handle, _pvresize_single);
 
 	log_print_unless_silent("%d physical volume(s) resized / %d physical volume(s) "
 				"not resized", params.done, params.total - params.done);

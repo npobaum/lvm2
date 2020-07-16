@@ -142,6 +142,8 @@ static int _lockd_result(daemon_reply reply, int *result, uint32_t *lockd_flags)
 	const char *flags_str = NULL;
 	const char *lock_type = NULL;
 
+	*result = -1;
+
 	if (reply.error) {
 		log_error("lockd_result reply error %d", reply.error);
 		return 0;
@@ -2328,6 +2330,12 @@ int lockd_init_lv(struct cmd_context *cmd, struct volume_group *vg, struct logic
 		 * and only the origin LV needs its own lock, which
 		 * represents itself and all associated cow snapshots.
 		 */
+
+		if (!lp->origin_name) {
+			/* Sparse LV case. We require a lock from the origin LV. */
+			log_error("Cannot create snapshot without origin LV in shared VG.");
+			return 0;
+		}
 
 		if (!(origin_lv = find_lv(vg, lp->origin_name))) {
 			log_error("Failed to find origin LV %s/%s", vg->name, lp->origin_name);

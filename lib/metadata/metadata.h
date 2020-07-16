@@ -256,10 +256,7 @@ struct format_handler {
 	 * Initialise a new PV.
 	 */
 	int (*pv_initialise) (const struct format_type * fmt,
-			      int64_t label_sector,
-			      unsigned long data_alignment,
-			      unsigned long data_alignment_offset,
-			      struct pvcreate_restorable_params *rp,
+			      struct pv_create_args *pva,
 			      struct physical_volume * pv);
 
 	/*
@@ -301,6 +298,15 @@ struct format_handler {
 	 */
 	int (*pv_write) (const struct format_type * fmt,
 			 struct physical_volume * pv);
+
+	/*
+	 * Check if PV needs rewriting. This is used to check whether there are any
+	 * format-specific changes  before actually writing the PV (by calling pv_write).
+	 * With this, we can call pv_write conditionally only if it's really needed.
+	 */
+	int (*pv_needs_rewrite) (const struct format_type *fmt,
+				 struct physical_volume *pv,
+				 int *needs_rewrite);
 
 	/*
 	 * Tweak an already filled out a lv eg, check there
@@ -434,6 +440,12 @@ int lv_split_segment(struct logical_volume *lv, uint32_t le);
 int add_seg_to_segs_using_this_lv(struct logical_volume *lv, struct lv_segment *seg);
 int remove_seg_from_segs_using_this_lv(struct logical_volume *lv, struct lv_segment *seg);
 
+int add_glv_to_indirect_glvs(struct dm_pool *mem,
+			     struct generic_logical_volume *origin_glv,
+			     struct generic_logical_volume *user_glv);
+int remove_glv_from_indirect_glvs(struct generic_logical_volume *glv,
+				  struct generic_logical_volume *user_glv);
+
 int for_each_sub_lv_except_pools(struct logical_volume *lv,
 				 int (*fn)(struct logical_volume *lv, void *data),
 				 void *data);
@@ -475,7 +487,9 @@ int fixup_imported_mirrors(struct volume_group *vg);
  * From thin_manip.c
  */
 int attach_pool_lv(struct lv_segment *seg, struct logical_volume *pool_lv,
-		   struct logical_volume *origin_lv, struct logical_volume *merge_lv);
+		   struct logical_volume *origin_lv,
+		   struct generic_logical_volume *indirect_origin,
+		   struct logical_volume *merge_lv);
 int detach_pool_lv(struct lv_segment *seg);
 int attach_pool_message(struct lv_segment *pool_seg, dm_thin_message_t type,
 			struct logical_volume *lv, uint32_t delete_id,
@@ -494,9 +508,6 @@ int create_pool(struct logical_volume *lv, const struct segment_type *segtype,
 struct id pv_id(const struct physical_volume *pv);
 const struct format_type *pv_format_type(const struct physical_volume *pv);
 struct id pv_vgid(const struct physical_volume *pv);
-
-int add_pv_to_vg(struct volume_group *vg, const char *pv_name,
-		 struct physical_volume *pv, struct pvcreate_params *pp);
 
 uint64_t find_min_mda_size(struct dm_list *mdas);
 char *tags_format_and_copy(struct dm_pool *mem, const struct dm_list *tagsl);
