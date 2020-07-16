@@ -293,8 +293,7 @@ int init_locking(int type, struct cmd_context *cmd)
 	    find_config_tree_int(cmd, "locking/fallback_to_local_locking",
 	    	    find_config_tree_int(cmd, "global/fallback_to_local_locking",
 					 DEFAULT_FALLBACK_TO_LOCAL_LOCKING))) {
-		log_warn_suppress(suppress_messages,
-				  "WARNING: Falling back to local file-based locking.");
+		log_warn_suppress(suppress_messages, "WARNING: Falling back to local file-based locking.");
 		log_warn_suppress(suppress_messages,
 				  "Volume Groups with the clustered attribute will "
 				  "be inaccessible.");
@@ -388,7 +387,8 @@ static int _lock_vol(struct cmd_context *cmd, const char *resource,
 		}
 
 		_update_vg_lock_count(resource, flags);
-	}
+	} else
+		stack;
 
 	_unlock_memory(cmd, lv_op);
 	_unblock_signals();
@@ -420,11 +420,9 @@ int lock_vol(struct cmd_context *cmd, const char *vol, uint32_t flags)
 	switch (flags & LCK_SCOPE_MASK) {
 	case LCK_VG:
 		/*
-		 * Automatically set LCK_NONBLOCK if one or more VGs locked.
-		 * This will enforce correctness and prevent deadlocks rather
-		 * than relying on the caller to set the flag properly.
+		 * VG locks alphabetical, ORPHAN lock last
 		 */
-		if (!_blocking_supported || vgs_locked())
+		if (!_blocking_supported)
 			flags |= LCK_NONBLOCK;
 
 		if (vol[0] != '#' &&
@@ -471,12 +469,15 @@ int lock_vol(struct cmd_context *cmd, const char *vol, uint32_t flags)
 int resume_lvs(struct cmd_context *cmd, struct dm_list *lvs)
 {
 	struct lv_list *lvl;
+	int r = 1;
 
 	dm_list_iterate_items(lvl, lvs)
-		if (!resume_lv(cmd, lvl->lv))
+		if (!resume_lv(cmd, lvl->lv)) {
+			r = 0;
 			stack;
+		}
 
-	return 1;
+	return r;
 }
 
 /* Lock a list of LVs */

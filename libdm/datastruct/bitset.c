@@ -26,16 +26,13 @@ dm_bitset_t dm_bitset_create(struct dm_pool *mem, unsigned num_bits)
 	
 	if (mem)
 		bs = dm_pool_zalloc(mem, size);
-	else
-		bs = dm_malloc(size);
+	else if ((bs = dm_malloc(size)))
+		memset(bs, 0, size);
 
 	if (!bs)
 		return NULL;
 
 	*bs = num_bits;
-
-	if (!mem)
-		dm_bit_clear_all(bs);
 
 	return bs;
 }
@@ -45,6 +42,24 @@ void dm_bitset_destroy(dm_bitset_t bs)
 	dm_free(bs);
 }
 
+int dm_bitset_equal(dm_bitset_t in1, dm_bitset_t in2)
+{
+	int i;
+
+	for (i = (in1[0] / DM_BITS_PER_INT) + 1; i; i--)
+		if (in1[i] != in2[i])
+			return 0;
+
+	return 1;
+}
+
+void dm_bit_and(dm_bitset_t out, dm_bitset_t in1, dm_bitset_t in2)
+{
+	int i;
+
+	for (i = (in1[0] / DM_BITS_PER_INT) + 1; i; i--)
+		out[i] = in1[i] & in2[i];
+}
 void dm_bit_union(dm_bitset_t out, dm_bitset_t in1, dm_bitset_t in2)
 {
 	int i;
@@ -52,18 +67,11 @@ void dm_bit_union(dm_bitset_t out, dm_bitset_t in1, dm_bitset_t in2)
 		out[i] = in1[i] | in2[i];
 }
 
-/*
- * FIXME: slow
- */
-static inline int _test_word(uint32_t test, int bit)
+static int _test_word(uint32_t test, int bit)
 {
-	while (bit < (int) DM_BITS_PER_INT) {
-		if (test & (0x1 << bit))
-			return bit;
-		bit++;
-	}
+	int next_set_bit;
 
-	return -1;
+	return ((next_set_bit = ffs(test >> bit)) ? next_set_bit + bit - 1 : -1);
 }
 
 int dm_bit_get_next(dm_bitset_t bs, int last_bit)

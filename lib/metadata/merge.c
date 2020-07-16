@@ -30,7 +30,8 @@
 static int _merge(struct lv_segment *first, struct lv_segment *second)
 {
 	if (!first || !second || first->segtype != second->segtype ||
-	    !first->segtype->ops->merge_segments) return 0;
+	    !first->segtype->ops->merge_segments)
+		return 0;
 
 	return first->segtype->ops->merge_segments(first, second);
 }
@@ -55,6 +56,11 @@ int lv_merge_segments(struct logical_volume *lv)
 	return 1;
 }
 
+#define ERROR_MAX 100
+#define inc_error_count \
+	if (error_count++ > ERROR_MAX)	\
+		goto out
+
 /*
  * Verify that an LV's segments are consecutive, complete and don't overlap.
  */
@@ -63,9 +69,9 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 	struct lv_segment *seg, *seg2;
 	uint32_t le = 0;
 	unsigned seg_count = 0, seg_found;
-	int r = 1;
 	uint32_t area_multiplier, s;
 	struct seg_list *sl;
+	int error_count = 0;
 
 	dm_list_iterate_items(seg, &lv->segments) {
 		seg_count++;
@@ -73,7 +79,7 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 			log_error("LV %s invalid: segment %u should begin at "
 				  "LE %" PRIu32 " (found %" PRIu32 ").",
 				  lv->name, seg_count, le, seg->le);
-			r = 0;
+			inc_error_count;
 		}
 
 		area_multiplier = segtype_is_striped(seg->segtype) ?
@@ -83,7 +89,7 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 			log_error("LV %s: segment %u has inconsistent "
 				  "area_len %u",
 				  lv->name, seg_count, seg->area_len);
-			r = 0;
+			inc_error_count;
 		}
 
 		if (complete_vg && seg->log_lv) {
@@ -91,14 +97,14 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 				log_error("LV %s: segment %u has log LV but "
 					  "is not mirrored",
 					  lv->name, seg_count);
-				r = 0;
+				inc_error_count;
 			}
 
 			if (!(seg->log_lv->status & MIRROR_LOG)) {
 				log_error("LV %s: segment %u log LV %s is not "
 					  "a mirror log",
 					   lv->name, seg_count, seg->log_lv->name);
-				r = 0;
+				inc_error_count;
 			}
 
 			if (!(seg2 = first_seg(seg->log_lv)) ||
@@ -106,7 +112,7 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 				log_error("LV %s: segment %u log LV does not "
 					  "point back to mirror segment",
 					   lv->name, seg_count);
-				r = 0;
+				inc_error_count;
 			}
 		}
 
@@ -116,7 +122,7 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 				log_error("LV %s: segment %u mirror image "
 					  "is not mirrored",
 					  lv->name, seg_count);
-				r = 0;
+				inc_error_count;
 			}
 		}
 
@@ -125,7 +131,7 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 				log_error("LV %s: segment %u has same LV %s for "
 					  "both origin and snapshot",
 					  lv->name, seg_count, seg->cow->name);
-				r = 0;
+				inc_error_count;
 			}
 		}
 
@@ -134,7 +140,7 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 				log_error("LV %s: segment %u has unassigned "
 					  "area %u.",
 					  lv->name, seg_count, s);
-				r = 0;
+				inc_error_count;
 			} else if (seg_type(seg, s) == AREA_PV) {
 				if (!seg_pvseg(seg, s) ||
 				    seg_pvseg(seg, s)->lvseg != seg ||
@@ -142,7 +148,7 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 					log_error("LV %s: segment %u has "
 						  "inconsistent PV area %u",
 						  lv->name, seg_count, s);
-					r = 0;
+					inc_error_count;
 				}
 			} else {
 				if (!seg_lv(seg, s) ||
@@ -151,7 +157,7 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 					log_error("LV %s: segment %u has "
 						  "inconsistent LV area %u",
 						  lv->name, seg_count, s);
-					r = 0;
+					inc_error_count;
 				}
 
 				if (complete_vg && seg_lv(seg, s) &&
@@ -162,7 +168,7 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 					log_error("LV %s: segment %u mirror "
 						  "image %u missing mirror ptr",
 						  lv->name, seg_count, s);
-					r = 0;
+					inc_error_count;
 				}
 
 /* FIXME I don't think this ever holds?
@@ -171,7 +177,7 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 						  "inconsistent LV area %u "
 						  "size",
 						  lv->name, seg_count, s);
-					r = 0;
+					inc_error_count;
 				}
  */
 				seg_found = 0;
@@ -184,13 +190,13 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 						  lv->name, seg_count,
 						  seg_lv(seg, s)->name,
 						  seg_lv(seg, s)->name, lv->name);
-					r = 0;
+					inc_error_count;
 				} else if (seg_found > 1) {
 					log_error("LV %s has duplicated links "
 						  "to LV %s segment %d",
 						  seg_lv(seg, s)->name,
 						  lv->name, seg_count);
-					r = 0;
+					inc_error_count;
 				}
 			}
 		}
@@ -215,14 +221,14 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 				  lv->name, seg->lv->name, seg->le,
 				  seg->le + seg->len - 1,
 				  seg->lv->name, lv->name);
-			r = 0;
+			inc_error_count;
 		} else if (seg_found != sl->count) {
 			log_error("Reference count mismatch: LV %s has %d "
 				  "links to LV %s:%" PRIu32 "-%" PRIu32
 				  ", which has %d links",
 				  lv->name, sl->count, seg->lv->name, seg->le,
 				  seg->le + seg->len - 1, seg_found);
-			r = 0;
+			inc_error_count;
 		}
 
 		seg_found = 0;
@@ -233,20 +239,21 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 			}
 		if (!seg_found) {
 			log_error("LV segment %s:%" PRIu32 "-%" PRIu32
-				  "is incorrectly listed as being used by LV %s",
+				  " is incorrectly listed as being used by LV %s",
 				  seg->lv->name, seg->le, seg->le + seg->len - 1,
 				  lv->name);
-			r = 0;
+			inc_error_count;
 		}
 	}
 
 	if (le != lv->le_count) {
 		log_error("LV %s: inconsistent LE count %u != %u",
 			  lv->name, le, lv->le_count);
-		r = 0;
+		inc_error_count;
 	}
 
-	return r;
+out:
+	return !error_count;
 }
 
 /*
@@ -268,18 +275,18 @@ static int _lv_split_segment(struct logical_volume *lv, struct lv_segment *seg,
 	}
 
 	/* Clone the existing segment */
-	if (!(split_seg = alloc_lv_segment(lv->vg->cmd->mem, seg->segtype,
+	if (!(split_seg = alloc_lv_segment(lv->vg->vgmem, seg->segtype,
 					   seg->lv, seg->le, seg->len,
 					   seg->status, seg->stripe_size,
 					   seg->log_lv,
 					   seg->area_count, seg->area_len,
 					   seg->chunk_size, seg->region_size,
-					   seg->extents_copied))) {
+					   seg->extents_copied, seg->pvmove_source_seg))) {
 		log_error("Couldn't allocate cloned LV segment.");
 		return 0;
 	}
 
-	if (!str_list_dup(lv->vg->cmd->mem, &split_seg->tags, &seg->tags)) {
+	if (!str_list_dup(lv->vg->vgmem, &split_seg->tags, &seg->tags)) {
 		log_error("LV segment tags duplication failed");
 		return 0;
 	}

@@ -1,4 +1,4 @@
-# Copyright (C) 2007 Red Hat, Inc. All rights reserved.
+# Copyright (C) 2007-2010 Red Hat, Inc. All rights reserved.
 #
 # This file is part of LVM2.
 #
@@ -25,47 +25,68 @@ abs_builddir = @abs_builddir@
 abs_top_builddir = @abs_top_builddir@
 abs_top_srcdir = @abs_top_srcdir@
 
+T ?= .
+RUN = $(shell find -regextype posix-egrep -name t-\*.sh -and -regex ".*($(T)).*")
+
 # Shell quote;
 SHELL_PATH_SQ = $(subst ','\'',$(SHELL_PATH))
 
-T = $(wildcard $(srcdir)/t-*.sh)
+SCRIPTS := $(wildcard $(srcdir)/t-*.sh) \
+ $(srcdir)/test-utils.sh \
+ $(srcdir)/lvm-utils.sh
 
 ifeq ("@UDEV_SYNC@", "yes")
 dm_udev_synchronisation = 1
 endif
 
 ifeq ("@APPLIB@", "yes")
-T += $(srcdir)/lvm2app.sh
+SCRIPTS += $(srcdir)/lvm2app.sh
 all: api/vgtest
 api/vgtest:
 	$(MAKE) -C api vgtest
 endif
 
-all: init.sh
-	./bin/harness t-*.sh
+all check: init.sh
+	@echo Testing with locking_type 1
+	./bin/harness $(RUN)
+	@echo Testing with locking_type 3
+	LVM_TEST_LOCKING=3 ./bin/harness $(RUN)
+
+check_cluster: init.sh
+	@echo Testing with locking_type 3
+	LVM_TEST_LOCKING=3 ./bin/harness $(RUN)
+
+check_local: init.sh
+	@echo Testing with locking_type 1
+	LVM_TEST_LOCKING=1 ./bin/harness $(RUN)
 
 bin/not: $(srcdir)/not.c .bin-dir-stamp
 	$(CC) -o bin/not $<
+	ln -sf not bin/should
 
 bin/harness: $(srcdir)/harness.c .bin-dir-stamp
 	$(CC) -o bin/harness $<
 
-init.sh: $(srcdir)/Makefile.in $(srcdir)/test-utils.sh .bin-dir-stamp bin/not bin/harness $(T)
+bin/check: $(srcdir)/check.sh .bin-dir-stamp
+	cp $< bin/check
+	chmod +x bin/check
+
+init.sh: $(srcdir)/Makefile.in .bin-dir-stamp bin/not bin/check bin/harness $(SCRIPTS)
 	rm -f $@-t $@
 	echo 'top_srcdir=$(top_srcdir)' >> $@-t
 	echo 'abs_top_builddir=$(abs_top_builddir)' >> $@-t
 	echo 'abs_top_srcdir=$(abs_top_builddir)' >> $@-t
-	echo 'PATH=$(abs_top_builddir)/test/bin:$$PATH' >> $@-t
-	echo 'export LD_LIBRARY_PATH="$(abs_top_builddir)/libdm:$(abs_top_builddir)/liblvm:$(abs_top_builddir)/daemons/dmeventd"' >> $@-t
+	echo 'PATH=$$abs_top_builddir/test/bin:$$PATH' >> $@-t
+	LDLPATH="\$$abs_top_builddir/libdm"; \
+	LDLPATH="$$LDLPATH:\$$abs_top_builddir/daemons/dmeventd"; \
+	echo "export LD_LIBRARY_PATH=\"$$LDLPATH\"" >> $@-t
 	echo 'abs_srcdir=$(abs_srcdir)' >> $@-t
 	echo 'abs_builddir=$(abs_builddir)' >> $@-t
 	echo 'export PATH' >> $@-t
 	echo 'export DM_UDEV_SYNCHRONISATION=$(dm_udev_synchronisation)' >> $@-t
 	chmod a-w $@-t
 	mv $@-t $@
-	if test "$(srcdir)" != "."; then cp $(srcdir)/test-utils.sh \
-	                                    $(srcdir)/test-lib.sh \
-	                                    $(T) .; fi
+	@if test "$(srcdir)" != . ; then echo "Copying tests to builddir."; cp $(SCRIPTS) . ; fi
 
 Makefile: $(srcdir)/Makefile.in $(top_builddir)/config.status
 	cd $(top_builddir) && $(SHELL) ./config.status $(subdir)/$@
@@ -77,6 +98,7 @@ Makefile: $(srcdir)/Makefile.in $(top_builddir)/config.status
 	  ln -s ../lvm-wrapper bin/$$i; \
 	done
 	ln -s "$(abs_top_builddir)/tools/dmsetup" bin/dmsetup
+	ln -s "$(abs_top_builddir)/daemons/clvmd/clvmd" bin/clvmd
 	touch $@
 
 lvm-wrapper: Makefile
@@ -91,9 +113,9 @@ lvm-wrapper: Makefile
 
 clean:
 	rm -rf init.sh lvm-wrapper bin .bin-dir-stamp
+	if test "$(srcdir)" != . ; then rm -f $(subst $(srcdir)/, ,$(SCRIPTS)) lvm2app.sh ; fi
 
 distclean: clean
 	rm -f Makefile
 
-.PHONY: clean distclean
 .NOTPARALLEL:

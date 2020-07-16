@@ -233,8 +233,8 @@ static int _process_config(struct cmd_context *cmd)
 	}
 
 	if (*cmd->proc_dir && !dir_exists(cmd->proc_dir)) {
-		log_error("WARNING: proc dir %s not found - some checks will be bypassed",
-			  cmd->proc_dir);
+		log_warn("WARNING: proc dir %s not found - some checks will be bypassed",
+			 cmd->proc_dir);
 		cmd->proc_dir[0] = '\0';
 	}
 
@@ -639,14 +639,14 @@ static struct dev_filter *_init_filter_components(struct cmd_context *cmd)
 
 	else if (!(filters[nr_filt++] = regex_filter_create(cn->v))) {
 		log_error("Failed to create regex device filter");
-		return NULL;
+		goto err;
 	}
 
 	/* device type filter. Required. */
 	cn = find_config_tree_node(cmd, "devices/types");
 	if (!(filters[nr_filt++] = lvm_type_filter_create(cmd->proc_dir, cn))) {
 		log_error("Failed to create lvm type filter");
-		return NULL;
+		goto err;
 	}
 
 	/* md component filter. Optional, non-critical. */
@@ -660,6 +660,11 @@ static struct dev_filter *_init_filter_components(struct cmd_context *cmd)
 	/* Only build a composite filter if we really need it. */
 	return (nr_filt == 1) ?
 	    filters[0] : composite_filter_create(nr_filt, filters);
+err:
+	nr_filt--; /* skip NULL */
+	while (nr_filt-- > 0)
+		 filters[nr_filt]->destroy(filters[nr_filt]);
+	return NULL;
 }
 
 static int _init_filters(struct cmd_context *cmd, unsigned load_persistent_cache)
@@ -731,6 +736,19 @@ static int _init_filters(struct cmd_context *cmd, unsigned load_persistent_cache
 	cmd->filter = f4;
 
 	return 1;
+}
+
+struct format_type *get_format_by_name(struct cmd_context *cmd, const char *format)
+{
+        struct format_type *fmt;
+
+        dm_list_iterate_items(fmt, &cmd->formats)
+                if (!strcasecmp(fmt->name, format) ||
+                    !strcasecmp(fmt->name + 3, format) ||
+                    (fmt->alias && !strcasecmp(fmt->alias, format)))
+                        return fmt;
+
+        return NULL;
 }
 
 static int _init_formats(struct cmd_context *cmd)
@@ -806,8 +824,8 @@ static int _init_formats(struct cmd_context *cmd)
 	dm_list_iterate_items(fmt, &cmd->formats) {
 		if (!strcasecmp(fmt->name, format) ||
 		    (fmt->alias && !strcasecmp(fmt->alias, format))) {
-			cmd->default_settings.fmt = fmt;
-			cmd->fmt = cmd->default_settings.fmt;
+			cmd->default_settings.fmt_name = fmt->name;
+			cmd->fmt = fmt;
 			return 1;
 		}
 	}
@@ -1190,7 +1208,7 @@ out:
 	return cmd;
 }
 
-static void _destroy_formats(struct dm_list *formats)
+static void _destroy_formats(struct cmd_context *cmd, struct dm_list *formats)
 {
 	struct dm_list *fmtl, *tmp;
 	struct format_type *fmt;
@@ -1268,7 +1286,7 @@ int refresh_toolcontext(struct cmd_context *cmd)
 	lvmcache_destroy(cmd, 0);
 	label_exit();
 	_destroy_segtypes(&cmd->segtypes);
-	_destroy_formats(&cmd->formats);
+	_destroy_formats(cmd, &cmd->formats);
 	if (cmd->filter) {
 		cmd->filter->destroy(cmd->filter);
 		cmd->filter = NULL;
@@ -1329,7 +1347,7 @@ void destroy_toolcontext(struct cmd_context *cmd)
 	lvmcache_destroy(cmd, 0);
 	label_exit();
 	_destroy_segtypes(&cmd->segtypes);
-	_destroy_formats(&cmd->formats);
+	_destroy_formats(cmd, &cmd->formats);
 	if (cmd->filter)
 		cmd->filter->destroy(cmd->filter);
 	if (cmd->mem)

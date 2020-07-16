@@ -8,10 +8,19 @@
 
 pid_t pid;
 int fds[2];
-int *status;
-int nfailed = 0;
-int nskipped = 0;
-int npassed = 0;
+
+#define MAX 1024
+
+struct stats {
+	int nfailed;
+	int nskipped;
+	int npassed;
+	int nwarned;
+	int status[MAX];
+};
+
+struct stats s;
+struct stats backup;
 
 char *readbuf = NULL;
 int readbuf_sz = 0, readbuf_used = 0;
@@ -21,6 +30,7 @@ int die = 0;
 #define PASSED 0
 #define SKIPPED 1
 #define FAILED 2
+#define WARNED 3
 
 void handler( int s ) {
 	signal( s, SIG_DFL );
@@ -29,7 +39,7 @@ void handler( int s ) {
 }
 
 void dump() {
-	write(1, readbuf, readbuf_used);
+	fwrite(readbuf, 1, readbuf_used, stdout);
 }
 
 void clear() {
@@ -51,24 +61,31 @@ void drain() {
 			exit(205);
 		memcpy(readbuf + readbuf_used, buf, sz);
 		readbuf_used += sz;
+		readbuf[readbuf_used] = 0;
 	}
 }
 
 void passed(int i, char *f) {
-	++ npassed;
-	status[i] = PASSED;
-	printf("passed.\n");
+	if (strstr(readbuf, "TEST WARNING")) {
+		++s.nwarned;
+		s.status[i] = WARNED;
+		printf("warnings\n");
+	} else {
+		++ s.npassed;
+		s.status[i] = PASSED;
+		printf("passed.\n");
+	}
 }
 
 void skipped(int i, char *f) {
-	++ nskipped;
-	status[i] = SKIPPED;
+	++ s.nskipped;
+	s.status[i] = SKIPPED;
 	printf("skipped.\n");
 }
 
 void failed(int i, char *f, int st) {
-	++ nfailed;
-	status[i] = FAILED;
+	++ s.nfailed;
+	s.status[i] = FAILED;
 	if(die == 2) {
 		printf("interrupted.\n");
 		return;
@@ -125,7 +142,19 @@ void run(int i, char *f) {
 
 int main(int argc, char **argv) {
 	int i;
-	status = alloca(sizeof(int)*argc);
+	int repeat = getenv("LVM_TEST_NOVERBOSE") ? 0 : 1;
+
+	if (argc >= MAX) {
+		fprintf(stderr, "Sorry, my head exploded. Please increase MAX.\n");
+		exit(1);
+	}
+
+	s.nwarned = s.nfailed = s.npassed = s.nskipped = 0;
+
+	char *config = getenv("LVM_TEST_CONFIG"),
+	     *config_debug;
+	config = config ? config : "";
+	asprintf(&config_debug, "%s\n%s\n", config, "log { verbose=4 }");
 
 	if (socketpair(PF_UNIX, SOCK_STREAM, 0, fds)) {
 		perror("socketpair");
@@ -149,15 +178,23 @@ int main(int argc, char **argv) {
 		run(i, argv[i]);
 		if (die)
 			break;
+		if ( repeat && s.status[i] == FAILED ) {
+			backup = s;
+			setenv("LVM_TEST_CONFIG", config_debug, 1);
+			run(i, argv[i]);
+			setenv("LVM_TEST_CONFIG", config, 1);
+			s = backup;
+		}
 	}
 
-	printf("\n## %d tests: %d OK, %d failed, %d skipped\n",
-	       npassed + nfailed + nskipped, npassed, nfailed, nskipped);
+	printf("\n## %d tests: %d OK, %d warnings, %d failures; %d skipped\n",
+	       s.nwarned + s.npassed + s.nfailed + s.nskipped,
+	       s.npassed, s.nwarned, s.nfailed, s.nskipped);
 
 	/* print out a summary */
-	if (nfailed || nskipped) {
+	if (s.nfailed || s.nskipped) {
 		for (i = 1; i < argc; ++ i) {
-			switch (status[i]) {
+			switch (s.status[i]) {
 			case FAILED:
 				printf("FAILED: %s\n", argv[i]);
 				break;
@@ -167,7 +204,7 @@ int main(int argc, char **argv) {
 			}
 		}
 		printf("\n");
-		return nfailed > 0 || die;
+		return s.nfailed > 0 || die;
 	}
-	return !die;
+	return die;
 }

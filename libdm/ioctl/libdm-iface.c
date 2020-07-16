@@ -353,13 +353,29 @@ error:
 #endif
 }
 
+static void _dm_zfree_string(char *string)
+{
+	if (string) {
+		memset(string, 0, strlen(string));
+		dm_free(string);
+	}
+}
+
+static void _dm_zfree_dmi(struct dm_ioctl *dmi)
+{
+	if (dmi) {
+		memset(dmi, 0, dmi->data_size);
+		dm_free(dmi);
+	}
+}
+
 void dm_task_destroy(struct dm_task *dmt)
 {
 	struct target *t, *n;
 
 	for (t = dmt->head; t; t = n) {
 		n = t->next;
-		dm_free(t->params);
+		_dm_zfree_string(t->params);
 		dm_free(t->type);
 		dm_free(t);
 	}
@@ -373,8 +389,7 @@ void dm_task_destroy(struct dm_task *dmt)
 	if (dmt->message)
 		dm_free(dmt->message);
 
-	if (dmt->dmi.v4)
-		dm_free(dmt->dmi.v4);
+	_dm_zfree_dmi(dmt->dmi.v4);
 
 	if (dmt->uuid)
 		dm_free(dmt->uuid);
@@ -387,6 +402,14 @@ void dm_task_destroy(struct dm_task *dmt)
  */
 
 #ifdef DM_COMPAT
+
+static void _dm_zfree_dmi_v1(struct dm_ioctl_v1 *dmi)
+{
+	if (dmi) {
+		memset(dmi, 0, dmi->data_size);
+		dm_free(dmi);
+	}
+}
 
 static int _dm_task_get_driver_version_v1(struct dm_task *dmt, char *version,
 					  size_t size)
@@ -494,13 +517,10 @@ static void *_add_target_v1(struct target *t, void *out, void *end)
 	struct dm_target_spec_v1 sp;
 	size_t sp_size = sizeof(struct dm_target_spec_v1);
 	int len;
-	const char no_space[] = "Ran out of memory building ioctl parameter";
 
 	out += sp_size;
-	if (out >= end) {
-		log_error(no_space);
-		return NULL;
-	}
+	if (out >= end)
+		return_NULL;
 
 	sp.status = 0;
 	sp.sector_start = t->start;
@@ -509,12 +529,9 @@ static void *_add_target_v1(struct target *t, void *out, void *end)
 
 	len = strlen(t->params);
 
-	if ((out + len + 1) >= end) {
-		log_error(no_space);
+	if ((out + len + 1) >= end)
+		return_NULL;
 
-		log_error("t->params= '%s'", t->params);
-		return NULL;
-	}
 	strcpy((char *) out, t->params);
 	out += len + 1;
 
@@ -600,8 +617,10 @@ static struct dm_ioctl_v1 *_flatten_v1(struct dm_task *dmt)
 	e = (void *) ((char *) dmi + len);
 
 	for (t = dmt->head; t; t = t->next)
-		if (!(b = _add_target_v1(t, b, e)))
+		if (!(b = _add_target_v1(t, b, e))) {
+			log_error("Ran out of memory building ioctl parameter");
 			goto bad;
+		}
 
 	if (dmt->newname)
 		strcpy(b, dmt->newname);
@@ -609,7 +628,7 @@ static struct dm_ioctl_v1 *_flatten_v1(struct dm_task *dmt)
 	return dmi;
 
       bad:
-	dm_free(dmi);
+	_dm_zfree_dmi_v1(dmi);
 	return NULL;
 }
 
@@ -691,7 +710,7 @@ static int _dm_task_run_v1(struct dm_task *dmt)
 
 	if ((unsigned) dmt->type >=
 	    (sizeof(_cmd_data_v1) / sizeof(*_cmd_data_v1))) {
-		log_error("Internal error: unknown device-mapper task %d",
+		log_error(INTERNAL ERROR "unknown device-mapper task %d",
 			  dmt->type);
 		goto bad;
 	}
@@ -762,7 +781,7 @@ static int _dm_task_run_v1(struct dm_task *dmt)
 		dmt->type = DM_DEVICE_INFO;
 		if (!dm_task_run(dmt))
 			goto bad;
-		dm_free(dmi);	/* We'll use what info returned */
+		_dm_zfree_dmi_v1(dmi);	/* We'll use what info returned */
 		return 1;
 	}
 
@@ -770,7 +789,7 @@ static int _dm_task_run_v1(struct dm_task *dmt)
 	return 1;
 
       bad:
-	dm_free(dmi);
+	_dm_zfree_dmi_v1(dmi);
 	return 0;
 }
 
@@ -1177,7 +1196,7 @@ struct target *create_target(uint64_t start, uint64_t len, const char *type,
 	return t;
 
       bad:
-	dm_free(t->params);
+	_dm_zfree_string(t->params);
 	dm_free(t->type);
 	dm_free(t);
 	return NULL;
@@ -1189,13 +1208,10 @@ static void *_add_target(struct target *t, void *out, void *end)
 	struct dm_target_spec sp;
 	size_t sp_size = sizeof(struct dm_target_spec);
 	int len;
-	const char no_space[] = "Ran out of memory building ioctl parameter";
 
 	out += sp_size;
-	if (out >= end) {
-		log_error(no_space);
-		return NULL;
-	}
+	if (out >= end)
+		return_NULL;
 
 	sp.status = 0;
 	sp.sector_start = t->start;
@@ -1204,12 +1220,9 @@ static void *_add_target(struct target *t, void *out, void *end)
 
 	len = strlen(t->params);
 
-	if ((out + len + 1) >= end) {
-		log_error(no_space);
+	if ((out + len + 1) >= end)
+		return_NULL;
 
-		log_error("t->params= '%s'", t->params);
-		return NULL;
-	}
 	strcpy((char *) out, t->params);
 	out += len + 1;
 
@@ -1403,8 +1416,10 @@ static struct dm_ioctl *_flatten(struct dm_task *dmt, unsigned repeat_count)
 	e = (void *) ((char *) dmi + len);
 
 	for (t = dmt->head; t; t = t->next)
-		if (!(b = _add_target(t, b, e)))
+		if (!(b = _add_target(t, b, e))) {
+			log_error("Ran out of memory building ioctl parameter");
 			goto bad;
+		}
 
 	if (dmt->newname)
 		strcpy(b, dmt->newname);
@@ -1421,7 +1436,7 @@ static struct dm_ioctl *_flatten(struct dm_task *dmt, unsigned repeat_count)
 	return dmi;
 
       bad:
-	dm_free(dmi);
+	_dm_zfree_dmi(dmi);
 	return NULL;
 }
 
@@ -1505,16 +1520,26 @@ static int _mknodes_v4(struct dm_task *dmt)
  */
 static int _udev_complete(struct dm_task *dmt)
 {
-	uint32_t cookie;
+	uint16_t base;
 
-	if (dmt->cookie_set) {
+	if (dmt->cookie_set &&
+	    (base = dmt->event_nr & ~DM_UDEV_FLAGS_MASK))
 		/* strip flags from the cookie and use cookie magic instead */
-		cookie = (dmt->event_nr & ~DM_UDEV_FLAGS_MASK) |
-			  (DM_COOKIE_MAGIC << DM_UDEV_FLAGS_SHIFT);
-		return dm_udev_complete(cookie);
-	}
+		return dm_udev_complete(base | (DM_COOKIE_MAGIC <<
+						DM_UDEV_FLAGS_SHIFT));
 
 	return 1;
+}
+
+static int _check_uevent_generated(struct dm_ioctl *dmi)
+{
+	if (!dm_check_version() ||
+	    _dm_version < 4 ||
+	    _dm_version_minor < 17)
+		/* can't check, assume uevent is generated */
+		return 1;
+
+	return dmi->flags & DM_UEVENT_GENERATED_FLAG;
 }
 
 static int _create_and_load_v4(struct dm_task *dmt)
@@ -1691,6 +1716,7 @@ static struct dm_ioctl *_do_dm_ioctl(struct dm_task *dmt, unsigned command,
 				     unsigned repeat_count)
 {
 	struct dm_ioctl *dmi;
+	int ioctl_with_uevent;
 
 	dmi = _flatten(dmt, repeat_count);
 	if (!dmi) {
@@ -1706,34 +1732,48 @@ static struct dm_ioctl *_do_dm_ioctl(struct dm_task *dmt, unsigned command,
 	if (dmt->no_open_count)
 		dmi->flags |= DM_SKIP_BDGET_FLAG;
 
-	/*
-	 * Prevent udev vs. libdevmapper race when processing nodes and
-	 * symlinks. This can happen when the udev rules are installed and
-	 * udev synchronisation code is enabled in libdevmapper but the
-	 * software using libdevmapper does not make use of it (by not calling
-	 * dm_task_set_cookie before). We need to instruct the udev rules not
-	 * to be applied at all in this situation so we can gracefully fallback
-	 * to libdevmapper's node and symlink creation code.
-	 */
-	if (dm_udev_get_sync_support() && !dmt->cookie_set &&
-	    (dmt->type == DM_DEVICE_RESUME ||
-	     dmt->type == DM_DEVICE_REMOVE ||
-	     dmt->type == DM_DEVICE_RENAME)) {
-		log_debug("Cookie value is not set while trying to call "
-			  "DM_DEVICE_RESUME, DM_DEVICE_REMOVE or DM_DEVICE_RENAME "
-			  "ioctl. Please, consider using libdevmapper's udev "
-			  "synchronisation interface or disable it explicitly "
-			  "by calling dm_udev_set_sync_support(0).");
-		log_debug("Switching off device-mapper and all subsystem related "
-			  "udev rules. Falling back to libdevmapper node creation.");
+	ioctl_with_uevent = dmt->type == DM_DEVICE_RESUME ||
+			    dmt->type == DM_DEVICE_REMOVE ||
+			    dmt->type == DM_DEVICE_RENAME;
+
+	if (ioctl_with_uevent && dm_cookie_supported()) {
 		/*
-		 * Disable general dm and subsystem rules but keep dm disk rules
-		 * if not flagged out explicitly before. We need /dev/disk content
-		 * for the software that expects it.
-		*/
-		dmi->event_nr |= (DM_UDEV_DISABLE_DM_RULES_FLAG |
-				  DM_UDEV_DISABLE_SUBSYSTEM_RULES_FLAG) <<
+		 * Always mark events coming from libdevmapper as
+		 * "primary sourced". This is needed to distinguish
+		 * any spurious events so we can act appropriately.
+		 * This needs to be applied even when udev_sync is
+		 * not used because udev flags could be used alone.
+		 */
+		dmi->event_nr |= DM_UDEV_PRIMARY_SOURCE_FLAG <<
 				 DM_UDEV_FLAGS_SHIFT;
+
+		/*
+		 * Prevent udev vs. libdevmapper race when processing nodes
+		 * and symlinks. This can happen when the udev rules are
+		 * installed and udev synchronisation code is enabled in
+		 * libdevmapper but the software using libdevmapper does not
+		 * make use of it (by not calling dm_task_set_cookie before).
+		 * We need to instruct the udev rules not to be applied at
+		 * all in this situation so we can gracefully fallback to
+		 * libdevmapper's node and symlink creation code.
+		 */
+		if (!dmt->cookie_set && dm_udev_get_sync_support()) {
+			log_debug("Cookie value is not set while trying to call "
+				  "DM_DEVICE_RESUME, DM_DEVICE_REMOVE or DM_DEVICE_RENAME "
+				  "ioctl. Please, consider using libdevmapper's udev "
+				  "synchronisation interface or disable it explicitly "
+				  "by calling dm_udev_set_sync_support(0).");
+			log_debug("Switching off device-mapper and all subsystem related "
+				  "udev rules. Falling back to libdevmapper node creation.");
+			/*
+			 * Disable general dm and subsystem rules but keep
+			 * dm disk rules if not flagged out explicitly before.
+			 * We need /dev/disk content for the software that expects it.
+			*/
+			dmi->event_nr |= (DM_UDEV_DISABLE_DM_RULES_FLAG |
+					  DM_UDEV_DISABLE_SUBSYSTEM_RULES_FLAG) <<
+					 DM_UDEV_FLAGS_SHIFT;
+		}
 	}
 
 	log_debug("dm %s %s %s%s%s %s%.0d%s%.0d%s"
@@ -1770,10 +1810,14 @@ static struct dm_ioctl *_do_dm_ioctl(struct dm_task *dmt, unsigned command,
 					  "failed: %s",
 				    	   _cmd_data_v4[dmt->type].name,
 					  strerror(errno));
-			dm_free(dmi);
+			_dm_zfree_dmi(dmi);
 			return NULL;
 		}
 	}
+
+	if (ioctl_with_uevent && !_check_uevent_generated(dmi))
+		_udev_complete(dmt);
+
 #else /* Userspace alternative for testing */
 #endif
 	return dmi;
@@ -1798,7 +1842,7 @@ int dm_task_run(struct dm_task *dmt)
 
 	if ((unsigned) dmt->type >=
 	    (sizeof(_cmd_data_v4) / sizeof(*_cmd_data_v4))) {
-		log_error("Internal error: unknown device-mapper task %d",
+		log_error(INTERNAL_ERROR "unknown device-mapper task %d",
 			  dmt->type);
 		return 0;
 	}
@@ -1837,7 +1881,7 @@ repeat_ioctl:
 		case DM_DEVICE_TABLE:
 		case DM_DEVICE_WAITEVENT:
 			_ioctl_buffer_double_factor++;
-			dm_free(dmi);
+			_dm_zfree_dmi(dmi);
 			goto repeat_ioctl;
 		default:
 			log_error("WARNING: libdevmapper buffer too small for data");
@@ -1895,13 +1939,12 @@ repeat_ioctl:
 	}
 
 	/* Was structure reused? */
-	if (dmt->dmi.v4)
-		dm_free(dmt->dmi.v4);
+	_dm_zfree_dmi(dmt->dmi.v4);
 	dmt->dmi.v4 = dmi;
 	return 1;
 
       bad:
-	dm_free(dmi);
+	_dm_zfree_dmi(dmi);
 	return 0;
 }
 

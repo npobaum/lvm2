@@ -233,71 +233,6 @@ static int _read_size_params(struct lvcreate_params *lp,
 }
 
 /*
- * Generic stripe parameter checks.
- * FIXME: Should eventually be moved into lvm library.
- */
-static int _validate_stripe_params(struct cmd_context *cmd,
-				   struct lvcreate_params *lp)
-{
-	if (lp->stripes == 1 && lp->stripe_size) {
-		log_print("Ignoring stripesize argument with single stripe");
-		lp->stripe_size = 0;
-	}
-
-	if (lp->stripes > 1 && !lp->stripe_size) {
-		lp->stripe_size = find_config_tree_int(cmd,
-						  "metadata/stripesize",
-						  DEFAULT_STRIPESIZE) * 2;
-		log_print("Using default stripesize %s",
-			  display_size(cmd, (uint64_t) lp->stripe_size));
-	}
-
-	if (lp->stripes < 1 || lp->stripes > MAX_STRIPES) {
-		log_error("Number of stripes (%d) must be between %d and %d",
-			  lp->stripes, 1, MAX_STRIPES);
-		return 0;
-	}
-
-	/* MAX size check is in _lvcreate */
-	if (lp->stripes > 1 && (lp->stripe_size < STRIPE_SIZE_MIN ||
-				lp->stripe_size & (lp->stripe_size - 1))) {
-		log_error("Invalid stripe size %s",
-			  display_size(cmd, (uint64_t) lp->stripe_size));
-		return 0;
-	}
-
-	return 1;
-}
-
-/* The stripe size is limited by the size of a uint32_t, but since the
- * value given by the user is doubled, and the final result must be a
- * power of 2, we must divide UINT_MAX by four and add 1 (to round it
- * up to the power of 2) */
-static int _read_stripe_params(struct lvcreate_params *lp,
-			       struct cmd_context *cmd)
-{
-	if (arg_count(cmd, stripesize_ARG)) {
-		if (arg_sign_value(cmd, stripesize_ARG, 0) == SIGN_MINUS) {
-			log_error("Negative stripesize is invalid");
-			return 0;
-		}
-		/* Check to make sure we won't overflow lp->stripe_size */
-		if(arg_uint_value(cmd, stripesize_ARG, 0) > STRIPE_SIZE_LIMIT * 2) {
-			log_error("Stripe size cannot be larger than %s",
-				  display_size(cmd, (uint64_t) STRIPE_SIZE_LIMIT));
-			return 0;
-		}
-		lp->stripe_size = arg_uint_value(cmd, stripesize_ARG, 0);
-	}
-
-
-	if (!_validate_stripe_params(cmd, lp))
-		return 0;
-
-	return 1;
-}
-
-/*
  * Generic mirror parameter checks.
  * FIXME: Should eventually be moved into lvm library.
  */
@@ -337,12 +272,14 @@ static int _read_mirror_params(struct lvcreate_params *lp,
 	mirrorlog = arg_str_value(cmd, mirrorlog_ARG,
 				  corelog ? "core" : DEFAULT_MIRRORLOG);
 
-	if (!strcmp("disk", mirrorlog)) {
-		if (corelog) {
-			log_error("--mirrorlog disk and --corelog "
-				  "are incompatible");
-			return 0;
-		}
+	if (strcmp("core", mirrorlog) && corelog) {
+		log_error("Please use only one of --mirrorlog or --corelog");
+		return 0;
+	}
+
+	if (!strcmp("mirrored", mirrorlog)) {
+		lp->log_count = 2;
+	} else if (!strcmp("disk", mirrorlog)) {
 		lp->log_count = 1;
 	} else if (!strcmp("core", mirrorlog))
 		lp->log_count = 0;
@@ -393,13 +330,7 @@ static int _lvcreate_params(struct lvcreate_params *lp,
 	/*
 	 * Check selected options are compatible and determine segtype
 	 */
-	lp->segtype = (const struct segment_type *)
-	    arg_ptr_value(cmd, type_ARG,
-			  get_segtype_from_string(cmd, "striped"));
-
-	lp->stripes = arg_uint_value(cmd, stripes_ARG, 1);
-	if (arg_count(cmd, stripes_ARG) && lp->stripes == 1)
-		log_print("Redundant stripes argument: default is 1");
+	lp->segtype = get_segtype_from_string(cmd, arg_str_value(cmd, type_ARG, "striped"));
 
 	if (arg_count(cmd, snapshot_ARG) || seg_is_snapshot(lp) ||
 	    arg_count(cmd, virtualsize_ARG))
@@ -455,12 +386,6 @@ static int _lvcreate_params(struct lvcreate_params *lp,
 			return 0;
 		}
 
-		if (lp->stripes > 1) {
-			log_error("mirrors and stripes are currently "
-				  "incompatible");
-			return 0;
-		}
-
 		if (!(lp->segtype = get_segtype_from_string(cmd, "striped")))
 			return_0;
 	} else {
@@ -482,9 +407,13 @@ static int _lvcreate_params(struct lvcreate_params *lp,
 		return 0;
 	}
 
+	if (!get_activation_monitoring_mode(cmd, NULL,
+					    &lp->activation_monitoring))
+		return_0;
+
 	if (!_lvcreate_name_params(lp, cmd, &argc, &argv) ||
 	    !_read_size_params(lp, lcp, cmd) ||
-	    !_read_stripe_params(lp, cmd) ||
+	    !get_stripe_params(cmd, &lp->stripes, &lp->stripe_size) ||
 	    !_read_mirror_params(lp, cmd))
 		return_0;
 

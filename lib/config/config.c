@@ -295,8 +295,10 @@ int read_config_file(struct config_tree *cft)
 		if (!(c->dev = dev_create_file(c->filename, NULL, NULL, 1)))
 			return_0;
 
-		if (!dev_open_flags(c->dev, O_RDONLY, 0, 0))
+		if (!dev_open_flags(c->dev, O_RDONLY, 0, 0)) {
+			c->dev = 0;
 			return_0;
+		}
 	}
 
 	r = read_config_fd(cft, c->dev, 0, (size_t) info.st_size, 0, 0,
@@ -911,9 +913,9 @@ static struct config_node *_find_config_node(const struct config_node *cn,
 				if (!cn_found)
 					cn_found = cn;
 				else
-					log_error("WARNING: Ignoring duplicate"
-						  " config node: %s ("
-						  "seeking %s)", cn->key, path);
+					log_warn("WARNING: Ignoring duplicate"
+						 " config node: %s ("
+						 "seeking %s)", cn->key, path);
 			}
 
 			cn = cn->sib;

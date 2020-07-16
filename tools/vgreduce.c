@@ -39,9 +39,7 @@ static int _remove_pv(struct volume_group *vg, struct pv_list *pvl, int silent)
 
 	vg->free_count -= pvl->pv->pe_count;
 	vg->extent_count -= pvl->pv->pe_count;
-	vg->pv_count--;
-
-	dm_list_del(&pvl->list);
+	del_pvl_from_vgs(vg, pvl);
 
 	return 1;
 }
@@ -152,7 +150,7 @@ static int _consolidate_vg(struct cmd_context *cmd, struct volume_group *vg)
 	}
 
 	dm_list_iterate_items(pvl, &vg->pvs) {
-		if (pvl->pv->dev && !(pvl->pv->status & MISSING_PV))
+		if (pvl->pv->dev && !is_missing_pv(pvl->pv))
 			continue;
 		if (r && !_remove_pv(vg, pvl, 0))
 			return_0;
@@ -193,7 +191,7 @@ static int _make_vg_consistent(struct cmd_context *cmd, struct volume_group *vg)
 
 				pv = seg_pv(seg, s);
 				if (!pv || !pv_dev(pv) ||
-				    (pv->status & MISSING_PV)) {
+				    is_missing_pv(pv)) {
 					if (arg_count(cmd, mirrorsonly_ARG) &&
 					    !(lv->status & MIRROR_IMAGE)) {
 						log_error("Non-mirror-image LV %s found: can't remove.", lv->name);
@@ -224,7 +222,7 @@ static int _make_vg_consistent(struct cmd_context *cmd, struct volume_group *vg)
 	 */
 	dm_list_iterate_safe(pvh, pvht, &vg->pvs) {
 		pvl = dm_list_item(pvh, struct pv_list);
-		if (pvl->pv->dev && !(pvl->pv->status & MISSING_PV))
+		if (pvl->pv->dev && !is_missing_pv(pvl->pv))
 			continue;
 		if (!_remove_pv(vg, pvl, 0))
 			return_0;
@@ -409,7 +407,7 @@ static int _vgreduce_single(struct cmd_context *cmd, struct volume_group *vg,
 	log_verbose("Removing \"%s\" from volume group \"%s\"", name, vg->name);
 
 	if (pvl)
-		dm_list_del(&pvl->list);
+		del_pvl_from_vgs(vg, pvl);
 
 	pv->vg_name = vg->fid->fmt->orphan_vg_name;
 	pv->status = ALLOCATABLE_PV;
@@ -419,7 +417,6 @@ static int _vgreduce_single(struct cmd_context *cmd, struct volume_group *vg,
 		goto bad;
 	}
 
-	vg->pv_count--;
 	vg->free_count -= pv_pe_count(pv) - pv_pe_alloc_count(pv);
 	vg->extent_count -= pv_pe_count(pv);
 

@@ -93,21 +93,20 @@ struct lvmcache_vginfo *vginfo_from_vgname(const char *vgname,
 struct lvmcache_vginfo *vginfo_from_vgid(const char *vgid);
 struct lvmcache_info *info_from_pvid(const char *pvid, int valid_only);
 const char *vgname_from_vgid(struct dm_pool *mem, const char *vgid);
-struct device *device_from_pvid(struct cmd_context *cmd, struct id *pvid);
+struct device *device_from_pvid(struct cmd_context *cmd, struct id *pvid,
+				unsigned *scan_done_once);
 int vgs_locked(void);
 int vgname_is_locked(const char *vgname);
 
 /* Returns list of struct str_lists containing pool-allocated copy of vgnames */
-/* Set full_scan to 1 to reread every filtered device label. If include_internal
- * is not set, return only proper vg names. */
-struct dm_list *lvmcache_get_vgnames(struct cmd_context *cmd, int full_scan,
-				      int include_internal);
+/* If include_internal is not set, return only proper vg names. */
+struct dm_list *lvmcache_get_vgnames(struct cmd_context *cmd,
+				     int include_internal);
 
 /* Returns list of struct str_lists containing pool-allocated copy of vgids */
-/* Set full_scan to 1 to reread every filtered device label. If include_internal
- * is not set, return only proper vg ids. */
-struct dm_list *lvmcache_get_vgids(struct cmd_context *cmd, int full_scan,
-				    int include_internal);
+/* If include_internal is not set, return only proper vg ids. */
+struct dm_list *lvmcache_get_vgids(struct cmd_context *cmd,
+				   int include_internal);
 
 /* Returns list of struct str_lists containing pool-allocated copy of pvids */
 struct dm_list *lvmcache_get_pvids(struct cmd_context *cmd, const char *vgname,

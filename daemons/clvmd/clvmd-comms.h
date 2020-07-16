@@ -110,5 +110,16 @@ struct cluster_ops *init_openais_cluster(void);
 struct cluster_ops *init_corosync_cluster(void);
 #endif
 
+#ifdef USE_SINGLENODE
+#  define SINGLENODE_CSID_LEN (sizeof(int))
+#  ifndef MAX_CLUSTER_MEMBER_NAME_LEN
+#    define MAX_CLUSTER_MEMBER_NAME_LEN       64
+#  endif
+#  define SINGLENODE_MAX_CLUSTER_MESSAGE          65535
+#  ifndef MAX_CSID_LEN
+#    define MAX_CSID_LEN sizeof(int)
+#  endif
+struct cluster_ops *init_singlenode_cluster(void);
+#endif
 
 #endif
