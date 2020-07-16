@@ -20,6 +20,7 @@
 #include "clvmd-common.h"
 
 #include <pthread.h>
+#include <getopt.h>
 
 #include "clvmd-comms.h"
 #include "clvm.h"
@@ -102,8 +103,6 @@ static int child_pipe[2];
 
 typedef enum {IF_AUTO, IF_CMAN, IF_GULM, IF_OPENAIS, IF_COROSYNC, IF_SINGLENODE} if_type_t;
 
-typedef void *(lvm_pthread_fn_t)(void*);
-
 /* Prototypes for code further down */
 static void sigusr2_handler(int sig);
 static void sighup_handler(int sig);
@@ -133,7 +132,7 @@ static int check_all_clvmds_running(struct local_client *client);
 static int local_rendezvous_callback(struct local_client *thisfd, char *buf,
 				     int len, const char *csid,
 				     struct local_client **new_client);
-static void lvm_thread_fn(void *) __attribute__ ((noreturn));
+static void *lvm_thread_fn(void *) __attribute__((noreturn));
 static int add_to_lvmqueue(struct local_client *client, struct clvm_header *msg,
 			   int msglen, const char *csid);
 static int distribute_command(struct local_client *thisfd);
@@ -296,6 +295,9 @@ static const char *decode_cmd(unsigned char cmdl)
 	case CLVMD_CMD_RESTART:
 		command = "RESTART";
 		break;
+	case CLVMD_CMD_SYNC_NAMES:
+		command = "SYNC_NAMES";
+		break;
 	default:
 		command = "unknown";
 		break;
@@ -332,10 +334,10 @@ static void check_permissions(void)
 int main(int argc, char *argv[])
 {
 	int local_sock;
-	struct local_client *newfd;
+	struct local_client *newfd, *delfd;
 	struct utsname nodeinfo;
 	struct lvm_startup_params lvm_params;
-	signed char opt;
+	int opt;
 	int cmd_timeout = DEFAULT_CMD_TIMEOUT;
 	int start_timeout = 0;
 	if_type_t cluster_iface = IF_AUTO;
@@ -346,17 +348,19 @@ int main(int argc, char *argv[])
 	int clusterwide_opt = 0;
 	mode_t old_mask;
 
+	struct option longopts[] = {
+		{ "help", 0, 0, 'h' },
+		{ NULL, 0, 0, 0 }
+	};
+
 	/* Deal with command-line arguments */
 	opterr = 0;
 	optind = 0;
-	while ((opt = getopt(argc, argv, "?vVhfd::t:RST:CI:E:")) != EOF) {
+	while ((opt = getopt_long(argc, argv, "vVhfd::t:RST:CI:E:",
+				  longopts, NULL)) != -1) {
 		switch (opt) {
 		case 'h':
 			usage(argv[0], stdout);
-			exit(0);
-
-		case '?':
-			usage(argv[0], stderr);
 			exit(0);
 
 		case 'R':
@@ -409,6 +413,9 @@ int main(int argc, char *argv[])
 			exit(0);
 			break;
 
+		default:
+			usage(argv[0], stderr);
+			exit(2);
 		}
 	}
 
@@ -432,7 +439,7 @@ int main(int argc, char *argv[])
 	if (!foreground_mode)
 		be_daemon(start_timeout);
 
-        dm_prepare_selinux_context(DEFAULT_RUN_DIR, S_IFDIR);
+        (void) dm_prepare_selinux_context(DEFAULT_RUN_DIR, S_IFDIR);
         old_mask = umask(0077);
         if (dm_create_dir(DEFAULT_RUN_DIR) == 0) {
                 DEBUGLOG("clvmd: unable to create %s directory\n",
@@ -575,8 +582,7 @@ int main(int argc, char *argv[])
 	pthread_mutex_lock(&lvm_start_mutex);
 	lvm_params.using_gulm = using_gulm;
 	lvm_params.argv = argv;
-	pthread_create(&lvm_thread, NULL, (lvm_pthread_fn_t*)lvm_thread_fn,
-			(void *)&lvm_params);
+	pthread_create(&lvm_thread, NULL, lvm_thread_fn, &lvm_params);
 
 	/* Tell the rest of the cluster our version number */
 	/* CMAN can do this immediately, gulm needs to wait until
@@ -595,15 +601,33 @@ int main(int argc, char *argv[])
 	/* Do some work */
 	main_loop(local_sock, cmd_timeout);
 
+	pthread_mutex_lock(&lvm_thread_mutex);
+	pthread_cond_signal(&lvm_thread_cond);
+	pthread_mutex_unlock(&lvm_thread_mutex);
+	if ((errno = pthread_join(lvm_thread, NULL)))
+		log_sys_error("pthread_join", "");
+
 	close_local_sock(local_sock);
 	destroy_lvm();
+
+	for (newfd = local_client_head.next; newfd != NULL;) {
+		delfd = newfd;
+		newfd = newfd->next;
+		/*
+		 * FIXME:
+		 * needs cleanup code from read_from_local_sock() for now
+		 * break of 'clvmd' may access already free memory here.
+		 */
+		safe_close(&(delfd->fd));
+		free(delfd);
+	}
 
 	return 0;
 }
 
 /* Called when the GuLM cluster layer has completed initialisation.
    We send the version message */
-void clvmd_cluster_init_completed()
+void clvmd_cluster_init_completed(void)
 {
 	send_version_message();
 }
@@ -796,9 +820,10 @@ static void request_timed_out(struct local_client *client)
 /* This is where the real work happens */
 static void main_loop(int local_sock, int cmd_timeout)
 {
+	sigset_t ss;
+
 	DEBUGLOG("Using timeout of %d seconds\n", cmd_timeout);
 
-	sigset_t ss;
 	sigemptyset(&ss);
 	sigaddset(&ss, SIGINT);
 	sigaddset(&ss, SIGTERM);
@@ -1007,7 +1032,10 @@ static void be_daemon(int timeout)
 		exit(3);
 	}
 
-	pipe(child_pipe);
+	if (pipe(child_pipe)) {
+		perror("Error creating pipe");
+		exit(3);
+	}
 
 	switch (fork()) {
 	case -1:
@@ -1254,7 +1282,9 @@ static int read_from_local_sock(struct local_client *thisfd)
 		}
 
 		/* Create a pipe and add the reading end to our FD list */
-		pipe(comms_pipe);
+		if (pipe(comms_pipe))
+			DEBUGLOG("creating pipe failed: %s\n", strerror(errno));
+		
 		newfd = malloc(sizeof(struct local_client));
 		if (!newfd) {
 			struct clvm_header reply;
@@ -1392,7 +1422,6 @@ static void process_remote_command(struct clvm_header *msg, int msglen, int fd,
 	int replylen = 0;
 	int buflen = max_cluster_message - sizeof(struct clvm_header) - 1;
 	int status;
-	int msg_malloced = 0;
 
 	/* Get the node name as we /may/ need it later */
 	clops->name_from_csid(csid, nodename);
@@ -1501,10 +1530,6 @@ static void process_remote_command(struct clvm_header *msg, int msglen, int fd,
 		}
 	}
 
-	/* Free buffer if it was malloced */
-	if (msg_malloced) {
-		free(msg);
-	}
 	free(replyargs);
 }
 
@@ -1743,13 +1768,18 @@ static void send_local_reply(struct local_client *client, int status, int fd)
 	}
 
 	/* Add in the size of our header */
-	message_len = message_len + sizeof(struct clvm_header) + 1;
-	replybuf = malloc(message_len);
+	message_len = message_len + sizeof(struct clvm_header);
+	if (!(replybuf = malloc(message_len))) {
+		DEBUGLOG("Memory allocation fails\n");
+		return;
+	}
 
 	clientreply = (struct clvm_header *) replybuf;
 	clientreply->status = status;
 	clientreply->cmd = CLVMD_CMD_REPLY;
 	clientreply->node[0] = '\0';
+	clientreply->xid = 0;
+	clientreply->clientid = 0;
 	clientreply->flags = 0;
 
 	ptr = clientreply->args;
@@ -1784,7 +1814,7 @@ static void send_local_reply(struct local_client *client, int status, int fd)
 	/* Terminate with an empty node name */
 	*ptr = '\0';
 
-	clientreply->arglen = ptr - clientreply->args + 1;
+	clientreply->arglen = ptr - clientreply->args;
 
 	/* And send it */
 	send_message(replybuf, message_len, our_csid, fd,
@@ -1815,7 +1845,7 @@ static void free_reply(struct local_client *client)
 }
 
 /* Send our version number to the cluster */
-static void send_version_message()
+static void send_version_message(void)
 {
 	char message[sizeof(struct clvm_header) + sizeof(int) * 3];
 	struct clvm_header *msg = (struct clvm_header *) message;
@@ -1867,7 +1897,7 @@ static int send_message(void *buf, int msglen, const char *csid, int fd,
 				break;
 			}
 
-			len = write(fd, buf + ptr, msglen - ptr);
+			len = write(fd, (char*)buf + ptr, msglen - ptr);
 
 			if (len <= 0) {
 				if (errno == EINTR)
@@ -1920,7 +1950,7 @@ static int process_work_item(struct lvm_thread_cmd *cmd)
 /*
  * Routine that runs in the "LVM thread".
  */
-static void lvm_thread_fn(void *arg)
+static void *lvm_thread_fn(void *arg)
 {
 	struct dm_list *cmdl, *tmp;
 	sigset_t ss;
@@ -1941,7 +1971,7 @@ static void lvm_thread_fn(void *arg)
 	pthread_mutex_unlock(&lvm_start_mutex);
 
 	/* Now wait for some actual work */
-	for (;;) {
+	while (!quit) {
 		DEBUGLOG("LVM thread waiting for work\n");
 
 		pthread_mutex_lock(&lvm_thread_mutex);
@@ -1964,6 +1994,8 @@ static void lvm_thread_fn(void *arg)
 		}
 		pthread_mutex_unlock(&lvm_thread_mutex);
 	}
+
+	pthread_exit(NULL);
 }
 
 /* Pass down some work to the LVM thread */
@@ -2045,7 +2077,7 @@ static void close_local_sock(int local_socket)
 }
 
 /* Open the local socket, that's the one we talk to libclvm down */
-static int open_local_sock()
+static int open_local_sock(void)
 {
 	int local_socket = -1;
 	struct sockaddr_un sockaddr;
@@ -2091,7 +2123,7 @@ error:
 	return -1;
 }
 
-void process_message(struct local_client *client, const char *buf, int len,
+void process_message(struct local_client *client, char *buf, int len,
 		     const char *csid)
 {
 	struct clvm_header *inheader;
@@ -2128,7 +2160,7 @@ static struct local_client *find_client(int clientid)
 {
 	struct local_client *thisfd;
 	for (thisfd = &local_client_head; thisfd != NULL; thisfd = thisfd->next) {
-		if (thisfd->fd == ntohl(clientid))
+		if (thisfd->fd == (int)ntohl(clientid))
 			return thisfd;
 	}
 	return NULL;
@@ -2207,7 +2239,7 @@ static if_type_t parse_cluster_interface(char *ifname)
  * only called if the command-line option is not present, and if it fails
  * we still try the interfaces in order.
  */
-static if_type_t get_cluster_type()
+static if_type_t get_cluster_type(void)
 {
 #ifdef HAVE_COROSYNC_CONFDB_H
 	confdb_handle_t handle;

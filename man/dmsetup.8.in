@@ -80,6 +80,7 @@ dmsetup \- low level logical volume management
 .I cookie
 .br
 .B dmsetup udevcomplete_all
+.I [age_in_minutes]
 .br
 .B dmsetup udevcookies
 .br
@@ -113,6 +114,10 @@ Invoking the command as \fBdevmap_name\fP is equivalent to
 .br
 \fBdmsetup info -c --noheadings -j \fImajor\fB -m \fIminor\fP.
 .SH OPTIONS
+.IP \fB--checks
+Perform additional checks on the operations requested and report
+potential problems.  Useful when debugging scripts.
+In some cases these checks may slow down operations noticeably.
 .IP \fB-c|-C|--columns
 .br
 Display output in columns rather than as Field: Value lines.
@@ -181,6 +186,10 @@ Answer yes to all prompts automatically.
 .IP \fB-v|--verbose\ [-v|--verbose]
 .br
 Produce additional output.
+.IP \fB--verifyudev
+If udev synchronisation is enabled, verify that udev operations get performed
+correctly and try to fix up the device nodes afterwards if not.
+.br
 .IP \fB--version
 .br
 Display the library and kernel driver version.
@@ -374,7 +383,7 @@ the command will try to use a value defined by DM_UDEV_COOKIE environment variab
 .br
 Parses given cookie value and extracts any udev control flags encoded.
 The output is in environment key format that is suitable for use in udev
-rules. If the flag has its symbolic name assigned then the ouput is
+rules. If the flag has its symbolic name assigned then the output is
 DM_UDEV_FLAG_<flag_name>='1', DM_UDEV_FLAG<flag_position>='1' otherwise.
 Subsystem udev flags don't have symbolic names assigned and these ones are
 always reported as DM_SUBSYSTEM_UDEV_FLAG<flag_position>='1'. There are
@@ -385,8 +394,10 @@ always reported as DM_SUBSYSTEM_UDEV_FLAG<flag_position>='1'. There are
 .br
 Wake any processes that are waiting for udev to complete processing the specified cookie.
 .br
-.IP \fBudevcomplete_all
-Remove all cookies. Any process waiting on a cookie will be resumed immediately.
+.IP \fBudevcomplete_all 
+.I[age_in_minutes]
+Remove all cookies older than the specified number of minutes. 
+Any process waiting on a cookie will be resumed immediately.
 .br
 .IP \fBudevcookies
 List all existing cookies. Cookies are system-wide semaphores with keys

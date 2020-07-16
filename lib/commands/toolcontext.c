@@ -58,6 +58,8 @@
 #  include <malloc.h>
 #endif
 
+static const size_t linebuffer_size = 4096;
+
 static int _get_env_vars(struct cmd_context *cmd)
 {
 	const char *e;
@@ -198,6 +200,23 @@ static void _init_logging(struct cmd_context *cmd)
 	reset_lvm_errno(1);
 }
 
+#ifdef UDEV_SYNC_SUPPORT
+/*
+ * Until the DM_UEVENT_GENERATED_FLAG was introduced in kernel patch 
+ * 856a6f1dbd8940e72755af145ebcd806408ecedd
+ * some operations could not be performed by udev, requiring our fallback code.
+ */
+static int _dm_driver_has_stable_udev_support()
+{
+	char vsn[80];
+	unsigned maj, min, patchlevel;
+
+	return driver_version(vsn, sizeof(vsn)) &&
+	       (sscanf(vsn, "%u.%u.%u", &maj, &min, &patchlevel) == 3) &&
+	       (maj == 4 ? min >= 18 : maj > 4);
+}
+#endif
+
 static int _process_config(struct cmd_context *cmd)
 {
 	mode_t old_umask;
@@ -205,6 +224,7 @@ static int _process_config(struct cmd_context *cmd)
 	struct stat st;
 	const struct config_node *cn;
 	const struct config_value *cv;
+	int64_t pv_min_kb;
 
 	/* umask */
 	cmd->default_settings.umask = find_config_tree_int(cmd,
@@ -282,6 +302,32 @@ static int _process_config(struct cmd_context *cmd)
 								"activation/udev_sync",
 								DEFAULT_UDEV_SYNC);
 
+	init_activation_checks(find_config_tree_int(cmd, "activation/checks",
+						      DEFAULT_ACTIVATION_CHECKS));
+
+#ifdef UDEV_SYNC_SUPPORT
+	/*
+	 * We need udev rules to be applied, otherwise we would end up with no
+	 * nodes and symlinks! However, we can disable the synchronization itself
+	 * in runtime and still have only udev to create the nodes and symlinks
+	 * without any fallback.
+	 */
+	cmd->default_settings.udev_fallback = cmd->default_settings.udev_rules ?
+		find_config_tree_int(cmd, "activation/verify_udev_operations",
+				     DEFAULT_VERIFY_UDEV_OPERATIONS) : 1;
+
+	/* Do not rely fully on udev if the udev support is known to be incomplete. */
+	if (!cmd->default_settings.udev_fallback && !_dm_driver_has_stable_udev_support()) {
+		log_very_verbose("Kernel driver has incomplete udev support so "
+				 "LVM will check and perform some operations itself.");
+		cmd->default_settings.udev_fallback = 1;
+	}
+
+#else
+	/* We must use old node/symlink creation code if not compiled with udev support at all! */
+	cmd->default_settings.udev_fallback = 1;
+#endif
+
 	cmd->stripe_filler = find_config_tree_str(cmd,
 						  "activation/missing_stripe_filler",
 						  DEFAULT_STRIPE_FILLER);
@@ -317,6 +363,15 @@ static int _process_config(struct cmd_context *cmd)
 
 	cmd->metadata_read_only = find_config_tree_int(cmd, "global/metadata_read_only",
 						       DEFAULT_METADATA_READ_ONLY);
+
+	pv_min_kb = find_config_tree_int64(cmd, "devices/pv_min_size", DEFAULT_PV_MIN_SIZE_KB);
+	if (pv_min_kb < DEFAULT_PV_MIN_SIZE_KB) {
+		log_warn("Ignoring too small pv_min_size %" PRId64 "KB, using default %dKB.",
+			 pv_min_kb, DEFAULT_PV_MIN_SIZE_KB);
+		pv_min_kb = DEFAULT_PV_MIN_SIZE_KB;
+	}
+	/* LVM stores sizes internally in units of 512-byte sectors. */
+	init_pv_min_size((uint64_t)pv_min_kb * (1024 >> SECTOR_SHIFT));
 
 	return 1;
 }
@@ -563,6 +618,9 @@ static int _init_dev_cache(struct cmd_context *cmd)
 {
 	const struct config_node *cn;
 	const struct config_value *cv;
+	size_t uninitialized_var(udev_dir_len), len;
+	int device_list_from_udev;
+	const char *uninitialized_var(udev_dir);
 
 	init_dev_disable_after_error_count(
 		find_config_tree_int(cmd, "devices/disable_after_error_count",
@@ -570,6 +628,14 @@ static int _init_dev_cache(struct cmd_context *cmd)
 
 	if (!dev_cache_init(cmd))
 		return_0;
+
+	if ((device_list_from_udev = udev_is_running() ?
+		find_config_tree_bool(cmd, "devices/obtain_device_list_from_udev",
+				      DEFAULT_OBTAIN_DEVICE_LIST_FROM_UDEV) : 0)) {
+		udev_dir = udev_get_dev_dir();
+		udev_dir_len = strlen(udev_dir);
+	}
+	init_obtain_device_list_from_udev(device_list_from_udev);
 
 	if (!(cn = find_config_tree_node(cmd, "devices/scan"))) {
 		if (!dev_cache_add_dir("/dev")) {
@@ -587,6 +653,16 @@ static int _init_dev_cache(struct cmd_context *cmd)
 			log_error("Invalid string in config file: "
 				  "devices/scan");
 			return 0;
+		}
+
+		if (device_list_from_udev) {
+			len = strlen(cv->v.str);
+			len = udev_dir_len > len ? len : udev_dir_len;
+			if (strncmp(udev_dir, cv->v.str, len) ||
+			    udev_dir[len] != cv->v.str[len]) {
+				device_list_from_udev = 0;
+				init_obtain_device_list_from_udev(0);
+			}
 		}
 
 		if (!dev_cache_add_dir(cv->v.str)) {
@@ -1113,12 +1189,12 @@ static void _init_globals(struct cmd_context *cmd)
 {
 	init_full_scan_done(0);
 	init_mirror_in_sync(0);
-
 }
 
 /* Entry point */
 struct cmd_context *create_toolcontext(unsigned is_long_lived,
-				       const char *system_dir)
+				       const char *system_dir,
+				       unsigned set_buffering)
 {
 	struct cmd_context *cmd;
 
@@ -1152,6 +1228,22 @@ struct cmd_context *create_toolcontext(unsigned is_long_lived,
 
 	/* FIXME Make this configurable? */
 	reset_lvm_errno(1);
+
+	/* Set in/out stream buffering before glibc */
+	if (set_buffering) {
+		/* Allocate 2 buffers */
+		if (!(cmd->linebuffer = dm_malloc(2 * linebuffer_size))) {
+			log_error("Failed to allocate line buffer.");
+			goto out;
+		}
+		if ((setvbuf(stdin, cmd->linebuffer, _IOLBF, linebuffer_size) ||
+		     setvbuf(stdout, cmd->linebuffer + linebuffer_size,
+			     _IOLBF, linebuffer_size))) {
+			log_sys_error("setvbuf", "");
+			goto out;
+		}
+		/* Buffers are used for lines without '\n' */
+	}
 
 	/*
 	 * Environment variable LVM_SYSTEM_DIR overrides this below.
@@ -1389,6 +1481,15 @@ void destroy_toolcontext(struct cmd_context *cmd)
 	_destroy_tag_configs(cmd);
 	if (cmd->libmem)
 		dm_pool_destroy(cmd->libmem);
+
+	if (cmd->linebuffer) {
+		/* Reset stream buffering to defaults */
+		setlinebuf(stdin);
+		fflush(stdout);
+		setlinebuf(stdout);
+		dm_free(cmd->linebuffer);
+	}
+
 	dm_free(cmd);
 
 	release_log_memory();

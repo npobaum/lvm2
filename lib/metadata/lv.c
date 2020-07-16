@@ -21,18 +21,100 @@
 #include "segtype.h"
 #include "str_list.h"
 
+static char *_format_pvsegs(struct dm_pool *mem, const struct lv_segment *seg,
+			     int range_format)
+{
+	unsigned int s;
+	const char *name = NULL;
+	uint32_t extent = 0;
+	char extent_str[32];
+
+	if (!dm_pool_begin_object(mem, 256)) {
+		log_error("dm_pool_begin_object failed");
+		return NULL;
+	}
+
+	for (s = 0; s < seg->area_count; s++) {
+		switch (seg_type(seg, s)) {
+		case AREA_LV:
+			name = seg_lv(seg, s)->name;
+			extent = seg_le(seg, s);
+			break;
+		case AREA_PV:
+			name = dev_name(seg_dev(seg, s));
+			extent = seg_pe(seg, s);
+			break;
+		case AREA_UNASSIGNED:
+			name = "unassigned";
+			extent = 0;
+		}
+
+		if (!dm_pool_grow_object(mem, name, strlen(name))) {
+			log_error("dm_pool_grow_object failed");
+			return NULL;
+		}
+
+		if (dm_snprintf(extent_str, sizeof(extent_str),
+				"%s%" PRIu32 "%s",
+				range_format ? ":" : "(", extent,
+				range_format ? "-"  : ")") < 0) {
+			log_error("Extent number dm_snprintf failed");
+			return NULL;
+		}
+		if (!dm_pool_grow_object(mem, extent_str, strlen(extent_str))) {
+			log_error("dm_pool_grow_object failed");
+			return NULL;
+		}
+
+		if (range_format) {
+			if (dm_snprintf(extent_str, sizeof(extent_str),
+					"%" PRIu32, extent + seg->area_len - 1) < 0) {
+				log_error("Extent number dm_snprintf failed");
+				return NULL;
+			}
+			if (!dm_pool_grow_object(mem, extent_str, strlen(extent_str))) {
+				log_error("dm_pool_grow_object failed");
+				return NULL;
+			}
+		}
+
+		if ((s != seg->area_count - 1) &&
+		    !dm_pool_grow_object(mem, range_format ? " " : ",", 1)) {
+			log_error("dm_pool_grow_object failed");
+			return NULL;
+		}
+	}
+
+	if (!dm_pool_grow_object(mem, "\0", 1)) {
+		log_error("dm_pool_grow_object failed");
+		return NULL;
+	}
+
+	return dm_pool_end_object(mem);
+}
+
+char *lvseg_devices(struct dm_pool *mem, const struct lv_segment *seg)
+{
+	return _format_pvsegs(mem, seg, 0);
+}
+
+char *lvseg_seg_pe_ranges(struct dm_pool *mem, const struct lv_segment *seg)
+{
+	return _format_pvsegs(mem, seg, 1);
+}
+
 char *lvseg_tags_dup(const struct lv_segment *seg)
 {
 	return tags_format_and_copy(seg->lv->vg->vgmem, &seg->tags);
 }
 
-char *lvseg_segtype_dup(const struct lv_segment *seg)
+char *lvseg_segtype_dup(struct dm_pool *mem, const struct lv_segment *seg)
 {
 	if (seg->area_count == 1) {
 		return (char *)"linear";
 	}
 
-	return dm_pool_strdup(seg->lv->vg->vgmem, seg->segtype->ops->name(seg));
+	return dm_pool_strdup(mem, seg->segtype->ops->name(seg));
 }
 
 uint64_t lvseg_chunksize(const struct lv_segment *seg)
@@ -160,6 +242,9 @@ char *lv_path_dup(struct dm_pool *mem, const struct logical_volume *lv)
 	char *repstr;
 	size_t len;
 
+	if (!*lv->vg->name)
+		return dm_pool_strdup(mem, "");
+
 	len = strlen(lv->vg->cmd->dev_dir) + strlen(lv->vg->name) +
 		strlen(lv->name) + 2;
 
@@ -173,6 +258,7 @@ char *lv_path_dup(struct dm_pool *mem, const struct logical_volume *lv)
 		log_error("lvpath snprintf failed");
 		return 0;
 	}
+
 	return repstr;
 }
 
@@ -232,7 +318,7 @@ char *lv_attr_dup(struct dm_pool *mem, const struct logical_volume *lv)
 		repstr[0] = (lv_is_merging_origin(lv)) ? 'O' : 'o';
 	}
 	else if (lv->status & MIRRORED) {
-		repstr[0] = (lv->status & MIRROR_NOTSYNCED) ? 'M' : 'm';
+		repstr[0] = (lv->status & LV_NOTSYNCED) ? 'M' : 'm';
 	}else if (lv->status & MIRROR_IMAGE)
 		repstr[0] = (_lv_mimage_in_sync(lv)) ? 'i' : 'I';
 	else if (lv->status & MIRROR_LOG)

@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2011 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -30,6 +30,12 @@ struct lvinfo {
 	uint32_t read_ahead;
 };
 
+struct lv_activate_opts {
+	int exclusive;
+	int origin_only;
+	int no_merging;
+};
+
 /* target attribute flags */
 #define MIRROR_LOG_CLUSTERED	0x00000001U
 
@@ -56,7 +62,8 @@ void activation_exit(void);
 /* int lv_suspend(struct cmd_context *cmd, const char *lvid_s); */
 int lv_suspend_if_active(struct cmd_context *cmd, const char *lvid_s, unsigned origin_only);
 int lv_resume(struct cmd_context *cmd, const char *lvid_s, unsigned origin_only);
-int lv_resume_if_active(struct cmd_context *cmd, const char *lvid_s, unsigned origin_only);
+int lv_resume_if_active(struct cmd_context *cmd, const char *lvid_s,
+			unsigned origin_only, unsigned exclusive);
 int lv_activate(struct cmd_context *cmd, const char *lvid_s, int exclusive);
 int lv_activate_with_filter(struct cmd_context *cmd, const char *lvid_s,
 			    int exclusive);
@@ -84,7 +91,7 @@ int lv_check_transient(struct logical_volume *lv);
  * Returns 1 if percent has been set, else 0.
  */
 int lv_snapshot_percent(const struct logical_volume *lv, percent_t *percent);
-int lv_mirror_percent(struct cmd_context *cmd, struct logical_volume *lv,
+int lv_mirror_percent(struct cmd_context *cmd, const struct logical_volume *lv,
 		      int wait, percent_t *percent, uint32_t *event_nr);
 
 /*
@@ -94,6 +101,7 @@ int lvs_in_vg_activated(struct volume_group *vg);
 int lvs_in_vg_opened(const struct volume_group *vg);
 
 int lv_is_active(struct logical_volume *lv);
+int lv_is_active_but_not_locally(struct logical_volume *lv);
 int lv_is_active_exclusive_locally(struct logical_volume *lv);
 int lv_is_active_exclusive_remotely(struct logical_volume *lv);
 
@@ -101,7 +109,7 @@ int lv_has_target_type(struct dm_pool *mem, struct logical_volume *lv,
 		       const char *layer, const char *target_type);
 
 int monitor_dev_for_events(struct cmd_context *cmd, struct logical_volume *lv,
-			   unsigned origin_only, int do_reg);
+			   const struct lv_activate_opts *laopts, int do_reg);
 
 #ifdef DMEVENTD
 #  include "libdevmapper-event.h"

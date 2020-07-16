@@ -24,8 +24,8 @@ lv_is_on_ ()
 	echo $pvs | sed 's/ /\n/g' | sort | uniq > out1
 
 	lvs -a -o+devices $lv
-	lvs -a -odevices --noheadings $lv | \
-	sed 's/([^)]*)//g; s/[ ,]/\n/g' | sort | uniq > out2
+	lvs -a -odevices --noheadings $lv > lvs_log
+	sed 's/([^)]*)//g; s/[ ,]/\n/g' lvs_log | sort | uniq > out2 || true
 
 	diff --ignore-blank-lines out1 out2
 }
@@ -41,14 +41,15 @@ mimages_are_on_ ()
 	echo "Check if mirror images of $lv are on PVs $pvs"
 	rm -f out1 out2
 	echo $pvs | sed 's/ /\n/g' | sort | uniq > out1
-
-	mimages=$(lvs --noheadings -a -o lv_name $vg | grep "${lv}_mimage_" | \
-		sed 's/\[//g; s/\]//g')
+	lvs --noheadings -a -o lv_name $vg > lvs_log
+	mimages=$(grep "${lv}_mimage_" lvs_log | \
+		sed 's/\[//g; s/\]//g' || true)
+	
 	for i in $mimages; do
 		echo "Checking $vg/$i"
 		lvs -a -o+devices $vg/$i
-		lvs -a -odevices --noheadings $vg/$i | \
-			sed 's/([^)]*)//g; s/ //g; s/,/ /g' | sort | uniq >> out2
+		lvs -a -odevices --noheadings $vg/$i > lvs_log
+		sed 's/([^)]*)//g; s/ //g; s/,/ /g' lvs_log | sort | uniq >> out2 || true
 	done
 
 	diff --ignore-blank-lines out1 out2
@@ -65,7 +66,7 @@ lv_is_linear_()
 {
 	echo "Check if $1 is linear LV (i.e. not a mirror)"
 	lvs -o stripes,attr --noheadings $vg/$1 | sed 's/ //g'
-	lvs -o stripes,attr --noheadings $vg/$1 | sed 's/ //g' | grep -q '^1-'
+	lvs -o stripes,attr --noheadings $vg/$1 | sed 's/ //g' | grep '^1-' >/dev/null
 }
 
 rest_pvs_()
@@ -94,7 +95,7 @@ aux prepare_vg 5
 prepare_lvs_()
 {
 	lvremove -ff $vg;
-	if dmsetup table|grep $vg; then
+	if dmsetup table|grep -v -- "-missing_"|grep $vg; then
 		echo "ERROR: lvremove did leave some some mappings in DM behind!"
 		return 1
 	fi
@@ -207,13 +208,14 @@ test_3way_mirror_plus_1_fail_1_()
 	lvcreate -l2 -m2 -n $lv1 $vg $dev1 $dev2 $dev3 $dev5:0
 	lvchange -an $vg/$lv1 
 	lvconvert -m+1 $vg/$lv1 $dev4 
-	mimages_are_on_ $lv1 $dev1 $dev2 $dev3 $dev4 
-	mirrorlog_is_on_ $lv1 $dev5 
-	eval aux disable_dev \$dev$n 
+	check mirror_images_on $vg $lv1 $dev1 $dev2 $dev3 $dev4 
+	check mirror_log_on $vg $lv1 $dev5 
+	eval aux disable_dev \$dev$index 
+        lvs -a -o +devices
 	vgreduce --removemissing --force $vg 
-	lvs -a -o+devices $vg 
-	mimages_are_on_ $lv1 $(rest_pvs_ $index 4) 
-	mirrorlog_is_on_ $lv1 $dev5
+	lvs -a -o+devices # $vg 
+	check mirror_images_on $vg $lv1 $dev5 # $(rest_pvs_ $index 4) 
+	check mirror_log_on $vg $lv1 $dev5
 }
 
 for n in $(seq 1 4); do
@@ -233,16 +235,17 @@ test_3way_mirror_plus_1_fail_3_()
 	local index=$1
 
 	lvcreate -l2 -m2 -n $lv1 $vg $dev1 $dev2 $dev3 $dev5:0
-	lvchange -an $vg/$lv1 
-	lvconvert -m+1 $vg/$lv1 $dev4 
-	mimages_are_on_ $lv1 $dev1 $dev2 $dev3 $dev4 
-	mirrorlog_is_on_ $lv1 $dev5 
-	aux disable_dev $(rest_pvs_ $index 4) 
-	vgreduce --removemissing --force $vg 
-	lvs -a -o+devices $vg 
+	lvchange -an $vg/$lv1
+	lvconvert -m+1 $vg/$lv1 $dev4
+	check mirror_images_on $vg $lv1 $dev1 $dev2 $dev3 $dev4
+	check mirror_log_on $vg $lv1 $dev5
+	lvs -a -o+devices $vg
+	aux disable_dev $(rest_pvs_ $index 4)
+	vgreduce --removemissing --force $vg
+	lvs -a -o+devices $vg
 	eval local dev=\$dev$n
-	mimages_are_on_ $lv1 $dev || lv_is_on_ $lv1 $dev
-	not mirrorlog_is_on_ $lv1 $dev5
+	check linear $vg $lv1
+        check lv_on $vg $lv1 $dev
 }
 
 for n in $(seq 1 4); do

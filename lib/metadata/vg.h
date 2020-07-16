@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2010 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2011 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -31,6 +31,12 @@ typedef enum {
 	ALLOC_INHERIT
 } alloc_policy_t;
 
+struct pv_to_create {
+	struct dm_list list;
+	struct physical_volume *pv;
+	struct pvcreate_params *pp;
+};
+
 struct volume_group {
 	struct cmd_context *cmd;
 	struct dm_pool *vgmem;
@@ -57,6 +63,13 @@ struct volume_group {
 	/* physical volumes */
 	uint32_t pv_count;
 	struct dm_list pvs;
+
+	/*
+	 * List of physical volumes that were used in vgextend but do not carry
+	 * a PV label yet. They need to be pvcreate'd at vg_write time.
+	 */
+
+	struct dm_list pvs_to_create;
 
 	/*
 	 * logical volumes
@@ -94,6 +107,9 @@ struct volume_group {
 	uint32_t read_status;
 	uint32_t mda_copies; /* target number of mdas for this VG */
 };
+
+struct volume_group *alloc_vg(const char *pool_name, struct cmd_context *cmd,
+			      const char *vg_name);
 
 char *vg_fmt_dup(const struct volume_group *vg);
 char *vg_name_dup(const struct volume_group *vg);

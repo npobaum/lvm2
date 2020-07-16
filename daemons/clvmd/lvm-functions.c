@@ -132,11 +132,12 @@ static const char *decode_flags(unsigned char flags)
 	static char buf[128];
 	int len;
 
-	len = sprintf(buf, "0x%x ( %s%s%s%s%s)", flags,
+	len = sprintf(buf, "0x%x ( %s%s%s%s%s%s)", flags,
 		flags & LCK_PARTIAL_MODE	  ? "PARTIAL_MODE|" : "",
 		flags & LCK_MIRROR_NOSYNC_MODE	  ? "MIRROR_NOSYNC|" : "",
 		flags & LCK_DMEVENTD_MONITOR_MODE ? "DMEVENTD_MONITOR|" : "",
 		flags & LCK_ORIGIN_ONLY_MODE ? "ORIGIN_ONLY|" : "",
+		flags & LCK_TEST_MODE ? "TEST|" : "",
 		flags & LCK_CONVERT ? "CONVERT|" : "");
 
 	if (len > 1)
@@ -147,7 +148,7 @@ static const char *decode_flags(unsigned char flags)
 	return buf;
 }
 
-char *get_last_lvm_error()
+char *get_last_lvm_error(void)
 {
 	return last_error;
 }
@@ -194,7 +195,7 @@ static int get_current_lock(char *resource)
 }
 
 
-void init_lvhash()
+void init_lvhash(void)
 {
 	/* Create hash table for keeping LV locks & status */
 	lv_hash = dm_hash_create(1024);
@@ -203,7 +204,7 @@ void init_lvhash()
 }
 
 /* Called at shutdown to tidy the lockspace */
-void destroy_lvhash()
+void destroy_lvhash(void)
 {
 	struct dm_hash_node *v;
 	struct lv_info *lvi;
@@ -234,6 +235,9 @@ static int hold_lock(char *resource, int mode, int flags)
 	int status;
 	int saved_errno;
 	struct lv_info *lvi;
+
+	if (test_mode())
+		return 0;
 
 	/* Mask off invalid options */
 	flags &= LCKF_NOQUEUE | LCKF_CONVERT;
@@ -297,6 +301,9 @@ static int hold_unlock(char *resource)
 	struct lv_info *lvi;
 	int status;
 	int saved_errno;
+
+	if (test_mode())
+		return 0;
 
 	if (!(lvi = lookup_info(resource))) {
 		DEBUGLOG("hold_unlock, lock not already held\n");
@@ -377,9 +384,9 @@ static int do_activate_lv(char *resource, unsigned char lock_flags, int mode)
 		goto error;
 
 	if (lvi.suspended) {
-		memlock_inc(cmd);
+		critical_section_inc(cmd, "resuming");
 		if (!lv_resume(cmd, resource, 0)) {
-			memlock_dec(cmd);
+			critical_section_dec(cmd, "resumed");
 			goto error;
 		}
 	}
@@ -399,7 +406,7 @@ error:
 /* Resume the LV if it was active */
 static int do_resume_lv(char *resource, unsigned char lock_flags)
 {
-	int oldmode;
+	int oldmode, origin_only, exclusive;
 
 	/* Is it open ? */
 	oldmode = get_current_lock(resource);
@@ -407,8 +414,10 @@ static int do_resume_lv(char *resource, unsigned char lock_flags)
 		DEBUGLOG("do_resume_lv, lock not already held\n");
 		return 0;	/* We don't need to do anything */
 	}
+	origin_only = (lock_flags & LCK_ORIGIN_ONLY_MODE) ? 1 : 0;
+	exclusive = (oldmode == LCK_EXCL) ? 1 : 0;
 
-	if (!lv_resume_if_active(cmd, resource, (lock_flags & LCK_ORIGIN_ONLY_MODE) ? 1 : 0))
+	if (!lv_resume_if_active(cmd, resource, origin_only, exclusive))
 		return EIO;
 
 	return 0;
@@ -487,8 +496,8 @@ int do_lock_lv(unsigned char command, unsigned char lock_flags, char *resource)
 {
 	int status = 0;
 
-	DEBUGLOG("do_lock_lv: resource '%s', cmd = %s, flags = %s, memlock = %d\n",
-		 resource, decode_locking_cmd(command), decode_flags(lock_flags), memlock());
+	DEBUGLOG("do_lock_lv: resource '%s', cmd = %s, flags = %s, critical_section = %d\n",
+		 resource, decode_locking_cmd(command), decode_flags(lock_flags), critical_section());
 
 	if (!cmd->config_valid || config_files_changed(cmd)) {
 		/* Reinitialise various settings inc. logging, filters */
@@ -549,7 +558,7 @@ int do_lock_lv(unsigned char command, unsigned char lock_flags, char *resource)
 	dm_pool_empty(cmd->mem);
 	pthread_mutex_unlock(&lvm_lock);
 
-	DEBUGLOG("Command return is %d, memlock is %d\n", status, memlock());
+	DEBUGLOG("Command return is %d, critical_section is %d\n", status, critical_section());
 	return status;
 }
 
@@ -619,7 +628,7 @@ int do_check_lvm1(const char *vgname)
 	return status == 1 ? 0 : EBUSY;
 }
 
-int do_refresh_cache()
+int do_refresh_cache(void)
 {
 	DEBUGLOG("Refreshing context\n");
 	log_notice("Refreshing context");
@@ -697,8 +706,8 @@ void do_lock_vg(unsigned char command, unsigned char lock_flags, char *resource)
 	if (strncmp(resource, "P_#", 3) && !strncmp(resource, "P_", 2))
 		lock_cmd |= LCK_CACHE;
 
-	DEBUGLOG("do_lock_vg: resource '%s', cmd = %s, flags = %s, memlock = %d\n",
-		 resource, decode_full_locking_cmd(lock_cmd), decode_flags(lock_flags), memlock());
+	DEBUGLOG("do_lock_vg: resource '%s', cmd = %s, flags = %s, critical_section = %d\n",
+		 resource, decode_full_locking_cmd(lock_cmd), decode_flags(lock_flags), critical_section());
 
 	/* P_#global causes a full cache refresh */
 	if (!strcmp(resource, "P_" VG_GLOBAL)) {
@@ -913,7 +922,11 @@ void lvm_do_fs_unlock(void)
 /* Called to initialise the LVM context of the daemon */
 int init_clvm(int using_gulm, char **argv)
 {
-	if (!(cmd = create_toolcontext(1, NULL))) {
+	/* Use LOG_DAEMON for syslog messages instead of LOG_USER */
+	init_syslog(LOG_DAEMON);
+	openlog("clvmd", LOG_PID, LOG_DAEMON);
+
+	if (!(cmd = create_toolcontext(1, NULL, 0))) {
 		log_error("Failed to allocate command context");
 		return 0;
 	}
@@ -923,9 +936,6 @@ int init_clvm(int using_gulm, char **argv)
 		return 0;
 	}
 
-	/* Use LOG_DAEMON for syslog messages instead of LOG_USER */
-	init_syslog(LOG_DAEMON);
-	openlog("clvmd", LOG_PID, LOG_DAEMON);
 	cmd->cmd_line = "clvmd";
 
 	/* Check lvm.conf is setup for cluster-LVM */

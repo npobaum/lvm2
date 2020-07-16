@@ -149,7 +149,16 @@ struct load_properties {
 	 * and processing of dm tree). This will also flush all stacked dev
 	 * node operations, synchronizing with udev.
 	 */
-	int immediate_dev_node;
+	unsigned immediate_dev_node;
+
+	/*
+	 * If the device size changed from zero and this is set,
+	 * don't resume the device immediately, even if the device
+	 * has parents.  This works provided the parents do not
+	 * validate the device size and is required by pvmove to
+	 * avoid starting the mirror resync operation too early.
+	 */
+	unsigned delay_resume_if_new;
 };
 
 /* Two of these used to join two nodes with uses and used_by. */
@@ -329,13 +338,13 @@ static void _remove_from_bottomlevel(struct dm_tree_node *node)
 static int _link_tree_nodes(struct dm_tree_node *parent, struct dm_tree_node *child)
 {
 	/* Don't link to root node if child already has a parent */
-	if ((parent == &parent->dtree->root)) {
+	if (parent == &parent->dtree->root) {
 		if (dm_tree_node_num_children(child, 1))
 			return 1;
 	} else
 		_remove_from_toplevel(child);
 
-	if ((child == &child->dtree->root)) {
+	if (child == &child->dtree->root) {
 		if (dm_tree_node_num_children(parent, 0))
 			return 1;
 	} else
@@ -938,8 +947,11 @@ static int _node_has_closed_parents(struct dm_tree_node *node,
 		    !info.exists)
 			continue;
 
-		if (info.open_count)
+		if (info.open_count) {
+			log_debug("Node %s %d:%d has open_count %d", uuid_prefix,
+				  dinfo->major, dinfo->minor, info.open_count);
 			return 0;
+		}
 	}
 
 	return 1;
@@ -971,9 +983,9 @@ static int _deactivate_node(const char *name, uint32_t major, uint32_t minor,
 
 	r = dm_task_run(dmt);
 
-	/* FIXME Until kernel returns actual name so dm-ioctl.c can handle it */
-	rm_dev_node(name, dmt->cookie_set &&
-			  !(udev_flags & DM_UDEV_DISABLE_DM_RULES_FLAG));
+	/* FIXME Until kernel returns actual name so dm-iface.c can handle it */
+	rm_dev_node(name, dmt->cookie_set && !(udev_flags & DM_UDEV_DISABLE_DM_RULES_FLAG),
+			  dmt->cookie_set && (udev_flags & DM_UDEV_DISABLE_LIBRARY_FALLBACK));
 
 	/* FIXME Remove node from tree or mark invalid? */
 
@@ -1022,7 +1034,7 @@ out:
 static int _resume_node(const char *name, uint32_t major, uint32_t minor,
 			uint32_t read_ahead, uint32_t read_ahead_flags,
 			struct dm_info *newinfo, uint32_t *cookie,
-			uint16_t udev_flags)
+			uint16_t udev_flags, int already_suspended)
 {
 	struct dm_task *dmt;
 	int r = 0;
@@ -1054,8 +1066,11 @@ static int _resume_node(const char *name, uint32_t major, uint32_t minor,
 	if (!dm_task_set_cookie(dmt, cookie, udev_flags))
 		goto out;
 
-	if ((r = dm_task_run(dmt)))
+	if ((r = dm_task_run(dmt))) {
+		if (already_suspended)
+			dec_suspended();
 		r = dm_task_get_info(dmt, newinfo);
+	}
 
 out:
 	dm_task_destroy(dmt);
@@ -1094,8 +1109,10 @@ static int _suspend_node(const char *name, uint32_t major, uint32_t minor,
 	if (no_flush && !dm_task_no_flush(dmt))
 		log_error("Failed to set no_flush flag.");
 
-	if ((r = dm_task_run(dmt)))
+	if ((r = dm_task_run(dmt))) {
+		inc_suspended();
 		r = dm_task_get_info(dmt, newinfo);
+	}
 
 	dm_task_destroy(dmt);
 
@@ -1170,7 +1187,8 @@ static int _dm_tree_deactivate_children(struct dm_tree_node *dnode,
 				  info.minor);
 			r = 0;
 			continue;
-		}
+		} else if (info.suspended)
+			dec_suspended();
 
 		if (dm_tree_node_num_children(child, 0)) {
 			if (!_dm_tree_deactivate_children(child, uuid_prefix, uuid_prefix_len, level + 1))
@@ -1340,7 +1358,7 @@ int dm_tree_activate_children(struct dm_tree_node *dnode,
 
 			if (!_resume_node(child->name, child->info.major, child->info.minor,
 					  child->props.read_ahead, child->props.read_ahead_flags,
-					  &newinfo, &child->dtree->cookie, child->udev_flags)) {
+					  &newinfo, &child->dtree->cookie, child->udev_flags, child->info.suspended)) {
 				log_error("Unable to resume %s (%" PRIu32
 					  ":%" PRIu32 ")", child->name, child->info.major,
 					  child->info.minor);
@@ -1541,13 +1559,20 @@ static int _mirror_emit_segment_line(struct dm_task *dmt, uint32_t major,
 	int dm_log_userspace = 0;
 	struct utsname uts;
 	unsigned log_parm_count;
-	int pos = 0;
+	int pos = 0, parts;
 	char logbuf[DM_FORMAT_DEV_BUFSIZE];
 	const char *logtype;
-	unsigned kmaj, kmin, krel;
+	unsigned kmaj = 0, kmin = 0, krel = 0;
 
-	if (uname(&uts) == -1 || sscanf(uts.release, "%u.%u.%u", &kmaj, &kmin, &krel) != 3) {
-		log_error("Cannot read kernel release version");
+	if (uname(&uts) == -1) {
+		log_error("Cannot read kernel release version.");
+		return 0;
+	}
+
+	/* Kernels with a major number of 2 always had 3 parts. */
+	parts = sscanf(uts.release, "%u.%u.%u", &kmaj, &kmin, &krel);
+	if (parts < 1 || (kmaj < 3 && parts < 3)) {
+		log_error("Wrong kernel release version %s.", uts.release);
 		return 0;
 	}
 
@@ -1729,6 +1754,12 @@ static int _emit_segment_line(struct dm_task *dmt, uint32_t major,
 			stack;
 			return r;
 		}
+		if (!params[0]) {
+			log_error("No parameters supplied for %s target "
+				  "%u:%u.", dm_segtypes[seg->type].target,
+				  major, minor);
+			return 0;
+		}
 		break;
 	}
 
@@ -1785,7 +1816,7 @@ static int _load_node(struct dm_tree_node *dnode)
 	int r = 0;
 	struct dm_task *dmt;
 	struct load_segment *seg;
-	uint64_t seg_start = 0;
+	uint64_t seg_start = 0, existing_table_size;
 
 	log_verbose("Loading %s table (%" PRIu32 ":%" PRIu32 ")", dnode->name,
 		    dnode->info.major, dnode->info.minor);
@@ -1823,12 +1854,20 @@ static int _load_node(struct dm_tree_node *dnode)
 			log_verbose("Suppressed %s identical table reload.",
 				    dnode->name);
 
+		existing_table_size = dm_task_get_existing_table_size(dmt);
 		if ((dnode->props.size_changed =
-		     (dm_task_get_existing_table_size(dmt) == seg_start) ? 0 : 1))
+		     (existing_table_size == seg_start) ? 0 : 1)) {
 			log_debug("Table size changed from %" PRIu64 " to %"
-				  PRIu64 " for %s",
-				  dm_task_get_existing_table_size(dmt),
+				  PRIu64 " for %s", existing_table_size,
 				  seg_start, dnode->name);
+			/*
+			 * Kernel usually skips size validation on zero-length devices
+			 * now so no need to preload them.
+			 */
+			/* FIXME In which kernel version did this begin? */
+			if (!existing_table_size && dnode->props.delay_resume_if_new)
+				dnode->props.size_changed = 0;
+		}
 	}
 
 	dnode->props.segment_count = 0;
@@ -1892,7 +1931,8 @@ int dm_tree_preload_children(struct dm_tree_node *dnode,
 
 		if (!_resume_node(child->name, child->info.major, child->info.minor,
 				  child->props.read_ahead, child->props.read_ahead_flags,
-				  &newinfo, &child->dtree->cookie, child->udev_flags)) {
+				  &newinfo, &child->dtree->cookie, child->udev_flags,
+				  child->info.suspended)) {
 			log_error("Unable to resume %s (%" PRIu32
 				  ":%" PRIu32 ")", child->name, child->info.major,
 				  child->info.minor);
@@ -1919,7 +1959,6 @@ int dm_tree_preload_children(struct dm_tree_node *dnode,
 		if (!dm_udev_wait(dm_tree_get_cookie(dnode)))
 			stack;
 		dm_tree_set_cookie(dnode, 0);
-		dm_task_update_nodes();
 	}
 
 	return r;
@@ -2172,7 +2211,10 @@ int dm_tree_node_add_mirror_target_log(struct dm_tree_node *node,
 			log_error("log uuid pool_strdup failed");
 			return 0;
 		}
-		if (!(flags & DM_CORELOG)) {
+		if ((flags & DM_CORELOG))
+			/* For pvmove: immediate resume (for size validation) isn't needed. */
+			node->props.delay_resume_if_new = 1;
+		else {
 			if (!(log_node = dm_tree_find_node_by_uuid(node->dtree, log_uuid))) {
 				log_error("Couldn't find mirror log uuid %s.", log_uuid);
 				return 0;
@@ -2180,6 +2222,10 @@ int dm_tree_node_add_mirror_target_log(struct dm_tree_node *node,
 
 			if (clustered)
 				log_node->props.immediate_dev_node = 1;
+
+			/* The kernel validates the size of disk logs. */
+			/* FIXME Propagate to any devices below */
+			log_node->props.delay_resume_if_new = 0;
 
 			if (!_link_tree_nodes(node, log_node))
 				return_0;

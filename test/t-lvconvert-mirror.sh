@@ -240,3 +240,16 @@ lvconvert -m+1 --mirrorlog disk -i1 $vg/$lv1 $dev4 $dev3:0
 check mirror $vg $lv1 $dev3
 check mirror_no_temporaries $vg $lv1
 check mirror_legs $vg $lv1 3
+
+# simple mirrored stripe
+aux prepare_vg 5
+lvcreate -i2 -l10 -n $lv1 $vg
+lvconvert -m1 -i1 $vg/$lv1
+lvreduce -f -l1 $vg/$lv1
+lvextend -f -l10 $vg/$lv1
+lvremove -ff $vg/$lv1
+
+# extents must be divisible
+lvcreate -l15 -n $lv1 $vg
+not lvconvert -m1 --corelog --stripes 2 $vg/$lv1
+lvremove -ff $vg/$lv1

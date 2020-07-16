@@ -57,6 +57,7 @@
 #include "clvmd-comms.h"
 #include "clvm.h"
 #include "clvmd.h"
+#include "lvm-globals.h"
 #include "lvm-functions.h"
 
 #include "locking.h"
@@ -79,6 +80,9 @@ int do_command(struct local_client *client, struct clvm_header *msg, int msglen,
 	struct utsname nodeinfo;
 	unsigned char lock_cmd;
 	unsigned char lock_flags;
+
+	/* Reset test mode before we start */
+	init_test(0);
 
 	/* Do the command */
 	switch (msg->cmd) {
@@ -109,6 +113,8 @@ int do_command(struct local_client *client, struct clvm_header *msg, int msglen,
 		lockname = &args[2];
 		/* Check to see if the VG is in use by LVM1 */
 		status = do_check_lvm1(lockname);
+		if (lock_flags & LCK_TEST_MODE)
+			init_test(1);
 		do_lock_vg(lock_cmd, lock_flags, lockname);
 		break;
 
@@ -117,6 +123,8 @@ int do_command(struct local_client *client, struct clvm_header *msg, int msglen,
 		lock_cmd = args[0] & (LCK_NONBLOCK | LCK_HOLD | LCK_SCOPE_MASK | LCK_TYPE_MASK);
 		lock_flags = args[1];
 		lockname = &args[2];
+		if (lock_flags & LCK_TEST_MODE)
+			init_test(1);
 		status = do_lock_lv(lock_cmd, lock_flags, lockname);
 		/* Replace EIO with something less scary */
 		if (status == EIO) {
@@ -185,7 +193,6 @@ static int lock_vg(struct local_client *client)
     struct clvm_header *header =
 	(struct clvm_header *) client->bits.localsock.cmd;
     unsigned char lock_cmd;
-    unsigned char lock_flags;
     int lock_mode;
     char *args = header->node + strlen(header->node) + 1;
     int lkid;
@@ -207,7 +214,7 @@ static int lock_vg(struct local_client *client)
 
     lock_cmd = args[0] & (LCK_NONBLOCK | LCK_HOLD | LCK_SCOPE_MASK | LCK_TYPE_MASK);
     lock_mode = ((int)lock_cmd & LCK_TYPE_MASK);
-    lock_flags = args[1];
+    /* lock_flags = args[1]; */
     lockname = &args[2];
     DEBUGLOG("doing PRE command LOCK_VG '%s' at %x (client=%p)\n", lockname, lock_cmd, client);
 
@@ -252,6 +259,7 @@ int do_pre_command(struct local_client *client)
 	int status = 0;
 	char *lockname;
 
+	init_test(0);
 	switch (header->cmd) {
 	case CLVMD_CMD_TEST:
 		status = sync_lock("CLVMD_TEST", LCK_EXCL, 0, &lockid);
@@ -270,6 +278,8 @@ int do_pre_command(struct local_client *client)
 		lock_cmd = args[0];
 		lock_flags = args[1];
 		lockname = &args[2];
+		if (lock_flags & LCK_TEST_MODE)
+			init_test(1);
 		status = pre_lock_lv(lock_cmd, lock_flags, lockname);
 		break;
 
@@ -301,6 +311,7 @@ int do_post_command(struct local_client *client)
 	char *args = header->node + strlen(header->node) + 1;
 	char *lockname;
 
+	init_test(0);
 	switch (header->cmd) {
 	case CLVMD_CMD_TEST:
 		status =
@@ -312,6 +323,8 @@ int do_post_command(struct local_client *client)
 		lock_cmd = args[0];
 		lock_flags = args[1];
 		lockname = &args[2];
+		if (lock_flags & LCK_TEST_MODE)
+			init_test(1);
 		status = post_lock_lv(lock_cmd, lock_flags, lockname);
 		break;
 
@@ -378,7 +391,7 @@ static int restart_clvmd(void)
 	/* Propogate debug options */
 	if (clvmd_get_debug()) {
 		if (!(debug_arg = malloc(16)) ||
-		    dm_snprintf(debug_arg, 16, "-d%d", (int)clvmd_get_debug()) < 0)
+		    dm_snprintf(debug_arg, 16, "-d%u", clvmd_get_debug()) < 0)
 			goto_out;
 		argv[argc++] = debug_arg;
 		debug_arg = NULL;

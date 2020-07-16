@@ -22,11 +22,9 @@ static int vgconvert_single(struct cmd_context *cmd, const char *vg_name,
 	struct physical_volume *pv, *existing_pv;
 	struct logical_volume *lv;
 	struct lv_list *lvl;
-	uint64_t size = 0;
-	struct dm_list mdas;
 	int pvmetadatacopies = 0;
 	uint64_t pvmetadatasize = 0;
-	uint64_t pe_end = 0, pe_start = 0;
+	uint64_t pe_start = 0;
 	struct pv_list *pvl;
 	int change_made = 0;
 	struct lvinfo info;
@@ -119,15 +117,15 @@ static int vgconvert_single(struct cmd_context *cmd, const char *vg_name,
 		existing_pv = pvl->pv;
 
 		pe_start = pv_pe_start(existing_pv);
-		pe_end = pv_pe_count(existing_pv) * pv_pe_size(existing_pv)
-		    + pe_start - 1;
+		/* pe_end = pv_pe_count(existing_pv) * pv_pe_size(existing_pv) + pe_start - 1; */
 
-		dm_list_init(&mdas);
 		if (!(pv = pv_create(cmd, pv_dev(existing_pv),
-				     &existing_pv->id, size, 0, 0,
+				     &existing_pv->id, 0, 0, 0,
 				     pe_start, pv_pe_count(existing_pv),
-				     pv_pe_size(existing_pv), pvmetadatacopies,
-				     pvmetadatasize, 0, &mdas))) {
+				     pv_pe_size(existing_pv),
+				     arg_int64_value(cmd, labelsector_ARG,
+						     DEFAULT_LABELSECTOR),
+				     pvmetadatacopies, pvmetadatasize, 0))) {
 			log_error("Failed to setup physical volume \"%s\"",
 				  pv_dev_name(existing_pv));
 			if (change_made)
@@ -148,23 +146,24 @@ static int vgconvert_single(struct cmd_context *cmd, const char *vg_name,
 				  pv_dev_name(pv));
 			log_error("Use pvcreate and vgcfgrestore to repair "
 				  "from archived metadata.");
+			free_pv_fid(pv);
 			return ECMD_FAILED;
 		}
 
 		log_very_verbose("Writing physical volume data to disk \"%s\"",
 				 pv_dev_name(pv));
-		if (!(pv_write(cmd, pv, &mdas,
-			       arg_int64_value(cmd, labelsector_ARG,
-					       DEFAULT_LABELSECTOR)))) {
+		if (!(pv_write(cmd, pv, 0))) {
 			log_error("Failed to write physical volume \"%s\"",
 				  pv_dev_name(pv));
 			log_error("Use pvcreate and vgcfgrestore to repair "
 				  "from archived metadata.");
+			free_pv_fid(pv);
 			return ECMD_FAILED;
 		}
 		log_verbose("Physical volume \"%s\" successfully created",
 			    pv_dev_name(pv));
 
+		free_pv_fid(pv);
 	}
 
 	log_verbose("Deleting existing metadata for VG %s", vg_name);
