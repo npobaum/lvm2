@@ -941,8 +941,7 @@ struct lv_segment *alloc_lv_segment(const struct segment_type *segtype,
 		return_NULL;
 	}
 
-	if (segtype_is_raid(segtype) &&
-	    !segtype_is_raid0(segtype) &&
+	if (segtype_is_raid_with_meta(segtype) &&
 	    !(seg->meta_areas = dm_pool_zalloc(mem, areas_sz))) {
 		dm_pool_free(mem, seg); /* frees everything alloced since seg */
 		return_NULL;
@@ -1315,13 +1314,19 @@ static int _lv_segment_reduce(struct lv_segment *seg, uint32_t reduction)
  */
 static int _lv_reduce(struct logical_volume *lv, uint32_t extents, int delete)
 {
-	struct lv_segment *seg = first_seg(lv);;
+	struct lv_segment *seg = NULL;
 	uint32_t count = extents;
 	uint32_t reduction;
 	struct logical_volume *pool_lv;
 	struct logical_volume *external_lv = NULL;
-	int is_raid10 = seg_is_any_raid10(seg) && seg->reshape_len;
-	uint32_t data_copies = seg->data_copies;
+	int is_raid10 = 0;
+	uint32_t data_copies = 0;
+
+	if (!dm_list_empty(&lv->segments)) {
+		seg = first_seg(lv);
+		is_raid10 = seg_is_any_raid10(seg) && seg->reshape_len;
+		data_copies = seg->data_copies;
+	}
 
 	if (lv_is_merging_origin(lv)) {
 		log_debug_metadata("Dropping snapshot merge of %s to removed origin %s.",
@@ -3917,7 +3922,7 @@ static int _lv_insert_empty_sublvs(struct logical_volume *lv,
 			return_0;
 
 		/* Metadata LVs for raid */
-		if (segtype_is_raid(segtype) && !segtype_is_raid0(segtype)) {
+		if (segtype_is_raid_with_meta(segtype)) {
 			if (dm_snprintf(img_name, sizeof(img_name), "%s_rmeta_%u",
 					lv->name, i) < 0)
 				goto_bad;
@@ -4022,6 +4027,15 @@ static int _lv_extend_layered_lv(struct alloc_handle *ah,
 		fa += stripes;
 	}
 
+	seg->len += extents;
+	if (seg_is_raid(seg))
+		seg->area_len = seg->len;
+	else
+		seg->area_len += extents / area_multiple;
+
+	if (!_setup_lv_size(lv, lv->le_count + extents))
+		return_0;
+
 	if (clear_metadata) {
 		/*
 		 * We must clear the metadata areas upon creation.
@@ -4086,15 +4100,6 @@ static int _lv_extend_layered_lv(struct alloc_handle *ah,
 			lv_set_hidden(seg_metalv(seg, s));
 	}
 
-	seg->len += extents;
-	if (seg_is_raid(seg))
-		seg->area_len = seg->len;
-	else
-		seg->area_len += extents / area_multiple;
-
-	if (!_setup_lv_size(lv, lv->le_count + extents))
-		return_0;
-
 	return 1;
 }
 
@@ -4138,7 +4143,7 @@ int lv_extend(struct logical_volume *lv,
 		else if (segtype_is_raid0_meta(segtype))
 			/* Extend raid0 metadata LVs too */
 			log_count = stripes;
-		else if (segtype_is_raid(segtype) && !segtype_is_raid0(segtype))
+		else if (segtype_is_raid_with_meta(segtype))
 			log_count = mirrors * stripes;
 	}
 	/* FIXME log_count should be 1 for mirrors */
@@ -4165,7 +4170,7 @@ int lv_extend(struct logical_volume *lv,
 		return_0;
 
 	new_extents = ah->new_extents;
-	if (segtype_is_raid(segtype) && !segtype_is_raid0(segtype))
+	if (segtype_is_raid_with_meta(segtype))
 		new_extents -= ah->log_len * ah->area_multiple;
 
 	if (segtype_is_pool(segtype)) {
@@ -4719,7 +4724,7 @@ static int _lvresize_adjust_policy(const struct logical_volume *lv,
 	return 1;
 }
 
-static uint32_t lvseg_get_stripes(struct lv_segment *seg, uint32_t *stripesize)
+static uint32_t _lvseg_get_stripes(struct lv_segment *seg, uint32_t *stripesize)
 {
 	uint32_t s;
 	struct lv_segment *seg_mirr;
@@ -4797,7 +4802,8 @@ static int _lvresize_check(struct logical_volume *lv,
 		return 0;
 	}
 
-	if (lv_is_cache_type(lv)) {
+	if (lv_is_cache_type(lv) ||
+	    (lv_is_thin_pool(lv) && lv_is_cache_type(seg_lv(first_seg(lv), 0)))) {
 		log_error("Unable to resize logical volumes of cache type.");
 		return 0;
 	}
@@ -5165,7 +5171,7 @@ static int _lvresize_adjust_extents(struct logical_volume *lv,
 			seg_physical_extents = seg->area_len * seg->area_count;	/* FIXME Also metadata, cow etc. */
 
 			/* Check for underlying stripe sizes */
-			seg_stripes = lvseg_get_stripes(seg, &seg_stripesize);
+			seg_stripes = _lvseg_get_stripes(seg, &seg_stripesize);
 
 			if (seg_is_mirrored(seg))
 				seg_mirrors = lv_mirror_count(seg->lv);
@@ -5748,7 +5754,6 @@ struct logical_volume *alloc_lv(struct dm_pool *mem)
 	dm_list_init(&lv->tags);
 	dm_list_init(&lv->segs_using_this_lv);
 	dm_list_init(&lv->indirect_glvs);
-	dm_list_init(&lv->rsites);
 
 	return lv;
 }
@@ -7048,8 +7053,18 @@ int insert_layer_for_segments_on_pv(struct cmd_context *cmd,
 			 layer_lv->name, lv_where->name,
 			 pvl ? pv_dev_name(pvl->pv) : "any");
 
+	/* Temporarily hide layer_lv from vg->lvs list
+	 * so the lv_split_segment() passes  vg_validate()
+	 * since here layer_lv has empty segment list */
+	if (!(lvl = find_lv_in_vg(lv_where->vg, layer_lv->name)))
+		return_0;
+	dm_list_del(&lvl->list);
+
 	if (!_align_segment_boundary_to_pe_range(lv_where, pvl))
 		return_0;
+
+	/* Put back layer_lv in vg->lv */
+	dm_list_add(&lv_where->vg->lvs, &lvl->list);
 
 	/* Work through all segments on the supplied PV */
 	dm_list_iterate_items(seg, &lv_where->segments) {
@@ -7536,11 +7551,18 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 			status |= LV_NOTSYNCED;
 		}
 
-		lp->region_size = adjusted_mirror_region_size(vg->cmd,
-							      vg->extent_size,
-							      lp->extents,
-							      lp->region_size, 0,
-							      vg_is_clustered(vg));
+		if (seg_is_raid(lp)) {
+			/* Value raid target constraint */
+			if (lp->region_size > (uint64_t)vg->extent_size * lp->extents) {
+				log_error("Cannot create RAID LV with region size larger than LV size.");
+				return NULL;
+			}
+		} else
+			lp->region_size = adjusted_mirror_region_size(vg->cmd,
+								      vg->extent_size,
+								      lp->extents,
+								      lp->region_size, 0,
+								      vg_is_clustered(vg));
 	} else if (pool_lv && seg_is_thin_volume(lp)) {
 		if (!lv_is_thin_pool(pool_lv)) {
 			log_error("Logical volume %s is not a thin pool.",
@@ -7585,47 +7607,9 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 					  "Use --virtualsize.");
 				return NULL;
 			}
-			if (lv_is_cow(origin_lv)) {
-				log_error("Snapshots of snapshots are not supported.");
-				return NULL;
-			}
-			if (lv_is_locked(origin_lv)) {
-				log_error("Snapshots of locked devices are not supported.");
-				return NULL;
-			}
-			if (lv_is_merging_origin(origin_lv)) {
-				log_error("Snapshots of an origin that has a "
-					  "merging snapshot is not supported");
-				return NULL;
-			}
 
-			if (lv_is_cache_type(origin_lv) && !lv_is_cache(origin_lv)) {
-				log_error("Snapshots of cache type volume %s "
-					  "is not supported.", display_lvname(origin_lv));
-				return NULL;
-			}
-
-			if (lv_is_thin_type(origin_lv) && !lv_is_thin_volume(origin_lv)) {
-				log_error("Snapshots of thin pool %sdevices "
-					  "are not supported.",
-					  lv_is_thin_pool_data(origin_lv) ? "data " :
-					  lv_is_thin_pool_metadata(origin_lv) ?
-					  "metadata " : "");
-				return NULL;
-			}
-
-			if (lv_is_mirror_type(origin_lv)) {
-				log_warn("WARNING: Snapshots of mirrors can deadlock under rare device failures.");
-				log_warn("WARNING: Consider using the raid1 mirror type to avoid this.");
-				log_warn("WARNING: See global/mirror_segtype_default in lvm.conf.");
-			}
-
-			if (vg_is_clustered(vg) && lv_is_active(origin_lv) &&
-			    !lv_is_active_exclusive_locally(origin_lv)) {
-				log_error("%s must be active exclusively to"
-					  " create snapshot", origin_lv->name);
-				return NULL;
-			}
+			if (!validate_snapshot_origin(origin_lv))
+                                return_0;
 		}
 
 		if (!cow_has_min_chunks(vg, lp->extents, lp->chunk_size))
@@ -7691,8 +7675,17 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 		       lp->mirrors,
 		       segtype_is_pool(create_segtype) ? lp->pool_metadata_extents : lp->region_size,
 		       segtype_is_thin_volume(create_segtype) ? lp->virtual_extents : lp->extents,
-		       lp->pvh, lp->alloc, lp->approx_alloc))
+		       lp->pvh, lp->alloc, lp->approx_alloc)) {
+		unlink_lv_from_vg(lv); /* Keep VG consistent and remove LV without any segment */
 		return_NULL;
+	}
+
+	/* rhbz1269533: allow for 100%FREE allocation to work with "mirror" and a disk log */
+	if (segtype_is_mirror(create_segtype) &&
+	    lp->log_count &&
+	    !vg->free_count &&
+	    lv->le_count > 1)
+		lv_reduce(lv, 1);
 
 	/* Unlock memory if possible */
 	memlock_unlock(vg->cmd);

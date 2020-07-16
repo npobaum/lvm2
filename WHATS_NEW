@@ -1,3 +1,30 @@
+Version 2.02.176 - 3rd November 2017
+====================================
+  Keep Install section only in lvm2-{lvmetad,lvmpolld}.socket systemd unit.
+  Fix segfault in lvm_pv_remove in liblvm. (2.02.173)
+  Do not allow storing VG metadata with LV without any segment.
+  Fix printed message when thin snapshot was already merged.
+  Remove created spare LV when creation of thin-pool failed.
+  Avoid reading ignored metadata when mda gets used again.
+  Fix detection of moved PVs in vgsplit. (2.02.175)
+  Ignore --stripes/--stripesize on RAID takeover
+  Improve used paths for generated systemd units and init shells.
+  Disallow creation of snapshot of mirror/raid subLV (was never supported).
+  Fix regression in more advanced vgname extraction in lvconvert (2.02.169).
+  Allow lvcreate to be used for caching of _tdata LV.
+  Avoid internal error when resizing cache type _tdata LV (not yet supported).
+  Show original converted names when lvconverting LV to pool volume.
+  Move lib code used only by liblvm into metadata-liblvm.c.
+  Distinguish between device not found and excluded by filter.
+  Monitor external origin LVs.
+  Remove the replicator code, including configure --with-replicators.
+  Allow lvcreate --type mirror to work with 100%FREE.
+  Improve selection of resource name for complex volume activation lock.
+  Avoid cutting first character of resource name for activation lock.
+  Support for encrypted devices in fsadm.
+  Improve thin pool overprovisioning and repair warning messages.
+  Fix incorrect adjustment of region size on striped RaidLVs.
+
 Version 2.02.175 - 6th October 2017
 ===================================
   Use --help with blockdev when checking for --getsize64 support in fsadm.

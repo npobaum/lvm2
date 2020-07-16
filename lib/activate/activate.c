@@ -1707,7 +1707,7 @@ static char *_build_target_uuid(struct cmd_context *cmd, const struct logical_vo
 
 	if (lv_is_thin_pool(lv))
 		layer = "tpool"; /* Monitor "tpool" for the "thin pool". */
-	else if (lv_is_origin(lv))
+	else if (lv_is_origin(lv) || lv_is_external_origin(lv))
 		layer = "real"; /* Monitor "real" for "snapshot-origin". */
 	else
 		layer = NULL;
@@ -1949,6 +1949,13 @@ int monitor_dev_for_events(struct cmd_context *cmd, const struct logical_volume 
 			r = 0;
 		}
 
+		if (seg->external_lv &&
+		    !monitor_dev_for_events(cmd, seg->external_lv,
+					    (!monitor) ? laopts : NULL, monitor)) {
+			stack;
+			r = 0;
+		}
+
 		if (seg->metadata_lv &&
 		    !monitor_dev_for_events(cmd, seg->metadata_lv, NULL, monitor)) {
 			stack;
@@ -2125,9 +2132,6 @@ static int _lv_suspend(struct cmd_context *cmd, const char *lvid_s,
 		goto out;
 	}
 
-	if (!lv_read_replicator_vgs(lv))
-		goto_out;
-
 	lv_calculate_readahead(lv, NULL);
 
 	/*
@@ -2249,10 +2253,8 @@ static int _lv_suspend(struct cmd_context *cmd, const char *lvid_s,
 out:
 	if (lv_pre_to_free)
 		release_vg(lv_pre_to_free->vg);
-	if (lv_to_free) {
-		lv_release_replicator_vgs(lv_to_free);
+	if (lv_to_free)
 		release_vg(lv_to_free->vg);
-	}
 
 	return r;
 }
@@ -2436,9 +2438,6 @@ int lv_deactivate(struct cmd_context *cmd, const char *lvid_s, const struct logi
 			goto_out;
 	}
 
-	if (!lv_read_replicator_vgs(lv))
-		goto_out;
-
 	if (!monitor_dev_for_events(cmd, lv, &laopts, 0))
 		stack;
 
@@ -2453,10 +2452,8 @@ int lv_deactivate(struct cmd_context *cmd, const char *lvid_s, const struct logi
 		r = 0;
 	}
 out:
-	if (lv_to_free) {
-		lv_release_replicator_vgs(lv_to_free);
+	if (lv_to_free)
 		release_vg(lv_to_free->vg);
-	}
 
 	return r;
 }
@@ -2571,9 +2568,6 @@ static int _lv_activate(struct cmd_context *cmd, const char *lvid_s,
 		goto out;
 	}
 
-	if (!lv_read_replicator_vgs(lv))
-		goto_out;
-
 	lv_calculate_readahead(lv, NULL);
 
 	critical_section_inc(cmd, "activating");
@@ -2585,10 +2579,8 @@ static int _lv_activate(struct cmd_context *cmd, const char *lvid_s,
 		stack;
 
 out:
-	if (lv_to_free) {
-		lv_release_replicator_vgs(lv_to_free);
+	if (lv_to_free)
 		release_vg(lv_to_free->vg);
-	}
 
 	return r;
 }

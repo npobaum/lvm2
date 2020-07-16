@@ -114,11 +114,6 @@ static int _activate_lvs_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 		if (lv_is_mirror_image(lv) || lv_is_mirror_log(lv))
 			continue;
 
-		/* Only request activation of the first replicator-dev LV */
-		/* Avoids retry with all heads in case of failure */
-		if (lv_is_replicator_dev(lv) && (lv != first_replicator_dev(lv)))
-			continue;
-
 		if (lv_activation_skip(lv, activate, arg_is_set(cmd, ignoreactivationskip_ARG)))
 			continue;
 
@@ -254,9 +249,8 @@ int vgchange_activate(struct cmd_context *cmd, struct volume_group *vg,
 	}
 
 	/* Print message only if there was not found a missing VG */
-	if (!vg->cmd_missing_vgs)
-		log_print_unless_silent("%d logical volume(s) in volume group \"%s\" now active",
-					lvs_in_vg_activated(vg), vg->name);
+	log_print_unless_silent("%d logical volume(s) in volume group \"%s\" now active",
+				lvs_in_vg_activated(vg), vg->name);
 	return r;
 }
 
@@ -686,9 +680,9 @@ static int _vgchange_lock_stop(struct cmd_context *cmd, struct volume_group *vg)
 	return lockd_stop_vg(cmd, vg);
 }
 
-static int vgchange_single(struct cmd_context *cmd, const char *vg_name,
-			   struct volume_group *vg,
-			   struct processing_handle *handle)
+static int _vgchange_single(struct cmd_context *cmd, const char *vg_name,
+			    struct volume_group *vg,
+			    struct processing_handle *handle)
 {
 	int ret = ECMD_PROCESSED;
 	unsigned i;
@@ -933,7 +927,7 @@ int vgchange(struct cmd_context *cmd, int argc, char **argv)
 		return ECMD_FAILED;
 	}
 
-	ret = process_each_vg(cmd, argc, argv, NULL, NULL, flags, 0, handle, &vgchange_single);
+	ret = process_each_vg(cmd, argc, argv, NULL, NULL, flags, 0, handle, &_vgchange_single);
 
 	destroy_processing_handle(cmd, handle);
 	return ret;

@@ -84,8 +84,8 @@ int peg_dup(struct dm_pool *mem, struct dm_list *peg_new, struct dm_list *peg_ol
 }
 
 /* Find segment at a given physical extent in a PV */
-static struct pv_segment *find_peg_by_pe(const struct physical_volume *pv,
-					 uint32_t pe)
+static struct pv_segment *_find_peg_by_pe(const struct physical_volume *pv,
+					  uint32_t pe)
 {
 	struct pv_segment *pvseg;
 
@@ -137,7 +137,7 @@ int pv_split_segment(struct dm_pool *mem,
 	if (pe == pv->pe_count)
 		goto out;
 
-	if (!(pvseg = find_peg_by_pe(pv, pe))) {
+	if (!(pvseg = _find_peg_by_pe(pv, pe))) {
 		log_error("Segment with extent %" PRIu32 " in PV %s not found",
 			  pe, pv_dev_name(pv));
 		return 0;
@@ -158,7 +158,7 @@ out:
 	return 1;
 }
 
-static struct pv_segment null_pv_segment = {
+static struct pv_segment _null_pv_segment = {
 	.pv = NULL,
 	.pe = 0,
 };
@@ -172,7 +172,7 @@ struct pv_segment *assign_peg_to_lvseg(struct physical_volume *pv,
 
 	/* Missing format1 PV */
 	if (!pv)
-		return &null_pv_segment;
+		return &_null_pv_segment;
 
 	if (!pv_split_segment(seg->lv->vg->vgmem, pv, pe, &peg) ||
 	    !pv_split_segment(seg->lv->vg->vgmem, pv, pe + area_len, NULL))
@@ -556,9 +556,7 @@ static int _extend_pv(struct physical_volume *pv, struct volume_group *vg,
  * Resize a PV in a VG, adding or removing segments as needed.
  * New size must fit within pv->size.
  */
-static int pv_resize(struct physical_volume *pv,
-	      struct volume_group *vg,
-	      uint64_t size)
+static int _pv_resize(struct physical_volume *pv, struct volume_group *vg, uint64_t size)
 {
 	uint32_t old_pe_count, new_pe_count = 0;
 
@@ -674,7 +672,7 @@ int pv_resize_single(struct cmd_context *cmd,
 	log_verbose("Resizing volume \"%s\" to %" PRIu64 " sectors.",
 		    pv_name, size);
 
-	if (!pv_resize(pv, vg, size))
+	if (!_pv_resize(pv, vg, size))
 		goto_out;
 
 	log_verbose("Updating physical volume \"%s\"", pv_name);
@@ -706,180 +704,4 @@ out:
 		log_error("Use pvcreate and vgcfgrestore "
 			  "to repair from archived metadata.");
 	return r;
-}
-
-/*
- * Decide whether it is "safe" to wipe the labels on this device.
- * 0 indicates we may not.
- */
-static int pvremove_check(struct cmd_context *cmd, const char *name,
-			  unsigned force_count, unsigned prompt, struct dm_list *pvslist)
-{
-	static const char really_wipe_msg[] = "Really WIPE LABELS from physical volume";
-	struct device *dev;
-	struct label *label;
-	struct pv_list *pvl;
-	struct physical_volume *pv = NULL;
-	int used;
-	int r = 0;
-
-	/* FIXME Check partition type is LVM unless --force is given */
-
-	if (!(dev = dev_cache_get(name, cmd->filter))) {
-		log_error("Device %s not found.", name);
-		return 0;
-	}
-
-	/* Is there a pv here already? */
-	/* If not, this is an error unless you used -f. */
-	if (!label_read(dev, &label, 0)) {
-		if (force_count)
-			return 1;
-		log_error("No PV label found on %s.", name);
-		return 0;
-	}
-
-	dm_list_iterate_items(pvl, pvslist)
-		if (pvl->pv->dev == dev)
-			pv = pvl->pv;
-
-	if (!pv) {
-		log_error(INTERNAL_ERROR "Physical Volume %s has a label, "
-			  "but is neither in a VG nor orphan.", name);
-		goto out; /* better safe than sorry */
-	}
-
-	if (is_orphan(pv)) {
-		if ((used = is_used_pv(pv)) < 0)
-			goto_out;
-
-		if (used) {
-			log_warn("WARNING: PV %s is used by a VG but its metadata is missing.", name);
-
-			if (force_count < 2)
-				goto_bad;
-
-			if (!prompt &&
-			    yes_no_prompt("%s \"%s\" that is marked as belonging to a VG [y/n]? ",
-					  really_wipe_msg, name) == 'n')
-				goto_bad;
-		}
-	} else {
-		log_warn("WARNING: PV %s is used by VG %s (consider using vgreduce).", name, pv_vg_name(pv));
-
-		if (force_count < 2)
-			goto_bad;
-
-		if (!prompt &&
-		    yes_no_prompt("%s \"%s\" of volume group \"%s\" [y/n]? ",
-				  really_wipe_msg, name, pv_vg_name(pv)) == 'n')
-			goto_bad;
-	}
-
-	if (force_count)
-		log_warn("WARNING: Wiping physical volume label from "
-			 "%s%s%s%s", name,
-			 !is_orphan(pv) ? " of volume group \"" : "",
-			 pv_vg_name(pv),
-			 !is_orphan(pv) ? "\"" : "");
-
-	r = 1;
-bad:
-	if (!r) {
-		log_error("%s: physical volume label not removed.", name);
-
-		if (force_count < 2) /* Show hint as log_error() */
-			log_error("(If you are certain you need pvremove, "
-				  "then confirm by using --force twice.)");
-	}
-out:
-	return r;
-}
-
-int pvremove_single(struct cmd_context *cmd, const char *pv_name,
-		    void *handle __attribute__((unused)), unsigned force_count,
-	            unsigned prompt, struct dm_list *pvslist)
-{
-	struct device *dev;
-	struct lvmcache_info *info;
-	int r = 0;
-
-	if (!pvremove_check(cmd, pv_name, force_count, prompt, pvslist))
-		goto out;
-
-	if (!(dev = dev_cache_get(pv_name, cmd->filter))) {
-		log_error("%s: Couldn't find device.  Check your filters?",
-			  pv_name);
-		goto out;
-	}
-
-	info = lvmcache_info_from_pvid(dev->pvid, dev, 0);
-
-	if (!dev_test_excl(dev)) {
-		/* FIXME Detect whether device-mapper is still using the device */
-		log_error("Can't open %s exclusively - not removing. "
-			  "Mounted filesystem?", dev_name(dev));
-		goto out;
-	}
-
-	/* Wipe existing label(s) */
-	if (!label_remove(dev)) {
-		log_error("Failed to wipe existing label(s) on %s", pv_name);
-		goto out;
-	}
-
-	if (info)
-		lvmcache_del(info);
-
-	if (!lvmetad_pv_gone_by_dev(dev))
-		goto_out;
-
-	log_print_unless_silent("Labels on physical volume \"%s\" successfully wiped",
-				pv_name);
-
-	r = 1;
-
-out:
-	return r;
-}
-
-int pvremove_many(struct cmd_context *cmd, struct dm_list *pv_names,
-		  unsigned force_count, unsigned prompt)
-{
-	int ret = 1;
-	struct dm_list *pvslist = NULL;
-	struct pv_list *pvl;
-	const struct dm_str_list *pv_name;
-
-	if (!lock_vol(cmd, VG_ORPHANS, LCK_VG_WRITE, NULL)) {
-		log_error("Can't get lock for orphan PVs");
-		return 0;
-	}
-
-	lvmcache_seed_infos_from_lvmetad(cmd);
-
-	if (!(pvslist = get_pvs(cmd))) {
-		ret = 0;
-		goto_out;
-	}
-
-	dm_list_iterate_items(pv_name, pv_names) {
-		if (!pvremove_single(cmd, pv_name->str, NULL, force_count, prompt, pvslist)) {
-			stack;
-			ret = 0;
-		}
-		if (sigint_caught()) {
-			ret = 0;
-			goto_out;
-		}
-	}
-
-out:
-	unlock_vg(cmd, NULL, VG_ORPHANS);
-
-	if (pvslist)
-		dm_list_iterate_items(pvl, pvslist)
-			free_pv_fid(pvl->pv);
-
-	return ret;
 }
