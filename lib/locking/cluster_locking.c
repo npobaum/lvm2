@@ -36,7 +36,7 @@
 int lock_resource(struct cmd_context *cmd, const char *resource, uint32_t flags);
 int query_resource(const char *resource, int *mode);
 void locking_end(void);
-int locking_init(int type, struct dm_config_tree *cf, uint32_t *flags);
+int locking_init(int type, struct config_tree *cf, uint32_t *flags);
 #endif
 
 typedef struct lvm_response {
@@ -178,19 +178,21 @@ static void _build_header(struct clvm_header *head, int clvmd_cmd, const char *n
 	head->clientid = 0;
 	head->arglen = len;
 
-	/*
-	 * Handle special node names.
-	 */
-	if (!node || !strcmp(node, NODE_ALL))
-		head->node[0] = '\0';
-	else if (!strcmp(node, NODE_LOCAL)) {
-		head->node[0] = '\0';
-		head->flags = CLVMD_FLAG_LOCAL;
-	} else if (!strcmp(node, NODE_REMOTE)) {
-		head->node[0] = '\0';
-		head->flags = CLVMD_FLAG_REMOTE;
+	if (node) {
+		/*
+		 * Allow a couple of special node names:
+		 * "*" for all nodes,
+		 * "." for the local node only
+		 */
+		if (strcmp(node, "*") == 0) {
+			head->node[0] = '\0';
+		} else if (strcmp(node, ".") == 0) {
+			head->node[0] = '\0';
+			head->flags = CLVMD_FLAG_LOCAL;
+		} else
+			strcpy(head->node, node);
 	} else
-		strcpy(head->node, node);
+		head->node[0] = '\0';
 }
 
 /*
@@ -318,16 +320,12 @@ static int _lock_for_cluster(struct cmd_context *cmd, unsigned char clvmd_cmd,
 	args = alloca(len);
 	strcpy(args + 2, name);
 
-	/* args[0] holds bottom 8 bits except LCK_LOCAL (0x40). */
-	args[0] = flags & (LCK_SCOPE_MASK | LCK_TYPE_MASK | LCK_NONBLOCK | LCK_HOLD | LCK_CLUSTER_VG); 
-
-	args[1] = 0;
+	/* Mask off lock flags */
+	args[0] = flags & (LCK_SCOPE_MASK | LCK_TYPE_MASK | LCK_NONBLOCK | LCK_HOLD); 
+	args[1] = flags & (LCK_LOCAL | LCK_CLUSTER_VG);
 
 	if (flags & LCK_ORIGIN_ONLY)
 		args[1] |= LCK_ORIGIN_ONLY_MODE;
-
-	if (flags & LCK_REVERT)
-		args[1] |= LCK_REVERT_MODE;
 
 	if (mirror_in_sync())
 		args[1] |= LCK_MIRROR_NOSYNC_MODE;
@@ -336,15 +334,11 @@ static int _lock_for_cluster(struct cmd_context *cmd, unsigned char clvmd_cmd,
 		args[1] |= LCK_TEST_MODE;
 
 	/*
-	 * We propagate dmeventd_monitor_mode() to clvmd faithfully, since
-	 * dmeventd monitoring is tied to activation which happens inside clvmd
-	 * when locking_type = 3.
+	 * Must handle tri-state return from dmeventd_monitor_mode.
+	 * But DMEVENTD_MONITOR_IGNORE is not propagated across the cluster.
 	 */
 	dmeventd_mode = dmeventd_monitor_mode();
-	if (dmeventd_mode == DMEVENTD_MONITOR_IGNORE)
-		args[1] |= LCK_DMEVENTD_MONITOR_IGNORE;
-
-	if (dmeventd_mode)
+	if (dmeventd_mode != DMEVENTD_MONITOR_IGNORE && dmeventd_mode)
 		args[1] |= LCK_DMEVENTD_MONITOR_MODE;
 
 	if (cmd->partial_activation)
@@ -355,6 +349,9 @@ static int _lock_for_cluster(struct cmd_context *cmd, unsigned char clvmd_cmd,
 	 * so we only need to do them on the local node because all
 	 * locks are cluster-wide.
 	 *
+	 * Also, if the lock is exclusive it makes no sense to try to
+	 * acquire it on all nodes, so just do that on the local node too.
+	 *
 	 * P_ locks /do/ get distributed across the cluster because they might
 	 * have side-effects.
 	 *
@@ -362,15 +359,14 @@ static int _lock_for_cluster(struct cmd_context *cmd, unsigned char clvmd_cmd,
 	 */
 	if (clvmd_cmd == CLVMD_CMD_SYNC_NAMES) {
 		if (flags & LCK_LOCAL)
-			node = NODE_LOCAL;
+			node = ".";
 	} else if (clvmd_cmd != CLVMD_CMD_VG_BACKUP) {
 		if (strncmp(name, "P_", 2) &&
 		    (clvmd_cmd == CLVMD_CMD_LOCK_VG ||
+		     (flags & LCK_TYPE_MASK) == LCK_EXCL ||
 		     (flags & LCK_LOCAL) ||
 		     !(flags & LCK_CLUSTER_VG)))
-			node = NODE_LOCAL;
-		else if (flags & LCK_REMOTE)
-			node = NODE_REMOTE;
+			node = ".";
 	}
 
 	status = _cluster_request(clvmd_cmd, node, args, len,
@@ -490,16 +486,14 @@ int lock_resource(struct cmd_context *cmd, const char *resource, uint32_t flags)
 		return 0;
 	}
 
-	log_very_verbose("Locking %s %s %s (%s%s%s%s%s%s%s%s%s) (0x%x)", lock_scope, lockname,
+	log_very_verbose("Locking %s %s %s (%s%s%s%s%s%s%s) (0x%x)", lock_scope, lockname,
 			 lock_type, lock_scope,
 			 flags & LCK_NONBLOCK ? "|NONBLOCK" : "",
 			 flags & LCK_HOLD ? "|HOLD" : "",
-			 flags & LCK_CLUSTER_VG ? "|CLUSTER" : "",
 			 flags & LCK_LOCAL ? "|LOCAL" : "",
-			 flags & LCK_REMOTE ? "|REMOTE" : "",
+			 flags & LCK_CLUSTER_VG ? "|CLUSTER" : "",
 			 flags & LCK_CACHE ? "|CACHE" : "",
 			 flags & LCK_ORIGIN_ONLY ? "|ORIGIN_ONLY" : "",
-			 flags & LCK_REVERT ? "|REVERT" : "",
 			 flags);
 
 	/* Send a message to the cluster manager */
@@ -612,7 +606,7 @@ int init_cluster_locking(struct locking_type *locking, struct cmd_context *cmd,
 	return 1;
 }
 #else
-int locking_init(int type, struct dm_config_tree *cf, uint32_t *flags)
+int locking_init(int type, struct config_tree *cf, uint32_t *flags)
 {
 	_clvmd_sock = _open_local_sock(0);
 	if (_clvmd_sock == -1)

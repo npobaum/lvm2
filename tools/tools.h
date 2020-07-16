@@ -28,7 +28,6 @@
 #include "activate.h"
 #include "archiver.h"
 #include "lvmcache.h"
-#include "lvmetad.h"
 #include "config.h"
 #include "defaults.h"
 #include "dev-cache.h"
@@ -173,7 +172,6 @@ int arg_count_increment(struct cmd_context *cmd, int a);
 unsigned grouped_arg_count(const struct arg_values *av, int a);
 unsigned grouped_arg_is_set(const struct arg_values *av, int a);
 const char *grouped_arg_str_value(const struct arg_values *av, int a, const char *def);
-int32_t grouped_arg_int_value(const struct arg_values *av, int a, const int32_t def); 
 
 const char *command_name(struct cmd_context *cmd);
 
@@ -183,5 +181,4 @@ int lvconvert_poll(struct cmd_context *cmd, struct logical_volume *lv, unsigned 
 int mirror_remove_missing(struct cmd_context *cmd,
 			  struct logical_volume *lv, int force);
 
-uint32_t percent_of_extents(uint32_t percents, uint32_t count, int roundup);
 #endif

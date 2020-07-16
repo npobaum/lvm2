@@ -459,8 +459,7 @@ int lock_vol(struct cmd_context *cmd, const char *vol, uint32_t flags)
 		return 0;
 	}
 
-	strncpy(resource, vol, sizeof(resource) - 1);
-	resource[sizeof(resource) - 1] = '\0';
+	strncpy(resource, vol, sizeof(resource));
 
 	if (!_lock_vol(cmd, resource, flags, lv_op))
 		return_0;
@@ -494,77 +493,26 @@ int resume_lvs(struct cmd_context *cmd, struct dm_list *lvs)
 	return r;
 }
 
-/* Unlock and revert list of LVs */
-int revert_lvs(struct cmd_context *cmd, struct dm_list *lvs)
+/* Lock a list of LVs */
+int suspend_lvs(struct cmd_context *cmd, struct dm_list *lvs)
 {
-	struct lv_list *lvl;
-	int r = 1;
-
-	dm_list_iterate_items(lvl, lvs)
-		if (!revert_lv(cmd, lvl->lv)) {
-			r = 0;
-			stack;
-		}
-
-	return r;
-}
-/*
- * Lock a list of LVs.
- * On failure to lock any LV, calls vg_revert() if vg_to_revert is set and 
- * then unlocks any LVs on the list already successfully locked.
- */
-int suspend_lvs(struct cmd_context *cmd, struct dm_list *lvs,
-		struct volume_group *vg_to_revert)
-{
+	struct dm_list *lvh;
 	struct lv_list *lvl;
 
 	dm_list_iterate_items(lvl, lvs) {
 		if (!suspend_lv(cmd, lvl->lv)) {
 			log_error("Failed to suspend %s", lvl->lv->name);
-			if (vg_to_revert)
-				vg_revert(vg_to_revert);
-			/*
-			 * FIXME Should be
-			 * 	dm_list_uniterate(lvh, lvs, &lvl->list) {
-			 *	lvl = dm_list_item(lvh, struct lv_list);
-			 * but revert would need fixing to use identical tree deps first.
-			 */
-			dm_list_iterate_items(lvl, lvs)
-				if (!revert_lv(cmd, lvl->lv))
+			dm_list_uniterate(lvh, lvs, &lvl->list) {
+				lvl = dm_list_item(lvh, struct lv_list);
+				if (!resume_lv(cmd, lvl->lv))
 					stack;
+			}
 
 			return 0;
 		}
 	}
 
 	return 1;
-}
-
-/*
- * First try to activate exclusively locally.
- * Then if the VG is clustered and the LV is not yet active (e.g. due to 
- * an activation filter) try activating on remote nodes.
- */
-int activate_lv_excl(struct cmd_context *cmd, struct logical_volume *lv) 
-{
-	/* Non-clustered VGs are only activated locally. */
-	if (!vg_is_clustered(lv->vg))
-		return activate_lv_excl_local(cmd, lv);
-
-	if (lv_is_active_exclusive(lv))
-		return 1;
-
-	if (!activate_lv_excl_local(cmd, lv))
-		return_0;
-
-	if (lv_is_active_exclusive(lv))
-		return 1;
-
-	/* FIXME Deal with error return codes. */
-	if (activate_lv_excl_remote(cmd, lv))
-		stack;
-
-	return lv_is_active_exclusive(lv);
 }
 
 /* Lock a list of LVs */

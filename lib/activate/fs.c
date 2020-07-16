@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2012 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2011 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -32,11 +32,10 @@
  * Supports to wait for udev device settle only when needed.
  */
 static uint32_t _fs_cookie = DM_COOKIE_AUTO_CREATE;
-static int _fs_create = 0;
 
 static int _mk_dir(const char *dev_dir, const char *vg_name)
 {
-	static char vg_path[PATH_MAX];
+	char vg_path[PATH_MAX];
 	mode_t old_umask;
 
 	if (dm_snprintf(vg_path, sizeof(vg_path), "%s%s",
@@ -67,7 +66,7 @@ static int _mk_dir(const char *dev_dir, const char *vg_name)
 
 static int _rm_dir(const char *dev_dir, const char *vg_name)
 {
-	static char vg_path[PATH_MAX];
+	char vg_path[PATH_MAX];
 
 	if (dm_snprintf(vg_path, sizeof(vg_path), "%s%s",
 			 dev_dir, vg_name) == -1) {
@@ -87,7 +86,7 @@ static int _rm_dir(const char *dev_dir, const char *vg_name)
 static void _rm_blks(const char *dir)
 {
 	const char *name;
-	static char path[PATH_MAX];
+	char path[PATH_MAX];
 	struct dirent *dirent;
 	struct stat buf;
 	DIR *d;
@@ -124,8 +123,8 @@ static void _rm_blks(const char *dir)
 static int _mk_link(const char *dev_dir, const char *vg_name,
 		    const char *lv_name, const char *dev, int check_udev)
 {
-	static char lv_path[PATH_MAX], link_path[PATH_MAX], lvm1_group_path[PATH_MAX];
-	static char vg_path[PATH_MAX];
+	char lv_path[PATH_MAX], link_path[PATH_MAX], lvm1_group_path[PATH_MAX];
+	char vg_path[PATH_MAX];
 	struct stat buf, buf_lp;
 
 	if (dm_snprintf(vg_path, sizeof(vg_path), "%s%s",
@@ -226,7 +225,7 @@ static int _rm_link(const char *dev_dir, const char *vg_name,
 		    const char *lv_name, int check_udev)
 {
 	struct stat buf;
-	static char lv_path[PATH_MAX];
+	char lv_path[PATH_MAX];
 
 	if (dm_snprintf(lv_path, sizeof(lv_path), "%s%s/%s",
 			 dev_dir, vg_name, lv_name) == -1) {
@@ -234,12 +233,9 @@ static int _rm_link(const char *dev_dir, const char *vg_name,
 		return 0;
 	}
 
-	if (lstat(lv_path, &buf)) {
-		if (errno == ENOENT)
-			return 1;
-		log_sys_error("lstat", lv_path);
-		return 0;
-	} else if (dm_udev_get_sync_support() && udev_checking() && check_udev)
+	if (lstat(lv_path, &buf) && errno == ENOENT)
+		return 1;
+	else if (dm_udev_get_sync_support() && udev_checking() && check_udev)
 		log_warn("The link %s should have been removed by udev "
 			 "but it is still present. Falling back to "
 			 "direct link removal.", lv_path);
@@ -431,8 +427,6 @@ static void _pop_fs_ops(void)
 			  fsp->dev, fsp->old_lv_name, fsp->check_udev);
 		_del_fs_op(fsp);
 	}
-
-	_fs_create = 0;
 }
 
 static int _fs_op(fs_op_t type, const char *dev_dir, const char *vg_name,
@@ -506,12 +500,7 @@ void fs_set_cookie(uint32_t cookie)
 	_fs_cookie = cookie;
 }
 
-void fs_set_create(void)
-{
-	_fs_create = 1;
-}
-
 int fs_has_non_delete_ops(void)
 {
-	return _fs_create || _other_fs_ops(FS_DEL);
+	return _other_fs_ops(FS_DEL);
 }

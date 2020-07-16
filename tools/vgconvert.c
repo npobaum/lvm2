@@ -42,7 +42,7 @@ static int vgconvert_single(struct cmd_context *cmd, const char *vg_name,
 	}
 
 	if (cmd->fmt->features & FMT_MDAS) {
-		if (arg_sign_value(cmd, metadatasize_ARG, SIGN_NONE) == SIGN_MINUS) {
+		if (arg_sign_value(cmd, metadatasize_ARG, 0) == SIGN_MINUS) {
 			log_error("Metadata size may not be negative");
 			return EINVALID_CMD_LINE;
 		}
@@ -146,6 +146,7 @@ static int vgconvert_single(struct cmd_context *cmd, const char *vg_name,
 				  pv_dev_name(pv));
 			log_error("Use pvcreate and vgcfgrestore to repair "
 				  "from archived metadata.");
+			free_pv_fid(pv);
 			return ECMD_FAILED;
 		}
 
@@ -156,10 +157,13 @@ static int vgconvert_single(struct cmd_context *cmd, const char *vg_name,
 				  pv_dev_name(pv));
 			log_error("Use pvcreate and vgcfgrestore to repair "
 				  "from archived metadata.");
+			free_pv_fid(pv);
 			return ECMD_FAILED;
 		}
 		log_verbose("Physical volume \"%s\" successfully created",
 			    pv_dev_name(pv));
+
+		free_pv_fid(pv);
 	}
 
 	log_verbose("Deleting existing metadata for VG %s", vg_name);

@@ -596,8 +596,6 @@ ac_default_prefix=/usr
 ac_subst_vars='LTLIBOBJS
 usrsbindir
 usrlibdir
-tmpfilesdir
-systemdsystemunitdir
 udevdir
 udev_prefix
 tmpdir
@@ -607,11 +605,9 @@ kerneldir
 interface
 DMEVENTD_PIDFILE
 WRITE_INSTALL
-UDEV_HAS_BUILTIN_BLKID
 UDEV_SYNC
 UDEV_RULES
 UDEV_PC
-THIN
 TESTING
 STATIC_LINK
 STATICDIR
@@ -629,7 +625,6 @@ OCF
 MIRRORS
 LVM_RELEASE_DATE
 LVM_RELEASE
-LVM_PATH
 LVM_PATCHLEVEL
 LVM_MINOR
 LVM_MAJOR
@@ -646,7 +641,6 @@ INTL
 HAVE_REALTIME
 HAVE_LIBDL
 FSADM
-ELDFLAGS
 DM_LIB_PATCHLEVEL
 DM_LIB_VERSION
 DM_IOCTLS
@@ -669,14 +663,12 @@ DEBUG
 COPTIMISE_FLAG
 CONFDIR
 CMDLIB
-CLVMD_PATH
 CLVMD_CMANAGERS
 CLVMD
 CLUSTER
 CLDWHOLEARCHIVE
 CLDNOWHOLEARCHIVE
 CLDFLAGS
-BUILD_LVMETAD
 BUILD_DMEVENTD
 BUILD_CMIRRORD
 APPLIB
@@ -686,8 +678,8 @@ LVM2CMD_LIB
 LVM2APP_LIB
 UDEV_LIBS
 UDEV_CFLAGS
-CUNIT_LIBS
-CUNIT_CFLAGS
+VALGRIND
+RUBY19
 GENPNG
 GENHTML
 LCOV
@@ -697,8 +689,6 @@ DLM_LIBS
 DLM_CFLAGS
 CPG_LIBS
 CPG_CFLAGS
-CMAP_LIBS
-CMAP_CFLAGS
 CONFDB_LIBS
 CONFDB_CFLAGS
 SALCK_LIBS
@@ -798,7 +788,6 @@ with_device_uid
 with_device_gid
 with_device_mode
 with_device_nodes_on
-with_default_name_mangling
 enable_lvm1_fallback
 with_lvm1
 with_pool
@@ -807,7 +796,6 @@ with_snapshots
 with_mirrors
 with_raid
 with_replicators
-with_thin
 enable_readline
 enable_realtime
 enable_ocf
@@ -822,7 +810,6 @@ enable_profiling
 enable_testing
 enable_valgrind_pool
 enable_devmapper
-enable_lvmetad
 enable_udev_sync
 enable_udev_rules
 enable_compat
@@ -844,8 +831,6 @@ with_usrlibdir
 with_usrsbindir
 with_udev_prefix
 with_udevdir
-with_systemdsystemunitdir
-with_tmpfilesdir
 with_dmeventd_pidfile
 with_dmeventd_path
 with_default_run_dir
@@ -881,16 +866,12 @@ SALCK_CFLAGS
 SALCK_LIBS
 CONFDB_CFLAGS
 CONFDB_LIBS
-CMAP_CFLAGS
-CMAP_LIBS
 CPG_CFLAGS
 CPG_LIBS
 DLM_CFLAGS
 DLM_LIBS
 SACKPT_CFLAGS
 SACKPT_LIBS
-CUNIT_CFLAGS
-CUNIT_LIBS
 UDEV_CFLAGS
 UDEV_LIBS'
 
@@ -1520,7 +1501,6 @@ Optional Features:
   --enable-testing        enable testing targets in the makefile
   --enable-valgrind-pool  enable valgrind awareness of pools
   --disable-devmapper     disable LVM2 device-mapper interaction
-  --enable-lvmetad        enable the LVM Metadata Daemon
   --enable-udev_sync      enable synchronisation with udev processing
   --enable-udev_rules     install rule files needed for udev synchronisation
   --enable-compat         enable support for old device-mapper versions
@@ -1547,9 +1527,6 @@ Optional Packages:
   --with-device-mode=MODE set the mode used for new device nodes [[MODE=0600]]
   --with-device-nodes-on=ON
                           create nodes on resume or create [[ON=resume]]
-  --with-default-name-mangling=MANGLING
-                          default name mangling: auto/none/hex
-                          [[MANGLING=auto]]
   --with-lvm1=TYPE        LVM1 metadata support: internal/shared/none
                           [[TYPE=internal]]
   --with-pool=TYPE        GFS pool read-only support: internal/shared/none
@@ -1563,8 +1540,6 @@ Optional Packages:
   --with-raid=TYPE        mirror support: internal/shared/none
                           [[TYPE=internal]]
   --with-replicators=TYPE replicator support: internal/shared/none
-                          [[TYPE=none]]
-  --with-thin=TYPE        thin provisioning support: internal/shared/none
                           [[TYPE=none]]
   --with-ocfdir=DIR       install OCF files in DIR
                           [[PREFIX/lib/ocf/resource.d/lvm2]]
@@ -1589,11 +1564,6 @@ Optional Packages:
   --with-udev-prefix=UPREFIX
                           install udev rule files in UPREFIX [[EPREFIX]]
   --with-udevdir=DIR      udev rules in DIR [[UPREFIX/lib/udev/rules.d]]
-  --with-systemdsystemunitdir=DIR
-                          systemd service files in DIR
-  --with-tmpfilesdir=DIR  install configuration files for management of
-                          volatile files and directories in DIR
-                          [[SYSCONFDIR/tmpfiles.d]]
   --with-dmeventd-pidfile=PATH
                           dmeventd pidfile [[/var/run/dmeventd.pid]]
   --with-dmeventd-path=PATH
@@ -1646,8 +1616,6 @@ Some influential environment variables:
   CONFDB_CFLAGS
               C compiler flags for CONFDB, overriding pkg-config
   CONFDB_LIBS linker flags for CONFDB, overriding pkg-config
-  CMAP_CFLAGS C compiler flags for CMAP, overriding pkg-config
-  CMAP_LIBS   linker flags for CMAP, overriding pkg-config
   CPG_CFLAGS  C compiler flags for CPG, overriding pkg-config
   CPG_LIBS    linker flags for CPG, overriding pkg-config
   DLM_CFLAGS  C compiler flags for DLM, overriding pkg-config
@@ -1655,9 +1623,6 @@ Some influential environment variables:
   SACKPT_CFLAGS
               C compiler flags for SACKPT, overriding pkg-config
   SACKPT_LIBS linker flags for SACKPT, overriding pkg-config
-  CUNIT_CFLAGS
-              C compiler flags for CUNIT, overriding pkg-config
-  CUNIT_LIBS  linker flags for CUNIT, overriding pkg-config
   UDEV_CFLAGS C compiler flags for UDEV, overriding pkg-config
   UDEV_LIBS   linker flags for UDEV, overriding pkg-config
 
@@ -2833,14 +2798,12 @@ case "$host_os" in
 		CFLAGS="$CFLAGS"
 		COPTIMISE_FLAG="-O2"
 		CLDFLAGS="$CLDFLAGS -Wl,--version-script,.export.sym"
-		ELDFLAGS="-Wl,--export-dynamic"
-		# FIXME Generate list and use --dynamic-list=.dlopen.sym
 		CLDWHOLEARCHIVE="-Wl,-whole-archive"
 		CLDNOWHOLEARCHIVE="-Wl,-no-whole-archive"
 		LDDEPS="$LDDEPS .export.sym"
+		LDFLAGS="$LDFLAGS -Wl,--export-dynamic"
 		LIB_SUFFIX=so
 		DEVMAPPER=yes
-		LVMETAD=no
 		ODIRECT=yes
 		DM_IOCTLS=yes
 		SELINUX=yes
@@ -2851,7 +2814,6 @@ case "$host_os" in
 		CFLAGS="$CFLAGS -no-cpp-precomp -fno-common"
 		COPTIMISE_FLAG="-O2"
 		CLDFLAGS="$CLDFLAGS"
-		ELDFLAGS=
 		CLDWHOLEARCHIVE="-all_load"
 		CLDNOWHOLEARCHIVE=
 		LIB_SUFFIX=dylib
@@ -6772,30 +6734,6 @@ cat >>confdefs.h <<_ACEOF
 _ACEOF
 
 
-{ $as_echo "$as_me:${as_lineno-$LINENO}: checking default name mangling" >&5
-$as_echo_n "checking default name mangling... " >&6; }
-
-# Check whether --with-default-name-mangling was given.
-if test "${with_default_name_mangling+set}" = set; then :
-  withval=$with_default_name_mangling; MANGLING=$withval
-else
-  MANGLING=auto
-fi
-
-case "$MANGLING" in
- auto) mangling=DM_STRING_MANGLING_AUTO;;
- disabled) mangling=DM_STRING_MANGLING_NONE;;
- hex) mangling=DM_STRING_MANGLING_HEX;;
- *) as_fn_error $? "--with-default-name-mangling parameter invalid" "$LINENO" 5;;
-esac
-{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $MANGLING" >&5
-$as_echo "$MANGLING" >&6; }
-
-cat >>confdefs.h <<_ACEOF
-#define DEFAULT_DM_NAME_MANGLING $mangling
-_ACEOF
-
-
 ################################################################################
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking whether to enable lvm1 fallback" >&5
 $as_echo_n "checking whether to enable lvm1 fallback... " >&6; }
@@ -6983,28 +6921,6 @@ case "$REPLICATORS" in
 $as_echo "#define REPLICATOR_INTERNAL 1" >>confdefs.h
  ;;
   *) as_fn_error $? "--with-replicators parameter invalid ($REPLICATORS)" "$LINENO" 5 ;;
-esac
-
-################################################################################
-{ $as_echo "$as_me:${as_lineno-$LINENO}: checking whether to include thin provisioning" >&5
-$as_echo_n "checking whether to include thin provisioning... " >&6; }
-
-# Check whether --with-thin was given.
-if test "${with_thin+set}" = set; then :
-  withval=$with_thin; THIN=$withval
-else
-  THIN=none
-fi
-
-{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $THIN" >&5
-$as_echo "$THIN" >&6; }
-
-case "$THIN" in
-  none|shared) ;;
-  internal)
-$as_echo "#define THIN_INTERNAL 1" >>confdefs.h
- ;;
-  *) as_fn_error $? "--with-thin parameter invalid ($THIN)" "$LINENO" 5 ;;
 esac
 
 ################################################################################
@@ -7558,7 +7474,6 @@ $as_echo "yes" >&6; }
 	HAVE_COROSYNC=yes
 fi
 	CHECKCONFDB=yes
-	CHECKCMAP=yes
 fi
 
 if test x$BUILDCOROSYNC = xyes; then
@@ -7804,110 +7719,11 @@ $as_echo "no pkg for confdb, using -lconfdb" >&6; }
 		CONFDB_LIBS="-lconfdb"
 		HAVE_CONFDB=yes
 	fi
-fi
 
-
-if test x$CHECKCMAP = xyes; then
-
-pkg_failed=no
-{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for CMAP" >&5
-$as_echo_n "checking for CMAP... " >&6; }
-
-if test -n "$CMAP_CFLAGS"; then
-    pkg_cv_CMAP_CFLAGS="$CMAP_CFLAGS"
- elif test -n "$PKG_CONFIG"; then
-    if test -n "$PKG_CONFIG" && \
-    { { $as_echo "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"libcmap\""; } >&5
-  ($PKG_CONFIG --exists --print-errors "libcmap") 2>&5
-  ac_status=$?
-  $as_echo "$as_me:${as_lineno-$LINENO}: \$? = $ac_status" >&5
-  test $ac_status = 0; }; then
-  pkg_cv_CMAP_CFLAGS=`$PKG_CONFIG --cflags "libcmap" 2>/dev/null`
-else
-  pkg_failed=yes
-fi
- else
-    pkg_failed=untried
-fi
-if test -n "$CMAP_LIBS"; then
-    pkg_cv_CMAP_LIBS="$CMAP_LIBS"
- elif test -n "$PKG_CONFIG"; then
-    if test -n "$PKG_CONFIG" && \
-    { { $as_echo "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"libcmap\""; } >&5
-  ($PKG_CONFIG --exists --print-errors "libcmap") 2>&5
-  ac_status=$?
-  $as_echo "$as_me:${as_lineno-$LINENO}: \$? = $ac_status" >&5
-  test $ac_status = 0; }; then
-  pkg_cv_CMAP_LIBS=`$PKG_CONFIG --libs "libcmap" 2>/dev/null`
-else
-  pkg_failed=yes
-fi
- else
-    pkg_failed=untried
-fi
-
-
-
-if test $pkg_failed = yes; then
-   	{ $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
-$as_echo "no" >&6; }
-
-if $PKG_CONFIG --atleast-pkgconfig-version 0.20; then
-        _pkg_short_errors_supported=yes
-else
-        _pkg_short_errors_supported=no
-fi
-        if test $_pkg_short_errors_supported = yes; then
-	        CMAP_PKG_ERRORS=`$PKG_CONFIG --short-errors --print-errors "libcmap" 2>&1`
-        else
-	        CMAP_PKG_ERRORS=`$PKG_CONFIG --print-errors "libcmap" 2>&1`
-        fi
-	# Put the nasty error message in config.log where it belongs
-	echo "$CMAP_PKG_ERRORS" >&5
-
-	HAVE_CMAP=no
-elif test $pkg_failed = untried; then
-     	{ $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
-$as_echo "no" >&6; }
-	HAVE_CMAP=no
-else
-	CMAP_CFLAGS=$pkg_cv_CMAP_CFLAGS
-	CMAP_LIBS=$pkg_cv_CMAP_LIBS
-        { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
-$as_echo "yes" >&6; }
-	HAVE_CMAP=yes
-fi
-
-	for ac_header in corosync/cmap.h
-do :
-  ac_fn_c_check_header_mongrel "$LINENO" "corosync/cmap.h" "ac_cv_header_corosync_cmap_h" "$ac_includes_default"
-if test "x$ac_cv_header_corosync_cmap_h" = x""yes; then :
-  cat >>confdefs.h <<_ACEOF
-#define HAVE_COROSYNC_CMAP_H 1
-_ACEOF
- HAVE_CMAP_H=yes
-else
-  HAVE_CMAP_H=no
-fi
-
-done
-
-
-	if test x$HAVE_CMAP != xyes && \
-	   test x$HAVE_CMAP_H = xyes; then
-		check_lib_no_libs cmap cmap_initialize
-		{ $as_echo "$as_me:${as_lineno-$LINENO}: result: no pkg for cmap, using -lcmap" >&5
-$as_echo "no pkg for cmap, using -lcmap" >&6; }
-		CMAP_LIBS="-lcmap"
-		HAVE_CMAP=yes
-	fi
-fi
-
-if test x$BUILDCOROSYNC = xyes; then
-	if test x$HAVE_CMAP != xyes && \
-	   test x$HAVE_CONFDB != xyes && \
+	if test x$BUILDCOROSYNC = xyes && \
+	   test x$HAVE_CONFDB != xyes &&
 	   test x$CLVMD != xall; then
-		as_fn_error $? "bailing out... cmap (corosync >= 2.0) or confdb (corosync < 2.0) library is required" "$LINENO" 5
+		as_fn_error $? "bailing out... confdb library is required" "$LINENO" 5
 	fi
 fi
 
@@ -8112,13 +7928,12 @@ $as_echo "Enabling clvmd cman cluster manager" >&6; }
 	if test x$HAVE_COROSYNC = xyes && \
 	   test x$HAVE_QUORUM = xyes && \
 	   test x$HAVE_CPG = xyes && \
-	   test x$HAVE_DLM = xyes; then
-	   if test x$HAVE_CONFDB = xyes || test x$HAVE_CMAP = xyes; then
+	   test x$HAVE_DLM = xyes && \
+	   test x$HAVE_CONFDB = xyes; then
 		{ $as_echo "$as_me:${as_lineno-$LINENO}: result: Enabling clvmd corosync cluster manager" >&5
 $as_echo "Enabling clvmd corosync cluster manager" >&6; }
 		CLVMD="$CLVMD,corosync"
 		CLVMD_CMANAGERS="$CLVMD_CMANAGERS corosync"
-	   fi
 	fi
 	if test x$HAVE_COROSYNC = xyes && \
 	   test x$HAVE_CPG = xyes && \
@@ -8135,12 +7950,6 @@ $as_echo "Enabling clvmd openais cluster manager" >&6; }
 		{ $as_echo "$as_me:${as_lineno-$LINENO}: result: Disabling clvmd build. No cluster manager detected." >&5
 $as_echo "Disabling clvmd build. No cluster manager detected." >&6; }
 	fi
-fi
-
-if [ `expr x"$CLVMD" : '.*corosync.*'` != 0 ]; then
-   if test x$HAVE_CMAP = xyes; then
-	CLVMD_CMANAGERS="$CLVMD_CMANAGERS dlm"
-   fi
 fi
 
 ################################################################################
@@ -8198,10 +8007,6 @@ if [ "x$BUILD_CMIRRORD" = xyes ]; then
 		pkg_config_init
 	fi
 
-
-$as_echo "#define CMIRROR_HAS_CHECKPOINT 1" >>confdefs.h
-
-
 pkg_failed=no
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for SACKPT" >&5
 $as_echo_n "checking for SACKPT... " >&6; }
@@ -8258,27 +8063,40 @@ fi
 	# Put the nasty error message in config.log where it belongs
 	echo "$SACKPT_PKG_ERRORS" >&5
 
-	{ $as_echo "$as_me:${as_lineno-$LINENO}: result: no libSaCkpt, compiling without it" >&5
-$as_echo "no libSaCkpt, compiling without it" >&6; }
+	as_fn_error $? "Package requirements (libSaCkpt) were not met:
 
-$as_echo "#define CMIRROR_HAS_CHECKPOINT 0" >>confdefs.h
+$SACKPT_PKG_ERRORS
+
+Consider adjusting the PKG_CONFIG_PATH environment variable if you
+installed software in a non-standard prefix.
+
+Alternatively, you may set the environment variables SACKPT_CFLAGS
+and SACKPT_LIBS to avoid the need to call pkg-config.
+See the pkg-config man page for more details." "$LINENO" 5
 
 elif test $pkg_failed = untried; then
      	{ $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
 $as_echo "no" >&6; }
-	{ $as_echo "$as_me:${as_lineno-$LINENO}: result: no libSaCkpt, compiling without it" >&5
-$as_echo "no libSaCkpt, compiling without it" >&6; }
+	{ { $as_echo "$as_me:${as_lineno-$LINENO}: error: in \`$ac_pwd':" >&5
+$as_echo "$as_me: error: in \`$ac_pwd':" >&2;}
+as_fn_error $? "The pkg-config script could not be found or is too old.  Make sure it
+is in your PATH or set the PKG_CONFIG environment variable to the full
+path to pkg-config.
 
-$as_echo "#define CMIRROR_HAS_CHECKPOINT 0" >>confdefs.h
+Alternatively, you may set the environment variables SACKPT_CFLAGS
+and SACKPT_LIBS to avoid the need to call pkg-config.
+See the pkg-config man page for more details.
+
+To get pkg-config, see <http://pkg-config.freedesktop.org/>.
+See \`config.log' for more details" "$LINENO" 5; }
 
 else
 	SACKPT_CFLAGS=$pkg_cv_SACKPT_CFLAGS
 	SACKPT_LIBS=$pkg_cv_SACKPT_LIBS
         { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
 $as_echo "yes" >&6; }
-	HAVE_SACKPT=yes
-fi
 
+fi
 	if test x$HAVE_CPG != xyes; then
 
 pkg_failed=no
@@ -8574,97 +8392,89 @@ fi
 $as_echo "$TESTING" >&6; }
 
 if test "$TESTING" = yes; then
-
-pkg_failed=no
-{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for CUNIT" >&5
-$as_echo_n "checking for CUNIT... " >&6; }
-
-if test -n "$CUNIT_CFLAGS"; then
-    pkg_cv_CUNIT_CFLAGS="$CUNIT_CFLAGS"
- elif test -n "$PKG_CONFIG"; then
-    if test -n "$PKG_CONFIG" && \
-    { { $as_echo "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"cunit >= 2.0\""; } >&5
-  ($PKG_CONFIG --exists --print-errors "cunit >= 2.0") 2>&5
-  ac_status=$?
-  $as_echo "$as_me:${as_lineno-$LINENO}: \$? = $ac_status" >&5
-  test $ac_status = 0; }; then
-  pkg_cv_CUNIT_CFLAGS=`$PKG_CONFIG --cflags "cunit >= 2.0" 2>/dev/null`
+   # Extract the first word of "ruby1.9", so it can be a program name with args.
+set dummy ruby1.9; ac_word=$2
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
+$as_echo_n "checking for $ac_word... " >&6; }
+if test "${ac_cv_path_RUBY19+set}" = set; then :
+  $as_echo_n "(cached) " >&6
 else
-  pkg_failed=yes
+  case $RUBY19 in
+  [\\/]* | ?:[\\/]*)
+  ac_cv_path_RUBY19="$RUBY19" # Let the user override the test with a path.
+  ;;
+  *)
+  as_save_IFS=$IFS; IFS=$PATH_SEPARATOR
+for as_dir in $PATH
+do
+  IFS=$as_save_IFS
+  test -z "$as_dir" && as_dir=.
+    for ac_exec_ext in '' $ac_executable_extensions; do
+  if { test -f "$as_dir/$ac_word$ac_exec_ext" && $as_test_x "$as_dir/$ac_word$ac_exec_ext"; }; then
+    ac_cv_path_RUBY19="$as_dir/$ac_word$ac_exec_ext"
+    $as_echo "$as_me:${as_lineno-$LINENO}: found $as_dir/$ac_word$ac_exec_ext" >&5
+    break 2
+  fi
+done
+  done
+IFS=$as_save_IFS
+
+  ;;
+esac
 fi
- else
-    pkg_failed=untried
-fi
-if test -n "$CUNIT_LIBS"; then
-    pkg_cv_CUNIT_LIBS="$CUNIT_LIBS"
- elif test -n "$PKG_CONFIG"; then
-    if test -n "$PKG_CONFIG" && \
-    { { $as_echo "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"cunit >= 2.0\""; } >&5
-  ($PKG_CONFIG --exists --print-errors "cunit >= 2.0") 2>&5
-  ac_status=$?
-  $as_echo "$as_me:${as_lineno-$LINENO}: \$? = $ac_status" >&5
-  test $ac_status = 0; }; then
-  pkg_cv_CUNIT_LIBS=`$PKG_CONFIG --libs "cunit >= 2.0" 2>/dev/null`
+RUBY19=$ac_cv_path_RUBY19
+if test -n "$RUBY19"; then
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: $RUBY19" >&5
+$as_echo "$RUBY19" >&6; }
 else
-  pkg_failed=yes
-fi
- else
-    pkg_failed=untried
-fi
-
-
-
-if test $pkg_failed = yes; then
-   	{ $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
 $as_echo "no" >&6; }
-
-if $PKG_CONFIG --atleast-pkgconfig-version 0.20; then
-        _pkg_short_errors_supported=yes
-else
-        _pkg_short_errors_supported=no
 fi
-        if test $_pkg_short_errors_supported = yes; then
-	        CUNIT_PKG_ERRORS=`$PKG_CONFIG --short-errors --print-errors "cunit >= 2.0" 2>&1`
-        else
-	        CUNIT_PKG_ERRORS=`$PKG_CONFIG --print-errors "cunit >= 2.0" 2>&1`
-        fi
-	# Put the nasty error message in config.log where it belongs
-	echo "$CUNIT_PKG_ERRORS" >&5
 
-	as_fn_error $? "Package requirements (cunit >= 2.0) were not met:
 
-$CUNIT_PKG_ERRORS
+   # Extract the first word of "valgrind", so it can be a program name with args.
+set dummy valgrind; ac_word=$2
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
+$as_echo_n "checking for $ac_word... " >&6; }
+if test "${ac_cv_path_VALGRIND+set}" = set; then :
+  $as_echo_n "(cached) " >&6
+else
+  case $VALGRIND in
+  [\\/]* | ?:[\\/]*)
+  ac_cv_path_VALGRIND="$VALGRIND" # Let the user override the test with a path.
+  ;;
+  *)
+  as_save_IFS=$IFS; IFS=$PATH_SEPARATOR
+for as_dir in $PATH
+do
+  IFS=$as_save_IFS
+  test -z "$as_dir" && as_dir=.
+    for ac_exec_ext in '' $ac_executable_extensions; do
+  if { test -f "$as_dir/$ac_word$ac_exec_ext" && $as_test_x "$as_dir/$ac_word$ac_exec_ext"; }; then
+    ac_cv_path_VALGRIND="$as_dir/$ac_word$ac_exec_ext"
+    $as_echo "$as_me:${as_lineno-$LINENO}: found $as_dir/$ac_word$ac_exec_ext" >&5
+    break 2
+  fi
+done
+  done
+IFS=$as_save_IFS
 
-Consider adjusting the PKG_CONFIG_PATH environment variable if you
-installed software in a non-standard prefix.
-
-Alternatively, you may set the environment variables CUNIT_CFLAGS
-and CUNIT_LIBS to avoid the need to call pkg-config.
-See the pkg-config man page for more details." "$LINENO" 5
-
-elif test $pkg_failed = untried; then
-     	{ $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
+  ;;
+esac
+fi
+VALGRIND=$ac_cv_path_VALGRIND
+if test -n "$VALGRIND"; then
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: $VALGRIND" >&5
+$as_echo "$VALGRIND" >&6; }
+else
+  { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
 $as_echo "no" >&6; }
-	{ { $as_echo "$as_me:${as_lineno-$LINENO}: error: in \`$ac_pwd':" >&5
-$as_echo "$as_me: error: in \`$ac_pwd':" >&2;}
-as_fn_error $? "The pkg-config script could not be found or is too old.  Make sure it
-is in your PATH or set the PKG_CONFIG environment variable to the full
-path to pkg-config.
-
-Alternatively, you may set the environment variables CUNIT_CFLAGS
-and CUNIT_LIBS to avoid the need to call pkg-config.
-See the pkg-config man page for more details.
-
-To get pkg-config, see <http://pkg-config.freedesktop.org/>.
-See \`config.log' for more details" "$LINENO" 5; }
-
-else
-	CUNIT_CFLAGS=$pkg_cv_CUNIT_CFLAGS
-	CUNIT_LIBS=$pkg_cv_CUNIT_LIBS
-        { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
-$as_echo "yes" >&6; }
-
 fi
+
+
+   if test -z "$RUBY19" -o -z "$VALGRIND"; then
+       as_fn_error $? "ruby1.9 and valgrind are required for testing" "$LINENO" 5
+   fi
 fi
 
 ################################################################################
@@ -8714,25 +8524,6 @@ $as_echo "$DEVMAPPER" >&6; }
 if test x$DEVMAPPER = xyes; then
 
 $as_echo "#define DEVMAPPER_SUPPORT 1" >>confdefs.h
-
-fi
-
-################################################################################
-{ $as_echo "$as_me:${as_lineno-$LINENO}: checking whether to build LVMetaD" >&5
-$as_echo_n "checking whether to build LVMetaD... " >&6; }
-# Check whether --enable-lvmetad was given.
-if test "${enable_lvmetad+set}" = set; then :
-  enableval=$enable_lvmetad; LVMETAD=$enableval
-fi
-
-{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $LVMETAD" >&5
-$as_echo "$LVMETAD" >&6; }
-
-BUILD_LVMETAD=$LVMETAD
-
-if test x$BUILD_LVMETAD = xyes; then
-
-$as_echo "#define LVMETAD_SUPPORT 1" >>confdefs.h
 
 fi
 
@@ -8860,19 +8651,6 @@ fi
 
 { $as_echo "$as_me:${as_lineno-$LINENO}: result: $UDEV_RULES" >&5
 $as_echo "$UDEV_RULES" >&6; }
-
-if test x$UDEV_RULES = xyes; then
-	{ $as_echo "$as_me:${as_lineno-$LINENO}: checking whether udev supports builtin blkid" >&5
-$as_echo_n "checking whether udev supports builtin blkid... " >&6; }
-	udev_version=$(udevadm info --version 2>/dev/null)
-	if test -n "$udev_version" && test "$udev_version" -ge 176; then
-		UDEV_HAS_BUILTIN_BLKID=yes
-	else
-		UDEV_HAS_BUILTIN_BLKID=no
-	fi
-	{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $UDEV_HAS_BUILTIN_BLKID" >&5
-$as_echo "$UDEV_HAS_BUILTIN_BLKID" >&6; }
-fi
 
 ################################################################################
 # Check whether --enable-compat was given.
@@ -9749,32 +9527,6 @@ fi
 
 
 ################################################################################
-
-# Check whether --with-systemdsystemunitdir was given.
-if test "${with_systemdsystemunitdir+set}" = set; then :
-  withval=$with_systemdsystemunitdir; systemdsystemunitdir=$withval
-else
-  pkg_systemdsystemunitdir=$($PKG_CONFIG --variable=systemdsystemunitdir systemd)
-fi
-
-
-if test -n "$pkg_systemdsystemunitdir"; then
-	    systemdsystemunitdir=$pkg_systemdsystemunitdir;
-fi
-
-if test -z "$systemdsystemunitdir"; then
-	    systemdsystemunitdir='/lib/systemd/system';
-fi
-################################################################################
-
-# Check whether --with-tmpfilesdir was given.
-if test "${with_tmpfilesdir+set}" = set; then :
-  withval=$with_tmpfilesdir; tmpfilesdir=$withval
-else
-  tmpfilesdir='${sysconfdir}/tmpfiles.d'
-fi
-
-################################################################################
 if test x$READLINE = xyes; then
 	for ac_header in readline/readline.h readline/history.h
 do :
@@ -10118,20 +9870,18 @@ fi
 lvm_exec_prefix=$exec_prefix
 test "$lvm_exec_prefix" = NONE && lvm_exec_prefix=$prefix
 test "$lvm_exec_prefix" = NONE && lvm_exec_prefix=$ac_default_prefix
-LVM_PATH="$lvm_exec_prefix/sbin/lvm"
 
 cat >>confdefs.h <<_ACEOF
-#define LVM_PATH "$LVM_PATH"
+#define LVM_PATH "$lvm_exec_prefix/sbin/lvm"
 _ACEOF
 
 
 if  test "$CLVMD" != none; then
         clvmd_prefix=$ac_default_prefix
-        CLVMD_PATH="$clvmd_prefix/sbin/clvmd"
         test "$prefix" != NONE && clvmd_prefix=$prefix
 
 cat >>confdefs.h <<_ACEOF
-#define CLVMD_PATH "$CLVMD_PATH"
+#define CLVMD_PATH "$clvmd_prefix/sbin/clvmd"
 _ACEOF
 
 fi
@@ -10410,20 +10160,8 @@ LVM_LIBAPI=`echo "$VER" | $AWK -F '[()]' '{print $2}'`
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
 ################################################################################
-ac_config_files="$ac_config_files Makefile make.tmpl daemons/Makefile daemons/clvmd/Makefile daemons/cmirrord/Makefile daemons/dmeventd/Makefile daemons/dmeventd/libdevmapper-event.pc daemons/dmeventd/plugins/Makefile daemons/dmeventd/plugins/lvm2/Makefile daemons/dmeventd/plugins/raid/Makefile daemons/dmeventd/plugins/mirror/Makefile daemons/dmeventd/plugins/snapshot/Makefile daemons/dmeventd/plugins/thin/Makefile daemons/lvmetad/Makefile doc/Makefile doc/example.conf include/.symlinks include/Makefile lib/Makefile lib/format1/Makefile lib/format_pool/Makefile lib/locking/Makefile lib/mirror/Makefile lib/replicator/Makefile lib/misc/lvm-version.h lib/raid/Makefile lib/snapshot/Makefile lib/thin/Makefile libdaemon/Makefile libdaemon/client/Makefile libdaemon/server/Makefile libdm/Makefile libdm/libdevmapper.pc liblvm/Makefile liblvm/liblvm2app.pc man/Makefile po/Makefile scripts/clvmd_init_red_hat scripts/cmirrord_init_red_hat scripts/lvm2_lvmetad_init_red_hat scripts/lvm2_lvmetad_systemd_red_hat.socket scripts/lvm2_lvmetad_systemd_red_hat.service scripts/lvm2_monitoring_init_red_hat scripts/dm_event_systemd_red_hat.service scripts/lvm2_monitoring_systemd_red_hat.service scripts/lvm2_tmpfiles_red_hat.conf scripts/Makefile test/Makefile test/api/Makefile test/unit/Makefile tools/Makefile udev/Makefile unit-tests/datastruct/Makefile unit-tests/regex/Makefile unit-tests/mm/Makefile"
+ac_config_files="$ac_config_files Makefile make.tmpl daemons/Makefile daemons/clvmd/Makefile daemons/cmirrord/Makefile daemons/dmeventd/Makefile daemons/dmeventd/libdevmapper-event.pc daemons/dmeventd/plugins/Makefile daemons/dmeventd/plugins/lvm2/Makefile daemons/dmeventd/plugins/raid/Makefile daemons/dmeventd/plugins/mirror/Makefile daemons/dmeventd/plugins/snapshot/Makefile doc/Makefile doc/example.conf include/.symlinks include/Makefile lib/Makefile lib/format1/Makefile lib/format_pool/Makefile lib/locking/Makefile lib/mirror/Makefile lib/replicator/Makefile lib/misc/lvm-version.h lib/raid/Makefile lib/snapshot/Makefile libdm/Makefile libdm/libdevmapper.pc liblvm/Makefile liblvm/liblvm2app.pc man/Makefile po/Makefile scripts/clvmd_init_red_hat scripts/cmirrord_init_red_hat scripts/lvm2_monitoring_init_red_hat scripts/dm_event_systemd_red_hat.service scripts/lvm2_monitoring_systemd_red_hat.service scripts/Makefile test/Makefile test/api/Makefile tools/Makefile udev/Makefile unit-tests/datastruct/Makefile unit-tests/regex/Makefile unit-tests/mm/Makefile"
 
 cat >confcache <<\_ACEOF
 # This file is a shell script that caches the results of configure
@@ -11124,8 +10862,6 @@ do
     "daemons/dmeventd/plugins/raid/Makefile") CONFIG_FILES="$CONFIG_FILES daemons/dmeventd/plugins/raid/Makefile" ;;
     "daemons/dmeventd/plugins/mirror/Makefile") CONFIG_FILES="$CONFIG_FILES daemons/dmeventd/plugins/mirror/Makefile" ;;
     "daemons/dmeventd/plugins/snapshot/Makefile") CONFIG_FILES="$CONFIG_FILES daemons/dmeventd/plugins/snapshot/Makefile" ;;
-    "daemons/dmeventd/plugins/thin/Makefile") CONFIG_FILES="$CONFIG_FILES daemons/dmeventd/plugins/thin/Makefile" ;;
-    "daemons/lvmetad/Makefile") CONFIG_FILES="$CONFIG_FILES daemons/lvmetad/Makefile" ;;
     "doc/Makefile") CONFIG_FILES="$CONFIG_FILES doc/Makefile" ;;
     "doc/example.conf") CONFIG_FILES="$CONFIG_FILES doc/example.conf" ;;
     "include/.symlinks") CONFIG_FILES="$CONFIG_FILES include/.symlinks" ;;
@@ -11139,10 +10875,6 @@ do
     "lib/misc/lvm-version.h") CONFIG_FILES="$CONFIG_FILES lib/misc/lvm-version.h" ;;
     "lib/raid/Makefile") CONFIG_FILES="$CONFIG_FILES lib/raid/Makefile" ;;
     "lib/snapshot/Makefile") CONFIG_FILES="$CONFIG_FILES lib/snapshot/Makefile" ;;
-    "lib/thin/Makefile") CONFIG_FILES="$CONFIG_FILES lib/thin/Makefile" ;;
-    "libdaemon/Makefile") CONFIG_FILES="$CONFIG_FILES libdaemon/Makefile" ;;
-    "libdaemon/client/Makefile") CONFIG_FILES="$CONFIG_FILES libdaemon/client/Makefile" ;;
-    "libdaemon/server/Makefile") CONFIG_FILES="$CONFIG_FILES libdaemon/server/Makefile" ;;
     "libdm/Makefile") CONFIG_FILES="$CONFIG_FILES libdm/Makefile" ;;
     "libdm/libdevmapper.pc") CONFIG_FILES="$CONFIG_FILES libdm/libdevmapper.pc" ;;
     "liblvm/Makefile") CONFIG_FILES="$CONFIG_FILES liblvm/Makefile" ;;
@@ -11151,17 +10883,12 @@ do
     "po/Makefile") CONFIG_FILES="$CONFIG_FILES po/Makefile" ;;
     "scripts/clvmd_init_red_hat") CONFIG_FILES="$CONFIG_FILES scripts/clvmd_init_red_hat" ;;
     "scripts/cmirrord_init_red_hat") CONFIG_FILES="$CONFIG_FILES scripts/cmirrord_init_red_hat" ;;
-    "scripts/lvm2_lvmetad_init_red_hat") CONFIG_FILES="$CONFIG_FILES scripts/lvm2_lvmetad_init_red_hat" ;;
-    "scripts/lvm2_lvmetad_systemd_red_hat.socket") CONFIG_FILES="$CONFIG_FILES scripts/lvm2_lvmetad_systemd_red_hat.socket" ;;
-    "scripts/lvm2_lvmetad_systemd_red_hat.service") CONFIG_FILES="$CONFIG_FILES scripts/lvm2_lvmetad_systemd_red_hat.service" ;;
     "scripts/lvm2_monitoring_init_red_hat") CONFIG_FILES="$CONFIG_FILES scripts/lvm2_monitoring_init_red_hat" ;;
     "scripts/dm_event_systemd_red_hat.service") CONFIG_FILES="$CONFIG_FILES scripts/dm_event_systemd_red_hat.service" ;;
     "scripts/lvm2_monitoring_systemd_red_hat.service") CONFIG_FILES="$CONFIG_FILES scripts/lvm2_monitoring_systemd_red_hat.service" ;;
-    "scripts/lvm2_tmpfiles_red_hat.conf") CONFIG_FILES="$CONFIG_FILES scripts/lvm2_tmpfiles_red_hat.conf" ;;
     "scripts/Makefile") CONFIG_FILES="$CONFIG_FILES scripts/Makefile" ;;
     "test/Makefile") CONFIG_FILES="$CONFIG_FILES test/Makefile" ;;
     "test/api/Makefile") CONFIG_FILES="$CONFIG_FILES test/api/Makefile" ;;
-    "test/unit/Makefile") CONFIG_FILES="$CONFIG_FILES test/unit/Makefile" ;;
     "tools/Makefile") CONFIG_FILES="$CONFIG_FILES tools/Makefile" ;;
     "udev/Makefile") CONFIG_FILES="$CONFIG_FILES udev/Makefile" ;;
     "unit-tests/datastruct/Makefile") CONFIG_FILES="$CONFIG_FILES unit-tests/datastruct/Makefile" ;;

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2010-2011 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2010 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -119,14 +119,6 @@ static void dump(void) {
 	}
 }
 
-static void trickle() {
-	static int counter_last = -1, counter = 0;
-	while ( counter < readbuf_used && counter != counter_last ) {
-		counter_last = counter;
-		counter = outline( readbuf, counter, 1 );
-	}
-}
-
 static void clear(void) {
 	readbuf_used = 0;
 }
@@ -134,17 +126,18 @@ static void clear(void) {
 static void drain(void) {
 	int sz;
 	char buf[2048];
+	memset(buf, 0, 2048);
 
 	while (1) {
-		sz = read(fds[1], buf, sizeof(buf));
+		sz = read(fds[1], buf, 2047);
+		if (verbose)
+			write(1, buf, sz);
 		if (sz <= 0)
 			return;
 		if (readbuf_used + sz >= readbuf_sz) {
 			readbuf_sz = readbuf_sz ? 2 * readbuf_sz : 4096;
 			readbuf = realloc(readbuf, readbuf_sz);
 		}
-		if (verbose)
-			trickle();
 		if (!readbuf)
 			exit(205);
 		memcpy(readbuf + readbuf_used, buf, sz);
@@ -188,11 +181,9 @@ static void failed(int i, char *f, int st) {
 		return;
 	}
 	printf("FAILED.\n");
-	if (!verbose) {
-		printf("-- FAILED %s ------------------------------------\n", f);
-		dump();
-		printf("-- FAILED %s (end) ------------------------------\n", f);
-	}
+	printf("-- FAILED %s ------------------------------------\n", f);
+	dump();
+	printf("-- FAILED %s (end) ------------------------------\n", f);
 }
 
 static void run(int i, char *f) {
@@ -216,7 +207,7 @@ static void run(int i, char *f) {
 		char buf[128];
 		snprintf(buf, 128, "%s ...", f);
 		buf[127] = 0;
-		printf("Running %-50s ", buf);
+		printf("Running %-40s ", buf);
 		fflush(stdout);
 		while ((w = waitpid(pid, &st, WNOHANG)) == 0) {
 			drain();
@@ -299,8 +290,6 @@ int main(int argc, char **argv) {
 		printf("\n");
 		return s.nfailed > 0 || die;
 	}
-
-	free(readbuf);
 
 	return die;
 }

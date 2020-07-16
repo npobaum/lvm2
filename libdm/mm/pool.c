@@ -94,7 +94,6 @@ void dm_pools_check_leaks(void)
 		log_error(" [%p] %s", p, p->name);
 #endif
 	}
-	log_error(INTERNAL_ERROR "Unreleased memory pool(s) found.");
 }
 
 /**

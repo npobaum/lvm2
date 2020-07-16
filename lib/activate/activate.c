@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2012 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2011 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -38,7 +38,7 @@
 
 int lvm1_present(struct cmd_context *cmd)
 {
-	static char path[PATH_MAX];
+	char path[PATH_MAX];
 
 	if (dm_snprintf(path, sizeof(path), "%s/lvm/global", cmd->proc_dir)
 	    < 0) {
@@ -147,24 +147,16 @@ int target_present(struct cmd_context *cmd, const char *target_name,
 {
 	return 0;
 }
-int lvm_dm_prefix_check(int major, int minor, const char *prefix)
-{
-	return 0;
-}
-int lv_info(struct cmd_context *cmd, const struct logical_volume *lv, int use_layer,
+int lv_info(struct cmd_context *cmd, const struct logical_volume *lv, unsigned origin_only,
 	    struct lvinfo *info, int with_open_count, int with_read_ahead)
 {
 	return 0;
 }
-int lv_info_by_lvid(struct cmd_context *cmd, const char *lvid_s, int use_layer,
+int lv_info_by_lvid(struct cmd_context *cmd, const char *lvid_s,
+		    unsigned origin_only,
 		    struct lvinfo *info, int with_open_count, int with_read_ahead)
 {
 	return 0;
-}
-int lv_check_not_in_use(struct cmd_context *cmd __attribute__((unused)),
-			struct logical_volume *lv, struct lvinfo *info)
-{
-        return 0;
 }
 int lv_snapshot_percent(const struct logical_volume *lv, percent_t *percent)
 {
@@ -175,26 +167,7 @@ int lv_mirror_percent(struct cmd_context *cmd, const struct logical_volume *lv,
 {
 	return 0;
 }
-int lv_raid_percent(const struct logical_volume *lv, percent_t *percent)
-{
-	return 0;
-}
-int lv_thin_pool_percent(const struct logical_volume *lv, int metadata,
-			 percent_t *percent)
-{
-	return 0;
-}
-int lv_thin_percent(const struct logical_volume *lv, int mapped,
-		    percent_t *percent)
-{
-	return 0;
-}
-int lv_thin_pool_transaction_id(const struct logical_volume *lv,
-				uint64_t *transaction_id)
-{
-	return 0;
-}
-int lvs_in_vg_activated(const struct volume_group *vg)
+int lvs_in_vg_activated(struct volume_group *vg)
 {
 	return 0;
 }
@@ -208,7 +181,7 @@ int lv_suspend(struct cmd_context *cmd, const char *lvid_s)
 	return 1;
 }
 *******/
-int lv_suspend_if_active(struct cmd_context *cmd, const char *lvid_s, unsigned origin_only, unsigned exclusive)
+int lv_suspend_if_active(struct cmd_context *cmd, const char *lvid_s, unsigned origin_only)
 {
 	return 1;
 }
@@ -217,7 +190,7 @@ int lv_resume(struct cmd_context *cmd, const char *lvid_s, unsigned origin_only)
 	return 1;
 }
 int lv_resume_if_active(struct cmd_context *cmd, const char *lvid_s,
-			unsigned origin_only, unsigned exclusive, unsigned revert)
+			unsigned origin_only, unsigned exclusive)
 {
 	return 1;
 }
@@ -253,57 +226,26 @@ void activation_release(void)
 void activation_exit(void)
 {
 }
-
-int lv_is_active(const struct logical_volume *lv)
+int lv_is_active(struct logical_volume *lv)
 {
 	return 0;
 }
-int lv_is_active_but_not_locally(const struct logical_volume *lv)
+int lv_is_active_exclusive_locally(struct logical_volume *lv)
 {
 	return 0;
 }
-int lv_is_active_exclusive(const struct logical_volume *lv)
+int lv_is_active_exclusive_remotely(struct logical_volume *lv)
 {
 	return 0;
 }
-int lv_is_active_exclusive_locally(const struct logical_volume *lv)
-{
-	return 0;
-}
-int lv_is_active_exclusive_remotely(const struct logical_volume *lv)
-{
-	return 0;
-}
-
 int lv_check_transient(struct logical_volume *lv)
 {
 	return 1;
 }
 int monitor_dev_for_events(struct cmd_context *cmd, struct logical_volume *lv,
-			   const struct lv_activate_opts *laopts, int monitor)
+			   struct lv_activate_opts *laopts, int monitor)
 {
 	return 1;
-}
-/* fs.c */
-void fs_unlock(void)
-{
-}
-/* dev_manager.c */
-#include "targets.h"
-int add_areas_line(struct dev_manager *dm, struct lv_segment *seg,
-		   struct dm_tree_node *node, uint32_t start_area,
-		   uint32_t areas)
-{
-        return 0;
-}
-int device_is_usable(struct device *dev)
-{
-        return 0;
-}
-int lv_has_target_type(struct dm_pool *mem, struct logical_volume *lv,
-		       const char *layer, const char *target_type)
-{
-        return 0;
 }
 #else				/* DEVMAPPER_SUPPORT */
 
@@ -328,29 +270,49 @@ int activation(void)
 	return _activation;
 }
 
-static int _passes_volumes_filter(struct cmd_context *cmd,
-				  struct logical_volume *lv,
-				  const struct dm_config_node *cn,
-				  const char *config_path)
+static int _passes_activation_filter(struct cmd_context *cmd,
+				     struct logical_volume *lv)
 {
-	const struct dm_config_value *cv;
+	const struct config_node *cn;
+	const struct config_value *cv;
 	const char *str;
-	static char path[PATH_MAX];
+	char path[PATH_MAX];
 
-	log_verbose("%s configuration setting defined: "
-		    "Checking the list to match %s/%s",
-		    config_path, lv->vg->name, lv->name);
+	if (!(cn = find_config_tree_node(cmd, "activation/volume_list"))) {
+		log_verbose("activation/volume_list configuration setting "
+			    "not defined, checking only host tags for %s/%s",
+			    lv->vg->name, lv->name);
+
+		/* If no host tags defined, activate */
+		if (dm_list_empty(&cmd->tags))
+			return 1;
+
+		/* If any host tag matches any LV or VG tag, activate */
+		if (str_list_match_list(&cmd->tags, &lv->tags, NULL) ||
+		    str_list_match_list(&cmd->tags, &lv->vg->tags, NULL))
+			return 1;
+
+		log_verbose("No host tag matches %s/%s",
+			    lv->vg->name, lv->name);
+
+		/* Don't activate */
+		return 0;
+	}
+	else
+		log_verbose("activation/volume_list configuration setting "
+			    "defined, checking the list to match %s/%s",
+			    lv->vg->name, lv->name);
 
 	for (cv = cn->v; cv; cv = cv->next) {
-		if (cv->type != DM_CFG_STRING) {
-			log_error("Ignoring invalid string in config file %s",
-				  config_path);
+		if (cv->type != CFG_STRING) {
+			log_error("Ignoring invalid string in config file "
+				  "activation/volume_list");
 			continue;
 		}
 		str = cv->v.str;
 		if (!*str) {
-			log_error("Ignoring empty string in config file %s",
-				  config_path);
+			log_error("Ignoring empty string in config file "
+				  "activation/volume_list");
 			continue;
 		}
 
@@ -360,7 +322,7 @@ static int _passes_volumes_filter(struct cmd_context *cmd,
 			str++;
 			if (!*str) {
 				log_error("Ignoring empty tag in config file "
-					  "%s", config_path);
+					  "activation/volume_list");
 				continue;
 			}
 			/* If any host tag matches any LV or VG tag, activate */
@@ -397,50 +359,10 @@ static int _passes_volumes_filter(struct cmd_context *cmd,
 			return 1;
 	}
 
-	log_verbose("No item supplied in %s configuration setting "
-		    "matches %s/%s", config_path, lv->vg->name, lv->name);
+	log_verbose("No item supplied in activation/volume_list configuration "
+		    "setting matches %s/%s", lv->vg->name, lv->name);
 
 	return 0;
-}
-
-static int _passes_activation_filter(struct cmd_context *cmd,
-				     struct logical_volume *lv)
-{
-	const struct dm_config_node *cn;
-
-	if (!(cn = find_config_tree_node(cmd, "activation/volume_list"))) {
-		log_verbose("activation/volume_list configuration setting "
-			    "not defined: Checking only host tags for %s/%s",
-			    lv->vg->name, lv->name);
-
-		/* If no host tags defined, activate */
-		if (dm_list_empty(&cmd->tags))
-			return 1;
-
-		/* If any host tag matches any LV or VG tag, activate */
-		if (str_list_match_list(&cmd->tags, &lv->tags, NULL) ||
-		    str_list_match_list(&cmd->tags, &lv->vg->tags, NULL))
-			return 1;
-
-		log_verbose("No host tag matches %s/%s",
-			    lv->vg->name, lv->name);
-
-		/* Don't activate */
-		return 0;
-	}
-
-	return _passes_volumes_filter(cmd, lv, cn, "activation/volume_list");
-}
-
-static int _passes_readonly_filter(struct cmd_context *cmd,
-				   struct logical_volume *lv)
-{
-	const struct dm_config_node *cn;
-
-	if (!(cn = find_config_tree_node(cmd, "activation/read_only_volume_list")))
-		return 0;
-
-	return _passes_volumes_filter(cmd, lv, cn, "activation/read_only_volume_list");
 }
 
 int library_version(char *version, size_t size)
@@ -478,11 +400,7 @@ int target_version(const char *target_name, uint32_t *maj,
 	if (!dm_task_run(dmt)) {
 		log_debug("Failed to get %s target version", target_name);
 		/* Assume this was because LIST_VERSIONS isn't supported */
-		*maj = 0;
-		*min = 0;
-		*patchlevel = 0;
-		r = 1;
-		goto out;
+		return 1;
 	}
 
 	target = dm_task_get_versions(dmt);
@@ -505,29 +423,6 @@ int target_version(const char *target_name, uint32_t *maj,
 	dm_task_destroy(dmt);
 
 	return r;
-}
-
-int lvm_dm_prefix_check(int major, int minor, const char *prefix)
-{
-	struct dm_task *dmt;
-	const char *uuid;
-	int r;
-
-	if (!(dmt = dm_task_create(DM_DEVICE_STATUS)))
-		return_0;
-
-	if (!dm_task_set_minor(dmt, minor) ||
-	    !dm_task_set_major(dmt, major) ||
-	    !dm_task_run(dmt) ||
-	    !(uuid = dm_task_get_uuid(dmt))) {
-		dm_task_destroy(dmt);
-		return 0;
-	}
-
-	r = strncasecmp(uuid, prefix, strlen(prefix));
-	dm_task_destroy(dmt);
-
-	return r ? 0 : 1;
 }
 
 int module_present(struct cmd_context *cmd, const char *target_name)
@@ -576,11 +471,10 @@ int target_present(struct cmd_context *cmd, const char *target_name,
 /*
  * Returns 1 if info structure populated, else 0 on failure.
  */
-int lv_info(struct cmd_context *cmd, const struct logical_volume *lv, int use_layer,
+int lv_info(struct cmd_context *cmd, const struct logical_volume *lv, unsigned origin_only,
 	    struct lvinfo *info, int with_open_count, int with_read_ahead)
 {
 	struct dm_info dminfo;
-	const char *layer;
 
 	if (!activation())
 		return 0;
@@ -597,14 +491,7 @@ int lv_info(struct cmd_context *cmd, const struct logical_volume *lv, int use_la
 			fs_unlock(); /* For non clustered - wait if there are non-delete ops */
 	}
 
-	if (use_layer && lv_is_thin_pool(lv))
-		layer = "tpool";
-	else if (use_layer && lv_is_origin(lv))
-		layer = "real";
-	else
-		layer = NULL;
-
-	if (!dev_manager_info(lv->vg->cmd->mem, lv, layer, with_open_count,
+	if (!dev_manager_info(lv->vg->cmd->mem, lv, origin_only ? "real" : NULL, with_open_count,
 			      with_read_ahead, &dminfo, &info->read_ahead))
 		return_0;
 
@@ -620,7 +507,8 @@ int lv_info(struct cmd_context *cmd, const struct logical_volume *lv, int use_la
 	return 1;
 }
 
-int lv_info_by_lvid(struct cmd_context *cmd, const char *lvid_s, int use_layer,
+int lv_info_by_lvid(struct cmd_context *cmd, const char *lvid_s,
+		    unsigned origin_only,
 		    struct lvinfo *info, int with_open_count, int with_read_ahead)
 {
 	int r;
@@ -629,42 +517,13 @@ int lv_info_by_lvid(struct cmd_context *cmd, const char *lvid_s, int use_layer,
 	if (!(lv = lv_from_lvid(cmd, lvid_s, 0)))
 		return 0;
 
-	r = lv_info(cmd, lv, use_layer, info, with_open_count, with_read_ahead);
+	if (!lv_is_origin(lv))
+		origin_only = 0;
+
+	r = lv_info(cmd, lv, origin_only, info, with_open_count, with_read_ahead);
 	release_vg(lv->vg);
 
 	return r;
-}
-
-int lv_check_not_in_use(struct cmd_context *cmd __attribute__((unused)),
-			struct logical_volume *lv, struct lvinfo *info)
-{
-	if (!info->exists)
-		return 1;
-
-	/* If sysfs is not used, use open_count information only. */
-	if (!*dm_sysfs_dir()) {
-		if (info->open_count) {
-			log_error("Logical volume %s/%s in use.",
-				  lv->vg->name, lv->name);
-			return 0;
-		}
-
-		return 1;
-	}
-
-	if (dm_device_has_holders(info->major, info->minor)) {
-		log_error("Logical volume %s/%s is used by another device.",
-			  lv->vg->name, lv->name);
-		return 0;
-	}
-
-	if (dm_device_has_mounted_fs(info->major, info->minor)) {
-		log_error("Logical volume %s/%s contains a filesystem in use.",
-			  lv->vg->name, lv->name);
-		return 0;
-	}
-
-	return 1;
 }
 
 /*
@@ -757,89 +616,7 @@ int lv_raid_percent(const struct logical_volume *lv, percent_t *percent)
 	return lv_mirror_percent(lv->vg->cmd, lv, 0, percent, NULL);
 }
 
-/*
- * Returns data or metadata percent usage, depends on metadata 0/1.
- * Returns 1 if percent set, else 0 on failure.
- */
-int lv_thin_pool_percent(const struct logical_volume *lv, int metadata,
-			 percent_t *percent)
-{
-	int r;
-	struct dev_manager *dm;
-
-	if (!activation())
-		return 0;
-
-	log_debug("Checking thin %sdata percent for LV %s/%s",
-		  (metadata) ? "meta" : "", lv->vg->name, lv->name);
-
-	if (!(dm = dev_manager_create(lv->vg->cmd, lv->vg->name, 1)))
-		return_0;
-
-	if (!(r = dev_manager_thin_pool_percent(dm, lv, metadata, percent)))
-		stack;
-
-	dev_manager_destroy(dm);
-
-	return r;
-}
-
-/*
- * Returns 1 if percent set, else 0 on failure.
- */
-int lv_thin_percent(const struct logical_volume *lv,
-		    int mapped, percent_t *percent)
-{
-	int r;
-	struct dev_manager *dm;
-
-	if (!activation())
-		return 0;
-
-	log_debug("Checking thin percent for LV %s/%s",
-		  lv->vg->name, lv->name);
-
-	if (!(dm = dev_manager_create(lv->vg->cmd, lv->vg->name, 1)))
-		return_0;
-
-	if (!(r = dev_manager_thin_percent(dm, lv, mapped, percent)))
-		stack;
-
-	dev_manager_destroy(dm);
-
-	return r;
-}
-
-/*
- * Returns 1 if transaction_id set, else 0 on failure.
- */
-int lv_thin_pool_transaction_id(const struct logical_volume *lv,
-				uint64_t *transaction_id)
-{
-	int r;
-	struct dev_manager *dm;
-	struct dm_status_thin_pool *status;
-
-	if (!activation())
-		return 0;
-
-	log_debug("Checking thin percent for LV %s/%s",
-		  lv->vg->name, lv->name);
-
-	if (!(dm = dev_manager_create(lv->vg->cmd, lv->vg->name, 1)))
-		return_0;
-
-	if (!(r = dev_manager_thin_pool_status(dm, lv, &status)))
-		stack;
-	else
-		*transaction_id = status->transaction_id;
-
-	dev_manager_destroy(dm);
-
-	return r;
-}
-
-static int _lv_active(struct cmd_context *cmd, const struct logical_volume *lv)
+static int _lv_active(struct cmd_context *cmd, struct logical_volume *lv)
 {
 	struct lvinfo info;
 
@@ -881,22 +658,16 @@ static int _lv_activate_lv(struct logical_volume *lv, struct lv_activate_opts *l
 static int _lv_preload(struct logical_volume *lv, struct lv_activate_opts *laopts,
 		       int *flush_required)
 {
-	int r = 0;
+	int r;
 	struct dev_manager *dm;
-	int old_readonly = laopts->read_only;
-
-	laopts->read_only = _passes_readonly_filter(lv->vg->cmd, lv);
 
 	if (!(dm = dev_manager_create(lv->vg->cmd, lv->vg->name, (lv->status & PVMOVE) ? 0 : 1)))
-		goto_out;
+		return_0;
 
 	if (!(r = dev_manager_preload(dm, lv, laopts, flush_required)))
 		stack;
 
 	dev_manager_destroy(dm);
-
-	laopts->read_only = old_readonly;
-out:
 	return r;
 }
 
@@ -921,8 +692,6 @@ static int _lv_suspend_lv(struct logical_volume *lv, struct lv_activate_opts *la
 	int r;
 	struct dev_manager *dm;
 
-	laopts->read_only = _passes_readonly_filter(lv->vg->cmd, lv);
-
 	/*
 	 * When we are asked to manipulate (normally suspend/resume) the PVMOVE
 	 * device directly, we don't want to touch the devices that use it.
@@ -941,7 +710,7 @@ static int _lv_suspend_lv(struct logical_volume *lv, struct lv_activate_opts *la
  * These two functions return the number of visible LVs in the state,
  * or -1 on error.  FIXME Check this.
  */
-int lvs_in_vg_activated(const struct volume_group *vg)
+int lvs_in_vg_activated(struct volume_group *vg)
 {
 	struct lv_list *lvl;
 	int count = 0;
@@ -996,7 +765,7 @@ int lvs_in_vg_opened(const struct volume_group *vg)
  *
  * Returns: 0 or 1
  */
-static int _lv_is_active(const struct logical_volume *lv,
+static int _lv_is_active(struct logical_volume *lv,
 			 int *locally, int *exclusive)
 {
 	int r, l, e; /* remote, local, and exclusive */
@@ -1007,8 +776,7 @@ static int _lv_is_active(const struct logical_volume *lv,
 		l = 1;
 
 	if (!vg_is_clustered(lv->vg)) {
-		if (l)
-			e = 1;  /* exclusive by definition */
+		e = 1;  /* exclusive by definition */
 		goto out;
 	}
 
@@ -1028,15 +796,21 @@ static int _lv_is_active(const struct logical_volume *lv,
 	 * New users of this function who specifically ask for 'exclusive'
 	 * will be given an error message.
 	 */
-	log_error("Unable to determine exclusivity of %s", lv->name);
+	if (l) {
+		if (exclusive)
+			log_error("Unable to determine exclusivity of %s",
+				  lv->name);
+		goto out;
+	}
 
-	e = 0;
-
-	/*
-	 * We used to attempt activate_lv_excl_local(lv->vg->cmd, lv) here,
-	 * but it's unreliable.
-	 */
-
+	/* FIXME: Is this fallback alright? */
+	if (activate_lv_excl(lv->vg->cmd, lv)) {
+		if (!deactivate_lv(lv->vg->cmd, lv))
+			stack;
+		/* FIXME: locally & exclusive are undefined. */
+		return 0;
+	}
+	/* FIXME: Check exclusive value here. */
 out:
 	if (locally)
 		*locally = l;
@@ -1052,32 +826,25 @@ out:
 	return r || l;
 }
 
-int lv_is_active(const struct logical_volume *lv)
+int lv_is_active(struct logical_volume *lv)
 {
 	return _lv_is_active(lv, NULL, NULL);
 }
 
-int lv_is_active_but_not_locally(const struct logical_volume *lv)
+int lv_is_active_but_not_locally(struct logical_volume *lv)
 {
 	int l;
 	return _lv_is_active(lv, &l, NULL) && !l;
 }
 
-int lv_is_active_exclusive(const struct logical_volume *lv)
-{
-	int e;
-
-	return _lv_is_active(lv, NULL, &e) && e;
-}
-
-int lv_is_active_exclusive_locally(const struct logical_volume *lv)
+int lv_is_active_exclusive_locally(struct logical_volume *lv)
 {
 	int l, e;
 
 	return _lv_is_active(lv, &l, &e) && l && e;
 }
 
-int lv_is_active_exclusive_remotely(const struct logical_volume *lv)
+int lv_is_active_exclusive_remotely(struct logical_volume *lv)
 {
 	int l, e;
 
@@ -1126,32 +893,20 @@ char *get_monitor_dso_path(struct cmd_context *cmd, const char *libpath)
 	return path;
 }
 
-static char *_build_target_uuid(struct cmd_context *cmd, struct logical_volume *lv)
-{
-	const char *layer;
-
-	if (lv_is_thin_pool(lv))
-		layer = "tpool"; /* Monitor "tpool" for the "thin pool". */
-	else if (lv_is_origin(lv))
-		layer = "real"; /* Monitor "real" for "snapshot-origin". */
-	else
-		layer = NULL;
-
-	return build_dm_uuid(cmd->mem, lv->lvid.s, layer);
-}
-
 int target_registered_with_dmeventd(struct cmd_context *cmd, const char *dso,
 				    struct logical_volume *lv, int *pending)
 {
 	char *uuid;
 	enum dm_event_mask evmask = 0;
 	struct dm_event_handler *dmevh;
+
 	*pending = 0;
 
 	if (!dso)
 		return_0;
 
-	if (!(uuid = _build_target_uuid(cmd, lv)))
+	/* We always monitor the "real" device, never the "snapshot-origin" itself. */
+	if (!(uuid = build_dm_uuid(cmd->mem, lv->lvid.s, lv_is_origin(lv) ? "real" : NULL)))
 		return_0;
 
 	if (!(dmevh = _create_dm_event_handler(cmd, uuid, dso, 0, DM_EVENT_ALL_ERRORS)))
@@ -1184,7 +939,7 @@ int target_register_events(struct cmd_context *cmd, const char *dso, struct logi
 		return_0;
 
 	/* We always monitor the "real" device, never the "snapshot-origin" itself. */
-	if (!(uuid = _build_target_uuid(cmd, lv)))
+	if (!(uuid = build_dm_uuid(cmd->mem, lv->lvid.s, lv_is_origin(lv) ? "real" : NULL)))
 		return_0;
 
 	if (!(dmevh = _create_dm_event_handler(cmd, uuid, dso, timeout,
@@ -1392,7 +1147,7 @@ static int _lv_suspend(struct cmd_context *cmd, const char *lvid_s,
 		goto_out;
 
 	/* Ignore origin_only unless LV is origin in both old and new metadata */
-	if (!lv_is_thin_volume(lv) && !(lv_is_origin(lv) && lv_is_origin(lv_pre)))
+	if (!lv_is_origin(lv) || !lv_is_origin(lv_pre))
 		laopts->origin_only = 0;
 
 	if (test_mode()) {
@@ -1526,18 +1281,10 @@ out:
 	return r;
 }
 
-/*
- * In a cluster, set exclusive to indicate that only one node is using the
- * device.  Any preloaded tables may then use non-clustered targets.
- *
- * Returns success if the device is not active
- */
-int lv_suspend_if_active(struct cmd_context *cmd, const char *lvid_s, unsigned origin_only, unsigned exclusive)
+/* Returns success if the device is not active */
+int lv_suspend_if_active(struct cmd_context *cmd, const char *lvid_s, unsigned origin_only)
 {
-	struct lv_activate_opts laopts = {
-		.origin_only = origin_only,
-		.exclusive = exclusive
-	};
+	struct lv_activate_opts laopts = { .origin_only = origin_only };
 
 	return _lv_suspend(cmd, lvid_s, &laopts, 0);
 }
@@ -1550,13 +1297,22 @@ int lv_suspend(struct cmd_context *cmd, const char *lvid_s)
 }
 ***********/
 
+ /*
+  * _lv_resume
+  * @cmd
+  * @lvid_s
+  * @origin_only
+  * @exclusive:  This parameter only has an affect in cluster-context.
+  *		 It forces local target type to be used (instead of
+  *		 cluster-aware type).
+  * @error_if_not_active
+  */
 static int _lv_resume(struct cmd_context *cmd, const char *lvid_s,
 		      struct lv_activate_opts *laopts, int error_if_not_active)
 {
 	struct logical_volume *lv;
 	struct lvinfo info;
 	int r = 0;
-	int messages_only = 0;
 
 	if (!activation())
 		return 1;
@@ -1564,28 +1320,23 @@ static int _lv_resume(struct cmd_context *cmd, const char *lvid_s,
 	if (!(lv = lv_from_lvid(cmd, lvid_s, 0)))
 		goto_out;
 
-	if (lv_is_thin_pool(lv) && laopts->origin_only)
-		messages_only = 1;
-
 	if (!lv_is_origin(lv))
 		laopts->origin_only = 0;
 
 	if (test_mode()) {
-		_skip("Resuming %s%s%s.", lv->name, laopts->origin_only ? " without snapshots" : "",
-		      laopts->revert ? " (reverting)" : "");
+		_skip("Resuming %s%s.", lv->name, laopts->origin_only ? " without snapshots" : "");
 		r = 1;
 		goto out;
 	}
 
-	log_debug("Resuming LV %s/%s%s%s%s.", lv->vg->name, lv->name,
+	log_debug("Resuming LV %s/%s%s%s.", lv->vg->name, lv->name,
 		  error_if_not_active ? "" : " if active",
-		  laopts->origin_only ? " without snapshots" : "",
-		  laopts->revert ? " (reverting)" : "");
+		  laopts->origin_only ? " without snapshots" : "");
 
 	if (!lv_info(cmd, lv, laopts->origin_only, &info, 0, 0))
 		goto_out;
 
-	if (!info.exists || !(info.suspended || messages_only)) {
+	if (!info.exists || !info.suspended) {
 		if (error_if_not_active)
 			goto_out;
 		r = 1;
@@ -1593,8 +1344,6 @@ static int _lv_resume(struct cmd_context *cmd, const char *lvid_s,
 			critical_section_dec(cmd, "already resumed");
 		goto out;
 	}
-
-	laopts->read_only = _passes_readonly_filter(cmd, lv);
 
 	if (!_lv_activate_lv(lv, laopts))
 		goto_out;
@@ -1612,24 +1361,18 @@ out:
 	return r;
 }
 
-/*
- * In a cluster, set exclusive to indicate that only one node is using the
- * device.  Any tables loaded may then use non-clustered targets.
- *
- * @origin_only
- * @exclusive   This parameter only has an affect in cluster-context.
- *              It forces local target type to be used (instead of
- *              cluster-aware type).
- * Returns success if the device is not active
- */
+/* Returns success if the device is not active */
 int lv_resume_if_active(struct cmd_context *cmd, const char *lvid_s,
-			unsigned origin_only, unsigned exclusive,
-			unsigned revert)
+			unsigned origin_only, unsigned exclusive)
 {
 	struct lv_activate_opts laopts = {
 		.origin_only = origin_only,
-		.exclusive = exclusive,
-		.revert = revert
+		/*
+		 * When targets are activated exclusively in a cluster, the
+		 * non-clustered target should be used.  This only happens
+		 * if exclusive is set.
+		 */
+		.exclusive = exclusive
 	};
 
 	return _lv_resume(cmd, lvid_s, &laopts, 0);
@@ -1694,9 +1437,11 @@ int lv_deactivate(struct cmd_context *cmd, const char *lvid_s)
 	}
 
 	if (lv_is_visible(lv)) {
-		if (!lv_check_not_in_use(cmd, lv, &info))
-			goto_out;
-
+		if (info.open_count) {
+			log_error("LV %s/%s in use: not deactivating",
+				  lv->vg->name, lv->name);
+			goto out;
+		}
 		if (lv_is_origin(lv) && _lv_has_open_snapshots(lv))
 			goto_out;
 	}
@@ -1790,21 +1535,13 @@ static int _lv_activate(struct cmd_context *cmd, const char *lvid_s,
 		goto out;
 	}
 
-	if (filter)
-		laopts->read_only = _passes_readonly_filter(cmd, lv);
-
-	log_debug("Activating %s/%s%s%s.", lv->vg->name, lv->name,
-		  laopts->exclusive ? " exclusively" : "",
-		  laopts->read_only ? " read-only" : "");
+	log_debug("Activating %s/%s%s.", lv->vg->name, lv->name,
+		  laopts->exclusive ? " exclusively" : "");
 
 	if (!lv_info(cmd, lv, 0, &info, 0, 0))
 		goto_out;
 
-	/*
-	 * Nothing to do?
-	 */
-	if (info.exists && !info.suspended && info.live_table &&
-	    (info.read_only == read_only_lv(lv, laopts))) {
+	if (info.exists && !info.suspended && info.live_table) {
 		r = 1;
 		goto out;
 	}
@@ -1880,7 +1617,7 @@ int lv_mknodes(struct cmd_context *cmd, const struct logical_volume *lv)
 int pv_uses_vg(struct physical_volume *pv,
 	       struct volume_group *vg)
 {
-	if (!activation() || !pv->dev)
+	if (!activation())
 		return 0;
 
 	if (!dm_is_dm_major(MAJOR(pv->dev->dev)))

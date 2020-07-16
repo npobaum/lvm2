@@ -26,8 +26,6 @@
 
 struct labeller;
 
-void allow_reads_with_lvmetad(void);
-
 /* On disk - 32 bytes */
 struct label_header {
 	int8_t id[8];		/* LABELONE */

@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 1997-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2012 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2006 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -100,8 +100,7 @@ static int _check_usp(const char *vgname, struct user_subpool *usp, int sp_count
 
 static struct volume_group *_pool_vg_read(struct format_instance *fid,
 					  const char *vg_name,
-					  struct metadata_area *mda __attribute__((unused)),
-					  int single_device __attribute__((unused)))
+					  struct metadata_area *mda __attribute__((unused)))
 {
 	struct volume_group *vg;
 	struct user_subpool *usp;
@@ -111,8 +110,7 @@ static struct volume_group *_pool_vg_read(struct format_instance *fid,
 	/* We can safely ignore the mda passed in */
 
 	/* Strip dev_dir if present */
-	if (vg_name)
-		vg_name = strip_dir(vg_name, fid->fmt->cmd->dev_dir);
+	vg_name = strip_dir(vg_name, fid->fmt->cmd->dev_dir);
 
 	/* Set vg_name through read_pool_pds() */
 	if (!(vg = alloc_vg("pool_vg_read", fid->fmt->cmd, NULL)))
@@ -261,9 +259,6 @@ static void _pool_destroy_instance(struct format_instance *fid)
 
 static void _pool_destroy(struct format_type *fmt)
 {
-	if (fmt->orphan_vg)
-		free_orphan_vg(fmt->orphan_vg);
-
 	dm_free(fmt);
 }
 
@@ -286,8 +281,6 @@ struct format_type *init_format(struct cmd_context *cmd)
 #endif
 {
 	struct format_type *fmt = dm_malloc(sizeof(*fmt));
-	struct format_instance_ctx fic;
-	struct format_instance *fid;
 
 	if (!fmt) {
 		log_error("Unable to allocate format type structure for pool "
@@ -303,37 +296,15 @@ struct format_type *init_format(struct cmd_context *cmd)
 	fmt->features = 0;
 	fmt->private = NULL;
 
-	dm_list_init(&fmt->mda_ops);
-
 	if (!(fmt->labeller = pool_labeller_create(fmt))) {
 		log_error("Couldn't create pool label handler.");
-		dm_free(fmt);
 		return NULL;
 	}
 
 	if (!(label_register_handler(FMT_POOL_NAME, fmt->labeller))) {
 		log_error("Couldn't register pool label handler.");
-		fmt->labeller->ops->destroy(fmt->labeller);
-		dm_free(fmt);
 		return NULL;
 	}
-
-	if (!(fmt->orphan_vg = alloc_vg("pool_orphan", cmd, fmt->orphan_vg_name))) {
-		log_error("Couldn't create pool orphan VG.");
-		dm_free(fmt);
-		return NULL;
-	}
-
-	fic.type = FMT_INSTANCE_AUX_MDAS;
-	fic.context.vg_ref.vg_name = fmt->orphan_vg_name;
-	fic.context.vg_ref.vg_id = NULL;
-
-	if (!(fid = _pool_create_instance(fmt, &fic))) {
-		_pool_destroy(fmt);
-		return NULL;
-	}
-
-	vg_set_fid(fmt->orphan_vg, fid);
 
 	log_very_verbose("Initialised format: %s", fmt->name);
 

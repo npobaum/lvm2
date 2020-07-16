@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2012 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -179,16 +179,14 @@ out:
 
 static struct volume_group *_format1_vg_read(struct format_instance *fid,
 				     const char *vg_name,
-				     struct metadata_area *mda __attribute__((unused)),
-				     int single_device __attribute__((unused)))
+				     struct metadata_area *mda __attribute__((unused)))
 {
 	struct volume_group *vg;
 	struct disk_list *dl;
 	DM_LIST_INIT(pvs);
 
 	/* Strip dev_dir if present */
-	if (vg_name)
-		vg_name = strip_dir(vg_name, fid->fmt->cmd->dev_dir);
+	vg_name = strip_dir(vg_name, fid->fmt->cmd->dev_dir);
 
 	if (!(vg = alloc_vg("format1_vg_read", fid->fmt->cmd, NULL)))
 		return_NULL;
@@ -229,7 +227,7 @@ static struct volume_group *_format1_vg_read(struct format_instance *fid,
 	return vg;
 
 bad:
-	release_vg(vg);
+	free(vg);
 
 	return NULL;
 }
@@ -415,9 +413,10 @@ static int _format1_pv_write(const struct format_type *fmt, struct physical_volu
 				  pv->vg_name, NULL, 0)))
 		return_0;
 
-	lvmcache_update_pv(info, pv, fmt);
-	lvmcache_del_mdas(info);
-	lvmcache_del_das(info);
+	info->device_size = pv->size << SECTOR_SHIFT;
+	info->fmt = fmt;
+
+	dm_list_init(&info->mdas);
 
 	dm_list_init(&pvs);
 
@@ -549,9 +548,6 @@ static void _format1_destroy_instance(struct format_instance *fid)
 
 static void _format1_destroy(struct format_type *fmt)
 {
-	if (fmt->orphan_vg)
-		free_orphan_vg(fmt->orphan_vg);
-
 	dm_free(fmt);
 }
 
@@ -576,13 +572,9 @@ struct format_type *init_format(struct cmd_context *cmd)
 #endif
 {
 	struct format_type *fmt = dm_malloc(sizeof(*fmt));
-	struct format_instance_ctx fic;
-	struct format_instance *fid;
 
-	if (!fmt) {
-		log_error("Failed to allocate format1 format type structure.");
-		return NULL;
-	}
+	if (!fmt)
+		return_NULL;
 
 	fmt->cmd = cmd;
 	fmt->ops = &_format1_ops;
@@ -593,37 +585,15 @@ struct format_type *init_format(struct cmd_context *cmd)
 			FMT_RESTRICTED_READAHEAD;
 	fmt->private = NULL;
 
-	dm_list_init(&fmt->mda_ops);
-
 	if (!(fmt->labeller = lvm1_labeller_create(fmt))) {
 		log_error("Couldn't create lvm1 label handler.");
-		dm_free(fmt);
 		return NULL;
 	}
 
 	if (!(label_register_handler(FMT_LVM1_NAME, fmt->labeller))) {
 		log_error("Couldn't register lvm1 label handler.");
-		fmt->labeller->ops->destroy(fmt->labeller);
-		dm_free(fmt);
 		return NULL;
 	}
-
-	if (!(fmt->orphan_vg = alloc_vg("format1_orphan", cmd, fmt->orphan_vg_name))) {
-		log_error("Couldn't create lvm1 orphan VG.");
-		dm_free(fmt);
-		return NULL;
-	}
-
-	fic.type = FMT_INSTANCE_AUX_MDAS;
-	fic.context.vg_ref.vg_name = fmt->orphan_vg_name;
-	fic.context.vg_ref.vg_id = NULL;
-
-	if (!(fid = _format1_create_instance(fmt, &fic))) {
-		_format1_destroy(fmt);
-		return_NULL;
-	}
-
-	vg_set_fid(fmt->orphan_vg, fid);
 
 	log_very_verbose("Initialised format: %s", fmt->name);
 

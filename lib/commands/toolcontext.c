@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2012 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2009 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -22,7 +22,6 @@
 #include "filter.h"
 #include "filter-composite.h"
 #include "filter-md.h"
-#include "filter-mpath.h"
 #include "filter-persistent.h"
 #include "filter-regex.h"
 #include "filter-sysfs.h"
@@ -34,7 +33,6 @@
 #include "str_list.h"
 #include "segtype.h"
 #include "lvmcache.h"
-#include "lvmetad.h"
 #include "dev-cache.h"
 #include "archiver.h"
 
@@ -99,7 +97,7 @@ static void _get_sysfs_dir(struct cmd_context *cmd)
 	}
 
 	if (!(fp = fopen(proc_mounts, "r"))) {
-		log_sys_error("_get_sysfs_dir fopen", proc_mounts);
+		log_sys_error("_get_sysfs_dir: fopen %s", proc_mounts);
 		return;
 	}
 
@@ -155,9 +153,9 @@ static void _init_logging(struct cmd_context *cmd)
 	init_abort_on_internal_errors(find_config_tree_int(cmd, "global/abort_on_internal_errors",
 							   DEFAULT_ABORT_ON_INTERNAL_ERRORS));
 
-	cmd->default_settings.msg_prefix =
-		find_config_tree_str_allow_empty(cmd, "log/prefix", DEFAULT_MSG_PREFIX);
-
+	cmd->default_settings.msg_prefix = find_config_tree_str(cmd,
+							   "log/prefix",
+							   DEFAULT_MSG_PREFIX);
 	init_msg_prefix(cmd->default_settings.msg_prefix);
 
 	cmd->default_settings.cmd_name = find_config_tree_int(cmd,
@@ -208,7 +206,7 @@ static void _init_logging(struct cmd_context *cmd)
  * 856a6f1dbd8940e72755af145ebcd806408ecedd
  * some operations could not be performed by udev, requiring our fallback code.
  */
-static int _dm_driver_has_stable_udev_support(void)
+static int _dm_driver_has_stable_udev_support()
 {
 	char vsn[80];
 	unsigned maj, min, patchlevel;
@@ -224,8 +222,8 @@ static int _process_config(struct cmd_context *cmd)
 	mode_t old_umask;
 	const char *read_ahead;
 	struct stat st;
-	const struct dm_config_node *cn;
-	const struct dm_config_value *cv;
+	const struct config_node *cn;
+	const struct config_value *cv;
 	int64_t pv_min_kb;
 
 	/* umask */
@@ -247,9 +245,6 @@ static int _process_config(struct cmd_context *cmd)
 	}
 #ifdef DEVMAPPER_SUPPORT
 	dm_set_dev_dir(cmd->dev_dir);
-
-	if (!dm_set_uuid_prefix("LVM-"))
-		return_0;
 #endif
 
 	/* proc dir */
@@ -269,7 +264,6 @@ static int _process_config(struct cmd_context *cmd)
 	/* FIXME Use global value of sysfs_dir everywhere instead cmd->sysfs_dir. */
 	_get_sysfs_dir(cmd);
 	set_sysfs_dir_path(cmd->sysfs_dir);
-	dm_set_sysfs_dir(cmd->sysfs_dir);
 
 	/* activation? */
 	cmd->default_settings.activation = find_config_tree_int(cmd,
@@ -308,9 +302,6 @@ static int _process_config(struct cmd_context *cmd)
 								"activation/udev_sync",
 								DEFAULT_UDEV_SYNC);
 
-	init_retry_deactivation(find_config_tree_int(cmd, "activation/retry_deactivation",
-							DEFAULT_RETRY_DEACTIVATION));
-
 	init_activation_checks(find_config_tree_int(cmd, "activation/checks",
 						      DEFAULT_ACTIVATION_CHECKS));
 
@@ -336,10 +327,6 @@ static int _process_config(struct cmd_context *cmd)
 	/* We must use old node/symlink creation code if not compiled with udev support at all! */
 	cmd->default_settings.udev_fallback = 1;
 #endif
-
-	cmd->use_linear_target = find_config_tree_int(cmd,
-						      "activation/use_linear_target",
-						       DEFAULT_USE_LINEAR_TARGET);
 
 	cmd->stripe_filler = find_config_tree_str(cmd,
 						  "activation/missing_stripe_filler",
@@ -371,17 +358,17 @@ static int _process_config(struct cmd_context *cmd)
 
 	if ((cn = find_config_tree_node(cmd, "activation/mlock_filter")))
 		for (cv = cn->v; cv; cv = cv->next) 
-			if ((cv->type != DM_CFG_STRING) || !cv->v.str[0]) 
+			if ((cv->type != CFG_STRING) || !cv->v.str[0]) 
 				log_error("Ignoring invalid activation/mlock_filter entry in config file");
 
 	cmd->metadata_read_only = find_config_tree_int(cmd, "global/metadata_read_only",
 						       DEFAULT_METADATA_READ_ONLY);
 
 	pv_min_kb = find_config_tree_int64(cmd, "devices/pv_min_size", DEFAULT_PV_MIN_SIZE_KB);
-	if (pv_min_kb < PV_MIN_SIZE_KB) {
+	if (pv_min_kb < DEFAULT_PV_MIN_SIZE_KB) {
 		log_warn("Ignoring too small pv_min_size %" PRId64 "KB, using default %dKB.",
-			 pv_min_kb, PV_MIN_SIZE_KB);
-		pv_min_kb = PV_MIN_SIZE_KB;
+			 pv_min_kb, DEFAULT_PV_MIN_SIZE_KB);
+		pv_min_kb = DEFAULT_PV_MIN_SIZE_KB;
 	}
 	/* LVM stores sizes internally in units of 512-byte sectors. */
 	init_pv_min_size((uint64_t)pv_min_kb * (1024 >> SECTOR_SHIFT));
@@ -389,8 +376,6 @@ static int _process_config(struct cmd_context *cmd)
 	init_detect_internal_vg_cache_corruption
 		(find_config_tree_int(cmd, "global/detect_internal_vg_cache_corruption()",
 				      DEFAULT_DETECT_INTERNAL_VG_CACHE_CORRUPTION));
-
-	lvmetad_set_active(find_config_tree_int(cmd, "global/use_lvmetad", 0));
 
 	return 1;
 }
@@ -407,11 +392,11 @@ static int _set_tag(struct cmd_context *cmd, const char *tag)
 	return 1;
 }
 
-static int _check_host_filters(struct cmd_context *cmd, const struct dm_config_node *hn,
+static int _check_host_filters(struct cmd_context *cmd, const struct config_node *hn,
 			       int *passes)
 {
-	const struct dm_config_node *cn;
-	const struct dm_config_value *cv;
+	const struct config_node *cn;
+	const struct config_value *cv;
 
 	*passes = 1;
 
@@ -420,10 +405,10 @@ static int _check_host_filters(struct cmd_context *cmd, const struct dm_config_n
 			continue;
 		if (!strcmp(cn->key, "host_list")) {
 			*passes = 0;
-			if (cn->v->type == DM_CFG_EMPTY_ARRAY)
+			if (cn->v->type == CFG_EMPTY_ARRAY)
 				continue;
 			for (cv = cn->v; cv; cv = cv->next) {
-				if (cv->type != DM_CFG_STRING) {
+				if (cv->type != CFG_STRING) {
 					log_error("Invalid hostname string "
 						  "for tag %s", cn->key);
 					return 0;
@@ -443,17 +428,17 @@ static int _check_host_filters(struct cmd_context *cmd, const struct dm_config_n
 	return 1;
 }
 
-static int _init_tags(struct cmd_context *cmd, struct dm_config_tree *cft)
+static int _init_tags(struct cmd_context *cmd, struct config_tree *cft)
 {
-	const struct dm_config_node *tn, *cn;
+	const struct config_node *tn, *cn;
 	const char *tag;
 	int passes;
 
-	if (!(tn = dm_config_find_node(cft->root, "tags")) || !tn->child)
+	if (!(tn = find_config_node(cft->root, "tags")) || !tn->child)
 		return 1;
 
 	/* NB hosttags 0 when already 1 intentionally does not delete the tag */
-	if (!cmd->hosttags && dm_config_find_int(cft->root, "tags/hosttags",
+	if (!cmd->hosttags && find_config_int(cft->root, "tags/hosttags",
 					      DEFAULT_HOSTTAGS)) {
 		/* FIXME Strip out invalid chars: only A-Za-z0-9_+.- */
 		if (!_set_tag(cmd, cmd->hostname))
@@ -487,7 +472,7 @@ static int _init_tags(struct cmd_context *cmd, struct dm_config_tree *cft)
 
 static int _load_config_file(struct cmd_context *cmd, const char *tag)
 {
-	static char config_file[PATH_MAX] = "";
+	char config_file[PATH_MAX] = "";
 	const char *filler = "";
 	struct stat info;
 	struct config_tree_list *cfl;
@@ -506,7 +491,7 @@ static int _load_config_file(struct cmd_context *cmd, const char *tag)
 		return 0;
 	}
 
-	if (!(cfl->cft = config_file_open(config_file, 0))) {
+	if (!(cfl->cft = create_config_tree(config_file, 0))) {
 		log_error("config_tree allocation failed");
 		return 0;
 	}
@@ -518,24 +503,23 @@ static int _load_config_file(struct cmd_context *cmd, const char *tag)
 			goto out;
 		}
 		log_sys_error("stat", config_file);
-		config_file_destroy(cfl->cft);
+		destroy_config_tree(cfl->cft);
 		return 0;
 	}
 
 	log_very_verbose("Loading config file: %s", config_file);
-	if (!config_file_read(cfl->cft)) {
+	if (!read_config_file(cfl->cft)) {
 		log_error("Failed to load config file %s", config_file);
-		config_file_destroy(cfl->cft);
+		destroy_config_tree(cfl->cft);
 		return 0;
 	}
 
 	dm_list_add(&cmd->config_files, &cfl->list);
 
       out:
-	if (*tag) {
-		if (!_init_tags(cmd, cfl->cft))
-			return_0;
-	} else
+	if (*tag)
+		_init_tags(cmd, cfl->cft);
+	else
 		/* Use temporary copy of lvm.conf while loading other files */
 		cmd->cft = cfl->cft;
 
@@ -547,7 +531,7 @@ static int _init_lvm_conf(struct cmd_context *cmd)
 {
 	/* No config file if LVM_SYSTEM_DIR is empty */
 	if (!*cmd->system_dir) {
-		if (!(cmd->cft = config_file_open(NULL, 0))) {
+		if (!(cmd->cft = create_config_tree(NULL, 0))) {
 			log_error("Failed to create config tree");
 			return 0;
 		}
@@ -574,13 +558,13 @@ static int _init_tag_configs(struct cmd_context *cmd)
 	return 1;
 }
 
-static struct dm_config_tree *_merge_config_files(struct cmd_context *cmd, struct dm_config_tree *cft)
+static int _merge_config_files(struct cmd_context *cmd)
 {
 	struct config_tree_list *cfl;
 
 	/* Replace temporary duplicate copy of lvm.conf */
-	if (cft->root) {
-		if (!(cft = config_file_open(NULL, 0))) {
+	if (cmd->cft->root) {
+		if (!(cmd->cft = create_config_tree(NULL, 0))) {
 			log_error("Failed to create config tree");
 			return 0;
 		}
@@ -588,11 +572,11 @@ static struct dm_config_tree *_merge_config_files(struct cmd_context *cmd, struc
 
 	dm_list_iterate_items(cfl, &cmd->config_files) {
 		/* Merge all config trees into cmd->cft using merge/tag rules */
-		if (!merge_config_tree(cmd, cft, cfl->cft))
+		if (!merge_config_tree(cmd, cmd->cft, cfl->cft))
 			return_0;
 	}
 
-	return cft;
+	return 1;
 }
 
 static void _destroy_tags(struct cmd_context *cmd)
@@ -616,40 +600,28 @@ int config_files_changed(struct cmd_context *cmd)
 	return 0;
 }
 
-/*
- * Returns cmdline config_tree that overrides all others, if present.
- */
-static struct dm_config_tree *_destroy_tag_configs(struct cmd_context *cmd)
+static void _destroy_tag_configs(struct cmd_context *cmd)
 {
 	struct config_tree_list *cfl;
-	struct dm_config_tree *cft_cmdline = NULL, *cft;
-
-	cft = dm_config_remove_cascaded_tree(cmd->cft);
-	if (cft) {
-		cft_cmdline = cmd->cft;
-		cmd->cft = cft;
-	}
 
 	dm_list_iterate_items(cfl, &cmd->config_files) {
 		if (cfl->cft == cmd->cft)
 			cmd->cft = NULL;
-		config_file_destroy(cfl->cft);
+		destroy_config_tree(cfl->cft);
 	}
 
 	if (cmd->cft) {
-		config_file_destroy(cmd->cft);
+		destroy_config_tree(cmd->cft);
 		cmd->cft = NULL;
 	}
 
 	dm_list_init(&cmd->config_files);
-
-	return cft_cmdline;
 }
 
 static int _init_dev_cache(struct cmd_context *cmd)
 {
-	const struct dm_config_node *cn;
-	const struct dm_config_value *cv;
+	const struct config_node *cn;
+	const struct config_value *cv;
 	size_t uninitialized_var(udev_dir_len), len;
 	int device_list_from_udev;
 	const char *uninitialized_var(udev_dir);
@@ -664,9 +636,8 @@ static int _init_dev_cache(struct cmd_context *cmd)
 	if ((device_list_from_udev = udev_is_running() ?
 		find_config_tree_bool(cmd, "devices/obtain_device_list_from_udev",
 				      DEFAULT_OBTAIN_DEVICE_LIST_FROM_UDEV) : 0)) {
-		if (!(udev_dir = udev_get_dev_dir()))
-			stack;
-		udev_dir_len = (udev_dir) ? strlen(udev_dir) : 0;
+		udev_dir = udev_get_dev_dir();
+		udev_dir_len = strlen(udev_dir);
 	}
 	init_obtain_device_list_from_udev(device_list_from_udev);
 
@@ -682,13 +653,13 @@ static int _init_dev_cache(struct cmd_context *cmd)
 	}
 
 	for (cv = cn->v; cv; cv = cv->next) {
-		if (cv->type != DM_CFG_STRING) {
+		if (cv->type != CFG_STRING) {
 			log_error("Invalid string in config file: "
 				  "devices/scan");
 			return 0;
 		}
 
-		if (device_list_from_udev && udev_dir) {
+		if (device_list_from_udev) {
 			len = strlen(cv->v.str);
 			len = udev_dir_len > len ? len : udev_dir_len;
 			if (strncmp(udev_dir, cv->v.str, len) ||
@@ -709,7 +680,7 @@ static int _init_dev_cache(struct cmd_context *cmd)
 		return 1;
 
 	for (cv = cn->v; cv; cv = cv->next) {
-		if (cv->type != DM_CFG_STRING) {
+		if (cv->type != CFG_STRING) {
 			log_error("Invalid string in config file: "
 				  "devices/loopfiles");
 			return 0;
@@ -726,14 +697,13 @@ static int _init_dev_cache(struct cmd_context *cmd)
 	return 1;
 }
 
-#define MAX_FILTERS 5
+#define MAX_FILTERS 4
 
 static struct dev_filter *_init_filter_components(struct cmd_context *cmd)
 {
 	unsigned nr_filt = 0;
-	const struct dm_config_node *cn;
+	const struct config_node *cn;
 	struct dev_filter *filters[MAX_FILTERS];
-	struct dev_filter *composite;
 
 	memset(filters, 0, sizeof(filters));
 
@@ -779,24 +749,9 @@ static struct dev_filter *_init_filter_components(struct cmd_context *cmd)
 			nr_filt++;
 	}
 
-	/* mpath component filter. Optional, non-critical. */
-	if (find_config_tree_bool(cmd, "devices/multipath_component_detection",
-			     DEFAULT_MULTIPATH_COMPONENT_DETECTION)) {
-		if ((filters[nr_filt] = mpath_filter_create(cmd->sysfs_dir)))
-			nr_filt++;
-	}
-
 	/* Only build a composite filter if we really need it. */
-	if (nr_filt == 1)
-		return filters[0];
-
-	if (!(composite = composite_filter_create(nr_filt, filters))) {
-		stack;
-		nr_filt++; /* compensate skip NULL */
-		goto err;
-	}
-
-	return composite;
+	return (nr_filt == 1) ?
+	    filters[0] : composite_filter_create(nr_filt, filters);
 err:
 	nr_filt--; /* skip NULL */
 	while (nr_filt-- > 0)
@@ -806,15 +761,15 @@ err:
 
 static int _init_filters(struct cmd_context *cmd, unsigned load_persistent_cache)
 {
-	static char cache_file[PATH_MAX];
 	const char *dev_cache = NULL, *cache_dir, *cache_file_prefix;
 	struct dev_filter *f3, *f4;
 	struct stat st;
+	char cache_file[PATH_MAX];
 
 	cmd->dump_filter = 0;
 
 	if (!(f3 = _init_filter_components(cmd)))
-		return_0;
+		return 0;
 
 	init_ignore_suspended_devices(find_config_tree_int(cmd,
 	    "devices/ignore_suspended_devices", DEFAULT_IGNORE_SUSPENDED_DEVICES));
@@ -898,8 +853,10 @@ static int _init_formats(struct cmd_context *cmd)
 	struct format_type *fmt;
 
 #ifdef HAVE_LIBDL
-	const struct dm_config_node *cn;
+	const struct config_node *cn;
 #endif
+
+	label_init();
 
 #ifdef LVM1_INTERNAL
 	if (!(fmt = init_lvm1_format(cmd)))
@@ -920,12 +877,12 @@ static int _init_formats(struct cmd_context *cmd)
 	if (!is_static() &&
 	    (cn = find_config_tree_node(cmd, "global/format_libraries"))) {
 
-		const struct dm_config_value *cv;
+		const struct config_value *cv;
 		struct format_type *(*init_format_fn) (struct cmd_context *);
 		void *lib;
 
 		for (cv = cn->v; cv; cv = cv->next) {
-			if (cv->type != DM_CFG_STRING) {
+			if (cv->type != CFG_STRING) {
 				log_error("Invalid string in config file: "
 					  "global/format_libraries");
 				return 0;
@@ -1037,23 +994,30 @@ static int _init_segtypes(struct cmd_context *cmd)
 {
 	int i;
 	struct segment_type *segtype;
-	struct segtype_library seglib = { .cmd = cmd, .lib = NULL };
+	struct segtype_library seglib = { .cmd = cmd };
 	struct segment_type *(*init_segtype_array[])(struct cmd_context *cmd) = {
 		init_striped_segtype,
 		init_zero_segtype,
 		init_error_segtype,
 		init_free_segtype,
-#ifdef SNAPSHOT_INTERNAL
-		init_snapshot_segtype,
-#endif
-#ifdef MIRRORED_INTERNAL
-		init_mirrored_segtype,
+#ifdef RAID_INTERNAL
+		init_raid1_segtype,
+		init_raid4_segtype,
+		init_raid5_segtype,
+		init_raid5_la_segtype,
+		init_raid5_ra_segtype,
+		init_raid5_ls_segtype,
+		init_raid5_rs_segtype,
+		init_raid6_segtype,
+		init_raid6_zr_segtype,
+		init_raid6_nr_segtype,
+		init_raid6_nc_segtype,
 #endif
 		NULL
 	};
 
 #ifdef HAVE_LIBDL
-	const struct dm_config_node *cn;
+	const struct config_node *cn;
 #endif
 
 	for (i = 0; init_segtype_array[i]; i++) {
@@ -1063,18 +1027,22 @@ static int _init_segtypes(struct cmd_context *cmd)
 		dm_list_add(&cmd->segtypes, &segtype->list);
 	}
 
+#ifdef SNAPSHOT_INTERNAL
+	if (!(segtype = init_snapshot_segtype(cmd)))
+		return 0;
+	segtype->library = NULL;
+	dm_list_add(&cmd->segtypes, &segtype->list);
+#endif
+
+#ifdef MIRRORED_INTERNAL
+	if (!(segtype = init_mirrored_segtype(cmd)))
+		return 0;
+	segtype->library = NULL;
+	dm_list_add(&cmd->segtypes, &segtype->list);
+#endif
+
 #ifdef REPLICATOR_INTERNAL
-	if (!init_replicator_segtype(cmd, &seglib))
-		return 0;
-#endif
-
-#ifdef RAID_INTERNAL
-	if (!init_raid_segtypes(cmd, &seglib))
-		return 0;
-#endif
-
-#ifdef THIN_INTERNAL
-	if (!init_thin_segtypes(cmd, &seglib))
+	if (!init_replicator_segtype(&seglib))
 		return 0;
 #endif
 
@@ -1083,12 +1051,12 @@ static int _init_segtypes(struct cmd_context *cmd)
 	if (!is_static() &&
 	    (cn = find_config_tree_node(cmd, "global/segment_libraries"))) {
 
-		const struct dm_config_value *cv;
+		const struct config_value *cv;
 		int (*init_multiple_segtypes_fn) (struct cmd_context *,
 						  struct segtype_library *);
 
 		for (cv = cn->v; cv; cv = cv->next) {
-			if (cv->type != DM_CFG_STRING) {
+			if (cv->type != CFG_STRING) {
 				log_error("Invalid string in config file: "
 					  "global/segment_libraries");
 				return 0;
@@ -1156,8 +1124,8 @@ static int _init_hostname(struct cmd_context *cmd)
 
 static int _init_backup(struct cmd_context *cmd)
 {
-	static char default_dir[PATH_MAX];
 	uint32_t days, min;
+	char default_dir[PATH_MAX];
 	const char *dir;
 
 	if (!cmd->system_dir[0]) {
@@ -1238,8 +1206,7 @@ static void _init_globals(struct cmd_context *cmd)
 /* Entry point */
 struct cmd_context *create_toolcontext(unsigned is_long_lived,
 				       const char *system_dir,
-				       unsigned set_buffering,
-				       unsigned threaded)
+				       unsigned set_buffering)
 {
 	struct cmd_context *cmd;
 
@@ -1261,7 +1228,6 @@ struct cmd_context *create_toolcontext(unsigned is_long_lived,
 		return NULL;
 	}
 	cmd->is_long_lived = is_long_lived;
-	cmd->threaded = threaded ? 1 : 0;
 	cmd->handles_missing_pvs = 0;
 	cmd->handles_unknown_segments = 0;
 	cmd->independent_metadata_areas = 0;
@@ -1271,7 +1237,6 @@ struct cmd_context *create_toolcontext(unsigned is_long_lived,
 	dm_list_init(&cmd->segtypes);
 	dm_list_init(&cmd->tags);
 	dm_list_init(&cmd->config_files);
-	label_init();
 
 	/* FIXME Make this configurable? */
 	reset_lvm_errno(1);
@@ -1331,7 +1296,7 @@ struct cmd_context *create_toolcontext(unsigned is_long_lived,
 	if (!_init_tag_configs(cmd))
 		goto_out;
 
-	if (!(cmd->cft = _merge_config_files(cmd, cmd->cft)))
+	if (!_merge_config_files(cmd))
 		goto_out;
 
 	if (!_process_config(cmd))
@@ -1431,8 +1396,7 @@ int refresh_filters(struct cmd_context *cmd)
 		cmd->filter = NULL;
 	}
 
-	if (!(r = _init_filters(cmd, 0)))
-                stack;
+	r = _init_filters(cmd, 0);
 
 	/*
 	 * During repair code must not reset suspended flag.
@@ -1444,8 +1408,6 @@ int refresh_filters(struct cmd_context *cmd)
 
 int refresh_toolcontext(struct cmd_context *cmd)
 {
-	struct dm_config_tree *cft_cmdline, *cft_tmp;
-
 	log_verbose("Reloading config files");
 
 	/*
@@ -1464,8 +1426,7 @@ int refresh_toolcontext(struct cmd_context *cmd)
 	}
 	dev_cache_exit();
 	_destroy_tags(cmd);
-
-	cft_cmdline = _destroy_tag_configs(cmd);
+	_destroy_tag_configs(cmd);
 
 	cmd->config_valid = 0;
 
@@ -1474,30 +1435,16 @@ int refresh_toolcontext(struct cmd_context *cmd)
 	if (!_init_lvm_conf(cmd))
 		return 0;
 
-	/* Temporary duplicate cft pointer holding lvm.conf - replaced later */
-	cft_tmp = cmd->cft;
-	if (cft_cmdline)
-		cmd->cft = dm_config_insert_cascaded_tree(cft_cmdline, cft_tmp);
-
-	/* Uses cmd->cft i.e. cft_cmdline + lvm.conf */
 	_init_logging(cmd);
 
-	/* Init tags from lvm.conf. */
-	if (!_init_tags(cmd, cft_tmp))
+	if (!_init_tags(cmd, cmd->cft))
 		return 0;
 
-	/* Doesn't change cmd->cft */
 	if (!_init_tag_configs(cmd))
 		return 0;
 
-	/* Merge all the tag config files with lvm.conf, returning a
-	 * fresh cft pointer in place of cft_tmp. */
-	if (!(cmd->cft = _merge_config_files(cmd, cft_tmp)))
+	if (!_merge_config_files(cmd))
 		return 0;
-
-	/* Finally we can make the proper, fully-merged, cmd->cft */
-	if (cft_cmdline)
-		cmd->cft = dm_config_insert_cascaded_tree(cft_cmdline, cmd->cft);
 
 	if (!_process_config(cmd))
 		return 0;
@@ -1528,8 +1475,6 @@ int refresh_toolcontext(struct cmd_context *cmd)
 
 void destroy_toolcontext(struct cmd_context *cmd)
 {
-	struct dm_config_tree *cft_cmdline;
-
 	if (cmd->dump_filter)
 		persistent_filter_dump(cmd->filter, 1);
 
@@ -1545,9 +1490,7 @@ void destroy_toolcontext(struct cmd_context *cmd)
 		dm_pool_destroy(cmd->mem);
 	dev_cache_exit();
 	_destroy_tags(cmd);
-
-	if ((cft_cmdline = _destroy_tag_configs(cmd)))
-		dm_config_destroy(cft_cmdline);
+	_destroy_tag_configs(cmd);
 	if (cmd->libmem)
 		dm_pool_destroy(cmd->libmem);
 

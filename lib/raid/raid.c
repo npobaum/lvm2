@@ -32,32 +32,33 @@ static const char *_raid_name(const struct lv_segment *seg)
 	return seg->segtype->name;
 }
 
-static int _raid_text_import_area_count(const struct dm_config_node *sn,
+static int _raid_text_import_area_count(const struct config_node *sn,
 					uint32_t *area_count)
 {
-	if (!dm_config_get_uint32(sn, "device_count", area_count)) {
+	if (!get_config_uint32(sn, "device_count", area_count)) {
 		log_error("Couldn't read 'device_count' for "
-			  "segment '%s'.", dm_config_parent_name(sn));
+			  "segment '%s'.", config_parent_name(sn));
 		return 0;
 	}
 	return 1;
 }
 
 static int _raid_text_import_areas(struct lv_segment *seg,
-				   const struct dm_config_node *sn,
-				   const struct dm_config_value *cv)
+				   const struct config_node *sn,
+				   const struct config_node *cn)
 {
 	unsigned int s;
+	const struct config_value *cv;
 	struct logical_volume *lv1;
-	const char *seg_name = dm_config_parent_name(sn);
+	const char *seg_name = config_parent_name(sn);
 
 	if (!seg->area_count) {
 		log_error("No areas found for segment %s", seg_name);
 		return 0;
 	}
 
-	for (s = 0; cv && s < seg->area_count; s++, cv = cv->next) {
-		if (cv->type != DM_CFG_STRING) {
+	for (cv = cn->v, s = 0; cv && s < seg->area_count; s++, cv = cv->next) {
+		if (cv->type != CFG_STRING) {
 			log_error("Bad volume name in areas array for segment %s.", seg_name);
 			return 0;
 		}
@@ -100,35 +101,35 @@ static int _raid_text_import_areas(struct lv_segment *seg,
 }
 
 static int _raid_text_import(struct lv_segment *seg,
-			     const struct dm_config_node *sn,
+			     const struct config_node *sn,
 			     struct dm_hash_table *pv_hash)
 {
-	const struct dm_config_value *cv;
+	const struct config_node *cn;
 
-	if (dm_config_has_node(sn, "region_size")) {
-		if (!dm_config_get_uint32(sn, "region_size", &seg->region_size)) {
+	if (find_config_node(sn, "region_size")) {
+		if (!get_config_uint32(sn, "region_size", &seg->region_size)) {
 			log_error("Couldn't read 'region_size' for "
 				  "segment %s of logical volume %s.",
-				  dm_config_parent_name(sn), seg->lv->name);
+				  config_parent_name(sn), seg->lv->name);
 			return 0;
 		}
 	}
-	if (dm_config_has_node(sn, "stripe_size")) {
-		if (!dm_config_get_uint32(sn, "stripe_size", &seg->stripe_size)) {
+	if (find_config_node(sn, "stripe_size")) {
+		if (!get_config_uint32(sn, "stripe_size", &seg->stripe_size)) {
 			log_error("Couldn't read 'stripe_size' for "
 				  "segment %s of logical volume %s.",
-				  dm_config_parent_name(sn), seg->lv->name);
+				  config_parent_name(sn), seg->lv->name);
 			return 0;
 		}
 	}
-	if (!dm_config_get_list(sn, "raids", &cv)) {
+	if (!(cn = find_config_node(sn, "raids"))) {
 		log_error("Couldn't find RAID array for "
 			  "segment %s of logical volume %s.",
-			  dm_config_parent_name(sn), seg->lv->name);
+			  config_parent_name(sn), seg->lv->name);
 		return 0;
 	}
 
-	if (!_raid_text_import_areas(seg, sn, cv)) {
+	if (!_raid_text_import_areas(seg, sn, cn)) {
 		log_error("Failed to import RAID images");
 		return 0;
 	}
@@ -159,7 +160,6 @@ static int _raid_add_target_line(struct dev_manager *dm __attribute__((unused)),
 				 uint32_t *pvmove_mirror_count __attribute__((unused)))
 {
 	uint32_t s;
-	uint64_t flags = 0;
 	uint64_t rebuilds = 0;
 
 	if (!seg->area_count) {
@@ -184,15 +184,12 @@ static int _raid_add_target_line(struct dev_manager *dm __attribute__((unused)),
 	}
 
 	for (s = 0; s < seg->area_count; s++)
-		if (seg_lv(seg, s)->status & LV_REBUILD)
+		if (seg_lv(seg, s)->status & LV_NOTSYNCED)
 			rebuilds |= 1 << s;
-
-	if (mirror_in_sync())
-		flags = DM_NOSYNC;
 
 	if (!dm_tree_node_add_raid_target(node, len, _raid_name(seg),
 					  seg->region_size, seg->stripe_size,
-					  rebuilds, flags))
+					  rebuilds, 0))
 		return_0;
 
 	return add_areas_line(dm, seg, node, 0u, seg->area_count);
@@ -230,7 +227,7 @@ static int _raid_target_percent(void **target_state,
 	if (!pos || (sscanf(pos, "%" PRIu64 "/%" PRIu64 "%n",
 			    &numerator, &denominator, &i) != 2)) {
 		log_error("Failed to parse %s status fraction: %s",
-			  (seg) ? seg->segtype->name : "segment", params);
+			  seg->segtype->name, params);
 		return 0;
 	}
 
@@ -334,15 +331,15 @@ static struct segtype_handler _raid_ops = {
 	.destroy = _raid_destroy,
 };
 
-static struct segment_type *_init_raid_segtype(struct cmd_context *cmd,
-					       const char *raid_type)
+static struct segment_type *init_raid_segtype(struct cmd_context *cmd,
+					      const char *raid_type)
 {
 	struct segment_type *segtype = dm_zalloc(sizeof(*segtype));
 
 	if (!segtype) {
 		log_error("Failed to allocate memory for %s segtype",
 			  raid_type);
-		return NULL;
+		return_NULL;
 	}
 	segtype->cmd = cmd;
 
@@ -365,11 +362,25 @@ static struct segment_type *_init_raid_segtype(struct cmd_context *cmd,
 	return segtype;
 }
 
-static struct segment_type *_init_raid1_segtype(struct cmd_context *cmd)
+#ifndef RAID_INTERNAL /* Shared */
+struct segment_type *init_raid1_segtype(struct cmd_context *cmd);
+struct segment_type *init_raid4_segtype(struct cmd_context *cmd);
+struct segment_type *init_raid5_segtype(struct cmd_context *cmd);
+struct segment_type *init_raid5_la_segtype(struct cmd_context *cmd);
+struct segment_type *init_raid5_ra_segtype(struct cmd_context *cmd);
+struct segment_type *init_raid5_ls_segtype(struct cmd_context *cmd);
+struct segment_type *init_raid5_rs_segtype(struct cmd_context *cmd);
+struct segment_type *init_raid6_segtype(struct cmd_context *cmd);
+struct segment_type *init_raid6_zr_segtype(struct cmd_context *cmd);
+struct segment_type *init_raid6_nr_segtype(struct cmd_context *cmd);
+struct segment_type *init_raid6_nc_segtype(struct cmd_context *cmd);
+#endif
+
+struct segment_type *init_raid1_segtype(struct cmd_context *cmd)
 {
 	struct segment_type *segtype;
 
-	segtype = _init_raid_segtype(cmd, "raid1");
+	segtype = init_raid_segtype(cmd, "raid1");
 	if (!segtype)
 		return NULL;
 
@@ -378,88 +389,43 @@ static struct segment_type *_init_raid1_segtype(struct cmd_context *cmd)
 
 	return segtype;
 }
-
-static struct segment_type *_init_raid4_segtype(struct cmd_context *cmd)
+struct segment_type *init_raid4_segtype(struct cmd_context *cmd)
 {
-	return _init_raid_segtype(cmd, "raid4");
+	return init_raid_segtype(cmd, "raid4");
 }
-
-static struct segment_type *_init_raid5_segtype(struct cmd_context *cmd)
+struct segment_type *init_raid5_segtype(struct cmd_context *cmd)
 {
-	return _init_raid_segtype(cmd, "raid5");
+	return init_raid_segtype(cmd, "raid5");
 }
-
-static struct segment_type *_init_raid5_la_segtype(struct cmd_context *cmd)
+struct segment_type *init_raid5_la_segtype(struct cmd_context *cmd)
 {
-	return _init_raid_segtype(cmd, "raid5_la");
+	return init_raid_segtype(cmd, "raid5_la");
 }
-
-static struct segment_type *_init_raid5_ra_segtype(struct cmd_context *cmd)
+struct segment_type *init_raid5_ra_segtype(struct cmd_context *cmd)
 {
-	return _init_raid_segtype(cmd, "raid5_ra");
+	return init_raid_segtype(cmd, "raid5_ra");
 }
-
-static struct segment_type *_init_raid5_ls_segtype(struct cmd_context *cmd)
+struct segment_type *init_raid5_ls_segtype(struct cmd_context *cmd)
 {
-	return _init_raid_segtype(cmd, "raid5_ls");
+	return init_raid_segtype(cmd, "raid5_ls");
 }
-
-static struct segment_type *_init_raid5_rs_segtype(struct cmd_context *cmd)
+struct segment_type *init_raid5_rs_segtype(struct cmd_context *cmd)
 {
-	return _init_raid_segtype(cmd, "raid5_rs");
+	return init_raid_segtype(cmd, "raid5_rs");
 }
-
-static struct segment_type *_init_raid6_segtype(struct cmd_context *cmd)
+struct segment_type *init_raid6_segtype(struct cmd_context *cmd)
 {
-	return _init_raid_segtype(cmd, "raid6");
+	return init_raid_segtype(cmd, "raid6");
 }
-
-static struct segment_type *_init_raid6_zr_segtype(struct cmd_context *cmd)
+struct segment_type *init_raid6_zr_segtype(struct cmd_context *cmd)
 {
-	return _init_raid_segtype(cmd, "raid6_zr");
+	return init_raid_segtype(cmd, "raid6_zr");
 }
-
-static struct segment_type *_init_raid6_nr_segtype(struct cmd_context *cmd)
+struct segment_type *init_raid6_nr_segtype(struct cmd_context *cmd)
 {
-	return _init_raid_segtype(cmd, "raid6_nr");
+	return init_raid_segtype(cmd, "raid6_nr");
 }
-
-static struct segment_type *_init_raid6_nc_segtype(struct cmd_context *cmd)
+struct segment_type *init_raid6_nc_segtype(struct cmd_context *cmd)
 {
-	return _init_raid_segtype(cmd, "raid6_nc");
-}
-
-#ifdef RAID_INTERNAL /* Shared */
-int init_raid_segtypes(struct cmd_context *cmd, struct segtype_library *seglib)
-#else
-int init_multiple_segtypes(struct cmd_context *cmd, struct segtype_library *seglib);
-
-int init_multiple_segtypes(struct cmd_context *cmd, struct segtype_library *seglib)
-#endif
-{
-	struct segment_type *segtype;
-	unsigned i = 0;
-	struct segment_type *(*raid_segtype_fn[])(struct cmd_context *) =  {
-		_init_raid1_segtype,
-		_init_raid4_segtype,
-		_init_raid5_segtype,
-		_init_raid5_la_segtype,
-		_init_raid5_ra_segtype,
-		_init_raid5_ls_segtype,
-		_init_raid5_rs_segtype,
-		_init_raid6_segtype,
-		_init_raid6_zr_segtype,
-		_init_raid6_nr_segtype,
-		_init_raid6_nc_segtype,
-		NULL,
-	};
-
-	do {
-		if ((segtype = raid_segtype_fn[i](cmd)) &&
-		    !lvm_register_segtype(seglib, segtype))
-			/* segtype is already destroyed */
-			return_0;
-	} while (raid_segtype_fn[++i]);
-
-	return 1;
+	return init_raid_segtype(cmd, "raid6_nc");
 }

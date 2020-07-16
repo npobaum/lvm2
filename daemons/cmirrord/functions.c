@@ -329,10 +329,7 @@ static int find_disk_path(char *major_minor_str, char *path_rtn, int *unlink_pat
 		 */
 
 		sprintf(path_rtn, "/dev/mapper/%s", dep->d_name);
-		if (stat(path_rtn, &statbuf) < 0) {
-			LOG_DBG("Unable to stat %s", path_rtn);
-			continue;
-		}
+		stat(path_rtn, &statbuf);
 		if (S_ISBLK(statbuf.st_mode) &&
 		    (major(statbuf.st_rdev) == major) &&
 		    (minor(statbuf.st_rdev) == minor)) {
@@ -372,10 +369,10 @@ static int _clog_ctr(char *uuid, uint64_t luid,
 	enum sync log_sync = DEFAULTSYNC;
 	uint32_t block_on_error = 0;
 
-	int disk_log;
+	int disk_log = 0;
 	char disk_path[128];
 	int unlink_path = 0;
-	long page_size;
+	size_t page_size;
 	int pages;
 
 	/* If core log request, then argv[0] will be region_size */
@@ -479,12 +476,7 @@ static int _clog_ctr(char *uuid, uint64_t luid,
 	lc->sync_count = (log_sync == NOSYNC) ? region_count : 0;
 
 	if (disk_log) {
-		if ((page_size = sysconf(_SC_PAGESIZE)) < 0) {
-			LOG_ERROR("Unable to read pagesize: %s",
-				  strerror(errno));
-			r = errno;
-			goto fail;
-		}
+		page_size = sysconf(_SC_PAGESIZE);
 		pages = *(lc->clean_bits) / page_size;
 		pages += *(lc->clean_bits) % page_size ? 1 : 0;
 		pages += 1; /* for header */
@@ -497,10 +489,7 @@ static int _clog_ctr(char *uuid, uint64_t luid,
 			goto fail;
 		}
 		if (unlink_path)
-			if (unlink(disk_path) < 0) {
-				LOG_DBG("Warning: Unable to unlink log device, %s: %s",
-					disk_path, strerror(errno));
-			}
+			unlink(disk_path);
 
 		lc->disk_fd = r;
 		lc->disk_size = pages * page_size;
@@ -597,10 +586,7 @@ static int clog_ctr(struct dm_ulog_request *rq)
 	/* We join the CPG when we resume */
 
 	/* No returning data */
-	if ((rq->version > 1) && !strcmp(argv[0], "clustered-disk"))
-		rq->data_size = sprintf(rq->data, "%s", argv[1]) + 1;
-	else
-		rq->data_size = 0;
+	rq->data_size = 0;
 
 	if (r) {
 		LOG_ERROR("Failed to create cluster log (%s)", rq->uuid);
@@ -1831,11 +1817,8 @@ int pull_state(const char *uuid, uint64_t luid,
 	}
 
 	if (!strncmp(which, "recovering_region", 17)) {
-		if (sscanf(buf, "%llu %u", (unsigned long long *)&lc->recovering_region,
-			   &lc->recoverer) != 2) {
-			LOG_ERROR("cannot parse recovering region from: %s", buf);
-			return -EINVAL;
-		}
+		sscanf(buf, "%llu %u", (unsigned long long *)&lc->recovering_region,
+		       &lc->recoverer);
 		LOG_SPRINT(lc, "CKPT INIT - SEQ#=X, UUID=%s, nodeid = X:: "
 			   "recovering_region=%llu, recoverer=%u",
 			   SHORT_UUID(lc->uuid),

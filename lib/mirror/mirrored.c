@@ -69,50 +69,55 @@ static void _mirrored_display(const struct lv_segment *seg)
 	log_print(" ");
 }
 
-static int _mirrored_text_import_area_count(const struct dm_config_node *sn, uint32_t *area_count)
+static int _mirrored_text_import_area_count(const struct config_node *sn, uint32_t *area_count)
 {
-	if (!dm_config_get_uint32(sn, "mirror_count", area_count)) {
+	if (!get_config_uint32(sn, "mirror_count", area_count)) {
 		log_error("Couldn't read 'mirror_count' for "
-			  "segment '%s'.", dm_config_parent_name(sn));
+			  "segment '%s'.", config_parent_name(sn));
 		return 0;
 	}
 
 	return 1;
 }
 
-static int _mirrored_text_import(struct lv_segment *seg, const struct dm_config_node *sn,
+static int _mirrored_text_import(struct lv_segment *seg, const struct config_node *sn,
 			struct dm_hash_table *pv_hash)
 {
-	const struct dm_config_value *cv;
+	const struct config_node *cn;
 	const char *logname = NULL;
 
-	if (dm_config_has_node(sn, "extents_moved")) {
-		if (dm_config_get_uint32(sn, "extents_moved",
+	if (find_config_node(sn, "extents_moved")) {
+		if (get_config_uint32(sn, "extents_moved",
 				      &seg->extents_copied))
 			seg->status |= PVMOVE;
 		else {
 			log_error("Couldn't read 'extents_moved' for "
 				  "segment %s of logical volume %s.",
-				  dm_config_parent_name(sn), seg->lv->name);
+				  config_parent_name(sn), seg->lv->name);
 			return 0;
 		}
 	}
 
-	if (dm_config_has_node(sn, "region_size")) {
-		if (!dm_config_get_uint32(sn, "region_size",
+	if (find_config_node(sn, "region_size")) {
+		if (!get_config_uint32(sn, "region_size",
 				      &seg->region_size)) {
 			log_error("Couldn't read 'region_size' for "
 				  "segment %s of logical volume %s.",
-				  dm_config_parent_name(sn), seg->lv->name);
+				  config_parent_name(sn), seg->lv->name);
 			return 0;
 		}
 	}
 
-	if (dm_config_get_str(sn, "mirror_log", &logname)) {
+	if ((cn = find_config_node(sn, "mirror_log"))) {
+		if (!cn->v || !cn->v->v.str) {
+			log_error("Mirror log type must be a string.");
+			return 0;
+		}
+		logname = cn->v->v.str;
 		if (!(seg->log_lv = find_lv(seg->lv->vg, logname))) {
 			log_error("Unrecognised mirror log in "
 				  "segment %s of logical volume %s.",
-				  dm_config_parent_name(sn), seg->lv->name);
+				  config_parent_name(sn), seg->lv->name);
 			return 0;
 		}
 		seg->log_lv->status |= MIRROR_LOG;
@@ -121,18 +126,18 @@ static int _mirrored_text_import(struct lv_segment *seg, const struct dm_config_
 	if (logname && !seg->region_size) {
 		log_error("Missing region size for mirror log for "
 			  "segment %s of logical volume %s.",
-			  dm_config_parent_name(sn), seg->lv->name);
+			  config_parent_name(sn), seg->lv->name);
 		return 0;
 	}
 
-	if (!dm_config_get_list(sn, "mirrors", &cv)) {
+	if (!(cn = find_config_node(sn, "mirrors"))) {
 		log_error("Couldn't find mirrors array for "
 			  "segment %s of logical volume %s.",
-			  dm_config_parent_name(sn), seg->lv->name);
+			  config_parent_name(sn), seg->lv->name);
 		return 0;
 	}
 
-	return text_import_areas(seg, sn, cv, pv_hash, MIRROR_IMAGE);
+	return text_import_areas(seg, sn, cn, pv_hash, MIRROR_IMAGE);
 }
 
 static int _mirrored_text_export(const struct lv_segment *seg, struct formatter *f)
@@ -226,14 +231,14 @@ static int _mirrored_target_percent(void **target_state,
 
 static int _mirrored_transient_status(struct lv_segment *seg, char *params)
 {
-	unsigned i, j;
+	int i, j;
 	struct logical_volume *lv = seg->lv;
 	struct lvinfo info;
 	char *p = NULL;
 	char **args, **log_args;
 	struct logical_volume **images;
 	struct logical_volume *log;
-	unsigned num_devs, log_argc;
+	int num_devs, log_argc;
 	int failed = 0;
 	char *status;
 
@@ -243,7 +248,7 @@ static int _mirrored_transient_status(struct lv_segment *seg, char *params)
 	if (!dm_split_words(params, 1, 0, &p))
 		return_0;
 
-	if (!(num_devs = (unsigned) atoi(p)))
+	if (!(num_devs = atoi(p)))
 		return_0;
 
 	p += strlen(p) + 1;
@@ -251,34 +256,33 @@ static int _mirrored_transient_status(struct lv_segment *seg, char *params)
 	if (num_devs > DEFAULT_MIRROR_MAX_IMAGES) {
 		log_error("Unexpectedly many (%d) mirror images in %s.",
 			  num_devs, lv->name);
-		return 0;
+		return_0;
 	}
 
 	args = alloca((num_devs + 5) * sizeof(char *));
 	images = alloca(num_devs * sizeof(struct logical_volume *));
 
-	/* FIXME: dm_split_words()  should return unsigned */
-	if ((unsigned)dm_split_words(p, num_devs + 4, 0, args) < num_devs + 4)
+	if (dm_split_words(p, num_devs + 4, 0, args) < num_devs + 4)
 		return_0;
 
-	log_argc = (unsigned) atoi(args[3 + num_devs]);
+	log_argc = atoi(args[3 + num_devs]);
+	log_args = alloca(log_argc * sizeof(char *));
 
 	if (log_argc > 16) {
 		log_error("Unexpectedly many (%d) log arguments in %s.",
 			  log_argc, lv->name);
-		return 0;
+		return_0;
 	}
 
-	log_args = alloca(log_argc * sizeof(char *));
 
-	if ((unsigned)dm_split_words(args[3 + num_devs] + strlen(args[3 + num_devs]) + 1,
-				     log_argc, 0, log_args) < log_argc)
+	if (dm_split_words(args[3 + num_devs] + strlen(args[3 + num_devs]) + 1,
+			   log_argc, 0, log_args) < log_argc)
 		return_0;
 
 	if (num_devs != seg->area_count) {
 		log_error("Active mirror has a wrong number of mirror images!");
 		log_error("Metadata says %d, kernel says %d.", seg->area_count, num_devs);
-		return 0;
+		return_0;
 	}
 
 	if (!strcmp(log_args[0], "disk")) {
@@ -294,7 +298,7 @@ static int _mirrored_transient_status(struct lv_segment *seg, char *params)
 		if (strcmp(buf, log_args[1])) {
 			log_error("Mirror log mismatch. Metadata says %s, kernel says %s.",
 				  buf, log_args[1]);
-			return 0;
+			return_0;
 		}
 		log_very_verbose("Status of log (%s): %s", buf, log_args[2]);
 		if (log_args[2][0] != 'A') {
@@ -328,7 +332,7 @@ static int _mirrored_transient_status(struct lv_segment *seg, char *params)
 	for (i = 0; i < num_devs; ++i) {
 		if (!images[i]) {
 			log_error("Failed to find image %d (%s).", i, args[i]);
-			return 0;
+			return_0;
 		}
 		log_very_verbose("Status of image %d: %c", i, status[i]);
 		if (status[i] != 'A') {
@@ -399,9 +403,8 @@ static int _mirrored_add_target_line(struct dev_manager *dm, struct dm_pool *mem
 	uint32_t region_size;
 	int r;
 
-	if (!*target_state &&
-	    !(*target_state = _mirrored_init_target(mem, cmd)))
-                return_0;
+	if (!*target_state)
+		*target_state = _mirrored_init_target(mem, cmd);
 
 	mirr_state = *target_state;
 
@@ -429,9 +432,7 @@ static int _mirrored_add_target_line(struct dev_manager *dm, struct dm_pool *mem
 	}
 
 	if (mirror_status != MIRR_RUNNING) {
-		if (!add_linear_area_to_dtree(node, len, seg->lv->vg->extent_size,
-					      cmd->use_linear_target,
-					      seg->lv->vg->name, seg->lv->name))
+		if (!dm_tree_node_add_linear_target(node, len))
 			return_0;
 		goto done;
 	}

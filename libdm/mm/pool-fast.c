@@ -23,7 +23,7 @@
 struct chunk {
 	char *begin, *end;
 	struct chunk *prev;
-} __attribute__((aligned(8)));
+};
 
 struct dm_pool {
 	struct dm_list list;
@@ -258,7 +258,7 @@ static struct chunk *_new_chunk(struct dm_pool *p, size_t s)
 	struct chunk *c;
 
 	if (p->spare_chunk &&
-	    ((p->spare_chunk->end - p->spare_chunk->begin) >= (ptrdiff_t)s)) {
+	    ((p->spare_chunk->end - p->spare_chunk->begin) >= s)) {
 		/* reuse old chunk */
 		c = p->spare_chunk;
 		p->spare_chunk = 0;
@@ -300,18 +300,7 @@ static struct chunk *_new_chunk(struct dm_pool *p, size_t s)
 
 static void _free_chunk(struct chunk *c)
 {
-#ifdef VALGRIND_POOL
-#  ifdef DEBUG_MEM
-	if (c)
-		VALGRIND_MAKE_MEM_UNDEFINED(c + 1, c->end - (char *) (c + 1));
-#  endif
-#endif
-#ifdef DEBUG_ENFORCE_POOL_LOCKING
-	/* since DEBUG_MEM is using own memory list */
-	free(c); /* for posix_memalign() */
-#else
 	dm_free(c);
-#endif
 }
 
 

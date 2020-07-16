@@ -319,9 +319,9 @@ static int _out_line(const char *line, void *_f) {
 	return out_text(f, "%s", line);
 }
 
-int out_config_node(struct formatter *f, const struct dm_config_node *cn)
+int out_config_node(struct formatter *f, const struct config_node *cn)
 {
-	return dm_config_write_node(cn, _out_line, f);
+	return write_config_node(cn, _out_line, f);
 }
 
 static int _print_header(struct formatter *f,
@@ -337,12 +337,12 @@ static int _print_header(struct formatter *f,
 	outf(f, FORMAT_VERSION_FIELD " = %d", FORMAT_VERSION_VALUE);
 	outnl(f);
 
-	if (!(buf = alloca(dm_escaped_len(desc)))) {
+	if (!(buf = alloca(escaped_len(desc)))) {
 		log_error("temporary stack allocation for description"
 			  "string failed");
 		return 0;
 	}
-	outf(f, "description = \"%s\"", dm_escape_double_quotes(buf, desc));
+	outf(f, "description = \"%s\"", escape_double_quotes(buf, desc));
 	outnl(f);
 	outf(f, "creation_host = \"%s\"\t# %s %s %s %s %s", _utsname.nodename,
 	     _utsname.sysname, _utsname.nodename, _utsname.release,
@@ -394,9 +394,6 @@ static int _print_vg(struct formatter *f, struct volume_group *vg)
 	outf(f, "id = \"%s\"", buffer);
 
 	outf(f, "seqno = %u", vg->seqno);
-
-	if (vg->fid && vg->fid->fmt)
-		outf(f, "format = \"%s\" # informational", vg->fid->fmt->name);
 
 	if (!_print_flag_config(f, vg->status, VG_FLAGS))
 		return_0;
@@ -468,14 +465,14 @@ static int _print_pvs(struct formatter *f, struct volume_group *vg)
 
 		outf(f, "id = \"%s\"", buffer);
 
-		if (!(buf = alloca(dm_escaped_len(pv_dev_name(pv))))) {
+		if (!(buf = alloca(escaped_len(pv_dev_name(pv))))) {
 			log_error("temporary stack allocation for device name"
 				  "string failed");
 			return 0;
 		}
 
 		outhint(f, "device = \"%s\"",
-			dm_escape_double_quotes(buf, pv_dev_name(pv)));
+			escape_double_quotes(buf, pv_dev_name(pv)));
 		outnl(f);
 
 		if (!_print_flag_config(f, pv->status, PV_FLAGS))
@@ -582,8 +579,6 @@ static int _print_lv(struct formatter *f, struct logical_volume *lv)
 	struct lv_segment *seg;
 	char buffer[4096];
 	int seg_count;
-	struct tm *local_tm;
-	time_t ts;
 
 	outnl(f);
 	outf(f, "%s {", lv->name);
@@ -600,19 +595,6 @@ static int _print_lv(struct formatter *f, struct logical_volume *lv)
 
 	if (!_out_tags(f, &lv->tags))
 		return_0;
-
-	if (lv->timestamp) {
-		ts = (time_t)lv->timestamp;
-		strncpy(buffer, "# ", sizeof(buffer));
-		if (!(local_tm = localtime(&ts)) ||
-		    !strftime(buffer + 2, sizeof(buffer) - 2,
-			      "%Y-%m-%d %T %z", local_tm))
-			buffer[0] = 0;
-
-		outf(f, "creation_host = \"%s\"", lv->hostname);
-		outfc(f, buffer, "creation_time = %" PRIu64,
-		      lv->timestamp);
-	}
 
 	if (lv->alloc != ALLOC_INHERIT)
 		outf(f, "allocation_policy = \"%s\"",
@@ -760,15 +742,11 @@ static int _text_vg_export(struct formatter *f,
 	r = 1;
 
       out:
-	if (f->mem) {
+	if (f->mem)
 		dm_pool_destroy(f->mem);
-		f->mem = NULL;
-	}
 
-	if (f->pv_names) {
+	if (f->pv_names)
 		dm_hash_destroy(f->pv_names);
-		f->pv_names = NULL;
-	}
 
 	return r;
 }
@@ -797,10 +775,10 @@ int text_vg_export_file(struct volume_group *vg, const char *desc, FILE *fp)
 }
 
 /* Returns amount of buffer used incl. terminating NUL */
-size_t text_vg_export_raw(struct volume_group *vg, const char *desc, char **buf)
+int text_vg_export_raw(struct volume_group *vg, const char *desc, char **buf)
 {
 	struct formatter *f;
-	size_t r = 0;
+	int r = 0;
 
 	_init();
 
@@ -831,7 +809,7 @@ size_t text_vg_export_raw(struct volume_group *vg, const char *desc, char **buf)
 	return r;
 }
 
-size_t export_vg_to_buffer(struct volume_group *vg, char **buf)
+int export_vg_to_buffer(struct volume_group *vg, char **buf)
 {
 	return text_vg_export_raw(vg, "", buf);
 }

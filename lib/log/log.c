@@ -110,7 +110,7 @@ void release_log_memory(void)
 void fin_log(void)
 {
 	if (_log_direct) {
-		(void) dev_close(&_log_dev);
+		dev_close(&_log_dev);
 		_log_direct = 0;
 	}
 
@@ -136,7 +136,7 @@ void fin_syslog(void)
 
 void init_msg_prefix(const char *prefix)
 {
-	strncpy(_msg_prefix, prefix, sizeof(_msg_prefix) - 1);
+	strncpy(_msg_prefix, prefix, sizeof(_msg_prefix));
 	_msg_prefix[sizeof(_msg_prefix) - 1] = '\0';
 }
 
@@ -185,7 +185,7 @@ void print_log(int level, const char *file, int line, int dm_errno,
 	       const char *format, ...)
 {
 	va_list ap;
-	char buf[1024], locn[4096];
+	char buf[1024], buf2[4096], locn[4096];
 	int bufused, n;
 	const char *message;
 	const char *trformat;		/* Translated format string */
@@ -221,7 +221,7 @@ void print_log(int level, const char *file, int line, int dm_errno,
 	    (_store_errmsg && (level <= _LOG_ERR)) ||
 	    log_once) {
 		va_start(ap, format);
-		n = vsnprintf(locn, sizeof(locn) - 1, trformat, ap);
+		n = vsnprintf(buf2, sizeof(buf2) - 1, trformat, ap);
 		va_end(ap);
 
 		if (n < 0) {
@@ -230,8 +230,8 @@ void print_log(int level, const char *file, int line, int dm_errno,
 			goto log_it;
 		}
 
-		locn[sizeof(locn) - 1] = '\0';
-		message = &locn[0];
+		buf2[sizeof(buf2) - 1] = '\0';
+		message = &buf2[0];
 	}
 
 /* FIXME Avoid pointless use of message buffer when it'll never be read! */
@@ -262,7 +262,7 @@ void print_log(int level, const char *file, int line, int dm_errno,
 		if (_duplicated) {
 			if (dm_hash_lookup(_duplicated, message))
 				level = _LOG_NOTICE;
-			(void) dm_hash_insert(_duplicated, message, (void*)1);
+			dm_hash_insert(_duplicated, message, (void*)1);
 		}
 	}
 
@@ -388,8 +388,8 @@ void print_log(int level, const char *file, int line, int dm_errno,
 		va_end(ap);
 		bufused += n;
 
-		buf[bufused - 1] = '\n';
 	      done:
+		buf[bufused - 1] = '\n';
 		buf[bufused] = '\n';
 		buf[sizeof(buf) - 1] = '\n';
 		/* FIXME real size bufused */

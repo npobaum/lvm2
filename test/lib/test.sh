@@ -34,15 +34,10 @@ trap 'aux teardown' EXIT # don't forget to clean up
 
 export LVM_SYSTEM_DIR=$TESTDIR/etc
 DM_DEV_DIR=$TESTDIR/dev
-mkdir $LVM_SYSTEM_DIR $TESTDIR/lib $DM_DEV_DIR
-if test -n "$LVM_TEST_DEVDIR" ; then
-	DM_DEV_DIR="$LVM_TEST_DEVDIR"
-else
-	mknod $DM_DEV_DIR/testnull c 1 3 || exit 1;
-	echo >$DM_DEV_DIR/testnull || { echo "Filesystem does support devices in $DM_DEV_DIR (mounted with nodev?)"; exit 1; }
-	mkdir -p $DM_DEV_DIR/mapper
-fi
+test -n "$LVM_TEST_DEVDIR" && DM_DEV_DIR="$LVM_TEST_DEVDIR"
 export DM_DEV_DIR
+mkdir $LVM_SYSTEM_DIR $TESTDIR/lib
+mkdir -p $DM_DEV_DIR $DM_DEV_DIR/mapper
 
 cd $TESTDIR
 
@@ -59,10 +54,6 @@ ln -s $abs_top_builddir/test/lib/* $TESTDIR/lib
 set -eE -o pipefail
 aux lvmconf
 aux prepare_clvmd
-test -n "$LVM_TEST_LVMETAD" && {
-    aux prepare_lvmetad
-    export LVM_LVMETAD_SOCKET="$TESTDIR/lvmetad.socket"
-}
 echo "@TESTDIR=$TESTDIR"
 echo "@PREFIX=$PREFIX"
 

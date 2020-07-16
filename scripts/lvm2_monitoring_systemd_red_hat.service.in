@@ -1,7 +1,7 @@
 [Unit]
 Description=Monitoring of LVM2 mirrors, snapshots etc. using dmeventd or progress polling
 Requires=dm-event.socket
-After=dm-event.socket fedora-storage-init.service fedora-storage-init-late.service
+After=fedora-storage-init.service fedora-storage-init-late.service
 Before=local-fs.target
 DefaultDependencies=no
 Conflicts=shutdown.target
@@ -15,3 +15,4 @@ RemainAfterExit=yes
 
 [Install]
 WantedBy=sysinit.target
+Also=dm-event.socket

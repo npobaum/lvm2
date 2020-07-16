@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2012 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2005-2010 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -18,7 +18,6 @@
 #include "errors.h"
 #include "libdevmapper-event.h"
 #include "dmeventd_lvm.h"
-#include "defaults.h"
 
 #include <syslog.h> /* FIXME Replace syslog with multilog */
 /* FIXME Missing openlog? */
@@ -82,8 +81,7 @@ static int _get_mirror_event(char *params)
 	if (!dm_split_words(params, 1, 0, &p))
 		goto out_parse;
 
-	if (!(num_devs = atoi(p)) ||
-	    (num_devs > DEFAULT_MIRROR_MAX_IMAGES) || (num_devs < 0))
+	if (!(num_devs = atoi(p)))
 		goto out_parse;
 	p += strlen(p) + 1;
 
@@ -92,7 +90,6 @@ static int _get_mirror_event(char *params)
 	if (!args || dm_split_words(p, num_devs + 7, 0, args) < num_devs + 5)
 		goto out_parse;
 
-	/* FIXME: Code differs from lib/mirror/mirrored.c */
 	dev_status_str = args[2 + num_devs];
 	log_argc = atoi(args[3 + num_devs]);
 	log_status_str = args[3 + num_devs + log_argc];
@@ -136,15 +133,32 @@ static int _remove_failed_devices(const char *device)
 	int r;
 #define CMD_SIZE 256	/* FIXME Use system restriction */
 	char cmd_str[CMD_SIZE];
+	char *vg = NULL, *lv = NULL, *layer = NULL;
 
-	if (!dmeventd_lvm2_command(dmeventd_lvm2_pool(), cmd_str, sizeof(cmd_str),
-				  "lvconvert --config devices{ignore_suspended_devices=1} "
-				  "--repair --use-policies", device))
+	if (strlen(device) > 200)  /* FIXME Use real restriction */
+		return -ENAMETOOLONG;	/* FIXME These return code distinctions are not used so remove them! */
+
+	if (!dm_split_lvm_name(dmeventd_lvm2_pool(), device, &vg, &lv, &layer)) {
+		syslog(LOG_ERR, "Unable to determine VG name from %s.",
+		       device);
+		return -ENOMEM;	/* FIXME Replace with generic error return - reason for failure has already got logged */
+	}
+
+	/* strip off the mirror component designations */
+	layer = strstr(lv, "_mlog");
+	if (layer)
+		*layer = '\0';
+
+	/* FIXME Is any sanity-checking required on %s? */
+	if (CMD_SIZE <= snprintf(cmd_str, CMD_SIZE, "lvconvert --config devices{ignore_suspended_devices=1} --repair --use-policies %s/%s", vg, lv)) {
+		/* this error should be caught above, but doesn't hurt to check again */
+		syslog(LOG_ERR, "Unable to form LVM command: Device name too long.");
 		return -ENAMETOOLONG; /* FIXME Replace with generic error return - reason for failure has already got logged */
+	}
 
 	r = dmeventd_lvm2_run(cmd_str);
 
-	syslog(LOG_INFO, "Repair of mirrored device %s %s.", device,
+	syslog(LOG_INFO, "Repair of mirrored LV %s/%s %s.", vg, lv,
 	       (r == ECMD_PROCESSED) ? "finished successfully" : "failed");
 
 	return (r == ECMD_PROCESSED) ? 0 : -1;
@@ -213,12 +227,9 @@ int register_device(const char *device,
 		    int minor __attribute__((unused)),
 		    void **unused __attribute__((unused)))
 {
-	if (!dmeventd_lvm2_init())
-		return 0;
-
+	int r = dmeventd_lvm2_init();
 	syslog(LOG_INFO, "Monitoring mirror device %s for events.", device);
-
-	return 1;
+	return r;
 }
 
 int unregister_device(const char *device,
@@ -230,6 +241,5 @@ int unregister_device(const char *device,
 	syslog(LOG_INFO, "No longer monitoring mirror device %s for events.",
 	       device);
 	dmeventd_lvm2_exit();
-
 	return 1;
 }

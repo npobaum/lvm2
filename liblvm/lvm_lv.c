@@ -110,6 +110,7 @@ static void _lv_set_default_params(struct lvcreate_params *lp,
 	lp->zero = 1;
 	lp->major = -1;
 	lp->minor = -1;
+	lp->activation_monitoring = DEFAULT_DMEVENTD_MONITOR;
 	lp->activate = CHANGE_AY;
 	lp->vg_name = vg->name;
 	lp->lv_name = lvname; /* FIXME: check this for safety */
@@ -123,18 +124,12 @@ static void _lv_set_default_params(struct lvcreate_params *lp,
 }
 
 /* Set default for linear segment specific LV parameters */
-static int _lv_set_default_linear_params(struct cmd_context *cmd,
+static void _lv_set_default_linear_params(struct cmd_context *cmd,
 					  struct lvcreate_params *lp)
 {
-	if (!(lp->segtype = get_segtype_from_string(cmd, "striped"))) {
-		log_error(INTERNAL_ERROR "Segtype striped not found.");
-		return 0;
-	}
-
+	lp->segtype = get_segtype_from_string(cmd, "striped");
 	lp->stripes = 1;
 	lp->stripe_size = DEFAULT_STRIPESIZE * 2;
-
-	return 1;
 }
 
 /*
@@ -156,8 +151,7 @@ lv_t lvm_vg_create_lv_linear(vg_t vg, const char *name, uint64_t size)
 	extents = extents_from_size(vg->cmd, size / SECTOR_SIZE,
 				    vg->extent_size);
 	_lv_set_default_params(&lp, vg, name, extents);
-	if (!_lv_set_default_linear_params(vg->cmd, &lp))
-		return_NULL;
+	_lv_set_default_linear_params(vg->cmd, &lp);
 	if (!lv_create_single(vg, &lp))
 		return NULL;
 	lvl = find_lv_in_vg(vg, name);
@@ -276,12 +270,12 @@ lv_t lvm_lv_from_uuid(vg_t vg, const char *uuid)
 		log_errno (EINVAL, "Invalid UUID string length");
 		return NULL;
 	}
-
-	if (!id_read_format(&id, uuid)) {
-		log_errno(EINVAL, "Invalid UUID format.");
-		return NULL;
+	if (strlen(uuid) >= ID_LEN) {
+		if (!id_read_format(&id, uuid)) {
+			log_errno(EINVAL, "Invalid UUID format");
+			return NULL;
+		}
 	}
-
 	dm_list_iterate_items(lvl, &vg->lvs) {
 		if (id_equal(&vg->id, &lvl->lv->lvid.id[0]) &&
 		    id_equal(&id, &lvl->lv->lvid.id[1]))

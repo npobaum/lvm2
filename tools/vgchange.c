@@ -90,19 +90,11 @@ static int _activate_lvs_in_vg(struct cmd_context *cmd,
 	struct logical_volume *lv;
 	int count = 0, expected_count = 0;
 
-	sigint_allow();
 	dm_list_iterate_items(lvl, &vg->lvs) {
-		if (sigint_caught())
-			return_0;
-
 		lv = lvl->lv;
 
 		if (!lv_is_visible(lv))
 			continue;
-
-		/* If LV is sparse, activate origin instead */
-		if (lv_is_cow(lv) && lv_is_virtual_origin(origin_from_cow(lv)))
-			lv = origin_from_cow(lv);
 
 		/* Only request activation of snapshot origin devices */
 		if ((lv->status & SNAPSHOT) || lv_is_cow(lv))
@@ -145,10 +137,7 @@ static int _activate_lvs_in_vg(struct cmd_context *cmd,
 				stack;
 				continue;
 			}
-		} else if ((activate == CHANGE_AE) ||
-			   lv_is_origin(lv) ||
-			   lv_is_thin_type(lv)) {
-			/* FIXME: duplicated test code with lvchange */
+		} else if (lv_is_origin(lv) || (activate == CHANGE_AE)) {
 			if (!activate_lv_excl(cmd, lv)) {
 				stack;
 				continue;
@@ -170,8 +159,6 @@ static int _activate_lvs_in_vg(struct cmd_context *cmd,
 
 		count++;
 	}
-
-	sigint_restore();
 
 	if (expected_count)
 		log_verbose("%s %d logical volumes in volume group %s",
@@ -280,7 +267,7 @@ static int _vgchange_alloc(struct cmd_context *cmd, struct volume_group *vg)
 {
 	alloc_policy_t alloc;
 
-	alloc = (alloc_policy_t) arg_uint_value(cmd, alloc_ARG, ALLOC_NORMAL);
+	alloc = arg_uint_value(cmd, alloc_ARG, ALLOC_NORMAL);
 
 	/* FIXME: make consistent with vg_set_alloc_policy() */
 	if (alloc == vg->alloc) {
@@ -447,6 +434,7 @@ static int vgchange_single(struct cmd_context *cmd, const char *vg_name,
 			   struct volume_group *vg,
 			   void *handle __attribute__((unused)))
 {
+	int dmeventd_mode;
 	int archived = 0;
 	int i;
 
@@ -471,6 +459,11 @@ static int vgchange_single(struct cmd_context *cmd, const char *vg_name,
 		log_error("Volume group \"%s\" is exported", vg_name);
 		return ECMD_FAILED;
 	}
+
+	if (!get_activation_monitoring_mode(cmd, vg, &dmeventd_mode))
+		return ECMD_FAILED;
+
+	init_dmeventd_monitor(dmeventd_mode);
 
 	/*
 	 * FIXME: DEFAULT_BACKGROUND_POLLING should be "unspecified".
@@ -596,13 +589,13 @@ int vgchange(struct cmd_context *cmd, int argc, char **argv)
 	}
 
 	if (arg_count(cmd, maxphysicalvolumes_ARG) &&
-	    arg_sign_value(cmd, maxphysicalvolumes_ARG, SIGN_NONE) == SIGN_MINUS) {
+	    arg_sign_value(cmd, maxphysicalvolumes_ARG, 0) == SIGN_MINUS) {
 		log_error("MaxPhysicalVolumes may not be negative");
 		return EINVALID_CMD_LINE;
 	}
 
 	if (arg_count(cmd, physicalextentsize_ARG) &&
-	    arg_sign_value(cmd, physicalextentsize_ARG, SIGN_NONE) == SIGN_MINUS) {
+	    arg_sign_value(cmd, physicalextentsize_ARG, 0) == SIGN_MINUS) {
 		log_error("Physical extent size may not be negative");
 		return EINVALID_CMD_LINE;
 	}

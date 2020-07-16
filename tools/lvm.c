@@ -60,7 +60,7 @@ static char *_list_args(const char *text, int state)
 	/* Initialise if this is a new completion attempt */
 	if (!state) {
 		char *s = rl_line_buffer;
-		int j;
+		int j = 0;
 
 		match_no = 0;
 		com = NULL;
@@ -167,6 +167,7 @@ static void _read_history(struct cmd_context *cmd)
 
 	stifle_history(find_config_tree_int(cmd, "shell/history_size",
 				       DEFAULT_MAX_HISTORY));
+
 }
 
 static void _write_history(void)

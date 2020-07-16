@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2007-2011 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2007-2010 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -38,12 +38,6 @@ struct snap_status {
 	int invalid;
 	int used;
 	int max;
-};
-
-struct dso_state {
-	int percent_check;
-	int known_size;
-	char cmd_str[1024];
 };
 
 /* FIXME possibly reconcile this with target_percent when we gain
@@ -121,9 +115,26 @@ static int _run(const char *cmd, ...)
         return 1; /* all good */
 }
 
-static int _extend(const char *cmd)
+static int _extend(const char *device)
 {
-	return dmeventd_lvm2_run(cmd) == ECMD_PROCESSED;
+	char *vg = NULL, *lv = NULL, *layer = NULL;
+	char cmd_str[1024];
+	int r = 0;
+
+	if (!dm_split_lvm_name(dmeventd_lvm2_pool(), device, &vg, &lv, &layer)) {
+		syslog(LOG_ERR, "Unable to determine VG name from %s.", device);
+		return 0;
+	}
+	if (dm_snprintf(cmd_str, sizeof(cmd_str),
+			"lvextend --use-policies %s/%s", vg, lv) < 0) {
+		syslog(LOG_ERR, "Unable to form LVM command: Device name too long.");
+		return 0;
+	}
+
+	r = dmeventd_lvm2_run(cmd_str);
+	syslog(LOG_INFO, "Extension of snapshot %s/%s %s.", vg, lv,
+	       (r == ECMD_PROCESSED) ? "finished successfully" : "failed");
+	return r == ECMD_PROCESSED;
 }
 
 static void _umount(const char *device, int major, int minor)
@@ -144,8 +155,7 @@ static void _umount(const char *device, int major, int minor)
 			break; /* eof, likely */
 
 		/* words[0] is the mount point and words[1] is the device path */
-		if (dm_split_words(buffer, 3, 0, words) < 2)
-			continue;
+		dm_split_words(buffer, 3, 0, words);
 
 		/* find the major/minor of the device */
 		if (stat(words[0], &st))
@@ -154,9 +164,9 @@ static void _umount(const char *device, int major, int minor)
 		if (S_ISBLK(st.st_mode) &&
 		    major(st.st_rdev) == major &&
 		    minor(st.st_rdev) == minor) {
-			syslog(LOG_ERR, "Unmounting invalid snapshot %s from %s.\n", device, words[1]);
+			syslog(LOG_ERR, "Unmounting invalid snapshot %s from %s.", device, words[1]);
                         if (!_run(UMOUNT_COMMAND, "-fl", words[1], NULL))
-                                syslog(LOG_ERR, "Failed to umount snapshot %s from %s: %s.\n",
+                                syslog(LOG_ERR, "Failed to umount snapshot %s from %s: %s.",
                                        device, words[1], strerror(errno));
 		}
 	}
@@ -175,11 +185,10 @@ void process_event(struct dm_task *dmt,
 	char *params;
 	struct snap_status status = { 0 };
 	const char *device = dm_task_get_name(dmt);
-	int percent;
-	struct dso_state *state = *private;
+	int percent, *percent_check = (int*)private;
 
 	/* No longer monitoring, waiting for remove */
-	if (!state->percent_check)
+	if (!*percent_check)
 		return;
 
 	dmeventd_lvm2_lock();
@@ -199,35 +208,27 @@ void process_event(struct dm_task *dmt,
 		} /* else; too bad, but this is best-effort thing... */
 	}
 
-	/* Snapshot size had changed. Clear the threshold. */
-	if (state->known_size != status.max) {
-		state->percent_check = CHECK_MINIMUM;
-		state->known_size = status.max;
-	}
-
 	/*
 	 * If the snapshot has been invalidated or we failed to parse
 	 * the status string. Report the full status string to syslog.
 	 */
 	if (status.invalid || !status.max) {
 		syslog(LOG_ERR, "Snapshot %s changed state to: %s\n", device, params);
-		state->percent_check = 0;
+		*percent_check = 0;
 		goto out;
 	}
 
 	percent = 100 * status.used / status.max;
-	if (percent >= state->percent_check) {
+	if (percent >= *percent_check) {
 		/* Usage has raised more than CHECK_STEP since the last
 		   time. Run actions. */
-		state->percent_check = (percent / CHECK_STEP) * CHECK_STEP + CHECK_STEP;
-
+		*percent_check = (percent / CHECK_STEP) * CHECK_STEP + CHECK_STEP;
 		if (percent >= WARNING_THRESH) /* Print a warning to syslog. */
 			syslog(LOG_WARNING, "Snapshot %s is now %i%% full.\n", device, percent);
 		/* Try to extend the snapshot, in accord with user-set policies */
-		if (!_extend(state->cmd_str))
-			syslog(LOG_ERR, "Failed to extend snapshot %s.\n", device);
+		if (!_extend(device))
+			syslog(LOG_ERR, "Failed to extend snapshot %s.", device);
 	}
-
 out:
 	dmeventd_lvm2_unlock();
 }
@@ -238,46 +239,23 @@ int register_device(const char *device,
 		    int minor __attribute__((unused)),
 		    void **private)
 {
-	struct dso_state *state;
+	int *percent_check = (int*)private;
+	int r = dmeventd_lvm2_init();
 
-	if (!dmeventd_lvm2_init())
-		goto out;
-
-	if (!(state = dm_zalloc(sizeof(*state))))
-		goto bad;
-
-	if (!dmeventd_lvm2_command(dmeventd_lvm2_pool(),
-                                   state->cmd_str, sizeof(state->cmd_str),
-				   "lvextend --use-policies", device))
-		goto bad;
-
-	state->percent_check = CHECK_MINIMUM;
-	state->known_size = 0;
-	*private = state;
+	*percent_check = CHECK_MINIMUM;
 
 	syslog(LOG_INFO, "Monitoring snapshot %s\n", device);
-
-	return 1;
-bad:
-	dm_free(state);
-	dmeventd_lvm2_exit();
-out:
-	syslog(LOG_ERR, "Failed to monitor snapshot %s.\n", device);
-
-	return 0;
+	return r;
 }
 
 int unregister_device(const char *device,
 		      const char *uuid __attribute__((unused)),
 		      int major __attribute__((unused)),
 		      int minor __attribute__((unused)),
-		      void **private)
+		      void **unused __attribute__((unused)))
 {
-	struct dso_state *state = *private;
-
-	syslog(LOG_INFO, "No longer monitoring snapshot %s\n", device);
-	dm_free(state);
+	syslog(LOG_INFO, "No longer monitoring snapshot %s\n",
+	       device);
 	dmeventd_lvm2_exit();
-
 	return 1;
 }

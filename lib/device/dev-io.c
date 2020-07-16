@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2012 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -292,14 +292,14 @@ static int _dev_read_ahead_dev(struct device *dev, uint32_t *read_ahead)
 		return 0;
 	}
 
+	if (!dev_close(dev))
+		stack;
+
 	*read_ahead = (uint32_t) read_ahead_long;
 	dev->read_ahead = read_ahead_long;
 
 	log_very_verbose("%s: read_ahead is %u sectors",
 			 dev_name(dev), *read_ahead);
-
-	if (!dev_close(dev))
-		stack;
 
 	return 1;
 }
@@ -449,6 +449,17 @@ int dev_open_flags(struct device *dev, int flags, int direct, int quiet)
 	else if (!(name = dev_name_confirmed(dev, quiet)))
 		return_0;
 
+	if (!(dev->flags & DEV_REGULAR)) {
+		if (stat(name, &buf) < 0) {
+			log_sys_error("%s: stat failed", name);
+			return 0;
+		}
+		if (buf.st_rdev != dev->dev) {
+			log_error("%s: device changed", name);
+			return 0;
+		}
+	}
+
 #ifdef O_DIRECT_SUPPORT
 	if (direct) {
 		if (!(dev->flags & DEV_O_DIRECT_TESTED))
@@ -586,6 +597,7 @@ static void _close(struct device *dev)
 
 static int _dev_close(struct device *dev, int immediate)
 {
+	struct lvmcache_info *info;
 
 	if (dev->fd < 0) {
 		log_error("Attempt to close device '%s' "
@@ -607,7 +619,10 @@ static int _dev_close(struct device *dev, int immediate)
 
 	/* Close unless device is known to belong to a locked VG */
 	if (immediate ||
-	    (dev->open_count < 1 && !lvmcache_pvid_is_locked(dev->pvid)))
+	    (dev->open_count < 1 &&
+	     (!(info = info_from_pvid(dev->pvid, 0)) ||
+	      !info->vginfo ||
+	      !vgname_is_locked(info->vginfo->vgname))))
 		_close(dev);
 
 	return 1;
@@ -663,8 +678,6 @@ int dev_read(struct device *dev, uint64_t offset, size_t len, void *buffer)
 	where.dev = dev;
 	where.start = offset;
 	where.size = len;
-
-	// fprintf(stderr, "READ: %s, %lld, %d\n", dev_name(dev), offset, len);
 
 	ret = _aligned_io(&where, buffer, 0);
 	if (!ret)

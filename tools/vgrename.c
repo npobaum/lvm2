@@ -79,10 +79,6 @@ static int vg_rename_path(struct cmd_context *cmd, const char *old_vg_path,
 
 	log_verbose("Checking for existing volume group \"%s\"", vg_name_old);
 
-	/* populate lvmcache */
-	if (!lvmetad_vg_list_to_lvmcache(cmd))
-		stack;
-
 	/* Avoid duplicates */
 	if (!(vgids = get_vgids(cmd, 0)) || dm_list_empty(vgids)) {
 		log_error("No complete volume groups found");
@@ -91,7 +87,7 @@ static int vg_rename_path(struct cmd_context *cmd, const char *old_vg_path,
 
 	dm_list_iterate_items(sl, vgids) {
 		vgid = sl->str;
-		if (!vgid || !(vg_name = lvmcache_vgname_from_vgid(NULL, vgid)))
+		if (!vgid || !(vg_name = vgname_from_vgid(NULL, vgid)))
 			continue;
 		if (!strcmp(vg_name, vg_name_old)) {
 			if (match) {
@@ -106,7 +102,7 @@ static int vg_rename_path(struct cmd_context *cmd, const char *old_vg_path,
 	log_suppress(2);
 	found_id = id_read_format(&id, vg_name_old);
 	log_suppress(0);
-	if (found_id && (vg_name = lvmcache_vgname_from_vgid(cmd->mem, (char *)id.uuid))) {
+	if (found_id && (vg_name = vgname_from_vgid(cmd->mem, (char *)id.uuid))) {
 		vg_name_old = vg_name;
 		vgid = (char *)id.uuid;
 	} else
@@ -139,8 +135,7 @@ static int vg_rename_path(struct cmd_context *cmd, const char *old_vg_path,
 		goto error;
 
 	/* Remove references based on old name */
-	if (!drop_cached_metadata(vg))
-		stack;
+	drop_cached_metadata(vg);
 
 	/* Change the volume group name */
 	vg_rename(cmd, vg, vg_name_new);

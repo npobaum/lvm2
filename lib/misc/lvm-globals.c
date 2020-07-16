@@ -42,7 +42,6 @@ static int _ignore_suspended_devices = 0;
 static int _error_message_produced = 0;
 static unsigned _is_static = 0;
 static int _udev_checking = 1;
-static int _retry_deactivation = DEFAULT_RETRY_DEACTIVATION;
 static int _activation_checks = 0;
 static char _sysfs_dir_path[PATH_MAX] = "";
 static int _dev_disable_after_error_count = DEFAULT_DISABLE_AFTER_ERROR_COUNT;
@@ -135,11 +134,6 @@ void init_udev_checking(int checking)
 		log_debug("LVM udev checking disabled");
 }
 
-void init_retry_deactivation(int retry)
-{
-	_retry_deactivation = retry;
-}
-
 void init_activation_checks(int checks)
 {
 	if ((_activation_checks = checks))
@@ -165,13 +159,13 @@ void init_detect_internal_vg_cache_corruption(int detect)
 
 void set_cmd_name(const char *cmd)
 {
-	strncpy(_cmd_name, cmd, sizeof(_cmd_name) - 1);
+	strncpy(_cmd_name, cmd, sizeof(_cmd_name));
 	_cmd_name[sizeof(_cmd_name) - 1] = '\0';
 }
 
 void set_sysfs_dir_path(const char *path)
 {
-	strncpy(_sysfs_dir_path, path, sizeof(_sysfs_dir_path) - 1);
+	strncpy(_sysfs_dir_path, path, sizeof(_sysfs_dir_path));
 	_sysfs_dir_path[sizeof(_sysfs_dir_path) - 1] = '\0';
 }
 
@@ -213,7 +207,7 @@ int full_scan_done(void)
 	return _full_scan_done;
 }
 
-int obtain_device_list_from_udev(void)
+int obtain_device_list_from_udev()
 {
 	return _obtain_device_list_from_udev;
 }
@@ -276,11 +270,6 @@ unsigned is_static(void)
 int udev_checking(void)
 {
 	return _udev_checking;
-}
-
-int retry_deactivation(void)
-{
-	return _retry_deactivation;
 }
 
 int activation_checks(void)

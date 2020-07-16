@@ -48,23 +48,11 @@ static struct {
 
 } _cache;
 
-#define _zalloc(x) dm_pool_zalloc(_cache.mem, (x))
+#define _alloc(x) dm_pool_zalloc(_cache.mem, (x))
 #define _free(x) dm_pool_free(_cache.mem, (x))
 #define _strdup(x) dm_pool_strdup(_cache.mem, (x))
 
 static int _insert(const char *path, int rec, int check_with_udev_db);
-
-/* Setup non-zero members of passed zeroed 'struct device' */
-static void _dev_init(struct device *dev, int max_error_count)
-{
-	dev->block_size = -1;
-	dev->fd = -1;
-	dev->read_ahead = -1;
-	dev->max_error_count = max_error_count;
-
-	dm_list_init(&dev->aliases);
-	dm_list_init(&dev->open_list);
-}
 
 struct device *dev_create_file(const char *filename, struct device *dev,
 			       struct str_list *alias, int use_malloc)
@@ -73,11 +61,11 @@ struct device *dev_create_file(const char *filename, struct device *dev,
 
 	if (allocate) {
 		if (use_malloc) {
-			if (!(dev = dm_zalloc(sizeof(*dev)))) {
+			if (!(dev = dm_malloc(sizeof(*dev)))) {
 				log_error("struct device allocation failed");
 				return NULL;
 			}
-			if (!(alias = dm_zalloc(sizeof(*alias)))) {
+			if (!(alias = dm_malloc(sizeof(*alias)))) {
 				log_error("struct str_list allocation failed");
 				dm_free(dev);
 				return NULL;
@@ -88,12 +76,13 @@ struct device *dev_create_file(const char *filename, struct device *dev,
 				dm_free(alias);
 				return NULL;
 			}
+			dev->flags = DEV_ALLOCED;
 		} else {
-			if (!(dev = _zalloc(sizeof(*dev)))) {
+			if (!(dev = _alloc(sizeof(*dev)))) {
 				log_error("struct device allocation failed");
 				return NULL;
 			}
-			if (!(alias = _zalloc(sizeof(*alias)))) {
+			if (!(alias = _alloc(sizeof(*alias)))) {
 				log_error("struct str_list allocation failed");
 				_free(dev);
 				return NULL;
@@ -108,9 +97,19 @@ struct device *dev_create_file(const char *filename, struct device *dev,
 		return NULL;
 	}
 
-	_dev_init(dev, NO_DEV_ERROR_COUNT_LIMIT);
-	dev->flags = DEV_REGULAR | ((use_malloc) ? DEV_ALLOCED : 0);
+	dev->flags |= DEV_REGULAR;
+	dm_list_init(&dev->aliases);
 	dm_list_add(&dev->aliases, &alias->list);
+	dev->end = UINT64_C(0);
+	dev->dev = 0;
+	dev->fd = -1;
+	dev->open_count = 0;
+	dev->error_count = 0;
+	dev->max_error_count = NO_DEV_ERROR_COUNT_LIMIT;
+	dev->block_size = -1;
+	dev->read_ahead = -1;
+	memset(dev->pvid, 0, sizeof(dev->pvid));
+	dm_list_init(&dev->open_list);
 
 	return dev;
 }
@@ -119,13 +118,21 @@ static struct device *_dev_create(dev_t d)
 {
 	struct device *dev;
 
-	if (!(dev = _zalloc(sizeof(*dev)))) {
+	if (!(dev = _alloc(sizeof(*dev)))) {
 		log_error("struct device allocation failed");
 		return NULL;
 	}
-
-	_dev_init(dev, dev_disable_after_error_count());
+	dev->flags = 0;
+	dm_list_init(&dev->aliases);
 	dev->dev = d;
+	dev->fd = -1;
+	dev->open_count = 0;
+	dev->max_error_count = dev_disable_after_error_count();
+	dev->block_size = -1;
+	dev->read_ahead = -1;
+	dev->end = UINT64_C(0);
+	memset(dev->pvid, 0, sizeof(dev->pvid));
+	dm_list_init(&dev->open_list);
 
 	return dev;
 }
@@ -254,19 +261,10 @@ static int _compare_paths(const char *path0, const char *path1)
 	if (slash1 < slash0)
 		return 1;
 
-	strncpy(p0, path0, sizeof(p0) - 1);
-	p0[sizeof(p0) - 1] = '\0';
-	strncpy(p1, path1, sizeof(p1) - 1);
-	p1[sizeof(p1) - 1] = '\0';
-	s0 = p0 + 1;
-	s1 = p1 + 1;
-
-	/*
-	 * If we reach here, both paths are the same length.
-	 * Now skip past identical path components.
-	 */
-	while (*s0 && *s0 == *s1)
-		s0++, s1++;
+	strncpy(p0, path0, PATH_MAX);
+	strncpy(p1, path1, PATH_MAX);
+	s0 = &p0[0] + 1;
+	s1 = &p1[0] + 1;
 
 	/* We prefer symlinks - they exist for a reason!
 	 * So we prefer a shorter path before the first symlink in the name.
@@ -305,7 +303,7 @@ static int _compare_paths(const char *path0, const char *path1)
 
 static int _add_alias(struct device *dev, const char *path)
 {
-	struct str_list *sl = _zalloc(sizeof(*sl));
+	struct str_list *sl = _alloc(sizeof(*sl));
 	struct str_list *strl;
 	const char *oldpath;
 	int prefer_old = 1;
@@ -509,21 +507,14 @@ static int _insert_udev_dir(struct udev *udev, const char *dir)
 		goto bad;
 
 	udev_list_entry_foreach(device_entry, udev_enumerate_get_list_entry(udev_enum)) {
-		if (!(device = udev_device_new_from_syspath(udev, udev_list_entry_get_name(device_entry)))) {
-			log_warn("WARNING: udev failed to return a device entry.");
-			continue;
-		}
+		device = udev_device_new_from_syspath(udev, udev_list_entry_get_name(device_entry));
 
-		if (!(node_name = udev_device_get_devnode(device)))
-			log_warn("WARNING: udev failed to return a device node.");
-		else
-			r &= _insert(node_name, 0, 0);
+		node_name = udev_device_get_devnode(device);
+		r &= _insert(node_name, 0, 0);
 
 		udev_list_entry_foreach(symlink_entry, udev_device_get_devlinks_list_entry(device)) {
-			if (!(symlink_name = udev_list_entry_get_name(symlink_entry)))
-				log_warn("WARNING: udev failed to return a symlink name.");
-			else
-				r &= _insert(symlink_name, 0, 0);
+			symlink_name = udev_list_entry_get_name(symlink_entry);
+			r &= _insert(symlink_name, 0, 0);
 		}
 
 		udev_device_unref(device);
@@ -653,8 +644,8 @@ void dev_cache_scan(int do_scan)
 
 static int _init_preferred_names(struct cmd_context *cmd)
 {
-	const struct dm_config_node *cn;
-	const struct dm_config_value *v;
+	const struct config_node *cn;
+	const struct config_value *v;
 	struct dm_pool *scratch = NULL;
 	const char **regex;
 	unsigned count = 0;
@@ -663,14 +654,14 @@ static int _init_preferred_names(struct cmd_context *cmd)
 	_cache.preferred_names_matcher = NULL;
 
 	if (!(cn = find_config_tree_node(cmd, "devices/preferred_names")) ||
-	    cn->v->type == DM_CFG_EMPTY_ARRAY) {
+	    cn->v->type == CFG_EMPTY_ARRAY) {
 		log_very_verbose("devices/preferred_names not found in config file: "
 				 "using built-in preferences");
 		return 1;
 	}
 
 	for (v = cn->v; v; v = v->next) {
-		if (v->type != DM_CFG_STRING) {
+		if (v->type != CFG_STRING) {
 			log_error("preferred_names patterns must be enclosed in quotes");
 			return 0;
 		}
@@ -797,7 +788,7 @@ int dev_cache_add_dir(const char *path)
 		return 1;
 	}
 
-	if (!(dl = _zalloc(sizeof(*dl) + strlen(path) + 1))) {
+	if (!(dl = _alloc(sizeof(*dl) + strlen(path) + 1))) {
 		log_error("dir_list allocation failed");
 		return 0;
 	}
@@ -823,7 +814,7 @@ int dev_cache_add_loopfile(const char *path)
 		return 1;
 	}
 
-	if (!(dl = _zalloc(sizeof(*dl) + strlen(path) + 1))) {
+	if (!(dl = _alloc(sizeof(*dl) + strlen(path) + 1))) {
 		log_error("dir_list allocation failed for file");
 		return 0;
 	}
@@ -907,39 +898,6 @@ struct device *dev_cache_get(const char *name, struct dev_filter *f)
 			_full_scan(0);
 			d = (struct device *) dm_hash_lookup(_cache.names, name);
 		}
-	}
-
-	return (d && (!f || (d->flags & DEV_REGULAR) ||
-		      f->passes_filter(f, d))) ? d : NULL;
-}
-
-static struct device *_dev_cache_seek_devt(dev_t dev)
-{
-	struct device *d = NULL;
-	struct dm_hash_node *n = dm_hash_get_first(_cache.names);
-	while (n) {
-		d = dm_hash_get_data(_cache.names, n);
-		if (d->dev == dev)
-			return d;
-		n = dm_hash_get_next(_cache.names, n);
-	}
-	return NULL;
-}
-
-/*
- * TODO This is very inefficient. We probably want a hash table indexed by
- * major:minor for keys to speed up these lookups.
- */
-struct device *dev_cache_get_by_devt(dev_t dev, struct dev_filter *f)
-{
-	struct device *d = _dev_cache_seek_devt(dev);
-
-	if (d && (d->flags & DEV_REGULAR))
-		return d;
-
-	if (!d) {
-		_full_scan(0);
-		d = _dev_cache_seek_devt(dev);
 	}
 
 	return (d && (!f || (d->flags & DEV_REGULAR) ||

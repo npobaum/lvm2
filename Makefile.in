@@ -32,15 +32,11 @@ ifeq ("@APPLIB@", "yes")
   SUBDIRS += liblvm
 endif
 
-ifeq ("@BUILD_LVMETAD@", "yes")
-  SUBDIRS += libdaemon
-endif
-
 # FIXME Should use intermediate Makefiles here!
 ifeq ($(MAKECMDGOALS),distclean)
   SUBDIRS = doc include man scripts \
-    libdaemon lib tools daemons libdm \
-    udev po liblvm test \
+    lib tools daemons libdm \
+    udev po liblvm test/api test \
     unit-tests/datastruct unit-tests/mm unit-tests/regex
 endif
 DISTCLEAN_DIRS += lcov_reports*
@@ -49,10 +45,10 @@ DISTCLEAN_TARGETS += config.cache config.log config.status make.tmpl
 include make.tmpl
 
 libdm: include
-lib: libdm libdaemon
+lib: libdm
 liblvm: lib
-daemons: lib libdaemon tools
-tools: lib libdaemon device-mapper
+daemons: lib tools
+tools: lib device-mapper
 po: tools daemons
 
 lib.device-mapper: include.device-mapper
@@ -83,7 +79,7 @@ all: cscope.out
 endif
 DISTCLEAN_TARGETS += cscope.out
 
-check check_cluster check_local unit: all
+check check_cluster check_local: all
 	$(MAKE) -C test $(@)
 
 install_system_dirs:
@@ -100,9 +96,6 @@ install_initscripts:
 
 install_systemd_units:
 	$(MAKE) -C scripts install_systemd_units
-
-install_tmpfiles_configuration:
-	$(MAKE) -C scripts install_tmpfiles_configuration
 
 LCOV_TRACES = libdm.info lib.info tools.info \
 	daemons/dmeventd.info daemons/clvmd.info
@@ -123,7 +116,7 @@ lcov-reset:
 
 # maybe use subdirs processing to create tracefiles...
 $(LCOV_TRACES):
-	$(LCOV) -b $(basename $@) \
+	$(LCOV) -b $(top_srcdir)/$(basename $@) \
 		-d $(basename $@) -c -o - | $(SED) \
 		-e "s/\(dmeventd_lvm.[ch]\)/plugins\/lvm2\/\1/" \
 		-e "s/\(dmeventd_mirror.c\)/plugins\/mirror\/\1/" \

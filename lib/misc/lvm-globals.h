@@ -18,7 +18,6 @@
 
 #define VERBOSE_BASE_LEVEL _LOG_WARN
 #define SECURITY_LEVEL 0
-#define PV_MIN_SIZE_KB 512
 
 void init_verbose(int level);
 void init_test(int level);
@@ -43,7 +42,6 @@ void init_dev_disable_after_error_count(int value);
 void init_pv_min_size(uint64_t sectors);
 void init_activation_checks(int checks);
 void init_detect_internal_vg_cache_corruption(int detect);
-void init_retry_deactivation(int retry);
 
 void set_cmd_name(const char *cmd_name);
 void set_sysfs_dir_path(const char *path);
@@ -69,7 +67,6 @@ const char *sysfs_dir_path(void);
 uint64_t pv_min_size(void);
 int activation_checks(void);
 int detect_internal_vg_cache_corruption(void);
-int retry_deactivation(void);
 
 #define DMEVENTD_MONITOR_IGNORE -1
 int dmeventd_monitor_mode(void);

@@ -44,12 +44,6 @@ struct volume_group *alloc_vg(const char *pool_name, struct cmd_context *cmd,
 	vg->vgmem = vgmem;
 	vg->alloc = ALLOC_NORMAL;
 
-	if (!(vg->hostnames = dm_hash_create(16))) {
-		log_error("Failed to allocate VG hostname hashtable.");
-		dm_pool_destroy(vgmem);
-		return NULL;
-	}
-
 	dm_list_init(&vg->pvs);
 	dm_list_init(&vg->pvs_to_create);
 	dm_list_init(&vg->lvs);
@@ -73,32 +67,19 @@ static void _free_vg(struct volume_group *vg)
 
 	log_debug("Freeing VG %s at %p.", vg->name, vg);
 
-	dm_hash_destroy(vg->hostnames);
 	dm_pool_destroy(vg->vgmem);
 }
 
 void release_vg(struct volume_group *vg)
 {
-	if (!vg || (vg->fid && vg == vg->fid->fmt->orphan_vg))
+	if (!vg)
 		return;
 
 	/* Check if there are any vginfo holders */
 	if (vg->vginfo &&
-	    !lvmcache_vginfo_holders_dec_and_test_for_zero(vg->vginfo))
+	    !vginfo_holders_dec_and_test_for_zero(vg->vginfo))
 		return;
 
-	_free_vg(vg);
-}
-
-/*
- * FIXME out of place, but the main (cmd) pool has been already
- * destroyed and touching the fid (also via release_vg) will crash the
- * program
- *
- * For now quick wrapper to allow destroy of orphan vg
- */
-void free_orphan_vg(struct volume_group *vg)
-{
 	_free_vg(vg);
 }
 
@@ -280,7 +261,7 @@ static int _recalc_extents(uint32_t *extents, const char *desc1,
 
 	size /= new_size;
 
-	if (size > MAX_EXTENT_COUNT) {
+	if (size > UINT32_MAX) {
 		log_error("New extent count %" PRIu64 " for %s%s exceeds "
 			  "32 bits.", size, desc1, desc2);
 		return 0;

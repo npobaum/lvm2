@@ -1,7 +1,7 @@
 # @configure_input@
 #
 # Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
-# Copyright (C) 2004-2011 Red Hat, Inc. All rights reserved.
+# Copyright (C) 2004-2010 Red Hat, Inc. All rights reserved.
 #
 # This file is part of LVM2.
 #
@@ -35,11 +35,10 @@ STATIC_LIBS = $(SELINUX_LIBS) $(UDEV_LIBS)
 DEFS += @DEFS@
 CFLAGS += @CFLAGS@
 CLDFLAGS += @CLDFLAGS@
-ELDFLAGS += @ELDFLAGS@
 LDDEPS += @LDDEPS@
 LDFLAGS += @LDFLAGS@
 LIB_SUFFIX = @LIB_SUFFIX@
-LVMINTERNAL_LIBS = -llvm-internal $(DAEMON_LIBS) $(UDEV_LIBS) $(DL_LIBS)
+LVMINTERNAL_LIBS = -llvm-internal $(UDEV_LIBS) $(DL_LIBS)
 DL_LIBS = @DL_LIBS@
 PTHREAD_LIBS = @PTHREAD_LIBS@
 READLINE_LIBS = @READLINE_LIBS@
@@ -51,7 +50,6 @@ TESTING = @TESTING@
 prefix = @prefix@
 exec_prefix = @exec_prefix@
 udev_prefix = @udev_prefix@
-sysconfdir = @sysconfdir@
 bindir = $(DESTDIR)@bindir@
 confdir = $(DESTDIR)@CONFDIR@/lvm
 includedir = $(DESTDIR)@includedir@
@@ -59,16 +57,15 @@ libdir = $(DESTDIR)@libdir@
 usrlibdir = $(DESTDIR)@usrlibdir@
 sbindir = $(DESTDIR)@sbindir@
 usrsbindir = $(DESTDIR)@usrsbindir@
-datarootdir = @datarootdir@
-infodir = $(DESTDIR)@infodir@
-mandir = $(DESTDIR)@mandir@
+datarootdir = $(DESTDIR)@datarootdir@
+infodir = $(datarootdir)/info
+mandir = $(datarootdir)/man
 localedir = $(DESTDIR)@LOCALEDIR@
 staticdir = $(DESTDIR)@STATICDIR@
 udevdir = $(DESTDIR)@udevdir@
 pkgconfigdir = $(usrlibdir)/pkgconfig
-initdir = $(DESTDIR)$(sysconfdir)/rc.d/init.d
-systemd_dir = $(DESTDIR)@systemdsystemunitdir@
-tmpfiles_dir = $(DESTDIR)@tmpfilesdir@
+initdir = $(DESTDIR)@sysconfdir@/rc.d/init.d
+systemd_dir = $(DESTDIR)/lib/systemd/system
 ocf_scriptdir = $(DESTDIR)@OCFDIR@
 
 USRLIB_RELPATH = $(shell echo $(abspath $(usrlibdir) $(libdir)) | \
@@ -108,24 +105,20 @@ INSTALL_PROGRAM = $(INSTALL) $(M_INSTALL_PROGRAM) $(STRIP)
 INSTALL_DATA = $(INSTALL) -p $(M_INSTALL_DATA)
 INSTALL_WDATA = $(INSTALL) -p -m 644
 
-INSTALL_DIR = $(INSTALL) -m 755 -d
-INSTALL_ROOT_DIR = $(INSTALL) -m 700 -d
-INSTALL_ROOT_DATA = $(INSTALL) -m 600
+INSTALL_DIR = $(INSTALL) -m 0755 -d
+INSTALL_ROOT_DIR = $(INSTALL) -m 0700 -d
+INSTALL_ROOT_DATA = $(INSTALL) -m 0600
 INSTALL_SCRIPT = $(INSTALL) -p $(M_INSTALL_PROGRAM)
 
 .SUFFIXES: .c .d .o .so .a .po .pot .mo .dylib
 
-WFLAGS += -Wall -Wundef -Wshadow -Wcast-align -Wwrite-strings \
- -Wmissing-prototypes -Wmissing-declarations -Wnested-externs \
- -Winline -Wmissing-noreturn -Wformat-security -Wredundant-decls \
- -Wpointer-arith
+CFLAGS += -fPIC -Wall -Wundef -Wshadow -Wcast-align -Wwrite-strings -Wmissing-prototypes -Wmissing-declarations -Wnested-externs -Winline -Wmissing-noreturn -Wformat-security -Wredundant-decls -Wpointer-arith
 
-#WFLAGS += -W -Wconversion -Wbad-function-cast -Wcast-qual
-#WFLAGS += -pedantic -std=gnu99
-#DEFS += -DDEBUG_CRC32
+#CFLAGS += -W -Wconversion -Wbad-function-cast -Wcast-qual
+#CFLAGS += -pedantic -std=gnu99
+#CFLAGS += -DDEBUG_CRC32
 
-CFLAGS += -fPIC  @COPTIMISE_FLAG@
-LDFLAGS += @COPTIMISE_FLAG@
+CFLAGS += @COPTIMISE_FLAG@
 
 ifeq ("@DEBUG@", "yes")
   CFLAGS += -g -fno-omit-frame-pointer
@@ -142,12 +135,6 @@ endif
 
 LDFLAGS += -L$(top_builddir)/libdm -L$(top_builddir)/lib
 CLDFLAGS += -L$(top_builddir)/libdm -L$(top_builddir)/lib
-
-ifeq ("@BUILD_LVMETAD@", "yes")
-  DAEMON_LIBS = -ldaemonclient
-  LDFLAGS += -L$(top_builddir)/libdaemon/client
-  CLDFLAGS += -L$(top_builddir)/libdaemon/client
-endif
 
 ifeq ("@DMEVENTD@", "yes")
   LDFLAGS += -L$(top_builddir)/daemons/dmeventd
@@ -314,14 +301,14 @@ endif
 $(TARGETS): $(OBJECTS)
 
 %.o: %.c
-	$(CC) -c $(INCLUDES) $(DEFS) $(WFLAGS) $(CFLAGS) $< -o $@
+	$(CC) -c $(INCLUDES) $(DEFS) $(CFLAGS) $< -o $@
 
 %.pot: %.c Makefile
 	$(CC) -E $(INCLUDES) -include $(top_srcdir)/include/pogen.h \
-		$(DEFS) $(WFLAGS) $(CFLAGS) $< > $@
+		$(DEFS) $(CFLAGS) $< > $@
 
 %.so: %.o
-	$(CC) -c $(CFLAGS) $(CLDFLAGS) $< $(LIBS) -o $@
+	$(CC) -c $(INCLUDES) $(DEFS) $(CFLAGS) $(CLDFLAGS) $< $(LIBS) -o $@
 
 ifneq (,$(LIB_SHARED))
 
@@ -366,7 +353,7 @@ $(LIB_STATIC): $(OBJECTS)
 	set -e; \
 	FILE=`echo $@ | sed 's/\\//\\\\\\//g;s/\\.d//g'`; \
 	DEPS=`echo $(DEPS) | sed -e 's/\\//\\\\\\//g'`; \
-	$(CC) -MM $(INCLUDES) $(DEFS) -o $@ $<; \
+	$(CC) -MM $(INCLUDES) $(DEFS) $(CFLAGS) -o $@ $<; \
 	sed -i "s/\(.*\)\.o[ :]*/$$FILE.o $$FILE.d $$FILE.pot: $$DEPS /g" $@; \
 	[ -s $@ ] || $(RM) $@
 
@@ -389,8 +376,8 @@ distclean: cleandir $(SUBDIRS.distclean)
 	set -e; \
 	( cat $(srcdir)/.exported_symbols; \
 	  if test x$(EXPORTED_HEADER) != x; then \
-		$(CC) -E -P $(INCLUDES) $(DEFS) $(EXPORTED_HEADER) | \
-		$(SED) -ne "/^typedef|}/!s/.*[ \*]\(\$(EXPORTED_FN_PREFIX)_[a-z0-9_]*\)(.*/\1/p"; \
+        	$(CC) -E -P $(INCLUDES) $(DEFS) $(CFLAGS) $(EXPORTED_HEADER) | \
+        	$(SED) -ne "/^typedef|}/!s/.*[ \*]\(\$(EXPORTED_FN_PREFIX)_[a-z0-9_]*\)(.*/\1/p"; \
 	  fi \
 	) > $@
 

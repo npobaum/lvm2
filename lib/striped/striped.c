@@ -57,38 +57,38 @@ static void _striped_display(const struct lv_segment *seg)
 	log_print(" ");
 }
 
-static int _striped_text_import_area_count(const struct dm_config_node *sn, uint32_t *area_count)
+static int _striped_text_import_area_count(const struct config_node *sn, uint32_t *area_count)
 {
-	if (!dm_config_get_uint32(sn, "stripe_count", area_count)) {
+	if (!get_config_uint32(sn, "stripe_count", area_count)) {
 		log_error("Couldn't read 'stripe_count' for "
-			  "segment '%s'.", dm_config_parent_name(sn));
+			  "segment '%s'.", config_parent_name(sn));
 		return 0;
 	}
 
 	return 1;
 }
 
-static int _striped_text_import(struct lv_segment *seg, const struct dm_config_node *sn,
+static int _striped_text_import(struct lv_segment *seg, const struct config_node *sn,
 			struct dm_hash_table *pv_hash)
 {
-	const struct dm_config_value *cv;
+	const struct config_node *cn;
 
 	if ((seg->area_count != 1) &&
-	    !dm_config_get_uint32(sn, "stripe_size", &seg->stripe_size)) {
+	    !get_config_uint32(sn, "stripe_size", &seg->stripe_size)) {
 		log_error("Couldn't read stripe_size for segment %s "
-			  "of logical volume %s.", dm_config_parent_name(sn), seg->lv->name);
+			  "of logical volume %s.", config_parent_name(sn), seg->lv->name);
 		return 0;
 	}
 
-	if (!dm_config_get_list(sn, "stripes", &cv)) {
+	if (!(cn = find_config_node(sn, "stripes"))) {
 		log_error("Couldn't find stripes array for segment %s "
-			  "of logical volume %s.", dm_config_parent_name(sn), seg->lv->name);
+			  "of logical volume %s.", config_parent_name(sn), seg->lv->name);
 		return 0;
 	}
 
 	seg->area_len /= seg->area_count;
 
-	return text_import_areas(seg, sn, cv, pv_hash, 0);
+	return text_import_areas(seg, sn, cn, pv_hash, 0);
 }
 
 static int _striped_text_export(const struct lv_segment *seg, struct formatter *f)
@@ -174,9 +174,7 @@ static int _striped_add_target_line(struct dev_manager *dm,
 		return 0;
 	}
 	if (seg->area_count == 1) {
-		if (!add_linear_area_to_dtree(node, len, seg->lv->vg->extent_size,
-					      cmd->use_linear_target,
-					      seg->lv->vg->name, seg->lv->name))
+		if (!dm_tree_node_add_linear_target(node, len))
 			return_0;
 	} else if (!dm_tree_node_add_striped_target(node, len,
 						  seg->stripe_size))

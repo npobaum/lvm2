@@ -107,36 +107,33 @@ static int pvremove_single(struct cmd_context *cmd, const char *pv_name,
 	}
 
 	if (!pvremove_check(cmd, pv_name))
-		goto out;
+		goto error;
 
 	if (!(dev = dev_cache_get(pv_name, cmd->filter))) {
 		log_error("%s: Couldn't find device.  Check your filters?",
 			  pv_name);
-		goto out;
+		goto error;
 	}
 
 	if (!dev_test_excl(dev)) {
 		/* FIXME Detect whether device-mapper is still using the device */
 		log_error("Can't open %s exclusively - not removing. "
 			  "Mounted filesystem?", dev_name(dev));
-		goto out;
+		goto error;
 	}
 
 	/* Wipe existing label(s) */
 	if (!label_remove(dev)) {
 		log_error("Failed to wipe existing label(s) on %s", pv_name);
-		goto out;
+		goto error;
 	}
-
-	if (!lvmetad_pv_gone_by_dev(dev))
-		goto_out;
 
 	log_print("Labels on physical volume \"%s\" successfully wiped",
 		  pv_name);
 
 	ret = ECMD_PROCESSED;
 
-out:
+      error:
 	unlock_vg(cmd, VG_ORPHANS);
 
 	return ret;
@@ -153,7 +150,7 @@ int pvremove(struct cmd_context *cmd, int argc, char **argv)
 	}
 
 	for (i = 0; i < argc; i++) {
-		dm_unescape_colons_and_at_signs(argv[i], NULL, NULL);
+		unescape_colons_and_at_signs(argv[i], NULL, NULL);
 		r = pvremove_single(cmd, argv[i], NULL);
 		if (r > ret)
 			ret = r;
