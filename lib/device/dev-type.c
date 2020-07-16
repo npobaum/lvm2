@@ -976,3 +976,100 @@ int dev_is_rotational(struct dev_types *dt, struct device *dev)
 	return 1;
 }
 #endif
+
+#ifdef UDEV_SYNC_SUPPORT
+
+/*
+ * Udev daemon usually has 30s timeout to process each event by default.
+ * But still, that value can be changed in udev configuration and we
+ * don't have libudev API to read the actual timeout value used.
+ */
+
+/* FIXME: Is this long enough to wait for udev db to get initialized?
+ *
+ *        Take also into consideration that this check is done for each
+ *        device that is scanned so we don't want to wait for a long time
+ *        if there's something wrong with udev, e.g. timeouts! With current
+ *        libudev API, we can't recognize whether the event processing has
+ *        not finished yet and it's still being processed or whether it has
+ *        failed already due to timeout in udev - in both cases the
+ *        udev_device_get_is_initialized returns 0.
+ */
+#define UDEV_DEV_IS_MPATH_COMPONENT_ITERATION_COUNT 100
+#define UDEV_DEV_IS_MPATH_COMPONENT_USLEEP 100000
+
+int udev_dev_is_mpath_component(struct device *dev)
+{
+	struct udev *udev_context = udev_get_library_context();
+	struct udev_device *udev_device = NULL;
+	const char *value;
+	int initialized = 0;
+	unsigned i = 0;
+	int ret = 0;
+
+	if (!udev_context) {
+		log_warn("WARNING: No udev context available to check if device %s is multipath component.", dev_name(dev));
+		return_0;
+	}
+
+	while (1) {
+		if (i >= UDEV_DEV_IS_MPATH_COMPONENT_ITERATION_COUNT)
+			break;
+
+		if (udev_device)
+			udev_device_unref(udev_device);
+
+		if (!(udev_device = udev_device_new_from_devnum(udev_context, 'b', dev->dev))) {
+			log_warn("WARNING: Failed to get udev device handler for device %s.", dev_name(dev));
+			return 0;
+		}
+
+#ifdef HAVE_LIBUDEV_UDEV_DEVICE_GET_IS_INITIALIZED
+		if ((initialized = udev_device_get_is_initialized(udev_device)))
+			break;
+#else
+		if ((initialized = (udev_device_get_property_value(udev_device, DEV_EXT_UDEV_DEVLINKS) != NULL)))
+			break;
+#endif
+
+		log_debug("Device %s not initialized in udev database (%u/%u, %u microseconds).", dev_name(dev),
+			   i + 1, UDEV_DEV_IS_MPATH_COMPONENT_ITERATION_COUNT,
+			   i * UDEV_DEV_IS_MPATH_COMPONENT_USLEEP);
+
+		usleep(UDEV_DEV_IS_MPATH_COMPONENT_USLEEP);
+		i++;
+	}
+
+	if (!initialized) {
+		log_warn("WARNING: Device %s not initialized in udev database even after waiting %u microseconds.",
+			  dev_name(dev), i * UDEV_DEV_IS_MPATH_COMPONENT_USLEEP);
+		goto out;
+	}
+
+	value = udev_device_get_property_value(udev_device, DEV_EXT_UDEV_BLKID_TYPE);
+	if (value && !strcmp(value, DEV_EXT_UDEV_BLKID_TYPE_MPATH)) {
+		log_debug("Device %s is multipath component based on blkid variable in udev db (%s=\"%s\").",
+			   dev_name(dev), DEV_EXT_UDEV_BLKID_TYPE, value);
+		ret = 1;
+		goto out;
+	}
+
+	value = udev_device_get_property_value(udev_device, DEV_EXT_UDEV_MPATH_DEVICE_PATH);
+	if (value && !strcmp(value, "1")) {
+		log_debug("Device %s is multipath component based on multipath variable in udev db (%s=\"%s\").",
+			   dev_name(dev), DEV_EXT_UDEV_MPATH_DEVICE_PATH, value);
+		ret = 1;
+		goto out;
+	}
+out:
+	udev_device_unref(udev_device);
+	return ret;
+}
+#else
+
+int udev_dev_is_mpath_component(struct device *dev)
+{
+	return 0;
+}
+
+#endif

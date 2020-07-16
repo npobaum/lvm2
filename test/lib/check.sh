@@ -392,6 +392,19 @@ sysfs() {
 		die "$1: $P = $val differs from expected value $3!"
 }
 
+# check raid_leg_status $vg $lv "Aaaaa"
+raid_leg_status() {
+	local st=$(dmsetup status $1-$2)
+	local val=$(echo "$st" | cut -d ' ' -f 6)
+	test "$val" = "$3" || \
+		die "$1-$2 status $val != $3  ($st)"
+}
+
+grep_dmsetup() {
+	dmsetup $1 $2 | tee out
+	grep "${@:3}" out || die "Expected output from dmsetup $1 not found!"
+}
+
 #set -x
 unset LVM_VALGRIND
 "$@"

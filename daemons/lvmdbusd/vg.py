@@ -19,7 +19,7 @@ from .request import RequestEntry
 from .loader import common
 from .state import State
 from . import background
-from .utils import round_size
+from .utils import round_size, mt_remove_dbus_objects
 from .job import JobState
 
 
@@ -78,7 +78,7 @@ class VgState(State):
 			(pv_name, pv_uuid) = p
 			rc.append(cfg.om.get_object_path_by_uuid_lvm_id(
 				pv_uuid, pv_name, pv_obj_path_generate))
-		return dbus.Array(rc, signature='o')
+		return rc
 
 	def __init__(self, Uuid, Name, Fmt,
 			SizeBytes, FreeBytes, SysId, ExtentSizeBytes,
@@ -146,7 +146,7 @@ class Vg(AutomatedProperties):
 	@staticmethod
 	def fetch_new_lv(vg_name, lv_name):
 		cfg.load()
-		return cfg.om.get_object_by_lvm_id("%s/%s" % (vg_name, lv_name))
+		return cfg.om.get_object_path_by_lvm_id("%s/%s" % (vg_name, lv_name))
 
 	@staticmethod
 	def _rename(uuid, vg_name, new_name, rename_options):
@@ -191,14 +191,7 @@ class Vg(AutomatedProperties):
 			rc, out, err = cmdhandler.vg_remove(vg_name, remove_options)
 
 			if rc == 0:
-				# Remove the VG
-				cfg.om.remove_object(dbo, True)
-
-				# If an LV has hidden LVs, things can get quite involved,
-				# especially if it's the last thin pool to get removed, so
-				# lets refresh all
 				cfg.load()
-
 			else:
 				# Need to work on error handling, need consistent
 				raise dbus.exceptions.DBusException(
@@ -605,9 +598,7 @@ class Vg(AutomatedProperties):
 			rc, out, err = create_method(
 				md.lv_full_name(), data.lv_full_name(), create_options)
 			if rc == 0:
-				cfg.om.remove_object(md, emit_signal=True)
-				cfg.om.remove_object(data, emit_signal=True)
-
+				mt_remove_dbus_objects((md, data))
 				cache_pool_lv = Vg.fetch_new_lv(vg_name, new_name)
 			else:
 				raise dbus.exceptions.DBusException(
@@ -840,9 +831,7 @@ class Vg(AutomatedProperties):
 		cfg.worker_q.put(r)
 
 	def _attribute(self, pos, ch):
-		if self.state.attr[pos] == ch:
-			return True
-		return False
+		return dbus.Boolean(self.state.attr[pos] == ch)
 
 	@dbus.service.method(
 		dbus_interface=VG_INTERFACE,
@@ -908,11 +897,11 @@ class Vg(AutomatedProperties):
 
 	@property
 	def Pvs(self):
-		return self.state.Pvs
+		return dbus.Array(self.state.Pvs, signature='o')
 
 	@property
 	def Lvs(self):
-		return self.state.Lvs
+		return dbus.Array(self.state.Lvs, signature='o')
 
 	@property
 	def lvm_id(self):

@@ -1611,7 +1611,7 @@ static int _udevcomplete_all(CMD_ARGS)
 	}
 
 	if (!_switches[YES_ARG]) {
-		log_warn("This operation will destroy all semaphores %s%.0d%swith keys "
+		log_warn("WARNING: This operation will destroy all semaphores %s%.0d%swith keys "
 			 "that have a prefix %" PRIu16 " (0x%" PRIx16 ").",
 			 age ? "older than " : "", age, age ? " minutes " : "",
 			 DM_COOKIE_MAGIC, DM_COOKIE_MAGIC);
@@ -2707,6 +2707,9 @@ static int _add_dep(CMD_ARGS)
 
 /*
  * Create and walk dependency tree
+ *
+ * An incomplete _dtree may still be used by the caller,
+ * but the error must be reported.
  */
 static int _build_whole_deptree(const struct command *cmd)
 {
@@ -2724,12 +2727,14 @@ static int _build_whole_deptree(const struct command *cmd)
 
 static int _display_tree(CMD_ARGS)
 {
-	if (!_build_whole_deptree(cmd))
-		return_0;
+	int r;
 
-	_display_tree_walk_children(dm_tree_find_node(_dtree, 0, 0), 0);
+	r = _build_whole_deptree(cmd);
 
-	return 1;
+	if (_dtree)
+		_display_tree_walk_children(dm_tree_find_node(_dtree, 0, 0), 0);
+
+	return r;
 }
 
 /*
@@ -4471,9 +4476,14 @@ static int _report_init(const struct command *cmd, const char *subcommand)
 				selection, NULL, NULL)))
 		goto_out;
 
-	if ((_report_type & DR_TREE) && cmd && !_build_whole_deptree(cmd)) {
-		err("Internal device dependency tree creation failed.");
-		goto out;
+	r = 1;
+
+	if ((_report_type & DR_TREE) && cmd) {
+		r = _build_whole_deptree(cmd);
+		if  (!_dtree) {
+			err("Internal device dependency tree creation failed.");
+			goto out;
+		}
 	}
 
 	if (!_switches[INTERVAL_ARG])
@@ -4483,8 +4493,6 @@ static int _report_init(const struct command *cmd, const char *subcommand)
 
 	if (field_prefixes)
 		dm_report_set_output_field_name_prefix(_report, "dm_");
-
-	r = 1;
 
 out:
 	if (len)
@@ -4951,12 +4959,12 @@ static char *_get_abspath(const char *path)
 static int _stats_create_file(CMD_ARGS)
 {
 	const char *alias, *program_id = DM_STATS_PROGRAM_ID;
-	const char *histogram = _string_args[BOUNDS_ARG];
+	const char *bounds_str = _string_args[BOUNDS_ARG];
 	uint64_t *regions, *region, count = 0;
 	struct dm_histogram *bounds = NULL;
 	char *path, *abspath = NULL;
-	int group, fd, precise;
-	struct dm_stats *dms;
+	struct dm_stats *dms = NULL;
+	int group, fd = -1, precise;
 
 	if (_switches[AREAS_ARG] || _switches[AREA_SIZE_ARG]) {
 		log_error("--filemap is incompatible with --areas and --area-size.");
@@ -5017,7 +5025,8 @@ static int _stats_create_file(CMD_ARGS)
 		return 0;
 	}
 
-	if (histogram && !(bounds = dm_histogram_bounds_from_string(histogram))) {
+	if (bounds_str
+	    && !(bounds = dm_histogram_bounds_from_string(bounds_str))) {
 		dm_free(abspath);
 		return_0;
 	}
@@ -5031,7 +5040,7 @@ static int _stats_create_file(CMD_ARGS)
 	group = !_switches[NOGROUP_ARG];
 
 	if (!(dms = dm_stats_create(DM_STATS_PROGRAM_ID)))
-		return_0;
+		goto_bad;
 
 	fd = open(abspath, O_RDONLY);
 
@@ -5087,16 +5096,20 @@ static int _stats_create_file(CMD_ARGS)
 
 	dm_free(regions);
 	dm_free(abspath);
+	dm_free(bounds);
 	dm_stats_destroy(dms);
 	return 1;
 
 bad:
 	dm_free(abspath);
+	dm_free(bounds);
 
 	if ((fd > -1) && close(fd))
 		log_error("Error closing %s", path);
 
-	dm_stats_destroy(dms);
+	if (dms)
+		dm_stats_destroy(dms);
+
 	return 0;
 }
 
@@ -5265,6 +5278,8 @@ static int _stats_delete(CMD_ARGS)
 		name = argv[0];
 	}
 
+	if (_switches[PROGRAM_ID_ARG])
+		program_id = _string_args[PROGRAM_ID_ARG];
 	if (_switches[ALL_PROGRAMS_ARG])
 		program_id = DM_STATS_ALL_PROGRAMS;
 
@@ -5308,7 +5323,7 @@ static int _stats_delete(CMD_ARGS)
 			log_error("Could not delete statistics region");
 			goto out;
 		}
-		log_info("Deleted statistics region " FMTu64 ".\n", region_id);
+		log_info("Deleted statistics region " FMTu64 ".", region_id);
 	}
 
 	r = 1;
@@ -6777,8 +6792,15 @@ unknown:
 		argc--, argv++;
 	}
 
-	if (_switches[COLS_ARG] && !_report_init(cmd, subcommand))
-		goto_out;
+	/* Default to success */
+	ret = 0;
+
+	if (_switches[COLS_ARG]) {
+		if (!_report_init(cmd, subcommand))
+			ret = 1;
+ 		if (!_report)
+			goto_out;
+	}
 
 	if (_switches[COUNT_ARG])
 		_count = ((uint32_t)_int_args[COUNT_ARG]) ? : UINT32_MAX;
@@ -6790,14 +6812,17 @@ unknown:
 						  &_disp_units);
 		if (!_disp_factor) {
 			log_error("Invalid --units argument.");
+			ret = 1;
 			goto out;
 		}
 	}
 
 	/* Start interval timer. */
 	if (_count > 1)
-		if (!_start_timer())
+		if (!_start_timer()) {
+			ret = 1;
 			goto_out;
+		}
 
 doit:
 	multiple_devices = (cmd->repeatable_cmd && argc != 1 &&
@@ -6814,17 +6839,18 @@ doit:
 			if (_count > 1 && r) {
 				printf("\n");
 				/* wait for --interval and update timestamps */
-				if (!_do_report_wait())
+				if (!_do_report_wait()) {
+					ret = 1;
 					goto_out;
+				}
 			}
 		}
 
-		if (!r)
+		if (!r) {
+			ret = 1;
 			goto_out;
+		}
 	} while (--_count);
-
-	/* Success */
-	ret = 0;
 
 out:
 	if (_report)

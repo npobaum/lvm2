@@ -19,6 +19,7 @@
 
 #include "math.h" /* log10() */
 
+#include <sys/sysmacros.h>
 #include <sys/ioctl.h>
 #include <sys/vfs.h> /* fstatfs */
 
@@ -1525,9 +1526,6 @@ static void _stats_walk_end_areas(const struct dm_stats *dms, uint64_t *flags,
 static int _stats_walk_end(const struct dm_stats *dms, uint64_t *flags,
 			   uint64_t *cur_r, uint64_t *cur_a, uint64_t *cur_g)
 {
-	if (!dms || !dms->regions)
-		return 1;
-
 	if (*flags & DM_STATS_WALK_AREA) {
 		_stats_walk_end_areas(dms, flags, cur_r, cur_a, cur_g);
 		goto out;
@@ -1542,7 +1540,7 @@ static int _stats_walk_end(const struct dm_stats *dms, uint64_t *flags,
 	}
 
 	if (*flags & DM_STATS_WALK_GROUP) {
-		if (*cur_g < dms->max_region)
+		if (*cur_g <= dms->max_region)
 			goto out;
 		*flags &= ~DM_STATS_WALK_GROUP;
 	}
@@ -1552,6 +1550,9 @@ out:
 
 int dm_stats_walk_end(struct dm_stats *dms)
 {
+	if (!dms)
+		return 1;
+
 	if (_stats_walk_end(dms, &dms->cur_flags,
 			    &dms->cur_region, &dms->cur_area,
 			    &dms->cur_group)) {
@@ -2019,26 +2020,47 @@ int dm_stats_delete_region(struct dm_stats *dms, uint64_t region_id)
 {
 	char msg[STATS_MSG_BUF_LEN];
 	struct dm_task *dmt;
+	int listed = 0;
 
 	if (!_stats_bound(dms))
 		return_0;
 
-	if (!dms->regions && !dm_stats_list(dms, dms->program_id)) {
+	/*
+	 * To correctly delete a region, that may be part of a group, a
+	 * listed handle is required, since the region may need to be
+	 * removed from another region's group descriptor; earlier
+	 * versions of the region deletion interface do not have this
+	 * requirement since there are no dependencies between regions.
+	 *
+	 * Listing a previously unlisted handle has numerous
+	 * side-effects on other calls and operations (e.g. stats
+	 * walks), especially when returning to a function that depends
+	 * on the state of the region table, or statistics cursor.
+	 *
+	 * To avoid changing the semantics of the API, and the need for
+	 * a versioned symbol, maintain a flag indicating when a listing
+	 * has been carried out, and drop the region table before
+	 * returning.
+	 *
+	 * This ensures compatibility with programs compiled against
+	 * earlier versions of libdm.
+	 */
+	if (!dms->regions && !(listed = dm_stats_list(dms, dms->program_id))) {
 		log_error("Could not obtain region list while deleting "
 			  "region ID " FMTu64, region_id);
-		return 0;
+		goto bad;
 	}
 
 	if (!dm_stats_get_nr_areas(dms)) {
 		log_error("Could not delete region ID " FMTu64 ": "
 			  "no regions found", region_id);
-		return 0;
+		goto bad;
 	}
 
 	/* includes invalid and special region_id values */
 	if (!dm_stats_region_present(dms, region_id)) {
 		log_error("Region ID " FMTu64 " does not exist", region_id);
-		return 0;
+		goto bad;
 	}
 
 	if(_stats_region_is_grouped(dms, region_id))
@@ -2046,12 +2068,12 @@ int dm_stats_delete_region(struct dm_stats *dms, uint64_t region_id)
 			log_error("Could not remove region ID " FMTu64 " from "
 				  "group ID " FMTu64,
 				  region_id, dms->regions[region_id].group_id);
-			return 0;
+			goto bad;
 		}
 
 	if (!dm_snprintf(msg, sizeof(msg), "@stats_delete " FMTu64, region_id)) {
 		log_error("Could not prepare @stats_delete message.");
-		return 0;
+		goto bad;
 	}
 
 	dmt = _stats_send_message(dms, msg);
@@ -2059,10 +2081,19 @@ int dm_stats_delete_region(struct dm_stats *dms, uint64_t region_id)
 		return_0;
 	dm_task_destroy(dmt);
 
-	/* wipe region and mark as not present */
-	_stats_region_destroy(&dms->regions[region_id]);
+	if (!listed)
+		/* wipe region and mark as not present */
+		_stats_region_destroy(&dms->regions[region_id]);
+	else
+		/* return handle to prior state */
+		_stats_regions_destroy(dms);
 
 	return 1;
+bad:
+	if (listed)
+		_stats_regions_destroy(dms);
+
+	return 0;
 }
 
 int dm_stats_clear_region(struct dm_stats *dms, uint64_t region_id)
@@ -3850,7 +3881,7 @@ merge:
 			continue;
 
 		if (_extents_overlap(ext, next)) {
-			log_warn("Warning: region IDs " FMTu64 " and "
+			log_warn("WARNING: region IDs " FMTu64 " and "
 				 FMTu64 " overlap. Some events will be "
 				 "counted twice.", ext->id, next->id);
 			/* merge larger extent into smaller */
@@ -3971,11 +4002,11 @@ int dm_stats_create_group(struct dm_stats *dms, const char *members,
 	}
 
 	if (precise && (precise != count))
-		log_warn("Grouping regions with different clock resolution: "
-			 "precision may be lost");
+		log_warn("WARNING: Grouping regions with different clock resolution: "
+			 "precision may be lost.");
 
 	if (!_stats_group_check_overlap(dms, regions, count))
-		log_info("Creating group with overlapping regions");
+		log_very_verbose("Creating group with overlapping regions.");
 
 	if (!_stats_create_group(dms, regions, alias, group_id))
 		goto bad;
@@ -4017,7 +4048,7 @@ int dm_stats_delete_group(struct dm_stats *dms, uint64_t group_id,
 		if (dm_bit(regions, i)) {
 			dm_bit_clear(regions, i);
 			if (remove_regions && !dm_stats_delete_region(dms, i))
-				log_warn("Failed to delete region "
+				log_warn("WARNING: Failed to delete region "
 					 FMTu64 " on %s.", i, dms->name);
 		}
 	}
@@ -4111,7 +4142,7 @@ static int _stats_group_file_regions(struct dm_stats *dms, uint64_t *region_ids,
 	 * returned by FIEMAP imply a kernel bug or a corrupt fs.
 	 */
 	if (!_stats_group_check_overlap(dms, regions, count))
-		log_info("Creating group with overlapping regions.");
+		log_very_verbose("Creating group with overlapping regions.");
 
 	if (!_stats_create_group(dms, regions, alias, &group_id))
 		goto bad;
@@ -4164,9 +4195,9 @@ static int _stats_add_extent(struct dm_pool *mem, struct fiemap_extent *fm_ext,
 static struct _extent *_stats_get_extents_for_file(struct dm_pool *mem, int fd,
 						   uint64_t *count)
 {
-	uint64_t buf[STATS_FIE_BUF_LEN];
-	struct fiemap *fiemap = (struct fiemap *)buf;
-	struct fiemap_extent *fm_ext = &fiemap->fm_extents[0];
+	uint64_t *buf;
+	struct fiemap *fiemap = NULL;
+	struct fiemap_extent *fm_ext = NULL;
 	struct fiemap_extent fm_last = {0};
 	struct _extent *extents;
 	unsigned long long expected = 0;
@@ -4177,10 +4208,18 @@ static struct _extent *_stats_get_extents_for_file(struct dm_pool *mem, int fd,
 	int last = 0;
 	int rc;
 
-	memset(buf, 0, sizeof(buf));
+	buf = dm_zalloc(STATS_FIE_BUF_LEN);
+	if (!buf) {
+		log_error("Could not allocate memory for FIEMAP buffer.");
+		return NULL;
+	}
+
+	/* initialise pointers into the ioctl buffer. */
+	fiemap = (struct fiemap *) buf;
+	fm_ext = &fiemap->fm_extents[0];
 
 	/* space available per ioctl */
-	*count = (sizeof(buf) - sizeof(*fiemap))
+	*count = (STATS_FIE_BUF_LEN - sizeof(*fiemap))
 		  / sizeof(struct fiemap_extent);
 
 	/* grow temporary extent table in the pool */
@@ -4246,9 +4285,16 @@ static struct _extent *_stats_get_extents_for_file(struct dm_pool *mem, int fd,
 
 	/* return total number of extents */
 	*count = tot_extents;
-	return dm_pool_end_object(mem);
+	extents = dm_pool_end_object(mem);
+
+	/* free FIEMAP buffer. */
+	dm_free(buf);
+
+	return extents;
+
 bad:
 	dm_pool_abandon_object(mem);
+	dm_free(buf);
 	return NULL;
 }
 

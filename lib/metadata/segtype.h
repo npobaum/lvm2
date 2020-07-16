@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004-2015 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2016 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -153,6 +153,7 @@ struct dev_manager;
 #define seg_is_striped_target(seg)	segtype_is_striped_target((seg)->segtype)
 #define seg_is_cache(seg)	segtype_is_cache((seg)->segtype)
 #define seg_is_cache_pool(seg)	segtype_is_cache_pool((seg)->segtype)
+#define seg_is_used_cache_pool(seg) (seg_is_cache_pool(seg) && (!dm_list_empty(&(seg->lv)->segs_using_this_lv)))
 #define seg_is_linear(seg)	(seg_is_striped(seg) && ((seg)->area_count == 1))
 #define seg_is_mirror(seg)	segtype_is_mirror((seg)->segtype)
 #define seg_is_mirrored(seg)	segtype_is_mirrored((seg)->segtype)
@@ -267,6 +268,7 @@ struct segment_type *init_unknown_segtype(struct cmd_context *cmd,
 #define RAID_FEATURE_RAID10			(1U << 0) /* version 1.3 */
 #define RAID_FEATURE_RAID0			(1U << 1) /* version 1.7 */
 #define RAID_FEATURE_RESHAPING			(1U << 2) /* version 1.8 */
+#define RAID_FEATURE_RAID4			(1U << 3) /* ! version 1.8 or 1.9.0 */
 
 #ifdef RAID_INTERNAL
 int init_raid_segtypes(struct cmd_context *cmd, struct segtype_library *seglib);

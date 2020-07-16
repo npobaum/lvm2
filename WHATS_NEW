@@ -1,3 +1,59 @@
+Version 2.02.167 - 5th November 2016
+====================================
+  Use log_error in regex and sysfs filter to describe reason of failure.
+  Fix blkdeactivate to deactivate dev stack if dev on top already unmounted.
+  Prevent non-synced raid1 repair unless --force
+  Prevent raid4 creation/conversion on non-supporting kernels
+  Add direct striped -> raid4 conversion
+  Fix raid4 parity image pair position on conversions from striped/raid0*
+  Fix a few unconverted return code values for some lvconvert error path.
+  Disable lvconvert of thin pool to raid while active.
+  Disable systemd service start rate limiting for lvm2-pvscan@.service.
+
+Version 2.02.166 - 26th September 2016
+======================================
+  Fix lvm2-activation-generator to read all LVM2 config sources. (2.02.155)
+  Fix lvchange-rebuild-raid.sh to cope with older target versions.
+  Use dm_config_parse_without_dup_node_check() to speedup metadata reading.
+  Fix lvconvert --repair regression
+  Fix reported origin lv field for cache volumes. (2.02.133)
+  Always specify snapshot cow LV for monitoring not internal LV. (2.02.165)
+  Fix lvchange --discard|--zero for active thin-pool.
+  Enforce 4MiB or 25% metadata free space for thin pool operations.
+  Fix lock-holder device for thin pool with inactive thin volumes.
+  Use --alloc normal for mirror logs even if the mimages were stricter.
+  Use O_DIRECT to gather metadata in lvmdump.
+  Ignore creation_time when checking for matching metadata for lvmetad.
+  Fix possible NULL pointer derefence when checking for monitoring.
+  Add lvmreport(7) man page.
+  Don't install lvmraid(7) man page when raid excluded. (2.02.165)
+  Report 0% as dirty (copy%) for cache without any used block.
+  Fix lvm2api reporting of cache data and metadata percent.
+  Restore reporting of metadata usage for cache volumes (2.02.155).
+  Support raid scrubbing on cache origin LV.
+
+Version 2.02.165 - 7th September 2016
+=====================================
+  Add lvmraid(7) man page.
+  Use udev db to check for mpath components before running pvscan for lvmetad.
+  Use lsblk -s and lsblk -O in lvmdump only if these options are supported.
+  Fix number of stripes shown in lvcreate raid10 message when too many.
+  Change lvmdbusd to use new lvm shell facilities.
+  Do not monitor cache-pool metadata when LV is just being cleared.
+  Add allocation/cache_pool_max_chunks to prevent misuse of cache target.
+  Give error not segfault in lvconvert --splitmirrors when PV lies outside LV.
+  Fix typo in report/columns_as_rows config option name recognition (2.02.99).
+  Avoid PV tags when checking allocation against parallel PVs.
+  Disallow mirror conversions of raid10 volumes.
+  Fix dmeventd unmonitoring when segment type (and dso) changes.
+  Don't allow lvconvert --repair on raid0 devices or attempt to monitor them.
+  No longer adjust incorrect number of raid stripes supplied to lvcreate.
+  Move lcm and gcd to lib/misc.
+  Fix vgsplit of external origins. (2.02.162)
+  Prohibit creation of RAID LVs unless VG extent size is at least the page size.
+  Suppress some unnecessary --stripesize parameter warnings.
+  Fix 'pvmove -n name ...' to prohibit collocation of RAID SubLVs
+
 Version 2.02.164 - 15th August 2016
 ===================================
   Fix selection of PVs when allocating raid0_meta.

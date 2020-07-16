@@ -15,16 +15,12 @@ import pprint as prettyprint
 import os
 import sys
 
-try:
-	from . import cmdhandler
-	from .utils import log_debug, log_error
-except SystemError:
-	import cmdhandler
-	from utils import log_debug
+from lvmdbusd import cmdhandler
+from lvmdbusd.utils import log_debug, log_error
 
 
 class DataStore(object):
-	def __init__(self, usejson=None):
+	def __init__(self, usejson=True):
 		self.pvs = {}
 		self.vgs = {}
 		self.lvs = {}
@@ -42,7 +38,7 @@ class DataStore(object):
 		# self.refresh()
 		self.num_refreshes = 0
 
-		if usejson is None:
+		if usejson:
 			self.json = cmdhandler.supports_json()
 		else:
 			self.json = usejson
@@ -437,6 +433,12 @@ class DataStore(object):
 				rc.append(self.pvs[self.pv_path_to_uuid[s]])
 			return rc
 
+	def pv_missing(self, pv_uuid):
+		if pv_uuid in self.pvs:
+			if self.pvs[pv_uuid]['pv_missing'] == '':
+				return False
+		return True
+
 	def fetch_vgs(self, vg_name):
 		if not vg_name:
 			return self.vgs.values()
@@ -520,6 +522,7 @@ if __name__ == "__main__":
 	print("PVS")
 	for v in ds.pvs.values():
 		pp.pprint(v)
+		print('PV missing is %s' % ds.pv_missing(v['pv_uuid']))
 
 	print("VGS")
 	for v in ds.vgs.values():

@@ -1674,49 +1674,6 @@ static void _init_alloc_parms(struct alloc_handle *ah,
 		alloc_parms->flags |= A_CAN_SPLIT;
 }
 
-static int _log_parallel_areas(struct dm_pool *mem, struct dm_list *parallel_areas)
-{
-	struct seg_pvs *spvs;
-	struct pv_list *pvl;
-	char *pvnames;
-
-	if (!parallel_areas)
-		return 1;
-
-	dm_list_iterate_items(spvs, parallel_areas) {
-		if (!dm_pool_begin_object(mem, 256)) {
-			log_error("dm_pool_begin_object failed");
-			return 0;
-		}
-
-		dm_list_iterate_items(pvl, &spvs->pvs) {
-			if (!dm_pool_grow_object(mem, pv_dev_name(pvl->pv), strlen(pv_dev_name(pvl->pv)))) {
-				log_error("dm_pool_grow_object failed");
-				dm_pool_abandon_object(mem);
-				return 0;
-			}
-			if (!dm_pool_grow_object(mem, " ", 1)) {
-				log_error("dm_pool_grow_object failed");
-				dm_pool_abandon_object(mem);
-				return 0;
-			}
-		}
-
-		if (!dm_pool_grow_object(mem, "\0", 1)) {
-			log_error("dm_pool_grow_object failed");
-			dm_pool_abandon_object(mem);
-			return 0;
-		}
-
-		pvnames = dm_pool_end_object(mem);
-		log_debug_alloc("Parallel PVs at LE %" PRIu32 " length %" PRIu32 ": %s",
-				spvs->le, spvs->len, pvnames);
-		dm_pool_free(mem, pvnames);
-	}
-
-	return 1;
-}
-
 /* Handles also stacking */
 static int _setup_lv_size(struct logical_volume *lv, uint32_t extents)
 {
@@ -2030,24 +1987,19 @@ static int _is_same_pv(struct pv_match *pvmatch __attribute((unused)), struct pv
 /*
  * Does PV area have a tag listed in allocation/cling_tag_list that
  * matches EITHER a tag of the PV of the existing segment OR a tag in pv_tags?
- * If tags_list_str is set, then instead we generate a list of matching tags for printing.
+ * If mem is set, then instead we append a list of matching tags for printing to the object there.
  */
 static int _match_pv_tags(const struct dm_config_node *cling_tag_list_cn,
 			  struct physical_volume *pv1, uint32_t pv1_start_pe, uint32_t area_num,
 			  struct physical_volume *pv2, struct dm_list *pv_tags, unsigned validate_only,
-			  struct dm_pool *mem, const char **tags_list_str)
+			  struct dm_pool *mem, unsigned parallel_pv)
 {
 	const struct dm_config_value *cv;
 	const char *str;
 	const char *tag_matched;
-	struct dm_list *tags_to_match = tags_list_str ? NULL : pv_tags ? : &pv2->tags;
+	struct dm_list *tags_to_match = mem ? NULL : pv_tags ? : &pv2->tags;
 	struct dm_str_list *sl;
 	unsigned first_tag = 1;
-
-	if (tags_list_str && !dm_pool_begin_object(mem, 256)) {
-		log_error("PV tags string allocation failed");
-		return 0;
-	}
 
 	for (cv = cling_tag_list_cn->v; cv; cv = cv->next) {
 		if (cv->type != DM_CFG_STRING) {
@@ -2085,16 +2037,14 @@ static int _match_pv_tags(const struct dm_config_node *cling_tag_list_cn,
 
 		/* Wildcard matches any tag against any tag. */
 		if (!strcmp(str, "*")) {
-			if (tags_list_str) {
+			if (mem) {
 				dm_list_iterate_items(sl, &pv1->tags) {
 					if (!first_tag && !dm_pool_grow_object(mem, ",", 0)) {
-						dm_pool_abandon_object(mem);
 						log_error("PV tags string extension failed.");
 						return 0;
 					}
 					first_tag = 0;
 					if (!dm_pool_grow_object(mem, sl->str, 0)) {
-						dm_pool_abandon_object(mem);
 						log_error("PV tags string extension failed.");
 						return 0;
 					}
@@ -2104,10 +2054,14 @@ static int _match_pv_tags(const struct dm_config_node *cling_tag_list_cn,
 			if (!str_list_match_list(&pv1->tags, tags_to_match, &tag_matched))
 				continue;
 			else {
-				if (!pv_tags)
-					log_debug_alloc("Matched allocation PV tag %s on existing %s with free space on %s.",
-							tag_matched, pv_dev_name(pv1), pv2 ? pv_dev_name(pv2) : "-");
-				else
+				if (!pv_tags) {
+					if (parallel_pv)
+						log_debug_alloc("Not using free space on %s: Matched allocation PV tag %s on existing parallel PV %s.",
+								pv_dev_name(pv1), tag_matched, pv2 ? pv_dev_name(pv2) : "-");
+					else
+						log_debug_alloc("Matched allocation PV tag %s on existing %s with free space on %s.",
+								tag_matched, pv_dev_name(pv1), pv2 ? pv_dev_name(pv2) : "-");
+				} else
 					log_debug_alloc("Eliminating allocation area %" PRIu32 " at PV %s start PE %" PRIu32
 							" from consideration: PV tag %s already used.",
 							area_num, pv_dev_name(pv1), pv1_start_pe, tag_matched);
@@ -2119,24 +2073,26 @@ static int _match_pv_tags(const struct dm_config_node *cling_tag_list_cn,
 		    (tags_to_match && !str_list_match_item(tags_to_match, str)))
 			continue;
 		else {
-			if (tags_list_str) {
+			if (mem) {
 				if (!first_tag && !dm_pool_grow_object(mem, ",", 0)) {
-					dm_pool_abandon_object(mem);
 					log_error("PV tags string extension failed.");
 					return 0;
 				}
 				first_tag = 0;
 				if (!dm_pool_grow_object(mem, str, 0)) {
-					dm_pool_abandon_object(mem);
 					log_error("PV tags string extension failed.");
 					return 0;
 				}
 				continue;
 			}
-			if (!pv_tags)
-				log_debug_alloc("Matched allocation PV tag %s on existing %s with free space on %s.",
-						str, pv_dev_name(pv1), pv2 ? pv_dev_name(pv2) : "-");
-			else
+			if (!pv_tags) {
+				if (parallel_pv)
+					log_debug_alloc("Not using free space on %s: Matched allocation PV tag %s on existing parallel PV %s.",
+ 							pv2 ? pv_dev_name(pv2) : "-", str, pv_dev_name(pv1));
+				else
+					log_debug_alloc("Matched allocation PV tag %s on existing %s with free space on %s.",
+							str, pv_dev_name(pv1), pv2 ? pv_dev_name(pv2) : "-");
+			} else
 				log_debug_alloc("Eliminating allocation area %" PRIu32 " at PV %s start PE %" PRIu32
 						" from consideration: PV tag %s already used.",
 						area_num, pv_dev_name(pv1), pv1_start_pe, str);
@@ -2144,32 +2100,25 @@ static int _match_pv_tags(const struct dm_config_node *cling_tag_list_cn,
 		}
 	}
 
-	if (tags_list_str) {
-		if (!dm_pool_grow_object(mem, "\0", 1)) {
-			dm_pool_abandon_object(mem);
-			log_error("PV tags string extension failed.");
-			return 0;
-		}
-		*tags_list_str = dm_pool_end_object(mem);
+	if (mem)
 		return 1;
-	}
 
 	return 0;
 }
 
 static int _validate_tag_list(const struct dm_config_node *cling_tag_list_cn)
 {
-	return _match_pv_tags(cling_tag_list_cn, NULL, 0, 0, NULL, NULL, 1, NULL, NULL);
+	return _match_pv_tags(cling_tag_list_cn, NULL, 0, 0, NULL, NULL, 1, NULL, 0);
 }
 
-static const char *_tags_list_str(struct alloc_handle *ah, struct physical_volume *pv1)
+static int _tags_list_str(struct dm_pool *mem, struct physical_volume *pv1, const struct dm_config_node *cling_tag_list_cn)
 {
-	const char *tags_list_str;
+	if (!_match_pv_tags(cling_tag_list_cn, pv1, 0, 0, NULL, NULL, 0, mem, 0)) {
+		dm_pool_abandon_object(mem);
+		return_0;
+	}
 
-	if (!_match_pv_tags(ah->cling_tag_list_cn, pv1, 0, 0, NULL, NULL, 0, ah->mem, &tags_list_str))
-		return_NULL;
-
-	return tags_list_str;
+	return 1;
 }
 
 /*
@@ -2180,7 +2129,7 @@ static int _pv_has_matching_tag(const struct dm_config_node *cling_tag_list_cn,
 				struct physical_volume *pv1, uint32_t pv1_start_pe, uint32_t area_num,
 				struct dm_list *pv_tags)
 {
-	return _match_pv_tags(cling_tag_list_cn, pv1, pv1_start_pe, area_num, NULL, pv_tags, 0, NULL, NULL);
+	return _match_pv_tags(cling_tag_list_cn, pv1, pv1_start_pe, area_num, NULL, pv_tags, 0, NULL, 0);
 }
 
 /*
@@ -2188,14 +2137,82 @@ static int _pv_has_matching_tag(const struct dm_config_node *cling_tag_list_cn,
  * matches a tag of the PV of the existing segment?
  */
 static int _pvs_have_matching_tag(const struct dm_config_node *cling_tag_list_cn,
-				  struct physical_volume *pv1, struct physical_volume *pv2)
+				  struct physical_volume *pv1, struct physical_volume *pv2,
+				  unsigned parallel_pv)
 {
-	return _match_pv_tags(cling_tag_list_cn, pv1, 0, 0, pv2, NULL, 0, NULL, NULL);
+	return _match_pv_tags(cling_tag_list_cn, pv1, 0, 0, pv2, NULL, 0, NULL, parallel_pv);
 }
 
 static int _has_matching_pv_tag(struct pv_match *pvmatch, struct pv_segment *pvseg, struct pv_area *pva)
 {
-	return _pvs_have_matching_tag(pvmatch->cling_tag_list_cn, pvseg->pv, pva->map->pv);
+	return _pvs_have_matching_tag(pvmatch->cling_tag_list_cn, pvseg->pv, pva->map->pv, 0);
+}
+
+static int _log_parallel_areas(struct dm_pool *mem, struct dm_list *parallel_areas,
+			       const struct dm_config_node *cling_tag_list_cn)
+{
+	struct seg_pvs *spvs;
+	struct pv_list *pvl;
+	char *pvnames;
+	unsigned first;
+
+	if (!parallel_areas)
+		return 1;
+
+	dm_list_iterate_items(spvs, parallel_areas) {
+		first = 1;
+
+		if (!dm_pool_begin_object(mem, 256)) {
+			log_error("dm_pool_begin_object failed");
+			return 0;
+		}
+
+		dm_list_iterate_items(pvl, &spvs->pvs) {
+			if (!first && !dm_pool_grow_object(mem, " ", 1)) {
+				log_error("dm_pool_grow_object failed");
+				dm_pool_abandon_object(mem);
+				return 0;
+			}
+
+			if (!dm_pool_grow_object(mem, pv_dev_name(pvl->pv), strlen(pv_dev_name(pvl->pv)))) {
+				log_error("dm_pool_grow_object failed");
+				dm_pool_abandon_object(mem);
+				return 0;
+			}
+
+			if (cling_tag_list_cn) {
+				if (!dm_pool_grow_object(mem, "(", 1)) {
+					log_error("dm_pool_grow_object failed");
+					dm_pool_abandon_object(mem);
+					return 0;
+				}
+				if (!_tags_list_str(mem, pvl->pv, cling_tag_list_cn)) {
+					dm_pool_abandon_object(mem);
+					return_0;
+				}
+				if (!dm_pool_grow_object(mem, ")", 1)) {
+					log_error("dm_pool_grow_object failed");
+					dm_pool_abandon_object(mem);
+					return 0;
+				}
+			}
+
+			first = 0;
+		}
+
+		if (!dm_pool_grow_object(mem, "\0", 1)) {
+			log_error("dm_pool_grow_object failed");
+			dm_pool_abandon_object(mem);
+			return 0;
+		}
+
+		pvnames = dm_pool_end_object(mem);
+		log_debug_alloc("Parallel PVs at LE %" PRIu32 " length %" PRIu32 ": %s",
+				spvs->le, spvs->len, pvnames);
+		dm_pool_free(mem, pvnames);
+	}
+
+	return 1;
 }
 
 /*
@@ -2218,8 +2235,17 @@ static void _reserve_area(struct alloc_handle *ah, struct alloc_state *alloc_sta
 	struct pv_area_used *area_used = &alloc_state->areas[ix_pva];
 	const char *pv_tag_list = NULL;
 
-	if (ah->cling_tag_list_cn)
-		pv_tag_list = _tags_list_str(ah, pva->map->pv);
+	if (ah->cling_tag_list_cn) {
+		if (!dm_pool_begin_object(ah->mem, 256))
+			log_error("PV tags string allocation failed");
+		else if (!_tags_list_str(ah->mem, pva->map->pv, ah->cling_tag_list_cn))
+			dm_pool_abandon_object(ah->mem);
+		else if (!dm_pool_grow_object(ah->mem, "\0", 1)) {
+			dm_pool_abandon_object(ah->mem);
+			log_error("PV tags string extension failed.");
+		} else
+			pv_tag_list = dm_pool_end_object(ah->mem);
+	}
 
 	log_debug_alloc("%s allocation area %" PRIu32 " %s %s start PE %" PRIu32
 			" length %" PRIu32 " leaving %" PRIu32 "%s%s.",
@@ -2378,7 +2404,7 @@ static int _check_cling_to_alloced(struct alloc_handle *ah, const struct dm_conf
 			continue;	/* Area already assigned */
 		dm_list_iterate_items(aa, &ah->alloced_areas[s]) {
 			if ((!cling_tag_list_cn && (pva->map->pv == aa[0].pv)) ||
-			    (cling_tag_list_cn && _pvs_have_matching_tag(cling_tag_list_cn, pva->map->pv, aa[0].pv))) {
+			    (cling_tag_list_cn && _pvs_have_matching_tag(cling_tag_list_cn, pva->map->pv, aa[0].pv, 0))) {
 				if (positional)
 					_reserve_required_area(ah, alloc_state, pva, pva->count, s, 0);
 				return 1;
@@ -2389,13 +2415,20 @@ static int _check_cling_to_alloced(struct alloc_handle *ah, const struct dm_conf
 	return 0;
 }
 
-static int _pv_is_parallel(struct physical_volume *pv, struct dm_list *parallel_pvs)
+static int _pv_is_parallel(struct physical_volume *pv, struct dm_list *parallel_pvs, const struct dm_config_node *cling_tag_list_cn)
 {
 	struct pv_list *pvl;
 
-	dm_list_iterate_items(pvl, parallel_pvs)
-		if (pv == pvl->pv)
+	dm_list_iterate_items(pvl, parallel_pvs) {
+		if (pv == pvl->pv) {
+			log_debug_alloc("Not using free space on existing parallel PV %s.",
+					pv_dev_name(pvl->pv));
 			return 1;
+		}
+		if (cling_tag_list_cn && _pvs_have_matching_tag(cling_tag_list_cn, pvl->pv, pv, 1))
+			return 1;
+	}
+
 
 	return 0;
 }
@@ -2683,7 +2716,7 @@ static int _find_some_parallel_space(struct alloc_handle *ah,
 				/* FIXME Split into log and non-log parallel_pvs and only check the log ones if log_iteration? */
 				/* (I've temporatily disabled the check.) */
 				/* Avoid PVs used by existing parallel areas */
-				if (!log_iteration_count && parallel_pvs && _pv_is_parallel(pvm->pv, parallel_pvs))
+				if (!log_iteration_count && parallel_pvs && _pv_is_parallel(pvm->pv, parallel_pvs, ah->cling_tag_list_cn))
 					goto next_pv;
 
 				/*
@@ -3001,7 +3034,7 @@ static int _allocate(struct alloc_handle *ah,
 	if (!(pvms = create_pv_maps(ah->mem, vg, allocatable_pvs)))
 		return_0;
 
-	if (!_log_parallel_areas(ah->mem, ah->parallel_areas))
+	if (!_log_parallel_areas(ah->mem, ah->parallel_areas, ah->cling_tag_list_cn))
 		stack;
 
 	alloc_state.areas_size = dm_list_size(pvms);
@@ -3051,6 +3084,15 @@ static int _allocate(struct alloc_handle *ah,
 
 		if (!_find_max_parallel_space_for_one_policy(ah, &alloc_parms, pvms, &alloc_state))
 			goto_out;
+
+		/* As a workaround, if only the log is missing now, fall through and try later policies up to normal. */
+		/* FIXME Change the core algorithm so the log extents cling to parallel LVs instead of avoiding them. */
+		if (alloc_state.allocated == ah->new_extents &&
+		    alloc_state.log_area_count_still_needed &&
+		    ah->alloc < ALLOC_NORMAL) {
+			ah->alloc = ALLOC_NORMAL;
+			continue;
+		}
 
 		if ((alloc_state.allocated == ah->new_extents &&
 		     !alloc_state.log_area_count_still_needed) ||
@@ -4473,6 +4515,7 @@ static int _lvresize_adjust_policy(const struct logical_volume *lv,
 {
 	struct cmd_context *cmd = lv->vg->cmd;
 	dm_percent_t percent;
+	dm_percent_t min_threshold;
 	int policy_threshold, policy_amount;
 
 	*amount = *meta_amount = 0;
@@ -4520,7 +4563,10 @@ static int _lvresize_adjust_policy(const struct logical_volume *lv,
 		if (!lv_thin_pool_percent(lv, 1, &percent))
 			return_0;
 
-		*meta_amount = _adjust_amount(percent, policy_threshold, policy_amount);
+		/* Resize below the minimal usable value */
+		min_threshold = pool_metadata_min_threshold(first_seg(lv)) / DM_PERCENT_1;
+		*meta_amount = _adjust_amount(percent, (min_threshold < policy_threshold) ?
+					      min_threshold : policy_threshold, policy_amount);
 
 		if (!lv_thin_pool_percent(lv, 0, &percent))
 			return_0;
@@ -6128,8 +6174,8 @@ static int _lv_update_and_reload(struct logical_volume *lv, int origin_only)
 	int do_backup = 0, r = 0;
 	const struct logical_volume *lock_lv = lv_lock_holder(lv);
 
-	log_very_verbose("Updating logical volume %s on disk(s).",
-			 display_lvname(lock_lv));
+	log_very_verbose("Updating logical volume %s on disk(s)%s.",
+			 display_lvname(lock_lv), origin_only ? " (origin only)": "");
 
 	if (!vg_write(vg))
 		return_0;
@@ -7110,7 +7156,7 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 
 	if (!lp->extents && !seg_is_thin_volume(lp)) {
 		log_error(INTERNAL_ERROR "Unable to create new logical volume with no extents.");
-		return_NULL;
+		return NULL;
 	}
 
 	if ((seg_is_pool(lp) || seg_is_cache(lp)) &&

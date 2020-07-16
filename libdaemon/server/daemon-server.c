@@ -444,7 +444,7 @@ static void *_client_thread(void *state)
 		if (!buffer_read(ts->client.socket_fd, &req.buffer))
 			goto fail;
 
-		req.cft = dm_config_from_string(req.buffer.mem);
+		req.cft = config_tree_from_string_without_dup_node_check(req.buffer.mem);
 
 		if (!req.cft)
 			fprintf(stderr, "error parsing request:\n %s\n", req.buffer.mem);
@@ -491,7 +491,7 @@ static int handle_connect(daemon_state s)
 
 	client.socket_fd = accept(s.socket_fd, (struct sockaddr *) &sockaddr, &sl);
 	if (client.socket_fd < 0) {
-		ERROR(&s, "Failed to accept connection.");
+		ERROR(&s, "Failed to accept connection errno %d.", errno);
 		return 0;
 	}
 
@@ -513,7 +513,7 @@ static int handle_connect(daemon_state s)
 	ts->client = client;
 
 	if (pthread_create(&ts->client.thread_id, NULL, _client_thread, ts)) {
-		ERROR(&s, "Failed to create client thread.");
+		ERROR(&s, "Failed to create client thread errno %d.", errno);
 		return 0;
 	}
 
