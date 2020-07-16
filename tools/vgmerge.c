@@ -26,7 +26,7 @@ static struct volume_group *_vgmerge_vg_read(struct cmd_context *cmd,
 		return NULL;
 	}
 
-	if (is_lockd_type(vg->lock_type)) {
+	if (vg_is_shared(vg)) {
 		log_error("vgmerge not allowed for lock_type %s", vg->lock_type);
 		unlock_and_release_vg(cmd, vg, vg_name);
 		return NULL;
@@ -72,6 +72,8 @@ static int _vgmerge_single(struct cmd_context *cmd, const char *vg_name_to,
 		return ECMD_FAILED;
 	}
 
+	lvmcache_label_scan(cmd);
+
 	if (strcmp(vg_name_to, vg_name_from) > 0)
 		lock_vg_from_first = 1;
 
@@ -99,9 +101,6 @@ static int _vgmerge_single(struct cmd_context *cmd, const char *vg_name_to,
 
 	if (!archive(vg_from) || !archive(vg_to))
 		goto_bad;
-
-	if (!drop_cached_metadata(vg_from))
-		stack;
 
 	if (!_vgmerge_select_pool_metadata_spare(cmd, vg_to, vg_from))
 		goto_bad;

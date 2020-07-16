@@ -13,7 +13,7 @@
 # test currently needs to drop
 # 'return NULL' in _lv_create_an_lv after log_error("Can't create %s without using "
 
-SKIP_WITH_LVMLOCKD=1
+
 SKIP_WITH_LVMPOLLD=1
 
 export LVM_TEST_THIN_REPAIR_CMD=${LVM_TEST_THIN_REPAIR_CMD-/bin/false}
@@ -39,7 +39,7 @@ which mkfs.ext4 || skip
 aux prepare_pvs 2 64
 get_devs
 
-vgcreate -s 64K "$vg" "${DEVICES[@]}"
+vgcreate $SHARED -s 64K "$vg" "${DEVICES[@]}"
 
 # Create named pool only
 lvcreate -l1 -T $vg/pool1
@@ -198,6 +198,17 @@ check vg_field $vg lv_count 6
 
 lvremove -ff $vg
 check vg_field $vg lv_count 0
+
+
+# Check how allocator works with 2PVs where one is nearly full
+lvcreate -l99%PV $vg "$dev1"
+lvs -a $vg
+# Check when separate metadata is required, allocation needs to fail
+fail lvcreate -L10 -T --poolmetadataspare n --config 'allocation/thin_pool_metadata_require_separate_pvs=1' $vg
+# Check when data and metadata may share the same PV, it shall pass
+lvcreate -L10 -T --poolmetadataspare n --config 'allocation/thin_pool_metadata_require_separate_pvs=0' $vg
+lvremove -f $vg
+
 
 # Fail cases
 # Too small pool size (1 extent 64KB) for given chunk size

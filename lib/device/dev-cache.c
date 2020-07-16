@@ -13,18 +13,18 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include "lib.h"
-#include "btree.h"
-#include "config.h"
-#include "toolcontext.h"
-#include "dm-ioctl.h" /* for DM_UUID_LEN */
-#include "lvm-string.h" /* for LVM's UUID_PREFIX */
+#include "base/memory/zalloc.h"
+#include "lib/misc/lib.h"
+#include "lib/datastruct/btree.h"
+#include "lib/config/config.h"
+#include "lib/commands/toolcontext.h"
+#include "device_mapper/misc/dm-ioctl.h"
+#include "lib/misc/lvm-string.h"
 
 #ifdef UDEV_SYNC_SUPPORT
 #include <libudev.h>
 #endif
 #include <unistd.h>
-#include <sys/param.h>
 #include <dirent.h>
 
 struct dev_iter {
@@ -61,19 +61,17 @@ static int _insert(const char *path, const struct stat *info,
 		   int rec, int check_with_udev_db);
 
 /* Setup non-zero members of passed zeroed 'struct device' */
-static void _dev_init(struct device *dev, int max_error_count)
+static void _dev_init(struct device *dev)
 {
 	dev->phys_block_size = -1;
 	dev->block_size = -1;
 	dev->fd = -1;
 	dev->read_ahead = -1;
-	dev->max_error_count = max_error_count;
 
 	dev->ext.enabled = 0;
 	dev->ext.src = DEV_EXT_NONE;
 
 	dm_list_init(&dev->aliases);
-	dm_list_init(&dev->open_list);
 }
 
 void dev_destroy_file(struct device *dev)
@@ -81,9 +79,9 @@ void dev_destroy_file(struct device *dev)
 	if (!(dev->flags & DEV_ALLOCED))
 		return;
 
-	dm_free((void *) dm_list_item(dev->aliases.n, struct dm_str_list)->str);
-	dm_free(dev->aliases.n);
-	dm_free(dev);
+	free((void *) dm_list_item(dev->aliases.n, struct dm_str_list)->str);
+	free(dev->aliases.n);
+	free(dev);
 }
 
 struct device *dev_create_file(const char *filename, struct device *dev,
@@ -93,19 +91,19 @@ struct device *dev_create_file(const char *filename, struct device *dev,
 
 	if (allocate) {
 		if (use_malloc) {
-			if (!(dev = dm_zalloc(sizeof(*dev)))) {
+			if (!(dev = zalloc(sizeof(*dev)))) {
 				log_error("struct device allocation failed");
 				return NULL;
 			}
-			if (!(alias = dm_zalloc(sizeof(*alias)))) {
+			if (!(alias = zalloc(sizeof(*alias)))) {
 				log_error("struct dm_str_list allocation failed");
-				dm_free(dev);
+				free(dev);
 				return NULL;
 			}
-			if (!(alias->str = dm_strdup(filename))) {
+			if (!(alias->str = strdup(filename))) {
 				log_error("filename strdup failed");
-				dm_free(dev);
-				dm_free(alias);
+				free(dev);
+				free(alias);
 				return NULL;
 			}
 		} else {
@@ -124,12 +122,12 @@ struct device *dev_create_file(const char *filename, struct device *dev,
 				return NULL;
 			}
 		}
-	} else if (!(alias->str = dm_strdup(filename))) {
+	} else if (!(alias->str = strdup(filename))) {
 		log_error("filename strdup failed");
 		return NULL;
 	}
 
-	_dev_init(dev, NO_DEV_ERROR_COUNT_LIMIT);
+	_dev_init(dev);
 	dev->flags = DEV_REGULAR | ((use_malloc) ? DEV_ALLOCED : 0);
 	dm_list_add(&dev->aliases, &alias->list);
 
@@ -145,7 +143,7 @@ static struct device *_dev_create(dev_t d)
 		return NULL;
 	}
 
-	_dev_init(dev, dev_disable_after_error_count());
+	_dev_init(dev);
 	dev->dev = d;
 
 	return dev;
@@ -275,10 +273,8 @@ static int _compare_paths(const char *path0, const char *path1)
 	if (slash1 < slash0)
 		return 1;
 
-	strncpy(p0, path0, sizeof(p0) - 1);
-	p0[sizeof(p0) - 1] = '\0';
-	strncpy(p1, path1, sizeof(p1) - 1);
-	p1[sizeof(p1) - 1] = '\0';
+	(void) dm_strncpy(p0, path0, sizeof(p0));
+	(void) dm_strncpy(p1, path1, sizeof(p1));
 	s0 = p0 + 1;
 	s1 = p1 + 1;
 
@@ -336,10 +332,8 @@ static int _add_alias(struct device *dev, const char *path)
 
 	/* Is name already there? */
 	dm_list_iterate_items(strl, &dev->aliases) {
-		if (!strcmp(strl->str, path)) {
-			log_debug_devs("%s: Already in device cache", path);
+		if (!strcmp(strl->str, path))
 			return 1;
-		}
 	}
 
 	sl->str = path;
@@ -347,13 +341,7 @@ static int _add_alias(struct device *dev, const char *path)
 	if (!dm_list_empty(&dev->aliases)) {
 		oldpath = dm_list_item(dev->aliases.n, struct dm_str_list)->str;
 		prefer_old = _compare_paths(path, oldpath);
-		log_debug_devs("%s: Aliased to %s in device cache%s (%d:%d)",
-			       path, oldpath, prefer_old ? "" : " (preferred name)",
-			       (int) MAJOR(dev->dev), (int) MINOR(dev->dev));
-
-	} else
-		log_debug_devs("%s: Added to device cache (%d:%d)", path,
-			       (int) MAJOR(dev->dev), (int) MINOR(dev->dev));
+	}
 
 	if (prefer_old)
 		dm_list_add(&dev->aliases, &sl->list);
@@ -670,32 +658,62 @@ struct dm_list *dev_cache_get_dev_list_for_lvid(const char *lvid)
 }
 
 /*
+ * Scanning code calls this when it fails to open a device using
+ * this path.  The path is dropped from dev-cache.  In the next
+ * dev_cache_scan it may be added again, but it could be for a
+ * different device.
+ */
+
+void dev_cache_failed_path(struct device *dev, const char *path)
+{
+	struct device *dev_by_path;
+	struct dm_str_list *strl;
+
+	if ((dev_by_path = (struct device *) dm_hash_lookup(_cache.names, path)))
+		dm_hash_remove(_cache.names, path);
+
+	dm_list_iterate_items(strl, &dev->aliases) {
+		if (!strcmp(strl->str, path)) {
+			dm_list_del(&strl->list);
+			break;
+		}
+	}
+}
+
+/*
  * Either creates a new dev, or adds an alias to
  * an existing dev.
  */
 static int _insert_dev(const char *path, dev_t d)
 {
 	struct device *dev;
-	static dev_t loopfile_count = 0;
-	int loopfile = 0;
+	struct device *dev_by_devt;
+	struct device *dev_by_path;
 	char *path_copy;
 
-	/* Generate pretend device numbers for loopfiles */
-	if (!d) {
-		if (dm_hash_lookup(_cache.names, path))
-			return 1;
-		d = ++loopfile_count;
-		loopfile = 1;
+	dev_by_devt = (struct device *) btree_lookup(_cache.devices, (uint32_t) d);
+	dev_by_path = (struct device *) dm_hash_lookup(_cache.names, path);
+	dev = dev_by_devt;
+
+	/*
+	 * Existing device, existing path points to the same device.
+	 */
+	if (dev_by_devt && dev_by_path && (dev_by_devt == dev_by_path)) {
+		log_debug_devs("Found dev %d:%d %s - exists. %.8s",
+			       (int)MAJOR(d), (int)MINOR(d), path, dev->pvid);
+		return 1;
 	}
 
-	/* is this device already registered ? */
-	if (!(dev = (struct device *) btree_lookup(_cache.devices, (uint32_t) d))) {
+	/*
+	 * No device or path found, add devt to cache.devices, add name to cache.names.
+	 */
+	if (!dev_by_devt && !dev_by_path) {
+		log_debug_devs("Found dev %d:%d %s - new.",
+			       (int)MAJOR(d), (int)MINOR(d), path);
+
 		if (!(dev = (struct device *) btree_lookup(_cache.sysfs_only_devices, (uint32_t) d))) {
 			/* create new device */
-			if (loopfile) {
-				if (!(dev = dev_create_file(path, NULL, NULL, 0)))
-					return_0;
-			} else if (!(dev = _dev_create(d)))
+			if (!(dev = _dev_create(d)))
 				return_0;
 		}
 
@@ -704,36 +722,129 @@ static int _insert_dev(const char *path, dev_t d)
 			_free(dev);
 			return 0;
 		}
-	}
 
-	if (dm_hash_lookup(_cache.names, path) == dev) {
-		/* Hash already has matching entry present */
-		log_debug("Path already cached %s.", path);
+		if (!(path_copy = dm_pool_strdup(_cache.mem, path))) {
+			log_error("Failed to duplicate path string.");
+			return 0;
+		}
+
+		if (!_add_alias(dev, path_copy)) {
+			log_error("Couldn't add alias to dev cache.");
+			return 0;
+		}
+
+		if (!dm_hash_insert(_cache.names, path_copy, dev)) {
+			log_error("Couldn't add name to hash in dev cache.");
+			return 0;
+		}
+
 		return 1;
 	}
 
-	if (!(path_copy = dm_pool_strdup(_cache.mem, path))) {
-		log_error("Failed to duplicate path string.");
-		return 0;
+	/*
+	 * Existing device, path is new, add path as a new alias for the device.
+	 */
+	if (dev_by_devt && !dev_by_path) {
+		log_debug_devs("Found dev %d:%d %s - new alias.",
+			       (int)MAJOR(d), (int)MINOR(d), path);
+
+		if (!(path_copy = dm_pool_strdup(_cache.mem, path))) {
+			log_error("Failed to duplicate path string.");
+			return 0;
+		}
+
+		if (!_add_alias(dev, path_copy)) {
+			log_error("Couldn't add alias to dev cache.");
+			return 0;
+		}
+
+		if (!dm_hash_insert(_cache.names, path_copy, dev)) {
+			log_error("Couldn't add name to hash in dev cache.");
+			return 0;
+		}
+
+		return 1;
 	}
 
-	if (!loopfile && !_add_alias(dev, path_copy)) {
-		log_error("Couldn't add alias to dev cache.");
-		return 0;
+	/*
+	 * No existing device, but path exists and previously pointed
+	 * to a different device.
+	 */
+	if (!dev_by_devt && dev_by_path) {
+		log_debug_devs("Found dev %d:%d %s - new device, path was previously %d:%d.",
+			       (int)MAJOR(d), (int)MINOR(d), path,
+			       (int)MAJOR(dev_by_path->dev), (int)MINOR(dev_by_path->dev));
+
+		if (!(dev = (struct device *) btree_lookup(_cache.sysfs_only_devices, (uint32_t) d))) {
+			/* create new device */
+			if (!(dev = _dev_create(d)))
+				return_0;
+		}
+
+		if (!(btree_insert(_cache.devices, (uint32_t) d, dev))) {
+			log_error("Couldn't insert device into binary tree.");
+			_free(dev);
+			return 0;
+		}
+
+		if (!(path_copy = dm_pool_strdup(_cache.mem, path))) {
+			log_error("Failed to duplicate path string.");
+			return 0;
+		}
+
+		if (!_add_alias(dev, path_copy)) {
+			log_error("Couldn't add alias to dev cache.");
+			return 0;
+		}
+
+		dm_hash_remove(_cache.names, path);
+
+		if (!dm_hash_insert(_cache.names, path_copy, dev)) {
+			log_error("Couldn't add name to hash in dev cache.");
+			return 0;
+		}
+
+		return 1;
+
 	}
 
-	if (!dm_hash_insert(_cache.names, path_copy, dev)) {
-		log_error("Couldn't add name to hash in dev cache.");
-		return 0;
+	/*
+	 * Existing device, and path exists and previously pointed to
+	 * a different device.
+	 */
+	if (dev_by_devt && dev_by_path) {
+		log_debug_devs("Found dev %d:%d %s - existing device, path was previously %d:%d.",
+			       (int)MAJOR(d), (int)MINOR(d), path,
+			       (int)MAJOR(dev_by_path->dev), (int)MINOR(dev_by_path->dev));
+
+		if (!(path_copy = dm_pool_strdup(_cache.mem, path))) {
+			log_error("Failed to duplicate path string.");
+			return 0;
+		}
+
+		if (!_add_alias(dev, path_copy)) {
+			log_error("Couldn't add alias to dev cache.");
+			return 0;
+		}
+
+		dm_hash_remove(_cache.names, path);
+
+		if (!dm_hash_insert(_cache.names, path_copy, dev)) {
+			log_error("Couldn't add name to hash in dev cache.");
+			return 0;
+		}
+
+		return 1;
 	}
 
-	return 1;
+	log_error("Found dev %d:%d %s - failed to use.", (int)MAJOR(d), (int)MINOR(d), path);
+	return 0;
 }
 
 static char *_join(const char *dir, const char *name)
 {
 	size_t len = strlen(dir) + strlen(name) + 2;
-	char *r = dm_malloc(len);
+	char *r = malloc(len);
 	if (r)
 		snprintf(r, len, "%s/%s", dir, name);
 
@@ -781,7 +892,7 @@ static int _insert_dir(const char *dir)
 
 			_collapse_slashes(path);
 			r &= _insert(path, NULL, 1, 0);
-			dm_free(path);
+			free(path);
 
 			free(dirent[n]);
 		}
@@ -789,26 +900,6 @@ static int _insert_dir(const char *dir)
 	}
 
 	return r;
-}
-
-static int _insert_file(const char *path)
-{
-	struct stat info;
-
-	if (stat(path, &info) < 0) {
-		log_sys_very_verbose("stat", path);
-		return 0;
-	}
-
-	if (!S_ISREG(info.st_mode)) {
-		log_debug_devs("%s: Not a regular file", path);
-		return 0;
-	}
-
-	if (!_insert_dev(path, 0))
-		return_0;
-
-	return 1;
 }
 
 static int _dev_cache_iterate_devs_for_index(void)
@@ -1067,10 +1158,8 @@ static int _insert(const char *path, const struct stat *info,
 		if (rec && !_insert_dir(path))
 			return_0;
 	} else {		/* add a device */
-		if (!S_ISBLK(info->st_mode)) {
-			log_debug_devs("%s: Not a block device", path);
+		if (!S_ISBLK(info->st_mode))
 			return 1;
-		}
 
 		if (!_insert_dev(path, info->st_rdev))
 			return_0;
@@ -1079,35 +1168,20 @@ static int _insert(const char *path, const struct stat *info,
 	return 1;
 }
 
-static void _full_scan(int dev_scan)
+void dev_cache_scan(void)
 {
-	struct dir_list *dl;
+	log_debug_devs("Creating list of system devices.");
 
-	if (_cache.has_scanned && !dev_scan)
-		return;
+	_cache.has_scanned = 1;
 
 	_insert_dirs(&_cache.dirs);
 
 	(void) dev_cache_index_devs();
-
-	dm_list_iterate_items(dl, &_cache.files)
-		_insert_file(dl->dir);
-
-	_cache.has_scanned = 1;
-	init_full_scan_done(1);
 }
 
 int dev_cache_has_scanned(void)
 {
 	return _cache.has_scanned;
-}
-
-void dev_cache_scan(int do_scan)
-{
-	if (!do_scan)
-		_cache.has_scanned = 1;
-	else
-		_full_scan(1);
 }
 
 static int _init_preferred_names(struct cmd_context *cmd)
@@ -1173,7 +1247,6 @@ out:
 int dev_cache_init(struct cmd_context *cmd)
 {
 	_cache.names = NULL;
-	_cache.has_scanned = 0;
 
 	if (!(_cache.mem = dm_pool_create("dev_cache", 10 * 1024)))
 		return_0;
@@ -1202,7 +1275,6 @@ int dev_cache_init(struct cmd_context *cmd)
 	}
 
 	dm_list_init(&_cache.dirs);
-	dm_list_init(&_cache.files);
 
 	if (!_init_preferred_names(cmd))
 		goto_bad;
@@ -1229,8 +1301,8 @@ static int _check_for_open_devices(int close_immediate)
 			log_error("Device '%s' has been left open (%d remaining references).",
 				  dev_name(dev), dev->open_count);
 			num_open++;
-			if (close_immediate)
-				dev_close_immediate(dev);
+			if (close_immediate && !dev_close_immediate(dev))
+				stack;
 		}
 	}
 
@@ -1293,32 +1365,6 @@ int dev_cache_add_dir(const char *path)
 
 	strcpy(dl->dir, path);
 	dm_list_add(&_cache.dirs, &dl->list);
-	return 1;
-}
-
-int dev_cache_add_loopfile(const char *path)
-{
-	struct dir_list *dl;
-	struct stat st;
-
-	if (stat(path, &st)) {
-		log_warn("Ignoring %s: %s.", path, strerror(errno));
-		/* But don't fail */
-		return 1;
-	}
-
-	if (!S_ISREG(st.st_mode)) {
-		log_warn("Ignoring %s: Not a regular file.", path);
-		return 1;
-	}
-
-	if (!(dl = _zalloc(sizeof(*dl) + strlen(path) + 1))) {
-		log_error("dir_list allocation failed for file");
-		return 0;
-	}
-
-	strcpy(dl->dir, path);
-	dm_list_add(&_cache.files, &dl->list);
 	return 1;
 }
 
@@ -1388,11 +1434,12 @@ const char *dev_cache_filtered_reason(const char *name)
 	return reason;
 }
 
-struct device *dev_cache_get(const char *name, struct dev_filter *f)
+struct device *dev_cache_get(struct cmd_context *cmd, const char *name, struct dev_filter *f)
 {
 	struct stat buf;
 	struct device *d = (struct device *) dm_hash_lookup(_cache.names, name);
 	int info_available = 0;
+	int ret = 1;
 
 	if (d && (d->flags & DEV_REGULAR))
 		return d;
@@ -1415,15 +1462,30 @@ struct device *dev_cache_get(const char *name, struct dev_filter *f)
 		_insert(name, info_available ? &buf : NULL, 0, obtain_device_list_from_udev());
 		d = (struct device *) dm_hash_lookup(_cache.names, name);
 		if (!d) {
-			_full_scan(0);
+			dev_cache_scan();
 			d = (struct device *) dm_hash_lookup(_cache.names, name);
 		}
 	}
 
-	if (!d || (f && !(d->flags & DEV_REGULAR) && !(f->passes_filter(f, d))))
+	if (!d)
 		return NULL;
 
-	log_debug_devs("Using %s", dev_name(d));
+	if (d && (d->flags & DEV_REGULAR))
+		return d;
+
+	if (f && !(d->flags & DEV_REGULAR)) {
+		ret = f->passes_filter(cmd, f, d);
+
+		if (ret == -EAGAIN) {
+			log_debug_devs("get device by name defer filter %s", dev_name(d));
+			d->flags |= DEV_FILTER_AFTER_SCAN;
+			ret = 1;
+		}
+	}
+
+	if (f && !(d->flags & DEV_REGULAR) && !ret)
+		return NULL;
+
 	return d;
 }
 
@@ -1444,12 +1506,13 @@ static struct device *_dev_cache_seek_devt(dev_t dev)
  * TODO This is very inefficient. We probably want a hash table indexed by
  * major:minor for keys to speed up these lookups.
  */
-struct device *dev_cache_get_by_devt(dev_t dev, struct dev_filter *f)
+struct device *dev_cache_get_by_devt(struct cmd_context *cmd, dev_t dev, struct dev_filter *f)
 {
 	char path[PATH_MAX];
 	const char *sysfs_dir;
 	struct stat info;
 	struct device *d = _dev_cache_seek_devt(dev);
+	int ret;
 
 	if (d && (d->flags & DEV_REGULAR))
 		return d;
@@ -1465,45 +1528,47 @@ struct device *dev_cache_get_by_devt(dev_t dev, struct dev_filter *f)
 			}
 
 			if (lstat(path, &info)) {
-				log_debug("No sysfs entry for %d:%d.",
-					  (int)MAJOR(dev), (int)MINOR(dev));
+				log_debug("No sysfs entry for %d:%d errno %d at %s.",
+					  (int)MAJOR(dev), (int)MINOR(dev), errno, path);
 				return NULL;
 			}
 		}
 
-		_full_scan(0);
+		dev_cache_scan();
 		d = _dev_cache_seek_devt(dev);
 	}
 
-	return (d && (!f || (d->flags & DEV_REGULAR) ||
-		      f->passes_filter(f, d))) ? d : NULL;
+	if (!d)
+		return NULL;
+
+	if (d->flags & DEV_REGULAR)
+		return d;
+
+	if (!f)
+		return d;
+
+	ret = f->passes_filter(cmd, f, d);
+
+	if (ret == -EAGAIN) {
+		log_debug_devs("get device by number defer filter %s", dev_name(d));
+		d->flags |= DEV_FILTER_AFTER_SCAN;
+		ret = 1;
+	}
+
+	if (ret)
+		return d;
+
+	return NULL;
 }
 
-void dev_cache_full_scan(struct dev_filter *f)
+struct dev_iter *dev_iter_create(struct dev_filter *f, int unused)
 {
-	if (f && f->wipe) {
-		f->wipe(f); /* might call _full_scan(1) */
-		if (!full_scan_done())
-			_full_scan(1);
-	} else
-		_full_scan(1);
-}
-
-struct dev_iter *dev_iter_create(struct dev_filter *f, int dev_scan)
-{
-	struct dev_iter *di = dm_malloc(sizeof(*di));
+	struct dev_iter *di = malloc(sizeof(*di));
 
 	if (!di) {
 		log_error("dev_iter allocation failed");
 		return NULL;
 	}
-
-	if (dev_scan && !trust_cache()) {
-		/* Flag gets reset between each command */
-		if (!full_scan_done())
-			dev_cache_full_scan(f);
-	} else
-		_full_scan(0);
 
 	di->current = btree_first(_cache.devices);
 	di->filter = f;
@@ -1517,7 +1582,7 @@ void dev_iter_destroy(struct dev_iter *iter)
 {
 	if (iter->filter)
 		iter->filter->use_count--;
-	dm_free(iter);
+	free(iter);
 }
 
 static struct device *_iter_next(struct dev_iter *iter)
@@ -1527,30 +1592,32 @@ static struct device *_iter_next(struct dev_iter *iter)
 	return d;
 }
 
-struct device *dev_iter_get(struct dev_iter *iter)
+struct device *dev_iter_get(struct cmd_context *cmd, struct dev_iter *iter)
 {
+	struct dev_filter *f;
+	int ret;
+
 	while (iter->current) {
 		struct device *d = _iter_next(iter);
-		if (!iter->filter || (d->flags & DEV_REGULAR) ||
-		    iter->filter->passes_filter(iter->filter, d)) {
-			log_debug_devs("Using %s", dev_name(d));
-			return d;
+		ret = 1;
+
+		f = iter->filter;
+
+		if (f && !(d->flags & DEV_REGULAR)) {
+			ret = f->passes_filter(cmd, f, d);
+
+			if (ret == -EAGAIN) {
+				log_debug_devs("get device by iter defer filter %s", dev_name(d));
+				d->flags |= DEV_FILTER_AFTER_SCAN;
+				ret = 1;
+			}
 		}
+
+		if (!f || (d->flags & DEV_REGULAR) || ret)
+			return d;
 	}
 
 	return NULL;
-}
-
-void dev_reset_error_count(struct cmd_context *cmd)
-{
-	struct dev_iter iter;
-
-	if (!_cache.devices)
-		return;
-
-	iter.current = btree_first(_cache.devices);
-	while (iter.current)
-		_iter_next(&iter)->error_count = 0;
 }
 
 int dev_fd(struct device *dev)

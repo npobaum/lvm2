@@ -13,18 +13,14 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include "lib.h"
-#include "toolcontext.h"
-#include "segtype.h"
+#include "lib/misc/lib.h"
+#include "lib/commands/toolcontext.h"
+#include "lib/metadata/segtype.h"
 
 struct segment_type *get_segtype_from_string(struct cmd_context *cmd,
 					     const char *str)
 {
 	struct segment_type *segtype;
-
-	/* FIXME Register this properly within striped.c */
-	if (!strcmp(str, SEG_TYPE_NAME_LINEAR))
-		str = SEG_TYPE_NAME_STRIPED;
 
 	dm_list_iterate_items(segtype, &cmd->segtypes)
 		if (!strcmp(segtype->name, str))

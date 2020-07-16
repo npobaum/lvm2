@@ -13,7 +13,7 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include "dmlib.h"
+#include "libdm/misc/dmlib.h"
 #include "libdm-targets.h"
 #include "libdm-common.h"
 
@@ -25,7 +25,7 @@
 #include <limits.h>
 
 #ifdef __linux__
-#  include "kdev_t.h"
+#  include "libdm/misc/kdev_t.h"
 #  include <linux/limits.h>
 #else
 #  define MAJOR(x) major((x))
@@ -33,7 +33,7 @@
 #  define MKDEV(x,y) makedev((x),(y))
 #endif
 
-#include "dm-ioctl.h"
+#include "libdm/misc/dm-ioctl.h"
 
 /*
  * Ensure build compatibility.  
@@ -133,9 +133,9 @@ static char *_align(char *ptr, unsigned int a)
 }
 
 #ifdef DM_IOCTLS
-static int _kernel_major = 0;
-static int _kernel_minor = 0;
-static int _kernel_release = 0;
+static unsigned _kernel_major = 0;
+static unsigned _kernel_minor = 0;
+static unsigned _kernel_release = 0;
 
 static int _uname(void)
 {
@@ -151,7 +151,7 @@ static int _uname(void)
 		return 0;
 	}
 
-	parts = sscanf(_uts.release, "%d.%d.%d",
+	parts = sscanf(_uts.release, "%u.%u.%u",
 		       &_kernel_major, &_kernel_minor, &_kernel_release);
 
 	/* Kernels with a major number of 2 always had 3 parts. */
@@ -164,6 +164,17 @@ static int _uname(void)
 	return 1;
 }
 
+int get_uname_version(unsigned *major, unsigned *minor, unsigned *release)
+{
+	if (!_uname())
+		return_0;
+
+	*major = _kernel_major;
+	*minor = _kernel_minor;
+	*release = _kernel_release;
+
+	return 1;
+}
 /*
  * Set number to NULL to populate _dm_bitset - otherwise first
  * match is returned.
@@ -1156,10 +1167,8 @@ static struct dm_ioctl *_flatten(struct dm_task *dmt, unsigned repeat_count)
 	while (repeat_count--)
 		len *= 2;
 
-	if (!(dmi = dm_malloc(len)))
+	if (!(dmi = dm_zalloc(len)))
 		return NULL;
-
-	memset(dmi, 0, len);
 
 	version = &_cmd_data_v4[dmt->type].version;
 

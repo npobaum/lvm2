@@ -41,7 +41,6 @@ lvdevices() {
 mirror_images_redundant() {
 	local vg=$1
 	local lv="$vg/$2"
-	lvs -a "$vg" -o+devices
 	for i in $(lvdevices "$lv"); do
 		echo "# $i:"
 		lvdevices "$vg/$i" | sort | uniq
@@ -65,8 +64,8 @@ lv_on_diff_() {
 	local diff_e
 
 	# Find diff between 2 shell arrays, print them as stdin files
-	printf "%s\n" "${expect[@]}" | sort | uniq >_lv_on_diff1
-	printf "%s\n" "${xdevs[@]}" >_lv_on_diff2
+	printf "%s\\n" "${expect[@]}" | sort | uniq >_lv_on_diff1
+	printf "%s\\n" "${xdevs[@]}" >_lv_on_diff2
 	diff_e=$(diff _lv_on_diff1 _lv_on_diff2) ||
 		die "LV $2/$3 $(lv_err_list_ "^>" "${diff_e}" found)$(lv_err_list_ "^<" "${diff_e}" "not found")."
 }
@@ -158,7 +157,7 @@ mirror_nonredundant() {
 	attr=$(get lv_field "$lv" attr)
 	(echo "$attr" | grep "^......m...$" >/dev/null) || {
 		if (echo "$attr" | grep "^o.........$" >/dev/null) &&
-		   lvs -a | grep -F "[${2}_mimage" >/dev/null; then
+		   lvs -a $1 | grep -F "[${2}_mimage" >/dev/null; then
 			echo "TEST WARNING: $lv is a snapshot origin and looks like a mirror,"
 			echo "assuming it is actually a mirror"
 		else
@@ -240,10 +239,10 @@ in_sync() {
 	fi
 
 	if [[ ${a[$(( idx - 1 ))]} =~ a ]] ; then
-		[ $ignore_a -eq 0 ] && \
+		[ "$ignore_a" = 0 ] && \
 			die "$lvm_name ($type$snap) in-sync, but 'a' characters in health status"
 		echo "$lvm_name ($type$snap) is not in-sync"
-		[ $ignore_a -eq 1 ] && return 0
+		[ "$ignore_a" = 1 ] && return 0
 		return 1
 	fi
 
@@ -423,10 +422,11 @@ sysfs() {
 	# read maj min and also convert hex to decimal
 	local maj
 	local min
-	local P="/sys/dev/block/$maj:$min/$2"
+	local P
 	local val
 	maj=$(($(stat -L --printf=0x%t "$1")))
 	min=$(($(stat -L --printf=0x%T "$1")))
+	P="/sys/dev/block/$maj:$min/$2"
 	val=$(< "$P") || return 0 # no sysfs ?
 	test "$val" -eq "$3" || \
 		die "$1: $P = $val differs from expected value $3!"

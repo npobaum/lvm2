@@ -13,36 +13,33 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include "lib.h"
-#include "device.h"
-#include "metadata.h"
-#include "toolcontext.h"
-#include "lvm-string.h"
-#include "lvm-file.h"
-#include "lvm-signal.h"
-#include "lvmcache.h"
-#include "lvmetad.h"
-#include "memlock.h"
-#include "str_list.h"
-#include "pv_alloc.h"
-#include "segtype.h"
-#include "activate.h"
-#include "display.h"
-#include "locking.h"
-#include "archiver.h"
-#include "defaults.h"
-#include "lvmlockd.h"
+#include "lib/misc/lib.h"
+#include "lib/device/device.h"
+#include "lib/metadata/metadata.h"
+#include "lib/commands/toolcontext.h"
+#include "lib/misc/lvm-string.h"
+#include "lib/misc/lvm-file.h"
+#include "lib/cache/lvmcache.h"
+#include "lib/mm/memlock.h"
+#include "lib/datastruct/str_list.h"
+#include "lib/metadata/pv_alloc.h"
+#include "lib/metadata/segtype.h"
+#include "lib/activate/activate.h"
+#include "lib/display/display.h"
+#include "lib/locking/locking.h"
+#include "lib/format_text/archiver.h"
+#include "lib/config/defaults.h"
+#include "lib/locking/lvmlockd.h"
 #include "time.h"
-#include "lvmnotify.h"
+#include "lib/notify/lvmnotify.h"
 
 #include <math.h>
 #include <sys/param.h>
 
 static struct physical_volume *_pv_read(struct cmd_context *cmd,
-					struct dm_pool *pvmem,
-					const char *pv_name,
-					struct format_instance *fid,
-					uint32_t warn_flags, int scan_label_only);
+					const struct format_type *fmt,
+					struct volume_group *vg,
+					struct lvmcache_info *info);
 
 static int _alignment_overrides_default(unsigned long data_alignment,
 					unsigned long default_pe_align)
@@ -331,37 +328,6 @@ bad:
 	return NULL;
 }
 
-int get_pv_from_vg_by_id(const struct format_type *fmt, const char *vg_name,
-			 const char *vgid, const char *pvid,
-			 struct physical_volume *pv)
-{
-	struct volume_group *vg;
-	struct pv_list *pvl;
-	uint32_t warn_flags = WARN_PV_READ | WARN_INCONSISTENT;
-	int r = 0, consistent = 0;
-
-	if (!(vg = vg_read_internal(fmt->cmd, vg_name, vgid, warn_flags, &consistent))) {
-		log_error("get_pv_from_vg_by_id: vg_read_internal failed to read VG %s",
-			  vg_name);
-		return 0;
-	}
-
-	dm_list_iterate_items(pvl, &vg->pvs) {
-		if (id_equal(&pvl->pv->id, (const struct id *) pvid)) {
-			if (!_copy_pv(fmt->cmd->mem, pv, pvl->pv)) {
-				log_error("internal PV duplication failed");
-				r = 0;
-				goto out;
-			}
-			r = 1;
-			goto out;
-		}
-	}
-out:
-	release_vg(vg);
-	return r;
-}
-
 static int _move_pv(struct volume_group *vg_from, struct volume_group *vg_to,
 		    const char *pv_name, int enforce_pv_from_source)
 {
@@ -575,11 +541,6 @@ int vg_remove_direct(struct volume_group *vg)
 	struct pv_list *pvl;
 	int ret = 1;
 
-	if (!lvmetad_vg_remove_pending(vg)) {
-		log_error("Failed to update lvmetad for pending remove.");
-		return 0;
-	}
-
 	if (!vg_remove_mdas(vg)) {
 		log_error("vg_remove_mdas %s failed", vg->name);
 		return 0;
@@ -611,9 +572,6 @@ int vg_remove_direct(struct volume_group *vg)
 		}
 	}
 
-	if (!lvmetad_vg_remove_finish(vg))
-		stack;
-
 	lockd_vg_update(vg);
 
 	set_vg_notify(vg->cmd);
@@ -633,14 +591,8 @@ int vg_remove(struct volume_group *vg)
 {
 	int ret;
 
-	if (!lock_vol(vg->cmd, VG_ORPHANS, LCK_VG_WRITE, NULL)) {
-		log_error("Can't get lock for orphan PVs");
-		return 0;
-	}
-
 	ret = vg_remove_direct(vg);
 
-	unlock_vg(vg->cmd, vg, VG_ORPHANS);
 	return ret;
 }
 
@@ -712,16 +664,6 @@ int check_pv_dev_sizes(struct volume_group *vg)
 
 	return r;
 }
-
-/*
- * FIXME: commands shifting to common code in toollib have left a large
- * amount of code only used by liblvm.  Either remove this by shifting
- * liblvm to use toollib, or isolate all this code into a liblvm-specific
- * source file.  All the following and more are only used by liblvm:
- *
- * . get_pvs()
- * . the vg->pvs_to_write list and pv_to_write struct
- */
 
 int vg_extend_each_pv(struct volume_group *vg, struct pvcreate_params *pp)
 {
@@ -898,51 +840,41 @@ int vgcreate_params_validate(struct cmd_context *cmd,
 	return 1;
 }
 
+static void _vg_wipe_cached_precommitted(struct volume_group *vg)
+{
+	release_vg(vg->vg_precommitted);
+	vg->vg_precommitted = NULL;
+}
+
+static void _vg_move_cached_precommitted_to_committed(struct volume_group *vg)
+{
+	release_vg(vg->vg_committed);
+	vg->vg_committed = vg->vg_precommitted;
+	vg->vg_precommitted = NULL;
+}
+
 /*
  * Update content of precommitted VG
  *
  * TODO: Optimize in the future, since lvmetad needs similar
  *       config tree processing in lvmetad_vg_update().
  */
-static int _vg_update_vg_precommitted(struct volume_group *vg)
+static int _vg_update_embedded_copy(struct volume_group *vg, struct volume_group **vg_embedded)
 {
-	release_vg(vg->vg_precommitted);
-	vg->vg_precommitted = NULL;
+	struct dm_config_tree *cft;
 
-	if (vg->cft_precommitted) {
-		dm_config_destroy(vg->cft_precommitted);
-		vg->cft_precommitted = NULL;
-	}
+	_vg_wipe_cached_precommitted(vg);
 
-	if (!(vg->cft_precommitted = export_vg_to_config_tree(vg)))
+	/* Copy the VG using an export followed by import */
+	if (!(cft = export_vg_to_config_tree(vg)))
 		return_0;
 
-	if (!(vg->vg_precommitted = import_vg_from_config_tree(vg->cft_precommitted, vg->fid))) {
-		dm_config_destroy(vg->cft_precommitted);
-		vg->cft_precommitted = NULL;
+	if (!(*vg_embedded = import_vg_from_config_tree(cft, vg->fid))) {
+		dm_config_destroy(cft);
 		return_0;
 	}
 
-	return 1;
-}
-
-static int _vg_update_vg_committed(struct volume_group *vg)
-{
-	if (dm_pool_locked(vg->vgmem))
-		return 1;
-
-	if (vg->vg_committed || is_orphan_vg(vg->name)) /* we already have it */
-		return 1;
-
-	if (!_vg_update_vg_precommitted(vg))
-		return_0;
-
-	vg->vg_committed = vg->vg_precommitted;
-	vg->vg_precommitted = NULL;
-	if (vg->cft_precommitted) {
-		dm_config_destroy(vg->cft_precommitted);
-		vg->cft_precommitted = NULL;
-	}
+	dm_config_destroy(cft);
 
 	return 1;
 }
@@ -955,7 +887,6 @@ static struct volume_group *_vg_make_handle(struct cmd_context *cmd,
 					    struct volume_group *vg,
 					    uint32_t failure)
 {
-
 	/* Never return a cached VG structure for a failure */
 	if (vg && vg->vginfo && failure != SUCCESS) {
 		release_vg(vg);
@@ -967,8 +898,13 @@ static struct volume_group *_vg_make_handle(struct cmd_context *cmd,
 
 	vg->read_status = failure;
 
-	if (vg->fid && !_vg_update_vg_committed(vg))
-		vg->read_status |= FAILED_ALLOCATION;
+	/*
+	 * If we hold a write lock and might be changing the VG contents, embed a pristine 
+	 * copy of the VG metadata for the activation code to use later
+	 */
+	if (vg->fid && !dm_pool_locked(vg->vgmem) && !vg->vg_committed && !is_orphan_vg(vg->name))
+		if (vg_write_lock_held() && !_vg_update_embedded_copy(vg, &vg->vg_committed))
+			vg->read_status |= FAILED_ALLOCATION;
 
 	return vg;
 }
@@ -1045,8 +981,6 @@ struct volume_group *vg_create(struct cmd_context *cmd, const char *vg_name)
 
 	vg->status = (RESIZEABLE_VG | LVM_READ | LVM_WRITE);
 	vg->system_id = NULL;
-	if (!(vg->lvm1_system_id = dm_pool_zalloc(vg->vgmem, NAME_LEN + 1)))
-		goto_bad;
 
 	vg->extent_size = DEFAULT_EXTENT_SIZE * 2;
 	vg->max_lv = DEFAULT_MAX_LV;
@@ -1086,7 +1020,7 @@ uint32_t extents_from_size(struct cmd_context *cmd, uint64_t size,
 
 	if (size > (uint64_t) MAX_EXTENT_COUNT * extent_size) {
 		log_error("Volume too large (%s) for extent size %s. "
-			  "Upper limit is less then %s.",
+			  "Upper limit is less than %s.",
 			  display_size(cmd, size),
 			  display_size(cmd, (uint64_t) extent_size),
 			  display_size(cmd, (uint64_t) MAX_EXTENT_COUNT *
@@ -1443,53 +1377,6 @@ void pvcreate_params_set_defaults(struct pvcreate_params *pp)
 	dm_list_init(&pp->pvs);
 }
 
-static int _pvcreate_write(struct cmd_context *cmd, struct pv_to_write *pvw)
-{
-	struct physical_volume *pv = pvw->pv;
-	struct device *dev = pv->dev;
-	const char *pv_name = dev_name(dev);
-
-	if (pvw->new_pv) {
-		/* Wipe existing label first */
-		if (!label_remove(pv_dev(pv))) {
-			log_error("Failed to wipe existing label on %s", pv_name);
-			return 0;
-		}
-
-		if (pvw->pp->zero) {
-			log_verbose("Zeroing start of device %s", pv_name);
-			if (!dev_open_quiet(dev)) {
-				log_error("%s not opened: device not zeroed", pv_name);
-				return 0;
-			}
-
-			if (!dev_set(dev, UINT64_C(0), (size_t) 2048, 0)) {
-				log_error("%s not wiped: aborting", pv_name);
-				if (!dev_close(dev))
-					stack;
-				return 0;
-			}
-			if (!dev_close(dev))
-				stack;
-		}
-	}
-
-	log_verbose("Writing physical volume data to disk \"%s\"",
-		    pv_name);
-
-	if (!(pv_write(cmd, pv, 1))) {
-		log_error("Failed to write physical volume \"%s\"", pv_name);
-		return 0;
-	}
-
-	if (pvw->new_pv)
-		log_print_unless_silent("Physical volume \"%s\" successfully created", pv_name);
-	else
-		log_verbose("Physical volume \"%s\" successfully written", pv_name);
-
-	return 1;
-}
-
 static struct physical_volume *_alloc_pv(struct dm_pool *mem, struct device *dev)
 {
 	struct physical_volume *pv;
@@ -1614,7 +1501,7 @@ struct pv_list *find_pv_in_vg(const struct volume_group *vg,
 			       const char *pv_name)
 {
 	struct pv_list *pvl;
-	struct device *dev = dev_cache_get(pv_name, vg->cmd->filter);
+	struct device *dev = dev_cache_get(vg->cmd, pv_name, vg->cmd->filter);
 
 	/*
 	 * If the device does not exist or is filtered out, don't bother trying
@@ -1879,13 +1766,6 @@ int vgs_are_compatible(struct cmd_context *cmd __attribute__((unused)),
 	/* Metadata types must be the same */
 	if (vg_to->fid->fmt != vg_from->fid->fmt) {
 		log_error("Metadata types differ for \"%s\" and \"%s\"",
-			  vg_to->name, vg_from->name);
-		return 0;
-	}
-
-	/* Clustering attribute must be the same */
-	if (vg_is_clustered(vg_to) != vg_is_clustered(vg_from)) {
-		log_error("Clustered attribute differs for \"%s\" and \"%s\"",
 			  vg_to->name, vg_from->name);
 		return 0;
 	}
@@ -2616,7 +2496,7 @@ int vg_validate(struct volume_group *vg)
 		goto out;
 	}
 
-	if (is_lockd_type(vg->lock_type)) {
+	if (vg_is_shared(vg)) {
 		if (!vg->lock_args) {
 			log_error(INTERNAL_ERROR "VG %s with lock_type %s without lock_args",
 				  vg->name, vg->lock_type);
@@ -2652,7 +2532,7 @@ int vg_validate(struct volume_group *vg)
 	}
 
 	dm_list_iterate_items(lvl, &vg->lvs) {
-		if (is_lockd_type(vg->lock_type)) {
+		if (vg_is_shared(vg)) {
 			if (lockd_lv_uses_lock(lvl->lv)) {
 				if (vg->skip_validate_lock_args)
 					continue;
@@ -2963,19 +2843,20 @@ static int _handle_historical_lvs(struct volume_group *vg)
 int vg_write(struct volume_group *vg)
 {
 	struct dm_list *mdah;
-	struct pv_to_write *pv_to_write, *pv_to_write_safe;
 	struct pv_list *pvl, *pvl_safe;
 	struct metadata_area *mda;
 	struct lv_list *lvl;
 	int revert = 0, wrote = 0;
 
-	dm_list_iterate_items(lvl, &vg->lvs) {
-		if (lvl->lv->lock_args && !strcmp(lvl->lv->lock_args, "pending")) {
-			if (!lockd_init_lv_args(vg->cmd, vg, lvl->lv, vg->lock_type, &lvl->lv->lock_args)) {
-				log_error("Cannot allocate lock for new LV.");
-				return 0;
+	if (vg_is_shared(vg)) {
+		dm_list_iterate_items(lvl, &vg->lvs) {
+			if (lvl->lv->lock_args && !strcmp(lvl->lv->lock_args, "pending")) {
+				if (!lockd_init_lv_args(vg->cmd, vg, lvl->lv, vg->lock_type, &lvl->lv->lock_args)) {
+					log_error("Cannot allocate lock for new LV.");
+					return 0;
+				}
+				lvl->lv->new_lock_args = 1;
 			}
-			lvl->lv->new_lock_args = 1;
 		}
 	}
 
@@ -3011,16 +2892,11 @@ int vg_write(struct volume_group *vg)
 		return 0;
 	}
 
-	if ((vg->fid->fmt->features & FMT_MDAS) && !_vg_adjust_ignored_mdas(vg))
+	if (!_vg_adjust_ignored_mdas(vg))
 		return_0;
 
 	if (!vg_mda_used_count(vg)) {
 		log_error("Aborting vg_write: No metadata areas to write to!");
-		return 0;
-	}
-
-	if (!drop_cached_metadata(vg)) {
-		log_error("Unable to drop cached metadata for VG %s.", vg->name);
 		return 0;
 	}
 
@@ -3038,14 +2914,10 @@ int vg_write(struct volume_group *vg)
 		dm_list_del(&pvl->list);
 	}
 
-        dm_list_iterate_items_safe(pv_to_write, pv_to_write_safe, &vg->pvs_to_write) {
-		if (!_pvcreate_write(vg->cmd, pv_to_write))
-			return_0;
-		dm_list_del(&pv_to_write->list);
-	}
-
 	/* Write to each copy of the metadata area */
 	dm_list_iterate_items(mda, &vg->fid->metadata_areas_in_use) {
+		if (mda->status & MDA_FAILED)
+			continue;
 		if (!mda->ops->vg_write) {
 			log_error("Format does not support writing volume"
 				  "group metadata areas");
@@ -3069,6 +2941,9 @@ int vg_write(struct volume_group *vg)
 		log_error("Failed to write VG %s.", vg->name);
 		dm_list_uniterate(mdah, &vg->fid->metadata_areas_in_use, &mda->list) {
 			mda = dm_list_item(mdah, struct metadata_area);
+
+			if (mda->status & MDA_FAILED)
+				continue;
 
 			if (mda->ops->vg_revert &&
 			    !mda->ops->vg_revert(vg->fid, vg, mda)) {
@@ -3098,21 +2973,10 @@ int vg_write(struct volume_group *vg)
 		}
 	}
 
-	if (!_vg_update_vg_precommitted(vg)) /* prepare precommited */
+	if (!_vg_update_embedded_copy(vg, &vg->vg_precommitted)) /* prepare precommited */
 		return_0;
 
 	lockd_vg_update(vg);
-
-	/*
-	 * This tells lvmetad the new seqno it should expect to receive
-	 * the metadata for after the commit.  The cached VG will be
-	 * invalid in lvmetad until this command sends the new metadata
-	 * after it's committed.
-	 */
-	if (!lvmetad_vg_update_pending(vg)) {
-		log_error("Failed to prepare new VG metadata in lvmetad cache.");
-		return 0;
-	}
 
 	return 1;
 }
@@ -3146,7 +3010,6 @@ static int _vg_commit_mdas(struct volume_group *vg)
 		/* Update cache first time we succeed */
 		if (!failed && !cache_updated) {
 			lvmcache_update_vg(vg, 0);
-			// lvmetad_vg_commit(vg);
 			cache_updated = 1;
 		}
 	}
@@ -3159,21 +3022,11 @@ int vg_commit(struct volume_group *vg)
 	int cache_updated = 0;
 	struct pv_list *pvl;
 
-	if (!lvmcache_vgname_is_locked(vg->name)) {
-		log_error(INTERNAL_ERROR "Attempt to write new VG metadata "
-			  "without locking %s", vg->name);
-		return cache_updated;
-	}
-
 	cache_updated = _vg_commit_mdas(vg);
 
 	set_vg_notify(vg->cmd);
 
 	if (cache_updated) {
-		/* Instruct remote nodes to upgrade cached metadata. */
-		if (!remote_commit_cached_metadata(vg))
-			stack; // FIXME: What should we do?
-
 		/*
 		 * We need to clear old_name after a successful commit.
 		 * The volume_group structure could be reused later.
@@ -3183,19 +3036,8 @@ int vg_commit(struct volume_group *vg)
 			pvl->pv->status &= ~PV_MOVED_VG;
 
 		/* This *is* the original now that it's commited. */
-		release_vg(vg->vg_committed);
-		vg->vg_committed = vg->vg_precommitted;
-		vg->vg_precommitted = NULL;
-		if (vg->cft_precommitted) {
-			dm_config_destroy(vg->cft_precommitted);
-			vg->cft_precommitted = NULL;
-		}
+		_vg_move_cached_precommitted_to_committed(vg);
 	}
-
-	/* If update failed, remove any cached precommitted metadata. */
-	if (!cache_updated && !drop_cached_metadata(vg))
-		log_error("Attempt to drop cached metadata failed "
-			  "after commit for VG %s.", vg->name);
 
 	/* If at least one mda commit succeeded, it was committed */
 	return cache_updated;
@@ -3207,14 +3049,6 @@ void vg_revert(struct volume_group *vg)
 	struct metadata_area *mda;
 	struct lv_list *lvl;
 
-	/*
-	 * This will leave the cached copy in lvmetad INVALID (from
-	 * lvmetad_vg_update_pending) and means the VG will be reread from disk
-	 * to update the lvmetad copy, which is what we want to ensure that the
-	 * cached copy is correct.
-	 */
-	vg->lvmetad_update_pending = 0;
-
 	dm_list_iterate_items(lvl, &vg->lvs) {
 		if (lvl->lv->new_lock_args) {
 			lockd_free_lv(vg->cmd, vg, lvl->lv->name, &lvl->lv->lvid.id[1], lvl->lv->lock_args);
@@ -3222,12 +3056,7 @@ void vg_revert(struct volume_group *vg)
 		}
 	}
 
-	release_vg(vg->vg_precommitted);  /* VG is no longer needed */
-	vg->vg_precommitted = NULL;
-	if (vg->cft_precommitted) {
-		dm_config_destroy(vg->cft_precommitted);
-		vg->cft_precommitted = NULL;
-	}
+	_vg_wipe_cached_precommitted(vg); /* VG is no longer needed */
 
 	dm_list_iterate_items(mda, &vg->fid->metadata_areas_in_use) {
 		if (mda->ops->vg_revert &&
@@ -3235,13 +3064,6 @@ void vg_revert(struct volume_group *vg)
 			stack;
 		}
 	}
-
-	if (!drop_cached_metadata(vg))
-		log_error("Attempt to drop cached metadata failed "
-			  "after reverted update for VG %s.", vg->name);
-
-	if (!remote_revert_cached_metadata(vg))
-		stack; // FIXME: What should we do?
 }
 
 static int _check_mda_in_use(struct metadata_area *mda, void *_in_use)
@@ -3255,9 +3077,7 @@ static int _check_mda_in_use(struct metadata_area *mda, void *_in_use)
 struct _vg_read_orphan_baton {
 	struct cmd_context *cmd;
 	struct volume_group *vg;
-	uint32_t warn_flags;
-	int consistent;
-	int repair;
+	const struct format_type *fmt;
 };
 
 /*
@@ -3354,8 +3174,7 @@ static int _vg_read_orphan_pv(struct lvmcache_info *info, void *baton)
 	uint32_t ext_version;
 	uint32_t ext_flags;
 
-	if (!(pv = _pv_read(b->vg->cmd, b->vg->vgmem, dev_name(lvmcache_device(info)),
-			    b->vg->fid, b->warn_flags, 0))) {
+	if (!(pv = _pv_read(b->cmd, b->fmt, b->vg, info))) {
 		stack;
 		return 1;
 	}
@@ -3426,10 +3245,9 @@ static int _vg_read_orphan_pv(struct lvmcache_info *info, void *baton)
 }
 
 /* Make orphan PVs look like a VG. */
-static struct volume_group *_vg_read_orphans(struct cmd_context *cmd,
+struct volume_group *vg_read_orphans(struct cmd_context *cmd,
 					     uint32_t warn_flags,
-					     const char *orphan_vgname,
-					     int *consistent)
+					     const char *orphan_vgname)
 {
 	const struct format_type *fmt;
 	struct lvmcache_vginfo *vginfo;
@@ -3439,8 +3257,6 @@ static struct volume_group *_vg_read_orphans(struct cmd_context *cmd,
 	struct pv_list head;
 
 	dm_list_init(&head.list);
-	lvmcache_label_scan(cmd);
-	lvmcache_seed_infos_from_lvmetad(cmd);
 
 	if (!(vginfo = lvmcache_vginfo_from_vgname(orphan_vgname, NULL)))
 		return_NULL;
@@ -3462,10 +3278,22 @@ static struct volume_group *_vg_read_orphans(struct cmd_context *cmd,
 	vg->free_count = 0;
 
 	baton.cmd = cmd;
-	baton.warn_flags = warn_flags;
+	baton.fmt = fmt;
 	baton.vg = vg;
-	baton.consistent = 1;
-	baton.repair = *consistent;
+
+	/*
+	 * vg_read for a normal VG will rescan labels for all the devices
+	 * in the VG, in case something changed on disk between the initial
+	 * label scan and acquiring the VG lock.  We don't rescan labels
+	 * here because this is only called in two ways:
+	 *
+	 * 1. for reporting, in which case it doesn't matter if something
+	 *    changed between the label scan and printing the PVs here
+	 *
+	 * 2. pvcreate_each_device() for pvcreate//vgcreate/vgextend,
+	 *    which already does the label rescan after taking the
+	 *    orphan lock.
+	 */
 
 	while ((pvl = (struct pv_list *) dm_list_first(&head.list))) {
 		dm_list_del(&pvl->list);
@@ -3477,7 +3305,6 @@ static struct volume_group *_vg_read_orphans(struct cmd_context *cmd,
 	if (!lvmcache_foreach_pv(vginfo, _vg_read_orphan_pv, &baton))
 		return_NULL;
 
-	*consistent = baton.consistent;
 	return vg;
 }
 
@@ -3581,7 +3408,7 @@ static int _is_foreign_vg(struct volume_group *vg)
 	return vg->cmd->system_id && strcmp(vg->system_id, vg->cmd->system_id);
 }
 
-static int _repair_inconsistent_vg(struct volume_group *vg)
+static int _repair_inconsistent_vg(struct volume_group *vg, uint32_t lockd_state)
 {
 	unsigned saved_handles_missing_pvs = vg->cmd->handles_missing_pvs;
 
@@ -3596,9 +3423,8 @@ static int _repair_inconsistent_vg(struct volume_group *vg)
 		return 0;
 	}
 
-	/* FIXME: do this at higher level where lvmlockd lock can be changed. */
-	if (is_lockd_type(vg->lock_type)) {
-		log_verbose("Skip metadata repair for shared VG.");
+	if (vg_is_shared(vg) && !(lockd_state & LDST_EX)) {
+		log_verbose("Skip metadata repair for shared VG without exclusive lock.");
 		return 0;
 	}
 
@@ -3621,7 +3447,7 @@ static int _repair_inconsistent_vg(struct volume_group *vg)
 	return 1;
 }
 
-static int _wipe_outdated_pvs(struct cmd_context *cmd, struct volume_group *vg, struct dm_list *to_check)
+static int _wipe_outdated_pvs(struct cmd_context *cmd, struct volume_group *vg, struct dm_list *to_check, uint32_t lockd_state)
 {
 	struct pv_list *pvl, *pvl2;
 	char uuid[64] __attribute__((aligned(8)));
@@ -3643,14 +3469,8 @@ static int _wipe_outdated_pvs(struct cmd_context *cmd, struct volume_group *vg, 
 		return 0;
 	}
 
-	/*
-	 * FIXME: do this at higher level where lvmlockd lock can be changed.
-	 * Also if we're reading the VG with the --shared option (not using
-	 * lvmlockd), we can see a VG while it's being written by another
-	 * host, same as the foreign VG case.
-	 */
-	if (is_lockd_type(vg->lock_type)) {
-		log_debug_metadata("Skip wiping outdated PVs for shared VG.");
+	if (vg_is_shared(vg) && !(lockd_state & LDST_EX)) {
+		log_verbose("Skip wiping outdated PVs for shared VG without exclusive lock.");
 		return 0;
 	}
 
@@ -3659,18 +3479,14 @@ static int _wipe_outdated_pvs(struct cmd_context *cmd, struct volume_group *vg, 
 			if (pvl->pv->dev == pvl2->pv->dev)
 				goto next_pv;
 		}
+
+
 		if (!id_write_format(&pvl->pv->id, uuid, sizeof(uuid)))
 			return_0;
 		log_warn("WARNING: Removing PV %s (%s) that no longer belongs to VG %s",
 			 pv_dev_name(pvl->pv), uuid, vg->name);
 		if (!pv_write_orphan(cmd, pvl->pv))
 			return_0;
-
-		/* Refresh metadata after orphan write */
-		if (!drop_cached_metadata(vg)) {
-			log_error("Unable to drop cached metadata for VG %s while wiping outdated PVs.", vg->name);
-			return 0;
-		}
 next_pv:
 		;
 	}
@@ -3679,6 +3495,7 @@ next_pv:
 
 static int _check_or_repair_pv_ext(struct cmd_context *cmd,
 				   struct volume_group *vg,
+				   uint32_t lockd_state,
 				   int repair, int *inconsistent_pvs)
 {
 	char uuid[64] __attribute__((aligned(8)));
@@ -3728,10 +3545,7 @@ static int _check_or_repair_pv_ext(struct cmd_context *cmd,
 					    "VG %s but not marked as used.",
 					    pv_dev_name(pvl->pv), vg->name);
 				*inconsistent_pvs = 1;
-			} else if (is_lockd_type(vg->lock_type)) {
-				/*
-				 * FIXME: decide how to handle repair for shared VGs.
-				 */
+			} else if (vg_is_shared(vg) && !(lockd_state & LDST_EX)) {
 				log_warn("Skip repair of PV %s that is in shared "
 					    "VG %s but not marked as used.",
 					    pv_dev_name(pvl->pv), vg->name);
@@ -3755,7 +3569,7 @@ static int _check_or_repair_pv_ext(struct cmd_context *cmd,
 
 	r = 1;
 out:
-	if ((pvs_fixed > 0) && !_repair_inconsistent_vg(vg))
+	if ((pvs_fixed > 0) && !_repair_inconsistent_vg(vg, lockd_state))
 		return_0;
 
 	return r;
@@ -3778,8 +3592,11 @@ out:
 static struct volume_group *_vg_read(struct cmd_context *cmd,
 				     const char *vgname,
 				     const char *vgid,
+				     uint32_t lockd_state, 
 				     uint32_t warn_flags, 
-				     int *consistent, unsigned precommitted)
+				     int enable_repair,
+				     int *mdas_consistent,
+				     unsigned precommitted)
 {
 	struct format_instance *fid = NULL;
 	struct format_instance_ctx fic;
@@ -3792,95 +3609,97 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 	int inconsistent_pvs = 0;
 	int inconsistent_mdas = 0;
 	int inconsistent_mda_count = 0;
-	int strip_historical_lvs = *consistent;
-	int update_old_pv_ext = *consistent;
+	int strip_historical_lvs = enable_repair;
+	int update_old_pv_ext = enable_repair;
 	unsigned use_precommitted = precommitted;
 	struct dm_list *pvids;
 	struct pv_list *pvl;
 	struct dm_list all_pvs;
-	unsigned seqno = 0;
-	int reappeared = 0;
+	char uuid[64] __attribute__((aligned(8)));
+	int skipped_rescan = 0;
 	struct cached_vg_fmtdata *vg_fmtdata = NULL;	/* Additional format-specific data about the vg */
 	unsigned use_previous_vg;
 
-	log_very_verbose("Reading VG %s %.32s", vgname ?: "<no name>", vgid ?: "<no vgid>");
+	*mdas_consistent = 1;
 
 	if (is_orphan_vg(vgname)) {
+		log_very_verbose("Reading VG %s", vgname);
+
 		if (use_precommitted) {
 			log_error(INTERNAL_ERROR "vg_read_internal requires vgname "
 				  "with pre-commit.");
 			return NULL;
 		}
-		return _vg_read_orphans(cmd, warn_flags, vgname, consistent);
+		return vg_read_orphans(cmd, warn_flags, vgname);
 	}
 
-	if (lvmetad_used() && !use_precommitted) {
-		if ((correct_vg = lvmcache_get_vg(cmd, vgname, vgid, precommitted))) {
-			dm_list_iterate_items(pvl, &correct_vg->pvs)
-				reappeared += _check_reappeared_pv(correct_vg, pvl->pv, *consistent);
-			if (reappeared && *consistent)
-				*consistent = _repair_inconsistent_vg(correct_vg);
-			else
-				*consistent = !reappeared;
-			if (_wipe_outdated_pvs(cmd, correct_vg, &correct_vg->pvs_outdated)) {
-				/* clear the list */
-				dm_list_init(&correct_vg->pvs_outdated);
-				lvmetad_vg_clear_outdated_pvs(correct_vg);
-                        }
-		}
+	uuid[0] = '\0';
+	if (vgid && !id_write_format((const struct id*)vgid, uuid, sizeof(uuid)))
+		stack;
 
-
-		if (correct_vg) {
-			if (update_old_pv_ext && !_vg_update_old_pv_ext_if_needed(correct_vg)) {
-				release_vg(correct_vg);
-				return_NULL;
-			}
-
-			if (strip_historical_lvs && !vg_strip_outdated_historical_lvs(correct_vg)) {
-				release_vg(correct_vg);
-				return_NULL;
-			}
-		}
-
-		return correct_vg;
-	}
+	log_very_verbose("Reading VG %s %s", vgname ?: "<no name>", vgid ? uuid : "<no vgid>");
 
 	/*
-	 * If cached metadata was inconsistent and *consistent is set
-	 * then repair it now.  Otherwise just return it.
-	 * Also return if use_precommitted is set due to the FIXME in
-	 * the missing PV logic below.
+	 * Rescan the devices that are associated with this vg in lvmcache.
+	 * This repeats what was done by the command's initial label scan,
+	 * but only the devices associated with this VG.
+	 *
+	 * The lvmcache info about these devs is from the initial label scan
+	 * performed by the command before the vg lock was held.  Now the VG
+	 * lock is held, so we rescan all the info from the devs in case
+	 * something changed between the initial scan and now that the lock
+	 * is held.
+	 *
+	 * Some commands (e.g. reporting) are fine reporting data read by
+	 * the label scan.  It doesn't matter if the devs changed between
+	 * the label scan and here, we can report what was seen in the
+	 * scan, even though it is the old state, since we will not be
+	 * making any modifications.  If the VG was being modified during
+	 * the scan, and caused us to see inconsistent metadata on the
+	 * different PVs in the VG, then we do want to rescan the devs
+	 * here to get a consistent view of the VG.  Note that we don't
+	 * know if the scan found all the PVs in the VG at this point.
+	 * We don't know that until vg_read looks at the list of PVs in
+	 * the metadata and compares that to the devices found by the scan.
+	 *
+	 * It's possible that a change made to the VG during scan was
+	 * adding or removing a PV from the VG.  In this case, the list
+	 * of devices associated with the VG in lvmcache would change
+	 * due to the rescan.
+	 *
+	 * The devs in the VG may be persistently inconsistent due to some
+	 * previous problem.  In this case, rescanning the labels here will
+	 * find the same inconsistency.  The VG repair (mistakenly done by
+	 * vg_read below) is supposed to fix that.
+	 *
+	 * FIXME: sort out the usage of the global lock (which is mixed up
+	 * with the orphan lock), and when we can tell that the global
+	 * lock is taken prior to the label scan, and still held here,
+	 * we can also skip the rescan in that case.
 	 */
-	if ((correct_vg = lvmcache_get_vg(cmd, vgname, vgid, precommitted)) &&
-	    (use_precommitted || !*consistent)) {
-		*consistent = 1;
-		return correct_vg;
+	if (!cmd->can_use_one_scan || lvmcache_scan_mismatch(cmd, vgname, vgid)) {
+		/* the skip rescan special case is for clvmd vg_read_by_vgid */
+		/* FIXME: this is not a warn flag, pass this differently */
+		if (warn_flags & SKIP_RESCAN)
+			goto find_vg;
+		skipped_rescan = 0;
+		log_debug_metadata("Rescanning devices for %s", vgname);
+		lvmcache_label_rescan_vg(cmd, vgname, vgid);
 	} else {
-		if (correct_vg && correct_vg->seqno > seqno)
-			seqno = correct_vg->seqno;
-		release_vg(correct_vg);
-		correct_vg = NULL;
+		log_debug_metadata("Skipped rescanning devices for %s", vgname);
+		skipped_rescan = 1;
 	}
 
+ find_vg:
 
-	/* Find the vgname in the cache */
-	/* If it's not there we must do full scan to be completely sure */
-	if (!(fmt = lvmcache_fmt_from_vgname(cmd, vgname, vgid, 1))) {
-		lvmcache_label_scan(cmd);
-		if (!(fmt = lvmcache_fmt_from_vgname(cmd, vgname, vgid, 1))) {
-			/* Independent MDAs aren't supported under low memory */
-			if (!cmd->independent_metadata_areas && critical_section())
-				return_NULL;
-			lvmcache_force_next_label_scan();
-			lvmcache_label_scan(cmd);
-			if (!(fmt = lvmcache_fmt_from_vgname(cmd, vgname, vgid, 0)))
-				return_NULL;
-		}
+	if (!(fmt = lvmcache_fmt_from_vgname(cmd, vgname, vgid, 0))) {
+		log_debug_metadata("Cache did not find fmt for vgname %s", vgname);
+		return_NULL;
 	}
 
 	/* Now determine the correct vgname if none was supplied */
 	if (!vgname && !(vgname = lvmcache_vgname_from_vgid(cmd->mem, vgid))) {
-		log_debug_metadata("Cache did not find VG name from vgid %.32s", vgid);
+		log_debug_metadata("Cache did not find VG name from vgid %s", uuid);
 		return_NULL;
 	}
 
@@ -3892,6 +3711,36 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 
 	if (use_precommitted && !(fmt->features & FMT_PRECOMMIT))
 		use_precommitted = 0;
+
+	/*
+	 * A "format instance" is an abstraction for a VG location,
+	 * i.e. where a VG's metadata exists on disk.
+	 *
+	 * An fic (format_instance_ctx) is a temporary struct used
+	 * to create an fid (format_instance).  The fid hangs around
+	 * and is used to create a 'vg' to which it connected (vg->fid).
+	 *
+	 * The 'fic' describes a VG in terms of fmt/name/id.
+	 *
+	 * The 'fid' describes a VG in more detail than the fic,
+	 * holding information about where to find the VG metadata.
+	 *
+	 * The 'vg' describes the VG in the most detail representing
+	 * all the VG metadata.
+	 *
+	 * The fic and fid are set up by create_instance() to describe
+	 * the VG location.  This happens before the VG metadata is
+	 * assembled into the more familiar struct volume_group "vg".
+	 *
+	 * The fid has one main purpose: to keep track of the metadata
+	 * locations for a given VG.  It does this by putting 'mda'
+	 * structs on fid->metadata_areas_in_use, which specify where
+	 * metadata is located on disk.  It gets this information
+	 * (metadata locations for a specific VG) from the command's
+	 * initial label scan.  The info is passed indirectly via
+	 * lvmcache info/vginfo structs, which are created by the
+	 * label scan and then copied into fid by create_instance().
+	 */
 
 	/* create format instance with appropriate metadata area */
 	fic.type = FMT_INSTANCE_MDAS | FMT_INSTANCE_AUX_MDAS;
@@ -3916,12 +3765,16 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 	/* Ensure contents of all metadata areas match - else do recovery */
 	inconsistent_mda_count=0;
 	dm_list_iterate_items(mda, &fid->metadata_areas_in_use) {
+		struct device *mda_dev = mda_get_device(mda);
+
 		use_previous_vg = 0;
+
+		log_debug_metadata("Reading VG %s from %s", vgname, dev_name(mda_dev));
 
 		if ((use_precommitted &&
 		     !(vg = mda->ops->vg_read_precommit(fid, vgname, mda, &vg_fmtdata, &use_previous_vg)) && !use_previous_vg) ||
 		    (!use_precommitted &&
-		     !(vg = mda->ops->vg_read(fid, vgname, mda, &vg_fmtdata, &use_previous_vg, 0)) && !use_previous_vg)) {
+		     !(vg = mda->ops->vg_read(fid, vgname, mda, &vg_fmtdata, &use_previous_vg)) && !use_previous_vg)) {
 			inconsistent = 1;
 			vg_fmtdata = NULL;
 			continue;
@@ -3940,10 +3793,8 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 
 		/* FIXME Also ensure contents same - checksum compare? */
 		if (correct_vg->seqno != vg->seqno) {
-			if (cmd->metadata_read_only)
-				log_very_verbose("Not repairing VG %s metadata seqno (%d != %d) "
-						  "as global/metadata_read_only is set.",
-						  vgname, vg->seqno, correct_vg->seqno);
+			if (cmd->metadata_read_only || skipped_rescan)
+				log_warn("Not repairing metadata for VG %s.", vgname);
 			else
 				inconsistent = 1;
 
@@ -4004,7 +3855,29 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 						return_NULL;
 					}
 
-					log_debug_metadata("Empty mda found for VG %s.", vgname);
+					log_debug_metadata("Empty mda found for VG %s on %s.",
+							   vgname, dev_name(pvl->pv->dev));
+
+#if 0
+					/*
+					 * If we are going to do any repair we have to be using 
+					 * the latest metadata on disk, so we have to rescan devs
+					 * if we skipped that at the start of the vg_read.  We'll
+					 * likely come back through here, but without having
+					 * skipped_rescan.
+					 *
+					 * FIXME: in some cases we don't want to do this.
+					 */
+					if (skipped_rescan && cmd->can_use_one_scan) {
+						log_debug_metadata("Restarting read to rescan devs.");
+						cmd->can_use_one_scan = 0;
+						release_vg(correct_vg);
+						correct_vg = NULL;
+						lvmcache_del(info);
+						label_read(pvl->pv->dev);
+						goto restart_scan;
+					}
+#endif
 
 					if (inconsistent_mdas)
 						continue;
@@ -4041,7 +3914,7 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 			log_debug_metadata("Cached VG %s had incorrect PV list",
 					   vgname);
 
-			if (critical_section())
+			if (prioritized_section())
 				inconsistent = 1;
 			else {
 				release_vg(correct_vg);
@@ -4080,11 +3953,6 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 
 		inconsistent = 0;
 
-		/* Independent MDAs aren't supported under low memory */
-		if (!cmd->independent_metadata_areas && critical_section())
-			return_NULL;
-		lvmcache_force_next_label_scan();
-		lvmcache_label_scan(cmd);
 		if (!(fmt = lvmcache_fmt_from_vgname(cmd, vgname, vgid, 0)))
 			return_NULL;
 
@@ -4113,7 +3981,7 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 			if ((use_precommitted &&
 			     !(vg = mda->ops->vg_read_precommit(fid, vgname, mda, &vg_fmtdata, &use_previous_vg)) && !use_previous_vg) ||
 			    (!use_precommitted &&
-			     !(vg = mda->ops->vg_read(fid, vgname, mda, &vg_fmtdata, &use_previous_vg, 0)) && !use_previous_vg)) {
+			     !(vg = mda->ops->vg_read(fid, vgname, mda, &vg_fmtdata, &use_previous_vg)) && !use_previous_vg)) {
 				inconsistent = 1;
 				vg_fmtdata = NULL;
 				continue;
@@ -4144,10 +4012,8 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 			/* FIXME Also ensure contents same - checksums same? */
 			if (correct_vg->seqno != vg->seqno) {
 				/* Ignore inconsistent seqno if told to skip repair logic */
-				if (cmd->metadata_read_only)
-					log_very_verbose("Not repairing VG %s metadata seqno (%d != %d) "
-							  "as global/metadata_read_only is set.",
-							  vgname, vg->seqno, correct_vg->seqno);
+				if (cmd->metadata_read_only || skipped_rescan)
+					log_warn("Not repairing metadata for VG %s.", vgname);
 				else
 					inconsistent = 1;
 
@@ -4213,7 +4079,6 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 				log_error(INTERNAL_ERROR "Too many inconsistent MDAs.");
 
 			if (!inconsistent_mda_count) {
-				*consistent = 0;
 				_free_pv_list(&all_pvs);
 				return correct_vg;
 			}
@@ -4222,17 +4087,24 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 			return NULL;
 		}
 
-		if (!*consistent) {
+		if (!enable_repair) {
 			_free_pv_list(&all_pvs);
+			*mdas_consistent = 0;
 			return correct_vg;
+		}
+
+		if (skipped_rescan) {
+			log_warn("Not repairing metadata for VG %s.", vgname);
+			_free_pv_list(&all_pvs);
+			release_vg(correct_vg);
+			return_NULL;
 		}
 
 		/* Don't touch if vgids didn't match */
 		if (inconsistent_vgid) {
-			log_warn("WARNING: Inconsistent metadata UUIDs found for "
-				 "volume group %s.", vgname);
-			*consistent = 0;
+			log_warn("WARNING: Inconsistent metadata UUIDs found for volume group %s.", vgname);
 			_free_pv_list(&all_pvs);
+			*mdas_consistent = 0;
 			return correct_vg;
 		}
 
@@ -4243,13 +4115,13 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 		dm_list_iterate_items(pvl, &all_pvs)
 			_check_reappeared_pv(correct_vg, pvl->pv, 1);
 
-		if (!_repair_inconsistent_vg(correct_vg)) {
+		if (!_repair_inconsistent_vg(correct_vg, lockd_state)) {
 			_free_pv_list(&all_pvs);
 			release_vg(correct_vg);
 			return NULL;
 		}
 
-		if (!_wipe_outdated_pvs(cmd, correct_vg, &all_pvs)) {
+		if (!_wipe_outdated_pvs(cmd, correct_vg, &all_pvs, lockd_state)) {
 			_free_pv_list(&all_pvs);
 			release_vg(correct_vg);
 			return_NULL;
@@ -4273,14 +4145,13 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 	}
 
 	/* We have the VG now finally, check if PV ext info is in sync with VG metadata. */
-	if (!_check_or_repair_pv_ext(cmd, correct_vg, *consistent, &inconsistent_pvs)) {
+	if (!_check_or_repair_pv_ext(cmd, correct_vg, lockd_state, skipped_rescan ? 0 : enable_repair,
+				     &inconsistent_pvs)) {
 		release_vg(correct_vg);
 		return_NULL;
 	}
 
-	*consistent = !inconsistent_pvs;
-
-	if (correct_vg && *consistent) {
+	if (correct_vg && enable_repair && !skipped_rescan) {
 		if (update_old_pv_ext && !_vg_update_old_pv_ext_if_needed(correct_vg)) {
 			release_vg(correct_vg);
 			return_NULL;
@@ -4291,6 +4162,9 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 			return_NULL;
 		}
 	}
+
+	if (inconsistent_pvs)
+		*mdas_consistent = 0;
 
 	return correct_vg;
 }
@@ -4433,13 +4307,17 @@ static int _check_devs_used_correspond_with_vg(struct volume_group *vg)
 	return 1;
 }
 
-struct volume_group *vg_read_internal(struct cmd_context *cmd, const char *vgname,
-				      const char *vgid, uint32_t warn_flags, int *consistent)
+struct volume_group *vg_read_internal(struct cmd_context *cmd,
+				      const char *vgname, const char *vgid,
+				      uint32_t lockd_state, uint32_t warn_flags,
+				      int enable_repair,
+				      int *mdas_consistent)
 {
 	struct volume_group *vg;
 	struct lv_list *lvl;
 
-	if (!(vg = _vg_read(cmd, vgname, vgid, warn_flags, consistent, 0)))
+	if (!(vg = _vg_read(cmd, vgname, vgid, lockd_state,
+			    warn_flags, enable_repair, mdas_consistent, 0)))
 		goto_out;
 
 	if (!check_pv_dev_sizes(vg))
@@ -4479,7 +4357,7 @@ struct volume_group *vg_read_internal(struct cmd_context *cmd, const char *vgnam
 
 	(void) _check_devs_used_correspond_with_vg(vg);
 out:
-	if (!*consistent && (warn_flags & WARN_INCONSISTENT)) {
+	if (!*mdas_consistent && (warn_flags & WARN_INCONSISTENT)) {
 		if (is_orphan_vg(vgname))
 			log_warn("WARNING: Found inconsistent standalone Physical Volumes.");
 		else
@@ -4497,255 +4375,47 @@ void free_pv_fid(struct physical_volume *pv)
 	pv_set_fid(pv, NULL);
 }
 
-/* This is only called by lv_from_lvid, which is only called from
- * activate.c so we know the appropriate VG lock is already held and
- * the vg_read_internal is therefore safe.
- */
-static struct volume_group *_vg_read_by_vgid(struct cmd_context *cmd,
-					    const char *vgid,
-					    unsigned precommitted)
-{
-	const char *vgname;
-	struct dm_list *vgnames;
-	struct volume_group *vg;
-	struct dm_str_list *strl;
-	uint32_t warn_flags = WARN_PV_READ | WARN_INCONSISTENT;
-	int consistent = 0;
-
-	/* Is corresponding vgname already cached? */
-	if (lvmcache_vgid_is_cached(vgid)) {
-		if ((vg = _vg_read(cmd, NULL, vgid, warn_flags, &consistent, precommitted)) &&
-		    id_equal(&vg->id, (const struct id *)vgid)) {
-			return vg;
-		}
-		release_vg(vg);
-	}
-
-	/*
-	 * When using lvmlockd we should never reach this point.
-	 * The VG is locked, then vg_read() is done, which gets
-	 * the latest VG from lvmetad, or disk if lvmetad has
-	 * been invalidated.  When we get here the VG should
-	 * always be cached and returned above.
-	 */
-	if (lvmlockd_use())
-		log_error(INTERNAL_ERROR "vg_read_by_vgid failed with lvmlockd");
-
-	/* Mustn't scan if memory locked: ensure cache gets pre-populated! */
-	if (critical_section())
-		return_NULL;
-
-	/* FIXME Need a genuine read by ID here - don't vg_read_internal by name! */
-	/* FIXME Disabled vgrenames while active for now because we aren't
-	 *       allowed to do a full scan here any more. */
-
-	// The slow way - full scan required to cope with vgrename
-	lvmcache_force_next_label_scan();
-	lvmcache_label_scan(cmd);
-	if (!(vgnames = get_vgnames(cmd, 0))) {
-		log_error("vg_read_by_vgid: get_vgnames failed");
-		return NULL;
-	}
-
-	dm_list_iterate_items(strl, vgnames) {
-		vgname = strl->str;
-		if (!vgname)
-			continue;	// FIXME Unnecessary?
-		consistent = 0;
-		if ((vg = _vg_read(cmd, vgname, vgid, warn_flags, &consistent, precommitted)) &&
-		    id_equal(&vg->id, (const struct id *)vgid)) {
-			if (!consistent) {
-				release_vg(vg);
-				return NULL;
-			}
-			return vg;
-		}
-		release_vg(vg);
-	}
-
-	return NULL;
-}
-
-/* Only called by activate.c */
-struct logical_volume *lv_from_lvid(struct cmd_context *cmd, const char *lvid_s,
-				    unsigned precommitted)
-{
-	struct logical_volume *lv;
-	struct volume_group *vg;
-	const union lvid *lvid;
-
-	lvid = (const union lvid *) lvid_s;
-
-	log_very_verbose("Finding %svolume group for uuid %s", precommitted ? "precommitted " : "", lvid_s);
-	if (!(vg = _vg_read_by_vgid(cmd, (const char *)lvid->id[0].uuid, precommitted))) {
-		log_error("Volume group for uuid not found: %s", lvid_s);
-		return NULL;
-	}
-
-	log_verbose("Found volume group \"%s\"", vg->name);
-	if (vg->status & EXPORTED_VG) {
-		log_error("Volume group \"%s\" is exported", vg->name);
-		goto out;
-	}
-	if (!(lv = find_lv_in_vg_by_lvid(vg, lvid))) {
-		log_very_verbose("Can't find logical volume id %s", lvid_s);
-		goto out;
-	}
-
-	return lv;
-out:
-	release_vg(vg);
-	return NULL;
-}
-
-const char *find_vgname_from_pvid(struct cmd_context *cmd,
-				  const char *pvid)
-{
-	char *vgname;
-	struct lvmcache_info *info;
-
-	vgname = lvmcache_vgname_from_pvid(cmd, pvid);
-
-	if (is_orphan_vg(vgname)) {
-		if (!(info = lvmcache_info_from_pvid(pvid, NULL, 0))) {
-			return_NULL;
-		}
-		/*
-		 * If an orphan PV has no MDAs, or it has MDAs but the
-		 * MDA is ignored, it may appear to be an orphan until
-		 * the metadata is read off another PV in the same VG.
-		 * Detecting this means checking every VG by scanning
-		 * every PV on the system.
-		 */
-		if (lvmcache_uncertain_ownership(info)) {
-			if (!scan_vgs_for_pvs(cmd, WARN_PV_READ)) {
-				log_error("Rescan for PVs without "
-					  "metadata areas failed.");
-				return NULL;
-			}
-			/*
-			 * Ask lvmcache again - we may have a non-orphan
-			 * name now
-			 */
-			vgname = lvmcache_vgname_from_pvid(cmd, pvid);
-		}
-	}
-	return vgname;
-}
-
-
-const char *find_vgname_from_pvname(struct cmd_context *cmd,
-				    const char *pvname)
-{
-	const char *pvid;
-
-	pvid = lvmcache_pvid_from_devname(cmd, pvname);
-	if (!pvid)
-		/* Not a PV */
-		return NULL;
-
-	return find_vgname_from_pvid(cmd, pvid);
-}
-
-/* FIXME Use label functions instead of PV functions */
 static struct physical_volume *_pv_read(struct cmd_context *cmd,
-					struct dm_pool *pvmem,
-					const char *pv_name,
-					struct format_instance *fid,
-					uint32_t warn_flags, int scan_label_only)
+					const struct format_type *fmt,
+					struct volume_group *vg,
+					struct lvmcache_info *info)
 {
 	struct physical_volume *pv;
-	struct label *label;
-	struct lvmcache_info *info;
-	struct device *dev;
-	const struct format_type *fmt;
-	int found;
+	struct device *dev = lvmcache_device(info);
 
-	if (!(dev = dev_cache_get(pv_name, cmd->filter)))
-		return_NULL;
-
-	if (lvmetad_used()) {
-		info = lvmcache_info_from_pvid(dev->pvid, dev, 0);
-		if (!info) {
-			if (!lvmetad_pv_lookup_by_dev(cmd, dev, &found))
-				return_NULL;
-			if (!found) {
-				if (warn_flags & WARN_PV_READ)
-					log_error("No physical volume found in lvmetad cache for %s",
-						  pv_name);
-				return NULL;
-			}
-			if (!(info = lvmcache_info_from_pvid(dev->pvid, dev, 0))) {
-				if (warn_flags & WARN_PV_READ)
-					log_error("No cache info in lvmetad cache for %s.",
-						  pv_name);
-				return NULL;
-			}
-		}
-		label = lvmcache_get_label(info);
-	} else {
-		if (!(label_read(dev, &label, UINT64_C(0)))) {
-			if (warn_flags & WARN_PV_READ)
-				log_error("No physical volume label read from %s",
-					  pv_name);
-			return NULL;
-		}
-		info = (struct lvmcache_info *) label->info;
-	}
-
-	fmt = lvmcache_fmt(info);
-
-	pv = _alloc_pv(pvmem, dev);
-	if (!pv) {
-		log_error("pv allocation for '%s' failed", pv_name);
+	if (!(pv = _alloc_pv(vg->vgmem, NULL))) {
+		log_error("pv allocation failed");
 		return NULL;
 	}
 
-	pv->label_sector = label->sector;
-
-	/* FIXME Move more common code up here */
-	if (!(lvmcache_fmt(info)->ops->pv_read(lvmcache_fmt(info), pv_name, pv, scan_label_only))) {
-		log_error("Failed to read existing physical volume '%s'",
-			  pv_name);
-		goto bad;
+	if (fmt->ops->pv_read) {
+		/* format1 and pool */
+		if (!(fmt->ops->pv_read(fmt, dev_name(dev), pv, 0))) {
+			log_error("Failed to read existing physical volume '%s'", dev_name(dev));
+			goto bad;
+		}
+	} else {
+		/* format text */
+		if (!lvmcache_populate_pv_fields(info, vg, pv))
+			goto_bad;
 	}
 
-	if (!pv->size)
-		goto bad;
-
-	if (!alloc_pv_segment_whole_pv(pvmem, pv))
+	if (!alloc_pv_segment_whole_pv(vg->vgmem, pv))
 		goto_bad;
 
-	if (fid)
-		lvmcache_fid_add_mdas(info, fid, (const char *) &pv->id, ID_LEN);
-	else {
-		lvmcache_fid_add_mdas(info, fmt->orphan_vg->fid, (const char *) &pv->id, ID_LEN);
-		pv_set_fid(pv, fmt->orphan_vg->fid);
-	}
-
+	lvmcache_fid_add_mdas(info, vg->fid, (const char *) &pv->id, ID_LEN);
+	pv_set_fid(pv, vg->fid);
 	return pv;
 bad:
 	free_pv_fid(pv);
-	dm_pool_free(pvmem, pv);
+	dm_pool_free(vg->vgmem, pv);
 	return NULL;
-}
-
-/* May return empty list */
-struct dm_list *get_vgnames(struct cmd_context *cmd, int include_internal)
-{
-	return lvmcache_get_vgnames(cmd, include_internal);
-}
-
-struct dm_list *get_vgids(struct cmd_context *cmd, int include_internal)
-{
-	return lvmcache_get_vgids(cmd, include_internal);
 }
 
 int get_vgnameids(struct cmd_context *cmd, struct dm_list *vgnameids,
 		  const char *only_this_vgname, int include_internal)
 {
 	struct vgnameid_list *vgnl;
-	struct format_type *fmt;
 
 	if (only_this_vgname) {
 		if (!(vgnl = dm_pool_alloc(cmd->mem, sizeof(*vgnl)))) {
@@ -4759,178 +4429,9 @@ int get_vgnameids(struct cmd_context *cmd, struct dm_list *vgnameids,
 		return 1;
 	}
 
-	if (lvmetad_used()) {
-		/*
-		 * This just gets the list of names/ids from lvmetad
-		 * and does not populate lvmcache.
-		 */
-		lvmetad_get_vgnameids(cmd, vgnameids);
-
-		if (include_internal) {
-			dm_list_iterate_items(fmt, &cmd->formats) {
-				if (!(vgnl = dm_pool_alloc(cmd->mem, sizeof(*vgnl)))) {
-					log_error("vgnameid_list allocation failed.");
-					return 0;
-				}
-
-				vgnl->vg_name = dm_pool_strdup(cmd->mem, fmt->orphan_vg_name);
-				vgnl->vgid = NULL;
-				dm_list_add(vgnameids, &vgnl->list);
-			}
-		}
-	} else {
-		/*
-		 * The non-lvmetad case. This function begins by calling
-		 * lvmcache_label_scan() to populate lvmcache.
-		 */
-		lvmcache_get_vgnameids(cmd, include_internal, vgnameids);
-	}
+	lvmcache_get_vgnameids(cmd, include_internal, vgnameids);
 
 	return 1;
-}
-
-static int _get_pvs(struct cmd_context *cmd, uint32_t warn_flags,
-		struct dm_list *pvslist, struct dm_list *vgslist)
-{
-	struct dm_str_list *strl;
-	const char *vgname, *vgid;
-	struct pv_list *pvl, *pvl_copy;
-	struct dm_list *vgids;
-	struct volume_group *vg;
-	int consistent = 0;
-	int old_pvmove;
-	struct vg_list *vgl_item = NULL;
-	int have_pv = 0;
-
-	lvmcache_label_scan(cmd);
-
-	/* Get list of VGs */
-	if (!(vgids = get_vgids(cmd, 1))) {
-		log_error("get_pvs: get_vgids failed");
-		return 0;
-	}
-
-	/* Read every VG to ensure cache consistency */
-	/* Orphan VG is last on list */
-	old_pvmove = pvmove_mode();
-	init_pvmove(1);
-	dm_list_iterate_items(strl, vgids) {
-		vgid = strl->str;
-		if (!vgid)
-			continue;	/* FIXME Unnecessary? */
-		consistent = 0;
-		if (!(vgname = lvmcache_vgname_from_vgid(NULL, vgid))) {
-			stack;
-			continue;
-		}
-
-		/*
-		 * When we are retrieving a list to return toliblvm we need
-		 * that list to contain VGs that are modifiable as we are using
-		 * the vgmem pool in the vg to provide allocation for liblvm.
-		 * This is a hack to prevent the vg from getting cached as the
-		 * vgid will be NULL.
-		 * FIXME Remove this hack.
-		 */
-
-		warn_flags |= WARN_INCONSISTENT;
-
-		if (!(vg = vg_read_internal(cmd, vgname, (!vgslist) ? vgid : NULL, warn_flags, &consistent))) {
-			stack;
-			continue;
-		}
-
-		/* Move PVs onto results list */
-		if (pvslist)
-			dm_list_iterate_items(pvl, &vg->pvs) {
-				if (!(pvl_copy = _copy_pvl(cmd->mem, pvl))) {
-					log_error("PV list allocation failed");
-					release_vg(vg);
-					return 0;
-				}
-				/* If we are going to release the VG, don't
-				 * store a pointer to it in the PV structure.
-				 */
-				if (!vgslist)
-					pvl_copy->pv->vg = NULL;
-				else
-					/*
-					 * Make sure the vg mode indicates
-					 * writeable.
-					 * FIXME Rework function to take a
-					 * parameter to control this
-					 */
-					pvl_copy->pv->vg->open_mode = 'w';
-				have_pv = 1;
-				dm_list_add(pvslist, &pvl_copy->list);
-			}
-
-		/*
-		 * In the case of the library we want to preserve the embedded
-		 * volume group as subsequent calls to retrieve data about the
-		 * PV require it.
-		 */
-		if (!vgslist || !have_pv)
-			release_vg(vg);
-		else {
-			/*
-			 * Add VG to list of VG objects that will be returned
-			 */
-			vgl_item = dm_pool_alloc(cmd->mem, sizeof(*vgl_item));
-			if (!vgl_item) {
-				log_error("VG list element allocation failed");
-				return 0;
-			}
-			vgl_item->vg = vg;
-			vg = NULL;
-			dm_list_add(vgslist, &vgl_item->list);
-		}
-		have_pv = 0;
-	}
-	init_pvmove(old_pvmove);
-
-	if (!pvslist)
-		dm_pool_free(cmd->mem, vgids);
-
-	return 1;
-}
-
-/*
- * Retrieve a list of all physical volumes.
- * @param 	cmd	Command context
- * @param	pvslist	Set to NULL if you want memory for list created,
- * 			else valid memory
- * @param	vgslist	Set to NULL if you need the pv structures to contain
- * 			valid vg pointer.  This is the list of VGs
- * @returns NULL on errors, else pvslist which will equal passed-in value if
- * supplied.
- */
-struct dm_list *get_pvs_internal(struct cmd_context *cmd,
-				 struct dm_list *pvslist,
-				 struct dm_list *vgslist)
-{
-	struct dm_list *results = pvslist;
-
-	if (NULL == results) {
-		if (!(results = dm_pool_alloc(cmd->mem, sizeof(*results)))) {
-			log_error("PV list allocation failed");
-			return 0;
-		}
-
-		dm_list_init(results);
-	}
-
-	if (!_get_pvs(cmd, WARN_PV_READ, results, vgslist)) {
-		if (!pvslist)
-			dm_pool_free(cmd->mem, results);
-		return NULL;
-	}
-	return results;
-}
-
-int scan_vgs_for_pvs(struct cmd_context *cmd, uint32_t warn_flags)
-{
-	return _get_pvs(cmd, warn_flags, NULL, NULL);
 }
 
 int pv_write(struct cmd_context *cmd,
@@ -4958,9 +4459,6 @@ int pv_write(struct cmd_context *cmd,
 		return_0;
 
 	pv->status &= ~UNLABELLED_PV;
-
-	if (!lvmetad_pv_found(cmd, &pv->id, pv->dev, pv->fmt, pv->label_sector, NULL, NULL, NULL))
-		return_0;
 
 	return 1;
 }
@@ -5022,30 +4520,19 @@ static int _analyze_mda(struct metadata_area *mda, void *baton)
  *  0 - fail
  *  1 - success
  */
-int pv_analyze(struct cmd_context *cmd, const char *pv_name,
+int pv_analyze(struct cmd_context *cmd, struct device *dev,
 	       uint64_t label_sector)
 {
 	struct label *label;
-	struct device *dev;
 	struct lvmcache_info *info;
 
-	dev = dev_cache_get(pv_name, cmd->filter);
-	if (!dev) {
-		log_error("Device %s %s.", pv_name, dev_cache_filtered_reason(pv_name));
-		return 0;
-	}
-
-	/*
-	 * First, scan for LVM labels.
-	 */
-	if (!label_read(dev, &label, label_sector)) {
-		log_error("Could not find LVM label on %s",
-			  pv_name);
+	if (!(label = lvmcache_get_dev_label(dev))) {
+		log_error("Could not find LVM label on %s", dev_name(dev));
 		return 0;
 	}
 
 	log_print("Found label on %s, sector %"PRIu64", type=%.8s",
-		  pv_name, label->sector, label->type);
+		  dev_name(dev), label->sector, label->type);
 
 	/*
 	 * Next, loop through metadata areas
@@ -5099,11 +4586,17 @@ int vg_flag_write_locked(struct volume_group *vg)
 
 static int _access_vg_clustered(struct cmd_context *cmd, const struct volume_group *vg)
 {
-	if (vg_is_clustered(vg) && !locking_is_clustered()) {
-		if (!cmd->ignore_clustered_vgs)
-			log_error("Skipping clustered volume group %s", vg->name);
-		else
-			log_verbose("Skipping clustered volume group %s", vg->name);
+	if (vg_is_clustered(vg)) {
+		/*
+		 * force_access_clustered is only set when forcibly
+		 * converting a clustered vg to lock type none.
+		 */
+		if (cmd->force_access_clustered) {
+			log_debug("Allowing forced access to clustered vg %s", vg->name);
+			return 1;
+		}
+
+		log_verbose("Skipping clustered VG %s.", vg->name);
 		return 0;
 	}
 
@@ -5159,24 +4652,36 @@ int vg_check_status(const struct volume_group *vg, uint64_t status)
  * VG is left unlocked on failure
  */
 static struct volume_group *_recover_vg(struct cmd_context *cmd,
-			 const char *vg_name, const char *vgid)
+			 const char *vg_name, const char *vgid,
+			 int is_shared, uint32_t lockd_state)
 {
-	int consistent = 1;
+	int mdas_consistent = 0;
 	struct volume_group *vg;
+	uint32_t state = 0;
 
 	unlock_vg(cmd, NULL, vg_name);
-
-	dev_close_all();
 
 	if (!lock_vol(cmd, vg_name, LCK_VG_WRITE, NULL))
 		return_NULL;
 
-	if (!(vg = vg_read_internal(cmd, vg_name, vgid, WARN_PV_READ, &consistent))) {
+	/*
+	 * Convert vg lock in lvmlockd from sh to ex.
+	 */
+	if (is_shared && !(lockd_state & LDST_FAIL) && !(lockd_state & LDST_EX)) {
+		log_debug("Upgrade lvmlockd lock to repair vg %s.", vg_name);
+		if (!lockd_vg(cmd, vg_name, "ex", 0, &state)) {
+			log_warn("Skip repair for shared VG without exclusive lock.");
+			return NULL;
+		}
+		lockd_state |= LDST_EX;
+	}
+
+	if (!(vg = vg_read_internal(cmd, vg_name, vgid, lockd_state, 0, 1, &mdas_consistent))) {
 		unlock_vg(cmd, NULL, vg_name);
 		return_NULL;
 	}
 
-	if (!consistent) {
+	if (!mdas_consistent) {
 		release_vg(vg);
 		unlock_vg(cmd, NULL, vg_name);
 		return_NULL;
@@ -5223,7 +4728,7 @@ static int _access_vg_lock_type(struct cmd_context *cmd, struct volume_group *vg
 	/*
 	 * Local VG requires no lock from lvmlockd.
 	 */
-	if (!is_lockd_type(vg->lock_type))
+	if (!vg_is_shared(vg))
 		return 1;
 
 	/*
@@ -5318,15 +4823,6 @@ int is_system_id_allowed(struct cmd_context *cmd, const char *system_id)
 static int _access_vg_systemid(struct cmd_context *cmd, struct volume_group *vg)
 {
 	/*
-	 * LVM1 VGs must not be accessed if a new-style LVM2 system ID is set.
-	 */
-	if (cmd->system_id && systemid_on_pvs(vg)) {
-		log_error("Cannot access VG %s with LVM1 system ID %s when host system ID is set.",
-			  vg->name, vg->lvm1_system_id);
-		return 0;
-	}
-
-	/*
 	 * A few commands allow read-only access to foreign VGs.
 	 */
 	if (cmd->include_foreign_vgs)
@@ -5378,11 +4874,6 @@ static int _vg_access_permitted(struct cmd_context *cmd, struct volume_group *vg
 				uint32_t lockd_state, uint32_t *failure)
 {
 	if (!is_real_vg(vg->name)) {
-		/* Disallow use of LVM1 orphans when a host system ID is set. */
-		if (cmd->system_id && *cmd->system_id && systemid_on_pvs(vg)) {
-			*failure |= FAILED_SYSTEMID;
-			return_0;
-		}
 		return 1;
 	}
 
@@ -5423,14 +4914,17 @@ static struct volume_group *_vg_lock_and_read(struct cmd_context *cmd, const cha
 			       uint32_t lockd_state)
 {
 	struct volume_group *vg = NULL;
-	int consistent = 1;
-	int consistent_in;
 	uint32_t failure = 0;
 	uint32_t warn_flags = 0;
-	int already_locked;
+	int mdas_consistent = 1;
+	int enable_repair = 1;
+	int is_shared = 0;
+	int skip_lock = is_orphan_vg(vg_name) && (read_flags & PROCESS_SKIP_ORPHAN_LOCK);
 
-	if ((read_flags & READ_ALLOW_INCONSISTENT) || (lock_flags != LCK_VG_WRITE))
-		consistent = 0;
+	if ((read_flags & READ_ALLOW_INCONSISTENT) || (lock_flags != LCK_VG_WRITE)) {
+		enable_repair = 0;
+		warn_flags |= WARN_INCONSISTENT;
+	}
 
 	if (!validate_name(vg_name) && !is_orphan_vg(vg_name)) {
 		log_error("Volume group name \"%s\" has invalid characters.",
@@ -5438,32 +4932,19 @@ static struct volume_group *_vg_lock_and_read(struct cmd_context *cmd, const cha
 		return NULL;
 	}
 
-	already_locked = lvmcache_vgname_is_locked(vg_name);
-
-	if (!already_locked &&
+	if (!skip_lock &&
 	    !lock_vol(cmd, vg_name, lock_flags, NULL)) {
 		log_error("Can't get lock for %s", vg_name);
 		return _vg_make_handle(cmd, vg, FAILED_LOCKING);
 	}
 
-	if (already_locked)
+	if (skip_lock)
 		log_very_verbose("Locking %s already done", vg_name);
 
 	if (is_orphan_vg(vg_name))
 		status_flags &= ~LVM_WRITE;
 
-	consistent_in = consistent;
-
-	warn_flags = WARN_PV_READ;
-	if (consistent || (read_flags & READ_WARN_INCONSISTENT))
-		warn_flags |= WARN_INCONSISTENT;
-
-	/* If consistent == 1, we get NULL here if correction fails. */
-	if (!(vg = vg_read_internal(cmd, vg_name, vgid, warn_flags, &consistent))) {
-		if (consistent_in && !consistent) {
-			failure |= FAILED_INCONSISTENT;
-			goto bad;
-		}
+	if (!(vg = vg_read_internal(cmd, vg_name, vgid, lockd_state, warn_flags, enable_repair, &mdas_consistent))) {
 		if (!(read_flags & READ_OK_NOTFOUND))
 			log_error("Volume group \"%s\" not found", vg_name);
 		failure |= FAILED_NOTFOUND;
@@ -5473,15 +4954,27 @@ static struct volume_group *_vg_lock_and_read(struct cmd_context *cmd, const cha
 	if (!_vg_access_permitted(cmd, vg, lockd_state, &failure))
 		goto bad;
 
-	/* consistent == 0 when VG is not found, but failed == FAILED_NOTFOUND */
-	if (!consistent && !failure) {
+	/*
+	 * If we called vg_read_internal above without repair enabled,
+	 * and the read found inconsistent mdas, then then get a write/ex
+	 * lock and call it again with repair enabled so it will fix
+	 * the inconsistent mdas.
+	 *
+	 * FIXME: factor vg repair out of vg_read.  The vg_read caller
+	 * should get an error about the vg have problems and then call
+	 * a repair-specific function if it wants to.  (NB there are
+	 * other kinds of repairs hidden in _vg_read that should be
+	 * pulled out in addition to _recover_vg).
+	 */
+	if (!mdas_consistent && !enable_repair) {
+		is_shared = vg_is_shared(vg);
 		release_vg(vg);
-		if (!(vg = _recover_vg(cmd, vg_name, vgid))) {
+
+		if (!(vg = _recover_vg(cmd, vg_name, vgid, is_shared, lockd_state))) {
 			if (is_orphan_vg(vg_name))
 				log_error("Recovery of standalone physical volumes failed.");
 			else
-				log_error("Recovery of volume group \"%s\" failed.",
-					  vg_name);
+				log_error("Recovery of volume group \"%s\" failed.", vg_name);
 			failure |= FAILED_RECOVERY;
 			goto bad_no_unlock;
 		}
@@ -5513,13 +5006,13 @@ static struct volume_group *_vg_lock_and_read(struct cmd_context *cmd, const cha
 		goto_bad;
 
 	if (!(vg = _vg_make_handle(cmd, vg, failure)) || vg_read_error(vg))
-		if (!already_locked)
+		if (!skip_lock)
 			unlock_vg(cmd, vg, vg_name);
 
 	return vg;
 
 bad:
-	if (!already_locked)
+	if (!skip_lock)
 		unlock_vg(cmd, vg, vg_name);
 
 bad_no_unlock:
@@ -5619,21 +5112,9 @@ uint32_t vg_lock_newname(struct cmd_context *cmd, const char *vgname)
 	if (!lvmcache_fmt_from_vgname(cmd, vgname, NULL, 1)) {
 		lvmcache_label_scan(cmd);
 		if (!lvmcache_fmt_from_vgname(cmd, vgname, NULL, 1)) {
-			/* Independent MDAs aren't supported under low memory */
-			if (!cmd->independent_metadata_areas && critical_section()) {
-				/*
-				 * FIXME: Disallow calling this function if
-				 * critical_section() is true.
-				 */
-				unlock_vg(cmd, NULL, vgname);
-				return FAILED_LOCKING;
-			}
-			lvmcache_force_next_label_scan();
 			lvmcache_label_scan(cmd);
-			if (!lvmcache_fmt_from_vgname(cmd, vgname, NULL, 0)) {
-				/* vgname not found after scanning */
-				return SUCCESS;
-			}
+			if (!lvmcache_fmt_from_vgname(cmd, vgname, NULL, 0))
+				return SUCCESS; /* vgname not found after scanning */
 		}
 	}
 
@@ -6030,6 +5511,11 @@ int is_lockd_type(const char *lock_type)
 	if (!strcmp(lock_type, "sanlock"))
 		return 1;
 	return 0;
+}
+
+int vg_is_shared(const struct volume_group *vg)
+{
+	return (vg->lock_type && is_lockd_type(vg->lock_type));
 }
 
 int vg_strip_outdated_historical_lvs(struct volume_group *vg) {

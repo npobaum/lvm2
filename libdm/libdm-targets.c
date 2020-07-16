@@ -12,7 +12,7 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include "dmlib.h"
+#include "libdm/misc/dmlib.h"
 #include "libdm-common.h"
 
 int dm_get_status_snapshot(struct dm_pool *mem, const char *params,
@@ -350,6 +350,8 @@ int parse_thin_pool_status(const char *params, struct dm_status_thin_pool *s)
 {
 	int pos;
 
+	memset(s, 0, sizeof(*s));
+
 	if (!params) {
 		log_error("Failed to parse invalid thin params.");
 		return 0;
@@ -406,7 +408,7 @@ int dm_get_status_thin_pool(struct dm_pool *mem, const char *params,
 {
 	struct dm_status_thin_pool *s;
 
-	if (!(s = dm_pool_zalloc(mem, sizeof(struct dm_status_thin_pool)))) {
+	if (!(s = dm_pool_alloc(mem, sizeof(struct dm_status_thin_pool)))) {
 		log_error("Failed to allocate thin_pool status structure.");
 		return 0;
 	}
@@ -505,6 +507,11 @@ int dm_get_status_mirror(struct dm_pool *mem, const char *params,
 
 	if (!(pos = _skip_fields(pos, argc)))
 		goto_out;
+
+	if (strncmp(pos, "userspace", 9) == 0) {
+		pos += 9;
+		/* FIXME: support status of userspace mirror implementation */
+	}
 
 	if (sscanf(pos, "%u %n", &argc, &used) != 1)
 		goto_out;

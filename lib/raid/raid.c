@@ -12,17 +12,22 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include "lib.h"
-#include "segtype.h"
-#include "display.h"
-#include "text_export.h"
-#include "config.h"
-#include "str_list.h"
-#include "targets.h"
-#include "lvm-string.h"
-#include "activate.h"
-#include "metadata.h"
-#include "lv_alloc.h"
+#include "base/memory/zalloc.h"
+#include "lib/misc/lib.h"
+#include "lib/metadata/segtype.h"
+#include "lib/display/display.h"
+#include "lib/format_text/text_export.h"
+#include "lib/config/config.h"
+#include "lib/datastruct/str_list.h"
+#include "lib/activate/targets.h"
+#include "lib/misc/lvm-string.h"
+#include "lib/activate/activate.h"
+#include "lib/metadata/metadata.h"
+#include "lib/metadata/lv_alloc.h"
+
+static int _raid_target_present(struct cmd_context *cmd,
+				const struct lv_segment *seg __attribute__((unused)),
+				unsigned *attributes);
 
 static void _raid_display(const struct lv_segment *seg)
 {
@@ -247,13 +252,19 @@ static int _raid_add_target_line(struct dev_manager *dm __attribute__((unused)),
 	int delta_disks = 0, delta_disks_minus = 0, delta_disks_plus = 0, data_offset = 0;
 	uint32_t s;
 	uint64_t flags = 0;
-	uint64_t rebuilds[RAID_BITMAP_SIZE];
-	uint64_t writemostly[RAID_BITMAP_SIZE];
-	struct dm_tree_node_raid_params_v2 params;
+	uint64_t rebuilds[RAID_BITMAP_SIZE] = { 0 };
+	uint64_t writemostly[RAID_BITMAP_SIZE] = { 0 };
+	struct dm_tree_node_raid_params_v2 params = { 0 };
+	unsigned attrs;
 
-	memset(&params, 0, sizeof(params));
-	memset(&rebuilds, 0, sizeof(rebuilds));
-	memset(&writemostly, 0, sizeof(writemostly));
+	if (seg_is_raid4(seg)) {
+		if (!_raid_target_present(cmd, NULL, &attrs) ||
+		    !(attrs & RAID_FEATURE_RAID4)) {
+			log_error("RAID target does not support RAID4 for LV %s.",
+				  display_lvname(seg->lv));
+			return 0;
+		}
+	}
 
 	if (!seg->area_count) {
 		log_error(INTERNAL_ERROR "_raid_add_target_line called "
@@ -353,7 +364,8 @@ static int _raid_target_status_compatible(const char *type)
 
 static void _raid_destroy(struct segment_type *segtype)
 {
-	dm_free((void *) segtype);
+	free((void *) segtype->dso);
+	free(segtype);
 }
 
 #ifdef DEVMAPPER_SUPPORT
@@ -453,7 +465,7 @@ struct raid_feature {
 static int _check_feature(const struct raid_feature *feature, uint32_t maj, uint32_t min, uint32_t patchlevel)
 {
 	return (maj > feature->maj) ||
-	       (maj == feature->maj && min >= feature->min) ||
+	       (maj == feature->maj && min > feature->min) ||
 	       (maj == feature->maj && min == feature->min && patchlevel >= feature->patchlevel);
 }
 
@@ -528,26 +540,16 @@ static int _raid_modules_needed(struct dm_pool *mem,
 }
 
 #  ifdef DMEVENTD
-static const char *_get_raid_dso_path(struct cmd_context *cmd)
+static int _raid_target_monitored(struct lv_segment *seg, int *pending, int *monitored)
 {
-	const char *config_str = find_config_tree_str(cmd, dmeventd_raid_library_CFG, NULL);
-	return get_monitor_dso_path(cmd, config_str);
-}
-
-static int _raid_target_monitored(struct lv_segment *seg, int *pending)
-{
-	struct cmd_context *cmd = seg->lv->vg->cmd;
-	const char *dso_path = _get_raid_dso_path(cmd);
-
-	return target_registered_with_dmeventd(cmd, dso_path, seg->lv, pending);
+	return target_registered_with_dmeventd(seg->lv->vg->cmd, seg->segtype->dso,
+					       seg->lv, pending, monitored);
 }
 
 static int _raid_set_events(struct lv_segment *seg, int evmask, int set)
 {
-	struct cmd_context *cmd = seg->lv->vg->cmd;
-	const char *dso_path = _get_raid_dso_path(cmd);
-
-	return target_register_events(cmd, dso_path, seg->lv, evmask, set, 0);
+	return target_register_events(seg->lv->vg->cmd, seg->segtype->dso,
+				      seg->lv, evmask, set, 0);
 }
 
 static int _raid_target_monitor_events(struct lv_segment *seg, int events)
@@ -613,9 +615,10 @@ static const struct raid_type {
 
 static struct segment_type *_init_raid_segtype(struct cmd_context *cmd,
 					       const struct raid_type *rt,
+					       const char *dso,
 					       uint64_t monitored)
 {
-	struct segment_type *segtype = dm_zalloc(sizeof(*segtype));
+	struct segment_type *segtype = zalloc(sizeof(*segtype));
 
 	if (!segtype) {
 		log_error("Failed to allocate memory for %s segtype",
@@ -628,8 +631,11 @@ static struct segment_type *_init_raid_segtype(struct cmd_context *cmd,
 	segtype->flags = SEG_RAID | SEG_ONLY_EXCLUSIVE | rt->extra_flags;
 
 	/* Never monitor raid0 or raid0_meta LVs */
-	if (!segtype_is_any_raid0(segtype))
+	if (!segtype_is_any_raid0(segtype) &&
+	    dso && (dso = strdup(dso))) {
+		segtype->dso = dso;
 		segtype->flags |= monitored;
+	}
 
 	segtype->parity_devs = rt->parity;
 
@@ -647,21 +653,30 @@ int init_multiple_segtypes(struct cmd_context *cmd, struct segtype_library *segl
 #endif
 {
 	struct segment_type *segtype;
+	char *dso = NULL;
 	unsigned i;
 	uint64_t monitored = 0;
+	int r = 1;
 
 #ifdef DEVMAPPER_SUPPORT
 #  ifdef DMEVENTD
-	if (_get_raid_dso_path(cmd))
+	dso = get_monitor_dso_path(cmd, dmeventd_raid_library_CFG);
+
+	if (dso)
 		monitored = SEG_MONITORED;
 #  endif
 #endif
 
 	for (i = 0; i < DM_ARRAY_SIZE(_raid_types); ++i)
-		if ((segtype = _init_raid_segtype(cmd, &_raid_types[i], monitored)) &&
-		    !lvm_register_segtype(seglib, segtype))
+		if ((segtype = _init_raid_segtype(cmd, &_raid_types[i], dso, monitored)) &&
+		    !lvm_register_segtype(seglib, segtype)) {
 			/* segtype is already destroyed */
-			return_0;
+			stack;
+			r = 0;
+			break;
+		}
 
-	return 1;
+	free(dso);
+
+	return r;
 }

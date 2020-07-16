@@ -13,16 +13,17 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include "lib.h"
+#include "base/memory/zalloc.h"
+#include "lib/misc/lib.h"
 #include "import-export.h"
-#include "metadata.h"
-#include "display.h"
-#include "lvm-string.h"
-#include "segtype.h"
-#include "text_export.h"
+#include "lib/metadata/metadata.h"
+#include "lib/display/display.h"
+#include "lib/misc/lvm-string.h"
+#include "lib/metadata/segtype.h"
+#include "lib/format_text/text_export.h"
 #include "lvm-version.h"
-#include "toolcontext.h"
-#include "config-util.h"
+#include "lib/commands/toolcontext.h"
+#include "libdaemon/client/config-util.h"
 
 #include <stdarg.h>
 #include <time.h>
@@ -121,9 +122,9 @@ static int _extend_buffer(struct formatter *f)
 {
 	char *newbuf;
 
-	log_debug_metadata("Doubling metadata output buffer to %" PRIu32,
+	log_debug_metadata("Doubling metadata output buffer to " FMTu32,
 			   f->data.buf.size * 2);
-	if (!(newbuf = dm_realloc(f->data.buf.start,
+	if (!(newbuf = realloc(f->data.buf.start,
 				   f->data.buf.size * 2))) {
 		log_error("Buffer reallocation failed.");
 		return 0;
@@ -383,7 +384,7 @@ static char *_alloc_printed_str_list(struct dm_list *list)
 	/* '[' + ']' + '\0' */
 	size += 3;
 
-	if (!(buffer = buf = dm_malloc(size))) {
+	if (!(buffer = buf = malloc(size))) {
 		log_error("Could not allocate memory for string list buffer.");
 		return NULL;
 	}
@@ -408,7 +409,7 @@ static char *_alloc_printed_str_list(struct dm_list *list)
 	return buffer;
 
 bad:
-	dm_free(buffer);
+	free(buffer);
 	return_NULL;
 }
 
@@ -421,10 +422,10 @@ static int _out_list(struct formatter *f, struct dm_list *list,
 		if (!(buffer = _alloc_printed_str_list(list)))
 			return_0;
 		if (!out_text(f, "%s = %s", list_name, buffer)) {
-			dm_free(buffer);
+			free(buffer);
 			return_0;
 		}
-		dm_free(buffer);
+		free(buffer);
 	}
 
 	return 1;
@@ -467,8 +468,6 @@ static int _print_vg(struct formatter *f, struct volume_group *vg)
  
 	if (vg->system_id && *vg->system_id)
 		outf(f, "system_id = \"%s\"", vg->system_id);
-	else if (vg->lvm1_system_id && *vg->lvm1_system_id)
-		outf(f, "system_id = \"%s\"", vg->lvm1_system_id);
 
 	if (vg->lock_type) {
 		outf(f, "lock_type = \"%s\"", vg->lock_type);
@@ -561,15 +560,15 @@ static int _print_pvs(struct formatter *f, struct volume_group *vg)
 		if (!_out_list(f, &pv->tags, "tags"))
 			return_0;
 
-		outsize(f, pv->size, "dev_size = %" PRIu64, pv->size);
+		outsize(f, pv->size, "dev_size = " FMTu64, pv->size);
 
-		outf(f, "pe_start = %" PRIu64, pv->pe_start);
+		outf(f, "pe_start = " FMTu64, pv->pe_start);
 		outsize(f, vg->extent_size * (uint64_t) pv->pe_count,
 			"pe_count = %u", pv->pe_count);
 
 		if (pv->ba_start && pv->ba_size) {
-			outf(f, "ba_start = %" PRIu64, pv->ba_start);
-			outsize(f, pv->ba_size, "ba_size = %" PRIu64, pv->ba_size);
+			outf(f, "ba_start = " FMTu64, pv->ba_start);
+			outsize(f, pv->ba_size, "ba_size = " FMTu64, pv->ba_size);
 		}
 
 		_dec_indent(f);
@@ -631,7 +630,7 @@ int out_areas(struct formatter *f, const struct lv_segment *seg,
 		switch (seg_type(seg, s)) {
 		case AREA_PV:
 			if (!(pv = seg_pv(seg, s))) {
-				log_error(INTERNAL_ERROR "Missing PV for area %" PRIu32 " of %s segment of LV %s.",
+				log_error(INTERNAL_ERROR "Missing PV for area " FMTu32 " of %s segment of LV %s.",
 					  s, type, display_lvname(seg->lv));
 				return 0;
 			}
@@ -670,7 +669,7 @@ int out_areas(struct formatter *f, const struct lv_segment *seg,
 
 			break;
 		case AREA_UNASSIGNED:
-			log_error(INTERNAL_ERROR "Invalid type for area %" PRIu32 " of %s segment of LV %s.",
+			log_error(INTERNAL_ERROR "Invalid type for area " FMTu32 " of %s segment of LV %s.",
 				  s, type, display_lvname(seg->lv));
 			return 0;
 		}
@@ -694,7 +693,7 @@ static int _print_timestamp(struct formatter *f,
 			      "%Y-%m-%d %T %z", local_tm))
 			buf[0] = 0;
 
-		outfc(f, buf, "%s = %" PRIu64, name, (uint64_t) ts);
+		outfc(f, buf, "%s = " FMTu64, name, (uint64_t) ts);
 	}
 
 	return 1;
@@ -837,7 +836,7 @@ static int _alloc_printed_indirect_descendants(struct dm_list *indirect_glvs, ch
 	/* '[' + ']' + '\0' */
 	buf_size += 3;
 
-	if (!(*buffer = dm_malloc(buf_size))) {
+	if (!(*buffer = malloc(buf_size))) {
 		log_error("Could not allocate memory for ancestor list buffer.");
 		return 0;
 	}
@@ -865,7 +864,7 @@ static int _alloc_printed_indirect_descendants(struct dm_list *indirect_glvs, ch
 	return 1;
 bad:
 	if (*buffer) {
-		dm_free(*buffer);
+		free(*buffer);
 		*buffer = NULL;
 	}
 	return 0;
@@ -910,7 +909,7 @@ static int _print_historical_lv(struct formatter *f, struct historical_logical_v
 
 	r = 1;
 out:
-	dm_free(descendants_buffer);
+	free(descendants_buffer);
 
 	return r;
 }
@@ -1036,7 +1035,7 @@ int text_vg_export_file(struct volume_group *vg, const char *desc, FILE *fp)
 
 	_init();
 
-	if (!(f = dm_zalloc(sizeof(*f))))
+	if (!(f = zalloc(sizeof(*f))))
 		return_0;
 
 	f->data.fp = fp;
@@ -1048,7 +1047,7 @@ int text_vg_export_file(struct volume_group *vg, const char *desc, FILE *fp)
 	r = _text_vg_export(f, vg, desc);
 	if (r)
 		r = !ferror(f->data.fp);
-	dm_free(f);
+	free(f);
 	return r;
 }
 
@@ -1060,11 +1059,11 @@ size_t text_vg_export_raw(struct volume_group *vg, const char *desc, char **buf)
 
 	_init();
 
-	if (!(f = dm_zalloc(sizeof(*f))))
+	if (!(f = zalloc(sizeof(*f))))
 		return_0;
 
 	f->data.buf.size = 65536;	/* Initial metadata limit */
-	if (!(f->data.buf.start = dm_malloc(f->data.buf.size))) {
+	if (!(f->data.buf.start = malloc(f->data.buf.size))) {
 		log_error("text_export buffer allocation failed");
 		goto out;
 	}
@@ -1075,7 +1074,7 @@ size_t text_vg_export_raw(struct volume_group *vg, const char *desc, char **buf)
 	f->nl = &_nl_raw;
 
 	if (!_text_vg_export(f, vg, desc)) {
-		dm_free(f->data.buf.start);
+		free(f->data.buf.start);
 		goto_out;
 	}
 
@@ -1083,7 +1082,7 @@ size_t text_vg_export_raw(struct volume_group *vg, const char *desc, char **buf)
 	*buf = f->data.buf.start;
 
       out:
-	dm_free(f);
+	free(f);
 	return r;
 }
 
@@ -1104,11 +1103,11 @@ struct dm_config_tree *export_vg_to_config_tree(struct volume_group *vg)
 
 	if (!(vg_cft = config_tree_from_string_without_dup_node_check(buf))) {
 		log_error("Error parsing metadata for VG %s.", vg->name);
-		dm_free(buf);
+		free(buf);
 		return_NULL;
 	}
 
-	dm_free(buf);
+	free(buf);
 	return vg_cft;
 }
 

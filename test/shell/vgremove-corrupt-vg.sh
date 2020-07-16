@@ -10,7 +10,7 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
-SKIP_WITH_LVMLOCKD=1
+
 SKIP_WITH_LVMPOLLD=1
 
 . lib/inittest
@@ -19,6 +19,5 @@ aux prepare_vg 3
 lvcreate -n blabla -L 1 $vg -an --zero n
 
 dd if=/dev/urandom bs=512 seek=2 count=32 of="$dev2"
-aux notify_lvmetad "$dev2"
 
 vgremove -f $vg

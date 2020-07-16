@@ -12,7 +12,7 @@
 
 # Test repairing of broken cached LV
 
-SKIP_WITH_LVMPOLLD=1
+SKIP_WITH_LVMLOCKD=1
 
 . lib/inittest
 
@@ -46,10 +46,12 @@ aux disable_dev "$dev1"
 
 #lvchange -an $vg
 
-# Check it is prompting fro confirmation
+# Check it is prompting for confirmation
 not lvconvert --uncache $vg/$lv1
 # --yes to drop when Check its prompting
 lvconvert --yes --uncache $vg/$lv1
+should not dmsetup remove ${vg}-cpool_cmeta-missing_0_0
+should not dmsetup remove ${vg}-cpool_cdata-missing_0_0
 
 "$FSCK" -n "$DM_DEV_DIR/$vg/$lv1"
 

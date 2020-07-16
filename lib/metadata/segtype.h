@@ -16,7 +16,7 @@
 #ifndef _SEGTYPES_H
 #define _SEGTYPES_H
 
-#include "metadata-exported.h"
+#include "lib/metadata/metadata-exported.h"
 
 struct segtype_handler;
 struct cmd_context;
@@ -32,7 +32,7 @@ struct dev_manager;
 #define SEG_AREAS_STRIPED	(1ULL <<  1)
 #define SEG_AREAS_MIRRORED	(1ULL <<  2)
 #define SEG_SNAPSHOT		(1ULL <<  3)
-#define SEG_FORMAT1_SUPPORT	(1ULL <<  4)
+/* #define SEG_FORMAT1_SUPPORT	(1ULL <<  4) */
 #define SEG_VIRTUAL		(1ULL <<  5)
 #define SEG_CANNOT_BE_ZEROED	(1ULL <<  6)
 #define SEG_MONITORED		(1ULL <<  7)
@@ -68,6 +68,9 @@ struct dev_manager;
 #define SEG_RAID6		SEG_RAID6_ZR
 
 #define SEG_STRIPED_TARGET	(1ULL << 39)
+#define SEG_LINEAR_TARGET	(1ULL << 40)
+#define SEG_VDO			(1ULL << 41)
+#define SEG_VDO_POOL		(1ULL << 42)
 
 #define SEG_UNKNOWN		(1ULL << 63)
 
@@ -82,6 +85,8 @@ struct dev_manager;
 #define SEG_TYPE_NAME_ERROR		"error"
 #define SEG_TYPE_NAME_FREE		"free"
 #define SEG_TYPE_NAME_ZERO		"zero"
+#define SEG_TYPE_NAME_VDO		"vdo"
+#define SEG_TYPE_NAME_VDO_POOL		"vdo-pool"
 #define SEG_TYPE_NAME_RAID		"raid"
 #define SEG_TYPE_NAME_RAID0		"raid0"
 #define SEG_TYPE_NAME_RAID0_META	"raid0_meta"
@@ -105,7 +110,7 @@ struct dev_manager;
 #define SEG_TYPE_NAME_RAID6_RS_6	"raid6_rs_6"
 #define SEG_TYPE_NAME_RAID6_N_6		"raid6_n_6"
 
-#define segtype_is_linear(segtype)	(!strcmp(segtype->name, SEG_TYPE_NAME_LINEAR))
+#define segtype_is_linear(segtype)	(!strcmp((segtype)->name, SEG_TYPE_NAME_LINEAR))
 #define segtype_is_striped_target(segtype)	((segtype)->flags & SEG_STRIPED_TARGET ? 1 : 0)
 #define segtype_is_cache(segtype)	((segtype)->flags & SEG_CACHE ? 1 : 0)
 #define segtype_is_cache_pool(segtype)	((segtype)->flags & SEG_CACHE_POOL ? 1 : 0)
@@ -150,6 +155,8 @@ struct dev_manager;
 #define segtype_is_thin(segtype)	((segtype)->flags & (SEG_THIN_POOL|SEG_THIN_VOLUME) ? 1 : 0)
 #define segtype_is_thin_pool(segtype)	((segtype)->flags & SEG_THIN_POOL ? 1 : 0)
 #define segtype_is_thin_volume(segtype)	((segtype)->flags & SEG_THIN_VOLUME ? 1 : 0)
+#define segtype_is_vdo(segtype)		((segtype)->flags & SEG_VDO ? 1 : 0)
+#define segtype_is_vdo_pool(segtype)	((segtype)->flags & SEG_VDO_POOL ? 1 : 0)
 #define segtype_is_virtual(segtype)	((segtype)->flags & SEG_VIRTUAL ? 1 : 0)
 #define segtype_is_unknown(segtype)	((segtype)->flags & SEG_UNKNOWN ? 1 : 0)
 
@@ -163,7 +170,7 @@ struct dev_manager;
 	((segtype_is_striped(segtype) || segtype_is_mirror(segtype) || \
 	  segtype_is_cache(segtype) || segtype_is_cache_pool(segtype) || \
 	  segtype_is_thin(segtype) || segtype_is_snapshot(segtype) || \
-	  (segtype_is_raid(segtype) && !segtype_is_raid1(segtype))) ? 1 : 0)
+	  (segtype_is_striped_raid(segtype))) ? 1 : 0)
 
 #define seg_is_striped_target(seg)	segtype_is_striped_target((seg)->segtype)
 #define seg_is_cache(seg)	segtype_is_cache((seg)->segtype)
@@ -201,6 +208,8 @@ struct dev_manager;
 #define seg_is_thin(seg)	segtype_is_thin((seg)->segtype)
 #define seg_is_thin_pool(seg)	segtype_is_thin_pool((seg)->segtype)
 #define seg_is_thin_volume(seg)	segtype_is_thin_volume((seg)->segtype)
+#define seg_is_vdo(seg)		segtype_is_vdo((seg)->segtype)
+#define seg_is_vdo_pool(seg)	segtype_is_vdo_pool((seg)->segtype)
 #define seg_is_virtual(seg)	segtype_is_virtual((seg)->segtype)
 #define seg_unknown(seg)	segtype_is_unknown((seg)->segtype)
 #define seg_can_split(seg)	segtype_can_split((seg)->segtype)
@@ -217,6 +226,7 @@ struct segment_type {
 
 	struct segtype_handler *ops;
 	const char *name;
+	const char *dso;
 
 	void *library;			/* lvm_register_segtype() sets this. */
 	void *private;			/* For the segtype handler to use. */
@@ -259,7 +269,7 @@ struct segtype_handler {
 			       const struct lv_segment *seg,
 			       struct dm_list *modules);
 	void (*destroy) (struct segment_type * segtype);
-	int (*target_monitored) (struct lv_segment *seg, int *pending);
+	int (*target_monitored) (struct lv_segment *seg, int *pending, int *monitored);
 	int (*target_monitor_events) (struct lv_segment *seg, int events);
 	int (*target_unmonitor_events) (struct lv_segment *seg, int events);
 };
@@ -273,6 +283,7 @@ struct segtype_library;
 int lvm_register_segtype(struct segtype_library *seglib,
 			 struct segment_type *segtype);
 
+struct segment_type *init_linear_segtype(struct cmd_context *cmd);
 struct segment_type *init_striped_segtype(struct cmd_context *cmd);
 struct segment_type *init_zero_segtype(struct cmd_context *cmd);
 struct segment_type *init_error_segtype(struct cmd_context *cmd);
@@ -324,6 +335,10 @@ int init_thin_segtypes(struct cmd_context *cmd, struct segtype_library *seglib);
 
 #ifdef CACHE_INTERNAL
 int init_cache_segtypes(struct cmd_context *cmd, struct segtype_library *seglib);
+#endif
+
+#ifdef VDO_INTERNAL
+int init_vdo_segtypes(struct cmd_context *cmd, struct segtype_library *seglib);
 #endif
 
 #define CACHE_FEATURE_POLICY_MQ			(1U << 0)

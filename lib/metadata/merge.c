@@ -13,13 +13,13 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include "lib.h"
-#include <defaults.h>
-#include "metadata.h"
-#include "lv_alloc.h"
-#include "pv_alloc.h"
-#include "str_list.h"
-#include "segtype.h"
+#include "lib/misc/lib.h"
+#include "lib/config/defaults.h"
+#include "lib/metadata/metadata.h"
+#include "lib/metadata/lv_alloc.h"
+#include "lib/metadata/pv_alloc.h"
+#include "lib/datastruct/str_list.h"
+#include "lib/metadata/segtype.h"
 
 /*
  * Attempt to merge two adjacent segments.
@@ -71,12 +71,12 @@ int lv_merge_segments(struct logical_volume *lv)
 	if (error_count++ > ERROR_MAX)	\
 		goto out
 
-#define seg_error(msg) { \
+#define seg_error(msg) do { \
 		log_error("LV %s, segment %u invalid: %s for %s segment.", \
 			  seg->lv->name, seg_count, (msg), lvseg_name(seg)); \
 		if ((*error_count)++ > ERROR_MAX) \
 			return; \
-	}
+	} while (0)
 
 /*
  * RAID segment property checks.
@@ -84,18 +84,26 @@ int lv_merge_segments(struct logical_volume *lv)
  * Checks in here shall catch any
  * bogus segment structure setup.
  */
-#define raid_seg_error(msg) { \
+#define raid_seg_error(msg) do { \
 	log_error("LV %s invalid: %s for %s segment", \
 		  seg->lv->name, (msg), lvseg_name(seg)); \
 	if ((*error_count)++ > ERROR_MAX) \
 		return; \
-}
+} while (0)
 
-#define raid_seg_error_val(msg, val) { \
+#define raid_seg_error_val(msg, val) do { \
 	log_error("LV %s invalid: %s (is %u) for %s segment", \
 		  seg->lv->name, (msg), (val), lvseg_name(seg)); \
 	if ((*error_count)++ > ERROR_MAX) \
 		return; \
+} while(0)
+
+/* Check segment LV for reshape flags. */
+static int _check_raid_seg_reshape_flags(struct lv_segment *seg)
+{
+	return ((seg->lv->status & LV_RESHAPE) ||
+		(seg->lv->status & LV_RESHAPE_DELTA_DISKS_MINUS) ||
+		(seg->lv->status & LV_RESHAPE_DELTA_DISKS_PLUS));
 }
 
 /* Check raid0 segment properties in @seg */
@@ -121,6 +129,8 @@ static void _check_raid0_seg(struct lv_segment *seg, int *error_count)
 		raid_seg_error_val("non-zero max recovery rate", seg->max_recovery_rate);
 	if ((seg->lv->status & LV_RESHAPE_DATA_OFFSET) || seg->data_offset > 1)
 		raid_seg_error_val("data_offset", seg->data_offset);
+	if (_check_raid_seg_reshape_flags(seg))
+		raid_seg_error("reshape");
 }
 
 /* Check RAID @seg for non-zero, power of 2 region size and min recovery rate <= max */
@@ -145,6 +155,8 @@ static void _check_raid1_seg(struct lv_segment *seg, int *error_count)
 		raid_seg_error_val("non-zero stripe size", seg->stripe_size);
 	if ((seg->lv->status & LV_RESHAPE_DATA_OFFSET) || seg->data_offset > 1)
 		raid_seg_error_val("data_offset", seg->data_offset);
+	if (_check_raid_seg_reshape_flags(seg))
+		raid_seg_error("reshape");
 	_check_raid_region_recovery(seg, error_count);
 }
 
@@ -342,7 +354,7 @@ static void _check_lv_segment(struct logical_volume *lv, struct lv_segment *seg,
 			case CACHE_MODE_PASSTHROUGH:
 				break;
 			default:
-				seg_error("has invalid cache's feature flag")
+				seg_error("has invalid cache's feature flag");
 			}
 			if (!seg->policy_name)
 				seg_error("is missing cache policy name");
@@ -379,6 +391,14 @@ static void _check_lv_segment(struct logical_volume *lv, struct lv_segment *seg,
 			if (!(seg2 = first_seg(seg->log_lv)) || (find_mirror_seg(seg2) != seg))
 				seg_error("log LV does not point back to mirror segment");
 		}
+		if (seg_is_mirror(seg)) {
+			if (!seg->region_size)
+				seg_error("region size is zero");
+			else if (seg->region_size > seg->lv->size)
+				seg_error("region size is bigger then LV itself");
+			else if (!is_power_of_2(seg->region_size))
+				seg_error("region size is non power of 2");
+		}
 	} else { /* !mirrored */
 		if (seg->log_lv) {
 			if (lv_is_raid_image(lv))
@@ -388,6 +408,9 @@ static void _check_lv_segment(struct logical_volume *lv, struct lv_segment *seg,
 
 	if (seg_is_raid(seg))
 		_check_raid_seg(seg, error_count);
+	else if (!lv_is_raid_type(lv) &&
+		 _check_raid_seg_reshape_flags(seg))
+		seg_error("reshape");
 
 	if (seg_is_pool(seg)) {
 		if ((seg->area_count != 1) || (seg_type(seg, 0) != AREA_LV)) {
@@ -461,6 +484,29 @@ static void _check_lv_segment(struct logical_volume *lv, struct lv_segment *seg,
 			seg_error("sets merge LV");
 		if (seg->indirect_origin)
 			seg_error("sets indirect_origin LV");
+	}
+
+	if (seg_is_vdo_pool(seg)) {
+		if (!lv_is_vdo_pool(lv))
+			seg_error("is not flagged as VDO pool LV");
+		if ((seg->area_count != 1) || (seg_type(seg, 0) != AREA_LV)) {
+			seg_error("is missing a VDO pool data LV");
+		} else if (!lv_is_vdo_pool_data(seg_lv(seg, 0)))
+			seg_error("is not VDO pool data LV");
+	} else { /* !VDO pool */
+		if (seg->vdo_pool_header_size)
+			seg_error("sets vdo_pool_header_size");
+		if (seg->vdo_pool_virtual_extents)
+			seg_error("sets vdo_pool_virtual_extents");
+	}
+
+	if (seg_is_vdo(seg)) {
+		if (!lv_is_vdo(lv))
+			seg_error("is not flagged as VDO LV");
+		if (!seg_lv(seg, 0))
+			seg_error("is missing VDO pool LV");
+		else if (!lv_is_vdo_pool(seg_lv(seg, 0)))
+			seg_error("is not referencing VDO pool LV");
 	}
 
 	/* Some multi-seg vars excluded here */

@@ -96,11 +96,11 @@ arg(bootloaderareasize_ARG, '\0', "bootloaderareasize", sizemb_VAL, 0, 0,
 
 arg(cache_long_ARG, '\0', "cache", 0, 0, 0,
     "#pvscan\n"
-    "Scan one or more devices and send the metadata to lvmetad.\n"
+    "Scan one or more devices and record that they are online.\n"
     "#vgscan\n"
-    "Scan all devices and send the metadata to lvmetad.\n"
+    "This option is no longer used.\n"
     "#lvscan\n"
-    "Scan the devices used by an LV and send the metadata to lvmetad.\n")
+    "This option is no longer used.\n")
 
 arg(cachemetadataformat_ARG, '\0', "cachemetadataformat", cachemetadataformat_VAL, 0, 0,
     "Specifies the cache metadata format used by cache target.\n")
@@ -124,6 +124,10 @@ arg(cachepool_ARG, '\0', "cachepool", lv_VAL, 0, 0,
 arg(commandprofile_ARG, '\0', "commandprofile", string_VAL, 0, 0,
     "The command profile to use for command configuration.\n"
     "See \\fBlvm.conf\\fP(5) for more information about profiles.\n")
+
+arg(compression_ARG, '\0', "compression", bool_VAL, 0, 0,
+    "Controls whether compression is enabled or disable for VDO volume.\n"
+    "See \\fBlvmvdo\\fP(7) for more information about VDO usage.\n")
 
 arg(config_ARG, '\0', "config", string_VAL, 0, 0,
     "Config settings for the command. These override lvm.conf settings.\n"
@@ -177,6 +181,10 @@ arg(dataalignment_ARG, '\0', "dataalignment", sizekb_VAL, 0, 0,
 
 arg(dataalignmentoffset_ARG, '\0', "dataalignmentoffset", sizekb_VAL, 0, 0,
     "Shift the start of the data area by this additional offset.\n")
+
+arg(deduplication_ARG, '\0', "deduplication", bool_VAL, 0, 0,
+    "Controls whether deduplication is enabled or disable for VDO volume.\n"
+    "See \\fBlvmvdo\\fP(7) for more information about VDO usage.\n")
 
 arg(deltag_ARG, '\0', "deltag", tag_VAL, ARG_GROUPABLE, 0,
     "Deletes a tag from a PV, VG or LV. This option can be repeated to delete\n"
@@ -243,8 +251,7 @@ arg(ignoremonitoring_ARG, '\0', "ignoremonitoring", 0, 0, 0,
     "Do not use this if dmeventd is already monitoring a device.\n")
 
 arg(ignoreskippedcluster_ARG, '\0', "ignoreskippedcluster", 0, 0, 0,
-    "Use to avoid exiting with an non-zero status code if the command is run\n"
-    "without clustered locking and clustered VGs are skipped.\n")
+    "No longer used.\n")
 
 arg(ignoreunsupported_ARG, '\0', "ignoreunsupported", 0, 0, 0,
     "Exclude unsupported configuration settings from the output. These settings are\n"
@@ -611,7 +618,9 @@ arg(splitcache_ARG, '\0', "splitcache", 0, 0, 0,
 arg(splitmirrors_ARG, '\0', "splitmirrors", number_VAL, 0, 0,
     "Splits the specified number of images from a raid1 or mirror LV\n"
     "and uses them to create a new LV. If --trackchanges is also specified,\n"
-    "changes to the raid1 LV are tracked while the split LV remains detached.\n")
+    "changes to the raid1 LV are tracked while the split LV remains detached.\n"
+    "If --name is specified, then the images are permanently split from the\n"
+    "original LV and changes are not tracked.\n")
 
 arg(splitsnapshot_ARG, '\0', "splitsnapshot", 0, 0, 0,
     "Separates a COW snapshot from its origin LV. The LV that is split off\n"
@@ -667,7 +676,6 @@ arg(sysinit_ARG, '\0', "sysinit", 0, 0, 0,
     "acts as a shortcut which selects an appropriate set of options. Currently,\n"
     "this is equivalent to using --ignorelockingfailure, --ignoremonitoring,\n"
     "--poll n, and setting env var LVM_SUPPRESS_LOCKING_FAILURE_MESSAGES.\n"
-    "When used in conjunction with lvmetad enabled and running,\n"
     "vgchange/lvchange skip autoactivation, and defer to pvscan autoactivation.\n")
 
 arg(systemid_ARG, '\0', "systemid", string_VAL, 0, 0,
@@ -691,10 +699,12 @@ arg(thinpool_ARG, '\0', "thinpool", lv_VAL, 0, 0,
 arg(trackchanges_ARG, '\0', "trackchanges", 0, 0, 0,
     "Can be used with --splitmirrors on a raid1 LV. This causes\n"
     "changes to the original raid1 LV to be tracked while the split images\n"
-    "remain detached. This allows the read-only detached image(s) to be\n"
-    "merged efficiently back into the raid1 LV later. Only the regions with\n"
-    "changed data are resynchronized during merge. (This option only applies\n"
-    "when using the raid1 LV type.)\n")
+    "remain detached. This is a temporary state that allows the read-only\n"
+    "detached image to be merged efficiently back into the raid1 LV later.\n"
+    "Only the regions with changed data are resynchronized during merge.\n"
+    "While a raid1 LV is tracking changes, operations on it are limited to\n"
+    "merging the split image (see --mergemirrors) or permanently splitting\n"
+    "the image (see --splitmirrors with --name.\n")
 
 /* TODO: hide this? */
 arg(trustcache_ARG, '\0', "trustcache", 0, 0, 0,
@@ -757,6 +767,15 @@ arg(validate_ARG, '\0', "validate", 0, 0, 0,
     "at the front of the \"config cascade\". To validate the whole\n"
     "merged configuration tree, also use --mergedconfig.\n"
     "The validation is done even if lvm.conf config/checks is disabled.\n")
+
+arg(vdo_ARG, '\0', "vdo", 0, 0, 0,
+    "Specifies the command is handling VDO LV.\n"
+    "See --type vdo.\n"
+    "See \\fBlvmvdo\\fP(7) for more information about VDO usage.\n")
+
+arg(vdopool_ARG, '\0', "vdopool", lv_VAL, 0, 0,
+    "The name of a VDO pool LV.\n"
+    "See \\fBlvmvdo\\fP(7) for more information about VDO usage.\n")
 
 arg(version_ARG, '\0', "version", 0, 0, 0,
     "Display version information.\n")
@@ -949,17 +968,8 @@ arg(chunksize_ARG, 'c', "chunksize", sizekb_VAL, 0, 0,
     "See \\fBlvmthin\\fP(7) and \\fBlvmcache\\fP(7) for more information.\n")
 
 arg(clustered_ARG, 'c', "clustered", bool_VAL, 0, 0,
-    "#vgcreate\n"
-    "Create a clustered VG using clvmd if LVM is compiled with cluster support.\n"
-    "This allows multiple hosts to share a VG on shared devices.\n"
-    "clvmd and a lock manager must be configured and running.\n"
-    "(A clustered VG using clvmd is different from a shared VG using lvmlockd.)\n"
-    "See \\fBclvmd\\fP(8) for more information about clustered VGs.\n"
-    "#vgchange\n"
-    "Change the clustered property of a VG using clvmd.\n"
-    "See \\fBclvmd\\fP(8) for more information about clustered VGs.\n"
-    "#vgsplit\n"
-    "Specifies the clustered property of the new VG.\n")
+    "This option was specific to clvm and is now replaced by\n"
+    "the --shared option with \\fBlvmlockd\\fP(8).\n")
 
 arg(colon_ARG, 'c', "colon", 0, 0, 0,
     "Generate colon separated output for easier parsing in scripts or programs.\n"
@@ -1207,8 +1217,7 @@ arg(mirrors_ARG, 'm', "mirrors", number_VAL, 0, 0,
 arg(metadatatype_ARG, 'M', "metadatatype", metadatatype_VAL, 0, 0,
     "Specifies the type of on-disk metadata to use.\n"
     "\\fBlvm2\\fP (or just \\fB2\\fP) is the current, standard format.\n"
-    "\\fBlvm1\\fP (or just \\fB1\\fP) is a historical format that\n"
-    "can be used for accessing old data.\n")
+    "\\fBlvm1\\fP (or just \\fB1\\fP) is no longer used.\n")
 
 arg(name_ARG, 'n', "name", string_VAL, 0, 0,
     "#lvcreate\n"
@@ -1295,7 +1304,7 @@ arg(resizefs_ARG, 'r', "resizefs", 0, 0, 0,
 /* Not used */
 arg(reset_ARG, 'R', "reset", 0, 0, 0, NULL)
 
-arg(regionsize_ARG, 'R', "regionsize", regionsize_VAL, 0, 0,
+arg(regionsize_ARG, 'R', "regionsize", regionsizemb_VAL, 0, 0,
     "Size of each raid or mirror synchronization region.\n"
     "lvm.conf activation/raid_region_size can be used to\n"
     "configure a default.\n")

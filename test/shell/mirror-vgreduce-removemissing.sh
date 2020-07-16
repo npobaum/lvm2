@@ -12,11 +12,8 @@
 # Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
 test_description="ensure that 'vgreduce --removemissing' works on mirrored LV"
-SKIP_WITH_LVMLOCKD=1
-SKIP_WITH_LVMPOLLD=1
 
-# disable lvmetad logging as it bogs down test systems
-export LVM_TEST_LVMETAD_DEBUG_OPTS=${LVM_TEST_LVMETAD_DEBUG_OPTS-}
+SKIP_WITH_LVMPOLLD=1
 
 . lib/inittest
 
@@ -104,7 +101,7 @@ rest_pvs_()
 aux prepare_pvs 5 80
 get_devs
 
-vgcreate -s 64k "$vg" "${DEVICES[@]}"
+vgcreate $SHARED -s 64k "$vg" "${DEVICES[@]}"
 BLOCKS=0-7
 BLOCKS1=8-15
 # ---------------------------------------------------------------------

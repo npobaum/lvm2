@@ -15,7 +15,7 @@
 
 #include "tools.h"
 
-#include "report.h"
+#include "lib/report/report.h"
 
 typedef enum {
 	REPORT_IDX_NULL = -1,
@@ -719,7 +719,7 @@ static void _check_pv_list(struct cmd_context *cmd, struct report_args *args, st
 
 	if (single_args->args_are_pvs && args->argc) {
 		for (i = 0; i < args->argc; i++) {
-			if (!rescan_done && !dev_cache_get(args->argv[i], cmd->full_filter)) {
+			if (!rescan_done && !dev_cache_get(cmd, args->argv[i], cmd->full_filter)) {
 				cmd->filter->wipe(cmd->filter);
 				/* FIXME scan only one device */
 				lvmcache_label_scan(cmd);
@@ -1104,8 +1104,7 @@ static int _do_report(struct cmd_context *cmd, struct processing_handle *handle,
 	 * We lock VG_GLOBAL to enable use of metadata cache.
 	 * This can pause alongide pvscan or vgscan process for a while.
 	 */
-	if (single_args->args_are_pvs && (report_type == PVS || report_type == PVSEGS) &&
-	    !lvmetad_used()) {
+	if (single_args->args_are_pvs && (report_type == PVS || report_type == PVSEGS)) {
 		lock_global = 1;
 		if (!lock_vol(cmd, VG_GLOBAL, LCK_VG_READ, NULL)) {
 			log_error("Unable to obtain global lock.");

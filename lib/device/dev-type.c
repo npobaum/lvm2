@@ -12,11 +12,14 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include "lib.h"
-#include "dev-type.h"
-#include "xlate.h"
-#include "config.h"
-#include "metadata.h"
+#include "base/memory/zalloc.h"
+#include "lib/misc/lib.h"
+#include "lib/device/dev-type.h"
+#include "lib/mm/xlate.h"
+#include "lib/config/config.h"
+#include "lib/metadata/metadata.h"
+#include "lib/device/bcache.h"
+#include "lib/label/label.h"
 
 #include <libgen.h>
 #include <ctype.h>
@@ -27,10 +30,10 @@
 
 #ifdef UDEV_SYNC_SUPPORT
 #include <libudev.h>
-#include "dev-ext-udev-constants.h"
+#include "lib/device/dev-ext-udev-constants.h"
 #endif
 
-#include "device-types.h"
+#include "lib/device/device-types.h"
 
 struct dev_types *create_dev_types(const char *proc_dir,
 				   const struct dm_config_node *cn)
@@ -47,7 +50,7 @@ struct dev_types *create_dev_types(const char *proc_dir,
 	const char *name;
 	char *nl;
 
-	if (!(dt = dm_zalloc(sizeof(struct dev_types)))) {
+	if (!(dt = zalloc(sizeof(struct dev_types)))) {
 		log_error("Failed to allocate device type register.");
 		return NULL;
 	}
@@ -202,7 +205,7 @@ struct dev_types *create_dev_types(const char *proc_dir,
 
 	return dt;
 bad:
-	dm_free(dt);
+	free(dt);
 	return NULL;
 }
 
@@ -211,6 +214,9 @@ int dev_subsystem_part_major(struct dev_types *dt, struct device *dev)
 	dev_t primary_dev;
 
 	if (MAJOR(dev->dev) == dt->device_mapper_major)
+		return 1;
+
+	if (MAJOR(dev->dev) == dt->md_major)
 		return 1;
 
 	if (MAJOR(dev->dev) == dt->drbd_major)
@@ -363,7 +369,7 @@ static int _has_partition_table(struct device *dev)
 		uint16_t magic;
 	} __attribute__((packed)) buf; /* sizeof() == SECTOR_SIZE */
 
-	if (!dev_read(dev, UINT64_C(0), sizeof(buf), &buf))
+	if (!dev_read_bytes(dev, UINT64_C(0), sizeof(buf), &buf))
 		return_0;
 
 	/* FIXME Check for other types of partition table too */
@@ -432,6 +438,9 @@ static int _native_dev_is_partitioned(struct dev_types *dt, struct device *dev)
 {
 	int r;
 
+	if (!scan_bcache)
+		return -EAGAIN;
+
 	if (!_is_partitionable(dt, dev))
 		return 0;
 
@@ -439,16 +448,7 @@ static int _native_dev_is_partitioned(struct dev_types *dt, struct device *dev)
 	if ((MAJOR(dev->dev) == dt->dasd_major) && dasd_is_cdl_formatted(dev))
 		return 1;
 
-	if (!dev_open_readonly_quiet(dev)) {
-		log_debug_devs("%s: failed to open device, considering device "
-			       "is partitioned", dev_name(dev));
-		return 1;
-	}
-
 	r = _has_partition_table(dev);
-
-	if (!dev_close(dev))
-		stack;
 
 	return r;
 }
@@ -675,7 +675,7 @@ static int _blkid_wipe(blkid_probe probe, struct device *dev, const char *name,
 	} else
 		log_verbose(_msg_wiping, type, name);
 
-	if (!dev_set(dev, offset_value, len, 0)) {
+	if (!dev_write_zeros(dev, offset_value, len)) {
 		log_error("Failed to wipe %s signature on %s.", type, name);
 		return 0;
 	}
@@ -748,12 +748,12 @@ out:
 
 static int _wipe_signature(struct device *dev, const char *type, const char *name,
 			   int wipe_len, int yes, force_t force, int *wiped,
-			   int (*signature_detection_fn)(struct device *dev, uint64_t *offset_found))
+			   int (*signature_detection_fn)(struct device *dev, uint64_t *offset_found, int full))
 {
 	int wipe;
 	uint64_t offset_found;
 
-	wipe = signature_detection_fn(dev, &offset_found);
+	wipe = signature_detection_fn(dev, &offset_found, 1);
 	if (wipe == -1) {
 		log_error("Fatal error while trying to detect %s on %s.",
 			  type, name);
@@ -772,7 +772,7 @@ static int _wipe_signature(struct device *dev, const char *type, const char *nam
 	}
 
 	log_print_unless_silent("Wiping %s on %s.", type, name);
-	if (!dev_set(dev, offset_found, wipe_len, 0)) {
+	if (!dev_write_zeros(dev, offset_found, wipe_len)) {
 		log_error("Failed to wipe %s on %s.", type, name);
 		return 0;
 	}

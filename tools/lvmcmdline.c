@@ -16,14 +16,12 @@
 #include "tools.h"
 
 #include "lvm2cmdline.h"
-#include "label.h"
+#include "lib/label/label.h"
 #include "lvm-version.h"
-#include "lvmlockd.h"
-#include "lvmetad-client.h"
+#include "lib/locking/lvmlockd.h"
 
 #include "stub.h"
-#include "last-path-component.h"
-#include "format1.h"
+#include "lib/misc/last-path-component.h"
 
 #include <signal.h>
 #include <sys/stat.h>
@@ -119,6 +117,7 @@ static const struct command_function _command_functions[CMD_COUNT] = {
 
 	/* lvconvert utility to trigger polling on an LV. */
 	{ lvconvert_start_poll_CMD, lvconvert_start_poll_cmd },
+	{ lvconvert_plain_CMD, lvconvert_start_poll_cmd },
 
 	/* lvconvert utilities for creating/maintaining thin and cache objects. */
 	{ lvconvert_to_thinpool_CMD,			lvconvert_to_pool_cmd },
@@ -144,6 +143,12 @@ static const struct command_function _command_functions[CMD_COUNT] = {
 	/* redirected to merge_snapshot/merge_thin/merge_mirrors */
 	{ lvconvert_merge_CMD, lvconvert_merge_cmd },
 
+	/* lvconvert VDO pool */
+	{ lvconvert_to_vdopool_CMD, lvconvert_to_vdopool_cmd },
+	{ lvconvert_to_vdopool_param_CMD, lvconvert_to_vdopool_param_cmd },
+
+	{ pvscan_display_CMD, pvscan_display_cmd },
+	{ pvscan_cache_CMD, pvscan_cache_cmd },
 };
 
 
@@ -508,10 +513,10 @@ static int _get_int_arg(struct arg_values *av, char **ptr)
 	if (*ptr == val || errno)
 		return 0;
 
-	av->i_value = (int32_t) v;
-	av->ui_value = (uint32_t) v;
-	av->i64_value = (int64_t) v;
-	av->ui64_value = (uint64_t) v;
+	av->i_value = (v < INT32_MAX) ? (int32_t) v : INT32_MAX;
+	av->ui_value = (v < UINT32_MAX) ? (uint32_t) v : UINT32_MAX;
+	av->i64_value = (v < INT64_MAX) ? (int64_t) v : INT64_MAX;
+	av->ui64_value = (v < UINT64_MAX) ? (uint64_t) v : UINT64_MAX;
 
 	return 1;
 }
@@ -641,10 +646,11 @@ static int _size_arg(struct cmd_context *cmd __attribute__((unused)),
 		log_error("Size is too big (>=16EiB).");
 		return 0;
 	}
-	av->i_value = (int32_t) v;
-	av->ui_value = (uint32_t) v;
-	av->i64_value = (int64_t) v;
-	av->ui64_value = (uint64_t) v;
+
+	av->i_value = (v < INT32_MAX) ? (int32_t) v : INT32_MAX;
+	av->ui_value = (v < UINT32_MAX) ? (uint32_t) v : UINT32_MAX;
+	av->i64_value = (v < INT64_MAX) ? (int64_t) v : INT64_MAX;
+	av->ui64_value = (v < UINT64_MAX) ? (uint64_t) v : UINT64_MAX;
 
 	return 1;
 }
@@ -928,7 +934,7 @@ int readahead_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_va
 	return 1;
 }
 
-int regionsize_arg(struct cmd_context *cmd, struct arg_values *av)
+int regionsize_mb_arg(struct cmd_context *cmd, struct arg_values *av)
 {
 	int pagesize = lvm_getpagesize();
 	uint32_t num;
@@ -1578,6 +1584,17 @@ static struct command *_find_command(struct cmd_context *cmd, const char *path, 
 		if (arg_is_set(cmd, help_ARG) || arg_is_set(cmd, help2_ARG) || arg_is_set(cmd, longhelp_ARG) || arg_is_set(cmd, version_ARG))
 			return &commands[i];
 
+		/*
+		 * The 'lvconvert LV' cmd def matches any lvconvert cmd which throws off
+		 * nearest-command partial-match suggestions.  Make it a special case so
+		 * that it won't be used as a close match.  If the command has any option
+		 * set (other than -v), don't attempt to match it to 'lvconvert LV'.
+		 */
+		if (commands[i].command_enum == lvconvert_plain_CMD) {
+			if (cmd->opt_count - cmd->opt_arg_values[verbose_ARG].count)
+				continue;
+		}
+
 		match_required = 0;	/* required parameters that match */
 		match_ro = 0;		/* required opt_args that match */
 		match_rp = 0;		/* required pos_args that match */
@@ -1864,8 +1881,8 @@ out:
 		}
 	}
 
-	log_debug("Using command index %d id %s enum %d.",
-		  best_i, commands[best_i].command_id, commands[best_i].command_enum);
+	log_debug("Recognised command %s (id %d / enum %d).",
+		  commands[best_i].command_id, best_i, commands[best_i].command_enum);
 
 	return &commands[best_i];
 }
@@ -2096,6 +2113,8 @@ static int _process_command_line(struct cmd_context *cmd, int *argc, char ***arg
 		if (goval == '?')
 			return 0;
 
+		cmd->opt_count++;
+
 		/*
 		 * translate the option value used by getopt into the enum
 		 * value (e.g. foo_ARG) from the args array.
@@ -2280,7 +2299,6 @@ static int _get_current_settings(struct cmd_context *cmd)
 
 	cmd->current_settings.archive = arg_int_value(cmd, autobackup_ARG, cmd->current_settings.archive);
 	cmd->current_settings.backup = arg_int_value(cmd, autobackup_ARG, cmd->current_settings.backup);
-	cmd->current_settings.cache_vgmetadata = cmd->cname->flags & CACHE_VGMETADATA ? 1 : 0;
 
 	if (arg_is_set(cmd, readonly_ARG)) {
 		cmd->current_settings.activation = 0;
@@ -2290,6 +2308,9 @@ static int _get_current_settings(struct cmd_context *cmd)
 
 	if (cmd->cname->flags & LOCKD_VG_SH)
 		cmd->lockd_vg_default_sh = 1;
+
+	if (cmd->cname->flags & CAN_USE_ONE_SCAN)
+		cmd->can_use_one_scan = 1;
 
 	cmd->partial_activation = 0;
 	cmd->degraded_activation = 0;
@@ -2321,12 +2342,6 @@ static int _get_current_settings(struct cmd_context *cmd)
 		return EINVALID_CMD_LINE;
 	}
 
-	if (arg_is_set(cmd, ignorelockingfailure_ARG) || arg_is_set(cmd, sysinit_ARG))
-		init_ignorelockingfailure(1);
-	else
-		init_ignorelockingfailure(0);
-
-	cmd->ignore_clustered_vgs = arg_is_set(cmd, ignoreskippedcluster_ARG);
 	cmd->include_foreign_vgs = arg_is_set(cmd, foreign_ARG) ? 1 : 0;
 	cmd->include_shared_vgs = arg_is_set(cmd, shared_ARG) ? 1 : 0;
 	cmd->include_historical_lvs = arg_is_set(cmd, history_ARG) ? 1 : 0;
@@ -2446,7 +2461,6 @@ static void _apply_current_settings(struct cmd_context *cmd)
 	_apply_current_output_settings(cmd);
 
 	init_test(cmd->current_settings.test);
-	init_full_scan_done(0);
 	init_mirror_in_sync(0);
 	init_dmeventd_monitor(DEFAULT_DMEVENTD_MONITOR);
 
@@ -2681,9 +2695,20 @@ static int _init_lvmlockd(struct cmd_context *cmd)
 		return 1;
 	}
 
-	if (use_lvmlockd && locking_is_clustered()) {
-		log_error("ERROR: configuration setting use_lvmlockd cannot be used with clustered locking_type 3.");
-		return 0;
+	if (use_lvmlockd && arg_is_set(cmd, lockopt_ARG)) {
+		const char *opts = arg_str_value(cmd, lockopt_ARG, "");
+		if (strstr(opts, "skiplv")) {
+			log_warn("WARNING: skipping LV lock in lvmlockd.");
+			cmd->lockd_lv_disable = 1;
+		}
+		if (strstr(opts, "skipvg")) {
+			log_warn("WARNING: skipping VG lock in lvmlockd.");
+			cmd->lockd_vg_disable = 1;
+		}
+		if (strstr(opts, "skipgl")) {
+			log_warn("WARNING: skipping global lock in lvmlockd.");
+			cmd->lockd_gl_disable = 1;
+		}
 	}
 
 	lvmlockd_disconnect(); /* start over when tool context is refreshed */
@@ -2709,9 +2734,11 @@ static int _cmd_no_meta_proc(struct cmd_context *cmd)
 int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 {
 	struct dm_config_tree *config_string_cft, *config_profile_command_cft, *config_profile_metadata_cft;
-	const char *reason = NULL;
 	int ret = 0;
 	int locking_type;
+	int nolocking = 0;
+	int readonly = 0;
+	int sysinit = 0;
 	int monitoring;
 	char *arg_new, *arg;
 	int i;
@@ -2828,15 +2855,16 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 	if (!cmd->initialized.connections && !_cmd_no_meta_proc(cmd) && !init_connections(cmd))
 		return_ECMD_FAILED;
 
-	/* Note: Load persistent cache only if we haven't refreshed toolcontext!
-	 *       If toolcontext has been refreshed, it means config has changed
-	 *       and we can't rely on persistent cache anymore.
-	 */
-	if (!cmd->initialized.filters && !_cmd_no_meta_proc(cmd) && !init_filters(cmd, !refresh_done))
+	if (!cmd->initialized.filters && !_cmd_no_meta_proc(cmd) &&
+	    !init_filters(cmd, !refresh_done))
 		return_ECMD_FAILED;
 
 	if (arg_is_set(cmd, readonly_ARG))
 		cmd->metadata_read_only = 1;
+
+	if ((cmd->command->command_enum == vgchange_activate_CMD) ||
+	    (cmd->command->command_enum == lvchange_activate_CMD))
+		cmd->is_activating = 1;
 
 	/*
 	 * Now that all configs, profiles and command lines args are available,
@@ -2856,9 +2884,9 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 		goto_out;
 	init_dmeventd_monitor(monitoring);
 
-	log_debug("Processing: %s", cmd->cmd_line);
+	log_debug("Processing command: %s", cmd->cmd_line);
 	log_debug("Command pid: %d", getpid());
-	log_debug("system ID: %s", cmd->system_id ? : "");
+	log_debug("System ID: %s", cmd->system_id ? : "");
 
 #ifdef O_DIRECT_SUPPORT
 	log_debug("O_DIRECT will be used");
@@ -2870,20 +2898,6 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 		goto out;
 	}
 
-	if (!strcmp(cmd->fmt->name, FMT_LVM1_NAME) && lvmetad_used()) {
-		log_warn("WARNING: Disabling lvmetad cache which does not support obsolete metadata.");
-		lvmetad_set_disabled(cmd, LVMETAD_DISABLE_REASON_LVM1);
-		log_warn("WARNING: Not using lvmetad because lvm1 format is used.");
-		lvmetad_make_unused(cmd);
-	}
-
-	if (cmd->command->command_enum == lvconvert_repair_CMD) {
-		log_warn("WARNING: Disabling lvmetad cache for repair command.");
-		lvmetad_set_disabled(cmd, LVMETAD_DISABLE_REASON_REPAIR);
-		log_warn("WARNING: Not using lvmetad because of repair.");
-		lvmetad_make_unused(cmd);
-	}
-
 	if (cmd->metadata_read_only &&
 	    !(cmd->cname->flags & PERMITTED_READ_ONLY)) {
 		log_error("%s: Command not permitted while global/metadata_read_only "
@@ -2891,79 +2905,47 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 		goto out;
 	}
 
-	if (_cmd_no_meta_proc(cmd))
-		locking_type = 0;
-	else if (arg_is_set(cmd, readonly_ARG)) {
-		if (find_config_tree_bool(cmd, global_use_lvmlockd_CFG, NULL)) {
-			/*
-			 * FIXME: we could use locking_type 5 here if that didn't
-			 * cause CLUSTERED to be set, which conflicts with using lvmlockd.
-			 */
-			locking_type = 1;
-			cmd->lockd_gl_disable = 1;
-			cmd->lockd_vg_disable = 1;
-			cmd->lockd_lv_disable = 1;
-		} else {
-			locking_type = 5;
-		}
+	/* Defaults to 1 if not set. */
+	locking_type = find_config_tree_int(cmd, global_locking_type_CFG, NULL);
 
-		if (lvmetad_used()) {
-			lvmetad_make_unused(cmd);
-			log_verbose("Not using lvmetad because read-only is set.");
-		}
-	} else if (arg_is_set(cmd, nolocking_ARG))
-		locking_type = 0;
-	else
-		locking_type = -1;
+	if (locking_type == 3)
+		log_warn("WARNING: see lvmlockd(8) for information on using cluster/clvm VGs.");
 
-	if (!init_locking(locking_type, cmd, _cmd_no_meta_proc(cmd) || arg_is_set(cmd, sysinit_ARG))) {
-		ret = ECMD_FAILED;
-		goto_out;
+	if ((locking_type == 0) || (locking_type == 5)) {
+		log_warn("WARNING: locking_type (%d) is deprecated, using --nolocking.", locking_type);
+		nolocking = 1;
+
+	} else if (locking_type == 4) {
+		log_warn("WARNING: locking_type (%d) is deprecated, using --sysinit --readonly.", locking_type);
+		sysinit = 1;
+		readonly = 1;
+
+	} else if (locking_type != 1) {
+		log_warn("WARNING: locking_type (%d) is deprecated, using file locking.", locking_type);
+	}
+
+	if (arg_is_set(cmd, nolocking_ARG) || _cmd_no_meta_proc(cmd))
+		nolocking = 1;
+
+	if (arg_is_set(cmd, sysinit_ARG))
+		sysinit = 1;
+
+	if (arg_is_set(cmd, readonly_ARG))
+		readonly = 1;
+
+	if (nolocking) {
+		if (!_cmd_no_meta_proc(cmd))
+			log_warn("WARNING: File locking is disabled.");
+	} else {
+		if (!init_locking(cmd, sysinit, readonly, arg_is_set(cmd, ignorelockingfailure_ARG))) {
+			ret = ECMD_FAILED;
+			goto_out;
+		}
 	}
 
 	if (!_cmd_no_meta_proc(cmd) && !_init_lvmlockd(cmd)) {
 		ret = ECMD_FAILED;
 		goto_out;
-	}
-
-	/*
-	 * pvscan/vgscan/lvscan/vgimport want their own control over rescanning
-	 * to populate lvmetad and have similar code of their own.
-	 * Other commands use this general policy for using lvmetad.
-	 *
-	 * The lvmetad cache may need to be repopulated before we use it because:
-	 * - We are reading foreign VGs which others hosts may have changed
-	 *   which our lvmetad would not have seen.
-	 * - lvmetad may have just been started and no command has been run
-	 *   to populate it yet (e.g. no pvscan --cache was run).
-	 * - Another local command may have run with a different global filter
-	 *   which changed the content of lvmetad from what we want (recognized
-	 *   by different token values.)
-	 *
-	 * lvmetad may have been previously disabled (or disabled during the
-	 * rescan done here) because duplicate devices or lvm1 metadata were seen.
-	 * In this case, disable the *use* of lvmetad by this command, reverting to
-	 * disk scanning.
-	 */
-	if (lvmetad_used() && !(cmd->cname->flags & NO_LVMETAD_AUTOSCAN)) {
-		if (cmd->include_foreign_vgs || !lvmetad_token_matches(cmd)) {
-			if (lvmetad_used() && !lvmetad_pvscan_all_devs(cmd, cmd->include_foreign_vgs ? 1 : 0)) {
-				log_warn("WARNING: Not using lvmetad because cache update failed.");
-				lvmetad_make_unused(cmd);
-			}
-		}
-
-		if (lvmetad_used() && lvmetad_is_disabled(cmd, &reason)) {
-			log_warn("WARNING: Not using lvmetad because %s.", reason);
-			lvmetad_make_unused(cmd);
-
-			if (strstr(reason, "duplicate")) {
-				log_warn("WARNING: Use multipath or vgimportclone to resolve duplicate PVs?");
-				if (!find_config_tree_bool(cmd, devices_multipath_component_detection_CFG, NULL))
-					log_warn("WARNING: Set multipath_component_detection=1 to hide multipath duplicates.");
-				log_warn("WARNING: After duplicates are resolved, run \"pvscan --cache\" to enable lvmetad.");
-			}
-		}
 	}
 
 	if (cmd->command->functions)
@@ -2980,10 +2962,9 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 		lvmnotify_send(cmd);
 
       out:
-	if (test_mode()) {
-		log_verbose("Test mode: Wiping internal cache");
-		lvmcache_destroy(cmd, 1, 0);
-	}
+
+	lvmcache_destroy(cmd, 1, 1);
+	label_scan_destroy(cmd);
 
 	if ((config_string_cft = remove_config_tree_by_source(cmd, CONFIG_STRING)))
 		dm_config_destroy(config_string_cft);
@@ -3367,41 +3348,6 @@ static int _run_script(struct cmd_context *cmd, int argc, char **argv)
 	return ret;
 }
 
-/*
- * Determine whether we should fall back and exec the equivalent LVM1 tool
- */
-static int _lvm1_fallback(struct cmd_context *cmd)
-{
-	char vsn[80];
-	int dm_present;
-
-	if (!find_config_tree_bool(cmd, global_fallback_to_lvm1_CFG, NULL) ||
-	    strncmp(cmd->kernel_vsn, "2.4.", 4))
-		return 0;
-
-	log_suppress(1);
-	dm_present = driver_version(vsn, sizeof(vsn));
-	log_suppress(0);
-
-	if (dm_present || !lvm1_present(cmd))
-		return 0;
-
-	return 1;
-}
-
-static void _exec_lvm1_command(char **argv)
-{
-	char path[PATH_MAX];
-
-	if (dm_snprintf(path, sizeof(path), "%s.lvm1", argv[0]) < 0) {
-		log_error("Failed to create LVM1 tool pathname");
-		return;
-	}
-
-	execvp(path, argv);
-	log_sys_error("execvp", path);
-}
-
 static void _nonroot_warning(void)
 {
 	if (getuid() || geteuid())
@@ -3490,19 +3436,6 @@ int lvm2_main(int argc, char **argv)
 		run_name = argv[0];
 	} else
 		run_name = dm_basename(argv[0]);
-
-	if (_lvm1_fallback(cmd)) {
-		/* Attempt to run equivalent LVM1 tool instead */
-		if (!argc) {
-			log_error("Falling back to LVM1 tools, but no "
-				  "command specified.");
-			ret = ECMD_FAILED;
-			goto out;
-		}
-		_exec_lvm1_command(argv);
-		ret = ECMD_FAILED;
-		goto_out;
-	}
 
 	/*
 	 * Decide if we are running a shell or a command or a script.  When

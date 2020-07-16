@@ -12,14 +12,14 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include "lib.h"
-#include "activate.h"
-#include "locking.h"
-#include "memlock.h"
-#include "metadata.h"
-#include "segtype.h"
-#include "defaults.h"
-#include "display.h"
+#include "lib/misc/lib.h"
+#include "lib/activate/activate.h"
+#include "lib/locking/locking.h"
+#include "lib/mm/memlock.h"
+#include "lib/metadata/metadata.h"
+#include "lib/metadata/segtype.h"
+#include "lib/config/defaults.h"
+#include "lib/display/display.h"
 
 /* TODO: drop unused no_update */
 int attach_pool_message(struct lv_segment *pool_seg, dm_thin_message_t type,
@@ -228,7 +228,7 @@ int pool_metadata_min_threshold(const struct lv_segment *pool_seg)
 	 *
 	 * In the metadata LV there should be minimum from either 4MiB of free space
 	 * or at least 25% of free space, which applies when the size of thin pool's
-	 * metadata is less then 16MiB.
+	 * metadata is less than 16MiB.
 	 */
 	const dm_percent_t meta_min = DM_PERCENT_1 * 25;
 	dm_percent_t meta_free = dm_make_percent(((4096 * 1024) >> SECTOR_SHIFT),
@@ -504,7 +504,7 @@ int update_pool_lv(struct logical_volume *lv, int activate)
 			 *   as this version has major problem when it does not know
 			 *   which Node has pool active.
 			 */
-			if (!activate_lv_excl(lv->vg->cmd, lv)) {
+			if (!activate_lv(lv->vg->cmd, lv)) {
 				init_dmeventd_monitor(monitored);
 				return_0;
 			}
@@ -857,7 +857,7 @@ int check_new_thin_pool(const struct logical_volume *pool_lv)
 	uint64_t transaction_id;
 
 	/* For transaction_id check LOCAL activation is required */
-	if (!activate_lv_excl_local(cmd, pool_lv)) {
+	if (!activate_lv(cmd, pool_lv)) {
 		log_error("Aborting. Failed to locally activate thin pool %s.",
 			  display_lvname(pool_lv));
 		return 0;

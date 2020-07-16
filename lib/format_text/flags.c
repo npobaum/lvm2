@@ -13,10 +13,10 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include "lib.h"
-#include "metadata.h"
+#include "lib/misc/lib.h"
+#include "lib/metadata/metadata.h"
 #include "import-export.h"
-#include "lvm-string.h"
+#include "lib/misc/lvm-string.h"
 
 /*
  * Bitsets held in the 'status' flags get
@@ -98,6 +98,9 @@ static const struct flag _lv_flags[] = {
 	{CACHE_POOL, NULL, 0},
 	{CACHE_POOL_DATA, NULL, 0},
 	{CACHE_POOL_METADATA, NULL, 0},
+	{LV_VDO, NULL, 0},
+	{LV_VDO_POOL, NULL, 0},
+	{LV_VDO_POOL_DATA, NULL, 0},
 	{LV_PENDING_DELETE, NULL, 0}, /* FIXME Display like COMPATIBLE_FLAG */
 	{LV_REMOVED, NULL, 0},
 	{0, NULL, 0}
@@ -235,7 +238,7 @@ int read_segtype_lvflags(uint64_t *status, char *segtype_str)
 	if (!(str = strchr(segtype_str, '+')))
 		return 1; /* No flags */
 
-	if (!(buffer = dm_strdup(str + 1))) {
+	if (!(buffer = strdup(str + 1))) {
 		log_error("Cannot duplicate segment string.");
 		return 0;
 	}
@@ -263,7 +266,7 @@ int read_segtype_lvflags(uint64_t *status, char *segtype_str)
 	else
 		*str = '\0'; /* Cut away 1st. '+' */
 
-	dm_free(buffer);
+	free(buffer);
 
 	return 1;
 }

@@ -16,33 +16,32 @@
 #ifndef _LVM_TOOLS_H
 #define _LVM_TOOLS_H
 
-#include "tool.h"
+#include "tools/tool.h"
 
-#include "lvm-logging.h"
+#include "lib/log/lvm-logging.h"
 
-#include "activate.h"
-#include "archiver.h"
-#include "lvmcache.h"
-#include "lvmetad.h"
-#include "lvmlockd.h"
+#include "lib/activate/activate.h"
+#include "lib/format_text/archiver.h"
+#include "lib/cache/lvmcache.h"
+#include "lib/locking/lvmlockd.h"
 #include "lvm-version.h"
-#include "config.h"
-#include "defaults.h"
-#include "dev-cache.h"
-#include "device.h"
-#include "display.h"
+#include "lib/config/config.h"
+#include "lib/config/defaults.h"
+#include "lib/device/dev-cache.h"
+#include "lib/device/device.h"
+#include "lib/display/display.h"
 #include "errors.h"
-#include "metadata-exported.h"
-#include "locking.h"
-#include "lvm-exec.h"
-#include "lvm-file.h"
-#include "lvm-signal.h"
-#include "lvm-string.h"
-#include "segtype.h"
-#include "str_list.h"
-#include "toolcontext.h"
+#include "lib/metadata/metadata-exported.h"
+#include "lib/locking/locking.h"
+#include "lib/misc/lvm-exec.h"
+#include "lib/misc/lvm-file.h"
+#include "lib/misc/lvm-signal.h"
+#include "lib/misc/lvm-string.h"
+#include "lib/metadata/segtype.h"
+#include "lib/datastruct/str_list.h"
+#include "lib/commands/toolcontext.h"
 #include "toollib.h"
-#include "lvmnotify.h"
+#include "lib/notify/lvmnotify.h"
 
 #include <ctype.h>
 #include <sys/types.h>
@@ -113,7 +112,6 @@ struct arg_value_group_list {
 	uint32_t prio;
 };
 
-#define CACHE_VGMETADATA	0x00000001
 #define PERMITTED_READ_ONLY 	0x00000002
 /* Process all VGs if none specified on the command line. */
 #define ALL_VGS_IS_DEFAULT	0x00000004
@@ -125,18 +123,17 @@ struct arg_value_group_list {
 #define LOCKD_VG_SH		0x00000020
 /* Command does not process any metadata. */
 #define NO_METADATA_PROCESSING	0x00000040
-/* Command wants to scan for new devices and force labels to be read from them all. */
-#define REQUIRES_FULL_LABEL_SCAN 0x00000080
 /* Command must use all specified arg names and fail if all cannot be used. */
 #define MUST_USE_ALL_ARGS        0x00000100
-/* Command wants to control the device scan for lvmetad itself. */
-#define NO_LVMETAD_AUTOSCAN      0x00000200
 /* Command should process unused duplicate devices. */
 #define ENABLE_DUPLICATE_DEVS    0x00000400
 /* Command does not accept tags as args. */
 #define DISALLOW_TAG_ARGS        0x00000800
 /* Command may need to find VG name in an option value. */
 #define GET_VGNAME_FROM_OPTIONS  0x00001000
+/* The data read from disk by label scan can be used for vg_read. */
+#define CAN_USE_ONE_SCAN	 0x00002000
+
 
 void usage(const char *name);
 
@@ -172,7 +169,7 @@ int segtype_arg(struct cmd_context *cmd, struct arg_values *av);
 int alloc_arg(struct cmd_context *cmd, struct arg_values *av);
 int locktype_arg(struct cmd_context *cmd, struct arg_values *av);
 int readahead_arg(struct cmd_context *cmd, struct arg_values *av);
-int regionsize_arg(struct cmd_context *cmd, struct arg_values *av);
+int regionsize_mb_arg(struct cmd_context *cmd, struct arg_values *av);
 int vgmetadatacopies_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_values *av);
 int pvmetadatacopies_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_values *av);
 int metadatacopies_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_values *av);
@@ -264,5 +261,11 @@ int lvconvert_change_mirrorlog_cmd(struct cmd_context * cmd, int argc, char **ar
 int lvconvert_change_region_size_cmd(struct cmd_context * cmd, int argc, char **argv);
 
 int lvconvert_merge_cmd(struct cmd_context *cmd, int argc, char **argv);
+
+int lvconvert_to_vdopool_cmd(struct cmd_context *cmd, int argc, char **argv);
+int lvconvert_to_vdopool_param_cmd(struct cmd_context *cmd, int argc, char **argv);
+
+int pvscan_display_cmd(struct cmd_context *cmd, int argc, char **argv);
+int pvscan_cache_cmd(struct cmd_context *cmd, int argc, char **argv);
 
 #endif

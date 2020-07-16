@@ -16,6 +16,12 @@ srcdir = @srcdir@
 top_srcdir = @top_srcdir@
 top_builddir = @top_builddir@
 
+ifeq ($(V),1)
+	Q=
+else
+	Q=@
+endif
+
 FSADMMAN = fsadm.8
 BLKDEACTIVATEMAN = blkdeactivate.8
 DMEVENTDMAN = dmeventd.8
@@ -23,7 +29,6 @@ DMFILEMAPDMAN = dmfilemapd.8
 LVMETADMAN = lvmetad.8
 LVMPOLLDMAN = lvmpolld.8
 LVMLOCKDMAN = lvmlockd.8 lvmlockctl.8
-CLVMDMAN = clvmd.8
 CMIRRORDMAN = cmirrord.8
 LVMCACHEMAN = lvmcache.7
 LVMTHINMAN = lvmthin.7
@@ -32,7 +37,7 @@ LVMRAIDMAN = lvmraid.7
 
 MAN5=lvm.conf.5
 MAN7=lvmsystemid.7 lvmreport.7 
-MAN8=lvm.8 lvmconf.8 lvmdump.8 lvm-fullreport.8 lvm-lvpoll.8 \
+MAN8=lvm.8 lvmdump.8 lvm-fullreport.8 lvm-lvpoll.8 \
      lvcreate.8 lvchange.8 lvmconfig.8 lvconvert.8 lvdisplay.8 \
      lvextend.8 lvreduce.8 lvremove.8 lvrename.8 lvresize.8 lvs.8 \
      lvscan.8 pvchange.8 pvck.8 pvcreate.8 pvdisplay.8 pvmove.8 pvremove.8 \
@@ -46,20 +51,6 @@ MAN8DM=dmsetup.8 dmstats.8
 MAN8CLUSTER=
 MAN8SYSTEMD_GENERATORS=lvm2-activation-generator.8
 
-ifeq ("$(origin V)", "command line")
-  BUILD_VERBOSE = $(V)
-endif
-ifndef BUILD_VERBOSE
-  BUILD_VERBOSE = 0
-endif
-
-ifeq ($(BUILD_VERBOSE),1)
-  Q =
-else
-  Q = @
-endif
-
-
 ifeq ($(MAKECMDGOALS),all_man)
   MAN_ALL="yes"
 endif
@@ -71,8 +62,7 @@ endif
 ifeq ($(MAN_ALL),"yes")
   MAN8+=$(FSADMMAN) $(LVMETADMAN) $(LVMPOLLDMAN) $(LVMLOCKDMAN) $(LVMDBUSDMAN)
   MAN8DM+=$(BLKDEACTIVATEMAN) $(DMEVENTDMAN) $(DMFILEMAPDMAN)
-  MAN8CLUSTER+=$(CLVMDMAN) $(CMIRRORDMAN)
-  MAN7+=$(LVMCACHEMAN) $(LVMTHINMAN) $(LVMRAIDMAN)
+  MAN8CLUSTER+=$(CMIRRORDMAN)
 else
   ifeq ("@FSADM@", "yes")
     MAN8+=$(FSADMMAN)
@@ -106,27 +96,12 @@ else
     MAN8DM+=$(DMFILEMAPDMAN)
   endif
 
-  ifneq ("@CLVMD@", "none")
-    MAN8CLUSTER+=$(CLVMDMAN)
-  endif
-
   ifeq ("@BUILD_CMIRRORD@", "yes")
     MAN8CLUSTER+=$(CMIRRORDMAN)
   endif
-
-  ifneq ("@CACHE@", "none")
-    MAN7+=$(LVMCACHEMAN)
-  endif
-
-  ifneq ("@THIN@", "none")
-    MAN7+=$(LVMTHINMAN)
-  endif
-
-  ifneq ("@RAID@", "none")
-    MAN7+=$(LVMRAIDMAN)
-  endif
 endif
 
+MAN7+=$(LVMCACHEMAN) $(LVMTHINMAN) $(LVMRAIDMAN)
 MAN5DIR=$(mandir)/man5
 MAN7DIR=$(mandir)/man7
 MAN8DIR=$(mandir)/man8
@@ -139,7 +114,7 @@ include $(top_builddir)/make.tmpl
 CLEAN_TARGETS+=$(MAN5) $(MAN7) $(MAN8) $(MAN8SO) $(MAN8:%.8=%.8_gen) $(MAN8CLUSTER) \
 	$(MAN8SYSTEMD_GENERATORS) $(MAN8DM) $(TESTMAN)
 DISTCLEAN_TARGETS+=$(FSADMMAN) $(BLKDEACTIVATEMAN) $(DMEVENTDMAN) \
-	$(LVMETADMAN) $(LVMPOLLDMAN) $(LVMLOCKDMAN) $(CLVMDMAN) $(CMIRRORDMAN) \
+	$(LVMETADMAN) $(LVMPOLLDMAN) $(LVMLOCKDMAN) $(CMIRRORDMAN) \
 	$(LVMCACHEMAN) $(LVMTHINMAN) $(LVMDBUSDMAN) $(LVMRAIDMAN) \
 	$(DMFILEMAPDMAN)
 
@@ -164,13 +139,6 @@ SEE_ALSO=$(srcdir)/see_also.end
 .PRECIOUS: %.8_gen
 
 %.8_gen: $(srcdir)/%.8_des $(srcdir)/%.8_end $(MANGENERATOR) $(TESTMAN)
-	$(Q)( \
-	    if [ ! -s $(TESTMAN) ] ; then \
-		echo "Copying pre-generated template $@" ; \
-	    else \
-		echo "Generating template $@" ; \
-	    fi \
-	)
 	$(Q)set -e ; ( \
 	    if [ ! -s $(TESTMAN) ] ; then \
 		cat $(srcdir)/$(@:%.8_gen=%.8_pregen) ; \
@@ -184,7 +152,6 @@ SEE_ALSO=$(srcdir)/see_also.end
 	) > $@
 
 define SUBSTVARS
-$(Q)echo "Generating $@"
 $(Q)$(SED) -e "s+#VERSION#+$(LVM_VERSION)+" \
 	-e "s+#DEFAULT_SYS_DIR#+$(DEFAULT_SYS_DIR)+" \
 	-e "s+#DEFAULT_ARCHIVE_DIR#+$(DEFAULT_ARCHIVE_DIR)+" \
@@ -237,51 +204,62 @@ $(Q)$(SED) -i -e "s+\([ [:alpha:]]\)-\{7\}+\1\\\-\\\-\\\-\\\-\\\-\\\-\\\-+g" \
 endef
 
 %.5: $(srcdir)/%.5_main
-	$(SUBSTVARS)
-	$(ESCAPEHYPHENS)
+	@echo "    [MAN] $@"
+	$(Q) $(SUBSTVARS)
+	$(Q) $(ESCAPEHYPHENS)
 
 %.7: $(srcdir)/%.7_main
-	$(SUBSTVARS)
-	$(ESCAPEHYPHENS)
+	@echo "    [MAN] $@"
+	$(Q) $(SUBSTVARS)
+	$(Q) $(ESCAPEHYPHENS)
 
 %.8: $(srcdir)/%.8_main
-	$(SUBSTVARS)
-	$(ESCAPEHYPHENS)
+	@echo "    [MAN] $@"
+	$(Q) $(SUBSTVARS)
+	$(Q) $(ESCAPEHYPHENS)
 
 %.8: %.8_gen
-	$(SUBSTVARS)
-	$(ESCAPEHYPHENS)
+	@echo "    [MAN] $@"
+	$(Q) $(SUBSTVARS)
+	$(Q) $(ESCAPEHYPHENS)
 
 $(MAN8SO): lvmconfig.8
-	echo ".so $<" > $@
+	@echo "    [MAN] $@"
+	$(Q) echo ".so $<" > $@
 
 install_man5: $(MAN5)
-	$(INSTALL) -d $(MAN5DIR)
-	$(INSTALL_DATA) $(MAN5) $(MAN5DIR)/
+	@echo "    [INSTALL] $<"
+	$(Q) $(INSTALL) -d $(MAN5DIR)
+	$(Q) $(INSTALL_DATA) $(MAN5) $(MAN5DIR)/
 
 install_man7: $(MAN7)
-	$(INSTALL) -d $(MAN7DIR)
-	$(INSTALL_DATA) $(MAN7) $(MAN7DIR)/
+	@echo "    [INSTALL] $<"
+	$(Q) $(INSTALL) -d $(MAN7DIR)
+	$(Q) $(INSTALL_DATA) $(MAN7) $(MAN7DIR)/
 
 install_man8: $(MAN8) $(MAN8SO)
-	$(INSTALL) -d $(MAN8DIR)
-	$(INSTALL_DATA) $(MAN8) $(MAN8SO) $(MAN8DIR)/
+	@echo "    [INSTALL] $<"
+	$(Q) $(INSTALL) -d $(MAN8DIR)
+	$(Q) $(INSTALL_DATA) $(MAN8) $(MAN8SO) $(MAN8DIR)/
 
 install_lvm2: install_man5 install_man7 install_man8
 
 install_cluster: $(MAN8CLUSTER)
 ifdef MAN8CLUSTER
-	$(INSTALL) -d $(MAN8DIR)
-	$(INSTALL_DATA) $(MAN8CLUSTER) $(MAN8DIR)/
+	@echo "    [INSTALL] $<"
+	$(Q) $(INSTALL) -d $(MAN8DIR)
+	$(Q) $(INSTALL_DATA) $(MAN8CLUSTER) $(MAN8DIR)/
 endif
 
 install_device-mapper: $(MAN8DM)
-	$(INSTALL) -d $(MAN8DIR)
-	$(INSTALL_DATA) $(MAN8DM) $(MAN8DIR)/
+	@echo "    [INSTALL] $<"
+	$(Q) $(INSTALL) -d $(MAN8DIR)
+	$(Q) $(INSTALL_DATA) $(MAN8DM) $(MAN8DIR)/
 
 install_systemd_generators: $(MAN8SYSTEMD_GENERATORS)
-	$(INSTALL) -d $(MAN8DIR)
-	$(INSTALL_DATA) $(MAN8SYSTEMD_GENERATORS) $(MAN8DIR)/
+	@echo "    [INSTALL] $<"
+	$(Q) $(INSTALL) -d $(MAN8DIR)
+	$(Q) $(INSTALL_DATA) $(MAN8SYSTEMD_GENERATORS) $(MAN8DIR)/
 
 install: install_lvm2 install_device-mapper install_cluster
 

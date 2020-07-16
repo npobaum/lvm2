@@ -58,19 +58,12 @@ static int _poll_lvs_in_vg(struct cmd_context *cmd,
 {
 	struct lv_list *lvl;
 	struct logical_volume *lv;
-	struct lvinfo info;
-	int lv_active;
 	int count = 0;
 
 	dm_list_iterate_items(lvl, &vg->lvs) {
 		lv = lvl->lv;
 
-		if (!lv_info(cmd, lv, 0, &info, 0, 0))
-			lv_active = 0;
-		else
-			lv_active = info.exists;
-
-		if (lv_active &&
+		if (lv_is_active(lv) &&
 		    (lv_is_pvmove(lv) || lv_is_converting(lv) || lv_is_merging(lv))) {
 			lv_spawn_background_polling(cmd, lv);
 			count++;
@@ -99,7 +92,7 @@ static int _activate_lvs_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 
 		lv = lvl->lv;
 
-		if (!lv_is_visible(lv))
+		if (!lv_is_visible(lv) && (!cmd->process_component_lvs || !lv_is_component(lv)))
 			continue;
 
 		/* If LV is sparse, activate origin instead */
@@ -114,6 +107,9 @@ static int _activate_lvs_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 		if (lv_is_mirror_image(lv) || lv_is_mirror_log(lv))
 			continue;
 
+		if (lv_is_vdo_pool(lv))
+			continue;
+
 		if (lv_activation_skip(lv, activate, arg_is_set(cmd, ignoreactivationskip_ARG)))
 			continue;
 
@@ -124,17 +120,8 @@ static int _activate_lvs_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 		expected_count++;
 
 		if (!lv_change_activate(cmd, lv, activate)) {
-			if (!lv_is_active_exclusive_remotely(lv))
-				stack;
-			else {
-				/*
-				 * If the LV is active exclusive remotely,
-				 * then ignore it here
-				 */
-				log_verbose("%s/%s is exclusively active on"
-					    " a remote node", vg->name, lv->name);
-				expected_count--; /* not accounted */
-			}
+			stack;
+			r = 0;
 			continue;
 		}
 
@@ -143,18 +130,30 @@ static int _activate_lvs_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 
 	sigint_restore();
 
+	if (expected_count)
+		log_verbose("%sctivated %d logical volumes in volume group %s.",
+			    is_change_activating(activate) ? "A" : "Dea",
+			    count, vg->name);
+
+	/*
+	 * After sucessfull activation we need to initialise polling
+	 * for all activated LVs in a VG. Possible enhancement would
+	 * be adding --poll y|n cmdline option for pvscan and call
+	 * init_background_polling routine in autoactivation handler.
+	 */
+	if (count && is_change_activating(activate) &&
+	    !vgchange_background_polling(cmd, vg)) {
+		stack;
+		r = 0;
+	}
+
 	/* Wait until devices are available */
 	if (!sync_local_dev_names(vg->cmd)) {
 		log_error("Failed to sync local devices for VG %s.", vg->name);
 		r = 0;
 	}
 
-	if (expected_count)
-		log_verbose("%s %d logical volumes in volume group %s",
-			    is_change_activating(activate) ?
-			    "Activated" : "Deactivated", count, vg->name);
-
-	return (expected_count != count) ? 0 : r;
+	return r;
 }
 
 static int _vgchange_monitoring(struct cmd_context *cmd, struct volume_group *vg)
@@ -178,8 +177,9 @@ int vgchange_background_polling(struct cmd_context *cmd, struct volume_group *vg
 {
 	int polled;
 
-	if (lvs_in_vg_activated(vg) && background_polling()) {
-	        polled = _poll_lvs_in_vg(cmd, vg);
+	if (background_polling()) {
+		log_debug_activation("Starting background polling for volume group \"%s\".", vg->name);
+		polled = _poll_lvs_in_vg(cmd, vg);
 		if (polled)
 			log_print_unless_silent("Background polling started for %d logical volume(s) "
 						"in volume group \"%s\"",
@@ -206,7 +206,7 @@ int vgchange_activate(struct cmd_context *cmd, struct volume_group *vg,
 	    strcmp(vg->system_id, cmd->system_id) &&
 	    do_activate) {
 		log_error("Cannot activate LVs in a foreign VG.");
-		return ECMD_FAILED;
+		return 0;
 	}
 
 	/*
@@ -216,19 +216,28 @@ int vgchange_activate(struct cmd_context *cmd, struct volume_group *vg,
         cmd->handles_missing_pvs = 1;
 
 	/* FIXME: Force argument to deactivate them? */
-	if (!do_activate && (lv_open = lvs_in_vg_opened(vg))) {
+	if (!do_activate) {
 		dm_list_iterate_items(lvl, &vg->lvs)
-			if (lv_is_visible(lvl->lv) &&
-			    !lv_check_not_in_use(lvl->lv, 1)) {
-				log_error("Can't deactivate volume group \"%s\" with %d open "
-					  "logical volume(s)", vg->name, lv_open);
-				return 0;
+			label_scan_invalidate_lv(cmd, lvl->lv);
+
+	       	if ((lv_open = lvs_in_vg_opened(vg))) {
+			dm_list_iterate_items(lvl, &vg->lvs) {
+				if (lv_is_visible(lvl->lv) &&
+				    !lv_is_vdo_pool(lvl->lv) && // FIXME: API skip flag missing
+				    !lv_check_not_in_use(lvl->lv, 1)) {
+					log_error("Can't deactivate volume group \"%s\" with %d open logical volume(s)",
+						  vg->name, lv_open);
+					return 0;
+				}
 			}
+		}
 	}
 
 	/* FIXME Move into library where clvmd can use it */
 	if (do_activate)
 		check_current_backup(vg);
+	else /* Component LVs might be active, support easy deactivation */
+		cmd->process_component_lvs = 1;
 
 	if (do_activate && (active = lvs_in_vg_activated(vg))) {
 		log_verbose("%d logical volume(s) in volume group \"%s\" "
@@ -304,84 +313,6 @@ static int _vgchange_resizeable(struct cmd_context *cmd,
 		vg->status |= RESIZEABLE_VG;
 	else
 		vg->status &= ~RESIZEABLE_VG;
-
-	return 1;
-}
-
-static int _vgchange_clustered(struct cmd_context *cmd,
-			       struct volume_group *vg)
-{
-	int clustered = arg_int_value(cmd, clustered_ARG, 0);
-	const char *lock_type = arg_str_value(cmd, locktype_ARG, NULL);
-	struct lv_list *lvl;
-	struct lv_segment *mirror_seg;
-
-	if (find_config_tree_bool(cmd, global_use_lvmlockd_CFG, NULL)) {
-		log_error("lvmlockd requires using the vgchange --lock-type option.");
-		return 0;
-	}
-
-	if (lock_type && !strcmp(lock_type, "clvm"))
-		clustered = 1;
-
-	if (clustered && vg_is_clustered(vg)) {
-		if (vg->system_id && *vg->system_id)
-			log_warn("WARNING: Clearing invalid system ID %s from volume group %s.",
-				 vg->system_id, vg->name);
-		else {
-			log_error("Volume group \"%s\" is already clustered", vg->name);
-			return 0;
-		}
-	}
-
-	if (!clustered && !vg_is_clustered(vg)) {
-		if ((!vg->system_id || !*vg->system_id) && cmd->system_id && *cmd->system_id)
-			log_warn("Setting missing system ID on Volume Group %s to %s.",
-				 vg->name, cmd->system_id);
-		else {
-			log_error("Volume group \"%s\" is already not clustered",
-				  vg->name);
-			return 0;
-		}
-	}
-
-	if (clustered && !arg_is_set(cmd, yes_ARG)) {
-		if (!clvmd_is_running()) {
-			if (yes_no_prompt("LVM cluster daemon (clvmd) is not running. "
-					  "Make volume group \"%s\" clustered "
-					  "anyway? [y/n]: ", vg->name) == 'n') {
-				log_error("No volume groups changed.");
-				return 0;
-			}
-
-		} else if (!locking_is_clustered() &&
-			   (yes_no_prompt("LVM locking type is not clustered. "
-					  "Make volume group \"%s\" clustered "
-					  "anyway? [y/n]: ", vg->name) == 'n')) {
-			log_error("No volume groups changed.");
-			return 0;
-		}
-#ifdef CMIRROR_REGION_COUNT_LIMIT
-		dm_list_iterate_items(lvl, &vg->lvs) {
-			if (!lv_is_mirror(lvl->lv))
-				continue;
-			mirror_seg = first_seg(lvl->lv);
-			if ((lvl->lv->size / mirror_seg->region_size) >
-			    CMIRROR_REGION_COUNT_LIMIT) {
-				log_error("Unable to convert %s to clustered mode:"
-					  " Mirror region size of %s is too small.",
-					  vg->name, lvl->lv->name);
-				return 0;
-			}
-		}
-#endif
-	}
-
-	if (!vg_set_system_id(vg, clustered ? NULL : cmd->system_id))
-		return_0;
-
-	if (!vg_set_clustered(vg, clustered))
-		return_0;
 
 	return 1;
 }
@@ -534,13 +465,6 @@ static int _vgchange_system_id(struct cmd_context *cmd, struct volume_group *vg)
 	const char *system_id;
 	const char *system_id_arg_str = arg_str_value(cmd, systemid_ARG, NULL);
 
-	/* FIXME Merge with vg_set_system_id() */
-	if (systemid_on_pvs(vg)) {
-		log_error("Metadata format %s does not support this type of system ID.",
-			  vg->fid->fmt->name);
-		return 0;
-	}
-
 	if (!(system_id = system_id_from_string(cmd, system_id_arg_str))) {
 		log_error("Unable to set system ID.");
 		return 0;
@@ -590,9 +514,6 @@ static int _vgchange_system_id(struct cmd_context *cmd, struct volume_group *vg)
 
 	vg->system_id = system_id;
 	
-	if (vg->lvm1_system_id)
-		*vg->lvm1_system_id = '\0';
-
 	return 1;
 }
 
@@ -641,7 +562,7 @@ static int _vgchange_lock_start(struct cmd_context *cmd, struct volume_group *vg
 	int auto_opt = 0;
 	int r;
 
-	if (!is_lockd_type(vg->lock_type))
+	if (!vg_is_shared(vg))
 		return 1;
 
 	if (arg_is_set(cmd, force_ARG))
@@ -686,7 +607,7 @@ static int _vgchange_single(struct cmd_context *cmd, const char *vg_name,
 {
 	int ret = ECMD_PROCESSED;
 	unsigned i;
-	struct lv_list *lvl;
+	activation_change_t activate = CHANGE_AN;
 
 	static const struct {
 		int arg;
@@ -700,7 +621,6 @@ static int _vgchange_single(struct cmd_context *cmd, const char *vg_name,
 		{ physicalextentsize_ARG, &_vgchange_pesize },
 		{ uuid_ARG, &_vgchange_uuid },
 		{ alloc_ARG, &_vgchange_alloc },
-		{ clustered_ARG, &_vgchange_clustered },
 		{ vgmetadatacopies_ARG, &_vgchange_metadata_copies },
 		{ metadataprofile_ARG, &_vgchange_profile },
 		{ profile_ARG, &_vgchange_profile },
@@ -741,56 +661,27 @@ static int _vgchange_single(struct cmd_context *cmd, const char *vg_name,
 		backup(vg);
 
 		log_print_unless_silent("Volume group \"%s\" successfully changed", vg->name);
-
-		/* FIXME: fix clvmd bug and take DLM lock for non clustered VGs. */
-		if (arg_is_set(cmd, clustered_ARG) &&
-		    vg_is_clustered(vg) && /* just switched to clustered */
-		    locking_is_clustered() &&
-		    locking_supports_remote_queries())
-			dm_list_iterate_items(lvl, &vg->lvs) {
-				if ((lv_lock_holder(lvl->lv) != lvl->lv) ||
-				    !lv_is_active(lvl->lv))
-					continue;
-
-				if (!activate_lv_excl_local(cmd, lvl->lv) ||
-				    !lv_is_active_exclusive_locally(lvl->lv)) {
-					log_error("Can't reactive logical volume %s, "
-						  "please fix manually.",
-						  display_lvname(lvl->lv));
-					ret = ECMD_FAILED;
-				}
-
-				if (lv_is_mirror(lvl->lv))
-					/* Give hint for clustered mirroring */
-					log_print_unless_silent("For clustered mirroring of %s "
-								"deactivation and activation is needed.",
-								display_lvname(lvl->lv));
-			}
 	}
 
 	if (arg_is_set(cmd, activate_ARG)) {
-		if (!vgchange_activate(cmd, vg, (activation_change_t)
-				       arg_uint_value(cmd, activate_ARG, CHANGE_AY)))
+		activate = (activation_change_t) arg_uint_value(cmd, activate_ARG, 0);
+		if (!vgchange_activate(cmd, vg, activate))
 			return_ECMD_FAILED;
-	}
-
-	if (arg_is_set(cmd, refresh_ARG)) {
+	} else if (arg_is_set(cmd, refresh_ARG)) {
 		/* refreshes the visible LVs (which starts polling) */
 		if (!_vgchange_refresh(cmd, vg))
 			return_ECMD_FAILED;
-	}
-
-	if (!arg_is_set(cmd, activate_ARG) &&
-	    !arg_is_set(cmd, refresh_ARG) &&
-	    arg_is_set(cmd, monitor_ARG)) {
+	} else {
 		/* -ay* will have already done monitoring changes */
-		if (!_vgchange_monitoring(cmd, vg))
+		if (arg_is_set(cmd, monitor_ARG) &&
+		    !_vgchange_monitoring(cmd, vg))
+			return_ECMD_FAILED;
+
+		/* When explicitelly specified --poll */
+		if (arg_is_set(cmd, poll_ARG) &&
+		    !vgchange_background_polling(cmd, vg))
 			return_ECMD_FAILED;
 	}
-
-	if (!arg_is_set(cmd, refresh_ARG) &&
-	    !vgchange_background_polling(cmd, vg))
-			return_ECMD_FAILED;
 
 	return ret;
 }
@@ -820,7 +711,6 @@ int vgchange(struct cmd_context *cmd, int argc, char **argv)
 		arg_is_set(cmd, resizeable_ARG) ||
 		arg_is_set(cmd, uuid_ARG) ||
 		arg_is_set(cmd, physicalextentsize_ARG) ||
-		arg_is_set(cmd, clustered_ARG) ||
 		arg_is_set(cmd, alloc_ARG) ||
 		arg_is_set(cmd, vgmetadatacopies_ARG);
 
@@ -879,20 +769,6 @@ int vgchange(struct cmd_context *cmd, int argc, char **argv)
 		return EINVALID_CMD_LINE;
 	}
 
-	/*
-	 * If --sysinit -aay is used and at the same time lvmetad is used,
-	 * we want to rely on autoactivation to take place. Also, we
-	 * need to take special care here as lvmetad service does
-	 * not neet to be running at this moment yet - it could be
-	 * just too early during system initialization time.
-	 */
-	if (arg_is_set(cmd, sysinit_ARG) && (arg_uint_value(cmd, activate_ARG, 0) == CHANGE_AAY)) {
-		if (lvmetad_used()) {
-			log_warn("WARNING: lvmetad is active, skipping direct activation during sysinit");
-			return ECMD_PROCESSED;
-		}
-	}
-
 	if (arg_is_set(cmd, clustered_ARG) && !argc && !arg_is_set(cmd, yes_ARG) &&
 	    (yes_no_prompt("Change clustered property of all volumes groups? [y/n]: ") == 'n')) {
 		log_error("No volume groups changed.");
@@ -919,7 +795,7 @@ int vgchange(struct cmd_context *cmd, int argc, char **argv)
 			cmd->lockd_vg_enforce_sh = 1;
 	}
 
-	if (update)
+	if (update || arg_is_set(cmd, activate_ARG))
 		flags |= READ_FOR_UPDATE;
 
 	if (!(handle = init_processing_handle(cmd, NULL))) {
@@ -960,7 +836,7 @@ static int _vgchange_locktype(struct cmd_context *cmd, struct volume_group *vg)
 			vg->lock_type = "none";
 	}
 
-	if (!strcmp(vg->lock_type, lock_type)) {
+	if (lock_type && !strcmp(vg->lock_type, lock_type)) {
 		log_warn("New lock type %s matches the current lock type %s.",
 			 lock_type, vg->lock_type);
 		return 1;
@@ -972,22 +848,6 @@ static int _vgchange_locktype(struct cmd_context *cmd, struct volume_group *vg)
 		log_error("First change lock type to \"none\", then to \"%s\".",
 			  lock_type);
 		return 0;
-	}
-
-	/*
-	 * When lvm is currently using clvm, this function is just an alternative
-	 * to vgchange -c{y,n}, and can:
-	 * - change none to clvm
-	 * - change clvm to none
-	 * - it CANNOT change to or from a lockd type
-	 */
-	if (locking_is_clustered()) {
-		if (is_lockd_type(lock_type)) {
-			log_error("Changing to lock type %s requires lvmlockd.", lock_type);
-			return 0;
-		}
-
-		return _vgchange_clustered(cmd, vg);
 	}
 
 	/*
@@ -1004,14 +864,6 @@ static int _vgchange_locktype(struct cmd_context *cmd, struct volume_group *vg)
 		log_error("Changing VG %s lock type not allowed with active LVs",
 			  vg->name);
 		return 0;
-	}
-
-	/* none to clvm */
-	if (!strcmp(vg->lock_type, "none") && !strcmp(lock_type, "clvm")) {
-		log_warn("New clvm lock type will not be usable with lvmlockd.");
-		vg->status |= CLUSTERED;
-		vg->lock_type = "clvm"; /* this is optional */
-		return 1;
 	}
 
 	/* clvm to none */
@@ -1041,15 +893,6 @@ static int _vgchange_locktype(struct cmd_context *cmd, struct volume_group *vg)
 
 		dm_list_iterate_items(lvl, &vg->lvs)
 			lvl->lv->lock_args = NULL;
-	}
-
-	/* ... to clvm */
-	if (!strcmp(lock_type, "clvm")) {
-		log_warn("New clvm lock type will not be usable with lvmlockd.");
-		vg->status |= CLUSTERED;
-		vg->lock_type = "clvm"; /* this is optional */
-		vg->system_id = NULL;
-		return 1;
 	}
 
 	/* ... to lockd type */
@@ -1185,7 +1028,7 @@ int vgchange_locktype_cmd(struct cmd_context *cmd, int argc, char **argv)
 	 * just return success when they see the disable flag set.
 	 */
 	if (lockopt && !strcmp(lockopt, "force")) {
-		if (strcmp(lock_type, "none")) {
+		if (lock_type && strcmp(lock_type, "none")) {
 			log_error("Lock type can only be forced to \"none\" for recovery.");
 			return 0;
 		}
@@ -1199,6 +1042,7 @@ int vgchange_locktype_cmd(struct cmd_context *cmd, int argc, char **argv)
 		cmd->lockd_vg_disable = 1;
 		cmd->lockd_lv_disable = 1;
 		cmd->handles_missing_pvs = 1;
+		cmd->force_access_clustered = 1;
 		goto process;
 	}
 

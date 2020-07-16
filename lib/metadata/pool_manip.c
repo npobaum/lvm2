@@ -16,16 +16,16 @@
  * This file holds common pool functions.
  */
 
-#include "lib.h"
-#include "activate.h"
-#include "locking.h"
-#include "metadata.h"
-#include "segtype.h"
-#include "lv_alloc.h"
-#include "defaults.h"
-#include "dev-type.h"
-#include "display.h"
-#include "toolcontext.h"
+#include "lib/misc/lib.h"
+#include "lib/activate/activate.h"
+#include "lib/locking/locking.h"
+#include "lib/metadata/metadata.h"
+#include "lib/metadata/segtype.h"
+#include "lib/metadata/lv_alloc.h"
+#include "lib/config/defaults.h"
+#include "lib/device/dev-type.h"
+#include "lib/display/display.h"
+#include "lib/commands/toolcontext.h"
 #include <stddef.h>
 
 int attach_pool_metadata_lv(struct lv_segment *pool_seg,
@@ -526,7 +526,7 @@ int create_pool(struct logical_volume *pool_lv,
 		 * or directly converted to invisible device via suspend/resume
 		 */
 		pool_lv->status |= LV_TEMPORARY;
-		if (!activate_lv_local(pool_lv->vg->cmd, pool_lv)) {
+		if (!activate_lv(pool_lv->vg->cmd, pool_lv)) {
 			log_error("Aborting. Failed to activate pool metadata %s.",
 				  display_lvname(pool_lv));
 			goto bad;
@@ -538,7 +538,7 @@ int create_pool(struct logical_volume *pool_lv,
 		}
 		pool_lv->status &= ~LV_TEMPORARY;
 		/* Deactivates cleared metadata LV */
-		if (!deactivate_lv_local(pool_lv->vg->cmd, pool_lv)) {
+		if (!deactivate_lv(pool_lv->vg->cmd, pool_lv)) {
 			log_error("Aborting. Could not deactivate pool metadata %s.",
 				  display_lvname(pool_lv));
 			return 0;
@@ -660,7 +660,7 @@ static struct logical_volume *_alloc_pool_metadata_spare(struct volume_group *vg
 		return_0;
 
 	/* Spare LV should not be active */
-	if (!deactivate_lv_local(vg->cmd, lv)) {
+	if (!deactivate_lv(vg->cmd, lv)) {
 		log_error("Unable to deactivate pool metadata spare LV. "
 			  "Manual intervention required.");
 		return 0;

@@ -13,6 +13,16 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
+ifneq ("@SILENT_RULES@","yes")
+	V ?= 1
+endif
+
+ifeq ($(V),1)
+	Q=
+else
+	Q=@
+endif
+
 SHELL = @SHELL@
 
 @SET_MAKE@
@@ -52,6 +62,7 @@ PYTHON3 = @PYTHON3@
 PYCOMPILE = $(top_srcdir)/autoconf/py-compile
 
 LIBS = @LIBS@
+LIBS += $(SELINUX_LIBS) $(UDEV_LIBS) $(BLKID_LIBS) $(RT_LIBS) -lm
 # Extra libraries always linked with static binaries
 STATIC_LIBS = $(SELINUX_LIBS) $(UDEV_LIBS) $(BLKID_LIBS)
 DEFS += @DEFS@
@@ -62,7 +73,9 @@ CLDFLAGS += @CLDFLAGS@
 ELDFLAGS += @ELDFLAGS@
 LDDEPS += @LDDEPS@
 LIB_SUFFIX = @LIB_SUFFIX@
-LVMINTERNAL_LIBS = -llvm-internal $(DMEVENT_LIBS) $(DAEMON_LIBS) $(SYSTEMD_LIBS) $(UDEV_LIBS) $(DL_LIBS) $(BLKID_LIBS)
+LVMINTERNAL_LIBS=\
+	-llvm-internal \
+	$(DMEVENT_LIBS) $(DAEMON_LIBS) $(SYSTEMD_LIBS) $(UDEV_LIBS) $(DL_LIBS) $(BLKID_LIBS)
 DL_LIBS = @DL_LIBS@
 RT_LIBS = @RT_LIBS@
 M_LIBS = @M_LIBS@
@@ -75,7 +88,7 @@ BLKID_CFLAGS = @BLKID_CFLAGS@
 BLKID_LIBS = @BLKID_LIBS@
 SYSTEMD_LIBS = @SYSTEMD_LIBS@
 VALGRIND_CFLAGS = @VALGRIND_CFLAGS@
-TESTING = @TESTING@
+USE_TRACKING = @USE_TRACKING@
 
 # Setup directory variables
 prefix = @prefix@
@@ -136,7 +149,6 @@ vpath %.po $(srcdir)
 vpath %.exported_symbols $(srcdir)
 
 interface = @interface@
-interfacebuilddir = $(top_builddir)/libdm/$(interface)
 rpmbuilddir = $(abs_top_builddir)/build
 
 # The number of jobs to run, if blank, defaults to the make standard
@@ -244,14 +256,10 @@ endif
   DEFS += -DDEBUG
   # memory debugging is not thread-safe yet
   ifneq ("@BUILD_DMEVENTD@", "yes")
-  ifneq ("@BUILD_DMFILEMAPD@", "yes")
   ifneq ("@BUILD_LVMLOCKD@", "yes")
   ifneq ("@BUILD_LVMPOLLD@", "yes")
   ifneq ("@BUILD_LVMETAD@", "yes")
-  ifeq ("@CLVMD@", "none")
     DEFS += -DDEBUG_MEM
-  endif
-  endif
   endif
   endif
   endif
@@ -261,8 +269,10 @@ endif
 # end of fPIC protection
 endif
 
-LDFLAGS += -L$(top_builddir)/libdm -L$(top_builddir)/lib
-CLDFLAGS += -L$(top_builddir)/libdm -L$(top_builddir)/lib
+DEFS += -D_BUILDING_LVM
+
+LDFLAGS += -L$(top_builddir)/lib
+CLDFLAGS += -L$(top_builddir)/lib
 
 DAEMON_LIBS = -ldaemonclient
 LDFLAGS += -L$(top_builddir)/libdaemon/client
@@ -299,12 +309,12 @@ LIB_VERSION_DM := $(shell $(AWK) -F '.' '{printf "%s.%s",$$1,$$2}' $(top_srcdir)
 
 LIB_VERSION_APP := $(shell $(AWK) -F '[(). ]' '{printf "%s.%s",$$1,$$4}' $(top_srcdir)/VERSION)
 
-INCLUDES += -I$(srcdir) -I$(top_builddir)/include
+INCLUDES += -I$(top_srcdir) -I$(srcdir) -I$(top_builddir)/include
 
-INC_LNS = $(top_builddir)/include/.symlinks_created
+#VDO_INCLUDES=-I@VDO_INCLUDE@
 
 DEPS = $(top_builddir)/make.tmpl $(top_srcdir)/VERSION \
-       $(top_builddir)/Makefile $(INC_LNS)
+       $(top_builddir)/Makefile
 
 OBJECTS = $(SOURCES:%.c=%.o) $(CXXSOURCES:%.cpp=%.o)
 POTFILES = $(SOURCES:%.c=%.pot)
@@ -333,7 +343,11 @@ SUBDIRS.distclean := $(SUBDIRS:=.distclean)
 
 TARGETS += $(LIB_SHARED) $(LIB_STATIC)
 
-all: $(SUBDIRS) $(TARGETS)
+INTERNAL_LIBS=\
+	$(top_builddir)/device_mapper/libdevice-mapper.a \
+	$(top_builddir)/base/libbase.a
+	
+all: $(INTERNAL_LIBS) $(SUBDIRS) $(TARGETS)
 
 install: all $(SUBDIRS.install)
 install_cluster: all $(SUBDIRS.install_cluster)
@@ -342,7 +356,7 @@ install_lvm2: $(SUBDIRS.install_lvm2)
 install_ocf: $(SUBDIRS.install_ocf)
 cflow: $(SUBDIRS.cflow)
 
-$(SUBDIRS): $(SUBDIRS.device-mapper)
+$(SUBDIRS): $(SUBDIRS.device-mapper) $(INTERNAL_LIBS)
 	$(MAKE) -C $@
 
 $(SUBDIRS.device-mapper):
@@ -413,8 +427,6 @@ CFLOW_FLAGS +=\
  --symbol __REDIRECT:wrapper \
  --symbol __REDIRECT_NTH:wrapper \
  --symbol __wur:wrapper \
- -I$(top_srcdir)/libdm \
- -I$(top_srcdir)/libdm/ioctl \
  -I$(top_srcdir)/daemons/dmeventd/plugins/lvm2/ \
  $(INCLUDES) $(DEFS)
 
@@ -435,60 +447,74 @@ endif
 
 .LIBPATTERNS = lib%.so lib%.a
 
+# still needed in 2018 for 32bit builds
+DEFS+=-D_FILE_OFFSET_BITS=64
+
 %.o: %.c
-	$(CC) -c $(INCLUDES) $(VALGRIND_CFLAGS) $(PROGS_CFLAGS) $(DEFS) $(DEFS_$@) $(WFLAGS) $(WCFLAGS) $(CFLAGS) $(CFLAGS_$@) $< -o $@
+	@echo "    [CC] $<"
+	$(Q) $(CC) -c $(INCLUDES) $(VALGRIND_CFLAGS) $(PROGS_CFLAGS) $(DEFS) $(DEFS_$@) $(WFLAGS) $(WCFLAGS) $(CFLAGS) $(CFLAGS_$@) $< -o $@
 
 %.o: %.cpp
-	$(CXX) -c $(INCLUDES) $(VALGRIND_CFLAGS) $(DEFS) $(DEFS_$@) $(WFLAGS) $(CXXFLAGS) $(CXXFLAGS_$@) $< -o $@
+	@echo "    [CXX] $<"
+	$(Q) $(CXX) -c $(INCLUDES) $(VALGRIND_CFLAGS) $(DEFS) $(DEFS_$@) $(WFLAGS) $(CXXFLAGS) $(CXXFLAGS_$@) $< -o $@
 
 %.pot: %.c Makefile
-	$(CC) -E $(INCLUDES) $(VALGRIND_CFLAGS) $(PROGS_CFLAGS) -include $(top_builddir)/include/pogen.h $(DEFS) $(WFLAGS) $(CFLAGS) $< >$@
+	@echo "    [CC] $@"
+	$(Q) $(CC) -E $(INCLUDES) $(VALGRIND_CFLAGS) $(PROGS_CFLAGS) -include $(top_builddir)/include/pogen.h $(DEFS) $(WFLAGS) $(CFLAGS) $< >$@
 
 %.so: %.o
-	$(CC) -c $(CFLAGS) $(CLDFLAGS) $< $(LIBS) -o $@
+	@echo "    [CC] $<"
+	$(Q) $(CC) -c $(CFLAGS) $(CLDFLAGS) $< $(LIBS) -o $@
 
 ifneq (,$(LIB_SHARED))
 
 TARGETS += $(LIB_SHARED).$(LIB_VERSION)
 $(LIB_SHARED).$(LIB_VERSION): $(OBJECTS) $(LDDEPS)
+	@echo "    [CC] $@"
 ifeq ("@LIB_SUFFIX@","so")
-	$(CC) -shared -Wl,-soname,$(notdir $@) \
+	$(Q) $(CC) -shared -Wl,-soname,$(notdir $@) \
 		$(CFLAGS) $(CLDFLAGS) $(OBJECTS) $(LIBS) -o $@
 endif
 ifeq ("@LIB_SUFFIX@","dylib")
-	$(CC) -dynamiclib -dylib_current_version,$(LIB_VERSION) \
+	$(Q) $(CC) -dynamiclib -dylib_current_version,$(LIB_VERSION) \
 		$(CFLAGS) $(CLDFLAGS) $(OBJECTS) $(LIBS) -o $@
 endif
 
 $(LIB_SHARED): $(LIB_SHARED).$(LIB_VERSION)
-	$(LN_S) -f $(<F) $@
+	@echo "    [LN] $<"
+	$(Q) $(LN_S) -f $(<F) $@
 
 CLEAN_TARGETS += $(LDDEPS) .exported_symbols_generated
 
 install_lib_shared: $(LIB_SHARED)
-	$(INSTALL_PROGRAM) -D $< $(libdir)/$(<F).$(LIB_VERSION)
-	$(INSTALL_DIR) $(usrlibdir)
-	$(LN_S) -f $(USRLIB_RELPATH)$(<F).$(LIB_VERSION) $(usrlibdir)/$(<F)
+	@echo "    [INSTALL] $<"
+	$(Q) $(INSTALL_PROGRAM) -D $< $(libdir)/$(<F).$(LIB_VERSION)
+	$(Q) $(INSTALL_DIR) $(usrlibdir)
+	$(Q) $(LN_S) -f $(USRLIB_RELPATH)$(<F).$(LIB_VERSION) $(usrlibdir)/$(<F)
 
 # FIXME: plugins are installed to subdirs
 #        and for compatibility links in libdir are created
 #        when the code is fixed links could be removed.
 install_dm_plugin: $(LIB_SHARED)
-	$(INSTALL_PROGRAM) -D $< $(libdir)/device-mapper/$(<F)
-	$(LN_S) -f device-mapper/$(<F) $(libdir)/$(<F)
+	@echo "    [INSTALL] $<"
+	$(Q) $(INSTALL_PROGRAM) -D $< $(libdir)/device-mapper/$(<F)
+	$(Q) $(LN_S) -f device-mapper/$(<F) $(libdir)/$(<F)
 
 install_lvm2_plugin: $(LIB_SHARED)
-	$(INSTALL_PROGRAM) -D $< $(libdir)/lvm2/$(<F)
-	$(LN_S) -f lvm2/$(<F) $(libdir)/$(<F)
-	$(LN_S) -f $(<F) $(libdir)/$(<F).$(LIB_VERSION)
+	@echo "    [INSTALL] $<"
+	$(Q) $(INSTALL_PROGRAM) -D $< $(libdir)/lvm2/$(<F)
+	$(Q) $(LN_S) -f lvm2/$(<F) $(libdir)/$(<F)
+	$(Q) $(LN_S) -f $(<F) $(libdir)/$(<F).$(LIB_VERSION)
 endif
 
 $(LIB_STATIC): $(OBJECTS)
-	$(RM) $@
-	$(AR) rsv $@ $(OBJECTS)
+	@echo "    [AR] $@"
+	$(Q) $(RM) $@
+	$(Q) $(AR) rsv $@ $(OBJECTS) > /dev/null
 
-%.d: %.c $(INC_LNS)
-	$(MKDIR_P) $(dir $@); \
+%.d: %.c
+	@echo "    [DEP] $<"
+	$(Q) $(MKDIR_P) $(dir $@); \
 	set -e; \
 	FILE=`echo $@ | sed 's/\\//\\\\\\//g;s/\\.d//g'`; \
 	DEPS=`echo $(DEPS) | sed -e 's/\\//\\\\\\//g'`; \
@@ -499,7 +525,8 @@ $(LIB_STATIC): $(OBJECTS)
 	[ -s $@ ] || $(RM) $@
 
 %.mo: %.po
-	$(MSGFMT) -o $@ $<
+	@echo "    [MSGFMT] $<"
+	$(Q) $(MSGFMT) -o $@ $<
 
 CLEAN_TARGETS += \
 	$(SOURCES:%.c=%.d) $(SOURCES:%.c=%.gcno) $(SOURCES:%.c=%.gcda) \
@@ -521,7 +548,7 @@ endif
 	$(RM) $(DISTCLEAN_TARGETS) Makefile
 
 .exported_symbols_generated: $(EXPORTED_HEADER) .exported_symbols $(DEPS)
-	set -e; \
+	$(Q) set -e; \
 	( cat $(srcdir)/.exported_symbols; \
 	  if test -n "$(EXPORTED_HEADER)"; then \
 		$(CC) -E -P $(INCLUDES) $(DEFS) $(EXPORTED_HEADER) | \
@@ -534,13 +561,13 @@ EXPORTED_SYMBOLS := $(wildcard $(srcdir)/.exported_symbols.Base $(srcdir)/.expor
 
 .export.sym: .exported_symbols_generated $(EXPORTED_SYMBOLS)
 ifeq (,$(firstword $(EXPORTED_SYMBOLS)))
-	set -e; (echo "Base {"; echo "	global:";\
+	$(Q) set -e; (echo "Base {"; echo "	global:";\
 		 $(SED) "s/^/		/;s/$$/;/" $<;\
 		 echo "};";\
 		 echo "Local {"; echo "	local:"; echo "		*;"; echo "};";\
 		 ) > $@
 else
-	set -e;\
+	$(Q) set -e;\
 	R=$$($(SORT) $^ | uniq -u);\
 	test -z "$$R" || { echo "Mismatch between symbols in shared library and lists in .exported_symbols.* files: $$R"; false; } ;\
 	( for i in $$(echo $(EXPORTED_SYMBOLS) | tr ' ' '\n' | $(SORT) -rnt_ -k5 ); do\
@@ -552,7 +579,7 @@ else
 	) > $@
 endif
 
-ifeq ("@USE_TRACKING@","yes")
+ifeq ("$(USE_TRACKING)","yes")
 ifeq (,$(findstring $(MAKECMDGOALS),cscope.out cflow clean distclean lcov \
  help check check_local check_cluster check_lvmetad check_lvmpolld))
     ifdef SOURCES

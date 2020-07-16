@@ -67,10 +67,6 @@ and more, using a more compact and configurable output format.
 .ad b
 .br
 .ad l
-[    \fB--ignoreskippedcluster\fP ]
-.ad b
-.br
-.ad l
 [    \fB--logonly\fP ]
 .ad b
 .br
@@ -153,7 +149,15 @@ Common options for lvm:
 .ad b
 .br
 .ad l
+[    \fB--lockopt\fP \fIString\fP ]
+.ad b
+.br
+.ad l
 [    \fB--longhelp\fP ]
+.ad b
+.br
+.ad l
+[    \fB--nolocking\fP ]
 .ad b
 .br
 .ad l
@@ -258,10 +262,10 @@ operations after locking failures.
 .ad b
 .HP
 .ad l
-\fB--ignoreskippedcluster\fP
+\fB--lockopt\fP \fIString\fP
 .br
-Use to avoid exiting with an non-zero status code if the command is run
-without clustered locking and clustered VGs are skipped.
+Used to pass options for special cases to lvmlockd.
+See \fBlvmlockd\fP(8) for more information.
 .ad b
 .HP
 .ad l
@@ -281,6 +285,12 @@ Display long help text.
 .br
 Suppress the headings line that is normally the first line of output.
 Useful if grepping the output.
+.ad b
+.HP
+.ad l
+\fB--nolocking\fP
+.br
+Disable locking.
 .ad b
 .HP
 .ad l

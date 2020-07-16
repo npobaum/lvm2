@@ -129,7 +129,7 @@ Display PV information.
 .RE
 .br
 
-Populate the lvmetad cache by scanning PVs.
+Autoactivate a VG when all PVs are online.
 .br
 .P
 \fBpvscan\fP \fB--cache\fP
@@ -210,7 +210,15 @@ Common options for lvm:
 .ad b
 .br
 .ad l
+[    \fB--lockopt\fP \fIString\fP ]
+.ad b
+.br
+.ad l
 [    \fB--longhelp\fP ]
+.ad b
+.br
+.ad l
+[    \fB--nolocking\fP ]
 .ad b
 .br
 .ad l
@@ -231,17 +239,12 @@ Auto-activate LVs in a VG when the PVs scanned have completed the VG.
 .ad b
 .HP
 .ad l
-\fB-b\fP|\fB--background\fP
-.br
-If the operation requires polling, this option causes the command to
-return before the operation is complete, and polling is done in the
-background.
-.ad b
+\fB-b\fP|\fB--background\fP.ad b
 .HP
 .ad l
 \fB--cache\fP
 .br
-Scan one or more devices and send the metadata to lvmetad.
+Scan one or more devices and record that they are online.
 .ad b
 .HP
 .ad l
@@ -294,6 +297,13 @@ operations after locking failures.
 .ad b
 .HP
 .ad l
+\fB--lockopt\fP \fIString\fP
+.br
+Used to pass options for special cases to lvmlockd.
+See \fBlvmlockd\fP(8) for more information.
+.ad b
+.HP
+.ad l
 \fB--longhelp\fP
 .br
 Display long help text.
@@ -309,6 +319,12 @@ The major number of a device.
 \fB--minor\fP \fINumber\fP
 .br
 The minor number of a device.
+.ad b
+.HP
+.ad l
+\fB--nolocking\fP
+.br
+Disable locking.
 .ad b
 .HP
 .ad l

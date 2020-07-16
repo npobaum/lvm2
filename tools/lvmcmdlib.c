@@ -16,10 +16,10 @@
 #include "tools.h"
 
 #include "lvm2cmdline.h"
-#include "label.h"
-#include "memlock.h"
+#include "lib/label/label.h"
+#include "lib/mm/memlock.h"
 
-#include "lvm2cmd.h"
+#include "tools/lvm2cmd.h"
 
 #include <signal.h>
 #include <sys/stat.h>
@@ -60,7 +60,7 @@ int lvm2_run(void *handle, const char *cmdline)
 
 	cmd->argv = argv;
 
-	if (!(cmdcopy = dm_strdup(cmdline))) {
+	if (!(cmdcopy = strdup(cmdline))) {
 		log_error("Cmdline copy failed.");
 		ret = ECMD_FAILED;
 		goto out;
@@ -87,11 +87,14 @@ int lvm2_run(void *handle, const char *cmdline)
 	else if (!strcmp(cmdline, "_dmeventd_thin_command")) {
 		if (setenv(cmdline, find_config_tree_str(cmd, dmeventd_thin_command_CFG, NULL), 1))
 			ret = ECMD_FAILED;
+	} else if (!strcmp(cmdline, "_dmeventd_vdo_command")) {
+		if (setenv(cmdline, find_config_tree_str(cmd, dmeventd_vdo_command_CFG, NULL), 1))
+			ret = ECMD_FAILED;
 	} else
 		ret = lvm_run_command(cmd, argc, argv);
 
       out:
-	dm_free(cmdcopy);
+	free(cmdcopy);
 
 	if (oneoff)
 		lvm2_exit(handle);
