@@ -29,8 +29,11 @@
 
 #define NUMBER_OF_MAJORS 4096
 
-/* 0 means LVM won't use this major number. */
-static int _max_partitions_by_major[NUMBER_OF_MAJORS];
+#define PARTITION_SCSI_DEVICE (1 << 0)
+static struct {
+	int max_partitions; /* 0 means LVM won't use this major number. */
+	int flags;
+} _partitions[NUMBER_OF_MAJORS];
 
 typedef struct {
 	const char *name;
@@ -41,6 +44,7 @@ static int _md_major = -1;
 static int _blkext_major = -1;
 static int _drbd_major = -1;
 static int _device_mapper_major = -1;
+static int _emcpower_major = -1;
 
 int dm_major(void)
 {
@@ -61,13 +65,13 @@ int dev_subsystem_part_major(const struct device *dev)
 {
 	dev_t primary_dev;
 
-	if (MAJOR(dev->dev) == -1)
-		return 0;
-
 	if (MAJOR(dev->dev) == _md_major)
 		return 1;
 
 	if (MAJOR(dev->dev) == _drbd_major)
+		return 1;
+
+	if (MAJOR(dev->dev) == _emcpower_major)
 		return 1;
 
 	if ((MAJOR(dev->dev) == _blkext_major) &&
@@ -85,6 +89,9 @@ const char *dev_subsystem_name(const struct device *dev)
 
 	if (MAJOR(dev->dev) == _drbd_major)
 		return "DRBD";
+
+	if (MAJOR(dev->dev) == _emcpower_major)
+		return "EMCPOWER";
 
 	if (MAJOR(dev->dev) == _blkext_major)
 		return "BLKEXT";
@@ -140,7 +147,7 @@ static int _passes_lvm_type_device_filter(struct dev_filter *f __attribute__((un
 	uint64_t size;
 
 	/* Is this a recognised device type? */
-	if (!_max_partitions_by_major[MAJOR(dev->dev)]) {
+	if (!_partitions[MAJOR(dev->dev)].max_partitions) {
 		log_debug("%s: Skipping: Unrecognised LVM device type %"
 			  PRIu64, name, (uint64_t) MAJOR(dev->dev));
 		return 0;
@@ -151,7 +158,7 @@ static int _passes_lvm_type_device_filter(struct dev_filter *f __attribute__((un
 		log_debug("%s: Skipping: open failed", name);
 		return 0;
 	}
-	
+
 	/* Check it's not too small */
 	if (!dev_get_size(dev, &size)) {
 		log_debug("%s: Skipping: dev_get_size failed", name);
@@ -172,12 +179,13 @@ static int _passes_lvm_type_device_filter(struct dev_filter *f __attribute__((un
 	ret = 1;
 
       out:
-	dev_close(dev);
+	if (!dev_close(dev))
+		stack;
 
 	return ret;
 }
 
-static int _scan_proc_dev(const char *proc, const struct config_node *cn)
+static int _scan_proc_dev(const char *proc, const struct dm_config_node *cn)
 {
 	char line[80];
 	char proc_devices[PATH_MAX];
@@ -186,7 +194,7 @@ static int _scan_proc_dev(const char *proc, const struct config_node *cn)
 	int line_maj = 0;
 	int blocksection = 0;
 	size_t dev_len = 0;
-	const struct config_value *cv;
+	const struct dm_config_value *cv;
 	const char *name;
 
 
@@ -194,12 +202,12 @@ static int _scan_proc_dev(const char *proc, const struct config_node *cn)
 		log_verbose("No proc filesystem found: using all block device "
 			    "types");
 		for (i = 0; i < NUMBER_OF_MAJORS; i++)
-			_max_partitions_by_major[i] = 1;
+			_partitions[i].max_partitions = 1;
 		return 1;
 	}
 
 	/* All types unrecognised initially */
-	memset(_max_partitions_by_major, 0, sizeof(int) * NUMBER_OF_MAJORS);
+	memset(_partitions, 0, sizeof(_partitions));
 
 	if (dm_snprintf(proc_devices, sizeof(proc_devices),
 			 "%s/devices", proc) < 0) {
@@ -214,12 +222,12 @@ static int _scan_proc_dev(const char *proc, const struct config_node *cn)
 
 	while (fgets(line, 80, pd) != NULL) {
 		i = 0;
-		while (line[i] == ' ' && line[i] != '\0')
+		while (line[i] == ' ')
 			i++;
 
 		/* If it's not a number it may be name of section */
 		line_maj = atoi(((char *) (line + i)));
-		if (!line_maj) {
+		if ((line_maj <= 0) || (line_maj >= NUMBER_OF_MAJORS)) {
 			blocksection = (line[i] == 'B') ? 1 : 0;
 			continue;
 		}
@@ -231,7 +239,7 @@ static int _scan_proc_dev(const char *proc, const struct config_node *cn)
 		/* Find the start of the device major name */
 		while (line[i] != ' ' && line[i] != '\0')
 			i++;
-		while (line[i] == ' ' && line[i] != '\0')
+		while (line[i] == ' ')
 			i++;
 
 		/* Look for md device */
@@ -246,10 +254,18 @@ static int _scan_proc_dev(const char *proc, const struct config_node *cn)
 		if (!strncmp("drbd", line + i, 4) && isspace(*(line + i + 4)))
 			_drbd_major = line_maj;
 
+		/* Look for EMC powerpath */
+		if (!strncmp("emcpower", line + i, 8) && isspace(*(line + i + 8)))
+			_emcpower_major = line_maj;
+
 		/* Look for device-mapper device */
 		/* FIXME Cope with multiple majors */
 		if (!strncmp("device-mapper", line + i, 13) && isspace(*(line + i + 13)))
 			_device_mapper_major = line_maj;
+
+		/* Major is SCSI device */
+		if (!strncmp("sd", line + i, 2) && isspace(*(line + i + 2)))
+			_partitions[line_maj].flags |= PARTITION_SCSI_DEVICE;
 
 		/* Go through the valid device names and if there is a
 		   match store max number of partitions */
@@ -258,7 +274,7 @@ static int _scan_proc_dev(const char *proc, const struct config_node *cn)
 			if (dev_len <= strlen(line + i) &&
 			    !strncmp(device_info[j].name, line + i, dev_len) &&
 			    (line_maj < NUMBER_OF_MAJORS)) {
-				_max_partitions_by_major[line_maj] =
+				_partitions[line_maj].max_partitions =
 				    device_info[j].max_partitions;
 				break;
 			}
@@ -269,7 +285,7 @@ static int _scan_proc_dev(const char *proc, const struct config_node *cn)
 
 		/* Check devices/types for local variations */
 		for (cv = cn->v; cv; cv = cv->next) {
-			if (cv->type != CFG_STRING) {
+			if (cv->type != DM_CFG_STRING) {
 				log_error("Expecting string in devices/types "
 					  "in config file");
 				if (fclose(pd))
@@ -279,7 +295,7 @@ static int _scan_proc_dev(const char *proc, const struct config_node *cn)
 			dev_len = strlen(cv->v.str);
 			name = cv->v.str;
 			cv = cv->next;
-			if (!cv || cv->type != CFG_INT) {
+			if (!cv || cv->type != DM_CFG_INT) {
 				log_error("Max partition count missing for %s "
 					  "in devices/types in config file",
 					  name);
@@ -298,7 +314,7 @@ static int _scan_proc_dev(const char *proc, const struct config_node *cn)
 			if (dev_len <= strlen(line + i) &&
 			    !strncmp(name, line + i, dev_len) &&
 			    (line_maj < NUMBER_OF_MAJORS)) {
-				_max_partitions_by_major[line_maj] = cv->v.i;
+				_partitions[line_maj].max_partitions = cv->v.i;
 				break;
 			}
 		}
@@ -312,11 +328,22 @@ static int _scan_proc_dev(const char *proc, const struct config_node *cn)
 
 int max_partitions(int major)
 {
-	return _max_partitions_by_major[major];
+	if (major >= NUMBER_OF_MAJORS)
+		return 0;
+
+	return _partitions[major].max_partitions;
+}
+
+int major_is_scsi_device(int major)
+{
+	if (major >= NUMBER_OF_MAJORS)
+		return 0;
+
+	return (_partitions[major].flags & PARTITION_SCSI_DEVICE) ? 1 : 0;
 }
 
 struct dev_filter *lvm_type_filter_create(const char *proc,
-					  const struct config_node *cn)
+					  const struct dm_config_node *cn)
 {
 	struct dev_filter *f;
 

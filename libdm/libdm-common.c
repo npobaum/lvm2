@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2012 Red Hat, Inc. All rights reserved.
  *
  * This file is part of the device-mapper userspace tools.
  *
@@ -43,6 +43,8 @@
 #  include <selinux/label.h>
 #endif
 
+#define DM_DEFAULT_NAME_MANGLING_MODE_ENV_VAR_NAME "DM_DEFAULT_NAME_MANGLING_MODE"
+
 #define DEV_DIR "/dev/"
 
 #ifdef UDEV_SYNC_SUPPORT
@@ -58,9 +60,15 @@ union semun
 #endif
 
 static char _dm_dir[PATH_MAX] = DEV_DIR DM_DIR;
+static char _sysfs_dir[PATH_MAX] = "/sys/";
+static char _path0[PATH_MAX];           /* path buffer, safe 4kB on stack */
+
+#define DM_MAX_UUID_PREFIX_LEN	15
+static char _default_uuid_prefix[DM_MAX_UUID_PREFIX_LEN + 1] = "LVM-";
 
 static int _verbose = 0;
 static int _suspended_dev_counter = 0;
+static dm_string_mangling_t _name_mangling_mode = DEFAULT_DM_NAME_MANGLING;
 
 #ifdef HAVE_SELINUX_LABEL_H
 static struct selabel_handle *_selabel_handle = NULL;
@@ -72,6 +80,22 @@ static int _udev_running = -1;
 static int _sync_with_udev = 1;
 static int _udev_checking = 1;
 #endif
+
+void dm_lib_init(void)
+{
+	const char *env;
+
+	env = getenv(DM_DEFAULT_NAME_MANGLING_MODE_ENV_VAR_NAME);
+	if (env && *env) {
+		if (!strcasecmp(env, "none"))
+			_name_mangling_mode = DM_STRING_MANGLING_NONE;
+		else if (!strcasecmp(env, "auto"))
+			_name_mangling_mode = DM_STRING_MANGLING_AUTO;
+		else if (!strcasecmp(env, "hex"))
+			_name_mangling_mode = DM_STRING_MANGLING_HEX;
+	} else
+		_name_mangling_mode = DEFAULT_DM_NAME_MANGLING;
+}
 
 /*
  * Library users can provide their own logging
@@ -196,6 +220,18 @@ int dm_get_suspended_counter(void)
 	return _suspended_dev_counter;
 }
 
+int dm_set_name_mangling_mode(dm_string_mangling_t name_mangling_mode)
+{
+	_name_mangling_mode = name_mangling_mode;
+
+	return 1;
+}
+
+dm_string_mangling_t dm_get_name_mangling_mode(void)
+{
+	return _name_mangling_mode;
+}
+
 struct dm_task *dm_task_create(int type)
 {
 	struct dm_task *dmt = dm_zalloc(sizeof(*dmt));
@@ -233,18 +269,18 @@ struct dm_task *dm_task_create(int type)
 /*
  * Find the name associated with a given device number by scanning _dm_dir.
  */
-static char *_find_dm_name_of_device(dev_t st_rdev)
+static int _find_dm_name_of_device(dev_t st_rdev, char *buf, size_t buf_len)
 {
 	const char *name;
 	char path[PATH_MAX];
 	struct dirent *dirent;
 	DIR *d;
-	struct stat buf;
-	char *new_name = NULL;
+	struct stat st;
+	int r = 0;
 
 	if (!(d = opendir(_dm_dir))) {
 		log_sys_error("opendir", _dm_dir);
-		return NULL;
+		return 0;
 	}
 
 	while ((dirent = readdir(d))) {
@@ -259,13 +295,12 @@ static char *_find_dm_name_of_device(dev_t st_rdev)
 			continue;
 		}
 
-		if (stat(path, &buf))
+		if (stat(path, &st))
 			continue;
 
-		if (buf.st_rdev == st_rdev) {
-			if (!(new_name = dm_strdup(name)))
-				log_error("dm_task_set_name: strdup(%s) failed",
-					  name);
+		if (st.st_rdev == st_rdev) {
+			strncpy(buf, name, buf_len);
+			r = 1;
 			break;
 		}
 	}
@@ -273,66 +308,355 @@ static char *_find_dm_name_of_device(dev_t st_rdev)
 	if (closedir(d))
 		log_sys_error("closedir", _dm_dir);
 
-	return new_name;
+	return r;
+}
+
+static int _is_whitelisted_char(char c)
+{
+	/*
+	 * Actually, DM supports any character in a device name.
+	 * This whitelist is just for proper integration with udev.
+	 */
+        if ((c >= '0' && c <= '9') ||
+            (c >= 'A' && c <= 'Z') ||
+            (c >= 'a' && c <= 'z') ||
+            strchr("#+-.:=@_", c) != NULL)
+                return 1;
+
+        return 0;
+}
+
+int check_multiple_mangled_name_allowed(dm_string_mangling_t mode, const char *name)
+{
+	if (mode == DM_STRING_MANGLING_AUTO && strstr(name, "\\x5cx")) {
+		log_error("The name \"%s\" seems to be mangled more than once. "
+			  "This is not allowed in auto mode.", name);
+		return 0;
+	}
+
+	return 1;
+}
+
+/*
+ * Mangle all characters in the input string which are not on a whitelist
+ * with '\xNN' format where NN is the hex value of the character.
+ */
+int mangle_name(const char *str, size_t len, char *buf,
+		size_t buf_len, dm_string_mangling_t mode)
+{
+	int need_mangling = -1; /* -1 don't know yet, 0 no, 1 yes */
+	size_t i, j;
+
+	if (!str || !buf)
+		return -1;
+
+	/* Is there anything to do at all? */
+	if (!*str || !len)
+		return 0;
+
+	if (buf_len < DM_NAME_LEN) {
+		log_error(INTERNAL_ERROR "mangle_name: supplied buffer too small");
+		return -1;
+	}
+
+	if (mode == DM_STRING_MANGLING_NONE)
+		mode = DM_STRING_MANGLING_AUTO;
+
+	for (i = 0, j = 0; str[i]; i++) {
+		if (mode == DM_STRING_MANGLING_AUTO) {
+			/*
+			 * Detect already mangled part of the string and keep it.
+			 * Return error on mixture of mangled/not mangled!
+			 */
+			if (str[i] == '\\' && str[i+1] == 'x') {
+				if ((len - i < 4) || (need_mangling == 1))
+					goto bad1;
+				if (buf_len - j < 4)
+					goto bad2;
+
+				memcpy(&buf[j], &str[i], 4);
+				i+=3; j+=4;
+
+				need_mangling = 0;
+				continue;
+			}
+		}
+
+		if (_is_whitelisted_char(str[i])) {
+			/* whitelisted, keep it. */
+			if (buf_len - j < 1)
+				goto bad2;
+			buf[j] = str[i];
+			j++;
+		} else {
+			/*
+			 * Not on a whitelist, mangle it.
+			 * Return error on mixture of mangled/not mangled
+			 * unless a DM_STRING_MANGLING_HEX is used!.
+			 */
+			if ((mode != DM_STRING_MANGLING_HEX) && (need_mangling == 0))
+				goto bad1;
+			if (buf_len - j < 4)
+				goto bad2;
+
+			sprintf(&buf[j], "\\x%02x", (unsigned char) str[i]);
+			j+=4;
+
+			need_mangling = 1;
+		}
+	}
+
+	if (buf_len - j < 1)
+		goto bad2;
+	buf[j] = '\0';
+
+	/* All chars in the string whitelisted? */
+	if (need_mangling == -1)
+		need_mangling = 0;
+
+	return need_mangling;
+
+bad1:
+	log_error("The name \"%s\" contains mixed mangled and unmangled "
+		  "characters or it's already mangled improperly.", str);
+	return -1;
+bad2:
+	log_error("Mangled form of the name too long for \"%s\".", str);
+	return -1;
+}
+
+/*
+ * Try to unmangle supplied string.
+ * Return value: -1 on error, 0 when no unmangling needed, 1 when unmangling applied
+ */
+int unmangle_name(const char *str, size_t len, char *buf,
+		  size_t buf_len, dm_string_mangling_t mode)
+{
+	int strict = mode != DM_STRING_MANGLING_NONE;
+	char str_rest[DM_NAME_LEN];
+	size_t i, j;
+	int code;
+	int r = 0;
+
+	if (!str || !buf)
+		return -1;
+
+	/* Is there anything to do at all? */
+	if (!*str || !len)
+		return 0;
+
+	if (buf_len < DM_NAME_LEN) {
+		log_error(INTERNAL_ERROR "unmangle_name: supplied buffer too small");
+		return -1;
+	}
+
+	for (i = 0, j = 0; str[i]; i++, j++) {
+		if (strict && !(_is_whitelisted_char(str[i]) || str[i]=='\\')) {
+			log_error("The name \"%s\" should be mangled but "
+				  "it contains blacklisted characters.", str);
+			j=0; r=-1;
+			goto out;
+		}
+
+		if (str[i] == '\\' && str[i+1] == 'x') {
+			if (!sscanf(&str[i+2], "%2x%s", &code, str_rest)) {
+				log_debug("Hex encoding mismatch detected in \"%s\" "
+					  "while trying to unmangle it.", str);
+				goto out;
+			}
+			buf[j] = (unsigned char) code;
+
+			/* skip the encoded part we've just decoded! */
+			i+= 3;
+
+			/* unmangling applied */
+			r = 1;
+		} else
+			buf[j] = str[i];
+	}
+
+out:
+	buf[j] = '\0';
+	return r;
+}
+
+static int _dm_task_set_name(struct dm_task *dmt, const char *name,
+			     dm_string_mangling_t mangling_mode)
+{
+	char mangled_name[DM_NAME_LEN];
+	int r = 0;
+
+	dm_free(dmt->dev_name);
+	dmt->dev_name = NULL;
+	dm_free(dmt->mangled_dev_name);
+	dmt->mangled_dev_name = NULL;
+
+	if (strlen(name) >= DM_NAME_LEN) {
+		log_error("Name \"%s\" too long.", name);
+		return 0;
+	}
+
+	if (!check_multiple_mangled_name_allowed(mangling_mode, name))
+		return_0;
+
+	if (mangling_mode != DM_STRING_MANGLING_NONE &&
+	    (r = mangle_name(name, strlen(name), mangled_name,
+			     sizeof(mangled_name), mangling_mode)) < 0) {
+		log_error("Failed to mangle device name \"%s\".", name);
+		return 0;
+	}
+
+	/* Store mangled_dev_name only if it differs from dev_name! */
+	if (r) {
+		log_debug("Device name mangled [%s]: %s --> %s",
+			  mangling_mode == DM_STRING_MANGLING_AUTO ? "auto" : "hex",
+			  name, mangled_name);
+		if (!(dmt->mangled_dev_name = dm_strdup(mangled_name))) {
+			log_error("_dm_task_set_name: dm_strdup(%s) failed", mangled_name);
+			return 0;
+		}
+	}
+
+	if (!(dmt->dev_name = dm_strdup(name))) {
+		log_error("_dm_task_set_name: strdup(%s) failed", name);
+		return 0;
+	}
+
+	return 1;
+}
+
+static int _dm_task_set_name_from_path(struct dm_task *dmt, const char *path,
+				       const char *name)
+{
+	char buf[PATH_MAX];
+	struct stat st1, st2;
+	const char *final_name;
+
+	if (dmt->type == DM_DEVICE_CREATE) {
+		log_error("Name \"%s\" invalid. It contains \"/\".", path);
+		return 0;
+	}
+
+	if (stat(path, &st1)) {
+		log_error("Device %s not found", path);
+		return 0;
+	}
+
+	/*
+	 * If supplied path points to same device as last component
+	 * under /dev/mapper, use that name directly.  Otherwise call
+	 * _find_dm_name_of_device() to scan _dm_dir for a match.
+	 */
+	if (dm_snprintf(buf, sizeof(buf), "%s/%s", _dm_dir, name) == -1) {
+		log_error("Couldn't create path for %s", name);
+		return 0;
+	}
+
+	if (!stat(buf, &st2) && (st1.st_rdev == st2.st_rdev))
+		final_name = name;
+	else if (_find_dm_name_of_device(st1.st_rdev, buf, sizeof(buf)))
+		final_name = buf;
+	else {
+		log_error("Device %s not found", name);
+		return 0;
+	}
+
+	/* This is an already existing path - do not mangle! */
+	return _dm_task_set_name(dmt, final_name, DM_STRING_MANGLING_NONE);
 }
 
 int dm_task_set_name(struct dm_task *dmt, const char *name)
 {
 	char *pos;
-	char *new_name = NULL;
-	char path[PATH_MAX];
-	struct stat st1, st2;
 
-	dm_free(dmt->dev_name);
-	dmt->dev_name = NULL;
+	/* Path supplied for existing device? */
+	if ((pos = strrchr(name, '/')))
+		return _dm_task_set_name_from_path(dmt, name, pos + 1);
+
+	return _dm_task_set_name(dmt, name, dm_get_name_mangling_mode());
+}
+
+const char *dm_task_get_name(const struct dm_task *dmt)
+{
+	return (dmt->dmi.v4->name);
+}
+
+char *dm_task_get_name_mangled(const struct dm_task *dmt)
+{
+	const char *s = dm_task_get_name(dmt);
+	char buf[DM_NAME_LEN];
+	char *rs = NULL;
+	int r;
+
+	if ((r = mangle_name(s, strlen(s), buf, sizeof(buf),
+			     dm_get_name_mangling_mode())) < 0)
+		log_error("Failed to mangle device name \"%s\".", s);
+	else if (!(rs = r ? dm_strdup(buf) : dm_strdup(s)))
+		log_error("dm_task_get_name_mangled: dm_strdup failed");
+
+	return rs;
+}
+
+char *dm_task_get_name_unmangled(const struct dm_task *dmt)
+{
+	const char *s = dm_task_get_name(dmt);
+	char buf[DM_NAME_LEN];
+	char *rs = NULL;
+	int r = 0;
 
 	/*
-	 * Path supplied for existing device?
+	 * Unless the mode used is 'none', the name
+	 * is *already* unmangled on ioctl return!
 	 */
-	if ((pos = strrchr(name, '/'))) {
-		if (dmt->type == DM_DEVICE_CREATE) {
-			log_error("Name \"%s\" invalid. It contains \"/\".", name);
-			return 0;
-		}
+	if (dm_get_name_mangling_mode() == DM_STRING_MANGLING_NONE &&
+	    (r = unmangle_name(s, strlen(s), buf, sizeof(buf),
+			       dm_get_name_mangling_mode())) < 0)
+		log_error("Failed to unmangle device name \"%s\".", s);
+	else if (!(rs = r ? dm_strdup(buf) : dm_strdup(s)))
+		log_error("dm_task_get_name_unmangled: dm_strdup failed");
 
-		if (stat(name, &st1)) {
-			log_error("Device %s not found", name);
-			return 0;
-		}
+	return rs;
+}
 
-		/*
-		 * If supplied path points to same device as last component
-		 * under /dev/mapper, use that name directly.  Otherwise call
-		 * _find_dm_name_of_device() to scan _dm_dir for a match.
-		 */
-		if (dm_snprintf(path, sizeof(path), "%s/%s", _dm_dir,
-				pos + 1) == -1) {
-			log_error("Couldn't create path for %s", pos + 1);
-			return 0;
-		}
+int dm_task_set_newname(struct dm_task *dmt, const char *newname)
+{
+	dm_string_mangling_t mangling_mode = dm_get_name_mangling_mode();
+	char mangled_name[DM_NAME_LEN];
+	int r = 0;
 
-		if (!stat(path, &st2) && (st1.st_rdev == st2.st_rdev))
-			name = pos + 1;
-		else if ((new_name = _find_dm_name_of_device(st1.st_rdev)))
-			name = new_name;
-		else {
-			log_error("Device %s not found", name);
-			return 0;
-		}
-	}
-
-	if (strlen(name) >= DM_NAME_LEN) {
-		log_error("Name \"%s\" too long", name);
-		dm_free(new_name);
+	if (strchr(newname, '/')) {
+		log_error("Name \"%s\" invalid. It contains \"/\".", newname);
 		return 0;
 	}
 
-	if (new_name)
-		dmt->dev_name = new_name;
-	else if (!(dmt->dev_name = dm_strdup(name))) {
-		log_error("dm_task_set_name: strdup(%s) failed", name);
+	if (strlen(newname) >= DM_NAME_LEN) {
+		log_error("Name \"%s\" too long", newname);
 		return 0;
 	}
+
+	if (!check_multiple_mangled_name_allowed(mangling_mode, newname))
+		return_0;
+
+	if (mangling_mode != DM_STRING_MANGLING_NONE &&
+	    (r = mangle_name(newname, strlen(newname), mangled_name,
+			     sizeof(mangled_name), mangling_mode)) < 0) {
+		log_error("Failed to mangle new device name \"%s\"", newname);
+		return 0;
+	}
+
+	if (r) {
+		log_debug("New device name mangled [%s]: %s --> %s",
+			  mangling_mode == DM_STRING_MANGLING_AUTO ? "auto" : "hex",
+			  newname, mangled_name);
+		newname = mangled_name;
+	}
+
+	if (!(dmt->newname = dm_strdup(newname))) {
+		log_error("dm_task_set_newname: strdup(%s) failed", newname);
+		return 0;
+	}
+
+	dmt->new_uuid = 0;
 
 	return 1;
 }
@@ -406,9 +730,8 @@ int dm_task_add_target(struct dm_task *dmt, uint64_t start, uint64_t size,
 		       const char *ttype, const char *params)
 {
 	struct target *t = create_target(start, size, ttype, params);
-
 	if (!t)
-		return 0;
+		return_0;
 
 	if (!dmt->head)
 		dmt->head = dmt->tail = t;
@@ -658,12 +981,53 @@ static int _open_dev_node(const char *dev_name)
 	return fd;
 }
 
-int get_dev_node_read_ahead(const char *dev_name, uint32_t *read_ahead)
+int get_dev_node_read_ahead(const char *dev_name, uint32_t major, uint32_t minor,
+			    uint32_t *read_ahead)
 {
+	char buf[24];
+	int len;
 	int r = 1;
 	int fd;
 	long read_ahead_long;
 
+	/*
+	 * If we know the device number, use sysfs if we can.
+	 * Otherwise use BLKRAGET ioctl.
+	 */
+	if (*_sysfs_dir && major != 0) {
+		if (dm_snprintf(_path0, sizeof(_path0), "%sdev/block/%" PRIu32
+				":%" PRIu32 "/bdi/read_ahead_kb", _sysfs_dir,
+				major, minor) < 0) {
+			log_error("Failed to build sysfs_path.");
+			return 0;
+		}
+
+		if ((fd = open(_path0, O_RDONLY, 0)) != -1) {
+			/* Reading from sysfs, expecting number\n */
+			if ((len = read(fd, buf, sizeof(buf) - 1)) < 1) {
+				log_sys_error("read", _path0);
+				r = 0;
+			} else {
+				buf[len] = 0; /* kill \n and ensure \0 */
+				*read_ahead = atoi(buf) * 2;
+				log_debug("%s (%d:%d): read ahead is %" PRIu32,
+					  dev_name, major, minor, *read_ahead);
+			}
+
+			if (close(fd))
+				log_sys_debug("close", _path0);
+
+			return r;
+		}
+
+		log_sys_debug("open", _path0);
+		/* Fall back to use dev_name */
+	}
+
+	/*
+	 * Open/close dev_name may block the process
+	 * (i.e. overfilled thin pool volume)
+	 */
 	if (!*dev_name) {
 		log_error("Empty device name passed to BLKRAGET");
 		return 0;
@@ -676,22 +1040,63 @@ int get_dev_node_read_ahead(const char *dev_name, uint32_t *read_ahead)
 		log_sys_error("BLKRAGET", dev_name);
 		*read_ahead = 0;
 		r = 0;
-	}  else {
+	} else {
 		*read_ahead = (uint32_t) read_ahead_long;
 		log_debug("%s: read ahead is %" PRIu32, dev_name, *read_ahead);
 	}
 
 	if (close(fd))
-		stack;
+		log_sys_debug("close", dev_name);
 
 	return r;
 }
 
-static int _set_read_ahead(const char *dev_name, uint32_t read_ahead)
+static int _set_read_ahead(const char *dev_name, uint32_t major, uint32_t minor,
+			   uint32_t read_ahead)
 {
+	char buf[24];
+	int len;
 	int r = 1;
 	int fd;
 	long read_ahead_long = (long) read_ahead;
+
+	log_debug("%s (%d:%d): Setting read ahead to %" PRIu32, dev_name,
+		  major, minor, read_ahead);
+
+	/*
+	 * If we know the device number, use sysfs if we can.
+	 * Otherwise use BLKRASET ioctl. RA is set after resume.
+	 */
+	if (*_sysfs_dir && major != 0) {
+		if (dm_snprintf(_path0, sizeof(_path0), "%sdev/block/%" PRIu32
+				":%" PRIu32 "/bdi/read_ahead_kb",
+				_sysfs_dir, major, minor) < 0) {
+			log_error("Failed to build sysfs_path.");
+			return 0;
+		}
+
+		/* Sysfs is kB based, round up to kB */
+		if ((len = dm_snprintf(buf, sizeof(buf), "%" PRIu32,
+				       (read_ahead + 1) / 2)) < 0) {
+			log_error("Failed to build size in kB.");
+			return 0;
+		}
+
+		if ((fd = open(_path0, O_WRONLY, 0)) != -1) {
+			if (write(fd, buf, len) < len) {
+				log_sys_error("write", _path0);
+				r = 0;
+			}
+
+			if (close(fd))
+				log_sys_debug("close", _path0);
+
+			return r;
+		}
+
+		log_sys_debug("open", _path0);
+		/* Fall back to use dev_name */
+	}
 
 	if (!*dev_name) {
 		log_error("Empty device name passed to BLKRAGET");
@@ -701,21 +1106,20 @@ static int _set_read_ahead(const char *dev_name, uint32_t read_ahead)
 	if ((fd = _open_dev_node(dev_name)) < 0)
 		return_0;
 
-	log_debug("%s: Setting read ahead to %" PRIu32, dev_name, read_ahead);
-
 	if (ioctl(fd, BLKRASET, read_ahead_long)) {
 		log_sys_error("BLKRASET", dev_name);
 		r = 0;
 	}
 
 	if (close(fd))
-		stack;
+		log_sys_debug("close", dev_name);
 
 	return r;
 }
 
-static int _set_dev_node_read_ahead(const char *dev_name, uint32_t read_ahead,
-				    uint32_t read_ahead_flags)
+static int _set_dev_node_read_ahead(const char *dev_name,
+				    uint32_t major, uint32_t minor,
+				    uint32_t read_ahead, uint32_t read_ahead_flags)
 {
 	uint32_t current_read_ahead;
 
@@ -726,7 +1130,7 @@ static int _set_dev_node_read_ahead(const char *dev_name, uint32_t read_ahead,
 		read_ahead = 0;
 
 	if (read_ahead_flags & DM_READ_AHEAD_MINIMUM_FLAG) {
-		if (!get_dev_node_read_ahead(dev_name, &current_read_ahead))
+		if (!get_dev_node_read_ahead(dev_name, major, minor, &current_read_ahead))
 			return_0;
 
 		if (current_read_ahead > read_ahead) {
@@ -737,7 +1141,7 @@ static int _set_dev_node_read_ahead(const char *dev_name, uint32_t read_ahead,
 		}
 	}
 
-	return _set_read_ahead(dev_name, read_ahead);
+	return _set_read_ahead(dev_name, major, minor, read_ahead);
 }
 
 #else
@@ -749,8 +1153,9 @@ int get_dev_node_read_ahead(const char *dev_name, uint32_t *read_ahead)
 	return 1;
 }
 
-static int _set_dev_node_read_ahead(const char *dev_name, uint32_t read_ahead,
-				    uint32_t read_ahead_flags)
+static int _set_dev_node_read_ahead(const char *dev_name,
+				    uint32_t major, uint32_t minor,
+				    uint32_t read_ahead, uint32_t read_ahead_flags)
 {
 	return 1;
 }
@@ -778,8 +1183,8 @@ static int _do_node_op(node_op_t type, const char *dev_name, uint32_t major,
 	case NODE_RENAME:
 		return _rename_dev_node(old_name, dev_name, warn_if_udev_failed);
 	case NODE_READ_AHEAD:
-		return _set_dev_node_read_ahead(dev_name, read_ahead,
-						read_ahead_flags);
+		return _set_dev_node_read_ahead(dev_name, major, minor,
+						read_ahead, read_ahead_flags);
 	default:
 		; /* NOTREACHED */
 	}
@@ -900,7 +1305,7 @@ static int _stack_node_op(node_op_t type, const char *dev_name, uint32_t major,
 				break; /* no other DEL ops */
 			}
 		}
-	else if ((type == NODE_RENAME))
+	else if (type == NODE_RENAME)
 		/*
 		 * Ignore any outstanding operations if renaming it.
 		 *
@@ -993,13 +1398,14 @@ int rm_dev_node(const char *dev_name, int check_udev, unsigned rely_on_udev)
 			      0, 0, "", 0, 0, check_udev, rely_on_udev);
 }
 
-int set_dev_node_read_ahead(const char *dev_name, uint32_t read_ahead,
-			    uint32_t read_ahead_flags)
+int set_dev_node_read_ahead(const char *dev_name,
+                            uint32_t major, uint32_t minor,
+			    uint32_t read_ahead, uint32_t read_ahead_flags)
 {
 	if (read_ahead == DM_READ_AHEAD_AUTO)
 		return 1;
 
-	return _stack_node_op(NODE_READ_AHEAD, dev_name, 0, 0, 0, 0,
+	return _stack_node_op(NODE_READ_AHEAD, dev_name, major, minor, 0, 0,
                               0, "", read_ahead, read_ahead_flags, 0, 0);
 }
 
@@ -1008,30 +1414,280 @@ void update_devs(void)
 	_pop_node_ops();
 }
 
-int dm_set_dev_dir(const char *dev_dir)
+static int _canonicalize_and_set_dir(const char *src, const char *suffix, size_t max_len, char *dir)
 {
 	size_t len;
 	const char *slash;
-	if (*dev_dir != '/') {
-		log_debug("Invalid dev_dir value, %s: "
-			  "not an absolute name.", dev_dir);
+
+	if (*src != '/') {
+		log_debug("Invalid directory value, %s: "
+			  "not an absolute name.", src);
 		return 0;
 	}
 
-	len = strlen(dev_dir);
-	slash = dev_dir[len-1] == '/' ? "" : "/";
+	len = strlen(src);
+	slash = src[len-1] == '/' ? "" : "/";
 
-	if (dm_snprintf(_dm_dir, sizeof _dm_dir, "%s%s%s", dev_dir, slash, DM_DIR) < 0) {
-		log_debug("Invalid dev_dir value, %s: name too long.", dev_dir);
+	if (dm_snprintf(dir, max_len, "%s%s%s", src, slash, suffix ? suffix : "") < 0) {
+		log_debug("Invalid directory value, %s: name too long.", src);
 		return 0;
 	}
 
 	return 1;
 }
 
+int dm_set_dev_dir(const char *dev_dir)
+{
+	return _canonicalize_and_set_dir(dev_dir, DM_DIR, sizeof _dm_dir, _dm_dir);
+}
+
 const char *dm_dir(void)
 {
 	return _dm_dir;
+}
+
+int dm_set_sysfs_dir(const char *sysfs_dir)
+{
+	if (!sysfs_dir || !*sysfs_dir) {
+		_sysfs_dir[0] = '\0';
+		return 1;
+	}
+	else
+		return _canonicalize_and_set_dir(sysfs_dir, NULL, sizeof _sysfs_dir, _sysfs_dir);
+}
+
+const char *dm_sysfs_dir(void)
+{
+	return _sysfs_dir;
+}
+
+/*
+ * Replace existing uuid_prefix provided it isn't too long.
+ */
+int dm_set_uuid_prefix(const char *uuid_prefix)
+{
+	if (!uuid_prefix)
+		return_0;
+
+	if (strlen(uuid_prefix) > DM_MAX_UUID_PREFIX_LEN) {
+		log_error("New uuid prefix %s too long.", uuid_prefix);
+		return 0;
+	}
+
+	strcpy(_default_uuid_prefix, uuid_prefix);
+
+	return 1;
+}
+
+const char *dm_uuid_prefix(void)
+{
+	return _default_uuid_prefix;
+}
+
+static int _sysfs_get_dm_name(uint32_t major, uint32_t minor, char *buf, size_t buf_size)
+{
+	char *sysfs_path, *temp_buf = NULL;
+	FILE *fp = NULL;
+	int r = 0;
+	size_t len;
+
+	if (!(sysfs_path = dm_malloc(PATH_MAX)) ||
+	    !(temp_buf = dm_malloc(PATH_MAX))) {
+		log_error("_sysfs_get_dm_name: failed to allocate temporary buffers");
+		goto bad;
+	}
+
+	if (dm_snprintf(sysfs_path, PATH_MAX, "%sdev/block/%" PRIu32 ":%" PRIu32
+			"/dm/name", _sysfs_dir, major, minor) < 0) {
+		log_error("_sysfs_get_dm_name: dm_snprintf failed");
+		goto bad;
+	}
+
+	if (!(fp = fopen(sysfs_path, "r"))) {
+		if (errno != ENOENT)
+			log_sys_error("fopen", sysfs_path);
+		else
+			log_sys_debug("fopen", sysfs_path);
+		goto bad;
+	}
+
+	if (!fgets(temp_buf, PATH_MAX, fp)) {
+		log_sys_error("fgets", sysfs_path);
+		goto bad;
+	}
+
+	len = strlen(temp_buf);
+
+	if (len > buf_size) {
+		log_error("_sysfs_get_dm_name: supplied buffer too small");
+		goto bad;
+	}
+
+	temp_buf[len ? len - 1 : 0] = '\0'; /* \n */
+	strcpy(buf, temp_buf);
+	r = 1;
+bad:
+	if (fp && fclose(fp))
+		log_sys_error("fclose", sysfs_path);
+
+	dm_free(temp_buf);
+	dm_free(sysfs_path);
+
+	return r;
+}
+
+static int _sysfs_get_kernel_name(uint32_t major, uint32_t minor, char *buf, size_t buf_size)
+{
+	char *name, *sysfs_path, *temp_buf = NULL;
+	ssize_t size;
+	size_t len;
+	int r = 0;
+
+	if (!(sysfs_path = dm_malloc(PATH_MAX)) ||
+	    !(temp_buf = dm_malloc(PATH_MAX))) {
+		log_error("_sysfs_get_kernel_name: failed to allocate temporary buffers");
+		goto bad;
+	}
+
+	if (dm_snprintf(sysfs_path, PATH_MAX, "%sdev/block/%" PRIu32 ":%" PRIu32,
+			_sysfs_dir, major, minor) < 0) {
+		log_error("_sysfs_get_kernel_name: dm_snprintf failed");
+		goto bad;
+	}
+
+	if ((size = readlink(sysfs_path, temp_buf, PATH_MAX - 1)) < 0) {
+		if (errno != ENOENT)
+			log_sys_error("readlink", sysfs_path);
+		else
+			log_sys_debug("readlink", sysfs_path);
+		goto bad;
+	}
+	temp_buf[size] = '\0';
+
+	if (!(name = strrchr(temp_buf, '/'))) {
+		log_error("Could not locate device kernel name in sysfs path %s", temp_buf);
+		goto bad;
+	}
+	name += 1;
+	len = size - (name - temp_buf) + 1;
+
+	if (len > buf_size) {
+		log_error("_sysfs_get_kernel_name: output buffer too small");
+		goto bad;
+	}
+
+	strcpy(buf, name);
+	r = 1;
+bad:
+	dm_free(temp_buf);
+	dm_free(sysfs_path);
+
+	return r;
+}
+
+int dm_device_get_name(uint32_t major, uint32_t minor, int prefer_kernel_name,
+		       char *buf, size_t buf_size)
+{
+	if (!*_sysfs_dir)
+		return 0;
+
+	/*
+	 * device-mapper devices and prefer_kernel_name = 0
+	 * get dm name by reading /sys/dev/block/major:minor/dm/name,
+	 * fallback to _sysfs_get_kernel_name if not successful
+	 */
+	if (dm_is_dm_major(major) && !prefer_kernel_name) {
+		if (_sysfs_get_dm_name(major, minor, buf, buf_size))
+			return 1;
+		else
+			stack;
+	}
+
+	/*
+	 * non-device-mapper devices or prefer_kernel_name = 1
+	 * get kernel name using readlink /sys/dev/block/major:minor -> .../dm-X
+	 */
+	return _sysfs_get_kernel_name(major, minor, buf, buf_size);
+}
+
+int dm_device_has_holders(uint32_t major, uint32_t minor)
+{
+	char sysfs_path[PATH_MAX];
+	struct stat st;
+
+	if (!*_sysfs_dir)
+		return 0;
+
+	if (dm_snprintf(sysfs_path, PATH_MAX, "%sdev/block/%" PRIu32
+			":%" PRIu32 "/holders", _sysfs_dir, major, minor) < 0) {
+		log_error("sysfs_path dm_snprintf failed");
+		return 0;
+	}
+
+	if (stat(sysfs_path, &st)) {
+		log_sys_error("stat", sysfs_path);
+		return 0;
+	}
+
+	return !dm_is_empty_dir(sysfs_path);
+}
+
+static int _mounted_fs_on_device(const char *kernel_dev_name)
+{
+	char sysfs_path[PATH_MAX];
+	struct dirent *dirent;
+	DIR *d;
+	struct stat st;
+	int r = 0;
+
+	if (dm_snprintf(sysfs_path, PATH_MAX, "%sfs", _sysfs_dir) < 0) {
+		log_error("sysfs_path dm_snprintf failed");
+		return 0;
+	}
+
+	if (!(d = opendir(sysfs_path))) {
+		if (errno != ENOENT)
+			log_sys_error("opendir", sysfs_path);
+		return 0;
+	}
+
+	while ((dirent = readdir(d))) {
+		if (!strcmp(dirent->d_name, ".") || !strcmp(dirent->d_name, ".."))
+			continue;
+
+		if (dm_snprintf(sysfs_path, PATH_MAX, "%sfs/%s/%s",
+				_sysfs_dir, dirent->d_name, kernel_dev_name) < 0) {
+			log_error("sysfs_path dm_snprintf failed");
+			break;
+		}
+
+		if (!stat(sysfs_path, &st)) {
+			/* found! */
+			r = 1;
+			break;
+		}
+		else if (errno != ENOENT) {
+			log_sys_error("stat", sysfs_path);
+			break;
+		}
+	}
+
+	if (closedir(d))
+		log_error("_fs_present_on_device: %s: closedir failed", kernel_dev_name);
+
+	return r;
+}
+
+int dm_device_has_mounted_fs(uint32_t major, uint32_t minor)
+{
+	char kernel_dev_name[PATH_MAX];
+
+	/* Get kernel device name first */
+	if (!dm_device_get_name(major, minor, 1, kernel_dev_name, PATH_MAX))
+		return 0;
+
+	/* Check /sys/fs/<fs_name>/<kernel_dev_name> presence */
+	return _mounted_fs_on_device(kernel_dev_name);
 }
 
 int dm_mknodes(const char *name)
@@ -1380,7 +2036,7 @@ static int _udev_notify_sem_create(uint32_t *cookie, int *semid)
 		log_error("semid %d: sem_ctl GETVAL failed for "
 			  "cookie 0x%" PRIx32 ": %s",
 			  gen_semid, gen_cookie, strerror(errno));
-		return 0;		
+		goto bad;
 	}
 
 	log_debug("Udev cookie 0x%" PRIx32 " (semid %d) incremented to %d",

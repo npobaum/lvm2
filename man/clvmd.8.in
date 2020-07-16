@@ -4,6 +4,7 @@ clvmd \- cluster LVM daemon
 .SH SYNOPSIS
 .B clvmd
 [\-d[<value>]] [\-C] [\-h]
+[\-E <lock uuid>]
 [\-R]
 [\-S]
 [\-t <timeout>]
@@ -69,6 +70,9 @@ sensible.
 .br
 This timeout will be ignored if you start clvmd with the -d switch.
 .TP
+.I \-E <lock uuid>
+Pass lock uuid to be reacquired exclusively when clvmd is restarted.
+.TP
 .I \-R
 Tells all the running clvmds in the cluster to reload their device cache and
 re-read the lvm configuration file. This command should be run whenever the
@@ -91,5 +95,15 @@ manually specify this option to override the search.
 .TP
 .I \-V
 Display the version of the cluster LVM daemon.
+
+.SH ENVIRONMENT VARIABLES
+.TP
+.B LVM_CLVMD_BINARY
+The CLVMD binary to use when clmvd restart is requested.
+Defaults to #CLVMD_PATH#.
+.TP
+.B LVM_BINARY
+The LVM2 binary to use. Defaults to #LVM_PATH#.
+
 .SH SEE ALSO
 .BR lvm (8)

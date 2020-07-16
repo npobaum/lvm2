@@ -98,7 +98,9 @@ xx(lvconvert,
    0,
    "lvconvert "
    "[-m|--mirrors Mirrors [{--mirrorlog {disk|core|mirrored}|--corelog}]]\n"
+   "\t[--type SegmentType]\n"
    "\t[--repair [--use-policies]]\n"
+   "\t[--replace PhysicalVolume]\n"
    "\t[-R|--regionsize MirrorLogRegionSize]\n"
    "\t[--alloc AllocationPolicy]\n"
    "\t[-b|--background]\n"
@@ -136,12 +138,12 @@ xx(lvconvert,
    "\t[-d|--debug]\n"
    "\t[-h|-?|--help]\n"
    "\t[-v|--verbose]\n"
-   "\tSnapshotLogicalVolume[Path]\n",
+   "\tLogicalVolume[Path]\n",
 
    alloc_ARG, background_ARG, chunksize_ARG, corelog_ARG, interval_ARG,
    merge_ARG, mirrorlog_ARG, mirrors_ARG, name_ARG, noudevsync_ARG,
-   regionsize_ARG, repair_ARG, snapshot_ARG, splitmirrors_ARG, trackchanges_ARG,
-   stripes_long_ARG, stripesize_ARG, test_ARG,
+   regionsize_ARG, repair_ARG, replace_ARG, snapshot_ARG, splitmirrors_ARG,
+   trackchanges_ARG, type_ARG, stripes_long_ARG, stripesize_ARG, test_ARG,
    use_policies_ARG, yes_ARG, force_ARG, zero_ARG)
 
 xx(lvcreate,
@@ -177,6 +179,8 @@ xx(lvcreate,
    "lvcreate \n"
    "\t{ {-s|--snapshot} OriginalLogicalVolume[Path] |\n"
    "\t  [-s|--snapshot] VolumeGroupName[Path] -V|--virtualsize VirtualSize}\n"
+   "\t  {-T|--thin} VolumeGroupName[Path][/PoolLogicalVolume] \n"
+   "\t              -V|--virtualsize VirtualSize}\n"
    "\t[-c|--chunksize]\n"
    "\t[-A|--autobackup {y|n}]\n"
    "\t[--addtag Tag]\n"
@@ -189,12 +193,14 @@ xx(lvcreate,
    "\t[-i|--stripes Stripes [-I|--stripesize StripeSize]]\n"
    "\t{-l|--extents LogicalExtentsNumber[%{VG|FREE|ORIGIN}] |\n"
    "\t -L|--size LogicalVolumeSize[bBsSkKmMgGtTpPeE]}\n"
+   "\t[--poolmetadatasize Size[bBsSkKmMgG]]\n"
    "\t[-M|--persistent {y|n}] [--major major] [--minor minor]\n"
    "\t[-n|--name LogicalVolumeName]\n"
    "\t[--noudevsync]\n"
    "\t[-p|--permission {r|rw}]\n"
    "\t[-r|--readahead ReadAheadSectors|auto|none]\n"
    "\t[-t|--test]\n"
+   "\t[--thinpool] PoolLogicalVolume\n"
    "\t[-v|--verbose]\n"
    "\t[--version]\n"
 
@@ -205,7 +211,8 @@ xx(lvcreate,
    minor_ARG, mirrorlog_ARG, mirrors_ARG, monitor_ARG, name_ARG, nosync_ARG,
    noudevsync_ARG, permission_ARG, persistent_ARG, readahead_ARG,
    regionsize_ARG, size_ARG, snapshot_ARG, stripes_ARG, stripesize_ARG,
-   test_ARG, type_ARG, virtualoriginsize_ARG, virtualsize_ARG, zero_ARG)
+   test_ARG, thin_ARG, thinpool_ARG, type_ARG, virtualoriginsize_ARG,
+   poolmetadatasize_ARG, virtualsize_ARG, zero_ARG)
 
 xx(lvdisplay,
    "Display information about a logical volume",
@@ -261,6 +268,7 @@ xx(lvextend,
    "\t{-l|--extents [+]LogicalExtentsNumber[%{VG|LV|PVS|FREE|ORIGIN}] |\n"
    "\t -L|--size [+]LogicalVolumeSize[bBsSkKmMgGtTpPeE]}\n"
    "\t[-m|--mirrors Mirrors]\n"
+   "\t[--nosync]\n"
    "\t[--use-policies]\n"
    "\t[-n|--nofsck]\n"
    "\t[--noudevsync]\n"
@@ -272,7 +280,7 @@ xx(lvextend,
    "\tLogicalVolume[Path] [ PhysicalVolumePath... ]\n",
 
    alloc_ARG, autobackup_ARG, extents_ARG, force_ARG, mirrors_ARG,
-   nofsck_ARG, noudevsync_ARG, resizefs_ARG, size_ARG, stripes_ARG,
+   nofsck_ARG, nosync_ARG, noudevsync_ARG, resizefs_ARG, size_ARG, stripes_ARG,
    stripesize_ARG, test_ARG, type_ARG, use_policies_ARG)
 
 xx(lvmchange,
@@ -655,6 +663,7 @@ xx(pvscan,
    "List all physical volumes",
    PERMITTED_READ_ONLY,
    "pvscan " "\n"
+   "\t[--cache [ DevicePath | --major major --minor minor]...]\n"
    "\t[-d|--debug] " "\n"
    "\t{-e|--exported | -n|--novolumegroup} " "\n"
    "\t[-h|-?|--help]" "\n"
@@ -665,8 +674,8 @@ xx(pvscan,
    "\t[-v|--verbose] " "\n"
    "\t[--version]\n",
 
-   exported_ARG, ignorelockingfailure_ARG, novolumegroup_ARG, partial_ARG,
-   short_ARG, uuid_ARG)
+   cache_ARG, exported_ARG, ignorelockingfailure_ARG, major_ARG, minor_ARG,
+   novolumegroup_ARG, partial_ARG, short_ARG, uuid_ARG)
 
 xx(segtypes,
    "List available segment types",

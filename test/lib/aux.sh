@@ -1,5 +1,5 @@
 #!/bin/bash
-# Copyright (C) 2011 Red Hat, Inc. All rights reserved.
+# Copyright (C) 2011-2012 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
 # modify, copy, or redistribute it subject to the terms and conditions
@@ -34,8 +34,8 @@ prepare_clvmd() {
 
 	# check that it is really running now
 	sleep .1
-	ps $LOCAL_CLVMD || skip
-        echo "$LOCAL_CLVMD" > LOCAL_CLVMD
+	ps $LOCAL_CLVMD || die
+	echo "$LOCAL_CLVMD" > LOCAL_CLVMD
 }
 
 prepare_dmeventd() {
@@ -58,6 +58,30 @@ prepare_dmeventd() {
 
 	# FIXME wait for pipe in /var/run instead
 	sleep 1
+}
+
+prepare_lvmetad() {
+	echo preparing lvmetad...
+
+	# skip if we don't have our own lvmetad...
+	(which lvmetad | grep $abs_builddir) || {
+		touch SKIP_THIS_TEST
+		exit 1
+	}
+
+	lvmconf "global/use_lvmetad = 1"
+	lvmconf "devices/md_component_detection = 0"
+
+	lvmetad -f "$@" -s $TESTDIR/lvmetad.socket &
+	echo "$!" > LOCAL_LVMETAD
+
+	sleep 1
+}
+
+notify_lvmetad() {
+	if test -e LOCAL_LVMETAD; then
+		pvscan --cache "$@" || true
+	fi
 }
 
 teardown_devs() {
@@ -145,10 +169,11 @@ teardown() {
     echo -n .
 
     test -f LOCAL_DMEVENTD && kill -9 "$(cat LOCAL_DMEVENTD)"
+    test -f LOCAL_LVMETAD && kill -9 "$(cat LOCAL_LVMETAD)"
 
     echo -n .
 
-    teardown_devs
+    test -d $DM_DEV_DIR/mapper && teardown_devs
 
     echo -n .
 
@@ -249,7 +274,7 @@ prepare_scsi_debug_dev()
     echo "$SCSI_DEBUG_DEV" > SCSI_DEBUG_DEV
     echo "$SCSI_DEBUG_DEV" > LOOP
     # Setting $LOOP provides means for prepare_devs() override
-    ln -snf $DEBUG_DEV $SCSI_DEBUG_DEV
+    test "$LVM_TEST_DEVDIR" != "/dev" && ln -snf $DEBUG_DEV $SCSI_DEBUG_DEV
     return 0
 }
 
@@ -305,7 +330,11 @@ disable_dev() {
 
 	init_udev_transaction
 	for dev in "$@"; do
-        	dmsetup remove -f $dev || true
+	    maj=$(($(stat --printf=0x%t $dev)))
+	    min=$(($(stat --printf=0x%T $dev)))
+	    echo "disabling device $dev ($maj:$min)"
+            dmsetup remove -f $dev || true
+	    notify_lvmetad --major $maj --minor $min
 	done
 	finish_udev_transaction
 
@@ -317,7 +346,9 @@ enable_dev() {
 	for dev in "$@"; do
 		local name=`echo "$dev" | sed -e 's,.*/,,'`
 		dmsetup create -u TEST-$name $name $name.table || dmsetup load $name $name.table
-		dmsetup resume $dev
+		# using device name (since device path does not exists yes with udev)
+		dmsetup resume $name
+		notify_lvmetad $dev
 	done
 	finish_udev_transaction
 }
@@ -355,15 +386,15 @@ prepare_vg() {
 lvmconf() {
     if test -z "$LVM_TEST_LOCKING"; then LVM_TEST_LOCKING=1; fi
     if test "$DM_DEV_DIR" = "/dev"; then
-	VERIFY_UDEV=0;
+	LVM_VERIFY_UDEV=${LVM_VERIFY_UDEV:-0};
     else
-	VERIFY_UDEV=1;
+	LVM_VERIFY_UDEV=${LVM_VERIFY_UDEV:-1};
     fi
     test -f CONFIG_VALUES || {
         cat > CONFIG_VALUES <<-EOF
 devices/dir = "$DM_DEV_DIR"
 devices/scan = "$DM_DEV_DIR"
-devices/filter = [ "a/dev\/mirror/", "a/dev\/mapper\/.*pv[0-9_]*$/", "r/.*/" ]
+devices/filter = [ "a/dev\\\\/mirror/", "a/dev\\\\/mapper\\\\/.*pv[0-9_]*$/", "r/.*/" ]
 devices/cache_dir = "$TESTDIR/etc"
 devices/sysfs_scan = 0
 devices/default_data_alignment = 1
@@ -385,7 +416,7 @@ global/fallback_to_local_locking = 0
 activation/checks = 1
 activation/udev_sync = 1
 activation/udev_rules = 1
-activation/verify_udev_operations = $VERIFY_UDEV
+activation/verify_udev_operations = $LVM_VERIFY_UDEV
 activation/polling_interval = 0
 activation/snapshot_autoextend_percent = 50
 activation/snapshot_autoextend_threshold = 50
@@ -429,6 +460,39 @@ udev_wait() {
 	else
 		udevadm settle --timeout=15
 	fi
+}
+
+#
+# Check wheter kernel [dm module] target exist
+# at least in expected version
+#
+# [dm-]target-name major minor revision
+#
+# i.e.   dm_target_at_least  dm-thin-pool  1 0
+target_at_least()
+{
+	case "$1" in
+	  dm-*) modprobe "$1" ;;
+	esac
+
+	version=$(dmsetup targets 2>/dev/null | grep "${1##dm-} " 2>/dev/null)
+	version=${version##* v}
+	shift
+	major=$(echo $version | cut -d. -f1)
+	minor=$(echo $version | cut -d. -f2)
+	revision=$(echo $version | cut -d. -f3)
+
+	test -z "$1" && return 0
+	test -z "$major" && return 1
+	test "$major" -gt "$1" && return 0
+	test "$major" -lt "$1" && return 1
+	test -z "$2" && return 0
+	test -z "$minor" && return 1
+	test "$minor" -gt "$2" && return 0
+	test "$minor" -lt "$2" && return 1
+	test -z "$4" && return 0
+	test -z "$revision" && return 1
+	test "$revision" -lt "$3" && return 1
 }
 
 test -f DEVICES && devs=$(cat DEVICES)

@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2009 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2012 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -50,7 +50,7 @@ static int _validate_stripesize(struct cmd_context *cmd,
 				const struct volume_group *vg,
 				struct lvresize_params *lp)
 {
-	if (arg_sign_value(cmd, stripesize_ARG, 0) == SIGN_MINUS) {
+	if (arg_sign_value(cmd, stripesize_ARG, SIGN_NONE) == SIGN_MINUS) {
 		log_error("Stripesize may not be negative.");
 		return 0;
 	}
@@ -63,7 +63,7 @@ static int _validate_stripesize(struct cmd_context *cmd,
 
 	if (!(vg->fid->fmt->features & FMT_SEGMENTS))
 		log_warn("Varied stripesize not supported. Ignoring.");
-	else if (arg_uint_value(cmd, stripesize_ARG, 0) > vg->extent_size * 2) {
+	else if (arg_uint_value(cmd, stripesize_ARG, 0) > (uint64_t) vg->extent_size * 2) {
 		log_error("Reducing stripe size %s to maximum, "
 			  "physical extent size %s",
 			  display_size(cmd,
@@ -158,6 +158,9 @@ static int _fsadm_cmd(struct cmd_context *cmd,
 		argv[i++] = "--force";
 
 	argv[i++] = (fcmd == FSADM_CMD_RESIZE) ? "resize" : "check";
+
+	if (status)
+		*status = -1;
 
 	if (dm_snprintf(lv_path, PATH_MAX, "%s%s/%s", cmd->dev_dir, lp->vg_name,
 			lp->lv_name) < 0) {
@@ -285,23 +288,49 @@ static int _adjust_policy_params(struct cmd_context *cmd,
 	percent_t percent;
 	int policy_threshold, policy_amount;
 
-	policy_threshold =
-		find_config_tree_int(cmd, "activation/snapshot_autoextend_threshold",
-				     DEFAULT_SNAPSHOT_AUTOEXTEND_THRESHOLD) * PERCENT_1;
-	policy_amount =
-		find_config_tree_int(cmd, "activation/snapshot_autoextend_percent",
-				     DEFAULT_SNAPSHOT_AUTOEXTEND_PERCENT);
+	if (lv_is_thin_pool(lv)) {
+		policy_threshold =
+			find_config_tree_int(cmd, "activation/thin_pool_autoextend_threshold",
+					     DEFAULT_THIN_POOL_AUTOEXTEND_THRESHOLD) * PERCENT_1;
+		policy_amount =
+			find_config_tree_int(cmd, "activation/thin_pool_autoextend_percent",
+					     DEFAULT_THIN_POOL_AUTOEXTEND_PERCENT);
+	} else {
+		policy_threshold =
+			find_config_tree_int(cmd, "activation/snapshot_autoextend_threshold",
+					     DEFAULT_SNAPSHOT_AUTOEXTEND_THRESHOLD) * PERCENT_1;
+		policy_amount =
+			find_config_tree_int(cmd, "activation/snapshot_autoextend_percent",
+					     DEFAULT_SNAPSHOT_AUTOEXTEND_PERCENT);
+	}
 
 	if (policy_threshold >= PERCENT_100)
 		return 1; /* nothing to do */
 
-	if (!lv_snapshot_percent(lv, &percent))
-		return_0;
+	if (lv_is_thin_pool(lv)) {
+		if (!lv_thin_pool_percent(lv, 1, &percent))
+			return_0;
+		if (percent > policy_threshold) {
+			/* FIXME: metadata resize support missing */
+			log_error("Resize for %s/%s is not yet supported.",
+				  lp->vg_name, lp->lv_name);
+			return ECMD_FAILED;
+		}
 
-	if (!(PERCENT_0 < percent && percent < PERCENT_100) || percent <= policy_threshold)
-		return 1; /* nothing to do */
+		if (!lv_thin_pool_percent(lv, 0, &percent))
+			return_0;
+		if (!(PERCENT_0 < percent && percent <= PERCENT_100) ||
+		    percent <= policy_threshold)
+			return 1; /* nothing to do */
+	} else {
+		if (!lv_snapshot_percent(lv, &percent))
+			return_0;
+		if (!(PERCENT_0 < percent && percent < PERCENT_100) || percent <= policy_threshold)
+			return 1; /* nothing to do */
+	}
 
 	lp->extents = policy_amount;
+
 	return 1;
 }
 
@@ -361,6 +390,19 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 		return ECMD_FAILED;
 	}
 
+	if (lvl->lv->status & (RAID_IMAGE | RAID_META)) {
+		log_error("Cannot resize a RAID %s directly",
+			  (lvl->lv->status & RAID_IMAGE) ? "image" :
+			  "metadata area");
+		return ECMD_FAILED;
+	}
+
+	if (lv_is_raid_with_tracking(lvl->lv)) {
+		log_error("Cannot resize %s while it is tracking a split image",
+			  lvl->lv->name);
+		return ECMD_FAILED;
+	}
+
 	if (arg_count(cmd, stripes_ARG)) {
 		if (vg->fid->fmt->features & FMT_SEGMENTS)
 			lp->stripes = arg_uint_value(cmd, stripes_ARG, 1);
@@ -373,7 +415,7 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 			lp->mirrors = arg_uint_value(cmd, mirrors_ARG, 1) + 1;
 		else
 			log_warn("Mirrors not supported. Ignoring.");
-		if (arg_sign_value(cmd, mirrors_ARG, 0) == SIGN_MINUS) {
+		if (arg_sign_value(cmd, mirrors_ARG, SIGN_NONE) == SIGN_MINUS) {
 			log_error("Mirrors argument may not be negative");
 			return EINVALID_CMD_LINE;
 		}
@@ -386,11 +428,13 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 	lv = lvl->lv;
 
 	if (use_policy) {
-		if (!lv_is_cow(lv)) {
-			log_error("Can't use policy-based resize for non-snapshot volumes.");
+		if (!lv_is_cow(lv) &&
+		    !lv_is_thin_pool(lv)) {
+			log_error("Policy-based resize is supported only for snapshot and thin pool volumes.");
 			return ECMD_FAILED;
 		}
-		_adjust_policy_params(cmd, lv, lp);
+		if (!_adjust_policy_params(cmd, lv, lp))
+			return ECMD_FAILED;
 	}
 
 	if (!lv_is_visible(lv)) {
@@ -408,7 +452,7 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 		return ECMD_FAILED;
 	}
 
-	alloc = arg_uint_value(cmd, alloc_ARG, lv->alloc);
+	alloc = (alloc_policy_t) arg_uint_value(cmd, alloc_ARG, lv->alloc);
 
 	if (lp->size) {
 		if (lp->size % vg->extent_size) {
@@ -419,7 +463,7 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 				    (lp->size % vg->extent_size);
 
 			log_print("Rounding up size to full physical extent %s",
-				  display_size(cmd, (uint64_t) lp->size));
+				  display_size(cmd, lp->size));
 		}
 
 		lp->extents = lp->size / vg->extent_size;
@@ -433,34 +477,46 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 
 	switch(lp->percent) {
 		case PERCENT_VG:
-			lp->extents = lp->extents * vg->extent_count / 100;
+			lp->extents = percent_of_extents(lp->extents, vg->extent_count,
+							 (lp->sign != SIGN_MINUS));
 			break;
 		case PERCENT_FREE:
-			lp->extents = lp->extents * vg->free_count / 100;
+			lp->extents = percent_of_extents(lp->extents, vg->free_count,
+							 (lp->sign != SIGN_MINUS));
 			break;
 		case PERCENT_LV:
-			lp->extents = lp->extents * lv->le_count / 100;
+			lp->extents = percent_of_extents(lp->extents, lv->le_count,
+							 (lp->sign != SIGN_MINUS));
 			break;
 		case PERCENT_PVS:
 			if (lp->argc) {
 				pv_extent_count = pv_list_extents_free(pvh);
-				lp->extents = lp->extents * pv_extent_count / 100;
+				lp->extents = percent_of_extents(lp->extents, pv_extent_count,
+								 (lp->sign != SIGN_MINUS));
 			} else
-				lp->extents = lp->extents * vg->extent_count / 100;
+				lp->extents = percent_of_extents(lp->extents, vg->extent_count,
+								 (lp->sign != SIGN_MINUS));
 			break;
 		case PERCENT_ORIGIN:
 			if (!lv_is_cow(lv)) {
 				log_error("Specified LV does not have an origin LV.");
 				return EINVALID_CMD_LINE;
 			}
-			lp->extents = lp->extents * origin_from_cow(lv)->le_count / 100;
+			lp->extents = percent_of_extents(lp->extents, origin_from_cow(lv)->le_count,
+							 (lp->sign != SIGN_MINUS));
 			break;
 		case PERCENT_NONE:
 			break;
 	}
 
-	if (lp->sign == SIGN_PLUS)
+	if (lp->sign == SIGN_PLUS) {
+		if (lp->extents >= (MAX_EXTENT_COUNT - lv->le_count)) {
+			log_error("Unable to extend %s by %u extents, exceeds limit (%u).",
+				  lp->lv_name, lv->le_count, MAX_EXTENT_COUNT);
+			return EINVALID_CMD_LINE;
+		}
 		lp->extents += lv->le_count;
+	}
 
 	if (lp->sign == SIGN_MINUS) {
 		if (lp->extents >= lv->le_count) {
@@ -504,6 +560,13 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 
 	/* If extending, find mirrors of last segment */
 	if ((lp->extents > lv->le_count)) {
+		/*
+		 * Has the user specified that they would like the additional
+		 * extents of a mirror not to have an initial sync?
+		 */
+		if (seg_is_mirrored(first_seg(lv)) && arg_count(cmd, nosync_ARG))
+			lv->status |= LV_NOTSYNCED;
+
 		dm_list_iterate_back_items(mirr_seg, &lv->segments) {
 			if (seg_is_mirrored(mirr_seg))
 				seg_mirrors = lv_mirror_count(mirr_seg->lv);
@@ -606,7 +669,8 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 			stripesize_extents = 1;
 
 		size_rest = seg_size % (lp->stripes * stripesize_extents);
-		if (size_rest && lp->resize == LV_REDUCE) {
+		/* Round toward the original size. */
+		if (size_rest && lp->extents < lv->le_count) {
 			log_print("Rounding size (%d extents) up to stripe "
 				  "boundary size for segment (%d extents)",
 				  lp->extents, lp->extents - size_rest +
@@ -661,6 +725,25 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 		}
 	}
 
+	if (lv_is_thin_pool(lv)) {
+		if (lp->resize == LV_REDUCE) {
+			log_error("Thin pool volumes cannot be reduced in size yet.");
+			return ECMD_FAILED;
+		}
+
+		if (lp->resizefs) {
+			log_warn("Thin pool volumes do not have filesystem.");
+			lp->resizefs = 0;
+		}
+
+		if (!lp->stripes) {
+			/* Try to use the same strip settings for underlying pool data LV */
+			lp->stripes = last_seg(seg_lv(first_seg(lv), 0))->area_count;
+			if (!lp->stripe_size)
+				lp->stripe_size = last_seg(seg_lv(first_seg(lv), 0))->stripe_size;
+		}
+	}
+
 	if ((lp->resize == LV_REDUCE) && lp->argc)
 		log_warn("Ignoring PVs on command line when reducing");
 
@@ -675,15 +758,15 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 		if (!lp->nofsck &&
 		    !_fsadm_cmd(cmd, vg, lp, FSADM_CMD_CHECK, &status)) {
 			if (status != FSADM_CHECK_FAILS_FOR_MOUNTED) {
-				stack;
+				log_error("Filesystem check failed.");
 				return ECMD_FAILED;
 			}
-                        /* some filesystems supports online resize */
+			/* some filesystems supports online resize */
 		}
 
 		if ((lp->resize == LV_REDUCE) &&
 		    !_fsadm_cmd(cmd, vg, lp, FSADM_CMD_RESIZE, NULL)) {
-			stack;
+			log_error("Filesystem resize failed.");
 			return ECMD_FAILED;
 		}
 	}
@@ -707,7 +790,7 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 		   !lv_extend(lv, lp->segtype,
 			      lp->stripes, lp->stripe_size,
 			      lp->mirrors, first_seg(lv)->region_size,
-			      lp->extents - lv->le_count,
+			      lp->extents - lv->le_count, NULL,
 			      pvh, alloc)) {
 		stack;
 		return ECMD_FAILED;
@@ -747,6 +830,20 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 	}
 
 	backup(vg);
+
+	/*
+	 * Update lvm pool metadata (drop messages) if the pool has been
+	 * resumed and do a pool active/deactivate in other case.
+	 *
+	 * Note: Active thin pool can be waiting for resize.
+	 *
+	 * FIXME: Activate only when thin volume is active
+	 */
+	if (lv_is_thin_pool(lv) &&
+	    !update_pool_lv(lv, !lv_is_active(lv))) {
+		stack;
+		return ECMD_FAILED;
+	}
 
 	log_print("Logical volume %s successfully resized", lp->lv_name);
 

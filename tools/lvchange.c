@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2011 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -40,6 +40,14 @@ static int lvchange_permission(struct cmd_context *cmd,
 	    lv_info(cmd, lv, 0, &info, 0, 0) && info.exists) {
 		log_error("Cannot change permissions of mirror \"%s\" "
 			  "while active.", lv->name);
+		return 0;
+	}
+
+	/* Not allowed to change permissions on RAID sub-LVs directly */
+	if ((lv->status & RAID_META) || (lv->status & RAID_IMAGE)) {
+		log_error("Cannot change permissions of RAID %s \"%s\"",
+			  (lv->status & RAID_IMAGE) ? "image" :
+			  "metadata area", lv->name);
 		return 0;
 	}
 
@@ -125,6 +133,9 @@ static int lvchange_availability(struct cmd_context *cmd,
 
 	activate = arg_uint_value(cmd, available_ARG, 0);
 
+	if (lv_is_cow(lv) && !lv_is_virtual_origin(origin_from_cow(lv)))
+		lv = origin_from_cow(lv);
+
 	if (activate == CHANGE_ALN) {
 		log_verbose("Deactivating logical volume \"%s\" locally",
 			    lv->name);
@@ -135,7 +146,9 @@ static int lvchange_availability(struct cmd_context *cmd,
 		if (!deactivate_lv(cmd, lv))
 			return_0;
 	} else {
-		if (lv_is_origin(lv) || (activate == CHANGE_AE)) {
+		if ((activate == CHANGE_AE) ||
+		    lv_is_origin(lv) ||
+		    lv_is_thin_type(lv)) {
 			log_verbose("Activating logical volume \"%s\" "
 				    "exclusively", lv->name);
 			if (!activate_lv_excl(cmd, lv))
@@ -327,7 +340,7 @@ static int lvchange_alloc(struct cmd_context *cmd, struct logical_volume *lv)
 
 	want_contiguous = strcmp(arg_str_value(cmd, contiguous_ARG, "n"), "n");
 	alloc = want_contiguous ? ALLOC_CONTIGUOUS : ALLOC_INHERIT;
-	alloc = arg_uint_value(cmd, alloc_ARG, alloc);
+	alloc = (alloc_policy_t) arg_uint_value(cmd, alloc_ARG, alloc);
 
 	if (alloc == lv->alloc) {
 		log_error("Allocation policy of logical volume \"%s\" is "
@@ -443,6 +456,14 @@ static int lvchange_persistent(struct cmd_context *cmd,
 			log_error("Minor number must be specified with -My");
 			return 0;
 		}
+		if (arg_count(cmd, major_ARG) > 1) {
+			log_error("Option -j/--major may not be repeated.");
+			return 0;
+		}
+		if (arg_count(cmd, minor_ARG) > 1) {
+			log_error("Option --minor may not be repeated.");
+			return 0;
+		}
 		if (!arg_count(cmd, major_ARG) && lv->major < 0) {
 			log_error("Major number must be specified with -My");
 			return 0;
@@ -511,8 +532,9 @@ static int lvchange_single(struct cmd_context *cmd, struct logical_volume *lv,
 			   void *handle __attribute__((unused)))
 {
 	int doit = 0, docmds = 0;
-	int dmeventd_mode, archived = 0;
+	int archived = 0;
 	struct logical_volume *origin;
+	char snaps_msg[128];
 
 	if (!(lv->vg->status & LVM_WRITE) &&
 	    (arg_count(cmd, contiguous_ARG) || arg_count(cmd, permission_ARG) ||
@@ -532,11 +554,24 @@ static int lvchange_single(struct cmd_context *cmd, struct logical_volume *lv,
 		return ECMD_FAILED;
 	}
 
-	if (lv_is_cow(lv) && !lv_is_virtual_origin(origin_from_cow(lv)) &&
+	if (lv_is_cow(lv) && !lv_is_virtual_origin(origin = origin_from_cow(lv)) &&
 	    arg_count(cmd, available_ARG)) {
-		log_error("Can't change snapshot logical volume \"%s\"",
-			  lv->name);
-		return ECMD_FAILED;
+		if (origin->origin_count < 2)
+			snaps_msg[0] = '\0';
+		else if (dm_snprintf(snaps_msg, sizeof(snaps_msg),
+				     " and %u other snapshot(s)",
+				     origin->origin_count - 1) < 0) {
+			log_error("Failed to prepare message.");
+			return ECMD_FAILED;
+		}
+
+		if (!arg_count(cmd, yes_ARG) &&
+		    (yes_no_prompt("Change of snapshot %s will also change its"
+				   " origin %s%s. Proceed? [y/n]: ", lv->name,
+				   origin->name, snaps_msg) == 'n')) {
+			log_error("Logical volume %s not changed.", lv->name);
+			return ECMD_FAILED;
+		}
 	}
 
 	if (lv->status & PVMOVE) {
@@ -567,11 +602,6 @@ static int lvchange_single(struct cmd_context *cmd, struct logical_volume *lv,
 			  lv->name);
 		return ECMD_FAILED;
 	}
-
-	if (!get_activation_monitoring_mode(cmd, lv->vg, &dmeventd_mode))
-		return ECMD_FAILED;
-
-	init_dmeventd_monitor(dmeventd_mode);
 
 	/*
 	 * FIXME: DEFAULT_BACKGROUND_POLLING should be "unspecified".
@@ -715,10 +745,8 @@ int lvchange(struct cmd_context *cmd, int argc, char **argv)
 
 	if (!update &&
             !arg_count(cmd, available_ARG) && !arg_count(cmd, refresh_ARG) &&
-            !arg_count(cmd, monitor_ARG) && !arg_count(cmd, poll_ARG) &&
-            /* for persistent_ARG */
-	    !arg_count(cmd, minor_ARG) && !arg_count(cmd, major_ARG)) {
-		log_error("Need 1 or more of -a, -C, -j, -m, -M, -p, -r, "
+            !arg_count(cmd, monitor_ARG) && !arg_count(cmd, poll_ARG)) {
+		log_error("Need 1 or more of -a, -C, -M, -p, -r, "
 			  "--resync, --refresh, --alloc, --addtag, --deltag, "
 			  "--monitor or --poll");
 		return EINVALID_CMD_LINE;
