@@ -34,11 +34,22 @@ struct lv_activate_opts {
 	int exclusive;
 	int origin_only;
 	int no_merging;
-	int real_pool;
-	int is_activate;
+	int send_messages;
 	int skip_in_use;
 	unsigned revert;
 	unsigned read_only;
+	unsigned noscan;	/* Mark this LV to avoid its scanning. This also
+				   directs udev to use proper udev flag to avoid
+				   any scanning in udev. This udev flag is automatically
+				   dropped in udev db on any spurious event that follows. */
+	unsigned temporary;	/* Mark this LV as temporary. It means, the LV
+				 * is created, used and deactivated within single
+				 * LVM command execution. Such LVs are mostly helper
+				 * LVs to do some action or cleanup before the proper
+				 * LV is created. This also directs udev to use proper
+				 * set of flags to avoid any scanning in udev. These udev
+				 * flags are persistent in udev db for any spurious event
+				 * that follows. */
 };
 
 /* target attribute flags */
@@ -51,6 +62,8 @@ enum {
 	THIN_FEATURE_EXTERNAL_ORIGIN		= (1 << 1),
 	THIN_FEATURE_HELD_ROOT			= (1 << 2),
 	THIN_FEATURE_BLOCK_SIZE			= (1 << 3),
+	THIN_FEATURE_DISCARDS_NON_POWER_2	= (1 << 4),
+	THIN_FEATURE_METADATA_RESIZE		= (1 << 5),
 };
 
 void set_activation(int activation);
@@ -75,14 +88,15 @@ void activation_release(void);
 void activation_exit(void);
 
 /* int lv_suspend(struct cmd_context *cmd, const char *lvid_s); */
-int lv_suspend_if_active(struct cmd_context *cmd, const char *lvid_s, unsigned origin_only, unsigned exclusive);
-int lv_resume(struct cmd_context *cmd, const char *lvid_s, unsigned origin_only);
+int lv_suspend_if_active(struct cmd_context *cmd, const char *lvid_s, unsigned origin_only, unsigned exclusive, struct logical_volume *lv_ondisk, struct logical_volume *lv_incore);
+int lv_resume(struct cmd_context *cmd, const char *lvid_s, unsigned origin_only, struct logical_volume *lv);
 int lv_resume_if_active(struct cmd_context *cmd, const char *lvid_s,
-			unsigned origin_only, unsigned exclusive, unsigned revert);
-int lv_activate(struct cmd_context *cmd, const char *lvid_s, int exclusive);
-int lv_activate_with_filter(struct cmd_context *cmd, const char *lvid_s,
-			    int exclusive);
-int lv_deactivate(struct cmd_context *cmd, const char *lvid_s);
+			unsigned origin_only, unsigned exclusive, unsigned revert, struct logical_volume *lv);
+int lv_activate(struct cmd_context *cmd, const char *lvid_s, int exclusive,
+		int noscan, int temporary, struct logical_volume *lv);
+int lv_activate_with_filter(struct cmd_context *cmd, const char *lvid_s, int exclusive,
+			    int noscan, int temporary, struct logical_volume *lv);
+int lv_deactivate(struct cmd_context *cmd, const char *lvid_s, struct logical_volume *lv);
 
 int lv_mknodes(struct cmd_context *cmd, const struct logical_volume *lv);
 
@@ -101,7 +115,7 @@ int lv_check_not_in_use(struct cmd_context *cmd, struct logical_volume *lv,
  * Returns 1 if activate_lv has been set: 1 = activate; 0 = don't.
  */
 int lv_activation_filter(struct cmd_context *cmd, const char *lvid_s,
-			 int *activate_lv);
+			 int *activate_lv, struct logical_volume *lv);
 /*
  * Checks against the auto_activation_volume_list and
  * returns 1 if the LV should be activated, 0 otherwise.
@@ -116,6 +130,10 @@ int lv_snapshot_percent(const struct logical_volume *lv, percent_t *percent);
 int lv_mirror_percent(struct cmd_context *cmd, const struct logical_volume *lv,
 		      int wait, percent_t *percent, uint32_t *event_nr);
 int lv_raid_percent(const struct logical_volume *lv, percent_t *percent);
+int lv_raid_dev_health(const struct logical_volume *lv, char **dev_health);
+int lv_raid_mismatch_count(const struct logical_volume *lv, uint64_t *cnt);
+int lv_raid_sync_action(const struct logical_volume *lv, char **sync_action);
+int lv_raid_message(const struct logical_volume *lv, const char *msg);
 int lv_thin_pool_percent(const struct logical_volume *lv, int metadata,
 			 percent_t *percent);
 int lv_thin_percent(const struct logical_volume *lv, int mapped,
@@ -130,6 +148,7 @@ int lvs_in_vg_activated(const struct volume_group *vg);
 int lvs_in_vg_opened(const struct volume_group *vg);
 
 int lv_is_active(const struct logical_volume *lv);
+int lv_is_active_locally(const struct logical_volume *lv);
 int lv_is_active_but_not_locally(const struct logical_volume *lv);
 int lv_is_active_exclusive(const struct logical_volume *lv);
 int lv_is_active_exclusive_locally(const struct logical_volume *lv);
@@ -161,9 +180,17 @@ int pv_uses_vg(struct physical_volume *pv,
 	       struct volume_group *vg);
 
 /*
- * Returns 1 if mapped device is not suspended.
+ * Returns 1 if mapped device is not suspended, blocked or
+ * is using a reserved name.
  */
 int device_is_usable(struct device *dev);
+
+/*
+ * Returns 1 if the device is suspended or blocking.
+ * (Does not perform check on the LV name of the device.)
+ * N.B.  This is !device_is_usable() without the name check.
+ */
+int device_is_suspended_or_blocking(struct device *dev);
 
 /*
  * Declaration moved here from fs.h to keep header fs.h hidden

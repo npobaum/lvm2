@@ -19,13 +19,7 @@ static int _pvchange_single(struct cmd_context *cmd, struct volume_group *vg,
 			    struct physical_volume *pv,
 			    void *handle __attribute__((unused)))
 {
-	uint32_t orig_pe_alloc_count;
-	/* FIXME Next three only required for format1. */
-	uint32_t orig_pe_count, orig_pe_size;
-	uint64_t orig_pe_start;
-
 	const char *pv_name = pv_dev_name(pv);
-	const char *orig_vg_name;
 	char uuid[64] __attribute__((aligned(8)));
 
 	int allocatable = 0;
@@ -73,14 +67,14 @@ static int _pvchange_single(struct cmd_context *cmd, struct volume_group *vg,
 
 		/* change allocatability for a PV */
 		if (allocatable && (pv_status(pv) & ALLOCATABLE_PV)) {
-			log_error("Physical volume \"%s\" is already "
-				  "allocatable", pv_name);
+			log_warn("Physical volume \"%s\" is already "
+				 "allocatable.", pv_name);
 			return 1;
 		}
 
 		if (!allocatable && !(pv_status(pv) & ALLOCATABLE_PV)) {
-			log_error("Physical volume \"%s\" is already "
-				  "unallocatable", pv_name);
+			log_warn("Physical volume \"%s\" is already "
+				 "unallocatable.", pv_name);
 			return 1;
 		}
 
@@ -129,28 +123,10 @@ static int _pvchange_single(struct cmd_context *cmd, struct volume_group *vg,
 		if (!id_write_format(&pv->id, uuid, sizeof(uuid)))
 			return 0;
 		log_verbose("Changing uuid of %s to %s.", pv_name, uuid);
-		if (!is_orphan(pv)) {
-			orig_vg_name = pv_vg_name(pv);
-			orig_pe_alloc_count = pv_pe_alloc_count(pv);
-
-			/* FIXME format1 pv_write doesn't preserve these. */
-			orig_pe_size = pv_pe_size(pv);
-			orig_pe_start = pv_pe_start(pv);
-			orig_pe_count = pv_pe_count(pv);
-
-			pv->vg_name = pv->fmt->orphan_vg_name;
-			pv->pe_alloc_count = 0;
-			if (!(pv_write(cmd, pv, 0))) {
-				log_error("pv_write with new uuid failed "
-					  "for %s.", pv_name);
-				return 0;
-			}
-			pv->vg_name = orig_vg_name;
-			pv->pe_alloc_count = orig_pe_alloc_count;
-
-			pv->pe_size = orig_pe_size;
-			pv->pe_start = orig_pe_start;
-			pv->pe_count = orig_pe_count;
+		if (!is_orphan(pv) && (!pv_write(cmd, pv, 1))) {
+			log_error("pv_write with new uuid failed "
+				  "for %s.", pv_name);
+			return 0;
 		}
 	}
 
@@ -243,7 +219,7 @@ int pvchange(struct cmd_context *cmd, int argc, char **argv)
 		 * take the lock here, pvs with 0 mdas in a non-orphan VG will
 		 * be processed twice.
 		 */
-		if (!lock_vol(cmd, VG_GLOBAL, LCK_VG_WRITE)) {
+		if (!lock_vol(cmd, VG_GLOBAL, LCK_VG_WRITE, NULL)) {
 			log_error("Unable to obtain global lock.");
 			return ECMD_FAILED;
 		}

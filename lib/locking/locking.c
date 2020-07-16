@@ -54,6 +54,9 @@ static void _catch_sigint(int unused __attribute__((unused)))
 }
 
 int sigint_caught(void) {
+	if (_sigint_caught)
+		log_error("Interrupted...");
+
 	return _sigint_caught;
 }
 
@@ -225,10 +228,9 @@ int init_locking(int type, struct cmd_context *cmd, int suppress_messages)
 		suppress_messages = 1;
 
 	if (type < 0)
-		type = find_config_tree_int(cmd, "global/locking_type", 1);
+		type = find_config_tree_int(cmd, global_locking_type_CFG, NULL);
 
-	_blocking_supported = find_config_tree_int(cmd,
-	    "global/wait_for_locks", DEFAULT_WAIT_FOR_LOCKS);
+	_blocking_supported = find_config_tree_bool(cmd, global_wait_for_locks_CFG, NULL);
 
 	switch (type) {
 	case 0:
@@ -255,9 +257,7 @@ int init_locking(int type, struct cmd_context *cmd, int suppress_messages)
 			if (init_external_locking(&_locking, cmd, suppress_messages))
 				return 1;
 		}
-		if (!find_config_tree_int(cmd, "locking/fallback_to_clustered_locking",
-			    find_config_tree_int(cmd, "global/fallback_to_clustered_locking",
-						 DEFAULT_FALLBACK_TO_CLUSTERED_LOCKING))) {
+		if (!find_config_tree_bool(cmd, global_fallback_to_clustered_locking_CFG, NULL)) {
 			log_error_suppress(suppress_messages, "External locking initialisation failed.");
 			break;
 		}
@@ -290,9 +290,7 @@ int init_locking(int type, struct cmd_context *cmd, int suppress_messages)
 	}
 
 	if ((type == 2 || type == 3) &&
-	    find_config_tree_int(cmd, "locking/fallback_to_local_locking",
-	    	    find_config_tree_int(cmd, "global/fallback_to_local_locking",
-					 DEFAULT_FALLBACK_TO_LOCAL_LOCKING))) {
+	    find_config_tree_bool(cmd, global_fallback_to_local_locking_CFG, NULL)) {
 		log_warn_suppress(suppress_messages, "WARNING: Falling back to local file-based locking.");
 		log_warn_suppress(suppress_messages,
 				  "Volume Groups with the clustered attribute will "
@@ -357,7 +355,7 @@ int check_lvm1_vg_inactive(struct cmd_context *cmd, const char *vgname)
  * FIXME This should become VG uuid.
  */
 static int _lock_vol(struct cmd_context *cmd, const char *resource,
-		     uint32_t flags, lv_operation_t lv_op)
+		     uint32_t flags, lv_operation_t lv_op, struct logical_volume *lv)
 {
 	uint32_t lck_type = flags & LCK_TYPE_MASK;
 	uint32_t lck_scope = flags & LCK_SCOPE_MASK;
@@ -370,21 +368,21 @@ static int _lock_vol(struct cmd_context *cmd, const char *resource,
 
 	if (!*resource) {
 		log_error(INTERNAL_ERROR "Use of P_orphans is deprecated.");
-		return 0;
+		goto out;
 	}
 
 	if ((is_orphan_vg(resource) || is_global_vg(resource)) && (flags & LCK_CACHE)) {
 		log_error(INTERNAL_ERROR "P_%s referenced", resource);
-		return 0;
+		goto out;
 	}
 
 	if (cmd->metadata_read_only && lck_type == LCK_WRITE &&
 	    strcmp(resource, VG_GLOBAL)) {
 		log_error("Operation prohibited while global/metadata_read_only is set.");
-		return 0;
+		goto out;
 	}
 
-	if ((ret = _locking.lock_resource(cmd, resource, flags))) {
+	if ((ret = _locking.lock_resource(cmd, resource, flags, lv))) {
 		if (lck_scope == LCK_VG && !(flags & LCK_CACHE)) {
 			if (lck_type != LCK_UNLOCK)
 				lvmcache_lock_vgname(resource, lck_type == LCK_READ);
@@ -401,14 +399,14 @@ static int _lock_vol(struct cmd_context *cmd, const char *resource,
 		if (!ret)
 			_update_vg_lock_count(resource, flags);
 	}
-
+out:
 	_unlock_memory(cmd, lv_op);
 	_unblock_signals();
 
 	return ret;
 }
 
-int lock_vol(struct cmd_context *cmd, const char *vol, uint32_t flags)
+int lock_vol(struct cmd_context *cmd, const char *vol, uint32_t flags, struct logical_volume *lv)
 {
 	char resource[258] __attribute__((aligned(8)));
 	lv_operation_t lv_op;
@@ -426,7 +424,7 @@ int lock_vol(struct cmd_context *cmd, const char *vol, uint32_t flags)
 
 
 	if (flags == LCK_NONE) {
-		log_debug(INTERNAL_ERROR "%s: LCK_NONE lock requested", vol);
+		log_debug_locking(INTERNAL_ERROR "%s: LCK_NONE lock requested", vol);
 		return 1;
 	}
 
@@ -462,7 +460,7 @@ int lock_vol(struct cmd_context *cmd, const char *vol, uint32_t flags)
 	strncpy(resource, vol, sizeof(resource) - 1);
 	resource[sizeof(resource) - 1] = '\0';
 
-	if (!_lock_vol(cmd, resource, flags, lv_op))
+	if (!_lock_vol(cmd, resource, flags, lv_op, lv))
 		return_0;
 
 	/*
@@ -473,7 +471,7 @@ int lock_vol(struct cmd_context *cmd, const char *vol, uint32_t flags)
 	    (flags & (LCK_CACHE | LCK_HOLD)))
 		return 1;
 
-	if (!_lock_vol(cmd, resource, (flags & ~LCK_TYPE_MASK) | LCK_UNLOCK, lv_op))
+	if (!_lock_vol(cmd, resource, (flags & ~LCK_TYPE_MASK) | LCK_UNLOCK, lv_op, lv))
 		return_0;
 
 	return 1;
@@ -561,10 +559,10 @@ int activate_lv_excl(struct cmd_context *cmd, struct logical_volume *lv)
 		return 1;
 
 	/* FIXME Deal with error return codes. */
-	if (activate_lv_excl_remote(cmd, lv))
-		stack;
+	if (!activate_lv_excl_remote(cmd, lv))
+		return_0;
 
-	return lv_is_active_exclusive(lv);
+	return 1;
 }
 
 /* Lock a list of LVs */
@@ -631,12 +629,12 @@ int sync_local_dev_names(struct cmd_context* cmd)
 {
 	memlock_unlock(cmd);
 
-	return lock_vol(cmd, VG_SYNC_NAMES, LCK_VG_SYNC_LOCAL);
+	return lock_vol(cmd, VG_SYNC_NAMES, LCK_VG_SYNC_LOCAL, NULL);
 }
 
 int sync_dev_names(struct cmd_context* cmd)
 {
 	memlock_unlock(cmd);
 
-	return lock_vol(cmd, VG_SYNC_NAMES, LCK_VG_SYNC);
+	return lock_vol(cmd, VG_SYNC_NAMES, LCK_VG_SYNC, NULL);
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2011 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2013 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -12,12 +12,4 @@
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
-#ifndef _LVM_FILTER_MPATH_H
-#define _LVM_FILTER_MPATH_H
-
-#include "dev-cache.h"
-
-struct dev_filter *mpath_filter_create(const char *sysfs_dir);
-
-#endif
-
+FIELD(LV_CREATE_PARAMS, lvcreate_params, NUM, "skip_zero", zero, 2, uint32, skip_zero, "Skip zeroing on lv creation", 1)

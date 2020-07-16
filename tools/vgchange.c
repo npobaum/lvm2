@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2013 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -131,43 +131,22 @@ static int _activate_lvs_in_vg(struct cmd_context *cmd, struct volume_group *vg,
 			continue;
 		}
 
-		if (activate == CHANGE_AAY && !lv_passes_auto_activation_filter(cmd, lv))
+		if (lv_activation_skip(lv, activate, arg_count(cmd, ignoreactivationskip_ARG), 0)) {
+			log_verbose("ACTIVATION_SKIP flag set for LV %s/%s, skipping activation.",
+				    lv->vg->name, lv->name);
+			continue;
+		}
+
+		if ((activate == CHANGE_AAY) &&
+		    !lv_passes_auto_activation_filter(cmd, lv))
 			continue;
 
 		expected_count++;
 
-		if (activate == CHANGE_AN) {
-			if (!deactivate_lv(cmd, lv)) {
-				stack;
-				continue;
-			}
-		} else if (activate == CHANGE_ALN) {
-			if (!deactivate_lv_local(cmd, lv)) {
-				stack;
-				continue;
-			}
-		} else if ((activate == CHANGE_AE) ||
-			   lv_is_origin(lv) ||
-			   lv_is_thin_type(lv)) {
-			/* FIXME: duplicated test code with lvchange */
-			if (!activate_lv_excl(cmd, lv)) {
-				stack;
-				continue;
-			}
-		} else if (activate == CHANGE_AAY || activate == CHANGE_ALY) {
-			if (!activate_lv_local(cmd, lv)) {
-				stack;
-				continue;
-			}
-		} else if (!activate_lv(cmd, lv)) {
+		if (!lv_change_activate(cmd, lv, activate)) {
 			stack;
 			continue;
 		}
-
-		if (background_polling() &&
-		    activate != CHANGE_AN && activate != CHANGE_ALN &&
-		    (lv->status & (PVMOVE|CONVERTING|MERGING)))
-			lv_spawn_background_polling(cmd, lv);
 
 		count++;
 	}
@@ -218,6 +197,8 @@ int vgchange_activate(struct cmd_context *cmd, struct volume_group *vg,
 		      activation_change_t activate)
 {
 	int lv_open, active, monitored = 0, r = 1, do_activate = 1;
+	const struct lv_list *lvl;
+	struct lvinfo info;
 
 	if ((activate == CHANGE_AN) || (activate == CHANGE_ALN))
 		do_activate = 0;
@@ -230,9 +211,14 @@ int vgchange_activate(struct cmd_context *cmd, struct volume_group *vg,
 
 	/* FIXME: Force argument to deactivate them? */
 	if (!do_activate && (lv_open = lvs_in_vg_opened(vg))) {
-		log_error("Can't deactivate volume group \"%s\" with %d open "
-			  "logical volume(s)", vg->name, lv_open);
-		return 0;
+		dm_list_iterate_items(lvl, &vg->lvs)
+			if (lv_is_visible(lvl->lv) &&
+			    lv_info(cmd, lvl->lv, 0, &info, 1, 0) &&
+			    !lv_check_not_in_use(cmd, lvl->lv, &info)) {
+				log_error("Can't deactivate volume group \"%s\" with %d open "
+					  "logical volume(s)", vg->name, lv_open);
+				return 0;
+			}
 	}
 
 	/* FIXME Move into library where clvmd can use it */
@@ -266,10 +252,8 @@ static int _vgchange_refresh(struct cmd_context *cmd, struct volume_group *vg)
 {
 	log_verbose("Refreshing volume group \"%s\"", vg->name);
 
-	if (!vg_refresh_visible(cmd, vg)) {
-		stack;
-		return 0;
-	}
+	if (!vg_refresh_visible(cmd, vg))
+		return_0;
 
 	return 1;
 }
@@ -368,16 +352,16 @@ static int _vgchange_pesize(struct cmd_context *cmd, struct volume_group *vg)
 	uint32_t extent_size;
 
 	if (arg_uint64_value(cmd, physicalextentsize_ARG, 0) > MAX_EXTENT_SIZE) {
-		log_error("Physical extent size cannot be larger than %s",
-				  display_size(cmd, (uint64_t) MAX_EXTENT_SIZE));
+		log_warn("Physical extent size cannot be larger than %s.",
+			 display_size(cmd, (uint64_t) MAX_EXTENT_SIZE));
 		return 1;
 	}
 
 	extent_size = arg_uint_value(cmd, physicalextentsize_ARG, 0);
 	/* FIXME: remove check - redundant with vg_change_pesize */
 	if (extent_size == vg->extent_size) {
-		log_error("Physical extent size of VG %s is already %s",
-			  vg->name, display_size(cmd, (uint64_t) extent_size));
+		log_warn("Physical extent size of VG %s is already %s.",
+			 vg->name, display_size(cmd, (uint64_t) extent_size));
 		return 1;
 	}
 
@@ -427,11 +411,11 @@ static int _vgchange_metadata_copies(struct cmd_context *cmd,
 
 	if (mda_copies == vg_mda_copies(vg)) {
 		if (vg_mda_copies(vg) == VGMETADATACOPIES_UNMANAGED)
-			log_error("Number of metadata copies for VG %s is already unmanaged.",
-				  vg->name);
+			log_warn("Number of metadata copies for VG %s is already unmanaged.",
+				 vg->name);
 		else
-			log_error("Number of metadata copies for VG %s is already %" PRIu32,
-				  vg->name, mda_copies);
+			log_warn("Number of metadata copies for VG %s is already %u.",
+				 vg->name, mda_copies);
 		return 1;
 	}
 
@@ -441,14 +425,37 @@ static int _vgchange_metadata_copies(struct cmd_context *cmd,
 	return 1;
 }
 
+static int _vgchange_profile(struct cmd_context *cmd,
+			     struct volume_group *vg)
+{
+	const char *old_profile_name, *new_profile_name;
+	struct profile *new_profile;
+
+	old_profile_name = vg->profile ? vg->profile->name : "(no profile)";
+
+	if (arg_count(cmd, detachprofile_ARG)) {
+		new_profile_name = "(no profile)";
+		vg->profile = NULL;
+	} else {
+		new_profile_name = arg_str_value(cmd, profile_ARG, NULL);
+		if (!(new_profile = add_profile(cmd, new_profile_name)))
+			return_0;
+		vg->profile = new_profile;
+	}
+
+	log_verbose("Changing configuration profile for VG %s: %s -> %s.",
+		    vg->name, old_profile_name, new_profile_name);
+
+	return 1;
+}
+
 static int vgchange_single(struct cmd_context *cmd, const char *vg_name,
 			   struct volume_group *vg,
 			   void *handle __attribute__((unused)))
 {
-	int archived = 0;
-	int i;
+	unsigned i;
 
-	static struct {
+	static const struct {
 		int arg;
 		int (*fn)(struct cmd_context *cmd, struct volume_group *vg);
 	} _vgchange_args[] = {
@@ -462,7 +469,8 @@ static int vgchange_single(struct cmd_context *cmd, const char *vg_name,
 		{ alloc_ARG, &_vgchange_alloc },
 		{ clustered_ARG, &_vgchange_clustered },
 		{ vgmetadatacopies_ARG, &_vgchange_metadata_copies },
-		{ -1, NULL },
+		{ profile_ARG, &_vgchange_profile},
+		{ detachprofile_ARG, &_vgchange_profile},
 	};
 
 	if (vg_is_exported(vg)) {
@@ -483,25 +491,18 @@ static int vgchange_single(struct cmd_context *cmd, const char *vg_name,
 						arg_int_value(cmd, poll_ARG,
 						DEFAULT_BACKGROUND_POLLING));
 
-	for (i = 0; _vgchange_args[i].arg >= 0; i++) {
+	for (i = 0; i < DM_ARRAY_SIZE(_vgchange_args); ++i) {
 		if (arg_count(cmd, _vgchange_args[i].arg)) {
-			if (!archived && !archive(vg)) {
-				stack;
-				return ECMD_FAILED;
-			}
-			archived = 1;
-			if (!_vgchange_args[i].fn(cmd, vg)) {
-				stack;
-				return ECMD_FAILED;
-			}
+			if (!archive(vg))
+				return_ECMD_FAILED;
+			if (!_vgchange_args[i].fn(cmd, vg))
+				return_ECMD_FAILED;
 		}
 	}
 
-	if (archived) {
-		if (!vg_write(vg) || !vg_commit(vg)) {
-			stack;
-			return ECMD_FAILED;
-		}
+	if (vg_is_archived(vg)) {
+		if (!vg_write(vg) || !vg_commit(vg))
+			return_ECMD_FAILED;
 
 		backup(vg);
 
@@ -511,13 +512,13 @@ static int vgchange_single(struct cmd_context *cmd, const char *vg_name,
 	if (arg_count(cmd, activate_ARG)) {
 		if (!vgchange_activate(cmd, vg, (activation_change_t)
 				       arg_uint_value(cmd, activate_ARG, CHANGE_AY)))
-			return ECMD_FAILED;
+			return_ECMD_FAILED;
 	}
 
 	if (arg_count(cmd, refresh_ARG)) {
 		/* refreshes the visible LVs (which starts polling) */
 		if (!_vgchange_refresh(cmd, vg))
-			return ECMD_FAILED;
+			return_ECMD_FAILED;
 	}
 
 	if (!arg_count(cmd, activate_ARG) &&
@@ -525,13 +526,13 @@ static int vgchange_single(struct cmd_context *cmd, const char *vg_name,
 	    arg_count(cmd, monitor_ARG)) {
 		/* -ay* will have already done monitoring changes */
 		if (!_vgchange_monitoring(cmd, vg))
-			return ECMD_FAILED;
+			return_ECMD_FAILED;
 	}
 
 	if (!arg_count(cmd, refresh_ARG) &&
 	    background_polling())
 		if (!_vgchange_background_polling(cmd, vg))
-			return ECMD_FAILED;
+			return_ECMD_FAILED;
 
         return ECMD_PROCESSED;
 }
@@ -541,7 +542,9 @@ int vgchange(struct cmd_context *cmd, int argc, char **argv)
 	/* Update commands that can be combined */
 	int update_partial_safe =
 		arg_count(cmd, deltag_ARG) ||
-		arg_count(cmd, addtag_ARG);
+		arg_count(cmd, addtag_ARG) ||
+		arg_count(cmd, profile_ARG) ||
+		arg_count(cmd, detachprofile_ARG);
 	int update_partial_unsafe =
 		arg_count(cmd, logicalvolume_ARG) ||
 		arg_count(cmd, maxphysicalvolumes_ARG) ||
@@ -562,6 +565,11 @@ int vgchange(struct cmd_context *cmd, int argc, char **argv)
 			  "--refresh, --uuid, --alloc, --addtag, --deltag, "
 			  "--monitor, --poll, --vgmetadatacopies or "
 			  "--metadatacopies");
+		return EINVALID_CMD_LINE;
+	}
+
+	if (arg_count(cmd, profile_ARG) && arg_count(cmd, detachprofile_ARG)) {
+		log_error("Only one of --profile and --detachprofile permitted.");
 		return EINVALID_CMD_LINE;
 	}
 
@@ -613,6 +621,12 @@ int vgchange(struct cmd_context *cmd, int argc, char **argv)
 		log_warn("lvmetad is active while using --sysinit -a ay, "
 			 "skipping manual activation");
 		return ECMD_PROCESSED;
+	}
+
+	if (arg_count(cmd, clustered_ARG) && !argc && !arg_count(cmd, yes_ARG) &&
+	    (yes_no_prompt("Change clustered property of all volumes groups? [y/n]: ") == 'n')) {
+		log_error("No volume groups changed.");
+		return ECMD_FAILED;
 	}
 
 	if (!update || !update_partial_unsafe)

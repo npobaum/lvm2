@@ -106,7 +106,7 @@ uint64_t pv_free(const struct physical_volume *pv)
 {
 	uint64_t freespace;
 
-	if (!pv->pe_count)
+	if (!pv->vg || is_orphan_vg(pv->vg->name))
 		freespace = pv->size;
 	else
 		freespace = (uint64_t)
@@ -122,6 +122,16 @@ uint64_t pv_status(const struct physical_volume *pv)
 uint32_t pv_pe_size(const struct physical_volume *pv)
 {
 	return pv_field(pv, pe_size);
+}
+
+uint64_t pv_ba_start(const struct physical_volume *pv)
+{
+	return pv_field(pv, ba_start);
+}
+
+uint64_t pv_ba_size(const struct physical_volume *pv)
+{
+	return pv_field(pv, ba_size);
 }
 
 uint64_t pv_pe_start(const struct physical_volume *pv)

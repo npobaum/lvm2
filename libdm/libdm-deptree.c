@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2012 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2005-2013 Red Hat, Inc. All rights reserved.
  *
  * This file is part of the device-mapper userspace tools.
  *
@@ -183,7 +183,11 @@ struct load_segment {
 	struct dm_tree_node *replicator;/* Replicator-dev */
 	uint64_t rdevice_index;		/* Replicator-dev */
 
-	uint64_t rebuilds;	      /* raid */
+	uint64_t rebuilds;		/* raid */
+	uint64_t writemostly;		/* raid */
+	uint32_t writebehind;		/* raid */
+	uint32_t max_recovery_rate;	/* raid kB/sec/disk */
+	uint32_t min_recovery_rate;	/* raid kB/sec/disk */
 
 	struct dm_tree_node *metadata;	/* Thin_pool */
 	struct dm_tree_node *pool;	/* Thin_pool, Thin */
@@ -541,10 +545,10 @@ void dm_tree_node_set_udev_flags(struct dm_tree_node *dnode, uint16_t udev_flags
 	struct dm_info *dinfo = &dnode->info;
 
 	if (udev_flags != dnode->udev_flags)
-		log_debug("Resetting %s (%" PRIu32 ":%" PRIu32
-			  ") udev_flags from 0x%x to 0x%x",
-			  dnode->name, dinfo->major, dinfo->minor,
-			  dnode->udev_flags, udev_flags);
+		log_debug_activation("Resetting %s (%" PRIu32 ":%" PRIu32
+				     ") udev_flags from 0x%x to 0x%x",
+				     dnode->name, dinfo->major, dinfo->minor,
+				     dnode->udev_flags, udev_flags);
 	dnode->udev_flags = udev_flags;
 }
 
@@ -668,10 +672,8 @@ static int _children_suspended(struct dm_tree_node *node,
 		if (dlink->node->presuspend_node == node)
 			continue;
 
-		if (!(dinfo = dm_tree_node_get_info(dlink->node))) {
-			stack;	/* FIXME Is this normal? */
-			return 0;
-		}
+		if (!(dinfo = dm_tree_node_get_info(dlink->node)))
+			return_0;	/* FIXME Is this normal? */
 
 		if (!dinfo->suspended)
 			return 0;
@@ -849,13 +851,13 @@ static int _info_by_dev(uint32_t major, uint32_t minor, int with_open_count,
 	if (name && !(*name = dm_pool_strdup(mem, dm_task_get_name(dmt)))) {
 		log_error("name pool_strdup failed");
 		r = 0;
-		goto_out;
+		goto out;
 	}
 
 	if (uuid && !(*uuid = dm_pool_strdup(mem, dm_task_get_uuid(dmt)))) {
 		log_error("uuid pool_strdup failed");
 		r = 0;
-		goto_out;
+		goto out;
 	}
 
 out:
@@ -916,10 +918,8 @@ static int _node_has_closed_parents(struct dm_tree_node *node,
 		if (!_uuid_prefix_matches(uuid, uuid_prefix, uuid_prefix_len))
 			continue;
 
-		if (!(dinfo = dm_tree_node_get_info(dlink->node))) {
-			stack;	/* FIXME Is this normal? */
-			return 0;
-		}
+		if (!(dinfo = dm_tree_node_get_info(dlink->node)))
+			return_0;	/* FIXME Is this normal? */
 
 		/* Refresh open_count */
 		if (!_info_by_dev(dinfo->major, dinfo->minor, 1, &info, NULL, NULL, NULL) ||
@@ -927,8 +927,8 @@ static int _node_has_closed_parents(struct dm_tree_node *node,
 			continue;
 
 		if (info.open_count) {
-			log_debug("Node %s %d:%d has open_count %d", uuid_prefix,
-				  dinfo->major, dinfo->minor, info.open_count);
+			log_debug_activation("Node %s %d:%d has open_count %d", uuid_prefix,
+					     dinfo->major, dinfo->minor, info.open_count);
 			return 0;
 		}
 	}
@@ -1014,13 +1014,13 @@ static int _node_clear_table(struct dm_tree_node *dnode, uint16_t udev_flags)
 
 	if (!(dmt = dm_task_create(DM_DEVICE_CLEAR))) {
 		log_error("Table clear dm_task creation failed for %s", name);
-		goto_out;
+		goto out;
 	}
 
 	if (!dm_task_set_major(dmt, info->major) ||
 	    !dm_task_set_minor(dmt, info->minor)) {
 		log_error("Failed to set device number for %s table clear", name);
-		goto_out;
+		goto out;
 	}
 
 	r = dm_task_run(dmt);
@@ -1263,13 +1263,13 @@ static int _resume_node(const char *name, uint32_t major, uint32_t minor,
 	log_verbose("Resuming %s (%" PRIu32 ":%" PRIu32 ")", name, major, minor);
 
 	if (!(dmt = dm_task_create(DM_DEVICE_RESUME))) {
-		log_debug("Suspend dm_task creation failed for %s.", name);
+		log_debug_activation("Suspend dm_task creation failed for %s.", name);
 		return 0;
 	}
 
 	/* FIXME Kernel should fill in name on return instead */
 	if (!dm_task_set_name(dmt, name)) {
-		log_debug("Failed to set device name for %s resumption.", name);
+		log_debug_activation("Failed to set device name for %s resumption.", name);
 		goto out;
 	}
 
@@ -1360,6 +1360,9 @@ static int _thin_pool_status_transaction_id(struct dm_tree_node *dnode, uint64_t
 		goto out;
 	}
 
+	if (!dm_task_no_flush(dmt))
+		log_warn("Can't set no_flush flag."); /* Non fatal */
+
 	if (!dm_task_run(dmt))
 		goto_out;
 
@@ -1376,7 +1379,7 @@ static int _thin_pool_status_transaction_id(struct dm_tree_node *dnode, uint64_t
 		goto out;
 	}
 
-	log_debug("Thin pool transaction id: %" PRIu64 " status: %s.", *transaction_id, params);
+	log_debug_activation("Thin pool transaction id: %" PRIu64 " status: %s.", *transaction_id, params);
 
 	r = 1;
 out:
@@ -1474,15 +1477,19 @@ static int _node_send_messages(struct dm_tree_node *dnode,
 		return_0;
 
 	if (!_uuid_prefix_matches(uuid, uuid_prefix, uuid_prefix_len)) {
-		log_debug("UUID \"%s\" does not match.", uuid);
+		log_debug_activation("UUID \"%s\" does not match.", uuid);
 		return 1;
 	}
 
 	if (!_thin_pool_status_transaction_id(dnode, &trans_id))
 		goto_bad;
 
-	if (trans_id == seg->transaction_id)
+	if (trans_id == seg->transaction_id) {
+		if (!dm_list_empty(&seg->thin_messages))
+			log_debug_activation("Thin pool transaction_id matches %" PRIu64
+					     ", skipping messages.", trans_id);
 		return 1; /* In sync - skip messages */
+	}
 
 	if (trans_id != (seg->transaction_id - 1)) {
 		log_error("Thin pool transaction_id=%" PRIu64 ", while expected: %" PRIu64 ".",
@@ -1593,7 +1600,7 @@ static int _dm_tree_deactivate_children(struct dm_tree_node *dnode,
 				  info.minor);
 			r = 0;
 			continue;
-		} else if (info.suspended)
+		} else if (info.suspended && info.live_table)
 			dec_suspended();
 
 		if (child->callback &&
@@ -1695,11 +1702,58 @@ int dm_tree_suspend_children(struct dm_tree_node *dnode,
 	return r;
 }
 
+/*
+ * _rename_conflict_exists
+ * @dnode
+ * @node
+ * @resolvable
+ *
+ * Check if there is a rename conflict with existing peers in
+ * this tree.  'resolvable' is set if the conflicting node will
+ * also be undergoing a rename.  (Allowing that node to rename
+ * first would clear the conflict.)
+ *
+ * Returns: 1 if conflict, 0 otherwise
+ */
+static int _rename_conflict_exists(struct dm_tree_node *parent,
+				 struct dm_tree_node *node,
+				 int *resolvable)
+{
+	void *handle = NULL;
+	const char *name = dm_tree_node_get_name(node);
+	const char *sibling_name;
+	struct dm_tree_node *sibling;
+
+	*resolvable = 0;
+
+	if (!name)
+		return_0;
+
+	while ((sibling = dm_tree_next_child(&handle, parent, 0))) {
+		if (sibling == node)
+			continue;
+
+		if (!(sibling_name = dm_tree_node_get_name(sibling))) {
+			stack;
+			continue;
+		}
+
+		if (!strcmp(node->props.new_name, sibling_name)) {
+			if (sibling->props.new_name)
+				*resolvable = 1;
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
 int dm_tree_activate_children(struct dm_tree_node *dnode,
 				 const char *uuid_prefix,
 				 size_t uuid_prefix_len)
 {
 	int r = 1;
+	int resolvable_name_conflict, awaiting_peer_rename = 0;
 	void *handle = NULL;
 	struct dm_tree_node *child = dnode;
 	struct dm_info newinfo;
@@ -1725,6 +1779,7 @@ int dm_tree_activate_children(struct dm_tree_node *dnode,
 	handle = NULL;
 
 	for (priority = 0; priority < 3; priority++) {
+		awaiting_peer_rename = 0;
 		while ((child = dm_tree_next_child(&handle, dnode, 0))) {
 			if (priority != child->activation_priority)
 				continue;
@@ -1744,6 +1799,11 @@ int dm_tree_activate_children(struct dm_tree_node *dnode,
 
 			/* Rename? */
 			if (child->props.new_name) {
+				if (_rename_conflict_exists(dnode, child, &resolvable_name_conflict) &&
+				    resolvable_name_conflict) {
+					awaiting_peer_rename++;
+					continue;
+				}
 				if (!_rename_node(name, child->props.new_name, child->info.major,
 						  child->info.minor, &child->dtree->cookie,
 						  child->udev_flags)) {
@@ -1772,6 +1832,8 @@ int dm_tree_activate_children(struct dm_tree_node *dnode,
 			/* Update cached info */
 			child->info = newinfo;
 		}
+		if (awaiting_peer_rename)
+			priority--; /* redo priority level */
 	}
 
 	/*
@@ -1781,9 +1843,12 @@ int dm_tree_activate_children(struct dm_tree_node *dnode,
 	 * resume should continue further, just whole command
 	 * has to report failure.
 	 */
-	if (r && dnode->props.send_messages &&
-	    !(r = _node_send_messages(dnode, uuid_prefix, uuid_prefix_len)))
-		stack;
+	if (r && dnode->props.send_messages) {
+		if (!(r = _node_send_messages(dnode, uuid_prefix, uuid_prefix_len)))
+			stack;
+		else
+			dnode->props.send_messages = 0; /* messages posted */
+	}
 
 	handle = NULL;
 
@@ -2125,9 +2190,22 @@ static int _raid_emit_segment_line(struct dm_task *dmt, uint32_t major,
 	if (seg->region_size)
 		param_count += 2;
 
+	if (seg->writebehind)
+		param_count += 2;
+
+	if (seg->min_recovery_rate)
+		param_count += 2;
+
+	if (seg->max_recovery_rate)
+		param_count += 2;
+
 	/* rebuilds is 64-bit */
 	param_count += 2 * hweight32(seg->rebuilds & 0xFFFFFFFF);
 	param_count += 2 * hweight32(seg->rebuilds >> 32);
+
+	/* rebuilds is 64-bit */
+	param_count += 2 * hweight32(seg->writemostly & 0xFFFFFFFF);
+	param_count += 2 * hweight32(seg->writemostly >> 32);
 
 	if ((seg->type == SEG_RAID1) && seg->stripe_size)
 		log_error("WARNING: Ignoring RAID1 stripe size");
@@ -2146,6 +2224,21 @@ static int _raid_emit_segment_line(struct dm_task *dmt, uint32_t major,
 	for (i = 0; i < (seg->area_count / 2); i++)
 		if (seg->rebuilds & (1 << i))
 			EMIT_PARAMS(pos, " rebuild %u", i);
+
+	for (i = 0; i < (seg->area_count / 2); i++)
+		if (seg->writemostly & (1 << i))
+			EMIT_PARAMS(pos, " write_mostly %u", i);
+
+	if (seg->writebehind)
+		EMIT_PARAMS(pos, " writebehind %u", seg->writebehind);
+
+	if (seg->min_recovery_rate)
+		EMIT_PARAMS(pos, " min_recovery_rate %u",
+			    seg->min_recovery_rate);
+
+	if (seg->max_recovery_rate)
+		EMIT_PARAMS(pos, " max_recovery_rate %u",
+			    seg->max_recovery_rate);
 
 	/* Print number of metadata/data device pairs */
 	EMIT_PARAMS(pos, " %u", seg->area_count/2);
@@ -2321,10 +2414,10 @@ static int _emit_segment_line(struct dm_task *dmt, uint32_t major,
 		break;
 	}
 
-	log_debug("Adding target to (%" PRIu32 ":%" PRIu32 "): %" PRIu64
-		  " %" PRIu64 " %s %s", major, minor,
-		  *seg_start, seg->size, target_type_is_raid ? "raid" :
-		  dm_segtypes[seg->type].target, params);
+	log_debug_activation("Adding target to (%" PRIu32 ":%" PRIu32 "): %" PRIu64
+			     " %" PRIu64 " %s %s", major, minor,
+			     *seg_start, seg->size, target_type_is_raid ? "raid" :
+			     dm_segtypes[seg->type].target, params);
 
 	if (!dm_task_add_target(dmt, *seg_start, seg->size,
 				target_type_is_raid ? "raid" :
@@ -2362,8 +2455,8 @@ static int _emit_segment(struct dm_task *dmt, uint32_t major, uint32_t minor,
 		if (ret >= 0)
 			return ret;
 
-		log_debug("Insufficient space in params[%" PRIsize_t
-			  "] for target parameters.", paramsize);
+		log_debug_activation("Insufficient space in params[%" PRIsize_t
+				     "] for target parameters.", paramsize);
 
 		paramsize *= 2;
 	} while (paramsize < MAX_TARGET_PARAMSIZE);
@@ -2428,11 +2521,11 @@ static int _load_node(struct dm_tree_node *dnode)
 			if (!existing_table_size && dnode->props.delay_resume_if_new)
 				dnode->props.size_changed = 0;
 
-			log_debug("Table size changed from %" PRIu64 " to %"
-				  PRIu64 " for %s (%" PRIu32 ":%" PRIu32 ").%s",
-				  existing_table_size, seg_start, dnode->name,
-				  dnode->info.major, dnode->info.minor,
-				  dnode->props.size_changed ? "" : " (Ignoring.)");
+			log_debug_activation("Table size changed from %" PRIu64 " to %"
+					     PRIu64 " for %s (%" PRIu32 ":%" PRIu32 ").%s",
+					     existing_table_size, seg_start, dnode->name,
+					     dnode->info.major, dnode->info.minor,
+					     dnode->props.size_changed ? "" : " (Ignoring.)");
 		}
 	}
 
@@ -2496,7 +2589,15 @@ int dm_tree_preload_children(struct dm_tree_node *dnode,
 			log_error("Unable to resume %s (%" PRIu32
 				  ":%" PRIu32 ")", child->name, child->info.major,
 				  child->info.minor);
+			/* If the device was not previously active, we might as well remove this node. */
+			if (!child->info.live_table &&
+			    !_deactivate_node(child->name, child->info.major,child->info.minor,
+					      &child->dtree->cookie, child->udev_flags, 0))
+				log_error("Unable to deactivate %s (%" PRIu32
+					  ":%" PRIu32 ")", child->name, child->info.major,
+					  child->info.minor);
 			r = 0;
+			/* Each child is handled independently */
 			continue;
 		}
 
@@ -2694,6 +2795,43 @@ int dm_tree_node_add_snapshot_merge_target(struct dm_tree_node *node,
 				    merge_uuid, 1, chunk_size);
 }
 
+int dm_get_status_snapshot(struct dm_pool *mem, const char *params,
+			   struct dm_status_snapshot **status)
+{
+	struct dm_status_snapshot *s;
+	int r;
+
+	if (!params) {
+		log_error("Failed to parse invalid snapshot params.");
+		return 0;
+	}
+
+	if (!(s = dm_pool_zalloc(mem, sizeof(*s)))) {
+		log_error("Failed to allocate snapshot status structure.");
+		return 0;
+	}
+
+	r = sscanf(params, "%" PRIu64 "/%" PRIu64 " %" PRIu64,
+		   &s->used_sectors, &s->total_sectors,
+		   &s->metadata_sectors);
+
+	if (r == 3 || r == 2)
+		s->has_metadata_sectors = (r == 3);
+	else if (!strcmp(params, "Invalid"))
+		s->invalid = 1;
+	else if (!strcmp(params, "Merge failed"))
+		s->merge_failed = 1;
+	else {
+		dm_pool_free(mem, s);
+		log_error("Failed to parse snapshot params: %s.", params);
+		return 0;
+	}
+
+	*status = s;
+
+	return 1;
+}
+
 int dm_tree_node_add_error_target(struct dm_tree_node *node,
 				     uint64_t size)
 {
@@ -2818,6 +2956,35 @@ int dm_tree_node_add_mirror_target(struct dm_tree_node *node,
 	return 1;
 }
 
+int dm_tree_node_add_raid_target_with_params(struct dm_tree_node *node,
+					     uint64_t size,
+					     struct dm_tree_node_raid_params *p)
+{
+	int i;
+	struct load_segment *seg = NULL;
+
+	for (i = 0; dm_segtypes[i].target && !seg; i++)
+		if (!strcmp(p->raid_type, dm_segtypes[i].target))
+			if (!(seg = _add_segment(node,
+						 dm_segtypes[i].type, size)))
+				return_0;
+
+	if (!seg)
+		return_0;
+
+	seg->region_size = p->region_size;
+	seg->stripe_size = p->stripe_size;
+	seg->area_count = 0;
+	seg->rebuilds = p->rebuilds;
+	seg->writemostly = p->writemostly;
+	seg->writebehind = p->writebehind;
+	seg->min_recovery_rate = p->min_recovery_rate;
+	seg->max_recovery_rate = p->max_recovery_rate;
+	seg->flags = p->flags;
+
+	return 1;
+}
+
 int dm_tree_node_add_raid_target(struct dm_tree_node *node,
 				 uint64_t size,
 				 const char *raid_type,
@@ -2826,25 +2993,95 @@ int dm_tree_node_add_raid_target(struct dm_tree_node *node,
 				 uint64_t rebuilds,
 				 uint64_t flags)
 {
+	struct dm_tree_node_raid_params params;
+
+	memset(&params, 0, sizeof(params));
+	params.raid_type = raid_type;
+	params.region_size = region_size;
+	params.stripe_size = stripe_size;
+	params.rebuilds = rebuilds;
+	params.flags = flags;
+
+	return dm_tree_node_add_raid_target_with_params(node, size, &params);
+}
+
+
+/*
+ * Various RAID status versions include:
+ * Versions < 1.5.0 (4 fields):
+ *   <raid_type> <#devs> <health_str> <sync_ratio>
+ * Versions 1.5.0+  (6 fields):
+ *   <raid_type> <#devs> <health_str> <sync_ratio> <sync_action> <mismatch_cnt>
+ */
+int dm_get_status_raid(struct dm_pool *mem, const char *params,
+		       struct dm_status_raid **status)
+{
 	int i;
-	struct load_segment *seg = NULL;
+	const char *pp, *p;
+	struct dm_status_raid *s;
 
-	for (i = 0; dm_segtypes[i].target && !seg; i++)
-		if (!strcmp(raid_type, dm_segtypes[i].target))
-			if (!(seg = _add_segment(node,
-						 dm_segtypes[i].type, size)))
-				return_0;
+	if (!params || !(p = strchr(params, ' '))) {
+		log_error("Failed to parse invalid raid params.");
+		return 0;
+	}
+	p++;
 
-	if (!seg)
+	/* second field holds the device count */
+	if (sscanf(p, "%d", &i) != 1)
 		return_0;
 
-	seg->region_size = region_size;
-	seg->stripe_size = stripe_size;
-	seg->area_count = 0;
-	seg->rebuilds = rebuilds;
-	seg->flags = flags;
+	if (!(s = dm_pool_zalloc(mem, sizeof(struct dm_status_raid))))
+		return_0;
+
+	if (!(s->raid_type = dm_pool_zalloc(mem, p - params)))
+		goto_bad; /* memory is freed went pool is destroyed */
+
+	if (!(s->dev_health = dm_pool_zalloc(mem, i + 1)))
+		goto_bad;
+
+	if (sscanf(params, "%s %u %s %" PRIu64 "/%" PRIu64,
+		   s->raid_type,
+		   &s->dev_count,
+		   s->dev_health,
+		   &s->insync_regions,
+		   &s->total_regions) != 5) {
+		log_error("Failed to parse raid params: %s", params);
+		goto bad;
+	}
+
+	*status = s;
+
+	/*
+	 * All pre-1.5.0 version parameters are read.  Now we check
+	 * for additional 1.5.0+ parameters.
+	 *
+	 * Note that 'sync_action' will be NULL (and mismatch_count
+	 * will be 0) if the kernel returns a pre-1.5.0 status.
+	 */
+	for (p = params, i = 0; i < 4; i++, p++)
+		if (!(p = strchr(p, ' ')))
+			return 1;  /* return pre-1.5.0 status */
+
+	pp = p;
+	if (!(p = strchr(p, ' '))) {
+		log_error(INTERNAL_ERROR "Bad RAID status received.");
+		goto bad;
+	}
+	p++;
+
+	if (!(s->sync_action = dm_pool_zalloc(mem, p - pp)))
+		goto_bad;
+
+	if (sscanf(pp, "%s %" PRIu64, s->sync_action, &s->mismatch_count) != 2) {
+		log_error("Failed to parse raid params: %s", params);
+		goto bad;
+	}
 
 	return 1;
+bad:
+	dm_pool_free(mem, s);
+
+	return 0;
 }
 
 int dm_tree_node_add_replicator_target(struct dm_tree_node *node,
@@ -3056,13 +3293,6 @@ int dm_tree_node_add_thin_pool_target(struct dm_tree_node *node,
 {
 	struct load_segment *seg, *mseg;
 	uint64_t devsize = 0;
-	/*
-	 * Max supported size for thin pool  metadata device
-	 * Limitation is hardcoded into kernel and bigger
-	 * device size is not accepted. (16978542592)
-	 */
-	const uint64_t max_metadata_size =
-		255ULL * (1 << 14) * (4096 / (1 << 9)) - 256 * 1024;
 
 	if (data_block_size < DM_THIN_MIN_DATA_BLOCK_SIZE) {
 		log_error("Data block size %u is lower then %u sectors.",
@@ -3090,11 +3320,11 @@ int dm_tree_node_add_thin_pool_target(struct dm_tree_node *node,
 	/* FIXME: more complex target may need more tweaks */
 	dm_list_iterate_items(mseg, &seg->metadata->props.segs) {
 		devsize += mseg->size;
-		if (devsize > max_metadata_size) {
-			log_debug("Ignoring %" PRIu64 " of device.",
-				  devsize - max_metadata_size);
-			mseg->size -= (devsize - max_metadata_size);
-			devsize = max_metadata_size;
+		if (devsize > DM_THIN_MAX_METADATA_SIZE) {
+			log_debug_activation("Ignoring %" PRIu64 " of device.",
+					     devsize - DM_THIN_MAX_METADATA_SIZE);
+			mseg->size -= (devsize - DM_THIN_MAX_METADATA_SIZE);
+			devsize = DM_THIN_MAX_METADATA_SIZE;
 			/* FIXME: drop remaining segs */
 		}
 	}
@@ -3255,6 +3485,12 @@ int dm_get_status_thin_pool(struct dm_pool *mem, const char *params,
 			    struct dm_status_thin_pool **status)
 {
 	struct dm_status_thin_pool *s;
+	int pos;
+
+	if (!params) {
+		log_error("Failed to parse invalid thin pool params.");
+		return 0;
+	}
 
 	if (!(s = dm_pool_zalloc(mem, sizeof(struct dm_status_thin_pool)))) {
 		log_error("Failed to allocate thin_pool status structure.");
@@ -3262,15 +3498,26 @@ int dm_get_status_thin_pool(struct dm_pool *mem, const char *params,
 	}
 
 	/* FIXME: add support for held metadata root */
-	if (sscanf(params, "%" PRIu64 " %" PRIu64 "/%" PRIu64 " %" PRIu64 "/%" PRIu64,
+	if (sscanf(params, "%" PRIu64 " %" PRIu64 "/%" PRIu64 " %" PRIu64 "/%" PRIu64 "%n",
 		   &s->transaction_id,
 		   &s->used_metadata_blocks,
 		   &s->total_metadata_blocks,
 		   &s->used_data_blocks,
-		   &s->total_data_blocks) != 5) {
+		   &s->total_data_blocks, &pos) < 5) {
+		dm_pool_free(mem, s);
 		log_error("Failed to parse thin pool params: %s.", params);
 		return 0;
 	}
+
+	/* New status flags */
+	if (strstr(params + pos, "no_discard_passdown"))
+		s->discards = DM_THIN_DISCARDS_NO_PASSDOWN;
+	else if (strstr(params + pos, "ignore_discard"))
+		s->discards = DM_THIN_DISCARDS_IGNORE;
+	else /* default discard_passdown */
+		s->discards = DM_THIN_DISCARDS_PASSDOWN;
+
+	s->read_only = (strstr(params + pos, "ro ")) ? 1 : 0;
 
 	*status = s;
 
@@ -3281,6 +3528,11 @@ int dm_get_status_thin(struct dm_pool *mem, const char *params,
 		       struct dm_status_thin **status)
 {
 	struct dm_status_thin *s;
+
+	if (!params) {
+		log_error("Failed to parse invalid thin params.");
+		return 0;
+	}
 
 	if (!(s = dm_pool_zalloc(mem, sizeof(struct dm_status_thin)))) {
 		log_error("Failed to allocate thin status structure.");
@@ -3293,6 +3545,7 @@ int dm_get_status_thin(struct dm_pool *mem, const char *params,
 	} else if (sscanf(params, "%" PRIu64 " %" PRIu64,
 		   &s->mapped_sectors,
 		   &s->highest_mapped_sector) != 2) {
+		dm_pool_free(mem, s);
 		log_error("Failed to parse thin params: %s.", params);
 		return 0;
 	}

@@ -32,7 +32,7 @@
 #  include <libudev.h>
 #endif
 
-#ifdef linux
+#ifdef __linux__
 #  include <linux/fs.h>
 #endif
 
@@ -62,6 +62,7 @@ union semun
 static char _dm_dir[PATH_MAX] = DEV_DIR DM_DIR;
 static char _sysfs_dir[PATH_MAX] = "/sys/";
 static char _path0[PATH_MAX];           /* path buffer, safe 4kB on stack */
+static const char _mountinfo[] = "/proc/self/mountinfo";
 
 #define DM_MAX_UUID_PREFIX_LEN	15
 static char _default_uuid_prefix[DM_MAX_UUID_PREFIX_LEN + 1] = "LVM-";
@@ -74,6 +75,8 @@ static dm_string_mangling_t _name_mangling_mode = DEFAULT_DM_NAME_MANGLING;
 static struct selabel_handle *_selabel_handle = NULL;
 #endif
 
+static int _udev_disabled = 0;
+
 #ifdef UDEV_SYNC_SUPPORT
 static int _semaphore_supported = -1;
 static int _udev_running = -1;
@@ -84,6 +87,9 @@ static int _udev_checking = 1;
 void dm_lib_init(void)
 {
 	const char *env;
+
+	if (getenv("DM_DISABLE_UDEV"))
+		_udev_disabled = 1;
 
 	env = getenv(DM_DEFAULT_NAME_MANGLING_MODE_ENV_VAR_NAME);
 	if (env && *env) {
@@ -105,37 +111,41 @@ void dm_lib_init(void)
 __attribute__((format(printf, 5, 0)))
 static void _default_log_line(int level,
 	    const char *file __attribute__((unused)),
-	    int line __attribute__((unused)), int dm_errno, 
+	    int line __attribute__((unused)), int dm_errno_or_class, 
 	    const char *f, va_list ap)
 {
-	int use_stderr = level & _LOG_STDERR;
+	static int _abort_on_internal_errors = -1;
+	FILE *out = (level & _LOG_STDERR) ? stderr : stdout;
 
 	level &= ~_LOG_STDERR;
 
-	if (level > _LOG_WARN && !_verbose)
-		return;
+	if (level <= _LOG_WARN || _verbose) {
+		if (level < _LOG_WARN)
+			out = stderr;
+		vfprintf(out, f, ap);
+		fputc('\n', out);
+	}
 
-	if (level < _LOG_WARN)
-		vfprintf(stderr, f, ap);
-	else
-		vfprintf(use_stderr ? stderr : stdout, f, ap);
+	if (_abort_on_internal_errors < 0)
+		/* Set when env DM_ABORT_ON_INTERNAL_ERRORS is not "0" */
+		_abort_on_internal_errors =
+			strcmp(getenv("DM_ABORT_ON_INTERNAL_ERRORS") ? : "0", "0");
 
-	if (level < _LOG_WARN)
-		fprintf(stderr, "\n");
-	else
-		fprintf(use_stderr ? stderr : stdout, "\n");
+	if (_abort_on_internal_errors &&
+	    !strncmp(f, INTERNAL_ERROR, sizeof(INTERNAL_ERROR) - 1))
+		abort();
 }
 
 __attribute__((format(printf, 5, 6)))
 static void _default_log_with_errno(int level,
 	    const char *file __attribute__((unused)),
-	    int line __attribute__((unused)), int dm_errno, 
+	    int line __attribute__((unused)), int dm_errno_or_class, 
 	    const char *f, ...)
 {
 	va_list ap;
 
 	va_start(ap, f);
-	_default_log_line(level, file, line, dm_errno, f, ap);
+	_default_log_line(level, file, line, dm_errno_or_class, f, ap);
 	va_end(ap);
 }
 
@@ -201,7 +211,7 @@ int dm_get_library_version(char *version, size_t size)
 void inc_suspended(void)
 {
 	_suspended_dev_counter++;
-	log_debug("Suspended device counter increased to %d", _suspended_dev_counter);
+	log_debug_activation("Suspended device counter increased to %d", _suspended_dev_counter);
 }
 
 void dec_suspended(void)
@@ -212,7 +222,7 @@ void dec_suspended(void)
 	}
 
 	_suspended_dev_counter--;
-	log_debug("Suspended device counter reduced to %d", _suspended_dev_counter);
+	log_debug_activation("Suspended device counter reduced to %d", _suspended_dev_counter);
 }
 
 int dm_get_suspended_counter(void)
@@ -461,8 +471,8 @@ int unmangle_string(const char *str, const char *str_name, size_t len,
 
 		if (str[i] == '\\' && str[i+1] == 'x') {
 			if (!sscanf(&str[i+2], "%2x%s", &code, str_rest)) {
-				log_debug("Hex encoding mismatch detected in %s \"%s\" "
-					  "while trying to unmangle it.", str_name, str);
+				log_debug_activation("Hex encoding mismatch detected in %s \"%s\" "
+						     "while trying to unmangle it.", str_name, str);
 				goto out;
 			}
 			buf[j] = (unsigned char) code;
@@ -509,9 +519,9 @@ static int _dm_task_set_name(struct dm_task *dmt, const char *name,
 
 	/* Store mangled_dev_name only if it differs from dev_name! */
 	if (r) {
-		log_debug("Device name mangled [%s]: %s --> %s",
-			  mangling_mode == DM_STRING_MANGLING_AUTO ? "auto" : "hex",
-			  name, mangled_name);
+		log_debug_activation("Device name mangled [%s]: %s --> %s",
+				     mangling_mode == DM_STRING_MANGLING_AUTO ? "auto" : "hex",
+				     name, mangled_name);
 		if (!(dmt->mangled_dev_name = dm_strdup(mangled_name))) {
 			log_error("_dm_task_set_name: dm_strdup(%s) failed", mangled_name);
 			return 0;
@@ -688,6 +698,11 @@ int dm_task_set_newname(struct dm_task *dmt, const char *newname)
 		return 0;
 	}
 
+	if (!*newname) {
+		log_error("Non empty new name is required.");
+		return 0;
+	}
+
 	if (!check_multiple_mangled_string_allowed(newname, "new name", mangling_mode))
 		return_0;
 
@@ -699,12 +714,13 @@ int dm_task_set_newname(struct dm_task *dmt, const char *newname)
 	}
 
 	if (r) {
-		log_debug("New device name mangled [%s]: %s --> %s",
-			  mangling_mode == DM_STRING_MANGLING_AUTO ? "auto" : "hex",
-			  newname, mangled_name);
+		log_debug_activation("New device name mangled [%s]: %s --> %s",
+				     mangling_mode == DM_STRING_MANGLING_AUTO ? "auto" : "hex",
+				     newname, mangled_name);
 		newname = mangled_name;
 	}
 
+	dm_free(dmt->newname);
 	if (!(dmt->newname = dm_strdup(newname))) {
 		log_error("dm_task_set_newname: strdup(%s) failed", newname);
 		return 0;
@@ -737,9 +753,9 @@ int dm_task_set_uuid(struct dm_task *dmt, const char *uuid)
 	}
 
 	if (r) {
-		log_debug("Device uuid mangled [%s]: %s --> %s",
-			  mangling_mode == DM_STRING_MANGLING_AUTO ? "auto" : "hex",
-			  uuid, mangled_uuid);
+		log_debug_activation("Device uuid mangled [%s]: %s --> %s",
+				     mangling_mode == DM_STRING_MANGLING_AUTO ? "auto" : "hex",
+				     uuid, mangled_uuid);
 
 		if (!(dmt->mangled_uuid = dm_strdup(mangled_uuid))) {
 			log_error("dm_task_set_uuid: dm_strdup(%s) failed", mangled_uuid);
@@ -837,14 +853,14 @@ static int _selabel_lookup(const char *path, mode_t mode,
 	}
 
 	if (selabel_lookup(_selabel_handle, scontext, path, mode)) {
-		log_debug("selabel_lookup failed for %s: %s",
-			  path, strerror(errno));
+		log_debug_activation("selabel_lookup failed for %s: %s",
+				     path, strerror(errno));
 		return 0;
 	}
 #else
 	if (matchpathcon(path, mode, scontext)) {
-		log_debug("matchpathcon failed for %s: %s",
-			  path, strerror(errno));
+		log_debug_activation("matchpathcon failed for %s: %s",
+				     path, strerror(errno));
 		return 0;
 	}
 #endif
@@ -864,13 +880,13 @@ int dm_prepare_selinux_context(const char *path, mode_t mode)
 		if (!_selabel_lookup(path, mode, &scontext))
 			return_0;
 
-		log_debug("Preparing SELinux context for %s to %s.", path, scontext);
+		log_debug_activation("Preparing SELinux context for %s to %s.", path, scontext);
 	}
 	else
-		log_debug("Resetting SELinux context to default value.");
+		log_debug_activation("Resetting SELinux context to default value.");
 
 	if (setfscreatecon(scontext) < 0) {
-		log_sys_error("setfscreatecon", path);
+		log_sys_error("setfscreatecon", (path ? : "SELinux context reset"));
 		freecon(scontext);
 		return 0;
 	}
@@ -891,7 +907,7 @@ int dm_set_selinux_context(const char *path, mode_t mode)
 	if (!_selabel_lookup(path, mode, &scontext))
 		return_0;
 
-	log_debug("Setting SELinux context for %s to %s.", path, scontext);
+	log_debug_activation("Setting SELinux context for %s to %s.", path, scontext);
 
 	if ((lsetfilecon(path, scontext) < 0) && (errno != ENOTSUP)) {
 		log_sys_error("lsetfilecon", path);
@@ -950,7 +966,9 @@ static int _add_dev_node(const char *dev_name, uint32_t major, uint32_t minor,
 
 	(void) dm_prepare_selinux_context(path, S_IFBLK);
 	old_mask = umask(0);
-	if (mknod(path, S_IFBLK | mode, dev) < 0) {
+
+	/* The node may already have been created by udev. So ignore EEXIST. */
+	if (mknod(path, S_IFBLK | mode, dev) < 0 && errno != EEXIST) {
 		log_error("%s: mknod for %s failed: %s", path, dev_name, strerror(errno));
 		umask(old_mask);
 		(void) dm_prepare_selinux_context(NULL, 0);
@@ -964,7 +982,7 @@ static int _add_dev_node(const char *dev_name, uint32_t major, uint32_t minor,
 		return 0;
 	}
 
-	log_debug("Created %s", path);
+	log_debug_activation("Created %s", path);
 
 	return 1;
 }
@@ -982,12 +1000,13 @@ static int _rm_dev_node(const char *dev_name, int warn_if_udev_failed)
 		log_warn("Node %s was not removed by udev. "
 			 "Falling back to direct node removal.", path);
 
-	if (unlink(path) < 0) {
+	/* udev may already have deleted the node. Ignore ENOENT. */
+	if (unlink(path) < 0 && errno != ENOENT) {
 		log_error("Unable to unlink device node for '%s'", dev_name);
 		return 0;
 	}
 
-	log_debug("Removed %s", path);
+	log_debug_activation("Removed %s", path);
 
 	return 1;
 }
@@ -1038,18 +1057,19 @@ static int _rename_dev_node(const char *old_name, const char *new_name,
 			 "Falling back to direct node rename.",
 			 oldpath, newpath);
 
-	if (rename(oldpath, newpath) < 0) {
+	/* udev may already have renamed the node. Ignore ENOENT. */
+	if (rename(oldpath, newpath) < 0 && errno != ENOENT) {
 		log_error("Unable to rename device node from '%s' to '%s'",
 			  old_name, new_name);
 		return 0;
 	}
 
-	log_debug("Renamed %s to %s", oldpath, newpath);
+	log_debug_activation("Renamed %s to %s", oldpath, newpath);
 
 	return 1;
 }
 
-#ifdef linux
+#ifdef __linux__
 static int _open_dev_node(const char *dev_name)
 {
 	int fd = -1;
@@ -1092,8 +1112,8 @@ int get_dev_node_read_ahead(const char *dev_name, uint32_t major, uint32_t minor
 			} else {
 				buf[len] = 0; /* kill \n and ensure \0 */
 				*read_ahead = atoi(buf) * 2;
-				log_debug("%s (%d:%d): read ahead is %" PRIu32,
-					  dev_name, major, minor, *read_ahead);
+				log_debug_activation("%s (%d:%d): read ahead is %" PRIu32,
+						     dev_name, major, minor, *read_ahead);
 			}
 
 			if (close(fd))
@@ -1124,7 +1144,7 @@ int get_dev_node_read_ahead(const char *dev_name, uint32_t major, uint32_t minor
 		r = 0;
 	} else {
 		*read_ahead = (uint32_t) read_ahead_long;
-		log_debug("%s: read ahead is %" PRIu32, dev_name, *read_ahead);
+		log_debug_activation("%s: read ahead is %" PRIu32, dev_name, *read_ahead);
 	}
 
 	if (close(fd))
@@ -1142,8 +1162,8 @@ static int _set_read_ahead(const char *dev_name, uint32_t major, uint32_t minor,
 	int fd;
 	long read_ahead_long = (long) read_ahead;
 
-	log_debug("%s (%d:%d): Setting read ahead to %" PRIu32, dev_name,
-		  major, minor, read_ahead);
+	log_debug_activation("%s (%d:%d): Setting read ahead to %" PRIu32, dev_name,
+			     major, minor, read_ahead);
 
 	/*
 	 * If we know the device number, use sysfs if we can.
@@ -1215,8 +1235,8 @@ static int _set_dev_node_read_ahead(const char *dev_name,
 		if (!get_dev_node_read_ahead(dev_name, major, minor, &current_read_ahead))
 			return_0;
 
-		if (current_read_ahead > read_ahead) {
-			log_debug("%s: retaining kernel read ahead of %" PRIu32
+		if (current_read_ahead >= read_ahead) {
+			log_debug_activation("%s: retaining kernel read ahead of %" PRIu32
 				  " (requested %" PRIu32 ")",           
 				  dev_name, current_read_ahead, read_ahead);
 			return 1;
@@ -1327,19 +1347,19 @@ static void _log_node_op(const char *action_str, struct node_op_parms *nop)
 
 	switch (nop->type) {
 	case NODE_ADD:
-		log_debug("%s: %s NODE_ADD (%" PRIu32 ",%" PRIu32 ") %u:%u 0%o%s%s",
-			  nop->dev_name, action_str, nop->major, nop->minor, nop->uid, nop->gid, nop->mode,
-			  rely, verify);
+		log_debug_activation("%s: %s NODE_ADD (%" PRIu32 ",%" PRIu32 ") %u:%u 0%o%s%s",
+				     nop->dev_name, action_str, nop->major, nop->minor, nop->uid, nop->gid, nop->mode,
+				     rely, verify);
 		break;
 	case NODE_DEL:
-		log_debug("%s: %s NODE_DEL%s%s", nop->dev_name, action_str, rely, verify);
+		log_debug_activation("%s: %s NODE_DEL%s%s", nop->dev_name, action_str, rely, verify);
 		break;
 	case NODE_RENAME:
-		log_debug("%s: %s NODE_RENAME to %s%s%s", nop->old_name, action_str, nop->dev_name, rely, verify);
+		log_debug_activation("%s: %s NODE_RENAME to %s%s%s", nop->old_name, action_str, nop->dev_name, rely, verify);
 		break;
 	case NODE_READ_AHEAD:
-		log_debug("%s: %s NODE_READ_AHEAD %" PRIu32 " (flags=%" PRIu32 ")%s%s",
-			  nop->dev_name, action_str, nop->read_ahead, nop->read_ahead_flags, rely, verify);
+		log_debug_activation("%s: %s NODE_READ_AHEAD %" PRIu32 " (flags=%" PRIu32 ")%s%s",
+				     nop->dev_name, action_str, nop->read_ahead, nop->read_ahead_flags, rely, verify);
 		break;
 	default:
 		; /* NOTREACHED */
@@ -1502,8 +1522,8 @@ static int _canonicalize_and_set_dir(const char *src, const char *suffix, size_t
 	const char *slash;
 
 	if (*src != '/') {
-		log_debug("Invalid directory value, %s: "
-			  "not an absolute name.", src);
+		log_debug_activation("Invalid directory value, %s: "
+				     "not an absolute name.", src);
 		return 0;
 	}
 
@@ -1511,7 +1531,7 @@ static int _canonicalize_and_set_dir(const char *src, const char *suffix, size_t
 	slash = src[len-1] == '/' ? "" : "/";
 
 	if (dm_snprintf(dir, max_len, "%s%s%s", src, slash, suffix ? suffix : "") < 0) {
-		log_debug("Invalid directory value, %s: name too long.", src);
+		log_debug_activation("Invalid directory value, %s: name too long.", src);
 		return 0;
 	}
 
@@ -1564,6 +1584,78 @@ int dm_set_uuid_prefix(const char *uuid_prefix)
 const char *dm_uuid_prefix(void)
 {
 	return _default_uuid_prefix;
+}
+
+static int _is_octal(int a)
+{
+	return (((a) & ~7) == '0');
+}
+
+/* Convert mangled mountinfo into normal ASCII string */
+static void _unmangle_mountinfo_string(const char *src, char *buf)
+{
+	while (*src) {
+		if ((*src == '\\') &&
+		    _is_octal(src[1]) && _is_octal(src[2]) && _is_octal(src[3])) {
+			*buf++ = 64 * (src[1] & 7) + 8 * (src[2] & 7) + (src[3] & 7);
+			src += 4;
+		} else
+			*buf++ = *src++;
+	}
+	*buf = '\0';
+}
+
+/* Parse one line of mountinfo and unmangled target line */
+static int _mountinfo_parse_line(const char *line, unsigned *maj, unsigned *min, char *buf)
+{
+	char root[PATH_MAX + 1];
+	char target[PATH_MAX + 1];
+
+	/* TODO: maybe detect availability of  %ms  glib support ? */
+	if (sscanf(line, "%*u %*u %u:%u %" DM_TO_STRING(PATH_MAX)
+		   "s %" DM_TO_STRING(PATH_MAX) "s",
+		   maj, min, root, target) < 4) {
+		log_error("Failed to parse mountinfo line.");
+		return 0;
+	}
+
+	_unmangle_mountinfo_string(target, buf);
+
+	return 1;
+}
+
+/*
+ * Function to operate on individal mountinfo line,
+ * minor, major and mount target are parsed and unmangled
+ */
+int dm_mountinfo_read(dm_mountinfo_line_callback_fn read_fn, void *cb_data)
+{
+	FILE *minfo;
+	char buffer[2 * PATH_MAX];
+	char target[PATH_MAX];
+	unsigned maj, min;
+	int r = 1;
+
+	if (!(minfo = fopen(_mountinfo, "r"))) {
+		if (errno != ENOENT)
+			log_sys_error("fopen", _mountinfo);
+		else
+			log_sys_debug("fopen", _mountinfo);
+		return 0;
+	}
+
+	while (!feof(minfo) && fgets(buffer, sizeof(buffer), minfo))
+		if (!_mountinfo_parse_line(buffer, &maj, &min, target) ||
+		    !read_fn(buffer, maj, min, target, cb_data)) {
+			stack;
+			r = 0;
+			break;
+		}
+
+	if (fclose(minfo))
+		log_sys_error("fclose", _mountinfo);
+
+	return r;
 }
 
 static int _sysfs_get_dm_name(uint32_t major, uint32_t minor, char *buf, size_t buf_size)
@@ -1707,7 +1799,8 @@ int dm_device_has_holders(uint32_t major, uint32_t minor)
 	}
 
 	if (stat(sysfs_path, &st)) {
-		log_sys_error("stat", sysfs_path);
+		if (errno != ENOENT)
+			log_sys_error("stat", sysfs_path);
 		return 0;
 	}
 
@@ -1760,10 +1853,48 @@ static int _mounted_fs_on_device(const char *kernel_dev_name)
 	return r;
 }
 
+struct mountinfo_s {
+	unsigned maj;
+	unsigned min;
+	int mounted;
+};
+
+static int _device_has_mounted_fs(char *buffer, unsigned major, unsigned minor,
+				  char *target, void *cb_data)
+{
+	struct mountinfo_s *data = cb_data;
+	char kernel_dev_name[PATH_MAX];
+
+	if ((major == data->maj) && (minor == data->min)) {
+		if (!dm_device_get_name(major, minor, 1, kernel_dev_name, PATH_MAX)) {
+			stack;
+			*kernel_dev_name = '\0';
+		}
+		log_verbose("Device %s (%u:%u) appears to be mounted on %s.",
+			    kernel_dev_name, major, minor, target);
+		data->mounted = 1;
+	}
+
+	return 1;
+}
+
 int dm_device_has_mounted_fs(uint32_t major, uint32_t minor)
 {
 	char kernel_dev_name[PATH_MAX];
+	struct mountinfo_s data = {
+		.maj = major,
+		.min = minor,
+	};
 
+	if (!dm_mountinfo_read(_device_has_mounted_fs, &data))
+		stack;
+
+	if (data.mounted)
+		return 1;
+	/*
+	 * TODO: Verify dm_mountinfo_read() is superset
+	 * and remove sysfs check (namespaces)
+	 */
 	/* Get kernel device name first */
 	if (!dm_device_get_name(major, minor, 1, kernel_dev_name, PATH_MAX))
 		return 0;
@@ -1814,6 +1945,26 @@ out:
 	return r;
 }
 
+static void _set_cookie_flags(struct dm_task *dmt, uint16_t flags)
+{
+	if (!dm_cookie_supported())
+		return;
+
+	if (_udev_disabled) {
+		/*
+		 * If udev is disabled, hardcode this functionality:
+		 *   - we want libdm to create the nodes
+		 *   - we don't want the /dev/mapper and any subsystem
+		 *     related content to be created by udev if udev
+		 *     rules are installed
+		 */
+		flags &= ~DM_UDEV_DISABLE_LIBRARY_FALLBACK;
+		flags |= DM_UDEV_DISABLE_DM_RULES_FLAG | DM_UDEV_DISABLE_SUBSYSTEM_RULES_FLAG;
+	}
+
+	dmt->event_nr = flags << DM_UDEV_FLAGS_SHIFT;
+}
+
 #ifndef UDEV_SYNC_SUPPORT
 void dm_udev_set_sync_support(int sync_with_udev)
 {
@@ -1835,9 +1986,10 @@ int dm_udev_get_checking(void)
 
 int dm_task_set_cookie(struct dm_task *dmt, uint32_t *cookie, uint16_t flags)
 {
-	if (dm_cookie_supported())
-		dmt->event_nr = flags << DM_UDEV_FLAGS_SHIFT;
+	_set_cookie_flags(dmt, flags);
+
 	*cookie = 0;
+	dmt->cookie_set = 1;
 
 	return 1;
 }
@@ -1889,8 +2041,8 @@ static int _check_udev_is_running(void)
 	}
 
 	if (!(r = udev_queue_get_udev_is_active(udev_queue)))
-		log_debug("Udev is not running. "
-			  "Not using udev synchronisation code.");
+		log_debug_activation("Udev is not running. "
+				     "Not using udev synchronisation code.");
 
 	udev_queue_unref(udev_queue);
 	udev_unref(udev);
@@ -1907,8 +2059,13 @@ static void _check_udev_sync_requirements_once(void)
 	if (_semaphore_supported < 0)
 		_semaphore_supported = _check_semaphore_is_supported();
 
-	if (_udev_running < 0)
+	if (_udev_running < 0) {
 		_udev_running = _check_udev_is_running();
+		if (_udev_disabled && _udev_running)
+			log_warn("Udev is running and DM_DISABLE_UDEV environment variable is set. "
+				 "Bypassing udev, device-mapper library will manage device "
+				 "nodes in device directory.");
+	}
 }
 
 void dm_udev_set_sync_support(int sync_with_udev)
@@ -1921,16 +2078,16 @@ int dm_udev_get_sync_support(void)
 {
 	_check_udev_sync_requirements_once();
 
-	return _semaphore_supported && dm_cookie_supported() &&
-		_udev_running && _sync_with_udev;
+	return !_udev_disabled && _semaphore_supported &&
+		dm_cookie_supported() &&_udev_running && _sync_with_udev;
 }
 
 void dm_udev_set_checking(int checking)
 {
 	if ((_udev_checking = checking))
-		log_debug("DM udev checking enabled");
+		log_debug_activation("DM udev checking enabled");
 	else
-		log_debug("DM udev checking disabled");
+		log_debug_activation("DM udev checking disabled");
 }
 
 int dm_udev_get_checking(void)
@@ -1993,7 +2150,7 @@ static int _udev_notify_sem_inc(uint32_t cookie, int semid)
 		return 0;		
 	}
 
-	log_debug("Udev cookie 0x%" PRIx32 " (semid %d) incremented to %d",
+	log_debug_activation("Udev cookie 0x%" PRIx32 " (semid %d) incremented to %d",
 		  cookie, semid, val);
 
 	return 1;
@@ -2028,8 +2185,8 @@ static int _udev_notify_sem_dec(uint32_t cookie, int semid)
 		return 0;
 	}
 
-	log_debug("Udev cookie 0x%" PRIx32 " (semid %d) decremented to %d",
-		  cookie, semid, val - 1);
+	log_debug_activation("Udev cookie 0x%" PRIx32 " (semid %d) decremented to %d",
+			     cookie, semid, val - 1);
 
 	return 1;
 }
@@ -2043,8 +2200,8 @@ static int _udev_notify_sem_destroy(uint32_t cookie, int semid)
 		return 0;
 	}
 
-	log_debug("Udev cookie 0x%" PRIx32 " (semid %d) destroyed", cookie,
-		  semid);
+	log_debug_activation("Udev cookie 0x%" PRIx32 " (semid %d) destroyed", cookie,
+			     semid);
 
 	return 1;
 }
@@ -2101,8 +2258,8 @@ static int _udev_notify_sem_create(uint32_t *cookie, int *semid)
 		}
 	} while (!base_cookie);
 
-	log_debug("Udev cookie 0x%" PRIx32 " (semid %d) created",
-		  gen_cookie, gen_semid);
+	log_debug_activation("Udev cookie 0x%" PRIx32 " (semid %d) created",
+			     gen_cookie, gen_semid);
 
 	sem_arg.val = 1;
 
@@ -2121,8 +2278,8 @@ static int _udev_notify_sem_create(uint32_t *cookie, int *semid)
 		goto bad;
 	}
 
-	log_debug("Udev cookie 0x%" PRIx32 " (semid %d) incremented to %d",
-		  gen_cookie, gen_semid, val);
+	log_debug_activation("Udev cookie 0x%" PRIx32 " (semid %d) incremented to %d",
+			     gen_cookie, gen_semid, val);
 
 	if (close(fd))
 		stack;
@@ -2202,11 +2359,11 @@ int dm_task_set_cookie(struct dm_task *dmt, uint32_t *cookie, uint16_t flags)
 {
 	int semid;
 
-	if (dm_cookie_supported())
-		dmt->event_nr = flags << DM_UDEV_FLAGS_SHIFT;
+	_set_cookie_flags(dmt, flags);
 
 	if (!dm_udev_get_sync_support()) {
 		*cookie = 0;
+		dmt->cookie_set = 1;
 		return 1;
 	}
 
@@ -2226,16 +2383,16 @@ int dm_task_set_cookie(struct dm_task *dmt, uint32_t *cookie, uint16_t flags)
 	dmt->event_nr |= ~DM_UDEV_FLAGS_MASK & *cookie;
 	dmt->cookie_set = 1;
 
-	log_debug("Udev cookie 0x%" PRIx32 " (semid %d) assigned to "
-		  "%s task(%d) with flags%s%s%s%s%s%s%s (0x%" PRIx16 ")", *cookie, semid, _task_type_disp(dmt->type), dmt->type, 
-		  (flags & DM_UDEV_DISABLE_DM_RULES_FLAG) ? " DISABLE_DM_RULES" : "",
-		  (flags & DM_UDEV_DISABLE_SUBSYSTEM_RULES_FLAG) ? " DISABLE_SUBSYSTEM_RULES" : "",
-		  (flags & DM_UDEV_DISABLE_DISK_RULES_FLAG) ? " DISABLE_DISK_RULES" : "",
-		  (flags & DM_UDEV_DISABLE_OTHER_RULES_FLAG) ? " DISABLE_OTHER_RULES" : "",
-		  (flags & DM_UDEV_LOW_PRIORITY_FLAG) ? " LOW_PRIORITY" : "",
-		  (flags & DM_UDEV_DISABLE_LIBRARY_FALLBACK) ? " DISABLE_LIBRARY_FALLBACK" : "",
-		  (flags & DM_UDEV_PRIMARY_SOURCE_FLAG) ? " PRIMARY_SOURCE" : "",
-		  flags);
+	log_debug_activation("Udev cookie 0x%" PRIx32 " (semid %d) assigned to "
+			     "%s task(%d) with flags%s%s%s%s%s%s%s (0x%" PRIx16 ")", *cookie, semid, _task_type_disp(dmt->type), dmt->type, 
+			     (flags & DM_UDEV_DISABLE_DM_RULES_FLAG) ? " DISABLE_DM_RULES" : "",
+			     (flags & DM_UDEV_DISABLE_SUBSYSTEM_RULES_FLAG) ? " DISABLE_SUBSYSTEM_RULES" : "",
+			     (flags & DM_UDEV_DISABLE_DISK_RULES_FLAG) ? " DISABLE_DISK_RULES" : "",
+			     (flags & DM_UDEV_DISABLE_OTHER_RULES_FLAG) ? " DISABLE_OTHER_RULES" : "",
+			     (flags & DM_UDEV_LOW_PRIORITY_FLAG) ? " LOW_PRIORITY" : "",
+			     (flags & DM_UDEV_DISABLE_LIBRARY_FALLBACK) ? " DISABLE_LIBRARY_FALLBACK" : "",
+			     (flags & DM_UDEV_PRIMARY_SOURCE_FLAG) ? " PRIMARY_SOURCE" : "",
+			     flags);
 
 	return 1;
 
@@ -2284,8 +2441,8 @@ static int _udev_wait(uint32_t cookie)
 		return 0;
 	}
 
-	log_debug("Udev cookie 0x%" PRIx32 " (semid %d) waiting for zero",
-		  cookie, semid);
+	log_debug_activation("Udev cookie 0x%" PRIx32 " (semid %d) waiting for zero",
+			     cookie, semid);
 
 repeat_wait:
 	if (semop(semid, &sb, 1) < 0) {

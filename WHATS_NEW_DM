@@ -1,3 +1,62 @@
+Version 1.02.83 - 13th November 2013
+====================================
+  Consistently report on stderr when device is not found for dmsetup info.
+  Skip race errors when non-udev dmsetup build runs on udev-enabled system.
+  Skip error message when holders are not present in sysfs.
+  Use __linux__ instead of linux define to make libdevmapper.h C compliant.
+  Use mutex to avoid possible race while creating/destroying memory pools.
+  Require libpthread to build now.
+
+Version 1.02.82 - 4th October 2013
+==================================
+  Define symbolic names for subsystem udev flags in libdevmapper for easier use.
+  Make subsystem udev rules responsible for importing DM_SUBSYSTEM_UDEV_FLAG*.
+
+Version 1.02.81 - 23rd September 2013
+=====================================
+  Tidy dmeventd fifo initialisation.
+
+Version 1.02.80 - 20th September 2013
+=====================================
+  Detect invalid sector supplied to 'dmsetup message'.
+  Free any previously-set string if a dm_task_set_* function is called again.
+  Do not allow passing empty new name for dmsetup rename.
+  Display any output returned by 'dmsetup message'.
+  Add dm_task_get_message_response to libdevmapper.
+
+Version 1.02.79 - 13th August 2013
+==================================
+  Create dmeventd timeout threads as "detached" so exit status is freed.
+  Add DM_ABORT_ON_INTERNAL_ERRORS env var support to abort on internal errors.
+
+Version 1.02.78 - 24th July 2013
+================================
+  Process thin messages once to active thin pool target for dm_tree.
+  Optimize out setting the same value or read_ahead.
+  Add DM_ARRAY_SIZE public macro.
+  Move syslog code out of signal handle in dmeventd.
+  Add DM_TO_STRING public macro.
+  Always return success on dmeventd -V command call.
+  Fix parsing of 64bit snapshot status in dmeventd snapshot plugin.
+  Add dm_get_status_snapshot() for parsing snapshot status.
+  Detecte mounted fs also via reading /proc/self/mountinfo.
+  Add dm_mountinfo_read() for parsing /proc/self/mountinfo.
+  Report error for nonexisting devices in dmeventd communication.
+  Prevent double free error after dmeventd call of _fill_device_data().
+  Update dmevent structure message_data to simplify/fix error path handling.
+  Validate passed params to dm_get_status_raid/thin/thin_pool(). 
+  Fix 'dmsetup splitname -o' to not fail if used without '-c' switch (1.02.68).
+  Add dm_config_write_{node_out/one_node_out} for enhanced config output.
+  Add dm_config_value_is_bool to check for boolean value in supported formats.
+  Fix config node lookup inside empty sections to not return the section itself.
+  Append discards and read-only fields to exported struct dm_status_thin_pool.
+  Fix segfault for truncated string token in config file after the first '"'.
+  Close open dmeventd FIFO file descriptors on exec (FD_CLOEXEC).
+  Fix resource leak in error path of dmeventd's umount of thin volume.
+  Automatically deactivate failed preloaded dm tree node.
+  Add DM_DISABLE_UDEV environment variable to manage dev nodes by libdm only.
+  Fix dm_task_set_cookie to properly process udev flags if udev_sync disabled.
+
 Version 1.02.77 - 15th October 2012
 ===================================
   Support unmount of thin volumes from pool above thin pool threshold.

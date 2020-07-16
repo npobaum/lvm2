@@ -22,7 +22,8 @@ struct cmd_context;
 struct dm_config_tree;
 enum activation_change;
 
-typedef int (*activation_handler) (struct volume_group *vg, int partial,
+typedef int (*activation_handler) (struct cmd_context *cmd,
+				   const char *vgid, int partial,
 				   enum activation_change activate);
 
 #ifdef LVMETAD_SUPPORT
@@ -48,8 +49,11 @@ void lvmetad_set_socket(const char *);
  */
 int lvmetad_active(void);
 
-/* Print a warning if lvmetad is enabled but we failed to connect. */
-void lvmetad_warning(void);
+/* 
+ * Connect to lvmetad unless the connection is already open or lvmetad is
+ * not configured to be used.  If we fail to connect, print a warning.
+ */
+void lvmetad_connect_or_warn(void);
 
 /*
  * Drop connection to lvmetad. A subsequent lvmetad_init() will re-establish
@@ -68,6 +72,7 @@ void lvmetad_set_token(const struct dm_config_value *filter);
  */
 void lvmetad_release_token(void);
 
+// FIXME What's described here doesn't appear to be implemented yet.
 /*
  * Send a new version of VG metadata to lvmetad. This is normally called after
  * vg_write but before vg_commit. After vg_commit, lvmetad_vg_commit is called
@@ -93,7 +98,7 @@ int lvmetad_vg_remove(struct volume_group *vg);
  * number on the cached and on the discovered PV match but the metadata content
  * does not.
  */
-int lvmetad_pv_found(const struct id *pvid, struct device *device,
+int lvmetad_pv_found(const struct id *pvid, struct device *dev,
 		     const struct format_type *fmt, uint64_t label_sector,
 		     struct volume_group *vg, activation_handler handler);
 
@@ -145,12 +150,12 @@ int lvmetad_pvscan_all_devs(struct cmd_context *cmd, activation_handler handler)
 #    define lvmetad_set_active(a)	do { } while (0)
 #    define lvmetad_set_socket(a)	do { } while (0)
 #    define lvmetad_active()	(0)
-#    define lvmetad_warning()	do { } while (0)
+#    define lvmetad_connect_or_warn()	do { } while (0)
 #    define lvmetad_set_token(a)	do { } while (0)
 #    define lvmetad_release_token()	do { } while (0)
 #    define lvmetad_vg_update(vg)	(1)
 #    define lvmetad_vg_remove(vg)	(1)
-#    define lvmetad_pv_found(pvid, device, fmt, label_sector, vg, handler)	(1)
+#    define lvmetad_pv_found(pvid, dev, fmt, label_sector, vg, handler)	(1)
 #    define lvmetad_pv_gone(devno, pv_name, handler)	(1)
 #    define lvmetad_pv_gone_by_dev(dev, handler)	(1)
 #    define lvmetad_pv_list_to_lvmcache(cmd)	(1)

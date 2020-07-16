@@ -56,7 +56,7 @@ struct volume_group *alloc_vg(const char *pool_name, struct cmd_context *cmd,
 	dm_list_init(&vg->tags);
 	dm_list_init(&vg->removed_pvs);
 
-	log_debug("Allocated VG %s at %p.", vg->name, vg);
+	log_debug_mem("Allocated VG %s at %p.", vg->name, vg);
 
 	return vg;
 }
@@ -71,7 +71,7 @@ static void _free_vg(struct volume_group *vg)
 		return;
 	}
 
-	log_debug("Freeing VG %s at %p.", vg->name, vg);
+	log_debug_mem("Freeing VG %s at %p.", vg->name, vg);
 
 	dm_hash_destroy(vg->hostnames);
 	dm_pool_destroy(vg->vgmem);
@@ -87,6 +87,7 @@ void release_vg(struct volume_group *vg)
 	    !lvmcache_vginfo_holders_dec_and_test_for_zero(vg->vginfo))
 		return;
 
+	release_vg(vg->vg_ondisk);
 	_free_vg(vg);
 }
 
@@ -260,10 +261,16 @@ int vg_set_mda_copies(struct volume_group *vg, uint32_t mda_copies)
 	vg->mda_copies = mda_copies;
 
 	/* FIXME Use log_verbose when this is due to specific cmdline request. */
-	log_debug("Setting mda_copies to %"PRIu32" for VG %s",
-		    mda_copies, vg->name);
+	log_debug_metadata("Setting mda_copies to %"PRIu32" for VG %s",
+			   mda_copies, vg->name);
 
 	return 1;
+}
+
+char *vg_profile_dup(const struct volume_group *vg)
+{
+	const char *profile_name = vg->profile ? vg->profile->name : "";
+	return dm_pool_strdup(vg->vgmem, profile_name);
 }
 
 static int _recalc_extents(uint32_t *extents, const char *desc1,
@@ -517,17 +524,6 @@ int vg_set_clustered(struct volume_group *vg, int clustered)
 	 * on active mirrors, snapshots or RAID logical volumes.
 	 */
 	dm_list_iterate_items(lvl, &vg->lvs) {
-		/*
-		 * FIXME:
-		 * We could allow exclusive activation of RAID LVs, but
-		 * for now we disallow them in a cluster VG at all.
-		 */
-		if (lv_is_raid_type(lvl->lv)) {
-			log_error("RAID logical volumes are not allowed "
-				  "in a cluster volume group.");
-			return 0;
-		}
-
 		if (lv_is_active(lvl->lv) &&
 		    (lv_is_mirrored(lvl->lv) || lv_is_raid_type(lvl->lv))) {
 			log_error("%s logical volumes must be inactive "

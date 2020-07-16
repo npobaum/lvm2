@@ -23,16 +23,26 @@ check_logical_block_size() {
     fi
 }
 
+check_optimal_io_size() {
+    local DEV_=$(cat SCSI_DEBUG_DEV)
+    # Verify optimal_io_size
+    SYSFS_OPTIMAL_IO_SIZE=$(echo /sys/block/$(basename $DEV_)/queue/optimal_io_size)
+    if [ -f "$SYSFS_OPTIMAL_IO_SIZE" ] ; then
+	ACTUAL_OPTIMAL_IO_SIZE=$(cat $SYSFS_OPTIMAL_IO_SIZE)
+	test $ACTUAL_OPTIMAL_IO_SIZE = $1
+    fi
+}
+
 lvdev_() {
     echo "$DM_DEV_DIR/$1/$2"
 }
 
 test_snapshot_mount() {
-    lvcreate -L 16M -n $lv1 $vg "$dev1"
+    lvcreate -aey -L4M -n $lv1 $vg "$dev1"
     mkfs.ext3 $(lvdev_ $vg $lv1)
     mkdir test_mnt
     mount "$(lvdev_ $vg $lv1)" test_mnt
-    lvcreate -L 16M -n $lv2 -s $vg/$lv1
+    lvcreate -L4M -n $lv2 -s $vg/$lv1
     umount test_mnt
     # mount the origin
     mount "$(lvdev_ $vg $lv1)" test_mnt
@@ -42,7 +52,6 @@ test_snapshot_mount() {
     umount test_mnt
     rm -r test_mnt
     vgchange -an $vg
-    lvremove -f $vg/$lv2
     lvremove -f $vg/$lv1
 }
 
@@ -70,7 +79,7 @@ aux prepare_scsi_debug_dev $DEV_SIZE \
 check_logical_block_size $LOGICAL_BLOCK_SIZE
 
 aux prepare_pvs $NUM_DEVS $PER_DEV_SIZE
-vgcreate -c n $vg $(cat DEVICES)
+vgcreate $vg $(cat DEVICES)
 test_snapshot_mount
 vgremove $vg
 
@@ -85,7 +94,7 @@ aux prepare_scsi_debug_dev $DEV_SIZE \
 check_logical_block_size $LOGICAL_BLOCK_SIZE
 
 aux prepare_pvs $NUM_DEVS $PER_DEV_SIZE
-vgcreate -c n $vg $(cat DEVICES)
+vgcreate $vg $(cat DEVICES)
 test_snapshot_mount
 vgremove $vg
 
@@ -100,6 +109,23 @@ aux prepare_scsi_debug_dev $DEV_SIZE \
 check_logical_block_size $LOGICAL_BLOCK_SIZE
 
 aux prepare_pvs $NUM_DEVS $PER_DEV_SIZE
-vgcreate -c n $vg $(cat DEVICES)
+vgcreate $vg $(cat DEVICES)
 test_snapshot_mount
 vgremove $vg
+
+aux cleanup_scsi_debug_dev
+
+# ---------------------------------------------
+# Create "enterprise-class" 512 drive w/ HW raid stripe_size = 768K
+# (logical_block_size=512, physical_block_size=512, alignment_offset=0):
+# - tests case where optimal_io_size=768k < default PE alignment=1MB
+LOGICAL_BLOCK_SIZE=512
+aux prepare_scsi_debug_dev $DEV_SIZE \
+    sector_size=$LOGICAL_BLOCK_SIZE opt_blks=1536
+check_logical_block_size $LOGICAL_BLOCK_SIZE
+check_optimal_io_size 786432
+
+aux prepare_pvs 1 $PER_DEV_SIZE
+check pv_field $(cat DEVICES) pe_start 768.00k
+
+aux cleanup_scsi_debug_dev

@@ -282,7 +282,6 @@ static int _init_mirror_log(struct cmd_context *cmd,
 			    struct dm_list *tags, int remove_on_failure)
 {
 	struct str_list *sl;
-	struct lvinfo info;
 	uint64_t orig_status = log_lv->status;
 	int was_active = 0;
 
@@ -298,14 +297,14 @@ static int _init_mirror_log(struct cmd_context *cmd,
 	}
 
 	/* If the LV is active, deactivate it first. */
-	if (lv_info(cmd, log_lv, 0, &info, 0, 0) && info.exists) {
-		(void)deactivate_lv(cmd, log_lv);
+	if (lv_is_active(log_lv)) {
+		(void) deactivate_lv(cmd, log_lv);
 		/*
 		 * FIXME: workaround to fail early
 		 * Ensure that log is really deactivated because deactivate_lv
 		 * on cluster do not fail if there is log_lv with different UUID.
 		 */
-		if (lv_info(cmd, log_lv, 0, &info, 0, 0) && info.exists) {
+		if (lv_is_active(log_lv)) {
 			log_error("Aborting. Unable to deactivate mirror log.");
 			goto revert_new_lv;
 		}
@@ -435,7 +434,7 @@ static int _delete_lv(struct logical_volume *mirror_lv, struct logical_volume *l
 		}
 	}
 
-	// FIXME: shouldn't the activation type be based on mirror_lv, not lv?
+	/* FIXME: the 'model' should be 'mirror_lv' not 'lv', I think. */
 	if (!_activate_lv_like_model(lv, lv))
 		return_0;
 
@@ -484,7 +483,8 @@ struct logical_volume *detach_mirror_log(struct lv_segment *mirrored_seg)
 	mirrored_seg->log_lv = NULL;
 	lv_set_visible(log_lv);
 	log_lv->status &= ~MIRROR_LOG;
-	remove_seg_from_segs_using_this_lv(log_lv, mirrored_seg);
+	if (!remove_seg_from_segs_using_this_lv(log_lv, mirrored_seg))
+		return_0;
 
 	return log_lv;
 }
@@ -866,8 +866,13 @@ static int _remove_mirror_images(struct logical_volume *lv,
 	     s >= 0 && old_area_count - new_area_count < orig_removed;
 	     s--) {
 		sub_lv = seg_lv(mirrored_seg, s);
-		if (!(is_temporary_mirror_layer(sub_lv) && lv_mirror_count(sub_lv) != 1) &&
-		    is_removable(sub_lv, removable_baton)) {
+		if (!(is_temporary_mirror_layer(sub_lv) && lv_mirror_count(sub_lv) != 1)) {
+			if (!is_removable) {
+				log_error(INTERNAL_ERROR "_remove_mirror_images called incorrectly with is_removable undefined.");
+				return 0;
+			}
+			if (!is_removable(sub_lv, removable_baton))
+				continue;
 			/*
 			 * Check if the user is trying to pull the
 			 * primary mirror image when the mirror is
@@ -1227,19 +1232,16 @@ int collapse_mirrored_lv(struct logical_volume *lv)
 static int _get_mirror_fault_policy(struct cmd_context *cmd __attribute__((unused)),
 				   int log_policy)
 {
-	const char *policy;
-
+	const char *policy = NULL;
+/*
 	if (log_policy)
-		policy = dm_config_find_str(NULL, "activation/mirror_log_fault_policy",
-					 DEFAULT_MIRROR_LOG_FAULT_POLICY);
+		policy = find_config_tree_str(cmd, activation_mirror_log_fault_policy_CFG);
 	else {
-		policy = dm_config_find_str(NULL, "activation/mirror_image_fault_policy",
-					 NULL);
+		policy = find_config_tree_str(cmd, activation_mirror_image_fault_policy_CFG);
 		if (!policy)
-			policy = dm_config_find_str(NULL, "activation/mirror_device_fault_policy",
-						 DEFAULT_MIRROR_IMAGE_FAULT_POLICY);
+			policy = find_config_tree_str(cmd, activation_mirror_device_fault_policy_CFG);
 	}
-
+*/
 	if (!strcmp(policy, "remove"))
 		return MIRROR_REMOVE;
 	else if (!strcmp(policy, "allocate"))
@@ -1572,7 +1574,7 @@ struct logical_volume *find_pvmove_lv_from_pvname(struct cmd_context *cmd,
 	struct physical_volume *pv;
 	struct logical_volume *lv;
 
-	if (!(pv = find_pv_by_name(cmd, name)))
+	if (!(pv = find_pv_by_name(cmd, name, 0)))
 		return_NULL;
 
 	lv = find_pvmove_lv(vg, pv->dev, lv_type);
@@ -1623,23 +1625,6 @@ struct dm_list *lvs_using_lv(struct cmd_context *cmd, struct volume_group *vg,
 	}
 
 	return lvs;
-}
-
-percent_t copy_percent(const struct logical_volume *lv_mirr)
-{
-	uint32_t numerator = 0u, denominator = 0u;
-	struct lv_segment *seg;
-
-	dm_list_iterate_items(seg, &lv_mirr->segments) {
-		denominator += seg->area_len;
-
-		if (seg_is_mirrored(seg) && seg->area_count > 1)
-			numerator += seg->extents_copied;
-		else
-			numerator += seg->area_len;
-	}
-
-	return denominator ? make_percent( numerator, denominator ) : 100.0;
 }
 
 /*
@@ -1714,7 +1699,6 @@ int remove_mirror_log(struct cmd_context *cmd,
 		      int force)
 {
 	percent_t sync_percent;
-	struct lvinfo info;
 	struct volume_group *vg = lv->vg;
 
 	/* Unimplemented features */
@@ -1724,12 +1708,16 @@ int remove_mirror_log(struct cmd_context *cmd,
 	}
 
 	/* Had disk log, switch to core. */
-	if (lv_info(cmd, lv, 0, &info, 0, 0) && info.exists) {
+	if (lv_is_active_locally(lv)) {
 		if (!lv_mirror_percent(cmd, lv, 0, &sync_percent,
 				       NULL)) {
 			log_error("Unable to determine mirror sync status.");
 			return 0;
 		}
+	} else if (lv_is_active(lv)) {
+		log_error("Unable to determine sync status of"
+			  " remotely active mirror, %s", lv->name);
+		return 0;
 	} else if (vg_is_clustered(vg)) {
 		log_error("Unable to convert the log of an inactive "
 			  "cluster mirror, %s", lv->name);
@@ -1738,8 +1726,10 @@ int remove_mirror_log(struct cmd_context *cmd,
 				 "inactive mirror %s to core log. "
 				 "Proceed? [y/n]: ", lv->name) == 'y')
 		sync_percent = 0;
-	else
+	else {
+		log_error("Logical volume %s NOT converted.", lv->name);
 		return 0;
+	}
 
 	if (sync_percent == PERCENT_100)
 		init_mirror_in_sync(1);
@@ -2077,10 +2067,11 @@ int lv_add_mirrors(struct cmd_context *cmd, struct logical_volume *lv,
 	}
 
 	if (vg_is_clustered(lv->vg)) {
-		/* FIXME: review check of lv_is_active_remotely */
 		/* FIXME: move this test out of this function */
 		/* Skip test for pvmove mirrors, it can use local mirror */
 		if (!(lv->status & (PVMOVE | LOCKED)) &&
+		    lv_is_active(lv) &&
+		    !lv_is_active_exclusive_locally(lv) && /* lv_is_active_remotely */
 		    !_cluster_mirror_is_available(lv)) {
 			log_error("Shared cluster mirrors are not available.");
 			return 0;

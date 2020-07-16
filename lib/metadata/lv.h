@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2010 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2012 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -20,6 +20,7 @@ struct volume_group;
 struct dm_list;
 struct lv_segment;
 struct replicator_device;
+enum activation_change;
 
 struct logical_volume {
 	union lvid lvid;
@@ -29,6 +30,7 @@ struct logical_volume {
 
 	uint64_t status;
 	alloc_policy_t alloc;
+	struct profile *profile;
 	uint32_t read_ahead;
 	int32_t major;
 	int32_t minor;
@@ -37,6 +39,7 @@ struct logical_volume {
 	uint32_t le_count;
 
 	uint32_t origin_count;
+	uint32_t external_count;
 	struct dm_list snapshot_segs;
 	struct lv_segment *snapshot;
 
@@ -74,6 +77,8 @@ uint64_t lvseg_start(const struct lv_segment *seg);
 uint64_t lvseg_size(const struct lv_segment *seg);
 uint64_t lvseg_chunksize(const struct lv_segment *seg);
 char *lvseg_segtype_dup(struct dm_pool *mem, const struct lv_segment *seg);
+char *lvseg_discards_dup(struct dm_pool *mem, const struct lv_segment *seg);
+char *lvseg_monitor_dup(struct dm_pool *mem, const struct lv_segment *seg);
 char *lvseg_tags_dup(const struct lv_segment *seg);
 char *lvseg_devices(struct dm_pool *mem, const struct lv_segment *seg);
 char *lvseg_seg_pe_ranges(struct dm_pool *mem, const struct lv_segment *seg);
@@ -81,4 +86,12 @@ char *lv_time_dup(struct dm_pool *mem, const struct logical_volume *lv);
 char *lv_host_dup(struct dm_pool *mem, const struct logical_volume *lv);
 int lv_set_creation(struct logical_volume *lv,
 		    const char *hostname, uint64_t timestamp);
+const char *lv_layer(const struct logical_volume *lv);
+int lv_active_change(struct cmd_context *cmd, struct logical_volume *lv,
+		     enum activation_change activate);
+char *lv_active_dup(struct dm_pool *mem, const struct logical_volume *lv);
+const struct logical_volume *lv_lock_holder(const struct logical_volume *lv);
+struct logical_volume *lv_ondisk(struct logical_volume *lv);
+struct profile *lv_config_profile(const struct logical_volume *lv);
+char *lv_profile_dup(struct dm_pool *mem, const struct logical_volume *lv);
 #endif /* _LVM_LV_H */

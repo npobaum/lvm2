@@ -13,7 +13,7 @@
  */
 
 #include "lib.h"
-#include "metadata.h"
+#include "dev-type.h"
 
 #define LUKS_SIGNATURE "LUKS\xba\xbe"
 #define LUKS_SIGNATURE_SIZE 6

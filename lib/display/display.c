@@ -20,6 +20,8 @@
 #include "toolcontext.h"
 #include "segtype.h"
 #include "defaults.h"
+#include <math.h>  /* fabs() */
+#include <float.h> /* DBL_EPSILON */
 
 #define SIZE_BUF 128
 
@@ -41,6 +43,12 @@ static const struct {
 
 static const int _num_policies = sizeof(_policies) / sizeof(*_policies);
 
+/* Test if the doubles are close enough to be considered equal */
+static int _close_enough(double d1, double d2)
+{
+	return fabs(d1 - d2) < DBL_EPSILON;
+}
+
 uint64_t units_to_bytes(const char *units, char *unit_type)
 {
 	char *ptr = NULL;
@@ -53,7 +61,7 @@ uint64_t units_to_bytes(const char *units, char *unit_type)
 		if (ptr == units)
 			return 0;
 		v = (uint64_t) strtoull(units, NULL, 10);
-		if ((double) v == custom_value)
+		if (_close_enough((double) v, custom_value))
 			custom_value = 0;	/* Use integer arithmetic */
 		units = ptr;
 	} else
@@ -126,10 +134,10 @@ uint64_t units_to_bytes(const char *units, char *unit_type)
 		return 0;
 	}
 
-	if (custom_value)
-		return (uint64_t) (custom_value * multiplier);
+	if (_close_enough(custom_value, 0.))
+		return v * multiplier; /* Use integer arithmetic */
 	else
-		return v * multiplier;
+		return (uint64_t) (custom_value * multiplier);
 }
 
 char alloc_policy_char(alloc_policy_t alloc)
@@ -176,9 +184,9 @@ alloc_policy_t get_alloc_from_string(const char *str)
 
 #define BASE_UNKNOWN 0
 #define BASE_SHARED 1
-#define BASE_1024 7
-#define BASE_1000 13
-#define BASE_SPECIAL 19
+#define BASE_1024 8
+#define BASE_1000 15
+#define BASE_SPECIAL 21
 #define NUM_UNIT_PREFIXES 6
 #define NUM_SPECIAL 3
 
@@ -203,27 +211,29 @@ static const char *_display_size(const struct cmd_context *cmd,
 		{" Gigabyte", " GB", "G"},	/* [4] */
 		{" Megabyte", " MB", "M"},	/* [5] */
 		{" Kilobyte", " KB", "K"},	/* [6] */
+		{" Byte    ", " B", "B"},	/* [7] */
 
 		/* BASE_1024 - Used if cmd->si_unit_consistency = 1 */
-		{" Exbibyte", " EiB", "e"},	/* [7] */
-		{" Pebibyte", " PiB", "p"},	/* [8] */
-		{" Tebibyte", " TiB", "t"},	/* [9] */
-		{" Gibibyte", " GiB", "g"},	/* [10] */
-		{" Mebibyte", " MiB", "m"},	/* [11] */
-		{" Kibibyte", " KiB", "k"},	/* [12] */
+		{" Exbibyte", " EiB", "e"},	/* [8] */
+		{" Pebibyte", " PiB", "p"},	/* [9] */
+		{" Tebibyte", " TiB", "t"},	/* [10] */
+		{" Gibibyte", " GiB", "g"},	/* [11] */
+		{" Mebibyte", " MiB", "m"},	/* [12] */
+		{" Kibibyte", " KiB", "k"},	/* [13] */
+		{" Byte    ", " B", "b"},	/* [14] */
 
 		/* BASE_1000 - Used if cmd->si_unit_consistency = 1 */
-		{" Exabyte",  " EB", "E"},	/* [13] */
-		{" Petabyte", " PB", "P"},	/* [14] */
-		{" Terabyte", " TB", "T"},	/* [15] */
-		{" Gigabyte", " GB", "G"},	/* [16] */
-		{" Megabyte", " MB", "M"},	/* [17] */
-		{" Kilobyte", " kB", "K"},	/* [18] */
+		{" Exabyte",  " EB", "E"},	/* [15] */
+		{" Petabyte", " PB", "P"},	/* [16] */
+		{" Terabyte", " TB", "T"},	/* [17] */
+		{" Gigabyte", " GB", "G"},	/* [18] */
+		{" Megabyte", " MB", "M"},	/* [19] */
+		{" Kilobyte", " kB", "K"},	/* [20] */
 
 		/* BASE_SPECIAL */
-		{" Byte    ", " B ", "B"},	/* [19] */
-		{" Units   ", " Un", "U"},	/* [20] */
-		{" Sectors ", " Se", "S"},	/* [21] */
+		{" Byte    ", " B ", "B"},	/* [21] (shared with BASE_1000) */
+		{" Units   ", " Un", "U"},	/* [22] */
+		{" Sectors ", " Se", "S"},	/* [23] */
 	};
 
 	if (!(size_buf = dm_pool_alloc(cmd->mem, SIZE_BUF))) {
@@ -302,7 +312,7 @@ static const char *_display_size(const struct cmd_context *cmd,
 	}
 
 	/* FIXME Make precision configurable */
-	switch(toupper((int) cmd->current_settings.unit_type)) {
+	switch (toupper(*size_str[base + s][SIZE_UNIT])) {
 	case 'B':
 	case 'S':
 		precision = 0;
@@ -526,8 +536,7 @@ int lvdisplay_full(struct cmd_context *cmd,
 
 	log_print("--- Logical volume ---");
 
-	lvm1compat = find_config_tree_int(cmd, "global/lvdisplay_shows_full_device_path",
-					  DEFAULT_LVDISPLAY_SHOWS_FULL_DEVICE_PATH);
+	lvm1compat = find_config_tree_bool(cmd, global_lvdisplay_shows_full_device_path_CFG, NULL);
 
 	if (lvm1compat)
 		/* /dev/vgname/lvname doen't actually exist for internal devices */
@@ -570,7 +579,7 @@ int lvdisplay_full(struct cmd_context *cmd,
 					  snap_active ? "active" : "INACTIVE");
 		}
 		snap_seg = NULL;
-	} else if ((snap_seg = find_cow(lv))) {
+	} else if ((snap_seg = find_snapshot(lv))) {
 		if (inkernel &&
 		    (snap_active = lv_snapshot_percent(snap_seg->cow,
 						       &snap_percent)))
@@ -594,6 +603,9 @@ int lvdisplay_full(struct cmd_context *cmd,
 		if (seg->origin)
 			log_print("LV Thin origin name    %s",
 				  seg->origin->name);
+		if (seg->external_lv)
+			log_print("LV External origin name %s",
+				  seg->external_lv->name);
 		if (inkernel)
 			thin_active = lv_thin_percent(lv, 0, &thin_percent);
 	} else if (lv_is_thin_pool(lv)) {
@@ -926,7 +938,7 @@ char yes_no_prompt(const char *prompt, ...)
 		}
 
 		if ((c = getchar()) == EOF) {
-			ret = 'n';
+			ret = 'n'; /* SIGINT */
 			break;
 		}
 

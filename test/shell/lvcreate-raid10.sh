@@ -17,7 +17,7 @@
 aux target_at_least dm-raid 1 3 0 || skip
 
 aux prepare_pvs 6 20  # 6 devices for RAID10 (2-mirror,3-stripe) test
-vgcreate -c n -s 512k $vg $(cat DEVICES)
+vgcreate -s 512k $vg $(cat DEVICES)
 
 #
 # Create RAID10:
@@ -30,11 +30,20 @@ not lvcreate --type raid10 -m 2 -i 2 -l 2 -n $lv1 $vg
 # 2-way mirror, 2-stripes
 lvcreate --type raid10 -m 1 -i 2 -l 2 -n $lv1 $vg
 aux wait_for_sync $vg $lv1
-lvremove -ff $vg
+lvremove -ff $vg/$lv1
+
+# 2-way mirror, 2-stripes - Set min/max recovery rate
+lvcreate --type raid10 -m 1 -i 2 -l 2 \
+	--minrecoveryrate 50 --maxrecoveryrate 100 \
+	-n $lv1 $vg
+check lv_field $vg/$lv1 raid_min_recovery_rate 50
+check lv_field $vg/$lv1 raid_max_recovery_rate 100
+aux wait_for_sync $vg $lv1
 
 # 2-way mirror, 3-stripes
-lvcreate --type raid10 -m 1 -i 3 -l 3 -n $lv1 $vg
-aux wait_for_sync $vg $lv1
+lvcreate --type raid10 -m 1 -i 3 -l 3 -n $lv2 $vg
+aux wait_for_sync $vg $lv2
+
 lvremove -ff $vg
 
 #

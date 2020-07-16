@@ -1,5 +1,5 @@
-#!/bin/bash
-# Copyright (C) 2010-2012 Red Hat, Inc. All rights reserved.
+#!/usr/bin/env bash
+# Copyright (C) 2010-2013 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
 # modify, copy, or redistribute it subject to the terms and conditions
@@ -25,7 +25,8 @@
 test -z "$BASH" || set -e -o pipefail
 
 die() {
-	echo "$@" >&2
+	rm -f debug.log
+	echo -e "$@" >&2
 	return 1
 }
 
@@ -53,14 +54,38 @@ mirror_images_redundant() {
 			$(cat check.tmp.all)
 }
 
+lv_err_list_() {
+	(echo "$2" | not grep -m 1 -q "$1") || \
+		echo "$3 on [ $(echo "$2" | grep "$1" | cut -b3- | tr '\n' ' ')] "
+}
+
+lv_on_diff_() {
+	declare -a devs=("${!1}") # pass in shell array
+	local expect=( "${@:4}" ) # make an array starting from 4th args...
+	local diff_e
+
+	# Find diff between 2 shell arrays, print them as stdin files
+	diff_e=$(diff <(printf "%s\n" "${expect[@]}" | sort | uniq ) <(printf "%s\n" "${devs[@]}") ) ||
+		die "LV $2/$3 $(lv_err_list_ "^>" "${diff_e}" found)$(lv_err_list_ "^<" "${diff_e}" "not found")."
+}
+
+# list devices for given LV
 lv_on() {
-	local lv=$1/$2
-	(lvdevices $lv | grep -F "$3") || \
-		die "LV $lv expected on $3 but is not:" \
-			$(lvdevices $lv)
-	test $(lvdevices $lv | grep -vF "$3" | wc -l) -eq 0 || \
-		die "LV $lv contains unexpected devices:" \
-			$(lvdevices $lv)
+	local devs
+
+	devs=( $(lvdevices "$1/$2" | sort | uniq ) )
+
+	lv_on_diff_ devs[@] "${@}"
+}
+
+# list devices for given LV and all its subdevices
+lv_tree_on() {
+	local devs
+
+	# Get sorted list of devices
+	devs=( $(get lv_tree_devices "$1" "$2") )
+
+	lv_on_diff_ devs[@] "${@}"
 }
 
 mirror_images_on() {
@@ -118,8 +143,8 @@ mirror() {
 mirror_nonredundant() {
 	local lv=$1/$2
 	local attr=$(get lv_field $lv attr)
-	(echo "$attr" | grep "^m........$" >/dev/null) || {
-		if (echo "$attr" | grep "^o........$" >/dev/null) &&
+	(echo "$attr" | grep "^......m...$" >/dev/null) || {
+		if (echo "$attr" | grep "^o.........$" >/dev/null) &&
 		   lvs -a | fgrep "[${2}_mimage" >/dev/null; then
 			echo "TEST WARNING: $lv is a snapshot origin and looks like a mirror,"
 			echo "assuming it is actually a mirror"
@@ -158,6 +183,7 @@ in_sync() {
 	local b
 	local idx
 	local type
+	local snap=""
 	local lvm_name="$1/$2"
 	local dm_name=$(echo $lvm_name | sed s:-:--: | sed s:/:-:)
 
@@ -167,11 +193,12 @@ in_sync() {
 		if ! a=(`dmsetup status ${dm_name}-real`); then
 			die "Unable to get sync status of $1"
 		fi
+		snap=": under snapshot"
 	fi
 
 	if [ ${a[2]} = "raid" ]; then
-		# Last argument is the sync ratio for RAID
-		idx=$((${#a[@]} - 1))
+		# 6th argument is the sync ratio for RAID
+		idx=6
 		type=${a[3]}
 	elif [ ${a[2]} = "mirror" ]; then
 		# 4th Arg tells us how far to the sync ratio
@@ -184,21 +211,21 @@ in_sync() {
 	b=( $(echo ${a[$idx]} | sed s:/:' ':) )
 
 	if [ ${b[0]} != ${b[1]} ]; then
-		echo "$lvm_name ($type) is not in-sync"
+		echo "$lvm_name ($type$snap) is not in-sync"
 		return 1
 	fi
 
 	if [[ ${a[$(($idx - 1))]} =~ a ]]; then
-		die "$lvm_name in-sync, but 'a' characters in health status"
+		die "$lvm_name ($type$snap) in-sync, but 'a' characters in health status"
 	fi
 
-	echo "$lvm_name ($type) is in-sync"
+	echo "$lvm_name ($type$snap) is in-sync"
 	return 0
 }
 
 active() {
 	local lv=$1/$2
-	(get lv_field $lv attr | grep "^....a....$" >/dev/null) || \
+	(get lv_field $lv attr | grep "^....a.....$" >/dev/null) || \
 		die "$lv expected active, but lvs says it's not:" \
 			$(lvl $lv -o+devices)
 	dmsetup info $1-$2 >/dev/null ||
@@ -207,7 +234,7 @@ active() {
 
 inactive() {
 	local lv=$1/$2
-	(get lv_field $lv attr | grep "^....[-isd]....$" >/dev/null) || \
+	(get lv_field $lv attr | grep "^....[-isd].....$" >/dev/null) || \
 		die "$lv expected inactive, but lvs says it's not:" \
 			$(lvl $lv -o+devices)
 	not dmsetup info $1-$2 2>/dev/null || \
@@ -233,13 +260,13 @@ pv_field() {
 }
 
 vg_field() {
-	local actual=$(get vg_field $1 "$2" "${@:4}")
+	local actual=$(get vg_field "$1" "$2" "${@:4}")
 	test "$actual" = "$3" || \
 		die "vg_field: vg=$1, field=\"$2\", actual=\"$actual\", expected=\"$3\""
 }
 
 lv_field() {
-	local actual=$(get lv_field $1 "$2" "${@:4}")
+	local actual=$(get lv_field "$1" "$2" "${@:4}")
 	test "$actual" = "$3" || \
 		die "lv_field: lv=$lv, field=\"$2\", actual=\"$actual\", expected=\"$3\""
 }
@@ -278,5 +305,13 @@ pvlv_counts() {
 	vg_field $local_vg snap_count $num_snaps
 }
 
+# Compare md5 check generated from get dev_md5sum
+dev_md5sum() {
+	md5sum -c "md5.$1-$2" || \
+		(get lv_field $1/$2 "name,size,seg_pe_ranges"
+		 die "LV $1/$2 has different MD5 check sum!")
+}
+
+#set -x
 unset LVM_VALGRIND
 "$@"

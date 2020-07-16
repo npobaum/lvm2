@@ -16,38 +16,54 @@
 #include <unistd.h>
 #include <errno.h>
 #include <stdarg.h>
+#include <syslog.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <limits.h>		/* For PATH_MAX for musl libc */
 #include "lvm2app.h"
+#include "configure.h"		/* for LVM_PATH */
 
 #define KMSG_DEV_PATH        "/dev/kmsg"
 #define LVM_CONF_USE_LVMETAD "global/use_lvmetad"
 
-#define DEFAULT_UNIT_DIR     "/tmp"
-#define UNIT_NAME_EARLY      "lvm2-activation-early.service"
-#define UNIT_NAME            "lvm2-activation.service"
-#define UNIT_TARGET          "local-fs.target"
+#define UNIT_TARGET_LOCAL_FS  "local-fs.target"
+#define UNIT_TARGET_REMOTE_FS "remote-fs.target"
 
 static char unit_path[PATH_MAX];
 static char target_path[PATH_MAX];
-static char message[PATH_MAX];
+static char message[PATH_MAX + 3]; /* +3 for '<n>' where n is the log level */
 static int kmsg_fd = -1;
 
-__attribute__ ((format(printf, 1, 2)))
-static void kmsg(const char *format, ...)
+enum {
+	UNIT_EARLY,
+	UNIT_MAIN,
+	UNIT_NET
+};
+
+static const char *unit_names[] = {
+	[UNIT_EARLY] = "lvm2-activation-early.service",
+	[UNIT_MAIN] = "lvm2-activation.service",
+	[UNIT_NET] = "lvm2-activation-net.service"
+};
+
+__attribute__ ((format(printf, 2, 3)))
+static void kmsg(int log_level, const char *format, ...)
 {
 	va_list ap;
 	int n;
 
+	snprintf(message, 4, "<%d>", log_level);
+
 	va_start(ap, format);
-	n = vsnprintf(message, sizeof(message), format, ap);
+	n = vsnprintf(message + 3, PATH_MAX, format, ap);
 	va_end(ap);
 
-	if (kmsg_fd < 0 || (n < 0 || ((unsigned) n + 1 > sizeof(message))))
+	if (kmsg_fd < 0 || (n < 0 || ((unsigned) n + 1 > PATH_MAX)))
 		return;
 
-	(void) write(kmsg_fd, message, n + 1);
+	/* The n+4: +3 for "<n>" prefix and +1 for '\0' suffix */
+	(void) write(kmsg_fd, message, n + 4);
 }
 
 static int lvm_uses_lvmetad(void)
@@ -56,7 +72,7 @@ static int lvm_uses_lvmetad(void)
 	int r;
 
 	if (!(lvm = lvm_init(NULL))) {
-		kmsg("LVM: Failed to initialize library context for activation generator.\n");
+		kmsg(LOG_ERR, "LVM: Failed to initialize library context for activation generator.\n");
 		return 0;
 	}
 	r = lvm_config_find_bool(lvm, LVM_CONF_USE_LVMETAD, 0);
@@ -74,7 +90,7 @@ static int register_unit_with_target(const char *dir, const char *unit, const ch
 	}
 	(void) dm_prepare_selinux_context(target_path, S_IFDIR);
 	if (mkdir(target_path, 0755) < 0 && errno != EEXIST) {
-		kmsg("LVM: Failed to create target directory %s: %m.\n", target_path);
+		kmsg(LOG_ERR, "LVM: Failed to create target directory %s: %m.\n", target_path);
 		r = 0; goto out;
 	}
 
@@ -83,7 +99,7 @@ static int register_unit_with_target(const char *dir, const char *unit, const ch
 	}
 	(void) dm_prepare_selinux_context(target_path, S_IFLNK);
 	if (symlink(unit_path, target_path) < 0) {
-		kmsg("LVM: Failed to create symlink for unit %s: %m.\n", unit);
+		kmsg(LOG_ERR, "LVM: Failed to create symlink for unit %s: %m.\n", unit);
 		r = 0;
 	}
 out:
@@ -91,16 +107,17 @@ out:
 	return r;
 }
 
-static int generate_unit(const char *dir, int early)
+static int generate_unit(const char *dir, int unit)
 {
 	FILE *f;
-	const char *unit = early ? UNIT_NAME_EARLY : UNIT_NAME;
+	const char *unit_name = unit_names[unit];
+	const char *target_name = unit == UNIT_NET ? UNIT_TARGET_REMOTE_FS : UNIT_TARGET_LOCAL_FS;
 
-	if (dm_snprintf(unit_path, PATH_MAX, "%s/%s", dir, unit) < 0)
+	if (dm_snprintf(unit_path, PATH_MAX, "%s/%s", dir, unit_name) < 0)
 		return 0;
 
 	if (!(f = fopen(unit_path, "wxe"))) {
-		kmsg("LVM: Failed to create unit file %s: %m.\n", unit);
+		kmsg(LOG_ERR, "LVM: Failed to create unit file %s: %m.\n", unit_name);
 		return 0;
 	}
 
@@ -116,25 +133,33 @@ static int generate_unit(const char *dir, int early)
 	      "SourcePath=/etc/lvm/lvm.conf\n"
 	      "DefaultDependencies=no\n", f);
 
-	if (early) {
-		fputs("After=systemd-udev-settle.service\n", f);
-		fputs("Before=cryptsetup.target\n", f);
-	} else
-		fputs("After=lvm2-activation-early.service cryptsetup.target\n", f);
+	if (unit == UNIT_NET) {
+		fprintf(f, "After=%s iscsi.service fcoe.service\n"
+			"Before=remote-fs.target shutdown.target\n\n"
+			"[Service]\n"
+			"ExecStartPre=/usr/bin/udevadm settle\n", unit_names[UNIT_MAIN]);
+	} else {
+		if (unit == UNIT_EARLY) {
+			fputs("After=systemd-udev-settle.service\n"
+			      "Before=cryptsetup.target\n", f);
+		} else
+			fprintf(f, "After= %s cryptsetup.target\n", unit_names[UNIT_EARLY]);
 
-	fputs("Before=local-fs.target shutdown.target\n"
-	      "Wants=systemd-udev-settle.service\n\n"
-	      "[Service]\n"
-	      "ExecStart=/usr/sbin/lvm vgchange -aay --sysinit\n"
+		fputs("Before=local-fs.target shutdown.target\n"
+		      "Wants=systemd-udev-settle.service\n\n"
+		      "[Service]\n", f);
+	}
+
+	fputs("ExecStart=" LVM_PATH " vgchange -aay --sysinit\n"
 	      "Type=oneshot\n", f);
 
 	if (fclose(f) < 0) {
-		kmsg("LVM: Failed to write unit file %s: %m.\n", unit);
+		kmsg(LOG_ERR, "LVM: Failed to write unit file %s: %m.\n", unit_name);
 		return 0;
 	}
 
-	if (!register_unit_with_target(dir, unit, UNIT_TARGET)) {
-		kmsg("LVM: Failed to register unit %s with target %s.\n", unit, UNIT_TARGET);
+	if (!register_unit_with_target(dir, unit_name, target_name)) {
+		kmsg(LOG_ERR, "LVM: Failed to register unit %s with target %s.\n", unit_name, target_name);
 		return 0;
 	}
 
@@ -148,23 +173,24 @@ int main(int argc, char *argv[])
 
 	kmsg_fd = open(KMSG_DEV_PATH, O_WRONLY|O_NOCTTY);
 
-	if (argc > 1 && argc != 4) {
-		kmsg("LVM: Activation generator takes three or no arguments.\n");
+	if (argc != 4) {
+		kmsg(LOG_ERR, "LVM: Incorrect number of arguments for activation generator.\n");
 		r = EXIT_FAILURE; goto out;
 	}
 
 	/* If lvmetad used, rely on autoactivation instead of direct activation. */
-	if (lvm_uses_lvmetad()) {
-		kmsg("LVM: Logical Volume autoactivation enabled.\n");
+	if (lvm_uses_lvmetad())
 		goto out;
-	}
 
-	dir = argc > 1 ? argv[1] : DEFAULT_UNIT_DIR;
+	dir = argv[1];
 
-	if (!generate_unit(dir, 1) || !generate_unit(dir, 0))
+	if (!generate_unit(dir, UNIT_EARLY) ||
+	    !generate_unit(dir, UNIT_MAIN) ||
+	    !generate_unit(dir, UNIT_NET))
 		r = EXIT_FAILURE;
 out:
-	kmsg("LVM: Activation generator %s.\n", r ? "failed" : "successfully completed");
+	if (r)
+		kmsg(LOG_ERR, "LVM: Activation generator failed.\n");
 	if (kmsg_fd != -1)
 		(void) close(kmsg_fd);
 	return r;

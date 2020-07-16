@@ -75,8 +75,6 @@ is updated so that the Logical Volumes reflect the new data locations.
 Note that this new process cannot support the original LVM1
 type of on-disk metadata.  Metadata can be converted using \fBvgconvert\fP(8).
 
-N.B. The moving of mirrors, snapshots and their origins is not yet supported.
-
 .SH OPTIONS
 See \fBlvm\fP(8) for common options.
 .TP
@@ -109,8 +107,6 @@ To move all Physical Extents that are used by simple Logical Volumes on
 .sp
 .B pvmove /dev/sdb1
 .P
-Any mirrors, snapshots and their origins are left unchanged.
-.P
 Additionally, a specific destination device /dev/sdc1
 can be specified like this:
 .sp
@@ -126,6 +122,13 @@ move a range of Physical Extents - for example numbers 1000 to 1999
 inclusive on /dev/sdb1 - like this:
 .sp
 .B pvmove /dev/sdb1:1000-1999
+.P
+A range can also be specified as start+length, so
+.sp
+.B pvmove /dev/sdb1:1000+1000
+.P
+also refers to 1000 Physical Extents starting from Physical Extent number 1000.
+(Counting starts from 0, so this refers to the 1001st to the 2000th inclusive.)
 .P
 To move a range of Physical Extents to a specific location (which must have
 sufficent free extents) use the form:

@@ -33,7 +33,7 @@
 #include <unistd.h>
 
 #ifndef CLUSTER_LOCKING_INTERNAL
-int lock_resource(struct cmd_context *cmd, const char *resource, uint32_t flags);
+int lock_resource(struct cmd_context *cmd, const char *resource, uint32_t flags, struct logical_volume *lv __attribute__((unused)));
 int query_resource(const char *resource, int *mode);
 void locking_end(void);
 int locking_init(int type, struct dm_config_tree *cf, uint32_t *flags);
@@ -241,14 +241,12 @@ static int _cluster_request(char clvmd_cmd, const char *node, void *data, int le
 	 * With an extra pair of INTs on the front to sanity
 	 * check the pointer when we are given it back to free
 	 */
-	*response = dm_malloc(sizeof(lvm_response_t) * num_responses);
-	if (!*response) {
+	*response = NULL;
+	if (!(rarray = dm_malloc(sizeof(lvm_response_t) * num_responses))) {
 		errno = ENOMEM;
 		status = 0;
 		goto out;
 	}
-
-	rarray = *response;
 
 	/* Unpack the response into an lvm_response_t array */
 	inptr = head->args;
@@ -266,9 +264,9 @@ static int _cluster_request(char clvmd_cmd, const char *node, void *data, int le
 			int j;
 			for (j = 0; j < i; j++)
 				dm_free(rarray[i].response);
-			free(*response);
+			dm_free(rarray);
 			errno = ENOMEM;
-			status = -1;
+			status = 0;
 			goto out;
 		}
 
@@ -405,9 +403,9 @@ static int _lock_for_cluster(struct cmd_context *cmd, unsigned char clvmd_cmd,
 /* API entry point for LVM */
 #ifdef CLUSTER_LOCKING_INTERNAL
 static int _lock_resource(struct cmd_context *cmd, const char *resource,
-			  uint32_t flags)
+			  uint32_t flags, struct logical_volume *lv __attribute__((unused)))
 #else
-int lock_resource(struct cmd_context *cmd, const char *resource, uint32_t flags)
+	int lock_resource(struct cmd_context *cmd, const char *resource, uint32_t flags, struct logical_volume *lv __attribute__((unused)))
 #endif
 {
 	char lockname[PATH_MAX];
@@ -518,8 +516,7 @@ static int decode_lock_type(const char *response)
 	else if (!strcmp(response, "PR"))
 		return LCK_PREAD;
 
-	stack;
-	return 0;
+	return_0;
 }
 
 #ifdef CLUSTER_LOCKING_INTERNAL
@@ -560,8 +557,8 @@ int query_resource(const char *resource, int *mode)
 		if (decode_lock_type(response[i].response) > *mode)
 			*mode = decode_lock_type(response[i].response);
 
-		log_debug("Lock held for %s, node %s : %s", resource,
-			  response[i].node, response[i].response);
+		log_debug_locking("Lock held for %s, node %s : %s", resource,
+				  response[i].node, response[i].response);
 	}
 
 	_cluster_free_request(response, num_responses);

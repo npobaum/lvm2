@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2008,2009 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2008-2013 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -18,6 +18,7 @@
 #include "archiver.h"
 #include "locking.h"
 #include "lvmcache.h"
+#include "lvmetad.h"
 #include "lvm_misc.h"
 #include "lvm2app.h"
 
@@ -73,7 +74,7 @@ int lvm_vg_extend(vg_t vg, const char *device)
 	if (!vg_check_write_mode(vg))
 		return -1;
 
-	if (!lock_vol(vg->cmd, VG_ORPHANS, LCK_VG_WRITE)) {
+	if (!lock_vol(vg->cmd, VG_ORPHANS, LCK_VG_WRITE, NULL)) {
 		log_error("Can't get lock for orphan PVs");
 		return -1;
 	}
@@ -131,7 +132,7 @@ int lvm_vg_write(vg_t vg)
 	}
 
 	if (! dm_list_empty(&vg->removed_pvs)) {
-		if (!lock_vol(vg->cmd, VG_ORPHANS, LCK_VG_WRITE)) {
+		if (!lock_vol(vg->cmd, VG_ORPHANS, LCK_VG_WRITE, NULL)) {
 			log_error("Can't get lock for orphan PVs");
 			return 0;
 		}
@@ -339,22 +340,39 @@ const char *lvm_vg_get_name(const vg_t vg)
 
 struct lvm_property_value lvm_vg_get_property(const vg_t vg, const char *name)
 {
-	return get_property(NULL, vg, NULL, NULL, NULL, name);
+	return get_property(NULL, vg, NULL, NULL, NULL, NULL, name);
 }
 
 int lvm_vg_set_property(const vg_t vg, const char *name,
 			struct lvm_property_value *value)
 {
-	return set_property(NULL, vg, NULL, name, value);
+	/* At this point it is unknown if all property set paths make the
+	 * appropriate copy of the string.  We will allocate a copy on the vg so
+	 * that worst case we have two copies which will get freed when the vg gets
+	 * released.
+	 */
+
+	if (value->is_valid && value->is_string && value->value.string) {
+		value->value.string = dm_pool_strndup(vg->vgmem, value->value.string,
+				strlen(value->value.string) + 1);
+	}
+
+	return set_property(NULL, vg, NULL, NULL, name, value);
 }
 
 struct dm_list *lvm_list_vg_names(lvm_t libh)
 {
+	if (!lvmetad_vg_list_to_lvmcache((struct cmd_context *)libh))
+		return NULL;
+
 	return get_vgnames((struct cmd_context *)libh, 0);
 }
 
 struct dm_list *lvm_list_vg_uuids(lvm_t libh)
 {
+	if (!lvmetad_vg_list_to_lvmcache((struct cmd_context *)libh))
+		return NULL;
+
 	return get_vgids((struct cmd_context *)libh, 0);
 }
 

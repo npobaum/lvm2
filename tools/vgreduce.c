@@ -89,6 +89,12 @@ static int _make_vg_consistent(struct cmd_context *cmd, struct volume_group *vg)
 
 		/* Are any segments of this LV on missing PVs? */
 		if (lv->status & PARTIAL_LV) {
+			if (seg_is_raid(first_seg(lv))) {
+				if (!lv_raid_remove_missing(lv))
+					return_0;
+				goto restart;
+			}
+
 			if (lv->status & MIRRORED) {
 				if (!mirror_remove_missing(cmd, lv, 1))
 					return_0;
@@ -140,7 +146,7 @@ static int _vgreduce_single(struct cmd_context *cmd, struct volume_group *vg,
 		return ECMD_FAILED;
 	}
 
-	if (!lock_vol(cmd, VG_ORPHANS, LCK_VG_WRITE)) {
+	if (!lock_vol(cmd, VG_ORPHANS, LCK_VG_WRITE, NULL)) {
 		log_error("Can't get lock for orphan PVs");
 		return ECMD_FAILED;
 	}
