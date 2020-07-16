@@ -99,7 +99,7 @@ static void _inc_indent(struct formatter *f)
 static void _dec_indent(struct formatter *f)
 {
 	if (!f->indent--) {
-		log_error("Internal error tracking indentation");
+		log_error(INTERNAL_ERROR "problem tracking indentation");
 		f->indent = 0;
 	}
 }
@@ -235,6 +235,24 @@ static int _sectors_to_units(uint64_t sectors, char *buffer, size_t s)
 	return dm_snprintf(buffer, s, "# %g %s", d, _units[i]) > 0;
 }
 
+/* increment indention level */
+void out_inc_indent(struct formatter *f)
+{
+	_inc_indent(f);
+}
+
+/* decrement indention level */
+void out_dec_indent(struct formatter *f)
+{
+	_dec_indent(f);
+}
+
+/* insert new line */
+int out_newline(struct formatter *f)
+{
+	return f->nl(f);
+}
+
 /*
  * Appends a comment giving a size in more easily
  * readable form (eg, 4M instead of 8096).
@@ -268,9 +286,9 @@ int out_hint(struct formatter *f, const char *fmt, ...)
 }
 
 /*
- * Appends a comment
+ * The normal output function with comment
  */
-static int _out_comment(struct formatter *f, const char *comment, const char *fmt, ...)
+int out_text_with_comment(struct formatter *f, const char *comment, const char *fmt, ...)
 {
 	va_list ap;
 	int r;
@@ -331,7 +349,7 @@ static int _print_header(struct formatter *f,
 	return 1;
 }
 
-static int _print_flag_config(struct formatter *f, int status, int type)
+static int _print_flag_config(struct formatter *f, uint64_t status, int type)
 {
 	char buffer[4096];
 	if (!print_flags(status, type | STATUS_FLAG, buffer, sizeof(buffer)))
@@ -368,9 +386,8 @@ static int _print_vg(struct formatter *f, struct volume_group *vg)
 	if (vg->system_id && *vg->system_id)
 		outf(f, "system_id = \"%s\"", vg->system_id);
 
-	if (!out_size(f, (uint64_t) vg->extent_size, "extent_size = %u",
-		      vg->extent_size))
-		return_0;
+	outsize(f, (uint64_t) vg->extent_size, "extent_size = %u",
+		vg->extent_size);
 	outf(f, "max_lv = %u", vg->max_lv);
 	outf(f, "max_pv = %u", vg->max_pv);
 
@@ -435,9 +452,8 @@ static int _print_pvs(struct formatter *f, struct volume_group *vg)
 			return 0;
 		}
 
-		if (!out_hint(f, "device = \"%s\"",
-			      escape_double_quotes(buf, pv_dev_name(pv))))
-			return_0;
+		outhint(f, "device = \"%s\"",
+			escape_double_quotes(buf, pv_dev_name(pv)));
 		outnl(f);
 
 		if (!_print_flag_config(f, pv->status, PV_FLAGS))
@@ -449,13 +465,11 @@ static int _print_pvs(struct formatter *f, struct volume_group *vg)
 			outf(f, "tags = %s", buffer);
 		}
 
-		if (!out_size(f, pv->size, "dev_size = %" PRIu64, pv->size))
-			return_0;
+		outsize(f, pv->size, "dev_size = %" PRIu64, pv->size);
 
 		outf(f, "pe_start = %" PRIu64, pv->pe_start);
-		if (!out_size(f, vg->extent_size * (uint64_t) pv->pe_count,
-			      "pe_count = %u", pv->pe_count))
-			return_0;
+		outsize(f, vg->extent_size * (uint64_t) pv->pe_count,
+			"pe_count = %u", pv->pe_count);
 
 		_dec_indent(f);
 		outf(f, "}");
@@ -475,9 +489,8 @@ static int _print_segment(struct formatter *f, struct volume_group *vg,
 	_inc_indent(f);
 
 	outf(f, "start_extent = %u", seg->le);
-	if (!out_size(f, (uint64_t) seg->len * vg->extent_size,
-		      "extent_count = %u", seg->len))
-		return_0;
+	outsize(f, (uint64_t) seg->len * vg->extent_size,
+		"extent_count = %u", seg->len);
 
 	outnl(f);
 	outf(f, "type = \"%s\"", seg->segtype->name);
@@ -566,7 +579,7 @@ static int _print_lv(struct formatter *f, struct logical_volume *lv)
 
 	switch (lv->read_ahead) {
 	case DM_READ_AHEAD_NONE:
-		_out_comment(f, "# None", "read_ahead = -1");
+		outfc(f, "# None", "read_ahead = -1");
 		break;
 	case DM_READ_AHEAD_AUTO:
 		/* No output - use default */

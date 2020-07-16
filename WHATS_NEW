@@ -1,3 +1,191 @@
+Version 2.02.62 - 9th March 2010
+================================
+  Add use_mlockall and mlock_filter to activation section of lvm.conf.
+  Add default alternative to mlockall using mlock to reduce pinned memory size.
+  Remove -rdynamic from static builds.
+  Update checks for pthread, readline & selinux libs and link only when needed.
+  Introduce makefile vars UDEV_LIBS, DL_LIBS, SELINUX_LIBS, STATIC_LIBS.
+  Introduce makefile vars LVMINTERNAL_LIBS, READLINE_LIBS, PTHREAD_LIBS.
+  Toggle configure help to print --disable-fsadm.
+  Use $() instead of ${} consistently for all Makefile variables.
+  Replace CFLOW_CMD only in make.tmpl and use it as variable elsewhere.
+  Use $(top_builddir) for inclusion of make.tmpl in Makefiles.
+  Fix autoconf warning about ignored datarootdir.
+  Increase AC_PREREQ version to 2.61 (for AC_PROC_SED, AC_PROG_MKDIR_P).
+  Handle misaligned devices that report alignment_offset of -1.
+  Extend core allocation code in preparation for mirrored log areas.
+  Rewrite clvmd init script.
+  Remove lvs_in_vg_activated_by_uuid_only call.
+  No longer fall back to looking up active devices by name if uuid not found.
+  Don't touch /dev in vgmknodes if activation is disabled.
+  Update lvm2app.h Doxygen comments and add lvm2app Doxygen config file.
+  Update nightly tests and lvm2app unit tests to cover tags.
+  Add lvm2app functions lvm_{vg|lv}_{get|add|remove}_tag() functions.
+  Add dm_pool_strdup to allocate and copy memory in tag library function.
+  Refactor vgcreate, vgchange, and lvchange for tag library function.
+  Refactor snapshot-merge deptree and device removal to support info-by-uuid.
+
+Version 2.02.61 - 15th February 2010
+====================================
+  Fix some consts and floating point gcc warnings.
+  Fix dm_report_field_uint64 function to accept 64-bit ints.
+  Change readhead display to use 32-bit -1 const instead of 64-bit.
+  Add LVM_SUPPRESS_LOCKING_FAILURE_MESSAGES environment variable.
+  Remove hard-coding that skipped _mimage devices from 11-dm-lvm.rules.
+  Use udev transactions in test suite.
+  Set udev state automatically instead of using LVM_UDEV_DISABLE_CHECKING.
+  Add lvm_pv_get_size, lvm_pv_get_free and lvm_pv_get_dev_size to lvm2app.
+  Change lvm2app to return all sizes in bytes as documented (not sectors).
+  Add 'fail_if_percent_unsupported' arg to _percent and _percent_run.
+  Remove false "failed to find tree node" error when activating merging origin.
+  Exit with success when lvconvert --repair --use-policies performs no action.
+  Accept a list of LVs with 'lvconvert --merge @tag' using process_each_lv.
+  Avoid unnecessary second resync when adding mimage to core-logged mirror.
+  Exclude internal VG names and uuids from lists returned through lvm2app.
+  Add %ORIGIN support to lv{create,extend,reduce,resize} --extents.
+  Add _mda_copy to clone a struct metadata_area.
+  Remove pointless versioned symlinks to dmeventd plugin libraries.
+  Fix dmeventd snapshot plugin build dependency.
+  Make clvmd -V return status zero.
+  Remove unnecessary 'dmsetup resume' following 'dmsetup create' in tests.
+  Fix cmirrord segfault in clog_cpg list processing when converting mirror log.
+  Deactivate temporary pvmove mirror cluster-wide when activating it fails.
+  Always query device by uuid and not name in clvmd.
+  Add missing metadata vg_reverts in pvmove error paths.
+  Unlock shared lock in clvmd if activation calls fail.
+  Return success from dev_manager_info with non-existent uuid if ioctl succeeds.
+
+Version 2.02.60 - 23rd January 2010
+===================================
+  Extend cmirrord man page.
+  Sleep before first progress check if pvmove/lvconvert interval has prefix '+'.
+  Default to checking progress before waiting in _wait_for_single_lv.
+  Fix cmirror initscript (including syntax error).
+  Eliminate avoidable ioctls for checking open_count in _add_new_lv_to_dtree.
+  Disable memory debugging if dmeventd is configured. (Not thread-safe.)
+  Fix first log message prefix in syslog for dmeventd plugins.
+  Fix exported symbols names for dmeventd lvm2 wrapper plugin.
+  Make failed locking initialisation messages more descriptive.
+
+Version 2.02.59 - 21st January 2010
+===================================
+  Add libdevmapper-event-lvm2.so to serialise dmeventd plugin liblvm2cmd use.
+  Cleanup memory initialization and freeing in pv_read() and pv_create().
+  Clear pointer and counters after their release in _fin_commands().
+  Stop dmeventd trying to access already-removed snapshots.
+  Remove (fallback) /dev mknod from cmirrord.
+  Add t-topology-support.sh and t-snapshot-merge.sh tests.
+  Fix clvmd to never scan suspended devices.
+  Fix dmeventd build outside source tree.
+  Assorted cmirror code changes to remove various compiler warnings.
+  Fix detection of completed snapshot merge.
+  Add Red Hat cmirror initscript (unfinished).
+  Add cmirrord man page (incomplete).
+  Make cluster log communication structures architecture independant.
+  Fix cluster log in-memory bitmap handling.
+  Improve snapshot merge metadata import validation.
+  Improve target type compatibility checking in _percent_run().
+  Add 'target_status_compatible' method to 'struct segtype_handler'.
+  Change underscore to hyphen in table line for clustered log type.
+
+Version 2.02.58 - 14th January 2010
+===================================
+  Cleanup some minor gcc warnings.
+  Add --merge to lvconvert to merge a snapshot into its origin.
+  Fix clvmd automatic target module loading crash (no reset_locking fn).
+  Fix allocation code not to stop at the first area of a PV that fits.
+
+Version 2.02.57 - 12th January 2010
+===================================
+  Ensure exactly one process returns from poll_daemon(), never two.
+  Reset _vgs_locked in lvmcache_init() in child after forking.
+  Define {DM, LVM}_UDEV_DISABLE_CHECKING=1 environment variables during tests.
+  Enable udev_sync and udev_rules in lvm.conf by default while running tests.
+  If LVM_UDEV_DISABLE_CHECKING in set in environment, disable udev warnings.
+  Add --splitmirrors to lvconvert to split off part of a mirror.
+  Change background polldaemon's process name to "(lvm2)".
+  Allow vgremove to remove a VG with PVs missing after a prompt.
+  Return success in lvconvert --repair --use-policies on failed allocation.
+  Keep log type consistent when changing mirror image count.
+  Always set environment variables for an LVM2 device in 11-dm-lvm.rules.
+  Add activation/udev_rules config option in lvm.conf.
+  Add consts to text metadata flag structs.
+  Add macros outfc, outsize, outhint and function out_text_with_comment.
+  Reimplement report FIELD macro using offsetof instead of static structs.
+  Fix fsadm man page typo (fsdam).
+  Rename mirror_device_fault_policy to mirror_image_fault policy.
+  Remove empty PV devices if lvconvert --repair is using defined policies.
+  Use fixed buffer to prevent stack overflow in persistent filter dump.
+  Use extended status of new kernel snapshot target 1.8.0 to detect when empty.
+  Insert stack macros in suspend_lv, resume_lv & (de)activate_lv callers.
+  Add --poll flag to vgchange and lvchange to control background daemon launch.
+  Propagate metadata commit and revert notifications to other cluster nodes.
+  Use proper mask for VG lock mode in clvmd.
+  Allow precommitted metadata to be dropped from lvmcache.
+  Move processing of VG locks to separate function in clvmd.
+  Properly decode all flags in clvmd messages including VG locks.
+  Properly handle precommitted cache flag when only committed metadata present.
+  Resume renamed volumes in reverse order to preserve memlock pairing.
+  Drop cached metadata after device was auto-repaired and removed from VG.
+  Clear MISSING_PV flag if PV reappeared and is empty.
+  Fix removal of multiple devices from a mirror.
+  Also clean up PVs flagged as missing in vgreduce --removemissing --force.
+  Introduce INTERNAL_ERROR macro for error messages and use throughout.
+  Remove superfluous returns from void functions.
+  Destroy allocated mempool in _vg_read_orphans() error path.
+  Fix some pvresize and toollib error paths with missing VG releases/unlocks.
+  Explicitly call suspend for temporary mirror layer.
+  Allow use of precommitted metadata when a PV is missing.
+  Add memlock information to do_lock_lv debug output.
+  Always bypass calls to remote cluster nodes for non-clustered VGs.
+  Permit implicit cluster lock conversion in pre/post callbacks on local node.
+  Permit implicit cluster lock conversion to the lock mode already held.
+  Fix lock flag masking in clvmd so intended code paths get invoked.
+  Replace magic masks in cluster locking code by defined masks.
+  Remove newly-created mirror log from metadata if initial deactivation fails.
+  Correct activated or deactivated text in vgchange summary message.
+  Improve pvmove error message when all source LVs are skipped.
+  Fix memlock imbalance in lv_suspend if already suspended.
+  Fix pvmove test mode not to poll (and fail).
+  Fix vgcreate error message if VG already exists.
+  Fix tools to use log_error when aborted due to user response to prompt.
+  Fix ignored readahead setting in lvcreate --readahead.
+  Fix clvmd memory leak in lv_info_by_lvid by calling release_vg.
+  If aborting due to internal error, always send that message to stderr.
+  Add global/abort_on_internal_errors to lvm.conf to assist testing.
+  Fix test Makefiles when builddir and srcdir differ.
+  Impose limit of 8 mirror images to match the in-kernel kcopyd restriction.
+  Use locking_type 3 (compiled in) for lvmconf --enable-cluster.
+  Remove list.c and list.h with no-longer-used dm_list macros and functions.
+  Log failure type and recognise type 'F' (flush) in dmeventd mirror plugin.
+  Extend internal PV/VG/LV/segment status variables from 32-bit to 64-bit.
+
+Version 2.02.56 - 24th November 2009
+====================================
+  Add missing vg_release to pvs and pvdisplay to fix memory leak.
+  Do not try to unlock VG which is not locked in _process_one_vg.
+  Move is_long_lived persistent_filter_dump to happen after every full scan.
+  Refresh device filters before full device rescan in lvmcache.
+  Return error status if vgchange fails to activate some volume.
+  Fix suspend/resume lock type test causing unbalanced memory locking.
+  Revert vg_read_internal change as clvmd was not ready for vg_read. (2.02.55)
+
+Version 2.02.55 - 19th November 2009
+====================================
+  Fix deadlock when changing mirrors due to unpaired memlock refcount changes.
+  Use separate memlock counter for dmeventd handlers to permit device scanning.
+  Directly restrict vgchange to activating visible LVs.
+  Fix pvmove region_size overflow for very large PVs.
+  Fix lvcreate and lvresize %PVS argument always to use sensible total size.
+  Tidy some uses of arg_count and introduce arg_is_set.
+  Export outnl and indent functions for modules.
+  Flush stdout after yes/no prompt.
+  Update vgsplit and vgcreate to use vg_set_clustered.
+  Add vg_mda_count and vg_set_clustered library functions.
+  Add more vgcreate and vgsplit nightly tests.
+  Insert some missing stack macros into activation code.
+  Recognise DRBD devices and handle them like md devices.
+
 Version 2.02.54 - 26th October 2009
 ===================================
   Update lvcreate/lvconvert man pages to explain PhysicalVolume parameter.

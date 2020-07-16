@@ -317,7 +317,7 @@ void pvdisplay_colons(const struct physical_volume *pv)
 		return;
 	}
 
-	log_print("%s:%s:%" PRIu64 ":-1:%u:%u:-1:%" PRIu32 ":%u:%u:%u:%s",
+	log_print("%s:%s:%" PRIu64 ":-1:%" PRIu64 ":%" PRIu64 ":-1:%" PRIu32 ":%u:%u:%u:%s",
 		  pv_dev_name(pv), pv->vg_name, pv->size,
 		  /* FIXME pv->pv_number, Derive or remove? */
 		  pv->status,	/* FIXME Support old or new format here? */
@@ -327,8 +327,6 @@ void pvdisplay_colons(const struct physical_volume *pv)
 		  pv->pe_count,
 		  pv->pe_count - pv->pe_alloc_count,
 		  pv->pe_alloc_count, *uuid ? uuid : "none");
-
-	return;
 }
 
 void pvdisplay_segments(const struct physical_volume *pv)
@@ -355,7 +353,6 @@ void pvdisplay_segments(const struct physical_volume *pv)
 	}
 
 	log_print(" ");
-	return;
 }
 
 /* FIXME Include label fields */
@@ -424,8 +421,6 @@ void pvdisplay_full(const struct cmd_context *cmd,
 	log_print("Allocated PE          %u", pv->pe_alloc_count);
 	log_print("PV UUID               %s", *uuid ? uuid : "none");
 	log_print(" ");
-
-	return;
 }
 
 int pvdisplay_short(const struct cmd_context *cmd __attribute((unused)),
@@ -459,7 +454,7 @@ void lvdisplay_colons(const struct logical_volume *lv)
 	struct lvinfo info;
 	inkernel = lv_info(lv->vg->cmd, lv, &info, 1, 0) && info.exists;
 
-	log_print("%s%s/%s:%s:%d:%d:-1:%d:%" PRIu64 ":%d:-1:%d:%d:%d:%d",
+	log_print("%s%s/%s:%s:%" PRIu64 ":%d:-1:%d:%" PRIu64 ":%d:-1:%d:%d:%d:%d",
 		  lv->vg->cmd->dev_dir,
 		  lv->vg->name,
 		  lv->name,
@@ -470,7 +465,6 @@ void lvdisplay_colons(const struct logical_volume *lv)
 		  /* FIXME Add num allocated to struct! lv->lv_allocated_le, */
 		  (lv->alloc == ALLOC_CONTIGUOUS ? 2 : 0), lv->read_ahead,
 		  inkernel ? info.major : -1, inkernel ? info.minor : -1);
-	return;
 }
 
 int lvdisplay_full(struct cmd_context *cmd,
@@ -654,7 +648,6 @@ int lvdisplay_segments(const struct logical_volume *lv)
 
 void vgdisplay_extents(const struct volume_group *vg __attribute((unused)))
 {
-	return;
 }
 
 void vgdisplay_full(const struct volume_group *vg)
@@ -729,8 +722,6 @@ void vgdisplay_full(const struct volume_group *vg)
 
 	log_print("VG UUID               %s", uuid);
 	log_print(" ");
-
-	return;
 }
 
 void vgdisplay_colons(const struct volume_group *vg)
@@ -760,7 +751,7 @@ void vgdisplay_colons(const struct volume_group *vg)
 		return;
 	}
 
-	log_print("%s:%s:%d:-1:%u:%u:%u:-1:%u:%u:%u:%" PRIu64 ":%" PRIu32
+	log_print("%s:%s:%" PRIu64 ":-1:%u:%u:%u:-1:%u:%u:%u:%" PRIu64 ":%" PRIu32
 		  ":%u:%u:%u:%s",
 		vg->name,
 		access_str,
@@ -779,7 +770,6 @@ void vgdisplay_colons(const struct volume_group *vg)
 		vg->extent_count - vg->free_count,
 		vg->free_count,
 		uuid[0] ? uuid : "none");
-	return;
 }
 
 void vgdisplay_short(const struct volume_group *vg)
@@ -792,7 +782,6 @@ void vgdisplay_short(const struct volume_group *vg)
 			       ((uint64_t) vg->extent_count -
 				vg->free_count) * vg->extent_size),
 		  display_size(vg->cmd, vg_free(vg)));
-	return;
 }
 
 void display_formats(const struct cmd_context *cmd)
@@ -824,6 +813,7 @@ char yes_no_prompt(const char *prompt, ...)
 			va_start(ap, prompt);
 			vprintf(prompt, ap);
 			va_end(ap);
+			fflush(stdout);
 		}
 
 		if ((c = getchar()) == EOF) {

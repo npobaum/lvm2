@@ -99,15 +99,16 @@ struct dm_list *clone_pv_list(struct dm_pool *mem, struct dm_list *pvs);
 int apply_lvname_restrictions(const char *name);
 int is_reserved_lvname(const char *name);
 
-int fill_vg_create_params(struct cmd_context *cmd,
-			  char *vg_name, struct vgcreate_params *vp_new,
-			  struct vgcreate_params *vp_def);
-
+void vgcreate_params_set_defaults(struct vgcreate_params *vp_def,
+				 struct volume_group *vg);
+int vgcreate_params_set_from_args(struct cmd_context *cmd,
+				  struct vgcreate_params *vp_new,
+				  struct vgcreate_params *vp_def);
 int lv_refresh(struct cmd_context *cmd, struct logical_volume *lv);
 int vg_refresh_visible(struct cmd_context *cmd, struct volume_group *vg);
 void lv_spawn_background_polling(struct cmd_context *cmd,
 				 struct logical_volume *lv);
-int pvcreate_validate_params(struct cmd_context *cmd,
+int pvcreate_params_validate(struct cmd_context *cmd,
 			     int argc, char **argv,
 			     struct pvcreate_params *pp);
 

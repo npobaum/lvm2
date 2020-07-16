@@ -98,8 +98,8 @@ static int _striped_text_export(const struct lv_segment *seg, struct formatter *
 	     (seg->area_count == 1) ? "\t# linear" : "");
 
 	if (seg->area_count > 1)
-		out_size(f, (uint64_t) seg->stripe_size,
-			 "stripe_size = %u", seg->stripe_size);
+		outsize(f, (uint64_t) seg->stripe_size,
+			"stripe_size = %u", seg->stripe_size);
 
 	return out_areas(f, seg, "stripe");
 }
@@ -168,7 +168,7 @@ static int _striped_add_target_line(struct dev_manager *dm,
 				uint32_t *pvmove_mirror_count __attribute((unused)))
 {
 	if (!seg->area_count) {
-		log_error("Internal error: striped add_target_line called "
+		log_error(INTERNAL_ERROR "striped add_target_line called "
 			  "with no areas for %s.", seg->lv->name);
 		return 0;
 	}

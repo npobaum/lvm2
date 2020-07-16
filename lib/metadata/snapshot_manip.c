@@ -15,6 +15,7 @@
 
 #include "lib.h"
 #include "metadata.h"
+#include "locking.h"
 #include "toolcontext.h"
 #include "lv_alloc.h"
 
@@ -25,7 +26,7 @@ int lv_is_origin(const struct logical_volume *lv)
 
 int lv_is_cow(const struct logical_volume *lv)
 {
-	return lv->snapshot ? 1 : 0;
+	return (!lv_is_origin(lv) && lv->snapshot) ? 1 : 0;
 }
 
 int lv_is_visible(const struct logical_volume *lv)
@@ -36,6 +37,9 @@ int lv_is_visible(const struct logical_volume *lv)
 	if (lv_is_cow(lv)) {
 		if (lv_is_virtual_origin(origin_from_cow(lv)))
 			return 1;
+
+		if (lv_is_merging_cow(lv))
+			return 0;
 
 		return lv_is_visible(origin_from_cow(lv));
 	}
@@ -48,6 +52,24 @@ int lv_is_virtual_origin(const struct logical_volume *lv)
 	return (lv->status & VIRTUAL_ORIGIN) ? 1 : 0;
 }
 
+int lv_is_merging_origin(const struct logical_volume *origin)
+{
+	return (origin->status & MERGING) ? 1 : 0;
+}
+
+struct lv_segment *find_merging_cow(const struct logical_volume *origin)
+{
+	if (!lv_is_merging_origin(origin))
+		return NULL;
+
+	return find_cow(origin);
+}
+
+int lv_is_merging_cow(const struct logical_volume *snapshot)
+{
+	/* checks lv_segment's status to see if cow is merging */
+	return (find_cow(snapshot)->status & MERGING) ? 1 : 0;
+}
 
 /* Given a cow LV, return the snapshot lv_segment that uses it */
 struct lv_segment *find_cow(const struct logical_volume *lv)
@@ -62,7 +84,7 @@ struct logical_volume *origin_from_cow(const struct logical_volume *lv)
 }
 
 void init_snapshot_seg(struct lv_segment *seg, struct logical_volume *origin,
-		       struct logical_volume *cow, uint32_t chunk_size)
+		       struct logical_volume *cow, uint32_t chunk_size, int merge)
 {
 	seg->chunk_size = chunk_size;
 	seg->origin = origin;
@@ -79,8 +101,37 @@ void init_snapshot_seg(struct lv_segment *seg, struct logical_volume *origin,
 		origin->status |= VIRTUAL_ORIGIN;
 
 	seg->lv->status |= (SNAPSHOT | VIRTUAL);
+	if (merge)
+		init_snapshot_merge(seg, origin);
 
 	dm_list_add(&origin->snapshot_segs, &seg->origin_list);
+}
+
+void init_snapshot_merge(struct lv_segment *cow_seg,
+			 struct logical_volume *origin)
+{
+	/*
+	 * Even though lv_is_visible(cow_seg->lv) returns 0,
+	 * the cow_seg->lv (name: snapshotX) is _not_ hidden;
+	 * this is part of the lvm2 snapshot fiction.  Must
+	 * clear VISIBLE_LV directly (lv_set_visible can't)
+	 * - cow_seg->lv->status is used to control whether 'lv'
+	 *   (with user provided snapshot LV name) is visible
+	 * - this also enables vg_validate() to succeed with
+	 *   merge metadata (cow_seg->lv is now "internal")
+	 */
+	cow_seg->lv->status &= ~VISIBLE_LV;
+	cow_seg->status |= MERGING;
+	origin->snapshot = cow_seg;
+	origin->status |= MERGING;
+}
+
+void clear_snapshot_merge(struct logical_volume *origin)
+{
+	/* clear merge attributes */
+	origin->snapshot->status &= ~MERGING;
+	origin->snapshot = NULL;
+	origin->status &= ~MERGING;
 }
 
 int vg_add_snapshot(struct logical_volume *origin,
@@ -113,15 +164,29 @@ int vg_add_snapshot(struct logical_volume *origin,
 	if (!(seg = alloc_snapshot_seg(snap, 0, 0)))
 		return_0;
 
-	init_snapshot_seg(seg, origin, cow, chunk_size);
+	init_snapshot_seg(seg, origin, cow, chunk_size, 0);
 
 	return 1;
 }
 
 int vg_remove_snapshot(struct logical_volume *cow)
 {
+	int preload_origin = 0;
+	struct logical_volume *origin = origin_from_cow(cow);
+
 	dm_list_del(&cow->snapshot->origin_list);
-	cow->snapshot->origin->origin_count--;
+	origin->origin_count--;
+	if (find_merging_cow(origin) == find_cow(cow)) {
+		clear_snapshot_merge(origin);
+		/*
+		 * preload origin to:
+		 * - allow proper release of -cow
+		 * - avoid allocations with other devices suspended
+		 *   when transitioning from "snapshot-merge" to
+		 *   "snapshot-origin after a merge completes.
+		 */
+		preload_origin = 1;
+	}
 
 	if (!lv_remove(cow->snapshot->lv)) {
 		log_error("Failed to remove internal snapshot LV %s",
@@ -131,6 +196,22 @@ int vg_remove_snapshot(struct logical_volume *cow)
 
 	cow->snapshot = NULL;
 	lv_set_visible(cow);
+
+	if (preload_origin) {
+		if (!vg_write(origin->vg))
+			return_0;
+		if (!suspend_lv(origin->vg->cmd, origin)) {
+			log_error("Failed to refresh %s without snapshot.",
+				  origin->name);
+			return 0;
+		}
+		if (!vg_commit(origin->vg))
+			return_0;
+		if (!resume_lv(origin->vg->cmd, origin)) {
+			log_error("Failed to resume %s.", origin->name);
+			return 0;
+		}
+	}
 
 	return 1;
 }

@@ -317,8 +317,9 @@ static int _lock_for_cluster(struct cmd_context *cmd, unsigned char clvmd_cmd,
 	args = alloca(len);
 	strcpy(args + 2, name);
 
-	args[0] = flags & 0x7F; /* Maskoff lock flags */
-	args[1] = flags & 0xC0; /* Bitmap flags */
+	/* Maskoff lock flags */
+	args[0] = flags & (LCK_SCOPE_MASK | LCK_TYPE_MASK | LCK_NONBLOCK | LCK_HOLD); 
+	args[1] = flags & (LCK_LOCAL | LCK_CLUSTER_VG);
 
 	if (mirror_in_sync())
 		args[1] |= LCK_MIRROR_NOSYNC_MODE;
@@ -408,14 +409,13 @@ int lock_resource(struct cmd_context *cmd, const char *resource, uint32_t flags)
 
 		lock_scope = "VG";
 		clvmd_cmd = CLVMD_CMD_LOCK_VG;
-		flags &= LCK_TYPE_MASK;
 		break;
 
 	case LCK_LV:
 		clvmd_cmd = CLVMD_CMD_LOCK_LV;
 		strcpy(lockname, resource);
 		lock_scope = "LV";
-		flags &= 0xffdf;	/* Mask off HOLD flag */
+		flags &= ~LCK_HOLD;	/* Mask off HOLD flag */
 		break;
 
 	default:
@@ -449,12 +449,13 @@ int lock_resource(struct cmd_context *cmd, const char *resource, uint32_t flags)
 		return 0;
 	}
 
-	log_very_verbose("Locking %s %s %s %s%s%s%s (0x%x)", lock_scope, lockname,
-			 lock_type,
-			 flags & LCK_NONBLOCK ? "" : "B",
-			 flags & LCK_HOLD ? "H" : "",
-			 flags & LCK_LOCAL ? "L" : "",
-			 flags & LCK_CLUSTER_VG ? "C" : "",
+	log_very_verbose("Locking %s %s %s (%s%s%s%s%s%s) (0x%x)", lock_scope, lockname,
+			 lock_type, lock_scope,
+			 flags & LCK_NONBLOCK ? "|NONBLOCK" : "",
+			 flags & LCK_HOLD ? "|HOLD" : "",
+			 flags & LCK_LOCAL ? "|LOCAL" : "",
+			 flags & LCK_CLUSTER_VG ? "|CLUSTER" : "",
+			 flags & LCK_CACHE ? "|CACHE" : "",
 			 flags);
 
 	/* Send a message to the cluster manager */

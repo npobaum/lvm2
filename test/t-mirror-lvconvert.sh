@@ -58,6 +58,7 @@ mirrorlog_is_on_()
 {
   local lv="$1"_mlog
   shift 1
+  if ! lvs -a $lv; then return 0; fi # FIXME?
   lvs -a -odevices --noheadings $lv | sed 's/,/\n/g' > out
   for d in $*; do grep "$d(" out || return 1; done
   for d in $*; do grep -v "$d(" out > out2 || true; mv out2 out; done
@@ -87,7 +88,7 @@ check_mirror_log_()
 {
   local lv=$1
   local mlog=$(lvs --noheadings -omirror_log $lv | sed -e 's/ //g')
-  [ "$(basename $lv)_mlog" = "$mlog" ]
+  [ "$(basename $lv)_mlog" == "$mlog" ]
 }
 
 wait_conversion_()
@@ -128,6 +129,12 @@ check_and_cleanup_lvs_()
 	fi
 }
 
+not_sh ()
+{
+    "$@" && exit 1 || :;
+}
+
+
 prepare_lvs_
 check_and_cleanup_lvs_
 
@@ -149,6 +156,19 @@ mimages_are_redundant_ $vg $lv1
 mirrorlog_is_on_ $vg/$lv1 $dev3
 check_and_cleanup_lvs_
 
+# remove 1 mirror from corelog'ed mirror
+#  should retain 'core' log type
+prepare_lvs_
+lvcreate -l2 -m2 --corelog -n $lv1 $vg
+check_mirror_count_ $vg/$lv1 3
+not_sh check_mirror_log_ $vg/$lv1
+lvconvert -m -1 -i1 $vg/$lv1
+check_no_tmplvs_ $vg/$lv1
+check_mirror_count_ $vg/$lv1 2
+mimages_are_redundant_ $vg $lv1
+not_sh check_mirror_log_ $vg/$lv1
+check_and_cleanup_lvs_
+
 # add 2 mirrors
 prepare_lvs_
 lvcreate -l2 -m1 -n $lv1 $vg $dev1 $dev2 $dev3:0-1
@@ -161,27 +181,41 @@ mimages_are_redundant_ $vg $lv1
 mirrorlog_is_on_ $vg/$lv1 $dev3
 check_and_cleanup_lvs_
 
-# add 1 mirror to core log mirror
+# add 1 mirror to core log mirror,
+#  explicitly keep log as 'core'
 prepare_lvs_
 lvcreate -l2 -m1 --mirrorlog core -n $lv1 $vg $dev1 $dev2
 check_mirror_count_ $vg/$lv1 2
-not check_mirror_log_ $vg/$lv1
+not_sh check_mirror_log_ $vg/$lv1
 lvconvert -m+1 -i1 --mirrorlog core $vg/$lv1 $dev4 
 check_no_tmplvs_ $vg/$lv1 
 check_mirror_count_ $vg/$lv1 3 
-not check_mirror_log_ $vg/$lv1
+not_sh check_mirror_log_ $vg/$lv1
 mimages_are_redundant_ $vg $lv1 
+check_and_cleanup_lvs_
+
+# add 1 mirror to core log mirror, but
+#  implicitly keep log as 'core'
+prepare_lvs_
+lvcreate -l2 -m1 --mirrorlog core -n $lv1 $vg $dev1 $dev2
+check_mirror_count_ $vg/$lv1 2
+not_sh check_mirror_log_ $vg/$lv1
+lvconvert -m +1 -i1 $vg/$lv1
+check_no_tmplvs_ $vg/$lv1
+check_mirror_count_ $vg/$lv1 3
+not_sh check_mirror_log_ $vg/$lv1
+mimages_are_redundant_ $vg $lv1
 check_and_cleanup_lvs_
 
 # add 2 mirrors to core log mirror" 
 prepare_lvs_ 
 lvcreate -l2 -m1 --mirrorlog core -n $lv1 $vg $dev1 $dev2 
 check_mirror_count_ $vg/$lv1 2 
-not check_mirror_log_ $vg/$lv1 
+not_sh check_mirror_log_ $vg/$lv1 
 lvconvert -m+2 -i1 --mirrorlog core $vg/$lv1 $dev4 $dev5 
 check_no_tmplvs_ $vg/$lv1 
 check_mirror_count_ $vg/$lv1 4 
-not check_mirror_log_ $vg/$lv1
+not_sh check_mirror_log_ $vg/$lv1
 mimages_are_redundant_ $vg $lv1 
 check_and_cleanup_lvs_
 
@@ -208,7 +242,7 @@ check_and_cleanup_lvs_
 prepare_lvs_ 
 lvcreate -l2 -m1 --mirrorlog core -n $lv1 $vg $dev1 $dev2 
 check_mirror_count_ $vg/$lv1 2 
-not check_mirror_log_ $vg/$lv1 
+not_sh check_mirror_log_ $vg/$lv1 
 lvconvert -m+1 --mirrorlog disk -i1 $vg/$lv1 $dev4 $dev3:0-1 
 check_no_tmplvs_ $vg/$lv1 
 check_mirror_count_ $vg/$lv1 3 

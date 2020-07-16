@@ -37,7 +37,7 @@ static int _snap_text_import(struct lv_segment *seg, const struct config_node *s
 	uint32_t chunk_size;
 	const char *org_name, *cow_name;
 	struct logical_volume *org, *cow;
-	int old_suppress;
+	int old_suppress, merge = 0;
 
 	if (!get_config_uint32(sn, "chunk_size", &chunk_size)) {
 		log_error("Couldn't read chunk size for snapshot.");
@@ -46,7 +46,15 @@ static int _snap_text_import(struct lv_segment *seg, const struct config_node *s
 
 	old_suppress = log_suppress(1);
 
-	if (!(cow_name = find_config_str(sn, "cow_store", NULL))) {
+	if ((cow_name = find_config_str(sn, "merging_store", NULL))) {
+		if (find_config_str(sn, "cow_store", NULL)) {
+			log_suppress(old_suppress);
+			log_error("Both snapshot cow and merging storage were specified.");
+			return 0;
+		}
+		merge = 1;
+	}
+	else if (!(cow_name = find_config_str(sn, "cow_store", NULL))) {
 		log_suppress(old_suppress);
 		log_error("Snapshot cow storage not specified.");
 		return 0;
@@ -72,7 +80,7 @@ static int _snap_text_import(struct lv_segment *seg, const struct config_node *s
 		return 0;
 	}
 
-	init_snapshot_seg(seg, org, cow, chunk_size);
+	init_snapshot_seg(seg, org, cow, chunk_size, merge);
 
 	return 1;
 }
@@ -81,9 +89,17 @@ static int _snap_text_export(const struct lv_segment *seg, struct formatter *f)
 {
 	outf(f, "chunk_size = %u", seg->chunk_size);
 	outf(f, "origin = \"%s\"", seg->origin->name);
-	outf(f, "cow_store = \"%s\"", seg->cow->name);
+	if (!(seg->status & MERGING))
+		outf(f, "cow_store = \"%s\"", seg->cow->name);
+	else
+		outf(f, "merging_store = \"%s\"", seg->cow->name);
 
 	return 1;
+}
+
+static int _snap_target_status_compatible(const char *type)
+{
+	return (strcmp(type, "snapshot-merge") == 0);
 }
 
 #ifdef DEVMAPPER_SUPPORT
@@ -95,19 +111,27 @@ static int _snap_target_percent(void **target_state __attribute((unused)),
 				char *params, uint64_t *total_numerator,
 				uint64_t *total_denominator)
 {
-	uint64_t numerator, denominator;
+	uint64_t total_sectors, sectors_allocated, metadata_sectors;
+	int r;
 
-	if (sscanf(params, "%" PRIu64 "/%" PRIu64,
-		   &numerator, &denominator) == 2) {
-		*total_numerator += numerator;
-		*total_denominator += denominator;
-		if (!numerator)
+	/*
+	 * snapshot target's percent format:
+	 * <= 1.7.0: <sectors_allocated>/<total_sectors>
+	 * >= 1.8.0: <sectors_allocated>/<total_sectors> <metadata_sectors>
+	 */
+	r = sscanf(params, "%" PRIu64 "/%" PRIu64 " %" PRIu64,
+		   &sectors_allocated, &total_sectors, &metadata_sectors);
+	if (r == 2 || r == 3) {
+		*total_numerator += sectors_allocated;
+		*total_denominator += total_sectors;
+		if (r == 3 && sectors_allocated == metadata_sectors)
 			*percent_range = PERCENT_0;
-		else if (numerator == denominator)
+		else if (sectors_allocated == total_sectors)
 			*percent_range = PERCENT_100;
 		else
 			*percent_range = PERCENT_0_TO_100;
-	} else if (!strcmp(params, "Invalid"))
+	} else if (!strcmp(params, "Invalid") ||
+		   !strcmp(params, "Merge failed"))
 		*percent_range = PERCENT_INVALID;
 	else
 		return 0;
@@ -116,17 +140,25 @@ static int _snap_target_percent(void **target_state __attribute((unused)),
 }
 
 static int _snap_target_present(struct cmd_context *cmd,
-				const struct lv_segment *seg __attribute((unused)),
+				const struct lv_segment *seg,
 				unsigned *attributes __attribute((unused)))
 {
 	static int _snap_checked = 0;
+	static int _snap_merge_checked = 0;
 	static int _snap_present = 0;
+	static int _snap_merge_present = 0;
 
-	if (!_snap_checked)
+	if (!_snap_checked) {
 		_snap_present = target_present(cmd, "snapshot", 1) &&
 		    target_present(cmd, "snapshot-origin", 0);
+		_snap_checked = 1;
+	}
 
-	_snap_checked = 1;
+	if (!_snap_merge_checked && seg && (seg->status & MERGING)) {
+		_snap_merge_present = target_present(cmd, "snapshot-merge", 0);
+		_snap_merge_checked = 1;
+		return _snap_present && _snap_merge_present;
+	}
 
 	return _snap_present;
 }
@@ -281,6 +313,7 @@ static struct segtype_handler _snapshot_ops = {
 	.name = _snap_name,
 	.text_import = _snap_text_import,
 	.text_export = _snap_text_export,
+	.target_status_compatible = _snap_target_status_compatible,
 #ifdef DEVMAPPER_SUPPORT
 	.target_percent = _snap_target_percent,
 	.target_present = _snap_target_present,

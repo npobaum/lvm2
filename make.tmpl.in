@@ -27,14 +27,23 @@ LCOV = @LCOV@
 GENHTML = @GENHTML@
 LN_S = @LN_S@
 SED = @SED@
+CFLOW_CMD = @CFLOW_CMD@
 
 LIBS = @LIBS@
+# Extra libraries always linked with static binaries
+STATIC_LIBS = $(SELINUX_LIBS) $(UDEV_LIBS)
 DEFS += @DEFS@
 CFLAGS += @CFLAGS@
 CLDFLAGS += @CLDFLAGS@
 LDDEPS += @LDDEPS@
 LDFLAGS += @LDFLAGS@
 LIB_SUFFIX = @LIB_SUFFIX@
+LVMINTERNAL_LIBS = -llvm-internal $(DL_LIBS)
+DL_LIBS = @DL_LIBS@
+PTHREAD_LIBS = @PTHREAD_LIBS@
+READLINE_LIBS = @READLINE_LIBS@
+SELINUX_LIBS = @SELINUX_LIBS@
+UDEV_LIBS = @UDEV_LIBS@
 
 # Setup directory variables
 prefix = @prefix@
@@ -47,6 +56,7 @@ libdir = $(DESTDIR)@libdir@
 usrlibdir = $(DESTDIR)@usrlibdir@
 sbindir = $(DESTDIR)@sbindir@
 usrsbindir = $(DESTDIR)@usrsbindir@
+datarootdir = $(DESTDIR)@datarootdir@
 infodir = $(DESTDIR)@infodir@
 mandir = $(DESTDIR)@mandir@
 localedir = $(DESTDIR)@LOCALEDIR@
@@ -54,7 +64,7 @@ staticdir = $(DESTDIR)@STATICDIR@
 udevdir = $(DESTDIR)@udevdir@
 
 interface = @interface@
-interfacedir = $(top_srcdir)/libdm/$(interface)
+interfacebuilddir = $(top_builddir)/libdm/$(interface)
 
 # setup misc variables
 # define the ownership variables for the binaries and man pages
@@ -78,7 +88,10 @@ CFLAGS += @COPTIMISE_FLAG@
 ifeq ("@DEBUG@", "yes")
   CFLAGS += -g -fno-omit-frame-pointer
   DEFS += -DDEBUG
-  DEFS += -DDEBUG_MEM
+  # memory debugging is not thread-safe yet
+  ifneq ("@DMEVENTD@", "yes")
+    DEFS += -DDEBUG_MEM
+  endif
 endif
 
 ifeq ("@INTL@", "yes")

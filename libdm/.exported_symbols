@@ -40,6 +40,7 @@ dm_task_add_target
 dm_task_no_flush
 dm_task_no_open_count
 dm_task_skip_lockfs
+dm_task_query_inactive_table
 dm_task_update_nodes
 dm_task_run
 dm_get_next_target
@@ -49,6 +50,7 @@ dm_format_dev
 dm_tree_create
 dm_tree_free
 dm_tree_add_dev
+dm_tree_add_dev_with_udev_flags
 dm_tree_add_new_dev
 dm_tree_add_new_dev_with_udev_flags
 dm_tree_node_get_name
@@ -69,6 +71,7 @@ dm_tree_suspend_children
 dm_tree_children_use_uuid
 dm_tree_node_add_snapshot_origin_target
 dm_tree_node_add_snapshot_target
+dm_tree_node_add_snapshot_merge_target
 dm_tree_node_add_error_target
 dm_tree_node_add_zero_target
 dm_tree_node_add_linear_target
@@ -161,5 +164,8 @@ dm_list_size
 dm_cookie_supported
 dm_udev_set_sync_support
 dm_udev_get_sync_support
+dm_udev_set_checking
+dm_udev_get_checking
+dm_udev_create_cookie
 dm_udev_complete
 dm_udev_wait

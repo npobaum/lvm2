@@ -75,18 +75,19 @@ endif
 TARGETS = \
 	clvmd
 
-LVMLIBS = -llvm-internal -lpthread
+LVMLIBS = $(LVMINTERNAL_LIBS)
 
 ifeq ("@DMEVENTD@", "yes")
 	LVMLIBS += -ldevmapper-event
 endif
  
 LVMLIBS += -ldevmapper
+LIBS += $(PTHREAD_LIBS)
 
 DEFS += -D_REENTRANT
 CFLAGS += -fno-strict-aliasing
 
-include ../../make.tmpl
+include $(top_builddir)/make.tmpl
 
 INSTALL_TARGETS = \
 	install_clvmd

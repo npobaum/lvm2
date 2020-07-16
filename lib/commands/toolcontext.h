@@ -34,6 +34,7 @@ struct config_info {
 	int archive;		/* should we archive ? */
 	int backup;		/* should we backup ? */
 	int read_ahead;		/* DM_READ_AHEAD_NONE or _AUTO */
+	int udev_rules;
 	int udev_sync;
 	int cache_vgmetadata;
 	const char *msg_prefix;
@@ -105,6 +106,7 @@ struct cmd_context *create_toolcontext(unsigned is_long_lived,
 				       const char *system_dir);
 void destroy_toolcontext(struct cmd_context *cmd);
 int refresh_toolcontext(struct cmd_context *cmd);
+int refresh_filters(struct cmd_context *cmd);
 int config_files_changed(struct cmd_context *cmd);
 int init_lvmcache_orphans(struct cmd_context *cmd);
 

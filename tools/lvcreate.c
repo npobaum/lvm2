@@ -33,8 +33,7 @@ static int _lvcreate_name_params(struct lvcreate_params *lp,
 	char **argv = *pargv, *ptr;
 	char *vg_name;
 
-	if (arg_count(cmd, name_ARG))
-		lp->lv_name = arg_value(cmd, name_ARG);
+	lp->lv_name = arg_str_value(cmd, name_ARG, NULL);
 
 	if (lp->snapshot && !arg_count(cmd, virtualsize_ARG)) {
 		if (!argc) {
@@ -131,6 +130,7 @@ static int _update_extents_params(struct volume_group *vg,
 				  struct lvcreate_cmdline_params *lcp)
 {
 	uint32_t pv_extent_count;
+	struct logical_volume *origin = NULL;
 
 	if (lcp->size &&
 	    !(lp->extents = extents_from_size(vg->cmd, lcp->size,
@@ -161,18 +161,26 @@ static int _update_extents_params(struct volume_group *vg,
 			lp->extents = lp->extents * vg->free_count / 100;
 			break;
 		case PERCENT_PVS:
-			if (!lcp->pv_count) {
-				log_error("Please specify physical volume(s) "
-					  "with %%PVS");
-				return 0;
+			if (!lcp->pv_count)
+				lp->extents = lp->extents * vg->extent_count / 100;
+			else {
+				pv_extent_count = pv_list_extents_free(lp->pvh);
+				lp->extents = lp->extents * pv_extent_count / 100;
 			}
-			pv_extent_count = pv_list_extents_free(lp->pvh);
-			lp->extents = lp->extents * pv_extent_count / 100;
 			break;
 		case PERCENT_LV:
 			log_error("Please express size as %%VG, %%PVS, or "
 				  "%%FREE.");
 			return 0;
+		case PERCENT_ORIGIN:
+			if (lp->snapshot && lp->origin &&
+			    !(origin = find_lv(vg, lp->origin))) {
+				log_error("Couldn't find origin volume '%s'.",
+					  lp->origin);
+				return 0;
+			}
+			lp->extents = lp->extents * origin->le_count / 100;
+			break;
 		case PERCENT_NONE:
 			break;
 	}
@@ -324,22 +332,20 @@ static int _read_mirror_params(struct lvcreate_params *lp,
 {
 	int region_size;
 	const char *mirrorlog;
-
-	if (arg_count(cmd, corelog_ARG))
-		lp->corelog = 1;
+	int corelog = arg_count(cmd, corelog_ARG);
 
 	mirrorlog = arg_str_value(cmd, mirrorlog_ARG,
-				  lp->corelog ? "core" : DEFAULT_MIRRORLOG);
+				  corelog ? "core" : DEFAULT_MIRRORLOG);
 
 	if (!strcmp("disk", mirrorlog)) {
-		if (lp->corelog) {
+		if (corelog) {
 			log_error("--mirrorlog disk and --corelog "
 				  "are incompatible");
 			return 0;
 		}
-		lp->corelog = 0;
+		lp->log_count = 1;
 	} else if (!strcmp("core", mirrorlog))
-		lp->corelog = 1;
+		lp->log_count = 0;
 	else {
 		log_error("Unknown mirrorlog type: %s", mirrorlog);
 		return 0;
@@ -347,7 +353,7 @@ static int _read_mirror_params(struct lvcreate_params *lp,
 
 	log_verbose("Setting logging type to %s", mirrorlog);
 
-	lp->nosync = arg_count(cmd, nosync_ARG) ? 1 : 0;
+	lp->nosync = arg_is_set(cmd, nosync_ARG);
 
 	if (arg_count(cmd, regionsize_ARG)) {
 		if (arg_sign_value(cmd, regionsize_ARG, 0) == SIGN_MINUS) {
@@ -502,10 +508,17 @@ static int _lvcreate_params(struct lvcreate_params *lp,
 		return 0;
 	}
 
+	if (lp->mirrors > DEFAULT_MIRROR_MAX_IMAGES) {
+		log_error("Only up to %d images in mirror supported currently.",
+			  DEFAULT_MIRROR_MAX_IMAGES);
+		return 0;
+	}
+
 	/*
 	 * Read ahead.
 	 */
-	lp->read_ahead = arg_uint_value(cmd, readahead_ARG, DM_READ_AHEAD_NONE);
+	lp->read_ahead = arg_uint_value(cmd, readahead_ARG,
+					cmd->default_settings.read_ahead);
 	pagesize = lvm_getpagesize() >> SECTOR_SHIFT;
 	if (lp->read_ahead != DM_READ_AHEAD_AUTO &&
 	    lp->read_ahead != DM_READ_AHEAD_NONE &&
@@ -521,10 +534,8 @@ static int _lvcreate_params(struct lvcreate_params *lp,
 	/*
 	 * Permissions.
 	 */
-	if (arg_count(cmd, permission_ARG))
-		lp->permission = arg_uint_value(cmd, permission_ARG, 0);
-	else
-		lp->permission = LVM_READ | LVM_WRITE;
+	lp->permission = arg_uint_value(cmd, permission_ARG,
+					LVM_READ | LVM_WRITE);
 
 	/* Must not zero read only volume */
 	if (!(lp->permission & LVM_WRITE))
@@ -558,11 +569,7 @@ static int _lvcreate_params(struct lvcreate_params *lp,
 		return 0;
 	}
 
-	if (arg_count(cmd, addtag_ARG) &&
-	    !(lp->tag = arg_str_value(cmd, addtag_ARG, NULL))) {
-		log_error("Failed to get tag");
-		return 0;
-	}
+	lp->tag = arg_str_value(cmd, addtag_ARG, NULL);
 
 	lcp->pv_count = argc;
 	lcp->pvs = argv;
@@ -591,15 +598,15 @@ int lvcreate(struct cmd_context *cmd, int argc, char **argv)
 	}
 
 	if (!_update_extents_params(vg, &lp, &lcp)) {
-		stack;
-		return ECMD_FAILED;
+		r = ECMD_FAILED;
+		goto_out;
 	}
 
 	if (!lv_create_single(vg, &lp)) {
 		stack;
 		r = ECMD_FAILED;
 	}
-
+out:
 	unlock_and_release_vg(cmd, vg, lp.vg_name);
 	return r;
 }

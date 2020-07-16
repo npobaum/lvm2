@@ -9,27 +9,17 @@
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
-#define _GNU_SOURCE
-#define _FILE_OFFSET_BITS 64
-
-#include <stdint.h>
-#include <errno.h>
-#include <string.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <dirent.h>
-#include <unistd.h>
-#include <signal.h>
-#include <linux/kdev_t.h>
-//#define __USE_GNU /* for O_DIRECT */
-#include <fcntl.h>
-#include <time.h>
-#include "libdevmapper.h"
-#include "dm-log-userspace.h"
-#include "functions.h"
-#include "common.h"
-#include "cluster.h"
 #include "logging.h"
+#include "functions.h"
+
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <linux/kdev_t.h>
+#include <signal.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
 
 #define BYTE_SHIFT 3
 
@@ -132,18 +122,18 @@ static void log_clear_bit(struct log_c *lc, dm_bitset_t bs, int bit)
 	lc->touched = 1;
 }
 
-static int find_next_zero_bit(dm_bitset_t bs, int start)
+static uint64_t find_next_zero_bit(dm_bitset_t bs, unsigned start)
 {
-	while (dm_bit(bs, start++))
-		if (start >= (int)bs[0])
-			return -1;
+	for (; dm_bit(bs, start); start++)
+		if (start >= *bs)
+			return (uint64_t)-1;
 
-	return start - 1;
+	return start;
 }
 
 static uint64_t count_bits32(dm_bitset_t bs)
 {
-	int i, size = ((int)bs[0]/DM_BITS_PER_INT + 1);
+	unsigned i, size = bs[0]/(unsigned)DM_BITS_PER_INT + 1;
 	unsigned count = 0;
 
 	for (i = 1; i <= size; i++)
@@ -203,7 +193,7 @@ static int rw_log(struct log_c *lc, int do_write)
 {
 	int r;
 
-	r = lseek(lc->disk_fd, 0, SEEK_SET);
+	r = (int)lseek(lc->disk_fd, 0, SEEK_SET);
 	if (r < 0) {
 		LOG_ERROR("[%s] rw_log:  lseek failure: %s",
 			  SHORT_UUID(lc->uuid), strerror(errno));
@@ -211,6 +201,7 @@ static int rw_log(struct log_c *lc, int do_write)
 	}
 
 	if (do_write) {
+		/* FIXME Cope with full set of non-error conditions */
 		r = write(lc->disk_fd, lc->disk_buffer, lc->disk_size);
 		if (r < 0) {
 			LOG_ERROR("[%s] rw_log:  write failure: %s",
@@ -221,6 +212,7 @@ static int rw_log(struct log_c *lc, int do_write)
 	}
 
 	/* Read */
+	/* FIXME Cope with full set of non-error conditions */
 	r = read(lc->disk_fd, lc->disk_buffer, lc->disk_size);
 	if (r < 0)
 		LOG_ERROR("[%s] rw_log:  read failure: %s",
@@ -260,7 +252,9 @@ static int read_log(struct log_c *lc)
 	/* Read disk bits into sync_bits */
 	bitset_size = lc->region_count / 8;
 	bitset_size += (lc->region_count % 8) ? 1 : 0;
-	memcpy(lc->clean_bits, lc->disk_buffer + 1024, bitset_size);
+
+	/* 'lc->clean_bits + 1' becasue dm_bitset_t leads with a uint32_t */
+	memcpy(lc->clean_bits + 1, (char *)lc->disk_buffer + 1024, bitset_size);
 
 	return 0;
 }
@@ -285,7 +279,9 @@ static int write_log(struct log_c *lc)
 	/* Write disk bits from clean_bits */
 	bitset_size = lc->region_count / 8;
 	bitset_size += (lc->region_count % 8) ? 1 : 0;
-	memcpy(lc->disk_buffer + 1024, lc->clean_bits, bitset_size);
+
+	/* 'lc->clean_bits + 1' becasue dm_bitset_t leads with a uint32_t */
+	memcpy((char *)lc->disk_buffer + 1024, lc->clean_bits + 1, bitset_size);
 
 	if (rw_log(lc, 1)) {
 		lc->log_dev_failed = 1;
@@ -294,7 +290,8 @@ static int write_log(struct log_c *lc)
 	return 0;
 }
 
-static int find_disk_path(char *major_minor_str, char *path_rtn, int *unlink_path)
+/* FIXME Rewrite this function taking advantage of the udev changes (where in use) to improve its efficiency! */
+static int find_disk_path(char *major_minor_str, char *path_rtn, int *unlink_path __attribute((unused)))
 {
 	int r;
 	DIR *dp;
@@ -316,6 +313,7 @@ static int find_disk_path(char *major_minor_str, char *path_rtn, int *unlink_pat
 	if (r != 2)
 		return -EINVAL;
 
+	/* FIXME dm_dir() */
 	LOG_DBG("Checking /dev/mapper for device %d:%d", major, minor);
 	/* Check /dev/mapper dir */
 	dp = opendir("/dev/mapper");
@@ -345,17 +343,18 @@ static int find_disk_path(char *major_minor_str, char *path_rtn, int *unlink_pat
 
 	closedir(dp);
 
+	/* FIXME Find out why this was here and deal with underlying problem. */
 	LOG_DBG("Path not found for %d/%d", major, minor);
-	LOG_DBG("Creating /dev/mapper/%d-%d", major, minor);
-	sprintf(path_rtn, "/dev/mapper/%d-%d", major, minor);
-	r = mknod(path_rtn, S_IFBLK | S_IRUSR | S_IWUSR, MKDEV(major, minor));
+	return -ENOENT;
 
+	// LOG_DBG("Creating /dev/mapper/%d-%d", major, minor);
+	// sprintf(path_rtn, "/dev/mapper/%d-%d", major, minor);
+	// r = mknod(path_rtn, S_IFBLK | S_IRUSR | S_IWUSR, MKDEV(major, minor));
 	/*
 	 * If we have to make the path, we unlink it after we open it
 	 */
-	*unlink_path = 1;
-
-	return r ? -errno : 0;
+	// *unlink_path = 1;
+	// return r ? -errno : 0;
 }
 
 static int _clog_ctr(char *uuid, uint64_t luid,
@@ -368,7 +367,7 @@ static int _clog_ctr(char *uuid, uint64_t luid,
 	uint64_t region_count;
 	struct log_c *lc = NULL;
 	struct log_c *duplicate;
-	enum sync sync = DEFAULTSYNC;
+	enum sync log_sync = DEFAULTSYNC;
 	uint32_t block_on_error = 0;
 
 	int disk_log = 0;
@@ -382,7 +381,7 @@ static int _clog_ctr(char *uuid, uint64_t luid,
 		disk_log = 1;
 
 		if ((argc < 2) || (argc > 4)) {
-			LOG_ERROR("Too %s arguments to clustered_disk log type",
+			LOG_ERROR("Too %s arguments to clustered-disk log type",
 				  (argc < 3) ? "few" : "many");
 			r = -EINVAL;
 			goto fail;
@@ -398,7 +397,7 @@ static int _clog_ctr(char *uuid, uint64_t luid,
 		disk_log = 0;
 
 		if ((argc < 1) || (argc > 3)) {
-			LOG_ERROR("Too %s arguments to clustered_core log type",
+			LOG_ERROR("Too %s arguments to clustered-core log type",
 				  (argc < 2) ? "few" : "many");
 			r = -EINVAL;
 			goto fail;
@@ -406,7 +405,7 @@ static int _clog_ctr(char *uuid, uint64_t luid,
 	}
 
 	if (!(region_size = strtoll(argv[disk_log], &p, 0)) || *p) {
-		LOG_ERROR("Invalid region_size argument to clustered_%s log type",
+		LOG_ERROR("Invalid region_size argument to clustered-%s log type",
 			  (disk_log) ? "disk" : "core");
 		r = -EINVAL;
 		goto fail;
@@ -423,9 +422,9 @@ static int _clog_ctr(char *uuid, uint64_t luid,
 
 	for (i = 0; i < argc; i++) {
 		if (!strcmp(argv[i], "sync"))
-			sync = FORCESYNC;
+			log_sync = FORCESYNC;
 		else if (!strcmp(argv[i], "nosync"))
-			sync = NOSYNC;
+			log_sync = NOSYNC;
 		else if (!strcmp(argv[i], "block_on_error"))
 			block_on_error = 1;
 	}
@@ -440,7 +439,7 @@ static int _clog_ctr(char *uuid, uint64_t luid,
 
 	lc->region_size = region_size;
 	lc->region_count = region_count;
-	lc->sync = sync;
+	lc->sync = log_sync;
 	lc->block_on_error = block_on_error;
 	lc->sync_search = 0;
 	lc->recovering_region = (uint64_t)-1;
@@ -452,7 +451,7 @@ static int _clog_ctr(char *uuid, uint64_t luid,
 
 	if ((duplicate = get_log(lc->uuid, lc->luid)) ||
 	    (duplicate = get_pending_log(lc->uuid, lc->luid))) {
-		LOG_ERROR("[%s/%llu] Log already exists, unable to create.",
+		LOG_ERROR("[%s/%" PRIu64 "u] Log already exists, unable to create.",
 			  SHORT_UUID(lc->uuid), lc->luid);
 		free(lc);
 		return -EINVAL;
@@ -473,14 +472,15 @@ static int _clog_ctr(char *uuid, uint64_t luid,
 		r = -ENOMEM;
 		goto fail;
 	}
-	if (sync == NOSYNC)
+	if (log_sync == NOSYNC)
 		dm_bit_set_all(lc->sync_bits);
 
-	lc->sync_count = (sync == NOSYNC) ? region_count : 0;
+	lc->sync_count = (log_sync == NOSYNC) ? region_count : 0;
+
 	if (disk_log) {
 		page_size = sysconf(_SC_PAGESIZE);
-		pages = ((int)lc->clean_bits[0])/page_size;
-		pages += ((int)lc->clean_bits[0])%page_size ? 1 : 0;
+		pages = *(lc->clean_bits) / page_size;
+		pages += *(lc->clean_bits) % page_size ? 1 : 0;
 		pages += 1; /* for header */
 
 		r = open(disk_path, O_RDWR | O_DIRECT);
@@ -572,8 +572,8 @@ static int clog_ctr(struct dm_ulog_request *rq)
 	for (i = 0; i < argc; i++, p = p + strlen(p) + 1)
 		argv[i] = p;
 
-	if (strcmp(argv[0], "clustered_disk") &&
-	    strcmp(argv[0], "clustered_core")) {
+	if (strcmp(argv[0], "clustered-disk") &&
+	    strcmp(argv[0], "clustered-core")) {
 		LOG_ERROR("Unsupported userspace log type, \"%s\"", argv[0]);
 		free(argv);
 		return -EINVAL;
@@ -928,13 +928,13 @@ static int clog_get_region_size(struct dm_ulog_request *rq)
 static int clog_is_clean(struct dm_ulog_request *rq)
 {
 	int64_t *rtn = (int64_t *)rq->data;
-	uint64_t region = *((uint64_t *)(rq->data));
+	uint64_t *region = (uint64_t *)rq->data;
 	struct log_c *lc = get_log(rq->uuid, rq->luid);
 
 	if (!lc)
 		return -EINVAL;
 
-	*rtn = log_test_bit(lc->clean_bits, region);
+	*rtn = log_test_bit(lc->clean_bits, *region);
 	rq->data_size = sizeof(*rtn);
 
 	return 0;
@@ -953,7 +953,8 @@ static int clog_is_clean(struct dm_ulog_request *rq)
 static int clog_in_sync(struct dm_ulog_request *rq)
 {
 	int64_t *rtn = (int64_t *)rq->data;
-	uint64_t region = *((uint64_t *)(rq->data));
+	uint64_t *region_p = (uint64_t *)rq->data;
+	uint64_t region = *region_p;
 	struct log_c *lc = get_log(rq->uuid, rq->luid);
 
 	if (!lc)
@@ -1224,8 +1225,7 @@ static int clog_get_resync_work(struct dm_ulog_request *rq, uint32_t originator)
 		}
 	}
 
-	pkg->r = find_next_zero_bit(lc->sync_bits,
-				    lc->sync_search);
+	pkg->r = find_next_zero_bit(lc->sync_bits, lc->sync_search);
 
 	if (pkg->r >= lc->region_count) {
 		LOG_SPRINT(lc, "GET - SEQ#=%u, UUID=%s, nodeid = %u:: "
@@ -1370,11 +1370,11 @@ static int clog_get_sync_count(struct dm_ulog_request *rq, uint32_t originator)
 	return 0;
 }
 
-static int core_status_info(struct log_c *lc, struct dm_ulog_request *rq)
+static int core_status_info(struct log_c *lc __attribute((unused)), struct dm_ulog_request *rq)
 {
 	char *data = (char *)rq->data;
 
-	rq->data_size = sprintf(data, "1 clustered_core");
+	rq->data_size = sprintf(data, "1 clustered-core");
 
 	return 0;
 }
@@ -1389,7 +1389,7 @@ static int disk_status_info(struct log_c *lc, struct dm_ulog_request *rq)
 		return -errno;
 	}
 
-	rq->data_size = sprintf(data, "3 clustered_disk %d:%d %c",
+	rq->data_size = sprintf(data, "3 clustered-disk %d:%d %c",
 				major(statbuf.st_rdev), minor(statbuf.st_rdev),
 				(lc->log_dev_failed) ? 'D' : 'A');
 
@@ -1424,7 +1424,7 @@ static int core_status_table(struct log_c *lc, struct dm_ulog_request *rq)
 {
 	char *data = (char *)rq->data;
 
-	rq->data_size = sprintf(data, "clustered_core %u %s%s ",
+	rq->data_size = sprintf(data, "clustered-core %u %s%s ",
 				lc->region_size,
 				(lc->sync == DEFAULTSYNC) ? "" :
 				(lc->sync == NOSYNC) ? "nosync " : "sync ",
@@ -1442,7 +1442,7 @@ static int disk_status_table(struct log_c *lc, struct dm_ulog_request *rq)
 		return -errno;
 	}
 
-	rq->data_size = sprintf(data, "clustered_disk %d:%d %u %s%s ",
+	rq->data_size = sprintf(data, "clustered-disk %d:%d %u %s%s ",
 				major(statbuf.st_rdev), minor(statbuf.st_rdev),
 				lc->region_size,
 				(lc->sync == DEFAULTSYNC) ? "" :
@@ -1482,7 +1482,8 @@ static int clog_status_table(struct dm_ulog_request *rq)
  */
 static int clog_is_remote_recovering(struct dm_ulog_request *rq)
 {
-	uint64_t region = *((uint64_t *)(rq->data));
+	uint64_t *region_p = (uint64_t *)rq->data;
+	uint64_t region = *region_p;
 	struct {
 		int64_t is_recovering;
 		uint64_t in_sync_hint;
@@ -1639,10 +1640,14 @@ int do_request(struct clog_request *rq, int server)
 	return 0;
 }
 
-static void print_bits(char *buf, int size, int print)
+static void print_bits(dm_bitset_t bs, int print)
 {
-	int i;
+	int i, size;
 	char outbuf[128];
+	unsigned char *buf = (unsigned char *)(bs + 1);
+
+	size = (*bs % 8) ? 1 : 0;
+	size += (*bs / 8);
 
 	memset(outbuf, 0, sizeof(outbuf));
 
@@ -1700,7 +1705,7 @@ int push_state(const char *uuid, uint64_t luid,
 	}
 
 	/* Size in 'int's */
-	bitset_size = ((int)lc->clean_bits[0]/DM_BITS_PER_INT) + 1;
+	bitset_size = (*(lc->clean_bits) / DM_BITS_PER_INT) + 1;
 
 	/* Size in bytes */
 	bitset_size *= 4;
@@ -1714,14 +1719,18 @@ int push_state(const char *uuid, uint64_t luid,
 
 	if (!strncmp(which, "sync_bits", 9)) {
 		memcpy(*buf, lc->sync_bits + 1, bitset_size);
+
 		LOG_DBG("[%s] storing sync_bits (sync_count = %llu):",
 			SHORT_UUID(uuid), (unsigned long long)
 			count_bits32(lc->sync_bits));
-		print_bits(*buf, bitset_size, 0);
+
+		print_bits(lc->sync_bits, 0);
 	} else if (!strncmp(which, "clean_bits", 9)) {
 		memcpy(*buf, lc->clean_bits + 1, bitset_size);
+
 		LOG_DBG("[%s] storing clean_bits:", SHORT_UUID(lc->uuid));
-		print_bits(*buf, bitset_size, 0);
+
+		print_bits(lc->clean_bits, 0);
 	}
 
 	return bitset_size;
@@ -1754,7 +1763,7 @@ int pull_state(const char *uuid, uint64_t luid,
 	}
 
 	/* Size in 'int's */
-	bitset_size = ((int)lc->clean_bits[0]/DM_BITS_PER_INT) + 1;
+	bitset_size = (*(lc->clean_bits) /DM_BITS_PER_INT) + 1;
 
 	/* Size in bytes */
 	bitset_size *= 4;
@@ -1768,15 +1777,19 @@ int pull_state(const char *uuid, uint64_t luid,
 	if (!strncmp(which, "sync_bits", 9)) {
 		lc->resume_override += 1;
 		memcpy(lc->sync_bits + 1, buf, bitset_size);
+
 		LOG_DBG("[%s] loading sync_bits (sync_count = %llu):",
 			SHORT_UUID(lc->uuid),(unsigned long long)
 			count_bits32(lc->sync_bits));
-		print_bits((char *)lc->sync_bits, bitset_size, 0);
+
+		print_bits(lc->sync_bits, 0);
 	} else if (!strncmp(which, "clean_bits", 9)) {
 		lc->resume_override += 2;
 		memcpy(lc->clean_bits + 1, buf, bitset_size);
+
 		LOG_DBG("[%s] loading clean_bits:", SHORT_UUID(lc->uuid));
-		print_bits((char *)lc->clean_bits, bitset_size, 0);
+
+		print_bits(lc->sync_bits, 0);
 	}
 
 	return 0;
@@ -1788,9 +1801,10 @@ int log_get_state(struct dm_ulog_request *rq)
 
 	lc = get_log(rq->uuid, rq->luid);
 	if (!lc)
+		/* FIXME Callers are ignoring this */
 		return -EINVAL;
 
-	return lc->state;
+	return (int)lc->state;
 }
 
 /*
@@ -1819,31 +1833,27 @@ void log_debug(void)
 	dm_list_iterate_items(lc, &log_pending_list) {
 		LOG_ERROR("%s", lc->uuid);
 		LOG_ERROR("sync_bits:");
-		print_bits((char *)lc->sync_bits, (int)lc->sync_bits[0], 1);
+		print_bits(lc->sync_bits, 1);
 		LOG_ERROR("clean_bits:");
-		print_bits((char *)lc->clean_bits, (int)lc->sync_bits[0], 1);
+		print_bits(lc->clean_bits, 1);
 	}
 
 	dm_list_iterate_items(lc, &log_list) {
 		LOG_ERROR("%s", lc->uuid);
-		LOG_ERROR("  recoverer        : %u", lc->recoverer);
-		LOG_ERROR("  recovering_region: %llu",
-			  (unsigned long long)lc->recovering_region);
+		LOG_ERROR("  recoverer        : %" PRIu32, lc->recoverer);
+		LOG_ERROR("  recovering_region: %" PRIu64, lc->recovering_region);
 		LOG_ERROR("  recovery_halted  : %s", (lc->recovery_halted) ?
 			  "YES" : "NO");
 		LOG_ERROR("sync_bits:");
-		print_bits((char *)lc->sync_bits, (int)lc->sync_bits[0], 1);
+		print_bits(lc->sync_bits, 1);
 		LOG_ERROR("clean_bits:");
-		print_bits((char *)lc->clean_bits, (int)lc->sync_bits[0], 1);
+		print_bits(lc->clean_bits, 1);
 
 		LOG_ERROR("Validating %s::", SHORT_UUID(lc->uuid));
 		r = find_next_zero_bit(lc->sync_bits, 0);
-		LOG_ERROR("  lc->region_count = %llu",
-			  (unsigned long long)lc->region_count);
-		LOG_ERROR("  lc->sync_count = %llu",
-			  (unsigned long long)lc->sync_count);
-		LOG_ERROR("  next zero bit  = %llu",
-			  (unsigned long long)r);
+		LOG_ERROR("  lc->region_count = %" PRIu32, lc->region_count);
+		LOG_ERROR("  lc->sync_count = %" PRIu64, lc->sync_count);
+		LOG_ERROR("  next zero bit  = %" PRIu64, r);
 		if ((r > lc->region_count) ||
 		    ((r == lc->region_count) && (lc->sync_count > lc->region_count))) {
 			LOG_ERROR("ADJUSTING SYNC_COUNT");

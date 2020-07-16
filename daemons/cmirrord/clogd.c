@@ -9,44 +9,29 @@
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
-
-#include "configure.h"
-
-#include <stdio.h>
-#include <stdlib.h>
-#include <stdint.h>
-#include <string.h>
-#include <errno.h>
-#include <sched.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <sys/stat.h>
-#include <signal.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <linux/types.h>
-#include <sys/socket.h>
-#include <linux/netlink.h>
-#include <linux/dm-ioctl.h>
-
-#include "dm-log-userspace.h"
-#include "functions.h"
-#include "local.h"
-#include "cluster.h"
-#include "common.h"
 #include "logging.h"
+#include "common.h"
+#include "functions.h"
 #include "link_mon.h"
+#include "local.h"
 
-static int exit_now = 0;
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+static volatile sig_atomic_t exit_now = 0;
+/* FIXME Review signal handling.  Should be volatile sig_atomic_t */
 static sigset_t signal_mask;
-static int signal_received;
+static volatile sig_atomic_t signal_received;
 
 static void process_signals(void);
 static void daemonize(void);
 static void init_all(void);
 static void cleanup_all(void);
 
-int main(int argc, char *argv[])
+int main(int argc __attribute((unused)), char *argv[] __attribute((unused)))
 {
 	daemonize();
 
@@ -74,7 +59,7 @@ int main(int argc, char *argv[])
  * @sig: the signal
  *
  */
-static void parent_exit_handler(int sig)
+static void parent_exit_handler(int sig __attribute((unused)))
 {
 	exit_now = 1;
 }
@@ -85,7 +70,7 @@ static void parent_exit_handler(int sig)
  *
  * Returns: 0 on success, -1 otherwise
  */
-static int create_lockfile(char *lockfile)
+static int create_lockfile(const char *lockfile)
 {
 	int fd;
 	struct flock lock;
@@ -112,7 +97,8 @@ static int create_lockfile(char *lockfile)
 
 	sprintf(buffer, "%d\n", getpid());
 
-	if(write(fd, buffer, strlen(buffer)) < strlen(buffer)){
+	/* FIXME Handle other non-error returns without aborting */
+	if (write(fd, buffer, strlen(buffer)) < strlen(buffer)){
 		close(fd);
 		unlink(lockfile);
 		return -errno;
@@ -123,8 +109,9 @@ static int create_lockfile(char *lockfile)
 
 static void sig_handler(int sig)
 {
+	/* FIXME Races - don't touch signal_mask here. */
 	sigaddset(&signal_mask, sig);
-	++signal_received;
+	signal_received = 1;
 }
 
 static void process_signal(int sig){
@@ -241,6 +228,7 @@ static void daemonize(void)
 	if (create_lockfile(CMIRRORD_PIDFILE))
 		exit(EXIT_LOCKFILE);
 
+	/* FIXME Replace with sigaction. (deprecated) */
 	signal(SIGINT, &sig_handler);
 	signal(SIGQUIT, &sig_handler);
 	signal(SIGTERM, &sig_handler);

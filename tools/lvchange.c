@@ -64,7 +64,8 @@ static int lvchange_permission(struct cmd_context *cmd,
 	}
 
 	if (!vg_commit(lv->vg)) {
-		resume_lv(cmd, lv);
+		if (!resume_lv(cmd, lv))
+			stack;
 		goto_out;
 	}
 
@@ -97,6 +98,22 @@ static int lvchange_monitoring(struct cmd_context *cmd,
 	if ((dmeventd_monitor_mode() != DMEVENTD_MONITOR_IGNORE) &&
 	    !monitor_dev_for_events(cmd, lv, dmeventd_monitor_mode()))
 		stack;
+
+	return 1;
+}
+
+static int lvchange_background_polling(struct cmd_context *cmd,
+				       struct logical_volume *lv)
+{
+	struct lvinfo info;
+
+	if (!lv_info(cmd, lv, &info, 0, 0) || !info.exists) {
+		log_error("Logical volume, %s, is not active", lv->name);
+		return 0;
+	}
+
+	if (background_polling())
+		lv_spawn_background_polling(cmd, lv);
 
 	return 1;
 }
@@ -135,7 +152,8 @@ static int lvchange_availability(struct cmd_context *cmd,
 				return_0;
 		}
 
-		lv_spawn_background_polling(cmd, lv);
+		if (background_polling())
+			lv_spawn_background_polling(cmd, lv);
 	}
 
 	return 1;
@@ -183,7 +201,7 @@ static int lvchange_resync(struct cmd_context *cmd,
 			    yes_no_prompt("Do you really want to deactivate "
 					  "logical volume %s to resync it? [y/n]: ",
 					  lv->name) == 'n') {
-				log_print("Logical volume \"%s\" not resynced",
+				log_error("Logical volume \"%s\" not resynced",
 					  lv->name);
 				return 0;
 			}
@@ -385,7 +403,8 @@ static int lvchange_readahead(struct cmd_context *cmd,
 	}
 
 	if (!vg_commit(lv->vg)) {
-		resume_lv(cmd, lv);
+		if (!resume_lv(cmd, lv))
+			stack;
 		goto_out;
 	}
 
@@ -433,7 +452,7 @@ static int lvchange_persistent(struct cmd_context *cmd,
 		    yes_no_prompt("Logical volume %s will be "
 				  "deactivated temporarily. "
 				  "Continue? [y/n]: ", lv->name) == 'n') {
-			log_print("%s device number not changed.",
+			log_error("%s device number not changed.",
 				  lv->name);
 			return 0;
 		}
@@ -481,25 +500,8 @@ static int lvchange_tag(struct cmd_context *cmd, struct logical_volume *lv,
 		return 0;
 	}
 
-	if (!(lv->vg->fid->fmt->features & FMT_TAGS)) {
-		log_error("Logical volume %s/%s does not support tags",
-			  lv->vg->name, lv->name);
-		return 0;
-	}
-
-	if ((arg == addtag_ARG)) {
-		if (!str_list_add(cmd->mem, &lv->tags, tag)) {
-			log_error("Failed to add tag %s to %s/%s",
-				  tag, lv->vg->name, lv->name);
-			return 0;
-		}
-	} else {
-		if (!str_list_del(&lv->tags, tag)) {
-			log_error("Failed to remove tag %s from %s/%s",
-				  tag, lv->vg->name, lv->name);
-			return 0;
-		}
-	}
+	if (!lv_change_tag(lv, tag, arg == addtag_ARG))
+		return_0;
 
 	log_very_verbose("Updating logical volume \"%s\" on disk(s)", lv->name);
 
@@ -577,6 +579,16 @@ static int lvchange_single(struct cmd_context *cmd, struct logical_volume *lv,
 					    (is_static() || arg_count(cmd, ignoremonitoring_ARG)) ?
 					    DMEVENTD_MONITOR_IGNORE : DEFAULT_DMEVENTD_MONITOR));
 
+	/*
+	 * FIXME: DEFAULT_BACKGROUND_POLLING should be "unspecified".
+	 * If --poll is explicitly provided use it; otherwise polling
+	 * should only be started if the LV is not already active. So:
+	 * 1) change the activation code to say if the LV was actually activated
+	 * 2) make polling of an LV tightly coupled with LV activation
+	 */
+	init_background_polling(arg_int_value(cmd, poll_ARG,
+					      DEFAULT_BACKGROUND_POLLING));
+
 	/* access permission change */
 	if (arg_count(cmd, permission_ARG)) {
 		if (!archive(lv->vg)) {
@@ -610,7 +622,7 @@ static int lvchange_single(struct cmd_context *cmd, struct logical_volume *lv,
 		docmds++;
 	}
 
-	/* read ahead sector change */
+	/* persistent device number change */
 	if (arg_count(cmd, persistent_ARG)) {
 		if (!archived && !archive(lv->vg)) {
 			stack;
@@ -679,6 +691,15 @@ static int lvchange_single(struct cmd_context *cmd, struct logical_volume *lv,
 		}
 	}
 
+	if (!arg_count(cmd, available_ARG) &&
+	    !arg_count(cmd, refresh_ARG) &&
+	    arg_count(cmd, poll_ARG)) {
+		if (!lvchange_background_polling(cmd, lv)) {
+			stack;
+			return ECMD_FAILED;
+		}
+	}
+
 	if (doit != docmds) {
 		stack;
 		return ECMD_FAILED;
@@ -695,10 +716,10 @@ int lvchange(struct cmd_context *cmd, int argc, char **argv)
 	    && !arg_count(cmd, persistent_ARG) && !arg_count(cmd, addtag_ARG)
 	    && !arg_count(cmd, deltag_ARG) && !arg_count(cmd, refresh_ARG)
 	    && !arg_count(cmd, alloc_ARG) && !arg_count(cmd, monitor_ARG)
-	    && !arg_count(cmd, resync_ARG)) {
+	    && !arg_count(cmd, poll_ARG) && !arg_count(cmd, resync_ARG)) {
 		log_error("Need 1 or more of -a, -C, -j, -m, -M, -p, -r, "
-			  "--resync, --refresh, --alloc, --addtag, --deltag "
-			  "or --monitor");
+			  "--resync, --refresh, --alloc, --addtag, --deltag, "
+			  "--monitor or --poll");
 		return EINVALID_CMD_LINE;
 	}
 

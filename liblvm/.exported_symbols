@@ -3,6 +3,9 @@ lvm_init
 lvm_quit
 lvm_config_reload
 lvm_config_override
+lvm_pv_get_dev_size
+lvm_pv_get_size
+lvm_pv_get_free
 lvm_pv_get_name
 lvm_pv_get_uuid
 lvm_pv_get_mda_count
@@ -15,6 +18,7 @@ lvm_vg_get_extent_size
 lvm_vg_get_extent_count
 lvm_vg_get_free_extent_count
 lvm_vg_get_pv_count
+lvm_vg_get_tags
 lvm_lv_activate
 lvm_lv_deactivate
 lvm_lv_get_uuid
@@ -22,6 +26,9 @@ lvm_lv_get_name
 lvm_lv_get_size
 lvm_lv_is_active
 lvm_lv_is_suspended
+lvm_lv_add_tag
+lvm_lv_remove_tag
+lvm_lv_get_tags
 lvm_vg_create
 lvm_vg_extend
 lvm_vg_reduce
@@ -30,6 +37,8 @@ lvm_vg_write
 lvm_vg_open
 lvm_vg_close
 lvm_vg_remove
+lvm_vg_add_tag
+lvm_vg_remove_tag
 lvm_scan
 lvm_errno
 lvm_errmsg

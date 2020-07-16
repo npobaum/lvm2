@@ -20,6 +20,7 @@
 #include "locking.h"
 #include "metadata.h"
 #include "filter.h"
+#include "filter-persistent.h"
 #include "memlock.h"
 #include "str_list.h"
 #include "format-text.h"
@@ -38,6 +39,12 @@ static int _vg_global_lock_held = 0;	/* Global lock held when cache wiped? */
 
 int lvmcache_init(void)
 {
+	/*
+	 * FIXME add a proper lvmcache_locking_reset() that
+	 * resets the cache so no previous locks are locked
+	 */
+	_vgs_locked = 0;
+
 	dm_list_init(&_vginfos);
 
 	if (!(_vgname_hash = dm_hash_create(128)))
@@ -157,7 +164,7 @@ static void _update_cache_lock_state(const char *vgname, int locked)
 	_update_cache_vginfo_lock_state(vginfo, locked);
 }
 
-static void _drop_metadata(const char *vgname)
+static void _drop_metadata(const char *vgname, int drop_precommitted)
 {
 	struct lvmcache_vginfo *vginfo;
 	struct lvmcache_info *info;
@@ -171,26 +178,48 @@ static void _drop_metadata(const char *vgname)
 	 * already invalidated the PV labels (before caching it)
 	 * and we must not do it again.
 	 */
+	if (!drop_precommitted && vginfo->precommitted && !vginfo->vgmetadata)
+		log_error(INTERNAL_ERROR "metadata commit (or revert) missing before "
+			  "dropping metadata from cache.");
 
-	if (!vginfo->precommitted)
+	if (drop_precommitted || !vginfo->precommitted)
 		dm_list_iterate_items(info, &vginfo->infos)
 			info->status |= CACHE_INVALID;
 
 	_free_cached_vgmetadata(vginfo);
 }
 
-void lvmcache_drop_metadata(const char *vgname)
+/*
+ * Remote node uses this to upgrade precommited metadata to commited state
+ * when receives vg_commit notification.
+ * (Note that devices can be suspended here, if so, precommited metadata are already read.)
+ */
+void lvmcache_commit_metadata(const char *vgname)
+{
+	struct lvmcache_vginfo *vginfo;
+
+	if (!(vginfo = vginfo_from_vgname(vgname, NULL)))
+		return;
+
+	if (vginfo->precommitted) {
+		log_debug("Precommitted metadata cache: VG %s upgraded to committed.",
+			  vginfo->vgname);
+		vginfo->precommitted = 0;
+	}
+}
+
+void lvmcache_drop_metadata(const char *vgname, int drop_precommitted)
 {
 	/* For VG_ORPHANS, we need to invalidate all labels on orphan PVs. */
 	if (!strcmp(vgname, VG_ORPHANS)) {
-		_drop_metadata(FMT_TEXT_ORPHAN_VG_NAME);
-		_drop_metadata(FMT_LVM1_ORPHAN_VG_NAME);
-		_drop_metadata(FMT_POOL_ORPHAN_VG_NAME);
+		_drop_metadata(FMT_TEXT_ORPHAN_VG_NAME, 0);
+		_drop_metadata(FMT_LVM1_ORPHAN_VG_NAME, 0);
+		_drop_metadata(FMT_POOL_ORPHAN_VG_NAME, 0);
 
 		/* Indicate that PVs could now be missing from the cache */
 		init_full_scan_done(0);
 	} else if (!vgname_is_locked(VG_GLOBAL))
-		_drop_metadata(vgname);
+		_drop_metadata(vgname, drop_precommitted);
 }
 
 /*
@@ -226,7 +255,7 @@ int lvmcache_verify_lock_order(const char *vgname)
 		vgname2 = dm_hash_get_key(_lock_hash, n);
 
 		if (!_vgname_order_correct(vgname2, vgname)) {
-			log_errno(EDEADLK, "Internal error: VG lock %s must "
+			log_errno(EDEADLK, INTERNAL_ERROR "VG lock %s must "
 				  "be requested before %s, not after.",
 				  vgname, vgname2);
 			return_0;
@@ -244,7 +273,7 @@ void lvmcache_lock_vgname(const char *vgname, int read_only __attribute((unused)
 	}
 
 	if (dm_hash_lookup(_lock_hash, vgname))
-		log_error("Internal error: Nested locking attempted on VG %s.",
+		log_error(INTERNAL_ERROR "Nested locking attempted on VG %s.",
 			  vgname);
 
 	if (!dm_hash_insert(_lock_hash, vgname, (void *) 1))
@@ -267,7 +296,7 @@ int vgname_is_locked(const char *vgname)
 void lvmcache_unlock_vgname(const char *vgname)
 {
 	if (!dm_hash_lookup(_lock_hash, vgname))
-		log_error("Internal error: Attempt to unlock unlocked VG %s.",
+		log_error(INTERNAL_ERROR "Attempt to unlock unlocked VG %s.",
 			  vgname);
 
 	_update_cache_lock_state(vgname, 0);
@@ -510,6 +539,11 @@ int lvmcache_label_scan(struct cmd_context *cmd, int full_scan)
 		goto out;
 	}
 
+	if (full_scan == 2 && !refresh_filters(cmd)) {
+		log_error("refresh filters failed");
+		goto out;
+	}
+
 	if (!(iter = dev_iter_create(cmd->filter, (full_scan == 2) ? 1 : 0))) {
 		log_error("dev_iter creation failed");
 		goto out;
@@ -527,6 +561,13 @@ int lvmcache_label_scan(struct cmd_context *cmd, int full_scan)
 		if (fmt->ops->scan && !fmt->ops->scan(fmt))
 			goto out;
 	}
+
+	/*
+	 * If we are a long-lived process, write out the updated persistent
+	 * device cache for the benefit of short-lived processes.
+	 */
+	if (full_scan == 2 && cmd->is_long_lived && cmd->dump_filter)
+		persistent_filter_dump(cmd->filter);
 
 	r = 1;
 
@@ -582,7 +623,8 @@ struct volume_group *lvmcache_get_vg(const char *vgid, unsigned precommitted)
 	return vg;
 }
 
-struct dm_list *lvmcache_get_vgids(struct cmd_context *cmd, int full_scan)
+struct dm_list *lvmcache_get_vgids(struct cmd_context *cmd, int full_scan,
+				    int include_internal)
 {
 	struct dm_list *vgids;
 	struct lvmcache_vginfo *vginfo;
@@ -595,6 +637,9 @@ struct dm_list *lvmcache_get_vgids(struct cmd_context *cmd, int full_scan)
 	}
 
 	dm_list_iterate_items(vginfo, &_vginfos) {
+		if (!include_internal && is_orphan_vg(vginfo->vgname))
+			continue;
+
 		if (!str_list_add(cmd->mem, vgids,
 				  dm_pool_strdup(cmd->mem, vginfo->vgid))) {
 			log_error("strlist allocation failed");
@@ -605,7 +650,8 @@ struct dm_list *lvmcache_get_vgids(struct cmd_context *cmd, int full_scan)
 	return vgids;
 }
 
-struct dm_list *lvmcache_get_vgnames(struct cmd_context *cmd, int full_scan)
+struct dm_list *lvmcache_get_vgnames(struct cmd_context *cmd, int full_scan,
+				      int include_internal)
 {
 	struct dm_list *vgnames;
 	struct lvmcache_vginfo *vginfo;
@@ -618,6 +664,9 @@ struct dm_list *lvmcache_get_vgnames(struct cmd_context *cmd, int full_scan)
 	}
 
 	dm_list_iterate_items(vginfo, &_vginfos) {
+		if (!include_internal && is_orphan_vg(vginfo->vgname))
+			continue;
+
 		if (!str_list_add(cmd->mem, vgnames,
 				  dm_pool_strdup(cmd->mem, vginfo->vgname))) {
 			log_errno(ENOMEM, "strlist allocation failed");
@@ -1089,7 +1138,7 @@ int lvmcache_update_vgname_and_id(struct lvmcache_info *info,
 				  uint32_t vgstatus, const char *creation_host)
 {
 	if (!vgname && !info->vginfo) {
-		log_error("Internal error: NULL vgname handed to cache");
+		log_error(INTERNAL_ERROR "NULL vgname handed to cache");
 		/* FIXME Remove this */
 		vgname = info->fmt->orphan_vg_name;
 		vgid = vgname;
@@ -1173,11 +1222,12 @@ struct lvmcache_info *lvmcache_add(struct labeller *labeller, const char *pvid,
 	} else {
 		if (existing->dev != dev) {
 			/* Is the existing entry a duplicate pvid e.g. md ? */
-			if (MAJOR(existing->dev->dev) == md_major() &&
-			    MAJOR(dev->dev) != md_major()) {
+			if (dev_subsystem_part_major(existing->dev) &&
+			    !dev_subsystem_part_major(dev)) {
 				log_very_verbose("Ignoring duplicate PV %s on "
-						 "%s - using md %s",
+						 "%s - using %s %s",
 						 pvid, dev_name(dev),
+						 dev_subsystem_name(existing->dev),
 						 dev_name(existing->dev));
 				return NULL;
 			} else if (dm_is_dm_major(MAJOR(existing->dev->dev)) &&
@@ -1187,11 +1237,12 @@ struct lvmcache_info *lvmcache_add(struct labeller *labeller, const char *pvid,
 						 pvid, dev_name(dev),
 						 dev_name(existing->dev));
 				return NULL;
-			} else if (MAJOR(existing->dev->dev) != md_major() &&
-				   MAJOR(dev->dev) == md_major())
+			} else if (!dev_subsystem_part_major(existing->dev) &&
+				   dev_subsystem_part_major(dev))
 				log_very_verbose("Duplicate PV %s on %s - "
-						 "using md %s", pvid,
+						 "using %s %s", pvid,
 						 dev_name(existing->dev),
+						 dev_subsystem_name(existing->dev),
 						 dev_name(dev));
 			else if (!dm_is_dm_major(MAJOR(existing->dev->dev)) &&
 				 dm_is_dm_major(MAJOR(dev->dev)))
@@ -1281,7 +1332,7 @@ static void _lvmcache_destroy_lockname(struct dm_hash_node *n)
 	if (!strcmp(vgname, VG_GLOBAL))
 		_vg_global_lock_held = 1;
 	else
-		log_error("Internal error: Volume Group %s was not unlocked",
+		log_error(INTERNAL_ERROR "Volume Group %s was not unlocked",
 			  dm_hash_get_key(_lock_hash, n));
 }
 
@@ -1318,7 +1369,7 @@ void lvmcache_destroy(struct cmd_context *cmd, int retain_orphans)
 	}
 
 	if (!dm_list_empty(&_vginfos))
-		log_error("Internal error: _vginfos list should be empty");
+		log_error(INTERNAL_ERROR "_vginfos list should be empty");
 	dm_list_init(&_vginfos);
 
 	if (retain_orphans)
