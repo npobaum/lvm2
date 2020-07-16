@@ -90,9 +90,9 @@ int vgcreate(struct cmd_context *cmd, int argc, char **argv)
 	 * VG lock to be released, so the lvmcache destroy rule about locks
 	 * seems to be unwarranted here.
 	 */
-	unlock_vg(cmd, vp_new.vg_name);
+	unlock_vg(cmd, NULL, vp_new.vg_name);
 
-	if (!(handle = init_processing_handle(cmd))) {
+	if (!(handle = init_processing_handle(cmd, NULL))) {
 		log_error("Failed to initialize processing handle.");
 		return ECMD_FAILED;
 	}
@@ -141,7 +141,7 @@ int vgcreate(struct cmd_context *cmd, int argc, char **argv)
 		log_warn("WARNING: Setting maxphysicalvolumes to %d "
 			 "(0 means unlimited)", vg->max_pv);
 
-	if (arg_count(cmd, addtag_ARG)) {
+	if (arg_is_set(cmd, addtag_ARG)) {
 		dm_list_iterate_items(current_group, &cmd->arg_value_groups) {
 			if (!grouped_arg_is_set(current_group->arg_values, addtag_ARG))
 				continue;
@@ -181,8 +181,8 @@ int vgcreate(struct cmd_context *cmd, int argc, char **argv)
 		goto_bad;
 	}
 
-	unlock_vg(cmd, VG_ORPHANS);
-	unlock_vg(cmd, vp_new.vg_name);
+	unlock_vg(cmd, NULL, VG_ORPHANS);
+	unlock_vg(cmd, vg, vp_new.vg_name);
 
 	backup(vg);
 
@@ -222,8 +222,8 @@ out:
 	return ECMD_PROCESSED;
 
 bad:
-	unlock_vg(cmd, vp_new.vg_name);
-	unlock_vg(cmd, VG_ORPHANS);
+	unlock_vg(cmd, vg, vp_new.vg_name);
+	unlock_vg(cmd, NULL, VG_ORPHANS);
 	release_vg(vg);
 	destroy_processing_handle(cmd, handle);
 	return ECMD_FAILED;

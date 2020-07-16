@@ -1266,8 +1266,10 @@ static int _lv_active(struct cmd_context *cmd, const struct logical_volume *lv)
 	struct lvinfo info;
 
 	if (!lv_info(cmd, lv, 0, &info, 0, 0)) {
-		stack;
-		return -1;
+		log_debug("Cannot determine activation status of %s%s.",
+			  display_lvname(lv),
+			  activation() ? "" : " (no device driver)");
+		return 0;
 	}
 
 	return info.exists;
@@ -1392,7 +1394,7 @@ int lvs_in_vg_opened(const struct volume_group *vg)
 		if (lv_is_visible(lvl->lv))
 			count += (_lv_open_count(vg->cmd, lvl->lv) > 0);
 
-	log_debug_activation("Counted %d open LVs in VG %s", count, vg->name);
+	log_debug_activation("Counted %d open LVs in VG %s.", count, vg->name);
 
 	return count;
 }
@@ -1454,9 +1456,9 @@ static int _lv_is_active(const struct logical_volume *lv,
 	 * Old users of this function will never be affected by this,
 	 * since they are only concerned about active vs. not active.
 	 * New users of this function who specifically ask for 'exclusive'
-	 * will be given an error message.
+	 * will be given a warning message.
 	 */
-	log_error("Unable to determine exclusivity of %s.", display_lvname(lv));
+	log_warn("WARNING: Unable to determine exclusivity of %s.", display_lvname(lv));
 
 	e = 0;
 

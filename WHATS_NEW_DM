@@ -1,3 +1,38 @@
+Version 1.02.130 - 6th July 2016
+================================
+  Minor fixes from coverity.
+
+Version 1.02.129 - 6th July 2016
+================================
+  Update default dmstats field selections for groups.
+  Add 'obj_type', 'group_id', and 'statsname' fields to dmstats reports.
+  Add --area, --region, and --group to dmstats to control object selection.
+  Add --alias, --groupid, --regions to dmstats for group creation and deletion.
+  Add 'group' and 'ungroup' commands to dmstats.
+  Allow dm_stats_delete_group() to optionally delete all group members.
+  Add dm_stats_get_object_type() to return the type of object present.
+  Add dm_stats_walk_init() allowing control of objects visited by walks.
+  Add dm_stats_get_group_descriptor() to return the member list as a string.
+  Introduce dm_stats_get_nr_groups() and dm_stats_group_present().
+  Add dm_stats_{get,set}_alias() to set and retrieve alias names for groups.
+  Add dm_stats_get_group_id() to return the group ID for a given region.
+  Add dm_stats_{create,delete}_group() to allow grouping of stats regions.
+  Add enum-driven dm_stats_get_{metric,counter}() interfaces.
+  Add dm_bitset_parse_list() to parse a string representation of a bitset.
+  Thin dmeventd plugin umounts lvm2 volume only when pool is 95% or more.
+
+Version 1.02.128 - 25th June 2016
+=================================
+  Recognize 'all' keyword used in selection as synonym for "" (no selection).
+  Add dm_report_set_selection to set selection for multiple output of report.
+  Add DM_REPORT_OUTPUT_MULTIPLE_TIMES flag for multiple output of same report.
+  Move field width handling/sort init from dm_report_object to dm_report_output.
+  Add _LOG_BYPASS_REPORT flag for bypassing any log report currently set.
+  Introduce DM_REPORT_GROUP_JSON for report group with JSON output format.
+  Introduce DM_REPORT_GROUP_BASIC for report group with basic report output.
+  Introduce DM_REPORT_GROUP_SINGLE for report group having single report only.
+  Add dm_report_group_{create,push,pop,destroy} to support report grouping.
+
 Version 1.02.127 - 11th June 2016
 =================================
  Fix blkdeactivate regression causing skipping of dm + md devices. (1.02.126)

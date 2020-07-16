@@ -66,7 +66,8 @@
 #define DEFAULT_MIRROR_LOG_FAULT_POLICY "allocate"
 #define DEFAULT_MIRROR_IMAGE_FAULT_POLICY "remove"
 #define DEFAULT_MIRROR_MAX_IMAGES 8 /* limited by kernel DM_KCOPYD_MAX_REGIONS */
-#define DEFAULT_RAID_MAX_IMAGES 8
+// FIXME Increase this to 64
+#define DEFAULT_RAID_MAX_IMAGES 8 /* limited by kernel failed devices bitfield in superblock (raid4/5/6 max 253) */
 
 #define DEFAULT_RAID_FAULT_POLICY "warn"
 
@@ -160,6 +161,7 @@
 #  define DEFAULT_LOG_FACILITY LOG_USER
 #endif
 
+#define DEFAULT_COMMAND_LOG_REPORT 0
 #define DEFAULT_SYSLOG 1
 #define DEFAULT_VERBOSE 0
 #define DEFAULT_SILENT 0
@@ -207,7 +209,10 @@
 #define DEFAULT_REP_LIST_ITEM_SEPARATOR ","
 #define DEFAULT_TIME_FORMAT "%Y-%m-%d %T %z"
 
+#define DEFAULT_REP_OUTPUT_FORMAT "basic"
 #define DEFAULT_COMPACT_OUTPUT_COLS ""
+
+#define DEFAULT_COMMAND_LOG_SELECTION "!(log_type=status && message=success)"
 
 #define DEFAULT_LVS_COLS "lv_name,vg_name,lv_attr,lv_size,pool_lv,origin,data_percent,metadata_percent,move_pv,mirror_log,copy_percent,convert_lv"
 #define DEFAULT_VGS_COLS "vg_name,pv_count,lv_count,snap_count,vg_attr,vg_size,vg_free"
@@ -215,6 +220,7 @@
 #define DEFAULT_SEGS_COLS "lv_name,vg_name,lv_attr,stripes,segtype,seg_size"
 #define DEFAULT_PVSEGS_COLS "pv_name,vg_name,pv_fmt,pv_attr,pv_size,pv_free,pvseg_start,pvseg_size"
 #define DEFAULT_DEVTYPES_COLS "devtype_name,devtype_max_partitions,devtype_description"
+#define DEFAULT_COMMAND_LOG_COLS "log_seq_num,log_type,log_context,log_object_type,log_object_name,log_object_id,log_object_group,log_object_group_id,log_message,log_errno,log_ret_code"
 
 #define DEFAULT_LVS_COLS_VERB "lv_name,vg_name,seg_count,lv_attr,lv_size,lv_major,lv_minor,lv_kernel_major,lv_kernel_minor,pool_lv,origin,data_percent,metadata_percent,move_pv,copy_percent,mirror_log,convert_lv,lv_uuid,lv_profile"
 #define DEFAULT_VGS_COLS_VERB "vg_name,vg_attr,vg_extent_size,pv_count,lv_count,snap_count,vg_size,vg_free,vg_uuid,vg_profile"
@@ -223,12 +229,25 @@
 #define DEFAULT_PVSEGS_COLS_VERB "pv_name,vg_name,pv_fmt,pv_attr,pv_size,pv_free,pvseg_start,pvseg_size,lv_name,seg_start_pe,segtype,seg_pe_ranges"
 #define DEFAULT_DEVTYPES_COLS_VERB "devtype_name,devtype_max_partitions,devtype_description"
 
+#define DEFAULT_VGS_COLS_FULL "vg_all"
+#define DEFAULT_PVS_COLS_FULL "pv_all"
+#define DEFAULT_LVS_COLS_FULL "lv_all"
+#define DEFAULT_PVSEGS_COLS_FULL "pvseg_all,pv_uuid,lv_uuid"
+#define DEFAULT_SEGS_COLS_FULL "seg_all,lv_uuid"
+
 #define DEFAULT_LVS_SORT "vg_name,lv_name"
 #define DEFAULT_VGS_SORT "vg_name"
 #define DEFAULT_PVS_SORT "pv_name"
 #define DEFAULT_SEGS_SORT "vg_name,lv_name,seg_start"
 #define DEFAULT_PVSEGS_SORT "pv_name,pvseg_start"
 #define DEFAULT_DEVTYPES_SORT "devtype_name"
+#define DEFAULT_COMMAND_LOG_SORT "log_seq_num"
+
+#define DEFAULT_VGS_SORT_FULL "vg_name"
+#define DEFAULT_PVS_SORT_FULL "pv_name"
+#define DEFAULT_LVS_SORT_FULL "vg_name,lv_name"
+#define DEFAULT_PVSEGS_SORT_FULL "pv_uuid,pvseg_start"
+#define DEFAULT_SEGS_SORT_FULL "lv_uuid,seg_start"
 
 #define DEFAULT_MIRROR_DEVICE_FAULT_POLICY "remove"
 #define DEFAULT_MIRROR_LOG_FAULT_POLICY "allocate"

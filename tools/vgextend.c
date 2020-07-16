@@ -82,7 +82,7 @@ static int _vgextend_single(struct cmd_context *cmd, const char *vg_name,
 	uint32_t mda_used;
 	int ret = ECMD_FAILED;
 
-	if (arg_count(cmd, metadataignore_ARG) &&
+	if (arg_is_set(cmd, metadataignore_ARG) &&
 	    (pp->force == PROMPT) && !pp->yes &&
 	    (vg_mda_copies(vg) != VGMETADATACOPIES_UNMANAGED) &&
 	    (yes_no_prompt("Override preferred number of copies of VG %s metadata? [y/n]: ", vg_name) == 'n')) {
@@ -96,7 +96,7 @@ static int _vgextend_single(struct cmd_context *cmd, const char *vg_name,
 	if (!vg_extend_each_pv(vg, pp))
 		goto_out;
 
-	if (arg_count(cmd, metadataignore_ARG)) {
+	if (arg_is_set(cmd, metadataignore_ARG)) {
 		mda_copies = vg_mda_copies(vg);
 		mda_used = vg_mda_used_count(vg);
 
@@ -136,7 +136,7 @@ int vgextend(struct cmd_context *cmd, int argc, char **argv)
 		return EINVALID_CMD_LINE;
 	}
 
-	if (arg_count(cmd, metadatacopies_ARG)) {
+	if (arg_is_set(cmd, metadatacopies_ARG)) {
 		log_error("Invalid option --metadatacopies, "
 			  "use --pvmetadatacopies instead.");
 		return EINVALID_CMD_LINE;
@@ -169,7 +169,7 @@ int vgextend(struct cmd_context *cmd, int argc, char **argv)
 		return_ECMD_FAILED;
 	cmd->lockd_gl_disable = 1;
 
-	if (!(handle = init_processing_handle(cmd))) {
+	if (!(handle = init_processing_handle(cmd, NULL))) {
 		log_error("Failed to initialize processing handle.");
 		return ECMD_FAILED;
 	}
@@ -198,12 +198,12 @@ int vgextend(struct cmd_context *cmd, int argc, char **argv)
 	handle->custom_handle = &vp;
 
 	ret = process_each_vg(cmd, 0, NULL, vg_name, NULL,
-			      READ_FOR_UPDATE, handle,
+			      READ_FOR_UPDATE, 0, handle,
 			      restoremissing ? &_vgextend_restoremissing : &_vgextend_single);
 
 	destroy_processing_handle(cmd, handle);
 
 	if (!restoremissing)
-		unlock_vg(cmd, VG_ORPHANS);
+		unlock_vg(cmd, NULL, VG_ORPHANS);
 	return ret;
 }

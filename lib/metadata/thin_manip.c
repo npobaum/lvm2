@@ -171,7 +171,8 @@ int pool_is_active(const struct logical_volume *lv)
 	const struct seg_list *sl;
 
 	if (!lv_is_thin_pool(lv)) {
-		log_error(INTERNAL_ERROR "pool_is_active called with non-pool LV %s.", lv->name);
+		log_error(INTERNAL_ERROR "pool_is_active called with non-pool volume %s.",
+			  display_lvname(lv));
 		return 0;
 	}
 
@@ -182,7 +183,8 @@ int pool_is_active(const struct logical_volume *lv)
 
 		dm_list_iterate_items(sl, &lv->segs_using_this_lv)
 			if (lv_is_active(sl->seg->lv)) {
-				log_debug("Thin volume \"%s\" is active.", sl->seg->lv->name);
+				log_debug_activation("Pool's thin volume %s is active.",
+						     display_lvname(sl->seg->lv));
 				return 1;
 			}
 	} else if (lv_info(lv->vg->cmd, lv, 1, &info, 0, 0) && info.exists)
@@ -206,7 +208,7 @@ int thin_pool_feature_supported(const struct logical_volume *lv, int feature)
 	    seg->segtype->ops->target_present &&
 	    !seg->segtype->ops->target_present(lv->vg->cmd, NULL, &attr)) {
 		log_error("%s: Required device-mapper target(s) not "
-			  "detected in your kernel", seg->segtype->name);
+			  "detected in your kernel.", seg->segtype->name);
 		return 0;
 	}
 
@@ -451,9 +453,15 @@ int update_pool_lv(struct logical_volume *lv, int activate)
 
 	if (activate) {
 		/* If the pool is not active, do activate deactivate */
+		monitored = dmeventd_monitor_mode();
+		init_dmeventd_monitor(DMEVENTD_MONITOR_IGNORE);
 		if (!lv_is_active(lv)) {
-			monitored = dmeventd_monitor_mode();
-			init_dmeventd_monitor(DMEVENTD_MONITOR_IGNORE);
+			/*
+			 * FIXME:
+			 *   Rewrite activation code to handle whole tree of thinLVs
+			 *   as this version has major problem when it does not know
+			 *   which Node has pool active.
+			 */
 			if (!activate_lv_excl(lv->vg->cmd, lv)) {
 				init_dmeventd_monitor(monitored);
 				return_0;
@@ -481,13 +489,12 @@ int update_pool_lv(struct logical_volume *lv, int activate)
 			}
 		}
 
-		if (activate) {
-			if (!deactivate_lv(lv->vg->cmd, lv)) {
-				log_error("Failed to deactivate %s.", display_lvname(lv));
-				ret = 0;
-			}
-			init_dmeventd_monitor(monitored);
+		if (activate &&
+		    !deactivate_lv(lv->vg->cmd, lv)) {
+			log_error("Failed to deactivate %s.", display_lvname(lv));
+			ret = 0;
 		}
+		init_dmeventd_monitor(monitored);
 
 		/* Unlock memory if possible */
 		memlock_unlock(lv->vg->cmd);
@@ -581,7 +588,7 @@ int update_thin_pool_params(const struct segment_type *segtype,
 		*zero = find_config_tree_bool(cmd, allocation_thin_pool_zero_CFG, profile);
 
 	if (!(attr & THIN_FEATURE_BLOCK_SIZE) &&
-	    (*chunk_size & (*chunk_size - 1))) {
+	    !is_power_of_2(*chunk_size)) {
 		log_error("Chunk size must be a power of 2 for this thin target version.");
 		return 0;
 	}
@@ -748,7 +755,7 @@ int check_new_thin_pool(const struct logical_volume *pool_lv)
 		return 0;
 	}
 
-	log_verbose("Deactivating public thin pool %s",
+	log_verbose("Deactivating public thin pool %s.",
 		    display_lvname(pool_lv));
 
 	/* Prevent any 'race' with in-use thin pool and always deactivate */

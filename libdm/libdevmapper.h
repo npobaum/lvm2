@@ -638,9 +638,24 @@ int dm_stats_populate(struct dm_stats *dms, const char *program_id,
  * program creating the region. If program_id is NULL or the empty
  * string the default program_id stored in the handle will be used.
  *
- * aux_data is an optional string argument passed to the kernel that is
- * stored with the statistics region. It is not currently accessed by
- * the library or kernel and may be used to store arbitrary user data.
+ * user_data is an optional string argument that is added to the
+ * content of the aux_data field stored with the statistics region by
+ * the kernel.
+ *
+ * The library may also use this space internally, for example, to
+ * store a group descriptor or other metadata: in this case the
+ * library will strip any internal data fields from the value before
+ * it is returned via a call to dm_stats_get_region_aux_data().
+ *
+ * The user data stored is not accessed by the library or kernel and
+ * may be used to store an arbitrary data word (embedded whitespace is
+ * not permitted).
+ *
+ * An application using both the library and direct access to the
+ * @stats_list device-mapper message may see the internal values stored
+ * in this field by the library. In such cases any string up to and
+ * including the first '#' in the field must be treated as an opaque
+ * value and preserved across any external modification of aux_data.
  *
  * The region_id of the newly-created region is returned in *region_id
  * if it is non-NULL.
@@ -648,7 +663,7 @@ int dm_stats_populate(struct dm_stats *dms, const char *program_id,
 int dm_stats_create_region(struct dm_stats *dms, uint64_t *region_id,
 			   uint64_t start, uint64_t len, int64_t step,
 			   int precise, struct dm_histogram *bounds,
-			   const char *program_id, const char *aux_data);
+			   const char *program_id, const char *user_data);
 
 /*
  * Delete the specified statistics region. This will also mark the
@@ -715,6 +730,19 @@ void dm_stats_buffer_destroy(struct dm_stats *dms, char *buffer);
 uint64_t dm_stats_get_nr_regions(const struct dm_stats *dms);
 
 /*
+ * Determine the number of groups contained in a dm_stats handle
+ * following a dm_stats_list() or dm_stats_populate() call.
+ *
+ * The value returned is the number of registered groups visible with the
+ * progam_id value used for the list or populate operation and may not be
+ * equal to the highest present group_id (either due to program_id
+ * filtering or gaps in the sequence of group_id values).
+ *
+ * Always returns zero on an empty handle.
+ */
+uint64_t dm_stats_get_nr_groups(const struct dm_stats *dms);
+
+/*
  * Test whether region_id is present in this dm_stats handle.
  */
 int dm_stats_region_present(const struct dm_stats *dms, uint64_t region_id);
@@ -731,6 +759,11 @@ uint64_t dm_stats_get_region_nr_areas(const struct dm_stats *dms,
  * given dm_stats object.
  */
 uint64_t dm_stats_get_nr_areas(const struct dm_stats *dms);
+
+/*
+ * Test whether group_id is present in this dm_stats handle.
+ */
+int dm_stats_group_present(const struct dm_stats *dms, uint64_t group_id);
 
 /*
  * Return the number of bins in the histogram configuration for the
@@ -904,51 +937,129 @@ int dm_stats_get_area_offset(const struct dm_stats *dms, uint64_t *offset,
 			     uint64_t region_id, uint64_t area_id);
 
 /*
- * Retrieve program_id and aux_data for a specific region. Only valid
- * following a call to dm_stats_list(). The returned pointer does not
- * need to be freed separately from the dm_stats handle but will become
- * invalid after a dm_stats_destroy(), dm_stats_list(),
- * dm_stats_populate(), or dm_stats_bind*() of the handle from which it
- * was obtained.
+ * Retrieve program_id and user aux_data for a specific region.
+ *
+ * Only valid following a call to dm_stats_list().
+ */
+
+/*
+ * Retrieve program_id for the specified region.
+ *
+ * The returned pointer does not need to be freed separately from the
+ * dm_stats handle but will become invalid after a dm_stats_destroy(),
+ * dm_stats_list(), dm_stats_populate(), or dm_stats_bind*() of the
+ * handle from which it was obtained.
  */
 const char *dm_stats_get_region_program_id(const struct dm_stats *dms,
 					   uint64_t region_id);
 
+/*
+ * Retrieve user aux_data set for the specified region. This function
+ * will return any stored user aux_data as a string in the memory
+ * pointed to by the aux_data argument.
+ *
+ * Any library internal aux_data fields, such as DMS_GROUP descriptors,
+ * are stripped before the value is returned.
+ *
+ * The returned pointer does not need to be freed separately from the
+ * dm_stats handle but will become invalid after a dm_stats_destroy(),
+ * dm_stats_list(), dm_stats_populate(), or dm_stats_bind*() of the
+ * handle from which it was obtained.
+ */
 const char *dm_stats_get_region_aux_data(const struct dm_stats *dms,
 					 uint64_t region_id);
+
+typedef enum {
+	DM_STATS_OBJECT_TYPE_NONE,
+	DM_STATS_OBJECT_TYPE_AREA,
+	DM_STATS_OBJECT_TYPE_REGION,
+	DM_STATS_OBJECT_TYPE_GROUP
+} dm_stats_obj_type_t;
 
 /*
  * Statistics cursor
  *
  * A dm_stats handle maintains an optional cursor into the statistics
- * regions and areas that it stores. Iterators are provided to visit
- * each region, or each area in a handle and accessor methods are
- * provided to obtain properties and values for the region or area
- * at the current cursor position.
+ * tables that it stores. Iterators are provided to visit each region,
+ * area, or group in a handle and accessor methods are provided to
+ * obtain properties and values for the object at the current cursor
+ * position.
  *
- * Using the cursor simplifies walking all regions or areas when the
- * region table is sparse (i.e. contains some present and some
- * non-present region_id values either due to program_id filtering
- * or the ordering of region creation and deletion).
+ * Using the cursor simplifies walking all regions or groups when
+ * the tables are sparse (i.e. contains some present and some
+ * non-present region_id or group_id values either due to program_id
+ * filtering or the ordering of region and group creation and deletion).
+ *
+ * Simple macros are provided to visit each area, region, or group,
+ * contained in a handle and applications are encouraged to use these
+ * where possible.
  */
 
 /*
- * Initialise the cursor of a dm_stats handle to address the first
- * present region. It is valid to attempt to walk a NULL stats handle
- * or a handle containing no present regions; in this case any call to
- * dm_stats_walk_next() becomes a no-op and all calls to
- * dm_stats_walk_end() return true.
+ * Walk flags are used to initialise a dm_stats handle's cursor control
+ * and to select region or group aggregation when calling a metric or
+ * counter property method with immediate group, region, and area ID
+ * values.
+ *
+ * Walk flags are stored in the uppermost word of a uint64_t so that
+ * a region_id or group_id may be encoded in the lower bits. This
+ * allows an aggregate region_id or group_id to be specified when
+ * retrieving counter or metric values.
+ *
+ * Flags may be ORred together when used to initialise a dm_stats_walk:
+ * the resulting walk will visit instance of each type specified by
+ * the flag combination.
+ */
+#define DM_STATS_WALK_AREA   0x1000000000000ULL
+#define DM_STATS_WALK_REGION 0x2000000000000ULL
+#define DM_STATS_WALK_GROUP  0x4000000000000ULL
+
+#define DM_STATS_WALK_ALL    0x7000000000000ULL
+#define DM_STATS_WALK_DEFAULT (DM_STATS_WALK_AREA | DM_STATS_WALK_REGION)
+
+/*
+ * Skip regions from a DM_STATS_WALK_REGION that contain only a single
+ * area: in this case the region's aggregate values are identical to
+ * the values of the single contained area. Setting this flag will
+ * suppress these duplicate entries during a dm_stats_walk_* with the
+ * DM_STATS_WALK_REGION flag set.
+ */
+#define DM_STATS_WALK_SKIP_SINGLE_AREA   0x8000000000000ULL
+
+/*
+ * Initialise the cursor control of a dm_stats handle for the specified
+ * walk type(s). Including a walk flag in the flags argument will cause
+ * any subsequent walk to visit that type of object (until the next
+ * call to dm_stats_walk_init()).
+ */
+int dm_stats_walk_init(struct dm_stats *dms, uint64_t flags);
+
+/*
+ * Set the cursor of a dm_stats handle to address the first present
+ * group, region, or area of the currently configured walk. It is
+ * valid to attempt to walk a NULL stats handle or a handle containing
+ * no present regions; in this case any call to dm_stats_walk_next()
+ * becomes a no-op and all calls to dm_stats_walk_end() return true.
  */
 void dm_stats_walk_start(struct dm_stats *dms);
 
 /*
  * Advance the statistics cursor to the next area, or to the next
- * present region if at the end of the current region.
+ * present region if at the end of the current region. If the end of
+ * the region, area, or group tables is reached a subsequent call to
+ * dm_stats_walk_end() will return 1 and dm_stats_object_type() called
+ * on the location will return DM_STATS_OBJECT_TYPE_NONE,
  */
 void dm_stats_walk_next(struct dm_stats *dms);
 
 /*
- * Advance the statistics cursor to the next region.
+ * Force the statistics cursor to advance to the next region. This will
+ * stop any in-progress area walk (by clearing DM_STATS_WALK_AREA) and
+ * advance the cursor to the next present region, the first present
+ * group (if DM_STATS_GROUP_WALK is set), or to the end. In this case a
+ * subsequent call to dm_stats_walk_end() will return 1 and a call to
+ * dm_stats_object_type() for the location will return
+ * DM_STATS_OBJECT_TYPE_NONE.
  */
 void dm_stats_walk_next_region(struct dm_stats *dms);
 
@@ -956,6 +1067,24 @@ void dm_stats_walk_next_region(struct dm_stats *dms);
  * Test whether the end of a statistics walk has been reached.
  */
 int dm_stats_walk_end(struct dm_stats *dms);
+
+/*
+ * Return the type of object at the location specified by region_id
+ * and area_id. If either region_id or area_id uses one of the special
+ * values DM_STATS_REGION_CURRENT or DM_STATS_AREA_CURRENT the
+ * corresponding region or area identifier will be taken from the
+ * current cursor location. If the cursor location or the value encoded
+ * by region_id and area_id indicates an aggregate region or group,
+ * this will be reflected in the value returned.
+ */
+dm_stats_obj_type_t dm_stats_object_type(const struct dm_stats *dms,
+					 uint64_t region_id,
+					 uint64_t area_id);
+
+/*
+ * Return the type of object at the current stats cursor location.
+ */
+dm_stats_obj_type_t dm_stats_current_object_type(const struct dm_stats *dms);
 
 /*
  * Stats iterators
@@ -978,7 +1107,8 @@ int dm_stats_walk_end(struct dm_stats *dms);
  * executed.
  */
 #define dm_stats_foreach_region(dms)				\
-for (dm_stats_walk_start((dms));				\
+for (dm_stats_walk_init((dms), DM_STATS_WALK_REGION),		\
+     dm_stats_walk_start((dms));				\
      !dm_stats_walk_end((dms)); dm_stats_walk_next_region((dms)))
 
 /*
@@ -988,8 +1118,22 @@ for (dm_stats_walk_start((dms));				\
  * be executed.
  */
 #define dm_stats_foreach_area(dms)				\
-for (dm_stats_walk_start((dms));				\
+for (dm_stats_walk_init((dms), DM_STATS_WALK_AREA),		\
+     dm_stats_walk_start((dms));				\
      !dm_stats_walk_end((dms)); dm_stats_walk_next((dms)))
+
+/*
+ * Iterate over the regions table visiting each group. Metric and
+ * counter methods will return values for the group.
+ *
+ * If the group table is empty or unpopulated the loop body will not
+ * be executed.
+ */
+#define dm_stats_foreach_group(dms)				\
+for (dm_stats_walk_init((dms), DM_STATS_WALK_GROUP),		\
+     dm_stats_group_walk_start(dms);				\
+     !dm_stats_group_walk_end(dms);				\
+     dm_stats_group_walk_next(dms))
 
 /*
  * Start a walk iterating over the regions contained in dm_stats handle
@@ -1074,10 +1218,70 @@ int dm_stats_get_current_area_len(const struct dm_stats *dms,
 const char *dm_stats_get_current_region_program_id(const struct dm_stats *dms);
 
 /*
- * Return a pointer to the aux_data string for the region at the current
- * cursor location.
+ * Return a pointer to the user aux_data string for the region at the
+ * current cursor location.
  */
 const char *dm_stats_get_current_region_aux_data(const struct dm_stats *dms);
+
+/*
+ * Statistics groups and data aggregation.
+ */
+
+/*
+ * Create a new group in stats handle dms from the group descriptor
+ * passed in group. The group descriptor is a string containing a list
+ * of region_id values that will be included in the group. The first
+ * region_id found will be the group leader. Ranges of identifiers may
+ * be expressed as "M-N", where M and N are the start and end region_id
+ * values for the range.
+ */
+int dm_stats_create_group(struct dm_stats *dms, const char *group,
+			  const char *alias, uint64_t *group_id);
+
+/*
+ * Remove the specified group_id. If the remove argument is zero the
+ * group will be removed but the regions that it contained will remain.
+ * If remove is non-zero then all regions that belong to the group will
+ * also be removed.
+ */
+int dm_stats_delete_group(struct dm_stats *dms, uint64_t group_id, int remove);
+
+/*
+ * Set an alias for this group or region. The alias will be returned
+ * instead of the normal dm-stats name for this region or group.
+ */
+int dm_stats_set_alias(struct dm_stats *dms, uint64_t group_id,
+		       const char *alias);
+
+/*
+ * Returns a pointer to the currently configured alias for id, or the
+ * name of the dm device the handle is bound to if no alias has been
+ * set. The pointer will be freed automatically when a new alias is set
+ * or when the stats handle is cleared.
+ */
+const char *dm_stats_get_alias(const struct dm_stats *dms, uint64_t id);
+
+#define DM_STATS_GROUP_NONE UINT64_MAX
+/*
+ * Return the group_id that the specified region_id belongs to, or the
+ * special value DM_STATS_GROUP_NONE if the region does not belong
+ * to any group.
+ */
+uint64_t dm_stats_get_group_id(const struct dm_stats *dms, uint64_t region_id);
+
+/*
+ * Store a pointer to a string describing the regions that are members
+ * of the group specified by group_id in the memory pointed to by buf.
+ * The string is in the same format as the 'group' argument to
+ * dm_stats_create_group().
+ *
+ * The pointer does not need to be freed explicitly by the caller: it
+ * will become invalid following a subsequent dm_stats_list(),
+ * dm_stats_populate() or dm_stats_destroy() of the corresponding
+ * dm_stats handle.
+ */
+int dm_stats_get_group_descriptor(const struct dm_stats *dms,
+				  uint64_t group_id, char **buf);
 
 /*
  * Call this to actually run the ioctl.
@@ -1843,6 +2047,16 @@ int dm_bit_get_next(dm_bitset_t bs, int last_bit);
 #define dm_bit_copy(bs1, bs2) \
    memcpy((bs1) + 1, (bs2) + 1, ((*(bs1) / DM_BITS_PER_INT) + 1) * sizeof(int))
 
+/*
+ * Parse a string representation of a bitset into a dm_bitset_t. The
+ * notation used is identical to the kernel bitmap parser (cpuset etc.)
+ * and supports both lists ("1,2,3") and ranges ("1-2,5-8"). If the mem
+ * parameter is NULL memory for the bitset will be allocated using
+ * dm_malloc(). Otherwise the bitset will be allocated using the supplied
+ * dm_pool.
+ */
+dm_bitset_t dm_bitset_parse_list(const char *str, struct dm_pool *mem);
+
 /* Returns number of set bits */
 static inline unsigned hweight32(uint32_t i)
 {
@@ -2606,6 +2820,7 @@ const void *dm_report_value_cache_get(struct dm_report *rh, const char *name);
 #define DM_REPORT_OUTPUT_FIELD_NAME_PREFIX	0x00000008
 #define DM_REPORT_OUTPUT_FIELD_UNQUOTED		0x00000010
 #define DM_REPORT_OUTPUT_COLUMNS_AS_ROWS	0x00000020
+#define DM_REPORT_OUTPUT_MULTIPLE_TIMES		0x00000040
 
 struct dm_report *dm_report_init(uint32_t *report_types,
 				 const struct dm_report_object_type *types,
@@ -2674,6 +2889,8 @@ void dm_report_free(struct dm_report *rh);
 int dm_report_set_output_field_name_prefix(struct dm_report *rh,
 					   const char *report_prefix);
 
+int dm_report_set_selection(struct dm_report *rh, const char *selection);
+
 /*
  * Report functions are provided for simple data types.
  * They take care of allocating copies of the data.
@@ -2704,6 +2921,22 @@ void dm_report_field_set_value(struct dm_report_field *field, const void *value,
 			       const void *sortvalue);
 
 /*
+ * Report group support.
+ */
+struct dm_report_group;
+
+typedef enum {
+	DM_REPORT_GROUP_SINGLE,
+	DM_REPORT_GROUP_BASIC,
+	DM_REPORT_GROUP_JSON
+} dm_report_group_type_t;
+
+struct dm_report_group *dm_report_group_create(dm_report_group_type_t type, void *data);
+int dm_report_group_push(struct dm_report_group *group, struct dm_report *report, void *data);
+int dm_report_group_pop(struct dm_report_group *group);
+int dm_report_group_destroy(struct dm_report_group *group);
+
+/*
  * Stats counter access methods
  *
  * Each method returns the corresponding stats counter value from the
@@ -2712,6 +2945,12 @@ void dm_report_field_set_value(struct dm_report_field *field, const void *value,
  * DM_STATS_REGION_CURRENT or DM_STATS_AREA_CURRENT then the region
  * or area is selected according to the current state of the dm_stats
  * handle's embedded cursor.
+ *
+ * Two methods are provided to access counter values: a named function
+ * for each available counter field and a single function that accepts
+ * an enum value specifying the required field. New code is encouraged
+ * to use the enum based interface as calls to the named functions are
+ * implemented using the enum method internally.
  *
  * See the kernel documentation for complete descriptions of each
  * counter field:
@@ -2736,6 +2975,27 @@ void dm_report_field_set_value(struct dm_report_field *field, const void *value,
 
 #define DM_STATS_REGION_CURRENT UINT64_MAX
 #define DM_STATS_AREA_CURRENT UINT64_MAX
+
+typedef enum {
+	DM_STATS_READS_COUNT,
+	DM_STATS_READS_MERGED_COUNT,
+	DM_STATS_READ_SECTORS_COUNT,
+	DM_STATS_READ_NSECS,
+	DM_STATS_WRITES_COUNT,
+	DM_STATS_WRITES_MERGED_COUNT,
+	DM_STATS_WRITE_SECTORS_COUNT,
+	DM_STATS_WRITE_NSECS,
+	DM_STATS_IO_IN_PROGRESS_COUNT,
+	DM_STATS_IO_NSECS,
+	DM_STATS_WEIGHTED_IO_NSECS,
+	DM_STATS_TOTAL_READ_NSECS,
+	DM_STATS_TOTAL_WRITE_NSECS,
+	DM_STATS_NR_COUNTERS
+} dm_stats_counter_t;
+
+uint64_t dm_stats_get_counter(const struct dm_stats *dms,
+			      dm_stats_counter_t counter,
+			      uint64_t region_id, uint64_t area_id);
 
 uint64_t dm_stats_get_reads(const struct dm_stats *dms,
 			    uint64_t region_id, uint64_t area_id);
@@ -2802,6 +3062,27 @@ uint64_t dm_stats_get_total_write_nsecs(const struct dm_stats *dms,
  * average_rd_wait_time: the average read wait time
  * average_wr_wait_time: the average write wait time
  */
+
+typedef enum {
+	DM_STATS_RD_MERGES_PER_SEC,
+	DM_STATS_WR_MERGES_PER_SEC,
+	DM_STATS_READS_PER_SEC,
+	DM_STATS_WRITES_PER_SEC,
+	DM_STATS_READ_SECTORS_PER_SEC,
+	DM_STATS_WRITE_SECTORS_PER_SEC,
+	DM_STATS_AVERAGE_REQUEST_SIZE,
+	DM_STATS_AVERAGE_QUEUE_SIZE,
+	DM_STATS_AVERAGE_WAIT_TIME,
+	DM_STATS_AVERAGE_RD_WAIT_TIME,
+	DM_STATS_AVERAGE_WR_WAIT_TIME,
+	DM_STATS_SERVICE_TIME,
+	DM_STATS_THROUGHPUT,
+	DM_STATS_UTILIZATION,
+	DM_STATS_NR_METRICS
+} dm_stats_metric_t;
+
+int dm_stats_get_metric(const struct dm_stats *dms, int metric,
+			uint64_t region_id, uint64_t area_id, double *value);
 
 int dm_stats_get_rd_merges_per_sec(const struct dm_stats *dms, double *rrqm,
 				   uint64_t region_id, uint64_t area_id);

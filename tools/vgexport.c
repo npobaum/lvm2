@@ -70,16 +70,16 @@ bad:
 
 int vgexport(struct cmd_context *cmd, int argc, char **argv)
 {
-	if (!argc && !arg_count(cmd, all_ARG) && !arg_is_set(cmd, select_ARG)) {
+	if (!argc && !arg_is_set(cmd, all_ARG) && !arg_is_set(cmd, select_ARG)) {
 		log_error("Please supply volume groups or use --select for selection or use -a for all.");
 		return EINVALID_CMD_LINE;
 	}
 
-	if (arg_count(cmd, all_ARG) && (argc || arg_is_set(cmd, select_ARG))) {
+	if (arg_is_set(cmd, all_ARG) && (argc || arg_is_set(cmd, select_ARG))) {
 		log_error("No arguments permitted when using -a for all.");
 		return EINVALID_CMD_LINE;
 	}
 
-	return process_each_vg(cmd, argc, argv, NULL, NULL, READ_FOR_UPDATE, NULL,
+	return process_each_vg(cmd, argc, argv, NULL, NULL, READ_FOR_UPDATE, 0, NULL,
 			       &vgexport_single);
 }
