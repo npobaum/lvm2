@@ -13,7 +13,7 @@
 
 . ./test-utils.sh
 
-aux prepare_pvs 2
+aux prepare_pvs 4
 aux pvcreate --metadatacopies 0 $dev1
 vgcreate -cn $vg $devs
 
@@ -21,6 +21,8 @@ vgcreate -cn $vg $devs
 lvcreate -n $lv -l 4 $vg 
 not lvcreate -n $lv -l 4 $vg
 lvremove -ff $vg/$lv
+# try to remove it again - should fail (but not segfault)
+not lvremove -ff $vg/$lv
 
 # "lvcreate rejects a negative stripe_size"
 not lvcreate -L 64M -n $lv -i2 --stripesize -4 $vg 2>err;
@@ -48,13 +50,78 @@ lvremove -ff $vg
 not lvcreate -L 64M -n $lv -i129 $vg 2>err
 grep "^  Number of stripes (129) must be between 1 and 128\$" err
 
-# 'lvcreate rejects an invalid regionsize (bz186013)' 
-not lvcreate -L 64M -n $lv -R0 $vg 2>err
-grep "Non-zero region size must be supplied." err
-
 # The case on lvdisplay output is to verify that the LV was not created.
 # 'lvcreate rejects an invalid stripe size'
 not lvcreate -L 64M -n $lv -i2 --stripesize 3 $vg 2>err
 grep "^  Invalid stripe size 3\.00 KB\$" err
 case $(lvdisplay $vg) in "") true ;; *) false ;; esac
 
+# Setting max_lv works. (bz490298)
+lvremove -ff $vg
+vgchange -l 3 $vg
+lvcreate -l1 -n $lv1 $vg
+lvcreate -l1 -s -n $lv2 $vg/$lv1
+lvcreate -l1 -n $lv3 $vg
+not lvcreate -l1 -n $lv4 $vg
+
+lvremove -ff $vg/$lv3
+lvcreate -l1 -s -n $lv3 $vg/$lv1
+not lvcreate -l1 -n $lv4 $vg
+not lvcreate -l1 -m1 -n $lv4 $vg
+
+lvremove -ff $vg/$lv3
+lvcreate -l1 -m1 -n $lv3 $vg
+lvs
+vgs -o +max_lv
+not lvcreate -l1 -n $lv4 $vg
+not lvcreate -l1 -m1 -n $lv4 $vg
+
+lvconvert -m0 $vg/$lv3
+lvconvert -m2 -i 1 $vg/$lv3
+lvconvert -m1 $vg/$lv3
+
+not vgchange -l 2
+vgchange -l 4
+vgs $vg
+
+lvremove -ff $vg
+vgchange -l 0 $vg
+
+# lvcreate rejects invalid chunksize, accepts between 4K and 512K
+# validate origin_size
+vgremove -ff $vg
+vgcreate -cn $vg $devs
+lvcreate -L 32M -n $lv1 $vg
+not lvcreate -L 8M -n $lv2 -s --chunksize 3K $vg/$lv1
+not lvcreate -L 8M -n $lv2 -s --chunksize 1024K $vg/$lv1
+lvcreate -L 8M -n $lv2 -s --chunksize 4K $vg/$lv1
+check_lv_field_ $vg/$lv2 chunk_size 4.00K
+check_lv_field_ $vg/$lv2 origin_size 32.00M
+lvcreate -L 8M -n $lv3 -s --chunksize 512K $vg/$lv1
+check_lv_field_ $vg/$lv3 chunk_size 512.00K
+check_lv_field_ $vg/$lv3 origin_size 32.00M
+lvremove -ff $vg
+vgchange -l 0 $vg
+
+# regionsize must be
+# - nonzero (bz186013)
+# - a power of 2 and a multiple of page size
+# - <= size of LV
+not lvcreate -L 32M -n $lv -R0 $vg 2>err
+grep "Non-zero region size must be supplied." err
+not lvcreate -L 32M -n $lv -R 11k $vg
+not lvcreate -L 32M -n $lv -R 1k $vg
+lvcreate -L 32M -n $lv --regionsize 128M  -m 1 $vg
+check_lv_field_ $vg/$lv regionsize "32.00M"
+lvremove -ff $vg
+lvcreate -L 32M -n $lv --regionsize 4M -m 1 $vg
+check_lv_field_ $vg/$lv regionsize "4.00M"
+lvremove -ff $vg
+
+# snapshot with virtual origin works
+lvcreate -s --virtualoriginsize 64M -L 32M -n $lv1 $vg
+lvrename $vg/$lv1 $vg/$lv2
+lvcreate -s --virtualoriginsize 64M -L 32M -n $lv1 $vg
+lvchange -a n $vg/$lv1
+lvremove $vg/$lv1
+lvremove -ff $vg

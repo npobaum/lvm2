@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2002-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2009 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -471,20 +471,6 @@ static int _segtype_disp(struct dm_report *rh __attribute((unused)),
 	return 1;
 }
 
-static int _origin_disp(struct dm_report *rh, struct dm_pool *mem __attribute((unused)),
-			struct dm_report_field *field,
-			const void *data, void *private __attribute((unused)))
-{
-	const struct logical_volume *lv = (const struct logical_volume *) data;
-
-	if (lv_is_cow(lv))
-		return dm_report_field_string(rh, field,
-					      (const char **) &origin_from_cow(lv)->name);
-
-	dm_report_field_set_value(field, "", NULL);
-	return 1;
-}
-
 static int _loglv_disp(struct dm_report *rh, struct dm_pool *mem __attribute((unused)),
 		       struct dm_report_field *field,
 		       const void *data, void *private __attribute((unused)))
@@ -511,7 +497,7 @@ static int _lvname_disp(struct dm_report *rh, struct dm_pool *mem,
 	char *repstr, *lvname;
 	size_t len;
 
-	if (lv_is_displayable(lv)) {
+	if (lv_is_visible(lv)) {
 		repstr = lv->name;
 		return dm_report_field_string(rh, field, (const char **) &repstr);
 	}
@@ -534,6 +520,19 @@ static int _lvname_disp(struct dm_report *rh, struct dm_pool *mem,
 
 	dm_report_field_set_value(field, repstr, lvname);
 
+	return 1;
+}
+
+static int _origin_disp(struct dm_report *rh, struct dm_pool *mem,
+			struct dm_report_field *field,
+			const void *data, void *private)
+{
+	const struct logical_volume *lv = (const struct logical_volume *) data;
+
+	if (lv_is_cow(lv))
+		return _lvname_disp(rh, mem, field, origin_from_cow(lv), private);
+
+	dm_report_field_set_value(field, "", NULL);
 	return 1;
 }
 
@@ -673,7 +672,7 @@ static int _vgsize_disp(struct dm_report *rh, struct dm_pool *mem,
 	const struct volume_group *vg = (const struct volume_group *) data;
 	uint64_t size;
 
-	size = (uint64_t) vg->extent_count * vg->extent_size;
+	size = (uint64_t) vg_size(vg);
 
 	return _size64_disp(rh, mem, field, &size, private);
 }
@@ -723,7 +722,24 @@ static int _chunksize_disp(struct dm_report *rh, struct dm_pool *mem,
 	if (lv_is_cow(seg->lv))
 		size = (uint64_t) find_cow(seg->lv)->chunk_size;
 	else
-		size = 0;
+		size = UINT64_C(0);
+
+	return _size64_disp(rh, mem, field, &size, private);
+}
+
+static int _originsize_disp(struct dm_report *rh, struct dm_pool *mem,
+			    struct dm_report_field *field,
+			    const void *data, void *private)
+{
+	const struct logical_volume *lv = (const struct logical_volume *) data;
+	uint64_t size;
+
+	if (lv_is_cow(lv))
+		size = (uint64_t) find_cow(lv)->len * lv->vg->extent_size;
+	else if (lv_is_origin(lv))
+		size = lv->size;
+	else
+		size = UINT64_C(0);
 
 	return _size64_disp(rh, mem, field, &size, private);
 }
@@ -796,7 +812,7 @@ static int _vgfree_disp(struct dm_report *rh, struct dm_pool *mem,
 	const struct volume_group *vg = (const struct volume_group *) data;
 	uint64_t freespace;
 
-	freespace = (uint64_t) vg->free_count * vg->extent_size;
+	freespace = (uint64_t) vg_free(vg);
 
 	return _size64_disp(rh, mem, field, &freespace, private);
 }
@@ -837,12 +853,11 @@ static int _pvmdas_disp(struct dm_report *rh, struct dm_pool *mem,
 			struct dm_report_field *field,
 			const void *data, void *private)
 {
-	struct lvmcache_info *info;
 	uint32_t count;
-	const char *pvid = (const char *)(&((struct id *) data)->uuid);
+	const struct physical_volume *pv =
+	    (const struct physical_volume *) data;
 
-	info = info_from_pvid(pvid, 0);
-	count = info ? dm_list_size(&info->mdas) : 0;
+	count = pv_mda_count(pv);
 
 	return _uint32_disp(rh, mem, field, &count, private);
 }
@@ -868,15 +883,14 @@ static int _pvmdafree_disp(struct dm_report *rh, struct dm_pool *mem,
 	const char *pvid = (const char *)(&((struct id *) data)->uuid);
 	struct metadata_area *mda;
 
-	info = info_from_pvid(pvid, 0);
-
-	dm_list_iterate_items(mda, &info->mdas) {
-		if (!mda->ops->mda_free_sectors)
-			continue;
-		mda_free = mda->ops->mda_free_sectors(mda);
-		if (mda_free < freespace)
-			freespace = mda_free;
-	}
+	if ((info = info_from_pvid(pvid, 0)))
+		dm_list_iterate_items(mda, &info->mdas) {
+			if (!mda->ops->mda_free_sectors)
+				continue;
+			mda_free = mda->ops->mda_free_sectors(mda);
+			if (mda_free < freespace)
+				freespace = mda_free;
+		}
 
 	if (freespace == UINT64_MAX)
 		freespace = UINT64_C(0);
@@ -908,13 +922,12 @@ static int _pvmdasize_disp(struct dm_report *rh, struct dm_pool *mem,
 			   const void *data, void *private)
 {
 	struct lvmcache_info *info;
-	uint64_t min_mda_size;
+	uint64_t min_mda_size = 0;
 	const char *pvid = (const char *)(&((struct id *) data)->uuid);
 
-	info = info_from_pvid(pvid, 0);
-
 	/* PVs could have 2 mdas of different sizes (rounding effect) */
-	min_mda_size = _find_min_mda_size(&info->mdas);
+	if ((info = info_from_pvid(pvid, 0)))
+		min_mda_size = _find_min_mda_size(&info->mdas);
 
 	return _size64_disp(rh, mem, field, &min_mda_size, private);
 }
@@ -960,7 +973,7 @@ static int _lvcount_disp(struct dm_report *rh, struct dm_pool *mem,
 	const struct volume_group *vg = (const struct volume_group *) data;
 	uint32_t count;
 
-	count = displayable_lvs_in_vg(vg);	
+	count = vg_visible_lvs(vg);
 
 	return _uint32_disp(rh, mem, field, &count, private);
 }
@@ -973,6 +986,18 @@ static int _lvsegcount_disp(struct dm_report *rh, struct dm_pool *mem,
 	uint32_t count;
 
 	count = dm_list_size(&lv->segments);
+
+	return _uint32_disp(rh, mem, field, &count, private);
+}
+
+static int _snapcount_disp(struct dm_report *rh, struct dm_pool *mem,
+			   struct dm_report_field *field,
+			   const void *data, void *private)
+{
+	const struct volume_group *vg = (const struct volume_group *) data;
+	uint32_t count;
+
+	count = snapshot_count(vg);
 
 	return _uint32_disp(rh, mem, field, &count, private);
 }
@@ -1113,6 +1138,7 @@ static const struct dm_report_object_type _report_types[] = {
 	{ VGS, "Volume Group", "vg_", _obj_get_vg },
 	{ LVS, "Logical Volume", "lv_", _obj_get_lv },
 	{ PVS, "Physical Volume", "pv_", _obj_get_pv },
+	{ LABEL, "Physical Volume Label", "pv_", _obj_get_pv },
 	{ SEGS, "Logical Volume Segment", "seg_", _obj_get_seg },
 	{ PVSEGS, "Physical Volume Segment", "pvseg_", _obj_get_pvseg },
 	{ 0, "", "", NULL },

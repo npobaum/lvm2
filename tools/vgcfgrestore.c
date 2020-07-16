@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2009 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -26,7 +26,7 @@ int vgcfgrestore(struct cmd_context *cmd, int argc, char **argv)
 			return ECMD_FAILED;
 		}
 	} else if (!(arg_count(cmd, list_ARG) && arg_count(cmd, file_ARG))) {
-		log_err("Please specify a *single* volume group to restore.");
+		log_error("Please specify a *single* volume group to restore.");
 		return ECMD_FAILED;
 	}
 
@@ -43,14 +43,14 @@ int vgcfgrestore(struct cmd_context *cmd, int argc, char **argv)
 		return ECMD_PROCESSED;
 	}
 
-	if (!lock_vol(cmd, VG_ORPHANS, LCK_VG_WRITE)) {
-		log_error("Unable to lock orphans");
+	if (!lock_vol(cmd, vg_name, LCK_VG_WRITE)) {
+		log_error("Unable to lock volume group %s", vg_name);
+		unlock_vg(cmd, VG_ORPHANS);
 		return ECMD_FAILED;
 	}
 
-	if (!lock_vol(cmd, vg_name, LCK_VG_WRITE | LCK_NONBLOCK)) {
-		log_error("Unable to lock volume group %s", vg_name);
-		unlock_vg(cmd, VG_ORPHANS);
+	if (!lock_vol(cmd, VG_ORPHANS, LCK_VG_WRITE)) {
+		log_error("Unable to lock orphans");
 		return ECMD_FAILED;
 	}
 
@@ -60,13 +60,13 @@ int vgcfgrestore(struct cmd_context *cmd, int argc, char **argv)
 	      backup_restore(cmd, vg_name))) {
 		unlock_vg(cmd, vg_name);
 		unlock_vg(cmd, VG_ORPHANS);
-		log_err("Restore failed.");
+		log_error("Restore failed.");
 		return ECMD_FAILED;
 	}
 
 	log_print("Restored volume group %s", vg_name);
 
-	unlock_vg(cmd, vg_name);
 	unlock_vg(cmd, VG_ORPHANS);
+	unlock_vg(cmd, vg_name);
 	return ECMD_PROCESSED;
 }

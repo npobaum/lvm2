@@ -40,6 +40,7 @@ struct device {
 	int fd;
 	int open_count;
 	int block_size;
+	int read_ahead;
 	uint32_t flags;
 	uint64_t end;
 	struct dm_list open_list;
@@ -64,6 +65,7 @@ struct device_area {
  */
 int dev_get_size(const struct device *dev, uint64_t *size);
 int dev_get_sectsize(struct device *dev, uint32_t *size);
+int dev_get_read_ahead(struct device *dev, uint32_t *read_ahead);
 
 /* Use quiet version if device number could change e.g. when opening LV */
 int dev_open(struct device *dev);
@@ -93,8 +95,21 @@ const char *dev_name_confirmed(struct device *dev, int quiet);
 
 /* Does device contain md superblock?  If so, where? */
 int dev_is_md(struct device *dev, uint64_t *sb);
-unsigned long dev_md_chunk_size(const char *sysfs_dir, struct device *dev);
+int dev_is_swap(struct device *dev, uint64_t *signature);
+unsigned long dev_md_stripe_width(const char *sysfs_dir, struct device *dev);
 
 int is_partitioned_dev(struct device *dev);
+
+int get_primary_dev(const char *sysfs_dir,
+		    struct device *dev, dev_t *result);
+
+unsigned long dev_alignment_offset(const char *sysfs_dir,
+				   struct device *dev);
+
+unsigned long dev_minimum_io_size(const char *sysfs_dir,
+				  struct device *dev);
+
+unsigned long dev_optimal_io_size(const char *sysfs_dir,
+				  struct device *dev);
 
 #endif

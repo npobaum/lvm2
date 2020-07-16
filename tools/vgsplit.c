@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2009 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -14,72 +14,6 @@
  */
 
 #include "tools.h"
-
-static int _move_pv(struct volume_group *vg_from, struct volume_group *vg_to,
-		    const char *pv_name)
-{
-	struct physical_volume *pv;
-	struct pv_list *pvl;
-
-	/* FIXME: handle tags */
-	if (!(pvl = find_pv_in_vg(vg_from, pv_name))) {
-		log_error("Physical volume %s not in volume group %s",
-			  pv_name, vg_from->name);
-		return 0;
-	}
-
-	dm_list_move(&vg_to->pvs, &pvl->list);
-
-	vg_from->pv_count--;
-	vg_to->pv_count++;
-
-	pv = pvl->pv;
-
-	vg_from->extent_count -= pv_pe_count(pv);
-	vg_to->extent_count += pv_pe_count(pv);
-
-	vg_from->free_count -= pv_pe_count(pv) - pv_pe_alloc_count(pv);
-	vg_to->free_count += pv_pe_count(pv) - pv_pe_alloc_count(pv);
-
-	return 1;
-}
-
-static int _move_pvs_used_by_lv(struct volume_group *vg_from,
-				   struct volume_group *vg_to,
-				   const char *lv_name)
-{
-	struct lv_segment *lvseg;
-	unsigned s;
-	struct lv_list *lvl;
-	struct logical_volume *lv;
-
-	/* FIXME: handle tags */
-	if (!(lvl = find_lv_in_vg(vg_from, lv_name))) {
-		log_error("Logical volume %s not in volume group %s",
-			  lv_name, vg_from->name);
-		return 0;
-	}
-
-	dm_list_iterate_items(lvseg, &lvl->lv->segments) {
-		if (lvseg->log_lv)
-			if (!_move_pvs_used_by_lv(vg_from, vg_to,
-						     lvseg->log_lv->name))
-				return_0;
-		for (s = 0; s < lvseg->area_count; s++) {
-			if (seg_type(lvseg, s) == AREA_PV) {
-				if (!_move_pv(vg_from, vg_to,
-					      pv_dev_name(seg_pv(lvseg, s))))
-					return_0;
-			} else if (seg_type(lvseg, s) == AREA_LV) {
-				lv = seg_lv(lvseg, s);
-				if (!_move_pvs_used_by_lv(vg_from, vg_to,
-							     lv->name))
-				    return_0;
-			}
-		}
-	}
-	return 1;
-}
 
 /* FIXME Why not (lv->vg == vg) ? */
 static int _lv_is_in_vg(struct volume_group *vg, struct logical_volume *lv)
@@ -100,21 +34,14 @@ static int _move_one_lv(struct volume_group *vg_from,
 	struct logical_volume *lv = dm_list_item(lvh, struct lv_list)->lv;
 
 	dm_list_move(&vg_to->lvs, lvh);
-	
+
 	if (lv_is_active(lv)) {
 		log_error("Logical volume \"%s\" must be inactive", lv->name);
 		return 0;
 	}
 
-	if (lv->status & SNAPSHOT) {
-		vg_from->snapshot_count--;
-		vg_to->snapshot_count++;
-	} else if (!lv_is_cow(lv)) {
-		vg_from->lv_count--;
-		vg_to->lv_count++;
-	}
 	return 1;
-}	
+}
 
 static int _move_lvs(struct volume_group *vg_from, struct volume_group *vg_to)
 {
@@ -169,7 +96,7 @@ static int _move_lvs(struct volume_group *vg_from, struct volume_group *vg_to)
 			}
 
 		}
-			
+
 		if (vg_with == vg_from)
 			continue;
 
@@ -252,7 +179,7 @@ static int _move_mirrors(struct volume_group *vg_from,
 			    seg_in++;
 
 		log_in = (!seg->log_lv || _lv_is_in_vg(vg_to, seg->log_lv));
-		
+
 		if ((seg_in && seg_in < seg->area_count) ||
 		    (seg_in && seg->log_lv && !log_in) ||
 		    (!seg_in && seg->log_lv && log_in)) {
@@ -286,10 +213,10 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 	struct vgcreate_params vp_new;
 	struct vgcreate_params vp_def;
 	char *vg_name_from, *vg_name_to;
-	struct volume_group *vg_to, *vg_from;
+	struct volume_group *vg_to = NULL, *vg_from = NULL;
 	int opt;
-	int existing_vg;
-	int consistent;
+	int existing_vg = 0;
+	int r = ECMD_FAILED;
 	const char *lv_name;
 
 	if ((arg_count(cmd, name_ARG) + argc) < 3) {
@@ -320,22 +247,49 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 	}
 
 	log_verbose("Checking for volume group \"%s\"", vg_name_from);
-	if (!(vg_from = vg_lock_and_read(cmd, vg_name_from, NULL, LCK_VG_WRITE,
-				       CLUSTERED | EXPORTED_VG |
-				       RESIZEABLE_VG | LVM_WRITE,
-				       CORRECT_INCONSISTENT | FAIL_INCONSISTENT)))
-		 return ECMD_FAILED;
 
-	log_verbose("Checking for new volume group \"%s\"", vg_name_to);
-	if (!lock_vol(cmd, vg_name_to, LCK_VG_WRITE | LCK_NONBLOCK)) {
-		log_error("Can't get lock for %s", vg_name_to);
-		unlock_vg(cmd, vg_name_from);
+	vg_from = vg_read_for_update(cmd, vg_name_from, NULL, 0);
+	if (vg_read_error(vg_from)) {
+		vg_release(vg_from);
 		return ECMD_FAILED;
 	}
 
-	consistent = 0;
-	if ((vg_to = vg_read(cmd, vg_name_to, NULL, &consistent))) {
+	/*
+	 * Set metadata format of original VG.
+	 * NOTE: We must set the format before calling vg_create()
+	 * since vg_create() calls the per-format constructor.
+	 */
+	cmd->fmt = vg_from->fid->fmt;
+
+	log_verbose("Checking for new volume group \"%s\"", vg_name_to);
+	/*
+	 * First try to create a new VG.  If we cannot create it,
+	 * and we get FAILED_EXIST (we will not be holding a lock),
+	 * a VG must already exist with this name.  We then try to
+	 * read the existing VG - the vgsplit will be into an existing VG.
+	 *
+	 * Otherwise, if the lock was successful, it must be the case that
+	 * we obtained a WRITE lock and could not find the vgname in the
+	 * system.  Thus, the split will be into a new VG.
+	 */
+	vg_to = vg_create(cmd, vg_name_to);
+	if (vg_read_error(vg_to) == FAILED_LOCKING) {
+		log_error("Can't get lock for %s", vg_name_to);
+		vg_release(vg_to);
+		unlock_and_release_vg(cmd, vg_from, vg_name_from);
+		return ECMD_FAILED;
+	}
+	if (vg_read_error(vg_to) == FAILED_EXIST) {
 		existing_vg = 1;
+		vg_release(vg_to);
+		vg_to = vg_read_for_update(cmd, vg_name_to, NULL, 0);
+
+		if (vg_read_error(vg_to)) {
+			vg_release(vg_to);
+			stack;
+			goto bad2;
+		}
+
 		if (new_vg_option_specified(cmd)) {
 			log_error("Volume group \"%s\" exists, but new VG "
 				    "option specified", vg_name_to);
@@ -343,35 +297,30 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 		}
 		if (!vgs_are_compatible(cmd, vg_from,vg_to))
 			goto_bad;
-	} else {
+	} else if (vg_read_error(vg_to) == SUCCESS) {
 		existing_vg = 0;
-
-		/* Set metadata format of original VG */
-		/* FIXME: need some common logic */
-		cmd->fmt = vg_from->fid->fmt;
 
 		vp_def.vg_name = NULL;
 		vp_def.extent_size = vg_from->extent_size;
 		vp_def.max_pv = vg_from->max_pv;
 		vp_def.max_lv = vg_from->max_lv;
 		vp_def.alloc = vg_from->alloc;
-		vp_def.clustered = 0;
+		vp_def.clustered = DEFAULT_CLUSTERED;
 
 		if (fill_vg_create_params(cmd, vg_name_to, &vp_new, &vp_def)) {
-			unlock_vg(cmd, vg_name_from);
-			unlock_vg(cmd, vg_name_to);
-			return EINVALID_CMD_LINE;
+			r = EINVALID_CMD_LINE;
+			goto bad;
 		}
 
 		if (validate_vg_create_params(cmd, &vp_new)) {
-			unlock_vg(cmd, vg_name_from);
-			unlock_vg(cmd, vg_name_to);
-			return EINVALID_CMD_LINE;
+			r = EINVALID_CMD_LINE;
+			goto bad;
 		}
 
-		if (!(vg_to = vg_create(cmd, vg_name_to, vp_new.extent_size,
-					vp_new.max_pv, vp_new.max_lv,
-					vp_new.alloc, 0, NULL)))
+		if (!vg_set_extent_size(vg_to, vp_new.extent_size) ||
+		    !vg_set_max_lv(vg_to, vp_new.max_lv) ||
+		    !vg_set_max_pv(vg_to, vp_new.max_pv) ||
+		    !vg_set_alloc_policy(vg_to, vp_new.alloc))
 			goto_bad;
 
 		if (vg_is_clustered(vg_from))
@@ -384,12 +333,12 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 
 	/* Move PVs across to new structure */
 	for (opt = 0; opt < argc; opt++) {
-		if (!_move_pv(vg_from, vg_to, argv[opt]))
+		if (!move_pv(vg_from, vg_to, argv[opt]))
 			goto_bad;
 	}
 
 	/* If an LV given on the cmdline, move used_by PVs */
-	if (lv_name && !_move_pvs_used_by_lv(vg_from, vg_to, lv_name))
+	if (lv_name && !move_pvs_used_by_lv(vg_from, vg_to, lv_name))
 		goto_bad;
 
 	/* Move required LVs across, checking consistency */
@@ -449,13 +398,15 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 	/*
 	 * Finally, remove the EXPORTED flag from the new VG and write it out.
 	 */
-	consistent = 1;
-	if (!test_mode() &&
-	    (!(vg_to = vg_read(cmd, vg_name_to, NULL, &consistent)) ||
-	     !consistent)) {
-		log_error("Volume group \"%s\" became inconsistent: please "
-			  "fix manually", vg_name_to);
-		goto_bad;
+	if (!test_mode()) {
+		vg_release(vg_to);
+		vg_to = vg_read_for_update(cmd, vg_name_to, NULL,
+					   READ_ALLOW_EXPORTED);
+		if (vg_read_error(vg_to)) {
+			log_error("Volume group \"%s\" became inconsistent: "
+				  "please fix manually", vg_name_to);
+			goto_bad;
+		}
 	}
 
 	vg_to->status &= ~EXPORTED_VG;
@@ -465,16 +416,15 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 
 	backup(vg_to);
 
-	unlock_vg(cmd, vg_name_from);
-	unlock_vg(cmd, vg_name_to);
-
 	log_print("%s volume group \"%s\" successfully split from \"%s\"",
 		  existing_vg ? "Existing" : "New",
 		  vg_to->name, vg_from->name);
-	return ECMD_PROCESSED;
 
-      bad:
-	unlock_vg(cmd, vg_name_from);
-	unlock_vg(cmd, vg_name_to);
-	return ECMD_FAILED;
+	r = ECMD_PROCESSED;
+
+bad:
+	unlock_and_release_vg(cmd, vg_to, vg_name_to);
+bad2:
+	unlock_and_release_vg(cmd, vg_from, vg_name_from);
+	return r;
 }

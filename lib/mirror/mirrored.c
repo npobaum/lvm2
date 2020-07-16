@@ -78,7 +78,7 @@ static int _mirrored_text_import_area_count(struct config_node *sn, uint32_t *ar
 {
 	if (!get_config_uint32(sn, "mirror_count", area_count)) {
 		log_error("Couldn't read 'mirror_count' for "
-			  "segment '%s'.", sn->key);
+			  "segment '%s'.", config_parent_name(sn));
 		return 0;
 	}
 
@@ -97,7 +97,8 @@ static int _mirrored_text_import(struct lv_segment *seg, const struct config_nod
 			seg->status |= PVMOVE;
 		else {
 			log_error("Couldn't read 'extents_moved' for "
-				  "segment '%s'.", sn->key);
+				  "segment %s of logical volume %s.",
+				  config_parent_name(sn), seg->lv->name);
 			return 0;
 		}
 	}
@@ -106,7 +107,8 @@ static int _mirrored_text_import(struct lv_segment *seg, const struct config_nod
 		if (!get_config_uint32(sn, "region_size",
 				      &seg->region_size)) {
 			log_error("Couldn't read 'region_size' for "
-				  "segment '%s'.", sn->key);
+				  "segment %s of logical volume %s.",
+				  config_parent_name(sn), seg->lv->name);
 			return 0;
 		}
 	}
@@ -118,22 +120,25 @@ static int _mirrored_text_import(struct lv_segment *seg, const struct config_nod
 		}
 		logname = cn->v->v.str;
 		if (!(seg->log_lv = find_lv(seg->lv->vg, logname))) {
-			log_error("Unrecognised mirror log in segment %s.",
-				  sn->key);
+			log_error("Unrecognised mirror log in "
+				  "segment %s of logical volume %s.",
+				  config_parent_name(sn), seg->lv->name);
 			return 0;
 		}
 		seg->log_lv->status |= MIRROR_LOG;
 	}
 
 	if (logname && !seg->region_size) {
-		log_error("Missing region size for mirror log for segment "
-			  "'%s'.", sn->key);
+		log_error("Missing region size for mirror log for "
+			  "segment %s of logical volume %s.",
+			  config_parent_name(sn), seg->lv->name);
 		return 0;
 	}
 
 	if (!(cn = find_config_node(sn, "mirrors"))) {
-		log_error("Couldn't find mirrors array for segment "
-			  "'%s'.", sn->key);
+		log_error("Couldn't find mirrors array for "
+			  "segment %s of logical volume %s.",
+			  config_parent_name(sn), seg->lv->name);
 		return 0;
 	}
 
@@ -343,7 +348,8 @@ static int _mirrored_add_target_line(struct dev_manager *dm, struct dm_pool *mem
 	return add_areas_line(dm, seg, node, start_area, area_count);
 }
 
-static int _mirrored_target_present(const struct lv_segment *seg __attribute((unused)),
+static int _mirrored_target_present(struct cmd_context *cmd,
+				    const struct lv_segment *seg,
 				    unsigned *attributes)
 {
 	static int _mirrored_checked = 0;
@@ -353,7 +359,7 @@ static int _mirrored_target_present(const struct lv_segment *seg __attribute((un
 	char vsn[80];
 
 	if (!_mirrored_checked) {
-		_mirrored_present = target_present("mirror", 1);
+		_mirrored_present = target_present(cmd, "mirror", 1);
 
 		/*
 		 * block_on_error available with mirror target >= 1.1 and <= 1.11
@@ -375,7 +381,7 @@ static int _mirrored_target_present(const struct lv_segment *seg __attribute((un
 	 * FIXME: Fails incorrectly if cmirror was built into kernel.
 	 */
 	if (attributes) {
-		if (!_mirror_attributes && module_present("log-clustered"))
+		if (!_mirror_attributes && module_present(cmd, "log-clustered"))
 			_mirror_attributes |= MIRROR_LOG_CLUSTERED;
 		*attributes = _mirror_attributes;
 	}

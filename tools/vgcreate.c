@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2009 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -36,32 +36,35 @@ int vgcreate(struct cmd_context *cmd, int argc, char **argv)
 
 	vp_def.vg_name = NULL;
 	vp_def.extent_size = DEFAULT_EXTENT_SIZE * 2;
-	vp_def.max_pv = 0;
-	vp_def.max_lv = 0;
-	vp_def.alloc = ALLOC_NORMAL;
-	vp_def.clustered = 0;
+	vp_def.max_pv = DEFAULT_MAX_PV;
+	vp_def.max_lv = DEFAULT_MAX_LV;
+	vp_def.alloc = DEFAULT_ALLOC_POLICY;
+	vp_def.clustered = DEFAULT_CLUSTERED;
 	if (fill_vg_create_params(cmd, argv[0], &vp_new, &vp_def))
 		return EINVALID_CMD_LINE;
 
 	if (validate_vg_create_params(cmd, &vp_new))
 	    return EINVALID_CMD_LINE;
 
+	/* Create the new VG */
+	vg = vg_create(cmd, vp_new.vg_name);
+	if (vg_read_error(vg))
+		goto_bad;
+
+	if (!vg_set_extent_size(vg, vp_new.extent_size) ||
+	    !vg_set_max_lv(vg, vp_new.max_lv) ||
+	    !vg_set_max_pv(vg, vp_new.max_pv) ||
+	    !vg_set_alloc_policy(vg, vp_new.alloc))
+		goto_bad;
+
 	if (!lock_vol(cmd, VG_ORPHANS, LCK_VG_WRITE)) {
 		log_error("Can't get lock for orphan PVs");
-		return ECMD_FAILED;
+		goto bad_orphan;
 	}
 
-	if (!lock_vol(cmd, vp_new.vg_name, LCK_VG_WRITE | LCK_NONBLOCK)) {
-		log_error("Can't get lock for %s", vp_new.vg_name);
-		unlock_vg(cmd, VG_ORPHANS);
-		return ECMD_FAILED;
-	}
-
-	/* Create the new VG */
-	if (!(vg = vg_create(cmd, vp_new.vg_name, vp_new.extent_size,
-			     vp_new.max_pv, vp_new.max_lv, vp_new.alloc,
-			     argc - 1, argv + 1)))
-		goto bad;
+	/* attach the pv's */
+	if (!vg_extend(vg, argc - 1, argv + 1))
+		goto_bad;
 
 	if (vp_new.max_lv != vg->max_lv)
 		log_warn("WARNING: Setting maxlogicalvolumes to %d "
@@ -108,18 +111,21 @@ int vgcreate(struct cmd_context *cmd, int argc, char **argv)
 		goto bad;
 	}
 
-	unlock_vg(cmd, vp_new.vg_name);
 	unlock_vg(cmd, VG_ORPHANS);
+	unlock_vg(cmd, vp_new.vg_name);
 
 	backup(vg);
 
 	log_print("%s%colume group \"%s\" successfully created",
 		  clustered_message, *clustered_message ? 'v' : 'V', vg->name);
 
+	vg_release(vg);
 	return ECMD_PROCESSED;
 
 bad:
-	unlock_vg(cmd, vp_new.vg_name);
 	unlock_vg(cmd, VG_ORPHANS);
+bad_orphan:
+	vg_release(vg);
+	unlock_vg(cmd, vp_new.vg_name);
 	return ECMD_FAILED;
 }

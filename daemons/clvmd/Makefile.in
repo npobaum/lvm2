@@ -15,37 +15,39 @@ srcdir = @srcdir@
 top_srcdir = @top_srcdir@
 VPATH = @srcdir@
 
+QUORUM_LIBS = @QUORUM_LIBS@
+QUORUM_CFLAGS = @QUORUM_CFLAGS@
+CONFDB_LIBS = @CONFDB_LIBS@
+CONFDB_CFLAGS = @CONFDB_CFLAGS@
+CPG_LIBS = @CPG_LIBS@
+CPG_CFLAGS = @CPG_CFLAGS@
+
 SOURCES = \
 	clvmd-command.c  \
 	clvmd.c          \
 	lvm-functions.c  \
 	refresh_clvmd.c
 
-ifeq ("@CLVMD@", "gulm")
+ifneq (,$(findstring gulm,, "@CLVMD@,"))
 	GULM = yes
 endif
 
-ifeq ("@CLVMD@", "cman")
+ifneq (,$(findstring cman,, "@CLVMD@,"))
 	CMAN = yes
 endif
 
-ifeq ("@CLVMD@", "openais")
+ifneq (,$(findstring openais,, "@CLVMD@,"))
 	OPENAIS = yes
-	GULM = no
-	CMAN = no
 endif
 
-ifeq ("@CLVMD@", "all")
+ifneq (,$(findstring corosync,, "@CLVMD@,"))
+	COROSYNC = yes
+endif
+
+ifneq (,$(findstring all,, "@CLVMD@,"))
 	GULM = yes
 	CMAN = yes
-	OPENAIS = no
-	COROSYNC = no
-endif
-
-ifeq ("@CLVMD@", "corosync")
-	GULM = no
-	CMAN = no
-	OPENAIS = no
+	OPENAIS = yes
 	COROSYNC = yes
 endif
 
@@ -72,16 +74,17 @@ ifeq ("$(OPENAIS)", "yes")
 endif
 
 ifeq ("$(COROSYNC)", "yes")
-        SOURCES += clvmd-corosync.c
-        LMLIBS += -lquorum -lcpg -ldlm
-        DEFS += -DUSE_COROSYNC
+	SOURCES += clvmd-corosync.c
+	LMLIBS += $(QUORUM_LIBS) $(CONFDB_LIBS) $(CPG_LIBS) -ldlm
+	CFLAGS += $(QUORUM_CFLAGS) $(CONFDB_CFLAGS) $(CPG_CFLAGS)
+	DEFS += -DUSE_COROSYNC
 endif
 
 
 TARGETS = \
 	clvmd
 
-LVMLIBS = -llvm -lpthread
+LVMLIBS = -llvm-internal -lpthread
 
 ifeq ("@DMEVENTD@", "yes")
 	LVMLIBS += -ldevmapper-event
@@ -97,7 +100,7 @@ include $(top_srcdir)/make.tmpl
 INSTALL_TARGETS = \
 	install_clvmd
 
-clvmd: $(OBJECTS) $(top_srcdir)/lib/liblvm.a
+clvmd: $(OBJECTS) $(top_srcdir)/lib/liblvm-internal.a
 	$(CC) -o clvmd $(OBJECTS) $(CFLAGS) $(LDFLAGS) \
 		$(LVMLIBS) $(LMLIBS) $(LIBS)
 

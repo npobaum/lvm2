@@ -260,7 +260,7 @@ static int _init_mirror_log(struct cmd_context *cmd,
 	}
 
 	/* Temporary make it visible for set_lv() */
-	log_lv->status |= VISIBLE_LV;
+	lv_set_visible(log_lv);
 
 	/* Temporary tag mirror log for activation */
 	dm_list_iterate_items(sl, tags)
@@ -270,13 +270,10 @@ static int _init_mirror_log(struct cmd_context *cmd,
 		}
 
 	/* store mirror log on disk(s) */
-	if (!vg_write(log_lv->vg))
+	if (!vg_write(log_lv->vg) || !vg_commit(log_lv->vg))
 		goto activate_lv;
 
 	backup(log_lv->vg);
-
-	if (!vg_commit(log_lv->vg))
-		goto activate_lv;
 
 	if (!activate_lv(cmd, log_lv)) {
 		log_error("Aborting. Failed to activate mirror log.");
@@ -306,7 +303,7 @@ static int _init_mirror_log(struct cmd_context *cmd,
 		return 0;
 	}
 
-	log_lv->status &= ~VISIBLE_LV;
+	lv_set_hidden(log_lv);
 
 	if (was_active && !activate_lv(cmd, log_lv))
 		return_0;
@@ -334,10 +331,12 @@ revert_new_lv:
 		return 0;
 	}
 
-	if (!vg_write(log_lv->vg) ||
-	    (backup(log_lv->vg), !vg_commit(log_lv->vg)))
+	if (!vg_write(log_lv->vg) || !vg_commit(log_lv->vg))
 		log_error("Manual intervention may be required to "
 			  "remove/restore abandoned log LV before retrying.");
+	else
+		backup(log_lv->vg);
+
 activate_lv:
 	if (was_active && !remove_on_failure && !activate_lv(cmd, log_lv))
 		return_0;
@@ -411,7 +410,7 @@ struct logical_volume *detach_mirror_log(struct lv_segment *mirrored_seg)
 
 	log_lv = mirrored_seg->log_lv;
 	mirrored_seg->log_lv = NULL;
-	log_lv->status |= VISIBLE_LV;
+	lv_set_visible(log_lv);
 	log_lv->status &= ~MIRROR_LOG;
 	remove_seg_from_segs_using_this_lv(log_lv, mirrored_seg);
 
@@ -441,7 +440,12 @@ static int _is_mirror_image_removable(struct logical_volume *mimage_lv,
 
 			pv_found = 0;
 			dm_list_iterate_items(pvl, removable_pvs) {
-				if (pv->dev->dev == pvl->pv->dev->dev) {
+				if (id_equal(&pv->id, &pvl->pv->id)) {
+					pv_found = 1;
+					break;
+				}
+				if (pvl->pv->dev && pv->dev &&
+				    pv->dev->dev == pvl->pv->dev->dev) {
 					pv_found = 1;
 					break;
 				}
@@ -532,7 +536,7 @@ static int _remove_mirror_images(struct logical_volume *lv,
 	dm_list_init(&tmp_orphan_lvs);
 	for (m = new_area_count; m < mirrored_seg->area_count; m++) {
 		seg_lv(mirrored_seg, m)->status &= ~MIRROR_IMAGE;
-		seg_lv(mirrored_seg, m)->status |= VISIBLE_LV;
+		lv_set_visible(seg_lv(mirrored_seg, m));
 		if (!(lvl = dm_pool_alloc(lv->vg->cmd->mem, sizeof(*lvl)))) {
 			log_error("lv_list alloc failed");
 			return 0;
@@ -550,7 +554,7 @@ static int _remove_mirror_images(struct logical_volume *lv,
 	if (new_area_count == 1 && !is_temporary_mirror_layer(lv)) {
 		lv1 = seg_lv(mirrored_seg, 0);
 		lv1->status &= ~MIRROR_IMAGE;
-		lv1->status |= VISIBLE_LV;
+		lv_set_visible(lv1);
 		detached_log_lv = detach_mirror_log(mirrored_seg);
 		if (!remove_layer_from_lv(lv, lv1))
 			return_0;
@@ -928,7 +932,7 @@ static int _create_mimage_lvs(struct alloc_handle *ah,
 	for (m = 0; m < num_mirrors; m++) {
 		if (!(img_lvs[m] = lv_create_empty(img_name,
 					     NULL, LVM_READ | LVM_WRITE,
-					     ALLOC_INHERIT, 0, lv->vg))) {
+					     ALLOC_INHERIT, lv->vg))) {
 			log_error("Aborting. Failed to create mirror image LV. "
 				  "Remove new LV and retry.");
 			return 0;
@@ -1054,9 +1058,10 @@ struct logical_volume *find_pvmove_lv(struct volume_group *vg,
 }
 
 struct logical_volume *find_pvmove_lv_from_pvname(struct cmd_context *cmd,
-					 	  struct volume_group *vg,
-				      		  const char *name,
-				      		  uint32_t lv_type)
+						  struct volume_group *vg,
+						  const char *name,
+						  const char *uuid __attribute((unused)),
+						  uint32_t lv_type)
 {
 	struct physical_volume *pv;
 
@@ -1160,6 +1165,7 @@ int add_mirrors_to_segments(struct cmd_context *cmd, struct logical_volume *lv,
 	const struct segment_type *segtype;
 	struct dm_list *parallel_areas;
 	uint32_t adjusted_region_size;
+	int r = 1;
 
 	if (!(parallel_areas = build_parallel_areas_from_lv(cmd, lv)))
 		return_0;
@@ -1180,10 +1186,11 @@ int add_mirrors_to_segments(struct cmd_context *cmd, struct logical_volume *lv,
 
 	if (!lv_add_mirror_areas(ah, lv, 0, adjusted_region_size)) {
 		log_error("Failed to add mirror areas to %s", lv->name);
-		return 0;
+		r = 0;
 	}
 
-	return 1;
+	alloc_destroy(ah);
+	return r;
 }
 
 /*
@@ -1217,7 +1224,7 @@ int remove_mirror_log(struct cmd_context *cmd,
 		return 0;
 	} else if (yes_no_prompt("Full resync required to convert "
 				 "inactive mirror %s to core log. "
-				 "Proceed? [y/n]: "))
+				 "Proceed? [y/n]: ") == 'y')
 		sync_percent = 0;
 	else
 		return 0;
@@ -1260,7 +1267,7 @@ static struct logical_volume *_create_mirror_log(struct logical_volume *lv,
 
 	if (!(log_lv = lv_create_empty(log_name, NULL,
 				       VISIBLE_LV | LVM_READ | LVM_WRITE,
-				       alloc, 0, lv->vg)))
+				       alloc, lv->vg)))
 		return_NULL;
 
 	if (!lv_add_log_segment(ah, log_lv))
@@ -1334,7 +1341,7 @@ int attach_mirror_log(struct lv_segment *seg, struct logical_volume *log_lv)
 {
 	seg->log_lv = log_lv;
 	log_lv->status |= MIRROR_LOG;
-	log_lv->status &= ~VISIBLE_LV;
+	lv_set_hidden(log_lv);
 	return add_seg_to_segs_using_this_lv(log_lv, seg);
 }
 
@@ -1349,6 +1356,7 @@ int add_mirror_log(struct cmd_context *cmd, struct logical_volume *lv,
 	int in_sync;
 	struct logical_volume *log_lv;
 	struct lvinfo info;
+	int r = 0;
 
 	/* Unimplemented features */
 	if (log_count > 1) {
@@ -1380,7 +1388,7 @@ int add_mirror_log(struct cmd_context *cmd, struct logical_volume *lv,
 		return_0;
 
 	if (activation() && segtype->ops->target_present &&
-	    !segtype->ops->target_present(NULL, NULL)) {
+	    !segtype->ops->target_present(cmd, NULL, NULL)) {
 		log_error("%s: Required device-mapper target(s) not "
 			  "detected in your kernel", segtype->name);
 		return 0;
@@ -1404,13 +1412,15 @@ int add_mirror_log(struct cmd_context *cmd, struct logical_volume *lv,
 
 	if (!(log_lv = _set_up_mirror_log(cmd, ah, lv, log_count,
 					  region_size, alloc, in_sync)))
-		return_0;
+		goto_out;
 
 	if (!attach_mirror_log(first_seg(lv), log_lv))
-		return_0;
+		goto_out;
 
+	r = 1;
+out:
 	alloc_destroy(ah);
-	return 1;
+	return r;
 }
 
 /*
@@ -1455,8 +1465,10 @@ int add_mirror_images(struct cmd_context *cmd, struct logical_volume *lv,
 	 */
 	if (log_count &&
 	    !(log_lv = _set_up_mirror_log(cmd, ah, lv, log_count, region_size,
-					  alloc, mirror_in_sync())))
-		return_0;
+					  alloc, mirror_in_sync()))) {
+		stack;
+		goto out_remove_images;
+	}
 
 	/* The log initialization involves vg metadata commit.
 	   So from here on, if failure occurs, the log must be explicitly
@@ -1487,7 +1499,7 @@ int add_mirror_images(struct cmd_context *cmd, struct logical_volume *lv,
 			       region_size)) {
 		log_error("Aborting. Failed to add mirror segment. "
 			  "Remove new LV and retry.");
-		goto out_remove_imgs;
+		goto out_remove_images;
 	}
 
 	if (log_count && !attach_mirror_log(first_seg(lv), log_lv))
@@ -1497,12 +1509,17 @@ int add_mirror_images(struct cmd_context *cmd, struct logical_volume *lv,
 	return 1;
 
   out_remove_log:
-	if (log_lv && (!lv_remove(log_lv) || !vg_write(log_lv->vg) ||
-		       (backup(log_lv->vg), !vg_commit(log_lv->vg))))
-		log_error("Manual intervention may be required to remove "
-			  "abandoned log LV before retrying.");
-
-  out_remove_imgs:
+	if (log_lv) {
+		if (!lv_remove(log_lv) ||
+		    !vg_write(log_lv->vg) ||
+		    !vg_commit(log_lv->vg))
+			log_error("Manual intervention may be required to remove "
+				  "abandoned log LV before retrying.");
+		else
+			backup(log_lv->vg);
+	}
+  out_remove_images:
+	alloc_destroy(ah);
 	return 0;
 }
 

@@ -1,6 +1,6 @@
 #
 # Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
-# Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
+# Copyright (C) 2004-2009 Red Hat, Inc. All rights reserved.
 #
 # This file is part of LVM2.
 #
@@ -42,6 +42,7 @@ SOURCES =\
 	device/dev-cache.c \
 	device/dev-io.c \
 	device/dev-md.c \
+	device/dev-swap.c \
 	device/device.c \
 	display/display.c \
 	error/errseg.c \
@@ -139,18 +140,19 @@ ifeq ("@DMEVENTD@", "yes")
   CLDFLAGS += -ldevmapper-event
 endif
 
-LIB_STATIC = liblvm.a
+LIB_NAME = liblvm-internal
+LIB_STATIC = $(LIB_NAME).a
 
-$(SUBDIRS): $(LIB_STATIC)
-
-CLEAN_TARGETS += liblvm.cflow
+CLEAN_TARGETS += $(LIB_NAME).cflow
 
 include $(top_srcdir)/make.tmpl
 
-liblvm.cflow: $(SOURCES)
+$(SUBDIRS): $(LIB_STATIC)
+
+$(LIB_NAME).cflow: $(SOURCES)
 	set -e; (echo -n "SOURCES += "; \
 		 echo $(SOURCES) | \
 		 sed "s/^/ /;s/ / $(top_srcdir)\/lib\//g;s/$$//"; \
 		 ) > $@
 
-cflow: liblvm.cflow
+cflow: $(LIB_NAME).cflow

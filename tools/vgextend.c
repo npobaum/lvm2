@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2009 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -19,6 +19,7 @@ int vgextend(struct cmd_context *cmd, int argc, char **argv)
 {
 	char *vg_name;
 	struct volume_group *vg = NULL;
+	int r = ECMD_FAILED;
 
 	if (!argc) {
 		log_error("Please enter volume group name and "
@@ -35,19 +36,13 @@ int vgextend(struct cmd_context *cmd, int argc, char **argv)
 	argc--;
 	argv++;
 
-	if (!lock_vol(cmd, VG_ORPHANS, LCK_VG_WRITE)) {
-		log_error("Can't get lock for orphan PVs");
+	log_verbose("Checking for volume group \"%s\"", vg_name);
+	vg = vg_read_for_update(cmd, vg_name, NULL, 0);
+	if (vg_read_error(vg)) {
+		vg_release(vg);
 		return ECMD_FAILED;
 	}
 
-	log_verbose("Checking for volume group \"%s\"", vg_name);
-	if (!(vg = vg_lock_and_read(cmd, vg_name, NULL, LCK_VG_WRITE | LCK_NONBLOCK,
-				    CLUSTERED | EXPORTED_VG |
-				    LVM_WRITE | RESIZEABLE_VG,
-				    CORRECT_INCONSISTENT | FAIL_INCONSISTENT))) {
-		 unlock_vg(cmd, VG_ORPHANS);
-		return ECMD_FAILED;
-	 }
 /********** FIXME
 	log_print("maximum logical volume size is %s",
 		  (dummy = lvm_show_size(LVM_LV_SIZE_MAX(vg) / 2, LONG)));
@@ -57,6 +52,11 @@ int vgextend(struct cmd_context *cmd, int argc, char **argv)
 
 	if (!archive(vg))
 		goto error;
+
+	if (!lock_vol(cmd, VG_ORPHANS, LCK_VG_WRITE)) {
+		log_error("Can't get lock for orphan PVs");
+		return ECMD_FAILED;
+	}
 
 	/* extend vg */
 	if (!vg_extend(vg, argc, argv))
@@ -71,16 +71,11 @@ int vgextend(struct cmd_context *cmd, int argc, char **argv)
 		goto error;
 
 	backup(vg);
-
-	unlock_vg(cmd, vg_name);
-	unlock_vg(cmd, VG_ORPHANS);
-
 	log_print("Volume group \"%s\" successfully extended", vg_name);
+	r = ECMD_PROCESSED;
 
-	return ECMD_PROCESSED;
-
-      error:
-	unlock_vg(cmd, vg_name);
+error:
 	unlock_vg(cmd, VG_ORPHANS);
-	return ECMD_FAILED;
+	unlock_and_release_vg(cmd, vg, vg_name);
+	return r;
 }

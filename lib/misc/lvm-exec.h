@@ -18,6 +18,7 @@
 
 #include "lib.h"
 
-int exec_cmd(const char *command, const char *fscmd, const char *lv_path,
-	     const char *size);
+struct cmd_context;
+int exec_cmd(struct cmd_context *cmd, const char *const argv[]);
+
 #endif

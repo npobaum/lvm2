@@ -14,6 +14,7 @@
  */
 
 #include "dmlib.h"
+#include <assert.h>
 
 struct block {
 	struct block *next;
@@ -29,7 +30,9 @@ typedef struct {
 } pool_stats;
 
 struct dm_pool {
+	struct dm_list list;
 	const char *name;
+	void *orig_pool;	/* to pair it with first allocation call */
 
 	int begun;
 	struct block *object;
@@ -43,7 +46,7 @@ struct dm_pool {
 /* by default things come out aligned for doubles */
 #define DEFAULT_ALIGNMENT __alignof__ (double)
 
-struct pool *dm_pool_create(const char *name, size_t chunk_hint)
+struct dm_pool *dm_pool_create(const char *name, size_t chunk_hint)
 {
 	struct dm_pool *mem = dm_malloc(sizeof(*mem));
 
@@ -64,10 +67,13 @@ struct pool *dm_pool_create(const char *name, size_t chunk_hint)
 	mem->stats.bytes = 0;
 	mem->stats.maxbytes = 0;
 
+	mem->orig_pool = mem;
+
 #ifdef DEBUG_POOL
 	log_debug("Created mempool %s", name);
 #endif
 
+	dm_list_add(&_dm_pools, &mem->list);
 	return mem;
 }
 
@@ -102,6 +108,7 @@ void dm_pool_destroy(struct dm_pool *p)
 {
 	_pool_stats(p, "Destroying");
 	_free_blocks(p, p->blocks);
+	dm_list_del(&p->list);
 	dm_free(p);
 }
 
@@ -130,8 +137,6 @@ static void _append_block(struct dm_pool *p, struct block *b)
 
 static struct block *_new_block(size_t s, unsigned alignment)
 {
-	static const char *_oom = "Out of memory";
-
 	/* FIXME: I'm currently ignoring the alignment arg. */
 	size_t len = sizeof(struct block) + s;
 	struct block *b = dm_malloc(len);
@@ -144,12 +149,12 @@ static struct block *_new_block(size_t s, unsigned alignment)
 	assert(alignment == DEFAULT_ALIGNMENT);
 
 	if (!b) {
-		log_err(_oom);
+		log_error("Out of memory");
 		return NULL;
 	}
 
 	if (!(b->data = dm_malloc(s))) {
-		log_err(_oom);
+		log_error("Out of memory");
 		dm_free(b);
 		return NULL;
 	}
@@ -219,15 +224,20 @@ int dm_pool_begin_object(struct dm_pool *p, size_t init_size)
 int dm_pool_grow_object(struct dm_pool *p, const void *extra, size_t delta)
 {
 	struct block *new;
-	size_t size = delta ? : strlen(extra);
+	size_t new_size;
+
+	if (!delta)
+		delta = strlen(extra);
 
 	assert(p->begun);
 
 	if (p->object)
-		size += p->object->size;
+		new_size = delta + p->object->size;
+	else
+		new_size = delta;
 
-	if (!(new = _new_block(size, DEFAULT_ALIGNMENT))) {
-		log_err("Couldn't extend object.");
+	if (!(new = _new_block(new_size, DEFAULT_ALIGNMENT))) {
+		log_error("Couldn't extend object.");
 		return 0;
 	}
 
@@ -238,7 +248,7 @@ int dm_pool_grow_object(struct dm_pool *p, const void *extra, size_t delta)
 	}
 	p->object = new;
 
-	memcpy(new->data + size - delta, extra, delta);
+	memcpy(new->data + new_size - delta, extra, delta);
 
 	return 1;
 }

@@ -25,6 +25,8 @@ void reset_locking(void);
 int vg_write_lock_held(void);
 int locking_is_clustered(void);
 
+int remote_lock_held(const char *vol);
+
 /*
  * LCK_VG:
  *   Lock/unlock on-disk volume group data.
@@ -83,6 +85,7 @@ int check_lvm1_vg_inactive(struct cmd_context *cmd, const char *vgname);
 /*
  * Additional lock bits for cluster communication
  */
+#define LCK_PARTIAL_MODE        0x00000001U	/* Partial activation? */
 #define LCK_MIRROR_NOSYNC_MODE	0x00000002U	/* Mirrors don't require sync */
 #define LCK_DMEVENTD_MONITOR_MODE	0x00000004U	/* Register with dmeventd */
 
@@ -101,12 +104,15 @@ int check_lvm1_vg_inactive(struct cmd_context *cmd, const char *vgname);
 #define LCK_VG_WRITE		(LCK_VG | LCK_WRITE | LCK_HOLD)
 #define LCK_VG_UNLOCK		(LCK_VG | LCK_UNLOCK)
 #define LCK_VG_DROP_CACHE	(LCK_VG | LCK_WRITE | LCK_CACHE)
+#define LCK_VG_BACKUP		(LCK_VG | LCK_CACHE)
 
-#define LCK_LV_EXCLUSIVE	(LCK_LV | LCK_EXCL | LCK_NONBLOCK)
-#define LCK_LV_SUSPEND		(LCK_LV | LCK_WRITE | LCK_NONBLOCK)
-#define LCK_LV_RESUME		(LCK_LV | LCK_UNLOCK | LCK_NONBLOCK)
-#define LCK_LV_ACTIVATE		(LCK_LV | LCK_READ | LCK_NONBLOCK)
-#define LCK_LV_DEACTIVATE	(LCK_LV | LCK_NULL | LCK_NONBLOCK)
+#define LCK_LV_EXCLUSIVE	(LCK_LV | LCK_EXCL)
+#define LCK_LV_SUSPEND		(LCK_LV | LCK_WRITE)
+#define LCK_LV_RESUME		(LCK_LV | LCK_UNLOCK)
+#define LCK_LV_ACTIVATE		(LCK_LV | LCK_READ)
+#define LCK_LV_DEACTIVATE	(LCK_LV | LCK_NULL)
+
+#define LCK_MASK (LCK_TYPE_MASK | LCK_SCOPE_MASK)
 
 #define LCK_LV_CLUSTERED(lv)	\
 	(vg_is_clustered((lv)->vg) ? LCK_CLUSTER_VG : 0)
@@ -115,6 +121,11 @@ int check_lvm1_vg_inactive(struct cmd_context *cmd, const char *vgname);
 	lock_vol(cmd, (lv)->lvid.s, flags | LCK_LV_CLUSTERED(lv))
 
 #define unlock_vg(cmd, vol)	lock_vol(cmd, vol, LCK_VG_UNLOCK)
+#define unlock_and_release_vg(cmd, vg, vol) \
+	do { \
+		unlock_vg(cmd, vol); \
+		vg_release(vg); \
+	} while (0)
 
 #define resume_lv(cmd, lv)	lock_lv_vol(cmd, lv, LCK_LV_RESUME)
 #define suspend_lv(cmd, lv)	lock_lv_vol(cmd, lv, LCK_LV_SUSPEND | LCK_HOLD)
@@ -128,6 +139,8 @@ int check_lvm1_vg_inactive(struct cmd_context *cmd, const char *vgname);
 	lock_lv_vol(cmd, lv, LCK_LV_DEACTIVATE | LCK_LOCAL)
 #define drop_cached_metadata(vg)	\
 	lock_vol((vg)->cmd, (vg)->name, LCK_VG_DROP_CACHE)
+#define remote_backup_metadata(vg)	\
+	lock_vol((vg)->cmd, (vg)->name, LCK_VG_BACKUP)
 
 /* Process list of LVs */
 int suspend_lvs(struct cmd_context *cmd, struct dm_list *lvs);
