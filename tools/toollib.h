@@ -97,8 +97,11 @@ typedef int (*process_single_pvseg_fn_t) (struct cmd_context * cmd,
 					  struct pv_segment * pvseg,
 					  struct processing_handle *handle);
 
-int process_each_vg(struct cmd_context *cmd, int argc, char **argv,
-		    const char *one_vgname, uint32_t flags,
+int process_each_vg(struct cmd_context *cmd,
+	            int argc, char **argv,
+		    const char *one_vgname,
+		    struct dm_list *use_vgnames,
+		    uint32_t flags,
 		    struct processing_handle *handle,
 		    process_single_vg_fn_t process_single_vg);
 
@@ -118,6 +121,7 @@ int process_each_segment_in_pv(struct cmd_context *cmd,
 			       process_single_pvseg_fn_t process_single_pvseg);
 
 int process_each_lv(struct cmd_context *cmd, int argc, char **argv,
+		    const char *one_vgname, const char *one_lvname,
 		    uint32_t flags, struct processing_handle *handle,
 		    process_single_lv_fn_t process_single_lv);
 
@@ -143,11 +147,11 @@ int init_selection_handle(struct cmd_context *cmd, struct processing_handle *han
 void destroy_processing_handle(struct cmd_context *cmd, struct processing_handle *handle);
 
 int select_match_vg(struct cmd_context *cmd, struct processing_handle *handle,
-		    struct volume_group *vg, int *selected);
+		    struct volume_group *vg);
 int select_match_lv(struct cmd_context *cmd, struct processing_handle *handle,
-		    struct volume_group *vg, struct logical_volume *lv, int *selected);
+		    struct volume_group *vg, struct logical_volume *lv);
 int select_match_pv(struct cmd_context *cmd, struct processing_handle *handle,
-		    struct volume_group *vg, struct physical_volume *pv, int *selected);
+		    struct volume_group *vg, struct physical_volume *pv);
 
 const char *extract_vgname(struct cmd_context *cmd, const char *lv_name);
 const char *skip_dev_dir(struct cmd_context *cmd, const char *vg_name,
@@ -194,7 +198,7 @@ int get_stripe_params(struct cmd_context *cmd, uint32_t *stripes,
 		      uint32_t *stripe_size);
 
 int get_cache_params(struct cmd_context *cmd,
-		     const char **mode,
+		     cache_mode_t *cache_mode,
 		     const char **name,
 		     struct dm_config_tree **settings);
 

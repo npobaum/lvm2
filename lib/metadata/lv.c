@@ -53,7 +53,7 @@ static struct dm_list *_format_pvsegs(struct dm_pool *mem, const struct lv_segme
 		goto bad;
 	}
 
-	if (metadata_areas_only && (!seg_is_raid(seg) || lv_is_raid_metadata(seg->lv) || lv_is_raid_image(seg->lv)))
+	if (metadata_areas_only && (!seg_is_raid_with_meta(seg) || !seg->meta_areas || lv_is_raid_metadata(seg->lv) || lv_is_raid_image(seg->lv)))
 		goto out;
 
 	for (s = 0; s < seg->area_count; s++) {
@@ -343,6 +343,90 @@ uint64_t lvseg_start(const struct lv_segment *seg)
 uint64_t lvseg_size(const struct lv_segment *seg)
 {
 	return (uint64_t) seg->len * seg->lv->vg->extent_size;
+}
+
+dm_percent_t lvseg_percent_with_info_and_seg_status(const struct lv_with_info_and_seg_status *lvdm,
+						    percent_get_t type)
+{
+	dm_percent_t p;
+	uint64_t csize;
+	const struct lv_segment *seg;
+	const struct lv_seg_status *s = &lvdm->seg_status;
+
+	/*
+	 * TODO:
+	 *   Later move to segment methods, instead of using single place.
+	 *   Also handle logic for mirror segments and it total_* summing
+	 *   Esentially rework  _target_percent API for segtype.
+	 */
+	switch (s->type) {
+	case SEG_STATUS_CACHE:
+		if (s->cache->fail || s->cache->error)
+			p = DM_PERCENT_INVALID;
+		else {
+			switch (type) {
+			case PERCENT_GET_DIRTY:
+				p = dm_make_percent(s->cache->dirty_blocks,
+						    s->cache->used_blocks);
+				break;
+			case PERCENT_GET_METADATA:
+				p = dm_make_percent(s->cache->metadata_used_blocks,
+						    s->cache->metadata_total_blocks);
+				break;
+			default:
+				p = dm_make_percent(s->cache->used_blocks,
+						    s->cache->total_blocks);
+			}
+		}
+		break;
+	case SEG_STATUS_SNAPSHOT:
+		if (s->snapshot->merge_failed)
+			p = DM_PERCENT_INVALID;
+		else if (s->snapshot->invalid)
+			p = DM_PERCENT_100; /* Shown as 100% full */
+		else if (s->snapshot->has_metadata_sectors &&
+			 (s->snapshot->used_sectors == s->snapshot->metadata_sectors))
+			p = DM_PERCENT_0;
+		else
+			p = dm_make_percent(s->snapshot->used_sectors,
+					    s->snapshot->total_sectors);
+		break;
+	case SEG_STATUS_THIN_POOL:
+		if (s->thin_pool->fail || s->thin_pool->error)
+			p = DM_PERCENT_INVALID;
+		else if (type == PERCENT_GET_METADATA)
+			p = dm_make_percent(s->thin_pool->used_metadata_blocks,
+					    s->thin_pool->total_metadata_blocks);
+		else
+			p = dm_make_percent(s->thin_pool->used_data_blocks,
+					    s->thin_pool->total_data_blocks);
+		break;
+	case SEG_STATUS_THIN:
+		if (s->thin->fail || (type != PERCENT_GET_DATA))
+			/* TODO: expose highest mapped sector */
+			p = DM_PERCENT_INVALID;
+		else {
+			seg = first_seg(lvdm->lv);
+			/* Pool allocates whole chunk so round-up to nearest one */
+			csize = first_seg(seg->pool_lv)->chunk_size;
+			csize = ((seg->lv->size + csize - 1) / csize) * csize;
+			if (s->thin->mapped_sectors <= csize)
+				p = dm_make_percent(s->thin->mapped_sectors, csize);
+			else {
+				log_warn("WARNING: Thin volume %s maps %s while the size is only %s.",
+					 display_lvname(seg->lv),
+					 display_size(lvdm->lv->vg->cmd, s->thin->mapped_sectors),
+					 display_size(lvdm->lv->vg->cmd, csize));
+				/* Don't show nonsense numbers like i.e. 1000% full */
+				p = DM_PERCENT_100;
+			}
+		}
+		break;
+	default:
+		p = DM_PERCENT_INVALID;
+	}
+
+	return p;
 }
 
 uint32_t lv_kernel_read_ahead(const struct logical_volume *lv)
@@ -1012,7 +1096,7 @@ int lv_raid_healthy(const struct logical_volume *lv)
 	/* Find out which sub-LV this is. */
 	for (s = 0; s < raid_seg->area_count; s++)
 		if ((lv_is_raid_image(lv) && (seg_lv(raid_seg, s) == lv)) ||
-		    (lv_is_raid_metadata(lv) && (seg_metalv(raid_seg,s) == lv)))
+		    (lv_is_raid_metadata(lv) && (seg_metalv(raid_seg, s) == lv)))
 			break;
 	if (s == raid_seg->area_count) {
 		log_error(INTERNAL_ERROR
@@ -1029,7 +1113,6 @@ int lv_raid_healthy(const struct logical_volume *lv)
 
 char *lv_attr_dup_with_info_and_seg_status(struct dm_pool *mem, const struct lv_with_info_and_seg_status *lvdm)
 {
-	dm_percent_t snap_percent;
 	const struct logical_volume *lv = lvdm->lv;
 	struct lv_segment *seg;
 	char *repstr;
@@ -1121,19 +1204,18 @@ char *lv_attr_dup_with_info_and_seg_status(struct dm_pool *mem, const struct lv_
 			repstr[4] = 'd';	/* Inactive without table */
 
 		/* Snapshot dropped? */
-		if (lvdm->info.live_table && lv_is_cow(lv)) {
-			if (!lv_snapshot_percent(lv, &snap_percent) ||
-			    snap_percent == DM_PERCENT_INVALID) {
+		if (lvdm->info.live_table &&
+		    (lvdm->seg_status.type == SEG_STATUS_SNAPSHOT)) {
+			if (lvdm->seg_status.snapshot->invalid) {
 				if (lvdm->info.suspended)
 					repstr[4] = 'S'; /* Susp Inv snapshot */
 				else
 					repstr[4] = 'I'; /* Invalid snapshot */
-			}
-			else if (snap_percent == LVM_PERCENT_MERGE_FAILED) {
+			} else if (lvdm->seg_status.snapshot->merge_failed) {
 				if (lvdm->info.suspended)
 					repstr[4] = 'M'; /* Susp snapshot merge failed */
 				else
-					repstr[4] = 'm'; /* snapshot merge failed */
+					repstr[4] = 'm'; /* Snapshot merge failed */
 			}
 		}
 

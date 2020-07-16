@@ -253,8 +253,9 @@ int lv_status(struct cmd_context *cmd, const struct lv_segment *lv_seg,
 int lv_cache_status(const struct logical_volume *cache_lv,
 		    struct lv_status_cache **status)
 {
+	return 0;
 }
-int lv_check_not_in_use(const struct logical_volume *lv)
+int lv_check_not_in_use(const struct logical_volume *lv, int error_if_used)
 {
         return 0;
 }
@@ -284,18 +285,6 @@ int lv_raid_sync_action(const struct logical_volume *lv, char **sync_action)
 	return 0;
 }
 int lv_raid_message(const struct logical_volume *lv, const char *msg)
-{
-	return 0;
-}
-int lv_cache_block_info(struct logical_volume *lv,
-			uint32_t *chunk_size, uint64_t *dirty_count,
-			uint64_t *used_count, uint64_t *total_count)
-{
-	return 0;
-}
-int lv_cache_policy_info(struct logical_volume *lv,
-			 const char **policy_name, int *policy_argc,
-			 const char ***policy_argv)
 {
 	return 0;
 }
@@ -691,8 +680,36 @@ static int _lv_info(struct cmd_context *cmd, const struct logical_volume *lv,
 			use_layer = 1;
 	}
 
-	if (seg_status)
+	if (seg_status) {
+		/* TODO: for now it's mess with seg_status */
 		seg_status->seg = seg;
+		if (lv_is_merging_cow(lv)) {
+			if (lv_has_target_type(cmd->mem, origin_from_cow(lv), NULL, TARGET_NAME_SNAPSHOT_MERGE)) {
+				/*
+				 * When the snapshot-merge has not yet started, query COW LVs as is.
+				 * When merge is in progress, query merging origin LV instead.
+				 * COW volume is already mapped as error target in this case.
+				 */
+				lv = origin_from_cow(lv);
+				seg_status->seg = first_seg(lv);
+				log_debug_activation("Snapshot merge is in progress, querying status of %s instead.",
+						     display_lvname(lv));
+			}
+		} else if (!use_layer && lv_is_origin(lv) && !lv_is_external_origin(lv)) {
+			/*
+			 * Query status for 'layered' (-real) device most of the time,
+			 * only when snapshot merge started, query its progress.
+			 * TODO: single LV may need couple status to be exposed at once....
+			 *       but this needs more logical background
+			 */
+			if (!lv_is_merging_origin(lv) ||
+			    !lv_has_target_type(cmd->mem, origin_from_cow(lv), NULL, TARGET_NAME_SNAPSHOT_MERGE))
+				use_layer = 1;
+		} else if (lv_is_cow(lv)) {
+			/* Hadle fictional lvm2 snapshot and query snapshotX volume */
+			seg_status->seg = find_snapshot(lv);
+		}
+	}
 
 	if (!dev_manager_info(cmd, lv,
 			      (use_layer) ? lv_layer(lv) : NULL,
@@ -1103,19 +1120,29 @@ int lv_cache_status(const struct logical_volume *cache_lv,
 	struct dev_manager *dm;
 	struct lv_segment *cache_seg;
 
-	if (lv_is_cache_pool(cache_lv) && !dm_list_empty(&cache_lv->segs_using_this_lv)) {
-		if (!(cache_seg = get_only_segment_using_this_lv(cache_lv)))
-			return_0;
+	if (lv_is_cache_pool(cache_lv)) {
+		if (dm_list_empty(&cache_lv->segs_using_this_lv) ||
+		    !(cache_seg = get_only_segment_using_this_lv(cache_lv))) {
+			log_error(INTERNAL_ERROR "Cannot check status for unused cache pool %s.",
+				  display_lvname(cache_lv));
+			return 0;
+		}
 		cache_lv = cache_seg->lv;
 	}
 
-	if (lv_is_pending_delete(cache_lv))
+	if (lv_is_pending_delete(cache_lv)) {
+		log_error("Cannot check status for deleted cache volume %s.",
+			  display_lvname(cache_lv));
 		return 0;
+	}
 
-	if (!lv_info(cache_lv->vg->cmd, cache_lv, 0, NULL, 0, 0))
+	if (!lv_info(cache_lv->vg->cmd, cache_lv, 0, NULL, 0, 0)) {
+		log_error("Cannot check status for locally inactive cache volume %s.",
+			  display_lvname(cache_lv));
 		return 0;
+	}
 
-	log_debug_activation("Checking cache status for LV %s.",
+	log_debug_activation("Checking status for cache volume %s.",
 			     display_lvname(cache_lv));
 
 	if (!(dm = dev_manager_create(cache_lv->vg->cmd, cache_lv->vg->name, 1)))
@@ -1202,7 +1229,7 @@ int lv_thin_pool_transaction_id(const struct logical_volume *lv,
 	if (!(dm = dev_manager_create(lv->vg->cmd, lv->vg->name, 1)))
 		return_0;
 
-	if (!(r = dev_manager_thin_pool_status(dm, lv, &status, 1)))
+	if (!(r = dev_manager_thin_pool_status(dm, lv, &status, 0)))
 		stack;
 	else
 		*transaction_id = status->transaction_id;

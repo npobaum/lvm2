@@ -197,6 +197,7 @@ struct cmd_context {
 	const char *report_list_item_separator;
 	const char *time_format;
 	unsigned rand_seed;
+	struct dm_list unused_duplicate_devs; /* save preferences between lvmcache instances */
 };
 
 /*
@@ -217,6 +218,14 @@ int config_files_changed(struct cmd_context *cmd);
 int init_lvmcache_orphans(struct cmd_context *cmd);
 int init_filters(struct cmd_context *cmd, unsigned load_persistent_cache);
 int init_connections(struct cmd_context *cmd);
+
+/*
+ * A config context is a very light weight cmd struct that
+ * is only used for reading config settings from lvm.conf,
+ * which are at cmd->cft.
+ */
+struct cmd_context *create_config_context(void);
+void destroy_config_context(struct cmd_context *cmd);
 
 struct format_type *get_format_by_name(struct cmd_context *cmd, const char *format);
 
