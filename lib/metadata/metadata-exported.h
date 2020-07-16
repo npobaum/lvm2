@@ -101,7 +101,6 @@
 #define THIN_POOL_DATA		UINT64_C(0x0000004000000000)	/* LV - Internal use only */
 #define THIN_POOL_METADATA	UINT64_C(0x0000008000000000)	/* LV - Internal use only */
 #define POOL_METADATA_SPARE	UINT64_C(0x0000010000000000)	/* LV - Internal use only */
-
 #define LV_WRITEMOSTLY		UINT64_C(0x0000020000000000)	/* LV (RAID1) */
 
 #define LV_ACTIVATION_SKIP	UINT64_C(0x0000040000000000)	/* LV */
@@ -132,7 +131,8 @@
 #define PV_ALLOCATION_PROHIBITED	UINT64_C(0x0010000000000000)	/* PV - internal use only - allocation prohibited
 									e.g. to prohibit allocation of a RAID image
 									on a PV already holing an image of the RAID set */
-/* Next unused flag:		UINT64_C(0x0080000000000000)    */
+#define LOCKD_SANLOCK_LV	UINT64_C(0x0080000000000000)	/* LV - Internal use only */
+/* Next unused flag:		UINT64_C(0x0100000000000000)    */
 
 /* Format features flags */
 #define FMT_SEGMENTS		0x00000001U	/* Arbitrary segment params? */
@@ -181,6 +181,7 @@
 #define FAILED_RECOVERY		0x00000200U
 #define FAILED_SYSTEMID		0x00000400U
 #define FAILED_LOCK_TYPE	0x00000800U
+#define FAILED_LOCK_MODE	0x00001000U
 #define SUCCESS			0x00000000U
 
 #define VGMETADATACOPIES_ALL UINT32_MAX
@@ -228,6 +229,7 @@
 #define lv_is_pool_data(lv)		(((lv)->status & (CACHE_POOL_DATA | THIN_POOL_DATA)) ? 1 : 0)
 #define lv_is_pool_metadata(lv)		(((lv)->status & (CACHE_POOL_METADATA | THIN_POOL_METADATA)) ? 1 : 0)
 #define lv_is_pool_metadata_spare(lv)	(((lv)->status & POOL_METADATA_SPARE) ? 1 : 0)
+#define lv_is_lockd_sanlock_lv(lv)	(((lv)->status & LOCKD_SANLOCK_LV) ? 1 : 0)
 
 #define lv_is_rlog(lv)		(((lv)->status & REPLICATOR_LOG) ? 1 : 0)
 
@@ -261,6 +263,14 @@ typedef enum {
 	THIN_DISCARDS_NO_PASSDOWN,
 	THIN_DISCARDS_PASSDOWN,
 } thin_discards_t;
+
+typedef enum {
+	LOCK_TYPE_INVALID = -1,
+	LOCK_TYPE_NONE = 0,
+	LOCK_TYPE_CLVM = 1,
+	LOCK_TYPE_DLM = 2,
+	LOCK_TYPE_SANLOCK = 3,
+} lock_type_t;
 
 struct cmd_context;
 struct format_handler;
@@ -640,9 +650,9 @@ int lv_resize(struct cmd_context *cmd, struct logical_volume *lv,
  * Return a handle to VG metadata.
  */
 struct volume_group *vg_read(struct cmd_context *cmd, const char *vg_name,
-			     const char *vgid, uint32_t flags);
+			     const char *vgid, uint32_t flags, uint32_t lockd_state);
 struct volume_group *vg_read_for_update(struct cmd_context *cmd, const char *vg_name,
-			 const char *vgid, uint32_t flags);
+			 const char *vgid, uint32_t flags, uint32_t lockd_state);
 
 /* 
  * Test validity of a VG handle.
@@ -685,6 +695,7 @@ struct volume_group *vg_create(struct cmd_context *cmd, const char *vg_name);
 int vg_remove_mdas(struct volume_group *vg);
 int vg_remove_check(struct volume_group *vg);
 void vg_remove_pvs(struct volume_group *vg);
+int vg_remove_direct(struct volume_group *vg);
 int vg_remove(struct volume_group *vg);
 int vg_rename(struct cmd_context *cmd, struct volume_group *vg,
 	      const char *new_name);
@@ -863,11 +874,14 @@ struct lvcreate_params {
 #define THIN_CHUNK_SIZE_CALC_METHOD_GENERIC 0x01
 #define THIN_CHUNK_SIZE_CALC_METHOD_PERFORMANCE 0x02
 	int thin_chunk_size_calc_policy;
+	unsigned needs_lockd_init : 1;
 
 	const char *vg_name; /* only-used when VG is not yet opened (in /tools) */
 	const char *lv_name; /* all */
 	const char *origin_name; /* snap */
 	const char *pool_name;   /* thin */
+
+	const char *lock_args;
 
 	/* Keep args given by the user on command line */
 	/* FIXME: create some more universal solution here */
@@ -888,7 +902,8 @@ struct lvcreate_params {
 	uint32_t max_recovery_rate; /* RAID */
 
 	uint64_t feature_flags; /* cache */
-	struct dm_config_tree *cache_policy; /* cache */
+	const char *policy_name; /* cache */
+	struct dm_config_tree *policy_settings; /* cache */
 
 	const struct segment_type *segtype; /* all */
 	unsigned target_attr; /* all */
@@ -1150,7 +1165,8 @@ int validate_lv_cache_create_origin(const struct logical_volume *origin_lv);
 struct logical_volume *lv_cache_create(struct logical_volume *pool,
 				       struct logical_volume *origin);
 int lv_cache_remove(struct logical_volume *cache_lv);
-int lv_cache_setpolicy(struct logical_volume *cache_lv, struct dm_config_tree *pol);
+int lv_cache_set_policy(struct logical_volume *cache_lv, const char *name,
+			const struct dm_config_tree *settings);
 int wipe_cache_pool(struct logical_volume *cache_pool_lv);
 /* --  metadata/cache_manip.c */
 
@@ -1211,6 +1227,8 @@ struct vgcreate_params {
 	int clustered; /* FIXME: put this into a 'status' variable instead? */
 	uint32_t vgmetadatacopies;
 	const char *system_id;
+	const char *lock_type;
+	const char *lock_args;
 };
 
 int validate_major_minor(const struct cmd_context *cmd,
@@ -1222,4 +1240,7 @@ int vgcreate_params_validate(struct cmd_context *cmd,
 int validate_vg_rename_params(struct cmd_context *cmd,
 			      const char *vg_name_old,
 			      const char *vg_name_new);
+
+int is_lockd_type(const char *lock_type);
+
 #endif

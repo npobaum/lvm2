@@ -578,11 +578,16 @@ static int _read_cache_params(struct cmd_context *cmd,
 	if (!set_cache_pool_feature(&lp->feature_flags, cachemode))
 		return_0;
 
+	if (!get_cache_policy_params(cmd, &lp->policy_name, &lp->policy_settings)) {
+		log_error("Failed to parse cache policy and/or settings.");
+		return 0;
+	}
+
 	return 1;
 }
 
 static int _read_activation_params(struct cmd_context *cmd,
-                                   struct volume_group *vg,
+				   struct volume_group *vg,
 				   struct lvcreate_params *lp)
 {
 	unsigned pagesize = lvm_getpagesize() >> SECTOR_SHIFT;
@@ -1036,13 +1041,6 @@ static int _lvcreate_params(struct cmd_context *cmd,
 		return 0;
 	}
 
-	if ((arg_count(cmd, cachepolicy_ARG) || arg_count(cmd, cachesettings_ARG)) &&
-	    !(lp->cache_policy = get_cachepolicy_params(cmd)))
-	{
-		log_error("Failed to parse cache policy and/or settings.");
-		return 0;
-	}
-
 	dm_list_iterate_items(current_group, &cmd->arg_value_groups) {
 		if (!grouped_arg_is_set(current_group->arg_values, addtag_ARG))
 			continue;
@@ -1439,9 +1437,10 @@ static int _validate_internal_thin_processing(const struct lvcreate_params *lp)
 
 static void _destroy_lvcreate_params(struct lvcreate_params *lp)
 {
-	if (lp->cache_policy)
-		dm_config_destroy(lp->cache_policy);
-	lp->cache_policy = NULL;
+	if (lp->policy_settings) {
+		dm_config_destroy(lp->policy_settings);
+		lp->policy_settings = NULL;
+	}
 }
 
 int lvcreate(struct cmd_context *cmd, int argc, char **argv)
@@ -1453,6 +1452,7 @@ int lvcreate(struct cmd_context *cmd, int argc, char **argv)
 	};
 	struct lvcreate_cmdline_params lcp = { 0 };
 	struct volume_group *vg;
+	uint32_t lockd_state = 0;
 
 	if (!_lvcreate_params(cmd, argc, argv, &lp, &lcp)) {
 		stack;
@@ -1464,8 +1464,11 @@ int lvcreate(struct cmd_context *cmd, int argc, char **argv)
 		return EINVALID_CMD_LINE;
 	}
 
+	if (!lockd_vg(cmd, lp.vg_name, "ex", 0, &lockd_state))
+		return_ECMD_FAILED;
+
 	log_verbose("Finding volume group \"%s\"", lp.vg_name);
-	vg = vg_read_for_update(cmd, lp.vg_name, NULL, 0);
+	vg = vg_read_for_update(cmd, lp.vg_name, NULL, 0, lockd_state);
 	if (vg_read_error(vg)) {
 		release_vg(vg);
 		return_ECMD_FAILED;
@@ -1510,12 +1513,22 @@ int lvcreate(struct cmd_context *cmd, int argc, char **argv)
 			    lp.pool_name ? : "with generated name", lp.vg_name, lp.segtype->name);
 	}
 
+	if (vg->lock_type && !strcmp(vg->lock_type, "sanlock")) {
+		if (!handle_sanlock_lv(cmd, vg)) {
+			log_error("No space for sanlock lock, extend the internal lvmlock LV.");
+			goto_out;
+		}
+	}
+
 	if (seg_is_thin_volume(&lp))
 		log_verbose("Making thin LV %s in pool %s in VG %s%s%s using segtype %s",
 			    lp.lv_name ? : "with generated name",
 			    lp.pool_name ? : "with generated name", lp.vg_name,
 			    lp.snapshot ? " as snapshot of " : "",
 			    lp.snapshot ? lp.origin_name : "", lp.segtype->name);
+
+	if (is_lockd_type(vg->lock_type))
+		lp.needs_lockd_init = 1;
 
 	if (!lv_create_single(vg, &lp))
 		goto_out;
