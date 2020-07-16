@@ -55,6 +55,7 @@ static int max_updown_nodes = 50;	/* Current size of the allocated array */
 static int *node_updown = NULL;
 static dlm_lshandle_t *lockspace;
 
+static void sigusr1_handler(int sig);
 static void count_clvmds_running(void);
 static void get_members(void);
 static int nodeid_from_csid(char *csid);
@@ -74,7 +75,7 @@ int init_cluster()
 	/* Open the cluster communication socket */
 	cluster_sock = socket(AF_CLUSTER, SOCK_DGRAM, CLPROTO_CLIENT);
 	if (cluster_sock == -1) {
-		syslog(LOG_ERR, "Can't open cluster manager socket: %m");
+		perror("Can't open cluster socket");
 		return -1;
 	}
 
@@ -86,7 +87,7 @@ int init_cluster()
 	if (bind
 	    (cluster_sock, (struct sockaddr *) &saddr,
 	     sizeof(struct sockaddr_cl))) {
-		syslog(LOG_ERR, "Can't bind cluster socket: %m");
+		log_error("Can't bind cluster socket: %m");
 		return -1;
 	}
 
@@ -97,7 +98,7 @@ int init_cluster()
 	/* Create a lockspace for LV & VG locks to live in */
 	lockspace = dlm_create_lockspace(LOCKSPACE_NAME, 0600);
 	if (!lockspace) {
-		syslog(LOG_ERR, "Unable to create lockspace for CLVM: %m");
+		log_error("Unable to create lockspace for CLVM\n");
 		return -1;
 	}
 	dlm_ls_pthread_init(lockspace);
@@ -202,7 +203,7 @@ static void process_oob_msg(char *buf, int len, int nodeid)
 	}
 }
 
-int cluster_fd_callback(struct local_client *client, char *buf, int len, char *csid,
+int cluster_fd_callback(struct local_client *fd, char *buf, int len, char *csid,
 			struct local_client **new_client)
 {
 	struct iovec iov[2];
@@ -246,11 +247,7 @@ int cluster_fd_callback(struct local_client *client, char *buf, int len, char *c
 		len = -1;
 		errno = EAGAIN;
 	}
-	else {
-		memcpy(csid, &saddr.scl_nodeid, sizeof(saddr.scl_nodeid));
-		/* Send it back to clvmd */
-		process_message(client, buf, len, csid);
-	}
+	memcpy(csid, &saddr.scl_nodeid, sizeof(saddr.scl_nodeid));
 	return len;
 }
 
@@ -260,18 +257,17 @@ void add_up_node(char *csid)
 	int nodeid = nodeid_from_csid(csid);
 
 	if (nodeid >= max_updown_nodes) {
-	        int new_size = nodeid + 10;
-		int *new_updown = realloc(node_updown, new_size);
+		int *new_updown = realloc(node_updown, max_updown_nodes + 10);
 
 		if (new_updown) {
 			node_updown = new_updown;
-			max_updown_nodes = new_size;
+			max_updown_nodes += 10;
 			DEBUGLOG("realloced more space for nodes. now %d\n",
 				 max_updown_nodes);
 		} else {
 			log_error
-			    ("Realloc failed. Node status for clvmd will be wrong. quitting\n");
-			exit(999);
+			    ("Realloc failed. Node status for clvmd will be wrong\n");
+			return;
 		}
 	}
 	node_updown[nodeid] = 1;
@@ -323,7 +319,7 @@ static void get_members()
 
 	num_nodes = ioctl(cluster_sock, SIOCCLUSTER_GETMEMBERS, 0);
 	if (num_nodes == -1) {
-		log_error("Unable to get node count");
+		perror("get nodes");
 	} else {
 	        /* Not enough room for new nodes list ? */
 	        if (num_nodes > count_nodes && nodes) {
@@ -335,7 +331,7 @@ static void get_members()
 		        count_nodes = num_nodes + 10; /* Overallocate a little */
 		        nodes = malloc(count_nodes * sizeof(struct cl_cluster_node));
 			if (!nodes) {
-			        log_error("Unable to allocate nodes array\n");
+			        perror("Unable to allocate nodes array\n");
 				exit(5);
 			}
 		}
@@ -344,7 +340,7 @@ static void get_members()
 
 		num_nodes = ioctl(cluster_sock, SIOCCLUSTER_GETMEMBERS, &nodelist);
 		if (num_nodes <= 0) {
-		        log_error("Unable to get node details");
+		        perror("get node details");
 			exit(6);
 		}
 

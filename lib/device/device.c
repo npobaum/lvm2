@@ -13,93 +13,6 @@
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
-#include "lib.h"
-#include "lvm-types.h"
-#include "device.h"
-#include "metadata.h"
-#include "filter.h"
-#include "xlate.h"
-
-/* See linux/genhd.h and fs/partitions/msdos */
-
-#define PART_MAGIC 0xAA55
-#define PART_MAGIC_OFFSET UINT64_C(0x1FE)
-#define PART_OFFSET UINT64_C(0x1BE)
-
-struct partition {
-        uint8_t boot_ind;
-        uint8_t head;
-        uint8_t sector;
-        uint8_t cyl;
-        uint8_t sys_ind;	/* partition type */
-        uint8_t end_head;
-        uint8_t end_sector;
-        uint8_t end_cyl;
-        uint32_t start_sect;
-        uint32_t nr_sects;
-} __attribute__((packed));
-
-static int _is_partitionable(struct device *dev)
-{
-	int parts = max_partitions(MAJOR(dev->dev));
-
-	if ((parts <= 1) || (MINOR(dev->dev) % parts))
-		return 0;
-
-	return 1;
-}
-
-static int _has_partition_table(struct device *dev)
-{
-	int ret = 0;
-	unsigned p;
-	uint8_t buf[SECTOR_SIZE];
-	uint16_t *part_magic;
-	struct partition *part;
-
-	if (!dev_open(dev)) {
-		stack;
-		return -1;
-	}
-
-	if (!dev_read(dev, 0, sizeof(buf), &buf)) {
-		stack;
-		goto out;
-	}
-
-	/* FIXME Check for other types of partition table too */
-
-	/* Check for msdos partition table */
-	part_magic = (uint16_t *)(buf + PART_MAGIC_OFFSET);
-	if ((*part_magic == xlate16(PART_MAGIC))) {
-		part = (struct partition *) (buf + PART_OFFSET);
-		for (p = 0; p < 4; p++, part++) {
-			/* Table is invalid if boot indicator not 0 or 0x80 */
-			if ((part->boot_ind & 0x7f)) {
-				ret = 0;
-				break;
-			}
-			/* Must have at least one non-empty partition */
-			if (part->nr_sects)
-				ret = 1;
-		}
-	}
-
-      out:
-	if (!dev_close(dev))
-		stack;
-
-	return ret;
-}
-
-int is_partitioned_dev(struct device *dev)
-{
-	if (!_is_partitionable(dev))
-		return 0;
-
-	return _has_partition_table(dev);
-}
-
 #if 0
 #include <sys/stat.h>
 #include <sys/mman.h>
@@ -114,13 +27,24 @@ int is_partitioned_dev(struct device *dev)
 #include <linux/major.h>
 #include <linux/genhd.h>
 
+#include "dbg_malloc.h"
+#include "log.h"
+#include "dev-cache.h"
+#include "metadata.h"
+#include "device.h"
+
 int _get_partition_type(struct dev_filter *filter, struct device *d);
 
-#define MINOR_PART(dev) (MINOR((dev)->dev) % max_partitions(MINOR((dev)->dev)))
+#define MINOR_PART(dm, d) (MINOR((d)->dev) % dev_max_partitions(dm, (d)->dev))
 
-int is_extended_partition(struct device *d)
+int is_whole_disk(struct dev_filter *filter, struct device *d)
 {
-	return (MINOR_PART(d) > 4) ? 1 : 0;
+	return (MINOR_PART(dm, d)) ? 0 : 1;
+}
+
+int is_extended_partition(struct dev_mgr *dm, struct device *d)
+{
+	return (MINOR_PART(dm, d) > 4) ? 1 : 0;
 }
 
 struct device *dev_primary(struct dev_mgr *dm, struct device *d)

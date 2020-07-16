@@ -101,7 +101,7 @@ static int _build_matcher(struct rfilter *rf, struct config_value *val)
 	unsigned count = 0;
 	int i, r = 0;
 
-	if (!(scratch = pool_create("filter matcher", 1024))) {
+	if (!(scratch = pool_create(1024))) {
 		stack;
 		return 0;
 	}
@@ -186,9 +186,6 @@ static int _accept_p(struct dev_filter *f, struct device *dev)
 		first = 0;
 	}
 
-	if (rejected)
-		log_debug("%s: Skipping (regex)", dev_name(dev));
-
 	/*
 	 * pass everything that doesn't match
 	 * anything.
@@ -204,7 +201,7 @@ static void _destroy(struct dev_filter *f)
 
 struct dev_filter *regex_filter_create(struct config_value *patterns)
 {
-	struct pool *mem = pool_create("filter regex", 10 * 1024);
+	struct pool *mem = pool_create(10 * 1024);
 	struct rfilter *rf;
 	struct dev_filter *f;
 

@@ -28,7 +28,6 @@ static struct str_list _log_dev_alias;
 static int _verbose_level = VERBOSE_BASE_LEVEL;
 static int _test = 0;
 static int _partial = 0;
-static int _md_filtering = 0;
 static int _pvmove = 0;
 static int _debug_level = 0;
 static int _syslog = 0;
@@ -139,11 +138,6 @@ void init_partial(int level)
 	_partial = level;
 }
 
-void init_md_filtering(int level)
-{
-	_md_filtering = level;
-}
-
 void init_pvmove(int level)
 {
 	_pvmove = level;
@@ -193,11 +187,6 @@ int partial_mode()
 	return _partial;
 }
 
-int md_filtering()
-{
-	return _md_filtering;
-}
-
 int pvmove_mode()
 {
 	return _pvmove;
@@ -226,7 +215,7 @@ int debug_level()
 void print_log(int level, const char *file, int line, const char *format, ...)
 {
 	va_list ap;
-	char buf[1024], buf2[4096], locn[4096];
+	char buf[1024], buf2[4096];
 	int bufused, n;
 	const char *message;
 	const char *trformat;		/* Translated format string */
@@ -254,46 +243,36 @@ void print_log(int level, const char *file, int line, const char *format, ...)
 
       log_it:
 	if (!_log_suppress) {
-		if (_verbose_level > _LOG_DEBUG)
-			lvm_snprintf(locn, sizeof(locn), "#%s:%d ",
-				     file, line);
-		else
-			locn[0] = '\0';
-
 		va_start(ap, format);
 		switch (level) {
 		case _LOG_DEBUG:
-			if (!strcmp("<backtrace>", format) &&
-			    _verbose_level <= _LOG_DEBUG)
+			if (!strcmp("<backtrace>", format))
 				break;
 			if (_verbose_level >= _LOG_DEBUG) {
-				fprintf(stderr, "%s%s%s", locn, _cmd_name,
-					_msg_prefix);
+				printf("%s%s", _cmd_name, _msg_prefix);
 				if (_indent)
-					fprintf(stderr, "      ");
-				vfprintf(stderr, trformat, ap);
-				fputc('\n', stderr);
+					printf("      ");
+				vprintf(trformat, ap);
+				putchar('\n');
 			}
 			break;
 
 		case _LOG_INFO:
 			if (_verbose_level >= _LOG_INFO) {
-				fprintf(stderr, "%s%s%s", locn, _cmd_name,
-					_msg_prefix);
+				printf("%s%s", _cmd_name, _msg_prefix);
 				if (_indent)
-					fprintf(stderr, "    ");
-				vfprintf(stderr, trformat, ap);
-				fputc('\n', stderr);
+					printf("    ");
+				vprintf(trformat, ap);
+				putchar('\n');
 			}
 			break;
 		case _LOG_NOTICE:
 			if (_verbose_level >= _LOG_NOTICE) {
-				fprintf(stderr, "%s%s%s", locn, _cmd_name,
-					_msg_prefix);
+				printf("%s%s", _cmd_name, _msg_prefix);
 				if (_indent)
-					fprintf(stderr, "  ");
-				vfprintf(stderr, trformat, ap);
-				fputc('\n', stderr);
+					printf("  ");
+				vprintf(trformat, ap);
+				putchar('\n');
 			}
 			break;
 		case _LOG_WARN:
@@ -305,8 +284,7 @@ void print_log(int level, const char *file, int line, const char *format, ...)
 			break;
 		case _LOG_ERR:
 			if (_verbose_level >= _LOG_ERR) {
-				fprintf(stderr, "%s%s%s", locn, _cmd_name,
-					_msg_prefix);
+				fprintf(stderr, "%s%s", _cmd_name, _msg_prefix);
 				vfprintf(stderr, trformat, ap);
 				fputc('\n', stderr);
 			}
@@ -314,8 +292,7 @@ void print_log(int level, const char *file, int line, const char *format, ...)
 		case _LOG_FATAL:
 		default:
 			if (_verbose_level >= _LOG_FATAL) {
-				fprintf(stderr, "%s%s%s", locn, _cmd_name,
-					_msg_prefix);
+				fprintf(stderr, "%s%s", _cmd_name, _msg_prefix);
 				vfprintf(stderr, trformat, ap);
 				fputc('\n', stderr);
 			}

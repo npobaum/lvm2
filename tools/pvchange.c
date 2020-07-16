@@ -32,8 +32,6 @@ static int _pvchange_single(struct cmd_context *cmd, struct physical_volume *pv,
 	int allocatable = 0;
 	int tagarg = 0;
 
-	list_init(&mdas);
-
 	if (arg_count(cmd, addtag_ARG))
 		tagarg = addtag_ARG;
 	else if (arg_count(cmd, deltag_ARG))

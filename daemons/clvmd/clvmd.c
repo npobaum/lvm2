@@ -39,7 +39,6 @@
 #include "clvmd-comms.h"
 #include "lvm-functions.h"
 #include "clvm.h"
-#include "version.h"
 #include "clvmd.h"
 #include "libdlm.h"
 #include "system-lv.h"
@@ -83,14 +82,6 @@ static pthread_mutex_t lvm_thread_mutex;
 static pthread_cond_t lvm_thread_cond;
 static struct list lvm_cmd_head;
 static int quit = 0;
-static int child_pipe[2];
-
-/* Reasons the daemon failed initialisation */
-#define DFAIL_INIT       1
-#define DFAIL_LOCAL_SOCK 2
-#define DFAIL_CLUSTER_IF 3
-#define DFAIL_MALLOC     4
-#define SUCCESS          0
 
 /* Prototypes for code further down */
 static void sigusr2_handler(int sig);
@@ -138,18 +129,6 @@ static void usage(char *prog, FILE *file)
 	fprintf(file, "\n");
 }
 
-/* Called to signal the parent how well we got on during initialisation */
-static void child_init_signal(int status)
-{
-        if (child_pipe[1]) {
-	        write(child_pipe[1], &status, sizeof(status));
-		close(child_pipe[1]);
-	}
-	if (status)
-	        exit(status);
-}
-
-
 int main(int argc, char *argv[])
 {
 	int local_sock;
@@ -187,8 +166,7 @@ int main(int argc, char *argv[])
 			break;
 
 		case 'V':
-		        printf("Cluster LVM daemon version: %s\n", LVM_VERSION);
-			printf("Protocol version:           %d.%d.%d\n",
+			printf("\nCluster LVM Daemon version %d.%d.%d\n\n",
 			       CLVMD_MAJOR_VERSION, CLVMD_MINOR_VERSION,
 			       CLVMD_PATCH_VERSION);
 			exit(1);
@@ -210,7 +188,7 @@ int main(int argc, char *argv[])
 	   but the cluster is not ready yet */
 	local_sock = open_local_sock();
 	if (local_sock < 0)
-		child_init_signal(DFAIL_LOCAL_SOCK);
+		exit(2);
 
 	/* Set up signal handlers, USR1 is for cluster change notifications (in cman)
 	   USR2 causes child threads to exit.
@@ -235,7 +213,7 @@ int main(int argc, char *argv[])
 	if (init_cluster()) {
 		DEBUGLOG("Can't initialise cluster interface\n");
 		log_error("Can't initialise cluster interface\n");
-		child_init_signal(DFAIL_CLUSTER_IF);
+		exit(5);
 	}
 	DEBUGLOG("Cluster ready, doing some more initialisation\n");
 
@@ -251,7 +229,7 @@ int main(int argc, char *argv[])
 	/* Add the local socket to the list */
 	newfd = malloc(sizeof(struct local_client));
 	if (!newfd)
-	        child_init_signal(DFAIL_MALLOC);
+		exit(2);
 
 	newfd->fd = local_sock;
 	newfd->type = LOCAL_RENDEZVOUS;
@@ -273,7 +251,6 @@ int main(int argc, char *argv[])
 #endif
 
 	DEBUGLOG("clvmd ready for work\n");
-	child_init_signal(SUCCESS);
 
 	/* Do some work */
 	main_loop(local_sock, cmd_timeout);
@@ -485,6 +462,7 @@ static void main_loop(int local_sock, int cmd_timeout)
 
 		if ((select_status = select(FD_SETSIZE, &in, NULL, NULL, &tv)) > 0) {
 			struct local_client *lastfd = NULL;
+			struct clvm_header *inheader;
 			char csid[MAX_CSID_LEN];
 			char buf[MAX_CLUSTER_MESSAGE];
 
@@ -513,8 +491,9 @@ static void main_loop(int local_sock, int cmd_timeout)
 						    type == CLUSTER_INTERNAL)
 							goto closedown;
 
-						DEBUGLOG("ret == %d, errno = %d. removing client\n",
-							 ret, errno);
+						DEBUGLOG
+						    ("ret == %d, errno = %d. removing client\n",
+						     ret, errno);
 						lastfd->next = thisfd->next;
 						free_fd = thisfd;
 						thisfd = lastfd;
@@ -527,6 +506,33 @@ static void main_loop(int local_sock, int cmd_timeout)
 					if (newfd) {
 						newfd->next = thisfd->next;
 						thisfd->next = newfd;
+						break;
+					}
+
+					switch (thisfd->type) {
+					case CLUSTER_MAIN_SOCK:
+					case CLUSTER_DATA_SOCK:
+						inheader =
+						    (struct clvm_header *) buf;
+						ntoh_clvm(inheader);	/* Byteswap fields */
+						if (inheader->cmd ==
+						    CLVMD_CMD_REPLY)
+							    process_reply
+							    (inheader, ret,
+							     csid);
+						else
+							add_to_lvmqueue(thisfd,
+									inheader,
+									ret,
+									csid);
+						break;
+
+						/* All the work for these is done in the callback
+						   rightly or wrongly... */
+					case LOCAL_RENDEZVOUS:
+					case LOCAL_SOCK:
+					case THREAD_PIPE:
+					case CLUSTER_INTERNAL:
 						break;
 					}
 				}
@@ -575,64 +581,26 @@ static void main_loop(int local_sock, int cmd_timeout)
 	close(local_sock);
 }
 
-/*
- * Fork into the background and detach from our parent process.
- * In the interests of user-friendliness we wait for the daemon
- * to complete initialisation before returning its status
- * the the user.
- */
+/* Fork into the background and detach from our parent process */
 static void be_daemon()
 {
-        pid_t pid;
-	int child_status;
+	pid_t pid;
 	int devnull = open("/dev/null", O_RDWR);
 	if (devnull == -1) {
 		perror("Can't open /dev/null");
 		exit(3);
 	}
 
-	pipe(child_pipe);
-
 	switch (pid = fork()) {
 	case -1:
 		perror("clvmd: can't fork");
 		exit(2);
 
-	case 0:		/* Child */
-	        close(child_pipe[0]);
+	case 0:		/* child */
 		break;
 
-	default:       /* Parent */
-		close(child_pipe[1]);
-		if (read(child_pipe[0], &child_status, sizeof(child_status)) !=
-		    sizeof(child_status)) {
-
-		        fprintf(stderr, "clvmd failed in initialisation\n");
-		        exit(DFAIL_INIT);
-		}
-		else {
-		        switch (child_status) {
-			case SUCCESS:
-			        break;
-			case DFAIL_INIT:
-			        fprintf(stderr, "clvmd failed in initialisation\n");
-				break;
-			case DFAIL_LOCAL_SOCK:
-			        fprintf(stderr, "clvmd could not create local socket\n");
-				break;
-			case DFAIL_CLUSTER_IF:
-			        fprintf(stderr, "clvmd could not connect to cluster manager\n");
-				fprintf(stderr, "Consult syslog for more information\n");
-				break;
-			case DFAIL_MALLOC:
-			        fprintf(stderr, "clvmd failed, not enough memory\n");
-				break;
-			default:
-			        fprintf(stderr, "clvmd failed, error was %d\n", child_status);
-				break;
-			}
-			exit(child_status);
-		}
+	default:		/* Parent */
+		exit(0);
 	}
 
 	/* Detach ourself from the calling environment */
@@ -1667,19 +1635,6 @@ static int open_local_sock()
 
 	return local_socket;
 }
-
-void process_message(struct local_client *client, char *buf, int len, char *csid)
-{
-	struct clvm_header *inheader;
-
-	inheader = (struct clvm_header *) buf;
-	ntoh_clvm(inheader);	/* Byteswap fields */
-	if (inheader->cmd == CLVMD_CMD_REPLY)
-		process_reply(inheader, len, csid);
-	else
-		add_to_lvmqueue(client, inheader, len, csid);
-}
-
 
 static void check_all_callback(struct local_client *client, char *csid,
 			       int node_up)

@@ -54,9 +54,9 @@ xx(lvchange,
    "Change the attributes of logical volume(s)",
    "lvchange\n"
    "\t[-A|--autobackup y|n]\n"
-   "\t[-a|--available [e|l]y|n]\n"
+   "\t[-a|--available y|n]\n"
    "\t[--addtag Tag]\n"
-   "\t[--alloc AllocationPolicy]\n"
+   "\t[--alloc AllocationType]\n"
    "\t[-C|--contiguous y|n]\n"
    "\t[-d|--debug]\n"
    "\t[--deltag Tag]\n"
@@ -83,7 +83,7 @@ xx(lvcreate,
    "lvcreate " "\n"
    "\t[-A|--autobackup {y|n}]\n"
    "\t[--addtag Tag]\n"
-   "\t[--alloc AllocationPolicy]\n"
+   "\t[--alloc AllocationType]\n"
    "\t[-C|--contiguous {y|n}]\n"
    "\t[-d|--debug]\n"
    "\t[-h|-?|--help]\n"
@@ -105,7 +105,7 @@ xx(lvcreate,
    "\t[-c|--chunksize]\n"
    "\t[-A|--autobackup {y|n}]\n"
    "\t[--addtag Tag]\n"
-   "\t[--alloc AllocationPolicy]\n"
+   "\t[--alloc AllocationType]\n"
    "\t[-C|--contiguous {y|n}]\n"
    "\t[-d|--debug]\n"
    "\t[-h|-?|--help]\n"
@@ -167,7 +167,7 @@ xx(lvextend,
    "Add space to a logical volume",
    "lvextend\n"
    "\t[-A|--autobackup y|n]\n"
-   "\t[--alloc AllocationPolicy]\n"
+   "\t[--alloc AllocationType]\n"
    "\t[-d|--debug]\n"
    "\t[-h|--help]\n"
    "\t[-i|--stripes Stripes [-I|--stripesize StripeSize]]\n"
@@ -278,7 +278,7 @@ xx(lvresize,
    "Resize a logical volume",
    "lvresize\n"
    "\t[-A|--autobackup y|n]\n"
-   "\t[--alloc AllocationPolicy]\n"
+   "\t[--alloc AllocationType]\n"
    "\t[-d|--debug]\n"
    "\t[-h|--help]\n"
    "\t[-i|--stripes Stripes [-I|--stripesize StripeSize]]\n"
@@ -432,7 +432,7 @@ xx(pvmove,
    "pvmove " "\n"
    "\t[--abort]\n"
    "\t[-A|--autobackup {y|n}]\n"
-   "\t[--alloc AllocationPolicy]\n"
+   "\t[--alloc AllocationType]\n"
    "\t[-b|--background]\n"
    "\t[-d|--debug]\n "
    "\t[-f|--force]\n"
@@ -555,7 +555,7 @@ xx(vgchange,
    "Change volume group attributes",
    "vgchange" "\n"
    "\t[-A|--autobackup {y|n}] " "\n"
-   "\t[--alloc AllocationPolicy] " "\n"
+   "\t[--alloc AllocationType] " "\n"
    "\t[-P|--partial] " "\n"
    "\t[-d|--debug] " "\n"
    "\t[-h|--help] " "\n"
@@ -564,7 +564,7 @@ xx(vgchange,
    "\t[-u|--uuid] " "\n"
    "\t[-v|--verbose] " "\n"
    "\t[--version]" "\n"
-   "\t{-a|--available [e|l]{y|n}  |" "\n"
+   "\t{-a|--available {y|n}  |" "\n"
    "\t -x|--resizeable {y|n} |" "\n"
    "\t -l|--logicalvolume MaxLogicalVolumes |" "\n"
    "\t --addtag Tag |\n"
@@ -606,7 +606,7 @@ xx(vgcreate,
    "vgcreate" "\n"
    "\t[-A|--autobackup {y|n}] " "\n"
    "\t[--addtag Tag] " "\n"
-   "\t[--alloc AllocationPolicy] " "\n"
+   "\t[--alloc AllocationType] " "\n"
    "\t[-d|--debug]" "\n"
    "\t[-h|--help]" "\n"
    "\t[-l|--maxlogicalvolumes MaxLogicalVolumes]" "\n"
@@ -654,7 +654,7 @@ xx(vgdisplay,
 
    activevolumegroups_ARG, aligned_ARG, colon_ARG, columns_ARG, disk_ARG,
    ignorelockingfailure_ARG, noheadings_ARG, nosuffix_ARG, options_ARG,
-   partial_ARG, short_ARG, separator_ARG, sort_ARG, unbuffered_ARG, units_ARG)
+   partial_ARG, separator_ARG, short_ARG, sort_ARG, unbuffered_ARG, units_ARG)
 
 xx(vgexport,
    "Unregister volume group(s) from the system",

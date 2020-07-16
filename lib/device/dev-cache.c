@@ -82,7 +82,6 @@ struct device *dev_create_file(const char *filename, struct device *dev,
 	dev->dev = 0;
 	dev->fd = -1;
 	dev->open_count = 0;
-	dev->block_size = -1;
 	memset(dev->pvid, 0, sizeof(dev->pvid));
 	list_init(&dev->open_list);
 
@@ -102,7 +101,6 @@ static struct device *_dev_create(dev_t d)
 	dev->dev = d;
 	dev->fd = -1;
 	dev->open_count = 0;
-	dev->block_size = -1;
 	dev->end = UINT64_C(0);
 	memset(dev->pvid, 0, sizeof(dev->pvid));
 	list_init(&dev->open_list);
@@ -389,7 +387,7 @@ int dev_cache_init(void)
 {
 	_cache.names = NULL;
 
-	if (!(_cache.mem = pool_create("dev_cache", 10 * 1024))) {
+	if (!(_cache.mem = pool_create(10 * 1024))) {
 		stack;
 		return 0;
 	}

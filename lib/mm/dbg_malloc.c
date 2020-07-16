@@ -19,8 +19,6 @@
 
 #include <stdarg.h>
 
-#ifdef DEBUG_MEM
-
 struct memblock {
 	struct memblock *prev, *next;	/* All allocated blocks are linked */
 	size_t length;		/* Size of the requested block */
@@ -49,7 +47,7 @@ void *malloc_aux(size_t s, const char *file, int line)
 
 	if (s > 50000000) {
 		log_error("Huge memory allocation (size %" PRIuPTR
-			  ") rejected - metadata corruption?", s);
+			  ") rejected - bug?", s);
 		return 0;
 	}
 
@@ -168,6 +166,7 @@ void *realloc_aux(void *p, unsigned int s, const char *file, int line)
 	return r;
 }
 
+#ifdef DEBUG_MEM
 int dump_memory(void)
 {
 	unsigned long tot = 0;
@@ -214,18 +213,10 @@ void bounds_check(void)
 		mb = mb->next;
 	}
 }
-
-#else
-
-void *malloc_aux(size_t s, const char *file, int line)
-{
-	if (s > 50000000) {
-		log_error("Huge memory allocation (size %" PRIuPTR
-			  ") rejected - metadata corruption?", s);
-		return 0;
-	}
-
-	return malloc(s);
-}
-
 #endif
+
+/*
+ * Local variables:
+ * c-file-style: "linux"
+ * End:
+ */

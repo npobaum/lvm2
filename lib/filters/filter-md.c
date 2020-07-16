@@ -28,23 +28,41 @@
 
 static int _ignore_md(struct dev_filter *f, struct device *dev)
 {
-	int ret;
-	
-	if (!md_filtering())
+	uint64_t size, sector;
+	uint32_t md_magic;
+
+	if (!dev_get_size(dev, &size)) {
+		stack;
+		return 0;
+	}
+
+	if (size < MD_RESERVED_SECTORS * 2)
+		/*
+		 * We could ignore it since it is obviously too
+		 * small, but that's not our job.
+		 */
 		return 1;
-	
-	ret = dev_is_md(dev, NULL);
 
-	if (ret == 1) {
-		log_debug("%s: Skipping md component device", dev_name(dev));
+	if (!dev_open(dev)) {
+		stack;
 		return 0;
 	}
 
-	if (ret < 0) {
-		log_debug("%s: Skipping: error in md component detection",
-			  dev_name(dev));
-		return 0;
+	sector = MD_NEW_SIZE_SECTORS(size);
+
+	/* Check if it is an md component device. */
+	if (dev_read(dev, sector << SECTOR_SHIFT, sizeof(uint32_t), &md_magic)) {
+		if (md_magic == MD_SB_MAGIC) {
+			log_debug("%s: Skipping md component device",
+				  dev_name(dev));
+			if (!dev_close(dev))
+				stack;
+			return 0;
+		}
 	}
+
+	if (!dev_close(dev))
+		stack;
 
 	return 1;
 }

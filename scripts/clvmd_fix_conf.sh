@@ -15,10 +15,9 @@ if [ -z "$PREFIX" ]
 then
   echo "usage: $0 <prefix> [<config file>] [<library>]"
   echo ""
-  echo "<prefix>|UNDO  location of the cluster locking shared library. (no default)"
-  echo "               UNDO will reset the locking back to local"
-  echo "<config file>  name of the LVM config file (default: /etc/lvm/lvm.conf)"
-  echo "<library>      name of the shared library (default: liblvm2clusterlock.so)"
+  echo "<prefix>      location of the cluster locking shared library. (no default)"
+  echo "<config file> name of the LVM config file (default: /etc/lvm/lvm.conf)"
+  echo "<library>     name of the shared library (default: liblvm2clusterlock.so)"
   echo ""
   exit 0
 fi
@@ -26,29 +25,22 @@ fi
 [ -z "$LVMCONF" ] && LVMCONF="/etc/lvm/lvm.conf"
 [ -z "$LIB" ] && LIB="liblvm2clusterlock.so"
 
-if [ "$PREFIX" = "UNDO" ]
+if [ "${PREFIX:0:1}" != "/" ]
 then
-  locking_type="1"
-else
-  locking_type="2"
-
-  if [ "${PREFIX:0:1}" != "/" ]
-  then
-    echo "Prefix must be an absolute path name (starting with a /)"
-    exit 12
-  fi
-
-  if [ ! -f "$PREFIX/$LIB" ]
-  then
-    echo "$PREFIX/$LIB does not exist, did you do a \"make install\" ?"
-    exit 11
-  fi
+  echo "Prefix must be an absolute path name (starting with a /)"
+  exit 12
 fi
 
 if [ ! -f "$LVMCONF" ]
 then
   echo "$LVMCONF does not exist"
   exit 10
+fi
+
+if [ ! -f "$PREFIX/$LIB" ]
+then
+  echo "$PREFIX/$LIB does not exist, did you do a \"make install\" ?"
+  exit 11
 fi
 
 
@@ -95,7 +87,7 @@ then
     cat $LVMCONF - <<EOF > $TMPFILE
 global {
     # Enable locking for cluster LVM
-    locking_type = $locking_type
+    locking_type = 2
     library_dir = "$PREFIX"
     locking_library = "$LIB"
 }
@@ -113,7 +105,7 @@ else
 
     if [ "$have_type" = "0" ] 
     then
-	SEDCMD=" s/^[[:blank:]]*locking_type[[:blank:]]*=.*/\ \ \ \ locking_type = $locking_type/g"
+	SEDCMD=" s/^[[:blank:]]*locking_type[[:blank:]]*=.*/\ \ \ \ locking_type = 2/g"
     else
 	SEDCMD=" /global[[:blank:]]*{/a\ \ \ \ locking_type = 2"
     fi

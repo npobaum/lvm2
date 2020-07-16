@@ -519,8 +519,8 @@ static struct dev_filter *_init_filter_components(struct cmd_context *cmd)
 
 	/* regex filter. Optional. */
 	if (!(cn = find_config_node(cmd->cft->root, "devices/filter")))
-		log_very_verbose("devices/filter not found in config file: "
-				 "no regex filter installed");
+		log_debug("devices/filter not found in config file: no regex "
+			  "filter installed");
 
 	else if (!(filters[nr_filt++] = regex_filter_create(cn->v))) {
 		log_error("Failed to create regex device filter");
@@ -537,7 +537,6 @@ static struct dev_filter *_init_filter_components(struct cmd_context *cmd)
 	/* md component filter. Optional, non-critical. */
 	if (find_config_bool(cmd->cft->root, "devices/md_component_detection",
 			     DEFAULT_MD_COMPONENT_DETECTION)) {
-		init_md_filtering(1);
 		if ((filters[nr_filt] = md_filter_create()))
 			nr_filt++;
 	}
@@ -828,7 +827,7 @@ struct cmd_context *create_toolcontext(struct arg *the_args)
 	if (*cmd->sys_dir && !create_dir(cmd->sys_dir))
 		goto error;
 
-	if (!(cmd->libmem = pool_create("library", 4 * 1024))) {
+	if (!(cmd->libmem = pool_create(4 * 1024))) {
 		log_error("Library memory pool creation failed");
 		return 0;
 	}
@@ -859,7 +858,7 @@ struct cmd_context *create_toolcontext(struct arg *the_args)
 	if (!_init_filters(cmd))
 		goto error;
 
-	if (!(cmd->mem = pool_create("command", 4 * 1024))) {
+	if (!(cmd->mem = pool_create(4 * 1024))) {
 		log_error("Command memory pool creation failed");
 		return 0;
 	}
