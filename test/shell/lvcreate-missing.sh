@@ -11,11 +11,14 @@
 
 . lib/inittest
 
+test -e LOCAL_LVMPOLLD && skip
+
 aux prepare_vg 2
-init_udev_transaction
-dmsetup remove -f "$dev1" || true
-finish_udev_transaction
+
+aux disable_dev "$dev1"
 
 not lvcreate -n "foo" $vg -l 1
+
+aux enable_dev "$dev1"
 
 vgremove -ff $vg

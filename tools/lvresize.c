@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2013 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2014 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -20,7 +20,6 @@ static int _lvresize_params(struct cmd_context *cmd, int argc, char **argv,
 {
 	const char *cmd_name;
 	char *st;
-	unsigned dev_dir_found = 0;
 	int use_policy = arg_count(cmd, use_policies_ARG);
 
 	lp->sign = SIGN_NONE;
@@ -106,7 +105,7 @@ static int _lvresize_params(struct cmd_context *cmd, int argc, char **argv,
 	argv++;
 	argc--;
 
-	if (!(lp->lv_name = skip_dev_dir(cmd, lp->lv_name, &dev_dir_found)) ||
+	if (!(lp->lv_name = skip_dev_dir(cmd, lp->lv_name, NULL)) ||
 	    !(lp->vg_name = extract_vgname(cmd, lp->lv_name))) {
 		log_error("Please provide a volume group name");
 		return 0;
@@ -169,7 +168,7 @@ int lvresize(struct cmd_context *cmd, int argc, char **argv)
 	struct lvresize_params lp = { 0 };
 	struct volume_group *vg;
 	struct dm_list *pvh = NULL;
-	struct lv_list *lvl;
+	struct logical_volume *lv;
 	int r = ECMD_FAILED;
 
 	if (!_lvresize_params(cmd, argc, argv, &lp))
@@ -182,23 +181,23 @@ int lvresize(struct cmd_context *cmd, int argc, char **argv)
 		return_ECMD_FAILED;
 	}
 
-        /* Does LV exist? */
-        if (!(lvl = find_lv_in_vg(vg, lp.lv_name))) {
-                log_error("Logical volume %s not found in volume group %s",
-                          lp.lv_name, lp.vg_name);
+	/* Does LV exist? */
+	if (!(lv = find_lv(vg, lp.lv_name))) {
+		log_error("Logical volume %s not found in volume group %s",
+			  lp.lv_name, lp.vg_name);
 		goto out;
-        }
+	}
 
 	if (!(pvh = lp.argc ? create_pv_list(cmd->mem, vg, lp.argc,
 					     lp.argv, 1) : &vg->pvs))
 		goto_out;
 
-	if (!lv_resize_prepare(cmd, lvl->lv, &lp, pvh)) {
+	if (!lv_resize_prepare(cmd, lv, &lp, pvh)) {
 		r = EINVALID_CMD_LINE;
 		goto_out;
 	}
 
-	if (!lv_resize(cmd, lvl->lv, &lp, pvh))
+	if (!lv_resize(cmd, lv, &lp, pvh))
 		goto_out;
 
 	r = ECMD_PROCESSED;

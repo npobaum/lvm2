@@ -40,7 +40,7 @@ static int _lvscan_single_lvmetad(struct cmd_context *cmd, struct logical_volume
 					 pvid_s);
 			continue;
 		}
-		if (!lvmetad_pvscan_single(cmd, pvl->pv->dev, NULL))
+		if (!lvmetad_pvscan_single(cmd, pvl->pv->dev, NULL, 0))
 			return ECMD_FAILED;
 	}
 
@@ -48,7 +48,7 @@ static int _lvscan_single_lvmetad(struct cmd_context *cmd, struct logical_volume
 }
 
 static int lvscan_single(struct cmd_context *cmd, struct logical_volume *lv,
-			 void *handle __attribute__((unused)))
+			 struct processing_handle *handle __attribute__((unused)))
 {
 	struct lvinfo info;
 	int inkernel, snap_active = 1;
@@ -56,7 +56,7 @@ static int lvscan_single(struct cmd_context *cmd, struct logical_volume *lv,
 
 	const char *active_str, *snapshot_str;
 
-	if (arg_count(cmd, cache_ARG))
+	if (arg_count(cmd, cache_long_ARG))
 		return _lvscan_single_lvmetad(cmd, lv);
 
 	if (!arg_count(cmd, all_ARG) && !lv_is_visible(lv))
@@ -93,7 +93,7 @@ static int lvscan_single(struct cmd_context *cmd, struct logical_volume *lv,
 
 int lvscan(struct cmd_context *cmd, int argc, char **argv)
 {
-	if (argc && !arg_count(cmd, cache_ARG)) {
+	if (argc && !arg_count(cmd, cache_long_ARG)) {
 		log_error("No additional command line arguments allowed");
 		return EINVALID_CMD_LINE;
 	}

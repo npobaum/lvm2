@@ -25,11 +25,6 @@
 #include "metadata.h"
 #include "lv_alloc.h"
 
-static const char *_raid_name(const struct lv_segment *seg)
-{
-	return seg->segtype->name;
-}
-
 static void _raid_display(const struct lv_segment *seg)
 {
 	unsigned s;
@@ -243,12 +238,12 @@ static int _raid_add_target_line(struct dev_manager *dm __attribute__((unused)),
 	if (mirror_in_sync())
 		flags = DM_NOSYNC;
 
-	params.raid_type = _raid_name(seg);
+	params.raid_type = lvseg_name(seg);
 	if (seg->segtype->parity_devs) {
 		/* RAID 4/5/6 */
 		params.mirrors = 1;
 		params.stripes = seg->area_count - seg->segtype->parity_devs;
-	} else if (strcmp(seg->segtype->name, "raid10")) {
+	} else if (strcmp(seg->segtype->name, SEG_TYPE_NAME_RAID10)) {
 		/* RAID 10 only supports 2 mirrors now */
 		params.mirrors = 2;
 		params.stripes = seg->area_count / 2;
@@ -336,7 +331,7 @@ static int _raid_target_present(struct cmd_context *cmd,
 		unsigned raid_feature;
 		const char *feature;
 	} _features[] = {
-		{ 1, 3, RAID_FEATURE_RAID10, "raid10" },
+		{ 1, 3, RAID_FEATURE_RAID10, SEG_TYPE_NAME_RAID10 },
 	};
 
 	static int _raid_checked = 0;
@@ -418,7 +413,6 @@ static int _raid_target_unmonitor_events(struct lv_segment *seg, int events)
 #endif /* DEVMAPPER_SUPPORT */
 
 static struct segtype_handler _raid_ops = {
-	.name = _raid_name,
 	.display = _raid_display,
 	.text_import_area_count = _raid_text_import_area_count,
 	.text_import = _raid_text_import,
@@ -468,10 +462,10 @@ static struct segment_type *_init_raid_segtype(struct cmd_context *cmd,
 			  rt->name);
 		return NULL;
 	}
-	segtype->cmd = cmd;
+
 	segtype->ops = &_raid_ops;
 	segtype->name = rt->name;
-	segtype->flags = SEG_RAID | rt->extra_flags | monitored;
+	segtype->flags = SEG_RAID | SEG_ONLY_EXCLUSIVE | rt->extra_flags | monitored;
 	segtype->parity_devs = rt->parity;
 
 	log_very_verbose("Initialised segtype: %s", segtype->name);

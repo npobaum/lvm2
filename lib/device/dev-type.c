@@ -25,6 +25,11 @@
 #include <blkid.h>
 #endif
 
+#ifdef UDEV_SYNC_SUPPORT
+#include <libudev.h>
+#include "dev-ext-udev-constants.h"
+#endif
+
 #include "device-types.h"
 
 struct dev_types *create_dev_types(const char *proc_dir,
@@ -111,6 +116,10 @@ struct dev_types *create_dev_types(const char *proc_dir,
 		/* Look for drbd device */
 		if (!strncmp("drbd", line + i, 4) && isspace(*(line + i + 4)))
 			dt->drbd_major = line_maj;
+
+		/* Look for DASD */
+		if (!strncmp("dasd", line + i, 4) && isspace(*(line + i + 4)))
+			dt->dasd_major = line_maj;
 
 		/* Look for EMC powerpath */
 		if (!strncmp("emcpower", line + i, 8) && isspace(*(line + i + 8)))
@@ -216,11 +225,17 @@ int dev_subsystem_part_major(struct dev_types *dt, struct device *dev)
 
 const char *dev_subsystem_name(struct dev_types *dt, struct device *dev)
 {
+	if (MAJOR(dev->dev) == dt->device_mapper_major)
+		return "DM";
+
 	if (MAJOR(dev->dev) == dt->md_major)
 		return "MD";
 
 	if (MAJOR(dev->dev) == dt->drbd_major)
 		return "DRBD";
+
+	if (MAJOR(dev->dev) == dt->dasd_major)
+		return "DASD";
 
 	if (MAJOR(dev->dev) == dt->emcpower_major)
 		return "EMCPOWER";
@@ -272,6 +287,9 @@ static int _is_partitionable(struct dev_types *dt, struct device *dev)
 {
 	int parts = major_max_partitions(dt, MAJOR(dev->dev));
 
+	if (MAJOR(dev->dev) == dt->device_mapper_major)
+		return 1;
+
 	/* All MD devices are partitionable via blkext (as of 2.6.28) */
 	if (MAJOR(dev->dev) == dt->md_major)
 		return 1;
@@ -314,12 +332,66 @@ static int _has_partition_table(struct device *dev)
 	return ret;
 }
 
-int dev_is_partitioned(struct dev_types *dt, struct device *dev)
+#ifdef UDEV_SYNC_SUPPORT
+static int _udev_dev_is_partitioned(struct device *dev)
 {
+	struct dev_ext *ext;
+
+	if (!(ext = dev_ext_get(dev)))
+		return_0;
+
+	if (!udev_device_get_property_value((struct udev_device *)ext->handle, DEV_EXT_UDEV_BLKID_PART_TABLE_TYPE))
+		return 0;
+
+	if (udev_device_get_property_value((struct udev_device *)ext->handle, DEV_EXT_UDEV_BLKID_PART_ENTRY_DISK))
+		return 0;
+
+	return 1;
+}
+#else
+static int _udev_dev_is_partitioned(struct device *dev)
+{
+	return 0;
+}
+#endif
+
+static int _native_dev_is_partitioned(struct dev_types *dt, struct device *dev)
+{
+	int r;
+
 	if (!_is_partitionable(dt, dev))
 		return 0;
 
-	return _has_partition_table(dev);
+	/* Unpartitioned DASD devices are not supported. */
+	if (MAJOR(dev->dev) == dt->dasd_major)
+		return 1;
+
+	if (!dev_open_readonly_quiet(dev)) {
+		log_debug_devs("%s: failed to open device, considering device "
+			       "is partitioned", dev_name(dev));
+		return 1;
+	}
+
+	r = _has_partition_table(dev);
+
+	if (!dev_close(dev))
+		stack;
+
+	return r;
+}
+
+int dev_is_partitioned(struct dev_types *dt, struct device *dev)
+{
+	if (dev->ext.src == DEV_EXT_NONE)
+		return _native_dev_is_partitioned(dt, dev);
+
+	if (dev->ext.src == DEV_EXT_UDEV)
+		return _udev_dev_is_partitioned(dev);
+
+	log_error(INTERNAL_ERROR "Missing hook for partition table recognition "
+		  "using external device info source %s", dev_ext_name(dev));
+
+	return 0;
 }
 
 /*
@@ -361,7 +433,7 @@ int dev_get_primary_dev(struct dev_types *dt, struct device *dev, dev_t *result)
 	 */
 	if ((parts = dt->dev_type_array[major].max_partitions) > 1) {
 		if ((residue = minor % parts)) {
-			*result = MKDEV((dev_t)major, (minor - residue));
+			*result = MKDEV((dev_t)major, (dev_t)(minor - residue));
 			ret = 2;
 		} else {
 			*result = dev->dev;
@@ -438,7 +510,7 @@ int dev_get_primary_dev(struct dev_types *dt, struct device *dev, dev_t *result)
 			  path, buffer);
 		goto out;
 	}
-	*result = MKDEV((dev_t)major, minor);
+	*result = MKDEV((dev_t)major, (dev_t)minor);
 	ret = 2;
 out:
 	if (fp && fclose(fp))
@@ -460,9 +532,9 @@ static int _blkid_wipe(blkid_probe probe, struct device *dev, const char *name,
 		       uint32_t types_to_exclude, uint32_t types_no_prompt,
 		       int yes, force_t force)
 {
-	static const char const _msg_failed_offset[] = "Failed to get offset of the %s signature on %s.";
-	static const char const _msg_failed_length[] = "Failed to get length of the %s signature on %s.";
-	static const char const _msg_wiping[] = "Wiping %s signature on %s.";
+	static const char _msg_failed_offset[] = "Failed to get offset of the %s signature on %s.";
+	static const char _msg_failed_length[] = "Failed to get length of the %s signature on %s.";
+	static const char _msg_wiping[] = "Wiping %s signature on %s.";
 	const char *offset = NULL, *type = NULL, *magic = NULL,
 		   *usage = NULL, *label = NULL, *uuid = NULL;
 	loff_t offset_value;
@@ -470,7 +542,7 @@ static int _blkid_wipe(blkid_probe probe, struct device *dev, const char *name,
 
 	if (!blkid_probe_lookup_value(probe, "TYPE", &type, NULL)) {
 		if (_type_in_flag_list(type, types_to_exclude))
-			return 1;
+			return 2;
 		if (blkid_probe_lookup_value(probe, "SBMAGIC_OFFSET", &offset, NULL)) {
 			log_error(_msg_failed_offset, type, name);
 			return 0;
@@ -526,11 +598,16 @@ static int _blkid_wipe(blkid_probe probe, struct device *dev, const char *name,
 static int _wipe_known_signatures_with_blkid(struct device *dev, const char *name,
 					     uint32_t types_to_exclude,
 					     uint32_t types_no_prompt,
-					     int yes, force_t force)
+					     int yes, force_t force, int *wiped)
 {
 	blkid_probe probe = NULL;
-	int found = 0, wiped = 0, left = 0;
+	int found = 0, left = 0, wiped_tmp;
+	int r_wipe;
 	int r = 0;
+
+	if (!wiped)
+		wiped = &wiped_tmp;
+	*wiped = 0;
 
 	/* TODO: Should we check for valid dev - _dev_is_valid(dev)? */
 
@@ -552,15 +629,17 @@ static int _wipe_known_signatures_with_blkid(struct device *dev, const char *nam
 						 BLKID_SUBLKS_BADCSUM);
 
 	while (!blkid_do_probe(probe)) {
-		found++;
-		if (_blkid_wipe(probe, dev, name, types_to_exclude, types_no_prompt, yes, force))
-			wiped++;
+		if ((r_wipe = _blkid_wipe(probe, dev, name, types_to_exclude, types_no_prompt, yes, force)) == 1)
+			(*wiped)++;
+		/* do not count excluded types */
+		if (r_wipe != 2)
+			found++;
 	}
 
 	if (!found)
 		r = 1;
 
-	left = found - wiped;
+	left = found - *wiped;
 	if (!left)
 		r = 1;
 	else
@@ -575,7 +654,7 @@ out:
 #endif /* BLKID_WIPING_SUPPORT */
 
 static int _wipe_signature(struct device *dev, const char *type, const char *name,
-			   int wipe_len, int yes, force_t force,
+			   int wipe_len, int yes, force_t force, int *wiped,
 			   int (*signature_detection_fn)(struct device *dev, uint64_t *offset_found))
 {
 	int wipe;
@@ -605,17 +684,24 @@ static int _wipe_signature(struct device *dev, const char *type, const char *nam
 		return 0;
 	}
 
+	(*wiped)++;
 	return 1;
 }
 
 static int _wipe_known_signatures_with_lvm(struct device *dev, const char *name,
 					   uint32_t types_to_exclude __attribute__((unused)),
 					   uint32_t types_no_prompt __attribute__((unused)),
-					   int yes, force_t force)
+					   int yes, force_t force, int *wiped)
 {
-	if (!_wipe_signature(dev, "software RAID md superblock", name, 4, yes, force, dev_is_md) ||
-	    !_wipe_signature(dev, "swap signature", name, 10, yes, force, dev_is_swap) ||
-	    !_wipe_signature(dev, "LUKS signature", name, 8, yes, force, dev_is_luks))
+	int wiped_tmp;
+
+	if (!wiped)
+		wiped = &wiped_tmp;
+	*wiped = 0;
+
+	if (!_wipe_signature(dev, "software RAID md superblock", name, 4, yes, force, wiped, dev_is_md) ||
+	    !_wipe_signature(dev, "swap signature", name, 10, yes, force, wiped, dev_is_swap) ||
+	    !_wipe_signature(dev, "LUKS signature", name, 8, yes, force, wiped, dev_is_luks))
 		return 0;
 
 	return 1;
@@ -623,19 +709,20 @@ static int _wipe_known_signatures_with_lvm(struct device *dev, const char *name,
 
 int wipe_known_signatures(struct cmd_context *cmd, struct device *dev,
 			  const char *name, uint32_t types_to_exclude,
-			  uint32_t types_no_prompt, int yes, force_t force)
+			  uint32_t types_no_prompt, int yes, force_t force,
+			  int *wiped)
 {
 #ifdef BLKID_WIPING_SUPPORT
 	if (find_config_tree_bool(cmd, allocation_use_blkid_wiping_CFG, NULL))
 		return _wipe_known_signatures_with_blkid(dev, name,
 							 types_to_exclude,
 							 types_no_prompt,
-							 yes, force);
+							 yes, force, wiped);
 #endif
 	return _wipe_known_signatures_with_lvm(dev, name,
 					       types_to_exclude,
 					       types_no_prompt,
-					       yes, force);
+					       yes, force, wiped);
 }
 
 #ifdef __linux__
@@ -655,23 +742,25 @@ static int _snprintf_attr(char *buf, size_t buf_size, const char *sysfs_dir,
 
 static unsigned long _dev_topology_attribute(struct dev_types *dt,
 					     const char *attribute,
-					     struct device *dev)
+					     struct device *dev,
+					     unsigned long default_value)
 {
 	const char *sysfs_dir = dm_sysfs_dir();
 	char path[PATH_MAX], buffer[64];
 	FILE *fp;
 	struct stat info;
 	dev_t uninitialized_var(primary);
-	unsigned long result = 0UL;
+	unsigned long result = default_value;
+	unsigned long value = 0UL;
 
 	if (!attribute || !*attribute)
-		return_0;
+		goto_out;
 
 	if (!sysfs_dir || !*sysfs_dir)
-		return_0;
+		goto_out;
 
 	if (!_snprintf_attr(path, sizeof(path), sysfs_dir, attribute, dev->dev))
-                return_0;
+                goto_out;
 
 	/*
 	 * check if the desired sysfs attribute exists
@@ -681,72 +770,79 @@ static unsigned long _dev_topology_attribute(struct dev_types *dt,
 	if (stat(path, &info) == -1) {
 		if (errno != ENOENT) {
 			log_sys_debug("stat", path);
-			return 0;
+			goto out;
 		}
 		if (!dev_get_primary_dev(dt, dev, &primary))
-			return 0;
+			goto out;
 
 		/* get attribute from partition's primary device */
 		if (!_snprintf_attr(path, sizeof(path), sysfs_dir, attribute, primary))
-			return_0;
+			goto_out;
 
 		if (stat(path, &info) == -1) {
 			if (errno != ENOENT)
 				log_sys_debug("stat", path);
-			return 0;
+			goto out;
 		}
 	}
 
 	if (!(fp = fopen(path, "r"))) {
 		log_sys_debug("fopen", path);
-		return 0;
+		goto out;
 	}
 
 	if (!fgets(buffer, sizeof(buffer), fp)) {
 		log_sys_debug("fgets", path);
-		goto out;
+		goto out_close;
 	}
 
-	if (sscanf(buffer, "%lu", &result) != 1) {
+	if (sscanf(buffer, "%lu", &value) != 1) {
 		log_warn("sysfs file %s not in expected format: %s", path, buffer);
-		goto out;
+		goto out_close;
 	}
 
-	log_very_verbose("Device %s %s is %lu bytes.",
-			 dev_name(dev), attribute, result);
+	log_very_verbose("Device %s: %s is %lu%s.",
+			 dev_name(dev), attribute, value, default_value ? "" : " bytes");
 
-out:
+	result = value >> SECTOR_SHIFT;
+
+out_close:
 	if (fclose(fp))
 		log_sys_debug("fclose", path);
 
-	return result >> SECTOR_SHIFT;
+out:
+	return result;
 }
 
 unsigned long dev_alignment_offset(struct dev_types *dt, struct device *dev)
 {
-	return _dev_topology_attribute(dt, "alignment_offset", dev);
+	return _dev_topology_attribute(dt, "alignment_offset", dev, 0UL);
 }
 
 unsigned long dev_minimum_io_size(struct dev_types *dt, struct device *dev)
 {
-	return _dev_topology_attribute(dt, "queue/minimum_io_size", dev);
+	return _dev_topology_attribute(dt, "queue/minimum_io_size", dev, 0UL);
 }
 
 unsigned long dev_optimal_io_size(struct dev_types *dt, struct device *dev)
 {
-	return _dev_topology_attribute(dt, "queue/optimal_io_size", dev);
+	return _dev_topology_attribute(dt, "queue/optimal_io_size", dev, 0UL);
 }
 
 unsigned long dev_discard_max_bytes(struct dev_types *dt, struct device *dev)
 {
-	return _dev_topology_attribute(dt, "queue/discard_max_bytes", dev);
+	return _dev_topology_attribute(dt, "queue/discard_max_bytes", dev, 0UL);
 }
 
 unsigned long dev_discard_granularity(struct dev_types *dt, struct device *dev)
 {
-	return _dev_topology_attribute(dt, "queue/discard_granularity", dev);
+	return _dev_topology_attribute(dt, "queue/discard_granularity", dev, 0UL);
 }
 
+int dev_is_rotational(struct dev_types *dt, struct device *dev)
+{
+	return (int) _dev_topology_attribute(dt, "queue/rotational", dev, 1UL);
+}
 #else
 
 int dev_get_primary_dev(struct dev_types *dt, struct device *dev, dev_t *result)
@@ -779,4 +875,8 @@ unsigned long dev_discard_granularity(struct dev_types *dt, struct device *dev)
 	return 0UL;
 }
 
+int dev_is_rotational(struct dev_types *dt, struct device *dev)
+{
+	return 1;
+}
 #endif

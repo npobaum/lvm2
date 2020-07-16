@@ -10,7 +10,11 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
+export LVM_TEST_THIN_REPAIR_CMD=${LVM_TEST_THIN_REPAIR_CMD-/bin/false}
+
 . lib/inittest
+
+test -e LOCAL_LVMPOLLD && skip
 
 check_lv_field_modules_()
 {
@@ -41,9 +45,16 @@ lvcreate -K -s $vg/$lv1 -pr --name snap
 fsck -n "$DM_DEV_DIR/$vg/snap"
 lvcreate -K -s $vg/$lv1 --name $lv2
 lvcreate -K -s $vg/$lv1 --name $vg/$lv3
-lvcreate --type snapshot $vg/$lv1
-lvcreate --type snapshot $vg/$lv1 --name $lv4
-lvcreate --type snapshot $vg/$lv1 --name $vg/$lv5
+# old-snapshot without known size is invalid
+invalid lvcreate --type snapshot $vg/$lv1
+invalid lvcreate --type snapshot $vg/$lv1 --name $lv4
+invalid lvcreate --type snapshot $vg/$lv1 --name $vg/$lv5
+# some other ways how to take a thin snapshot
+lvcreate -T $vg/$lv1
+lvcreate --thin $vg/$lv1 --name $lv4
+lvcreate --type thin $vg/$lv1 --name $vg/$lv5
+# virtual size needs thin pool
+fail lvcreate --type thin $vg/$lv1 -V20
 
 # create old-style snapshot
 lvcreate -s -L10M --name oldsnap1 $vg/$lv2

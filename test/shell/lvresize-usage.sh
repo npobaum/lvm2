@@ -11,6 +11,8 @@
 
 . lib/inittest
 
+test -e LOCAL_LVMPOLLD && skip
+
 aux prepare_vg 2 80
 
 lvcreate -L 10M -n lv -i2 $vg
@@ -27,8 +29,8 @@ grep "Reducing stripe size" err
 
 lvremove -ff $vg
 
-lvcreate -L 10M -n lv $vg $dev1
-lvextend -L +10M $vg/lv $dev2
+lvcreate -L 10M -n lv $vg "$dev1"
+lvextend -L +10M $vg/lv "$dev2"
 
 # Attempt to reduce with lvextend and vice versa:
 not lvextend -L 16M $vg/lv

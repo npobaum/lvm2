@@ -26,6 +26,7 @@ void fin_locking(void);
 void reset_locking(void);
 int vg_write_lock_held(void);
 int locking_is_clustered(void);
+int locking_supports_remote_queries(void);
 
 int remote_lock_held(const char *vol, int *exclusive);
 
@@ -48,7 +49,7 @@ int remote_lock_held(const char *vol, int *exclusive);
  *   Lock/unlock an individual logical volume
  *   char *vol holds lvid
  */
-int lock_vol(struct cmd_context *cmd, const char *vol, uint32_t flags, struct logical_volume *lv);
+int lock_vol(struct cmd_context *cmd, const char *vol, uint32_t flags, const struct logical_volume *lv);
 
 /*
  * Internal locking representation.
@@ -113,7 +114,7 @@ int check_lvm1_vg_inactive(struct cmd_context *cmd, const char *vgname);
 #define LCK_DMEVENTD_MONITOR_MODE	0x04	/* Register with dmeventd */
 
 /* Not yet used. */
-#define LCK_CONVERT			0x08	/* Convert existing lock */
+#define LCK_CONVERT_MODE		0x08	/* Convert existing lock */
 
 #define LCK_TEST_MODE			0x10    /* Test mode: No activation */
 #define LCK_ORIGIN_ONLY_MODE		0x20	/* Same as above */

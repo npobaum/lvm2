@@ -204,11 +204,6 @@ for ARG
 do
     if [ -b "$ARG" ]
     then
-        PVS_OUT=`"${LVM}" pvs ${LVM_OPTS} --noheadings -o vg_name "$ARG"`
-        checkvalue $? "$ARG could not be verified to be a PV without errors."
-        PV_VGNAME=$(echo $PVS_OUT | $GREP -v '[[:space:]]+$')
-        [ -z "$PV_VGNAME" ] && die 3 "$ARG is not in a VG."
-
         ln -s "$ARG" ${TMP_LVM_SYSTEM_DIR}/vgimport${DEVNO}
         DISKS="${DISKS} ${TMP_LVM_SYSTEM_DIR}/vgimport${DEVNO}"
         DEVNO=$((${DEVNO}+1))
@@ -242,17 +237,17 @@ export FILTER="filter=[ ${FILTER} \"r|.*|\" ]"
 
 LVMCONF=${TMP_LVM_SYSTEM_DIR}/lvm.conf
 
-# FIXME convert to cmdline override
-"$LVM" dumpconfig ${LVM_OPTS} | \
-"$AWK" -v DEV=${TMP_LVM_SYSTEM_DIR} -v CACHE=${TMP_LVM_SYSTEM_DIR}/.cache \
-    -v CACHE_DIR=${TMP_LVM_SYSTEM_DIR}/cache \
-    '/^[ \t]*filter[ \t]*=/{print ENVIRON["FILTER"];next} \
-     /^[ \t]*scan[ \t]*=/{print "scan = [ \"" DEV "\" ]";next} \
-     /^[ \t]*cache[ \t]*=/{print "cache = \"" CACHE "\"";next} \
-     /^[ \t]*use_lvmetad[ \t]*=/{print "use_lvmetad = 0";next} \
-     /^[ \t]*global_filter[ \t]*=/{print "global_filter = [ \"a|.*|\" ]";next} \
-     /^[ \t]*cache_dir[ \t]*=/{print "cache_dir = \"" CACHE_DIR "\"";next} \
-     {print $0}' > ${LVMCONF}
+CMD_CONFIG_LINE="devices { \
+                   scan = [ \"${TMP_LVM_SYSTEM_DIR}\" ] \
+                   cache_dir = \"$TMP_LVM_SYSTEM_DIR}/cache\"
+                   global_filter = [ \"a|.*|\" ] \
+                   ${FILTER}
+                 } \
+                 global { \
+                   use_lvmetad = 0 \
+                 }"
+
+$LVM dumpconfig ${LVM_OPTS} --file ${LVMCONF} --mergedconfig --config "${CMD_CONFIG_LINE}"
 
 checkvalue $? "Failed to generate ${LVMCONF}"
 # Only keep TMP_LVM_SYSTEM_DIR if it contains something worth keeping
@@ -363,6 +358,16 @@ fi
 ### the device nodes we need are straight
 if [ ${CHANGES_MADE} -eq 1 ]
 then
+    # get global/use_lvmetad config and if set also notify lvmetad about changes
+    # since we were running LVM commands above with use_lvmetad=0
+    eval $(${LVM} dumpconfig ${LVM_OPTS} global/use_lvmetad)
+    if [ "$use_lvmetad" = "1" ]
+    then
+      echo "Notifying lvmetad about changes since it was disabled temporarily."
+      echo "(This resolves any WARNING message about restarting lvmetad that appears above.)"
+      LVM_OPTS="${LVM_OPTS} --cache"
+    fi
+
     "$LVM" vgscan ${LVM_OPTS} --mknodes
 fi
 

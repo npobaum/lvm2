@@ -15,6 +15,8 @@
 
 . lib/inittest
 
+test -e LOCAL_LVMPOLLD && skip
+
 aux prepare_devs 5
 get_devs
 
@@ -67,6 +69,11 @@ lvcreate -aey -l2 --type mirror -m2 -n $lv3 $vg
 test $(lvs --noheadings $vg | wc -l) -eq 2
 test $(lvs -a --noheadings $vg | wc -l) -eq 6
 dmsetup ls | grep "$PREFIX" | grep -v "LVMTEST.*pv."
+
+# Check we parse /dev/mapper/vg-lv
+lvdisplay "$DM_DEV_DIR/mapper/$vg-$lv3"
+# Check we parse /dev/vg/lv
+lvdisplay "$DM_DEV_DIR/$vg/$lv3"
 
 lvcreate -l2 -s $vg/$lv3
 lvcreate -l1 -s -n inval $vg/$lv3

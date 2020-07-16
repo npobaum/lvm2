@@ -171,11 +171,9 @@ struct load_segment {
 	uint32_t flags;			/* Mirror + raid + Cache */
 	char *uuid;			/* Clustered mirror log */
 
-	unsigned core_argc;		/* Cache */
-	const char *const *core_argv;	/* Cache */
 	const char *policy_name;	/* Cache */
 	unsigned policy_argc;		/* Cache */
-	const char *const *policy_argv;	/* Cache */
+	struct dm_config_node *policy_settings;	/* Cache */
 
 	const char *cipher;		/* Crypt */
 	const char *chainmode;		/* Crypt */
@@ -206,6 +204,8 @@ struct load_segment {
 	unsigned skip_block_zeroing;	/* Thin_pool */
 	unsigned ignore_discard;	/* Thin_pool target vsn 1.1 */
 	unsigned no_discard_passdown;	/* Thin_pool target vsn 1.1 */
+	unsigned error_if_no_space;	/* Thin pool target vsn 1.10 */
+	unsigned read_only;		/* Thin pool target vsn 1.3 */
 	uint32_t device_id;		/* Thin */
 
 };
@@ -512,7 +512,7 @@ static struct dm_tree_node *_create_dm_tree_node(struct dm_tree *dtree,
 	dm_list_init(&node->activated);
 	dm_list_init(&node->props.segs);
 
-	dev = MKDEV((dev_t)info->major, info->minor);
+	dev = MKDEV((dev_t)info->major, (dev_t)info->minor);
 
 	if (!dm_hash_insert_binary(dtree->devs, (const char *) &dev,
 				sizeof(dev), node)) {
@@ -536,7 +536,7 @@ static struct dm_tree_node *_create_dm_tree_node(struct dm_tree *dtree,
 static struct dm_tree_node *_find_dm_tree_node(struct dm_tree *dtree,
 					       uint32_t major, uint32_t minor)
 {
-	dev_t dev = MKDEV((dev_t)major, minor);
+	dev_t dev = MKDEV((dev_t)major, (dev_t)minor);
 
 	return dm_hash_lookup_binary(dtree->devs, (const char *) &dev,
 				     sizeof(dev));
@@ -1507,11 +1507,13 @@ static int _thin_pool_node_message(struct dm_tree_node *dnode, struct thin_messa
 	if (!dm_task_set_message(dmt, buf))
 		goto_out;
 
-        /* Internal functionality of dm_task */
+	/* Internal functionality of dm_task */
 	dmt->expected_errno = tm->expected_errno;
 
-	if (!dm_task_run(dmt))
-		goto_out;
+	if (!dm_task_run(dmt)) {
+		log_error("Failed to process thin pool message \"%s\".", buf);
+		goto out;
+	}
 
 	r = 1;
 out:
@@ -2366,25 +2368,23 @@ static int _cache_emit_segment_line(struct dm_task *dmt,
 				    char *params, size_t paramsize)
 {
 	int pos = 0;
-	unsigned i = 0;
-	unsigned feature_count;
-	struct seg_area *area;
+	/* unsigned feature_count; */
 	char data[DM_FORMAT_DEV_BUFSIZE];
 	char metadata[DM_FORMAT_DEV_BUFSIZE];
 	char origin[DM_FORMAT_DEV_BUFSIZE];
+	const char *name;
+	struct dm_config_node *cn;
+
+	/* Cache Dev */
+	if (!_build_dev_string(data, sizeof(data), seg->pool))
+		return_0;
 
 	/* Metadata Dev */
 	if (!_build_dev_string(metadata, sizeof(metadata), seg->metadata))
 		return_0;
 
-	/* Cache Dev */
-	if (!_build_dev_string(data, sizeof(origin), seg->pool))
-		return_0;
-
 	/* Origin Dev */
-	dm_list_iterate_items(area, &seg->areas)
-		break; /* There is only ever 1 area */
-	if (!_build_dev_string(origin, sizeof(data), area->dev_node))
+	if (!_build_dev_string(origin, sizeof(origin), seg->origin))
 		return_0;
 
 	EMIT_PARAMS(pos, " %s %s %s", metadata, data, origin);
@@ -2393,34 +2393,24 @@ static int _cache_emit_segment_line(struct dm_task *dmt,
 	EMIT_PARAMS(pos, " %u", seg->chunk_size);
 
 	/* Features */
-	feature_count = hweight32(seg->flags);
-	EMIT_PARAMS(pos, " %u", feature_count);
-	if (seg->flags & DM_CACHE_FEATURE_WRITETHROUGH)
-		EMIT_PARAMS(pos, " writethrough");
+	/* feature_count = hweight32(seg->flags); */
+	/* EMIT_PARAMS(pos, " %u", feature_count); */
+	if (seg->flags & DM_CACHE_FEATURE_PASSTHROUGH)
+		EMIT_PARAMS(pos, " 1 passthrough");
+	else if (seg->flags & DM_CACHE_FEATURE_WRITETHROUGH)
+		EMIT_PARAMS(pos, " 1 writethrough");
 	else if (seg->flags & DM_CACHE_FEATURE_WRITEBACK)
-		EMIT_PARAMS(pos, " writeback");
-
-	/* Core Arguments (like 'migration_threshold') */
-	if (seg->core_argc) {
-		EMIT_PARAMS(pos, " %u", seg->core_argc);
-		for (i = 0; i < seg->core_argc; i++)
-			EMIT_PARAMS(pos, " %s", seg->core_argv[i]);
-	}
+		EMIT_PARAMS(pos, " 1 writeback");
 
 	/* Cache Policy */
-	if (!seg->policy_name)
-		EMIT_PARAMS(pos, " default 0");
-	else {
-		EMIT_PARAMS(pos, " %s %u", seg->policy_name, seg->policy_argc);
-		if (seg->policy_argc % 2) {
-			log_error(INTERNAL_ERROR
-				  "Cache policy arguments must be in "
-				  "<key> <value> pairs");
-			return 0;
-		}
-		for (i = 0; i < seg->policy_argc; i++)
-			EMIT_PARAMS(pos, " %s", seg->policy_argv[i]);
-	}
+	name = seg->policy_name ? : "default";
+
+	EMIT_PARAMS(pos, " %s", name);
+
+	EMIT_PARAMS(pos, " %u", seg->policy_argc * 2);
+	if (seg->policy_settings)
+		for (cn = seg->policy_settings->child; cn; cn = cn->sib)
+			EMIT_PARAMS(pos, " %s %" PRIu64, cn->key, cn->v->v.i);
 
 	return 1;
 }
@@ -2431,9 +2421,11 @@ static int _thin_pool_emit_segment_line(struct dm_task *dmt,
 {
 	int pos = 0;
 	char pool[DM_FORMAT_DEV_BUFSIZE], metadata[DM_FORMAT_DEV_BUFSIZE];
-	int features = (seg->skip_block_zeroing ? 1 : 0) +
-			(seg->ignore_discard ? 1 : 0) +
-			(seg->no_discard_passdown ? 1 : 0);
+	int features = (seg->error_if_no_space ? 1 : 0) +
+		 (seg->read_only ? 1 : 0) +
+		 (seg->ignore_discard ? 1 : 0) +
+		 (seg->no_discard_passdown ? 1 : 0) +
+		 (seg->skip_block_zeroing ? 1 : 0);
 
 	if (!_build_dev_string(metadata, sizeof(metadata), seg->metadata))
 		return_0;
@@ -2441,8 +2433,10 @@ static int _thin_pool_emit_segment_line(struct dm_task *dmt,
 	if (!_build_dev_string(pool, sizeof(pool), seg->pool))
 		return_0;
 
-	EMIT_PARAMS(pos, "%s %s %d %" PRIu64 " %d%s%s%s", metadata, pool,
+	EMIT_PARAMS(pos, "%s %s %d %" PRIu64 " %d%s%s%s%s%s", metadata, pool,
 		    seg->data_block_size, seg->low_water_mark, features,
+		    seg->error_if_no_space ? " error_if_no_space" : "",
+		    seg->read_only ? " read_only" : "",
 		    seg->skip_block_zeroing ? " skip_block_zeroing" : "",
 		    seg->ignore_discard ? " ignore_discard" : "",
 		    seg->no_discard_passdown ? " no_discard_passdown" : ""
@@ -3190,7 +3184,7 @@ int dm_tree_node_add_raid_target_with_params(struct dm_tree_node *node,
 					     uint64_t size,
 					     struct dm_tree_node_raid_params *p)
 {
-	int i;
+	unsigned i;
 	struct load_segment *seg = NULL;
 
 	for (i = 0; i < DM_ARRAY_SIZE(_dm_segtypes) && !seg; ++i)
@@ -3313,17 +3307,15 @@ bad:
 
 int dm_tree_node_add_cache_target(struct dm_tree_node *node,
 				  uint64_t size,
+				  uint64_t feature_flags, /* DM_CACHE_FEATURE_* */
 				  const char *metadata_uuid,
 				  const char *data_uuid,
 				  const char *origin_uuid,
-				  uint32_t chunk_size,
-				  uint32_t feature_flags, /* DM_CACHE_FEATURE_* */
-				  unsigned core_argc,
-				  const char *const *core_argv,
 				  const char *policy_name,
-				  unsigned policy_argc,
-				  const char *const *policy_argv)
+				  const struct dm_config_node *policy_settings,
+				  uint32_t chunk_size)
 {
+	struct dm_config_node *cn;
 	struct load_segment *seg;
 
 	if (!(seg = _add_segment(node, SEG_CACHE, size)))
@@ -3347,18 +3339,35 @@ int dm_tree_node_add_cache_target(struct dm_tree_node *node,
 	if (!_link_tree_nodes(node, seg->metadata))
 		return_0;
 
+
+	if (!(seg->origin = dm_tree_find_node_by_uuid(node->dtree,
+						      origin_uuid))) {
+		log_error("Missing cache's origin uuid %s.",
+			  metadata_uuid);
+		return 0;
+	}
+	if (!_link_tree_nodes(node, seg->origin))
+		return_0;
+
 	seg->chunk_size = chunk_size;
-
 	seg->flags = feature_flags;
-
-	/* FIXME: validation missing */
-
-	seg->core_argc = core_argc;
-	seg->core_argv = core_argv;
-
 	seg->policy_name = policy_name;
-	seg->policy_argc = policy_argc;
-	seg->policy_argv = policy_argv;
+
+	/* FIXME: better validation missing */
+	if (policy_settings) {
+		if (!(seg->policy_settings = dm_config_clone_node_with_mem(node->dtree->mem, policy_settings, 0)))
+			return_0;
+
+		for (cn = seg->policy_settings->child; cn; cn = cn->sib) {
+			if (!cn->v || (cn->v->type != DM_CFG_INT)) {
+				/* For now only  <key> = <int>  pairs are supported */
+				log_error("Cache policy parameter %s is without integer value.", cn->key);
+				return 0;
+			}
+			seg->policy_argc++;
+		}
+	}
+
 
 	return 1;
 }
@@ -3757,7 +3766,8 @@ int dm_tree_node_add_thin_pool_target(struct dm_tree_node *node,
 	seg->metadata->props.delay_resume_if_new = 0;
 	seg->pool->props.delay_resume_if_new = 0;
 
-	node->props.send_messages = 1;
+	/* Validate only transaction_id > 0 when activating thin-pool */
+	node->props.send_messages = transaction_id ? 1 : 0;
 	seg->transaction_id = transaction_id;
 	seg->low_water_mark = low_water_mark;
 	seg->data_block_size = data_block_size;
@@ -3826,6 +3836,7 @@ int dm_tree_node_add_thin_pool_message(struct dm_tree_node *node,
 
 	tm->message.type = type;
 	dm_list_add(&seg->thin_messages, &tm->list);
+	node->props.send_messages = 1;
 
 	return 1;
 }
@@ -3841,6 +3852,32 @@ int dm_tree_node_set_thin_pool_discard(struct dm_tree_node *node,
 
 	seg->ignore_discard = ignore;
 	seg->no_discard_passdown = no_passdown;
+
+	return 1;
+}
+
+int dm_tree_node_set_thin_pool_error_if_no_space(struct dm_tree_node *node,
+						 unsigned error_if_no_space)
+{
+	struct load_segment *seg;
+
+	if (!(seg = _get_single_load_segment(node, SEG_THIN_POOL)))
+		return_0;
+
+	seg->error_if_no_space = error_if_no_space;
+
+	return 1;
+}
+
+int dm_tree_node_set_thin_pool_read_only(struct dm_tree_node *node,
+					 unsigned read_only)
+{
+	struct load_segment *seg;
+
+	if (!(seg = _get_single_load_segment(node, SEG_THIN_POOL)))
+		return_0;
+
+	seg->read_only = read_only;
 
 	return 1;
 }
@@ -3933,7 +3970,15 @@ int dm_get_status_thin_pool(struct dm_pool *mem, const char *params,
 	else /* default discard_passdown */
 		s->discards = DM_THIN_DISCARDS_PASSDOWN;
 
-	s->read_only = (strstr(params + pos, "ro ")) ? 1 : 0;
+	if (strstr(params + pos, "ro "))
+		s->read_only = 1;
+	else if (strstr(params + pos, "fail"))
+		s->fail = 1;
+	else if (strstr(params + pos, "out_of_data_space"))
+		s->out_of_data_space = 1;
+
+	if (strstr(params + pos, "error_if_no_space"))
+		s->error_if_no_space = 1;
 
 	*status = s;
 

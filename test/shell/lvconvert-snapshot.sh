@@ -14,11 +14,13 @@
 
 . lib/inittest
 
+test -e LOCAL_LVMPOLLD && skip
+
 aux prepare_pvs 1
 
 vgcreate -s 1k $vg $(cat DEVICES)
 
-lvcreate -V50 -L1 -n $lv1 -s $vg
+lvcreate --type snapshot -V50 -L1 -n $lv1 -s $vg
 
 lvcreate -aey -L1 -n $lv2 $vg
 lvcreate -L1 -s -n $lv3 $vg/$lv2

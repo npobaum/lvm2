@@ -154,7 +154,7 @@ int dev_get_block_size(struct device *dev, unsigned int *physical_block_size, un
 		}
 		log_debug_devs("%s: physical block size is %u bytes", name, dev->phys_block_size);
 	}
-#elif BLKSSZGET
+#elif defined (BLKSSZGET)
 	/* if we can't get physical block size, just use logical block size instead */
 	if (dev->phys_block_size == -1) {
 		if (ioctl(dev_fd(dev), BLKSSZGET, &dev->phys_block_size) < 0) {
@@ -289,25 +289,22 @@ static int _dev_get_size_file(const struct device *dev, uint64_t *size)
 	return 1;
 }
 
-static int _dev_get_size_dev(const struct device *dev, uint64_t *size)
+static int _dev_get_size_dev(struct device *dev, uint64_t *size)
 {
-	int fd;
 	const char *name = dev_name(dev);
 
-	if ((fd = open(name, O_RDONLY)) < 0) {
-		log_sys_error("open", name);
-		return 0;
-	}
+	if (!dev_open_readonly(dev))
+		return_0;
 
-	if (ioctl(fd, BLKGETSIZE64, size) < 0) {
+	if (ioctl(dev_fd(dev), BLKGETSIZE64, size) < 0) {
 		log_sys_error("ioctl BLKGETSIZE64", name);
-		if (close(fd))
+		if (!dev_close(dev))
 			log_sys_error("close", name);
 		return 0;
 	}
 
 	*size >>= BLKSIZE_SHIFT;	/* Convert to sectors */
-	if (close(fd))
+	if (!dev_close(dev))
 		log_sys_error("close", name);
 
 	log_very_verbose("%s: size is %" PRIu64 " sectors", name, *size);
@@ -377,7 +374,7 @@ static int _dev_discard_blocks(struct device *dev, uint64_t offset_bytes, uint64
  * Public functions
  *---------------------------------------------------------------*/
 
-int dev_get_size(const struct device *dev, uint64_t *size)
+int dev_get_size(struct device *dev, uint64_t *size)
 {
 	if (!dev)
 		return 0;

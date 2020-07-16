@@ -71,6 +71,7 @@ struct cmd_context {
 
 	struct dm_list formats;	/* Available formats */
 	struct dm_list segtypes;	/* Available segment types */
+	const char *system_id;
 	const char *hostname;
 	const char *kernel_vsn;
 
@@ -95,10 +96,29 @@ struct cmd_context {
 	unsigned threaded:1;		/* Set if running within a thread e.g. clvmd */
 
 	unsigned independent_metadata_areas:1;	/* Active formats have MDAs outside PVs */
+	unsigned unknown_system_id:1;
+	unsigned include_foreign_vgs:1;
+	unsigned include_active_foreign_vgs:1;
+	unsigned error_foreign_vgs:1;
 
 	struct dev_types *dev_types;
-	struct dev_filter *filter;
+
+	/*
+	 * Use of filters depends on whether lvmetad is used or not:
+	 *
+	 *   - if lvmetad is used:
+	 *   	- cmd->lvmetad_filter used when scanning devices for lvmetad
+	 *   	- cmd->filter used when processing lvmetad responses
+	 *   	- cmd->full_filter used for remaining situations
+	 *
+	 *   - if lvmetad is not used:
+	 *   	- cmd->lvmetad_filter is NULL
+	 *   	- cmd->filter == cmd->full_filter used for all situations
+	 *
+	 */
 	struct dev_filter *lvmetad_filter;
+	struct dev_filter *filter;
+	struct dev_filter *full_filter;
 	int dump_filter;	/* Dump filter when exiting? */
 
 	struct dm_list config_files; /* master lvm config + any existing tag configs */
@@ -126,6 +146,8 @@ struct cmd_context {
 	char system_dir[PATH_MAX];
 	char dev_dir[PATH_MAX];
 	char proc_dir[PATH_MAX];
+	char display_buffer[NAME_LEN * 10];	/* Ring buffer for upto 10 longest vg/lv names */
+	unsigned display_lvname_idx;		/* Index to ring buffer */
 };
 
 /*
@@ -144,5 +166,7 @@ int config_files_changed(struct cmd_context *cmd);
 int init_lvmcache_orphans(struct cmd_context *cmd);
 
 struct format_type *get_format_by_name(struct cmd_context *cmd, const char *format);
+
+const char *system_id_from_string(struct cmd_context *cmd, const char *str);
 
 #endif

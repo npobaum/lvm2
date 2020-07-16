@@ -10,7 +10,11 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
+export LVM_TEST_THIN_REPAIR_CMD=${LVM_TEST_THIN_REPAIR_CMD-/bin/false}
+
 . lib/inittest
+
+test -e LOCAL_LVMPOLLD && skip
 
 prepare_lvs() {
 	lvremove -f $vg
@@ -27,6 +31,7 @@ aux prepare_pvs 4 64
 
 # build one large PV
 vgcreate $vg1 $(head -n 3 DEVICES)
+
 # 32bit linux kernels are fragille with device size >= 16T
 # maybe  uname -m    [ x86_64 | i686 ]
 TSIZE=64T
@@ -52,7 +57,7 @@ lvchange -an $vg/$lv1
 # conversion fails for mirror segment type
 fail lvconvert --thinpool $vg/$lv1
 # cannot use same LV
-fail lvconvert --yes --thinpool $vg/$lv2 --poolmetadata $vg/$lv2
+invalid lvconvert --yes --thinpool $vg/$lv2 --poolmetadata $vg/$lv2
 
 prepare_lvs
 
@@ -63,12 +68,25 @@ lvconvert --yes --thinpool $vg/$lv1 --poolmetadata $vg/$lv2
 
 prepare_lvs
 lvconvert --yes -c 64 --stripes 2 --thinpool $vg/$lv1 --readahead 48
-
 lvremove -f $vg
+
+
+# Swaping of metadata volume
 lvcreate -L1T -n $lv1 $vg
-lvconvert --yes -c 8M --type thin-pool $vg/$lv1
-
+lvcreate -L32 -n $lv2 $vg
+lvconvert --yes -c 8M --type thin-pool $vg/$lv1 2>&1 | tee err
+# Check tther is warning for large chunk size and zeroing enabled
+grep "Pool zeroing and large" err
+UUID=$(get lv_field $vg/$lv2 uuid)
+# Fail is pool is active
+# TODO  maybe detect inactive pool and deactivate
+fail lvconvert --yes --thinpool $vg/$lv1 --poolmetadata $lv2
+lvchange -an $vg
+lvconvert --yes --thinpool $vg/$lv1 --poolmetadata $lv2
+check lv_field $vg/${lv1}_tmeta uuid "$UUID"
 lvremove -f $vg
+
+
 # test with bigger sizes
 lvcreate -L1T -n $lv1 $vg
 lvcreate -L8M -n $lv2 $vg
@@ -81,39 +99,55 @@ invalid lvconvert --stripes 2 --thinpool $vg/$lv1 --poolmetadata $vg/$lv2
 # too small metadata (<2M)
 fail lvconvert --yes -c 64 --thinpool $vg/$lv1 --poolmetadata $vg/$lv3
 # too small chunk size fails
-# 'fail' because profiles need to read VG
-fail lvconvert -c 4 --thinpool $vg/$lv1 --poolmetadata $vg/$lv2
+invalid lvconvert -c 4 --thinpool $vg/$lv1 --poolmetadata $vg/$lv2
 # too big chunk size fails
-fail lvconvert -c 2G --thinpool $vg/$lv1 --poolmetadata $vg/$lv2
+invalid lvconvert -c 2G --thinpool $vg/$lv1 --poolmetadata $vg/$lv2
 # negative chunk size fails
 invalid lvconvert -c -256 --thinpool $vg/$lv1 --poolmetadata $vg/$lv2
-# non power of 2 fails
-fail lvconvert -c 88 --thinpool $vg/$lv1 --poolmetadata $vg/$lv2
+# non multiple of 64KiB fails
+invalid lvconvert -c 88 --thinpool $vg/$lv1 --poolmetadata $vg/$lv2
+
+# cannot use same LV for pool and convertion
+invalid lvconvert --yes --thinpool $vg/$lv3 -T $vg/$lv3
 
 # Warning about smaller then suggested
-lvconvert --yes -c 256 --thinpool $vg/$lv1 --poolmetadata $vg/$lv2 |& tee err
+lvconvert --yes -c 256 --thinpool $vg/$lv1 --poolmetadata $vg/$lv2 2>&1 | tee err
 grep "WARNING: Chunk size is smaller" err
-
 lvremove -f $vg
+
+
 lvcreate -L1T -n $lv1 $vg
 lvcreate -L32G -n $lv2 $vg
 # Warning about bigger then needed
-lvconvert --yes --thinpool $vg/$lv1 --poolmetadata $vg/$lv2 |& tee err
+lvconvert --yes --thinpool $vg/$lv1 --poolmetadata $vg/$lv2 2>&1 | tee err
 grep "WARNING: Maximum" err
-
 lvremove -f $vg
+
 
 if test "$TSIZE" = 64T; then
 lvcreate -L24T -n $lv1 $vg
 # Warning about bigger then needed (24T data and 16G -> 128K chunk)
-lvconvert --yes -c 64 --thinpool $vg/$lv1 |& tee err
+lvconvert --yes -c 64 --thinpool $vg/$lv1 2>&1 | tee err
 grep "WARNING: Chunk size is too small" err
+lvremove -f $vg
 fi
 
 #lvs -a -o+chunk_size,stripe_size,seg_pe_ranges
 
-# Convertions of pool to mirror or RAID is unsupported
-fail lvconvert --type mirror -m1 $vg/$lv1
-fail lvconvert --type raid1 -m1 $vg/$lv1
+####################################
+# Prohibites thin pool conversions #
+####################################
+lvcreate -L32 -n $lv1 $vg
+lvcreate -L16 -n $lv2 $vg
+lvconvert --yes --thinpool $vg/$lv1
+
+not aux have_cache 1 3 0 || fail lvconvert --yes --type cache-pool $vg/$lv1
+fail lvconvert --yes --type mirror -m1 $vg/$lv1
+not aux have_raid 1 0 0 || fail lvconvert --yes --type raid1 -m1 $vg/$lv1
+fail lvconvert --yes --type snapshot $vg/$lv1 $vg/$lv2
+fail lvconvert --yes --type snapshot $vg/$lv2 $vg/$lv1
+fail lvconvert --yes --type thin-pool $vg/$lv1
+
+lvremove -f $vg
 
 vgremove -ff $vg

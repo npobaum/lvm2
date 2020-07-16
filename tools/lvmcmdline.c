@@ -27,6 +27,11 @@
 #include <sys/resource.h>
 #include <dirent.h>
 #include <paths.h>
+#include <locale.h>
+
+#ifdef HAVE_VALGRIND
+#include <valgrind.h>
+#endif
 
 #ifdef HAVE_GETOPTLONG
 #  include <getopt.h>
@@ -127,6 +132,41 @@ int arg_outside_list_is_set(const struct cmd_context *cmd, const char *err_found
 	return 0;
 }
 
+int arg_from_list_is_negative(const struct cmd_context *cmd, const char *err_found, ...)
+{
+	int arg, ret = 0;
+	va_list ap;
+
+	va_start(ap, err_found);
+	while ((arg = va_arg(ap, int)) != -1)
+		if (arg_sign_value(cmd, arg, SIGN_NONE) == SIGN_MINUS) {
+			if (err_found)
+				log_error("%s %s.", arg_long_option_name(arg), err_found);
+			ret = 1;
+		}
+	va_end(ap);
+
+	return ret;
+}
+
+int arg_from_list_is_zero(const struct cmd_context *cmd, const char *err_found, ...)
+{
+	int arg, ret = 0;
+	va_list ap;
+
+	va_start(ap, err_found);
+	while ((arg = va_arg(ap, int)) != -1)
+		if (arg_is_set(cmd, arg) &&
+		    !arg_int_value(cmd, arg, 0)) {
+			if (err_found)
+				log_error("%s %s.", arg_long_option_name(arg), err_found);
+			ret = 1;
+		}
+	va_end(ap);
+
+	return ret;
+}
+
 unsigned grouped_arg_is_set(const struct arg_values *av, int a)
 {
 	return grouped_arg_count(av, a) ? 1 : 0;
@@ -137,12 +177,12 @@ const char *arg_long_option_name(int a)
 	return _cmdline.arg_props[a].long_arg;
 }
 
-const char *arg_value(struct cmd_context *cmd, int a)
+const char *arg_value(const struct cmd_context *cmd, int a)
 {
 	return cmd->arg_values[a].value;
 }
 
-const char *arg_str_value(struct cmd_context *cmd, int a, const char *def)
+const char *arg_str_value(const struct cmd_context *cmd, int a, const char *def)
 {
 	return arg_count(cmd, a) ? cmd->arg_values[a].value : def;
 }
@@ -157,7 +197,7 @@ int32_t grouped_arg_int_value(const struct arg_values *av, int a, const int32_t 
 	return grouped_arg_count(av, a) ? av[a].i_value : def;
 }
 
-int32_t first_grouped_arg_int_value(struct cmd_context *cmd, int a, const int32_t def)
+int32_t first_grouped_arg_int_value(const struct cmd_context *cmd, int a, const int32_t def)
 {
 	struct arg_value_group_list *current_group;
 	struct arg_values *av;
@@ -171,23 +211,23 @@ int32_t first_grouped_arg_int_value(struct cmd_context *cmd, int a, const int32_
 	return def;
 }
 
-int32_t arg_int_value(struct cmd_context *cmd, int a, const int32_t def)
+int32_t arg_int_value(const struct cmd_context *cmd, int a, const int32_t def)
 {
 	return (_cmdline.arg_props[a].flags & ARG_GROUPABLE) ?
 		first_grouped_arg_int_value(cmd, a, def) : (arg_count(cmd, a) ? cmd->arg_values[a].i_value : def);
 }
 
-uint32_t arg_uint_value(struct cmd_context *cmd, int a, const uint32_t def)
+uint32_t arg_uint_value(const struct cmd_context *cmd, int a, const uint32_t def)
 {
 	return arg_count(cmd, a) ? cmd->arg_values[a].ui_value : def;
 }
 
-int64_t arg_int64_value(struct cmd_context *cmd, int a, const int64_t def)
+int64_t arg_int64_value(const struct cmd_context *cmd, int a, const int64_t def)
 {
 	return arg_count(cmd, a) ? cmd->arg_values[a].i64_value : def;
 }
 
-uint64_t arg_uint64_value(struct cmd_context *cmd, int a, const uint64_t def)
+uint64_t arg_uint64_value(const struct cmd_context *cmd, int a, const uint64_t def)
 {
 	return arg_count(cmd, a) ? cmd->arg_values[a].ui64_value : def;
 }
@@ -199,12 +239,12 @@ const void *arg_ptr_value(struct cmd_context *cmd, int a, const void *def)
 }
 */
 
-sign_t arg_sign_value(struct cmd_context *cmd, int a, const sign_t def)
+sign_t arg_sign_value(const struct cmd_context *cmd, int a, const sign_t def)
 {
 	return arg_count(cmd, a) ? cmd->arg_values[a].sign : def;
 }
 
-percent_type_t arg_percent_value(struct cmd_context *cmd, int a, const percent_type_t def)
+percent_type_t arg_percent_value(const struct cmd_context *cmd, int a, const percent_type_t def)
 {
 	return arg_count(cmd, a) ? cmd->arg_values[a].percent : def;
 }
@@ -242,8 +282,14 @@ int activation_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_v
 
 	if (!strcmp(av->value, "e") || !strcmp(av->value, "ey") ||
 	    !strcmp(av->value, "ye")) {
-		av->i_value = CHANGE_AE;
-		av->ui_value = CHANGE_AE;
+		av->i_value = CHANGE_AEY;
+		av->ui_value = CHANGE_AEY;
+	}
+
+	else if (!strcmp(av->value, "s") || !strcmp(av->value, "sy") ||
+		 !strcmp(av->value, "ys")) {
+		av->i_value = CHANGE_ASY;
+		av->ui_value = CHANGE_ASY;
 	}
 
 	else if (!strcmp(av->value, "y")) {
@@ -283,11 +329,24 @@ int discards_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_val
 {
 	thin_discards_t discards;
 
-	if (!get_pool_discards(av->value, &discards))
+	if (!set_pool_discards(&discards, av->value))
 		return_0;
 
 	av->i_value = discards;
 	av->ui_value = discards;
+
+	return 1;
+}
+
+int mirrorlog_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_values *av)
+{
+	int log_count;
+
+	if (!set_mirror_log_count(&log_count, av->value))
+		return_0;
+
+	av->i_value = log_count;
+	av->ui_value = log_count;
 
 	return 1;
 }
@@ -335,8 +394,32 @@ static int _get_int_arg(struct arg_values *av, char **ptr)
 	return 1;
 }
 
+static int _get_percent_arg(struct arg_values *av, const char *ptr)
+{
+	if (!strcasecmp(ptr, "V") || !strcasecmp(ptr, "VG"))
+		av->percent = PERCENT_VG;
+	else if (!strcasecmp(ptr, "L") || !strcasecmp(ptr, "LV"))
+		av->percent = PERCENT_LV;
+	else if (!strcasecmp(ptr, "P") || !strcasecmp(ptr, "PV") ||
+		 !strcasecmp(ptr, "PVS"))
+		av->percent = PERCENT_PVS;
+	else if (!strcasecmp(ptr, "F") || !strcasecmp(ptr, "FR") ||
+		 !strcasecmp(ptr, "FREE"))
+		av->percent = PERCENT_FREE;
+	else if (!strcasecmp(ptr, "O") || !strcasecmp(ptr, "OR") ||
+		 !strcasecmp(ptr, "ORIGIN"))
+		av->percent = PERCENT_ORIGIN;
+	else {
+		log_error("Specified %%%s is unknown.", ptr);
+		return 0;
+	}
+
+	return 1;
+}
+
 /* Size stored in sectors */
-static int _size_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_values *av, int factor)
+static int _size_arg(struct cmd_context *cmd __attribute__((unused)),
+		     struct arg_values *av, int factor, int percent)
 {
 	char *ptr;
 	int i;
@@ -366,10 +449,28 @@ static int _size_arg(struct cmd_context *cmd __attribute__((unused)), struct arg
 
 	v = strtod(val, &ptr);
 
+	if (*ptr == '.') {
+		/*
+		 * Maybe user has non-C locale with different decimal point ?
+		 * Lets be toleran and retry with standard C locales
+		 */
+		if (setlocale(LC_ALL, "C")) {
+			v = strtod(val, &ptr);
+			setlocale(LC_ALL, "");
+		}
+	}
+
 	if (ptr == val)
 		return 0;
 
-	if (*ptr) {
+	if (percent && *ptr == '%') {
+		if (!_get_percent_arg(av, ++ptr))
+			return_0;
+		if ((uint64_t) v >= UINT32_MAX) {
+			log_error("Percentage is too big (>=%d%%).", UINT32_MAX);
+			return 0;
+		}
+	} else if (*ptr) {
 		for (i = strlen(suffixes) - 1; i >= 0; i--)
 			if (suffixes[i] == tolower((int) *ptr))
 				break;
@@ -414,12 +515,17 @@ static int _size_arg(struct cmd_context *cmd __attribute__((unused)), struct arg
 
 int size_kb_arg(struct cmd_context *cmd, struct arg_values *av)
 {
-	return _size_arg(cmd, av, 2);
+	return _size_arg(cmd, av, 2, 0);
 }
 
 int size_mb_arg(struct cmd_context *cmd, struct arg_values *av)
 {
-	return _size_arg(cmd, av, 2048);
+	return _size_arg(cmd, av, 2048, 0);
+}
+
+int size_mb_arg_with_percent(struct cmd_context *cmd, struct arg_values *av)
+{
+	return _size_arg(cmd, av, 2048, 1);
 }
 
 int int_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_values *av)
@@ -456,21 +562,13 @@ int int_arg_with_sign_and_percent(struct cmd_context *cmd __attribute__((unused)
 	if (*ptr++ != '%')
 		return 0;
 
-	if (!strcasecmp(ptr, "V") || !strcasecmp(ptr, "VG"))
-		av->percent = PERCENT_VG;
-	else if (!strcasecmp(ptr, "L") || !strcasecmp(ptr, "LV"))
-		av->percent = PERCENT_LV;
-	else if (!strcasecmp(ptr, "P") || !strcasecmp(ptr, "PV") ||
-		 !strcasecmp(ptr, "PVS"))
-		av->percent = PERCENT_PVS;
-	else if (!strcasecmp(ptr, "F") || !strcasecmp(ptr, "FR") ||
-		 !strcasecmp(ptr, "FREE"))
-		av->percent = PERCENT_FREE;
-	else if (!strcasecmp(ptr, "O") || !strcasecmp(ptr, "OR") ||
-		 !strcasecmp(ptr, "ORIGIN"))
-		av->percent = PERCENT_ORIGIN;
-	else
+	if (!_get_percent_arg(av, ptr))
+		return_0;
+
+	if (av->ui64_value >= UINT32_MAX) {
+		log_error("Percentage is too big (>=%d%%).", UINT32_MAX);
 		return 0;
+	}
 
 	return 1;
 }
@@ -529,7 +627,13 @@ int alloc_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_values
 
 int segtype_arg(struct cmd_context *cmd, struct arg_values *av)
 {
-	return get_segtype_from_string(cmd, av->value) ? 1 : 0;
+	struct segment_type *segtype;
+	const char *str = (!strcmp(av->value, "linear")) ? "striped" : av->value;
+
+	if (!(segtype = get_segtype_from_string(cmd, str)))
+		return_0;
+
+	return (!segtype_is_unknown(segtype)) ? 1 : 0;
 }
 
 /*
@@ -547,7 +651,7 @@ int readahead_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_va
 		return 1;
 	}
 
-	if (!_size_arg(cmd, av, 1))
+	if (!_size_arg(cmd, av, 1, 0))
 		return 0;
 
 	if (av->sign == SIGN_MINUS)
@@ -574,35 +678,6 @@ int metadatacopies_arg(struct cmd_context *cmd, struct arg_values *av)
 	}
 
 	return int_arg(cmd, av);
-}
-
-int major_minor_valid(const struct cmd_context *cmd, const struct format_type *fmt,
-		      int32_t major, int32_t minor)
-{
-	if (!strncmp(cmd->kernel_vsn, "2.4.", 4) ||
-	    (fmt->features & FMT_RESTRICTED_LVIDS)) {
-		if (major < 0 || major > 255) {
-			log_error("Major number outside range 0-255");
-			return 0;
-		}
-		if (minor < 0 || minor > 255) {
-			log_error("Minor number outside range 0-255");
-			return 0;
-		}
-	} else {
-		/* 12 bits for major number */
-		if (major < 0 || major > 4095) {
-			log_error("Major number outside range 0-4095");
-			return 0;
-		}
-		/* 20 bits for minor number */
-		if (minor < 0 || minor > 1048575) {
-			log_error("Minor number outside range 0-1048575");
-			return 0;
-		}
-	}
-
-	return 1;
 }
 
 static void __alloc(int size)
@@ -908,6 +983,15 @@ static int _merge_synonym(struct cmd_context *cmd, int oldarg, int newarg)
 	return 1;
 }
 
+int systemid(struct cmd_context *cmd __attribute__((unused)),
+	     int argc __attribute__((unused)),
+	     char **argv __attribute__((unused)))
+{
+	log_print("system ID: %s", cmd->system_id ? : "");
+
+	return ECMD_PROCESSED;
+}
+
 int version(struct cmd_context *cmd __attribute__((unused)),
 	    int argc __attribute__((unused)),
 	    char **argv __attribute__((unused)))
@@ -996,8 +1080,11 @@ static int _get_settings(struct cmd_context *cmd)
 	else
 		init_ignorelockingfailure(0);
 
-	cmd->ignore_clustered_vgs = arg_count(cmd, ignoreskippedcluster_ARG) ? 1 : 0;
-
+	cmd->ignore_clustered_vgs = arg_is_set(cmd, ignoreskippedcluster_ARG);
+	cmd->error_foreign_vgs = cmd->command->flags & ENABLE_FOREIGN_VGS ? 0 : 1;
+	cmd->include_foreign_vgs = arg_is_set(cmd, foreign_ARG) ? 1 : 0;
+	cmd->include_active_foreign_vgs = cmd->command->flags & ENABLE_FOREIGN_VGS ? 1 : 0;
+		
 	if (!arg_count(cmd, sysinit_ARG))
 		lvmetad_connect_or_warn();
 
@@ -1167,23 +1254,47 @@ static const char *_copy_command_line(struct cmd_context *cmd, int argc, char **
 
 static int _prepare_profiles(struct cmd_context *cmd)
 {
+	static const char COMMAND_PROFILE_ENV_VAR_NAME[] = "LVM_COMMAND_PROFILE";
+	static const char _cmd_profile_arg_preferred_over_env_var_msg[] = "Giving "
+				"preference to command profile specified on command "
+				"line over the one specified via environment variable.";
 	static const char _failed_to_add_profile_msg[] = "Failed to add %s %s.";
 	static const char _failed_to_apply_profile_msg[] = "Failed to apply %s %s.";
 	static const char _command_profile_source_name[] = "command profile";
 	static const char _metadata_profile_source_name[] = "metadata profile";
 	static const char _setting_global_profile_msg[] = "Setting global %s \"%s\".";
 
+	const char *env_cmd_profile_name = NULL;
 	const char *name;
 	struct profile *profile;
 	config_source_t source;
 	const char *source_name;
+
+	/* Check whether default global command profile is set via env. var. */
+	if ((env_cmd_profile_name = getenv(COMMAND_PROFILE_ENV_VAR_NAME))) {
+		if (!*env_cmd_profile_name)
+			env_cmd_profile_name = NULL;
+		else
+			log_debug("Command profile '%s' requested via "
+				  "environment variable.",
+				   env_cmd_profile_name);
+	}
+
+	if (!arg_count(cmd, profile_ARG) &&
+	    !arg_count(cmd, commandprofile_ARG) &&
+	    !arg_count(cmd, metadataprofile_ARG) &&
+	    !env_cmd_profile_name)
+		/* nothing to do */
+		return 1;
 
 	if (arg_count(cmd, profile_ARG)) {
 		/*
 		 * If --profile is used with dumpconfig, it's used
 		 * to dump the profile without the profile being applied.
 		 */
-		if (!strcmp(cmd->command->name, "dumpconfig"))
+		if (!strcmp(cmd->command->name, "dumpconfig") ||
+		    !strcmp(cmd->command->name, "lvmconfig") ||
+		    !strcmp(cmd->command->name, "config"))
 			return 1;
 
 		/*
@@ -1208,6 +1319,15 @@ static int _prepare_profiles(struct cmd_context *cmd)
 				log_error("Only one of --profile or "
 					  "--commandprofile allowed.");
 				return 0;
+			}
+			/*
+			 * Prefer command profile specified on command
+			 * line over the profile specified via
+			 * COMMAND_PROFILE_ENV_VAR_NAME env. var.
+			 */
+			if (env_cmd_profile_name) {
+				log_debug(_cmd_profile_arg_preferred_over_env_var_msg);
+				env_cmd_profile_name = NULL;
 			}
 			source = CONFIG_PROFILE_COMMAND;
 			source_name = _command_profile_source_name;
@@ -1236,8 +1356,18 @@ static int _prepare_profiles(struct cmd_context *cmd)
 
 	}
 
-	if (arg_count(cmd, commandprofile_ARG)) {
-		name = arg_str_value(cmd, commandprofile_ARG, NULL);
+	if (arg_count(cmd, commandprofile_ARG) || env_cmd_profile_name) {
+		if (arg_count(cmd, commandprofile_ARG)) {
+			/*
+			 * Prefer command profile specified on command
+			 * line over the profile specified via
+			 * COMMAND_PROFILE_ENV_VAR_NAME env. var.
+			 */
+			if (env_cmd_profile_name)
+				log_debug(_cmd_profile_arg_preferred_over_env_var_msg);
+			name = arg_str_value(cmd, commandprofile_ARG, NULL);
+		} else
+			name = env_cmd_profile_name;
 		source_name = _command_profile_source_name;
 
 		if (!(profile = add_profile(cmd, name, CONFIG_PROFILE_COMMAND))) {
@@ -1284,11 +1414,34 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 	int ret = 0;
 	int locking_type;
 	int monitoring;
+	char *arg_new, *arg;
+	int i;
 
 	init_error_message_produced(0);
 
 	/* each command should start out with sigint flag cleared */
 	sigint_clear();
+
+	/* eliminate '-' from all options starting with -- */
+	for (i = 1; i < argc; ++i) {
+
+		if (argv[i][0] != '-' || argv[i][1] != '-')
+			continue;
+
+		arg_new = arg = argv[i] + 2;
+
+		while (*arg) {
+			if (*arg != '-') {
+				if (arg_new != arg)
+					*arg_new = *arg;
+				++arg_new;
+			}
+			++arg;
+		}
+
+		if (arg_new != arg)
+			*arg_new = 0;
+	}
 
 	if (!(cmd->cmd_line = _copy_command_line(cmd, argc, argv)))
 		return_ECMD_FAILED;
@@ -1329,12 +1482,8 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 		}
 	}
 
-	if (arg_count(cmd, profile_ARG) ||
-	    arg_count(cmd, commandprofile_ARG) ||
-	    arg_count(cmd, metadataprofile_ARG)) {
-		if (!_prepare_profiles(cmd))
-			return_ECMD_FAILED;
-	}
+	if (!_prepare_profiles(cmd))
+		return_ECMD_FAILED;
 
 	if (arg_count(cmd, readonly_ARG))
 		cmd->metadata_read_only = 1;
@@ -1343,13 +1492,14 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 		goto_out;
 	_apply_settings(cmd);
 	if (cmd->degraded_activation)
-		log_verbose("DEGRADED MODE. Incomplete RAID LVs will be processed.");
+		log_debug("DEGRADED MODE. Incomplete RAID LVs will be processed.");
 
 	if (!get_activation_monitoring_mode(cmd, &monitoring))
 		goto_out;
 	init_dmeventd_monitor(monitoring);
 
 	log_debug("Processing: %s", cmd->cmd_line);
+	log_debug("system ID: %s", cmd->system_id ? : "");
 
 #ifdef O_DIRECT_SUPPORT
 	log_debug("O_DIRECT will be used");
@@ -1371,7 +1521,7 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 	if (arg_count(cmd, readonly_ARG)) {
 		locking_type = 5;
 		if (lvmetad_used()) {
-			lvmetad_set_active(0);
+			lvmetad_set_active(cmd, 0);
 			log_verbose("Disabling use of lvmetad because read-only is set.");
 		}
 	} else if (arg_count(cmd, nolocking_ARG))
@@ -1384,6 +1534,19 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 		goto_out;
 	}
 
+	/*
+	 * Other hosts might have changed foreign VGs so enforce a rescan
+	 * before processing any command using them.
+	 */
+	if (cmd->include_foreign_vgs && lvmetad_used() &&
+	    !lvmetad_pvscan_foreign_vgs(cmd, NULL)) {
+		log_error("Failed to scan devices.");
+		return ECMD_FAILED;
+	}
+
+	/*
+	 * FIXME Break up into multiple functions.
+	 */
 	ret = cmd->command->fn(cmd, argc, argv);
 
 	fin_locking();
@@ -1429,12 +1592,15 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 
 int lvm_return_code(int ret)
 {
+	unlink_log_file(ret);
+
 	return (ret == ECMD_PROCESSED ? 0 : ret);
 }
 
 int lvm_split(char *str, int *argc, char **argv, int max)
 {
 	char *b = str, *e;
+	char quote = 0;
 	*argc = 0;
 
 	while (*b) {
@@ -1444,14 +1610,20 @@ int lvm_split(char *str, int *argc, char **argv, int max)
 		if ((!*b) || (*b == '#'))
 			break;
 
+		if (*b == '\'' || *b == '"') {
+			quote = *b;
+			b++;
+		}
+
 		e = b;
-		while (*e && !isspace(*e))
+		while (*e && (quote ? *e != quote : !isspace(*e)))
 			e++;
 
 		argv[(*argc)++] = b;
 		if (!*e)
 			break;
 		*e++ = '\0';
+		quote = 0;
 		b = e;
 		if (*argc == max)
 			break;
@@ -1572,6 +1744,13 @@ static int _close_stray_fds(const char *command)
 	struct dirent *dirent;
 	DIR *d;
 
+#ifdef HAVE_VALGRIND
+	if (RUNNING_ON_VALGRIND) {
+		log_debug("Skipping close of descriptors within valgrind execution.");
+		return 1;
+	}
+#endif
+
 	if (getenv("LVM_SUPPRESS_FD_WARNINGS"))
 		suppress_warnings = 1;
 
@@ -1617,7 +1796,7 @@ struct cmd_context *init_lvm(void)
 	/*
 	 * It's not necessary to use name mangling for LVM:
 	 *   - the character set used for LV names is subset of udev character set
-	 *   - when we check other devices (e.g. _device_is_usable fn), we use major:minor, not dm names
+	 *   - when we check other devices (e.g. device_is_usable fn), we use major:minor, not dm names
 	 */
 	dm_set_name_mangling_mode(DM_STRING_MANGLING_NONE);
 
@@ -1775,12 +1954,12 @@ int lvm2_main(int argc, char **argv)
 		return -1;
 
 	if (is_static() && strcmp(base, "lvm.static") &&
-	    path_exists(LVM_SHARED_PATH) &&
+	    path_exists(LVM_PATH) &&
 	    !getenv("LVM_DID_EXEC")) {
 		if (setenv("LVM_DID_EXEC", base, 1))
 			log_sys_error("setenv", "LVM_DID_EXEC");
-		if (execvp(LVM_SHARED_PATH, argv) == -1)
-			log_sys_error("execvp", "LVM_SHARED_PATH");
+		if (execvp(LVM_PATH, argv) == -1)
+			log_sys_error("execvp", LVM_PATH);
 		if (unsetenv("LVM_DID_EXEC"))
 			log_sys_error("unsetenv", "LVM_DID_EXEC");
 	}
