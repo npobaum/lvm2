@@ -643,7 +643,7 @@ fail:
 	 * commands will not use it until it's been properly repopulated.
 	 */
 	if (action_modifies)
-		log_error("lvmetad update failed.  Restart lvmetad immediately.");
+		log_warn("WARNING: To avoid corruption, restart lvmetad (or disable with use_lvmetad=0).");
 
 	return 0;
 }
@@ -665,17 +665,14 @@ static int _pv_populate_lvmcache(struct cmd_context *cmd,
 				 struct dm_config_node *cn,
 				 struct format_type *fmt, dev_t fallback)
 {
-	struct device *dev, *dev_alternate, *dev_alternate_cache = NULL;
-	struct label *label;
+	struct device *dev;
 	struct id pvid, vgid;
 	char mda_id[32];
 	char da_id[32];
 	int i = 0;
 	struct dm_config_node *mda, *da;
-	struct dm_config_node *alt_devices = dm_config_find_node(cn->child, "devices_alternate");
-	struct dm_config_value *alt_device = NULL;
 	uint64_t offset, size;
-	struct lvmcache_info *info, *info_alternate;
+	struct lvmcache_info *info;
 	const char *pvid_txt = dm_config_find_str(cn->child, "id", NULL),
 		   *vgid_txt = dm_config_find_str(cn->child, "vgid", NULL),
 		   *vgname = dm_config_find_str(cn->child, "vgname", NULL),
@@ -759,42 +756,6 @@ static int _pv_populate_lvmcache(struct cmd_context *cmd,
 		}
 		++i;
 	} while (da);
-
-	if (alt_devices)
-		alt_device = alt_devices->v;
-
-	while (alt_device) {
-		dev_alternate = dev_cache_get_by_devt(alt_device->v.i, cmd->filter);
-
-		log_verbose("PV on device %s (%d:%d %d) is also on device %s (%d:%d %d) %s",
-			    dev_name(dev),
-			    (int)MAJOR(devt), (int)MINOR(devt), (int)devt,
-			    dev_alternate ? dev_name(dev_alternate) : "unknown",
-			    (int)MAJOR(alt_device->v.i), (int)MINOR(alt_device->v.i), (int)alt_device->v.i,
-			    pvid_txt);
-
-		if (dev_alternate) {
-			if ((info_alternate = lvmcache_add(fmt->labeller, (const char *)&pvid, dev_alternate,
-							   vgname, (const char *)&vgid, 0))) {
-				dev_alternate_cache = dev_alternate;
-				info = info_alternate;
-				lvmcache_get_label(info)->dev = dev_alternate;
-			}
-		}
-		alt_device = alt_device->next;
-	}
-
-	/*
-	 * Update lvmcache with the info about the alternate device by
-	 * reading its label, which should update lvmcache.
-	 */
-	if (dev_alternate_cache) {
-		if (!label_read(dev_alternate_cache, &label, 0)) {
-			log_warn("No PV label found on duplicate device %s.", dev_name(dev_alternate_cache));
-		}
-	}
-
-	lvmcache_set_preferred_duplicates((const char *)&vgid);
 
 	lvmcache_set_ext_flags(info, ext_flags);
 	lvmcache_set_ext_version(info, ext_version);
@@ -1739,11 +1700,6 @@ int lvmetad_pvscan_single(struct cmd_context *cmd, struct device *dev,
 	if (!baton.vg)
 		lvmcache_fmt(info)->ops->destroy_instance(baton.fid);
 
-	/*
-	 * NB. If this command failed and we are relying on lvmetad to have an
-	 * *exact* image of the system, the lvmetad instance that went out of
-	 * sync needs to be killed.
-	 */
 	if (!lvmetad_pv_found((const struct id *) &dev->pvid, dev, lvmcache_fmt(info),
 			      label->sector, baton.vg, handler)) {
 		release_vg(baton.vg);
@@ -1788,13 +1744,13 @@ static int _lvmetad_pvscan_all_devs(struct cmd_context *cmd, activation_handler 
 	struct dev_iter *iter;
 	struct device *dev;
 	daemon_reply reply;
-	int r = 1;
 	char *future_token;
 	const char *reason;
 	int was_silent;
 	int replacing_other_update = 0;
 	int replaced_update = 0;
 	int retries = 0;
+	int ret = 1;
 
 	if (!lvmetad_used()) {
 		log_error("Cannot proceed since lvmetad is not active.");
@@ -1852,7 +1808,7 @@ static int _lvmetad_pvscan_all_devs(struct cmd_context *cmd, activation_handler 
 	log_debug_lvmetad("Telling lvmetad to clear its cache");
 	reply = _lvmetad_send(cmd, "pv_clear_all", NULL);
 	if (!_lvmetad_handle_reply(reply, "pv_clear_all", "", NULL))
-		r = 0;
+		ret = 0;
 	daemon_reply_destroy(reply);
 
 	was_silent = silent_mode();
@@ -1860,33 +1816,38 @@ static int _lvmetad_pvscan_all_devs(struct cmd_context *cmd, activation_handler 
 
 	while ((dev = dev_iter_get(iter))) {
 		if (sigint_caught()) {
-			r = 0;
+			ret = 0;
 			stack;
 			break;
 		}
 		if (!lvmetad_pvscan_single(cmd, dev, handler, ignore_obsolete))
-			r = 0;
+			ret = 0;
 	}
 
 	init_silent(was_silent);
 
 	dev_iter_destroy(iter);
 
+	if (!ret)
+		lvmetad_set_disabled(cmd, LVMETAD_DISABLE_REASON_SCANERROR);
+
 	_lvmetad_token = future_token;
-	if (!_token_update(NULL))
+	if (!_token_update(NULL)) {
+		log_error("Failed to update lvmetad token after device scan.");
 		return 0;
+	}
 
 	/*
 	 * If lvmetad is disabled, and no lvm1 metadata was seen and no
 	 * duplicate PVs were seen, then re-enable lvmetad.
 	 */
-	if (lvmetad_is_disabled(cmd, &reason) &&
+	if (ret && lvmetad_is_disabled(cmd, &reason) &&
 	    !lvmcache_found_duplicate_pvs() && !_found_lvm1_metadata) {
 		log_debug_lvmetad("Enabling lvmetad which was previously disabled.");
 		lvmetad_clear_disabled(cmd);
 	}
 
-	return r;
+	return ret;
 }
 
 int lvmetad_pvscan_all_devs(struct cmd_context *cmd, activation_handler handler, int do_wait)
@@ -2268,6 +2229,144 @@ int lvmetad_vg_is_foreign(struct cmd_context *cmd, const char *vgname, const cha
 	return ret;
 }
 
+/*
+ * lvmetad has a disabled state in which it continues running,
+ * and returns the "disabled" flag in a get_global_info query.
+ *
+ * Case 1
+ * ------
+ * When "normal" commands start, (those not specifically
+ * intended to rescan devs) they begin by checking lvmetad's
+ * token and global info:
+ *
+ * - If the token doesn't match (should be uncommon), the
+ * command first rescans devices to repopulate lvmetad with
+ * the global_filter it is using.  After rescanning, the
+ * lvmetad disabled state is set or cleared depending on
+ * what the scan saw.
+ *
+ *     An unmatching token occurs when:
+ *     . lvmetad was just started and has not been populated yet.
+ *     . The global_filter has been changed in lvm.conf since the
+ *       last command was run.
+ *     . The global_filter is overriden on the command line.
+ *       (There's little point in using lvmetad if global_filter
+ *       is often changed/overridden.)
+ *
+ * - If the token does match (common case), the command and
+ * lvmetad are using the same global_filter and the command
+ * does not rescan devs to repopulate lvmetad, or change the
+ * lvmetad disabled state.
+ *
+ * - After the token check/sync, the command checks if the
+ * disabled flag is set in lvmetad.  If it is, the command will
+ * not use the lvmetad cache and will revert to scanning, i.e.
+ * it runs the same as if use_lvmetad=0.
+ *
+ * So, "normal" commands try to use the lvmetad cache to avoid
+ * scanning devices.  In the uncommon case when the token doesn't
+ * match, these commands will first rescan devs to repopulate the
+ * lvmetad cache, and then attempt to use the lvmetad cache.
+ * In the uncommon case where lvmetad is disabled (by a previous
+ * command), the common commands do not rescan devs to repopulate
+ * lvmetad, but revert the equivalent of use_lvmetad=0, reading
+ * from disk instead of the cache.
+ * The combination of those two uncommon cases means that a command
+ * could begin by rescanning devs because of a token mismatch, then
+ * disable lvmetad as a result of that scan, and continue without
+ * using lvmetad.
+ *
+ * Case 2
+ * ------
+ * Commands that are meant to scan devices to repopulate the
+ * lvmetad cache, e.g. pvscan --cache, will always rescan
+ * devices and then set/clear the disabled state according to
+ * what they found when scanning.  The global_filter is always
+ * used when choosing which devices to scan to populate lvmetad.
+ * The command-specific filter is never used when choosing
+ * which devices to scan for repopulating the lvmetad cache.
+ *
+ * During a scan repopulating the lvmetad cache, a command looks
+ * for PVs with lvm1 metadata, or duplicate PVs (two devices with
+ * the same PVID).  If either of those are found during the scan,
+ * the command sets the disabled state in lvmetad.  If none are
+ * found, the command clears the disabled state in lvmetad.
+ * (Other problems scanning may also cause the command to set the
+ * disabled state.)
+ *
+ * Case 3
+ * ------
+ * The special command 'pvscan --cache <dev>' is meant to only
+ * scan the specified device and send info from the dev to
+ * lvmetad.  This single-dev pvscan will not detect duplicate PVs
+ * since it only sees the one device.  If lvmetad already knows
+ * about the same PV on another device, then lvmetad will be the
+ * first to discover that a duplicate PV exists.  In this case,
+ * lvmetad sets the disabled state for itself.
+ *
+ * Duplicates
+ * ----------
+ * The most common reasons for duplicate PVs to exist are:
+ *
+ * 1. Multipath.  When multipath is running, it creates a new
+ * mpath device for the underlying "duplicate" devs.  lvm has
+ * built in, automatic filtering that will hide the duplicate
+ * devs of the underlying mpath dev, so the duplicates will
+ * be skipping during scanning (multipath_component_detection).
+ *
+ * If multipath_component_detection=0, or if multipathd is not
+ * running, or multipath is not set up to handle a particular
+ * set of devs, then lvm will see the multipath paths as
+ * duplicates.  lvm will choose one of them to use, consider
+ * the other a duplicate, and disable lvmetad.  multipathd
+ * should be configured and running to resolve these duplicates,
+ * and multipath_component_detection enabled.
+ *
+ * 2. Cloning by copying.  One device is copied over another, e.g.
+ * with dd.  This is a more concerning case because using the
+ * wrong device could lead to corruption.  LVM will attempt to
+ * choose the best device as the PV, but it may not always
+ * be the right one.  In this case, lvmetad is disabled.
+ * vgimportclone should be used on the new copy to resolve the
+ * duplicates.
+ *
+ * 3. Cloning by hardware.  A LUN is cloned/snapshotted on
+ * a hardware device.  The description here is the same as
+ * cloning by copying.
+ *
+ * 4. Creating LVM snapshots of LVs being used as PVs.
+ * If pvcreate is run on an LV, and lvcreate is used to
+ * create a snapshot of that LV, then the two LVs will
+ * appear to be duplicate PVs.
+ *
+ * Filtering duplicates
+ * --------------------
+ * 
+ * If all but one copy of a PV is added to the global_filter,
+ * then duplicates will not be seen when scanning to populate
+ * the lvmetad cache.  Neither common commands nor scanning
+ * commands will see the duplicates, and lvmetad will not be
+ * disabled.
+ *
+ * If the global_filter is *not* used to hide duplicates,
+ * then lvmetad will be disabled when they are scanned, but
+ * common commands can use the command filter to hide the
+ * duplicates and work with a selected instance of the PV.
+ * The command will not use lvmetad in this case, but will
+ * not see duplicate PVs itself because its command filter
+ * is more restrictive than the global_filter and has hidden
+ * the duplicates.
+ */
+
+/*
+ * FIXME: if we fail to disable lvmetad, then other commands could
+ * potentially use incorrect cache data from lvmetad.  Should we
+ * do something more severe if the disable messages fails, like
+ * sending SIGKILL to the lvmetad pid?
+ *
+ * FIXME: log something in syslog any time we disable lvmetad?
+ * At a minimum if we fail to disable lvmetad.
+ */
 void lvmetad_set_disabled(struct cmd_context *cmd, const char *reason)
 {
 	daemon_reply reply;
@@ -2351,6 +2450,9 @@ int lvmetad_is_disabled(struct cmd_context *cmd, const char **reason)
 
 		} else if (strstr(reply_reason, LVMETAD_DISABLE_REASON_DUPLICATES)) {
 			*reason = "duplicate PVs were found";
+
+		} else if (strstr(reply_reason, LVMETAD_DISABLE_REASON_SCANERROR)) {
+			*reason = "scanning devices failed";
 
 		} else {
 			*reason = "<unknown>";

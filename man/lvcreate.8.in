@@ -219,7 +219,10 @@ If \fBwritethough\fP is specified, a write is considered complete only
 when it has been stored in the cache pool LV and on the origin LV.
 While \fBwritethrough\fP may be slower for writes, it is more
 resilient if something should happen to a device associated with the
-cache pool LV.
+cache pool LV. With \fBpassthrough\fP mode, all reads are served
+from origin LV (all reads miss the cache) and all writes are
+forwarded to the origin LV; additionally, write hits cause cache
+block invalidates. See \fBlvmcache(7)\fP for more details.
 .
 .HP
 .BR \-\-cachepolicy
@@ -257,6 +260,8 @@ and the default value is 4KiB.
 .br
 For cache pools the value must a multiple of 32KiB
 between 32KiB and 1GiB. The default is 64KiB.
+When the size is specified with volume caching, it may not be smaller
+then cache pool creation chunk size was.
 .br
 For thin pools the value must be a multiple of 64KiB
 between 64KiB and 1GiB.
