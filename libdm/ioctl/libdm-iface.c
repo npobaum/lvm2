@@ -239,7 +239,7 @@ static int _control_exists(const char *control, uint32_t major, uint32_t minor)
 		return -1;
 	}
 
-	if (major && buf.st_rdev != MKDEV(major, minor)) {
+	if (major && buf.st_rdev != MKDEV((dev_t)major, minor)) {
 		log_verbose("%s: Wrong device number: (%u, %u) instead of "
 			    "(%u, %u)", control,
 			    MAJOR(buf.st_mode), MINOR(buf.st_mode),
@@ -282,7 +282,7 @@ static int _create_control(const char *control, uint32_t major, uint32_t minor)
 	(void) dm_prepare_selinux_context(control, S_IFCHR);
 	old_umask = umask(DM_CONTROL_NODE_UMASK);
 	if (mknod(control, S_IFCHR | S_IRUSR | S_IWUSR,
-		  MKDEV(major, minor)) < 0)  {
+		  MKDEV((dev_t)major, minor)) < 0)  {
 		log_sys_error("mknod", control);
 		(void) dm_prepare_selinux_context(NULL, 0);
 		return 0;
@@ -455,6 +455,7 @@ void dm_task_destroy(struct dm_task *dmt)
 	dm_free(dmt->message);
 	dm_free(dmt->geometry);
 	dm_free(dmt->uuid);
+	dm_free(dmt->mangled_uuid);
 	dm_free(dmt);
 }
 
@@ -681,11 +682,6 @@ uint32_t dm_task_get_read_ahead(const struct dm_task *dmt, uint32_t *read_ahead)
 				       MINOR(dmt->dmi.v4->dev), read_ahead);
 }
 
-const char *dm_task_get_uuid(const struct dm_task *dmt)
-{
-	return (dmt->dmi.v4->uuid);
-}
-
 struct dm_deps *dm_task_get_deps(struct dm_task *dmt)
 {
 	return (struct dm_deps *) (((char *) dmt->dmi.v4) +
@@ -740,9 +736,30 @@ int dm_task_set_add_node(struct dm_task *dmt, dm_add_node_t add_node)
 
 int dm_task_set_newuuid(struct dm_task *dmt, const char *newuuid)
 {
+	dm_string_mangling_t mangling_mode = dm_get_name_mangling_mode();
+	char mangled_uuid[DM_UUID_LEN];
+	int r = 0;
+
 	if (strlen(newuuid) >= DM_UUID_LEN) {
 		log_error("Uuid \"%s\" too long", newuuid);
 		return 0;
+	}
+
+	if (!check_multiple_mangled_string_allowed(newuuid, "new UUID", mangling_mode))
+		return_0;
+
+	if (mangling_mode != DM_STRING_MANGLING_NONE &&
+	    (r = mangle_string(newuuid, "new UUID", strlen(newuuid), mangled_uuid,
+			       sizeof(mangled_uuid), mangling_mode)) < 0) {
+		log_error("Failed to mangle new device UUID \"%s\"", newuuid);
+		return 0;
+	}
+
+	if (r) {
+		log_debug("New device uuid mangled [%s]: %s --> %s",
+			  mangling_mode == DM_STRING_MANGLING_AUTO ? "auto" : "hex",
+			  newuuid, mangled_uuid);
+		newuuid = mangled_uuid;
 	}
 
 	if (!(dmt->newname = dm_strdup(newuuid))) {
@@ -1062,11 +1079,11 @@ static struct dm_ioctl *_flatten(struct dm_task *dmt, unsigned repeat_count)
 		}
 
 		dmi->flags |= DM_PERSISTENT_DEV_FLAG;
-		dmi->dev = MKDEV(dmt->major, dmt->minor);
+		dmi->dev = MKDEV((dev_t)dmt->major, dmt->minor);
 	}
 
 	/* Does driver support device number referencing? */
-	if (_dm_version_minor < 3 && !DEV_NAME(dmt) && !dmt->uuid && dmi->dev) {
+	if (_dm_version_minor < 3 && !DEV_NAME(dmt) && !DEV_UUID(dmt) && dmi->dev) {
 		if (!_lookup_dev_name(dmi->dev, dmi->name, sizeof(dmi->name))) {
 			log_error("Unable to find name for device (%" PRIu32
 				  ":%" PRIu32 ")", dmt->major, dmt->minor);
@@ -1082,8 +1099,8 @@ static struct dm_ioctl *_flatten(struct dm_task *dmt, unsigned repeat_count)
 			      dmt->major < 0))
 		strncpy(dmi->name, DEV_NAME(dmt), sizeof(dmi->name));
 
-	if (dmt->uuid)
-		strncpy(dmi->uuid, dmt->uuid, sizeof(dmi->uuid));
+	if (DEV_UUID(dmt))
+		strncpy(dmi->uuid, DEV_UUID(dmt), sizeof(dmi->uuid));
 
 	if (dmt->type == DM_DEVICE_SUSPEND)
 		dmi->flags |= DM_SUSPEND_FLAG;
@@ -1322,6 +1339,8 @@ static int _create_and_load_v4(struct dm_task *dmt)
 	dmt->type = DM_DEVICE_RESUME;
 	dm_free(dmt->uuid);
 	dmt->uuid = NULL;
+	dm_free(dmt->mangled_uuid);
+	dmt->mangled_uuid = NULL;
 
 	if (dm_task_run(dmt))
 		return 1;
@@ -1330,6 +1349,8 @@ static int _create_and_load_v4(struct dm_task *dmt)
 	dmt->type = DM_DEVICE_REMOVE;
 	dm_free(dmt->uuid);
 	dmt->uuid = NULL;
+	dm_free(dmt->mangled_uuid);
+	dmt->mangled_uuid = NULL;
 
 	/*
 	 * Also udev-synchronize "remove" dm task that is a part of this revert!
@@ -1489,7 +1510,7 @@ static int _check_children_not_suspended_v4(struct dm_task *dmt, uint64_t device
 		else
 			log_error(INTERNAL_ERROR "Attempt to suspend device %s%s%s%.0d%s%.0d%s%s"
 				  "that uses already-suspended device (%u:%u)", 
-				  DEV_NAME(dmt) ? : "", dmt->uuid ? : "",
+				  DEV_NAME(dmt) ? : "", DEV_UUID(dmt) ? : "",
 				  dmt->major > 0 ? "(" : "",
 				  dmt->major > 0 ? dmt->major : 0,
 				  dmt->major > 0 ? ":" : "",
@@ -1550,49 +1571,65 @@ static const char *_sanitise_message(char *message)
 	return sanitised_message;
 }
 
-static int _do_dm_ioctl_unmangle_name(char *name)
+static int _do_dm_ioctl_unmangle_string(char *str, const char *str_name,
+					char *buf, size_t buf_size,
+					dm_string_mangling_t mode)
 {
-	dm_string_mangling_t mode = dm_get_name_mangling_mode();
-	char buf[DM_NAME_LEN];
 	int r;
 
 	if (mode == DM_STRING_MANGLING_NONE)
 		return 1;
 
-	if (!check_multiple_mangled_name_allowed(mode, name))
+	if (!check_multiple_mangled_string_allowed(str, str_name, mode))
 		return_0;
 
-	if ((r = unmangle_name(name, DM_NAME_LEN, buf, sizeof(buf), mode)) < 0) {
-		log_debug("_do_dm_ioctl_unmangle_name: failed to "
-			  "unmangle \"%s\"", name);
+	if ((r = unmangle_string(str, str_name, strlen(str), buf, buf_size, mode)) < 0) {
+		log_debug("_do_dm_ioctl_unmangle_string: failed to "
+			  "unmangle %s \"%s\"", str_name, str);
 		return 0;
 	} else if (r)
-		memcpy(name, buf, strlen(buf) + 1);
+		memcpy(str, buf, strlen(buf) + 1);
 
 	return 1;
 }
 
 static int _dm_ioctl_unmangle_names(int type, struct dm_ioctl *dmi)
 {
+	char buf[DM_NAME_LEN];
 	struct dm_names *names;
 	unsigned next = 0;
 	char *name;
 	int r = 1;
 
 	if ((name = dmi->name))
-		r = _do_dm_ioctl_unmangle_name(name);
+		r = _do_dm_ioctl_unmangle_string(name, "name", buf, sizeof(buf),
+						 dm_get_name_mangling_mode());
 
 	if (type == DM_DEVICE_LIST &&
 	    ((names = ((struct dm_names *) ((char *)dmi + dmi->data_start)))) &&
 	    names->dev) {
 		do {
 			names = (struct dm_names *)((char *) names + next);
-			r = _do_dm_ioctl_unmangle_name(names->name);
+			r = _do_dm_ioctl_unmangle_string(names->name, "name",
+							 buf, sizeof(buf),
+							 dm_get_name_mangling_mode());
 			next = names->next;
 		} while (next);
 	}
 
 	return r;
+}
+
+static int _dm_ioctl_unmangle_uuids(int type, struct dm_ioctl *dmi)
+{
+	char buf[DM_UUID_LEN];
+	char *uuid = dmi->uuid;
+
+	if (uuid)
+		return _do_dm_ioctl_unmangle_string(uuid, "UUID", buf, sizeof(buf),
+						    dm_get_name_mangling_mode());
+
+	return 1;
 }
 
 static struct dm_ioctl *_do_dm_ioctl(struct dm_task *dmt, unsigned command,
@@ -1725,6 +1762,10 @@ static struct dm_ioctl *_do_dm_ioctl(struct dm_task *dmt, unsigned command,
 	if (!_dm_ioctl_unmangle_names(dmt->type, dmi))
 		goto error;
 
+	if (dmt->type != DM_DEVICE_REMOVE &&
+	    !_dm_ioctl_unmangle_uuids(dmt->type, dmi))
+		goto error;
+
 #else /* Userspace alternative for testing */
 #endif
 	return dmi;
@@ -1752,6 +1793,7 @@ int dm_task_run(struct dm_task *dmt)
 	unsigned ioctl_retry = 1;
 	int retryable = 0;
 	const char *dev_name = DEV_NAME(dmt);
+	const char *dev_uuid = DEV_UUID(dmt);
 
 	if ((unsigned) dmt->type >=
 	    (sizeof(_cmd_data_v4) / sizeof(*_cmd_data_v4))) {
@@ -1767,7 +1809,7 @@ int dm_task_run(struct dm_task *dmt)
 		return _create_and_load_v4(dmt);
 
 	if (dmt->type == DM_DEVICE_MKNODES && !dev_name &&
-	    !dmt->uuid && dmt->major <= 0)
+	    !dev_uuid && dmt->major <= 0)
 		return _mknodes_v4(dmt);
 
 	if ((dmt->type == DM_DEVICE_RELOAD) && dmt->suppress_identical_reload)
@@ -1788,8 +1830,8 @@ int dm_task_run(struct dm_task *dmt)
 			  "%s%s%s %s%.0d%s%.0d%s%s",
 			  suspended_counter,
 			  dev_name ? : "",
-			  dmt->uuid ? " UUID " : "",
-			  dmt->uuid ? : "",
+			  dev_uuid ? " UUID " : "",
+			  dev_uuid ? : "",
 			  dmt->major > 0 ? "(" : "",
 			  dmt->major > 0 ? dmt->major : 0,
 			  dmt->major > 0 ? ":" : "",

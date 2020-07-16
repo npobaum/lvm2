@@ -24,7 +24,6 @@
 #include "lvm-string.h"
 #include "str_list.h"
 #include "locking.h"	/* FIXME Should not be used in this file */
-#include "memlock.h"
 
 #include "defaults.h" /* FIXME: should this be defaults.h? */
 
@@ -115,6 +114,10 @@ uint32_t lv_mirror_count(const struct logical_volume *lv)
 
 	seg = first_seg(lv);
 
+	/* FIXME: RAID10 only supports 2 copies right now */
+	if (!strcmp(seg->segtype->name, "raid10"))
+		return 2;
+
 	if (lv->status & PVMOVE)
 		return seg->area_count;
 
@@ -165,8 +168,8 @@ uint32_t adjusted_mirror_region_size(uint32_t extent_size, uint32_t extents,
 
 	if (region_max < UINT32_MAX && region_size > region_max) {
 		region_size = (uint32_t) region_max;
-		log_print("Using reduced mirror region size of %" PRIu32
-			  " sectors", region_size);
+		log_print_unless_silent("Using reduced mirror region size of %" PRIu32
+					" sectors", region_size);
 	}
 
 	return region_size;
@@ -645,8 +648,8 @@ static int _split_mirror_images(struct logical_volume *lv,
 		sub_lv = seg_lv(mirrored_seg, mirrored_seg->area_count);
 
 		sub_lv->status &= ~MIRROR_IMAGE;
-		release_lv_segment_area(mirrored_seg, mirrored_seg->area_count,
-					mirrored_seg->area_len);
+		if (!release_lv_segment_area(mirrored_seg, mirrored_seg->area_count, mirrored_seg->area_len))
+			return_0;
 
 		log_very_verbose("%s assigned to be split", sub_lv->name);
 
@@ -906,7 +909,8 @@ static int _remove_mirror_images(struct logical_volume *lv,
 		}
 		lvl->lv = seg_lv(mirrored_seg, m);
 		dm_list_add(&tmp_orphan_lvs, &lvl->list);
-		release_lv_segment_area(mirrored_seg, m, mirrored_seg->area_len);
+		if (!release_lv_segment_area(mirrored_seg, m, mirrored_seg->area_len))
+			return_0;
 	}
 	mirrored_seg->area_count = new_area_count;
 
@@ -1218,6 +1222,8 @@ int collapse_mirrored_lv(struct logical_volume *lv)
 	return 1;
 }
 
+#if 0
+/* FIXME: reconfigure_mirror_images: remove this code? */
 static int _get_mirror_fault_policy(struct cmd_context *cmd __attribute__((unused)),
 				   int log_policy)
 {
@@ -1374,6 +1380,7 @@ int reconfigure_mirror_images(struct lv_segment *mirrored_seg, uint32_t num_mirr
 	 */
 	return 1;
 }
+#endif
 
 static int _create_mimage_lvs(struct alloc_handle *ah,
 			      uint32_t num_mirrors,
@@ -1468,7 +1475,8 @@ int remove_mirrors_from_segments(struct logical_volume *lv,
 		}
 
 		for (s = new_mirrors + 1; s < seg->area_count; s++)
-			release_lv_segment_area(seg, s, seg->area_len);
+			if (!release_and_discard_lv_segment_area(seg, s, seg->area_len))
+				return_0;
 
 		seg->area_count = new_mirrors + 1;
 
@@ -2070,7 +2078,10 @@ int lv_add_mirrors(struct cmd_context *cmd, struct logical_volume *lv,
 
 	if (vg_is_clustered(lv->vg)) {
 		/* FIXME: review check of lv_is_active_remotely */
-		if (!_cluster_mirror_is_available(lv)) {
+		/* FIXME: move this test out of this function */
+		/* Skip test for pvmove mirrors, it can use local mirror */
+		if (!(lv->status & (PVMOVE | LOCKED)) &&
+		    !_cluster_mirror_is_available(lv)) {
 			log_error("Shared cluster mirrors are not available.");
 			return 0;
 		}

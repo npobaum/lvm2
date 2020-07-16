@@ -16,10 +16,7 @@
 #include "lib.h"
 #include "device.h"
 #include "memlock.h"
-#include "lvm-string.h"
-#include "lvm-file.h"
 #include "defaults.h"
-#include "config.h"
 
 #include <stdarg.h>
 #include <syslog.h>
@@ -176,9 +173,10 @@ const char *stored_errmsg(void)
 static struct dm_hash_table *_duplicated = NULL;
 
 void reset_log_duplicated(void) {
-	if (_duplicated)
+	if (_duplicated) {
 		dm_hash_destroy(_duplicated);
-	_duplicated = NULL;
+		_duplicated = NULL;
+	}
 }
 
 void print_log(int level, const char *file, int line, int dm_errno,
@@ -231,7 +229,7 @@ void print_log(int level, const char *file, int line, int dm_errno,
 		}
 
 		locn[sizeof(locn) - 1] = '\0';
-		message = &locn[0];
+		message = locn;
 	}
 
 /* FIXME Avoid pointless use of message buffer when it'll never be read! */

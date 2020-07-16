@@ -77,7 +77,7 @@ static const int sep = '/';
 		  p->tb - p->fb + 1, p->line); \
       return 0;\
    } \
-} while(0);
+} while(0)
 
 static int _tok_match(const char *str, const char *b, const char *e)
 {
@@ -331,14 +331,15 @@ static int _write_config(const struct dm_config_node *n, int only_one,
 	return 1;
 }
 
-int dm_config_write_node(const struct dm_config_node *cn, dm_putline_fn putline, void *baton)
+static int _write_node(const struct dm_config_node *cn, int only_one,
+		       dm_putline_fn putline, void *baton)
 {
 	struct output_line outline;
 	if (!(outline.mem = dm_pool_create("config_line", 1024)))
 		return_0;
 	outline.putline = putline;
 	outline.putline_baton = baton;
-	if (!_write_config(cn, 0, &outline, 0)) {
+	if (!_write_config(cn, only_one, &outline, 0)) {
 		dm_pool_destroy(outline.mem);
 		return_0;
 	}
@@ -346,6 +347,15 @@ int dm_config_write_node(const struct dm_config_node *cn, dm_putline_fn putline,
 	return 1;
 }
 
+int dm_config_write_one_node(const struct dm_config_node *cn, dm_putline_fn putline, void *baton)
+{
+	return _write_node(cn, 1, putline, baton);
+}
+
+int dm_config_write_node(const struct dm_config_node *cn, dm_putline_fn putline, void *baton)
+{
+	return _write_node(cn, 0, putline, baton);
+}
 
 /*
  * parser
@@ -842,21 +852,28 @@ static int _find_config_bool(const void *start, node_lookup_fn find,
 {
 	const struct dm_config_node *n = find(start, path);
 	const struct dm_config_value *v;
+	int b;
 
-	if (!n)
-		return fail;
+	if (n) {
+		v = n->v;
 
-	v = n->v;
+		switch (v->type) {
+		case DM_CFG_INT:
+			b = v->v.i ? 1 : 0;
+			log_very_verbose("Setting %s to %d", path, b);
+			return b;
 
-	switch (v->type) {
-	case DM_CFG_INT:
-		return v->v.i ? 1 : 0;
-
-	case DM_CFG_STRING:
-		return _str_to_bool(v->v.str, fail);
-	default:
-		;
+		case DM_CFG_STRING:
+			b = _str_to_bool(v->v.str, fail);
+			log_very_verbose("Setting %s to %d", path, b);
+			return b;
+		default:
+			;
+		}
 	}
+
+	log_very_verbose("%s not found in config: defaulting to %d",
+			 path, fail);
 
 	return fail;
 }
@@ -1152,14 +1169,9 @@ struct dm_config_node *dm_config_create_node(struct dm_config_tree *cft, const c
 		log_error("Failed to create config node's key.");
 		return NULL;
 	}
-	if (!(cn->v = _create_value(cft->mem))) {
-		log_error("Failed to create config node's value.");
-		return NULL;
-	}
 	cn->parent = NULL;
-	cn->v->type = DM_CFG_INT;
-	cn->v->v.i = 0;
-	cn->v->next = NULL;
+	cn->v = NULL;
+
 	return cn;
 }
 

@@ -18,7 +18,6 @@
 #include "lvm-types.h"
 #include "btree.h"
 #include "filter.h"
-#include "filter-persistent.h"
 #include "toolcontext.h"
 
 #include <unistd.h>
@@ -497,7 +496,7 @@ static int _insert_udev_dir(struct udev *udev, const char *dir)
 {
 	struct udev_enumerate *udev_enum = NULL;
 	struct udev_list_entry *device_entry, *symlink_entry;
-	const char *node_name, *symlink_name;
+	const char *entry_name, *node_name, *symlink_name;
 	struct udev_device *device;
 	int r = 1;
 
@@ -508,20 +507,34 @@ static int _insert_udev_dir(struct udev *udev, const char *dir)
 	    udev_enumerate_scan_devices(udev_enum))
 		goto bad;
 
+	/*
+	 * Report any missing information as "log_very_verbose" only, do not
+	 * report it as a "warning" or "error" - the record could be removed
+	 * by the time we ask for more info (node name, symlink name...).
+	 * Whatever removes *any* block device in the system (even unrelated
+	 * to our operation), we would have a warning/error on output then.
+	 * That could be misleading. If there's really any problem with missing
+	 * information from udev db, we can still have a look at the verbose log.
+	 */
 	udev_list_entry_foreach(device_entry, udev_enumerate_get_list_entry(udev_enum)) {
-		if (!(device = udev_device_new_from_syspath(udev, udev_list_entry_get_name(device_entry)))) {
-			log_warn("WARNING: udev failed to return a device entry.");
+		entry_name = udev_list_entry_get_name(device_entry);
+
+		if (!(device = udev_device_new_from_syspath(udev, entry_name))) {
+			log_very_verbose("udev failed to return a device for entry %s.",
+					 entry_name);
 			continue;
 		}
 
 		if (!(node_name = udev_device_get_devnode(device)))
-			log_warn("WARNING: udev failed to return a device node.");
+			log_very_verbose("udev failed to return a device node for entry %s.",
+					 entry_name);
 		else
 			r &= _insert(node_name, 0, 0);
 
 		udev_list_entry_foreach(symlink_entry, udev_device_get_devlinks_list_entry(device)) {
 			if (!(symlink_name = udev_list_entry_get_name(symlink_entry)))
-				log_warn("WARNING: udev failed to return a symlink name.");
+				log_very_verbose("udev failed to return a symlink name for entry %s.",
+						 entry_name);
 			else
 				r &= _insert(symlink_name, 0, 0);
 		}
@@ -957,21 +970,27 @@ struct dev_iter *dev_iter_create(struct dev_filter *f, int dev_scan)
 
 	if (dev_scan && !trust_cache()) {
 		/* Flag gets reset between each command */
-		if (!full_scan_done())
-			persistent_filter_wipe(f); /* Calls _full_scan(1) */
+		if (!full_scan_done()) {
+			if (f && f->wipe)
+				f->wipe(f); /* Calls _full_scan(1) */
+			else
+				_full_scan(1);
+		}
 	} else
 		_full_scan(0);
 
 	di->current = btree_first(_cache.devices);
 	di->filter = f;
-	di->filter->use_count++;
+	if (di->filter)
+		di->filter->use_count++;
 
 	return di;
 }
 
 void dev_iter_destroy(struct dev_iter *iter)
 {
-	iter->filter->use_count--;
+	if (iter->filter)
+		iter->filter->use_count--;
 	dm_free(iter);
 }
 

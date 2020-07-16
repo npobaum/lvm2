@@ -37,7 +37,7 @@ lvm_t lvm_init(const char *system_dir)
 	/* create context */
 	/* FIXME: split create_toolcontext */
 	/* FIXME: make all globals configurable */
-	cmd = create_toolcontext(0, system_dir, 1, 0);
+	cmd = create_toolcontext(0, system_dir, 0, 0);
 	if (!cmd)
 		return NULL;
 
@@ -94,6 +94,11 @@ int lvm_config_override(lvm_t libh, const char *config_settings)
 	return 0;
 }
 
+int lvm_config_find_bool(lvm_t libh, const char *config_path, int fail)
+{
+	return find_config_tree_bool((struct cmd_context *)libh, config_path, fail);
+}
+
 int lvm_errno(lvm_t libh)
 {
 	return stored_errno();
@@ -120,4 +125,9 @@ const char *lvm_vgname_from_device(lvm_t libh, const char *device)
 {
 	struct cmd_context *cmd = (struct cmd_context *)libh;
 	return find_vgname_from_pvname(cmd, device);
+}
+
+float lvm_percent_to_float(percent_t v)
+{
+	return percent_to_float(v);
 }

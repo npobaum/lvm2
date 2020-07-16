@@ -86,9 +86,7 @@ static int _request_confirmation(struct cmd_context *cmd,
 				 const struct logical_volume *lv,
 				 const struct lvresize_params *lp)
 {
-	struct lvinfo info;
-
-	memset(&info, 0, sizeof(info));
+	struct lvinfo info = { 0 };
 
 	if (!lv_info(cmd, lv, 0, &info, 1, 0) && driver_version(NULL, 0)) {
 		log_error("lv_info failed: aborting");
@@ -295,6 +293,8 @@ static int _adjust_policy_params(struct cmd_context *cmd,
 		policy_amount =
 			find_config_tree_int(cmd, "activation/thin_pool_autoextend_percent",
 					     DEFAULT_THIN_POOL_AUTOEXTEND_PERCENT);
+		if (!policy_amount && policy_threshold < PERCENT_100)
+                        return 0;
 	} else {
 		policy_threshold =
 			find_config_tree_int(cmd, "activation/snapshot_autoextend_threshold",
@@ -367,12 +367,12 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 {
 	struct logical_volume *lv;
 	struct lvinfo info;
-	uint32_t stripesize_extents = 0;
-	uint32_t seg_stripes = 0, seg_stripesize = 0, seg_size = 0;
+	uint32_t stripesize_extents;
+	uint32_t seg_stripes = 0, seg_stripesize = 0, seg_size;
 	uint32_t seg_mirrors = 0;
-	uint32_t extents_used = 0;
+	uint32_t extents_used;
 	uint32_t size_rest;
-	uint32_t pv_extent_count = 0;
+	uint32_t pv_extent_count;
 	alloc_policy_t alloc;
 	struct logical_volume *lock_lv;
 	struct lv_list *lvl;
@@ -454,6 +454,12 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 
 	alloc = (alloc_policy_t) arg_uint_value(cmd, alloc_ARG, lv->alloc);
 
+	/*
+	 * First adjust to an exact multiple of extent size.
+	 * When extending by a relative amount we round that amount up.
+	 * When reducing by a relative amount we remove at most that amount.
+	 * When changing to an absolute size, we round that size up.
+	 */
 	if (lp->size) {
 		if (lp->size % vg->extent_size) {
 			if (lp->sign == SIGN_MINUS)
@@ -462,8 +468,8 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 				lp->size += vg->extent_size -
 				    (lp->size % vg->extent_size);
 
-			log_print("Rounding up size to full physical extent %s",
-				  display_size(cmd, lp->size));
+			log_print_unless_silent("Rounding size to boundary between physical extents: %s",
+						display_size(cmd, lp->size));
 		}
 
 		lp->extents = lp->size / vg->extent_size;
@@ -574,9 +580,10 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 				seg_mirrors = 0;
 			break;
 		}
+
 		if (!arg_count(cmd, mirrors_ARG) && seg_mirrors) {
-			log_print("Extending %" PRIu32 " mirror images.",
-				  seg_mirrors);
+			log_print_unless_silent("Extending %" PRIu32 " mirror images.",
+						seg_mirrors);
 			lp->mirrors = seg_mirrors;
 		}
 		if ((arg_count(cmd, mirrors_ARG) || seg_mirrors) &&
@@ -584,18 +591,30 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 			log_error("Cannot vary number of mirrors in LV yet.");
 			return EINVALID_CMD_LINE;
 		}
+
+		if (seg_mirrors && !strcmp(mirr_seg->segtype->name, "raid10")) {
+			lp->stripes = mirr_seg->area_count / seg_mirrors;
+			lp->stripe_size = mirr_seg->stripe_size;
+		}
 	}
 
 	/* If extending, find stripes, stripesize & size of last segment */
 	if ((lp->extents > lv->le_count) &&
-	    !(lp->stripes == 1 || (lp->stripes > 1 && lp->stripe_size))) {
+	    !(lp->stripes == 1 || (lp->stripes > 1 && lp->stripe_size)) &&
+	    strcmp(mirr_seg->segtype->name, "raid10")) {
 		/* FIXME Don't assume mirror seg will always be AREA_LV */
-		dm_list_iterate_items(seg, seg_mirrors ? &seg_lv(mirr_seg, 0)->segments : &lv->segments) {
-			if (!seg_is_striped(seg))
+		/* FIXME We will need to support resize for metadata LV as well,
+		 *       and data LV could be any type (i.e. mirror)) */
+		dm_list_iterate_items(seg, seg_mirrors ? &seg_lv(mirr_seg, 0)->segments :
+				      lv_is_thin_pool(lv) ? &seg_lv(first_seg(lv), 0)->segments : &lv->segments) {
+			/* Allow through "striped" and RAID 4/5/6/10 */
+			if (!seg_is_striped(seg) &&
+			    (!seg_is_raid(seg) || seg_is_mirrored(seg)) &&
+			    strcmp(seg->segtype->name, "raid10"))
 				continue;
 
 			sz = seg->stripe_size;
-			str = seg->area_count;
+			str = seg->area_count - lp->segtype->parity_devs;
 
 			if ((seg_stripesize && seg_stripesize != sz &&
 			     sz && !lp->stripe_size) ||
@@ -611,19 +630,24 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 
 		if (!lp->stripes)
 			lp->stripes = seg_stripes;
+		else if (seg_is_raid(first_seg(lv)) &&
+			 (lp->stripes != seg_stripes)) {
+			log_error("Unable to extend \"%s\" segment type with different number of stripes.", first_seg(lv)->segtype->ops->name(first_seg(lv)));
+			return ECMD_FAILED;
+		}
 
 		if (!lp->stripe_size && lp->stripes > 1) {
 			if (seg_stripesize) {
-				log_print("Using stripesize of last segment %s",
-					  display_size(cmd, (uint64_t) seg_stripesize));
+				log_print_unless_silent("Using stripesize of last segment %s",
+							display_size(cmd, (uint64_t) seg_stripesize));
 				lp->stripe_size = seg_stripesize;
 			} else {
 				lp->stripe_size =
 					find_config_tree_int(cmd,
 							"metadata/stripesize",
 							DEFAULT_STRIPESIZE) * 2;
-				log_print("Using default stripesize %s",
-					  display_size(cmd, (uint64_t) lp->stripe_size));
+				log_print_unless_silent("Using default stripesize %s",
+							display_size(cmd, (uint64_t) lp->stripe_size));
 			}
 		}
 	}
@@ -665,29 +689,33 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 	}
 
 	if (lp->stripes > 1) {
+		if (lp->stripe_size < STRIPE_SIZE_MIN) {
+			log_error("Invalid stripe size %s",
+				  display_size(cmd, (uint64_t) lp->stripe_size));
+			return EINVALID_CMD_LINE;
+		}
+
 		if (!(stripesize_extents = lp->stripe_size / vg->extent_size))
 			stripesize_extents = 1;
 
 		size_rest = seg_size % (lp->stripes * stripesize_extents);
 		/* Round toward the original size. */
-		if (size_rest && lp->extents < lv->le_count) {
-			log_print("Rounding size (%d extents) up to stripe "
-				  "boundary size for segment (%d extents)",
-				  lp->extents, lp->extents - size_rest +
-				  (lp->stripes * stripesize_extents));
+		if (size_rest &&
+		    ((lp->extents < lv->le_count) ||
+		     !lp->percent ||
+		     (vg->free_count >= (lp->extents - lv->le_count - size_rest +
+					 (lp->stripes * stripesize_extents))))) {
+			log_print_unless_silent("Rounding size (%d extents) up to stripe "
+						"boundary size for segment (%d extents)",
+						lp->extents, lp->extents - size_rest +
+						(lp->stripes * stripesize_extents));
 			lp->extents = lp->extents - size_rest +
 				      (lp->stripes * stripesize_extents);
 		} else if (size_rest) {
-			log_print("Rounding size (%d extents) down to stripe "
-				  "boundary size for segment (%d extents)",
-				  lp->extents, lp->extents - size_rest);
+			log_print_unless_silent("Rounding size (%d extents) down to stripe "
+						"boundary size for segment (%d extents)",
+						lp->extents, lp->extents - size_rest);
 			lp->extents = lp->extents - size_rest;
-		}
-
-		if (lp->stripe_size < STRIPE_SIZE_MIN) {
-			log_error("Invalid stripe size %s",
-				  display_size(cmd, (uint64_t) lp->stripe_size));
-			return EINVALID_CMD_LINE;
 		}
 	}
 
@@ -707,6 +735,15 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 			return EINVALID_CMD_LINE;
 		}
 		lp->resize = LV_EXTEND;
+	} else if (lp->extents == lv->le_count) {
+		if (use_policy)
+			return ECMD_PROCESSED; /* Nothing to do. */
+		if (!lp->resizefs) {
+			log_error("New size (%d extents) matches existing size "
+				  "(%d extents)", lp->extents, lv->le_count);
+			return EINVALID_CMD_LINE;
+		}
+		lp->resize = LV_EXTEND;
 	}
 
 	if (lv_is_origin(lv)) {
@@ -715,8 +752,6 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 				  "in size yet.");
 			return ECMD_FAILED;
 		}
-
-		memset(&info, 0, sizeof(info));
 
 		if (lv_info(cmd, lv, 0, &info, 0, 0) && info.exists) {
 			log_error("Snapshot origin volumes can be resized "
@@ -734,13 +769,6 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 		if (lp->resizefs) {
 			log_warn("Thin pool volumes do not have filesystem.");
 			lp->resizefs = 0;
-		}
-
-		if (!lp->stripes) {
-			/* Try to use the same strip settings for underlying pool data LV */
-			lp->stripes = last_seg(seg_lv(first_seg(lv), 0))->area_count;
-			if (!lp->stripe_size)
-				lp->stripe_size = last_seg(seg_lv(first_seg(lv), 0))->stripe_size;
 		}
 	}
 
@@ -776,10 +804,10 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 		return ECMD_FAILED;
 	}
 
-	log_print("%sing logical volume %s to %s",
-		  (lp->resize == LV_REDUCE) ? "Reduc" : "Extend",
-		  lp->lv_name,
-		  display_size(cmd, (uint64_t) lp->extents * vg->extent_size));
+	log_print_unless_silent("%sing logical volume %s to %s",
+				(lp->resize == LV_REDUCE) ? "Reduc" : "Extend",
+				lp->lv_name,
+				display_size(cmd, (uint64_t) lp->extents * vg->extent_size));
 
 	if (lp->resize == LV_REDUCE) {
 		if (!lv_reduce(lv, lv->le_count - lp->extents)) {
@@ -845,7 +873,7 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 		return ECMD_FAILED;
 	}
 
-	log_print("Logical volume %s successfully resized", lp->lv_name);
+	log_print_unless_silent("Logical volume %s successfully resized", lp->lv_name);
 
 	if (lp->resizefs && (lp->resize == LV_EXTEND) &&
 	    !_fsadm_cmd(cmd, vg, lp, FSADM_CMD_RESIZE, NULL)) {
@@ -858,11 +886,9 @@ static int _lvresize(struct cmd_context *cmd, struct volume_group *vg,
 
 int lvresize(struct cmd_context *cmd, int argc, char **argv)
 {
-	struct lvresize_params lp;
+	struct lvresize_params lp = { 0 };
 	struct volume_group *vg;
 	int r;
-
-	memset(&lp, 0, sizeof(lp));
 
 	if (!_lvresize_params(cmd, argc, argv, &lp))
 		return EINVALID_CMD_LINE;

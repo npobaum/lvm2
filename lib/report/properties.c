@@ -95,14 +95,22 @@ static percent_t _copy_percent(const struct logical_volume *lv) {
 
 static percent_t _snap_percent(const struct logical_volume *lv) {
 	percent_t perc;
-	if (!lv_snapshot_percent(lv, &perc))
+
+	if (!lv_is_cow(lv) || !lv_snapshot_percent(lv, &perc))
 		perc = PERCENT_INVALID;
+
 	return perc;
 }
 
 static percent_t _data_percent(const struct logical_volume *lv)
 {
 	percent_t perc;
+
+	if (lv_is_cow(lv))
+		return _snap_percent(lv);
+
+	if (lv_is_thin_volume(lv))
+		return lv_thin_percent(lv, 0, &perc) ? perc : PERCENT_INVALID;
 
 	return lv_thin_pool_percent(lv, 0, &perc) ? perc : PERCENT_INVALID;
 }
@@ -277,6 +285,8 @@ GET_LVSEG_NUM_PROPERTY_FN(zero, lvseg->zero_new_blocks)
 #define _zero_set _not_implemented_set
 GET_LVSEG_NUM_PROPERTY_FN(transaction_id, lvseg->transaction_id)
 #define _transaction_id_set _not_implemented_set
+GET_LVSEG_NUM_PROPERTY_FN(discards, lvseg->discards)
+#define _discards_set _not_implemented_set
 GET_LVSEG_NUM_PROPERTY_FN(seg_start, lvseg_start(lvseg))
 #define _seg_start_set _not_implemented_set
 GET_LVSEG_NUM_PROPERTY_FN(seg_start_pe, lvseg->le)

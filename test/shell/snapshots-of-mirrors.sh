@@ -1,3 +1,4 @@
+#!/bin/sh
 # Copyright (C) 2010 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -12,8 +13,9 @@
 
 aux prepare_vg 4
 
-# Create snapshot of a mirror origin
+# Attempt to create snapshot of a mirror origin - should fail
 lvcreate -m 1 -L 10M -n lv $vg
+
 lvcreate -s $vg/lv -L 10M -n snap
 
 # Down-convert (mirror -> linear) under a snapshot
@@ -40,5 +42,5 @@ lvconvert --mirrorlog core $vg/lv
 # Log conversion (core -> disk)
 lvconvert --mirrorlog disk $vg/lv
 
-# Clean-up
-lvremove -ff $vg
+## Clean-up
+vgremove -f $vg

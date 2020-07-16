@@ -1,3 +1,51 @@
+Version 1.02.77 - 15th October 2012
+===================================
+  Support unmount of thin volumes from pool above thin pool threshold.
+  Update man page to reflect that dm UUIDs are being mangled as well.
+  Apply 'dmsetup mangle' for dm UUIDs besides dm names.
+  Add 'mangled_uuid' and 'unmangled_uuid' fields to dmsetup info -c -o.
+  Mangle device UUID on dm_task_set_uuid/newuuid call if necessary.
+  Add dm_task_get_uuid_mangled/unmangled to libdevmapper.
+  Always reset delay_resume_if_new flag when stacking thin pool over anything.
+  Don't create value for dm_config_node and require dm_config_create_value call.
+  Check for existing new_name for dmsetup rename.
+  Fix memory leak in dmsetup _get_split_name() error path.
+
+Version 1.02.76 - 7th August 2012
+=================================
+  Add dm_vasprintf to libdevmapper.
+  Allow --noflush with dmsetup status and wait (for thin target).
+  Add dm_config_write_one_node to libdevmapper.
+  Support thin pool message release/reserve_metadata_snap in libdevmapper.
+  Support thin pool discards and external origin features in libdevmapper.
+  Add configure --enable-udev-rule-exec-detection to detect exec path in rules.
+  Use sbindir in udev rules by default and remove executable path detection.
+  Remove hard-coded paths for dmeventd fifos and use default-dm-run-dir.
+  Add configure --with-lvmetad-pidfile to remove hard-coded value.
+  Add configure --with-default-pid-dir for common directory with pid files.
+  Add configure --with-default-dm-run-dir to set run directory for dm tools.
+  Detect kernel_send() errors in cmirrord.
+  Add __attribute__ instrumentation to libdevmapper.h.
+  Print clean_bits instead of sync_bits in pull_state in cmirrord.
+  Add tests for errors from closedir(), close() in cmirrord.
+  Add documentation references in systemd units.
+  Remove veritysetup.  Now maintained with cryptsetup.
+
+Version 1.02.75 - 8th June 2012
+===============================
+  Upstream source repo now fedorahosted.org git not sources.redhat.com CVS.
+  Remove unsupported udev_get_dev_path libudev call used for checking udev dir.
+  Set delay_resume_if_new on deptree snapshot origin.
+  Log value chosen in _find_config_bool like other variable types do.
+  Wait for dmeventd to exit after sending it DM_EVENT_CMD_DIE when restarting.
+  Append 'Used' to {Blk}DevNames/DevNos dmsetup report headers for clarity.
+  Add configure --with-veritysetup for independent veritysetup tool.
+  Properly support supplied dmevent path in dm_event_register_handler().
+  Remove dmeventd fifos on exit if they are not managed by systemd.
+  Use SD_ACTIVATION environment variable in systemd units to detect systemd.
+  Only start a new dmeventd instance on restart if one was already running.
+  Extend the time waited for input from dmeventd fifo to 5 secs. (1.02.73)
+
 Version 1.02.74 - 6th March 2012
 ================================
   Check for multiply-mangled names in auto mangling mode.

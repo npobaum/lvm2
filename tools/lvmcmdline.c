@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2009 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2012 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -19,15 +19,14 @@
 #include "lvm-version.h"
 
 #include "stub.h"
-#include "lvm2cmd.h"
 #include "last-path-component.h"
 
 #include <signal.h>
-#include <syslog.h>
-#include <libgen.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <sys/resource.h>
+#include <dirent.h>
+#include <paths.h>
 
 #ifdef HAVE_GETOPTLONG
 #  include <getopt.h>
@@ -94,9 +93,24 @@ int32_t grouped_arg_int_value(const struct arg_values *av, int a, const int32_t 
 	return grouped_arg_count(av, a) ? av[a].i_value : def;
 }
 
+int32_t first_grouped_arg_int_value(struct cmd_context *cmd, int a, const int32_t def)
+{
+	struct arg_value_group_list *current_group;
+	struct arg_values *av;
+
+	dm_list_iterate_items(current_group, &cmd->arg_value_groups) {
+		av = current_group->arg_values;
+		if (grouped_arg_count(av, a))
+			return grouped_arg_int_value(av, a, def);
+	}
+
+	return def;
+}
+
 int32_t arg_int_value(struct cmd_context *cmd, int a, const int32_t def)
 {
-	return arg_count(cmd, a) ? cmd->arg_values[a].i_value : def;
+	return (_cmdline.arg_props[a].flags & ARG_GROUPABLE) ?
+		first_grouped_arg_int_value(cmd, a, def) : (arg_count(cmd, a) ? cmd->arg_values[a].i_value : def);
 }
 
 uint32_t arg_uint_value(struct cmd_context *cmd, int a, const uint32_t def)
@@ -157,7 +171,7 @@ int yes_no_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_value
 	return 1;
 }
 
-int yes_no_excl_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_values *av)
+int activation_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_values *av)
 {
 	av->sign = SIGN_NONE;
 	av->percent = PERCENT_NONE;
@@ -171,6 +185,12 @@ int yes_no_excl_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_
 	else if (!strcmp(av->value, "y")) {
 		av->i_value = CHANGE_AY;
 		av->ui_value = CHANGE_AY;
+	}
+
+	else if (!strcmp(av->value, "a") || !strcmp(av->value, "ay") ||
+		 !strcmp(av->value, "ya")) {
+		av->i_value = CHANGE_AAY;
+		av->ui_value = CHANGE_AAY;
 	}
 
 	else if (!strcmp(av->value, "n") || !strcmp(av->value, "en") ||
@@ -191,6 +211,19 @@ int yes_no_excl_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_
 
 	else
 		return 0;
+
+	return 1;
+}
+
+int discards_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_values *av)
+{
+	thin_discards_t discards;
+
+	if (!get_pool_discards(av->value, &discards))
+		return_0;
+
+	av->i_value = discards;
+	av->ui_value = discards;
 
 	return 1;
 }
@@ -373,38 +406,6 @@ int int_arg_with_sign_and_percent(struct cmd_context *cmd __attribute__((unused)
 	return 1;
 }
 
-int minor_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_values *av)
-{
-	char *ptr;
-
-	if (!_get_int_arg(av, &ptr) || (*ptr) || (av->sign == SIGN_MINUS))
-		return 0;
-
-	if (av->i_value > 255) {
-		log_error("Minor number outside range 0-255");
-		return 0;
-	}
-
-	return 1;
-}
-
-int major_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_values *av)
-{
-	char *ptr;
-
-	if (!_get_int_arg(av, &ptr) || (*ptr) || (av->sign == SIGN_MINUS))
-		return 0;
-
-	if (av->i_value > 255) {
-		log_error("Major number outside range 0-255");
-		return 0;
-	}
-
-	/* FIXME Also Check against /proc/devices */
-
-	return 1;
-}
-
 int string_arg(struct cmd_context *cmd __attribute__((unused)),
 	       struct arg_values *av __attribute__((unused)))
 {
@@ -504,6 +505,35 @@ int metadatacopies_arg(struct cmd_context *cmd, struct arg_values *av)
 	}
 
 	return int_arg(cmd, av);
+}
+
+int major_minor_valid(const struct cmd_context *cmd, const struct format_type *fmt,
+		      int32_t major, int32_t minor)
+{
+	if (!strncmp(cmd->kernel_vsn, "2.4.", 4) ||
+	    (fmt->features & FMT_RESTRICTED_LVIDS)) {
+		if (major < 0 || major > 255) {
+			log_error("Major number outside range 0-255");
+			return 0;
+		}
+		if (minor < 0 || minor > 255) {
+			log_error("Minor number outside range 0-255");
+			return 0;
+		}
+	} else {
+		/* 12 bits for major number */
+		if (major < 0 || major > 4095) {
+			log_error("Major number outside range 0-4095");
+			return 0;
+		}
+		/* 20 bits for minor number */
+		if (minor < 0 || minor > 1048575) {
+			log_error("Minor number outside range 0-1048575");
+			return 0;
+		}
+	}
+
+	return 1;
 }
 
 static void __alloc(int size)
@@ -819,6 +849,9 @@ static int _get_settings(struct cmd_context *cmd)
 		cmd->current_settings.verbose = 0;
 	}
 
+	if (arg_count(cmd, quiet_ARG) > 1)
+		cmd->current_settings.silent = 1;
+
 	if (arg_count(cmd, test_ARG))
 		cmd->current_settings.test = arg_count(cmd, test_ARG);
 
@@ -835,13 +868,16 @@ static int _get_settings(struct cmd_context *cmd)
 
 	if (arg_count(cmd, partial_ARG)) {
 		cmd->partial_activation = 1;
-		log_print("Partial mode. Incomplete logical volumes will be processed.");
+		log_warn("PARTIAL MODE. Incomplete logical volumes will be processed.");
 	}
 
 	if (arg_count(cmd, ignorelockingfailure_ARG) || arg_count(cmd, sysinit_ARG))
 		init_ignorelockingfailure(1);
 	else
 		init_ignorelockingfailure(0);
+
+	if (!arg_count(cmd, sysinit_ARG))
+		lvmetad_warning();
 
 	if (arg_count(cmd, nosuffix_ARG))
 		cmd->current_settings.suffix = 0;
@@ -874,7 +910,8 @@ static int _get_settings(struct cmd_context *cmd)
 	if (!_merge_synonym(cmd, resizable_ARG, resizeable_ARG) ||
 	    !_merge_synonym(cmd, allocation_ARG, allocatable_ARG) ||
 	    !_merge_synonym(cmd, allocation_ARG, resizeable_ARG) ||
-	    !_merge_synonym(cmd, virtualoriginsize_ARG, virtualsize_ARG))
+	    !_merge_synonym(cmd, virtualoriginsize_ARG, virtualsize_ARG) ||
+	    !_merge_synonym(cmd, available_ARG, activate_ARG))
 		return EINVALID_CMD_LINE;
 
 	if ((!strncmp(cmd->command->name, "pv", 2) &&
@@ -937,6 +974,7 @@ static void _apply_settings(struct cmd_context *cmd)
 {
 	init_debug(cmd->current_settings.debug);
 	init_verbose(cmd->current_settings.verbose + VERBOSE_BASE_LEVEL);
+	init_silent(cmd->current_settings.silent);
 	init_test(cmd->current_settings.test);
 	init_full_scan_done(0);
 	init_mirror_in_sync(0);
@@ -1152,6 +1190,39 @@ int lvm_split(char *str, int *argc, char **argv, int max)
 	return *argc;
 }
 
+/* Make sure we have always valid filedescriptors 0,1,2 */
+static int _check_standard_fds(void)
+{
+	int err = is_valid_fd(STDERR_FILENO);
+
+	if (!is_valid_fd(STDIN_FILENO) &&
+	    !(stdin = fopen(_PATH_DEVNULL, "r"))) {
+		if (err)
+			perror("stdin stream open");
+		else
+			printf("stdin stream open: %s\n",
+			       strerror(errno));
+		return 0;
+	}
+
+	if (!is_valid_fd(STDOUT_FILENO) &&
+	    !(stdout = fopen(_PATH_DEVNULL, "w"))) {
+		if (err)
+			perror("stdout stream open");
+		/* else no stdout */
+		return 0;
+	}
+
+	if (!is_valid_fd(STDERR_FILENO) &&
+	    !(stderr = fopen(_PATH_DEVNULL, "w"))) {
+		printf("stderr stream open: %s\n",
+		       strerror(errno));
+		return 0;
+	}
+
+	return 1;
+}
+
 static const char *_get_cmdline(pid_t pid)
 {
 	static char _proc_cmdline[32];
@@ -1197,7 +1268,7 @@ static void _close_descriptor(int fd, unsigned suppress_warnings,
 	const char *filename;
 
 	/* Ignore bad file descriptors */
-	if (fcntl(fd, F_GETFD) == -1 && errno == EBADF)
+	if (!is_valid_fd(fd))
 		return;
 
 	if (!suppress_warnings)
@@ -1219,26 +1290,51 @@ static void _close_descriptor(int fd, unsigned suppress_warnings,
 	fprintf(stderr, " Parent PID %" PRIpid_t ": %s\n", ppid, parent_cmdline);
 }
 
-static void _close_stray_fds(const char *command)
+static int _close_stray_fds(const char *command)
 {
+#ifndef VALGRIND_POOL
 	struct rlimit rlim;
 	int fd;
 	unsigned suppress_warnings = 0;
 	pid_t ppid = getppid();
 	const char *parent_cmdline = _get_cmdline(ppid);
-
-	if (getrlimit(RLIMIT_NOFILE, &rlim) < 0) {
-		fprintf(stderr, "getrlimit(RLIMIT_NOFILE) failed: %s\n",
-			strerror(errno));
-		return;
-	}
+	static const char _fd_dir[] = DEFAULT_PROC_DIR "/self/fd";
+	struct dirent *dirent;
+	DIR *d;
 
 	if (getenv("LVM_SUPPRESS_FD_WARNINGS"))
 		suppress_warnings = 1;
 
-	for (fd = 3; fd < (int)rlim.rlim_cur; fd++)
-		_close_descriptor(fd, suppress_warnings, command, ppid,
-				  parent_cmdline);
+	if (!(d = opendir(_fd_dir))) {
+		if (errno != ENOENT) {
+			log_sys_error("opendir", _fd_dir);
+			return 0; /* broken system */
+		}
+
+		/* Path does not exist, use the old way */
+		if (getrlimit(RLIMIT_NOFILE, &rlim) < 0) {
+			log_sys_error("getrlimit", "RLIMIT_NOFILE");
+			return 1;
+		}
+
+		for (fd = 3; fd < (int)rlim.rlim_cur; fd++)
+			_close_descriptor(fd, suppress_warnings, command, ppid,
+					  parent_cmdline);
+		return 1;
+	}
+
+	while ((dirent = readdir(d))) {
+		fd = atoi(dirent->d_name);
+		if (fd > 2 && fd != dirfd(d))
+			_close_descriptor(fd, suppress_warnings,
+					  command, ppid, parent_cmdline);
+	}
+
+	if (closedir(d))
+		log_sys_error("closedir", _fd_dir);
+#endif
+
+	return 1;
 }
 
 struct cmd_context *init_lvm(void)
@@ -1248,13 +1344,16 @@ struct cmd_context *init_lvm(void)
 	if (!udev_init_library_context())
 		stack;
 
-	if (!(cmd = create_toolcontext(0, NULL, 1, 0)))
+	if (!(cmd = create_toolcontext(0, NULL, 1, 0))) {
+		udev_fin_library_context();
 		return_NULL;
+	}
 
 	_cmdline.arg_props = &_arg_props[0];
 
 	if (stored_errno()) {
 		destroy_toolcontext(cmd);
+		udev_fin_library_context();
 		return_NULL;
 	}
 
@@ -1390,7 +1489,11 @@ int lvm2_main(int argc, char **argv)
 	    strcmp(base, "initrd-lvm"))
 		alias = 1;
 
-	_close_stray_fds(base);
+	if (!_check_standard_fds())
+		return -1;
+
+	if (!_close_stray_fds(base))
+		return -1;
 
 	if (is_static() && strcmp(base, "lvm.static") &&
 	    path_exists(LVM_SHARED_PATH) &&

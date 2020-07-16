@@ -21,7 +21,6 @@
 #include "display.h"
 #include "activate.h"
 #include "segtype.h"
-#include "str_list.h"
 #include "lvmcache.h"
 
 #include <stddef.h> /* offsetof() */
@@ -564,6 +563,25 @@ static int _transactionid_disp(struct dm_report *rh, struct dm_pool *mem,
 	return  dm_report_field_uint64(rh, field, &seg->transaction_id);
 }
 
+static int _discards_disp(struct dm_report *rh, struct dm_pool *mem,
+			  struct dm_report_field *field,
+			  const void *data, void *private)
+{
+	const struct lv_segment *seg = (const struct lv_segment *) data;
+	const char *discards_str;
+
+	if (seg_is_thin_volume(seg))
+		seg = first_seg(seg->pool_lv);
+
+	if (seg_is_thin_pool(seg)) {
+		discards_str = get_pool_discards_name(seg->discards);
+		return dm_report_field_string(rh, field, &discards_str);
+	}
+
+	dm_report_field_set_value(field, "", NULL);
+
+	return 1;
+}
 
 static int _originsize_disp(struct dm_report *rh, struct dm_pool *mem,
 			    struct dm_report_field *field,

@@ -371,7 +371,8 @@ int main(int argc, char *argv[])
 
 		case 'R':
 			check_permissions();
-			return refresh_clvmd(1)==1?0:1;
+			ret = (refresh_clvmd(1) == 1) ? 0 : 1;
+			goto out;
 
 		case 'S':
 			check_permissions();
@@ -619,6 +620,8 @@ int main(int argc, char *argv[])
 	for (newfd = local_client_head.next; newfd != NULL;) {
 		delfd = newfd;
 		newfd = newfd->next;
+		if (delfd->fd == local_sock)
+			delfd->fd = -1;
 		/*
 		 * FIXME:
 		 * needs cleanup code from read_from_local_sock() for now
@@ -2090,20 +2093,23 @@ static int add_to_lvmqueue(struct local_client *client, struct clvm_header *msg,
 static int check_local_clvmd(void)
 {
 	int local_socket;
-	struct sockaddr_un sockaddr;
 	int ret = 0;
+	struct sockaddr_un sockaddr = { .sun_family = AF_UNIX };
 
-	/* Open local socket */
-	if ((local_socket = socket(PF_UNIX, SOCK_STREAM, 0)) < 0) {
+	if (!dm_strncpy(sockaddr.sun_path, CLVMD_SOCKNAME, sizeof(sockaddr.sun_path))) {
+		log_error("%s: clvmd socket name too long.", CLVMD_SOCKNAME);
 		return -1;
 	}
 
-	memset(&sockaddr, 0, sizeof(sockaddr));
-	memcpy(sockaddr.sun_path, CLVMD_SOCKNAME, sizeof(CLVMD_SOCKNAME));
-	sockaddr.sun_family = AF_UNIX;
+	/* Open local socket */
+	if ((local_socket = socket(PF_UNIX, SOCK_STREAM, 0)) < 0) {
+		log_sys_error("socket", "local socket");
+		return -1;
+	}
 
 	if (connect(local_socket,(struct sockaddr *) &sockaddr,
 		    sizeof(sockaddr))) {
+		log_sys_error("connect", "local socket");
 		ret = -1;
 	}
 
@@ -2125,9 +2131,14 @@ static void close_local_sock(int local_socket)
 /* Open the local socket, that's the one we talk to libclvm down */
 static int open_local_sock(void)
 {
-	int local_socket = -1;
-	struct sockaddr_un sockaddr;
 	mode_t old_mask;
+	int local_socket = -1;
+	struct sockaddr_un sockaddr = { .sun_family = AF_UNIX };
+
+	if (!dm_strncpy(sockaddr.sun_path, CLVMD_SOCKNAME, sizeof(sockaddr.sun_path))) {
+		log_error("%s: clvmd socket name too long.", CLVMD_SOCKNAME);
+		return -1;
+	}
 
 	close_local_sock(local_socket);
 
@@ -2144,11 +2155,9 @@ static int open_local_sock(void)
 	/* Set Close-on-exec & non-blocking */
 	if (fcntl(local_socket, F_SETFD, 1))
 		DEBUGLOG("setting CLOEXEC on local_socket failed: %s\n", strerror(errno));
-	fcntl(local_socket, F_SETFL, fcntl(local_socket, F_GETFL, 0) | O_NONBLOCK);
+	if (fcntl(local_socket, F_SETFL, fcntl(local_socket, F_GETFL, 0) | O_NONBLOCK))
+		DEBUGLOG("setting O_NONBLOCK on local_socket failed: %s\n", strerror(errno));
 
-	memset(&sockaddr, 0, sizeof(sockaddr));
-	memcpy(sockaddr.sun_path, CLVMD_SOCKNAME, sizeof(CLVMD_SOCKNAME));
-	sockaddr.sun_family = AF_UNIX;
 
 	if (bind(local_socket, (struct sockaddr *) &sockaddr, sizeof(sockaddr))) {
 		log_error("can't bind local socket: %m");
@@ -2322,6 +2331,9 @@ static if_type_t get_cluster_type(void)
         result = confdb_key_get(handle, clvmd_handle, (void *)"interface", strlen("interface"), buf, &namelen);
         if (result != CS_OK)
 		goto out;
+
+	if (namelen >= sizeof(buf))
+		namelen = sizeof(buf) - 1;
 
 	buf[namelen] = '\0';
 	type = parse_cluster_interface(buf);

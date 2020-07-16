@@ -17,14 +17,12 @@
 #include "metadata.h"
 #include "segtype.h"
 #include "text_export.h"
-#include "text_import.h"
 #include "config.h"
 #include "activate.h"
 #include "str_list.h"
 #include "defaults.h"
 
 #ifdef DMEVENTD
-#  include "sharedlib.h"
 #  include "libdevmapper-event.h"
 #endif
 
@@ -38,6 +36,10 @@
 #define SEG_LOG_ERROR(t, p...) \
 	log_error(t " segment %s of logical volume %s.", ## p, \
 		  dm_config_parent_name(sn), seg->lv->name), 0;
+
+static int _thin_target_present(struct cmd_context *cmd,
+				const struct lv_segment *seg,
+				unsigned *attributes);
 
 static const char *_thin_pool_name(const struct lv_segment *seg)
 {
@@ -83,6 +85,7 @@ static int _thin_pool_text_import(struct lv_segment *seg,
 {
 	const char *lv_name;
 	struct logical_volume *pool_data_lv, *pool_metadata_lv;
+	const char *discards_str = NULL;
 
 	if (!dm_config_get_str(sn, "metadata", &lv_name))
 		return SEG_LOG_ERROR("Metadata must be a string in");
@@ -108,6 +111,15 @@ static int _thin_pool_text_import(struct lv_segment *seg,
 
 	if (!dm_config_get_uint32(sn, "chunk_size", &seg->chunk_size))
 		return SEG_LOG_ERROR("Could not read chunk_size");
+
+	if (dm_config_has_node(sn, "discards") &&
+	    !dm_config_get_str(sn, "discards", &discards_str))
+		return SEG_LOG_ERROR("Could not read discards for");
+
+	if (!discards_str)
+		seg->discards = THIN_DISCARDS_IGNORE;
+	else if (!get_pool_discards(discards_str, &seg->discards))
+		return SEG_LOG_ERROR("Discards option unsupported for");
 
 	if (dm_config_has_node(sn, "low_water_mark") &&
 	    !dm_config_get_uint64(sn, "low_water_mark", &seg->low_water_mark))
@@ -148,6 +160,17 @@ static int _thin_pool_text_export(const struct lv_segment *seg, struct formatter
 	outf(f, "transaction_id = %" PRIu64, seg->transaction_id);
 	outsize(f, (uint64_t) seg->chunk_size,
 		"chunk_size = %u", seg->chunk_size);
+
+	switch (seg->discards) {
+	case THIN_DISCARDS_PASSDOWN:
+	case THIN_DISCARDS_NO_PASSDOWN:
+	case THIN_DISCARDS_IGNORE:
+		outf(f, "discards = \"%s\"", get_pool_discards_name(seg->discards));
+		break;
+	default:
+		log_error(INTERNAL_ERROR "Invalid discards value %d.", seg->discards);
+		return 0;
+	}
 
 	if (seg->low_water_mark)
 		outf(f, "low_water_mark = %" PRIu64, seg->low_water_mark);
@@ -207,11 +230,23 @@ static int _thin_pool_add_target_line(struct dev_manager *dm,
 				      struct dm_tree_node *node, uint64_t len,
 				      uint32_t *pvmove_mirror_count __attribute__((unused)))
 {
+	static int _no_discards = 0;
 	char *metadata_dlid, *pool_dlid;
 	const struct lv_thin_message *lmsg;
 	const struct logical_volume *origin;
 	struct lvinfo info;
 	uint64_t transaction_id = 0;
+	unsigned attr;
+
+	if (!_thin_target_present(cmd, seg, &attr))
+		return_0;
+
+	if (!(attr & THIN_FEATURE_BLOCK_SIZE) &&
+	    (seg->chunk_size & (seg->chunk_size - 1))) {
+		log_error("Thin pool target does not support %uKiB chunk size "
+			  "(needs kernel >= 3.6).", seg->chunk_size / 2);
+		return 0;
+	}
 
 	if (!laopts->real_pool) {
 		if (!(pool_dlid = build_dm_uuid(mem, seg->lv->lvid.s, "tpool"))) {
@@ -245,6 +280,16 @@ static int _thin_pool_add_target_line(struct dev_manager *dm,
 					       seg->chunk_size, seg->low_water_mark,
 					       seg->zero_new_blocks ? 0 : 1))
 		return_0;
+
+	if (attr & THIN_FEATURE_DISCARDS) {
+		/* FIXME: Check whether underlying dev supports discards */
+		if (!dm_tree_node_set_thin_pool_discard(node,
+							seg->discards == THIN_DISCARDS_IGNORE,
+							seg->discards == THIN_DISCARDS_NO_PASSDOWN))
+			return_0;
+	} else if (seg->discards != THIN_DISCARDS_IGNORE)
+		log_warn_suppress(_no_discards++, "WARNING: Thin pool target does "
+				  "not support discards (needs kernel >= 3.4).");
 
 	/*
 	 * Add messages only for activation tree.
@@ -337,6 +382,43 @@ static int _thin_pool_target_percent(void **target_state __attribute__((unused))
 
 	return 1;
 }
+
+#  ifdef DMEVENTD
+static const char *_get_thin_dso_path(struct cmd_context *cmd)
+{
+	return get_monitor_dso_path(cmd, find_config_tree_str(cmd, "dmeventd/thin_library",
+							      DEFAULT_DMEVENTD_THIN_LIB));
+}
+
+/* FIXME Cache this */
+static int _target_registered(struct lv_segment *seg, int *pending)
+{
+	return target_registered_with_dmeventd(seg->lv->vg->cmd,
+					       _get_thin_dso_path(seg->lv->vg->cmd),
+					       seg->lv, pending);
+}
+
+/* FIXME This gets run while suspended and performs banned operations. */
+static int _target_set_events(struct lv_segment *seg, int evmask, int set)
+{
+	/* FIXME Make timeout (10) configurable */
+	return target_register_events(seg->lv->vg->cmd,
+				      _get_thin_dso_path(seg->lv->vg->cmd),
+				      seg->lv, evmask, set, 10);
+}
+
+static int _target_register_events(struct lv_segment *seg,
+				   int events)
+{
+	return _target_set_events(seg, events, 1);
+}
+
+static int _target_unregister_events(struct lv_segment *seg,
+				     int events)
+{
+	return _target_set_events(seg, events, 0);
+}
+#  endif /* DMEVENTD */
 #endif /* DEVMAPPER_SUPPORT */
 
 static const char *_thin_name(const struct lv_segment *seg)
@@ -450,55 +532,47 @@ static int _thin_target_percent(void **target_state __attribute__((unused)),
 
 static int _thin_target_present(struct cmd_context *cmd,
 				const struct lv_segment *seg,
-				unsigned *attributes __attribute__((unused)))
+				unsigned *attributes)
 {
 	static int _checked = 0;
 	static int _present = 0;
+	static int _attrs = 0;
+	uint32_t maj, min, patchlevel;
 
 	if (!_checked) {
 		_present = target_present(cmd, THIN_MODULE, 1);
+
+		if (!target_version(THIN_MODULE, &maj, &min, &patchlevel)) {
+			log_error("Cannot read " THIN_MODULE " target version.");
+			return 0;
+		}
+
+		if (maj >=1 && min >= 1)
+			_attrs |= THIN_FEATURE_DISCARDS;
+		else
+		/* FIXME Log this as WARNING later only if the user asked for the feature to be used but it's not present */
+			log_debug("Target " THIN_MODULE " does not support discards.");
+
+		if (maj >=1 && min >= 1)
+			_attrs |= THIN_FEATURE_EXTERNAL_ORIGIN;
+		else
+		/* FIXME Log this as WARNING later only if the user asked for the feature to be used but it's not present */
+			log_debug("Target " THIN_MODULE " does not support external origins.");
+
+		if (maj >=1 && min >= 4)
+			_attrs |= THIN_FEATURE_BLOCK_SIZE;
+		else
+		/* FIXME Log this as WARNING later only if the user asked for the feature to be used but it's not present */
+			log_debug("Target " THIN_MODULE " does not support non power of 2 block sizes.");
+
 		_checked = 1;
 	}
 
+	if (attributes)
+		*attributes = _attrs;
+
 	return _present;
 }
-
-#  ifdef DMEVENTD
-static const char *_get_thin_dso_path(struct cmd_context *cmd)
-{
-	return get_monitor_dso_path(cmd, find_config_tree_str(cmd, "dmeventd/thin_library",
-							      DEFAULT_DMEVENTD_THIN_LIB));
-}
-
-/* FIXME Cache this */
-static int _target_registered(struct lv_segment *seg, int *pending)
-{
-	return target_registered_with_dmeventd(seg->lv->vg->cmd,
-					       _get_thin_dso_path(seg->lv->vg->cmd),
-					       seg->pool_lv, pending);
-}
-
-/* FIXME This gets run while suspended and performs banned operations. */
-static int _target_set_events(struct lv_segment *seg, int evmask, int set)
-{
-	/* FIXME Make timeout (10) configurable */
-	return target_register_events(seg->lv->vg->cmd,
-				      _get_thin_dso_path(seg->lv->vg->cmd),
-				      seg->pool_lv, evmask, set, 10);
-}
-
-static int _target_register_events(struct lv_segment *seg,
-				   int events)
-{
-	return _target_set_events(seg, events, 1);
-}
-
-static int _target_unregister_events(struct lv_segment *seg,
-				     int events)
-{
-	return _target_set_events(seg, events, 0);
-}
-#  endif /* DMEVENTD */
 #endif
 
 static int _thin_modules_needed(struct dm_pool *mem,
@@ -527,6 +601,11 @@ static struct segtype_handler _thin_pool_ops = {
 	.add_target_line = _thin_pool_add_target_line,
 	.target_percent = _thin_pool_target_percent,
 	.target_present = _thin_target_present,
+#  ifdef DMEVENTD
+	.target_monitored = _target_registered,
+	.target_monitor_events = _target_register_events,
+	.target_unmonitor_events = _target_unregister_events,
+#  endif /* DMEVENTD */
 #endif
 	.modules_needed = _thin_modules_needed,
 	.destroy = _thin_destroy,
@@ -540,11 +619,6 @@ static struct segtype_handler _thin_ops = {
 	.add_target_line = _thin_add_target_line,
 	.target_percent = _thin_target_percent,
 	.target_present = _thin_target_present,
-#  ifdef DMEVENTD
-	.target_monitored = _target_registered,
-	.target_monitor_events = _target_register_events,
-	.target_unmonitor_events = _target_unregister_events,
-#  endif /* DMEVENTD */
 #endif
 	.modules_needed = _thin_modules_needed,
 	.destroy = _thin_destroy,

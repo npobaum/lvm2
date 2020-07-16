@@ -14,11 +14,7 @@
  */
 
 #include "tools.h"
-#include "lv_alloc.h"
-#include "xlate.h"
-
 #include <sys/stat.h>
-#include <sys/wait.h>
 
 const char *command_name(struct cmd_context *cmd)
 {
@@ -129,7 +125,7 @@ int process_each_lv_in_vg(struct cmd_context *cmd,
 
 		/* Skip availability change for non-virt snaps when processing all LVs */
 		/* FIXME: pass process_all to process_single_lv() */
-		if (process_all && arg_count(cmd, available_ARG) &&
+		if (process_all && arg_count(cmd, activate_ARG) &&
 		    lv_is_cow(lvl->lv) && !lv_is_virtual_origin(origin_from_cow(lvl->lv)))
 			continue;
 
@@ -674,7 +670,6 @@ static int _process_all_devs(struct cmd_context *cmd, void *handle,
 			dm_list_init(&pv_dummy.tags);
 			dm_list_init(&pv_dummy.segments);
 			pv_dummy.dev = dev;
-			pv_dummy.fmt = NULL;
 			pv = &pv_dummy;
 		}
 		ret = process_single_pv(cmd, NULL, pv, handle);
@@ -771,8 +766,7 @@ int process_each_pv(struct cmd_context *cmd, int argc, char **argv,
 				 * PV on the system.
 				 */
 				if (!scanned && is_orphan(pv) &&
-				    !dm_list_size(&pv->fid->metadata_areas_in_use) &&
-				    !dm_list_size(&pv->fid->metadata_areas_ignored)) {
+				    !dm_list_size(&pv->fid->metadata_areas_in_use)) {
 					if (!scan_label_only &&
 					    !scan_vgs_for_pvs(cmd, 1)) {
 						stack;
@@ -1000,10 +994,11 @@ static int xstrtouint32(const char *s, char **p, int base, uint32_t *result)
 
 	errno = 0;
 	ul = strtoul(s, p, base);
-	if (errno || *p == s || (uint32_t) ul != ul)
-		return -1;
+	if (errno || *p == s || ul > UINT32_MAX)
+		return 0;
 	*result = ul;
-	return 0;
+
+	return 1;
 }
 
 static int _parse_pes(struct dm_pool *mem, char *c, struct dm_list *pe_ranges,
@@ -1035,7 +1030,7 @@ static int _parse_pes(struct dm_pool *mem, char *c, struct dm_list *pe_ranges,
 
 		/* Start extent given? */
 		if (isdigit(*c)) {
-			if (xstrtouint32(c, &endptr, 10, &start))
+			if (!xstrtouint32(c, &endptr, 10, &start))
 				goto error;
 			c = endptr;
 			/* Just one number given? */
@@ -1046,7 +1041,7 @@ static int _parse_pes(struct dm_pool *mem, char *c, struct dm_list *pe_ranges,
 		if (*c == '-') {
 			c++;
 			if (isdigit(*c)) {
-				if (xstrtouint32(c, &endptr, 10, &end))
+				if (!xstrtouint32(c, &endptr, 10, &end))
 					goto error;
 				c = endptr;
 			}
@@ -1533,13 +1528,13 @@ static int _validate_stripe_params(struct cmd_context *cmd, uint32_t *stripes,
 				   uint32_t *stripe_size)
 {
 	if (*stripes == 1 && *stripe_size) {
-		log_print("Ignoring stripesize argument with single stripe");
+		log_print_unless_silent("Ignoring stripesize argument with single stripe");
 		*stripe_size = 0;
 	}
 
 	if (*stripes > 1 && !*stripe_size) {
 		*stripe_size = find_config_tree_int(cmd, "metadata/stripesize", DEFAULT_STRIPESIZE) * 2;
-		log_print("Using default stripesize %s",
+		log_print_unless_silent("Using default stripesize %s",
 			  display_size(cmd, (uint64_t) *stripe_size));
 	}
 

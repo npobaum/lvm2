@@ -30,7 +30,6 @@
 #include "locking.h"
 #include "archiver.h"
 #include "defaults.h"
-#include "filter-persistent.h"
 
 #include <math.h>
 #include <sys/param.h>
@@ -624,7 +623,7 @@ int vg_remove(struct volume_group *vg)
 		stack;
 
 	if (ret)
-		log_print("Volume group \"%s\" successfully removed", vg->name);
+		log_print_unless_silent("Volume group \"%s\" successfully removed", vg->name);
 	else
 		log_error("Volume group \"%s\" not properly removed", vg->name);
 
@@ -646,19 +645,19 @@ static int vg_extend_single_pv(struct volume_group *vg, char *pv_name,
 {
 	struct physical_volume *pv;
 
-	pv = pv_by_path(vg->fid->fmt->cmd, pv_name);
+	if (!(pv = pv_by_path(vg->fid->fmt->cmd, pv_name)))
+		stack;
 	if (!pv && !pp) {
 		log_error("%s not identified as an existing "
 			  "physical volume", pv_name);
 		return 0;
 	} else if (!pv && pp) {
-		pv = pvcreate_single(vg->cmd, pv_name, pp, 0);
-		if (!pv)
-			return 0;
+		if (!(pv = pvcreate_single(vg->cmd, pv_name, pp, 0)))
+			return_0;
 	}
 	if (!add_pv_to_vg(vg, pv_name, pv, pp)) {
 		free_pv_fid(pv);
-		return 0;
+		return_0;
 	}
 	return 1;
 }
@@ -680,7 +679,7 @@ int vg_extend(struct volume_group *vg, int pv_count, const char *const *pv_names
 	char *pv_name;
 
 	if (_vg_bad_status_bits(vg, RESIZEABLE_VG))
-		return 0;
+		return_0;
 
 	/* attach each pv */
 	for (i = 0; i < pv_count; i++) {
@@ -989,8 +988,8 @@ uint64_t extents_from_size(struct cmd_context *cmd, uint64_t size,
 {
 	if (size % extent_size) {
 		size += extent_size - size % extent_size;
-		log_print("Rounding up size to full physical extent %s",
-			  display_size(cmd, size));
+		log_print_unless_silent("Rounding up size to full physical extent %s",
+			  		display_size(cmd, size));
 	}
 
 	if (size > (uint64_t) MAX_EXTENT_COUNT * extent_size) {
@@ -1306,7 +1305,7 @@ static int _wipe_sb(struct device *dev, const char *type, const char *name,
 		return 0;
 	}
 
-	log_print("Wiping %s on %s.", type, name);
+	log_print_unless_silent("Wiping %s on %s.", type, name);
 	if (!dev_set(dev, superblock, wipe_len, 0)) {
 		log_error("Failed to wipe %s on %s.", type, name);
 		return 0;
@@ -1328,7 +1327,8 @@ static int pvcreate_check(struct cmd_context *cmd, const char *name,
 	/* FIXME Check partition type is LVM unless --force is given */
 
 	/* Is there a pv here already? */
-	pv = pv_read(cmd, name, 0, 0);
+	if (!(pv = pv_read(cmd, name, 0, 0)))
+		stack;
 
 	/*
 	 * If a PV has no MDAs it may appear to be an orphan until the
@@ -1340,7 +1340,8 @@ static int pvcreate_check(struct cmd_context *cmd, const char *name,
 		free_pv_fid(pv);
 		if (!scan_vgs_for_pvs(cmd, 0))
 			return_0;
-		pv = pv_read(cmd, name, 0, 0);
+		if (!(pv = pv_read(cmd, name, 0, 0)))
+			stack;
 	}
 
 	/* Allow partial & exported VGs to be destroyed. */
@@ -1468,15 +1469,15 @@ static int _pvcreate_write(struct cmd_context *cmd, struct pv_to_create *pvc)
 			stack;
 	}
 
-	log_error("Writing physical volume data to disk \"%s\"",
-			 pv_name);
+	log_verbose("Writing physical volume data to disk \"%s\"",
+		    pv_name);
 
 	if (!(pv_write(cmd, pv, 1))) {
 		log_error("Failed to write physical volume \"%s\"", pv_name);
 		return 0;
 	}
 
-	log_print("Physical volume \"%s\" successfully created", pv_name);
+	log_print_unless_silent("Physical volume \"%s\" successfully created", pv_name);
 	return 1;
 }
 
@@ -1514,7 +1515,7 @@ struct physical_volume * pvcreate_single(struct cmd_context *cmd,
 				goto_bad;
 			log_error("uuid %s already in use on \"%s\"", buffer,
 				  dev_name(dev));
-			goto bad;;
+			goto bad;
 		}
 	}
 
@@ -2222,6 +2223,11 @@ static int _lv_read_ahead_single(struct logical_volume *lv, void *data)
 	struct lv_segment *seg = first_seg(lv);
 	uint32_t seg_read_ahead = 0, *read_ahead = data;
 
+	if (!read_ahead) {
+		log_error(INTERNAL_ERROR "Read ahead data missing.");
+		return 0;
+	}
+
 	if (seg && seg->area_count && seg_type(seg, 0) == AREA_PV)
 		dev_get_read_ahead(seg_pv(seg, 0)->dev, &seg_read_ahead);
 
@@ -2762,6 +2768,7 @@ static int _vg_read_orphan_pv(struct lvmcache_info *info, void *baton)
 
 	if (!(pv = _pv_read(b->vg->cmd, b->vg->vgmem, dev_name(lvmcache_device(info)),
 			    b->vg->fid, b->warnings, 0))) {
+		stack;
 		return 1;
 	}
 
@@ -2936,7 +2943,7 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 	struct pv_list *pvl, *pvl2;
 	struct dm_list all_pvs;
 	char uuid[64] __attribute__((aligned(8)));
-	int seqno = 0;
+	unsigned seqno = 0;
 
 	if (is_orphan_vg(vgname)) {
 		if (use_precommitted) {
@@ -3021,7 +3028,6 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 		    (!use_precommitted &&
 		     !(vg = mda->ops->vg_read(fid, vgname, mda, 0)))) {
 			inconsistent = 1;
-			release_vg(vg);
 			continue;
 		}
 
@@ -3801,7 +3807,8 @@ int pv_write(struct cmd_context *cmd __attribute__((unused)),
 	if (!pv->fmt->ops->pv_write(pv->fmt, pv))
 		return_0;
 
-	if (!lvmetad_pv_found(pv->id, pv->dev, pv->fmt, pv->label_sector, NULL))
+	if (!lvmetad_pv_found(&pv->id, pv->dev, pv->fmt, pv->label_sector,
+			      NULL, NULL))
 		return_0;
 
 	return 1;
@@ -4036,13 +4043,13 @@ static struct volume_group *_vg_lock_and_read(struct cmd_context *cmd, const cha
 		log_error("Volume group \"%s\" not found", vg_name);
 
 		failure |= FAILED_NOTFOUND;
-		goto_bad;
+		goto bad;
 	}
 
 	if (vg_is_clustered(vg) && !locking_is_clustered()) {
 		log_error("Skipping clustered volume group %s", vg->name);
 		failure |= FAILED_CLUSTERED;
-		goto_bad;
+		goto bad;
 	}
 
 	/* consistent == 0 when VG is not found, but failed == FAILED_NOTFOUND */

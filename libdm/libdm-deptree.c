@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2011 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2005-2012 Red Hat, Inc. All rights reserved.
  *
  * This file is part of the device-mapper userspace tools.
  *
@@ -16,7 +16,6 @@
 #include "libdm-targets.h"
 #include "libdm-common.h"
 #include "kdev_t.h"
-#include "dm-ioctl.h"
 
 #include <stdarg.h>
 #include <sys/param.h>
@@ -42,6 +41,7 @@ enum {
 	SEG_THIN_POOL,
 	SEG_THIN,
 	SEG_RAID1,
+	SEG_RAID10,
 	SEG_RAID4,
 	SEG_RAID5_LA,
 	SEG_RAID5_RA,
@@ -73,6 +73,7 @@ struct {
 	{ SEG_THIN_POOL, "thin-pool"},
 	{ SEG_THIN, "thin"},
 	{ SEG_RAID1, "raid1"},
+	{ SEG_RAID10, "raid10"},
 	{ SEG_RAID4, "raid4"},
 	{ SEG_RAID5_LA, "raid5_la"},
 	{ SEG_RAID5_RA, "raid5_ra"},
@@ -186,11 +187,14 @@ struct load_segment {
 
 	struct dm_tree_node *metadata;	/* Thin_pool */
 	struct dm_tree_node *pool;	/* Thin_pool, Thin */
+	struct dm_tree_node *external;	/* Thin */
 	struct dm_list thin_messages;	/* Thin_pool */
 	uint64_t transaction_id;	/* Thin_pool */
 	uint64_t low_water_mark;	/* Thin_pool */
 	uint32_t data_block_size;       /* Thin_pool */
 	unsigned skip_block_zeroing;	/* Thin_pool */
+	unsigned ignore_discard;	/* Thin_pool target vsn 1.1 */
+	unsigned no_discard_passdown;	/* Thin_pool target vsn 1.1 */
 	uint32_t device_id;		/* Thin */
 
 };
@@ -462,7 +466,7 @@ static struct dm_tree_node *_create_dm_tree_node(struct dm_tree *dtree,
 						 uint16_t udev_flags)
 {
 	struct dm_tree_node *node;
-	uint64_t dev;
+	dev_t dev;
 
 	if (!(node = dm_pool_zalloc(dtree->mem, sizeof(*node)))) {
 		log_error("_create_dm_tree_node alloc failed");
@@ -482,7 +486,7 @@ static struct dm_tree_node *_create_dm_tree_node(struct dm_tree *dtree,
 	dm_list_init(&node->used_by);
 	dm_list_init(&node->props.segs);
 
-	dev = MKDEV(info->major, info->minor);
+	dev = MKDEV((dev_t)info->major, info->minor);
 
 	if (!dm_hash_insert_binary(dtree->devs, (const char *) &dev,
 				sizeof(dev), node)) {
@@ -506,7 +510,7 @@ static struct dm_tree_node *_create_dm_tree_node(struct dm_tree *dtree,
 static struct dm_tree_node *_find_dm_tree_node(struct dm_tree *dtree,
 					       uint32_t major, uint32_t minor)
 {
-	uint64_t dev = MKDEV(major, minor);
+	dev_t dev = MKDEV((dev_t)major, minor);
 
 	return dm_hash_lookup_binary(dtree->devs, (const char *) &dev,
 				  sizeof(dev));
@@ -1082,7 +1086,7 @@ struct dm_tree_node *dm_tree_add_new_dev_with_udev_flags(struct dm_tree *dtree,
 							 uint16_t udev_flags)
 {
 	struct dm_tree_node *dnode;
-	struct dm_info info;
+	struct dm_info info = { 0 };
 	const char *name2;
 	const char *uuid2;
 
@@ -1101,8 +1105,6 @@ struct dm_tree_node *dm_tree_add_new_dev_with_udev_flags(struct dm_tree *dtree,
 			log_error("uuid pool_strdup failed");
 			return NULL;
 		}
-
-		memset(&info, 0, sizeof(info));
 
 		if (!(dnode = _create_dm_tree_node(dtree, name2, uuid2, &info,
 						   context, 0)))
@@ -1409,6 +1411,12 @@ static int _thin_pool_node_message(struct dm_tree_node *dnode, struct thin_messa
 				"set_transaction_id %" PRIu64 " %" PRIu64,
 				m->u.m_set_transaction_id.current_id,
 				m->u.m_set_transaction_id.new_id);
+		break;
+	case DM_THIN_MESSAGE_RESERVE_METADATA_SNAP: /* target vsn 1.1 */
+		r = dm_snprintf(buf, sizeof(buf), "reserve_metadata_snap");
+		break;
+	case DM_THIN_MESSAGE_RELEASE_METADATA_SNAP: /* target vsn 1.1 */
+		r = dm_snprintf(buf, sizeof(buf), "release_metadata_snap");
 		break;
 	default:
 		r = -1;
@@ -1906,6 +1914,7 @@ static int _emit_areas_line(struct dm_task *dmt __attribute__((unused)),
 			}
 			break;
 		case SEG_RAID1:
+		case SEG_RAID10:
 		case SEG_RAID4:
 		case SEG_RAID5_LA:
 		case SEG_RAID5_RA:
@@ -2147,6 +2156,57 @@ static int _raid_emit_segment_line(struct dm_task *dmt, uint32_t major,
 	return 1;
 }
 
+static int _thin_pool_emit_segment_line(struct dm_task *dmt,
+					struct load_segment *seg,
+					char *params, size_t paramsize)
+{
+	int pos = 0;
+	char pool[DM_FORMAT_DEV_BUFSIZE], metadata[DM_FORMAT_DEV_BUFSIZE];
+	int features = (seg->skip_block_zeroing ? 1 : 0) +
+			(seg->ignore_discard ? 1 : 0) +
+			(seg->no_discard_passdown ? 1 : 0);
+
+	if (!_build_dev_string(metadata, sizeof(metadata), seg->metadata))
+		return_0;
+
+	if (!_build_dev_string(pool, sizeof(pool), seg->pool))
+		return_0;
+
+	EMIT_PARAMS(pos, "%s %s %d %" PRIu64 " %d%s%s%s", metadata, pool,
+		    seg->data_block_size, seg->low_water_mark, features,
+		    seg->skip_block_zeroing ? " skip_block_zeroing" : "",
+		    seg->ignore_discard ? " ignore_discard" : "",
+		    seg->no_discard_passdown ? " no_discard_passdown" : ""
+		   );
+
+	return 1;
+}
+
+static int _thin_emit_segment_line(struct dm_task *dmt,
+				   struct load_segment *seg,
+				   char *params, size_t paramsize)
+{
+	int pos = 0;
+	char pool[DM_FORMAT_DEV_BUFSIZE];
+	char external[DM_FORMAT_DEV_BUFSIZE + 1];
+
+	if (!_build_dev_string(pool, sizeof(pool), seg->pool))
+		return_0;
+
+	if (!seg->external)
+		*external = 0;
+	else {
+		*external = ' ';
+		if (!_build_dev_string(external + 1, sizeof(external) - 1,
+				       seg->external))
+			return_0;
+	}
+
+	EMIT_PARAMS(pos, "%s %d%s", pool, seg->device_id, external);
+
+	return 1;
+}
+
 static int _emit_segment_line(struct dm_task *dmt, uint32_t major,
 			      uint32_t minor, struct load_segment *seg,
 			      uint64_t *seg_start, char *params,
@@ -2156,7 +2216,6 @@ static int _emit_segment_line(struct dm_task *dmt, uint32_t major,
 	int r;
 	int target_type_is_raid = 0;
 	char originbuf[DM_FORMAT_DEV_BUFSIZE], cowbuf[DM_FORMAT_DEV_BUFSIZE];
-	char pool[DM_FORMAT_DEV_BUFSIZE], metadata[DM_FORMAT_DEV_BUFSIZE];
 
 	switch(seg->type) {
 	case SEG_ERROR:
@@ -2209,6 +2268,7 @@ static int _emit_segment_line(struct dm_task *dmt, uint32_t major,
 			    seg->iv_offset : *seg_start);
 		break;
 	case SEG_RAID1:
+	case SEG_RAID10:
 	case SEG_RAID4:
 	case SEG_RAID5_LA:
 	case SEG_RAID5_RA:
@@ -2225,18 +2285,12 @@ static int _emit_segment_line(struct dm_task *dmt, uint32_t major,
 
 		break;
 	case SEG_THIN_POOL:
-		if (!_build_dev_string(metadata, sizeof(metadata), seg->metadata))
+		if (!_thin_pool_emit_segment_line(dmt, seg, params, paramsize))
 			return_0;
-		if (!_build_dev_string(pool, sizeof(pool), seg->pool))
-			return_0;
-		EMIT_PARAMS(pos, "%s %s %d %" PRIu64 " %s", metadata, pool,
-			    seg->data_block_size, seg->low_water_mark,
-			    seg->skip_block_zeroing ? "1 skip_block_zeroing" : "0");
 		break;
 	case SEG_THIN:
-		if (!_build_dev_string(pool, sizeof(pool), seg->pool))
+		if (!_thin_emit_segment_line(dmt, seg, params, paramsize))
 			return_0;
-		EMIT_PARAMS(pos, "%s %d", pool, seg->device_id);
 		break;
 	}
 
@@ -2358,15 +2412,14 @@ static int _load_node(struct dm_tree_node *dnode)
 	if ((r = dm_task_run(dmt))) {
 		r = dm_task_get_info(dmt, &dnode->info);
 		if (r && !dnode->info.inactive_table)
-			log_verbose("Suppressed %s identical table reload.",
-				    dnode->name);
+			log_verbose("Suppressed %s (%" PRIu32 ":%" PRIu32
+				    ") identical table reload.",
+				    dnode->name,
+				    dnode->info.major, dnode->info.minor);
 
 		existing_table_size = dm_task_get_existing_table_size(dmt);
 		if ((dnode->props.size_changed =
 		     (existing_table_size == seg_start) ? 0 : 1)) {
-			log_debug("Table size changed from %" PRIu64 " to %"
-				  PRIu64 " for %s", existing_table_size,
-				  seg_start, dnode->name);
 			/*
 			 * Kernel usually skips size validation on zero-length devices
 			 * now so no need to preload them.
@@ -2374,6 +2427,12 @@ static int _load_node(struct dm_tree_node *dnode)
 			/* FIXME In which kernel version did this begin? */
 			if (!existing_table_size && dnode->props.delay_resume_if_new)
 				dnode->props.size_changed = 0;
+
+			log_debug("Table size changed from %" PRIu64 " to %"
+				  PRIu64 " for %s (%" PRIu32 ":%" PRIu32 ").%s",
+				  existing_table_size, seg_start, dnode->name,
+				  dnode->info.major, dnode->info.minor,
+				  dnode->props.size_changed ? "" : " (Ignoring.)");
 		}
 	}
 
@@ -2544,6 +2603,12 @@ int dm_tree_node_add_snapshot_origin_target(struct dm_tree_node *dnode,
 
 	/* Resume snapshot origins after new snapshots */
 	dnode->activation_priority = 1;
+
+	/*
+	 * Don't resume the origin immediately in case it is a non-trivial 
+	 * target that must not be active more than once concurrently!
+	 */
+	origin_node->props.delay_resume_if_new = 1;
 
 	return 1;
 }
@@ -2947,6 +3012,28 @@ int dm_tree_node_add_replicator_dev_target(struct dm_tree_node *node,
 	return 1;
 }
 
+static struct load_segment *_get_single_load_segment(struct dm_tree_node *node,
+						     unsigned type)
+{
+	struct load_segment *seg;
+
+	if (node->props.segment_count != 1) {
+		log_error("Node %s must have only one segment.",
+			  dm_segtypes[type].target);
+		return NULL;
+	}
+
+	seg = dm_list_item(dm_list_last(&node->props.segs), struct load_segment);
+	if (seg->type != type) {
+		log_error("Node %s has segment type %s.",
+			  dm_segtypes[type].target,
+			  dm_segtypes[seg->type].target);
+		return NULL;
+	}
+
+	return seg;
+}
+
 static int _thin_validate_device_id(uint32_t device_id)
 {
 	if (device_id > DM_THIN_MAX_DEVICE_ID) {
@@ -3020,6 +3107,10 @@ int dm_tree_node_add_thin_pool_target(struct dm_tree_node *node,
 	if (!_link_tree_nodes(node, seg->pool))
 		return_0;
 
+	/* Clean flag delay_resume_if_new - so corelog gets resumed */
+	seg->metadata->props.delay_resume_if_new = 0;
+	seg->pool->props.delay_resume_if_new = 0;
+
 	node->props.send_messages = 1;
 	seg->transaction_id = transaction_id;
 	seg->low_water_mark = low_water_mark;
@@ -3034,20 +3125,11 @@ int dm_tree_node_add_thin_pool_message(struct dm_tree_node *node,
 				       dm_thin_message_t type,
 				       uint64_t id1, uint64_t id2)
 {
-	struct load_segment *seg;
 	struct thin_message *tm;
+	struct load_segment *seg;
 
-	if (node->props.segment_count != 1) {
-		log_error("Thin pool node must have only one segment.");
-		return 0;
-	}
-
-	seg = dm_list_item(dm_list_last(&node->props.segs), struct load_segment);
-	if (seg->type != SEG_THIN_POOL) {
-		log_error("Thin pool node has segment type %s.",
-			  dm_segtypes[seg->type].target);
-		return 0;
-	}
+	if (!(seg = _get_single_load_segment(node, SEG_THIN_POOL)))
+		return_0;
 
 	if (!(tm = dm_pool_zalloc(node->dtree->mem, sizeof (*tm)))) {
 		log_error("Failed to allocate thin message.");
@@ -3102,6 +3184,21 @@ int dm_tree_node_add_thin_pool_message(struct dm_tree_node *node,
 	return 1;
 }
 
+int dm_tree_node_set_thin_pool_discard(struct dm_tree_node *node,
+				       unsigned ignore,
+				       unsigned no_passdown)
+{
+	struct load_segment *seg;
+
+	if (!(seg = _get_single_load_segment(node, SEG_THIN_POOL)))
+		return_0;
+
+	seg->ignore_discard = ignore;
+	seg->no_discard_passdown = no_passdown;
+
+	return 1;
+}
+
 int dm_tree_node_add_thin_target(struct dm_tree_node *node,
 				 uint64_t size,
 				 const char *pool_uuid,
@@ -3130,6 +3227,29 @@ int dm_tree_node_add_thin_target(struct dm_tree_node *node,
 	return 1;
 }
 
+int dm_tree_node_set_thin_external_origin(struct dm_tree_node *node,
+					  const char *external_uuid)
+{
+	struct dm_tree_node *external;
+	struct load_segment *seg;
+
+	if (!(seg = _get_single_load_segment(node, SEG_THIN)))
+		return_0;
+
+	if (!(external = dm_tree_find_node_by_uuid(node->dtree,
+						   external_uuid))) {
+		log_error("Missing thin external origin uuid %s.",
+			  external_uuid);
+		return 0;
+	}
+
+	if (!_link_tree_nodes(node, external))
+		return_0;
+
+	seg->external = external;
+
+	return 1;
+}
 
 int dm_get_status_thin_pool(struct dm_pool *mem, const char *params,
 			    struct dm_status_thin_pool **status)

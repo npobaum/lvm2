@@ -18,6 +18,7 @@
 #include "display.h"
 
 #define PVMOVE_FIRST_TIME   0x00000001      /* Called for first time */
+#define PVMOVE_EXCLUSIVE    0x00000002      /* Require exclusive LV */
 
 static int _pvmove_target_present(struct cmd_context *cmd, int clustered)
 {
@@ -174,13 +175,16 @@ static struct logical_volume *_set_up_pvmove_lv(struct cmd_context *cmd,
 						const char *lv_name,
 						struct dm_list *allocatable_pvs,
 						alloc_policy_t alloc,
-						struct dm_list **lvs_changed)
+						struct dm_list **lvs_changed,
+						unsigned *exclusive)
 {
 	struct logical_volume *lv_mirr, *lv;
 	struct lv_list *lvl;
 	uint32_t log_count = 0;
 	int lv_found = 0;
 	int lv_skipped = 0;
+	int lv_active_count = 0;
+	int lv_exclusive_count = 0;
 
 	/* FIXME Cope with non-contiguous => splitting existing segments */
 	if (!(lv_mirr = lv_create_empty("pvmove%d", NULL,
@@ -211,29 +215,45 @@ static struct logical_volume *_set_up_pvmove_lv(struct cmd_context *cmd,
 		}
 		if (lv_is_origin(lv) || lv_is_cow(lv)) {
 			lv_skipped = 1;
-			log_print("Skipping snapshot-related LV %s", lv->name);
+			log_print_unless_silent("Skipping snapshot-related LV %s", lv->name);
 			continue;
 		}
 		if (lv->status & MIRRORED) {
 			lv_skipped = 1;
-			log_print("Skipping mirror LV %s", lv->name);
+			log_print_unless_silent("Skipping mirror LV %s", lv->name);
 			continue;
 		}
 		if (lv->status & MIRROR_LOG) {
 			lv_skipped = 1;
-			log_print("Skipping mirror log LV %s", lv->name);
+			log_print_unless_silent("Skipping mirror log LV %s", lv->name);
 			continue;
 		}
 		if (lv->status & MIRROR_IMAGE) {
 			lv_skipped = 1;
-			log_print("Skipping mirror image LV %s", lv->name);
+			log_print_unless_silent("Skipping mirror image LV %s", lv->name);
 			continue;
 		}
 		if (lv->status & LOCKED) {
 			lv_skipped = 1;
-			log_print("Skipping locked LV %s", lv->name);
+			log_print_unless_silent("Skipping locked LV %s", lv->name);
 			continue;
 		}
+
+		if (vg_is_clustered(vg) &&
+		    lv_is_active_exclusive_remotely(lv)) {
+			lv_skipped = 1;
+			log_print_unless_silent("Skipping LV %s which is activated "
+						"exclusively on remote node.", lv->name);
+			continue;
+		}
+
+		if (vg_is_clustered(vg)) {
+			if (lv_is_active_exclusive_locally(lv))
+				lv_exclusive_count++;
+			else if (lv_is_active(lv))
+				lv_active_count++;
+		}
+
 		if (!_insert_pvmove_mirrors(cmd, lv_mirr, source_pvl, lv,
 					    *lvs_changed))
 			return_NULL;
@@ -252,6 +272,25 @@ static struct logical_volume *_set_up_pvmove_lv(struct cmd_context *cmd,
 				  "non-top level LVs only.");
 		log_error("No data to move for %s", vg->name);
 		return NULL;
+	}
+
+	if (vg_is_clustered(vg) && lv_active_count && *exclusive) {
+		log_error("Cannot move in clustered VG %s, "
+			  "clustered mirror (cmirror) not detected "
+			  "and LVs are activated non-exclusively.",
+			  vg->name);
+		return NULL;
+	}
+
+	if (vg_is_clustered(vg) && lv_exclusive_count) {
+		if (lv_active_count) {
+			log_error("Cannot move in clustered VG %s "
+				  "if some LVs are activated "
+				  "exclusively while others don't.",
+				  vg->name);
+			return NULL;
+		}
+		*exclusive = 1;
 	}
 
 	if (!lv_add_mirrors(cmd, lv_mirr, 1, 1, 0, 0, log_count,
@@ -273,7 +312,7 @@ static int _activate_lv(struct cmd_context *cmd, struct logical_volume *lv_mirr,
 {
 	int r = 0;
 
-	if (exclusive)
+	if (exclusive || lv_is_active_exclusive(lv_mirr))
 		r = activate_lv_excl(cmd, lv_mirr);
 	else
 		r = activate_lv(cmd, lv_mirr);
@@ -358,7 +397,7 @@ static int _update_metadata(struct cmd_context *cmd, struct volume_group *vg,
 			    struct logical_volume *lv_mirr,
 			    struct dm_list *lvs_changed, unsigned flags)
 {
-	unsigned exclusive = _pvmove_is_exclusive(cmd, vg);
+	unsigned exclusive = (flags & PVMOVE_EXCLUSIVE) ? 1 : 0;
 	unsigned first_time = (flags & PVMOVE_FIRST_TIME) ? 1 : 0;
 	int r = 0;
 
@@ -369,7 +408,7 @@ static int _update_metadata(struct cmd_context *cmd, struct volume_group *vg,
 	}
 
 	if (!_suspend_lvs(cmd, first_time, lv_mirr, lvs_changed, vg)) {
-		log_error("ABORTING: Volume group metadata update failed. (first_time: %d)", first_time);
+		log_error("ABORTING: Temporary pvmove mirror %s failed.", first_time ? "activation" : "reload");
 		/* FIXME Add a recovery path for first time too. */
 		if (!first_time && !revert_lv(cmd, lv_mirr))
 			stack;
@@ -390,6 +429,9 @@ static int _update_metadata(struct cmd_context *cmd, struct volume_group *vg,
 	/* Only the first mirror segment gets activated as a mirror */
 	/* FIXME: Add option to use a log */
 	if (first_time) {
+		if (!exclusive && _pvmove_is_exclusive(cmd, vg))
+			exclusive = 1;
+
 		if (!_activate_lv(cmd, lv_mirr, exclusive)) {
 			if (test_mode()) {
 				r = 1;
@@ -428,7 +470,7 @@ static int _set_up_pvmove(struct cmd_context *cmd, const char *pv_name,
 	struct dm_list *lvs_changed;
 	struct physical_volume *pv;
 	struct logical_volume *lv_mirr;
-	unsigned first_time = 1;
+	unsigned flags = PVMOVE_FIRST_TIME;
 	unsigned exclusive;
 	int r = ECMD_FAILED;
 
@@ -470,7 +512,7 @@ static int _set_up_pvmove(struct cmd_context *cmd, const char *pv_name,
 	exclusive = _pvmove_is_exclusive(cmd, vg);
 
 	if ((lv_mirr = find_pvmove_lv(vg, pv_dev(pv), PVMOVE))) {
-		log_print("Detected pvmove in progress for %s", pv_name);
+		log_print_unless_silent("Detected pvmove in progress for %s", pv_name);
 		if (argc || lv_name)
 			log_error("Ignoring remaining command line arguments");
 
@@ -485,7 +527,7 @@ static int _set_up_pvmove(struct cmd_context *cmd, const char *pv_name,
 			goto out;
 		}
 
-		first_time = 0;
+		flags &= ~PVMOVE_FIRST_TIME;
 	} else {
 		/* Determine PE ranges to be moved */
 		if (!(source_pvl = create_pv_list(cmd->mem, vg, 1,
@@ -506,7 +548,7 @@ static int _set_up_pvmove(struct cmd_context *cmd, const char *pv_name,
 
 		if (!(lv_mirr = _set_up_pvmove_lv(cmd, vg, source_pvl, lv_name,
 						  allocatable_pvs, alloc,
-						  &lvs_changed)))
+						  &lvs_changed, &exclusive)))
 			goto_out;
 	}
 
@@ -518,9 +560,11 @@ static int _set_up_pvmove(struct cmd_context *cmd, const char *pv_name,
 	/* init_pvmove(1); */
 	/* vg->status |= PVMOVE; */
 
-	if (first_time) {
+	if (flags & PVMOVE_FIRST_TIME) {
+		if (exclusive)
+			flags |= PVMOVE_EXCLUSIVE;
 		if (!_update_metadata
-		    (cmd, vg, lv_mirr, lvs_changed, PVMOVE_FIRST_TIME))
+		    (cmd, vg, lv_mirr, lvs_changed, flags))
 			goto_out;
 	}
 

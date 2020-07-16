@@ -166,6 +166,12 @@ typedef enum {
 	DONT_PROMPT_OVERRIDE = 2 /* Skip prompt + override a second condition */
 } force_t;
 
+typedef enum {
+	THIN_DISCARDS_IGNORE,
+	THIN_DISCARDS_NO_PASSDOWN,
+	THIN_DISCARDS_PASSDOWN,
+} thin_discards_t;
+
 struct cmd_context;
 struct format_handler;
 struct labeller;
@@ -205,14 +211,20 @@ struct pv_segment {
  * area information we are working with.
  */
 
-/* Include any existing PV mdas during format_instance initialisation */
+/* Include any existing PV ("on-disk") mdas during format_instance initialisation. */
 #define FMT_INSTANCE_MDAS		0x00000002U
 
-/* FIXME Define auxiliary here! */
-/* Include any auxiliary mdas during format_instance intialisation */
+/*
+ * Include any auxiliary mdas during format_instance intialisation.
+ * Currently, this includes metadata areas as defined by
+ * metadata/dirs and metadata/raws setting.
+ */
 #define FMT_INSTANCE_AUX_MDAS		0x00000004U
 
-/* Include any other format-specific mdas during format_instance initialisation */
+/*
+ * Include any other format-specific mdas during format_instance initialisation.
+ * For example metadata areas used during backup/restore/archive handling.
+ */
 #define FMT_INSTANCE_PRIVATE_MDAS	0x00000008U
 
 struct format_instance {
@@ -341,6 +353,7 @@ struct lv_segment {
 	uint64_t transaction_id;		/* For thin_pool, thin */
 	uint64_t low_water_mark;		/* For thin_pool */
 	unsigned zero_new_blocks;		/* For thin_pool */
+	thin_discards_t discards;		/* For thin_pool */
 	struct dm_list thin_messages;		/* For thin_pool */
 	struct logical_volume *pool_lv;		/* For thin */
 	uint32_t device_id;			/* For thin, 24bit */
@@ -547,21 +560,26 @@ int lv_remove_with_dependencies(struct cmd_context *cmd, struct logical_volume *
 
 int lv_rename(struct cmd_context *cmd, struct logical_volume *lv,
 	      const char *new_name);
+int lv_rename_update(struct cmd_context *cmd, struct logical_volume *lv,
+		     const char *new_name, int update_mda);
 
 uint64_t extents_from_size(struct cmd_context *cmd, uint64_t size,
 			   uint32_t extent_size);
 
 int update_pool_lv(struct logical_volume *lv, int activate);
+int get_pool_discards(const char *str, thin_discards_t *discards);
+const char *get_pool_discards_name(thin_discards_t discards);
 
 /*
  * Activation options
  */
-typedef enum {
-	CHANGE_AY = 0,
-	CHANGE_AN = 1,
-	CHANGE_AE = 2,
-	CHANGE_ALY = 3,
-	CHANGE_ALN = 4
+typedef enum activation_change {
+	CHANGE_AY = 0,  /* activate */
+	CHANGE_AN = 1,  /* deactivate */
+	CHANGE_AE = 2,  /* activate exclusively */
+	CHANGE_ALY = 3, /* activate locally */
+	CHANGE_ALN = 4, /* deactivate locally */
+	CHANGE_AAY = 5  /* automatic activation */
 } activation_change_t;
 
 /* FIXME: refactor and reduce the size of this struct! */
@@ -576,6 +594,7 @@ struct lvcreate_params {
 	int log_count; /* mirror */
 	int nosync; /* mirror */
 	activation_change_t activate; /* non-snapshot, non-mirror */
+	thin_discards_t discards;     /* thin */
 
 	const char *origin; /* snap */
 	const char *pool;   /* thin */
@@ -744,8 +763,11 @@ int add_mirror_log(struct cmd_context *cmd, struct logical_volume *lv,
 		   uint32_t log_count, uint32_t region_size,
 		   struct dm_list *allocatable_pvs, alloc_policy_t alloc);
 
+#if 0
+/* FIXME: reconfigure_mirror_images: remove this code? */
 int reconfigure_mirror_images(struct lv_segment *mirrored_seg, uint32_t num_mirrors,
 			      struct dm_list *removable_pvs, unsigned remove_log);
+#endif
 int collapse_mirrored_lv(struct logical_volume *lv);
 int shift_mirror_images(struct lv_segment *mirrored_seg, unsigned mimage);
 
