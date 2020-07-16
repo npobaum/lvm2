@@ -68,6 +68,8 @@ struct dev_manager;
 #define SEG_RAID6_N_6		0x0000000800000000ULL
 #define SEG_RAID6		SEG_RAID6_ZR
 
+#define SEG_STRIPED_TARGET	0x0000008000000000ULL
+
 #define SEG_UNKNOWN		0x8000000000000000ULL
 
 #define SEG_TYPE_NAME_LINEAR		"linear"
@@ -88,6 +90,7 @@ struct dev_manager;
 #define SEG_TYPE_NAME_RAID10		"raid10"
 #define SEG_TYPE_NAME_RAID4		"raid4"
 #define SEG_TYPE_NAME_RAID5		"raid5"
+#define SEG_TYPE_NAME_RAID5_N		"raid5_n"
 #define SEG_TYPE_NAME_RAID5_LA		"raid5_la"
 #define SEG_TYPE_NAME_RAID5_LS		"raid5_ls"
 #define SEG_TYPE_NAME_RAID5_RA		"raid5_ra"
@@ -96,8 +99,14 @@ struct dev_manager;
 #define SEG_TYPE_NAME_RAID6_NC		"raid6_nc"
 #define SEG_TYPE_NAME_RAID6_NR		"raid6_nr"
 #define SEG_TYPE_NAME_RAID6_ZR		"raid6_zr"
+#define SEG_TYPE_NAME_RAID6_LA_6	"raid6_la_6"
+#define SEG_TYPE_NAME_RAID6_LS_6	"raid6_ls_6"
+#define SEG_TYPE_NAME_RAID6_RA_6	"raid6_ra_6"
+#define SEG_TYPE_NAME_RAID6_RS_6	"raid6_rs_6"
+#define SEG_TYPE_NAME_RAID6_N_6		"raid6_n_6"
 
 #define segtype_is_linear(segtype)	(!strcmp(segtype->name, SEG_TYPE_NAME_LINEAR))
+#define segtype_is_striped_target(segtype)	((segtype)->flags & SEG_STRIPED_TARGET ? 1 : 0)
 #define segtype_is_cache(segtype)	((segtype)->flags & SEG_CACHE ? 1 : 0)
 #define segtype_is_cache_pool(segtype)	((segtype)->flags & SEG_CACHE_POOL ? 1 : 0)
 #define segtype_is_mirrored(segtype)	((segtype)->flags & SEG_AREAS_MIRRORED ? 1 : 0)
@@ -111,6 +120,7 @@ struct dev_manager;
 #define segtype_is_raid4(segtype)	((segtype)->flags & SEG_RAID4 ? 1 : 0)
 #define segtype_is_any_raid5(segtype)	((segtype)->flags & \
 					 (SEG_RAID5_LS|SEG_RAID5_LA|SEG_RAID5_RS|SEG_RAID5_RA|SEG_RAID5_N) ? 1 : 0)
+#define segtype_is_raid5_n(segtype)	((segtype)->flags & SEG_RAID5_N ? 1 : 0)
 #define segtype_is_raid5_la(segtype)	((segtype)->flags & SEG_RAID5_LA ? 1 : 0)
 #define segtype_is_raid5_ra(segtype)	((segtype)->flags & SEG_RAID5_RA ? 1 : 0)
 #define segtype_is_raid5_ls(segtype)	((segtype)->flags & SEG_RAID5_LS ? 1 : 0)
@@ -120,8 +130,11 @@ struct dev_manager;
 					  SEG_RAID6_LA_6|SEG_RAID6_LS_6|SEG_RAID6_RA_6|SEG_RAID6_RS_6|SEG_RAID6_N_6) ? 1 : 0)
 #define segtype_is_raid6_nc(segtype)	((segtype)->flags & SEG_RAID6_NC ? 1 : 0)
 #define segtype_is_raid6_nr(segtype)	((segtype)->flags & SEG_RAID6_NR ? 1 : 0)
+#define segtype_is_raid6_n_6(segtype)	((segtype)->flags & SEG_RAID6_N_6 ? 1 : 0)
 #define segtype_is_raid6_zr(segtype)	((segtype)->flags & SEG_RAID6_ZR ? 1 : 0)
+#define segtype_is_any_raid10(segtype)	((segtype)->flags & SEG_RAID10 ? 1 : 0)
 #define segtype_is_raid10(segtype)	((segtype)->flags & SEG_RAID10 ? 1 : 0)
+#define segtype_is_raid10_near(segtype)	segtype_is_raid10(segtype)
 #define segtype_is_raid_with_meta(segtype)	(segtype_is_raid(segtype) && !segtype_is_raid0(segtype))
 #define segtype_is_snapshot(segtype)	((segtype)->flags & SEG_SNAPSHOT ? 1 : 0)
 #define segtype_is_striped(segtype)	((segtype)->flags & SEG_AREAS_STRIPED ? 1 : 0)
@@ -131,6 +144,13 @@ struct dev_manager;
 #define segtype_is_virtual(segtype)	((segtype)->flags & SEG_VIRTUAL ? 1 : 0)
 #define segtype_is_unknown(segtype)	((segtype)->flags & SEG_UNKNOWN ? 1 : 0)
 
+#define segtype_supports_stripe_size(segtype)	\
+	((segtype_is_striped(segtype) || segtype_is_mirror(segtype) || \
+	  segtype_is_cache(segtype) || segtype_is_cache_pool(segtype) || \
+	  segtype_is_thin(segtype) || segtype_is_snapshot(segtype) || \
+	  (segtype_is_raid(segtype) && !segtype_is_raid1(segtype))) ? 1 : 0)
+
+#define seg_is_striped_target(seg)	segtype_is_striped_target((seg)->segtype)
 #define seg_is_cache(seg)	segtype_is_cache((seg)->segtype)
 #define seg_is_cache_pool(seg)	segtype_is_cache_pool((seg)->segtype)
 #define seg_is_linear(seg)	(seg_is_striped(seg) && ((seg)->area_count == 1))
@@ -144,6 +164,7 @@ struct dev_manager;
 #define seg_is_raid1(seg)	segtype_is_raid1((seg)->segtype)
 #define seg_is_raid4(seg)	segtype_is_raid4((seg)->segtype)
 #define seg_is_any_raid5(seg)	segtype_is_any_raid5((seg)->segtype)
+#define seg_is_raid5_n(seg)	segtype_is_raid5_n((seg)->segtype)
 #define seg_is_raid5_la(seg)	segtype_is_raid5_la((seg)->segtype)
 #define seg_is_raid5_ra(seg)	segtype_is_raid5_ra((seg)->segtype)
 #define seg_is_raid5_ls(seg)	segtype_is_raid5_ls((seg)->segtype)
@@ -152,7 +173,10 @@ struct dev_manager;
 #define seg_is_raid6_zr(seg)	segtype_is_raid6_zr((seg)->segtype)
 #define seg_is_raid6_nr(seg)	segtype_is_raid6_nr((seg)->segtype)
 #define seg_is_raid6_nc(seg)	segtype_is_raid6_nc((seg)->segtype)
+#define seg_is_raid6_n_6(seg)	segtype_is_raid6_n_6((seg)->segtype)
+#define seg_is_any_raid10(seg)	segtype_is_any_raid10((seg)->segtype)
 #define seg_is_raid10(seg)	segtype_is_raid10((seg)->segtype)
+#define seg_is_raid10_near(seg)	segtype_is_raid10_near((seg)->segtype)
 #define seg_is_raid_with_meta(seg)	segtype_is_raid_with_meta((seg)->segtype)
 #define seg_is_replicator(seg)	((seg)->segtype->flags & SEG_REPLICATOR ? 1 : 0)
 #define seg_is_replicator_dev(seg) ((seg)->segtype->flags & SEG_REPLICATOR_DEV ? 1 : 0)

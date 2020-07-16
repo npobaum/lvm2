@@ -1199,6 +1199,7 @@ int lvmetad_vg_update_finish(struct volume_group *vg)
 	struct dm_hash_node *n;
 	struct metadata_area *mda;
 	char mda_id[128], *num;
+	struct volume_group *vgu;
 	struct dm_config_tree *vgmeta;
 	struct pv_list *pvl;
 	struct lvmcache_info *info;
@@ -1216,7 +1217,21 @@ int lvmetad_vg_update_finish(struct volume_group *vg)
 	if (!id_write_format(&vg->id, uuid, sizeof(uuid)))
 		return_0;
 
-	if (!(vgmeta = export_vg_to_config_tree(vg))) {
+	/*
+	 * vg->vg_committted is the state of the VG metadata when vg_commit()
+	 * was called.  Since then, 'vg' may have been partially modified and
+	 * not committed.  We only want to send committed metadata to lvmetad.
+	 *
+	 * lvmetad is sometimes updated in cases where the VG is not written
+	 * (no vg_committed).  In those cases 'vg' has just been read from
+	 * disk, and we can send 'vg' to lvmetad.  This happens when the
+	 * command finds the lvmetad cache invalid, so the VG has been read
+	 * from disk and is then sent to lvmetad.
+	 */
+
+	vgu = vg->vg_committed ? vg->vg_committed : vg;
+
+	if (!(vgmeta = export_vg_to_config_tree(vgu))) {
 		log_error("Failed to export VG to config tree.");
 		return 0;
 	}
@@ -1242,11 +1257,11 @@ int lvmetad_vg_update_finish(struct volume_group *vg)
 
 	daemon_reply_destroy(reply);
 
-	n = (vg->fid && vg->fid->metadata_areas_index) ?
-		dm_hash_get_first(vg->fid->metadata_areas_index) : NULL;
+	n = (vgu->fid && vgu->fid->metadata_areas_index) ?
+		dm_hash_get_first(vgu->fid->metadata_areas_index) : NULL;
 	while (n) {
-		mda = dm_hash_get_data(vg->fid->metadata_areas_index, n);
-		(void) dm_strncpy(mda_id, dm_hash_get_key(vg->fid->metadata_areas_index, n), sizeof(mda_id));
+		mda = dm_hash_get_data(vgu->fid->metadata_areas_index, n);
+		(void) dm_strncpy(mda_id, dm_hash_get_key(vgu->fid->metadata_areas_index, n), sizeof(mda_id));
 		if ((num = strchr(mda_id, '_'))) {
 			*num = 0;
 			++num;
@@ -1257,13 +1272,13 @@ int lvmetad_vg_update_finish(struct volume_group *vg)
 				lvmcache_foreach_mda(info, _fixup_ignored, &baton);
 			}
 		}
-		n = dm_hash_get_next(vg->fid->metadata_areas_index, n);
+		n = dm_hash_get_next(vgu->fid->metadata_areas_index, n);
 	}
 
-	dm_list_iterate_items(pvl, &vg->pvs) {
+	dm_list_iterate_items(pvl, &vgu->pvs) {
 		/* NB. the PV fmt pointer is sometimes wrong during vgconvert */
 		if (pvl->pv->dev && !lvmetad_pv_found(vg->cmd, &pvl->pv->id, pvl->pv->dev,
-						      vg->fid ? vg->fid->fmt : pvl->pv->fmt,
+						      vgu->fid ? vgu->fid->fmt : pvl->pv->fmt,
 						      pvl->pv->label_sector, NULL, NULL, NULL))
 			return 0;
 	}
@@ -1784,7 +1799,7 @@ static struct volume_group *lvmetad_pvscan_vg(struct cmd_context *cmd, struct vo
 	struct dm_list pvs_scan;
 	struct dm_list pvs_drop;
 	struct dm_list pvs_new;
-	struct lvmcache_info *info;
+	struct lvmcache_info *info = NULL;
 	struct format_instance *fid;
 	struct format_instance_ctx fic = { .type = 0 };
 	struct _lvmetad_pvscan_baton baton;

@@ -80,13 +80,16 @@ dmstats \(em device-mapper statistics management
 .de CMD_CREATE
 .  ad l
 .  BR create
-.  IR device_name
+.  RB [ device_name...
+.  RB | file_path... ]
 .  RB [ \-\-alldevices ]
 .  RB [ \-\-areas
 .  IR nr_areas | \fB\-\-areasize
 .  IR area_size ]
 .  RB [ \-\-bounds
 .  IR \%histogram_boundaries ]
+.  RB [ \-\-filemap ]
+.  RB [ \-\-nogroup ]
 .  RB [ \-\-precise ]
 .  RB [ \-\-start
 .  IR start_sector
@@ -145,8 +148,6 @@ dmstats \(em device-mapper statistics management
 .  RI [ device_name ]
 .  RB [ \-\-histogram ]
 .  OPT_PROGRAMS
-.  RB [ \-\-statstype
-.  IR type_list ]
 .  RB [ \-\-units
 .  IR units ]
 .  OPT_OBJECTS
@@ -190,8 +191,6 @@ dmstats \(em device-mapper statistics management
 .  IR sort_fields ]
 .  RB [ \-S | \-\-select
 .  IR selection ]
-.  RB [ \-\-statstype
-.  IR type_list ]
 .  RB [ \-\-units
 .  IR units ]
 .  RB [ \-\-nosuffix ]
@@ -299,6 +298,14 @@ When peforming a list or report, include objects of type group in the
 results.
 .
 .HP
+.BR \-\-filemap
+.br
+Instead of creating regions on a device as specified by command line
+options, open the file found at each \fBfile_path\fP argument, and
+create regions corresponding to the locations of the on-disk extents
+allocated to the file(s).
+.
+.HP
 .BR \-\-groupid
 .IR id
 .br
@@ -354,6 +361,12 @@ Specify the major number.
 .IR minor
 .br
 Specify the minor number.
+.
+.HP
+.BR \-\-nogroup
+.br
+When creating regions mapping the extents of a file in the file
+system, do not create a group or set an alias.
 .
 .HP
 .BR \-\-nosuffix
@@ -443,23 +456,13 @@ optional suffix selects units of:
 .HP
 .BR \-\-segments
 .br
-Create a new statistics region for each target contained in the target
-device. This causes a separate region to be allocated for each segment
-of the device.
-.
-.HP
-.BR \-\-statstype
-.IR type_list
-.br
-Filter the types of statistics object included in a report or listing
-according to the provided list. A report may include areas, regions,
-and user-defined groups of regions that report aggregate data for all
-group members.
+When used with \fBcreate\fP, create a new statistics region for each
+target contained in the given device(s). This causes a separate region
+to be allocated for each segment of the device.
 
-The list may be a single object type, a comma separated list of types,
-or the special value 'all'.
-
-The currently available object types are 'area', 'region' and 'group'.
+The newly created regions are automatically placed into a group unless
+the \fB\-\-nogroup\fP option is given. When grouping is enabled a group
+alias may be specified using the \fB\-\-alias\fP option.
 .
 .HP
 .BR \-\-units
@@ -506,7 +509,7 @@ regions (with the exception of in-flight IO counters).
 Creates one or more new statistics regions on the specified device(s).
 
 The region will span the entire device unless \fB\-\-start\fP and
-\fB\-\-length\fP or \fB\-\-target\fP are given. The \fB\-\-start\fP and
+\fB\-\-length\fP or \fB\-\-segments\fP are given. The \fB\-\-start\fP an
 \fB\-\-length\fP options allow a region of arbitrary length to be placed
 at an arbitrary offset into the device. The \fB\-\-segments\fP option
 causes a new region to be created for each target in the corresponding
@@ -538,8 +541,27 @@ device-mapper kernel statistics subsystem.
 By default dmstats creates regions with a \fBprogram_id\fP of
 "dmstats".
 
-On success the \fBregion_id\fP of the newly created region is printed to
-stdout.
+On success the \fBregion_id\fP of the newly created region is printed
+to stdout.
+
+If the \fB\-\-filemap\fP option is given with a regular file, or list
+of files, as the \fBfile_path\fP argument, instead of creating regions
+with parameters specified on the command line, \fBdmstats\fP will open
+the files located at \fBfile_path\fP and create regions corresponding to
+the physical extents allocated to the file. This can be used to monitor
+statistics for individual files in the file system, for example, virtual
+machine images, swap areas, or large database files.
+
+To work with the \fB\-\-filemap\fP option, files must be located on a
+local file system, backed by a device-mapper device, that supports
+physical extent data using the FIEMAP ioctl (Ext4 and XFS for e.g.).
+
+By default regions that map a file are placed into a group and the
+group alias is set to the basename of the file. This behaviour can be
+overridden with the \fB\-\-alias\fP and \fB\-\-nogroup\fP options.
+
+Use the \fB\-\-group\fP option to only display information for groups
+when listing and reporting.
 .
 .HP
 .CMD_DELETE
@@ -573,8 +595,16 @@ regions is given as a comma-separated list of region identifiers. A
 continuous range of identifers spanning from \fBR1\fP to \fBR2\fP may
 be expressed as '\fBR1\fP-\fBR2\fP'.
 
+Regions that have a histogram configured can be grouped: in this case
+the number of histogram bins and their bounds must match exactly.
+
 On success the group list and newly created \fBgroup_id\fP are
 printed to stdout.
+
+The group metadata is stored with the first (lowest numbered)
+\fBregion_id\fP in the group: deleting this region will also delete
+the group and other group members will be returned to their prior
+state.
 .
 .HP
 .CMD_HELP
@@ -592,13 +622,13 @@ regardless of region program ID values.
 By default only regions and groups are included in list output. If
 \fB\-v\fP or \fB\-\-verbose\fP is given the report will also include a
 row of information for each configured group and for each area contained
-in each region displayed (regions that contain a single area are by
-default omitted from the verbose list since their properties are
-identical to the area that they contain - to view all regions regardless
-of the number of areas they contain use \fB\-\-statstype\fP).
+in each region displayed.
 
-Specific combinations of objects may be selected using the
-\fB\-\-statstype\fP option.
+Regions that contain a single area are by default omitted from the
+verbose list since their properties are identical to the area that they
+contain - to view all regions regardless of the number of areas present
+use \fB\-\-region\fP). To also view the areas contained within regions
+use \fB\-\-area\fP.
 
 If \fB\-\-histogram\fP is given the report will include the bin count
 and latency boundary values for any configured histograms.
@@ -625,8 +655,9 @@ values and latency boundaries.
 If the \fB\-\-relative\fP is used the default histogram field displays
 bin values as a percentage of the total number of I/Os.
 
-Object types (areas, regions and groups) are selected using the
-\fB\-\-statstype\fP option.
+Object types (areas, regions and groups) to include in the report are
+selected using the \fB\-\-area\fP, \fB\-\-region\fP, and \fB\-\-group\fP
+options.
 .
 .HP
 .CMD_UNGROUP
@@ -646,8 +677,16 @@ each with its own counter set. In this case a summary value for the
 entire region is also available for use in reports.
 
 In addition, one or more regions on one device can be combined into
-a statistics group allowing reporting of aggregate values for all
-regions and areas making up the group.
+a statistics group. Groups allow several regions to be aggregated and
+reported as a single entity; counters for all regions and areas are
+summed and used to report totals for all group members. Groups also
+permit the assignment of an optional alias, allowing meaningful names
+to be associated with sets of regions.
+
+The group metadata is stored with the first (lowest numbered)
+\fBregion_id\fP in the group: deleting this region will also delete
+the group and other group members will be returned to their prior
+state.
 
 By default new regions span the entire device. The \fB\-\-start\fP and
 \fB\-\-length\fP options allows a region of any size to be placed at any
@@ -1018,6 +1057,22 @@ vg00-lvol1: Created new region with 1 area(s) as region ID 0
 vg00-lvol1: Created new region with 1 area(s) as region ID 1
 .br
 vg00-lvol1: Created new region with 1 area(s) as region ID 2
+.P
+Create regions mapping each file in the directory images/ and place
+them into separate groups, each named after the corresponding file
+.br
+#
+.B dmstats create --filemap images/*
+.br
+images/vm1.qcow2: Created new group with 87 region(s) as group ID 0.
+.br
+images/vm1-1.qcow2: Created new group with 8 region(s) as group ID 87.
+.br
+images/vm2.qcow2: Created new group with 11 region(s) as group ID 95.
+.br
+images/vm2-1.qcow2: Created new group with 1454 region(s) as group ID 106.
+.br
+images/vm3.img: Created new group with 2 region(s) as group ID 1560.
 .P
 Print raw counters for region 4 on device d0
 .br

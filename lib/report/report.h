@@ -81,9 +81,7 @@ struct processing_handle;
 typedef int (*field_report_fn) (struct report_handle * dh, struct field * field,
 				const void *data);
 
-int report_format_init(struct cmd_context *cmd, dm_report_group_type_t *report_group_type,
-		       struct dm_report_group **report_group, struct dm_report **log_rh,
-		       int *log_only, log_report_t *saved_log_report_state);
+int report_format_init(struct cmd_context *cmd);
 
 void *report_init(struct cmd_context *cmd, const char *format, const char *keys,
 		  report_type_t *report_type, const char *separator,
@@ -113,6 +111,7 @@ int report_cmdlog(void *handle, const char *type, const char *context,
 		  const char *object_id, const char *object_group,
 		  const char *object_group_id, const char *msg,
 		  int current_errno, int ret_code);
+void report_reset_cmdlog_seqnum(void);
 #define REPORT_OBJECT_CMDLOG_NAME "status"
 #define REPORT_OBJECT_CMDLOG_SUCCESS "success"
 #define REPORT_OBJECT_CMDLOG_FAILURE "failure"
