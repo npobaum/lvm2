@@ -303,6 +303,12 @@ static int _read_params(struct lvcreate_params *lp, struct cmd_context *cmd,
 			return 0;
 		}
 		lp->chunk_size = 2 * arg_uint_value(cmd, chunksize_ARG, 8);
+		if (lp->chunk_size < 8 || lp->chunk_size > 1024 ||
+		    (lp->chunk_size & (lp->chunk_size - 1))) {
+			log_error("Chunk size must be a power of 2 in the "
+				  "range 4K to 512K");
+			return 0;
+		}
 		log_verbose("Setting chunksize to %d sectors.", lp->chunk_size);
 
 		if (!(lp->segtype = get_segtype_from_string(cmd, "snapshot"))) {
@@ -416,7 +422,7 @@ static int _read_params(struct lvcreate_params *lp, struct cmd_context *cmd,
 
 static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 {
-	uint32_t size_rest, region_max;
+	uint32_t size_rest;
 	uint32_t status = 0;
 	uint64_t tmp_size;
 	struct volume_group *vg;
@@ -506,6 +512,11 @@ static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 				  "device-mapper kernel driver");
 			return 0;
 		}
+		/* FIXME Allow exclusive activation. */
+		if (vg->status & CLUSTERED) {
+			log_error("Clustered snapshots are not yet supported.");
+			return 0;
+		}
 		if (!(org = find_lv(vg, lp->origin))) {
 			log_err("Couldn't find origin volume '%s'.",
 				lp->origin);
@@ -572,39 +583,20 @@ static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 	}
 
 	if (lp->mirrors > 1) {
-		/* FIXME Adjust lp->region_size if necessary */
-		region_max = (1 << (ffs(lp->extents) - 1)) * vg->extent_size;
-
-		if (region_max < lp->region_size) {
-			lp->region_size = region_max;
-			log_print("Using reduced mirror region size of %" PRIu32
-				  " sectors", lp->region_size);
-		}
+		lp->region_size = adjusted_mirror_region_size(vg->extent_size,
+							      lp->extents,
+							      lp->region_size);
 
 		/* FIXME Calculate how many extents needed for the log */
 
 		len = strlen(lv_name) + 32;
-        	if (!(log_name = alloca(len))) {
+        	if (!(log_name = alloca(len)) ||
+		    !(generate_log_name_format(vg, lv_name, log_name, len))) {
                 	log_error("log_name allocation failed. "
 	                          "Remove new LV and retry.");
                 	return 0;
         	}
 
-        	if (lvm_snprintf(log_name, len, "%s_mlog", lv_name) < 0) {
-                	log_error("log_name allocation failed. "
-	                          "Remove new LV and retry.");
-                	return 0;
-        	}
-
-		if (find_lv_in_vg(vg, log_name)) {
-        		if (lvm_snprintf(log_name, len, "%s_mlog_%%d",
-					 lv_name) < 0) {
-                		log_error("log_name allocation failed. "
-					  "Remove new LV and retry.");
-                		return 0;
-        		}
-		}
- 
 		if (!(log_lv = lv_create_empty(vg->fid, log_name, NULL,
 				VISIBLE_LV | LVM_READ | LVM_WRITE,
 				lp->alloc, 0, vg))) {
@@ -637,7 +629,7 @@ static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 			goto error;
 		}
 
-		if (!activate_lv(cmd, log_lv->lvid.s)) {
+		if (!activate_lv(cmd, log_lv)) {
 			log_error("Aborting. Failed to activate mirror log. "
 				  "Remove new LVs and retry.");
 			goto error;
@@ -649,7 +641,7 @@ static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 			goto error;
 		}
 
-		if (!deactivate_lv(cmd, log_lv->lvid.s)) {
+		if (!deactivate_lv(cmd, log_lv)) {
 			log_error("Aborting. Failed to deactivate mirror log. "
 				  "Remove new LV and retry.");
 			goto error;
@@ -725,7 +717,7 @@ static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 		return 0;
 	}
 
-	if (!activate_lv(cmd, lv->lvid.s)) {
+	if (!activate_lv(cmd, lv)) {
 		if (lp->snapshot)
 			/* FIXME Remove the failed lv we just added */
 			log_error("Aborting. Failed to activate snapshot "
@@ -751,13 +743,13 @@ static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 		/* Reset permission after zeroing */
 		if (!(lp->permission & LVM_WRITE))
 			lv->status &= ~LVM_WRITE;
-		if (!deactivate_lv(cmd, lv->lvid.s)) {
+		if (!deactivate_lv(cmd, lv)) {
 			log_err("Couldn't deactivate new snapshot.");
 			return 0;
 		}
 
 		/* FIXME write/commit/backup sequence issue */
-		if (!suspend_lv(cmd, org->lvid.s)) {
+		if (!suspend_lv(cmd, org)) {
 			log_error("Failed to suspend origin %s", org->name);
 			return 0;
 		}
@@ -772,7 +764,7 @@ static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 		if (!vg_write(vg) || !vg_commit(vg))
 			return 0;
 
-		if (!resume_lv(cmd, org->lvid.s)) {
+		if (!resume_lv(cmd, org)) {
 			log_error("Problem reactivating origin %s", org->name);
 			return 0;
 		}

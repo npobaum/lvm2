@@ -62,13 +62,13 @@ static int pvcreate_check(struct cmd_context *cmd, const char *name)
 
 	/* Is there an md superblock here? */
 	if (!dev && md_filtering()) {
-		unlock_vg(cmd, "");
+		unlock_vg(cmd, ORPHAN);
 
 		persistent_filter_wipe(cmd->filter);
 		lvmcache_destroy();
 
 		init_md_filtering(0);
-		if (!lock_vol(cmd, "", LCK_VG_WRITE)) {
+		if (!lock_vol(cmd, ORPHAN, LCK_VG_WRITE)) {
 			log_error("Can't get lock for orphan PVs");
 			init_md_filtering(1);
 			return 0;
@@ -79,6 +79,12 @@ static int pvcreate_check(struct cmd_context *cmd, const char *name)
 
 	if (!dev) {
 		log_error("Device %s not found.", name);
+		return 0;
+	}
+
+	if (!dev_test_excl(dev)) {
+		log_error("Can't open %s exclusively.  Mounted filesystem?",
+			  name);
 		return 0;
 	}
 
@@ -158,7 +164,7 @@ static int pvcreate_single(struct cmd_context *cmd, const char *pv_name,
 		extent_count = existing_pv->pe_count;
 	}
 
-	if (!lock_vol(cmd, "", LCK_VG_WRITE)) {
+	if (!lock_vol(cmd, ORPHAN, LCK_VG_WRITE)) {
 		log_error("Can't get lock for orphan PVs");
 		return ECMD_FAILED;
 	}
@@ -218,8 +224,12 @@ static int pvcreate_single(struct cmd_context *cmd, const char *pv_name,
 			log_error("%s not opened: device not zeroed", pv_name);
 			goto error;
 		}
-			
-		dev_zero(dev, UINT64_C(0), (size_t) 2048);
+
+		if (!dev_zero(dev, UINT64_C(0), (size_t) 2048)) {
+			log_error("%s not wiped: aborting", pv_name);
+			dev_close(dev);
+			goto error;
+		}
 		dev_close(dev);
 	}
 
@@ -233,11 +243,11 @@ static int pvcreate_single(struct cmd_context *cmd, const char *pv_name,
 
 	log_print("Physical volume \"%s\" successfully created", pv_name);
 
-	unlock_vg(cmd, "");
+	unlock_vg(cmd, ORPHAN);
 	return ECMD_PROCESSED;
 
       error:
-	unlock_vg(cmd, "");
+	unlock_vg(cmd, ORPHAN);
 	return ECMD_FAILED;
 }
 
