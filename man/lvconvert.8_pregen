@@ -43,6 +43,10 @@ lvconvert - Change logical volume layout
 .ad b
 .br
 .ad l
+    \fB--cachevol\fP \fILV\fP
+.ad b
+.br
+.ad l
  \fB-c\fP|\fB--chunksize\fP \fISize\fP[k|UNIT]
 .ad b
 .br
@@ -223,7 +227,7 @@ lvconvert - Change logical volume layout
 .ad b
 .br
 .ad l
-    \fB--type\fP \fBlinear\fP|\fBstriped\fP|\fBsnapshot\fP|\fBmirror\fP|\fBraid\fP|\fBthin\fP|\fBcache\fP|\fBthin-pool\fP|\fBcache-pool\fP
+    \fB--type\fP \fBlinear\fP|\fBstriped\fP|\fBsnapshot\fP|\fBmirror\fP|\fBraid\fP|\fBthin\fP|\fBcache\fP|\fBvdo\fP|\fBthin-pool\fP|\fBcache-pool\fP|\fBvdo-pool\fP
 .ad b
 .br
 .ad l
@@ -364,6 +368,44 @@ Convert LV to striped.
 .br
 .ad l
 [    \fB--stripes\fP \fINumber\fP ]
+.ad b
+.br
+[ COMMON_OPTIONS ]
+.RE
+.br
+.RS 4
+[ \fIPV\fP ... ]
+.RE
+-
+
+Convert LV to type mirror (also see type raid1),
+.br
+.P
+\fBlvconvert\fP \fB--type\fP \fBmirror\fP \fILV\fP
+.br
+.RS 4
+.ad l
+[ \fB-m\fP|\fB--mirrors\fP [\fB+\fP|\fB-\fP]\fINumber\fP ]
+.ad b
+.br
+.ad l
+[ \fB-I\fP|\fB--stripesize\fP \fISize\fP[k|UNIT] ]
+.ad b
+.br
+.ad l
+[ \fB-R\fP|\fB--regionsize\fP \fISize\fP[m|UNIT] ]
+.ad b
+.br
+.ad l
+[ \fB-i\fP|\fB--interval\fP \fINumber\fP ]
+.ad b
+.br
+.ad l
+[    \fB--stripes\fP \fINumber\fP ]
+.ad b
+.br
+.ad l
+[    \fB--mirrorlog\fP \fBcore\fP|\fBdisk\fP ]
 .ad b
 .br
 [ COMMON_OPTIONS ]
@@ -567,10 +609,10 @@ Convert LV to a thin LV, using the original LV as an external origin.
 .br
 -
 
-Convert LV to type cache.
+Attach a cache pool to an LV, converts the LV to type cache.
 .br
 .P
-\fBlvconvert\fP \fB--type\fP \fBcache\fP \fB--cachepool\fP \fILV\fP \fILV\fP\fI_linear_striped_thinpool_raid\fP
+\fBlvconvert\fP \fB--type\fP \fBcache\fP \fB--cachepool\fP \fILV\fP \fILV\fP\fI_linear_striped_thinpool_vdo_vdopool_vdopooldata_raid\fP
 .br
 .RS 4
 .ad l
@@ -619,6 +661,64 @@ Convert LV to type cache.
 .br
 .ad l
 [    \fB--metadataprofile\fP \fIString\fP ]
+.ad b
+.br
+[ COMMON_OPTIONS ]
+.RE
+.br
+-
+
+Attach a writecache to an LV, converts the LV to type writecache.
+.br
+.P
+\fBlvconvert\fP \fB--type\fP \fBwritecache\fP \fB--cachevol\fP \fILV\fP \fILV\fP\fI_linear_striped_raid\fP
+.br
+.RS 4
+.ad l
+[    \fB--cachesettings\fP \fIString\fP ]
+.ad b
+.br
+[ COMMON_OPTIONS ]
+.RE
+.br
+-
+
+Attach a cache to an LV, converts the LV to type cache.
+.br
+.P
+\fBlvconvert\fP \fB--type\fP \fBcache\fP \fB--cachevol\fP \fILV\fP \fILV\fP\fI_linear_striped_thinpool_raid\fP
+.br
+.RS 4
+.ad l
+[ \fB-H\fP|\fB--cache\fP ]
+.ad b
+.br
+.ad l
+[ \fB-Z\fP|\fB--zero\fP \fBy\fP|\fBn\fP ]
+.ad b
+.br
+.ad l
+[ \fB-c\fP|\fB--chunksize\fP \fISize\fP[k|UNIT] ]
+.ad b
+.br
+.ad l
+[    \fB--cachemetadataformat\fP \fBauto\fP|\fB1\fP|\fB2\fP ]
+.ad b
+.br
+.ad l
+[    \fB--cachemode\fP \fBwritethrough\fP|\fBwriteback\fP|\fBpassthrough\fP ]
+.ad b
+.br
+.ad l
+[    \fB--cachepolicy\fP \fIString\fP ]
+.ad b
+.br
+.ad l
+[    \fB--cachesettings\fP \fIString\fP ]
+.ad b
+.br
+.ad l
+[    \fB--poolmetadatasize\fP \fISize\fP[m|UNIT] ]
 .ad b
 .br
 [ COMMON_OPTIONS ]
@@ -765,10 +865,10 @@ Convert LV to type vdopool.
 .br
 -
 
-Separate and keep the cache pool from a cache LV.
+Detach a cache from an LV.
 .br
 .P
-\fBlvconvert\fP \fB--splitcache\fP \fILV\fP\fI_thinpool_cache_cachepool\fP
+\fBlvconvert\fP \fB--splitcache\fP \fILV\fP\fI_thinpool_cache_cachepool_vdopool_writecache\fP
 .br
 .RS 4
 [ COMMON_OPTIONS ]
@@ -1032,7 +1132,7 @@ See \fBlvmcache\fP(7) for more information.
 .ad l
 \fB--cachepool\fP \fILV\fP
 .br
-The name of a cache pool LV.
+The name of a cache pool.
 .ad b
 .HP
 .ad l
@@ -1045,6 +1145,12 @@ The special string value \fBdefault\fP switches
 settings back to their default kernel values and removes
 them from the list of settings stored in LVM metadata.
 See \fBlvmcache\fP(7) for more information.
+.ad b
+.HP
+.ad l
+\fB--cachevol\fP \fILV\fP
+.br
+The name of a cache volume.
 .ad b
 .HP
 .ad l
@@ -1436,7 +1542,7 @@ the image (see --splitmirrors with --name.
 .ad b
 .HP
 .ad l
-\fB--type\fP \fBlinear\fP|\fBstriped\fP|\fBsnapshot\fP|\fBmirror\fP|\fBraid\fP|\fBthin\fP|\fBcache\fP|\fBthin-pool\fP|\fBcache-pool\fP
+\fB--type\fP \fBlinear\fP|\fBstriped\fP|\fBsnapshot\fP|\fBmirror\fP|\fBraid\fP|\fBthin\fP|\fBcache\fP|\fBvdo\fP|\fBthin-pool\fP|\fBcache-pool\fP|\fBvdo-pool\fP
 .br
 The LV type, also known as "segment type" or "segtype".
 See usage descriptions for the specific ways to use these types.
@@ -1444,9 +1550,10 @@ For more information about redundancy and performance (\fBraid\fP<N>, \fBmirror\
 For thin provisioning (\fBthin\fP, \fBthin-pool\fP) see \fBlvmthin\fP(7).
 For performance caching (\fBcache\fP, \fBcache-pool\fP) see \fBlvmcache\fP(7).
 For copy-on-write snapshots (\fBsnapshot\fP) see usage definitions.
+For VDO (\fBvdo\fP) see \fBlvmvdo\fP(7).
 Several commands omit an explicit type option because the type
 is inferred from other options or shortcuts
-(e.g. --stripes, --mirrors, --snapshot, --virtualsize, --thin, --cache).
+(e.g. --stripes, --mirrors, --snapshot, --virtualsize, --thin, --cache, --vdo).
 Use inferred types with care because it can lead to unexpected results.
 .ad b
 .HP
@@ -1567,38 +1674,6 @@ For example, LVM_VG_NAME can generally be substituted for a required VG paramete
 .SH ADVANCED USAGE
 Alternate command forms, advanced command usage, and listing of all valid syntax for completeness.
 .P
-Convert LV to type mirror (also see type raid1), 
-.br
-(also see lvconvert --mirrors).
-.br
-.P
-\fBlvconvert\fP \fB--type\fP \fBmirror\fP \fILV\fP
-.br
-.RS 4
-.ad l
-[ \fB-m\fP|\fB--mirrors\fP [\fB+\fP|\fB-\fP]\fINumber\fP ]
-.ad b
-.br
-.ad l
-[ \fB-R\fP|\fB--regionsize\fP \fISize\fP[m|UNIT] ]
-.ad b
-.br
-.ad l
-[ \fB-i\fP|\fB--interval\fP \fINumber\fP ]
-.ad b
-.br
-.ad l
-[    \fB--mirrorlog\fP \fBcore\fP|\fBdisk\fP ]
-.ad b
-.br
-[ COMMON_OPTIONS ]
-.RE
-.br
-.RS 4
-[ \fIPV\fP ... ]
-.RE
--
-
 Change the region size of an LV.
 .br
 .P
@@ -1673,10 +1748,10 @@ Convert LV to a thin LV, using the original LV as an external origin
 .br
 -
 
-Convert LV to type cache (infers --type cache).
+Attach a cache pool to an LV (infers --type cache).
 .br
 .P
-\fBlvconvert\fP \fB-H\fP|\fB--cache\fP \fB--cachepool\fP \fILV\fP \fILV\fP\fI_linear_striped_thinpool_raid\fP
+\fBlvconvert\fP \fB-H\fP|\fB--cache\fP \fB--cachepool\fP \fILV\fP \fILV\fP\fI_linear_striped_thinpool_vdo_vdopool_vdopooldata_raid\fP
 .br
 .RS 4
 .ad l
@@ -1732,6 +1807,45 @@ Convert LV to type cache (infers --type cache).
 .br
 -
 
+Attach a cache to an LV, converts the LV to type cache.
+.br
+.P
+\fBlvconvert\fP \fB-H\fP|\fB--cache\fP \fB--cachevol\fP \fILV\fP \fILV\fP\fI_linear_striped_thinpool_raid\fP
+.br
+.RS 4
+.ad l
+[ \fB-Z\fP|\fB--zero\fP \fBy\fP|\fBn\fP ]
+.ad b
+.br
+.ad l
+[ \fB-c\fP|\fB--chunksize\fP \fISize\fP[k|UNIT] ]
+.ad b
+.br
+.ad l
+[    \fB--cachemetadataformat\fP \fBauto\fP|\fB1\fP|\fB2\fP ]
+.ad b
+.br
+.ad l
+[    \fB--cachemode\fP \fBwritethrough\fP|\fBwriteback\fP|\fBpassthrough\fP ]
+.ad b
+.br
+.ad l
+[    \fB--cachepolicy\fP \fIString\fP ]
+.ad b
+.br
+.ad l
+[    \fB--cachesettings\fP \fIString\fP ]
+.ad b
+.br
+.ad l
+[    \fB--poolmetadatasize\fP \fISize\fP[m|UNIT] ]
+.ad b
+.br
+[ COMMON_OPTIONS ]
+.RE
+.br
+-
+
 Convert LV to type vdopool.
 .br
 .P
@@ -1763,10 +1877,10 @@ Convert LV to type vdopool.
 .br
 -
 
-Separate and delete the cache pool from a cache LV.
+Detach and delete a cache from an LV.
 .br
 .P
-\fBlvconvert\fP \fB--uncache\fP \fILV\fP\fI_thinpool_cache\fP
+\fBlvconvert\fP \fB--uncache\fP \fILV\fP\fI_thinpool_cache_vdopool_writecache\fP
 .br
 .RS 4
 [ COMMON_OPTIONS ]

@@ -42,6 +42,7 @@
 #include "lib/commands/toolcontext.h"
 #include "toollib.h"
 #include "lib/notify/lvmnotify.h"
+#include "lib/label/hints.h"
 
 #include <ctype.h>
 #include <sys/types.h>
@@ -133,6 +134,10 @@ struct arg_value_group_list {
 #define GET_VGNAME_FROM_OPTIONS  0x00001000
 /* The data read from disk by label scan can be used for vg_read. */
 #define CAN_USE_ONE_SCAN	 0x00002000
+/* Command can use hints file */
+#define ALLOW_HINTS		 0x00004000
+/* Command can access exported vg. */
+#define ALLOW_EXPORTED           0x00008000
 
 
 void usage(const char *name);
@@ -179,6 +184,7 @@ int syncaction_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_v
 int reportformat_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_values *av);
 int configreport_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_values *av);
 int configtype_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_values *av);
+int repairtype_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_values *av);
 
 /* we use the enums to access the switches */
 unsigned arg_count(const struct cmd_context *cmd, int a);
@@ -247,12 +253,14 @@ int lvconvert_combine_split_snapshot_cmd(struct cmd_context *cmd, int argc, char
 int lvconvert_start_poll_cmd(struct cmd_context *cmd, int argc, char **argv);
 
 int lvconvert_to_pool_cmd(struct cmd_context *cmd, int argc, char **argv);
-int lvconvert_to_cache_vol_cmd(struct cmd_context *cmd, int argc, char **argv);
+int lvconvert_to_cache_with_cachevol_cmd(struct cmd_context *cmd, int argc, char **argv);
+int lvconvert_to_cache_with_cachepool_cmd(struct cmd_context *cmd, int argc, char **argv);
+int lvconvert_to_writecache_cmd(struct cmd_context *cmd, int argc, char **argv);
 int lvconvert_to_thin_with_external_cmd(struct cmd_context *cmd, int argc, char **argv);
 int lvconvert_swap_pool_metadata_cmd(struct cmd_context *cmd, int argc, char **argv);
 int lvconvert_to_pool_or_swap_metadata_cmd(struct cmd_context *cmd, int argc, char **argv);
 int lvconvert_merge_thin_cmd(struct cmd_context *cmd, int argc, char **argv);
-int lvconvert_split_cachepool_cmd(struct cmd_context *cmd, int argc, char **argv);
+int lvconvert_split_cache_cmd(struct cmd_context *cmd, int argc, char **argv);
 
 int lvconvert_raid_types_cmd(struct cmd_context * cmd, int argc, char **argv);
 int lvconvert_split_mirror_images_cmd(struct cmd_context * cmd, int argc, char **argv);

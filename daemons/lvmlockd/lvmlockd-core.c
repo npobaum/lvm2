@@ -8,9 +8,6 @@
  * of the GNU Lesser General Public License v.2.1.
  */
 
-#define _XOPEN_SOURCE 500  /* pthread */
-#define _ISOC99_SOURCE
-
 #include "tools/tool.h"
 
 #include "libdaemon/client/daemon-io.h"
@@ -408,12 +405,11 @@ struct lockspace *alloc_lockspace(void)
 {
 	struct lockspace *ls;
 
-	if (!(ls = malloc(sizeof(struct lockspace)))) {
+	if (!(ls = zalloc(sizeof(struct lockspace)))) {
 		log_error("out of memory for lockspace");
 		return NULL;
 	}
 
-	memset(ls, 0, sizeof(struct lockspace));
 	INIT_LIST_HEAD(&ls->actions);
 	INIT_LIST_HEAD(&ls->resources);
 	pthread_mutex_init(&ls->mutex, NULL);
@@ -506,6 +502,10 @@ static struct lock *alloc_lock(void)
 
 static void free_action(struct action *act)
 {
+	if (act->path) {
+		free(act->path);
+		act->path = NULL;
+	}
 	pthread_mutex_lock(&unused_struct_mutex);
 	if (unused_action_count >= MAX_UNUSED_ACTION) {
 		free(act);
@@ -729,6 +729,8 @@ static const char *op_str(int x)
 		return "rename_final";
 	case LD_OP_RUNNING_LM:
 		return "running_lm";
+	case LD_OP_QUERY_LOCK:
+		return "query_lock";
 	case LD_OP_FIND_FREE_LOCK:
 		return "find_free_lock";
 	case LD_OP_KILL_VG:
@@ -741,6 +743,8 @@ static const char *op_str(int x)
 		return "dump_info";
 	case LD_OP_BUSY:
 		return "busy";
+	case LD_OP_REFRESH_LV:
+		return "refresh_lv";
 	default:
 		return "op_unknown";
 	};
@@ -928,12 +932,12 @@ static void lm_rem_resource(struct lockspace *ls, struct resource *r)
 		lm_rem_resource_sanlock(ls, r);
 }
 
-static int lm_find_free_lock(struct lockspace *ls, uint64_t *free_offset)
+static int lm_find_free_lock(struct lockspace *ls, uint64_t *free_offset, int *sector_size, int *align_size)
 {
 	if (ls->lm_type == LD_LM_DLM)
 		return 0;
 	else if (ls->lm_type == LD_LM_SANLOCK)
-		return lm_find_free_lock_sanlock(ls, free_offset);
+		return lm_find_free_lock_sanlock(ls, free_offset, sector_size, align_size);
 	return -1;
 }
 
@@ -1818,9 +1822,9 @@ static void res_process(struct lockspace *ls, struct resource *r,
 			add_client_result(act);
 		} else {
 			/* persistent lock is sh, transient request is ex */
-			/* FIXME: can we remove this case? do a convert here? */
 			log_debug("res_process %s existing persistent lock new transient", r->name);
 			r->last_client_id = act->client_id;
+			act->flags |= LD_AF_SH_EXISTS;
 			act->result = -EEXIST;
 			list_del(&act->list);
 			add_client_result(act);
@@ -2200,6 +2204,7 @@ static int process_op_during_kill(struct action *act)
 	case LD_OP_UPDATE:
 	case LD_OP_RENAME_BEFORE:
 	case LD_OP_RENAME_FINAL:
+	case LD_OP_QUERY_LOCK:
 	case LD_OP_FIND_FREE_LOCK:
 		return 0;
 	};
@@ -2225,7 +2230,7 @@ static void *lockspace_thread_main(void *arg_in)
 	struct action *act_op_free = NULL;
 	struct list_head tmp_act;
 	struct list_head act_close;
-	char tmp_name[MAX_NAME+1];
+	char tmp_name[MAX_NAME+5];
 	int free_vg = 0;
 	int drop_vg = 0;
 	int error = 0;
@@ -2424,13 +2429,31 @@ static void *lockspace_thread_main(void *arg_in)
 				break;
 			}
 
+			if (act->op == LD_OP_QUERY_LOCK) {
+				r = find_resource_act(ls, act, 0);
+				if (!r)
+					act->result = -ENOENT;
+				else {
+					act->result = 0;
+					act->mode = r->mode;
+				}
+				list_del(&act->list);
+				add_client_result(act);
+				continue;
+			}
+
 			if (act->op == LD_OP_FIND_FREE_LOCK && act->rt == LD_RT_VG) {
 				uint64_t free_offset = 0;
+				int sector_size = 0;
+				int align_size = 0;
+
 				log_debug("S %s find free lock", ls->name);
-				rv = lm_find_free_lock(ls, &free_offset);
-				log_debug("S %s find free lock %d offset %llu",
-					  ls->name, rv, (unsigned long long)free_offset);
+				rv = lm_find_free_lock(ls, &free_offset, &sector_size, &align_size);
+				log_debug("S %s find free lock %d offset %llu sector_size %d align_size %d",
+					  ls->name, rv, (unsigned long long)free_offset, sector_size, align_size);
 				ls->free_lock_offset = free_offset;
+				ls->free_lock_sector_size = sector_size;
+				ls->free_lock_align_size = align_size;
 				list_del(&act->list);
 				act->result = rv;
 				add_client_result(act);
@@ -2601,8 +2624,10 @@ out_act:
 	 * blank or fill it with garbage, but instead set it to REM:<name>
 	 * to make it easier to follow progress of freeing is via log_debug.
 	 */
-	dm_strncpy(tmp_name, ls->name, sizeof(tmp_name));
-	snprintf(ls->name, sizeof(ls->name), "REM:%s", tmp_name);
+	memset(tmp_name, 0, sizeof(tmp_name));
+	memcpy(tmp_name, "REM:", 4);
+	strncpy(tmp_name+4, ls->name, sizeof(tmp_name)-4);
+	memcpy(ls->name, tmp_name, sizeof(ls->name));
 	pthread_mutex_unlock(&lockspaces_mutex);
 
 	/* worker_thread will join this thread, and free the ls */
@@ -2742,6 +2767,9 @@ static int add_lockspace_thread(const char *ls_name,
 		if (ls2->thread_stop) {
 			log_debug("add_lockspace_thread %s exists and stopping", ls->name);
 			rv = -EAGAIN;
+		} else if (!ls2->create_fail && !ls2->create_done) {
+			log_debug("add_lockspace_thread %s exists and starting", ls->name);
+			rv = -ESTARTING;
 		} else {
 			log_debug("add_lockspace_thread %s exists", ls->name);
 			rv = -EEXIST;
@@ -2983,7 +3011,7 @@ static int count_lockspace_starting(uint32_t client_id)
 
 	pthread_mutex_lock(&lockspaces_mutex);
 	list_for_each_entry(ls, &lockspaces, list) {
-		if (ls->start_client_id != client_id)
+		if (client_id && (ls->start_client_id != client_id))
 			continue;
 
 		if (!ls->create_done && !ls->create_fail) {
@@ -3236,6 +3264,8 @@ static int work_init_lv(struct action *act)
 	char vg_args[MAX_ARGS+1];
 	char lv_args[MAX_ARGS+1];
 	uint64_t free_offset = 0;
+	int sector_size = 0;
+	int align_size = 0;
 	int lm_type = 0;
 	int rv = 0;
 
@@ -3251,6 +3281,8 @@ static int work_init_lv(struct action *act)
 		lm_type = ls->lm_type;
 		memcpy(vg_args, ls->vg_args, MAX_ARGS);
 		free_offset = ls->free_lock_offset;
+		sector_size = ls->free_lock_sector_size;
+		align_size = ls->free_lock_align_size;
 	}
 	pthread_mutex_unlock(&lockspaces_mutex);
 
@@ -3267,7 +3299,7 @@ static int work_init_lv(struct action *act)
 
 	if (lm_type == LD_LM_SANLOCK) {
 		rv = lm_init_lv_sanlock(ls_name, act->vg_name, act->lv_uuid,
-					vg_args, lv_args, free_offset);
+					vg_args, lv_args, sector_size, align_size, free_offset);
 
 		memcpy(act->lv_args, lv_args, MAX_ARGS);
 		return rv;
@@ -3384,7 +3416,7 @@ static void *worker_thread_main(void *arg_in)
 			add_client_result(act);
 
 		} else if (act->op == LD_OP_START_WAIT) {
-			act->result = count_lockspace_starting(act->client_id);
+			act->result = count_lockspace_starting(0);
 			if (!act->result)
 				add_client_result(act);
 			else
@@ -3395,6 +3427,15 @@ static void *worker_thread_main(void *arg_in)
 			if (!act->result || !(act->flags & LD_AF_WAIT))
 				add_client_result(act);
 			else
+				list_add(&act->list, &delayed_list);
+
+		} else if (act->op == LD_OP_REFRESH_LV) {
+			log_debug("work refresh_lv %s %s", act->lv_uuid, act->path);
+			rv = lm_refresh_lv_start_dlm(act);
+			if (rv < 0) {
+				act->result = rv;
+				add_client_result(act);
+			} else
 				list_add(&act->list, &delayed_list);
 
 		} else {
@@ -3418,7 +3459,7 @@ static void *worker_thread_main(void *arg_in)
 		list_for_each_entry_safe(act, safe, &delayed_list, list) {
 			if (act->op == LD_OP_START_WAIT) {
 				log_debug("work delayed start_wait for client %u", act->client_id);
-				act->result = count_lockspace_starting(act->client_id);
+				act->result = count_lockspace_starting(0);
 				if (!act->result) {
 					list_del(&act->list);
 					add_client_result(act);
@@ -3430,6 +3471,19 @@ static void *worker_thread_main(void *arg_in)
 				if (!act->result) {
 					list_del(&act->list);
 					act->result = 0;
+					add_client_result(act);
+				}
+
+			} else if (act->op == LD_OP_REFRESH_LV) {
+				log_debug("work delayed refresh_lv");
+				rv = lm_refresh_lv_check_dlm(act);
+				if (!rv) {
+					list_del(&act->list);
+					act->result = 0;
+					add_client_result(act);
+				} else if ((rv < 0) && (rv != -EAGAIN)) {
+					list_del(&act->list);
+					act->result = rv;
 					add_client_result(act);
 				}
 			}
@@ -3637,6 +3691,9 @@ static int client_send_result(struct client *cl, struct action *act)
 	if ((act->flags & LD_AF_WARN_GL_REMOVED) || gl_vg_removed)
 		strcat(result_flags, "WARN_GL_REMOVED,");
 	
+	if (act->flags & LD_AF_SH_EXISTS)
+		strcat(result_flags, "SH_EXISTS,");
+
 	if (act->op == LD_OP_INIT) {
 		/*
 		 * init is a special case where lock args need
@@ -3663,6 +3720,20 @@ static int client_send_result(struct client *cl, struct action *act)
 					  "vg_lock_args = %s", vg_args,
 					  "lv_lock_args = %s", lv_args,
 					  "result_flags = %s", result_flags[0] ? result_flags : "none",
+					  NULL);
+
+	} else if (act->op == LD_OP_QUERY_LOCK) {
+
+		log_debug("send %s[%d] cl %u %s %s rv %d mode %d",
+			  cl->name[0] ? cl->name : "client", cl->pid, cl->id,
+			  op_str(act->op), rt_str(act->rt),
+			  act->result, act->mode);
+
+		res = daemon_reply_simple("OK",
+					  "op = " FMTd64, (int64_t)act->op,
+					  "op_result = " FMTd64, (int64_t) act->result,
+					  "lock_type = %s", lm_str(act->lm_type),
+					  "mode = %s", mode_str(act->mode),
 					  NULL);
 
 	} else if (act->op == LD_OP_DUMP_LOG || act->op == LD_OP_DUMP_INFO) {
@@ -3995,6 +4066,16 @@ static int str_to_op_rt(const char *req_name, int *op, int *rt)
 		*rt = 0;
 		return 0;
 	}
+	if (!strcmp(req_name, "query_lock_vg")) {
+		*op = LD_OP_QUERY_LOCK;
+		*rt = LD_RT_VG;
+		return 0;
+	}
+	if (!strcmp(req_name, "query_lock_lv")) {
+		*op = LD_OP_QUERY_LOCK;
+		*rt = LD_RT_LV;
+		return 0;
+	}
 	if (!strcmp(req_name, "find_free_lock")) {
 		*op = LD_OP_FIND_FREE_LOCK;
 		*rt = LD_RT_VG;
@@ -4008,6 +4089,11 @@ static int str_to_op_rt(const char *req_name, int *op, int *rt)
 	if (!strcmp(req_name, "drop_vg")) {
 		*op = LD_OP_DROP_VG;
 		*rt = LD_RT_VG;
+		return 0;
+	}
+	if (!strcmp(req_name, "refresh_lv")) {
+		*op = LD_OP_REFRESH_LV;
+		*rt = 0;
 		return 0;
 	}
 out:
@@ -4371,6 +4457,7 @@ static void client_recv_action(struct client *cl)
 	const char *vg_name;
 	const char *vg_uuid;
 	const char *vg_sysid;
+	const char *path;
 	const char *str;
 	int64_t val;
 	uint32_t opts = 0;
@@ -4457,6 +4544,7 @@ static void client_recv_action(struct client *cl)
 	opts = str_to_opts(str);
 	str = daemon_request_str(req, "vg_lock_type", NULL);
 	lm = str_to_lm(str);
+	path = daemon_request_str(req, "path", NULL);
 
 	if (cl_pid && cl_pid != cl->pid)
 		log_error("client recv bad message pid %d client %d", cl_pid, cl->pid);
@@ -4488,6 +4576,9 @@ static void client_recv_action(struct client *cl)
 	act->mode = mode;
 	act->flags = opts;
 	act->lm_type = lm;
+
+	if (path)
+		act->path = strdup(path);
 
 	if (vg_name && strcmp(vg_name, "none"))
 		strncpy(act->vg_name, vg_name, MAX_NAME);
@@ -4565,6 +4656,7 @@ static void client_recv_action(struct client *cl)
 	case LD_OP_STOP_ALL:
 	case LD_OP_RENAME_FINAL:
 	case LD_OP_RUNNING_LM:
+	case LD_OP_REFRESH_LV:
 		add_work_action(act);
 		rv = 0;
 		break;
@@ -4574,6 +4666,7 @@ static void client_recv_action(struct client *cl)
 	case LD_OP_DISABLE:
 	case LD_OP_FREE:
 	case LD_OP_RENAME_BEFORE:
+	case LD_OP_QUERY_LOCK:
 	case LD_OP_FIND_FREE_LOCK:
 	case LD_OP_KILL_VG:
 	case LD_OP_DROP_VG:
