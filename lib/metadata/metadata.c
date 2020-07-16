@@ -374,7 +374,7 @@ int get_pv_from_vg_by_id(const struct format_type *fmt, const char *vg_name,
 		}
 	}
 out:
-	free_vg(vg);
+	release_vg(vg);
 	return r;
 }
 
@@ -866,6 +866,12 @@ static struct volume_group *_vg_make_handle(struct cmd_context *cmd,
 					    struct volume_group *vg,
 					    uint32_t failure)
 {
+	/* Never return a cached VG structure for a failure */
+	if (vg && vg->vginfo && failure != SUCCESS) {
+		release_vg(vg);
+		vg = NULL;
+	}
+
 	if (!vg && !(vg = alloc_vg("vg_make_handle", cmd, NULL)))
 		return_NULL;
 
@@ -928,7 +934,7 @@ struct volume_group *vg_create(struct cmd_context *cmd, const char *vg_name)
 	/* is this vg name already in use ? */
 	if ((vg = vg_read_internal(cmd, vg_name, NULL, 1, &consistent))) {
 		log_error("A volume group called '%s' already exists.", vg_name);
-		unlock_and_free_vg(cmd, vg, vg_name);
+		unlock_and_release_vg(cmd, vg, vg_name);
 		return _vg_make_handle(cmd, NULL, FAILED_EXIST);
 	}
 
@@ -980,7 +986,7 @@ struct volume_group *vg_create(struct cmd_context *cmd, const char *vg_name)
 	return _vg_make_handle(cmd, vg, SUCCESS);
 
 bad:
-	unlock_and_free_vg(cmd, vg, vg_name);
+	unlock_and_release_vg(cmd, vg, vg_name);
 	/* FIXME: use _vg_make_handle() w/proper error code */
 	return NULL;
 }
@@ -2101,8 +2107,17 @@ static int _lv_postorder(struct logical_volume *lv,
 			       void *data)
 {
 	int r;
+	int pool_locked = dm_pool_locked(lv->vg->vgmem);
+
+	if (pool_locked && !dm_pool_unlock(lv->vg->vgmem, 0))
+		return_0;
+
 	r = _lv_postorder_visit(lv, fn, data);
 	_lv_postorder_cleanup(lv, 0);
+
+	if (pool_locked && !dm_pool_lock(lv->vg->vgmem, 0))
+		return_0;
+
 	return r;
 }
 
@@ -2116,6 +2131,10 @@ static int _lv_postorder_vg(struct volume_group *vg,
 {
 	struct lv_list *lvl;
 	int r = 1;
+	int pool_locked = dm_pool_locked(vg->vgmem);
+
+	if (pool_locked && !dm_pool_unlock(vg->vgmem, 0))
+		return_0;
 
 	dm_list_iterate_items(lvl, &vg->lvs)
 		if (!_lv_postorder_visit(lvl->lv, fn, data)) {
@@ -2125,6 +2144,9 @@ static int _lv_postorder_vg(struct volume_group *vg,
 
 	dm_list_iterate_items(lvl, &vg->lvs)
 		_lv_postorder_cleanup(lvl->lv, 0);
+
+	if (pool_locked && !dm_pool_lock(vg->vgmem, 0))
+		return_0;
 
 	return r;
 }
@@ -2730,7 +2752,7 @@ static struct volume_group *_vg_read_orphans(struct cmd_context *cmd,
 	return vg;
 bad:
 	free_pv_fid(pv);
-	free_vg(vg);
+	release_vg(vg);
 	return NULL;
 }
 
@@ -2766,6 +2788,14 @@ static void _free_pv_list(struct dm_list *all_pvs)
 
 	dm_list_iterate_items(pvl, all_pvs)
 		pvl->pv->fid->fmt->ops->destroy_instance(pvl->pv->fid);
+}
+
+static void _destroy_fid(struct format_instance **fid)
+{
+	if (*fid) {
+		(*fid)->fmt->ops->destroy_instance(*fid);
+		*fid = NULL;
+	}
 }
 
 int vg_missing_pv_count(const struct volume_group *vg)
@@ -2826,7 +2856,7 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 				     int warnings, 
 				     int *consistent, unsigned precommitted)
 {
-	struct format_instance *fid;
+	struct format_instance *fid = NULL;
 	struct format_instance_ctx fic;
 	const struct format_type *fmt;
 	struct volume_group *vg, *correct_vg = NULL;
@@ -2835,7 +2865,6 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 	int inconsistent = 0;
 	int inconsistent_vgid = 0;
 	int inconsistent_pvs = 0;
-	int inconsistent_seqno = 0;
 	int inconsistent_mdas = 0;
 	int inconsistent_mda_count = 0;
 	unsigned use_precommitted = precommitted;
@@ -2862,15 +2891,11 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 	 * the missing PV logic below.
 	 */
 	if ((correct_vg = lvmcache_get_vg(vgid, precommitted)) &&
-	    (use_precommitted || !*consistent || !(correct_vg->status & INCONSISTENT_VG))) {
-		if (!(correct_vg->status & INCONSISTENT_VG))
-			*consistent = 1;
-		else	/* Inconsistent but we can't repair it */
-			correct_vg->status &= ~INCONSISTENT_VG;
-
+	    (use_precommitted || !*consistent)) {
+		*consistent = 1;
 		return correct_vg;
 	} else {
-		free_vg(correct_vg);
+		release_vg(correct_vg);
 		correct_vg = NULL;
 	}
 
@@ -2905,18 +2930,26 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 	}
 
 	/* Store pvids for later so we can check if any are missing */
-	if (!(pvids = lvmcache_get_pvids(cmd, vgname, vgid)))
+	if (!(pvids = lvmcache_get_pvids(cmd, vgname, vgid))) {
+		_destroy_fid(&fid);
 		return_NULL;
+	}
 
+	/*
+	 * We use the fid globally here so prevent the release_vg
+	 * call to destroy the fid - we may want to reuse it!
+	 */
+	fid->ref_count++;
 	/* Ensure contents of all metadata areas match - else do recovery */
 	inconsistent_mda_count=0;
 	dm_list_iterate_items(mda, &fid->metadata_areas_in_use) {
+
 		if ((use_precommitted &&
 		     !(vg = mda->ops->vg_read_precommit(fid, vgname, mda))) ||
 		    (!use_precommitted &&
 		     !(vg = mda->ops->vg_read(fid, vgname, mda)))) {
 			inconsistent = 1;
-			free_vg(vg);
+			release_vg(vg);
 			continue;
 		}
 
@@ -2931,12 +2964,11 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 				log_very_verbose("Not repairing VG %s metadata seqno (%d != %d) "
 						  "as global/metadata_read_only is set.",
 						  vgname, vg->seqno, correct_vg->seqno);
-			else {
+			else
 				inconsistent = 1;
-				inconsistent_seqno = 1;
-			}
+
 			if (vg->seqno > correct_vg->seqno) {
-				free_vg(correct_vg);
+				release_vg(correct_vg);
 				correct_vg = vg;
 			} else {
 				mda->status |= MDA_INCONSISTENT;
@@ -2945,8 +2977,9 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 		}
 
 		if (vg != correct_vg)
-			free_vg(vg);
+			release_vg(vg);
 	}
+	fid->ref_count--;
 
 	/* Ensure every PV in the VG was in the cache */
 	if (correct_vg) {
@@ -2978,8 +3011,10 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 				}
 				if (dm_list_size(&info->mdas)) {
 					if (!fid_add_mdas(fid, &info->mdas,
-							  info->dev->pvid, ID_LEN))
+							  info->dev->pvid, ID_LEN)) {
+						release_vg(correct_vg);
 						return_NULL;
+					}
 					 
 					log_debug("Empty mda found for VG %s.", vgname);
 
@@ -3008,11 +3043,14 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 				 */
 				lvmcache_update_vg(correct_vg, correct_vg->status & PRECOMMITTED);
 
-				if (!(pvids = lvmcache_get_pvids(cmd, vgname, vgid)))
+				if (!(pvids = lvmcache_get_pvids(cmd, vgname, vgid))) {
+					release_vg(correct_vg);
 					return_NULL;
+				}
 			}
 		}
 
+		fid->ref_count++;
 		if (dm_list_size(&correct_vg->pvs) !=
 		    dm_list_size(pvids) + vg_missing_pv_count(correct_vg)) {
 			log_debug("Cached VG %s had incorrect PV list",
@@ -3021,7 +3059,7 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 			if (critical_section())
 				inconsistent = 1;
 			else {
-				free_vg(correct_vg);
+				release_vg(correct_vg);
 				correct_vg = NULL;
 			}
 		} else dm_list_iterate_items(pvl, &correct_vg->pvs) {
@@ -3030,22 +3068,30 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 			if (!str_list_match_item(pvids, pvl->pv->dev->pvid)) {
 				log_debug("Cached VG %s had incorrect PV list",
 					  vgname);
-				free_vg(correct_vg);
+				release_vg(correct_vg);
 				correct_vg = NULL;
 				break;
 			}
 		}
 
 		if (correct_vg && inconsistent_mdas) {
-			free_vg(correct_vg);
+			release_vg(correct_vg);
 			correct_vg = NULL;
 		}
+		fid->ref_count--;
 	}
 
 	dm_list_init(&all_pvs);
 
 	/* Failed to find VG where we expected it - full scan and retry */
 	if (!correct_vg) {
+		/*
+		 * Free outstanding format instance that remained unassigned
+		 * from previous step where we tried to get the "correct_vg",
+		 * but we failed to do so (so there's a dangling fid now).
+		 */
+		_destroy_fid(&fid);
+
 		inconsistent = 0;
 
 		/* Independent MDAs aren't supported under low memory */
@@ -3067,6 +3113,11 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 			return NULL;
 		}
 
+		/*
+		 * We use the fid globally here so prevent the release_vg
+		 * call to destroy the fid - we may want to reuse it!
+		*/
+		fid->ref_count++;
 		/* Ensure contents of all metadata areas match - else recover */
 		inconsistent_mda_count=0;
 		dm_list_iterate_items(mda, &fid->metadata_areas_in_use) {
@@ -3082,7 +3133,8 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 				correct_vg = vg;
 				if (!_update_pv_list(cmd->mem, &all_pvs, correct_vg)) {
 					_free_pv_list(&all_pvs);
-					free_vg(vg);
+					fid->ref_count--;
+					release_vg(vg);
 					return_NULL;
 				}
 				continue;
@@ -3100,18 +3152,18 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 					log_very_verbose("Not repairing VG %s metadata seqno (%d != %d) "
 							  "as global/metadata_read_only is set.",
 							  vgname, vg->seqno, correct_vg->seqno);
-				else {
+				else
 					inconsistent = 1;
-					inconsistent_seqno = 1;
-				}
+
 				if (!_update_pv_list(cmd->mem, &all_pvs, vg)) {
 					_free_pv_list(&all_pvs);
-					free_vg(vg);
-					free_vg(correct_vg);
+					fid->ref_count--;
+					release_vg(vg);
+					release_vg(correct_vg);
 					return_NULL;
 				}
 				if (vg->seqno > correct_vg->seqno) {
-					free_vg(correct_vg);
+					release_vg(correct_vg);
 					correct_vg = vg;
 				} else {
 					mda->status |= MDA_INCONSISTENT;
@@ -3120,12 +3172,14 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 			}
 
 			if (vg != correct_vg)
-				free_vg(vg);
+				release_vg(vg);
 		}
+		fid->ref_count--;
 
 		/* Give up looking */
 		if (!correct_vg) {
 			_free_pv_list(&all_pvs);
+			_destroy_fid(&fid);
 			return_NULL;
 		}
 	}
@@ -3134,8 +3188,7 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 	 * If there is no precommitted metadata, committed metadata
 	 * is read and stored in the cache even if use_precommitted is set
 	 */
-	lvmcache_update_vg(correct_vg, correct_vg->status & PRECOMMITTED &
-			   (inconsistent ? INCONSISTENT_VG : 0));
+	lvmcache_update_vg(correct_vg, (correct_vg->status & PRECOMMITTED));
 
 	if (inconsistent) {
 		/* FIXME Test should be if we're *using* precommitted metadata not if we were searching for it */
@@ -3167,7 +3220,7 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 				return correct_vg;
 			}
 			_free_pv_list(&all_pvs);
-			free_vg(correct_vg);
+			release_vg(correct_vg);
 			return NULL;
 		}
 
@@ -3199,7 +3252,7 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 		if (!vg_write(correct_vg)) {
 			log_error("Automatic metadata correction failed");
 			_free_pv_list(&all_pvs);
-			free_vg(correct_vg);
+			release_vg(correct_vg);
 			cmd->handles_missing_pvs = saved_handles_missing_pvs;
 			return NULL;
 		}
@@ -3208,7 +3261,7 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 		if (!vg_commit(correct_vg)) {
 			log_error("Automatic metadata correction commit "
 				  "failed");
-			free_vg(correct_vg);
+			release_vg(correct_vg);
 			return NULL;
 		}
 
@@ -3219,14 +3272,14 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 			}
 			if (!id_write_format(&pvl->pv->id, uuid, sizeof(uuid))) {
 				_free_pv_list(&all_pvs);
-				free_vg(correct_vg);
+				release_vg(correct_vg);
 				return_NULL;
 			}
 			log_error("Removing PV %s (%s) that no longer belongs to VG %s",
 				  pv_dev_name(pvl->pv), uuid, correct_vg->name);
 			if (!pv_write_orphan(cmd, pvl->pv)) {
 				_free_pv_list(&all_pvs);
-				free_vg(correct_vg);
+				release_vg(correct_vg);
 				return_NULL;
 			}
 
@@ -3250,7 +3303,7 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 			  "volume group %s", correct_vg->name);
 		log_error("Please restore the metadata by running "
 			  "vgcfgrestore.");
-		free_vg(correct_vg);
+		release_vg(correct_vg);
 		return NULL;
 	}
 
@@ -3270,7 +3323,7 @@ struct volume_group *vg_read_internal(struct cmd_context *cmd, const char *vgnam
 	if (!check_pv_segments(vg)) {
 		log_error(INTERNAL_ERROR "PV segments corrupted in %s.",
 			  vg->name);
-		free_vg(vg);
+		release_vg(vg);
 		return NULL;
 	}
 
@@ -3278,7 +3331,7 @@ struct volume_group *vg_read_internal(struct cmd_context *cmd, const char *vgnam
 		if (!check_lv_segments(lvl->lv, 0)) {
 			log_error(INTERNAL_ERROR "LV segments corrupted in %s.",
 				  lvl->lv->name);
-			free_vg(vg);
+			release_vg(vg);
 			return NULL;
 		}
 	}
@@ -3290,7 +3343,7 @@ struct volume_group *vg_read_internal(struct cmd_context *cmd, const char *vgnam
 		if (!check_lv_segments(lvl->lv, 1)) {
 			log_error(INTERNAL_ERROR "LV segments corrupted in %s.",
 				  lvl->lv->name);
-			free_vg(vg);
+			release_vg(vg);
 			return NULL;
 		}
 	}
@@ -3305,22 +3358,6 @@ void free_pv_fid(struct physical_volume *pv)
 
 	if (pv->fid)
 		pv->fid->fmt->ops->destroy_instance(pv->fid);
-}
-
-void free_vg(struct volume_group *vg)
-{
-	if (!vg)
-		return;
-
-	vg_set_fid(vg, NULL);
-
-	if (vg->cmd && vg->vgmem == vg->cmd->mem) {
-		log_error(INTERNAL_ERROR "global memory pool used for VG %s",
-			  vg->name);
-		return;
-	}
-
-	dm_pool_destroy(vg->vgmem);
 }
 
 /* This is only called by lv_from_lvid, which is only called from
@@ -3349,7 +3386,7 @@ static struct volume_group *_vg_read_by_vgid(struct cmd_context *cmd,
 					  "inconsistent", vg->name);
 			return vg;
 		}
-		free_vg(vg);
+		release_vg(vg);
 	}
 
 	/* Mustn't scan if memory locked: ensure cache gets pre-populated! */
@@ -3378,12 +3415,12 @@ static struct volume_group *_vg_read_by_vgid(struct cmd_context *cmd,
 			if (!consistent) {
 				log_error("Volume group %s metadata is "
 					  "inconsistent", vgname);
-				free_vg(vg);
+				release_vg(vg);
 				return NULL;
 			}
 			return vg;
 		}
-		free_vg(vg);
+		release_vg(vg);
 	}
 
 	return NULL;
@@ -3417,7 +3454,7 @@ struct logical_volume *lv_from_lvid(struct cmd_context *cmd, const char *lvid_s,
 
 	return lvl->lv;
 out:
-	free_vg(vg);
+	release_vg(vg);
 	return NULL;
 }
 
@@ -3624,12 +3661,12 @@ static int _get_pvs(struct cmd_context *cmd, int warnings, struct dm_list **pvsl
 			dm_list_iterate_items(pvl, &vg->pvs) {
 				if (!(pvl_copy = _copy_pvl(cmd->mem, pvl))) {
 					log_error("PV list allocation failed");
-					free_vg(vg);
+					release_vg(vg);
 					return 0;
 				}
 				dm_list_add(results, &pvl_copy->list);
 			}
-		free_vg(vg);
+		release_vg(vg);
 	}
 	init_pvmove(old_pvmove);
 
@@ -3846,7 +3883,7 @@ static struct volume_group *_recover_vg(struct cmd_context *cmd,
 		return_NULL;
 
 	if (!consistent) {
-		free_vg(vg);
+		release_vg(vg);
 		return_NULL;
 	}
 
@@ -3918,7 +3955,7 @@ static struct volume_group *_vg_lock_and_read(struct cmd_context *cmd, const cha
 
 	/* consistent == 0 when VG is not found, but failed == FAILED_NOTFOUND */
 	if (!consistent && !failure) {
-		free_vg(vg);
+		release_vg(vg);
 		if (!(vg = _recover_vg(cmd, vg_name, vgid))) {
 			log_error("Recovery of volume group \"%s\" failed.",
 				  vg_name);

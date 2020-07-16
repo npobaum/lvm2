@@ -20,6 +20,7 @@
 struct lvconvert_params {
 	int snapshot;
 	int merge;
+	int merge_mirror;
 	int zero;
 
 	const char *origin;
@@ -39,7 +40,7 @@ struct lvconvert_params {
 	uint32_t stripes;
 	uint32_t stripe_size;
 
-	struct segment_type *segtype;
+	const struct segment_type *segtype;
 
 	alloc_policy_t alloc;
 
@@ -107,7 +108,7 @@ static int _lvconvert_name_params(struct lvconvert_params *lp,
 	if ((ptr = strrchr(lp->lv_name_full, '/')))
 		lp->lv_name = ptr + 1;
 
-	if (!apply_lvname_restrictions(lp->lv_name))
+	if (!lp->merge_mirror && !apply_lvname_restrictions(lp->lv_name))
 		return_0;
 
 	if (*pargc && lp->snapshot) {
@@ -158,13 +159,15 @@ static int _read_params(struct lvconvert_params *lp, struct cmd_context *cmd,
 	 * discarding it.
 	 */
 	if (arg_count(cmd, splitmirrors_ARG)) {
-		if (!arg_count(cmd, name_ARG)) {
+		if (!arg_count(cmd, name_ARG) &&
+		    !arg_count(cmd, trackchanges_ARG)) {
 			log_error("Please name the new logical volume using '--name'");
 			return 0;
 		}
 
 		lp->lv_split_name = arg_value(cmd, name_ARG);
-		if (!apply_lvname_restrictions(lp->lv_split_name))
+		if (lp->lv_split_name &&
+		    !apply_lvname_restrictions(lp->lv_split_name))
 			return_0;
 
 		lp->keep_mimages = 1;
@@ -176,8 +179,12 @@ static int _read_params(struct lvconvert_params *lp, struct cmd_context *cmd,
 		return 0;
 	}
 
-	if (arg_count(cmd, merge_ARG))
-		lp->merge = 1;
+	if (arg_count(cmd, merge_ARG)) {
+		if ((argc == 1) && strstr(argv[0], "_rimage_"))
+			lp->merge_mirror = 1;
+		else
+			lp->merge = 1;
+	}
 
 	if (arg_count(cmd, mirrors_ARG)) {
 		/*
@@ -1146,6 +1153,11 @@ static int _lvconvert_mirrors_aux(struct cmd_context *cmd,
 
 		/* Reduce number of mirrors */
 		if (lp->keep_mimages) {
+			if (arg_count(cmd, trackchanges_ARG)) {
+				log_error("--trackchanges is not available "
+					  "to 'mirror' segment type");
+				return 0;
+			}
 			if (!lv_split_mirror_images(lv, lp->lv_split_name,
 						    nmc, operable_pvs))
 				return 0;
@@ -1332,6 +1344,12 @@ static int _lvconvert_mirrors(struct cmd_context *cmd,
 	uint32_t new_mimage_count;
 	uint32_t new_log_count;
 
+	if (lp->merge_mirror) {
+		log_error("Unable to merge mirror images"
+			  "of segment type 'mirror'");
+		return 0;
+	}
+
 	/* Adjust mimage and/or log count */
 	if (!_lvconvert_mirrors_parse_params(cmd, lv, lp,
 					     &old_mimage_count, &old_log_count,
@@ -1364,6 +1382,75 @@ static int _lvconvert_mirrors(struct cmd_context *cmd,
 
 	backup(lv->vg);
 	return 1;
+}
+
+static int is_valid_raid_conversion(const struct segment_type *from_segtype,
+				    const struct segment_type *to_segtype)
+{
+	if (from_segtype == to_segtype)
+		return 1;
+
+	if (!segtype_is_raid(from_segtype) && !segtype_is_raid(to_segtype))
+		return_0;  /* Not converting to or from RAID? */
+
+	return 0;
+}
+
+static int lvconvert_raid(struct logical_volume *lv, struct lvconvert_params *lp)
+{
+	int image_count;
+	struct cmd_context *cmd = lv->vg->cmd;
+	struct lv_segment *seg = first_seg(lv);
+
+	if (!arg_count(cmd, type_ARG))
+		lp->segtype = seg->segtype;
+
+	if (arg_count(cmd, mirrors_ARG) && !seg_is_mirrored(seg)) {
+		log_error("'--mirrors/-m' is not compatible with %s",
+			  seg->segtype->name);
+		return 0;
+	}
+
+	if (!is_valid_raid_conversion(seg->segtype, lp->segtype)) {
+		log_error("Unable to convert %s/%s from %s to %s",
+			  lv->vg->name, lv->name,
+			  seg->segtype->name, lp->segtype->name);
+		return 0;
+	}
+
+	/* Change number of RAID1 images */
+	if (arg_count(cmd, mirrors_ARG) || arg_count(cmd, splitmirrors_ARG)) {
+		image_count = lv_raid_image_count(lv);
+		if (lp->mirrors_sign == SIGN_PLUS)
+			image_count += lp->mirrors;
+		else if (lp->mirrors_sign == SIGN_MINUS)
+			image_count -= lp->mirrors;
+		else
+			image_count = lp->mirrors + 1;
+
+		if (image_count < 1) {
+			log_error("Unable to %s images by specified amount",
+				  arg_count(cmd, splitmirrors_ARG) ?
+				  "split" : "reduce");
+			return 0;
+		}
+	}
+
+	if (lp->merge_mirror)
+		return lv_raid_merge(lv);
+
+	if (arg_count(cmd, trackchanges_ARG))
+		return lv_raid_split_and_track(lv, lp->pvh);
+
+	if (arg_count(cmd, splitmirrors_ARG))
+		return lv_raid_split(lv, lp->lv_split_name,
+				     image_count, lp->pvh);
+
+	if (arg_count(cmd, mirrors_ARG))
+		return lv_raid_change_image_count(lv, image_count, lp->pvh);
+
+	log_error("Conversion operation not yet supported.");
+	return 0;
 }
 
 static int lvconvert_snapshot(struct cmd_context *cmd,
@@ -1580,6 +1667,25 @@ static int _lvconvert_single(struct cmd_context *cmd, struct logical_volume *lv,
 			stack;
 			return ECMD_FAILED;
 		}
+	} else if (segtype_is_raid(lp->segtype) ||
+		   (lv->status & RAID) || lp->merge_mirror) {
+		if (!archive(lv->vg)) {
+			stack;
+			return ECMD_FAILED;
+		}
+		if (!lvconvert_raid(lv, lp)) {
+			stack;
+			return ECMD_FAILED;
+		}
+
+		if (!(failed_pvs = _failed_pv_list(lv->vg))) {
+			stack;
+			return ECMD_FAILED;
+		}
+
+		/* If repairing and using policies, remove missing PVs from VG */
+		if (arg_count(cmd, repair_ARG) && arg_count(cmd, use_policies_ARG))
+			_remove_missing_empty_pv(lv->vg, failed_pvs);
 	} else if (arg_count(cmd, mirrors_ARG) ||
 		   arg_count(cmd, splitmirrors_ARG) ||
 		   (lv->status & MIRRORED)) {
@@ -1615,7 +1721,7 @@ static struct logical_volume *get_vg_lock_and_logical_volume(struct cmd_context 
 {
 	/*
 	 * Returns NULL if the requested LV doesn't exist;
-	 * otherwise the caller must free_vg(lv->vg)
+	 * otherwise the caller must release_vg(lv->vg)
 	 * - it is also up to the caller to unlock_vg() as needed
 	 */
 	struct volume_group *vg;
@@ -1623,13 +1729,13 @@ static struct logical_volume *get_vg_lock_and_logical_volume(struct cmd_context 
 
 	vg = _get_lvconvert_vg(cmd, vg_name, NULL);
 	if (vg_read_error(vg)) {
-		free_vg(vg);
+		release_vg(vg);
 		return_NULL;
 	}
 
 	if (!(lv = _get_lvconvert_lv(cmd, vg, lv_name, NULL, 0))) {
 		log_error("Can't find LV %s in VG %s", lv_name, vg_name);
-		unlock_and_free_vg(cmd, vg, vg_name);
+		unlock_and_release_vg(cmd, vg, vg_name);
 		return NULL;
 	}
 
@@ -1682,7 +1788,7 @@ bad:
 		ret = poll_logical_volume(cmd, lp->lv_to_poll,
 					  lp->wait_completion);
 
-	free_vg(lv->vg);
+	release_vg(lv->vg);
 out:
 	init_ignore_suspended_devices(saved_ignore_suspended_devices);
 	return ret;
@@ -1732,7 +1838,7 @@ static int lvconvert_merge_single(struct cmd_context *cmd, struct logical_volume
 		}
 	}
 
-	free_vg(refreshed_lv->vg);
+	release_vg(refreshed_lv->vg);
 
 	return ret;
 }

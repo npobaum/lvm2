@@ -373,6 +373,10 @@ static int _process_config(struct cmd_context *cmd)
 	/* LVM stores sizes internally in units of 512-byte sectors. */
 	init_pv_min_size((uint64_t)pv_min_kb * (1024 >> SECTOR_SHIFT));
 
+	init_detect_internal_vg_cache_corruption
+		(find_config_tree_int(cmd, "global/detect_internal_vg_cache_corruption()",
+				      DEFAULT_DETECT_INTERNAL_VG_CACHE_CORRUPTION));
+
 	return 1;
 }
 
@@ -988,32 +992,40 @@ static int _init_single_segtype(struct cmd_context *cmd,
 
 static int _init_segtypes(struct cmd_context *cmd)
 {
+	int i;
 	struct segment_type *segtype;
 	struct segtype_library seglib = { .cmd = cmd };
+	struct segment_type *(*init_segtype_array[])(struct cmd_context *cmd) = {
+		init_striped_segtype,
+		init_zero_segtype,
+		init_error_segtype,
+		init_free_segtype,
+#ifdef RAID_INTERNAL
+		init_raid1_segtype,
+		init_raid4_segtype,
+		init_raid5_segtype,
+		init_raid5_la_segtype,
+		init_raid5_ra_segtype,
+		init_raid5_ls_segtype,
+		init_raid5_rs_segtype,
+		init_raid6_segtype,
+		init_raid6_zr_segtype,
+		init_raid6_nr_segtype,
+		init_raid6_nc_segtype,
+#endif
+		NULL
+	};
 
 #ifdef HAVE_LIBDL
 	const struct config_node *cn;
 #endif
 
-	if (!(segtype = init_striped_segtype(cmd)))
-		return 0;
-	segtype->library = NULL;
-	dm_list_add(&cmd->segtypes, &segtype->list);
-
-	if (!(segtype = init_zero_segtype(cmd)))
-		return 0;
-	segtype->library = NULL;
-	dm_list_add(&cmd->segtypes, &segtype->list);
-
-	if (!(segtype = init_error_segtype(cmd)))
-		return 0;
-	segtype->library = NULL;
-	dm_list_add(&cmd->segtypes, &segtype->list);
-
-	if (!(segtype = init_free_segtype(cmd)))
-		return 0;
-	segtype->library = NULL;
-	dm_list_add(&cmd->segtypes, &segtype->list);
+	for (i = 0; init_segtype_array[i]; i++) {
+		if (!(segtype = init_segtype_array[i](cmd)))
+			return 0;
+		segtype->library = NULL;
+		dm_list_add(&cmd->segtypes, &segtype->list);
+	}
 
 #ifdef SNAPSHOT_INTERNAL
 	if (!(segtype = init_snapshot_segtype(cmd)))
