@@ -14,21 +14,26 @@ import functools
 import xml.etree.ElementTree as Et
 from collections import OrderedDict
 import dbus
+import os
+import sys
 
-BUSNAME = "com.redhat.lvmdbus1"
-MANAGER_INT = BUSNAME + '.Manager'
-MANAGER_OBJ = '/' + BUSNAME.replace('.', '/') + '/Manager'
-PV_INT = BUSNAME + ".Pv"
-VG_INT = BUSNAME + ".Vg"
-LV_INT = BUSNAME + ".Lv"
-THINPOOL_INT = BUSNAME + ".ThinPool"
-SNAPSHOT_INT = BUSNAME + ".Snapshot"
-LV_COMMON_INT = BUSNAME + ".LvCommon"
-JOB_INT = BUSNAME + ".Job"
-CACHE_POOL_INT = BUSNAME + ".CachePool"
-CACHE_LV_INT = BUSNAME + ".CachedLv"
-
+BUS_NAME = os.getenv('LVM_DBUS_NAME', 'com.redhat.lvmdbus1')
+BASE_INTERFACE = 'com.redhat.lvmdbus1'
+MANAGER_INT = BASE_INTERFACE + '.Manager'
+MANAGER_OBJ = '/' + BASE_INTERFACE.replace('.', '/') + '/Manager'
+PV_INT = BASE_INTERFACE + ".Pv"
+VG_INT = BASE_INTERFACE + ".Vg"
+LV_INT = BASE_INTERFACE + ".Lv"
+THINPOOL_INT = BASE_INTERFACE + ".ThinPool"
+SNAPSHOT_INT = BASE_INTERFACE + ".Snapshot"
+LV_COMMON_INT = BASE_INTERFACE + ".LvCommon"
+JOB_INT = BASE_INTERFACE + ".Job"
+CACHE_POOL_INT = BASE_INTERFACE + ".CachePool"
+CACHE_LV_INT = BASE_INTERFACE + ".CachedLv"
 THINPOOL_LV_PATH = '/' + THINPOOL_INT.replace('.', '/')
+
+
+validate_introspection = True
 
 
 def rs(length, suffix, character_set=string.ascii_lowercase):
@@ -37,6 +42,11 @@ def rs(length, suffix, character_set=string.ascii_lowercase):
 
 def mib(s):
 	return 1024 * 1024 * s
+
+
+def std_err_print(*args):
+	sys.stderr.write(' '.join(map(str, args)) + '\n')
+	sys.stderr.flush()
 
 
 class DbusIntrospection(object):
@@ -152,19 +162,14 @@ def verify_type(value, dbus_str_rep):
 				(dbus_str_rep, actual_str_rep, str(type(value))))
 
 
-class RemoteObject(object):
+class RemoteInterface(object):
 	def _set_props(self, props=None):
-		# print 'Fetching properties'
 		if not props:
-			# prop_fetch = dbus.Interface(self.bus.get_object(
-			#    BUSNAME, self.object_path), 'org.freedesktop.DBus.Properties')
-
-			for i in range(0, 3):
+			for _ in range(0, 3):
 				try:
-					prop_fetch = dbus.Interface(self.bus.get_object(
-						BUSNAME, self.object_path),
+					prop_interface = dbus.Interface(self.dbus_object,
 						'org.freedesktop.DBus.Properties')
-					props = prop_fetch.GetAll(self.interface)
+					props = prop_interface.GetAll(self.interface)
 					break
 				except dbus.exceptions.DBusException as dbe:
 					if "GetAll" not in str(dbe):
@@ -172,42 +177,42 @@ class RemoteObject(object):
 		if props:
 			for kl, vl in list(props.items()):
 				# Verify type is correct!
-				verify_type(
-					vl,
-					self.introspect[self.interface]['properties'][kl]['p_type'])
+				if self.introspect:
+					verify_type(vl, self.introspect[self.interface]
+					['properties'][kl]['p_type'])
 				setattr(self, kl, vl)
 
+	@property
+	def object_path(self):
+		return self.dbus_object.object_path
+
 	def __init__(
-			self, specified_bus, object_path, interface, introspect,
+			self, dbus_object, interface, introspect,
 			properties=None):
-		self.object_path = object_path
+		self.dbus_object = dbus_object
 		self.interface = interface
-		self.bus = specified_bus
 		self.introspect = introspect
 
-		self.dbus_method = dbus.Interface(specified_bus.get_object(
-			BUSNAME, self.object_path), self.interface)
-
+		self.dbus_interface = dbus.Interface(self.dbus_object, self.interface)
 		self._set_props(properties)
 
 	def __getattr__(self, item):
-		if hasattr(self.dbus_method, item):
+		if hasattr(self.dbus_interface, item):
 			return functools.partial(self._wrapper, item)
 		else:
 			return functools.partial(self, item)
 
 	def _wrapper(self, _method_name, *args, **kwargs):
-		result = getattr(self.dbus_method, _method_name)(*args, **kwargs)
-		# print("DEBUG: %s.%s result %s" %
-		# (self.interface, _method_name, str(type(result))))
+		result = getattr(self.dbus_interface, _method_name)(*args, **kwargs)
 
-		if 'RETURN_VALUE' in self.introspect[
-				self.interface]['methods'][_method_name]:
-			r_type = self.introspect[
-				self.interface]['methods'][
-				_method_name]['RETURN_VALUE']['a_type']
+		if self.introspect:
+			if 'RETURN_VALUE' in self.introspect[
+					self.interface]['methods'][_method_name]:
+				r_type = self.introspect[
+					self.interface]['methods'][
+					_method_name]['RETURN_VALUE']['a_type']
 
-			verify_type(result, r_type)
+				verify_type(result, r_type)
 
 		return result
 
@@ -220,36 +225,55 @@ class ClientProxy(object):
 	def _intf_short_name(nm):
 		return nm.split('.')[-1:][0]
 
-	def __init__(self, specified_bus, object_path, interface=None, props=None):
-		i = dbus.Interface(specified_bus.get_object(
-			BUSNAME, object_path), 'org.freedesktop.DBus.Introspectable')
+	def get_introspect(self):
+		i = dbus.Interface(
+				self.dbus_object,
+				'org.freedesktop.DBus.Introspectable')
 
-		introspection_xml = i.Introspect()
+		return DbusIntrospection.introspect(i.Introspect())
 
-		# import xml.dom.minidom
-		#
-		# xml = xml.dom.minidom.parseString(introspection_xml)
-		# print(xml.toprettyxml())
+	def _common(self, interface, introspect, properties):
+		short_name = ClientProxy._intf_short_name(interface)
+		self.short_interface_names.append(short_name)
+		ro = RemoteInterface(self.dbus_object, interface, introspect,
+								properties)
+		setattr(self, short_name, ro)
 
-		self.intro_spect = DbusIntrospection.introspect(introspection_xml)
-
-		for k in self.intro_spect.keys():
-			sn = ClientProxy._intf_short_name(k)
-			# print('Client proxy has interface: %s %s' % (k, sn))
-
-			if interface and interface == k and props is not None:
-				ro = RemoteObject(
-					specified_bus, object_path, k, self.intro_spect, props)
-			else:
-				ro = RemoteObject(
-					specified_bus, object_path, k, self.intro_spect)
-
-			setattr(self, sn, ro)
-
+	def __init__(self, bus, object_path, interface_prop_hash=None,
+					interfaces=None):
 		self.object_path = object_path
+		self.short_interface_names = []
+		self.dbus_object = bus.get_object(
+			BUS_NAME, self.object_path, introspect=False)
+
+		if interface_prop_hash:
+			assert interfaces is None
+		if interfaces:
+			assert interface_prop_hash is None
+
+		if interface_prop_hash and not validate_introspection:
+			# We have everything including the values of the properties
+			for i, props in interface_prop_hash.items():
+				self._common(i, None, props)
+		elif interfaces and not validate_introspection:
+			# We are retrieving the values of the properties
+			for i in interfaces:
+				self._common(i, None, None)
+		else:
+			# We need to query the interfaces and gather all the properties
+			# for each interface, as we have the introspection data we
+			# will also utilize it to verify what we get back verifies
+			introspect = self.get_introspect()
+
+			if interface_prop_hash:
+				introspect_interfaces = list(introspect.keys())
+				for object_manager_key in interface_prop_hash.keys():
+					assert object_manager_key in introspect_interfaces
+
+			for i in list(introspect.keys()):
+				self._common(i, introspect, None)
 
 	def update(self):
 		# Go through all interfaces and update them
-		for int_f in self.intro_spect.keys():
-			sn = ClientProxy._intf_short_name(int_f)
+		for sn in self.short_interface_names:
 			getattr(self, sn).update()

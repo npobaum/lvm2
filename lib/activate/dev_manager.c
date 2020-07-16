@@ -424,7 +424,7 @@ static int _ignore_suspended_snapshot_component(struct device *dev)
 		return_0;
 
 	if (!dm_task_run(dmt)) {
-		log_error("Failed to get state of snapshot or snapshot origin device");
+		log_error("Failed to get state of snapshot or snapshot origin device.");
 		goto out;
 	}
 
@@ -432,14 +432,14 @@ static int _ignore_suspended_snapshot_component(struct device *dev)
 		next = dm_get_next_target(dmt, next, &start, &length, &target_type, &params);
 		if (!target_type || !strcmp(target_type, TARGET_NAME_SNAPSHOT)) {
 			if (!params || sscanf(params, "%d:%d %d:%d", &major1, &minor1, &major2, &minor2) != 4) {
-				log_error("Incorrect snapshot table found");
-				goto_out;
+				log_error("Incorrect snapshot table found.");
+				goto out;
 			}
 			r = r || _device_is_suspended(major1, minor1) || _device_is_suspended(major2, minor2);
 		} else if (!strcmp(target_type, TARGET_NAME_SNAPSHOT_ORIGIN)) {
 			if (!params || sscanf(params, "%d:%d", &major1, &minor1) != 2) {
-				log_error("Incorrect snapshot-origin table found");
-				goto_out;
+				log_error("Incorrect snapshot-origin table found.");
+				goto out;
 			}
 			r = r || _device_is_suspended(major1, minor1);
 		}
@@ -2250,8 +2250,8 @@ bad:
 	return NULL;
 }
 
-static char *_add_error_device(struct dev_manager *dm, struct dm_tree *dtree,
-			       struct lv_segment *seg, int s)
+static char *_add_error_or_zero_device(struct dev_manager *dm, struct dm_tree *dtree,
+				       struct lv_segment *seg, int s, int use_zero)
 {
 	char *dlid, *name;
 	char errid[32];
@@ -2262,13 +2262,15 @@ static char *_add_error_device(struct dev_manager *dm, struct dm_tree *dtree,
 	uint64_t size = (uint64_t) seg->len * seg->lv->vg->extent_size;
 
 	dm_list_iterate_items(seg_i, &seg->lv->segments) {
-		if (seg == seg_i)
+		if (seg == seg_i) {
 			segno = i;
+			break;
+		}
 		++i;
 	}
 
 	if (segno < 0) {
-		log_error("_add_error_device called with bad segment");
+		log_error(INTERNAL_ERROR "_add_error_or_zero_device called with bad segment.");
 		return NULL;
 	}
 
@@ -2281,7 +2283,7 @@ static char *_add_error_device(struct dev_manager *dm, struct dm_tree *dtree,
 				      seg->lv->name, errid)))
 		return_NULL;
 
-	log_debug_activation("Getting device info for %s [%s]", name, dlid);
+	log_debug_activation("Getting device info for %s [%s].", name, dlid);
 	if (!_info(dm->cmd, dlid, 1, 0, &info, NULL, NULL)) {
 		log_error("Failed to get info for %s [%s].", name, dlid);
 		return 0;
@@ -2291,14 +2293,19 @@ static char *_add_error_device(struct dev_manager *dm, struct dm_tree *dtree,
 		/* Create new node */
 		if (!(node = dm_tree_add_new_dev(dtree, name, dlid, 0, 0, 0, 0, 0)))
 			return_NULL;
-		if (!dm_tree_node_add_error_target(node, size))
-			return_NULL;
+
+		if (use_zero) {
+			if (!dm_tree_node_add_zero_target(node, size))
+				return_NULL;
+		} else
+			if (!dm_tree_node_add_error_target(node, size))
+				return_NULL;
 	} else {
 		/* Already exists */
 		if (!dm_tree_add_dev(dtree, info.major, info.minor)) {
-			log_error("Failed to add device (%" PRIu32 ":%" PRIu32") to dtree",
+			log_error("Failed to add device (%" PRIu32 ":%" PRIu32") to dtree.",
 				  info.major, info.minor);
-			return_NULL;
+			return NULL;
 		}
 	}
 
@@ -2310,14 +2317,15 @@ static int _add_error_area(struct dev_manager *dm, struct dm_tree_node *node,
 {
 	char *dlid;
 	uint64_t extent_size = seg->lv->vg->extent_size;
+	int use_zero = !strcmp(dm->cmd->stripe_filler, TARGET_NAME_ZERO) ? 1 : 0;
 
-	if (!strcmp(dm->cmd->stripe_filler, TARGET_NAME_ERROR)) {
+	if (!strcmp(dm->cmd->stripe_filler, TARGET_NAME_ERROR) || use_zero) {
 		/*
 		 * FIXME, the tree pointer is first field of dm_tree_node, but
 		 * we don't have the struct definition available.
 		 */
 		struct dm_tree **tree = (struct dm_tree **) node;
-		if (!(dlid = _add_error_device(dm, *tree, seg, s)))
+		if (!(dlid = _add_error_or_zero_device(dm, *tree, seg, s, use_zero)))
 			return_0;
 		if (!dm_tree_node_add_target_area(node, NULL, dlid, extent_size * seg_le(seg, s)))
 			return_0;
@@ -2825,7 +2833,7 @@ static int _add_new_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 	if (!(name = dm_build_dm_name(dm->mem, lv->vg->name, lv->name, layer)))
 		return_0;
 
-        /* Even unused thin-pool still needs to get layered  UUID -suffix */
+	/* Even unused thin-pool still needs to get layered  UUID -suffix */
 	if (!layer && lv_is_new_thin_pool(lv))
 		layer = lv_layer(lv);
 

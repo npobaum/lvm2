@@ -640,8 +640,8 @@ static int _process_config(struct cmd_context *cmd)
 	if (!strcmp(cmd->stripe_filler, "/dev/ioerror") &&
 	    stat(cmd->stripe_filler, &st))
 		cmd->stripe_filler = "error";
-
-	if (strcmp(cmd->stripe_filler, "error")) {
+	else if (strcmp(cmd->stripe_filler, "error") &&
+		 strcmp(cmd->stripe_filler, "zero")) {
 		if (stat(cmd->stripe_filler, &st)) {
 			log_warn("WARNING: activation/missing_stripe_filler = \"%s\" "
 				 "is invalid,", cmd->stripe_filler);
@@ -997,7 +997,7 @@ static int _init_dev_cache(struct cmd_context *cmd)
 
 	if (!(cn = find_config_tree_array(cmd, devices_scan_CFG, NULL))) {
 		log_error(INTERNAL_ERROR "Unable to find configuration for devices/scan.");
-		return_0;
+		return 0;
 	}
 
 	for (cv = cn->v; cv; cv = cv->next) {

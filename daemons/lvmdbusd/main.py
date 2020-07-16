@@ -10,7 +10,7 @@
 from . import cfg
 from . import objectmanager
 from . import utils
-from .cfg import BASE_INTERFACE, BASE_OBJ_PATH, MANAGER_OBJ_PATH
+from .cfg import BUS_NAME, BASE_INTERFACE, BASE_OBJ_PATH, MANAGER_OBJ_PATH
 import threading
 from . import cmdhandler
 import time
@@ -20,7 +20,7 @@ import dbus.mainloop.glib
 from . import lvmdb
 # noinspection PyUnresolvedReferences
 from gi.repository import GLib
-from .fetch import load
+from .fetch import StateUpdate
 from .manager import Manager
 import traceback
 import queue
@@ -29,7 +29,7 @@ from .utils import log_debug, log_error
 import argparse
 import os
 import sys
-from .refresh import handle_external_event, event_complete
+from .cmdhandler import LvmFlightRecorder
 
 
 class Lvm(objectmanager.ObjectManager):
@@ -37,60 +37,29 @@ class Lvm(objectmanager.ObjectManager):
 		super(Lvm, self).__init__(object_path, BASE_INTERFACE)
 
 
-def _discard_pending_refreshes():
-	# We just handled a refresh, if we have any in the queue they can be
-	# removed because by definition they are older than the refresh we just did.
-	# As we limit the number of refreshes getting into the queue
-	# we should only ever have one to remove.
-	requests = []
-	while not cfg.worker_q.empty():
-		try:
-			r = cfg.worker_q.get(block=False)
-			if r.method != handle_external_event:
-				requests.append(r)
-			else:
-				# Make sure we make this event complete even though it didn't
-				# run, otherwise no other events will get processed
-				event_complete()
-				break
-		except queue.Empty:
-			break
-
-	# Any requests we removed, but did not discard need to be re-queued
-	for r in requests:
-		cfg.worker_q.put(r)
-
-
 def process_request():
 	while cfg.run.value != 0:
 		# noinspection PyBroadException
 		try:
 			req = cfg.worker_q.get(True, 5)
-
-			start = cfg.db.num_refreshes
-
 			log_debug(
 				"Running method: %s with args %s" %
 				(str(req.method), str(req.arguments)))
 			req.run_cmd()
-
-			end = cfg.db.num_refreshes
-
-			num_refreshes = end - start
-
-			if num_refreshes > 0:
-				_discard_pending_refreshes()
-
-				if num_refreshes > 1:
-					log_debug(
-						"Inspect method %s for too many refreshes" %
-						(str(req.method)))
 			log_debug("Method complete ")
 		except queue.Empty:
 			pass
 		except Exception:
 			st = traceback.format_exc()
 			utils.log_error("process_request exception: \n%s" % st)
+
+
+def check_bb_size(value):
+	v = int(value)
+	if v < 0:
+		raise argparse.ArgumentTypeError(
+			"positive integers only ('%s' invalid)" % value)
+	return v
 
 
 def main():
@@ -115,6 +84,12 @@ def main():
 		help="Use the lvm shell, not fork & exec lvm",
 		default=False,
 		dest='use_lvm_shell')
+	parser.add_argument(
+		"--blackboxsize",
+		help="Size of the black box flight recorder, 0 to disable",
+		default=10,
+		type=check_bb_size,
+		dest='bb_size')
 
 	use_session = os.getenv('LVMDBUSD_USE_SESSION', False)
 
@@ -123,11 +98,14 @@ def main():
 
 	cfg.args = parser.parse_args()
 
+	# We create a flight recorder in cmdhandler too, but we replace it here
+	# as the user may be specifying a different size.  The default one in
+	# cmdhandler is for when we are running other code with a different main.
+	cfg.blackbox = LvmFlightRecorder(cfg.args.bb_size)
+
 	if cfg.args.use_lvm_shell and not cfg.args.use_json:
 		log_error("You cannot specify --lvmshell and --nojson")
 		sys.exit(1)
-
-	cmdhandler.set_execution(cfg.args.use_lvm_shell)
 
 	# List of threads that we start up
 	thread_list = []
@@ -142,17 +120,17 @@ def main():
 	dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 	dbus.mainloop.glib.threads_init()
 
+	cmdhandler.set_execution(cfg.args.use_lvm_shell)
+
 	if use_session:
 		cfg.bus = dbus.SessionBus()
 	else:
 		cfg.bus = dbus.SystemBus()
 	# The base name variable needs to exist for things to work.
 	# noinspection PyUnusedLocal
-	base_name = dbus.service.BusName(BASE_INTERFACE, cfg.bus)
+	base_name = dbus.service.BusName(BUS_NAME, cfg.bus)
 	cfg.om = Lvm(BASE_OBJ_PATH)
 	cfg.om.register_object(Manager(MANAGER_OBJ_PATH))
-
-	cfg.load = load
 
 	cfg.db = lvmdb.DataStore(cfg.args.use_json)
 
@@ -160,12 +138,19 @@ def main():
 	# thread that is handling the dbus interface
 	thread_list.append(threading.Thread(target=process_request))
 
-	cfg.load(refresh=False, emit_signal=False, need_main_thread=False)
+	# Have a single thread handling updating lvm and the dbus model so we
+	# don't have multiple threads doing this as the same time
+	updater = StateUpdate()
+	thread_list.append(updater.thread)
+
+	cfg.load = updater.load
+	cfg.event = updater.event
+
 	cfg.loop = GLib.MainLoop()
 
-	for process in thread_list:
-		process.damon = True
-		process.start()
+	for thread in thread_list:
+		thread.damon = True
+		thread.start()
 
 	# Add udev watching
 	if cfg.args.use_udev:
@@ -187,8 +172,8 @@ def main():
 			cfg.loop.run()
 			udevwatch.remove()
 
-			for process in thread_list:
-				process.join()
+			for thread in thread_list:
+				thread.join()
 	except KeyboardInterrupt:
 		utils.handler(signal.SIGINT, None)
 	return 0

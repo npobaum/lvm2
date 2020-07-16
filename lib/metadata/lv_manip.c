@@ -736,11 +736,11 @@ int add_seg_to_segs_using_this_lv(struct logical_volume *lv,
 		}
 	}
 
-	log_very_verbose("Adding %s:%" PRIu32 " as an user of %s",
-			 seg->lv->name, seg->le, lv->name);
+	log_very_verbose("Adding %s:" FMTu32 " as an user of %s.",
+			 display_lvname(seg->lv), seg->le, display_lvname(lv));
 
 	if (!(sl = dm_pool_zalloc(lv->vg->vgmem, sizeof(*sl)))) {
-		log_error("Failed to allocate segment list");
+		log_error("Failed to allocate segment list.");
 		return 0;
 	}
 
@@ -762,16 +762,16 @@ int remove_seg_from_segs_using_this_lv(struct logical_volume *lv,
 		if (sl->count > 1)
 			sl->count--;
 		else {
-			log_very_verbose("%s:%" PRIu32 " is no longer a user "
-					 "of %s", seg->lv->name, seg->le,
-					 lv->name);
+			log_very_verbose("%s:" FMTu32 " is no longer a user of %s.",
+					 display_lvname(seg->lv), seg->le,
+					 display_lvname(lv));
 			dm_list_del(&sl->list);
 		}
 		return 1;
 	}
 
-	log_error(INTERNAL_ERROR "Segment %s:%u is not a user of %s.",
-                  seg->lv->name, seg->le, lv->name);
+	log_error(INTERNAL_ERROR "Segment %s:" FMTu32 " is not a user of %s.",
+		  display_lvname(seg->lv), seg->le, display_lvname(lv));
 	return 0;
 }
 
@@ -798,8 +798,9 @@ struct lv_segment *get_only_segment_using_this_lv(const struct logical_volume *l
 
 		if (sl->count != 1) {
 			log_error("%s is expected to have only one segment using it, "
-				  "while %s:%" PRIu32 " uses it %d times.",
-				  display_lvname(lv), sl->seg->lv->name, sl->seg->le, sl->count);
+				  "while %s:" FMTu32 " uses it %d times.",
+				  display_lvname(lv), display_lvname(sl->seg->lv),
+				  sl->seg->le, sl->count);
 			return NULL;
 		}
 
@@ -890,7 +891,7 @@ static uint32_t _round_to_stripe_boundary(struct volume_group *vg, uint32_t exte
 	/* Round up extents to stripe divisible amount */
 	if ((size_rest = extents % stripes)) {
 		new_extents += extend ? stripes - size_rest : -size_rest;
-		log_print_unless_silent("Rounding size %s (%d extents) up to stripe boundary size %s (%d extents).",
+		log_print_unless_silent("Rounding size %s (%u extents) up to stripe boundary size %s (%u extents).",
 					display_size(vg->cmd, (uint64_t) extents * vg->extent_size), extents,
 					display_size(vg->cmd, (uint64_t) new_extents * vg->extent_size), new_extents);
 	}
@@ -1014,11 +1015,11 @@ static int _release_and_discard_lv_segment_area(struct lv_segment *seg, uint32_t
 		*/
 		if (area_reduction != seg->area_len) {
 			log_error("Unable to reduce RAID LV - operation not implemented.");
-			return_0;
+			return 0;
 		} else {
 			if (!lv_remove(lv)) {
-				log_error("Failed to remove RAID image %s",
-					  lv->name);
+				log_error("Failed to remove RAID image %s.",
+					  display_lvname(lv));
 				return 0;
 			}
 		}
@@ -1027,22 +1028,24 @@ static int _release_and_discard_lv_segment_area(struct lv_segment *seg, uint32_t
 		if (seg->meta_areas && seg_metalv(seg, s) && (area_reduction == seg->area_len)) {
 			if (!lv_reduce(seg_metalv(seg, s),
 				       seg_metalv(seg, s)->le_count)) {
-				log_error("Failed to remove RAID meta-device %s",
-					  seg_metalv(seg, s)->name);
+				log_error("Failed to remove RAID meta-device %s.",
+					  display_lvname(seg_metalv(seg, s)));
 				return 0;
 			}
 		}
+
 		return 1;
 	}
 
 	if (area_reduction == seg->area_len) {
-		log_very_verbose("Remove %s:%" PRIu32 "[%" PRIu32 "] from "
-				 "the top of LV %s:%" PRIu32,
-				 seg->lv->name, seg->le, s,
-				 lv->name, seg_le(seg, s));
+		log_very_verbose("Remove %s:" FMTu32 "[" FMTu32 "] from "
+				 "the top of LV %s:" FMTu32 ".",
+				 display_lvname(seg->lv), seg->le, s,
+				 display_lvname(lv), seg_le(seg, s));
 
 		if (!remove_seg_from_segs_using_this_lv(lv, seg))
 			return_0;
+
 		seg_lv(seg, s) = NULL;
 		seg_le(seg, s) = 0;
 		seg_type(seg, s) = AREA_UNASSIGNED;
@@ -1132,14 +1135,15 @@ int set_lv_segment_area_lv(struct lv_segment *seg, uint32_t area_num,
 			   struct logical_volume *lv, uint32_t le,
 			   uint64_t status)
 {
-	log_very_verbose("Stack %s:%" PRIu32 "[%" PRIu32 "] on LV %s:%" PRIu32,
-			 seg->lv->name, seg->le, area_num, lv->name, le);
+	log_very_verbose("Stack %s:" FMTu32 "[" FMTu32 "] on LV %s:" FMTu32 ".",
+			 display_lvname(seg->lv), seg->le, area_num,
+			 display_lvname(lv), le);
 
 	if (status & RAID_META) {
 		seg->meta_areas[area_num].type = AREA_LV;
 		seg_metalv(seg, area_num) = lv;
 		if (le) {
-			log_error(INTERNAL_ERROR "Meta le != 0");
+			log_error(INTERNAL_ERROR "Meta le != 0.");
 			return 0;
 		}
 		seg_metale(seg, area_num) = 0;
@@ -1378,7 +1382,7 @@ int replace_lv_with_error_segment(struct logical_volume *lv)
 	return 1;
 }
 
-int lv_refresh_suspend_resume(const struct logical_volume *lv)
+static int _lv_refresh_suspend_resume(const struct logical_volume *lv)
 {
 	struct cmd_context *cmd = lv->vg->cmd;
 	int r = 1;
@@ -1401,6 +1405,33 @@ int lv_refresh_suspend_resume(const struct logical_volume *lv)
 	}
 
 	return r;
+}
+
+int lv_refresh_suspend_resume(const struct logical_volume *lv)
+{
+	/*
+	 * FIXME:
+	 *
+	 * in case of RAID, refresh the SubLVs before
+	 * refreshing the top-level one in order to cope
+	 * with transient failures of SubLVs.
+	 */
+	if (lv_is_raid(lv)) {
+		uint32_t s;
+		struct lv_segment *seg = first_seg(lv);
+
+		for (s = 0; s < seg->area_count; s++) {
+			if (seg_type(seg, s) == AREA_LV &&
+			    !_lv_refresh_suspend_resume(seg_lv(seg, s)))
+				return 0;
+			if (seg->meta_areas &&
+			    seg_metatype(seg, s) == AREA_LV &&
+			    !_lv_refresh_suspend_resume(seg_metalv(seg, s)))
+				return 0;
+		}
+	}
+
+	return _lv_refresh_suspend_resume(lv);
 }
 
 /*
@@ -3479,7 +3510,7 @@ static struct lv_segment *_convert_seg_to_mirror(struct lv_segment *seg,
 					seg->area_count, seg->area_len,
 					seg->chunk_size, region_size,
 					seg->extents_copied, NULL))) {
-		log_error("Couldn't allocate converted LV segment");
+		log_error("Couldn't allocate converted LV segment.");
 		return NULL;
 	}
 
@@ -3512,13 +3543,14 @@ int lv_add_segmented_mirror_image(struct alloc_handle *ah,
 
 	if (!lv_is_pvmove(lv)) {
 		log_error(INTERNAL_ERROR
-			  "Non-pvmove LV, %s, passed as argument", lv->name);
+			  "Non-pvmove LV, %s, passed as argument.",
+			  display_lvname(lv));
 		return 0;
 	}
 
 	if (seg_type(first_seg(lv), 0) != AREA_PV) {
 		log_error(INTERNAL_ERROR
-			  "Bad segment type for first segment area");
+			  "Bad segment type for first segment area.");
 		return 0;
 	}
 
@@ -3529,8 +3561,8 @@ int lv_add_segmented_mirror_image(struct alloc_handle *ah,
 	 */
 	dm_list_iterate_items(aa, &ah->alloced_areas[0]) {
 		if (!(seg = find_seg_by_le(lv, current_le))) {
-			log_error("Failed to find segment for %s extent %"
-				  PRIu32, lv->name, current_le);
+			log_error("Failed to find segment for %s extent " FMTu32 ".",
+				  display_lvname(lv), current_le);
 			return 0;
 		}
 
@@ -3538,7 +3570,8 @@ int lv_add_segmented_mirror_image(struct alloc_handle *ah,
 		if (aa[0].len < seg->area_len) {
 			if (!lv_split_segment(lv, seg->le + aa[0].len)) {
 				log_error("Failed to split segment at %s "
-					  "extent %" PRIu32, lv->name, le);
+					  "extent " FMTu32 ".",
+					  display_lvname(lv), le);
 				return 0;
 			}
 		}
@@ -3548,8 +3581,8 @@ int lv_add_segmented_mirror_image(struct alloc_handle *ah,
 	current_le = le;
 
 	if (!insert_layer_for_lv(lv->vg->cmd, lv, PVMOVE, "_mimage_0")) {
-		log_error("Failed to build pvmove LV-type mirror, %s",
-			  lv->name);
+		log_error("Failed to build pvmove LV-type mirror %s.",
+			  display_lvname(lv));
 		return 0;
 	}
 	orig_lv = seg_lv(first_seg(lv), 0);
@@ -3570,8 +3603,8 @@ int lv_add_segmented_mirror_image(struct alloc_handle *ah,
 
 	dm_list_iterate_items(aa, &ah->alloced_areas[0]) {
 		if (!(seg = find_seg_by_le(orig_lv, current_le))) {
-			log_error("Failed to find segment for %s extent %"
-				  PRIu32, lv->name, current_le);
+			log_error("Failed to find segment for %s extent " FMTu32 ".",
+				  display_lvname(lv), current_le);
 			return 0;
 		}
 
@@ -3617,16 +3650,16 @@ int lv_add_mirror_areas(struct alloc_handle *ah,
 
 	dm_list_iterate_items(aa, &ah->alloced_areas[0]) {
 		if (!(seg = find_seg_by_le(lv, current_le))) {
-			log_error("Failed to find segment for %s extent %"
-				  PRIu32, lv->name, current_le);
+			log_error("Failed to find segment for %s extent " FMTu32 ".",
+				  display_lvname(lv), current_le);
 			return 0;
 		}
 
 		/* Allocator assures aa[0].len <= seg->area_len */
 		if (aa[0].len < seg->area_len) {
 			if (!lv_split_segment(lv, seg->le + aa[0].len)) {
-				log_error("Failed to split segment at %s "
-					  "extent %" PRIu32, lv->name, le);
+				log_error("Failed to split segment at %s extent " FMTu32 ".",
+					  display_lvname(lv), le);
 				return 0;
 			}
 		}
@@ -3667,15 +3700,13 @@ int lv_add_mirror_lvs(struct logical_volume *lv,
 		      uint32_t num_extra_areas,
 		      uint64_t status, uint32_t region_size)
 {
-	struct lv_segment *seg;
-	uint32_t old_area_count, new_area_count;
 	uint32_t m;
+	uint32_t old_area_count, new_area_count;
 	struct segment_type *mirror_segtype;
-
-	seg = first_seg(lv);
+	struct lv_segment *seg = first_seg(lv);
 
 	if (dm_list_size(&lv->segments) != 1 || seg_type(seg, 0) != AREA_LV) {
-		log_error("Mirror layer must be inserted before adding mirrors");
+		log_error(INTERNAL_ERROR "Mirror layer must be inserted before adding mirrors.");
 		return 0;
 	}
 
@@ -3685,7 +3716,7 @@ int lv_add_mirror_lvs(struct logical_volume *lv,
 			return_0;
 
 	if (region_size && region_size != seg->region_size) {
-		log_error("Conflicting region_size");
+		log_error("Conflicting region_size.");
 		return 0;
 	}
 
@@ -3694,7 +3725,7 @@ int lv_add_mirror_lvs(struct logical_volume *lv,
 
 	if (!_lv_segment_add_areas(lv, seg, new_area_count)) {
 		log_error("Failed to allocate widened LV segment for %s.",
-			  lv->name);
+			  display_lvname(lv));
 		return 0;
 	}
 
@@ -3844,6 +3875,7 @@ static int _lv_extend_layered_lv(struct alloc_handle *ah,
 	uint32_t fa, s;
 	int clear_metadata = 0;
 	uint32_t area_multiple = 1;
+	int fail;
 
 	if (!(segtype = get_segtype_from_string(lv->vg->cmd, SEG_TYPE_NAME_STRIPED)))
 		return_0;
@@ -3917,45 +3949,60 @@ static int _lv_extend_layered_lv(struct alloc_handle *ah,
 		if (!vg_write(lv->vg) || !vg_commit(lv->vg))
 			return_0;
 
-		for (s = 0; s < seg->area_count; s++) {
-			meta_lv = seg_metalv(seg, s);
+		if (test_mode())
+			log_verbose("Test mode: Skipping wiping of metadata areas.");
+		else {
+			fail = 0;
+			/* Activate all rmeta devices locally first (more efficient) */
+			for (s = 0; !fail && s < seg->area_count; s++) {
+				meta_lv = seg_metalv(seg, s);
 
-			if (test_mode()) {
-				lv_set_hidden(meta_lv);
-				continue;
+				if (!activate_lv_local(meta_lv->vg->cmd, meta_lv)) {
+					log_error("Failed to activate %s for clearing.",
+						  display_lvname(meta_lv));
+					fail = 1;
+				}
 			}
 
-			/* For clearing, simply activate locally */
-			if (!activate_lv_local(meta_lv->vg->cmd, meta_lv)) {
-				log_error("Failed to activate %s/%s for clearing",
-					  meta_lv->vg->name, meta_lv->name);
-				return 0;
+			/* Clear all rmeta devices */
+			for (s = 0; !fail && s < seg->area_count; s++) {
+				meta_lv = seg_metalv(seg, s);
+
+				log_verbose("Clearing metadata area of %s.",
+					    display_lvname(meta_lv));
+				/*
+				 * Rather than wiping meta_lv->size, we can simply
+				 * wipe '1' to remove the superblock of any previous
+				 * RAID devices.  It is much quicker.
+				 */
+				if (!wipe_lv(meta_lv, (struct wipe_params)
+					     { .do_zero = 1, .zero_sectors = 1 })) {
+					stack;
+					fail = 1;
+				}
 			}
 
-			log_verbose("Clearing metadata area of %s",
-				    display_lvname(meta_lv));
-			/*
-			 * Rather than wiping meta_lv->size, we can simply
-			 * wipe '1' to remove the superblock of any previous
-			 * RAID devices.  It is much quicker.
-			 */
-			if (!wipe_lv(meta_lv, (struct wipe_params)
-				     { .do_zero = 1, .zero_sectors = 1 })) {
-				log_error("Failed to zero %s/%s",
-					  meta_lv->vg->name, meta_lv->name);
-				return 0;
+			/* Deactivate all rmeta devices */
+			for (s = 0; s < seg->area_count; s++) {
+				meta_lv = seg_metalv(seg, s);
+
+				if (!deactivate_lv(meta_lv->vg->cmd, meta_lv)) {
+					log_error("Failed to deactivate %s after clearing.",
+						  display_lvname(meta_lv));
+					fail = 1;
+				}
+
+				/* Wipe any temporary tags required for activation. */
+				str_list_wipe(&meta_lv->tags);
 			}
 
-			if (!deactivate_lv(meta_lv->vg->cmd, meta_lv)) {
-				log_error("Failed to deactivate %s/%s",
-					  meta_lv->vg->name, meta_lv->name);
-				return 0;
-			}
-			lv_set_hidden(meta_lv);
-
-			/* Wipe any temporary tags required for activation. */
-			str_list_wipe(&meta_lv->tags);
+			if (fail)
+				/* Fail, after trying to deactivate all we could */
+				return_0;
 		}
+
+		for (s = 0; s < seg->area_count; s++)
+			lv_set_hidden(seg_metalv(seg, s));
 	}
 
 	seg->area_len += extents / area_multiple;
@@ -6557,7 +6604,7 @@ struct logical_volume *insert_layer_for_lv(struct cmd_context *cmd,
 	if (lv_is_active_exclusive_locally(lv_where))
 		exclusive = 1;
 
-	if (lv_is_active(lv_where) && strstr(name, "_mimagetmp")) {
+	if (lv_is_active(lv_where) && strstr(name, MIRROR_SYNC_LAYER)) {
 		log_very_verbose("Creating transient LV %s for mirror conversion in VG %s.", name, lv_where->vg->name);
 
 		segtype = get_segtype_from_string(cmd, SEG_TYPE_NAME_ERROR);

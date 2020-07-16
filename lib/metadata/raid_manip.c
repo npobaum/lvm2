@@ -34,6 +34,7 @@ static int _check_restriping(uint32_t new_stripes, struct logical_volume *lv)
 	return 1;
 }
 
+__attribute__ ((__unused__))
 /* Check that all lv has segments have exactly the required number of areas */
 static int _check_num_areas_in_lv_segments(struct logical_volume *lv, unsigned num_areas)
 {
@@ -283,8 +284,8 @@ static int _raid_in_sync(struct logical_volume *lv)
 		 * https://bugzilla.redhat.com/1210637
 		 */
 		if (!lv_raid_percent(lv, &sync_percent)) {
-			log_error("Unable to determine sync status of %s/%s.",
-				  lv->vg->name, lv->name);
+			log_error("Unable to determine sync status of %s.",
+				  display_lvname(lv));
 			return 0;
 		}
 		if (sync_percent > DM_PERCENT_0)
@@ -1055,11 +1056,10 @@ static int _extract_image_components(struct lv_segment *seg, uint32_t idx,
 	seg_type(seg, idx) = AREA_UNASSIGNED;
 	seg_metatype(seg, idx) = AREA_UNASSIGNED;
 
-	/* FIXME Remove duplicated prefix? */
-	if (!(data_lv->name = _generate_raid_name(data_lv, "_extracted", -1)))
+	if (!(data_lv->name = _generate_raid_name(data_lv, "extracted", -1)))
 		return_0;
 
-	if (!(meta_lv->name = _generate_raid_name(meta_lv, "_extracted", -1)))
+	if (!(meta_lv->name = _generate_raid_name(meta_lv, "extracted", -1)))
 		return_0;
 
 	*extracted_rmeta = meta_lv;
@@ -1861,25 +1861,25 @@ static int _alloc_and_add_rmeta_devs_for_lv(struct logical_volume *lv, struct dm
 
 	dm_list_init(&meta_lvs);
 
-	log_debug_metadata("Allocating metadata LVs for %s", display_lvname(lv));
+	log_debug_metadata("Allocating metadata LVs for %s.", display_lvname(lv));
 	if (!_alloc_rmeta_devs_for_lv(lv, &meta_lvs, allocate_pvs, &seg_meta_areas)) {
-		log_error("Failed to allocate metadata LVs for %s", display_lvname(lv));
-		return_0;
+		log_error("Failed to allocate metadata LVs for %s.", display_lvname(lv));
+		return 0;
 	}
 
 	/* Metadata LVs must be cleared before being added to the array */
-	log_debug_metadata("Clearing newly allocated metadata LVs for %s", display_lvname(lv));
+	log_debug_metadata("Clearing newly allocated metadata LVs for %s.", display_lvname(lv));
 	if (!_clear_lvs(&meta_lvs)) {
-		log_error("Failed to initialize metadata LVs for %s", display_lvname(lv));
-		return_0;
+		log_error("Failed to initialize metadata LVs for %s.", display_lvname(lv));
+		return 0;
 	}
 
 	/* Set segment areas for metadata sub_lvs */
 	seg->meta_areas = seg_meta_areas;
-	log_debug_metadata("Adding newly allocated metadata LVs to %s", display_lvname(lv));
+	log_debug_metadata("Adding newly allocated metadata LVs to %s.", display_lvname(lv));
 	if (!_add_image_component_list(seg, 1, 0, &meta_lvs, 0)) {
-		log_error("Failed to add newly allocated metadata LVs to %s", display_lvname(lv));
-		return_0;
+		log_error("Failed to add newly allocated metadata LVs to %s.", display_lvname(lv));
+		return 0;
 	}
 
 	return 1;
@@ -3663,14 +3663,14 @@ static int _set_convenient_raid456_segtype_to(const struct lv_segment *seg_from,
 	/* Got to do check for raid5 -> raid6 ... */
 	} else if (seg_is_any_raid5(seg_from) &&
 		   segtype_is_any_raid6(*segtype)) {
-			log_error("Conversion not supported.");
-		return_0;
+		log_error("Conversion not supported.");
+		return 0;
 
 	/* ... and raid6 -> raid5 */
 	} else if (seg_is_any_raid6(seg_from) &&
 		   segtype_is_any_raid5(*segtype)) {
-			log_error("Conversion not supported.");
-		return_0;
+		log_error("Conversion not supported.");
+		return 0;
 	}
 
 	return 1;
