@@ -37,6 +37,8 @@ struct pv_to_create {
 	struct pvcreate_params *pp;
 };
 
+#define MAX_EXTENT_COUNT  (UINT32_MAX)
+
 struct volume_group {
 	struct cmd_context *cmd;
 	struct dm_pool *vgmem;
@@ -107,6 +109,8 @@ struct volume_group {
 	 */
 	uint32_t read_status;
 	uint32_t mda_copies; /* target number of mdas for this VG */
+
+	struct dm_hash_table *hostnames; /* map of creation hostnames */
 };
 
 struct volume_group *alloc_vg(const char *pool_name, struct cmd_context *cmd,
@@ -117,6 +121,7 @@ struct volume_group *alloc_vg(const char *pool_name, struct cmd_context *cmd,
  * by vg_create() or vg_read_internal() to free it when no longer required.
  */
 void release_vg(struct volume_group *vg);
+void free_orphan_vg(struct volume_group *vg);
 
 char *vg_fmt_dup(const struct volume_group *vg);
 char *vg_name_dup(const struct volume_group *vg);

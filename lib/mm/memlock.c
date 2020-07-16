@@ -38,12 +38,12 @@ void memlock_dec_daemon(struct cmd_context *cmd)
 	return;
 }
 
-void critical_section_inc(struct cmd_context *cmd)
+void critical_section_inc(struct cmd_context *cmd, const char *reason)
 {
 	return;
 }
 
-void critical_section_dec(struct cmd_context *cmd)
+void critical_section_dec(struct cmd_context *cmd, const char *reason)
 {
 	return;
 }
@@ -146,15 +146,16 @@ static void _release_memory(void)
  * mlock/munlock memory areas from /proc/self/maps
  * format described in kernel/Documentation/filesystem/proc.txt
  */
-static int _maps_line(const struct config_node *cn, lvmlock_t lock,
-		      const char* line, size_t* mstats)
+static int _maps_line(const struct dm_config_node *cn, lvmlock_t lock,
+		      const char *line, size_t *mstats)
 {
-	const struct config_value *cv;
+	const struct dm_config_value *cv;
 	long from, to;
 	int pos;
 	unsigned i;
 	char fr, fw, fx, fp;
 	size_t sz;
+	const char *lock_str = (lock == LVM_MLOCK) ? "mlock" : "munlock";
 
 	if (sscanf(line, "%lx-%lx %c%c%c%c%n",
 		   &from, &to, &fr, &fw, &fx, &fp, &pos) != 6) {
@@ -164,16 +165,15 @@ static int _maps_line(const struct config_node *cn, lvmlock_t lock,
 
 	/* Select readable maps */
 	if (fr != 'r') {
-		log_debug("%s area unreadable %s : Skipping.",
-			  (lock == LVM_MLOCK) ? "mlock" : "munlock", line);
+		log_debug("%s area unreadable %s : Skipping.", lock_str, line);
 		return 1;
 	}
 
 	/* always ignored areas */
 	for (i = 0; i < sizeof(_ignore_maps) / sizeof(_ignore_maps[0]); ++i)
 		if (strstr(line + pos, _ignore_maps[i])) {
-			log_debug("mlock ignore filter '%s' matches '%s': Skipping.",
-				  _ignore_maps[i], line);
+			log_debug("%s ignore filter '%s' matches '%s': Skipping.",
+				  lock_str, _ignore_maps[i], line);
 			return 1;
 		}
 
@@ -182,17 +182,17 @@ static int _maps_line(const struct config_node *cn, lvmlock_t lock,
 		/* If no blacklist configured, use an internal set */
 		for (i = 0; i < sizeof(_blacklist_maps) / sizeof(_blacklist_maps[0]); ++i)
 			if (strstr(line + pos, _blacklist_maps[i])) {
-				log_debug("mlock default filter '%s' matches '%s': Skipping.",
-					  _blacklist_maps[i], line);
+				log_debug("%s default filter '%s' matches '%s': Skipping.",
+					  lock_str, _blacklist_maps[i], line);
 				return 1;
 			}
 	} else {
 		for (cv = cn->v; cv; cv = cv->next) {
-			if ((cv->type != CFG_STRING) || !cv->v.str[0])
+			if ((cv->type != DM_CFG_STRING) || !cv->v.str[0])
 				continue;
 			if (strstr(line + pos, cv->v.str)) {
-				log_debug("mlock_filter '%s' matches '%s': Skipping.",
-					  cv->v.str, line);
+				log_debug("%s_filter '%s' matches '%s': Skipping.",
+					  lock_str, cv->v.str, line);
 				return 1;
 			}
 		}
@@ -207,8 +207,7 @@ static int _maps_line(const struct config_node *cn, lvmlock_t lock,
 
 #endif
 	*mstats += sz;
-	log_debug("%s %10ldKiB %12lx - %12lx %c%c%c%c%s",
-		  (lock == LVM_MLOCK) ? "mlock" : "munlock",
+	log_debug("%s %10ldKiB %12lx - %12lx %c%c%c%c%s", lock_str,
 		  ((long)sz + 1023) / 1024, from, to, fr, fw, fx, fp, line + pos);
 
 	if (lock == LVM_MLOCK) {
@@ -228,7 +227,7 @@ static int _maps_line(const struct config_node *cn, lvmlock_t lock,
 
 static int _memlock_maps(struct cmd_context *cmd, lvmlock_t lock, size_t *mstats)
 {
-	const struct config_node *cn;
+	const struct dm_config_node *cn;
 	char *line, *line_end;
 	size_t len;
 	ssize_t n;
@@ -270,7 +269,8 @@ static int _memlock_maps(struct cmd_context *cmd, lvmlock_t lock, size_t *mstats
 				return 0;
 			}
 		}
-		lseek(_maps_fd, 0, SEEK_SET);
+		if (lseek(_maps_fd, 0, SEEK_SET))
+			log_sys_error("lseek", _procselfmaps);
 		for (len = 0 ; len < _maps_len; len += n) {
 			if (!(n = read(_maps_fd, _maps_buffer + len, _maps_len - len))) {
 				_maps_buffer[len] = '\0';
@@ -357,7 +357,7 @@ static void _unlock_mem(struct cmd_context *cmd)
 		if (_mstats < unlock_mstats) {
 			if ((_mstats + lvm_getpagesize()) < unlock_mstats)
 				log_error(INTERNAL_ERROR
-					  "Maps lock %ld < unlock %ld",
+					  "Reserved memory (%ld) not enough: used %ld. Increase activation/reserved_memory?",
 					  (long)_mstats, (long)unlock_mstats);
 			else
 				/* FIXME Believed due to incorrect use of yes_no_prompt while locks held */
@@ -445,9 +445,10 @@ void memlock_dec_daemon(struct cmd_context *cmd)
 
 void memlock_init(struct cmd_context *cmd)
 {
-	_size_stack = find_config_tree_int(cmd,
-				      "activation/reserved_stack",
-				      DEFAULT_RESERVED_STACK) * 1024;
+	/* When threaded, caller already limited stack size so just use the default. */
+	_size_stack = 1024 * (cmd->threaded ? DEFAULT_RESERVED_STACK :
+					      find_config_tree_int(cmd, "activation/reserved_stack",
+								   DEFAULT_RESERVED_STACK));
 	_size_malloc_tmp = find_config_tree_int(cmd,
 					   "activation/reserved_memory",
 					   DEFAULT_RESERVED_MEMORY) * 1024;

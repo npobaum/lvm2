@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2002-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004-2011 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2012 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -25,6 +25,8 @@ struct cmd_context;
 struct dev_manager;
 struct dm_info;
 struct device;
+
+int read_only_lv(struct logical_volume *lv, struct lv_activate_opts *laopts);
 
 /*
  * Constructor and destructor.
@@ -52,6 +54,15 @@ int dev_manager_snapshot_percent(struct dev_manager *dm,
 int dev_manager_mirror_percent(struct dev_manager *dm,
 			       const struct logical_volume *lv, int wait,
 			       percent_t *percent, uint32_t *event_nr);
+int dev_manager_thin_pool_status(struct dev_manager *dm,
+				 const struct logical_volume *lv,
+				 struct dm_status_thin_pool **status);
+int dev_manager_thin_pool_percent(struct dev_manager *dm,
+				  const struct logical_volume *lv,
+				  int metadata, percent_t *percent);
+int dev_manager_thin_percent(struct dev_manager *dm,
+			     const struct logical_volume *lv,
+			     int mapped, percent_t *percent);
 int dev_manager_suspend(struct dev_manager *dm, struct logical_volume *lv,
 			struct lv_activate_opts *laopts, int lockfs, int flush_required);
 int dev_manager_activate(struct dev_manager *dm, struct logical_volume *lv,

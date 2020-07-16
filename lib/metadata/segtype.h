@@ -20,11 +20,11 @@
 
 struct segtype_handler;
 struct cmd_context;
-struct config_tree;
+struct dm_config_tree;
 struct lv_segment;
 struct lv_activate_opts;
 struct formatter;
-struct config_node;
+struct dm_config_node;
 struct dev_manager;
 
 /* Feature flags */
@@ -39,15 +39,21 @@ struct dev_manager;
 #define SEG_REPLICATOR		0x00000100U
 #define SEG_REPLICATOR_DEV	0x00000200U
 #define SEG_RAID		0x00000400U
+#define SEG_THIN_POOL		0x00000800U
+#define SEG_THIN_VOLUME		0x00001000U
 #define SEG_UNKNOWN		0x80000000U
 
 #define seg_is_mirrored(seg)	((seg)->segtype->flags & SEG_AREAS_MIRRORED ? 1 : 0)
 #define seg_is_replicator(seg)	((seg)->segtype->flags & SEG_REPLICATOR ? 1 : 0)
 #define seg_is_replicator_dev(seg) ((seg)->segtype->flags & SEG_REPLICATOR_DEV ? 1 : 0)
 #define seg_is_striped(seg)	((seg)->segtype->flags & SEG_AREAS_STRIPED ? 1 : 0)
+#define     seg_is_linear(seg)  (seg_is_striped(seg) && ((seg)->area_count == 1))
 #define seg_is_snapshot(seg)	((seg)->segtype->flags & SEG_SNAPSHOT ? 1 : 0)
 #define seg_is_virtual(seg)	((seg)->segtype->flags & SEG_VIRTUAL ? 1 : 0)
 #define seg_is_raid(seg)	((seg)->segtype->flags & SEG_RAID ? 1 : 0)
+#define seg_is_thin(seg)	((seg)->segtype->flags & (SEG_THIN_POOL|SEG_THIN_VOLUME) ? 1 : 0)
+#define seg_is_thin_pool(seg)	((seg)->segtype->flags & SEG_THIN_POOL ? 1 : 0)
+#define seg_is_thin_volume(seg)	((seg)->segtype->flags & SEG_THIN_VOLUME ? 1 : 0)
 #define seg_can_split(seg)	((seg)->segtype->flags & SEG_CAN_SPLIT ? 1 : 0)
 #define seg_cannot_be_zeroed(seg) ((seg)->segtype->flags & SEG_CANNOT_BE_ZEROED ? 1 : 0)
 #define seg_monitored(seg)	((seg)->segtype->flags & SEG_MONITORED ? 1 : 0)
@@ -56,6 +62,9 @@ struct dev_manager;
 #define segtype_is_striped(segtype)	((segtype)->flags & SEG_AREAS_STRIPED ? 1 : 0)
 #define segtype_is_mirrored(segtype)	((segtype)->flags & SEG_AREAS_MIRRORED ? 1 : 0)
 #define segtype_is_raid(segtype)	((segtype)->flags & SEG_RAID ? 1 : 0)
+#define segtype_is_thin(segtype)	((segtype)->flags & (SEG_THIN_POOL|SEG_THIN_VOLUME) ? 1 : 0)
+#define segtype_is_thin_pool(segtype)	((segtype)->flags & SEG_THIN_POOL ? 1 : 0)
+#define segtype_is_thin_volume(segtype)	((segtype)->flags & SEG_THIN_VOLUME ? 1 : 0)
 #define segtype_is_virtual(segtype)	((segtype)->flags & SEG_VIRTUAL ? 1 : 0)
 
 struct segment_type {
@@ -79,10 +88,10 @@ struct segtype_handler {
 	void (*display) (const struct lv_segment * seg);
 	int (*text_export) (const struct lv_segment * seg,
 			    struct formatter * f);
-	int (*text_import_area_count) (const struct config_node * sn,
+	int (*text_import_area_count) (const struct dm_config_node * sn,
 				       uint32_t *area_count);
 	int (*text_import) (struct lv_segment * seg,
-			    const struct config_node * sn,
+			    const struct dm_config_node * sn,
 			    struct dm_hash_table * pv_hash);
 	int (*merge_segments) (struct lv_segment * seg1,
 			       struct lv_segment * seg2);
@@ -127,21 +136,15 @@ struct segment_type *init_free_segtype(struct cmd_context *cmd);
 struct segment_type *init_unknown_segtype(struct cmd_context *cmd,
 					  const char *name);
 #ifdef RAID_INTERNAL
-struct segment_type *init_raid1_segtype(struct cmd_context *cmd);
-struct segment_type *init_raid4_segtype(struct cmd_context *cmd);
-struct segment_type *init_raid5_segtype(struct cmd_context *cmd);
-struct segment_type *init_raid5_la_segtype(struct cmd_context *cmd);
-struct segment_type *init_raid5_ra_segtype(struct cmd_context *cmd);
-struct segment_type *init_raid5_ls_segtype(struct cmd_context *cmd);
-struct segment_type *init_raid5_rs_segtype(struct cmd_context *cmd);
-struct segment_type *init_raid6_segtype(struct cmd_context *cmd);
-struct segment_type *init_raid6_zr_segtype(struct cmd_context *cmd);
-struct segment_type *init_raid6_nr_segtype(struct cmd_context *cmd);
-struct segment_type *init_raid6_nc_segtype(struct cmd_context *cmd);
+int init_raid_segtypes(struct cmd_context *cmd, struct segtype_library *seglib);
 #endif
 
 #ifdef REPLICATOR_INTERNAL
-int init_replicator_segtype(struct segtype_library *seglib);
+int init_replicator_segtype(struct cmd_context *cmd, struct segtype_library *seglib);
+#endif
+
+#ifdef THIN_INTERNAL
+int init_thin_segtypes(struct cmd_context *cmd, struct segtype_library *seglib);
 #endif
 
 #ifdef SNAPSHOT_INTERNAL
