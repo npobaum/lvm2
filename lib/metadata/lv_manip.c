@@ -965,8 +965,8 @@ static uint32_t _round_to_stripe_boundary(struct volume_group *vg, uint32_t exte
 	if ((size_rest = extents % stripes)) {
 		new_extents += extend ? stripes - size_rest : -size_rest;
 		log_print_unless_silent("Rounding size %s (%d extents) up to stripe boundary size %s (%d extents).",
-					display_size(vg->cmd, extents * vg->extent_size), extents,
-					display_size(vg->cmd, new_extents * vg->extent_size), new_extents);
+					display_size(vg->cmd, (uint64_t) extents * vg->extent_size), extents,
+					display_size(vg->cmd, (uint64_t) new_extents * vg->extent_size), new_extents);
 	}
 
 	return new_extents;
@@ -1579,7 +1579,7 @@ struct alloc_handle {
  * Returns log device size in extents, algorithm from kernel code
  */
 #define BYTE_SHIFT 3
-static uint32_t mirror_log_extents(uint32_t region_size, uint32_t pe_size, uint32_t area_len)
+static uint32_t _mirror_log_extents(uint32_t region_size, uint32_t pe_size, uint32_t area_len)
 {
 	size_t area_size, bitset_size, log_size, region_count;
 
@@ -2114,7 +2114,7 @@ static int _match_pv_tags(const struct dm_config_node *cling_tag_list_cn,
 			else {
 				if (!pv_tags)
 					log_debug_alloc("Matched allocation PV tag %s on existing %s with free space on %s.",
-							tag_matched, pv_dev_name(pv1), pv_dev_name(pv2));
+							tag_matched, pv_dev_name(pv1), pv2 ? pv_dev_name(pv2) : "-");
 				else
 					log_debug_alloc("Eliminating allocation area %" PRIu32 " at PV %s start PE %" PRIu32
 							" from consideration: PV tag %s already used.",
@@ -2143,7 +2143,7 @@ static int _match_pv_tags(const struct dm_config_node *cling_tag_list_cn,
 			}
 			if (!pv_tags)
 				log_debug_alloc("Matched allocation PV tag %s on existing %s with free space on %s.",
-						str, pv_dev_name(pv1), pv_dev_name(pv2));
+						str, pv_dev_name(pv1), pv2 ? pv_dev_name(pv2) : "-");
 			else
 				log_debug_alloc("Eliminating allocation area %" PRIu32 " at PV %s start PE %" PRIu32
 						" from consideration: PV tag %s already used.",
@@ -3138,7 +3138,6 @@ int lv_add_virtual_segment(struct logical_volume *lv, uint64_t status,
  * If log_area_count > 1 it is always mirrored (not striped).
  */
 static struct alloc_handle *_alloc_init(struct cmd_context *cmd,
-					struct dm_pool *mem,
 					const struct segment_type *segtype,
 					alloc_policy_t alloc, int approx_alloc,
 					uint32_t existing_extents,
@@ -3150,6 +3149,7 @@ static struct alloc_handle *_alloc_init(struct cmd_context *cmd,
 					uint32_t region_size,
 					struct dm_list *parallel_areas)
 {
+	struct dm_pool *mem;
 	struct alloc_handle *ah;
 	uint32_t s, area_count, alloc_count, parity_count, total_extents;
 	size_t size = 0;
@@ -3164,6 +3164,12 @@ static struct alloc_handle *_alloc_init(struct cmd_context *cmd,
 		area_count = mirrors * stripes;
 	else
 		area_count = stripes;
+
+	if (!segtype_is_virtual(segtype) &&
+	    !(area_count + metadata_area_count)) {
+		log_error(INTERNAL_ERROR "_alloc_init called for non-virtual segment with no disk space.");
+		return NULL;
+	}
 
 	size = sizeof(*ah);
 
@@ -3193,25 +3199,22 @@ static struct alloc_handle *_alloc_init(struct cmd_context *cmd,
 
 	size += sizeof(ah->alloced_areas[0]) * alloc_count;
 
+	if (!(mem = dm_pool_create("allocation", 1024))) {
+		log_error("allocation pool creation failed");
+		return NULL;
+	}
+
 	if (!(ah = dm_pool_zalloc(mem, size))) {
 		log_error("allocation handle allocation failed");
+		dm_pool_destroy(mem);
 		return NULL;
 	}
 
 	ah->cmd = cmd;
+	ah->mem = mem;
 
 	if (segtype_is_virtual(segtype))
 		return ah;
-
-	if (!(area_count + metadata_area_count)) {
-		log_error(INTERNAL_ERROR "_alloc_init called for non-virtual segment with no disk space.");
-		return NULL;
-	}
-
-	if (!(ah->mem = dm_pool_create("allocation", 1024))) {
-		log_error("allocation pool creation failed");
-		return NULL;
-	}
 
 	ah->area_count = area_count;
 	ah->parity_count = parity_count;
@@ -3281,12 +3284,15 @@ static struct alloc_handle *_alloc_init(struct cmd_context *cmd,
 	} else {
 		ah->log_area_count = metadata_area_count;
 		ah->log_len = !metadata_area_count ? 0 :
-			mirror_log_extents(ah->region_size, extent_size,
-					   (existing_extents + total_extents) / ah->area_multiple);
+			_mirror_log_extents(ah->region_size, extent_size,
+					    (existing_extents + new_extents) / ah->area_multiple);
 	}
 
 	log_debug("Adjusted allocation request to %" PRIu32 " logical extents. Existing size %" PRIu32 ". New size %" PRIu32 ".",
 		  total_extents, existing_extents, total_extents + existing_extents);
+	if (ah->log_len)
+		log_debug("Mirror log of %" PRIu32 " extents of size %" PRIu32 "sectors needed for region size %" PRIu32  ".",
+			  ah->log_len, extent_size, ah->region_size);
 
 	if (mirrors || stripes)
 		total_extents += existing_extents;
@@ -3310,8 +3316,7 @@ static struct alloc_handle *_alloc_init(struct cmd_context *cmd,
 
 void alloc_destroy(struct alloc_handle *ah)
 {
-	if (ah->mem)
-		dm_pool_destroy(ah->mem);
+	dm_pool_destroy(ah->mem);
 }
 
 /*
@@ -3352,7 +3357,7 @@ struct alloc_handle *allocate_extents(struct volume_group *vg,
 	if (alloc >= ALLOC_INHERIT)
 		alloc = vg->alloc;
 
-	if (!(ah = _alloc_init(vg->cmd, vg->vgmem, segtype, alloc, approx_alloc,
+	if (!(ah = _alloc_init(vg->cmd, segtype, alloc, approx_alloc,
 			       lv ? lv->le_count : 0, extents, mirrors, stripes, log_count,
 			       vg->extent_size, region_size,
 			       parallel_areas)))
@@ -3713,8 +3718,7 @@ static int _lv_insert_empty_sublvs(struct logical_volume *lv,
 	uint32_t i;
 	uint64_t sub_lv_status = 0;
 	const char *layer_name;
-	size_t len = strlen(lv->name) + 32;
-	char img_name[len];
+	char img_name[NAME_LEN];
 	struct lv_segment *mapseg;
 
 	if (lv->le_count || !dm_list_empty(&lv->segments)) {
@@ -3740,7 +3744,8 @@ static int _lv_insert_empty_sublvs(struct logical_volume *lv,
 	if (!(mapseg = alloc_lv_segment(segtype, lv, 0, 0, lv->status,
 					stripe_size, NULL,
 					devices, 0, 0, region_size, 0, NULL))) {
-		log_error("Failed to create mapping segment for %s", lv->name);
+		log_error("Failed to create mapping segment for %s.",
+			  display_lvname(lv));
 		return 0;
 	}
 
@@ -3750,30 +3755,14 @@ static int _lv_insert_empty_sublvs(struct logical_volume *lv,
 	for (i = 0; i < devices; i++) {
 		/* Data LVs */
 		if (devices > 1) {
-			if (dm_snprintf(img_name, len, "%s_%s_%u",
+			if (dm_snprintf(img_name, sizeof(img_name), "%s_%s_%u",
 					lv->name, layer_name, i) < 0)
-				return_0;
+				goto_bad;
 		} else {
-			if (dm_snprintf(img_name, len, "%s_%s",
+			if (dm_snprintf(img_name, sizeof(img_name), "%s_%s",
 					lv->name, layer_name) < 0)
-				return_0;
+				goto_bad;
 		}
-
-		/* FIXME Should use ALLOC_INHERIT here and inherit from parent LV */
-		if (!(sub_lv = lv_create_empty(img_name, NULL,
-					 LVM_READ | LVM_WRITE,
-					 lv->alloc, lv->vg)))
-			return_0;
-
-		if (!set_lv_segment_area_lv(mapseg, i, sub_lv, 0, sub_lv_status))
-			return_0;
-
-		/* Metadata LVs for raid */
-		if (segtype_is_raid(segtype)) {
-			if (dm_snprintf(img_name, len, "%s_rmeta_%u", lv->name, i) < 0)
-				return_0;
-		} else
-			continue;
 
 		/* FIXME Should use ALLOC_INHERIT here and inherit from parent LV */
 		if (!(sub_lv = lv_create_empty(img_name, NULL,
@@ -3781,13 +3770,34 @@ static int _lv_insert_empty_sublvs(struct logical_volume *lv,
 					       lv->alloc, lv->vg)))
 			return_0;
 
-		if (!set_lv_segment_area_lv(mapseg, i, sub_lv, 0, RAID_META))
+		if (!set_lv_segment_area_lv(mapseg, i, sub_lv, 0, sub_lv_status))
+			return_0;
+
+		/* Metadata LVs for raid */
+		if (segtype_is_raid(segtype)) {
+			if (dm_snprintf(img_name, sizeof(img_name), "%s_rmeta_%u",
+					lv->name, i) < 0)
+				goto_bad;
+			/* FIXME Should use ALLOC_INHERIT here and inherit from parent LV */
+			if (!(sub_lv = lv_create_empty(img_name, NULL,
+						       LVM_READ | LVM_WRITE,
+						       lv->alloc, lv->vg)))
 				return_0;
+
+			if (!set_lv_segment_area_lv(mapseg, i, sub_lv, 0, RAID_META))
+				return_0;
+		}
 	}
 
 	dm_list_add(&lv->segments, &mapseg->list);
 
 	return 1;
+
+bad:
+	log_error("Failed to create sub LV name for LV %s.",
+		  display_lvname(lv));
+
+	return 0;
 }
 
 static int _lv_extend_layered_lv(struct alloc_handle *ah,
@@ -3875,8 +3885,8 @@ static int _lv_extend_layered_lv(struct alloc_handle *ah,
 				return 0;
 			}
 
-			log_verbose("Clearing metadata area of %s/%s",
-				    meta_lv->vg->name, meta_lv->name);
+			log_verbose("Clearing metadata area of %s",
+				    display_lvname(meta_lv));
 			/*
 			 * Rather than wiping meta_lv->size, we can simply
 			 * wipe '1' to remove the superblock of any previous
@@ -4008,13 +4018,12 @@ int lv_extend(struct logical_volume *lv,
 			dm_percent_t sync_percent = DM_PERCENT_INVALID;
 
 			if (!lv_is_active_locally(lv)) {
-				log_error("%s/%s is not active locally."
-					  "  Unable to get sync percent.",
-					  lv->vg->name, lv->name);
+				log_error("Unable to read sync percent while LV %s "
+					  "is not locally active.", display_lvname(lv));
 				/* FIXME Support --force */
 				if (yes_no_prompt("Do full resync of extended "
-						  "portion of %s/%s?  [y/n]: ",
-						  lv->vg->name, lv->name) == 'n') {
+						  "portion of %s?  [y/n]: ",
+						  display_lvname(lv)) == 'n') {
 					r = 0;
 					goto_out;
 				}
@@ -4023,19 +4032,18 @@ int lv_extend(struct logical_volume *lv,
 
 			if (!(r = lv_mirror_percent(lv->vg->cmd, lv, 0,
 						    &sync_percent, NULL))) {
-				log_error("Failed to get sync percent for %s/%s",
-					  lv->vg->name, lv->name);
+				log_error("Failed to get sync percent for %s.",
+					  display_lvname(lv));
 				goto out;
 			} else if (sync_percent == DM_PERCENT_100) {
 				log_verbose("Skipping initial resync for "
-					    "extended portion of %s/%s",
-					    lv->vg->name, lv->name);
+					    "extended portion of %s",
+					    display_lvname(lv));
 				init_mirror_in_sync(1);
 				lv->status |= LV_NOTSYNCED;
 			} else {
-				log_error("%s/%s cannot be extended while"
-					  " it is recovering.",
-					  lv->vg->name, lv->name);
+				log_error("LV %s cannot be extended while it "
+					  "is recovering.", display_lvname(lv));
 				r = 0;
 				goto out;
 			}
@@ -4050,7 +4058,7 @@ out:
 /*
  * Minimal LV renaming function.
  * Metadata transaction should be made by caller.
- * Assumes new_name is allocated from cmd->mem pool.
+ * Assumes new_name is allocated from lv->vgmem pool.
  */
 static int _rename_single_lv(struct logical_volume *lv, char *new_name)
 {
@@ -4146,7 +4154,7 @@ static int _for_each_sub_lv(struct logical_volume *lv, int skip_pools,
 	if (lv_is_cow(lv) && lv_is_virtual_origin(org = origin_from_cow(lv))) {
 		if (!fn(org, data))
 			return_0;
-		if (!for_each_sub_lv(org, fn, data))
+		if (!_for_each_sub_lv(org, skip_pools, fn, data))
 			return_0;
 	}
 
@@ -4154,21 +4162,21 @@ static int _for_each_sub_lv(struct logical_volume *lv, int skip_pools,
 		if (seg->log_lv) {
 			if (!fn(seg->log_lv, data))
 				return_0;
-			if (!for_each_sub_lv(seg->log_lv, fn, data))
+			if (!_for_each_sub_lv(seg->log_lv, skip_pools, fn, data))
 				return_0;
 		}
 
 		if (seg->metadata_lv) {
 			if (!fn(seg->metadata_lv, data))
 				return_0;
-			if (!for_each_sub_lv(seg->metadata_lv, fn, data))
+			if (!_for_each_sub_lv(seg->metadata_lv, skip_pools, fn, data))
 				return_0;
 		}
 
 		if (seg->pool_lv && !skip_pools) {
 			if (!fn(seg->pool_lv, data))
 				return_0;
-			if (!for_each_sub_lv(seg->pool_lv, fn, data))
+			if (!_for_each_sub_lv(seg->pool_lv, skip_pools, fn, data))
 				return_0;
 		}
 
@@ -4177,7 +4185,7 @@ static int _for_each_sub_lv(struct logical_volume *lv, int skip_pools,
 				continue;
 			if (!fn(seg_lv(seg, s), data))
 				return_0;
-			if (!for_each_sub_lv(seg_lv(seg, s), fn, data))
+			if (!_for_each_sub_lv(seg_lv(seg, s), skip_pools, fn, data))
 				return_0;
 		}
 
@@ -4190,7 +4198,7 @@ static int _for_each_sub_lv(struct logical_volume *lv, int skip_pools,
 				continue;
 			if (!fn(seg_metalv(seg, s), data))
 				return_0;
-			if (!for_each_sub_lv(seg_metalv(seg, s), fn, data))
+			if (!_for_each_sub_lv(seg_metalv(seg, s), skip_pools, fn, data))
 				return_0;
 		}
 	}
@@ -4222,8 +4230,12 @@ int lv_rename_update(struct cmd_context *cmd, struct logical_volume *lv,
 	struct volume_group *vg = lv->vg;
 	struct lv_names lv_names = { .old = lv->name };
 
-	/* rename is not allowed on sub LVs */
-	if (!lv_is_visible(lv)) {
+	/*
+	 * rename is not allowed on sub LVs except for pools
+	 * (thin pool is 'visible', but cache may not)
+	 */
+	if (!lv_is_pool(lv) &&
+	    !lv_is_visible(lv)) {
 		log_error("Cannot rename internal LV \"%s\".", lv->name);
 		return 0;
 	}
@@ -4238,18 +4250,6 @@ int lv_rename_update(struct cmd_context *cmd, struct logical_volume *lv,
 		log_error("Cannot rename locked LV %s", lv->name);
 		return 0;
 	}
-
-	/*
-	 * The lvmlockd LV lock is only acquired here to ensure the LV is not
-	 * active on another host.  This requests a transient LV lock.
-	 * If the LV is active, a persistent LV lock already exists in
-	 * lvmlockd, and the transient lock request does nothing.
-	 * If the LV is not active, then no LV lock exists and the transient
-	 * lock request acquires the LV lock (or fails).  The transient lock
-	 * is automatically released when the command exits.
-	 */
-	if (!lockd_lv(cmd, lv, "ex", 0))
-		return_0;
 
 	if (update_mda && !archive(vg))
 		return_0;
@@ -4269,7 +4269,7 @@ int lv_rename_update(struct cmd_context *cmd, struct logical_volume *lv,
 	if (lv_is_cow(lv))
 		lv = origin_from_cow(lv);
 
-	if (update_mda && !lv_update_and_reload(lv))
+	if (update_mda && !lv_update_and_reload((struct logical_volume *)lv_lock_holder(lv)))
 		return_0;
 
 	return 1;
@@ -4895,7 +4895,12 @@ static int _lvresize_adjust_extents(struct cmd_context *cmd, struct logical_volu
 			return 0;
 		}
 
-		if (!strcmp(mirr_seg->segtype->name, _lv_type_names[LV_TYPE_RAID10])) {
+		if (seg_is_raid10(mirr_seg)) {
+			if (!seg_mirrors) {
+				log_error(INTERNAL_ERROR "Missing mirror segments for %s.",
+					  display_lvname(lv));
+				return 0;
+			}
 			/* FIXME Warn if command line values are being overridden? */
 			lp->stripes = mirr_seg->area_count / seg_mirrors;
 			lp->stripe_size = mirr_seg->stripe_size;
@@ -4908,7 +4913,7 @@ static int _lvresize_adjust_extents(struct cmd_context *cmd, struct logical_volu
 				/* Allow through "striped" and RAID 4/5/6/10 */
 				if (!seg_is_striped(seg) &&
 				    (!seg_is_raid(seg) || seg_is_mirrored(seg)) &&
-				    strcmp(seg->segtype->name, _lv_type_names[LV_TYPE_RAID10]))
+				    !seg_is_raid10(seg))
 					continue;
 	
 				sz = seg->stripe_size;
@@ -5740,7 +5745,11 @@ int lv_remove_single(struct cmd_context *cmd, struct logical_volume *lv,
 			  lv->name);
 		return 0;
 	} else if (lv_is_thin_volume(lv)) {
-		pool_lv = first_seg(lv)->pool_lv;
+		if (!(pool_lv = first_seg(lv)->pool_lv)) {
+			log_error(INTERNAL_ERROR "Thin LV %s without pool.",
+				  display_lvname(lv));
+			return 0;
+		}
 		lock_lv = pool_lv;
 	}
 

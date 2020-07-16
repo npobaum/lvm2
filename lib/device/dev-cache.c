@@ -115,6 +115,7 @@ struct device *dev_create_file(const char *filename, struct device *dev,
 			}
 			if (!(alias->str = _strdup(filename))) {
 				log_error("filename strdup failed");
+				_free(dev);
 				return NULL;
 			}
 		}
@@ -818,23 +819,13 @@ int dev_cache_exit(void)
 		if ((num_open = _check_for_open_devices(1)) > 0)
 			log_error(INTERNAL_ERROR "%d device(s) were left open and have been closed.", num_open);
 
-	if (_cache.preferred_names_matcher)
-		_cache.preferred_names_matcher = NULL;
-
-	if (_cache.mem) {
+	if (_cache.mem)
 		dm_pool_destroy(_cache.mem);
-		_cache.mem = NULL;
-	}
 
-	if (_cache.names) {
+	if (_cache.names)
 		dm_hash_destroy(_cache.names);
-		_cache.names = NULL;
-	}
 
-	_cache.devices = NULL;
-	_cache.has_scanned = 0;
-	dm_list_init(&_cache.dirs);
-	dm_list_init(&_cache.files);
+	memset(&_cache, 0, sizeof(_cache));
 
 	return (!num_open);
 }

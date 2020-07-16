@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2002-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2015 Red Hat, Inc. All rights reserved.
  *
  * This file is part of the device-mapper userspace tools.
  *
@@ -175,8 +175,8 @@ static struct op_def _op_log[] = {
 };
 
 struct selection_str_list {
+	struct dm_str_list str_list;
 	unsigned type;			/* either SEL_AND or SEL_OR */
-	struct dm_list *list;
 };
 
 struct field_selection_value {
@@ -437,7 +437,8 @@ static int _report_field_string_list(struct dm_report *rh,
 	/* one item */
 	if (list_size == 1) {
 		sl = (struct dm_str_list *) dm_list_first(data);
-		if (!(sort_value->value = field->report_string = dm_pool_strdup(rh->mem, sl->str))) {
+		if (!sl ||
+		    !(sort_value->value = field->report_string = dm_pool_strdup(rh->mem, sl->str))) {
 			log_error("dm_report_field_string_list: dm_pool_strdup failed");
 			goto out;
 		}
@@ -948,7 +949,7 @@ static int _get_field(struct dm_report *rh, const char *field, size_t flen,
 		return 0;
 
 	if (!_get_canonical_field_name(field, flen, field_canon, DM_REPORT_FIELD_TYPE_ID_LEN, NULL))
-		return 0;
+		return_0;
 
 	for (f = 0; _implicit_report_fields[f].report_fn; f++) {
 		if (_is_same_field(_implicit_report_fields[f].id, field_canon, rh->field_prefix)) {
@@ -1062,7 +1063,7 @@ static int _key_match(struct dm_report *rh, const char *key, size_t len,
 	}
 
 	if (!_get_canonical_field_name(key, len, key_canon, DM_REPORT_FIELD_TYPE_ID_LEN, NULL))
-		return 0;
+		return_0;
 
 	for (f = 0; _implicit_report_fields[f].report_fn; f++)
 		if (_is_same_field(_implicit_report_fields[f].id, key_canon, rh->field_prefix))
@@ -1645,14 +1646,14 @@ static int _cmp_field_time(struct dm_report *rh,
 static int _cmp_field_string_list_strict_all(const struct str_list_sort_value *val,
 					     const struct selection_str_list *sel)
 {
-	unsigned int sel_list_size = dm_list_size(sel->list);
+	unsigned int sel_list_size = dm_list_size(&sel->str_list.list);
 	struct dm_str_list *sel_item;
 	unsigned int i = 1;
 
 	if (!val->items[0].len) {
 		if (sel_list_size == 1) {
 			/* match blank string list with selection defined as blank string only */
-			sel_item = dm_list_item(dm_list_first(sel->list), struct dm_str_list);
+			sel_item = dm_list_item(dm_list_first(&sel->str_list.list), struct dm_str_list);
 			return !strcmp(sel_item->str, "");
 		}
 		return 0;
@@ -1663,7 +1664,7 @@ static int _cmp_field_string_list_strict_all(const struct str_list_sort_value *v
 		return 0;
 
 	/* both lists are sorted so they either match 1:1 or not */
-	dm_list_iterate_items(sel_item, sel->list) {
+	dm_list_iterate_items(sel_item, &sel->str_list.list) {
 		if ((strlen(sel_item->str) != val->items[i].len) ||
 		    strncmp(sel_item->str, val->value + val->items[i].pos, val->items[i].len))
 			return 0;
@@ -1677,7 +1678,7 @@ static int _cmp_field_string_list_strict_all(const struct str_list_sort_value *v
 static int _cmp_field_string_list_subset_all(const struct str_list_sort_value *val,
 					     const struct selection_str_list *sel)
 {
-	unsigned int sel_list_size = dm_list_size(sel->list);
+	unsigned int sel_list_size = dm_list_size(&sel->str_list.list);
 	struct dm_str_list *sel_item;
 	unsigned int i, last_found = 1;
 	int r = 0;
@@ -1685,14 +1686,14 @@ static int _cmp_field_string_list_subset_all(const struct str_list_sort_value *v
 	if (!val->items[0].len) {
 		if (sel_list_size == 1) {
 			/* match blank string list with selection defined as blank string only */
-			sel_item = dm_list_item(dm_list_first(sel->list), struct dm_str_list);
+			sel_item = dm_list_item(dm_list_first(&sel->str_list.list), struct dm_str_list);
 			return !strcmp(sel_item->str, "");
 		}
 		return 0;
 	}
 
 	/* check selection is a subset of the value */
-	dm_list_iterate_items(sel_item, sel->list) {
+	dm_list_iterate_items(sel_item, &sel->str_list.list) {
 		r = 0;
 		for (i = last_found; i <= val->items[0].len; i++) {
 			if ((strlen(sel_item->str) == val->items[i].len) &&
@@ -1717,14 +1718,14 @@ static int _cmp_field_string_list_any(const struct str_list_sort_value *val,
 
 	/* match blank string list with selection that contains blank string */
 	if (!val->items[0].len) {
-		dm_list_iterate_items(sel_item, sel->list) {
+		dm_list_iterate_items(sel_item, &sel->str_list.list) {
 			if (!strcmp(sel_item->str, ""))
 				return 1;
 		}
 		return 0;
 	}
 
-	dm_list_iterate_items(sel_item, sel->list) {
+	dm_list_iterate_items(sel_item, &sel->str_list.list) {
 		/*
 		 * TODO: Optimize this so we don't need to compare the whole lists' content.
 		 *       Make use of the fact that the lists are sorted!
@@ -2218,7 +2219,7 @@ static const char *_tok_value_number(const char *s,
 	int is_float = 0;
 
 	*begin = s;
-	while ((!is_float && (*s == '.') && ((is_float = 1))) || isdigit(*s))
+	while ((!is_float && (*s == '.') && ++is_float) || isdigit(*s))
 		s++;
 	*end = s;
 
@@ -2309,7 +2310,7 @@ static const char *_reserved_name(struct dm_report *rh,
 	}
 
 	if (reserved->type & DM_REPORT_FIELD_RESERVED_VALUE_FUZZY_NAMES) {
-		handler = (dm_report_reserved_handler) frv ? frv->value : reserved->value;
+		handler = (dm_report_reserved_handler) (frv ? frv->value : reserved->value);
 		c = s[len];
 		tmp_s = (char *) s;
 		tmp_s[len] = '\0';
@@ -2576,12 +2577,11 @@ static const char *_tok_value_string_list(const struct dm_report_field_type *ft,
 	int list_end = 0;
 	char c;
 
-	if (!(ssl = dm_pool_alloc(mem, sizeof(*ssl))) ||
-	    !(ssl->list = dm_pool_alloc(mem, sizeof(*ssl->list)))) {
+	if (!(ssl = dm_pool_alloc(mem, sizeof(*ssl)))) {
 		log_error("_tok_value_string_list: memory allocation failed for selection list");
 		goto bad;
 	}
-	dm_list_init(ssl->list);
+	dm_list_init(&ssl->str_list.list);
 	ssl->type = 0;
 	*begin = s;
 
@@ -2592,7 +2592,7 @@ static const char *_tok_value_string_list(const struct dm_report_field_type *ft,
 			log_error(_str_list_item_parsing_failed, ft->id);
 			goto bad;
 		}
-		if (!_add_item_to_string_list(mem, begin_item, end_item, ssl->list))
+		if (!_add_item_to_string_list(mem, begin_item, end_item, &ssl->str_list.list))
 			goto_bad;
 		ssl->type = SEL_OR | SEL_LIST_LS;
 		goto out;
@@ -2649,7 +2649,7 @@ static const char *_tok_value_string_list(const struct dm_report_field_type *ft,
 				ssl->type = end_op_flag_hit;
 		}
 
-		if (!_add_item_to_string_list(mem, begin_item, end_item, ssl->list))
+		if (!_add_item_to_string_list(mem, begin_item, end_item, &ssl->str_list.list))
 			goto_bad;
 
 		s = tmp;
@@ -2670,7 +2670,7 @@ static const char *_tok_value_string_list(const struct dm_report_field_type *ft,
 		ssl->type |= SEL_LIST_SUBSET_LS;
 
 	/* Sort the list. */
-	if (!(list_size = dm_list_size(ssl->list))) {
+	if (!(list_size = dm_list_size(&ssl->str_list.list))) {
 		log_error(INTERNAL_ERROR "_tok_value_string_list: list has no items");
 		goto bad;
 	} else if (list_size == 1)
@@ -2681,23 +2681,26 @@ static const char *_tok_value_string_list(const struct dm_report_field_type *ft,
 	}
 
 	i = 0;
-	dm_list_iterate_items(item, ssl->list)
+	dm_list_iterate_items(item, &ssl->str_list.list)
 		arr[i++] = item;
 	qsort(arr, list_size, sizeof(item), _str_list_item_cmp);
-	dm_list_init(ssl->list);
+	dm_list_init(&ssl->str_list.list);
 	for (i = 0; i < list_size; i++)
-		dm_list_add(ssl->list, &arr[i]->list);
+		dm_list_add(&ssl->str_list.list, &arr[i]->list);
 
 	dm_free(arr);
 out:
 	*end = s;
-	*sel_str_list = ssl;
+        if (sel_str_list)
+		*sel_str_list = ssl;
+
 	return s;
 bad:
 	*end = s;
 	if (ssl)
 		dm_pool_free(mem, ssl);
-	*sel_str_list = NULL;
+        if (sel_str_list)
+		*sel_str_list = NULL;
 	return s;
 }
 
@@ -3208,7 +3211,9 @@ static const char *_tok_value(struct dm_report *rh,
 			break;
 
 		case DM_REPORT_FIELD_TYPE_STRING_LIST:
-			str_list = (struct selection_str_list **) custom;
+			if (!(str_list = (struct selection_str_list **) custom))
+				goto_bad;
+
 			s = _tok_value_string_list(ft, mem, s, begin, end, str_list);
 			if (!(*str_list)) {
 				log_error("Failed to parse string list value "
@@ -3229,8 +3234,6 @@ static const char *_tok_value(struct dm_report *rh,
 				return NULL;
 			}
 
-			factor = (uint64_t *) custom;
-
 			if (*s == DM_PERCENT_CHAR) {
 				s++;
 				c = DM_PERCENT_CHAR;
@@ -3241,24 +3244,29 @@ static const char *_tok_value(struct dm_report *rh,
 							"numeric" : "size", ft->id);
 					return NULL;
 				}
-			} else if ((*factor = dm_units_to_factor(s, &c, 0, &tmp))) {
-				s = tmp;
-				if (expected_type != DM_REPORT_FIELD_TYPE_SIZE) {
-					log_error("Found size unit specifier "
-						  "but %s value expected for "
-						  "selection field %s.",
-						  expected_type == DM_REPORT_FIELD_TYPE_NUMBER ?
-							"numeric" : "percent", ft->id);
-					return NULL;
+			} else {
+				if (!(factor = (uint64_t *) custom))
+					goto_bad;
+
+				if ((*factor = dm_units_to_factor(s, &c, 0, &tmp))) {
+					s = tmp;
+					if (expected_type != DM_REPORT_FIELD_TYPE_SIZE) {
+						log_error("Found size unit specifier "
+							  "but %s value expected for "
+							  "selection field %s.",
+							  expected_type == DM_REPORT_FIELD_TYPE_NUMBER ?
+							  "numeric" : "percent", ft->id);
+						return NULL;
+					}
+				} else if (expected_type == DM_REPORT_FIELD_TYPE_SIZE) {
+					/*
+					 * If size unit is not defined in the selection
+					 * and the type expected is size, use use 'm'
+					 * (1 MiB) for the unit by default. This is the
+					 * same behaviour as seen in lvcreate -L <size>.
+					 */
+					*factor = 1024*1024;
 				}
-			} else if (expected_type == DM_REPORT_FIELD_TYPE_SIZE) {
-				/*
-				 * If size unit is not defined in the selection
-				 * and the type expected is size, use use 'm'
-				 * (1 MiB) for the unit by default. This is the
-				 * same behaviour as seen in lvcreate -L <size>.
-				 */
-				*factor = 1024*1024;
 			}
 
 			*flags |= expected_type;
@@ -3270,7 +3278,9 @@ static const char *_tok_value(struct dm_report *rh,
 			break;
 
 		case DM_REPORT_FIELD_TYPE_TIME:
-			tval = (struct time_value *) custom;
+			if (!(tval = (struct time_value *) custom))
+				goto_bad;
+
 			if (!(s = _tok_value_time(ft, mem, s, begin, end, tval))) {
 				log_error("Failed to parse time value "
 					  "for selection field %s.", ft->id);
@@ -3287,6 +3297,10 @@ static const char *_tok_value(struct dm_report *rh,
 	}
 
 	return s;
+bad:
+	log_error(INTERNAL_ERROR "Forbidden NULL custom detected.");
+
+	return NULL;
 }
 
 /*
@@ -3409,7 +3423,8 @@ static struct field_selection *_create_field_selection(struct dm_report *rh,
 	}
 
 	if (((rvw->reserved && (rvw->reserved->type & DM_REPORT_FIELD_RESERVED_VALUE_RANGE)) ||
-	    (((flags & DM_REPORT_FIELD_TYPE_MASK) == DM_REPORT_FIELD_TYPE_TIME) && ((struct time_value *) custom)->range))
+	     (((flags & DM_REPORT_FIELD_TYPE_MASK) == DM_REPORT_FIELD_TYPE_TIME) &&
+	      custom && ((struct time_value *) custom)->range))
 		 &&
 	    !(fs->value->next = dm_pool_zalloc(rh->selection->mem, sizeof(struct field_selection_value)))) {
 		log_error(_field_selection_value_alloc_failed_msg, field_id);
@@ -3526,6 +3541,8 @@ static struct field_selection *_create_field_selection(struct dm_report *rh,
 				}
 				break;
 			case DM_REPORT_FIELD_TYPE_STRING_LIST:
+				if (!custom)
+                                        goto_bad;
 				fs->value->v.l = *(struct selection_str_list **)custom;
 				if (_check_value_is_strictly_reserved(rh, field_num, DM_REPORT_FIELD_TYPE_STRING_LIST, fs->value->v.l, NULL)) {
 					log_error("String list value found in selection is reserved.");
@@ -3538,7 +3555,8 @@ static struct field_selection *_create_field_selection(struct dm_report *rh,
 					if (rvw->reserved->type & DM_REPORT_FIELD_RESERVED_VALUE_RANGE)
 						fs->value->next->v.t = (((const time_t *) rvw->value)[1]);
 				} else {
-					tval = (struct time_value *) custom;
+					if (!(tval = (struct time_value *) custom))
+						goto_bad;
 					fs->value->v.t = tval->t1;
 					if (tval->range)
 						fs->value->next->v.t = tval->t2;
@@ -3556,8 +3574,11 @@ static struct field_selection *_create_field_selection(struct dm_report *rh,
 	}
 
 	return fs;
+bad:
+	log_error(INTERNAL_ERROR "Forbiden NULL custom detected.");
 error:
 	dm_pool_free(rh->selection->mem, fs);
+
 	return NULL;
 }
 

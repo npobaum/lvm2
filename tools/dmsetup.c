@@ -401,15 +401,18 @@ static int _task_run(struct dm_task *dmt)
 {
 	int r;
 	uint64_t delta;
+	struct dm_timestamp *ts;
 
 	if (_initial_timestamp)
 		dm_task_set_record_timestamp(dmt);
 
 	r = dm_task_run(dmt);
 
-	if (_initial_timestamp) {
-		delta = dm_timestamp_delta(dm_task_get_ioctl_timestamp(dmt), _initial_timestamp);
-		log_debug("Timestamp: %7" PRIu64 ".%09" PRIu64 " seconds", delta / NSEC_PER_SEC, delta % NSEC_PER_SEC);
+	if (_initial_timestamp &&
+	    (ts = dm_task_get_ioctl_timestamp(dmt))) {
+		delta = dm_timestamp_delta(ts, _initial_timestamp);
+		log_debug("Timestamp: %7" PRIu64 ".%09" PRIu64 " seconds",
+			  delta / NSEC_PER_SEC, delta % NSEC_PER_SEC);
 	}
 
 	return r;
@@ -4582,7 +4585,8 @@ static int _stats_clear(CMD_ARGS)
 	region_id = (allregions) ? DM_STATS_REGIONS_ALL
 		     : (uint64_t) _int_args[REGION_ID_ARG];
 
-	dms = dm_stats_create(DM_STATS_PROGRAM_ID);
+	if (!(dms = dm_stats_create(DM_STATS_PROGRAM_ID)))
+                return_0;
 
 	if (!_bind_stats_device(dms, name))
 		goto_out;
@@ -4831,7 +4835,9 @@ static int _stats_create(CMD_ARGS)
 	if (_switches[AUX_DATA_ARG])
 		aux_data = _string_args[AUX_DATA_ARG];
 
-	dms = dm_stats_create(DM_STATS_PROGRAM_ID);
+	if (!(dms = dm_stats_create(DM_STATS_PROGRAM_ID)))
+		return_0;
+
 	if (!_bind_stats_device(dms, name))
 		goto_bad;
 
@@ -4903,7 +4909,8 @@ static int _stats_delete(CMD_ARGS)
 
 	region_id = (uint64_t) _int_args[REGION_ID_ARG];
 
-	dms = dm_stats_create(program_id);
+	if (!(dms = dm_stats_create(program_id)))
+		return_0;
 
 	if (!_bind_stats_device(dms, name))
 		goto_out;
@@ -4965,7 +4972,8 @@ static int _stats_print(CMD_ARGS)
 
 	region_id = (uint64_t) _int_args[REGION_ID_ARG];
 
-	dms = dm_stats_create(DM_STATS_PROGRAM_ID);
+	if (!(dms = dm_stats_create(DM_STATS_PROGRAM_ID)))
+		return_0;
 
 	if (!_bind_stats_device(dms, name))
 		goto_out;
@@ -6125,7 +6133,7 @@ int main(int argc, char **argv)
 	int ret = 1, r;
 	const char *dev_dir;
 	const struct command *cmd;
-	const char *subcommand = NULL;
+	const char *subcommand = "";
 	int multiple_devices;
 
 	(void) setlocale(LC_ALL, "");
@@ -6220,8 +6228,7 @@ unknown:
 	if (cmd->has_subcommands) {
 		subcommand = argv[0];
 		argc--, argv++;
-	} else
-		subcommand = (char *) "";
+	}
 
 	if (_switches[COLS_ARG] && !_report_init(cmd, subcommand))
 		goto_out;

@@ -936,18 +936,18 @@ static int _vg_update_vg_precommitted(struct volume_group *vg)
 	return 1;
 }
 
-static int _vg_update_vg_ondisk(struct volume_group *vg)
+static int _vg_update_vg_committed(struct volume_group *vg)
 {
 	if (dm_pool_locked(vg->vgmem))
 		return 1;
 
-	if (vg->vg_ondisk || is_orphan_vg(vg->name)) /* we already have it */
+	if (vg->vg_committed || is_orphan_vg(vg->name)) /* we already have it */
 		return 1;
 
 	if (!_vg_update_vg_precommitted(vg))
 		return_0;
 
-	vg->vg_ondisk = vg->vg_precommitted;
+	vg->vg_committed = vg->vg_precommitted;
 	vg->vg_precommitted = NULL;
 	if (vg->cft_precommitted) {
 		dm_config_destroy(vg->cft_precommitted);
@@ -978,7 +978,7 @@ static struct volume_group *_vg_make_handle(struct cmd_context *cmd,
 	if (vg->read_status != failure)
 		vg->read_status = failure;
 
-	if (vg->fid && !_vg_update_vg_ondisk(vg))
+	if (vg->fid && !_vg_update_vg_committed(vg))
 		vg->read_status |= FAILED_ALLOCATION;
 
 	return vg;
@@ -1975,14 +1975,14 @@ struct lv_list *find_lv_in_lv_list(const struct dm_list *ll,
 	return NULL;
 }
 
-struct lv_list *find_lv_in_vg_by_lvid(struct volume_group *vg,
-				      const union lvid *lvid)
+struct logical_volume *find_lv_in_vg_by_lvid(struct volume_group *vg,
+					     const union lvid *lvid)
 {
 	struct lv_list *lvl;
 
 	dm_list_iterate_items(lvl, &vg->lvs)
 		if (!strncmp(lvl->lv->lvid.s, lvid->s, sizeof(*lvid)))
-			return lvl;
+			return lvl->lv;
 
 	return NULL;
 }
@@ -2254,7 +2254,7 @@ static int _lv_postorder_cleanup(struct logical_volume *lv, void *data)
 static int _lv_postorder_level(struct logical_volume *lv, void *data)
 {
 	struct _lv_postorder_baton *baton = data;
-	return _lv_postorder_visit(lv, baton->fn, baton->data);
+	return (data) ? _lv_postorder_visit(lv, baton->fn, baton->data) : 0;
 };
 
 static int _lv_postorder_visit(struct logical_volume *lv,
@@ -2346,7 +2346,7 @@ struct _lv_mark_if_partial_baton {
 static int _lv_mark_if_partial_collect(struct logical_volume *lv, void *data)
 {
 	struct _lv_mark_if_partial_baton *baton = data;
-	if (lv->status & PARTIAL_LV)
+	if (baton && lv->status & PARTIAL_LV)
 		baton->partial = 1;
 
 	return 1;
@@ -3206,8 +3206,8 @@ int vg_commit(struct volume_group *vg)
 		vg->old_name = NULL;
 
 		/* This *is* the original now that it's commited. */
-		release_vg(vg->vg_ondisk);
-		vg->vg_ondisk = vg->vg_precommitted;
+		release_vg(vg->vg_committed);
+		vg->vg_committed = vg->vg_precommitted;
 		vg->vg_precommitted = NULL;
 		if (vg->cft_precommitted) {
 			dm_config_destroy(vg->cft_precommitted);
@@ -3428,6 +3428,18 @@ static int _repair_inconsistent_vg(struct volume_group *vg)
 {
 	unsigned saved_handles_missing_pvs = vg->cmd->handles_missing_pvs;
 
+	/* Cannot write foreign VGs, the owner will repair it. */
+	if (vg->cmd->system_id && strcmp(vg->system_id, vg->cmd->system_id)) {
+		log_verbose("Skip metadata repair for foreign VG.");
+		return 0;
+	}
+
+	/* FIXME: do this at higher level where lvmlockd lock can be changed. */
+	if (is_lockd_type(vg->lock_type)) {
+		log_verbose("Skip metadata repair for shared VG.");
+		return 0;
+	}
+
 	vg->cmd->handles_missing_pvs = 1;
 	if (!vg_write(vg)) {
 		log_error("Automatic metadata correction failed");
@@ -3457,6 +3469,30 @@ static int _wipe_outdated_pvs(struct cmd_context *cmd, struct volume_group *vg, 
 {
 	struct pv_list *pvl, *pvl2;
 	char uuid[64] __attribute__((aligned(8)));
+
+	/*
+	 * Cannot write foreign VGs, the owner will repair it.
+	 * Also, if another host is updating its VG, we may read
+	 * the PVs while some are written but not others, making
+	 * some PVs look outdated to us just because we're reading
+	 * the VG while it's only partially written out.
+	 */
+	if (cmd->system_id && strcmp(vg->system_id, cmd->system_id)) {
+		log_debug_metadata("Skip wiping outdated PVs for foreign VG.");
+		return 0;
+	}
+
+	/*
+	 * FIXME: do this at higher level where lvmlockd lock can be changed.
+	 * Also if we're reading the VG with the --shared option (not using
+	 * lvmlockd), we can see a VG while it's being written by another
+	 * host, same as the foreign VG case.
+	 */
+	if (is_lockd_type(vg->lock_type)) {
+		log_debug_metadata("Skip wiping outdated PVs for shared VG.");
+		return 0;
+	}
+
 	dm_list_iterate_items(pvl, to_check) {
 		dm_list_iterate_items(pvl2, &vg->pvs) {
 			if (pvl->pv->dev == pvl2->pv->dev)
@@ -3581,8 +3617,16 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 	}
 
 	/* Now determine the correct vgname if none was supplied */
-	if (!vgname && !(vgname = lvmcache_vgname_from_vgid(cmd->mem, vgid)))
+	if (!vgname && !(vgname = lvmcache_vgname_from_vgid(cmd->mem, vgid))) {
+		log_debug_metadata("Cache did not find VG name from vgid %.32s", vgid);
 		return_NULL;
+	}
+
+	/* Determine the correct vgid if none was supplied */
+	if (!vgid && !(vgid = lvmcache_vgid_from_vgname(cmd, vgname))) {
+		log_debug_metadata("Cache did not find VG vgid from name %s", vgname);
+		return_NULL;
+	}
 
 	if (use_precommitted && !(fmt->features & FMT_PRECOMMIT))
 		use_precommitted = 0;
@@ -4098,7 +4142,7 @@ static struct volume_group *_vg_read_by_vgid(struct cmd_context *cmd,
 struct logical_volume *lv_from_lvid(struct cmd_context *cmd, const char *lvid_s,
 				    unsigned precommitted)
 {
-	struct lv_list *lvl;
+	struct logical_volume *lv;
 	struct volume_group *vg;
 	const union lvid *lvid;
 
@@ -4115,12 +4159,12 @@ struct logical_volume *lv_from_lvid(struct cmd_context *cmd, const char *lvid_s,
 		log_error("Volume group \"%s\" is exported", vg->name);
 		goto out;
 	}
-	if (!(lvl = find_lv_in_vg_by_lvid(vg, lvid))) {
+	if (!(lv = find_lv_in_vg_by_lvid(vg, lvid))) {
 		log_very_verbose("Can't find logical volume id %s", lvid_s);
 		goto out;
 	}
 
-	return lvl->lv;
+	return lv;
 out:
 	release_vg(vg);
 	return NULL;
@@ -4818,6 +4862,35 @@ static int _access_vg_lock_type(struct cmd_context *cmd, struct volume_group *vg
 	return 1;
 }
 
+int is_system_id_allowed(struct cmd_context *cmd, const char *system_id)
+{
+	/*
+	 * A VG without a system_id can be accessed by anyone.
+	 */
+	if (!system_id || !system_id[0])
+		return 1;
+
+	/*
+	 * Allowed if the host and VG system_id's match.
+	 */
+	if (cmd->system_id && !strcmp(cmd->system_id, system_id))
+		return 1;
+
+	/*
+	 * Allowed if a host's extra system_id matches.
+	 */
+	if (cmd->system_id && _allow_extra_system_id(cmd, system_id))
+		return 1;
+
+	/*
+	 * Not allowed if the host does not have a system_id
+	 * and the VG does, or if the host and VG's system_id's
+	 * do not match.
+	 */
+
+	return 0;
+}
+
 static int _access_vg_systemid(struct cmd_context *cmd, struct volume_group *vg)
 {
 	/*
@@ -4830,27 +4903,12 @@ static int _access_vg_systemid(struct cmd_context *cmd, struct volume_group *vg)
 	}
 
 	/*
-	 * A VG without a system_id can be accessed by anyone.
-	 */
-	if (!vg->system_id || !vg->system_id[0])
-		return 1;
-
-	/*
 	 * A few commands allow read-only access to foreign VGs.
 	 */
 	if (cmd->include_foreign_vgs)
 		return 1;
 
-	/*
-	 * A host can access a VG with a matching system_id.
-	 */
-	if (cmd->system_id && !strcmp(vg->system_id, cmd->system_id))
-		return 1;
-
-	/*
-	 * A host can access a VG if the VG's system_id is in extra_system_ids list.
-	 */
-	if (cmd->system_id && _allow_extra_system_id(cmd, vg->system_id))
+	if (is_system_id_allowed(cmd, vg->system_id))
 		return 1;
 
 	/*
@@ -4865,7 +4923,8 @@ static int _access_vg_systemid(struct cmd_context *cmd, struct volume_group *vg)
 	}
 
 	/*
-	 * A host without a system_id cannot access a VG with a system_id.
+	 * Print an error when reading a VG that has a system_id
+	 * and the host system_id is unknown.
 	 */
 	if (!cmd->system_id || cmd->unknown_system_id) {
 		log_error("Cannot access VG %s with system ID %s with unknown local system ID.",
@@ -5495,26 +5554,26 @@ char *tags_format_and_copy(struct dm_pool *mem, const struct dm_list *tagsl)
 	return dm_pool_end_object(mem);
 }
 
-const struct logical_volume *lv_ondisk(const struct logical_volume *lv)
+const struct logical_volume *lv_committed(const struct logical_volume *lv)
 {
 	struct volume_group *vg;
-	struct lv_list *lvl;
+	struct logical_volume *found_lv;
 
 	if (!lv)
 		return NULL;
 
-	if (!lv->vg->vg_ondisk)
+	if (!lv->vg->vg_committed)
 		return lv;
 
-	vg = lv->vg->vg_ondisk;
+	vg = lv->vg->vg_committed;
 
-	if (!(lvl = find_lv_in_vg_by_lvid(vg, &lv->lvid))) {
-		log_error(INTERNAL_ERROR "LV %s (UUID %s) not found in ondisk metadata.",
+	if (!(found_lv = find_lv_in_vg_by_lvid(vg, &lv->lvid))) {
+		log_error(INTERNAL_ERROR "LV %s (UUID %s) not found in committed metadata.",
 			  display_lvname(lv), lv->lvid.s);
 		return NULL;
 	}
 
-	return lvl->lv;
+	return found_lv;
 }
 
 /*

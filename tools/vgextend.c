@@ -52,6 +52,9 @@ static int _vgextend_restoremissing(struct cmd_context *cmd __attribute__((unuse
 	int fixed = 0;
 	int i;
 
+	if (!archive(vg))
+		return_0;
+
 	for (i = 0; i < vp->pv_count; i++)
 		if (_restore_pv(vg, vp->pv_names[i]))
 			fixed++;
@@ -87,6 +90,9 @@ static int _vgextend_single(struct cmd_context *cmd, const char *vg_name,
 		log_error("Volume group %s not changed", vg_name);
 		return ECMD_FAILED;
 	}
+
+	if (!archive(vg))
+		return_ECMD_FAILED;
 
 	if (!lock_vol(cmd, VG_ORPHANS, LCK_VG_WRITE, NULL)) {
 		log_error("Can't get lock for orphan PVs");
@@ -129,6 +135,7 @@ int vgextend(struct cmd_context *cmd, int argc, char **argv)
 	struct vgextend_params vp;
 	unsigned restoremissing = arg_is_set(cmd, restoremissing_ARG);
 	struct processing_handle *handle;
+	const char *one_vgname;
 	int ret;
 
 	if (!argc) {
@@ -136,6 +143,8 @@ int vgextend(struct cmd_context *cmd, int argc, char **argv)
 			  "physical volume(s)");
 		return EINVALID_CMD_LINE;
 	}
+
+	one_vgname = skip_dev_dir(cmd, argv[0], NULL);
 
 	if (arg_count(cmd, metadatacopies_ARG)) {
 		log_error("Invalid option --metadatacopies, "
@@ -169,7 +178,7 @@ int vgextend(struct cmd_context *cmd, int argc, char **argv)
 	if (!lockd_gl(cmd, "ex", 0))
 		return_ECMD_FAILED;
 
-	ret = process_each_vg(cmd, argc, argv,
+	ret = process_each_vg(cmd, 0, NULL, one_vgname,
 			      READ_FOR_UPDATE, handle,
 			      restoremissing ? &_vgextend_restoremissing : &_vgextend_single);
 

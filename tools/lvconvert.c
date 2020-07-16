@@ -199,6 +199,8 @@ static int _lvconvert_name_params(struct lvconvert_params *lp,
 	    !arg_count(cmd, splitmirrors_ARG) &&
 	    !strstr(lp->lv_name, "_tdata") &&
 	    !strstr(lp->lv_name, "_tmeta") &&
+	    !strstr(lp->lv_name, "_cdata") &&
+	    !strstr(lp->lv_name, "_cmeta") &&
 	    !apply_lvname_restrictions(lp->lv_name))
 		return_0;
 
@@ -242,7 +244,7 @@ static int _check_conversion_type(struct cmd_context *cmd, const char *type_str)
 
 	if (!strcmp(type_str, "mirror")) {
 		if (!arg_count(cmd, mirrors_ARG)) {
-			log_error("--type mirror requires -m/--mirrors");
+			log_error("Conversions to --type mirror require -m/--mirrors");
 			return 0;
 		}
 		return 1;
@@ -805,36 +807,32 @@ int lvconvert_poll(struct cmd_context *cmd, struct logical_volume *lv,
 static int _insert_lvconvert_layer(struct cmd_context *cmd,
 				   struct logical_volume *lv)
 {
-	char *format, *layer_name;
-	size_t len;
+	char format[NAME_LEN], layer_name[NAME_LEN];
 	int i;
 
 	/*
- 	 * We would like to give the same number for this layer
- 	 * and the newly added mimage.
- 	 * However, LV name of newly added mimage is determined *after*
+	 * We would like to give the same number for this layer
+	 * and the newly added mimage.
+	 * However, LV name of newly added mimage is determined *after*
 	 * the LV name of this layer is determined.
 	 *
 	 * So, use generate_lv_name() to generate mimage name first
 	 * and take the number from it.
 	 */
 
-	len = strlen(lv->name) + 32;
-	if (!(format = alloca(len)) ||
-	    !(layer_name = alloca(len)) ||
-	    dm_snprintf(format, len, "%s_mimage_%%d", lv->name) < 0) {
-		log_error("lvconvert: layer name allocation failed.");
+	if (dm_snprintf(format, sizeof(format), "%s_mimage_%%d", lv->name) < 0) {
+		log_error("lvconvert: layer name creation failed.");
 		return 0;
 	}
 
-	if (!generate_lv_name(lv->vg, format, layer_name, len) ||
+	if (!generate_lv_name(lv->vg, format, layer_name, sizeof(layer_name)) ||
 	    sscanf(layer_name, format, &i) != 1) {
 		log_error("lvconvert: layer name generation failed.");
 		return 0;
 	}
 
-	if (dm_snprintf(layer_name, len, MIRROR_SYNC_LAYER "_%d", i) < 0) {
-		log_error("layer name allocation failed.");
+	if (dm_snprintf(layer_name, sizeof(layer_name), MIRROR_SYNC_LAYER "_%d", i) < 0) {
+		log_error("layer name creation failed.");
 		return 0;
 	}
 
@@ -1736,6 +1734,11 @@ static int _lvconvert_raid(struct logical_volume *lv, struct lvconvert_params *l
 		return 0;
 	}
 
+	if (seg_is_linear(seg) && !lp->merge_mirror && !arg_count(cmd, mirrors_ARG)) {
+		log_error("Raid conversions require -m/--mirrors");
+		return 0;
+	}
+
 	/* Change number of RAID1 images */
 	if (arg_count(cmd, mirrors_ARG) || arg_count(cmd, splitmirrors_ARG)) {
 		image_count = lv_raid_image_count(lv);
@@ -2242,27 +2245,31 @@ static int _lvconvert_merge_thin_snapshot(struct cmd_context *cmd,
 	struct logical_volume *origin = snap_seg->origin;
 
 	if (!origin) {
-		log_error("\"%s\" is not a mergeable logical volume.",
-			  lv->name);
+		log_error("%s is not a mergeable logical volume.",
+			  display_lvname(lv));
 		return 0;
 	}
 
 	/* Check if merge is possible */
 	if (lv_is_merging_origin(origin)) {
 		log_error("Snapshot %s is already merging into the origin.",
-			  find_snapshot(origin)->lv->name);
+			  display_lvname(find_snapshot(origin)->lv));
 		return 0;
 	}
 
 	if (lv_is_external_origin(origin)) {
-		log_error("\"%s\" is read-only external origin \"%s\".",
-			  lv->name, origin_from_cow(lv)->name);
+		if (!(origin = origin_from_cow(lv)))
+			log_error(INTERNAL_ERROR "%s is missing origin.",
+				  display_lvname(lv));
+		else
+			log_error("%s is read-only external origin %s.",
+				  display_lvname(lv), display_lvname(origin));
 		return 0;
 	}
 
 	if (lv_is_origin(origin)) {
 		log_error("Merging into the old snapshot origin %s is not supported.",
-			  origin->name);
+			  display_lvname(origin));
 		return 0;
 	}
 
@@ -2292,7 +2299,8 @@ static int _lvconvert_merge_thin_snapshot(struct cmd_context *cmd,
 			goto_out;
 
 		if (origin_is_active && !activate_lv(cmd, lv)) {
-			log_error("Failed to reactivate origin %s.", lv->name);
+			log_error("Failed to reactivate origin %s.",
+				  display_lvname(lv));
 			goto out;
 		}
 
@@ -2317,9 +2325,9 @@ out:
 	return r;
 }
 
-static int _lvconvert_pool_repair(struct cmd_context *cmd,
-				  struct logical_volume *pool_lv,
-				  struct lvconvert_params *lp)
+static int _lvconvert_thin_pool_repair(struct cmd_context *cmd,
+				       struct logical_volume *pool_lv,
+				       struct lvconvert_params *lp)
 {
 	const char *dmdir = dm_dir();
 	const char *thin_dump =
@@ -2340,7 +2348,7 @@ static int _lvconvert_pool_repair(struct cmd_context *cmd,
 	struct pipe_data pdata;
 	FILE *f;
 
-	if (!thin_repair[0]) {
+	if (!thin_repair || !thin_repair[0]) {
 		log_error("Thin repair commnand is not configured. Repair is disabled.");
 		return 0; /* Checking disabled */
 	}
@@ -3267,7 +3275,12 @@ static int _lvconvert_single(struct cmd_context *cmd, struct logical_volume *lv,
 
 	if (arg_count(cmd, repair_ARG)) {
 		if (lv_is_pool(lv)) {
-			if (!_lvconvert_pool_repair(cmd, lv, lp))
+			if (lv_is_cache_pool(lv)) {
+				log_error("Repair for cache pool %s not yet implemented.",
+					  display_lvname(lv));
+				return ECMD_FAILED;
+			}
+			if (!_lvconvert_thin_pool_repair(cmd, lv, lp))
 				return_ECMD_FAILED;
 			return ECMD_PROCESSED;
 		}

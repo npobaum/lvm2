@@ -56,6 +56,7 @@ struct lvmcache_vginfo {
 	char _padding[7];
 	struct lvmcache_vginfo *next; /* Another VG with same name? */
 	char *creation_host;
+	char *system_id;
 	char *lock_type;
 	uint32_t mda_checksum;
 	size_t mda_size;
@@ -611,6 +612,23 @@ const char *lvmcache_vgname_from_vgid(struct dm_pool *mem, const char *vgid)
 		return dm_pool_strdup(mem, vgname);
 
 	return vgname;
+}
+
+const char *lvmcache_vgid_from_vgname(struct cmd_context *cmd, const char *vgname)
+{
+	struct lvmcache_vginfo *vginfo;
+
+	if (!(vginfo = dm_hash_lookup(_vgname_hash, vgname)))
+		return_NULL;
+
+	if (!vginfo->next)
+		return dm_pool_strdup(cmd->mem, vginfo->vgid);
+
+	/*
+	 * There are multiple VGs with this name to choose from.
+	 * Return an error because we don't know which VG is intended.
+	 */
+	return NULL;
 }
 
 static int _info_is_valid(struct lvmcache_info *info)
@@ -1241,6 +1259,15 @@ static int _insert_vginfo(struct lvmcache_vginfo *new_vginfo, const char *vgid,
 			return_0;
 
 		/*
+		 * vginfo is kept for each VG with the same name.
+		 * They are saved with the vginfo->next list.
+		 * These checks just decide the ordering of
+		 * that list.
+		 *
+		 * FIXME: it should no longer matter what order
+		 * the vginfo's are kept in, so we can probably
+		 * remove these comparisons and reordering entirely.
+		 *
 		 * If   Primary not exported, new exported => keep
 		 * Else Primary exported, new not exported => change
 		 * Else Primary has hostname for this machine => keep
@@ -1250,38 +1277,42 @@ static int _insert_vginfo(struct lvmcache_vginfo *new_vginfo, const char *vgid,
 		 */
 		if (!(primary_vginfo->status & EXPORTED_VG) &&
 		    (vgstatus & EXPORTED_VG))
-			log_warn("WARNING: Duplicate VG name %s: "
-				 "Existing %s takes precedence over "
-				 "exported %s", new_vginfo->vgname,
-				 uuid_primary, uuid_new);
+			log_verbose("Cache: Duplicate VG name %s: "
+				    "Existing %s takes precedence over "
+				    "exported %s", new_vginfo->vgname,
+				    uuid_primary, uuid_new);
 		else if ((primary_vginfo->status & EXPORTED_VG) &&
 			   !(vgstatus & EXPORTED_VG)) {
-			log_warn("WARNING: Duplicate VG name %s: "
-				 "%s takes precedence over exported %s",
-				 new_vginfo->vgname, uuid_new,
-				 uuid_primary);
+			log_verbose("Cache: Duplicate VG name %s: "
+				    "%s takes precedence over exported %s",
+				    new_vginfo->vgname, uuid_new,
+				    uuid_primary);
 			use_new = 1;
 		} else if (primary_vginfo->creation_host &&
 			   !strcmp(primary_vginfo->creation_host,
 				   primary_vginfo->fmt->cmd->hostname))
-			log_warn("WARNING: Duplicate VG name %s: "
-				 "Existing %s (created here) takes precedence "
-				 "over %s", new_vginfo->vgname, uuid_primary,
-				 uuid_new);
+			log_verbose("Cache: Duplicate VG name %s: "
+				    "Existing %s (created here) takes precedence "
+				    "over %s", new_vginfo->vgname, uuid_primary,
+				    uuid_new);
 		else if (!primary_vginfo->creation_host && creation_host) {
-			log_warn("WARNING: Duplicate VG name %s: "
-				 "%s (with creation_host) takes precedence over %s",
-				 new_vginfo->vgname, uuid_new,
-				 uuid_primary);
+			log_verbose("Cache: Duplicate VG name %s: "
+				    "%s (with creation_host) takes precedence over %s",
+				    new_vginfo->vgname, uuid_new,
+				    uuid_primary);
 			use_new = 1;
 		} else if (creation_host &&
 			   !strcmp(creation_host,
 				   primary_vginfo->fmt->cmd->hostname)) {
-			log_warn("WARNING: Duplicate VG name %s: "
-				 "%s (created here) takes precedence over %s",
-				 new_vginfo->vgname, uuid_new,
-				 uuid_primary);
+			log_verbose("Cache: Duplicate VG name %s: "
+				    "%s (created here) takes precedence over %s",
+				    new_vginfo->vgname, uuid_new,
+				    uuid_primary);
 			use_new = 1;
+		} else {
+			log_verbose("Cache: Duplicate VG name %s: "
+				    "Prefer existing %s vs new %s",
+				    new_vginfo->vgname, uuid_primary, uuid_new);
 		}
 
 		if (!use_new) {
@@ -1448,7 +1479,8 @@ static int _lvmcache_update_vgname(struct lvmcache_info *info,
 }
 
 static int _lvmcache_update_vgstatus(struct lvmcache_info *info, uint32_t vgstatus,
-				     const char *creation_host, const char *lock_type)
+				     const char *creation_host, const char *lock_type,
+				     const char *system_id)
 {
 	if (!info || !info->vginfo)
 		return 1;
@@ -1482,19 +1514,40 @@ static int _lvmcache_update_vgstatus(struct lvmcache_info *info, uint32_t vgstat
 set_lock_type:
 
 	if (!lock_type)
-		goto out;
+		goto set_system_id;
 
 	if (info->vginfo->lock_type && !strcmp(lock_type, info->vginfo->lock_type))
-		goto out;
+		goto set_system_id;
 
 	if (info->vginfo->lock_type)
 		dm_free(info->vginfo->lock_type);
 
 	if (!(info->vginfo->lock_type = dm_strdup(lock_type))) {
-		log_error("cache creation host alloc failed for %s",
-			  lock_type);
+		log_error("cache lock_type alloc failed for %s", lock_type);
 		return 0;
 	}
+
+	log_debug_cache("lvmcache: %s: VG %s: Set lock_type to %s.",
+			dev_name(info->dev), info->vginfo->vgname, lock_type);
+
+set_system_id:
+
+	if (!system_id)
+		goto out;
+
+	if (info->vginfo->system_id && !strcmp(system_id, info->vginfo->system_id))
+		goto out;
+
+	if (info->vginfo->system_id)
+		dm_free(info->vginfo->system_id);
+
+	if (!(info->vginfo->system_id = dm_strdup(system_id))) {
+		log_error("cache system_id alloc failed for %s", system_id);
+		return 0;
+	}
+
+	log_debug_cache("lvmcache: %s: VG %s: Set system_id to %s.",
+			dev_name(info->dev), info->vginfo->vgname, system_id);
 
 out:
 	return 1;
@@ -1561,7 +1614,7 @@ int lvmcache_update_vgname_and_id(struct lvmcache_info *info, struct lvmcache_vg
 	if (!_lvmcache_update_vgname(info, vgname, vgid, vgsummary->vgstatus,
 				     vgsummary->creation_host, info->fmt) ||
 	    !_lvmcache_update_vgid(info, info->vginfo, vgid) ||
-	    !_lvmcache_update_vgstatus(info, vgsummary->vgstatus, vgsummary->creation_host, vgsummary->lock_type) ||
+	    !_lvmcache_update_vgstatus(info, vgsummary->vgstatus, vgsummary->creation_host, vgsummary->lock_type, vgsummary->system_id) ||
 	    !_lvmcache_update_vg_mda_info(info, vgsummary->mda_checksum, vgsummary->mda_size))
 		return_0;
 
@@ -1577,6 +1630,7 @@ int lvmcache_update_vg(struct volume_group *vg, unsigned precommitted)
 		.vgname = vg->name,
 		.vgstatus = vg->status,
 		.vgid = vg->id,
+		.system_id = vg->system_id,
 		.lock_type = vg->lock_type
 	};
 
@@ -1784,9 +1838,9 @@ struct lvmcache_info *lvmcache_add(struct labeller *labeller, const char *pvid,
 				 * been chosen during a previous populating of
 				 * lvmcache, so just use the existing preferences.
 				 */
-				log_verbose("Found duplicate PV %s: using existing dev %s",
-					    pvid_s,
-					    dev_name(existing->dev));
+				log_warn("Found duplicate PV %s: using existing dev %s",
+					 pvid_s,
+					 dev_name(existing->dev));
 				return NULL;
 			}
 
@@ -2376,5 +2430,19 @@ void lvmcache_get_max_name_lengths(struct cmd_context *cmd,
 				*pv_max_name_len = len;
 		}
 	}
+}
+
+int lvmcache_vg_is_foreign(struct cmd_context *cmd, const char *vgname, const char *vgid)
+{
+	struct lvmcache_vginfo *vginfo;
+	int ret = 0;
+
+	if (lvmetad_active())
+		return lvmetad_vg_is_foreign(cmd, vgname, vgid);
+
+	if ((vginfo = lvmcache_vginfo_from_vgid(vgid)))
+		ret = !is_system_id_allowed(cmd, vginfo->system_id);
+
+	return ret;
 }
 

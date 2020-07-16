@@ -316,6 +316,15 @@ static int _lvmetad_handle_reply(daemon_reply reply, const char *action, const c
 		return 1;
 	}
 
+	/* Multiple VGs with the same name were found. */
+	if (found && !strcmp(daemon_reply_str(reply, "response", ""), "multiple")) {
+		log_very_verbose("Request to %s %s%sin lvmetad found multiple matching objects.",
+				 action, object, *object ? " " : "");
+		if (found)
+			*found = 2;
+		return 1;
+	}
+
 	log_error("Request to %s %s%sin lvmetad gave response %s. Reason: %s",
 		  action, object, *object ? " " : "", 
 		  daemon_reply_str(reply, "response", "<missing>"),
@@ -439,6 +448,14 @@ static int _pv_populate_lvmcache(struct cmd_context *cmd,
 
 	while (alt_device) {
 		dev_alternate = dev_cache_get_by_devt(alt_device->v.i, cmd->filter);
+
+		log_verbose("PV on device %s (%d:%d %d) is also on device %s (%d:%d %d) %s",
+			    dev_name(dev),
+			    (int)MAJOR(devt), (int)MINOR(devt), (int)devt,
+			    dev_alternate ? dev_name(dev_alternate) : "unknown",
+			    (int)MAJOR(alt_device->v.i), (int)MINOR(alt_device->v.i), (int)alt_device->v.i,
+			    pvid_txt);
+
 		if (dev_alternate) {
 			if ((info_alternate = lvmcache_add(fmt->labeller, (const char *)&pvid, dev_alternate,
 							   vgname, (const char *)&vgid, 0))) {
@@ -446,9 +463,6 @@ static int _pv_populate_lvmcache(struct cmd_context *cmd,
 				info = info_alternate;
 				lvmcache_get_label(info)->dev = dev_alternate;
 			}
-		} else {
-			log_warn("Duplicate of PV %s dev %s exists on unknown device %"PRId64 ":%" PRId64,
-				 pvid_txt, dev_name(dev), MAJOR(alt_device->v.i), MINOR(alt_device->v.i));
 		}
 		alt_device = alt_device->next;
 	}
@@ -506,21 +520,38 @@ struct volume_group *lvmetad_vg_lookup(struct cmd_context *cmd, const char *vgna
 	if (vgid) {
 		if (!id_write_format((const struct id*)vgid, uuid, sizeof(uuid)))
 			return_NULL;
-		log_debug_lvmetad("Asking lvmetad for VG %s (%s)", uuid, vgname ? : "name unknown");
+	}
+
+	if (vgid && vgname) {
+		log_debug_lvmetad("Asking lvmetad for VG %s %s", uuid, vgname);
+		reply = _lvmetad_send("vg_lookup",
+				      "uuid = %s", uuid,
+				      "name = %s", vgname,
+				      NULL);
+		diag_name = uuid;
+
+	} else if (vgid) {
+		log_debug_lvmetad("Asking lvmetad for VG vgid %s", uuid);
 		reply = _lvmetad_send("vg_lookup", "uuid = %s", uuid, NULL);
 		diag_name = uuid;
-	} else {
-		if (!vgname) {
-			log_error(INTERNAL_ERROR "VG name required (VGID not available)");
-			reply = _lvmetad_send("vg_lookup", "name = %s", "MISSING", NULL);
-			goto out;
-		}
+
+	} else if (vgname) {
 		log_debug_lvmetad("Asking lvmetad for VG %s", vgname);
 		reply = _lvmetad_send("vg_lookup", "name = %s", vgname, NULL);
 		diag_name = vgname;
+
+	} else {
+		log_error(INTERNAL_ERROR "VG name required (VGID not available)");
+		goto out;
 	}
 
 	if (_lvmetad_handle_reply(reply, "lookup VG", diag_name, &found) && found) {
+
+		if ((found == 2) && vgname) {
+			log_error("Multiple VGs found with the same name: %s.", vgname);
+			log_error("See the --select option with VG UUID (vg_uuid).");
+			goto out;
+		}
 
 		if (!(top = dm_config_find_node(reply.cft->root, "metadata"))) {
 			log_error(INTERNAL_ERROR "metadata config node not found.");
@@ -1167,16 +1198,17 @@ struct _lvmetad_pvscan_baton {
 static int _lvmetad_pvscan_single(struct metadata_area *mda, void *baton)
 {
 	struct _lvmetad_pvscan_baton *b = baton;
-	struct volume_group *this;
+	struct volume_group *vg;
 
-	if (!(this = mda_is_ignored(mda) ? NULL : mda->ops->vg_read(b->fid, "", mda, NULL, NULL, 1)))
+	if (mda_is_ignored(mda) ||
+	    !(vg = mda->ops->vg_read(b->fid, "", mda, NULL, NULL, 1)))
 		return 1;
 
 	/* FIXME Also ensure contents match etc. */
-	if (!b->vg || this->seqno > b->vg->seqno)
-		b->vg = this;
+	if (!b->vg || vg->seqno > b->vg->seqno)
+		b->vg = vg;
 	else if (b->vg)
-		release_vg(this);
+		release_vg(vg);
 
 	return 1;
 }
@@ -1305,6 +1337,7 @@ int lvmetad_pvscan_single(struct cmd_context *cmd, struct device *dev,
 	struct _lvmetad_pvscan_baton baton;
 	/* Create a dummy instance. */
 	struct format_instance_ctx fic = { .type = 0 };
+	struct metadata_area *mda;
 
 	if (!lvmetad_active()) {
 		log_error("Cannot proceed since lvmetad is not active.");
@@ -1348,8 +1381,12 @@ int lvmetad_pvscan_single(struct cmd_context *cmd, struct device *dev,
 	 * Note that the single_device parameter also gets ignored and this code
 	 * can scan further devices.
 	 */
-	if (!baton.vg && !(baton.fid->fmt->features & FMT_MDAS))
-		baton.vg = ((struct metadata_area *) dm_list_first(&baton.fid->metadata_areas_in_use))->ops->vg_read(baton.fid, lvmcache_vgname_from_info(info), NULL, NULL, NULL, 1);
+	if (!baton.vg && !(baton.fid->fmt->features & FMT_MDAS)) {
+		/* This code seems to be unreachable */
+		if ((mda = (struct metadata_area *)dm_list_first(&baton.fid->metadata_areas_in_use)))
+			baton.vg = mda->ops->vg_read(baton.fid, lvmcache_vgname_from_info(info),
+						     mda, NULL, NULL, 1);
+	}
 
 	if (!baton.vg)
 		lvmcache_fmt(info)->ops->destroy_instance(baton.fid);
@@ -1725,7 +1762,8 @@ void lvmetad_validate_global_cache(struct cmd_context *cmd, int force)
 	 * Update the local lvmetad cache so it correctly reflects any
 	 * changes made on remote hosts.
 	 */
-	lvmetad_pvscan_all_devs(cmd, NULL);
+	if (!lvmetad_pvscan_all_devs(cmd, NULL))
+		stack; /* FIXME: Anything more on this error path ? */
 
 	/*
 	 * Clear the global_invalid flag in lvmetad.
@@ -1735,7 +1773,7 @@ void lvmetad_validate_global_cache(struct cmd_context *cmd, int force)
 	 */
 	reply = daemon_send_simple(_lvmetad, "set_global_info",
 				   "token = %s", "skip",
-				   "global_invalid = %d", 0,
+				   "global_invalid = " FMTd64, INT64_C(0),
 				   NULL);
 	if (reply.error)
 		log_error("lvmetad_validate_global_cache set_global_info error %d", reply.error);
@@ -1770,3 +1808,29 @@ void lvmetad_validate_global_cache(struct cmd_context *cmd, int force)
 		_update_changed_pvs_in_udev(cmd, &pvc_before, &pvc_after);
 	}
 }
+
+int lvmetad_vg_is_foreign(struct cmd_context *cmd, const char *vgname, const char *vgid)
+{
+	daemon_reply reply;
+	struct dm_config_node *top;
+	const char *system_id = NULL;
+	char uuid[64];
+	int ret;
+
+	if (!id_write_format((const struct id*)vgid, uuid, sizeof(uuid)))
+		return_0;
+
+	reply = _lvmetad_send("vg_lookup",
+			      "uuid = %s", uuid,
+			      "name = %s", vgname,
+			       NULL);
+
+	if ((top = dm_config_find_node(reply.cft->root, "metadata")))
+		system_id = dm_config_find_str(top, "metadata/system_id", NULL);
+
+	ret = !is_system_id_allowed(cmd, system_id);
+
+	daemon_reply_destroy(reply);
+	return ret;
+}
+

@@ -1185,11 +1185,6 @@ void lv_release_replicator_vgs(const struct logical_volume *lv);
 
 struct logical_volume *find_pvmove_lv(struct volume_group *vg,
 				      struct device *dev, uint64_t lv_type);
-struct logical_volume *find_pvmove_lv_from_pvname(struct cmd_context *cmd,
-						  struct volume_group *vg,
-						  const char *name,
-						  const char *uuid,
-						  uint64_t lv_type);
 const struct logical_volume *find_pvmove_lv_in_lv(const struct logical_volume *lv);
 const char *get_pvmove_pvname_from_lv(const struct logical_volume *lv);
 const char *get_pvmove_pvname_from_lv_mirr(const struct logical_volume *lv_mirr);
@@ -1242,5 +1237,7 @@ int validate_vg_rename_params(struct cmd_context *cmd,
 			      const char *vg_name_new);
 
 int is_lockd_type(const char *lock_type);
+
+int is_system_id_allowed(struct cmd_context *cmd, const char *system_id);
 
 #endif

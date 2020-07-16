@@ -1,3 +1,27 @@
+Version 1.02.114 - 14th December 2015
+=====================================
+  Better support for dmsetup static linkage.
+  Extend validity checks on dmeventd client socket.
+
+Version 1.02.113 - 5th December 2015
+====================================
+  Mirror plugin in dmeventd uses dm_get_status_mirror().
+  Add dm_get_status_mirror() for parsing mirror status line.
+
+Version 1.02.112 - 28th November 2015
+=====================================
+  Show error message when trying to create unsupported raid type.
+  Improve preloading sequence of an active thin-pool target.
+  Drop extra space from cache target line to fix unneded table reloads.
+
+Version 1.02.111 - 23rd November 2015
+=====================================
+  Extend dm_hash to support multiple values with the same key.
+  Add missing check for allocation inside dm_split_lvm_name().
+  Test dm_task_get_message_response for !NULL in dm_stats_print_region().
+  Add checks for failing dm_stats_create() in dmsetup.
+  Add missing fifo close when failed to initialize client connection.
+
 Version 1.02.110 - 30th October 2015
 ====================================
   Disable thin monitoring plugin when it fails too often (>10 times).
