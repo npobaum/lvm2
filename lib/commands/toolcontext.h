@@ -57,22 +57,23 @@ struct cmd_context {
 	const struct format_type *fmt;	/* Current format to use by default */
 	struct format_type *fmt_backup;	/* Format to use for backups */
 
-	struct list formats;	/* Available formats */
-	struct list segtypes;	/* Available segment types */
+	struct dm_list formats;	/* Available formats */
+	struct dm_list segtypes;	/* Available segment types */
 	const char *hostname;
 	const char *kernel_vsn;
 
+	unsigned rand_seed;
 	char *cmd_line;
 	struct command *command;
-	struct arg *args;
 	char **argv;
-	unsigned is_static;	/* Static binary? */
-	unsigned is_long_lived;	/* Optimises persistent_filter handling */
+	unsigned is_long_lived:1;	/* Optimises persistent_filter handling */
+	unsigned handles_missing_pvs:1;
+	unsigned partial_activation:1;
 
 	struct dev_filter *filter;
 	int dump_filter;	/* Dump filter when exiting? */
 
-	struct list config_files;
+	struct dm_list config_files;
 	int config_valid;
 	struct config_tree *cft;
 	struct config_tree *cft_override;
@@ -81,17 +82,19 @@ struct cmd_context {
 
 	struct archive_params *archive_params;
 	struct backup_params *backup_params;
+	const char *stripe_filler;
 
 	/* List of defined tags */
-	struct list tags;
+	struct dm_list tags;
 	int hosttags;
 
 	char sys_dir[PATH_MAX];
 	char dev_dir[PATH_MAX];
 	char proc_dir[PATH_MAX];
+	char sysfs_dir[PATH_MAX];
 };
 
-struct cmd_context *create_toolcontext(struct arg *the_args, unsigned is_static, unsigned is_long_lived);
+struct cmd_context *create_toolcontext(unsigned is_long_lived);
 void destroy_toolcontext(struct cmd_context *cmd);
 int refresh_toolcontext(struct cmd_context *cmd);
 int config_files_changed(struct cmd_context *cmd);

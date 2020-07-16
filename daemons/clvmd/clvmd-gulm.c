@@ -44,9 +44,8 @@
 #include <ccs.h>
 #include <libgulm.h>
 
-#include "list.h"
 #include "locking.h"
-#include "log.h"
+#include "lvm-logging.h"
 #include "clvm.h"
 #include "clvmd-comms.h"
 #include "lvm-functions.h"

@@ -168,10 +168,7 @@ static int lvchange_availability(struct cmd_context *cmd,
 static int lvchange_refresh(struct cmd_context *cmd, struct logical_volume *lv)
 {
 	log_verbose("Refreshing logical volume \"%s\" (if active)", lv->name);
-	if (!suspend_lv(cmd, lv) || !resume_lv(cmd, lv))
-		return 0;
-
-	return 1;
+	return lv_refresh(cmd, lv);
 }
 
 static int lvchange_resync(struct cmd_context *cmd,
@@ -545,7 +542,7 @@ static int lvchange_tag(struct cmd_context *cmd, struct logical_volume *lv,
 static int lvchange_single(struct cmd_context *cmd, struct logical_volume *lv,
 			   void *handle __attribute((unused)))
 {
-	int doit = 0;
+	int doit = 0, docmds = 0;
 	int archived = 0;
 
 	if (!(lv->vg->status & LVM_WRITE) &&
@@ -590,14 +587,14 @@ static int lvchange_single(struct cmd_context *cmd, struct logical_volume *lv,
 		return ECMD_FAILED;
 	}
 
-	if (!(lv->status & VISIBLE_LV)) {
+	if (!(lv_is_displayable(lv))) {
 		log_error("Unable to change internal LV %s directly",
 			  lv->name);
 		return ECMD_FAILED;
 	}
 
 	init_dmeventd_monitor(arg_int_value(cmd, monitor_ARG,
-					    (cmd->is_static || arg_count(cmd, ignoremonitoring_ARG)) ?
+					    (is_static() || arg_count(cmd, ignoremonitoring_ARG)) ?
 					    DMEVENTD_MONITOR_IGNORE : DEFAULT_DMEVENTD_MONITOR));
 
 	/* access permission change */
@@ -606,6 +603,7 @@ static int lvchange_single(struct cmd_context *cmd, struct logical_volume *lv,
 			return ECMD_FAILED;
 		archived = 1;
 		doit += lvchange_permission(cmd, lv);
+		docmds++;
 	}
 
 	/* allocation policy change */
@@ -614,6 +612,7 @@ static int lvchange_single(struct cmd_context *cmd, struct logical_volume *lv,
 			return ECMD_FAILED;
 		archived = 1;
 		doit += lvchange_alloc(cmd, lv);
+		docmds++;
 	}
 
 	/* read ahead sector change */
@@ -622,6 +621,7 @@ static int lvchange_single(struct cmd_context *cmd, struct logical_volume *lv,
 			return ECMD_FAILED;
 		archived = 1;
 		doit += lvchange_readahead(cmd, lv);
+		docmds++;
 	}
 
 	/* read ahead sector change */
@@ -630,6 +630,7 @@ static int lvchange_single(struct cmd_context *cmd, struct logical_volume *lv,
 			return ECMD_FAILED;
 		archived = 1;
 		doit += lvchange_persistent(cmd, lv);
+		docmds++;
 		if (sigint_caught())
 			return ECMD_FAILED;
 	}
@@ -640,6 +641,7 @@ static int lvchange_single(struct cmd_context *cmd, struct logical_volume *lv,
 			return ECMD_FAILED;
 		archived = 1;
 		doit += lvchange_tag(cmd, lv, addtag_ARG);
+		docmds++;
 	}
 
 	/* del tag */
@@ -648,6 +650,7 @@ static int lvchange_single(struct cmd_context *cmd, struct logical_volume *lv,
 			return ECMD_FAILED;
 		archived = 1;
 		doit += lvchange_tag(cmd, lv, deltag_ARG);
+		docmds++;
 	}
 
 	if (doit)
@@ -673,6 +676,9 @@ static int lvchange_single(struct cmd_context *cmd, struct logical_volume *lv,
 		if (!lvchange_monitoring(cmd, lv))
 			return ECMD_FAILED;
 	}
+
+	if (doit != docmds)
+		return ECMD_FAILED;
 
 	return ECMD_PROCESSED;
 }

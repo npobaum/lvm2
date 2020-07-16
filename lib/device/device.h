@@ -33,7 +33,7 @@
  * pointer comparisons are valid.
  */
 struct device {
-	struct list aliases;	/* struct str_list from lvm-types.h */
+	struct dm_list aliases;	/* struct str_list from lvm-types.h */
 	dev_t dev;
 
 	/* private */
@@ -42,14 +42,14 @@ struct device {
 	int block_size;
 	uint32_t flags;
 	uint64_t end;
-	struct list open_list;
+	struct dm_list open_list;
 
 	char pvid[ID_LEN + 1];
 	char _padding[7];
 };
 
 struct device_list {
-	struct list list;
+	struct dm_list list;
 	struct device *dev;
 };
 
@@ -93,11 +93,7 @@ const char *dev_name_confirmed(struct device *dev, int quiet);
 
 /* Does device contain md superblock?  If so, where? */
 int dev_is_md(struct device *dev, uint64_t *sb);
-
-/* FIXME Check partition type if appropriate */
-
-#define is_lvm_partition(a) 1
-/* int is_lvm_partition(const char *name); */
+unsigned long dev_md_chunk_size(const char *sysfs_dir, struct device *dev);
 
 int is_partitioned_dev(struct device *dev);
 

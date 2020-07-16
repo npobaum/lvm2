@@ -24,7 +24,7 @@
 #include <libdevmapper.h>
 
 #include "lvm-types.h"
-#include "log.h"
+#include "lvm-logging.h"
 #include "activate.h"
 #include "archiver.h"
 #include "lvmcache.h"
@@ -39,7 +39,6 @@
 #include "filter-persistent.h"
 #include "filter-regex.h"
 #include "metadata-exported.h"
-#include "list.h"
 #include "locking.h"
 #include "lvm-exec.h"
 #include "lvm-file.h"

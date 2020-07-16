@@ -1011,7 +1011,7 @@ float find_config_tree_float(struct cmd_context *cmd, const char *path,
 	return _find_config_float(cmd->cft_override ? cmd->cft_override->root : NULL, cmd->cft->root, path, fail);
 }
 
-static int _str_in_array(const char *str, const char *values[])
+static int _str_in_array(const char *str, const char * const values[])
 {
 	int i;
 
@@ -1024,9 +1024,8 @@ static int _str_in_array(const char *str, const char *values[])
 
 static int _str_to_bool(const char *str, int fail)
 {
-	static const char *_true_values[] = { "y", "yes", "on", "true", NULL };
-	static const char *_false_values[] =
-	    { "n", "no", "off", "false", NULL };
+	const char * const _true_values[]  = { "y", "yes", "on", "true", NULL };
+	const char * const _false_values[] = { "n", "no", "off", "false", NULL };
 
 	if (_str_in_array(str, _true_values))
 		return 1;
@@ -1166,7 +1165,7 @@ static void _merge_section(struct config_node *cn1, struct config_node *cn2)
 	}
 }
 
-static int _match_host_tags(struct list *tags, struct config_node *tn)
+static int _match_host_tags(struct dm_list *tags, struct config_node *tn)
 {
 	struct config_value *tv;
 	const char *str;
@@ -1276,7 +1275,7 @@ unsigned maybe_config_section(const char *str, unsigned len)
 	begin_count = _count_tokens(str, len, TOK_SECTION_B);
 	end_count = _count_tokens(str, len, TOK_SECTION_E);
 
-	if (begin_count && end_count && (begin_count - end_count == 0))
+	if (begin_count && end_count && (begin_count == end_count))
 		return 1;
 	else
 		return 0;

@@ -53,6 +53,71 @@ static struct arg _the_args[ARG_COUNT + 1] = {
 
 static struct cmdline_context _cmdline;
 
+/* Command line args */
+/* FIXME: struct cmd_context * is unnecessary (large # files ) */
+unsigned arg_count(const struct cmd_context *cmd __attribute((unused)), int a)
+{
+	return _the_args[a].count;
+}
+
+const char *arg_value(struct cmd_context *cmd __attribute((unused)), int a)
+{
+	return _the_args[a].value;
+}
+
+const char *arg_str_value(struct cmd_context *cmd __attribute((unused)),
+			  int a, const char *def)
+{
+	return arg_count(cmd, a) ? _the_args[a].value : def;
+}
+
+int32_t arg_int_value(struct cmd_context *cmd __attribute((unused)),
+		      int a, const int32_t def)
+{
+	return arg_count(cmd, a) ? _the_args[a].i_value : def;
+}
+
+uint32_t arg_uint_value(struct cmd_context *cmd __attribute((unused)),
+			int a, const uint32_t def)
+{
+	return arg_count(cmd, a) ? _the_args[a].ui_value : def;
+}
+
+int64_t arg_int64_value(struct cmd_context *cmd __attribute((unused)),
+			int a, const int64_t def)
+{
+	return arg_count(cmd, a) ? _the_args[a].i64_value : def;
+}
+
+uint64_t arg_uint64_value(struct cmd_context *cmd __attribute((unused)),
+			  int a, const uint64_t def)
+{
+	return arg_count(cmd, a) ? _the_args[a].ui64_value : def;
+}
+
+const void *arg_ptr_value(struct cmd_context *cmd __attribute((unused)),
+			  int a, const void *def)
+{
+	return arg_count(cmd, a) ? _the_args[a].ptr : def;
+}
+
+sign_t arg_sign_value(struct cmd_context *cmd __attribute((unused)),
+		      int a, const sign_t def)
+{
+	return arg_count(cmd, a) ? _the_args[a].sign : def;
+}
+
+percent_t arg_percent_value(struct cmd_context *cmd __attribute((unused)),
+			    int a, const percent_t def)
+{
+	return arg_count(cmd, a) ? _the_args[a].percent : def;
+}
+
+int arg_count_increment(struct cmd_context *cmd __attribute((unused)), int a)
+{
+	return _the_args[a].count++;
+}
+
 int yes_no_arg(struct cmd_context *cmd __attribute((unused)), struct arg *a)
 {
 	a->sign = SIGN_NONE;
@@ -120,7 +185,7 @@ int metadatatype_arg(struct cmd_context *cmd, struct arg *a)
 
 	format = a->value;
 
-	list_iterate_items(fmt, &cmd->formats) {
+	dm_list_iterate_items(fmt, &cmd->formats) {
 		if (!strcasecmp(fmt->name, format) ||
 		    !strcasecmp(fmt->name + 3, format) ||
 		    (fmt->alias && !strcasecmp(fmt->alias, format))) {
@@ -483,7 +548,7 @@ void lvm_register_commands(void)
 static struct command *_find_command(const char *name)
 {
 	int i;
-	char *base;
+	const char *base;
 
 	base = last_path_component(name);
 
@@ -503,14 +568,17 @@ static void _short_usage(const char *name)
 	log_error("Run `%s --help' for more information.", name);
 }
 
-static void _usage(const char *name)
+static int _usage(const char *name)
 {
 	struct command *com = _find_command(name);
 
-	if (!com)
-		return;
+	if (!com) {
+		log_print("%s: no such command.", name);
+		return 0;
+	}
 
 	log_print("%s: %s\n\n%s", com->name, com->desc, com->usage);
+	return 1;
 }
 
 /*
@@ -710,13 +778,13 @@ static int _get_settings(struct cmd_context *cmd)
 	cmd->current_settings.archive = arg_int_value(cmd, autobackup_ARG, cmd->current_settings.archive);
 	cmd->current_settings.backup = arg_int_value(cmd, autobackup_ARG, cmd->current_settings.backup);
 	cmd->current_settings.cache_vgmetadata = cmd->command->flags & CACHE_VGMETADATA ? 1 : 0;
+	cmd->partial_activation = 0;
 
 	if (arg_count(cmd, partial_ARG)) {
-		init_partial(1);
+		cmd->partial_activation = 1;
 		log_print("Partial mode. Incomplete volume groups will "
 			  "be activated read-only.");
-	} else
-		init_partial(0);
+	}
 
 	if (arg_count(cmd, ignorelockingfailure_ARG))
 		init_ignorelockingfailure(1);
@@ -787,15 +855,18 @@ static void _display_help(void)
 
 int help(struct cmd_context *cmd __attribute((unused)), int argc, char **argv)
 {
+	int ret = ECMD_PROCESSED;
+
 	if (!argc)
 		_display_help();
 	else {
 		int i;
 		for (i = 0; i < argc; i++)
-			_usage(argv[i]);
+			if (!_usage(argv[i]))
+				ret = EINVALID_CMD_LINE;
 	}
 
-	return 0;
+	return ret;
 }
 
 static int _override_settings(struct cmd_context *cmd)
@@ -826,6 +897,7 @@ static void _apply_settings(struct cmd_context *cmd)
 
 	cmd->fmt = arg_ptr_value(cmd, metadatatype_ARG,
 				 cmd->current_settings.fmt);
+	cmd->handles_missing_pvs = 0;
 }
 
 static char *_copy_command_line(struct cmd_context *cmd, int argc, char **argv)
@@ -996,16 +1068,76 @@ int lvm_split(char *str, int *argc, char **argv, int max)
 	return *argc;
 }
 
-static void _init_rand(void)
+static const char *_get_cmdline(pid_t pid)
 {
-	srand((unsigned) time(NULL) + (unsigned) getpid());
+	static char _proc_cmdline[32];
+	char buf[256];
+	int fd;
+
+	snprintf(buf, sizeof(buf), DEFAULT_PROC_DIR "/%u/cmdline", pid);
+	if ((fd = open(buf, O_RDONLY)) > 0) {
+		read(fd, _proc_cmdline, sizeof(_proc_cmdline) - 1);
+		_proc_cmdline[sizeof(_proc_cmdline) - 1] = '\0';
+		close(fd);
+	} else
+		_proc_cmdline[0] = '\0';
+
+	return _proc_cmdline;
 }
 
-static void _close_stray_fds(void)
+static const char *_get_filename(int fd)
+{
+	static char filename[PATH_MAX];
+	char buf[32];	/* Assumes short DEFAULT_PROC_DIR */
+	int size;
+
+	snprintf(buf, sizeof(buf), DEFAULT_PROC_DIR "/self/fd/%u", fd);
+
+	if ((size = readlink(buf, filename, sizeof(filename) - 1)) == -1)
+		filename[0] = '\0';
+	else
+		filename[size] = '\0';
+
+	return filename;
+}
+
+static void _close_descriptor(int fd, unsigned suppress_warnings,
+			      const char *command, pid_t ppid,
+			      const char *parent_cmdline)
+{
+	int r;
+	const char *filename;
+
+	/* Ignore bad file descriptors */
+	if (fcntl(fd, F_GETFD) == -1 && errno == EBADF)
+		return;
+
+	if (!suppress_warnings)
+		filename = _get_filename(fd);
+
+	r = close(fd);
+	if (suppress_warnings)
+		return;
+
+	if (!r)
+		fprintf(stderr, "File descriptor %d (%s) leaked on "
+			"%s invocation.", fd, filename, command);
+	else if (errno == EBADF)
+		return;
+	else
+		fprintf(stderr, "Close failed on stray file descriptor "
+			"%d (%s): %s", fd, filename, strerror(errno));
+
+	fprintf(stderr, " Parent PID %" PRIpid_t ": %s\n", ppid, parent_cmdline);
+}
+
+static void _close_stray_fds(const char *command)
 {
 	struct rlimit rlim;
 	int fd;
-	int suppress_warnings = 0;
+	unsigned suppress_warnings = 0;
+	pid_t ppid = getppid();
+	const char *parent_cmdline = _get_cmdline(ppid);
 
 	if (getrlimit(RLIMIT_NOFILE, &rlim) < 0) {
 		fprintf(stderr, "getrlimit(RLIMIT_NOFILE) failed: %s\n",
@@ -1016,29 +1148,19 @@ static void _close_stray_fds(void)
 	if (getenv("LVM_SUPPRESS_FD_WARNINGS"))
 		suppress_warnings = 1;
 
-	for (fd = 3; fd < rlim.rlim_cur; fd++) {
-		if (suppress_warnings)
-			close(fd);
-		else if (!close(fd))
-			fprintf(stderr, "File descriptor %d left open\n", fd);
-		else if (errno != EBADF)
-			fprintf(stderr, "Close failed on stray file "
-				"descriptor %d: %s\n", fd, strerror(errno));
-	}
+	for (fd = 3; fd < rlim.rlim_cur; fd++)
+		_close_descriptor(fd, suppress_warnings, command, ppid,
+				  parent_cmdline);
 }
 
-struct cmd_context *init_lvm(unsigned is_static)
+struct cmd_context *init_lvm(void)
 {
 	struct cmd_context *cmd;
 
 	_cmdline.the_args = &_the_args[0];
 
-	if (!(cmd = create_toolcontext(_cmdline.the_args, is_static, 0)))
+	if (!(cmd = create_toolcontext(0)))
 		return_NULL;
-
-	_init_rand();
-
-	_apply_settings(cmd);
 
 	return cmd;
 }
@@ -1150,28 +1272,26 @@ static void _exec_lvm1_command(char **argv)
 	log_sys_error("execvp", path);
 }
 
-static void _nonroot_warning()
+static void _nonroot_warning(void)
 {
 	if (getuid() || geteuid())
 		log_warn("WARNING: Running as a non-root user. Functionality may be unavailable.");
 }
 
-int lvm2_main(int argc, char **argv, unsigned is_static)
+int lvm2_main(int argc, char **argv)
 {
-	char *base;
+	const char *base;
 	int ret, alias = 0;
 	struct cmd_context *cmd;
 
-	_close_stray_fds();
-
 	base = last_path_component(argv[0]);
-	while (*base == '/')
-		base++;
 	if (strcmp(base, "lvm") && strcmp(base, "lvm.static") &&
 	    strcmp(base, "initrd-lvm"))
 		alias = 1;
 
-	if (is_static && strcmp(base, "lvm.static") &&
+	_close_stray_fds(base);
+
+	if (is_static() && strcmp(base, "lvm.static") &&
 	    path_exists(LVM_SHARED_PATH) &&
 	    !getenv("LVM_DID_EXEC")) {
 		setenv("LVM_DID_EXEC", base, 1);
@@ -1179,7 +1299,7 @@ int lvm2_main(int argc, char **argv, unsigned is_static)
 		unsetenv("LVM_DID_EXEC");
 	}
 
-	if (!(cmd = init_lvm(is_static)))
+	if (!(cmd = init_lvm()))
 		return -1;
 
 	cmd->argv = argv;
