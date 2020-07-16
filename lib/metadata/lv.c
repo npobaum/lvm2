@@ -170,7 +170,7 @@ uint64_t lvseg_chunksize(const struct lv_segment *seg)
 
 	if (lv_is_cow(seg->lv))
 		size = (uint64_t) find_snapshot(seg->lv)->chunk_size;
-	else if (seg_is_thin_pool(seg))
+	else if (seg_is_thin_pool(seg) || seg_is_cache_pool(seg))
 		size = (uint64_t) seg->chunk_size;
 	else
 		size = UINT64_C(0);
@@ -201,6 +201,9 @@ char *lv_origin_dup(struct dm_pool *mem, const struct logical_volume *lv)
 {
 	if (lv_is_cow(lv))
 		return lv_name_dup(mem, origin_from_cow(lv));
+
+	if (lv_is_cache(lv) && first_seg(lv)->origin)
+		return lv_name_dup(mem, first_seg(lv)->origin);
 
 	if (lv_is_thin_volume(lv) && first_seg(lv)->origin)
 		return lv_name_dup(mem, first_seg(lv)->origin);
@@ -246,7 +249,8 @@ char *lv_pool_lv_dup(struct dm_pool *mem, const struct logical_volume *lv)
 	struct lv_segment *seg;
 
 	dm_list_iterate_items(seg, &lv->segments)
-		if (seg_is_thin_volume(seg) && seg->pool_lv)
+		if (seg->pool_lv &&
+		    (seg_is_thin_volume(seg) || seg_is_cache(seg)))
 			return dm_pool_strdup(mem, seg->pool_lv->name);
 
 	return NULL;
@@ -254,14 +258,16 @@ char *lv_pool_lv_dup(struct dm_pool *mem, const struct logical_volume *lv)
 
 char *lv_data_lv_dup(struct dm_pool *mem, const struct logical_volume *lv)
 {
-	struct lv_segment *seg = lv_is_thin_pool(lv) ? first_seg(lv) : NULL;
+	struct lv_segment *seg = (lv_is_thin_pool(lv) || lv_is_cache_pool(lv)) ?
+		first_seg(lv) : NULL;
 
 	return seg ? dm_pool_strdup(mem, seg_lv(seg, 0)->name) : NULL;
 }
 
 char *lv_metadata_lv_dup(struct dm_pool *mem, const struct logical_volume *lv)
 {
-	struct lv_segment *seg = lv_is_thin_pool(lv) ? first_seg(lv) : NULL;
+	struct lv_segment *seg = (lv_is_thin_pool(lv) || lv_is_cache_pool(lv)) ?
+		first_seg(lv) : NULL;
 
 	return seg ? dm_pool_strdup(mem, seg->metadata_lv->name) : NULL;
 }
@@ -338,7 +344,8 @@ uint64_t lv_origin_size(const struct logical_volume *lv)
 
 uint64_t lv_metadata_size(const struct logical_volume *lv)
 {
-	struct lv_segment *seg = lv_is_thin_pool(lv) ? first_seg(lv) : NULL;
+	struct lv_segment *seg = (lv_is_thin_pool(lv) || lv_is_cache_pool(lv)) ?
+		first_seg(lv) : NULL;
 
 	return seg ? seg->metadata_lv->size : 0;
 }
@@ -386,10 +393,14 @@ uint64_t lv_size(const struct logical_volume *lv)
 static int _lv_mimage_in_sync(const struct logical_volume *lv)
 {
 	percent_t percent;
-	struct lv_segment *mirror_seg = find_mirror_seg(first_seg(lv));
+	struct lv_segment *seg = first_seg(lv);
+	struct lv_segment *mirror_seg;
 
-	if (!(lv->status & MIRROR_IMAGE) || !mirror_seg)
-		return_0;
+	if (!(lv->status & MIRROR_IMAGE) || !seg ||
+	    !(mirror_seg = find_mirror_seg(seg))) {
+		log_error(INTERNAL_ERROR "Cannot find mirror segment.");
+		return 0;
+	}
 
 	if (!lv_mirror_percent(lv->vg->cmd, mirror_seg->lv, 0, &percent,
 			       NULL))
@@ -403,7 +414,7 @@ static int _lv_raid_image_in_sync(const struct logical_volume *lv)
 	unsigned s;
 	percent_t percent;
 	char *raid_health;
-	struct lv_segment *raid_seg;
+	struct lv_segment *seg, *raid_seg = NULL;
 
 	/*
 	 * If the LV is not active locally,
@@ -417,7 +428,8 @@ static int _lv_raid_image_in_sync(const struct logical_volume *lv)
 		return 0;
 	}
 
-	raid_seg = get_only_segment_using_this_lv(first_seg(lv)->lv);
+	if ((seg = first_seg(lv)))
+		raid_seg = get_only_segment_using_this_lv(seg->lv);
 	if (!raid_seg) {
 		log_error("Failed to find RAID segment for %s", lv->name);
 		return 0;
@@ -465,7 +477,7 @@ static int _lv_raid_healthy(const struct logical_volume *lv)
 {
 	unsigned s;
 	char *raid_health;
-	struct lv_segment *raid_seg;
+	struct lv_segment *seg, *raid_seg = NULL;
 
 	/*
 	 * If the LV is not active locally,
@@ -481,8 +493,8 @@ static int _lv_raid_healthy(const struct logical_volume *lv)
 
 	if (lv->status & RAID)
 		raid_seg = first_seg(lv);
-	else
-		raid_seg = get_only_segment_using_this_lv(first_seg(lv)->lv);
+	else if ((seg = first_seg(lv)))
+		raid_seg = get_only_segment_using_this_lv(seg->lv);
 
 	if (!raid_seg) {
 		log_error("Failed to find RAID segment for %s", lv->name);
@@ -546,6 +558,10 @@ char *lv_attr_dup(struct dm_pool *mem, const struct logical_volume *lv)
 	/* Origin takes precedence over mirror and thin volume */
 	else if (lv_is_origin(lv) || lv_is_external_origin(lv))
 		repstr[0] = (lv_is_merging_origin(lv)) ? 'O' : 'o';
+	else if (lv_is_cache_pool_metadata(lv))
+		repstr[0] = 'e';
+	else if (lv_is_cache_type(lv))
+		repstr[0] = 'C';
 	else if (lv_is_thin_pool_metadata(lv) ||
 		 lv_is_pool_metadata_spare(lv) ||
 		 (lv->status & RAID_META))
@@ -555,7 +571,8 @@ char *lv_attr_dup(struct dm_pool *mem, const struct logical_volume *lv)
 	else if (lv->status & MIRRORED)
 		repstr[0] = (lv->status & LV_NOTSYNCED) ? 'M' : 'm';
 	else if (lv_is_thin_volume(lv))
-		repstr[0] = 'V';
+		repstr[0] = lv_is_merging_origin(lv) ?
+			'O' : (lv_is_merging_thin_snapshot(lv) ? 'S' : 'V');
 	else if (lv->status & VIRTUAL)
 		repstr[0] = 'v';
 	else if (lv_is_thin_pool(lv))
@@ -637,6 +654,8 @@ char *lv_attr_dup(struct dm_pool *mem, const struct logical_volume *lv)
 
 	if (lv_is_thin_pool(lv) || lv_is_thin_volume(lv))
 		repstr[6] = 't';
+	else if (lv_is_cache_type(lv))
+		repstr[6] = 'C';
 	else if (lv_is_raid_type(lv))
 		repstr[6] = 'r';
 	else if (lv_is_mirror_type(lv))
@@ -740,7 +759,8 @@ static int _lv_is_exclusive(struct logical_volume *lv)
 	/* Some devices require exlusivness */
 	return seg_is_raid(first_seg(lv)) ||
 		lv_is_origin(lv) ||
-		lv_is_thin_type(lv);
+		lv_is_thin_type(lv) ||
+		lv_is_cache_type(lv);
 }
 
 int lv_active_change(struct cmd_context *cmd, struct logical_volume *lv,

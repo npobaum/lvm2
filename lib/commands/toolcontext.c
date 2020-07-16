@@ -1,6 +1,6 @@
-		/*
+/*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2012 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2014 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -269,12 +269,27 @@ static int _check_config(struct cmd_context *cmd)
 	}
 
 	cmd->cft_check_handle->cft = cmd->cft;
+	cmd->cft_check_handle->cmd = cmd;
 
-	if (!config_def_check(cmd, cmd->cft_check_handle) &&
+	if (!config_def_check(cmd->cft_check_handle) &&
 	    find_config_tree_bool(cmd, config_abort_on_errors_CFG, NULL)) {
 		log_error("LVM configuration invalid.");
 		return 0;
 	}
+
+	return 1;
+}
+
+int process_profilable_config(struct cmd_context *cmd) {
+	if (!(cmd->default_settings.unit_factor =
+	      units_to_bytes(find_config_tree_str(cmd, global_units_CFG, NULL),
+			     &cmd->default_settings.unit_type))) {
+		log_error("Invalid units specification");
+		return 0;
+	}
+
+	cmd->si_unit_consistency = find_config_tree_bool(cmd, global_si_unit_consistency_CFG, NULL);
+	cmd->default_settings.suffix = find_config_tree_bool(cmd, global_suffix_CFG, NULL);
 
 	return 1;
 }
@@ -337,15 +352,6 @@ static int _process_config(struct cmd_context *cmd)
 
 	cmd->auto_set_activation_skip = find_config_tree_bool(cmd, activation_auto_set_activation_skip_CFG, NULL);
 
-	cmd->default_settings.suffix = find_config_tree_bool(cmd, global_suffix_CFG, NULL);
-
-	if (!(cmd->default_settings.unit_factor =
-	      units_to_bytes(find_config_tree_str(cmd, global_units_CFG, NULL),
-			     &cmd->default_settings.unit_type))) {
-		log_error("Invalid units specification");
-		return 0;
-	}
-
 	read_ahead = find_config_tree_str(cmd, activation_readahead_CFG, NULL);
 	if (!strcasecmp(read_ahead, "auto"))
 		cmd->default_settings.read_ahead = DM_READ_AHEAD_AUTO;
@@ -407,8 +413,6 @@ static int _process_config(struct cmd_context *cmd)
 		}
 	}
 
-	cmd->si_unit_consistency = find_config_tree_bool(cmd, global_si_unit_consistency_CFG, NULL);
-
 	if ((cn = find_config_tree_node(cmd, activation_mlock_filter_CFG, NULL)))
 		for (cv = cn->v; cv; cv = cv->next) 
 			if ((cv->type != DM_CFG_STRING) || !cv->v.str[0]) 
@@ -424,6 +428,9 @@ static int _process_config(struct cmd_context *cmd)
 	}
 	/* LVM stores sizes internally in units of 512-byte sectors. */
 	init_pv_min_size((uint64_t)pv_min_kb * (1024 >> SECTOR_SHIFT));
+
+	if (!process_profilable_config(cmd))
+		return_0;
 
 	init_detect_internal_vg_cache_corruption
 		(find_config_tree_bool(cmd, global_detect_internal_vg_cache_corruption_CFG, NULL));
@@ -613,7 +620,6 @@ static int _init_tag_configs(struct cmd_context *cmd)
 
 static int _init_profiles(struct cmd_context *cmd)
 {
-	static char default_dir[PATH_MAX];
 	const char *dir;
 	struct profile_params *pp;
 
@@ -622,15 +628,8 @@ static int _init_profiles(struct cmd_context *cmd)
 		return 0;
 	}
 
-	if (!(dir = find_config_tree_str(cmd, config_profile_dir_CFG, NULL))) {
-		if (dm_snprintf(default_dir, sizeof(default_dir), "%s/%s",
-				cmd->system_dir, DEFAULT_PROFILE_SUBDIR) == -1) {
-			log_error("Couldn't create default profile path '%s/%s'.",
-				  cmd->system_dir, DEFAULT_PROFILE_SUBDIR);
-			return 0;
-		}
-		dir = default_dir;
-	}
+	if (!(dir = find_config_tree_str(cmd, config_profile_dir_CFG, NULL)))
+		return_0;
 
 	pp->dir = dm_pool_strdup(cmd->libmem, dir);
 	dm_list_init(&pp->profiles_to_load);
@@ -893,8 +892,7 @@ bad:
 
 static int _init_filters(struct cmd_context *cmd, unsigned load_persistent_cache)
 {
-	static char cache_file[PATH_MAX];
-	const char *dev_cache = NULL, *cache_dir, *cache_file_prefix;
+	const char *dev_cache;
 	struct dev_filter *f3 = NULL, *f4 = NULL, *toplevel_components[2] = { 0 };
 	struct stat st;
 	const struct dm_config_node *cn;
@@ -907,33 +905,8 @@ static int _init_filters(struct cmd_context *cmd, unsigned load_persistent_cache
 	init_ignore_suspended_devices(find_config_tree_bool(cmd, devices_ignore_suspended_devices_CFG, NULL));
 	init_ignore_lvm_mirrors(find_config_tree_bool(cmd, devices_ignore_lvm_mirrors_CFG, NULL));
 
-	/*
-	 * If 'cache_dir' or 'cache_file_prefix' is set, ignore 'cache'.
-	 */
-	cache_dir = find_config_tree_str(cmd, devices_cache_dir_CFG, NULL);
-	cache_file_prefix = find_config_tree_str(cmd, devices_cache_file_prefix_CFG, NULL);
-
-	if (cache_dir || cache_file_prefix) {
-		if (dm_snprintf(cache_file, sizeof(cache_file),
-		    "%s%s%s/%s.cache",
-		    cache_dir ? "" : cmd->system_dir,
-		    cache_dir ? "" : "/",
-		    cache_dir ? : DEFAULT_CACHE_SUBDIR,
-		    cache_file_prefix ? : DEFAULT_CACHE_FILE_PREFIX) < 0) {
-			log_error("Persistent cache filename too long.");
-			goto bad;
-		}
-	} else if (!(dev_cache = find_config_tree_str(cmd, devices_cache_CFG, NULL)) &&
-		   (dm_snprintf(cache_file, sizeof(cache_file),
-				"%s/%s/%s.cache",
-				cmd->system_dir, DEFAULT_CACHE_SUBDIR,
-				DEFAULT_CACHE_FILE_PREFIX) < 0)) {
-		log_error("Persistent cache filename too long.");
-		goto bad;
-	}
-
-	if (!dev_cache)
-		dev_cache = cache_file;
+	if (!(dev_cache = find_config_tree_str(cmd, devices_cache_CFG, NULL)))
+		goto_bad;
 
 	if (!(f4 = persistent_filter_create(cmd->dev_types, f3, dev_cache))) {
 		log_verbose("Failed to create persistent device filter.");
@@ -1181,6 +1154,11 @@ static int _init_segtypes(struct cmd_context *cmd)
 		return 0;
 #endif
 
+#ifdef CACHE_INTERNAL
+	if (!init_cache_segtypes(cmd, &seglib))
+		return 0;
+#endif
+
 #ifdef HAVE_LIBDL
 	/* Load any formats in shared libs unless static */
 	if (!is_static() &&
@@ -1259,7 +1237,6 @@ static int _init_hostname(struct cmd_context *cmd)
 
 static int _init_backup(struct cmd_context *cmd)
 {
-	static char default_dir[PATH_MAX];
 	uint32_t days, min;
 	const char *dir;
 
@@ -1278,16 +1255,8 @@ static int _init_backup(struct cmd_context *cmd)
 
 	min = (uint32_t) find_config_tree_int(cmd, backup_retain_min_CFG, NULL);
 
-	if (dm_snprintf
-	    (default_dir, sizeof(default_dir), "%s/%s", cmd->system_dir,
-	     DEFAULT_ARCHIVE_SUBDIR) == -1) {
-		log_error("Couldn't create default archive path '%s/%s'.",
-			  cmd->system_dir, DEFAULT_ARCHIVE_SUBDIR);
-		return 0;
-	}
-
 	if (!(dir = find_config_tree_str(cmd, backup_archive_dir_CFG, NULL)))
-		dir = default_dir;
+		return_0;
 
 	if (!archive_init(cmd, dir, days, min,
 			  cmd->default_settings.archive)) {
@@ -1298,16 +1267,8 @@ static int _init_backup(struct cmd_context *cmd)
 	/* set up the backup */
 	cmd->default_settings.backup = find_config_tree_bool(cmd, backup_backup_CFG, NULL);
 
-	if (dm_snprintf
-	    (default_dir, sizeof(default_dir), "%s/%s", cmd->system_dir,
-	     DEFAULT_BACKUP_SUBDIR) == -1) {
-		log_error("Couldn't create default backup path '%s/%s'.",
-			  cmd->system_dir, DEFAULT_BACKUP_SUBDIR);
-		return 0;
-	}
-
 	if (!(dir = find_config_tree_str(cmd, backup_backup_dir_CFG, NULL)))
-		dir = default_dir;
+		return_0;
 
 	if (!backup_init(cmd, dir, cmd->default_settings.backup)) {
 		log_debug("backup_init failed.");
@@ -1474,6 +1435,11 @@ struct cmd_context *create_toolcontext(unsigned is_long_lived,
 		goto out;
 	}
 
+	if (!(cmd->mem = dm_pool_create("command", 4 * 1024))) {
+		log_error("Command memory pool creation failed");
+		goto out;
+	}
+
 	if (!_init_lvm_conf(cmd))
 		goto_out;
 
@@ -1506,11 +1472,6 @@ struct cmd_context *create_toolcontext(unsigned is_long_lived,
 
 	if (!_init_filters(cmd, 1))
 		goto_out;
-
-	if (!(cmd->mem = dm_pool_create("command", 4 * 1024))) {
-		log_error("Command memory pool creation failed");
-		goto out;
-	}
 
 	memlock_init(cmd);
 
@@ -1635,7 +1596,7 @@ int refresh_toolcontext(struct cmd_context *cmd)
 	 */
 
 	activation_release();
-	lvmcache_destroy(cmd, 0);
+	lvmcache_destroy(cmd, 0, 0);
 	label_exit();
 	_destroy_segtypes(&cmd->segtypes);
 	_destroy_formats(cmd, &cmd->formats);
@@ -1643,7 +1604,8 @@ int refresh_toolcontext(struct cmd_context *cmd)
 		cmd->filter->destroy(cmd->filter);
 		cmd->filter = NULL;
 	}
-	dev_cache_exit();
+	if (!dev_cache_exit())
+		stack;
 	_destroy_dev_types(cmd);
 	_destroy_tags(cmd);
 
@@ -1654,8 +1616,10 @@ int refresh_toolcontext(struct cmd_context *cmd)
 
 	cmd->hosttags = 0;
 
+	cmd->lib_dir = NULL;
+
 	if (!_init_lvm_conf(cmd))
-		return 0;
+		return_0;
 
 	/* Temporary duplicate cft pointer holding lvm.conf - replaced later */
 	cft_tmp = cmd->cft;
@@ -1667,45 +1631,45 @@ int refresh_toolcontext(struct cmd_context *cmd)
 
 	/* Init tags from lvm.conf. */
 	if (!_init_tags(cmd, cft_tmp))
-		return 0;
+		return_0;
 
 	/* Doesn't change cmd->cft */
 	if (!_init_tag_configs(cmd))
-		return 0;
+		return_0;
 
 	/* Merge all the tag config files with lvm.conf, returning a
 	 * fresh cft pointer in place of cft_tmp. */
 	if (!(cmd->cft = _merge_config_files(cmd, cft_tmp)))
-		return 0;
+		return_0;
 
 	/* Finally we can make the proper, fully-merged, cmd->cft */
 	if (cft_cmdline)
 		cmd->cft = dm_config_insert_cascaded_tree(cft_cmdline, cmd->cft);
 
 	if (!_process_config(cmd))
-		return 0;
+		return_0;
 
 	if (!(cmd->dev_types = create_dev_types(cmd->proc_dir,
 						find_config_tree_node(cmd, devices_types_CFG, NULL))))
-		return 0;
+		return_0;
 
 	if (!_init_dev_cache(cmd))
-		return 0;
+		return_0;
 
 	if (!_init_filters(cmd, 0))
-		return 0;
+		return_0;
 
 	if (!_init_formats(cmd))
-		return 0;
+		return_0;
 
 	if (!init_lvmcache_orphans(cmd))
-		return 0;
+		return_0;
 
 	if (!_init_segtypes(cmd))
-		return 0;
+		return_0;
 
 	if (!_init_backup(cmd))
-		return 0;
+		return_0;
 
 	cmd->config_initialized = 1;
 
@@ -1725,7 +1689,7 @@ void destroy_toolcontext(struct cmd_context *cmd)
 
 	archive_exit(cmd);
 	backup_exit(cmd);
-	lvmcache_destroy(cmd, 0);
+	lvmcache_destroy(cmd, 0, 0);
 	label_exit();
 	_destroy_segtypes(&cmd->segtypes);
 	_destroy_formats(cmd, &cmd->formats);

@@ -91,16 +91,15 @@ void dm_lib_init(void)
 	if (getenv("DM_DISABLE_UDEV"))
 		_udev_disabled = 1;
 
-	env = getenv(DM_DEFAULT_NAME_MANGLING_MODE_ENV_VAR_NAME);
-	if (env && *env) {
+	_name_mangling_mode = DEFAULT_DM_NAME_MANGLING;
+	if ((env = getenv(DM_DEFAULT_NAME_MANGLING_MODE_ENV_VAR_NAME))) {
 		if (!strcasecmp(env, "none"))
 			_name_mangling_mode = DM_STRING_MANGLING_NONE;
 		else if (!strcasecmp(env, "auto"))
 			_name_mangling_mode = DM_STRING_MANGLING_AUTO;
 		else if (!strcasecmp(env, "hex"))
 			_name_mangling_mode = DM_STRING_MANGLING_HEX;
-	} else
-		_name_mangling_mode = DEFAULT_DM_NAME_MANGLING;
+	}
 }
 
 /*
@@ -193,19 +192,25 @@ void dm_log_init_verbose(int level)
 	_verbose = level;
 }
 
-static void _build_dev_path(char *buffer, size_t len, const char *dev_name)
+static int _build_dev_path(char *buffer, size_t len, const char *dev_name)
 {
+	int r;
+
 	/* If there's a /, assume caller knows what they're doing */
 	if (strchr(dev_name, '/'))
-		snprintf(buffer, len, "%s", dev_name);
+		r = dm_strncpy(buffer, dev_name, len);
 	else
-		snprintf(buffer, len, "%s/%s", _dm_dir, dev_name);
+		r = (dm_snprintf(buffer, len, "%s/%s",
+				 _dm_dir, dev_name) < 0) ? 0 : 1;
+	if (!r)
+		log_error("Failed to build dev path for \"%s\".", dev_name);
+
+	return r;
 }
 
 int dm_get_library_version(char *version, size_t size)
 {
-	strncpy(version, DM_LIB_VERSION, size);
-	return 1;
+	return dm_strncpy(version, DM_LIB_VERSION, size);
 }
 
 void inc_suspended(void)
@@ -868,12 +873,27 @@ static int _selabel_lookup(const char *path, mode_t mode,
 }
 #endif
 
+#ifdef HAVE_SELINUX
+static int _is_selinux_enabled(void)
+{
+	static int _tested = 0;
+	static int _enabled;
+
+	if (!_tested) {
+		_tested = 1;
+		_enabled = is_selinux_enabled();
+	}
+
+	return _enabled;
+}
+#endif
+
 int dm_prepare_selinux_context(const char *path, mode_t mode)
 {
 #ifdef HAVE_SELINUX
 	security_context_t scontext = NULL;
 
-	if (is_selinux_enabled() <= 0)
+	if (_is_selinux_enabled() <= 0)
 		return 1;
 
 	if (path) {
@@ -899,9 +919,9 @@ int dm_prepare_selinux_context(const char *path, mode_t mode)
 int dm_set_selinux_context(const char *path, mode_t mode)
 {
 #ifdef HAVE_SELINUX
-	security_context_t scontext;
+	security_context_t scontext = NULL;
 
-	if (is_selinux_enabled() <= 0)
+	if (_is_selinux_enabled() <= 0)
 		return 1;
 
 	if (!_selabel_lookup(path, mode, &scontext))
@@ -942,7 +962,8 @@ static int _add_dev_node(const char *dev_name, uint32_t major, uint32_t minor,
 	dev_t dev = MKDEV((dev_t)major, minor);
 	mode_t old_mask;
 
-	_build_dev_path(path, sizeof(path), dev_name);
+	if (!_build_dev_path(path, sizeof(path), dev_name))
+		return_0;
 
 	if (stat(path, &info) >= 0) {
 		if (!S_ISBLK(info.st_mode)) {
@@ -992,8 +1013,8 @@ static int _rm_dev_node(const char *dev_name, int warn_if_udev_failed)
 	char path[PATH_MAX];
 	struct stat info;
 
-	_build_dev_path(path, sizeof(path), dev_name);
-
+	if (!_build_dev_path(path, sizeof(path), dev_name))
+		return_0;
 	if (stat(path, &info) < 0)
 		return 1;
 	else if (_warn_if_op_needed(warn_if_udev_failed))
@@ -1018,8 +1039,9 @@ static int _rename_dev_node(const char *old_name, const char *new_name,
 	char newpath[PATH_MAX];
 	struct stat info;
 
-	_build_dev_path(oldpath, sizeof(oldpath), old_name);
-	_build_dev_path(newpath, sizeof(newpath), new_name);
+	if (!_build_dev_path(oldpath, sizeof(oldpath), old_name) ||
+	    !_build_dev_path(newpath, sizeof(newpath), new_name))
+		return_0;
 
 	if (stat(newpath, &info) == 0) {
 		if (!S_ISBLK(info.st_mode)) {
@@ -1058,6 +1080,24 @@ static int _rename_dev_node(const char *old_name, const char *new_name,
 			 oldpath, newpath);
 
 	/* udev may already have renamed the node. Ignore ENOENT. */
+	/* FIXME: when renaming to target mangling mode "none" with udev
+	 * while there are some blacklisted characters in the node name,
+	 * udev will remove the old_node, but fails to properly rename
+	 * to new_node. The libdevmapper code tries to call
+	 * rename(old_node,new_node), but that won't do anything
+	 * since the old node is already removed by udev.
+	 * For example renaming 'a\x20b' to 'a b':
+	 *   - udev removes 'a\x20b'
+	 *   - udev creates 'a' and 'b' (since it considers the ' ' as a delimiter
+	 *   - libdevmapper checks udev has done the rename properly
+	 *   - libdevmapper calls stat(new_node) and it does not see it
+	 *   - libdevmapper calls rename(old_node,new_node)
+	 *   - the rename is a NOP since the old_node does not exist anymore
+	 *
+	 * However, this situation is very rare - why would anyone need
+	 * to rename to an unsupported mode??? So a fix for this would be
+	 * just for completeness.
+	 */
 	if (rename(oldpath, newpath) < 0 && errno != ENOENT) {
 		log_error("Unable to rename device node from '%s' to '%s'",
 			  old_name, new_name);
@@ -1075,7 +1115,8 @@ static int _open_dev_node(const char *dev_name)
 	int fd = -1;
 	char path[PATH_MAX];
 
-	_build_dev_path(path, sizeof(path), dev_name);
+	if (!_build_dev_path(path, sizeof(path), dev_name))
+		return fd;
 
 	if ((fd = open(path, O_RDONLY, 0)) < 0)
 		log_sys_error("open", path);
@@ -1554,8 +1595,8 @@ int dm_set_sysfs_dir(const char *sysfs_dir)
 		_sysfs_dir[0] = '\0';
 		return 1;
 	}
-	else
-		return _canonicalize_and_set_dir(sysfs_dir, NULL, sizeof _sysfs_dir, _sysfs_dir);
+
+	return _canonicalize_and_set_dir(sysfs_dir, NULL, sizeof _sysfs_dir, _sysfs_dir);
 }
 
 const char *dm_sysfs_dir(void)

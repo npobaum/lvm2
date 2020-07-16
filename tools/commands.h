@@ -57,7 +57,7 @@ xx(dumpconfig,
    PERMITTED_READ_ONLY,
    "dumpconfig\n"
    "\t[-f|--file filename] \n"
-   "\t[--type {current|default|missing|new|profilable} \n"
+   "\t[--type {current|default|diff|missing|new|profilable} \n"
    "\t[--atversion version]] \n"
    "\t[--ignoreadvanced] \n"
    "\t[--ignoreunsupported] \n"
@@ -172,6 +172,15 @@ xx(lvconvert,
    "\tLogicalVolume[Path] [SplittablePhysicalVolume[Path]...]\n\n"
 
    "lvconvert "
+   "--splitsnapshot\n"
+   "\t[-d|--debug]\n"
+   "\t[-h|-?|--help]\n"
+   "\t[--noudevsync]\n"
+   "\t[-v|--verbose]\n"
+   "\t[--version]" "\n"
+   "\tSnapshotLogicalVolume[Path]\n\n"
+   
+   "lvconvert "
    "[-s|--snapshot]\n"
    "\t[-c|--chunksize]\n"
    "\t[-d|--debug]\n"
@@ -203,15 +212,29 @@ xx(lvconvert,
    "\t[-T|--thin ExternalLogicalVolume[Path]\n"
    "\t [--originname NewExternalOriginVolumeName]]\n"
    "\t[-Z|--zero {y|n}]\n"
-   "\t[-d|--debug] [-h|-?|--help] [-v|--verbose]\n",
+   "\t[-d|--debug] [-h|-?|--help] [-v|--verbose]\n\n"
 
-   alloc_ARG, background_ARG, chunksize_ARG, corelog_ARG, discards_ARG,
-   force_ARG, interval_ARG, merge_ARG, mirrorlog_ARG, mirrors_ARG, name_ARG,
-   noudevsync_ARG, originname_ARG, poolmetadata_ARG, poolmetadatasize_ARG,
-   poolmetadataspare_ARG, readahead_ARG, regionsize_ARG, repair_ARG,
-   replace_ARG, snapshot_ARG, splitmirrors_ARG, stripes_long_ARG,
-   stripesize_ARG, test_ARG, thin_ARG, thinpool_ARG, trackchanges_ARG,
-   type_ARG, use_policies_ARG, zero_ARG)
+   "lvconvert "
+   "--type cache-pool\n"
+   "\t[--cachemode CacheMode]\n"
+   "\t[--chunksize size]\n"
+   "\t[--poolmetadata CacheMetadataLogicalVolume[Path] |\n"
+   "\t [--poolmetadatasize size]\n"
+   "\t [--poolmetadataspare {y|n}]]\n"
+   "\tCacheDataLogicalVolume[Path]\n\n"
+
+   "lvconvert "
+   "--type cache\n"
+   "\t--cachepool CachePoolLogicalVolume[Path]\n"
+   "\tLogicalVolume[Path]\n\n",
+
+   alloc_ARG, background_ARG, cachemode_ARG, cachepool_ARG, chunksize_ARG,
+   corelog_ARG, discards_ARG, force_ARG, interval_ARG, merge_ARG, mirrorlog_ARG,
+   mirrors_ARG, name_ARG, noudevsync_ARG, originname_ARG, poolmetadata_ARG,
+   poolmetadatasize_ARG, poolmetadataspare_ARG, readahead_ARG, regionsize_ARG,
+   repair_ARG, replace_ARG, snapshot_ARG, splitmirrors_ARG, splitsnapshot_ARG,
+   stripes_long_ARG, stripesize_ARG, test_ARG, thin_ARG, thinpool_ARG,
+   trackchanges_ARG, type_ARG, use_policies_ARG, zero_ARG)
 
 xx(lvcreate,
    "Create a logical volume",
@@ -221,6 +244,7 @@ xx(lvcreate,
    "\t[-a|--activate [a|e|l]{y|n}]\n"
    "\t[--addtag Tag]\n"
    "\t[--alloc AllocationPolicy]\n"
+   "\t[--cachemode CacheMode]\n"
    "\t[-C|--contiguous {y|n}]\n"
    "\t[-d|--debug]\n"
    "\t[-h|-?|--help]\n"
@@ -248,6 +272,7 @@ xx(lvcreate,
    "\t[-t|--test]\n"
    "\t[--type VolumeType]\n"
    "\t[-v|--verbose]\n"
+   "\t[-W|--wipesignatures {y|n}]\n"
    "\t[-Z|--zero {y|n}]\n"
    "\t[--version]\n"
    "\tVolumeGroupName [PhysicalVolumePath...]\n\n"
@@ -286,15 +311,16 @@ xx(lvcreate,
    "\t[PhysicalVolumePath...]\n\n",
 
    addtag_ARG, alloc_ARG, autobackup_ARG, activate_ARG, available_ARG,
-   chunksize_ARG, contiguous_ARG, corelog_ARG, discards_ARG, extents_ARG,
-   ignoreactivationskip_ARG, ignoremonitoring_ARG, major_ARG, minor_ARG,
-   mirrorlog_ARG, mirrors_ARG, monitor_ARG, minrecoveryrate_ARG,
+   cachemode_ARG, chunksize_ARG, contiguous_ARG, corelog_ARG, discards_ARG,
+   extents_ARG, ignoreactivationskip_ARG, ignoremonitoring_ARG, major_ARG,
+   minor_ARG, mirrorlog_ARG, mirrors_ARG, monitor_ARG, minrecoveryrate_ARG,
    maxrecoveryrate_ARG, name_ARG, nosync_ARG, noudevsync_ARG,
    permission_ARG, persistent_ARG, poolmetadatasize_ARG, poolmetadataspare_ARG,
    raidminrecoveryrate_ARG, raidmaxrecoveryrate_ARG, readahead_ARG,
    regionsize_ARG, setactivationskip_ARG, size_ARG, snapshot_ARG, stripes_ARG,
    stripesize_ARG, test_ARG, thin_ARG, thinpool_ARG,
-   type_ARG, virtualoriginsize_ARG, virtualsize_ARG, zero_ARG)
+   type_ARG, virtualoriginsize_ARG, virtualsize_ARG,
+   wipesignatures_ARG, zero_ARG)
 
 xx(lvdisplay,
    "Display information about a logical volume",
@@ -777,6 +803,11 @@ xx(segtypes,
    "List available segment types",
    PERMITTED_READ_ONLY,
    "segtypes\n")
+
+xx(tags,
+   "List tags defined on this host",
+   PERMITTED_READ_ONLY,
+   "tags\n")
 
 xx(vgcfgbackup,
    "Backup volume group configuration(s)",

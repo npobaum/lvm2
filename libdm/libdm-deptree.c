@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2013 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2005-2014 Red Hat, Inc. All rights reserved.
  *
  * This file is part of the device-mapper userspace tools.
  *
@@ -27,6 +27,7 @@
 
 /* Supported segment types */
 enum {
+	SEG_CACHE,
 	SEG_CRYPT,
 	SEG_ERROR,
 	SEG_LINEAR,
@@ -50,15 +51,15 @@ enum {
 	SEG_RAID6_ZR,
 	SEG_RAID6_NR,
 	SEG_RAID6_NC,
-	SEG_LAST,
 };
 
 /* FIXME Add crypt and multipath support */
 
-struct {
+static const struct {
 	unsigned type;
-	const char *target;
-} dm_segtypes[] = {
+	const char target[16];
+} _dm_segtypes[] = {
+	{ SEG_CACHE, "cache" },
 	{ SEG_CRYPT, "crypt" },
 	{ SEG_ERROR, "error" },
 	{ SEG_LINEAR, "linear" },
@@ -89,7 +90,6 @@ struct {
 	 */
 	{ SEG_RAID5_LS, "raid5"}, /* same as "raid5_ls" (default for MD also) */
 	{ SEG_RAID6_ZR, "raid6"}, /* same as "raid6_zr" */
-	{ SEG_LAST, NULL },
 };
 
 /* Some segment types have a list of areas of other devices attached */
@@ -158,17 +158,23 @@ struct load_segment {
 	uint32_t stripe_size;		/* Striped + raid */
 
 	int persistent;			/* Snapshot */
-	uint32_t chunk_size;		/* Snapshot */
+	uint32_t chunk_size;		/* Snapshot + cache */
 	struct dm_tree_node *cow;	/* Snapshot */
-	struct dm_tree_node *origin;	/* Snapshot + Snapshot origin */
+	struct dm_tree_node *origin;	/* Snapshot + Snapshot origin + Cache */
 	struct dm_tree_node *merge;	/* Snapshot */
 
 	struct dm_tree_node *log;	/* Mirror + Replicator */
 	uint32_t region_size;		/* Mirror + raid */
 	unsigned clustered;		/* Mirror */
 	unsigned mirror_area_count;	/* Mirror */
-	uint32_t flags;			/* Mirror log */
+	uint32_t flags;			/* Mirror + raid + Cache */
 	char *uuid;			/* Clustered mirror log */
+
+	unsigned core_argc;		/* Cache */
+	const char *const *core_argv;	/* Cache */
+	const char *policy_name;	/* Cache */
+	unsigned policy_argc;		/* Cache */
+	const char *const *policy_argv;	/* Cache */
 
 	const char *cipher;		/* Crypt */
 	const char *chainmode;		/* Crypt */
@@ -189,7 +195,7 @@ struct load_segment {
 	uint32_t max_recovery_rate;	/* raid kB/sec/disk */
 	uint32_t min_recovery_rate;	/* raid kB/sec/disk */
 
-	struct dm_tree_node *metadata;	/* Thin_pool */
+	struct dm_tree_node *metadata;	/* Thin_pool + Cache */
 	struct dm_tree_node *pool;	/* Thin_pool, Thin */
 	struct dm_tree_node *external;	/* Thin */
 	struct dm_list thin_messages;	/* Thin_pool */
@@ -255,6 +261,7 @@ struct dm_tree_node {
 	struct dm_list used_by;    	/* Nodes that use this node */
 
 	int activation_priority;	/* 0 gets activated first */
+	int implicit_deps;		/* 1 device only implicitly referenced */
 
 	uint16_t udev_flags;		/* Udev control flags */
 
@@ -271,6 +278,17 @@ struct dm_tree_node {
 	/* Callback */
 	dm_node_callback_fn callback;
 	void *callback_data;
+
+	/*
+	 * TODO:
+	 *	Add advanced code which tracks of send ioctls and their
+	 *	proper revert operation for more advanced recovery
+	 *	Current code serves mostly only to recovery when
+	 *	thin pool metadata check fails and command would
+	 *	have left active thin data and metadata subvolumes.
+	 */
+	struct dm_list activated;	/* Head of activated nodes for preload revert */
+	struct dm_list activated_list;	/* List of activated nodes for preload revert */
 };
 
 struct dm_tree {
@@ -303,6 +321,7 @@ struct dm_tree *dm_tree_create(void)
 	dtree->root.dtree = dtree;
 	dm_list_init(&dtree->root.uses);
 	dm_list_init(&dtree->root.used_by);
+	dm_list_init(&dtree->root.activated);
 	dtree->skip_lockfs = 0;
 	dtree->no_flush = 0;
 	dtree->mem = dmem;
@@ -484,10 +503,10 @@ static struct dm_tree_node *_create_dm_tree_node(struct dm_tree *dtree,
 	node->info = *info;
 	node->context = context;
 	node->udev_flags = udev_flags;
-	node->activation_priority = 0;
 
 	dm_list_init(&node->uses);
 	dm_list_init(&node->used_by);
+	dm_list_init(&node->activated);
 	dm_list_init(&node->props.segs);
 
 	dev = MKDEV((dev_t)info->major, info->minor);
@@ -517,7 +536,7 @@ static struct dm_tree_node *_find_dm_tree_node(struct dm_tree *dtree,
 	dev_t dev = MKDEV((dev_t)major, minor);
 
 	return dm_hash_lookup_binary(dtree->devs, (const char *) &dev,
-				  sizeof(dev));
+				     sizeof(dev));
 }
 
 static struct dm_tree_node *_find_dm_tree_node_by_uuid(struct dm_tree *dtree,
@@ -686,8 +705,8 @@ static int _children_suspended(struct dm_tree_node *node,
  * Set major and minor to zero for root of tree.
  */
 struct dm_tree_node *dm_tree_find_node(struct dm_tree *dtree,
-					  uint32_t major,
-					  uint32_t minor)
+				       uint32_t major,
+				       uint32_t minor)
 {
 	if (!major && !minor)
 		return &dtree->root;
@@ -699,7 +718,7 @@ struct dm_tree_node *dm_tree_find_node(struct dm_tree *dtree,
  * Set uuid to NULL for root of tree.
  */
 struct dm_tree_node *dm_tree_find_node_by_uuid(struct dm_tree *dtree,
-						  const char *uuid)
+					       const char *uuid)
 {
 	if (!uuid || !*uuid)
 		return &dtree->root;
@@ -1116,8 +1135,6 @@ struct dm_tree_node *dm_tree_add_new_dev_with_udev_flags(struct dm_tree *dtree,
 
 		dnode->props.major = major;
 		dnode->props.minor = minor;
-		dnode->props.new_name = NULL;
-		dnode->props.size_changed = 0;
 	} else if (strcmp(name, dnode->name)) {
 		/* Do we need to rename node? */
 		if (!(dnode->props.new_name = dm_pool_strdup(dtree->mem, name))) {
@@ -1150,7 +1167,8 @@ struct dm_tree_node *dm_tree_add_new_dev(struct dm_tree *dtree, const char *name
 static struct dm_tree_node *_add_dev(struct dm_tree *dtree,
 				     struct dm_tree_node *parent,
 				     uint32_t major, uint32_t minor,
-				     uint16_t udev_flags)
+				     uint16_t udev_flags,
+				     int implicit_deps)
 {
 	struct dm_task *dmt = NULL;
 	struct dm_info info;
@@ -1170,6 +1188,10 @@ static struct dm_tree_node *_add_dev(struct dm_tree *dtree,
 						  NULL, udev_flags)))
 			goto_out;
 		new = 1;
+		node->implicit_deps = implicit_deps;
+	} else if (!implicit_deps && node->implicit_deps) {
+		node->udev_flags = udev_flags;
+		node->implicit_deps = 0;
 	}
 
 	if (!_link_tree_nodes(parent, node)) {
@@ -1192,8 +1214,12 @@ static struct dm_tree_node *_add_dev(struct dm_tree *dtree,
 
 	/* Add dependencies to tree */
 	for (i = 0; i < deps->count; i++)
+		/* Implicit devices are by default temporary */
 		if (!_add_dev(dtree, node, MAJOR(deps->device[i]),
-			      MINOR(deps->device[i]), udev_flags)) {
+			      MINOR(deps->device[i]), udev_flags |
+			      DM_UDEV_DISABLE_SUBSYSTEM_RULES_FLAG |
+			      DM_UDEV_DISABLE_DISK_RULES_FLAG |
+			      DM_UDEV_DISABLE_OTHER_RULES_FLAG, 1)) {
 			node = NULL;
 			goto_out;
 		}
@@ -1207,13 +1233,13 @@ out:
 
 int dm_tree_add_dev(struct dm_tree *dtree, uint32_t major, uint32_t minor)
 {
-	return _add_dev(dtree, &dtree->root, major, minor, 0) ? 1 : 0;
+	return _add_dev(dtree, &dtree->root, major, minor, 0, 0) ? 1 : 0;
 }
 
 int dm_tree_add_dev_with_udev_flags(struct dm_tree *dtree, uint32_t major,
 				    uint32_t minor, uint16_t udev_flags)
 {
-	return _add_dev(dtree, &dtree->root, major, minor, udev_flags) ? 1 : 0;
+	return _add_dev(dtree, &dtree->root, major, minor, udev_flags, 0) ? 1 : 0;
 }
 
 static int _rename_node(const char *old_name, const char *new_name, uint32_t major,
@@ -1457,14 +1483,17 @@ out:
 	return r;
 }
 
+/* For preload pass only validate pool's transaction_id */
 static int _node_send_messages(struct dm_tree_node *dnode,
 			       const char *uuid_prefix,
-			       size_t uuid_prefix_len)
+			       size_t uuid_prefix_len,
+			       int send)
 {
 	struct load_segment *seg;
 	struct thin_message *tmsg;
 	uint64_t trans_id;
 	const char *uuid;
+	int have_messages;
 
 	if (!dnode->info.exists || (dm_list_size(&dnode->props.segs) != 1))
 		return 1;
@@ -1482,32 +1511,34 @@ static int _node_send_messages(struct dm_tree_node *dnode,
 	}
 
 	if (!_thin_pool_status_transaction_id(dnode, &trans_id))
-		goto_bad;
+		return_0;
 
+	have_messages = !dm_list_empty(&seg->thin_messages) ? 1 : 0;
 	if (trans_id == seg->transaction_id) {
-		if (!dm_list_empty(&seg->thin_messages))
+		dnode->props.send_messages = 0; /* messages already committed */
+		if (have_messages)
 			log_debug_activation("Thin pool transaction_id matches %" PRIu64
 					     ", skipping messages.", trans_id);
-		return 1; /* In sync - skip messages */
+		return 1;
 	}
 
-	if (trans_id != (seg->transaction_id - 1)) {
+	/* Error if there are no stacked messages or id mismatches */
+	if (trans_id != (seg->transaction_id - have_messages)) {
 		log_error("Thin pool transaction_id=%" PRIu64 ", while expected: %" PRIu64 ".",
-			  trans_id, seg->transaction_id - 1);
-		goto bad; /* Nothing to send */
+			  trans_id, seg->transaction_id - have_messages);
+		return 0;
 	}
+
+	if (!send)
+		return 1; /* transaction_id is matching */
 
 	dm_list_iterate_items(tmsg, &seg->thin_messages)
 		if (!(_thin_pool_node_message(dnode, tmsg)))
-			goto_bad;
+			return_0;
+
+	dnode->props.send_messages = 0; /* messages posted */
 
 	return 1;
-bad:
-	/* Try to deactivate */
-	if (!(dm_tree_deactivate_children(dnode, uuid_prefix, uuid_prefix_len)))
-		log_error("Failed to deactivate %s", dnode->name);
-
-	return 0;
 }
 
 /*
@@ -1600,7 +1631,9 @@ static int _dm_tree_deactivate_children(struct dm_tree_node *dnode,
 				  info.minor);
 			r = 0;
 			continue;
-		} else if (info.suspended && info.live_table)
+		}
+
+		if (info.suspended && info.live_table)
 			dec_suspended();
 
 		if (child->callback &&
@@ -1620,8 +1653,8 @@ static int _dm_tree_deactivate_children(struct dm_tree_node *dnode,
 }
 
 int dm_tree_deactivate_children(struct dm_tree_node *dnode,
-				   const char *uuid_prefix,
-				   size_t uuid_prefix_len)
+				const char *uuid_prefix,
+				size_t uuid_prefix_len)
 {
 	return _dm_tree_deactivate_children(dnode, uuid_prefix, uuid_prefix_len, 0);
 }
@@ -1843,14 +1876,9 @@ int dm_tree_activate_children(struct dm_tree_node *dnode,
 	 * resume should continue further, just whole command
 	 * has to report failure.
 	 */
-	if (r && dnode->props.send_messages) {
-		if (!(r = _node_send_messages(dnode, uuid_prefix, uuid_prefix_len)))
-			stack;
-		else
-			dnode->props.send_messages = 0; /* messages posted */
-	}
-
-	handle = NULL;
+	if (r && dnode->props.send_messages &&
+	    !(r = _node_send_messages(dnode, uuid_prefix, uuid_prefix_len, 1)))
+		stack;
 
 	return r;
 }
@@ -2210,7 +2238,7 @@ static int _raid_emit_segment_line(struct dm_task *dmt, uint32_t major,
 	if ((seg->type == SEG_RAID1) && seg->stripe_size)
 		log_error("WARNING: Ignoring RAID1 stripe size");
 
-	EMIT_PARAMS(pos, "%s %d %u", dm_segtypes[seg->type].target,
+	EMIT_PARAMS(pos, "%s %d %u", _dm_segtypes[seg->type].target,
 		    param_count, seg->stripe_size);
 
 	if (seg->flags & DM_NOSYNC)
@@ -2222,11 +2250,11 @@ static int _raid_emit_segment_line(struct dm_task *dmt, uint32_t major,
 		EMIT_PARAMS(pos, " region_size %u", seg->region_size);
 
 	for (i = 0; i < (seg->area_count / 2); i++)
-		if (seg->rebuilds & (1 << i))
+		if (seg->rebuilds & (1ULL << i))
 			EMIT_PARAMS(pos, " rebuild %u", i);
 
 	for (i = 0; i < (seg->area_count / 2); i++)
-		if (seg->writemostly & (1 << i))
+		if (seg->writemostly & (1ULL << i))
 			EMIT_PARAMS(pos, " write_mostly %u", i);
 
 	if (seg->writebehind)
@@ -2245,6 +2273,70 @@ static int _raid_emit_segment_line(struct dm_task *dmt, uint32_t major,
 
 	if (_emit_areas_line(dmt, seg, params, paramsize, &pos) <= 0)
 		return_0;
+
+	return 1;
+}
+
+static int _cache_emit_segment_line(struct dm_task *dmt,
+				    struct load_segment *seg,
+				    char *params, size_t paramsize)
+{
+	int pos = 0;
+	unsigned i = 0;
+	unsigned feature_count;
+	struct seg_area *area;
+	char data[DM_FORMAT_DEV_BUFSIZE];
+	char metadata[DM_FORMAT_DEV_BUFSIZE];
+	char origin[DM_FORMAT_DEV_BUFSIZE];
+
+	/* Metadata Dev */
+	if (!_build_dev_string(metadata, sizeof(metadata), seg->metadata))
+		return_0;
+
+	/* Cache Dev */
+	if (!_build_dev_string(data, sizeof(origin), seg->pool))
+		return_0;
+
+	/* Origin Dev */
+	dm_list_iterate_items(area, &seg->areas)
+		break; /* There is only ever 1 area */
+	if (!_build_dev_string(origin, sizeof(data), area->dev_node))
+		return_0;
+
+	EMIT_PARAMS(pos, " %s %s %s", metadata, data, origin);
+
+	/* Chunk size */
+	EMIT_PARAMS(pos, " %u", seg->chunk_size);
+
+	/* Features */
+	feature_count = hweight32(seg->flags);
+	EMIT_PARAMS(pos, " %u", feature_count);
+	if (seg->flags & DM_CACHE_FEATURE_WRITETHROUGH)
+		EMIT_PARAMS(pos, " writethrough");
+	else if (seg->flags & DM_CACHE_FEATURE_WRITEBACK)
+		EMIT_PARAMS(pos, " writeback");
+
+	/* Core Arguments (like 'migration_threshold') */
+	if (seg->core_argc) {
+		EMIT_PARAMS(pos, " %u", seg->core_argc);
+		for (i = 0; i < seg->core_argc; i++)
+			EMIT_PARAMS(pos, " %s", seg->core_argv[i]);
+	}
+
+	/* Cache Policy */
+	if (!seg->policy_name)
+		EMIT_PARAMS(pos, " default 0");
+	else {
+		EMIT_PARAMS(pos, " %s %u", seg->policy_name, seg->policy_argc);
+		if (seg->policy_argc % 2) {
+			log_error(INTERNAL_ERROR
+				  "Cache policy arguments must be in "
+				  "<key> <value> pairs");
+			return 0;
+		}
+		for (i = 0; i < seg->policy_argc; i++)
+			EMIT_PARAMS(pos, " %s", seg->policy_argv[i]);
+	}
 
 	return 1;
 }
@@ -2385,6 +2477,10 @@ static int _emit_segment_line(struct dm_task *dmt, uint32_t major,
 		if (!_thin_emit_segment_line(dmt, seg, params, paramsize))
 			return_0;
 		break;
+	case SEG_CACHE:
+		if (!_cache_emit_segment_line(dmt, seg, params, paramsize))
+			return_0;
+		break;
 	}
 
 	switch(seg->type) {
@@ -2396,6 +2492,7 @@ static int _emit_segment_line(struct dm_task *dmt, uint32_t major,
 	case SEG_ZERO:
 	case SEG_THIN_POOL:
 	case SEG_THIN:
+	case SEG_CACHE:
 		break;
 	case SEG_CRYPT:
 	case SEG_LINEAR:
@@ -2407,7 +2504,7 @@ static int _emit_segment_line(struct dm_task *dmt, uint32_t major,
 		}
 		if (!params[0]) {
 			log_error("No parameters supplied for %s target "
-				  "%u:%u.", dm_segtypes[seg->type].target,
+				  "%u:%u.", _dm_segtypes[seg->type].target,
 				  major, minor);
 			return 0;
 		}
@@ -2417,11 +2514,11 @@ static int _emit_segment_line(struct dm_task *dmt, uint32_t major,
 	log_debug_activation("Adding target to (%" PRIu32 ":%" PRIu32 "): %" PRIu64
 			     " %" PRIu64 " %s %s", major, minor,
 			     *seg_start, seg->size, target_type_is_raid ? "raid" :
-			     dm_segtypes[seg->type].target, params);
+			     _dm_segtypes[seg->type].target, params);
 
 	if (!dm_task_add_target(dmt, *seg_start, seg->size,
 				target_type_is_raid ? "raid" :
-				dm_segtypes[seg->type].target, params))
+				_dm_segtypes[seg->type].target, params))
 		return_0;
 
 	*seg_start += seg->size;
@@ -2537,6 +2634,30 @@ out:
 	return r;
 }
 
+/*
+ * Currently try to deactivate only nodes created during preload.
+ * New node is always attached to the front of activated_list
+ */
+static int _dm_tree_revert_activated(struct dm_tree_node *parent)
+{
+	struct dm_tree_node *child;
+
+	dm_list_iterate_items_gen(child, &parent->activated, activated_list) {
+		log_debug_activation("Reverting %s.", child->name);
+		if (!_deactivate_node(child->name, child->info.major, child->info.minor,
+				      &child->dtree->cookie, child->udev_flags, 0)) {
+			log_error("Unable to deactivate %s (%" PRIu32
+				  ":%" PRIu32 ")", child->name, child->info.major,
+				  child->info.minor);
+			return 0;
+		}
+		if (!_dm_tree_revert_activated(child))
+			return_0;
+	}
+
+	return 1;
+}
+
 int dm_tree_preload_children(struct dm_tree_node *dnode,
 			     const char *uuid_prefix,
 			     size_t uuid_prefix_len)
@@ -2591,7 +2712,7 @@ int dm_tree_preload_children(struct dm_tree_node *dnode,
 				  child->info.minor);
 			/* If the device was not previously active, we might as well remove this node. */
 			if (!child->info.live_table &&
-			    !_deactivate_node(child->name, child->info.major,child->info.minor,
+			    !_deactivate_node(child->name, child->info.major, child->info.minor,
 					      &child->dtree->cookie, child->udev_flags, 0))
 				log_error("Unable to deactivate %s (%" PRIu32
 					  ":%" PRIu32 ")", child->name, child->info.major,
@@ -2599,6 +2720,23 @@ int dm_tree_preload_children(struct dm_tree_node *dnode,
 			r = 0;
 			/* Each child is handled independently */
 			continue;
+		}
+
+		if (!child->info.live_table) {
+			/* Collect newly introduced devices for revert */
+			dm_list_add_h(&dnode->activated, &child->activated_list);
+
+			/* When creating new node also check transaction_id. */
+			if (child->props.send_messages &&
+			    !_node_send_messages(child, uuid_prefix, uuid_prefix_len, 0)) {
+				stack;
+				if (!dm_udev_wait(dm_tree_get_cookie(dnode)))
+					stack;
+				dm_tree_set_cookie(dnode, 0);
+				(void) _dm_tree_revert_activated(dnode);
+				r = 0;
+				continue;
+			}
 		}
 
 		/* Update cached info */
@@ -2613,15 +2751,19 @@ int dm_tree_preload_children(struct dm_tree_node *dnode,
 	}
 
 	if (update_devs_flag ||
-	    (!dnode->info.exists && dnode->callback)) {
+	    (r && !dnode->info.exists && dnode->callback)) {
 		if (!dm_udev_wait(dm_tree_get_cookie(dnode)))
 			stack;
 		dm_tree_set_cookie(dnode, 0);
 
-		if (!dnode->info.exists && dnode->callback &&
-		    !dnode->callback(child, DM_NODE_CALLBACK_PRELOADED,
+		if (r && !dnode->info.exists && dnode->callback &&
+		    !dnode->callback(dnode, DM_NODE_CALLBACK_PRELOADED,
 				     dnode->callback_data))
+		{
+			/* Try to deactivate what has been activated in preload phase */
+			(void) _dm_tree_revert_activated(dnode);
 			return_0;
+		}
 	}
 
 	return r;
@@ -2668,15 +2810,7 @@ static struct load_segment *_add_segment(struct dm_tree_node *dnode, unsigned ty
 
 	seg->type = type;
 	seg->size = size;
-	seg->area_count = 0;
 	dm_list_init(&seg->areas);
-	seg->stripe_size = 0;
-	seg->persistent = 0;
-	seg->chunk_size = 0;
-	seg->cow = NULL;
-	seg->origin = NULL;
-	seg->merge = NULL;
-
 	dm_list_add(&dnode->props.segs, &seg->list);
 	dnode->props.segment_count++;
 
@@ -2684,8 +2818,8 @@ static struct load_segment *_add_segment(struct dm_tree_node *dnode, unsigned ty
 }
 
 int dm_tree_node_add_snapshot_origin_target(struct dm_tree_node *dnode,
-					       uint64_t size,
-					       const char *origin_uuid)
+					    uint64_t size,
+					    const char *origin_uuid)
 {
 	struct load_segment *seg;
 	struct dm_tree_node *origin_node;
@@ -2715,12 +2849,12 @@ int dm_tree_node_add_snapshot_origin_target(struct dm_tree_node *dnode,
 }
 
 static int _add_snapshot_target(struct dm_tree_node *node,
-				   uint64_t size,
-				   const char *origin_uuid,
-				   const char *cow_uuid,
-				   const char *merge_uuid,
-				   int persistent,
-				   uint32_t chunk_size)
+				uint64_t size,
+				const char *origin_uuid,
+				const char *cow_uuid,
+				const char *merge_uuid,
+				int persistent,
+				uint32_t chunk_size)
 {
 	struct load_segment *seg;
 	struct dm_tree_node *origin_node, *cow_node, *merge_node;
@@ -2833,7 +2967,7 @@ int dm_get_status_snapshot(struct dm_pool *mem, const char *params,
 }
 
 int dm_tree_node_add_error_target(struct dm_tree_node *node,
-				     uint64_t size)
+				  uint64_t size)
 {
 	if (!_add_segment(node, SEG_ERROR, size))
 		return_0;
@@ -2842,7 +2976,7 @@ int dm_tree_node_add_error_target(struct dm_tree_node *node,
 }
 
 int dm_tree_node_add_zero_target(struct dm_tree_node *node,
-				    uint64_t size)
+				 uint64_t size)
 {
 	if (!_add_segment(node, SEG_ZERO, size))
 		return_0;
@@ -2851,7 +2985,7 @@ int dm_tree_node_add_zero_target(struct dm_tree_node *node,
 }
 
 int dm_tree_node_add_linear_target(struct dm_tree_node *node,
-				      uint64_t size)
+				   uint64_t size)
 {
 	if (!_add_segment(node, SEG_LINEAR, size))
 		return_0;
@@ -2860,8 +2994,8 @@ int dm_tree_node_add_linear_target(struct dm_tree_node *node,
 }
 
 int dm_tree_node_add_striped_target(struct dm_tree_node *node,
-				       uint64_t size,
-				       uint32_t stripe_size)
+				    uint64_t size,
+				    uint32_t stripe_size)
 {
 	struct load_segment *seg;
 
@@ -2896,11 +3030,11 @@ int dm_tree_node_add_crypt_target(struct dm_tree_node *node,
 }
 
 int dm_tree_node_add_mirror_target_log(struct dm_tree_node *node,
-					  uint32_t region_size,
-					  unsigned clustered,
-					  const char *log_uuid,
-					  unsigned area_count,
-					  uint32_t flags)
+				       uint32_t region_size,
+				       unsigned clustered,
+				       const char *log_uuid,
+				       unsigned area_count,
+				       uint32_t flags)
 {
 	struct dm_tree_node *log_node = NULL;
 	struct load_segment *seg;
@@ -2948,7 +3082,7 @@ int dm_tree_node_add_mirror_target_log(struct dm_tree_node *node,
 }
 
 int dm_tree_node_add_mirror_target(struct dm_tree_node *node,
-				      uint64_t size)
+				   uint64_t size)
 {
 	if (!_add_segment(node, SEG_MIRRORED, size))
 		return_0;
@@ -2963,12 +3097,11 @@ int dm_tree_node_add_raid_target_with_params(struct dm_tree_node *node,
 	int i;
 	struct load_segment *seg = NULL;
 
-	for (i = 0; dm_segtypes[i].target && !seg; i++)
-		if (!strcmp(p->raid_type, dm_segtypes[i].target))
+	for (i = 0; i < DM_ARRAY_SIZE(_dm_segtypes) && !seg; ++i)
+		if (!strcmp(p->raid_type, _dm_segtypes[i].target))
 			if (!(seg = _add_segment(node,
-						 dm_segtypes[i].type, size)))
+						 _dm_segtypes[i].type, size)))
 				return_0;
-
 	if (!seg)
 		return_0;
 
@@ -2993,18 +3126,16 @@ int dm_tree_node_add_raid_target(struct dm_tree_node *node,
 				 uint64_t rebuilds,
 				 uint64_t flags)
 {
-	struct dm_tree_node_raid_params params;
-
-	memset(&params, 0, sizeof(params));
-	params.raid_type = raid_type;
-	params.region_size = region_size;
-	params.stripe_size = stripe_size;
-	params.rebuilds = rebuilds;
-	params.flags = flags;
+	struct dm_tree_node_raid_params params = {
+		.raid_type = raid_type,
+		.region_size = region_size,
+		.stripe_size = stripe_size,
+		.rebuilds = rebuilds,
+		.flags = flags
+	};
 
 	return dm_tree_node_add_raid_target_with_params(node, size, &params);
 }
-
 
 /*
  * Various RAID status versions include:
@@ -3084,6 +3215,195 @@ bad:
 	return 0;
 }
 
+int dm_tree_node_add_cache_target(struct dm_tree_node *node,
+				  uint64_t size,
+				  const char *metadata_uuid,
+				  const char *data_uuid,
+				  const char *origin_uuid,
+				  uint32_t chunk_size,
+				  uint32_t feature_flags, /* DM_CACHE_FEATURE_* */
+				  unsigned core_argc,
+				  const char *const *core_argv,
+				  const char *policy_name,
+				  unsigned policy_argc,
+				  const char *const *policy_argv)
+{
+	struct load_segment *seg;
+
+	if (!(seg = _add_segment(node, SEG_CACHE, size)))
+		return_0;
+
+	if (!(seg->pool = dm_tree_find_node_by_uuid(node->dtree,
+						    data_uuid))) {
+		log_error("Missing cache's data uuid %s.",
+			  data_uuid);
+		return 0;
+	}
+	if (!_link_tree_nodes(node, seg->pool))
+		return_0;
+
+	if (!(seg->metadata = dm_tree_find_node_by_uuid(node->dtree,
+							metadata_uuid))) {
+		log_error("Missing cache's metadata uuid %s.",
+			  metadata_uuid);
+		return 0;
+	}
+	if (!_link_tree_nodes(node, seg->metadata))
+		return_0;
+
+	seg->chunk_size = chunk_size;
+
+	seg->flags = feature_flags;
+
+	/* FIXME: validation missing */
+
+	seg->core_argc = core_argc;
+	seg->core_argv = core_argv;
+
+	seg->policy_name = policy_name;
+	seg->policy_argc = policy_argc;
+	seg->policy_argv = policy_argv;
+
+	return 1;
+}
+
+static const char *advance_to_next_word(const char *str, int count)
+{
+	int i;
+	const char *p;
+
+	for (p = str, i = 0; i < count; i++, p++)
+		if (!(p = strchr(p, ' ')))
+			return NULL;
+
+	return p;
+}
+
+/*
+ * <metadata block size> <#used metadata blocks>/<#total metadata blocks>
+ * <cache block size> <#used cache blocks>/<#total cache blocks>
+ * <#read hits> <#read misses> <#write hits> <#write misses>
+ * <#demotions> <#promotions> <#dirty> <#features> <features>*
+ * <#core args> <core args>* <policy name> <#policy args> <policy args>*
+ *
+ * metadata block size      : Fixed block size for each metadata block in
+ *                            sectors
+ * #used metadata blocks    : Number of metadata blocks used
+ * #total metadata blocks   : Total number of metadata blocks
+ * cache block size         : Configurable block size for the cache device
+ *                            in sectors
+ * #used cache blocks       : Number of blocks resident in the cache
+ * #total cache blocks      : Total number of cache blocks
+ * #read hits               : Number of times a READ bio has been mapped
+ *                            to the cache
+ * #read misses             : Number of times a READ bio has been mapped
+ *                            to the origin
+ * #write hits              : Number of times a WRITE bio has been mapped
+ *                            to the cache
+ * #write misses            : Number of times a WRITE bio has been
+ *                            mapped to the origin
+ * #demotions               : Number of times a block has been removed
+ *                            from the cache
+ * #promotions              : Number of times a block has been moved to
+ *                            the cache
+ * #dirty                   : Number of blocks in the cache that differ
+ *                            from the origin
+ * #feature args            : Number of feature args to follow
+ * feature args             : 'writethrough' (optional)
+ * #core args               : Number of core arguments (must be even)
+ * core args                : Key/value pairs for tuning the core
+ *                            e.g. migration_threshold
+ *			     *policy name              : Name of the policy
+ * #policy args             : Number of policy arguments to follow (must be even)
+ * policy args              : Key/value pairs
+ *                            e.g. sequential_threshold
+ */
+int dm_get_status_cache(struct dm_pool *mem, const char *params,
+			struct dm_status_cache **status)
+{
+	int i, feature_argc;
+	char *str;
+	const char *p, *pp;
+	struct dm_status_cache *s;
+
+	if (!(s = dm_pool_zalloc(mem, sizeof(struct dm_status_cache))))
+		return_0;
+
+	/* Read in args that have definitive placement */
+	if (sscanf(params,
+		   " %" PRIu32
+		   " %" PRIu64 "/%" PRIu64
+		   " %" PRIu32
+		   " %" PRIu64 "/%" PRIu64
+		   " %" PRIu64 " %" PRIu64
+		   " %" PRIu64 " %" PRIu64
+		   " %" PRIu64 " %" PRIu64
+		   " %" PRIu64
+		   " %d",
+		   &s->metadata_block_size,
+		   &s->metadata_used_blocks, &s->metadata_total_blocks,
+		   &s->block_size, /* AKA, chunk_size */
+		   &s->used_blocks, &s->total_blocks,
+		   &s->read_hits, &s->read_misses,
+		   &s->write_hits, &s->write_misses,
+		   &s->demotions, &s->promotions,
+		   &s->dirty_blocks,
+		   &feature_argc) != 14)
+		goto bad;
+
+	/* Now jump to "features" section */
+	if (!(p = advance_to_next_word(params, 12)))
+		goto bad;
+
+	/* Read in features */
+	for (i = 0; i < feature_argc; i++) {
+		if (!strncmp(p, "writethrough ", 13))
+			s->feature_flags |= DM_CACHE_FEATURE_WRITETHROUGH;
+		else if (!strncmp(p, "writeback ", 10))
+			s->feature_flags |= DM_CACHE_FEATURE_WRITEBACK;
+		else
+			log_error("Unknown feature in status: %s", params);
+
+		if (!(p = advance_to_next_word(p, 1)))
+			goto bad;
+	}
+
+	/* Read in core_args. */
+	if (sscanf(p, "%d ", &s->core_argc) != 1)
+		goto bad;
+	if (s->core_argc &&
+	    (!(s->core_argv = dm_pool_zalloc(mem, sizeof(char *) * s->core_argc)) ||
+	     !(p = advance_to_next_word(p, 1)) ||
+	     !(str = dm_pool_strdup(mem, p)) ||
+	     !(p = advance_to_next_word(p, s->core_argc)) ||
+	     (dm_split_words(str, s->core_argc, 0, s->core_argv) != s->core_argc)))
+		goto bad;
+
+	/* Read in policy args */
+	pp = p;
+	if (!(p = advance_to_next_word(p, 1)) ||
+	    !(s->policy_name = dm_pool_zalloc(mem, (p - pp))))
+		goto bad;
+	if (sscanf(pp, "%s %d", s->policy_name, &s->policy_argc) != 2)
+		goto bad;
+	if (s->policy_argc &&
+	    (!(s->policy_argv = dm_pool_zalloc(mem, sizeof(char *) * s->policy_argc)) ||
+	     !(p = advance_to_next_word(p, 1)) ||
+	     !(str = dm_pool_strdup(mem, p)) ||
+	     (dm_split_words(str, s->policy_argc, 0, s->policy_argv) != s->policy_argc)))
+		goto bad;
+
+	*status = s;
+	return 1;
+
+bad:
+	log_error("Failed to parse cache params: %s", params);
+	dm_pool_free(mem, s);
+	*status = NULL;
+
+	return 0;
+}
+
 int dm_tree_node_add_replicator_target(struct dm_tree_node *node,
 				       uint64_t size,
 				       const char *rlog_uuid,
@@ -3143,7 +3463,7 @@ int dm_tree_node_add_replicator_target(struct dm_tree_node *node,
 	rseg = dm_list_item(dm_list_last(&node->props.segs), struct load_segment);
 	if (rseg->type != SEG_REPLICATOR) {
 		log_error(INTERNAL_ERROR "Attempt to use non replicator segment %s.",
-			  dm_segtypes[rseg->type].target);
+			  _dm_segtypes[rseg->type].target);
 		return 0;
 	}
 
@@ -3198,7 +3518,7 @@ int dm_tree_node_add_replicator_dev_target(struct dm_tree_node *node,
 		rep_seg = dm_list_item(dm_list_last(&rseg->replicator->props.segs), struct load_segment);
 		if (rep_seg->type != SEG_REPLICATOR) {
 			log_error(INTERNAL_ERROR "Attempt to use non replicator segment %s.",
-				  dm_segtypes[rep_seg->type].target);
+				  _dm_segtypes[rep_seg->type].target);
 			return 0;
 		}
 		rep_seg->rdevice_count++;
@@ -3217,7 +3537,7 @@ int dm_tree_node_add_replicator_dev_target(struct dm_tree_node *node,
 		rseg = dm_list_item(dm_list_last(&node->props.segs), struct load_segment);
 		if (rseg->type != SEG_REPLICATOR_DEV) {
 			log_error(INTERNAL_ERROR "Attempt to use non replicator-dev segment %s.",
-				  dm_segtypes[rseg->type].target);
+				  _dm_segtypes[rseg->type].target);
 			return 0;
 		}
 	}
@@ -3256,15 +3576,15 @@ static struct load_segment *_get_single_load_segment(struct dm_tree_node *node,
 
 	if (node->props.segment_count != 1) {
 		log_error("Node %s must have only one segment.",
-			  dm_segtypes[type].target);
+			  _dm_segtypes[type].target);
 		return NULL;
 	}
 
 	seg = dm_list_item(dm_list_last(&node->props.segs), struct load_segment);
 	if (seg->type != type) {
 		log_error("Node %s has segment type %s.",
-			  dm_segtypes[type].target,
-			  dm_segtypes[seg->type].target);
+			  _dm_segtypes[type].target,
+			  _dm_segtypes[seg->type].target);
 		return NULL;
 	}
 
@@ -3574,9 +3894,9 @@ static int _add_area(struct dm_tree_node *node, struct load_segment *seg, struct
 }
 
 int dm_tree_node_add_target_area(struct dm_tree_node *node,
-				    const char *dev_name,
-				    const char *uuid,
-				    uint64_t offset)
+				 const char *dev_name,
+				 const char *uuid,
+				 uint64_t offset)
 {
 	struct load_segment *seg;
 	struct stat info;
@@ -3607,7 +3927,7 @@ int dm_tree_node_add_target_area(struct dm_tree_node *node,
 
 		/* FIXME Check correct macro use */
 		if (!(dev_node = _add_dev(node->dtree, node, MAJOR(info.st_rdev),
-					  MINOR(info.st_rdev), 0)))
+					  MINOR(info.st_rdev), 0, 0)))
 			return_0;
 	}
 

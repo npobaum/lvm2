@@ -47,6 +47,7 @@ static struct cft_check_handle *_get_cft_check_handle(struct cmd_context *cmd, s
 			log_error("Configuration check handle allocation failed.");
 			return NULL;
 		}
+		handle->cmd = cmd;
 		handle->cft = cft;
 		if (cft == cmd->cft)
 			cmd->cft_check_handle = handle;
@@ -55,19 +56,24 @@ static struct cft_check_handle *_get_cft_check_handle(struct cmd_context *cmd, s
 	return handle;
 }
 
-static int _do_def_check(struct cmd_context *cmd, struct dm_config_tree *cft,
+static int _do_def_check(struct config_def_tree_spec *spec,
+			 struct dm_config_tree *cft,
 			 struct cft_check_handle **cft_check_handle)
 {
 	struct cft_check_handle *handle;
 
-	if (!(handle = _get_cft_check_handle(cmd, cft)))
+	if (!(handle = _get_cft_check_handle(spec->cmd, cft)))
 		return 0;
 
 	handle->force_check = 1;
-	handle->skip_if_checked = 1;
 	handle->suppress_messages = 1;
 
-	config_def_check(cmd, handle);
+	if (spec->type == CFG_DEF_TREE_DIFF)
+		handle->check_diff = 1;
+	else
+		handle->skip_if_checked = 1;
+
+	config_def_check(handle);
 	*cft_check_handle = handle;
 
 	return 1;
@@ -97,6 +103,8 @@ int dumpconfig(struct cmd_context *cmd, int argc, char **argv)
 	struct cft_check_handle *cft_check_handle = NULL;
 	int r = ECMD_PROCESSED;
 
+	tree_spec.cmd = cmd;
+
 	if (arg_count(cmd, configtype_ARG) && arg_count(cmd, validate_ARG)) {
 		log_error("Only one of --type and --validate permitted.");
 		return EINVALID_CMD_LINE;
@@ -124,6 +132,9 @@ int dumpconfig(struct cmd_context *cmd, int argc, char **argv)
 				  "no effect with --type current");
 			return EINVALID_CMD_LINE;
 		}
+	} else if (arg_count(cmd, mergedconfig_ARG)) {
+		log_error("--mergedconfig has no effect without --type current");
+		return EINVALID_CMD_LINE;
 	}
 
 	if (!_get_vsn(cmd, &tree_spec.version))
@@ -150,7 +161,7 @@ int dumpconfig(struct cmd_context *cmd, int argc, char **argv)
 		cft_check_handle->skip_if_checked = 1;
 		cft_check_handle->suppress_messages = 0;
 
-		if (config_def_check(cmd, cft_check_handle)) {
+		if (config_def_check(cft_check_handle)) {
 			log_print("LVM configuration valid.");
 			goto out;
 		} else {
@@ -162,14 +173,14 @@ int dumpconfig(struct cmd_context *cmd, int argc, char **argv)
 
 	if (!strcmp(type, "current")) {
 		tree_spec.type = CFG_DEF_TREE_CURRENT;
-		if (!_do_def_check(cmd, cft, &cft_check_handle)) {
+		if (!_do_def_check(&tree_spec, cft, &cft_check_handle)) {
 			r = ECMD_FAILED;
 			goto_out;
 		}
 	}
 	else if (!strcmp(type, "missing")) {
 		tree_spec.type = CFG_DEF_TREE_MISSING;
-		if (!_do_def_check(cmd, cft, &cft_check_handle)) {
+		if (!_do_def_check(&tree_spec, cft, &cft_check_handle)) {
 			r = ECMD_FAILED;
 			goto_out;
 		}
@@ -177,6 +188,13 @@ int dumpconfig(struct cmd_context *cmd, int argc, char **argv)
 	else if (!strcmp(type, "default")) {
 		tree_spec.type = CFG_DEF_TREE_DEFAULT;
 		/* default type does not require check status */
+	}
+	else if (!strcmp(type, "diff")) {
+		tree_spec.type = CFG_DEF_TREE_DIFF;
+		if (!_do_def_check(&tree_spec, cft, &cft_check_handle)) {
+			r = ECMD_FAILED;
+			goto_out;
+		}
 	}
 	else if (!strcmp(type, "new")) {
 		tree_spec.type = CFG_DEF_TREE_NEW;
@@ -193,18 +211,23 @@ int dumpconfig(struct cmd_context *cmd, int argc, char **argv)
 		goto out;
 	}
 
+	if (arg_count(cmd, withcomments_ARG))
+		tree_spec.withcomments = 1;
+
+	if (arg_count(cmd, withversions_ARG))
+		tree_spec.withversions = 1;
+
 	if (cft_check_handle)
 		tree_spec.check_status = cft_check_handle->status;
 
 	if ((tree_spec.type != CFG_DEF_TREE_CURRENT) &&
+	    (tree_spec.type != CFG_DEF_TREE_DIFF) &&
 	    !(cft = config_def_create_tree(&tree_spec))) {
 		r = ECMD_FAILED;
 		goto_out;
 	}
 
-	if (!config_write(cft, arg_count(cmd, withcomments_ARG),
-			  arg_count(cmd, withversions_ARG),
-			  file, argc, argv)) {
+	if (!config_write(cft, &tree_spec, file, argc, argv)) {
 		stack;
 		r = ECMD_FAILED;
 	}

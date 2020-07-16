@@ -17,18 +17,8 @@
 #include "locking.h"
 #include "metadata.h"
 #include "segtype.h"
-#include "lv_alloc.h"
 #include "defaults.h"
 #include "display.h"
-
-int attach_pool_metadata_lv(struct lv_segment *pool_seg, struct logical_volume *metadata_lv)
-{
-	pool_seg->metadata_lv = metadata_lv;
-	metadata_lv->status |= THIN_POOL_METADATA;
-	lv_set_hidden(metadata_lv);
-
-	return add_seg_to_segs_using_this_lv(metadata_lv, pool_seg);
-}
 
 int detach_pool_metadata_lv(struct lv_segment *pool_seg, struct logical_volume **metadata_lv)
 {
@@ -44,105 +34,6 @@ int detach_pool_metadata_lv(struct lv_segment *pool_seg, struct logical_volume *
 	lv->status &= ~THIN_POOL_METADATA;
 	*metadata_lv = lv;
 	pool_seg->metadata_lv = NULL;
-
-	return 1;
-}
-
-int attach_pool_data_lv(struct lv_segment *pool_seg, struct logical_volume *pool_data_lv)
-{
-	if (!set_lv_segment_area_lv(pool_seg, 0, pool_data_lv, 0, THIN_POOL_DATA))
-		return_0;
-
-	pool_seg->lv->status |= THIN_POOL;
-	lv_set_hidden(pool_data_lv);
-
-	return 1;
-}
-
-int attach_pool_lv(struct lv_segment *seg, struct logical_volume *pool_lv,
-		   struct logical_volume *origin)
-{
-	seg->pool_lv = pool_lv;
-	seg->lv->status |= THIN_VOLUME;
-	seg->origin = origin;
-
-	if (origin && !add_seg_to_segs_using_this_lv(origin, seg))
-		return_0;
-
-	return add_seg_to_segs_using_this_lv(pool_lv, seg);
-}
-
-int detach_pool_lv(struct lv_segment *seg)
-{
-	struct lv_thin_message *tmsg, *tmp;
-	struct seg_list *sl, *tsl;
-	int no_update = 0;
-
-	if (!seg->pool_lv || !lv_is_thin_pool(seg->pool_lv)) {
-		log_error(INTERNAL_ERROR "Cannot detach pool from non-thin LV %s",
-			  seg->lv->name);
-		return 0;
-	}
-
-	/* Drop any message referencing removed segment */
-	dm_list_iterate_items_safe(tmsg, tmp, &(first_seg(seg->pool_lv)->thin_messages)) {
-		switch (tmsg->type) {
-		case DM_THIN_MESSAGE_CREATE_SNAP:
-		case DM_THIN_MESSAGE_CREATE_THIN:
-			if (tmsg->u.lv == seg->lv) {
-				log_debug_metadata("Discarding message for LV %s.",
-						   tmsg->u.lv->name);
-				dm_list_del(&tmsg->list);
-				no_update = 1; /* Replacing existing */
-			}
-			break;
-		case DM_THIN_MESSAGE_DELETE:
-			if (tmsg->u.delete_id == seg->device_id) {
-				log_error(INTERNAL_ERROR "Trying to delete %u again.",
-					  tmsg->u.delete_id);
-				return 0;
-			}
-			break;
-		default:
-			log_error(INTERNAL_ERROR "Unsupported message type %u.", tmsg->type);
-			break;
-		}
-	}
-
-	if (!detach_thin_external_origin(seg))
-		return_0;
-
-	if (!attach_pool_message(first_seg(seg->pool_lv),
-				 DM_THIN_MESSAGE_DELETE,
-				 NULL, seg->device_id, no_update))
-		return_0;
-
-	if (!remove_seg_from_segs_using_this_lv(seg->pool_lv, seg))
-		return_0;
-
-	if (seg->origin &&
-	    !remove_seg_from_segs_using_this_lv(seg->origin, seg))
-		return_0;
-
-	/* If thin origin, remove it from related thin snapshots */
-	/*
-	 * TODO: map removal of origin as snapshot lvconvert --merge?
-	 * i.e. rename thin snapshot to origin thin origin
-	 */
-	dm_list_iterate_items_safe(sl, tsl, &seg->lv->segs_using_this_lv) {
-		if (!seg_is_thin_volume(sl->seg) ||
-		    (seg->lv != sl->seg->origin))
-			continue;
-
-		if (!remove_seg_from_segs_using_this_lv(seg->lv, sl->seg))
-			return_0;
-		/* Thin snapshot is now regular thin volume */
-		sl->seg->origin = NULL;
-	}
-
-	seg->lv->status &= ~THIN_VOLUME;
-	seg->pool_lv = NULL;
-	seg->origin = NULL;
 
 	return 1;
 }
@@ -194,9 +85,9 @@ int attach_pool_message(struct lv_segment *pool_seg, dm_thin_message_t type,
 
 	dm_list_add(&pool_seg->thin_messages, &tmsg->list);
 
-	log_debug_metadata("Added %s message",
+	log_debug_metadata("Added %s message.",
 			   (type == DM_THIN_MESSAGE_CREATE_SNAP ||
-			   type == DM_THIN_MESSAGE_CREATE_THIN) ? "create" :
+			    type == DM_THIN_MESSAGE_CREATE_THIN) ? "create" :
 			   (type == DM_THIN_MESSAGE_DELETE) ? "delete" : "unknown");
 
 	return 1;
@@ -247,6 +138,13 @@ int detach_thin_external_origin(struct lv_segment *seg)
 	return 1;
 }
 
+int lv_is_merging_thin_snapshot(const struct logical_volume *lv)
+{
+	struct lv_segment *seg = first_seg(lv);
+
+	return (seg && seg->status & MERGING) ? 1 : 0;
+}
+
 /*
  * Check whether pool has some message queued for LV or for device_id
  * When LV is NULL and device_id is 0 it just checks for any message.
@@ -262,7 +160,7 @@ int pool_has_message(const struct lv_segment *seg,
 	}
 
 	if (!lv && !device_id)
-		return dm_list_empty(&seg->thin_messages);
+		return !dm_list_empty(&seg->thin_messages);
 
 	dm_list_iterate_items(tmsg, &seg->thin_messages) {
 		switch (tmsg->type) {
@@ -309,7 +207,7 @@ int pool_is_active(const struct logical_volume *lv)
 	return 0;
 }
 
-int pool_can_resize_metadata(const struct logical_volume *lv)
+int thin_pool_feature_supported(const struct logical_volume *lv, int feature)
 {
 	static unsigned attr = 0U;
 	struct lv_segment *seg;
@@ -328,7 +226,7 @@ int pool_can_resize_metadata(const struct logical_volume *lv)
 		return 0;
 	}
 
-	return (attr & THIN_FEATURE_METADATA_RESIZE) ? 1 : 0;
+	return (attr & feature) ? 1 : 0;
 }
 
 int pool_below_threshold(const struct lv_segment *pool_seg)
@@ -343,39 +241,40 @@ int pool_below_threshold(const struct lv_segment *pool_seg)
 		return_0;
 
 	if (percent >= threshold)
-		return_0;
+		return 0;
 
 	/* Metadata */
 	if (!lv_thin_pool_percent(pool_seg->lv, 1, &percent))
 		return_0;
 
 	if (percent >= threshold)
-		return_0;
+		return 0;
 
 	return 1;
 }
 
-struct lv_segment *find_pool_seg(const struct lv_segment *seg)
+/*
+ * Validate given external origin could be used with thin pool
+ */
+int pool_supports_external_origin(const struct lv_segment *pool_seg, const struct logical_volume *external_lv)
 {
-	struct lv_segment *pool_seg;
+	uint32_t csize = pool_seg->chunk_size;
 
-	pool_seg = get_only_segment_using_this_lv(seg->lv);
-
-	if (!pool_seg) {
-		log_error("Failed to find pool_seg for %s", seg->lv->name);
-		return NULL;
+	if ((external_lv->size < csize) || (external_lv->size % csize)) {
+		/* TODO: Validate with thin feature flag once, it will be supported */
+		log_error("Can't use \"%s/%s\" as external origin with \"%s/%s\" pool. "
+			  "Size %s is not a multiple of pool's chunk size %s.",
+			  external_lv->vg->name, external_lv->name,
+			  pool_seg->lv->vg->name, pool_seg->lv->name,
+			  display_size(external_lv->vg->cmd, external_lv->size),
+			  display_size(external_lv->vg->cmd, csize));
+		return 0;
 	}
 
-	if (!seg_is_thin_pool(pool_seg)) {
-		log_error("%s on %s is not a pool segment",
-			  pool_seg->lv->name, seg->lv->name);
-		return NULL;
-	}
-
-	return pool_seg;
+	return 1;
 }
 
-struct logical_volume *find_pool_lv(struct logical_volume *lv)
+struct logical_volume *find_pool_lv(const struct logical_volume *lv)
 {
 	struct lv_segment *seg;
 
@@ -426,108 +325,6 @@ uint32_t get_free_pool_device_id(struct lv_segment *thin_pool_seg)
 	return max_id;
 }
 
-int create_pool(struct logical_volume *pool_lv, const struct segment_type *segtype,
-		struct alloc_handle *ah, uint32_t stripes, uint32_t stripe_size)
-{
-	const struct segment_type *striped;
-	struct logical_volume *meta_lv, *data_lv;
-	struct lv_segment *seg;
-	char name[NAME_LEN];
-
-	if (pool_lv->le_count) {
-		/* FIXME move code for manipulation from lv_manip.c */
-		log_error(INTERNAL_ERROR "Pool %s has already extents.", pool_lv->name);
-		return 0;
-	}
-
-	/* LV is not yet a pool, so it's extension from lvcreate */
-	if (!(striped = get_segtype_from_string(pool_lv->vg->cmd, "striped")))
-		return_0;
-
-	if (activation() && segtype->ops->target_present &&
-	    !segtype->ops->target_present(pool_lv->vg->cmd, NULL, NULL)) {
-		log_error("%s: Required device-mapper target(s) not "
-			  "detected in your kernel.", segtype->name);
-		return 0;
-	}
-
-	/* Metadata segment */
-	if (!lv_add_segment(ah, stripes, 1, pool_lv, striped, 1, 0, 0))
-		return_0;
-
-	if (!activation())
-		log_warn("WARNING: Pool %s is created without initialization.", pool_lv->name);
-	else {
-		if (!vg_write(pool_lv->vg) || !vg_commit(pool_lv->vg))
-			return_0;
-
-		/*
-		 * If killed here, only the VISIBLE striped pool LV is left
-		 * and user could easily remove it.
-		 *
-		 * FIXME: implement lazy clearing when activation is disabled
-		 */
-
-		/* pool_lv is a new LV so the VG lock protects us */
-		if (!activate_lv_local(pool_lv->vg->cmd, pool_lv) ||
-		    /* Clear 4KB of metadata device for new thin-pool. */
-		    !set_lv(pool_lv->vg->cmd, pool_lv, UINT64_C(0), 0)) {
-			log_error("Aborting. Failed to wipe pool metadata %s.",
-				  pool_lv->name);
-			goto bad;
-		}
-	}
-
-	if (dm_snprintf(name, sizeof(name), "%s_tmeta", pool_lv->name) < 0) {
-		log_error("Name is too long to be a pool name.");
-		goto bad;
-	}
-
-	if (!(meta_lv = lv_create_empty(name, NULL, LVM_READ | LVM_WRITE,
-					ALLOC_INHERIT, pool_lv->vg)))
-		goto_bad;
-
-	if (!move_lv_segments(meta_lv, pool_lv, 0, 0))
-		goto_bad;
-
-	/* Pool data segment */
-	if (!lv_add_segment(ah, 0, stripes, pool_lv, striped, stripe_size, 0, 0))
-		goto_bad;
-
-	if (!(data_lv = insert_layer_for_lv(pool_lv->vg->cmd, pool_lv,
-					    pool_lv->status, "_tdata")))
-		goto_bad;
-
-	seg = first_seg(pool_lv);
-	/* Drop reference as attach_pool_data_lv() takes it again */
-	if (!remove_seg_from_segs_using_this_lv(data_lv, seg))
-		goto_bad;
-
-	if (!attach_pool_data_lv(seg, data_lv))
-		goto_bad;
-
-	if (!attach_pool_metadata_lv(seg, meta_lv))
-		goto_bad;
-
-	seg->segtype = segtype; /* Set as thin_pool segment */
-
-	return 1;
-
-bad:
-	if (activation()) {
-		if (deactivate_lv_local(pool_lv->vg->cmd, pool_lv)) {
-			log_error("Aborting. Could not deactivate pool %s.",
-				  pool_lv->name);
-			return 0;
-		}
-		if (!lv_remove(pool_lv) || !vg_write(pool_lv->vg) || !vg_commit(pool_lv->vg))
-			log_error("Manual intervention may be required to remove "
-				  "abandoned LV(s) before retrying.");
-	}
-
-	return 0;
-}
-
 int update_pool_lv(struct logical_volume *lv, int activate)
 {
 	int monitored;
@@ -569,26 +366,6 @@ int update_pool_lv(struct logical_volume *lv, int activate)
 	return 1;
 }
 
-static int _get_pool_chunk_size_calc(const char *str,
-				     int *chunk_size_calc_method,
-				     uint32_t *chunk_size)
-{
-	if (!strcasecmp(str, "generic")) {
-		*chunk_size_calc_method = THIN_CHUNK_SIZE_CALC_METHOD_GENERIC;
-		*chunk_size = DEFAULT_THIN_POOL_CHUNK_SIZE * 2;
-	}
-	else if (!strcasecmp(str, "performance")) {
-		*chunk_size_calc_method = THIN_CHUNK_SIZE_CALC_METHOD_PERFORMANCE;
-		*chunk_size = DEFAULT_THIN_POOL_CHUNK_SIZE_PERFORMANCE * 2;
-	}
-	else {
-		log_error("Thin pool chunk size calculation policy \"%s\" is unrecognised.", str);
-		return 0;
-	}
-
-	return 1;
-}
-
 int update_profilable_pool_params(struct cmd_context *cmd, struct profile *profile,
 				  int passed_args, int *chunk_size_calc_method,
 				  uint32_t *chunk_size, thin_discards_t *discards,
@@ -599,8 +376,15 @@ int update_profilable_pool_params(struct cmd_context *cmd, struct profile *profi
 	if (!(passed_args & PASS_ARG_CHUNK_SIZE)) {
 		if (!(*chunk_size = find_config_tree_int(cmd, allocation_thin_pool_chunk_size_CFG, profile) * 2)) {
 			str = find_config_tree_str(cmd, allocation_thin_pool_chunk_size_policy_CFG, profile);
-			if (!_get_pool_chunk_size_calc(str, chunk_size_calc_method, chunk_size))
-				return_0;
+			if (!strcasecmp(str, "generic"))
+				*chunk_size_calc_method = THIN_CHUNK_SIZE_CALC_METHOD_GENERIC;
+			else if (!strcasecmp(str, "performance"))
+				*chunk_size_calc_method = THIN_CHUNK_SIZE_CALC_METHOD_PERFORMANCE;
+			else {
+				log_error("Thin pool chunk size calculation policy \"%s\" is unrecognised.", str);
+				return 0;
+			}
+			*chunk_size = get_default_allocation_thin_pool_chunk_size_CFG(cmd, profile) * 2;
 		}
 	}
 
@@ -624,11 +408,12 @@ int update_profilable_pool_params(struct cmd_context *cmd, struct profile *profi
 	return 1;
 }
 
-int update_pool_params(struct volume_group *vg, unsigned attr, int passed_args,
-		       uint32_t data_extents, uint32_t extent_size,
-		       int *chunk_size_calc_method, uint32_t *chunk_size,
-		       thin_discards_t *discards, uint64_t *pool_metadata_size,
-		       int *zero)
+int update_thin_pool_params(struct volume_group *vg, unsigned attr,
+			    int passed_args,
+			    uint32_t data_extents, uint32_t extent_size,
+			    int *chunk_size_calc_method, uint32_t *chunk_size,
+			    thin_discards_t *discards,
+			    uint64_t *pool_metadata_size, int *zero)
 {
 	size_t estimate_chunk_size;
 	struct cmd_context *cmd = vg->cmd;
@@ -881,7 +666,7 @@ int handle_pool_metadata_spare(struct volume_group *vg, uint32_t extents,
 		       seg_mirrors,
 		       seg->region_size,
 		       extents - lv->le_count, NULL,
-		       pvh, lv->alloc))
+		       pvh, lv->alloc, 0))
 		return_0;
 
 	return 1;

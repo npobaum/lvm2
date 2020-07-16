@@ -41,7 +41,7 @@ static const struct {
 	ALLOC_INHERIT, "inherit", 'i'}
 };
 
-static const int _num_policies = sizeof(_policies) / sizeof(*_policies);
+static const int _num_policies = DM_ARRAY_SIZE(_policies);
 
 /* Test if the doubles are close enough to be considered equal */
 static int _close_enough(double d1, double d2)
@@ -180,6 +180,13 @@ alloc_policy_t get_alloc_from_string(const char *str)
 
 	log_error("Unrecognised allocation policy %s", str);
 	return ALLOC_INVALID;
+}
+
+static const char *_percent_types[7] = { "NONE", "VGS", "FREE", "LVS", "PVS", "ORIGIN" };
+
+const char *get_percent_string(percent_type_t def)
+{
+	return _percent_types[def];
 }
 
 #define BASE_UNKNOWN 0
@@ -355,7 +362,7 @@ void pvdisplay_colons(const struct physical_volume *pv)
 	}
 
 	log_print("%s:%s:%" PRIu64 ":-1:%" PRIu64 ":%" PRIu64 ":-1:%" PRIu32 ":%u:%u:%u:%s",
-		  pv_dev_name(pv), pv->vg_name, pv->size,
+		  pv_dev_name(pv), pv_vg_name(pv), pv->size,
 		  /* FIXME pv->pv_number, Derive or remove? */
 		  pv->status,	/* FIXME Support old or new format here? */
 		  pv->status & ALLOCATABLE_PV,	/* FIXME remove? */
@@ -600,14 +607,21 @@ int lvdisplay_full(struct cmd_context *cmd,
 	if (lv_is_thin_volume(lv)) {
 		seg = first_seg(lv);
 		log_print("LV Pool name           %s", seg->pool_lv->name);
+		log_print("LV Thin device ID      %u", seg->device_id);
 		if (seg->origin)
 			log_print("LV Thin origin name    %s",
 				  seg->origin->name);
 		if (seg->external_lv)
 			log_print("LV External origin name %s",
 				  seg->external_lv->name);
+		if (seg->merge_lv)
+			log_print("LV merging to          %s",
+				  seg->merge_lv->name);
 		if (inkernel)
 			thin_active = lv_thin_percent(lv, 0, &thin_percent);
+		if (lv_is_merging_origin(lv))
+			log_print("LV merged with         %s",
+				  find_snapshot(lv)->lv->name);
 	} else if (lv_is_thin_pool(lv)) {
 		if (inkernel) {
 			thin_data_active = lv_thin_pool_percent(lv, 0, &thin_data_percent);
@@ -814,14 +828,14 @@ void vgdisplay_full(const struct volume_group *vg)
 			       (uint64_t) vg->extent_count * vg->extent_size));
 
 	log_print("PE Size               %s",
-		  display_size(vg->cmd, (uint64_t) vg->extent_size));
+		  display_size(vg->cmd, vg->extent_size));
 
 	log_print("Total PE              %u", vg->extent_count);
 
 	log_print("Alloc PE / Size       %u / %s",
 		  vg->extent_count - vg->free_count,
 		  display_size(vg->cmd,
-			       ((uint64_t) vg->extent_count - vg->free_count) *
+			       (uint64_t) (vg->extent_count - vg->free_count) *
 			       vg->extent_size));
 
 	log_print("Free  PE / Size       %u / %s", vg->free_count,
@@ -911,6 +925,44 @@ void display_segtypes(const struct cmd_context *cmd)
 
 	dm_list_iterate_items(segtype, &cmd->segtypes) {
 		log_print("%s", segtype->name);
+	}
+}
+
+void display_tags(const struct cmd_context *cmd)
+{
+	const struct str_list *sl;
+
+	dm_list_iterate_items(sl, &cmd->tags) {
+		log_print("%s", sl->str);
+	}
+}
+
+void display_name_error(name_error_t name_error)
+{
+	if (name_error != NAME_VALID) {
+		switch(name_error) {
+		case NAME_INVALID_EMPTY:
+			log_error("Name is zero length");
+			break;
+		case NAME_INVALID_HYPEN:
+			log_error("Name cannot start with hyphen");
+			break;
+		case NAME_INVALID_DOTS:
+			log_error("Name starts with . or .. and has no "
+						"following character(s)");
+			break;
+		case NAME_INVALID_CHARSET:
+			log_error("Name contains invalid character, valid set includes: "
+					"[a-zA-Z0-9.-_+]");
+			break;
+		case NAME_INVALID_LENGTH:
+			/* Report that name length -1 to accommodate nul*/
+			log_error("Name length exceeds maximum limit of %d", (NAME_LEN -1));
+			break;
+		default:
+			log_error("Unknown error %d on name validation", name_error);
+			break;
+		}
 	}
 }
 

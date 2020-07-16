@@ -15,11 +15,11 @@
 #ifndef _LVM_VG_H
 #define _LVM_VG_H
 
+#include "uuid.h"
+#include "libdevmapper.h"
+
 struct cmd_context;
-struct dm_pool;
 struct format_instance;
-struct dm_list;
-struct id;
 struct logical_volume;
 
 typedef enum {
@@ -57,6 +57,8 @@ struct volume_group {
 	 * _vg_update_vg_ondisk.
 	 */
 	struct volume_group *vg_ondisk;
+	struct dm_config_tree *cft_precommitted; /* Precommitted metadata */
+	struct volume_group *vg_precommitted; /* Parsed from cft */
 
 	alloc_policy_t alloc;
 	struct profile *profile;

@@ -42,7 +42,7 @@ cd "$TESTDIR"
 
 if test -n "$LVM_TEST_FLAVOUR"; then
 	touch flavour_overrides
-	env | grep ^$LVM_TEST_FLAVOUR | while read var; do
+	env | grep ^${LVM_TEST_FLAVOUR} | while read var; do
 		(echo -n "export "; echo $var | sed -e s,^${LVM_TEST_FLAVOUR}_,,) >> flavour_overrides
 	done
 	. flavour_overrides
@@ -67,6 +67,14 @@ export DM_DEV_DIR LVM_SYSTEM_DIR DM_ABORT_ON_INTERNAL_ERRORS
 
 echo "$TESTNAME" >TESTNAME
 
+echo "Kernel is $(uname -a)"
+# Report SELinux mode
+if which getenforce &>/dev/null ; then
+	echo "Selinux mode is \"$(getenforce 2>/dev/null)\"."
+else
+	echo "Selinux mode is not installed."
+fi
+
 # Setting up symlink from $i to $TESTDIR/lib
 find "$abs_top_builddir/daemons/dmeventd/plugins/" -name '*.so' \
 	-exec ln -s -t lib "{}" +
@@ -81,9 +89,12 @@ test -n "$BASH" && set -eE -o pipefail
 aux lvmconf
 aux prepare_clvmd
 test -n "$LVM_TEST_LVMETAD" && {
-	aux prepare_lvmetad
 	export LVM_LVMETAD_SOCKET="$TESTDIR/lvmetad.socket"
+	export LVM_LVMETAD_PIDFILE="$TESTDIR/lvmetad.pid"
+	aux prepare_lvmetad
 }
+
+# Vars for harness
 echo "@TESTDIR=$TESTDIR"
 echo "@PREFIX=$PREFIX"
 

@@ -49,16 +49,24 @@ fi
 
 lvcreate -l10 -T $vg/pool
 # Can't convert pool to external origin
-lvcreate -l10 -T $vg/pool1
+lvcreate -l10 -T $vg/pool1 -c 192k
 not lvconvert -T --thinpool $vg/pool1 $vg/pool --originname origin
-lvremove -f $vg/pool1
+# Create pool1 chunk_size unaligned LV and check failing conversion
+lvcreate -l2 -n $lv1 $vg
+not lvconvert -T --thinpool $vg/pool1 $vg/$lv1
+
+lvremove -f $vg/pool1 $vg/$lv1
 
 # create plain LV (will be used for external origin)
 lvcreate -L8M -n $lv1 $vg
 
-mkfs.ext2 $DM_DEV_DIR/$vg/$lv1
+# Can't convert same LV to the thin pool and thin volume
+not lvconvert --thinpool $vg/$lv1 -T $vg/$lv1
+check lv_field $vg/$lv1 segtype linear
+
+mkfs.ext2 "$DM_DEV_DIR/$vg/$lv1"
 mkdir mnt
-mount $DM_DEV_DIR/$vg/$lv1 mnt
+mount "$DM_DEV_DIR/$vg/$lv1" mnt
 
 dd if=/dev/zero of=mnt/test1 bs=1M count=1
 
@@ -76,7 +84,7 @@ touch mnt/test
 umount mnt
 
 # check fs is without errors
-fsck -n $DM_DEV_DIR/$vg/$lv1
+fsck -n "$DM_DEV_DIR/$vg/$lv1"
 
 lvchange -aey $vg/extorg
 lvchange -an $vg/$lv1
@@ -85,7 +93,7 @@ check active $vg extorg
 check inactive $vg $lv1
 
 # fsck in read-only mode
-fsck -n $DM_DEV_DIR/$vg/extorg
+fsck -n "$DM_DEV_DIR/$vg/extorg"
 
 not lvresize -l+8 $vg/extorg
 not lvresize -l-4 $vg/extorg

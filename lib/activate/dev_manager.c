@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2002-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2013 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2014 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -63,7 +63,7 @@ struct lv_layer {
 
 int read_only_lv(struct logical_volume *lv, struct lv_activate_opts *laopts)
 {
-	return (laopts->read_only || !(lv->vg->status & LVM_WRITE) || !(lv->status & LVM_WRITE));
+	return (laopts->read_only || !(lv->status & LVM_WRITE));
 }
 
 /*
@@ -112,9 +112,9 @@ static int _info_run(const char *name, const char *dlid, struct dm_info *info,
 	if (!(dmt = _setup_task(mknodes ? name : NULL, dlid, 0, dmtask, major, minor)))
 		return_0;
 
-	if (!with_open_count)
-		if (!dm_task_no_open_count(dmt))
-			log_error("Failed to disable open_count");
+	if (!with_open_count &&
+	    !dm_task_no_open_count(dmt))
+		log_warn("WARNING: Failed to disable open_count.");
 
 	if (!dm_task_run(dmt))
 		goto_out;
@@ -392,6 +392,27 @@ static int _device_is_usable(struct device *dev, int check_lv_names)
 		goto out;
 	}
 
+	/* Check internal lvm devices */
+	if (check_lv_names &&
+	    uuid && !strncmp(uuid, UUID_PREFIX, sizeof(UUID_PREFIX) - 1)) {
+		if (strlen(uuid) > (sizeof(UUID_PREFIX) + 2 * ID_LEN)) { /* 68 */
+			log_debug_activation("%s: Reserved uuid %s on internal LV device %s not usable.",
+					     dev_name(dev), uuid, name);
+			goto out;
+		}
+
+		if (!(vgname = dm_strdup(name)) ||
+		    !dm_split_lvm_name(NULL, NULL, &vgname, &lvname, &layer))
+			goto_out;
+
+		/* FIXME: fails to handle dev aliases i.e. /dev/dm-5, replace with UUID suffix */
+		if (lvname && (is_reserved_lvname(lvname) || *layer)) {
+			log_debug_activation("%s: Reserved internal LV device %s/%s%s%s not usable.",
+					     dev_name(dev), vgname, lvname, *layer ? "-" : "", layer);
+			goto out;
+		}
+	}
+
 	/* FIXME Also check for mpath no paths */
 	do {
 		next = dm_get_next_target(dmt, next, &start, &length,
@@ -438,20 +459,6 @@ static int _device_is_usable(struct device *dev, int check_lv_names)
 	}
 
 	/* FIXME Also check dependencies? */
-
-	/* Check internal lvm devices */
-	if (check_lv_names &&
-	    uuid && !strncmp(uuid, UUID_PREFIX, sizeof(UUID_PREFIX) - 1)) {
-		if (!(vgname = dm_strdup(name)) ||
-		    !dm_split_lvm_name(NULL, NULL, &vgname, &lvname, &layer))
-			goto_out;
-
-		if (lvname && (is_reserved_lvname(lvname) || *layer)) {
-			log_debug_activation("%s: Reserved internal LV device %s/%s%s%s not usable.",
-					     dev_name(dev), vgname, lvname, *layer ? "-" : "", layer);
-			goto out;
-		}
-	}
 
 	r = 1;
 
@@ -505,7 +512,7 @@ int dev_manager_info(struct dm_pool *mem, const struct logical_volume *lv,
 		return 0;
 	}
 
-	if (!(dlid = build_dm_uuid(mem, lv->lvid.s, layer))) {
+	if (!(dlid = build_dm_uuid(mem, lv, layer))) {
 		log_error("dlid build failed for %s", name);
 		r = 0;
 		goto out;
@@ -528,7 +535,7 @@ static const struct dm_info *_cached_info(struct dm_pool *mem,
 	const struct dm_tree_node *dnode;
 	const struct dm_info *dinfo = NULL;
 
-	if (!(dlid = build_dm_uuid(mem, lv->lvid.s, layer))) {
+	if (!(dlid = build_dm_uuid(mem, lv, layer))) {
 		log_error("Failed to build dlid for %s.", lv->name);
 		return NULL;
 	}
@@ -641,7 +648,7 @@ int lv_has_target_type(struct dm_pool *mem, struct logical_volume *lv,
 	char *type = NULL;
 	char *params = NULL;
 
-	if (!(dlid = build_dm_uuid(mem, lv->lvid.s, layer)))
+	if (!(dlid = build_dm_uuid(mem, lv, layer)))
 		return_0;
 
 	if (!(dmt = _setup_task(NULL, dlid, 0,
@@ -872,7 +879,7 @@ int dev_manager_transient(struct dev_manager *dm, struct logical_volume *lv)
 	const struct dm_list *segh = &lv->segments;
 	struct lv_segment *seg = NULL;
 
-	if (!(dlid = build_dm_uuid(dm->mem, lv->lvid.s, layer)))
+	if (!(dlid = build_dm_uuid(dm->mem, lv, layer)))
 		return_0;
 
 	if (!(dmt = _setup_task(0, dlid, NULL, DM_DEVICE_STATUS, 0, 0)))
@@ -1015,7 +1022,7 @@ int dev_manager_snapshot_percent(struct dev_manager *dm,
 	if (!(name = dm_build_dm_name(dm->mem, snap_lv->vg->name, snap_lv->name, NULL)))
 		return_0;
 
-	if (!(dlid = build_dm_uuid(dm->mem, snap_lv->lvid.s, NULL)))
+	if (!(dlid = build_dm_uuid(dm->mem, snap_lv, NULL)))
 		return_0;
 
 	/*
@@ -1047,7 +1054,7 @@ int dev_manager_mirror_percent(struct dev_manager *dm,
 	if (!(name = dm_build_dm_name(dm->mem, lv->vg->name, lv->name, layer)))
 		return_0;
 
-	if (!(dlid = build_dm_uuid(dm->mem, lv->lvid.s, layer))) {
+	if (!(dlid = build_dm_uuid(dm->mem, lv, layer))) {
 		log_error("dlid build failed for %s", lv->name);
 		return 0;
 	}
@@ -1074,7 +1081,7 @@ int dev_manager_raid_status(struct dev_manager *dm,
 	char *params = NULL;
 	const char *layer = lv_layer(lv);
 
-	if (!(dlid = build_dm_uuid(dm->mem, lv->lvid.s, layer)))
+	if (!(dlid = build_dm_uuid(dm->mem, lv, layer)))
 		return_0;
 
 	log_debug_activation("Getting raid device status for %s.", lv->name);
@@ -1138,7 +1145,7 @@ int dev_manager_raid_message(struct dev_manager *dm,
 		return 0;
 	}
 
-	if (!(dlid = build_dm_uuid(dm->mem, lv->lvid.s, layer)))
+	if (!(dlid = build_dm_uuid(dm->mem, lv, layer)))
 		return_0;
 
 	if (!(dmt = _setup_task(NULL, dlid, 0, DM_DEVICE_TARGET_MSG, 0, 0)))
@@ -1160,6 +1167,55 @@ out:
 	return r;
 }
 
+int dev_manager_cache_status(struct dev_manager *dm,
+			     const struct logical_volume *lv,
+			     struct dm_status_cache **status)
+{
+	int r = 0;
+	const char *dlid;
+	struct dm_task *dmt;
+	struct dm_info info;
+	uint64_t start, length;
+	char *type = NULL;
+	char *params = NULL;
+	const char *layer = lv_layer(lv);
+
+	if (!(dlid = build_dm_uuid(dm->mem, lv, layer)))
+		return_0;
+
+	log_debug_activation("Getting cache device status for %s.", lv->name);
+
+	if (!(dmt = _setup_task(NULL, dlid, 0, DM_DEVICE_STATUS, 0, 0)))
+		return_0;
+
+	if (!dm_task_no_open_count(dmt))
+		log_error("Failed to disable open_count.");
+
+	if (!dm_task_run(dmt))
+		goto_out;
+
+	if (!dm_task_get_info(dmt, &info) || !info.exists)
+		goto_out;
+
+	dm_get_next_target(dmt, NULL, &start, &length, &type, &params);
+
+	if (!type || strcmp(type, "cache")) {
+		log_debug("Expected cache segment type but got %s instead",
+			  type ? type : "NULL");
+		goto out;
+	}
+
+	if (!dm_get_status_cache(dm->mem, params, status))
+		goto_out;
+
+	r = 1;
+out:
+	dm_task_destroy(dmt);
+
+	return r;
+}
+
+//FIXME: Can we get rid of this crap below?
 #if 0
 	log_very_verbose("%s %s", sus ? "Suspending" : "Resuming", name);
 
@@ -1233,7 +1289,7 @@ int dev_manager_thin_pool_status(struct dev_manager *dm,
 	int r = 0;
 
 	/* Build dlid for the thin pool layer */
-	if (!(dlid = build_dm_uuid(dm->mem, lv->lvid.s, lv_layer(lv))))
+	if (!(dlid = build_dm_uuid(dm->mem, lv, lv_layer(lv))))
 		return_0;
 
 	log_debug_activation("Getting thin pool device status for %s.", lv->name);
@@ -1279,7 +1335,7 @@ int dev_manager_thin_pool_percent(struct dev_manager *dm,
 				      lv_layer(lv))))
 		return_0;
 
-	if (!(dlid = build_dm_uuid(dm->mem, lv->lvid.s, lv_layer(lv))))
+	if (!(dlid = build_dm_uuid(dm->mem, lv, lv_layer(lv))))
 		return_0;
 
 	log_debug_activation("Getting device status percentage for %s", name);
@@ -1302,7 +1358,7 @@ int dev_manager_thin_percent(struct dev_manager *dm,
 	if (!(name = dm_build_dm_name(dm->mem, lv->vg->name, lv->name, layer)))
 		return_0;
 
-	if (!(dlid = build_dm_uuid(dm->mem, lv->lvid.s, layer)))
+	if (!(dlid = build_dm_uuid(dm->mem, lv, layer)))
 		return_0;
 
 	log_debug_activation("Getting device status percentage for %s", name);
@@ -1312,6 +1368,56 @@ int dev_manager_thin_percent(struct dev_manager *dm,
 
 	return 1;
 }
+
+int dev_manager_thin_device_id(struct dev_manager *dm,
+			       const struct logical_volume *lv,
+			       uint32_t *device_id)
+{
+	const char *dlid;
+	struct dm_task *dmt;
+	struct dm_info info;
+	uint64_t start, length;
+	char *params, *target_type = NULL;
+	int r = 0;
+
+	/* Build dlid for the thin layer */
+	if (!(dlid = build_dm_uuid(dm->mem, lv, lv_layer(lv))))
+		return_0;
+
+	log_debug_activation("Getting device id for %s.", dlid);
+
+	if (!(dmt = _setup_task(NULL, dlid, 0, DM_DEVICE_TABLE, 0, 0)))
+		return_0;
+
+	if (!dm_task_run(dmt))
+		goto_out;
+
+	if (!dm_task_get_info(dmt, &info) || !info.exists)
+		goto_out;
+
+	if (dm_get_next_target(dmt, NULL, &start, &length,
+			       &target_type, &params)) {
+		log_error("More then one table line found for %s.", lv->name);
+		goto out;
+	}
+
+	if (strcmp(target_type, "thin")) {
+		log_error("Unexpected target type %s found for thin %s.", target_type, lv->name);
+		goto out;
+	}
+
+	if (sscanf(params, "%*u:%*u %u", device_id) != 1) {
+		log_error("Cannot parse table like parameters %s for %s.", params, lv->name);
+		goto out;
+	}
+
+	r = 1;
+out:
+	dm_task_destroy(dmt);
+
+	return r;
+}
+
 
 /*************************/
 /*  NEW CODE STARTS HERE */
@@ -1476,7 +1582,7 @@ static int _add_dev_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 	if (!(name = dm_build_dm_name(dm->mem, lv->vg->name, lv->name, layer)))
 		return_0;
 
-	if (!(dlid = build_dm_uuid(dm->mem, lv->lvid.s, layer)))
+	if (!(dlid = build_dm_uuid(dm->mem, lv, layer)))
 		return_0;
 
 	log_debug_activation("Getting device info for %s [%s]", name, dlid);
@@ -1549,7 +1655,7 @@ static int _add_partial_replicator_to_dtree(struct dev_manager *dm,
 	if (!_add_dev_to_dtree(dm, dtree, rlv, NULL))
 		return_0;
 
-	if (!(uuid = build_dm_uuid(dm->mem, rlv->lvid.s, NULL)))
+	if (!(uuid = build_dm_uuid(dm->mem, rlv, NULL)))
 		return_0;
 
 	rep_node = dm_tree_find_node_by_uuid(dtree, uuid);
@@ -1571,7 +1677,7 @@ static int _add_partial_replicator_to_dtree(struct dev_manager *dm,
 				/* If replicator exists - try connect existing heads */
 				if (rep_node) {
 					uuid = build_dm_uuid(dm->mem,
-							     rdev->replicator_dev->lv->lvid.s,
+							     rdev->replicator_dev->lv,
 							     NULL);
 					if (!uuid)
 						return_0;
@@ -1691,7 +1797,9 @@ static int _thin_pool_register_callback(struct dev_manager *dm,
 	struct thin_cb_data *data;
 
 	/* Skip metadata testing for unused pool. */
-	if (!first_seg(lv)->transaction_id)
+	if (!first_seg(lv)->transaction_id ||
+	    ((first_seg(lv)->transaction_id == 1) &&
+	     pool_has_message(first_seg(lv), NULL, 0)))
 		return 1;
 
 	if (!(data = dm_pool_alloc(dm->mem, sizeof(*data)))) {
@@ -1720,6 +1828,16 @@ static int _add_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 	struct dm_tree_node *thin_node;
 	const char *uuid;
 
+	if (lv_is_cache_pool(lv)) {
+		/* origin_only is ignored */
+		/* cache pool is 'meta' LV and does not have a real device node */
+		if (!_add_lv_to_dtree(dm, dtree, seg_lv(first_seg(lv), 0), 0))
+			return_0;
+		if (!_add_lv_to_dtree(dm, dtree, first_seg(lv)->metadata_lv, 0))
+			return_0;
+		return 1;
+	}
+
 	if (!origin_only && !_add_dev_to_dtree(dm, dtree, lv, NULL))
 		return_0;
 
@@ -1737,7 +1855,7 @@ static int _add_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 #if 0
 		/* ? Use origin_only to avoid 'deep' thin pool suspend ? */
 		/* FIXME Implement dm_tree_node_skip_childrens optimisation */
-		if (!(uuid = build_dm_uuid(dm->mem, lv->lvid.s, lv_layer(lv))))
+		if (!(uuid = build_dm_uuid(dm->mem, lv, lv_layer(lv))))
 			return_0;
 		if ((thin_node = dm_tree_find_node_by_uuid(dtree, uuid)))
 			dm_tree_node_skip_childrens(thin_node, 1);
@@ -1767,7 +1885,7 @@ static int _add_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 			/* Setup callback for non-activation partial tree */
 			/* Activation gets own callback when needed */
 			/* TODO: extend _cached_info() to return dnode */
-			if (!(uuid = build_dm_uuid(dm->mem, lv->lvid.s, lv_layer(lv))))
+			if (!(uuid = build_dm_uuid(dm->mem, lv, lv_layer(lv))))
 				return_0;
 			if ((thin_node = dm_tree_find_node_by_uuid(dtree, uuid)) &&
 			    !_thin_pool_register_callback(dm, thin_node, lv))
@@ -1780,6 +1898,9 @@ static int _add_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 		dm_list_iterate(snh, &lv->snapshot_segs)
 			if (!_add_lv_to_dtree(dm, dtree, dm_list_struct_base(snh, struct lv_segment, origin_list)->cow, 0))
 				return_0;
+	if (dm->activation && !origin_only && lv_is_merging_origin(lv) &&
+	    !_add_lv_to_dtree(dm, dtree, find_snapshot(lv)->lv, 1))
+		return_0;
 
 	/* Add any LVs referencing a PVMOVE LV unless told not to. */
 	if (dm->track_pvmove_deps && lv->status & PVMOVE) {
@@ -1806,7 +1927,8 @@ static int _add_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 		if (seg->metadata_lv &&
 		    !_add_lv_to_dtree(dm, dtree, seg->metadata_lv, 0))
 			return_0;
-		if (seg->pool_lv && !dm->skip_external_lv &&
+		if (seg->pool_lv &&
+		    (lv_is_cache_pool(seg->pool_lv) || !dm->skip_external_lv) &&
 		    !_add_lv_to_dtree(dm, dtree, seg->pool_lv, 1)) /* stack */
 			return_0;
 
@@ -1818,6 +1940,11 @@ static int _add_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 			    !_add_lv_to_dtree(dm, dtree, seg_metalv(seg, s), 0))
 				return_0;
 		}
+
+		/* When activating, detect merging LV presence */
+		if (dm->activation && seg->merge_lv &&
+		    !_add_lv_to_dtree(dm, dtree, seg->merge_lv, 1))
+			return_0;
 	}
 
 	return 1;
@@ -1866,7 +1993,7 @@ static char *_add_error_device(struct dev_manager *dm, struct dm_tree *dtree,
 
 	sprintf(errid, "missing_%d_%d", segno, s);
 
-	if (!(dlid = build_dm_uuid(dm->mem, seg->lv->lvid.s, errid)))
+	if (!(dlid = build_dm_uuid(dm->mem, seg->lv, errid)))
 		return_NULL;
 
 	if (!(name = dm_build_dm_name(dm->mem, seg->lv->vg->name,
@@ -1974,18 +2101,18 @@ int add_areas_line(struct dev_manager *dm, struct lv_segment *seg,
 					return_0;
 				continue;
 			}
-			if (!(dlid = build_dm_uuid(dm->mem, seg_metalv(seg, s)->lvid.s, NULL)))
+			if (!(dlid = build_dm_uuid(dm->mem, seg_metalv(seg, s), NULL)))
 				return_0;
 			if (!dm_tree_node_add_target_area(node, NULL, dlid, extent_size * seg_metale(seg, s)))
 				return_0;
 
-			if (!(dlid = build_dm_uuid(dm->mem, seg_lv(seg, s)->lvid.s, NULL)))
+			if (!(dlid = build_dm_uuid(dm->mem, seg_lv(seg, s), NULL)))
 				return_0;
 			if (!dm_tree_node_add_target_area(node, NULL, dlid, extent_size * seg_le(seg, s)))
 				return_0;
 		} else if (seg_type(seg, s) == AREA_LV) {
 
-			if (!(dlid = build_dm_uuid(dm->mem, seg_lv(seg, s)->lvid.s, NULL)))
+			if (!(dlid = build_dm_uuid(dm->mem, seg_lv(seg, s), NULL)))
 				return_0;
 			if (!dm_tree_node_add_target_area(node, NULL, dlid, extent_size * seg_le(seg, s)))
 				return_0;
@@ -2014,7 +2141,7 @@ static int _add_layer_target_to_dtree(struct dev_manager *dm,
 {
 	const char *layer_dlid;
 
-	if (!(layer_dlid = build_dm_uuid(dm->mem, lv->lvid.s, lv_layer(lv))))
+	if (!(layer_dlid = build_dm_uuid(dm->mem, lv, lv_layer(lv))))
 		return_0;
 
 	/* Add linear mapping over layered LV */
@@ -2033,7 +2160,7 @@ static int _add_origin_target_to_dtree(struct dev_manager *dm,
 {
 	const char *real_dlid;
 
-	if (!(real_dlid = build_dm_uuid(dm->mem, lv->lvid.s, "real")))
+	if (!(real_dlid = build_dm_uuid(dm->mem, lv, "real")))
 		return_0;
 
 	if (!dm_tree_node_add_snapshot_origin_target(dnode, lv->size, real_dlid))
@@ -2047,20 +2174,20 @@ static int _add_snapshot_merge_target_to_dtree(struct dev_manager *dm,
 					       struct logical_volume *lv)
 {
 	const char *origin_dlid, *cow_dlid, *merge_dlid;
-	struct lv_segment *merging_snap_seg;
+	struct lv_segment *merging_snap_seg = find_snapshot(lv);
 
-	if (!(merging_snap_seg = find_merging_snapshot(lv))) {
+	if (!lv_is_merging_origin(lv)) {
 		log_error(INTERNAL_ERROR "LV %s is not merging snapshot.", lv->name);
 		return 0;
 	}
 
-	if (!(origin_dlid = build_dm_uuid(dm->mem, lv->lvid.s, "real")))
+	if (!(origin_dlid = build_dm_uuid(dm->mem, lv, "real")))
 		return_0;
 
-	if (!(cow_dlid = build_dm_uuid(dm->mem, merging_snap_seg->cow->lvid.s, "cow")))
+	if (!(cow_dlid = build_dm_uuid(dm->mem, merging_snap_seg->cow, "cow")))
 		return_0;
 
-	if (!(merge_dlid = build_dm_uuid(dm->mem, merging_snap_seg->cow->lvid.s, NULL)))
+	if (!(merge_dlid = build_dm_uuid(dm->mem, merging_snap_seg->cow, NULL)))
 		return_0;
 
 	if (!dm_tree_node_add_snapshot_merge_target(dnode, lv->size, origin_dlid,
@@ -2086,10 +2213,10 @@ static int _add_snapshot_target_to_dtree(struct dev_manager *dm,
 		return 0;
 	}
 
-	if (!(origin_dlid = build_dm_uuid(dm->mem, snap_seg->origin->lvid.s, "real")))
+	if (!(origin_dlid = build_dm_uuid(dm->mem, snap_seg->origin, "real")))
 		return_0;
 
-	if (!(cow_dlid = build_dm_uuid(dm->mem, snap_seg->cow->lvid.s, "cow")))
+	if (!(cow_dlid = build_dm_uuid(dm->mem, snap_seg->cow, "cow")))
 		return_0;
 
 	size = (uint64_t) snap_seg->len * snap_seg->origin->vg->extent_size;
@@ -2269,15 +2396,18 @@ static int _add_segment_to_dtree(struct dev_manager *dm,
 	if (seg->external_lv &&
 	    !_add_new_external_lv_to_dtree(dm, dtree, seg->external_lv, laopts))
 		return_0;
+
 	/* Add mirror log */
 	if (seg->log_lv &&
 	    !_add_new_lv_to_dtree(dm, dtree, seg->log_lv, laopts, NULL))
 		return_0;
-	/* Add thin pool metadata */
+
+	/* Add pool metadata */
 	if (seg->metadata_lv &&
 	    !_add_new_lv_to_dtree(dm, dtree, seg->metadata_lv, laopts, NULL))
 		return_0;
-	/* Add thin pool layer */
+
+	/* Add pool layer */
 	if (seg->pool_lv &&
 	    !_add_new_lv_to_dtree(dm, dtree, seg->pool_lv, laopts,
 				  lv_layer(seg->pool_lv)))
@@ -2372,9 +2502,19 @@ static int _add_new_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 	uint32_t read_ahead = lv->read_ahead;
 	uint32_t read_ahead_flags = UINT32_C(0);
 
+	if (lv_is_cache_pool(lv)) {
+		/* cache pool is 'meta' LV and does not have a real device node */
+		if (!_add_new_lv_to_dtree(dm, dtree, seg_lv(first_seg(lv), 0), laopts, NULL))
+			return_0;
+		if (!_add_new_lv_to_dtree(dm, dtree, first_seg(lv)->metadata_lv, laopts, NULL))
+			return_0;
+		return 1;
+	}
+
 	/* FIXME Seek a simpler way to lay out the snapshot-merge tree. */
 
-	if (lv_is_origin(lv) && lv_is_merging_origin(lv) && !layer) {
+	if (!layer && lv_is_merging_origin(lv)) {
+		seg = find_snapshot(lv);
 		/*
 		 * Clear merge attributes if merge isn't currently possible:
 		 * either origin or merging snapshot are open
@@ -2386,10 +2526,12 @@ static int _add_new_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 		if (((dinfo = _cached_info(dm->mem, dtree, lv, NULL)) &&
 		     dinfo->open_count) ||
 		    ((dinfo = _cached_info(dm->mem, dtree,
-					   find_merging_snapshot(lv)->cow, NULL)) &&
+					   seg_is_thin_volume(seg) ?
+					   seg->lv : seg->cow, NULL)) &&
 		     dinfo->open_count)) {
-			/* FIXME Is there anything simpler to check for instead? */
-			if (!lv_has_target_type(dm->mem, lv, NULL, "snapshot-merge"))
+			if (seg_is_thin_volume(seg) ||
+			    /* FIXME Is there anything simpler to check for instead? */
+			    !lv_has_target_type(dm->mem, lv, NULL, "snapshot-merge"))
 				laopts->no_merging = 1;
 		}
 	}
@@ -2397,7 +2539,7 @@ static int _add_new_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 	if (!(name = dm_build_dm_name(dm->mem, lv->vg->name, lv->name, layer)))
 		return_0;
 
-	if (!(dlid = build_dm_uuid(dm->mem, lv->lvid.s, layer)))
+	if (!(dlid = build_dm_uuid(dm->mem, lv, layer)))
 		return_0;
 
 	/* We've already processed this node if it already has a context ptr */
@@ -2445,7 +2587,7 @@ static int _add_new_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 			return_0;
 		if (!laopts->no_merging && lv_is_merging_origin(lv)) {
 			if (!_add_new_lv_to_dtree(dm, dtree,
-			     find_merging_snapshot(lv)->cow, laopts, "cow"))
+						  find_snapshot(lv)->cow, laopts, "cow"))
 				return_0;
 			/*
 			 * Must also add "real" LV for use when
@@ -2644,6 +2786,12 @@ static int _tree_action(struct dev_manager *dm, struct logical_volume *lv,
 	char *dlid;
 	int r = 0;
 
+	/* Some LV can be used for top level tree */
+	/* TODO: add more.... */
+	if (lv_is_cache_pool(lv)) {
+		log_error(INTERNAL_ERROR "Cannot create tree for %s.", lv->name);
+		return 0;
+	}
 	/* Some targets may build bigger tree for activation */
 	dm->activation = ((action == PRELOAD) || (action == ACTIVATE));
 	if (!(dtree = _create_partial_dtree(dm, lv, laopts->origin_only)))
@@ -2657,7 +2805,7 @@ static int _tree_action(struct dev_manager *dm, struct logical_volume *lv,
 	/* Restore fs cookie */
 	dm_tree_set_cookie(root, fs_get_cookie());
 
-	if (!(dlid = build_dm_uuid(dm->mem, lv->lvid.s, laopts->origin_only ? lv_layer(lv) : NULL)))
+	if (!(dlid = build_dm_uuid(dm->mem, lv, laopts->origin_only ? lv_layer(lv) : NULL)))
 		goto_out;
 
 	/* Only process nodes with uuid of "LVM-" plus VG id. */

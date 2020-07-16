@@ -52,20 +52,6 @@ struct lv_activate_opts {
 				 * that follows. */
 };
 
-/* target attribute flags */
-#define MIRROR_LOG_CLUSTERED	0x00000001U
-
-/* thin target attribute flags */
-enum {
-	/* bitfields - new features from 1.1 version */
-	THIN_FEATURE_DISCARDS			= (1 << 0),
-	THIN_FEATURE_EXTERNAL_ORIGIN		= (1 << 1),
-	THIN_FEATURE_HELD_ROOT			= (1 << 2),
-	THIN_FEATURE_BLOCK_SIZE			= (1 << 3),
-	THIN_FEATURE_DISCARDS_NON_POWER_2	= (1 << 4),
-	THIN_FEATURE_METADATA_RESIZE		= (1 << 5),
-};
-
 void set_activation(int activation);
 int activation(void);
 
@@ -134,12 +120,19 @@ int lv_raid_dev_health(const struct logical_volume *lv, char **dev_health);
 int lv_raid_mismatch_count(const struct logical_volume *lv, uint64_t *cnt);
 int lv_raid_sync_action(const struct logical_volume *lv, char **sync_action);
 int lv_raid_message(const struct logical_volume *lv, const char *msg);
+int lv_cache_block_info(struct logical_volume *lv,
+			uint32_t *chunk_size, uint64_t *dirty_count,
+			uint64_t *used_count, uint64_t *total_count);
+int lv_cache_policy_info(struct logical_volume *lv,
+			 const char **policy_name, int *policy_argc,
+			 const char ***policy_argv);
 int lv_thin_pool_percent(const struct logical_volume *lv, int metadata,
 			 percent_t *percent);
 int lv_thin_percent(const struct logical_volume *lv, int mapped,
 		    percent_t *percent);
 int lv_thin_pool_transaction_id(const struct logical_volume *lv,
 				uint64_t *transaction_id);
+int lv_thin_device_id(const struct logical_volume *lv, uint32_t *device_id);
 
 /*
  * Return number of LVs in the VG that are active.

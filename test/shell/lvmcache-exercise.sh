@@ -18,9 +18,13 @@ vgcreate $vg2 "$dev3" "$dev4" "$dev5"
 
 aux disable_dev "$dev1"
 pvscan
+# dev1 is missing
+fail pvs $(cat DEVICES)
+
 vgcreate $vg1 "$dev2"
 aux enable_dev "$dev1"
-pvs
+
+pvs "$dev1"
 
 # reappearing device (rhbz 995440)
 lvcreate -aey -m2 --type mirror -l4 --alloc anywhere --corelog -n $lv1 $vg2
@@ -30,7 +34,9 @@ lvconvert --yes --repair $vg2/$lv1
 aux enable_dev "$dev3"
 
 # here it should fix any reappeared devices
-lvs
+lvs $vg1 $vg2
 
 lvs -a $vg2 -o+devices 2>&1 | tee out
 not grep reappeared out
+
+vgremove -ff $vg1 $vg2

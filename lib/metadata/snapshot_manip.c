@@ -15,11 +15,13 @@
 
 #include "lib.h"
 #include "metadata.h"
+#include "segtype.h"
 #include "locking.h"
 #include "toolcontext.h"
 #include "lv_alloc.h"
 #include "activate.h"
-#include "segtype.h"
+
+#define SNAPSHOT_MIN_CHUNKS	3       /* Minimum number of chunks in snapshot */
 
 int lv_is_origin(const struct logical_volume *lv)
 {
@@ -28,10 +30,30 @@ int lv_is_origin(const struct logical_volume *lv)
 
 int lv_is_cow(const struct logical_volume *lv)
 {
-	return (!lv_is_origin(lv) && lv->snapshot) ? 1 : 0;
+	/* Make sure a merging thin origin isn't confused as a cow LV */
+	return (!lv_is_thin_volume(lv) && !lv_is_origin(lv) && lv->snapshot) ? 1 : 0;
 }
 
-static uint64_t _cow_max_size(uint64_t origin_size, uint32_t chunk_size)
+/*
+ * Some kernels have a bug that they may leak space in the snapshot on crash.
+ * If the kernel is buggy, we add some extra space.
+ */
+static uint64_t _cow_extra_chunks(struct cmd_context *cmd, uint64_t n_chunks)
+{
+	const struct segment_type *segtype;
+	unsigned attrs;
+
+	if (activation() &&
+	    (segtype = get_segtype_from_string(cmd, "snapshot")) &&
+	    segtype->ops->target_present &&
+	    segtype->ops->target_present(cmd, NULL, &attrs) &&
+	    (attrs & SNAPSHOT_FEATURE_FIXED_LEAK))
+		return 0;
+
+	return (n_chunks + 63) / 64;
+}
+
+static uint64_t _cow_max_size(struct cmd_context *cmd, uint64_t origin_size, uint32_t chunk_size)
 {
 	/* Snapshot disk layout:
 	 *    COW is divided into chunks
@@ -40,21 +62,22 @@ static uint64_t _cow_max_size(uint64_t origin_size, uint32_t chunk_size)
 	 *        3rd. chunk is the 1st. data chunk
 	 */
 
-	/* Size of metadata for snapshot in sectors */
-	uint64_t mdata_size = ((origin_size + chunk_size - 1) / chunk_size * 16 + 511) >> SECTOR_SHIFT;
+	uint64_t origin_chunks = (origin_size + chunk_size - 1) / chunk_size;
+	uint64_t chunks_per_metadata_area = (uint64_t)chunk_size << (SECTOR_SHIFT - 4);
 
-	/* Sum all chunks - header + metadata size + origin size (aligned on chunk boundary) */
-	uint64_t size = chunk_size +
-		((mdata_size + chunk_size - 1) & ~(uint64_t)(chunk_size - 1)) +
-		((origin_size + chunk_size - 1) & ~(uint64_t)(chunk_size - 1));
+	/*
+	 * Note: if origin_chunks is divisible by chunks_per_metadata_area, we
+	 * need one extra metadata chunk as a terminator.
+	 */
+	uint64_t metadata_chunks = (origin_chunks + chunks_per_metadata_area) / chunks_per_metadata_area;
+	uint64_t n_chunks = 1 + origin_chunks + metadata_chunks;
 
-	/* Does not overflow since size is in sectors (9 bits) */
-	return size;
+	return (n_chunks + _cow_extra_chunks(cmd, n_chunks)) * chunk_size;
 }
 
 uint32_t cow_max_extents(const struct logical_volume *origin, uint32_t chunk_size)
 {
-	uint64_t size = _cow_max_size(origin->size, chunk_size);
+	uint64_t size = _cow_max_size(origin->vg->cmd, origin->size, chunk_size);
 	uint32_t extent_size = origin->vg->extent_size;
 	uint64_t max_size = (uint64_t) MAX_EXTENT_COUNT * extent_size;
 
@@ -67,10 +90,25 @@ uint32_t cow_max_extents(const struct logical_volume *origin, uint32_t chunk_siz
 	return (uint32_t) (size / extent_size);
 }
 
+int cow_has_min_chunks(const struct volume_group *vg, uint32_t cow_extents, uint32_t chunk_size)
+{
+	if (((uint64_t)vg->extent_size * cow_extents) >= (SNAPSHOT_MIN_CHUNKS * chunk_size))
+		return 1;
+
+	log_error("Snapshot volume cannot be smaller than " DM_TO_STRING(SNAPSHOT_MIN_CHUNKS)
+		  " chunks (%u extents, %s).", (unsigned)
+		  (((uint64_t) SNAPSHOT_MIN_CHUNKS * chunk_size +
+		    vg->extent_size - 1) / vg->extent_size),
+		  display_size(vg->cmd, (uint64_t) SNAPSHOT_MIN_CHUNKS * chunk_size));
+
+	return 0;
+}
+
 int lv_is_cow_covering_origin(const struct logical_volume *lv)
 {
 	return lv_is_cow(lv) &&
-		(lv->size >= _cow_max_size(origin_from_cow(lv)->size, find_snapshot(lv)->chunk_size));
+		(lv->size >= _cow_max_size(lv->vg->cmd, origin_from_cow(lv)->size,
+					   find_snapshot(lv)->chunk_size));
 }
 
 int lv_is_visible(const struct logical_volume *lv)
@@ -99,14 +137,6 @@ int lv_is_virtual_origin(const struct logical_volume *lv)
 int lv_is_merging_origin(const struct logical_volume *origin)
 {
 	return (origin->status & MERGING) ? 1 : 0;
-}
-
-struct lv_segment *find_merging_snapshot(const struct logical_volume *origin)
-{
-	if (!lv_is_merging_origin(origin))
-		return NULL;
-
-	return find_snapshot(origin);
 }
 
 int lv_is_merging_cow(const struct logical_volume *snapshot)
@@ -152,9 +182,20 @@ void init_snapshot_seg(struct lv_segment *seg, struct logical_volume *origin,
 	dm_list_add(&origin->snapshot_segs, &seg->origin_list);
 }
 
-int init_snapshot_merge(struct lv_segment *snap_seg,
-			struct logical_volume *origin)
+void init_snapshot_merge(struct lv_segment *snap_seg,
+			 struct logical_volume *origin)
 {
+	snap_seg->status |= MERGING;
+	origin->snapshot = snap_seg;
+	origin->status |= MERGING;
+
+	if (seg_is_thin_volume(snap_seg)) {
+		snap_seg->merge_lv = origin;
+		/* Making thin LV inivisible with regular log */
+		lv_set_hidden(snap_seg->lv);
+		return;
+	}
+
 	/*
 	 * Even though lv_is_visible(snap_seg->lv) returns 0,
 	 * the snap_seg->lv (name: snapshotX) is _not_ hidden;
@@ -166,21 +207,16 @@ int init_snapshot_merge(struct lv_segment *snap_seg,
 	 *   merge metadata (snap_seg->lv is now "internal")
 	 */
 	snap_seg->lv->status &= ~VISIBLE_LV;
-	snap_seg->status |= MERGING;
-	origin->snapshot = snap_seg;
-	origin->status |= MERGING;
-
-	if (snap_seg->segtype->ops->target_present &&
-	    !snap_seg->segtype->ops->target_present(snap_seg->lv->vg->cmd,
-						    snap_seg, NULL))
-		return 0;
-
-	return 1;
 }
 
 void clear_snapshot_merge(struct logical_volume *origin)
 {
 	/* clear merge attributes */
+	if (origin->snapshot->merge_lv)
+		/* Removed thin volume has to be visible */
+		lv_set_visible(origin->snapshot->lv);
+
+	origin->snapshot->merge_lv = NULL;
 	origin->snapshot->status &= ~MERGING;
 	origin->snapshot = NULL;
 	origin->status &= ~MERGING;
@@ -240,7 +276,8 @@ int vg_remove_snapshot(struct logical_volume *cow)
 	dm_list_del(&cow->snapshot->origin_list);
 	origin->origin_count--;
 
-	if (find_merging_snapshot(origin) == find_snapshot(cow)) {
+	if (lv_is_merging_origin(origin) &&
+	    (find_snapshot(origin) == find_snapshot(cow))) {
 		clear_snapshot_merge(origin);
 		/*
 		 * preload origin IFF "snapshot-merge" target is active

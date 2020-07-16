@@ -1137,6 +1137,8 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 			log_error("Failed to apply configuration profile.");
 			return ECMD_FAILED;
 		}
+		if (!process_profilable_config(cmd))
+			return_ECMD_FAILED;
 	}
 
 	if ((ret = _get_settings(cmd)))
@@ -1183,7 +1185,7 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
       out:
 	if (test_mode()) {
 		log_verbose("Test mode: Wiping internal cache");
-		lvmcache_destroy(cmd, 1);
+		lvmcache_destroy(cmd, 1, 0);
 	}
 
 	if ((old_cft = remove_config_tree_by_source(cmd, CONFIG_STRING))) {

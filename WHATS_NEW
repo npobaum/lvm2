@@ -1,3 +1,165 @@
+Version 2.02.106 - 10th April 2014
+==================================
+  Fix ignored --dataalignment/dataalignment offset for pvcreate --restorefile.
+  Fix lost information about bootloader area when using lvmetad.
+  Don't require --major to be specified when using -My option on kernels > 2.4.
+  Add configure --disable-thin_check_needs_check to support old thin_check.
+  Use thin_check --clear-needs-check-flag by default.
+  Export lvm_even_rand() for controlled provision of random numbers.
+  Add lvmthin man page to section 7.
+  Ensure mapped device names are not too long in vg_validate and lvrename.
+  Ensure resume failure in lvrename results in command failure.
+  Add explicit error message when using lvdisplay -c -m.
+  Report error if superfluous argument (e.g. PV name) supplied to pvscan.
+  Fix error message for pvdisplay -c -m and add one for pvdisplay -c -s.
+  Use EINVALID_CMD_LINE correctly instead of ECMD_FAILED in vgimport/export.
+  Obtain list of known VGs from lvmetad for pvchange --all.
+  Add man page for lvm-dumpconfig to section 8.
+  Drop unused cmd pointer for internal function for_each_sub_lv().
+  Validate name for renamed sub LVs.
+  When lvrename fails on argument parsing return EINVALID_CMD_LINE.
+  Fix exit code regression in failing pvchange command (2.02.66).
+  Include 'lvm dumpconfig --type missing' and '--type diff' output to lvmdump.
+  Return failure when specifying negative size for pvresize.
+  Fix memory corruption in cmd context refresh if clvmd leaks opened device.
+  Reinitialise lvmcache properly on fork to fix premature polldaemon exit.
+  Add 'lvm dumpconfig --type diff' to show differences from defaults.
+  Fix swap signature detection for devices smaller then 2MB.
+  Use dm_malloc function in clvmd.c.
+  Resolve memory release order for clvmd shutdown.
+  Report error when lvm2 activation is released in critical_section.
+  Fix memory corruption when pvscan reports long pv names.
+  Do not report internal orphan VG names when reporting pvdisplay/pvscan.
+  Fix pvdisplay -c man page referencing KB instead of sectors.
+  Skip redundant synchronization calls on local clvmd.
+  Use correct PATH_MAX for locking dir path.
+  Do not check for backups when when its creation is disabled.
+  Don't allow --mergedconfig without --type current in dumpconfig. Fix memleak.
+  Make global/lvdisplay_shows_full_device_path lvm.conf setting profilable.
+  Make global/{units|si_unit_consistency|suffix} lvm.conf setting profilable.
+  Validate minimal chunk size for snapshot COW volume in lvconvert.
+  Disallow lvconvert of origin to snapshot COW volume.
+  Make report lvm.conf settings profilable.
+  Add existing report settings to lvm.conf.
+  Use VG read lock during 'pvscan --cache -aay' autoactivation.
+  Issue a VG refresh before autoactivation only if the PV has changed/is new.
+  Add flag to lvmetad protocol to indicate the PV scanned has changed/is new.
+  Also add vgname to lvmetad protocol when referencing VGs for PVs scanned.
+  Add man page for lvm2-activation-generator.
+  Don't print an error and accept empty value for global/thin_disabled_features.
+  Update API for internal function build_dm_uuid().
+  Do not try to check empty pool with scheduled messages.
+  Fix return value in pool_has_message() when quering for any message.
+  Cleanup all client resources on clvmd exit.
+  Use dm_zalloc to clear members of clvmd client struct.
+  Use BLKID_CFLAGS when compiling with blkid support.
+  Use correct rl_completion_func_t typedef for new readline.
+  Make lvm 'dumpconfig --type default' complete for it to be consumed by lvm.
+  Run pvscan --cache via systemd-run in udev if the PV label is detected lost.
+  Fix memleak when lvmetad discovers PV to appear on another device.
+  Fix calculation of maximum size of COW device for snapshot (2.02.99).
+  Do not allow stripe size to be bigger then extent size for lvresize.
+  Zero snapshot COW header when creating read-only snapshot.
+  Comment out config lines in dumpconfig output without default values defined.
+  Improve detection of clustered mirror support.
+  Enhance raid code with feature flags, for now checks for raid10.
+  Move parsing of VG metadata from vg_commit() back to vg_write() (2.02.99)
+  Avoid a PV label scan while in a critical section.
+  Remove (always 0) skip argument from lv_activation_skip().
+  Create /dev/disk/by-id/lvm-pv-uuid-<PV_UUID> symlink for each PV via udev.
+  lvcreate computes RAID4/5/6 stripes if not given from # of allocatable PVs.
+  Fix merging of old snapshot into thin volume origin.
+  Use --ignoreskippedcluster in lvm2-monitor initscript/systemd unit.
+  Do not use VG read/write state for LV read/write state.
+  Use --ignoreskippedcluster in activation systemd units if use_lvmetad=0.
+  Allow approximate allocation when specifying size in percentage terms.
+  Add basic LVM support for cache[pool] segment types.
+  Use local exclusive activation for creation of raid in cluster.
+  Use correctly signed 64b constant when selecting raid volumes.
+  Add systemd native service for clvmd, cmirrord and clustered LV activation.
+  Remove ExecReload from lvmetad systemd unit: lvmetad -R undefined. (2.02.98)
+  Do not fork lvmetad if running under systemd.
+  Wipe DM_snapshot_cow signature without prompt in new LVs with blkid wiping.
+  Avoid exposing temporary devices when initializing raid metadata volumes.
+  Add internal tags command to display any tags defined on the host.
+  Prohibit use of external origin with size incompatible with thin pool.
+  Avoid trying to convert single to thin pool and volume at the same time.
+  Add support for partitions on ZFS zvol.
+  Fix unwanted drop of hold flocks on forked children.
+  Respect LVM_LVMETAD_PIDFILE env var for lvm command.
+  Avoid exposing temporary devices when initializing thin pool volume.
+  Fix test when checking target version for available thin features.
+  Detect thin feature external_origin_extend and limit extend when missing.
+  Rename internal pool_can_resize_metadata() to thin_pool_feature_supported().
+  Issue error if libbblkid detects signature and fails to return offset/length.
+  Update autoconf config.guess/sub to 2014-01-01.
+  Online thin pool metadata resize requires 1.10 kernel thin pool target.
+
+Version 2.02.105 - 20th January 2014
+====================================
+  Fix thin LV flagging for udev to skip scanning only if the LV is wiped.
+  Replace use of xfs_check with xfs_repair in fsadm. 
+  Mark lvm1 format metadata as FMT_OBSOLETE. Do not use it with lvmetad.
+  Invalidate cached VG struct after a PV in it gets orphaned. (2.02.87)
+  Mark pool format metadata as FMT_OBSOLETE.
+  Use major:minor in lvm2-pvscan@.service for proper global_filter application.
+  Syntax and spelling fixes in some man pages.
+  Dependency scan counts with snapshots and external origins.
+  Make sure VG extent size is always greater or equal to PV phys. block size.
+  Optimize double call of stat() for cached devices.
+  Enable support for thin provisioning for default configuration.
+  Improve process_each_lv_in_vg() tag processing.
+  Reordered and simplified logging code.
+  Fix SYSTEMD_READY assignment for foreign devices in lvmetad udev rules.
+  Disable online thin pool metadata resize for 1.9 kernel thin target.
+  Shortened code for initialization of raid segment types.
+  Cache global library dir in command context.
+  Return success when inserting dirs and links into device cache.
+  Test for remote exclusive activation after activation fails.
+  Support lvconvert --merge for thin snapshots.
+  Add support to read thin device id from table line entry.
+  Drop extra test for origin when testing merging origin in lv_refresh().
+  Extend lv_remove_single() to not print info about removed LV.
+  Replace open_count check with lv_check_not_in_use() for snapshot open test.
+  Add error messages with LV names for failing lv refresh.
+  Compile/link executables with new RELRO and PIE options (non-static builds).
+  Support per-object compilation cflags via CFLAGS_object.o.
+  Automatically detect support for compiler/linker options to use RELRO and PIE.
+  Add --splitsnapshot to lvconvert to separate out cow LV.
+  Reinstate origin reload to complete lvconvert -s with active LVs. (2.02.98)
+  Select only active volume groups if vgdisplay -A is used.
+  Add -p and LVM_LVMETAD_PIDFILE env var to lvmetad to change pid file.
+  Allow lvmetad to reuse stale socket.
+  Only unlink lvmetad socket on error if created by the same process.
+  Append missing newline to lvmetad missing socket path error message.
+  Check for non-zero aligment in _text_pv_add_metadata_area() to not div by 0.
+  Add allocation/use_blkid_wiping to lvm.conf to enable blkid wiping.
+  Enable blkid_wiping by default if the blkid library is present.
+  Add configure --disable-blkid_wiping to disable libblkid signature detection.
+  Add -W/--wipesignatures lvcreate option to support wiping on new LVs.
+  Add allocation/wipe_signatures_when_zeroing_new_lvs to lvm.conf.
+  Do not fail the whole autoactivation if the VG refresh done before fails.
+  Do not connect to lvmetad on vg/lvchange --sysinit -aay and socket absent.
+  Use lv_check_not_in_use() when testing device in use before merging.
+  Move test for target present from init_snapshot_merge() to lvconvert.
+  Check for failure of lvmcache_add_mda() when writing pv.
+  Check for failure of dev_get_size() when reporting device size.
+  Drop extra unneeded '/' when scanning sysfs directory.
+  Fix undef value if skipped clustered VG ignored for toollib PV seg. (2.02.103)
+  Support validation of VG/LV names in liblvm/python.
+  Allow creation of PVs with arguments to liblvm/python.
+  Ensure sufficient metadata copies retained in liblvm/python vgreduce.
+  Fix installation of profiles from conf subdir when not building in srcdir.
+  Show UUIDs for missing PVs in reports.
+  Change dev_size/name, pv_fmt/mda_free/mda_size/uuid fields from pv to label.
+  Add struct device *dev to struct label.
+  Introduce process_each_label.
+  Change void *private to struct format_type *fmt in struct labeller.
+  Remove pv_read.
+  Add reporting of thin_id device id for thin volumes.
+  Fix reporting of empty numerical values for recently-added fields.
+  Use _field_set_percent/value in reporting code.
+
 Version 2.02.104 - 13th November 2013
 =====================================
   Workaround VG refresh race during autoactivation by retrying the refresh.

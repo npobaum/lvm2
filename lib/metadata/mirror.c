@@ -279,7 +279,7 @@ static int _write_log_header(struct cmd_context *cmd, struct logical_volume *lv)
  */
 static int _init_mirror_log(struct cmd_context *cmd,
 			    struct logical_volume *log_lv, int in_sync,
-			    struct dm_list *tags, int remove_on_failure)
+			    struct dm_list *tagsl, int remove_on_failure)
 {
 	struct str_list *sl;
 	uint64_t orig_status = log_lv->status;
@@ -315,7 +315,7 @@ static int _init_mirror_log(struct cmd_context *cmd,
 	lv_set_visible(log_lv);
 
 	/* Temporary tag mirror log for activation */
-	dm_list_iterate_items(sl, tags)
+	dm_list_iterate_items(sl, tagsl)
 		if (!str_list_add(cmd->mem, &log_lv->tags, sl->str)) {
 			log_error("Aborting. Unable to tag mirror log.");
 			goto activate_lv;
@@ -336,13 +336,16 @@ static int _init_mirror_log(struct cmd_context *cmd,
 	}
 
 	/* Remove the temporary tags */
-	dm_list_iterate_items(sl, tags)
+	dm_list_iterate_items(sl, tagsl)
 		str_list_del(&log_lv->tags, sl->str);
 
-	if (activation() && !set_lv(cmd, log_lv, log_lv->size,
-				    in_sync ? -1 : 0)) {
-		log_error("Aborting. Failed to wipe mirror log.");
-		goto deactivate_and_revert_new_lv;
+	if (activation()) {
+		if (!wipe_lv(log_lv, (struct wipe_params)
+			     { .do_zero = 1, .zero_sectors = log_lv->size,
+			       .zero_value = in_sync ? -1 : 0 })) {
+			log_error("Aborting. Failed to wipe mirror log.");
+			goto deactivate_and_revert_new_lv;
+		}
 	}
 
 	if (activation() && !_write_log_header(cmd, log_lv)) {
@@ -373,7 +376,7 @@ deactivate_and_revert_new_lv:
 revert_new_lv:
 	log_lv->status = orig_status;
 
-	dm_list_iterate_items(sl, tags)
+	dm_list_iterate_items(sl, tagsl)
 		str_list_del(&log_lv->tags, sl->str);
 
 	if (remove_on_failure && !lv_remove(log_lv)) {
@@ -844,7 +847,7 @@ static int _remove_mirror_images(struct logical_volume *lv,
 	uint32_t new_area_count = mirrored_seg->area_count;
 	struct lv_list *lvl;
 	struct dm_list tmp_orphan_lvs;
-	int orig_removed = num_removed;
+	uint32_t orig_removed = num_removed;
 
 	if (removed)
 		*removed = 0;
@@ -1574,7 +1577,7 @@ struct logical_volume *find_pvmove_lv_from_pvname(struct cmd_context *cmd,
 	struct physical_volume *pv;
 	struct logical_volume *lv;
 
-	if (!(pv = find_pv_by_name(cmd, name, 0)))
+	if (!(pv = find_pv_by_name(cmd, name, 0, 0)))
 		return_NULL;
 
 	lv = find_pvmove_lv(vg, pv->dev, lv_type);
@@ -1673,7 +1676,7 @@ int add_mirrors_to_segments(struct cmd_context *cmd, struct logical_volume *lv,
 							   region_size);
 
 	if (!(ah = allocate_extents(lv->vg, NULL, segtype, 1, mirrors, 0, 0,
-				    lv->le_count, allocatable_pvs, alloc,
+				    lv->le_count, allocatable_pvs, alloc, 0,
 				    parallel_areas))) {
 		log_error("Unable to allocate mirror extents for %s.", lv->name);
 		return 0;
@@ -1941,7 +1944,7 @@ int add_mirror_log(struct cmd_context *cmd, struct logical_volume *lv,
 	ah = allocate_extents(lv->vg, NULL, segtype,
 			      0, 0, log_count - old_log_count, region_size,
 			      lv->le_count, allocatable_pvs,
-			      alloc, parallel_areas);
+			      alloc, 0, parallel_areas);
 	if (!ah) {
 		log_error("Unable to allocate extents for mirror log.");
 		return 0;
@@ -2005,7 +2008,7 @@ int add_mirror_images(struct cmd_context *cmd, struct logical_volume *lv,
 
 	ah = allocate_extents(lv->vg, NULL, segtype,
 			      stripes, mirrors, log_count, region_size, lv->le_count,
-			      allocatable_pvs, alloc, parallel_areas);
+			      allocatable_pvs, alloc, 0, parallel_areas);
 	if (!ah) {
 		log_error("Unable to allocate extents for mirror(s).");
 		return 0;

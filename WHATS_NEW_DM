@@ -1,3 +1,33 @@
+Version 1.02.85 - 10th April 2014
+=================================
+  Check for sprintf error when building internal device path.
+  Check for sprintf error when creating path for dm control node.
+  When buffer for dm_get_library_version() is too small, return error code.
+  Always reinitialize _name_mangling_mode in dm_lib_init().
+  Add tracking flag about implicitly added devices into dm_tree.
+  Stop timeout thread immediately when the last worker thread is finished.
+  Fix dmeventd logging with parallel wait event processing.
+  Reuse _node_send_messages() for validation of transaction_id in preload.
+  Transaction_id could be lower by one only when messages are prepared.
+  Do not call callback when preload fails.
+  Wrap is_selinux_enabled() to be called just once.
+  Use correctly signed 64b constant when working with raid volumes.
+  Exit dmeventd with pidfile cleanup instead of raising SIGKILL on DIE request.
+  Add new DM_EVENT_GET_PARAMETERS request to dmeventd protocol.
+  Do not use systemd's reload for dmeventd restart, use dmeventd -R instead.
+  Drop cryptsetup rules from 10-dm.rules - cryptsetup >= 1.1.3 sets them.
+
+Version 1.02.84 - 20th January 2014
+===================================
+  Revert activation of activated nodes if a node preload callback fails.
+  Avoid busy looping on CPU when dmeventd reads event DM_WAIT_RETRY.
+  Ensure global mutex is held when working with dmeventd thread.
+  Drop taking timeout mutex for un/registering dmeventd monitor.
+  Allow section names in config file data to be quoted strings.
+  Close fifos before exiting in dmeventd restart() error path.
+  Move printf format string directly into dm_asprintf args list.
+  Catch invalid use of string sort values when reporting numerical fields.
+
 Version 1.02.83 - 13th November 2013
 ====================================
   Consistently report on stderr when device is not found for dmsetup info.

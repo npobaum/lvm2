@@ -14,7 +14,7 @@
 test -e LOCAL_LVMETAD || skip
 aux prepare_pvs 2
 
-vgcreate $vg1 $dev1 $dev2
+vgcreate $vg1 "$dev1" "$dev2"
 lvchange -ay $vg1 2>&1 | not grep "Failed to connect"
 kill $(cat LOCAL_LVMETAD)
 lvchange -ay $vg1 2>&1 | grep "Failed to connect"
@@ -25,3 +25,5 @@ lvchange -ay $vg1 --sysinit 2>&1 | not grep "Failed to connect"
 aux prepare_lvmetad
 lvchange -ay $vg1 2>&1 | not grep "Failed to connect"
 lvchange -ay $vg1 --sysinit 2>&1 | not grep "Failed to connect"
+
+vgremove -ff $vg1

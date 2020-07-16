@@ -345,9 +345,6 @@ int daemon_talk(struct dm_event_fifos *fifos,
 		const char *dso_name, const char *dev_name,
 		enum dm_event_mask evmask, uint32_t timeout)
 {
-	const char *dso = dso_name ? dso_name : "-";
-	const char *dev = dev_name ? dev_name : "-";
-	const char *fmt = "%d:%d %s %s %u %" PRIu32;
 	int msg_size;
 	memset(msg, 0, sizeof(*msg));
 
@@ -355,14 +352,17 @@ int daemon_talk(struct dm_event_fifos *fifos,
 	 * Set command and pack the arguments
 	 * into ASCII message string.
 	 */
-	msg->cmd = cmd;
-	if (cmd == DM_EVENT_CMD_HELLO)
-		fmt = "%d:%d HELLO";
-	if ((msg_size = dm_asprintf(&(msg->data), fmt, getpid(), _sequence_nr,
-				    dso, dev, evmask, timeout)) < 0) {
+	if ((msg_size =
+	     ((cmd == DM_EVENT_CMD_HELLO) ?
+	      dm_asprintf(&(msg->data), "%d:%d HELLO", getpid(), _sequence_nr) :
+	      dm_asprintf(&(msg->data), "%d:%d %s %s %u %" PRIu32,
+			  getpid(), _sequence_nr,
+			  dso_name ? : "-", dev_name ? : "-", evmask, timeout)))
+	    < 0) {
 		log_error("_daemon_talk: message allocation failed");
 		return -ENOMEM;
 	}
+	msg->cmd = cmd;
 	msg->size = msg_size;
 
 	/*
@@ -372,14 +372,13 @@ int daemon_talk(struct dm_event_fifos *fifos,
 	if (!_daemon_write(fifos, msg)) {
 		stack;
 		dm_free(msg->data);
-		msg->data = 0;
+		msg->data = NULL;
 		return -EIO;
 	}
 
 	do {
-
 		dm_free(msg->data);
-		msg->data = 0;
+		msg->data = NULL;
 
 		if (!_daemon_read(fifos, msg)) {
 			stack;
@@ -425,7 +424,7 @@ static int _start_daemon(char *dmeventd_path, struct dm_event_fifos *fifos)
 	if (fifos->client >= 0) {
 		/* server is running and listening */
 		if (close(fifos->client))
-			log_sys_error("close", fifos->client_path);
+			log_sys_debug("close", fifos->client_path);
 		return 1;
 	} else if (errno != ENXIO) {
 		/* problem */
@@ -468,10 +467,6 @@ int init_fifos(struct dm_event_fifos *fifos)
 	/* FIXME? Is fifo the most suitable method? Why not share
 	   comms/daemon code with something else e.g. multipath? */
 
-	/* FIXME Make these either configurable or depend directly on dmeventd_path */
-	fifos->client_path = DM_EVENT_FIFO_CLIENT;
-	fifos->server_path = DM_EVENT_FIFO_SERVER;
-
 	/* Open the fifo used to read from the daemon. */
 	if ((fifos->server = open(fifos->server_path, O_RDWR)) < 0) {
 		log_sys_error("open", fifos->server_path);
@@ -481,32 +476,27 @@ int init_fifos(struct dm_event_fifos *fifos)
 	/* Lock out anyone else trying to do communication with the daemon. */
 	if (flock(fifos->server, LOCK_EX) < 0) {
 		log_sys_error("flock", fifos->server_path);
-		if (close(fifos->server))
-			log_sys_error("close", fifos->server_path);
-		return 0;
+		goto bad;
 	}
 
 /*	if ((fifos->client = open(fifos->client_path, O_WRONLY | O_NONBLOCK)) < 0) {*/
 	if ((fifos->client = open(fifos->client_path, O_RDWR | O_NONBLOCK)) < 0) {
 		log_sys_error("open", fifos->client_path);
-		if (close(fifos->server))
-			log_sys_error("close", fifos->server_path);
-		return 0;
+		goto bad;
 	}
 
 	return 1;
+bad:
+	if (close(fifos->server))
+		log_sys_debug("close", fifos->server_path);
+	fifos->server = -1;
+
+	return 0;
 }
 
 /* Initialize client. */
 static int _init_client(char *dmeventd_path, struct dm_event_fifos *fifos)
 {
-	/* init fifos */
-	memset(fifos, 0, sizeof(*fifos));
-
-	/* FIXME Make these either configurable or depend directly on dmeventd_path */
-	fifos->client_path = DM_EVENT_FIFO_CLIENT;
-	fifos->server_path = DM_EVENT_FIFO_SERVER;
-
 	if (!_start_daemon(dmeventd_path, fifos))
 		return_0;
 
@@ -515,13 +505,16 @@ static int _init_client(char *dmeventd_path, struct dm_event_fifos *fifos)
 
 void fini_fifos(struct dm_event_fifos *fifos)
 {
-	if (flock(fifos->server, LOCK_UN))
-		log_error("flock unlock %s", fifos->server_path);
+	if (fifos->client >= 0 && close(fifos->client))
+		log_sys_debug("close", fifos->client_path);
 
-	if (close(fifos->client))
-		log_sys_error("close", fifos->client_path);
-	if (close(fifos->server))
-		log_sys_error("close", fifos->server_path);
+	if (fifos->server >= 0) {
+		if (flock(fifos->server, LOCK_UN))
+			log_sys_debug("flock unlock", fifos->server_path);
+
+		if (close(fifos->server))
+			log_sys_debug("close", fifos->server_path);
+	}
 }
 
 /* Get uuid of a device */
@@ -560,8 +553,8 @@ static struct dm_task *_get_device_info(const struct dm_event_handler *dmevh)
 
 	if (!info.exists) {
 		log_error("_get_device_info: %s%s%s%.0d%s%.0d%s%s: device not found",
-			  dmevh->uuid ? : "", 
-			  (!dmevh->uuid && dmevh->dev_name) ? dmevh->dev_name : "", 
+			  dmevh->uuid ? : "",
+			  (!dmevh->uuid && dmevh->dev_name) ? dmevh->dev_name : "",
 			  (!dmevh->uuid && !dmevh->dev_name && dmevh->major > 0) ? "(" : "",
 			  (!dmevh->uuid && !dmevh->dev_name && dmevh->major > 0) ? dmevh->major : 0,
 			  (!dmevh->uuid && !dmevh->dev_name && dmevh->major > 0) ? ":" : "",
@@ -571,7 +564,6 @@ static struct dm_task *_get_device_info(const struct dm_event_handler *dmevh)
 		goto bad;
 	}
 
-		  
 	return dmt;
 
       bad:
@@ -585,7 +577,13 @@ static int _do_event(int cmd, char *dmeventd_path, struct dm_event_daemon_messag
 		     enum dm_event_mask evmask, uint32_t timeout)
 {
 	int ret;
-	struct dm_event_fifos fifos;
+	struct dm_event_fifos fifos = {
+		.server = -1,
+		.client = -1,
+		/* FIXME Make these either configurable or depend directly on dmeventd_path */
+		.client_path = DM_EVENT_FIFO_CLIENT,
+		.server_path = DM_EVENT_FIFO_SERVER
+	};
 
 	if (!_init_client(dmeventd_path, &fifos)) {
 		stack;
@@ -618,6 +616,13 @@ int dm_event_register_handler(const struct dm_event_handler *dmevh)
 		return_0;
 
 	uuid = dm_task_get_uuid(dmt);
+
+	if (!strstr(dmevh->dso, "libdevmapper-event-lvm2thin.so") &&
+	    !strstr(dmevh->dso, "libdevmapper-event-lvm2snapshot.so") &&
+	    !strstr(dmevh->dso, "libdevmapper-event-lvm2mirror.so") &&
+	    !strstr(dmevh->dso, "libdevmapper-event-lvm2raid.so"))
+		log_warn("WARNING: %s: dmeventd plugins are deprecated", dmevh->dso);
+
 
 	if ((err = _do_event(DM_EVENT_CMD_REGISTER_FOR_EVENT, dmevh->dmeventd_path, &msg,
 			     dmevh->dso, uuid, dmevh->mask, dmevh->timeout)) < 0) {
@@ -683,7 +688,7 @@ static char *_fetch_string(char **src, const int delimiter)
 static int _parse_message(struct dm_event_daemon_message *msg, char **dso_name,
 			 char **uuid, enum dm_event_mask *evmask)
 {
-	char *id = NULL;
+	char *id;
 	char *p = msg->data;
 
 	if ((id = _fetch_string(&p, ' ')) &&
@@ -695,8 +700,7 @@ static int _parse_message(struct dm_event_daemon_message *msg, char **dso_name,
 		return 0;
 	}
 
-	if (id)
-		dm_free(id);
+	dm_free(id);
 	return -ENOMEM;
 }
 
@@ -836,7 +840,7 @@ static char *_skip_string(char *src, const int delimiter)
 
 int dm_event_set_timeout(const char *device_path, uint32_t timeout)
 {
-	struct dm_event_daemon_message msg = { 0, 0, NULL };
+	struct dm_event_daemon_message msg = { 0 };
 
 	if (!device_exists(device_path))
 		return -ENODEV;
@@ -848,7 +852,7 @@ int dm_event_set_timeout(const char *device_path, uint32_t timeout)
 int dm_event_get_timeout(const char *device_path, uint32_t *timeout)
 {
 	int ret;
-	struct dm_event_daemon_message msg = { 0, 0, NULL };
+	struct dm_event_daemon_message msg = { 0 };
 
 	if (!device_exists(device_path))
 		return -ENODEV;
@@ -858,12 +862,13 @@ int dm_event_get_timeout(const char *device_path, uint32_t *timeout)
 		if (!p) {
 			log_error("malformed reply from dmeventd '%s'\n",
 				  msg.data);
+			dm_free(msg.data);
 			return -EIO;
 		}
 		*timeout = atoi(p);
 	}
-	if (msg.data)
-		dm_free(msg.data);
+	dm_free(msg.data);
+
 	return ret;
 }
 #endif

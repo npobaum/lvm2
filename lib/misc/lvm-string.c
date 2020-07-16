@@ -15,6 +15,7 @@
 
 #include "lib.h"
 #include "lvm-string.h"
+#include "metadata-exported.h"
 
 #include <ctype.h>
 
@@ -63,6 +64,31 @@ int validate_tag(const char *n)
 	return 1;
 }
 
+static int _validate_name(const char *n)
+{
+	register char c;
+	register int len = 0;
+
+	if (!n || !*n)
+		return -1;
+
+	/* Hyphen used as VG-LV separator - ambiguity if LV starts with it */
+	if (*n == '-')
+		return -2;
+
+	if ((*n == '.') && (!n[1] || (n[1] == '.' && !n[2]))) /* ".", ".." */
+		return -3;
+
+	while ((len++, c = *n++))
+		if (!isalnum(c) && c != '.' && c != '_' && c != '-' && c != '+')
+			return -4;
+
+	if (len > NAME_LEN)
+		return -5;
+
+	return 0;
+}
+
 /*
  * Device layer names are all of the form <vg>-<lv>-<layer>, any
  * other hyphens that appear in these names are quoted with yet
@@ -71,84 +97,88 @@ int validate_tag(const char *n)
  */
 int validate_name(const char *n)
 {
-	register char c;
-	register int len = 0;
+	return (_validate_name(n) < 0 ? 0 : 1);
+}
 
-	if (!n || !*n)
+static const char *_lvname_has_reserved_prefix(const char *lvname)
+{
+	static const char _prefixes[][12] = {
+		"pvmove",
+		"snapshot"
+	};
+	unsigned i;
+
+	for (i = 0; i < DM_ARRAY_SIZE(_prefixes); ++i)
+		if (!strncmp(lvname, _prefixes[i], strlen(_prefixes[i])))
+			return _prefixes[i];
+
+	return NULL;
+}
+
+static const char *_lvname_has_reserved_string(const char *lvname)
+{
+	static const char _strings[][12] = {
+		"_cdata",
+		"_cmeta",
+		"_mimage",
+		"_mlog",
+		"_pmspare",
+		"_rimage",
+		"_rmeta",
+		"_tdata",
+		"_tmeta",
+		"_vorigin"
+	};
+	unsigned i;
+
+	for (i = 0; i < DM_ARRAY_SIZE(_strings); ++i)
+		if (strstr(lvname, _strings[i]))
+			return _strings[i];
+
+	return NULL;
+}
+
+
+int apply_lvname_restrictions(const char *name)
+{
+	const char *s;
+
+	if ((s = _lvname_has_reserved_prefix(name))) {
+		log_error("Names starting \"%s\" are reserved. "
+			  "Please choose a different LV name.", s);
 		return 0;
+	}
 
-	/* Hyphen used as VG-LV separator - ambiguity if LV starts with it */
-	if (*n == '-')
+	if ((s = _lvname_has_reserved_string(name))) {
+		log_error("Names including \"%s\" are reserved. "
+			  "Please choose a different LV name.", s);
 		return 0;
-
-	if ((*n == '.') && (!n[1] || (n[1] == '.' && !n[2]))) /* ".", ".." */
-		return 0;
-
-	while ((len++, c = *n++))
-		if (!isalnum(c) && c != '.' && c != '_' && c != '-' && c != '+')
-			return 0;
-
-	if (len > NAME_LEN)
-		return 0;
+	}
 
 	return 1;
 }
 
-int apply_lvname_restrictions(const char *name)
+/*
+ * Validates name and returns an emunerated reason for name validataion failure.
+ */
+name_error_t validate_name_detailed(const char *name)
 {
-	static const char * const _reserved_prefixes[] = {
-		"snapshot",
-		"pvmove",
-		NULL
-	};
-
-	static const char * const _reserved_strings[] = {
-		"_mlog",
-		"_mimage",
-		"_pmspare",
-		"_rimage",
-		"_rmeta",
-		"_vorigin",
-		"_tdata",
-		"_tmeta",
-		NULL
-	};
-
-	unsigned i;
-	const char *s;
-
-	for (i = 0; (s = _reserved_prefixes[i]); i++) {
-		if (!strncmp(name, s, strlen(s))) {
-			log_error("Names starting \"%s\" are reserved. "
-				  "Please choose a different LV name.", s);
-			return 0;
-		}
-	}
-
-	for (i = 0; (s = _reserved_strings[i]); i++) {
-		if (strstr(name, s)) {
-			log_error("Names including \"%s\" are reserved. "
-				  "Please choose a different LV name.", s);
-			return 0;
-		}
-	}
-
-	return 1;
+	return _validate_name(name);
 }
 
 int is_reserved_lvname(const char *name)
 {
-	int rc, old_suppress;
-
-	old_suppress = log_suppress(2);
-	rc = !apply_lvname_restrictions(name);
-	log_suppress(old_suppress);
-
-	return rc;
+	return (_lvname_has_reserved_prefix(name) ||
+		_lvname_has_reserved_string(name)) ? 1 : 0;
 }
 
-char *build_dm_uuid(struct dm_pool *mem, const char *lvid,
+char *build_dm_uuid(struct dm_pool *mem, const struct logical_volume *lv,
 		    const char *layer)
 {
+	const char *lvid = lv->lvid.s;
+
+	if (!layer && lv_is_thin_pool(lv))
+		layer = "pool";
+
 	return dm_build_dm_uuid(mem, UUID_PREFIX, lvid, layer);
 }

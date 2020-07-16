@@ -13,19 +13,23 @@
  */
 
 #define _GNU_SOURCE
+#include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/klog.h>
 #include <sys/resource.h> /* rusage */
 #include <sys/select.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#include <stdint.h>
 
 static pid_t pid;
 static int fds[2];
@@ -51,10 +55,15 @@ static size_t readbuf_sz = 0, readbuf_used = 0;
 static int die = 0;
 static int verbose = 0; /* >1 with timestamps */
 static int interactive = 0; /* disable all redirections */
+static int quiet = 0;
 static const char *results;
 static unsigned fullbuffer = 0;
+static int unlimited = 0;
+
+static time_t harness_start;
 
 static FILE *outfile = NULL;
+char testdirdebug[PATH_MAX];
 
 struct subst {
 	const char *key;
@@ -65,13 +74,13 @@ static struct subst subst[2];
 
 enum {
 	UNKNOWN,
+	FAILED,
+	INTERRUPTED,
+	KNOWNFAIL,
 	PASSED,
 	SKIPPED,
-	FAILED,
-	WARNED,
-	KNOWNFAIL,
-	INTERRUPTED,
 	TIMEOUT,
+	WARNED,
 };
 
 static void handler( int sig ) {
@@ -96,6 +105,7 @@ static int outline(FILE *out, char *buf, int start, int force) {
 		subst[0].key = "@TESTDIR@";
 		free(subst[0].value);
 		subst[0].value = strndup(from + 9, next - from - 9 - 1);
+		snprintf(testdirdebug, sizeof(testdirdebug), "%s/debug.log", subst[0].value);
 	} else if (!strncmp(from, "@PREFIX=", 8)) {
 		subst[1].key = "@PREFIX@";
 		free(subst[1].value);
@@ -167,13 +177,12 @@ static int64_t _get_time_us(void)
 static void _append_buf(const char *buf, size_t len)
 {
 	if ((readbuf_used + len) >= readbuf_sz) {
-		if ((readbuf_sz >= MAX_LOG_SIZE) &&
-		    !getenv("LVM_TEST_UNLIMITED")) {
+		if ((readbuf_sz >= MAX_LOG_SIZE) && !unlimited) {
 			if (fullbuffer++ ==  0)
 				kill(-pid, SIGINT);
 			return;
 		}
-		readbuf_sz = readbuf_sz ? 2 * readbuf_sz : 16384;
+		readbuf_sz = 2 * (readbuf_used + len + readbuf_sz);
 		readbuf = realloc(readbuf, readbuf_sz);
 	}
 
@@ -219,9 +228,9 @@ static const char *_append_with_stamp(const char *buf, int stamp)
 	return bb;
 }
 
-static void drain(int fd)
+static int drain(int fd)
 {
-	char buf[4096 + 1];
+	char buf[2 * 1024 * 1024 + 1]; /* try to capture large sysrq trace */
 	const char *bp;
 	int stamp = 0;
 	int sz;
@@ -229,9 +238,7 @@ static void drain(int fd)
 	static int stdout_last = -1, stdout_counter = 0;
 	static int outfile_last = -1, outfile_counter = 0;
 
-	while ((sz = read(fd, buf, sizeof(buf) - 1)) > 0) {
-		if (fullbuffer)
-			continue;
+	if ((sz = read(fd, buf, sizeof(buf) - 1)) > 0) {
 		buf[sz] = '\0';
 		bp = (verbose < 2) ? buf : _append_with_stamp(buf, stamp);
 		if (sz > (bp - buf)) {
@@ -246,6 +253,31 @@ static void drain(int fd)
 			trickle(stdout, &stdout_last, &stdout_counter);
 		if (outfile)
 			trickle(outfile, &outfile_last, &outfile_counter);
+	}
+
+	return sz;
+}
+
+static int drain_fds(int fd1, int fd2, long timeout)
+{
+	return -1;
+}
+
+#define SYSLOG_ACTION_READ_CLEAR     4
+#define SYSLOG_ACTION_CLEAR          5
+
+static void clear_dmesg(void)
+{
+	klogctl(SYSLOG_ACTION_CLEAR, 0, 0);
+}
+
+static void drain_dmesg(void)
+{
+	char buf[1024 * 1024 + 1];
+	int sz = klogctl(SYSLOG_ACTION_READ_CLEAR, buf, sizeof(buf) - 1);
+	if (sz > 0) {
+		buf[sz] = 0;
+		_append_buf(buf, sz);
 	}
 }
 
@@ -288,7 +320,7 @@ static void interrupted(int i, char *f) {
 	++ s.ninterrupted;
 	s.status[i] = INTERRUPTED;
 	printf("\ninterrupted.\n");
-	if (!verbose && fullbuffer) {
+	if (!quiet && !verbose && fullbuffer) {
 		printf("-- Interrupted %s ------------------------------------\n", f);
 		dump();
 		printf("\n-- Interrupted %s (end) ------------------------------\n", f);
@@ -299,7 +331,7 @@ static void timeout(int i, char *f) {
 	++ s.ninterrupted;
 	s.status[i] = TIMEOUT;
 	printf("timeout.\n");
-	if (!verbose && readbuf) {
+	if (!quiet && !verbose && readbuf) {
 		printf("-- Timed out %s ------------------------------------\n", f);
 		dump();
 		printf("\n-- Timed out %s (end) ------------------------------\n", f);
@@ -323,7 +355,7 @@ static void failed(int i, char *f, int st) {
 	++ s.nfailed;
 	s.status[i] = FAILED;
 	printf("FAILED  (status %d).\n", WEXITSTATUS(st));
-	if (!verbose && readbuf) {
+	if (!quiet && !verbose && readbuf) {
 		printf("-- FAILED %s ------------------------------------\n", f);
 		dump();
 		printf("-- FAILED %s (end) ------------------------------\n", f);
@@ -365,16 +397,20 @@ static void run(int i, char *f) {
 		char buf[128];
 		char outpath[PATH_MAX];
 		char *c = outpath + strlen(results) + 1;
-		struct timeval selectwait;
-		fd_set set;
+		struct stat statbuf;
 		int runaway = 0;
 		int no_write = 0;
-		FILE *varlogmsg;
-		int fd_vlm = -1;
+		int clobber_dmesg = 0;
+		int collect_debug = 0;
+		int fd_debuglog = -1;
+		int fd_kmsg;
+		fd_set set;
+		int ret;
 
 		//close(fds[1]);
+		testdirdebug[0] = '\0'; /* Capture RUNTESTDIR */
 		snprintf(buf, sizeof(buf), "%s ...", f);
-		printf("Running %-60s ", buf);
+		printf("Running %-60s%c", buf, verbose ? '\n' : ' ');
 		fflush(stdout);
 		snprintf(outpath, sizeof(outpath), "%s/%s.txt", results, f);
 		while ((c = strchr(c, '/')))
@@ -382,21 +418,36 @@ static void run(int i, char *f) {
 		if (!(outfile = fopen(outpath, "w")))
 			perror("fopen");
 
-		/* Mix in kernel log message */
-		if (!(varlogmsg = fopen("/var/log/messages", "r")))
-			perror("fopen");
-		else if (((fd_vlm = fileno(varlogmsg)) >= 0) &&
-			 fseek(varlogmsg, 0L, SEEK_END))
-			perror("fseek");
+		/* Mix-in kernel log message */
+		if ((fd_kmsg = open("/dev/kmsg", O_RDONLY | O_NONBLOCK)) < 0) {
+			if (errno != ENOENT) /* Older kernels (<3.5) do not support /dev/kmsg */
+				perror("open /dev/kmsg");
+		} else if (lseek(fd_kmsg, 0L, SEEK_END) == (off_t) -1)
+			perror("lseek /dev/kmsg");
+
+		if ((fd_kmsg < 0) &&
+		    (clobber_dmesg = strcmp(getenv("LVM_TEST_CAN_CLOBBER_DMESG") ? : "0", "0")))
+			clear_dmesg();
 
 		while ((w = wait4(pid, &st, WNOHANG, &usage)) == 0) {
+			struct timeval selectwait = { .tv_usec = 500000 }; /* 0.5s */
+
 			if ((fullbuffer && fullbuffer++ == 8000) ||
 			    (no_write > 180 * 2)) /* a 3 minute timeout */
 			{
-				system("echo t > /proc/sysrq-trigger");
+			timeout:
 				kill(pid, SIGINT);
 				sleep(5); /* wait a bit for a reaction */
 				if ((w = waitpid(pid, &st, WNOHANG)) == 0) {
+					if (no_write > 180 * 2)
+						/*
+						 * Kernel traces needed, when stuck for
+						 * too long in userspace without producing
+						 * any output, in other case it should be
+						 * user space problem
+						 */
+						system("echo t > /proc/sysrq-trigger");
+					collect_debug = 1;
 					kill(-pid, SIGKILL);
 					w = pid; // waitpid(pid, &st, NULL);
 				}
@@ -404,29 +455,54 @@ static void run(int i, char *f) {
 				break;
 			}
 
+			if (clobber_dmesg)
+				drain_dmesg();
+
 			FD_ZERO(&set);
 			FD_SET(fds[0], &set);
-			selectwait.tv_sec = 0;
-			selectwait.tv_usec = 500000; /* timeout 0.5s */
-			if (select(fds[0] + 1, &set, NULL, NULL, &selectwait) <= 0) {
+			if (fd_kmsg >= 0)
+				FD_SET(fd_kmsg, &set);
+
+			if ((ret = select(fd_kmsg > fds[0] ? fd_kmsg + 1 : fds[0] + 1, &set, NULL, NULL, &selectwait)) <= 0) {
+				/* Still checking debug log size if it's not growing too much */
+				if (!unlimited && testdirdebug[0] &&
+				    (stat(testdirdebug, &statbuf) == 0) &&
+				    statbuf.st_size > 32 * 1024 * 1024) { /* 32MB command log size */
+					printf("Killing test since debug.log has gone wild (size %ld)\n",
+					       statbuf.st_size);
+					goto timeout;
+				}
 				no_write++;
 				continue;
 			}
-			drain(fds[0]);
-			no_write = 0;
-			if (fd_vlm >= 0)
-				drain(fd_vlm);
+
+			if (FD_ISSET(fds[0], &set) && drain(fds[0]) > 0)
+				no_write = 0;
+			else if (fd_kmsg >= 0 && FD_ISSET(fd_kmsg, &set) && (drain(fd_kmsg) < 0)) {
+				close(fd_kmsg);
+				fd_kmsg = -1; /* Likely /dev/kmsg is not readable */
+				if ((clobber_dmesg = strcmp(getenv("LVM_TEST_CAN_CLOBBER_DMESG") ? : "0", "0")))
+					clear_dmesg();
+			}
 		}
 		if (w != pid) {
 			perror("waitpid");
 			exit(206);
 		}
-		drain(fds[0]);
-		if (fd_vlm >= 0)
-			drain(fd_vlm);
+
+		while (!fullbuffer && (drain_fds(fds[0], fd_kmsg, 0) > 0))
+			/* read out what was left */;
+
 		if (die == 2)
 			interrupted(i, f);
 		else if (runaway) {
+			if (collect_debug &&
+			    (fd_debuglog = open(testdirdebug, O_RDONLY)) != -1) {
+				runaway = unlimited ? INT32_MAX : 4 * 1024 * 1024;
+				while (!fullbuffer && runaway > 0 && (ret = drain(fd_debuglog)) > 0)
+					runaway -= ret;
+				close(fd_debuglog);
+			}
 			timeout(i, f);
 		} else if (WIFEXITED(st)) {
 			if (WEXITSTATUS(st) == 0)
@@ -438,8 +514,10 @@ static void run(int i, char *f) {
 		} else
 			failed(i, f, st);
 
-		if (varlogmsg)
-			fclose(varlogmsg);
+		if (fd_kmsg >= 0)
+			close(fd_kmsg);
+		else if (clobber_dmesg)
+			drain_dmesg();
 		if (outfile)
 			fclose(outfile);
 		if (fullbuffer)
@@ -454,7 +532,8 @@ int main(int argc, char **argv) {
 	char results_list[PATH_MAX];
 	const char *result;
 	const char *be_verbose = getenv("VERBOSE"),
-		   *be_interactive = getenv("INTERACTIVE");
+		   *be_interactive = getenv("INTERACTIVE"),
+		   *be_quiet = getenv("QUIET");;
 	time_t start = time(NULL);
 	int i;
 	FILE *list;
@@ -470,7 +549,11 @@ int main(int argc, char **argv) {
 	if (be_interactive)
 		interactive = atoi(be_interactive);
 
+	if (be_quiet)
+		quiet = atoi(be_quiet);
+
 	results = getenv("LVM_TEST_RESULTS") ? : "results";
+	unlimited = getenv("LVM_TEST_UNLIMITED") ? 1 : 0;
 	(void) snprintf(results_list, sizeof(results_list), "%s/list", results);
 
 	//if (pipe(fds)) {
@@ -492,31 +575,37 @@ int main(int argc, char **argv) {
 		default: signal(i, handler);
 		}
 
+	harness_start = time(NULL);
 	/* run the tests */
-	for (i = 1; !die && i < argc; ++i)
+	for (i = 1; !die && i < argc; ++i) {
 		run(i, argv[i]);
+		if ( time(NULL) - harness_start > 3 * 3600 ) {
+			printf("3 hours passed, giving up...\n");
+			die = 1;
+		}
+	}
 
 	free(subst[0].value);
 	free(subst[1].value);
 	free(readbuf);
 
-	printf("\n## %d tests %s : %d OK, %d warnings, %d failures, %d known failures; "
-	       "%d skipped, %d interrupted\n",
+	printf("\n## %d tests %s : %d OK, %d warnings, %d failures (%d interrupted), %d known failures; "
+	       "%d skipped\n",
 	       s.nwarned + s.npassed + s.nfailed + s.nskipped + s.ninterrupted,
 	       duration(start, NULL),
-	       s.npassed, s.nwarned, s.nfailed, s.nknownfail,
-	       s.nskipped, s.ninterrupted);
+	       s.npassed, s.nwarned, s.nfailed + s.ninterrupted, s.ninterrupted,
+	       s.nknownfail, s.nskipped);
 
 	/* dump a list to results */
 	if ((list = fopen(results_list, "w"))) {
 		for (i = 1; i < argc; ++ i) {
 			switch (s.status[i]) {
-			case PASSED: result = "passed"; break;
 			case FAILED: result = "failed"; break;
-			case SKIPPED: result = "skipped"; break;
-			case WARNED: result = "warnings"; break;
-			case TIMEOUT: result = "timeout"; break;
 			case INTERRUPTED: result = "interrupted"; break;
+			case PASSED: result = "passed"; break;
+			case SKIPPED: result = "skipped"; break;
+			case TIMEOUT: result = "timeout"; break;
+			case WARNED: result = "warnings"; break;
 			default: result = "unknown"; break;
 			}
 			fprintf(list, "%s %s\n", argv[i], result);
@@ -526,11 +615,14 @@ int main(int argc, char **argv) {
 		perror("fopen result");
 
 	/* print out a summary */
-	if (s.nfailed || s.nskipped || s.nknownfail || s.ninterrupted) {
+	if (s.nfailed || s.nskipped || s.nknownfail || s.ninterrupted || s.nwarned) {
 		for (i = 1; i < argc; ++ i) {
 			switch (s.status[i]) {
 			case FAILED:
 				printf("FAILED: %s\n", argv[i]);
+				break;
+			case INTERRUPTED:
+				printf("INTERRUPTED: %s\n", argv[i]);
 				break;
 			case KNOWNFAIL:
 				printf("FAILED (expected): %s\n", argv[i]);
@@ -538,11 +630,11 @@ int main(int argc, char **argv) {
 			case SKIPPED:
 				printf("skipped: %s\n", argv[i]);
 				break;
-			case INTERRUPTED:
-				printf("INTERRUPTED: %s\n", argv[i]);
-				break;
 			case TIMEOUT:
 				printf("TIMEOUT: %s\n", argv[i]);
+				break;
+			case WARNED:
+				printf("WARNED: %s\n", argv[i]);
 				break;
 			default: /* do nothing */ ;
 			}

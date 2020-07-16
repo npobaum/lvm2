@@ -13,6 +13,9 @@
 
 . lib/test
 
+# FIXME  update test to make something useful on <16T
+aux can_use_16T || skip
+
 aux target_at_least dm-raid 1 3 0 || skip
 
 aux prepare_vg 5
@@ -25,8 +28,8 @@ lvcreate -s -l 20%FREE -n $lv5 $vg --virtualsize 256T
 
 aux extend_filter_LVMTEST
 
-pvcreate $DM_DEV_DIR/$vg/$lv[12345]
-vgcreate $vg1 $DM_DEV_DIR/$vg/$lv[12345]
+pvcreate "$DM_DEV_DIR"/$vg/$lv[12345]
+vgcreate $vg1 "$DM_DEV_DIR"/$vg/$lv[12345]
 
 #
 # Create large RAID LVs
@@ -35,6 +38,6 @@ vgcreate $vg1 $DM_DEV_DIR/$vg/$lv[12345]
 
 lvcreate --type raid10 -m 1 -i 2 -L 200T -n $lv1 $vg1 --nosync
 check lv_field $vg1/$lv1 size "200.00t"
-lvremove -ff $vg1
+vgremove -ff $vg1
 
-lvremove -ff $vg
+vgremove -ff $vg

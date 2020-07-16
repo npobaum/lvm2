@@ -25,11 +25,11 @@ check_lv_field_modules_()
 	done
 }
 
-
 #
 # Main
 #
 aux have_thin 1 0 0 || skip
+which mkfs.ext4 || skip
 
 aux prepare_pvs 2 64
 
@@ -129,15 +129,16 @@ lvcreate -V2G --type thin --thinpool pool --name $vg/lv12 $vg
 
 check lv_exists $vg lv1 lv2 lv3 lv4 lv5 lv6 lv7 lv8 lv9 lv10 lv11 lv12
 check vg_field $vg lv_count 19
+check lv_field $vg/lv1 thin_id 7
 
 lvremove -ff $vg
 check vg_field $vg lv_count 0
 
 # Create thin snapshot of thinLV
 lvcreate -L10M -V10M -T $vg/pool --name lv1
-mkfs.ext4 $DM_DEV_DIR/$vg/lv1
+mkfs.ext4 "$DM_DEV_DIR/$vg/lv1"
 lvcreate -K -s $vg/lv1 --name snap_lv1
-fsck -p $DM_DEV_DIR/$vg/snap_lv1
+fsck -n "$DM_DEV_DIR/$vg/snap_lv1"
 lvcreate -s $vg/lv1 --name lv2
 lvcreate -s $vg/lv1 --name $vg/lv3
 lvcreate --type snapshot $vg/lv1 --name lv6
@@ -172,7 +173,12 @@ not lvcreate --chunksize 32 -l1 -T $vg/pool1
 # Too large chunk size (max is 1GB)
 not lvcreate -L4M --chunksize 2G -T $vg/pool1
 
-lvcreate -L4M -V2G --name lv1 -T $vg/pool1
+# Test creation of inactive pool
+lvcreate -an -L4M -T $vg/pool1
+lvcreate -V2G --name lv1 -T $vg/pool1
+# Check we are able remove spare volume if we want to
+lvremove -f $vg/lvol0_pmspare
+
 # Origin name is not accepted
 not lvcreate -s $vg/lv1 -L4M -V2G --name $vg/lv4
 

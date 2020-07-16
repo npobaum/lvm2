@@ -31,7 +31,7 @@ static int _vgs_single(struct cmd_context *cmd __attribute__((unused)),
 		       const char *vg_name, struct volume_group *vg,
 		       void *handle)
 {
-	if (!report_object(handle, vg, NULL, NULL, NULL, NULL))
+	if (!report_object(handle, vg, NULL, NULL, NULL, NULL, NULL))
 		return_ECMD_FAILED;
 
 	check_current_backup(vg);
@@ -42,7 +42,7 @@ static int _vgs_single(struct cmd_context *cmd __attribute__((unused)),
 static int _lvs_single(struct cmd_context *cmd, struct logical_volume *lv,
 		       void *handle)
 {
-	if (!report_object(handle, lv->vg, lv, NULL, NULL, NULL))
+	if (!report_object(handle, lv->vg, lv, NULL, NULL, NULL, NULL))
 		return_ECMD_FAILED;
 
 	return ECMD_PROCESSED;
@@ -51,7 +51,7 @@ static int _lvs_single(struct cmd_context *cmd, struct logical_volume *lv,
 static int _segs_single(struct cmd_context *cmd __attribute__((unused)),
 			struct lv_segment *seg, void *handle)
 {
-	if (!report_object(handle, seg->lv->vg, seg->lv, NULL, seg, NULL))
+	if (!report_object(handle, seg->lv->vg, seg->lv, NULL, seg, NULL, NULL))
 		return_ECMD_FAILED;
 
 	return ECMD_PROCESSED;
@@ -107,7 +107,7 @@ static int _pvsegs_sub_single(struct cmd_context *cmd,
 	dm_list_init(&_free_logical_volume.snapshot_segs);
 
 	if (!report_object(handle, vg, seg ? seg->lv : &_free_logical_volume, pvseg->pv,
-			   seg ? : &_free_lv_segment, pvseg)) {
+			   seg ? : &_free_lv_segment, pvseg, pv_label(pvseg->pv))) {
 		ret = ECMD_FAILED;
 		goto_out;
 	}
@@ -140,6 +140,9 @@ static int _pvs_single(struct cmd_context *cmd, struct volume_group *vg,
 	const char *vg_name = NULL;
 	struct volume_group *old_vg = vg;
 	char uuid[64] __attribute__((aligned(8)));
+	struct label *label;
+	struct label dummy_label = { .dev = 0 };
+	struct device dummy_device = { .dev = 0 };
 
 	if (is_pv(pv) && !is_orphan(pv) && !vg) {
 		vg_name = pv_vg_name(pv);
@@ -177,7 +180,22 @@ static int _pvs_single(struct cmd_context *cmd, struct volume_group *vg,
 		pv = pvl->pv;
 	}
 
-	if (!report_object(handle, vg, NULL, pv, NULL, NULL)) {
+	/* FIXME workaround for pv_label going through cache; remove once struct
+	 * physical_volume gains a proper "label" pointer */
+	if (!(label = pv_label(pv))) {
+		if (pv->fmt)
+			dummy_label.labeller = pv->fmt->labeller;
+
+		if (pv->dev)
+			dummy_label.dev = pv->dev;
+		else {
+			dummy_label.dev = &dummy_device;
+			memcpy(dummy_device.pvid, &pv->id, ID_LEN);
+		}
+		label = &dummy_label;
+	}
+
+	if (!report_object(handle, vg, NULL, pv, NULL, NULL, label)) {
 		stack;
 		ret = ECMD_FAILED;
 	}
@@ -192,10 +210,10 @@ out:
 	return ret;
 }
 
-static int _label_single(struct cmd_context *cmd, struct volume_group *vg,
-		       struct physical_volume *pv, void *handle)
+static int _label_single(struct cmd_context *cmd, struct label *label,
+		         void *handle)
 {
-	if (!report_object(handle, vg, NULL, pv, NULL, NULL))
+	if (!report_object(handle, NULL, NULL, NULL, NULL, NULL, label))
 		return_ECMD_FAILED;
 
 	return ECMD_PROCESSED;
@@ -252,6 +270,12 @@ static int _report(struct cmd_context *cmd, int argc, char **argv,
 	args_are_pvs = (report_type == PVS ||
 			report_type == LABEL ||
 			report_type == PVSEGS) ? 1 : 0;
+
+	/*
+	 * FIXME Trigger scans based on unrecognised listed devices instead.
+	 */
+	if (args_are_pvs && argc)
+		cmd->filter->wipe(cmd->filter);
 
 	switch (report_type) {
 	case DEVTYPES:
@@ -388,8 +412,8 @@ static int _report(struct cmd_context *cmd, int argc, char **argv,
 				    report_handle, &_vgs_single);
 		break;
 	case LABEL:
-		r = process_each_pv(cmd, argc, argv, NULL, READ_WITHOUT_LOCK,
-				    1, report_handle, &_label_single);
+		r = process_each_label(cmd, argc, argv,
+				       report_handle, &_label_single);
 		break;
 	case PVS:
 		if (args_are_pvs)
