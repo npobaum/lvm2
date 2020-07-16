@@ -1,3 +1,21 @@
+Version 1.02.144 - 6th October 2017
+===================================
+  Schedule exit when received SIGTERM in dmeventd.
+  Also try to unmount /boot on blkdeactivate -u if on top of supported device.
+  Use blkdeactivate -r wait in blk-availability systemd service/initscript.
+  Add blkdeactivate -r wait option to wait for MD resync/recovery/reshape.
+  Fix blkdeactivate regression with failing DM/MD devs deactivation (1.02.142).
+  Fix typo in blkdeactivate's '--{dm,lvm,mpath}options' option name.
+  Correct return value testing when get reserved values for reporting.
+  Take -S with dmsetup suspend/resume/clear/wipe_table/remove/deps/status/table.
+
+Version 1.02.143 - 13th September 2017
+======================================
+  Restore umask when creation of node fails.
+  Add --concise to dmsetup create for many devices with tables in one command.
+  Accept minor number without major in library when it knows dm major number.
+  Introduce single-line concise table output format: dmsetup table --concise
+
 Version 1.02.142 - 20th July 2017
 =================================
   Create /dev/disk/by-part{uuid,label} and gpt-auto-root symlinks with udev.

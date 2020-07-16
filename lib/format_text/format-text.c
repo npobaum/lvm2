@@ -448,8 +448,9 @@ static struct raw_locn *_find_vg_rlocn(struct device_area *dev_area,
 	    (isspace(vgnamebuf[len]) || vgnamebuf[len] == '{'))
 		return rlocn;
 
-	log_debug_metadata("Volume group name found in metadata does "
-			   "not match expected name %s.", vgname);
+	log_debug_metadata("Volume group name found in metadata on %s at %" PRIu64 " does "
+			   "not match expected name %s.", 
+			   dev_name(dev_area->dev), dev_area->start + rlocn->offset, vgname);
 
       bad:
 	if ((info = lvmcache_info_from_pvid(dev_area->dev->pvid, dev_area->dev, 0)) &&
@@ -608,14 +609,17 @@ static int _vg_write_raw(struct format_instance *fid, struct volume_group *vg,
 	struct mda_header *mdah;
 	struct pv_list *pvl;
 	int r = 0;
-       uint64_t new_wrap = 0, old_wrap = 0, new_end;
+	uint64_t new_wrap = 0, old_wrap = 0, new_end;
 	int found = 0;
 	int noprecommit = 0;
+	const char *old_vg_name = NULL;
 
 	/* Ignore any mda on a PV outside the VG. vgsplit relies on this */
 	dm_list_iterate_items(pvl, &vg->pvs) {
 		if (pvl->pv->dev == mdac->area.dev) {
 			found = 1;
+			if (pvl->pv->status & PV_MOVED_VG)
+				old_vg_name = vg->old_name;
 			break;
 		}
 	}
@@ -629,8 +633,7 @@ static int _vg_write_raw(struct format_instance *fid, struct volume_group *vg,
 	if (!(mdah = raw_read_mda_header(fid->fmt, &mdac->area)))
 		goto_out;
 
-	rlocn = _find_vg_rlocn(&mdac->area, mdah,
-			vg->old_name ? vg->old_name : vg->name, &noprecommit);
+	rlocn = _find_vg_rlocn(&mdac->area, mdah, old_vg_name ? : vg->name, &noprecommit);
 	mdac->rlocn.offset = _next_rlocn_offset(rlocn, mdah);
 
 	if (!fidtc->raw_metadata_buf &&
@@ -718,11 +721,14 @@ static int _vg_commit_raw_rlocn(struct format_instance *fid,
 	int r = 0;
 	int found = 0;
 	int noprecommit = 0;
+	const char *old_vg_name = NULL;
 
 	/* Ignore any mda on a PV outside the VG. vgsplit relies on this */
 	dm_list_iterate_items(pvl, &vg->pvs) {
 		if (pvl->pv->dev == mdac->area.dev) {
 			found = 1;
+			if (pvl->pv->status & PV_MOVED_VG)
+				old_vg_name = vg->old_name;
 			break;
 		}
 	}
@@ -733,9 +739,7 @@ static int _vg_commit_raw_rlocn(struct format_instance *fid,
 	if (!(mdah = raw_read_mda_header(fid->fmt, &mdac->area)))
 		goto_out;
 
-	if (!(rlocn = _find_vg_rlocn(&mdac->area, mdah,
-				     vg->old_name ? vg->old_name : vg->name,
-				     &noprecommit))) {
+	if (!(rlocn = _find_vg_rlocn(&mdac->area, mdah, old_vg_name ? : vg->name, &noprecommit))) {
 		mdah->raw_locns[0].offset = 0;
 		mdah->raw_locns[0].size = 0;
 		mdah->raw_locns[0].checksum = 0;
@@ -2078,7 +2082,7 @@ static int _text_pv_add_metadata_area(const struct format_type *fmt,
 {
 	struct format_instance *fid = pv->fid;
 	const char *pvid = (const char *) (*pv->old_id.uuid ? &pv->old_id : &pv->id);
-	uint64_t ba_size, pe_start, pe_end;
+	uint64_t ba_size, pe_start, first_unallocated;
 	uint64_t alignment, alignment_offset;
 	uint64_t disk_size;
 	uint64_t mda_start;
@@ -2213,14 +2217,24 @@ static int _text_pv_add_metadata_area(const struct format_type *fmt,
 		 * if defined or locked. If pe_start is not defined yet, count
 		 * with any existing MDA0. If MDA0 does not exist, just use
 		 * LABEL_SCAN_SIZE.
+		 *
+		 * The first_unallocated here is the first unallocated byte
+		 * beyond existing pe_end if there is any preallocated data area
+		 * reserved already so we can take that as lower limit for our MDA1
+		 * start calculation. If data area is not reserved yet, we set
+		 * first_unallocated to 0, meaning this is not our limiting factor
+		 * and we will look at other limiting factors if they exist.
+		 * Of course, if we have preallocated data area, we also must
+		 * have pe_start assigned too (simply, data area needs its start
+		 * and end specification).
 		 */
-		pe_end = pv->pe_count ? (pv->pe_start +
-					 pv->pe_count * (uint64_t)pv->pe_size - 1) << SECTOR_SHIFT
-				      : 0;
+		first_unallocated = pv->pe_count ? (pv->pe_start + pv->pe_count *
+						    (uint64_t)pv->pe_size) << SECTOR_SHIFT
+						 : 0;
 
 		if (pe_start || pe_start_locked) {
-			limit = pe_end ? pe_end : pe_start;
-			limit_name = pe_end ? "pe_end" : "pe_start";
+			limit = first_unallocated ? first_unallocated : pe_start;
+			limit_name = first_unallocated ? "pe_end" : "pe_start";
 		} else {
 			if ((mda = fid_get_mda_indexed(fid, pvid, ID_LEN, 0)) &&
 				 (mdac = mda->metadata_locn)) {
@@ -2239,7 +2253,7 @@ static int _text_pv_add_metadata_area(const struct format_type *fmt,
 			}
 		}
 
-		if (limit > disk_size)
+		if (limit >= disk_size)
 			goto bad;
 
 		if (mda_size > disk_size) {
@@ -2265,16 +2279,6 @@ static int _text_pv_add_metadata_area(const struct format_type *fmt,
 				mda_start = disk_size - mda_size;
 			}
 		}
-
-		/*
-		 * If PV's pe_end not set yet, set it to the end of the
-		 * area that precedes the MDA1 we've just calculated.
-		 * FIXME: do we need to set this? Isn't it always set before?
-		 */
-		/*if (!pe_end) {
-			pe_end = mda_start;
-			pv->pe_end = pe_end >> SECTOR_SHIFT;
-		}*/
 	}
 
 	if (limit_applied)

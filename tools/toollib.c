@@ -2819,7 +2819,7 @@ static int _check_lv_rules(struct cmd_context *cmd, struct logical_volume *lv)
 		if (rule->check_opts && (rule->rule == RULE_INVALID) && opts_match_count) {
 			memset(buf, 0, sizeof(buf));
 			opt_array_to_str(cmd, rule->check_opts, rule->check_opts_count, buf, sizeof(buf));
-			log_warn("Command on LV %s does not accept option %s.",
+			log_warn("Command on LV %s has invalid use of option %s.",
 				 display_lvname(lv), buf);
 			ret = 0;
 		}
@@ -2837,8 +2837,12 @@ static int _check_lv_rules(struct cmd_context *cmd, struct logical_volume *lv)
 		/* Fail if the LV matches any of the invalid LV types. */
 
 		if (rule->check_lvt_bits && (rule->rule == RULE_INVALID) && lv_types_match_bits) {
-			log_warn("Command on LV %s does not accept LV type %s.",
-				 display_lvname(lv), lvtype ? lvtype->name : "unknown");
+			if (rule->opts_count)
+				log_warn("Command on LV %s uses options invalid with LV type %s.",
+				 	 display_lvname(lv), lvtype ? lvtype->name : "unknown");
+			else
+				log_warn("Command on LV %s with invalid LV type %s.",
+				 	 display_lvname(lv), lvtype ? lvtype->name : "unknown");
 			ret = 0;
 		}
 
@@ -2847,8 +2851,12 @@ static int _check_lv_rules(struct cmd_context *cmd, struct logical_volume *lv)
 		if (rule->check_lvt_bits && (rule->rule == RULE_REQUIRE) && !lv_types_match_bits) {
 			memset(buf, 0, sizeof(buf));
 			lvt_bits_to_str(rule->check_lvt_bits, buf, sizeof(buf));
-			log_warn("Command on LV %s does not accept LV type %s. Required LV types are %s.",
-				 display_lvname(lv), lvtype ? lvtype->name : "unknown", buf);
+			if (rule->opts_count)
+				log_warn("Command on LV %s uses options that require LV types %s.",
+					 display_lvname(lv), buf);
+			else
+				log_warn("Command on LV %s does not accept LV type %s. Required LV types are %s.",
+					 display_lvname(lv), lvtype ? lvtype->name : "unknown", buf);
 			ret = 0;
 		}
 
@@ -2857,8 +2865,12 @@ static int _check_lv_rules(struct cmd_context *cmd, struct logical_volume *lv)
 		if (rule->check_lvp_bits && (rule->rule == RULE_INVALID) && lv_props_match_bits) {
 			memset(buf, 0, sizeof(buf));
 			lvp_bits_to_str(lv_props_match_bits, buf, sizeof(buf));
-			log_warn("Command on LV %s does not accept LV with properties: %s.",
-				 display_lvname(lv), buf);
+			if (rule->opts_count)
+				log_warn("Command on LV %s uses options that are invalid with LV properties: %s.",
+				 	 display_lvname(lv), buf);
+			else
+				log_warn("Command on LV %s is invalid on LV with properties: %s.",
+				 	 display_lvname(lv), buf);
 			ret = 0;
 		}
 
@@ -2867,8 +2879,12 @@ static int _check_lv_rules(struct cmd_context *cmd, struct logical_volume *lv)
 		if (rule->check_lvp_bits && (rule->rule == RULE_REQUIRE) && lv_props_unmatch_bits) {
 			memset(buf, 0, sizeof(buf));
 			lvp_bits_to_str(lv_props_unmatch_bits, buf, sizeof(buf));
-			log_warn("Command on LV %s requires LV with properties: %s.",
-				 display_lvname(lv), buf);
+			if (rule->opts_count)
+				log_warn("Command on LV %s uses options that require LV properties: %s.",
+				 	 display_lvname(lv), buf);
+			else
+				log_warn("Command on LV %s requires LV with properties: %s.",
+				 	 display_lvname(lv), buf);
 			ret = 0;
 		}
 	}
@@ -4464,7 +4480,7 @@ int process_each_pv(struct cmd_context *cmd,
 	 * from all VGs are processed first, removing them from all_devices.  Then
 	 * any devs remaining in all_devices are processed.
 	 */
-	if ((ret = _get_all_devices(cmd, &all_devices) != ECMD_PROCESSED)) {
+	if ((ret = _get_all_devices(cmd, &all_devices)) != ECMD_PROCESSED) {
 		ret_max = ret;
 		goto_out;
 	}
@@ -5398,7 +5414,6 @@ int pvcreate_each_device(struct cmd_context *cmd,
 	struct pvcreate_prompt *prompt, *prompt2;
 	struct physical_volume *pv;
 	struct volume_group *orphan_vg;
-	struct lvmcache_info *info;
 	struct dm_list remove_duplicates;
 	struct dm_list arg_sort;
 	struct pv_list *pvl;
@@ -5810,10 +5825,6 @@ do_command:
 			dm_list_move(&pp->arg_fail, &pd->list);
 			continue;
 		}
-
-		info = lvmcache_info_from_pvid(pd->pvid, pd->dev, 0);
-		if (info)
-			lvmcache_del(info);
 
 		if (!lvmetad_pv_gone_by_dev(pd->dev)) {
 			log_error("Failed to remove PV %s from lvmetad.", pd->name);

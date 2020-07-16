@@ -8,6 +8,7 @@ blkdeactivate \(em utility to deactivate block devices
 .RB [ -h ]
 .RB [ -l \  \fIlvm_options\fP ]
 .RB [ -m \  \fImpath_options\fP ]
+.RB [ -r \  \fImdraid_options\fP ]
 .RB [ -u ]
 .RB [ -v ]
 .RI [ device ]
@@ -22,7 +23,7 @@ based devices are handled using the \fBdmsetup\fP(8) command.
 MD devices are handled using the \fBmdadm\fP(8) command.
 .SH OPTIONS
 .TP
-.BR -d ", " --dmoption \ \fIdm_options\fP
+.BR -d ", " --dmoptions \ \fIdm_options\fP
 Comma separated list of device-mapper specific options.
 Accepted \fBdmsetup\fP(8) options are:
 .RS
@@ -41,7 +42,7 @@ the device was skipped.
 .BR -h ", " --help
 Display the help text.
 .TP
-.BR -l ", " --lvmoption \ \fIlvm_options\fP
+.BR -l ", " --lvmoptions \ \fIlvm_options\fP
 Comma-separated list of LVM specific options:
 .RS
 .IP \fIretry\fP
@@ -52,7 +53,7 @@ Deactivating the Volume Group as a whole is quicker than deactivating
 each Logical Volume separately.
 .RE
 .TP
-.BR -m ", " --mpathoption \ \fImpath_options\fP
+.BR -m ", " --mpathoptions \ \fImpath_options\fP
 Comma-separated list of device-mapper multipath specific options:
 .RS
 .IP \fIdisablequeueing\fP
@@ -60,6 +61,14 @@ Disable queueing on all multipath devices before deactivation.
 This avoids a situation where blkdeactivate may end up waiting if
 all the paths are unavailable for any underlying device-mapper multipath
 device.
+.RE
+.TP
+.BR -r ", " --mdraidoptions \ \fImdraid_options\fP
+Comma-separated list of MD RAID specific options:
+.RS
+.IP \fIwait\fP
+Wait MD device's resync, recovery or reshape action to complete
+before deactivation.
 .RE
 .TP
 .BR -u ", " --umount

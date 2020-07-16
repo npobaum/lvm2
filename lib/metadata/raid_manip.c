@@ -3426,6 +3426,12 @@ int lv_raid_split_and_track(struct logical_volume *lv,
 	int s;
 	struct lv_segment *seg = first_seg(lv);
 
+	if (is_lockd_type(lv->vg->lock_type)) {
+		log_error("Splitting raid image is not allowed with lock_type %s.",
+			  lv->vg->lock_type);
+		return 0;
+	}
+
 	if (!seg_is_mirrored(seg)) {
 		log_error("Unable to split images from non-mirrored RAID.");
 		return 0;
@@ -3853,6 +3859,12 @@ static int _eliminate_extracted_lvs_optional_write_vg(struct volume_group *vg,
 						      struct dm_list *removal_lvs,
 						      int vg_write_requested)
 {
+	if (!sync_local_dev_names(vg->cmd)) {
+		log_error("Failed to sync local devices after removing %u LVs in VG %s.",
+			  dm_list_size(removal_lvs), vg->name);
+		return 0;
+	}
+
 	if (!removal_lvs || dm_list_empty(removal_lvs))
 		return 1;
 
@@ -3866,6 +3878,13 @@ static int _eliminate_extracted_lvs_optional_write_vg(struct volume_group *vg,
 			return_0;
 
 		backup(vg);
+	}
+
+	/* Wait for events following any deactivation. */
+	if (!sync_local_dev_names(vg->cmd)) {
+		log_error("Failed to sync local devices after removing %u LVs in VG %s.",
+			  dm_list_size(removal_lvs), vg->name);
+		return 0;
 	}
 
 	return 1;
@@ -6404,7 +6423,7 @@ int lv_raid_convert(struct logical_volume *lv,
 
 	/* https://bugzilla.redhat.com/1439399 */
 	if (lv_is_origin(lv)) {
-		log_error("Can't convert snapshot origin %s.", display_lvname(lv));
+		log_error("Can't convert RAID LV %s while under snapshot.", display_lvname(lv));
 		return 0;
 	}
 

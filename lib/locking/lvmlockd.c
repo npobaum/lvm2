@@ -115,6 +115,9 @@ static void _flags_str_to_lockd_flags(const char *flags_str, uint32_t *lockd_fla
 	if (strstr(flags_str, "NO_GL_LS"))
 		*lockd_flags |= LD_RF_NO_GL_LS;
 
+	if (strstr(flags_str, "NO_LM"))
+		*lockd_flags |= LD_RF_NO_LM;
+
 	if (strstr(flags_str, "DUP_GL_LS"))
 		*lockd_flags |= LD_RF_DUP_GL_LS;
 
@@ -365,6 +368,9 @@ static int _remove_sanlock_lv(struct cmd_context *cmd, struct volume_group *vg)
 
 static int _extend_sanlock_lv(struct cmd_context *cmd, struct volume_group *vg, int extend_mb)
 {
+	struct device *dev;
+	char path[PATH_MAX];
+	uint64_t old_size_bytes, new_size_bytes;
 	struct logical_volume *lv = vg->sanlock_lv;
 	struct lvresize_params lp = {
 		.sign = SIGN_NONE,
@@ -374,11 +380,48 @@ static int _extend_sanlock_lv(struct cmd_context *cmd, struct volume_group *vg, 
 		.force = 1,
 	};
 
+	old_size_bytes = lv->size * SECTOR_SIZE;
+
 	if (!lv_resize(lv, &lp, &vg->pvs)) {
-		log_error("Extend LV %s to size %s failed.",
+		log_error("Extend sanlock LV %s to size %s failed.",
 			  display_lvname(lv), display_size(cmd, lp.size));
 		return 0;
 	}
+
+	new_size_bytes = lv->size * SECTOR_SIZE;
+
+	if (dm_snprintf(path, sizeof(path), "%s/mapper/%s-%s", lv->vg->cmd->dev_dir,
+			lv->vg->name, lv->name) < 0) {
+		log_error("Extend sanlock LV %s name too long - extended size not zeroed.",
+			  display_lvname(lv));
+		return 0;
+	}
+
+	log_debug("Extend sanlock LV zeroing blocks from offset " FMTu64 " bytes len %u bytes",
+		  old_size_bytes, (uint32_t)(new_size_bytes - old_size_bytes));
+
+	log_print("Zeroing %u MiB on extended internal lvmlock LV...", extend_mb);
+
+	if (!(dev = dev_cache_get(path, NULL))) {
+		log_error("Extend sanlock LV %s cannot find device.", display_lvname(lv));
+		return 0;
+	}
+
+	if (!dev_open_quiet(dev)) {
+		log_error("Extend sanlock LV %s cannot open device.", display_lvname(lv));
+		return 0;
+	}
+
+	if (!dev_set(dev, old_size_bytes, new_size_bytes - old_size_bytes, 0)) {
+		log_error("Extend sanlock LV %s cannot zero device.", display_lvname(lv));
+		dev_close_immediate(dev);
+		return 0;
+	}
+
+	dev_flush(dev);
+
+	if (!dev_close_immediate(dev))
+		stack;
 
 	return 1;
 }
@@ -1322,6 +1365,9 @@ int lockd_gl_create(struct cmd_context *cmd, const char *def_mode, const char *v
 			log_error("Global lock failed: check that VG holding global lock exists and is started.");
 		else
 			log_error("Global lock failed: check that global lockspace is started.");
+
+		if (lockd_flags & LD_RF_NO_LM)
+			log_error("Start a lock manager, lvmlockd did not find one running.");
 		return 0;
 	}
 
@@ -1525,6 +1571,9 @@ int lockd_gl(struct cmd_context *cmd, const char *def_mode, uint32_t flags)
 	 * access to lease storage.
 	 */
 
+	if (result == -ENOLS && (lockd_flags & LD_RF_NO_LM))
+		log_error("Start a lock manager, lvmlockd did not find one running.");
+
 	if (result == -ENOLS ||
 	    result == -ESTARTING ||
 	    result == -EVGKILLED ||
@@ -1543,6 +1592,7 @@ int lockd_gl(struct cmd_context *cmd, const char *def_mode, uint32_t flags)
 				log_error("Global lock failed: storage failed for sanlock leases");
 			else
 				log_error("Global lock failed: error %d", result);
+
 			return 0;
 		}
 
@@ -1596,15 +1646,15 @@ int lockd_gl(struct cmd_context *cmd, const char *def_mode, uint32_t flags)
 			 */
 			log_error("Global lock failed: held by other host.");
 			return 0;
+		} else {
+			/*
+			 * We don't intend to reach this.  We should check
+			 * any known/possible error specifically and print
+			 * a more helpful message.  This is for completeness.
+			 */
+			log_error("Global lock failed: error %d.", result);
+			return 0;
 		}
-
-		/*
-		 * We don't intend to reach this.  We should check
-		 * any known/possible error specifically and print
-		 * a more helpful message.  This is for completeness.
-		 */
-		log_error("Global lock failed: error %d.", result);
-		return 0;
 	}
 
  allow:
@@ -1992,6 +2042,15 @@ int lockd_lv_name(struct cmd_context *cmd, struct volume_group *vg,
 		return 0;
 	}
 
+	/*
+	 * This is a hack for mirror LVs which need to know at a very low level
+	 * which lock mode the LV is being activated with so that it can pick
+	 * a mirror log type during activation.  Do not use this for anything
+	 * else.
+	 */
+	if (mode && !strcmp(mode, "sh"))
+		cmd->lockd_lv_sh = 1;
+
 	if (!mode)
 		mode = "ex";
 
@@ -2110,6 +2169,31 @@ static int _lockd_lv_thin(struct cmd_context *cmd, struct logical_volume *lv,
 }
 
 /*
+ * Only the combination of dlm + corosync + cmirrord allows
+ * mirror LVs to be activated in shared mode on multiple nodes.
+ */
+static int _lockd_lv_mirror(struct cmd_context *cmd, struct logical_volume *lv,
+			    const char *def_mode, uint32_t flags)
+{
+	if (!strcmp(lv->vg->lock_type, "sanlock"))
+		flags |= LDLV_MODE_NO_SH;
+
+	else if (!strcmp(lv->vg->lock_type, "dlm") && def_mode && !strcmp(def_mode, "sh")) {
+#ifdef CMIRRORD_PIDFILE
+		if (!cmirrord_is_running()) {
+			log_error("cmirrord must be running to activate an LV in shared mode.");
+			return 0;
+		}
+#else
+		flags |= LDLV_MODE_NO_SH;
+#endif
+	}
+
+	return lockd_lv_name(cmd, lv->vg, lv->name, &lv->lvid.id[1],
+			     lv->lock_args, def_mode, flags);
+}
+
+/*
  * If the VG has no lock_type, then this function can return immediately.
  * The LV itself may have no lock (NULL lv->lock_args), but the lock request
  * may be directed to another lock, e.g. the pool LV lock in _lockd_lv_thin.
@@ -2162,12 +2246,14 @@ int lockd_lv(struct cmd_context *cmd, struct logical_volume *lv,
 	 */
 	if (lv_is_external_origin(lv) ||
 	    lv_is_thin_type(lv) ||
-	    lv_is_mirror_type(lv) ||
 	    lv_is_raid_type(lv) ||
 	    lv_is_cache_type(lv)) {
 		flags |= LDLV_MODE_NO_SH;
 	}
 
+	if (lv_is_mirror_type(lv))
+		return _lockd_lv_mirror(cmd, lv, def_mode, flags);
+	       
 	return lockd_lv_name(cmd, lv->vg, lv->name, &lv->lvid.id[1],
 			     lv->lock_args, def_mode, flags);
 }
@@ -2330,16 +2416,19 @@ int lockd_init_lv(struct cmd_context *cmd, struct volume_group *vg, struct logic
 	if (!_lvmlockd_connected)
 		return 0;
 
-	if (!lp->needs_lockd_init)
+	if (!lp->needs_lockd_init) {
 		/* needs_lock_init is set for LVs that need a lockd lock. */
 		return 1;
 
-	if (seg_is_cache(lp) || seg_is_cache_pool(lp)) {
+	} else if (seg_is_cache(lp) || seg_is_cache_pool(lp)) {
+		/*
+		 * This should not happen because the command defs are
+		 * checked and excluded for shared VGs early in lvcreate.
+		 */
 		log_error("Use lvconvert for cache with lock type %s", vg->lock_type);
 		return 0;
-	}
 
-	if (!seg_is_thin_volume(lp) && lp->snapshot) {
+	} else if (!seg_is_thin_volume(lp) && lp->snapshot) {
 		struct logical_volume *origin_lv;
 
 		/*
@@ -2364,9 +2453,8 @@ int lockd_init_lv(struct cmd_context *cmd, struct volume_group *vg, struct logic
 		}
 		lv->lock_args = NULL;
 		return 1;
-	}
 
-	if (seg_is_thin(lp)) {
+	} else if (seg_is_thin(lp)) {
 		if ((seg_is_thin_volume(lp) && !lp->create_pool) ||
 		    (!seg_is_thin_volume(lp) && lp->snapshot)) {
 			struct lv_list *lvl;
@@ -2387,30 +2475,32 @@ int lockd_init_lv(struct cmd_context *cmd, struct volume_group *vg, struct logic
 			}
 			lv->lock_args = NULL;
 			return 1;
-		}
 
-		if (seg_is_thin_volume(lp) && lp->create_pool) {
+		} else if (seg_is_thin_volume(lp) && lp->create_pool) {
 			/*
 			 * Creating a thin pool and a thin lv in it.  We could
 			 * probably make this work.
+			 *
+			 * This should not happen because the command defs are
+			 * checked and excluded for shared VGs early in lvcreate.
 			 */
 			log_error("Create thin pool and thin LV separately with lock type %s",
 				  vg->lock_type);
 			return 0;
-		}
 
-		if (!seg_is_thin_volume(lp) && lp->create_pool) {
+		} else if (!seg_is_thin_volume(lp) && lp->create_pool) {
 			/* Creating a thin pool only. */
 			/* lv_name_lock = lp->pool_name; */
 
+		} else {
+			log_error("Unknown thin options for lock init.");
+			return 0;
 		}
 
-		log_error("Unknown thin options for lock init.");
-		return 0;
+	} else {
+		/* Creating a normal lv. */
+		/* lv_name_lock = lv_name; */
 	}
-
-	/* Creating a normal lv. */
-	/* lv_name_lock = lv_name; */
 
 	/*
 	 * The LV gets its own lock, so set lock_args to non-NULL.

@@ -1,3 +1,35 @@
+Version 2.02.175 - 6th October 2017
+===================================
+  Use --help with blockdev when checking for --getsize64 support in fsadm.
+  Dump lvmdbusd debug information with SIGUSR1.
+  Fix metadata corruption in vgsplit and vgmerge intermediate states.
+  Add PV_MOVED_VG PV status flag to mark PVs moving between VGs.
+  Fix lvmdbus hang and recognise unknown VG correctly.
+  Improve error messages when command rules fail.
+  Require LV name with pvmove in a shared VG.
+  Allow shared active mirror LVs with lvmlockd, dlm, and cmirrord.
+  Support lvconvert --repair with cache and cachepool volumes.
+  lvconvert --repair respects --poolmetadataspare option.
+  Mark that we don't plan to develop liblvm2app and python bindings any further.
+  Fix thin pool creation in shared VG. (2.02.173)
+
+Version 2.02.174 - 13th September 2017
+======================================
+  Prevent raid1 split with trackchanges in a shared VG.
+  Avoid double unlocking of client & lockspace mutexes in lvmlockd.
+  Fix leaking of file descriptor for non-blocking filebased locking.
+  Fix check for 2nd mda at end of disk fits if using pvcreate --restorefile.
+  Use maximum metadataarea size that fits with pvcreate --restorefile.
+  Always clear cached bootloaderarea when wiping label e.g. in pvcreate.
+  Disallow --bootloaderareasize with pvcreate --restorefile.
+  Fix lvmlockd check for running lock managers during lock adoption.
+  Add --withgeneralpreamble and --withlocalpreamble to lvmconfig.
+  Improve makefiles' linking.
+  Fix some paths in generated makefiles to respected configured settings.
+  Add warning when creating thin-pool with zeroing and chunk size >= 512KiB.
+  Introduce exit code 4 EINIT_FAILED to replace -1 when initialisation fails.
+  Add synchronization points with udev during reshape of raid LVs.
+
 Version 2.02.173 - 20th July 2017
 =================================
   Add synchronization points with udev during conversion of raid LVs.
