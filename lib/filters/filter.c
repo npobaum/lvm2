@@ -19,6 +19,7 @@
 #include "lvm-string.h"
 #include "config.h"
 #include "metadata.h"
+#include "activate.h"
 
 #include <dirent.h>
 #include <unistd.h>
@@ -37,6 +38,7 @@ typedef struct {
 } device_info_t;
 
 static int _md_major = -1;
+static int _device_mapper_major = -1;
 
 int md_major(void)
 {
@@ -87,6 +89,13 @@ static int _passes_lvm_type_device_filter(struct dev_filter *f,
 	if (!_max_partitions_by_major[MAJOR(dev->dev)]) {
 		log_debug("%s: Skipping: Unrecognised LVM device type %"
 			  PRIu64, name, (uint64_t) MAJOR(dev->dev));
+		return 0;
+	}
+
+	/* Skip suspended devices */
+	if (MAJOR(dev->dev) == _device_mapper_major &&
+	    ignore_suspended_devices() && !device_is_usable(dev->dev)) {
+		log_debug("%s: Skipping: Suspended dm device", name);
 		return 0;
 	}
 
@@ -145,7 +154,7 @@ static int _scan_proc_dev(const char *proc, const struct config_node *cn)
 	/* All types unrecognised initially */
 	memset(_max_partitions_by_major, 0, sizeof(int) * NUMBER_OF_MAJORS);
 
-	if (lvm_snprintf(proc_devices, sizeof(proc_devices),
+	if (dm_snprintf(proc_devices, sizeof(proc_devices),
 			 "%s/devices", proc) < 0) {
 		log_error("Failed to create /proc/devices string");
 		return 0;
@@ -182,10 +191,14 @@ static int _scan_proc_dev(const char *proc, const struct config_node *cn)
 		if (!strncmp("md", line + i, 2) && isspace(*(line + i + 2)))
 			_md_major = line_maj;
 
+		/* Look for device-mapper device */
+		/* FIXME Cope with multiple majors */
+		if (!strncmp("device-mapper", line + i, 13) && isspace(*(line + i + 13)))
+			_device_mapper_major = line_maj;
+
 		/* Go through the valid device names and if there is a
 		   match store max number of partitions */
 		for (j = 0; device_info[j].name != NULL; j++) {
-
 			dev_len = strlen(device_info[j].name);
 			if (dev_len <= strlen(line + i) &&
 			    !strncmp(device_info[j].name, line + i, dev_len) &&
@@ -204,7 +217,8 @@ static int _scan_proc_dev(const char *proc, const struct config_node *cn)
 			if (cv->type != CFG_STRING) {
 				log_error("Expecting string in devices/types "
 					  "in config file");
-				fclose(pd);
+				if (fclose(pd))
+					log_sys_error("fclose", proc_devices);
 				return 0;
 			}
 			dev_len = strlen(cv->v.str);
@@ -214,14 +228,16 @@ static int _scan_proc_dev(const char *proc, const struct config_node *cn)
 				log_error("Max partition count missing for %s "
 					  "in devices/types in config file",
 					  name);
-				fclose(pd);
+				if (fclose(pd))
+					log_sys_error("fclose", proc_devices);
 				return 0;
 			}
 			if (!cv->v.i) {
 				log_error("Zero partition count invalid for "
 					  "%s in devices/types in config file",
 					  name);
-				fclose(pd);
+				if (fclose(pd))
+					log_sys_error("fclose", proc_devices);
 				return 0;
 			}
 			if (dev_len <= strlen(line + i) &&
@@ -232,7 +248,10 @@ static int _scan_proc_dev(const char *proc, const struct config_node *cn)
 			}
 		}
 	}
-	fclose(pd);
+
+	if (fclose(pd))
+		log_sys_error("fclose", proc_devices);
+
 	return 1;
 }
 

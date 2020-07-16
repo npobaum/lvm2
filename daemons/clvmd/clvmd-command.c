@@ -75,6 +75,8 @@
 #include "clvmd.h"
 #include "libdlm.h"
 
+extern struct cluster_ops *clops;
+
 /* This is where all the real work happens:
    NOTE: client will be NULL when this is executed on a remote node */
 int do_command(struct local_client *client, struct clvm_header *msg, int msglen,
@@ -117,9 +119,19 @@ int do_command(struct local_client *client, struct clvm_header *msg, int msglen,
 		if (status == EIO) {
 			*retlen =
 			    1 + snprintf(*buf, buflen,
-					 "Internal lvm error, check syslog");
+					 get_last_lvm_error());
 			return EIO;
 		}
+		break;
+
+	case CLVMD_CMD_REFRESH:
+		do_refresh_cache();
+		break;
+
+	case CLVMD_CMD_GET_CLUSTERNAME:
+		status = clops->get_cluster_name(*buf, buflen);
+		if (!status)
+			*retlen = strlen(*buf);
 		break;
 
 	default:
@@ -179,12 +191,16 @@ static int lock_vg(struct local_client *client)
 	    dm_hash_remove(lock_hash, lockname);
     }
     else {
-
+	/* Read locks need to be PR; other modes get passed through */
+	if ((lock_cmd & LCK_TYPE_MASK) == LCK_READ) {
+	    lock_cmd &= ~LCK_TYPE_MASK;
+	    lock_cmd |= LCK_PREAD;
+	}
 	status = sync_lock(lockname, (int)lock_cmd, (lock_flags & LCK_NONBLOCK) ? LKF_NOQUEUE : 0, &lkid);
 	if (status)
 	    status = errno;
 	else
-	    dm_hash_insert(lock_hash, lockname, (void *)lkid);
+	    dm_hash_insert(lock_hash, lockname, (void *)(long)lkid);
     }
 
     return status;
@@ -208,7 +224,7 @@ int do_pre_command(struct local_client *client)
 	switch (header->cmd) {
 	case CLVMD_CMD_TEST:
 		status = sync_lock("CLVMD_TEST", LKM_EXMODE, 0, &lockid);
-		client->bits.localsock.private = (void *) lockid;
+		client->bits.localsock.private = (void *)(long)lockid;
 		break;
 
 	case CLVMD_CMD_LOCK_VG:
@@ -220,6 +236,10 @@ int do_pre_command(struct local_client *client)
 		lock_flags = args[1];
 		lockname = &args[2];
 		status = pre_lock_lv(lock_cmd, lock_flags, lockname);
+		break;
+
+	case CLVMD_CMD_REFRESH:
+	case CLVMD_CMD_GET_CLUSTERNAME:
 		break;
 
 	default:

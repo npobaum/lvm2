@@ -29,9 +29,7 @@ int lvrename(struct cmd_context *cmd, int argc, char **argv)
 	struct lv_list *lvl;
 
 	if (argc == 3) {
-		vg_name = argv[0];
-		if (!strncmp(vg_name, cmd->dev_dir, strlen(cmd->dev_dir)))
-			vg_name += strlen(cmd->dev_dir);
+		vg_name = skip_dev_dir(cmd, argv[0], NULL);
 		lv_name_old = argv[1];
 		lv_name_new = argv[2];
 		if (strchr(lv_name_old, '/') &&
@@ -111,6 +109,12 @@ int lvrename(struct cmd_context *cmd, int argc, char **argv)
 		goto error;
 	}
 
+	if ((vg->status & CLUSTERED) && !locking_is_clustered() &&
+	    !lockingfailed()) {
+		log_error("Skipping clustered volume group %s", vg->name);
+		goto error;
+	}
+
 	if (vg->status & EXPORTED_VG) {
 		log_error("Volume group \"%s\" is exported", vg->name);
 		goto error;
@@ -137,6 +141,22 @@ int lvrename(struct cmd_context *cmd, int argc, char **argv)
 
 	if (lv->status & LOCKED) {
 		log_error("Cannot rename locked LV %s", lv->name);
+		goto error;
+	}
+
+	if ((lv->status & MIRRORED) ||
+	    (lv->status & MIRROR_LOG) ||
+	    (lv->status & MIRROR_IMAGE)) {
+		log_error("Mirrored LV, \"%s\" cannot be renamed: %s",
+			  lv->name, strerror(ENOSYS));
+		goto error;
+	}
+
+	if ((lv->status & MIRRORED) ||
+	    (lv->status & MIRROR_LOG) ||
+	    (lv->status & MIRROR_IMAGE)) {
+		log_error("Mirrored LV, \"%s\" cannot be renamed: %s",
+			  lv->name, strerror(ENOSYS));
 		goto error;
 	}
 

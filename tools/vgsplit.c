@@ -72,6 +72,9 @@ static int _move_lvs(struct volume_group *vg_from, struct volume_group *vg_to)
 		if ((lv->status & SNAPSHOT))
 			continue;
 
+		if ((lv->status & MIRRORED))
+			continue;
+
 		/* Ensure all the PVs used by this LV remain in the same */
 		/* VG as each other */
 		vg_with = NULL;
@@ -84,9 +87,9 @@ static int _move_lvs(struct volume_group *vg_from, struct volume_group *vg_to)
 				pv = seg_pv(seg, s);
 				if (vg_with) {
 					if (!pv_is_in_vg(vg_with, pv)) {
-						log_error("Logical Volume %s "
-							  "split between "
-							  "Volume Groups",
+						log_error("Can't split Logical "
+							  "Volume %s between "
+							  "two Volume Groups",
 							  lv->name);
 						return 0;
 					}
@@ -161,6 +164,48 @@ static int _move_snapshots(struct volume_group *vg_from,
 	return 1;
 }
 
+static int _move_mirrors(struct volume_group *vg_from,
+			 struct volume_group *vg_to)
+{
+	struct list *lvh, *lvht;
+	struct logical_volume *lv;
+	struct lv_segment *seg;
+	int i, seg_in, log_in;
+
+	list_iterate_safe(lvh, lvht, &vg_from->lvs) {
+		lv = list_item(lvh, struct lv_list)->lv;
+
+		if (!(lv->status & MIRRORED))
+			continue;
+
+		seg = first_seg(lv); 
+
+		seg_in = 0;
+		for (i = 0; i < seg->area_count; i++)
+			if (_lv_is_in_vg(vg_to, seg_lv(seg, i)))
+			    seg_in++;
+
+		log_in = (!seg->log_lv || _lv_is_in_vg(vg_to, seg->log_lv));
+		
+		if ((seg_in && seg_in < seg->area_count) || 
+		    (seg_in && seg->log_lv && !log_in) || 
+		    (!seg_in && seg->log_lv && log_in)) {
+			log_error("Mirror %s split", lv->name);
+			return 0;
+		}
+
+		if (seg_in == seg->area_count && log_in) {
+			list_del(lvh);
+			list_add(&vg_to->lvs, lvh);
+
+			vg_from->lv_count--;
+			vg_to->lv_count++;
+		}
+	}
+
+	return 1;
+}
+
 int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 {
 	char *vg_name_from, *vg_name_to;
@@ -174,10 +219,16 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 		return EINVALID_CMD_LINE;
 	}
 
-	vg_name_from = argv[0];
-	vg_name_to = argv[1];
+	vg_name_from = skip_dev_dir(cmd, argv[0], NULL);
+	vg_name_to = skip_dev_dir(cmd, argv[1], NULL);
 	argc -= 2;
 	argv += 2;
+
+	if (!validate_name(vg_name_from)) {
+		log_error("Volume group name \"%s\" is invalid",
+			  vg_name_from);
+		return ECMD_FAILED;
+	}
 
 	if (!strcmp(vg_name_to, vg_name_from)) {
 		log_error("Duplicate volume group name \"%s\"", vg_name_from);
@@ -196,8 +247,21 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 		return ECMD_FAILED;
 	}
 
+	if ((vg_from->status & CLUSTERED) && !locking_is_clustered() &&
+	    !lockingfailed()) {
+		log_error("Skipping clustered volume group %s", vg_from->name);
+		unlock_vg(cmd, vg_name_from);
+		return ECMD_FAILED;
+	}
+
 	if (vg_from->status & EXPORTED_VG) {
 		log_error("Volume group \"%s\" is exported", vg_from->name);
+		unlock_vg(cmd, vg_name_from);
+		return ECMD_FAILED;
+	}
+
+	if (!(vg_from->status & RESIZEABLE_VG)) {
+		log_error("Volume group \"%s\" is not resizeable", vg_from->name);
 		unlock_vg(cmd, vg_name_from);
 		return ECMD_FAILED;
 	}
@@ -241,6 +305,9 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 				vg_from->alloc, 0, NULL)))
 		goto error;
 
+	if (vg_from->status & CLUSTERED)
+		vg_to->status |= CLUSTERED;
+
 	/* Archive vg_from before changing it */
 	if (!archive(vg_from))
 		goto error;
@@ -257,6 +324,10 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 
 	/* Move required snapshots across */
 	if (!(_move_snapshots(vg_from, vg_to)))
+		goto error;
+
+	/* Move required mirrors across */
+	if (!(_move_mirrors(vg_from, vg_to)))
 		goto error;
 
 	/* FIXME Split mdas properly somehow too! */

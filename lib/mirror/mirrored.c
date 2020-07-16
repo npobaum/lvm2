@@ -26,6 +26,7 @@
 #include "targets.h"
 #include "activate.h"
 #include "sharedlib.h"
+#include "str_list.h"
 
 #ifdef DMEVENTD
 #  include <libdevmapper-event.h>
@@ -154,7 +155,7 @@ static int _mirrored_text_export(const struct lv_segment *seg, struct formatter 
 
 #ifdef DEVMAPPER_SUPPORT
 static struct mirror_state *_mirrored_init_target(struct dm_pool *mem,
-					 struct config_tree *cft)
+					 struct cmd_context *cmd)
 {
 	struct mirror_state *mirr_state;
 
@@ -164,7 +165,7 @@ static struct mirror_state *_mirrored_init_target(struct dm_pool *mem,
 	}
 
 	mirr_state->default_region_size = 2 *
-	    find_config_int(cft->root,
+	    find_config_tree_int(cmd,
 			    "activation/mirror_region_size",
 			    DEFAULT_MIRROR_REGION_SIZE);
 
@@ -172,7 +173,7 @@ static struct mirror_state *_mirrored_init_target(struct dm_pool *mem,
 }
 
 static int _mirrored_target_percent(void **target_state, struct dm_pool *mem,
-			   struct config_tree *cft, struct lv_segment *seg,
+			   struct cmd_context *cmd, struct lv_segment *seg,
 			   char *params, uint64_t *total_numerator,
 			   uint64_t *total_denominator,
 			   float *percent __attribute((unused)))
@@ -184,7 +185,7 @@ static int _mirrored_target_percent(void **target_state, struct dm_pool *mem,
 	char *pos = params;
 
 	if (!*target_state)
-		*target_state = _mirrored_init_target(mem, cft);
+		*target_state = _mirrored_init_target(mem, cmd);
 
 	mirr_state = *target_state;
 
@@ -265,7 +266,7 @@ static int _add_log(struct dev_manager *dm, struct lv_segment *seg,
 }
 
 static int _mirrored_add_target_line(struct dev_manager *dm, struct dm_pool *mem,
-                                struct config_tree *cft, void **target_state,
+                                struct cmd_context *cmd, void **target_state,
                                 struct lv_segment *seg,
                                 struct dm_tree_node *node, uint64_t len,
                                 uint32_t *pvmove_mirror_count)
@@ -278,7 +279,7 @@ static int _mirrored_add_target_line(struct dev_manager *dm, struct dm_pool *mem
 	int r;
 
 	if (!*target_state)
-		*target_state = _mirrored_init_target(mem, cft);
+		*target_state = _mirrored_init_target(mem, cmd);
 
 	mirr_state = *target_state;
 
@@ -335,7 +336,7 @@ static int _mirrored_add_target_line(struct dev_manager *dm, struct dm_pool *mem
 	return add_areas_line(dm, seg, node, start_area, area_count);
 }
 
-static int _mirrored_target_present(void)
+static int _mirrored_target_present(const struct lv_segment *seg __attribute((unused)))
 {
 	static int _mirrored_checked = 0;
 	static int _mirrored_present = 0;
@@ -367,87 +368,151 @@ static int _mirrored_target_present(void)
 }
 
 #ifdef DMEVENTD
-static int _setup_registration(struct dm_pool *mem, struct config_tree *cft,
-			       char **dso)
+static int _get_mirror_dso_path(struct cmd_context *cmd, char **dso)
 {
 	char *path;
 	const char *libpath;
 
-	if (!(path = dm_pool_alloc(mem, PATH_MAX))) {
+	if (!(path = dm_pool_alloc(cmd->mem, PATH_MAX))) {
 		log_error("Failed to allocate dmeventd library path.");
 		return 0;
 	}
 
-	libpath = find_config_str(cft->root, "dmeventd/mirror_library",
-				  DEFAULT_DMEVENTD_MIRROR_LIB);
+	libpath = find_config_tree_str(cmd, "dmeventd/mirror_library",
+				       DEFAULT_DMEVENTD_MIRROR_LIB);
 
-	get_shared_library_path(cft, libpath, path, PATH_MAX);
+	get_shared_library_path(cmd, libpath, path, PATH_MAX);
 
 	*dso = path;
 
 	return 1;
 }
 
-/* FIXME This gets run while suspended and performs banned operations. */
-/* FIXME Merge these two functions */
-static int _target_register_events(struct dm_pool *mem,
-				   struct lv_segment *seg,
-				   struct config_tree *cft, int events)
+static struct dm_event_handler *_create_dm_event_handler(const char *dmname,
+							 const char *dso,
+							 enum dm_event_mask mask)
+{
+	struct dm_event_handler *dmevh;
+
+	if (!(dmevh = dm_event_handler_create()))
+		return_0;
+
+       if (dm_event_handler_set_dso(dmevh, dso))
+		goto fail;
+
+	if (dm_event_handler_set_dev_name(dmevh, dmname))
+		goto fail;
+
+	dm_event_handler_set_event_mask(dmevh, mask);
+	return dmevh;
+
+fail:
+	dm_event_handler_destroy(dmevh);
+	return NULL;
+}
+
+static int _target_monitored(struct lv_segment *seg, int *pending)
 {
 	char *dso, *name;
 	struct logical_volume *lv;
 	struct volume_group *vg;
+	enum dm_event_mask evmask = 0;
+	struct dm_event_handler *dmevh;
 
 	lv = seg->lv;
 	vg = lv->vg;
 
-	if (!_setup_registration(mem, cft, &dso)) {
-		stack;
+	*pending = 0;
+	if (!_get_mirror_dso_path(vg->cmd, &dso))
+		return_0;
+
+	if (!(name = build_dm_name(vg->cmd->mem, vg->name, lv->name, NULL)))
+		return_0;
+
+	if (!(dmevh = _create_dm_event_handler(name, dso, DM_EVENT_ALL_ERRORS)))
+		return_0;
+
+	if (dm_event_get_registered_device(dmevh, 0)) {
+		dm_event_handler_destroy(dmevh);
 		return 0;
 	}
 
-	if (!(name = build_dm_name(mem, vg->name, lv->name, NULL)))
+	evmask = dm_event_handler_get_event_mask(dmevh);
+	if (evmask & DM_EVENT_REGISTRATION_PENDING) {
+		*pending = 1;
+		evmask &= ~DM_EVENT_REGISTRATION_PENDING;
+	}
+
+	dm_event_handler_destroy(dmevh);
+
+	return evmask;
+}
+
+/* FIXME This gets run while suspended and performs banned operations. */
+static int _target_set_events(struct lv_segment *seg, int evmask, int set)
+{
+	char *dso, *name;
+	struct logical_volume *lv;
+	struct volume_group *vg;
+	struct dm_event_handler *dmevh;
+	int r;
+
+	lv = seg->lv;
+	vg = lv->vg;
+
+	if (!_get_mirror_dso_path(vg->cmd, &dso))
 		return_0;
 
-	/* FIXME Save a returned handle here so we can unregister it later */
-	if (!dm_event_register(dso, name, DM_EVENT_ALL_ERRORS))
+	if (!(name = build_dm_name(vg->cmd->mem, vg->name, lv->name, NULL)))
 		return_0;
 
-	log_info("Registered %s for events", name);
+	if (!(dmevh = _create_dm_event_handler(name, dso, DM_EVENT_ALL_ERRORS)))
+		return_0;
+
+	r = set ? dm_event_register_handler(dmevh) : dm_event_unregister_handler(dmevh);
+	dm_event_handler_destroy(dmevh);
+	if (!r)
+		return_0;
+
+	log_info("%s %s for events", set ? "Monitored" : "Unmonitored", name);
 
 	return 1;
 }
 
-static int _target_unregister_events(struct dm_pool *mem,
-				     struct lv_segment *seg,
-				     struct config_tree *cft, int events)
+static int _target_monitor_events(struct lv_segment *seg, int events)
 {
-	char *dso;
-	char *name;
-	struct logical_volume *lv;
-	struct volume_group *vg;
+	return _target_set_events(seg, events, 1);
+}
 
-	lv = seg->lv;
-	vg = lv->vg;
-
-	/* FIXME Remove this and use handle to avoid config file race */
-	if (!_setup_registration(mem, cft, &dso))
-		return_0;
-
-	if (!(name = build_dm_name(mem, vg->name, lv->name, NULL)))
-		return_0;
-
-	/* FIXME Use handle returned by registration function instead of dso */
-	if (!dm_event_unregister(dso, name, DM_EVENT_ALL_ERRORS))
-		return_0;
-
-	log_info("Unregistered %s for events", name);
-
-	return 1;
+static int _target_unmonitor_events(struct lv_segment *seg, int events)
+{
+	return _target_set_events(seg, events, 0);
 }
 
 #endif /* DMEVENTD */
 #endif /* DEVMAPPER_SUPPORT */
+
+static int _mirrored_modules_needed(struct dm_pool *mem,
+				    const struct lv_segment *seg,
+				    struct list *modules)
+{
+	if (seg->log_lv &&
+	    !list_segment_modules(mem, first_seg(seg->log_lv), modules))
+		return_0;
+
+	if ((seg->lv->vg->status & CLUSTERED) &&
+	    !str_list_add(mem, modules, "clog")) {
+		log_error("cluster log string list allocation failed");
+		return 0;
+	}
+
+	if (!str_list_add(mem, modules, "mirror")) {
+		log_error("mirror string list allocation failed");
+		return 0;
+	}
+
+	return 1;
+}
 
 static void _mirrored_destroy(const struct segment_type *segtype)
 {
@@ -465,10 +530,12 @@ static struct segtype_handler _mirrored_ops = {
 	.target_percent = _mirrored_target_percent,
 	.target_present = _mirrored_target_present,
 #ifdef DMEVENTD
-	.target_register_events = _target_register_events,
-	.target_unregister_events = _target_unregister_events,
+	.target_monitored = _target_monitored,
+	.target_monitor_events = _target_monitor_events,
+	.target_unmonitor_events = _target_unmonitor_events,
 #endif
 #endif
+	.modules_needed = _mirrored_modules_needed,
 	.destroy = _mirrored_destroy,
 };
 
@@ -490,7 +557,7 @@ struct segment_type *init_segtype(struct cmd_context *cmd)
 	segtype->ops = &_mirrored_ops;
 	segtype->name = "mirror";
 	segtype->private = NULL;
-	segtype->flags = SEG_AREAS_MIRRORED;
+	segtype->flags = SEG_AREAS_MIRRORED | SEG_MONITORED;
 
 	log_very_verbose("Initialised segtype: %s", segtype->name);
 

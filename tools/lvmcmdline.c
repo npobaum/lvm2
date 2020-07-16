@@ -41,34 +41,21 @@ extern char *optarg;
 #  define OPTIND_INIT 1
 #endif
 
-#ifdef READLINE_SUPPORT
-#  include <readline/readline.h>
-#  include <readline/history.h>
-#  ifndef HAVE_RL_COMPLETION_MATCHES
-#    define rl_completion_matches(a, b) completion_matches((char *)a, b)
-#  endif
-#endif
-
 /*
- * Exported table of valid switches
+ * Table of valid switches
  */
-struct arg the_args[ARG_COUNT + 1] = {
-
-#define arg(a, b, c, d) {b, "", "--" c, d, 0, NULL, 0, 0, INT64_C(0), UINT64_C(0), 0, NULL},
+static struct arg _the_args[ARG_COUNT + 1] = {
+#define arg(a, b, c, d) {b, "", "--" c, d, 0, NULL, 0, 0, INT64_C(0), UINT64_C(0), SIGN_NONE, PERCENT_NONE, NULL},
 #include "args.h"
 #undef arg
-
 };
 
-static int _array_size;
-static int _num_commands;
-static struct command *_commands;
-
-static int _interactive;
+static struct cmdline_context _cmdline;
 
 int yes_no_arg(struct cmd_context *cmd __attribute((unused)), struct arg *a)
 {
 	a->sign = SIGN_NONE;
+	a->percent = PERCENT_NONE;
 
 	if (!strcmp(a->value, "y")) {
 		a->i_value = 1;
@@ -90,6 +77,7 @@ int yes_no_excl_arg(struct cmd_context *cmd __attribute((unused)),
 		    struct arg *a)
 {
 	a->sign = SIGN_NONE;
+	a->percent = PERCENT_NONE;
 
 	if (!strcmp(a->value, "e") || !strcmp(a->value, "ey") ||
 	    !strcmp(a->value, "ye")) {
@@ -148,6 +136,8 @@ static int _get_int_arg(struct arg *a, char **ptr)
 	char *val;
 	long v;
 
+	a->percent = PERCENT_NONE;
+
 	val = a->value;
 	switch (*val) {
 	case '+':
@@ -182,9 +172,11 @@ static int _size_arg(struct cmd_context *cmd __attribute((unused)), struct arg *
 {
 	char *ptr;
 	int i;
-	static const char *suffixes = "kmgt";
+	static const char *suffixes = "kmgtpe";
 	char *val;
 	double v;
+
+	a->percent = PERCENT_NONE;
 
 	val = a->value;
 	switch (*val) {
@@ -254,6 +246,33 @@ int int_arg_with_sign(struct cmd_context *cmd __attribute((unused)), struct arg 
 	char *ptr;
 
 	if (!_get_int_arg(a, &ptr) || (*ptr))
+		return 0;
+
+	return 1;
+}
+
+int int_arg_with_sign_and_percent(struct cmd_context *cmd __attribute((unused)),
+				  struct arg *a)
+{
+	char *ptr;
+
+	if (!_get_int_arg(a, &ptr))
+		return 0;
+
+	if (!*ptr)
+		return 1;
+
+	if (*ptr++ != '%')
+		return 0;
+
+	if (!strcasecmp(ptr, "V") || !strcasecmp(ptr, "VG"))
+		a->percent = PERCENT_VG;
+	else if (!strcasecmp(ptr, "L") || !strcasecmp(ptr, "LV"))
+		a->percent = PERCENT_LV;
+	else if (!strcasecmp(ptr, "F") || !strcasecmp(ptr, "FR") ||
+		 !strcasecmp(ptr, "FREE"))
+		a->percent = PERCENT_FREE;
+	else
 		return 0;
 
 	return 1;
@@ -379,21 +398,21 @@ char yes_no_prompt(const char *prompt, ...)
 
 static void __alloc(int size)
 {
-	if (!(_commands = dm_realloc(_commands, sizeof(*_commands) * size))) {
+	if (!(_cmdline.commands = dm_realloc(_cmdline.commands, sizeof(*_cmdline.commands) * size))) {
 		log_fatal("Couldn't allocate memory.");
 		exit(ECMD_FAILED);
 	}
 
-	_array_size = size;
+	_cmdline.commands_size = size;
 }
 
 static void _alloc_command(void)
 {
-	if (!_array_size)
+	if (!_cmdline.commands_size)
 		__alloc(32);
 
-	if (_array_size <= _num_commands)
-		__alloc(2 * _array_size);
+	if (_cmdline.commands_size <= _cmdline.num_commands)
+		__alloc(2 * _cmdline.commands_size);
 }
 
 static void _create_new_command(const char *name, command_fn command,
@@ -404,7 +423,7 @@ static void _create_new_command(const char *name, command_fn command,
 
 	_alloc_command();
 
-	nc = _commands + _num_commands++;
+	nc = _cmdline.commands + _cmdline.num_commands++;
 
 	nc->name = name;
 	nc->desc = desc;
@@ -443,13 +462,13 @@ static void _register_command(const char *name, command_fn fn,
 	_create_new_command(name, fn, desc, usagestr, nargs, args);
 }
 
-static void _register_commands()
+void lvm_register_commands(void)
 {
 #define xx(a, b, c...) _register_command(# a, a, b, ## c, \
 					driverloaded_ARG, \
 					debug_ARG, help_ARG, help2_ARG, \
 					version_ARG, verbose_ARG, \
-					quiet_ARG, -1);
+					quiet_ARG, config_ARG, -1);
 #include "commands.h"
 #undef xx
 }
@@ -462,17 +481,17 @@ static struct command *_find_command(const char *name)
 	namebase = strdup(name);
 	base = basename(namebase);
 
-	for (i = 0; i < _num_commands; i++) {
-		if (!strcmp(base, _commands[i].name))
+	for (i = 0; i < _cmdline.num_commands; i++) {
+		if (!strcmp(base, _cmdline.commands[i].name))
 			break;
 	}
 
 	free(namebase);
 
-	if (i >= _num_commands)
+	if (i >= _cmdline.num_commands)
 		return 0;
 
-	return _commands + i;
+	return _cmdline.commands + i;
 }
 
 static void _usage(const char *name)
@@ -494,7 +513,7 @@ static void _usage(const char *name)
  */
 static void _add_getopt_arg(int arg, char **ptr, struct option **o)
 {
-	struct arg *a = the_args + arg;
+	struct arg *a = _cmdline.the_args + arg;
 
 	if (a->short_arg) {
 		*(*ptr)++ = a->short_arg;
@@ -523,12 +542,12 @@ static struct arg *_find_arg(struct command *com, int opt)
 
 	for (i = 0; i < com->num_args; i++) {
 		arg = com->valid_args[i];
-		a = the_args + arg;
+		a = _cmdline.the_args + arg;
 
 		/*
 		 * opt should equal either the
 		 * short arg, or the index into
-		 * 'the_args'.
+		 * the_args.
 		 */
 		if ((a->short_arg && (opt == a->short_arg)) ||
 		    (!a->short_arg && (opt == arg)))
@@ -547,7 +566,7 @@ static int _process_command_line(struct cmd_context *cmd, int *argc,
 	struct arg *a;
 
 	for (i = 0; i < ARG_COUNT; i++) {
-		a = the_args + i;
+		a = _cmdline.the_args + i;
 
 		/* zero the count and arg */
 		a->count = 0;
@@ -618,15 +637,15 @@ static int _merge_synonym(struct cmd_context *cmd, int oldarg, int newarg)
 
 	if (arg_count(cmd, oldarg) && arg_count(cmd, newarg)) {
 		log_error("%s and %s are synonyms.  Please only supply one.",
-			  the_args[oldarg].long_arg, the_args[newarg].long_arg);
+			  _cmdline.the_args[oldarg].long_arg, _cmdline.the_args[newarg].long_arg);
 		return 0;
 	}
 
 	if (!arg_count(cmd, oldarg))
 		return 1;
 
-	old = the_args + oldarg;
-	new = the_args + newarg;
+	old = _cmdline.the_args + oldarg;
+	new = _cmdline.the_args + newarg;
 
 	new->count = old->count;
 	new->value = old->value;
@@ -679,10 +698,8 @@ static int _get_settings(struct cmd_context *cmd)
 				  cmd->default_settings.activation);
 	}
 
-	if (arg_count(cmd, autobackup_ARG)) {
-		cmd->current_settings.archive = 1;
-		cmd->current_settings.backup = 1;
-	}
+	cmd->current_settings.archive = arg_int_value(cmd, autobackup_ARG, cmd->current_settings.archive);
+	cmd->current_settings.backup = arg_int_value(cmd, autobackup_ARG, cmd->current_settings.backup);
 
 	if (arg_count(cmd, partial_ARG)) {
 		init_partial(1);
@@ -707,13 +724,22 @@ static int _get_settings(struct cmd_context *cmd)
 			return EINVALID_CMD_LINE;
 		}
 
+	if (arg_count(cmd, trustcache_ARG)) {
+		if (arg_count(cmd, all_ARG)) {
+			log_error("--trustcache is incompatible with --all");
+			return EINVALID_CMD_LINE;
+		}
+		init_trust_cache(1);
+		log_print("WARNING: Cache file of PVs will be trusted.  "
+			  "New devices holding PVs may get ignored.");
+	} else
+		init_trust_cache(0);
+
 	/* Handle synonyms */
 	if (!_merge_synonym(cmd, resizable_ARG, resizeable_ARG) ||
 	    !_merge_synonym(cmd, allocation_ARG, allocatable_ARG) ||
 	    !_merge_synonym(cmd, allocation_ARG, resizeable_ARG))
 		return EINVALID_CMD_LINE;
-
-	init_mirror_in_sync(0);
 
 	/* Zero indicates success */
 	return 0;
@@ -742,8 +768,8 @@ static void _display_help(void)
 	log_error("Use 'lvm help <command>' for more information");
 	log_error(" ");
 
-	for (i = 0; i < _num_commands; i++) {
-		struct command *com = _commands + i;
+	for (i = 0; i < _cmdline.num_commands; i++) {
+		struct command *com = _cmdline.commands + i;
 
 		log_error("%-16.16s%s", com->name, com->desc);
 	}
@@ -762,12 +788,23 @@ int help(struct cmd_context *cmd __attribute((unused)), int argc, char **argv)
 	return 0;
 }
 
+static int _override_settings(struct cmd_context *cmd)
+{
+	if (!(cmd->cft_override = create_config_tree_from_string(cmd, arg_str_value(cmd, config_ARG, "")))) {
+		log_error("Failed to set overridden configuration entries.");
+		return EINVALID_CMD_LINE;
+	}
+
+	return 0;
+}
+
 static void _apply_settings(struct cmd_context *cmd)
 {
 	init_debug(cmd->current_settings.debug);
 	init_verbose(cmd->current_settings.verbose + VERBOSE_BASE_LEVEL);
 	init_test(cmd->current_settings.test);
 	init_full_scan_done(0);
+	init_mirror_in_sync(0);
 
 	init_msg_prefix(cmd->default_settings.msg_prefix);
 	init_cmd_name(cmd->default_settings.cmd_name);
@@ -783,7 +820,7 @@ static void _apply_settings(struct cmd_context *cmd)
 
 static char *_copy_command_line(struct cmd_context *cmd, int argc, char **argv)
 {
-	int i;
+	int i, space;
 
 	/*
 	 * Build up the complete command line, used as a
@@ -793,7 +830,15 @@ static char *_copy_command_line(struct cmd_context *cmd, int argc, char **argv)
 		goto bad;
 
 	for (i = 0; i < argc; i++) {
+		space = strchr(argv[i], ' ') ? 1 : 0;
+
+		if (space && !dm_pool_grow_object(cmd->mem, "'", 1))
+			goto bad;
+
 		if (!dm_pool_grow_object(cmd->mem, argv[i], strlen(argv[i])))
+			goto bad;
+
+		if (space && !dm_pool_grow_object(cmd->mem, "'", 1))
 			goto bad;
 
 		if (i < (argc - 1))
@@ -815,7 +860,7 @@ static char *_copy_command_line(struct cmd_context *cmd, int argc, char **argv)
 	return NULL;
 }
 
-static int _run_command(struct cmd_context *cmd, int argc, char **argv)
+int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 {
 	int ret = 0;
 	int locking_type;
@@ -835,7 +880,11 @@ static int _run_command(struct cmd_context *cmd, int argc, char **argv)
 
 	set_cmd_name(cmd->command->name);
 
-	if (!cmd->config_valid || config_files_changed(cmd)) {
+	if (arg_count(cmd, config_ARG))
+		if ((ret = _override_settings(cmd)))
+			goto_out;
+
+	if (arg_count(cmd, config_ARG) || !cmd->config_valid || config_files_changed(cmd)) {
 		/* Reinitialise various settings inc. logging, filters */
 		if (!refresh_toolcontext(cmd)) {
 			log_error("Updated config file invalid. Aborting.");
@@ -844,7 +893,7 @@ static int _run_command(struct cmd_context *cmd, int argc, char **argv)
 	}
 
 	if ((ret = _get_settings(cmd)))
-		goto out;
+		goto_out;
 	_apply_settings(cmd);
 
 	log_debug("Processing: %s", cmd->cmd_line);
@@ -854,15 +903,15 @@ static int _run_command(struct cmd_context *cmd, int argc, char **argv)
 #endif
 
 	if ((ret = _process_common_commands(cmd)))
-		goto out;
+		goto_out;
 
 	if (arg_count(cmd, nolocking_ARG))
 		locking_type = 0;
 	else
-		locking_type = find_config_int(cmd->cft->root,
+		locking_type = find_config_tree_int(cmd,
 					       "global/locking_type", 1);
 
-	if (!init_locking(locking_type, cmd->cft)) {
+	if (!init_locking(locking_type, cmd)) {
 		log_error("Locking type %d initialisation failed.",
 			  locking_type);
 		ret = ECMD_FAILED;
@@ -879,6 +928,15 @@ static int _run_command(struct cmd_context *cmd, int argc, char **argv)
 		lvmcache_destroy();
 	}
 
+	if (cmd->cft_override) {
+		destroy_config_tree(cmd->cft_override);
+		cmd->cft_override = NULL;
+		/* Move this? */
+		if (!refresh_toolcontext(cmd))
+			stack;
+	}
+ 
+	/* FIXME Move this? */
 	cmd->current_settings = cmd->default_settings;
 	_apply_settings(cmd);
 
@@ -887,13 +945,15 @@ static int _run_command(struct cmd_context *cmd, int argc, char **argv)
 	 */
 	dm_pool_empty(cmd->mem);
 
-	if (ret == EINVALID_CMD_LINE && !_interactive)
+	if (ret == EINVALID_CMD_LINE && !_cmdline.interactive)
 		_usage(cmd->command->name);
+
+	log_debug("Completed: %s", cmd->cmd_line);
 
 	return ret;
 }
 
-static int _split(char *str, int *argc, char **argv, int max)
+int lvm_split(char *str, int *argc, char **argv, int max)
 {
 	char *b = str, *e;
 	*argc = 0;
@@ -952,11 +1012,13 @@ static void _close_stray_fds(void)
 	}
 }
 
-static struct cmd_context *_init_lvm(void)
+struct cmd_context *init_lvm(unsigned is_static)
 {
 	struct cmd_context *cmd;
 
-	if (!(cmd = create_toolcontext(&the_args[0]))) {
+	_cmdline.the_args = &_the_args[0];
+
+	if (!(cmd = create_toolcontext(_cmdline.the_args, is_static, 0))) {
 		stack;
 		return NULL;
 	}
@@ -972,13 +1034,13 @@ static void _fin_commands(void)
 {
 	int i;
 
-	for (i = 0; i < _num_commands; i++)
-		dm_free(_commands[i].valid_args);
+	for (i = 0; i < _cmdline.num_commands; i++)
+		dm_free(_cmdline.commands[i].valid_args);
 
-	dm_free(_commands);
+	dm_free(_cmdline.commands);
 }
 
-static void _fin(struct cmd_context *cmd)
+void lvm_fin(struct cmd_context *cmd)
 {
 	_fin_commands();
 	destroy_toolcontext(cmd);
@@ -991,8 +1053,9 @@ static int _run_script(struct cmd_context *cmd, int argc, char **argv)
 	char buffer[CMD_LEN];
 	int ret = 0;
 	int magic_number = 0;
+	char *script_file = argv[0];
 
-	if ((script = fopen(argv[0], "r")) == NULL)
+	if ((script = fopen(script_file, "r")) == NULL)
 		return ENO_SUCH_CMD;
 
 	while (fgets(buffer, sizeof(buffer), script) != NULL) {
@@ -1012,7 +1075,7 @@ static int _run_script(struct cmd_context *cmd, int argc, char **argv)
 			ret = EINVALID_CMD_LINE;
 			break;
 		}
-		if (_split(buffer, &argc, argv, MAX_ARGS) == MAX_ARGS) {
+		if (lvm_split(buffer, &argc, argv, MAX_ARGS) == MAX_ARGS) {
 			buffer[50] = '\0';
 			log_error("Too many arguments: %s", buffer);
 			ret = EINVALID_CMD_LINE;
@@ -1022,310 +1085,14 @@ static int _run_script(struct cmd_context *cmd, int argc, char **argv)
 			continue;
 		if (!strcmp(argv[0], "quit") || !strcmp(argv[0], "exit"))
 			break;
-		_run_command(cmd, argc, argv);
+		lvm_run_command(cmd, argc, argv);
 	}
 
-	fclose(script);
-	return ret;
-}
-
-#ifdef READLINE_SUPPORT
-/* List matching commands */
-static char *_list_cmds(const char *text, int state)
-{
-	static int i = 0;
-	static size_t len = 0;
-
-	/* Initialise if this is a new completion attempt */
-	if (!state) {
-		i = 0;
-		len = strlen(text);
-	}
-
-	while (i < _num_commands)
-		if (!strncmp(text, _commands[i++].name, len))
-			return strdup(_commands[i - 1].name);
-
-	return NULL;
-}
-
-/* List matching arguments */
-static char *_list_args(const char *text, int state)
-{
-	static int match_no = 0;
-	static size_t len = 0;
-	static struct command *com;
-
-	/* Initialise if this is a new completion attempt */
-	if (!state) {
-		char *s = rl_line_buffer;
-		int j = 0;
-
-		match_no = 0;
-		com = NULL;
-		len = strlen(text);
-
-		/* Find start of first word in line buffer */
-		while (isspace(*s))
-			s++;
-
-		/* Look for word in list of commands */
-		for (j = 0; j < _num_commands; j++) {
-			const char *p;
-			char *q = s;
-
-			p = _commands[j].name;
-			while (*p == *q) {
-				p++;
-				q++;
-			}
-			if ((!*p) && *q == ' ') {
-				com = _commands + j;
-				break;
-			}
-		}
-
-		if (!com)
-			return NULL;
-	}
-
-	/* Short form arguments */
-	if (len < 3) {
-		while (match_no < com->num_args) {
-			char s[3];
-			char c;
-			if (!(c = (the_args +
-				   com->valid_args[match_no++])->short_arg))
-				continue;
-
-			sprintf(s, "-%c", c);
-			if (!strncmp(text, s, len))
-				return strdup(s);
-		}
-	}
-
-	/* Long form arguments */
-	if (match_no < com->num_args)
-		match_no = com->num_args;
-
-	while (match_no - com->num_args < com->num_args) {
-		const char *l;
-		l = (the_args +
-		     com->valid_args[match_no++ - com->num_args])->long_arg;
-		if (*(l + 2) && !strncmp(text, l, len))
-			return strdup(l);
-	}
-
-	return NULL;
-}
-
-/* Custom completion function */
-static char **_completion(const char *text, int start_pos, int end_pos)
-{
-	char **match_list = NULL;
-	int p = 0;
-
-	while (isspace((int) *(rl_line_buffer + p)))
-		p++;
-
-	/* First word should be one of our commands */
-	if (start_pos == p)
-		match_list = rl_completion_matches(text, _list_cmds);
-
-	else if (*text == '-')
-		match_list = rl_completion_matches(text, _list_args);
-	/* else other args */
-
-	/* No further completion */
-	rl_attempted_completion_over = 1;
-	return match_list;
-}
-
-static int _hist_file(char *buffer, size_t size)
-{
-	char *e = getenv("HOME");
-
-	if (lvm_snprintf(buffer, size, "%s/.lvm_history", e) < 0) {
-		log_error("$HOME/.lvm_history: path too long");
-		return 0;
-	}
-
-	return 1;
-}
-
-static void _read_history(struct cmd_context *cmd)
-{
-	char hist_file[PATH_MAX];
-
-	if (!_hist_file(hist_file, sizeof(hist_file)))
-		return;
-
-	if (read_history(hist_file))
-		log_very_verbose("Couldn't read history from %s.", hist_file);
-
-	stifle_history(find_config_int(cmd->cft->root, "shell/history_size",
-				       DEFAULT_MAX_HISTORY));
-
-}
-
-static void _write_history(void)
-{
-	char hist_file[PATH_MAX];
-
-	if (!_hist_file(hist_file, sizeof(hist_file)))
-		return;
-
-	if (write_history(hist_file))
-		log_very_verbose("Couldn't write history to %s.", hist_file);
-}
-
-static int _shell(struct cmd_context *cmd)
-{
-	int argc, ret;
-	char *input = NULL, *args[MAX_ARGS], **argv;
-
-	rl_readline_name = "lvm";
-	rl_attempted_completion_function = (CPPFunction *) _completion;
-
-	_read_history(cmd);
-
-	_interactive = 1;
-	while (1) {
-		free(input);
-		input = readline("lvm> ");
-
-		/* EOF */
-		if (!input) {
-			printf("\n");
-			break;
-		}
-
-		/* empty line */
-		if (!*input)
-			continue;
-
-		add_history(input);
-
-		argv = args;
-
-		if (_split(input, &argc, argv, MAX_ARGS) == MAX_ARGS) {
-			log_error("Too many arguments, sorry.");
-			continue;
-		}
-
-		if (!strcmp(argv[0], "lvm")) {
-			argv++;
-			argc--;
-		}
-
-		if (!argc)
-			continue;
-
-		if (!strcmp(argv[0], "quit") || !strcmp(argv[0], "exit")) {
-			remove_history(history_length - 1);
-			log_error("Exiting.");
-			break;
-		}
-
-		ret = _run_command(cmd, argc, argv);
-		if (ret == ENO_SUCH_CMD)
-			log_error("No such command '%s'.  Try 'help'.",
-				  argv[0]);
-
-		_write_history();
-	}
-
-	free(input);
-	return 0;
-}
-
-#endif
-
-#ifdef CMDLIB
-
-void *lvm2_init(void)
-{
-	struct cmd_context *cmd;
-
-	_register_commands();
-
-	if (!(cmd = _init_lvm()))
-		return NULL;
-
-	return (void *) cmd;
-}
-
-int lvm2_run(void *handle, const char *cmdline)
-{
-	int argc, ret, oneoff = 0;
-	char *args[MAX_ARGS], **argv, *cmdcopy = NULL;
-	struct cmd_context *cmd;
-
-	argv = args;
-
-	if (!handle) {
-		oneoff = 1;
-		if (!(handle = lvm2_init())) {
-			log_error("Handle initialisation failed.");
-			return ECMD_FAILED;
-		}
-	}
-
-	cmd = (struct cmd_context *) handle;
-
-	cmd->argv = argv;
-
-	if (!(cmdcopy = dm_strdup(cmdline))) {
-		log_error("Cmdline copy failed.");
-		ret = ECMD_FAILED;
-		goto out;
-	}
-
-	if (_split(cmdcopy, &argc, argv, MAX_ARGS) == MAX_ARGS) {
-		log_error("Too many arguments.  Limit is %d.", MAX_ARGS);
-		ret = EINVALID_CMD_LINE;
-		goto out;
-	}
-
-	if (!argc) {
-		log_error("No command supplied");
-		ret = EINVALID_CMD_LINE;
-		goto out;
-	}
-
-	ret = _run_command(cmd, argc, argv);
-
-      out:
-	dm_free(cmdcopy);
-
-	if (oneoff)
-		lvm2_exit(handle);
+	if (fclose(script))
+		log_sys_error("fclose", script_file);
 
 	return ret;
 }
-
-void lvm2_log_level(void *handle, int level)
-{
-	struct cmd_context *cmd = (struct cmd_context *) handle;
-
-	cmd->default_settings.verbose = level - VERBOSE_BASE_LEVEL;
-
-	return;
-}
-
-void lvm2_log_fn(lvm2_log_fn_t log_fn)
-{
-	init_log_fn(log_fn);
-}
-
-void lvm2_exit(void *handle)
-{
-	struct cmd_context *cmd = (struct cmd_context *) handle;
-
-	_fin(cmd);
-}
-
-#endif
 
 /*
  * Determine whether we should fall back and exec the equivalent LVM1 tool
@@ -1335,7 +1102,7 @@ static int _lvm1_fallback(struct cmd_context *cmd)
 	char vsn[80];
 	int dm_present;
 
-	if (!find_config_int(cmd->cft->root, "global/fallback_to_lvm1",
+	if (!find_config_tree_int(cmd, "global/fallback_to_lvm1",
 			     DEFAULT_FALLBACK_TO_LVM1) ||
 	    strncmp(cmd->kernel_vsn, "2.4.", 4))
 		return 0;
@@ -1354,7 +1121,7 @@ static void _exec_lvm1_command(char **argv)
 {
 	char path[PATH_MAX];
 
-	if (lvm_snprintf(path, sizeof(path), "%s.lvm1", argv[0]) < 0) {
+	if (dm_snprintf(path, sizeof(path), "%s.lvm1", argv[0]) < 0) {
 		log_error("Failed to create LVM1 tool pathname");
 		return;
 	}
@@ -1363,7 +1130,7 @@ static void _exec_lvm1_command(char **argv)
 	log_sys_error("execvp", path);
 }
 
-int lvm2_main(int argc, char **argv, int is_static)
+int lvm2_main(int argc, char **argv, unsigned is_static)
 {
 	char *namebase, *base;
 	int ret, alias = 0;
@@ -1389,11 +1156,11 @@ int lvm2_main(int argc, char **argv, int is_static)
 
 	free(namebase);
 
-	if (!(cmd = _init_lvm()))
+	if (!(cmd = init_lvm(is_static)))
 		return -1;
 
 	cmd->argv = argv;
-	_register_commands();
+	lvm_register_commands();
 
 	if (_lvm1_fallback(cmd)) {
 		/* Attempt to run equivalent LVM1 tool instead */
@@ -1412,7 +1179,7 @@ int lvm2_main(int argc, char **argv, int is_static)
 	}
 #ifdef READLINE_SUPPORT
 	if (!alias && argc == 1) {
-		ret = _shell(cmd);
+		ret = lvm_shell(cmd, &_cmdline);
 		goto out;
 	}
 #endif
@@ -1429,14 +1196,14 @@ int lvm2_main(int argc, char **argv, int is_static)
 		argv++;
 	}
 
-	ret = _run_command(cmd, argc, argv);
+	ret = lvm_run_command(cmd, argc, argv);
 	if ((ret == ENO_SUCH_CMD) && (!alias))
 		ret = _run_script(cmd, argc, argv);
 	if (ret == ENO_SUCH_CMD)
 		log_error("No such command.  Try 'help'.");
 
       out:
-	_fin(cmd);
+	lvm_fin(cmd);
 	if (ret == ECMD_PROCESSED)
 		ret = 0;
 	return ret;

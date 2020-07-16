@@ -102,7 +102,7 @@ static int _read_params(struct lvconvert_params *lp, struct cmd_context *cmd,
 			int argc, char **argv)
 {
 	int region_size;
-	int pagesize = getpagesize();
+	int pagesize = lvm_getpagesize();
 
 	memset(lp, 0, sizeof(*lp));
 
@@ -177,7 +177,7 @@ static int _read_params(struct lvconvert_params *lp, struct cmd_context *cmd,
 			lp->region_size = 2 * arg_uint_value(cmd,
 							     regionsize_ARG, 0);
 		} else {
-			region_size = 2 * find_config_int(cmd->cft->root,
+			region_size = 2 * find_config_tree_int(cmd,
 						"activation/mirror_region_size",
 						DEFAULT_MIRROR_REGION_SIZE);
 			if (region_size < 0) {
@@ -212,7 +212,7 @@ static int _read_params(struct lvconvert_params *lp, struct cmd_context *cmd,
 	}
 
 	if (activation() && lp->segtype->ops->target_present &&
-	    !lp->segtype->ops->target_present()) {
+	    !lp->segtype->ops->target_present(NULL)) {
 		log_error("%s: Required device-mapper target(s) not "
 			  "detected in your kernel", lp->segtype->name);
 		return 0;
@@ -281,15 +281,8 @@ static int lvconvert_mirrors(struct cmd_context * cmd, struct logical_volume * l
 			if (lp->mirrors == existing_mirrors) {
 				if (!seg->log_lv && !arg_count(cmd, corelog_ARG)) {
 					/* No disk log present, add one. */
-					/* FIXME: Why doesn't this work?  Without
-					   it, we will probably put the log on the
-					   same device as a mirror leg.
-					  if (!(parallel_areas = build_parallel_areas_from_lv(cmd, lv))) {
-					  stack;
-					  return 0;
-					  }
-					*/
-					parallel_areas = NULL;
+					if (!(parallel_areas = build_parallel_areas_from_lv(cmd, lv)))
+						return_0;
 					if (!lv_mirror_percent(cmd, lv, 0, &sync_percent, NULL)) {
 						log_error("Unable to determine mirror sync status.");
 						return 0;
@@ -297,7 +290,7 @@ static int lvconvert_mirrors(struct cmd_context * cmd, struct logical_volume * l
 
 					segtype = get_segtype_from_string(cmd, "striped");
 
-					if (!(ah = allocate_extents(lv->vg, NULL, segtype, 1,
+					if (!(ah = allocate_extents(lv->vg, NULL, segtype, 0,
 								    0, 1, 0,
 								    NULL, 0, 0, lp->pvh,
 								    lp->alloc,
@@ -344,8 +337,7 @@ static int lvconvert_mirrors(struct cmd_context * cmd, struct logical_volume * l
 						  lp->mirrors - 1);
 					return 1;
 				}
-			}
-			if (lp->mirrors > existing_mirrors) {
+			} else if (lp->mirrors > existing_mirrors) {
 				/* FIXME Unless anywhere, remove PV of log_lv 
 				 * from allocatable_pvs & allocate 
 				 * (mirrors - existing_mirrors) new areas
@@ -454,9 +446,9 @@ static int lvconvert_snapshot(struct cmd_context *cmd,
 		return 0;
 	}
 
-	if (!lp->zero)
-		log_error("WARNING: \"%s\" not zeroed", lv->name);
-	else if (!set_lv(cmd, lv, 0)) {
+	if (!lp->zero || !(lv->status & LVM_WRITE))
+		log_print("WARNING: \"%s\" not zeroed", lv->name);
+	else if (!set_lv(cmd, lv, 0, 0)) {
 			log_error("Aborting. Failed to wipe snapshot "
 				  "exception store.");
 			return 0;
@@ -562,6 +554,12 @@ int lvconvert(struct cmd_context * cmd, int argc, char **argv)
 
 	if (!(vg = vg_read(cmd, lp.vg_name, NULL, &consistent))) {
 		log_error("Volume group \"%s\" doesn't exist", lp.vg_name);
+		goto error;
+	}
+
+	if ((vg->status & CLUSTERED) && !locking_is_clustered() &&
+	    !lockingfailed()) {
+		log_error("Skipping clustered volume group %s", lp.vg_name);
 		goto error;
 	}
 

@@ -38,8 +38,8 @@ static int pvremove_check(struct cmd_context *cmd, const char *name)
 	if (!(pv = pv_read(cmd, name, NULL, NULL, 1))) {
 		if (arg_count(cmd, force_ARG))
 			return 1;
-		else
-			return 0;
+		log_error("Physical Volume %s not found", name);
+		return 0;
 	}
 
 	/* orphan ? */
@@ -92,9 +92,9 @@ static int pvremove_single(struct cmd_context *cmd, const char *pv_name,
 	}
 
 	if (!dev_test_excl(dev)) {
-		log_error("Can't open %s exclusively.  Mounted filesystem?",
-			  dev_name(dev));
-		return 0;
+		log_error("Can't open %s exclusively - not removing. "
+			  "Mounted filesystem?", dev_name(dev));
+		goto error;
 	}
 
 	/* Wipe existing label(s) */

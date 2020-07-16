@@ -19,7 +19,7 @@ xx(e2fsadm,
    "e2fsadm "
    "[-d|--debug] " "[-h|--help] " "[-n|--nofsck]" "\n"
    "\t{[-l|--extents] [+|-]LogicalExtentsNumber |" "\n"
-   "\t [-L|--size] [+|-]LogicalVolumeSize[kKmMgGtT]}" "\n"
+   "\t [-L|--size] [+|-]LogicalVolumeSize[kKmMgGtTpPeE]}" "\n"
    "\t[-t|--test] "  "\n"
    "\t[-v|--verbose] "  "\n"
    "\t[--version] " "\n"
@@ -30,7 +30,10 @@ xx(e2fsadm,
 
 xx(dumpconfig,
    "Dump active configuration",
-   "dumpconfig <filename>\n")
+   "dumpconfig "
+   "\t[-f|--file filename] " "\n"
+   "[ConfigurationVariable...]\n",
+   file_ARG)
 
 xx(formats,
    "List available metadata formats",
@@ -69,20 +72,23 @@ xx(lvchange,
    "\t[-p|--permission r|rw]\n"
    "\t[-r|--readahead ReadAheadSectors]\n"
    "\t[--refresh]\n"
+   "\t[--resync]\n"
    "\t[-t|--test]\n"
    "\t[-v|--verbose]\n"
+   "\t[-y|--yes]\n"
    "\t[--version]" "\n"
    "\tLogicalVolume[Path] [LogicalVolume[Path]...]\n",
 
    alloc_ARG, autobackup_ARG, available_ARG, contiguous_ARG, force_ARG,
    ignorelockingfailure_ARG, major_ARG, minor_ARG, monitor_ARG,
-   partial_ARG, permission_ARG, persistent_ARG, readahead_ARG,
-   refresh_ARG, addtag_ARG, deltag_ARG, test_ARG)
+   partial_ARG, permission_ARG, persistent_ARG, readahead_ARG, resync_ARG,
+   refresh_ARG, addtag_ARG, deltag_ARG, test_ARG, yes_ARG)
 
 xx(lvconvert,
    "Change logical volume layout",
    "lvconvert "
    "[-m|--mirrors Mirrors [--corelog]]\n"
+   "\t[-R|--regionsize MirrorLogRegionSize]\n"
    "\t[--alloc AllocationPolicy]\n"
    "\t[-d|--debug]\n"
    "\t[-h|-?|--help]\n"
@@ -100,7 +106,7 @@ xx(lvconvert,
    "\t[--version]" "\n"
    "\tOriginalLogicalVolume[Path] SnapshotLogicalVolume[Path]\n",
 
-   alloc_ARG, chunksize_ARG, mirrors_ARG, corelog_ARG,
+   alloc_ARG, chunksize_ARG, mirrors_ARG, corelog_ARG, regionsize_ARG,
    snapshot_ARG, test_ARG, zero_ARG)
 
 xx(lvcreate,
@@ -114,7 +120,7 @@ xx(lvcreate,
    "\t[-h|-?|--help]\n"
    "\t[-i|--stripes Stripes [-I|--stripesize StripeSize]]\n"
    "\t{-l|--extents LogicalExtentsNumber |\n"
-   "\t -L|--size LogicalVolumeSize[kKmMgGtT]}\n"
+   "\t -L|--size LogicalVolumeSize[kKmMgGtTpPeE]}\n"
    "\t[-M|--persistent {y|n}] [--major major] [--minor minor]\n"
    "\t[-m|--mirrors Mirrors [--nosync] [--corelog]]\n"
    "\t[-n|--name LogicalVolumeName]\n"
@@ -137,8 +143,8 @@ xx(lvcreate,
    "\t[-d|--debug]\n"
    "\t[-h|-?|--help]\n"
    "\t[-i|--stripes Stripes [-I|--stripesize StripeSize]]\n"
-   "\t{-l|--extents LogicalExtentsNumber |\n"
-   "\t -L|--size LogicalVolumeSize[kKmMgGtT]}\n"
+   "\t{-l|--extents LogicalExtentsNumber[%{VG|LV|FREE}] |\n"
+   "\t -L|--size LogicalVolumeSize[kKmMgGtTpPeE]}\n"
    "\t[-M|--persistent {y|n}] [--major major] [--minor minor]\n"
    "\t[-n|--name LogicalVolumeName]\n"
    "\t[-p|--permission {r|rw}]\n"
@@ -202,8 +208,8 @@ xx(lvextend,
    "\t[-d|--debug]\n"
    "\t[-h|--help]\n"
    "\t[-i|--stripes Stripes [-I|--stripesize StripeSize]]\n"
-   "\t{-l|--extents [+]LogicalExtentsNumber |\n"
-   "\t -L|--size [+]LogicalVolumeSize[kKmMgGtT]}\n"
+   "\t{-l|--extents [+]LogicalExtentsNumber[%{VG|FREE}] |\n"
+   "\t -L|--size [+]LogicalVolumeSize[kKmMgGtTpPeE]}\n"
    "\t[-m|--mirrors Mirrors]\n"
    "\t[-n|--nofsck]\n"
    "\t[-r|--resizefs]\n"
@@ -267,12 +273,13 @@ xx(lvreduce,
    "\t[-d|--debug]\n"
    "\t[-f|--force]\n"
    "\t[-h|--help]\n"
-   "\t{-l|--extents [-]LogicalExtentsNumber |\n"
-   "\t -L|--size [-]LogicalVolumeSize[kKmMgGtT]}\n"
+   "\t{-l|--extents [-]LogicalExtentsNumber[%{VG|LV|FREE}] |\n"
+   "\t -L|--size [-]LogicalVolumeSize[kKmMgGtTpPeE]}\n"
    "\t[-n|--nofsck]\n"
    "\t[-r|--resizefs]\n"
    "\t[-t|--test]\n"
    "\t[-v|--verbose]\n"
+   "\t[-y|--yes]\n"
    "\t[--version]" "\n"
    "\tLogicalVolume[Path]\n",
 
@@ -315,8 +322,8 @@ xx(lvresize,
    "\t[-d|--debug]\n"
    "\t[-h|--help]\n"
    "\t[-i|--stripes Stripes [-I|--stripesize StripeSize]]\n"
-   "\t{-l|--extents [+|-]LogicalExtentsNumber |\n"
-   "\t -L|--size [+|-]LogicalVolumeSize[kKmMgGtT]}\n"
+   "\t{-l|--extents [+|-]LogicalExtentsNumber[%{VG|LV|FREE}] |\n"
+   "\t -L|--size [+|-]LogicalVolumeSize[kKmMgGtTpPeE]}\n"
    "\t[-n|--nofsck]\n"
    "\t[-r|--resizefs]\n"
    "\t[-t|--test]\n"
@@ -343,6 +350,7 @@ xx(lvs,
    "\t[-P|--partial] " "\n"
    "\t[--segments]\n"
    "\t[--separator Separator]\n"
+   "\t[--trustcache]\n"
    "\t[--unbuffered]\n"
    "\t[--units hsbkmgtHKMGT]\n"
    "\t[-v|--verbose]\n"
@@ -351,7 +359,7 @@ xx(lvs,
 
    aligned_ARG, all_ARG, ignorelockingfailure_ARG, noheadings_ARG,
    nolocking_ARG, nosuffix_ARG, options_ARG, partial_ARG, segments_ARG,
-   separator_ARG, sort_ARG, unbuffered_ARG, units_ARG)
+   separator_ARG, sort_ARG, trustcache_ARG, unbuffered_ARG, units_ARG)
 
 xx(lvscan,
    "List all logical volumes in all volume groups",
@@ -391,7 +399,7 @@ xx(pvresize,
    "pvresize " "\n"
    "\t[-d|--debug]" "\n"
    "\t[-h|-?|--help] " "\n"
-   "\t[--setphysicalvolumesize PhysicalVolumeSize[kKmMgGtT]" "\n"
+   "\t[--setphysicalvolumesize PhysicalVolumeSize[kKmMgGtTpPeE]" "\n"
    "\t[-t|--test] " "\n"
    "\t[-v|--verbose] " "\n"
    "\t[--version] " "\n"
@@ -409,8 +417,8 @@ xx(pvcreate,
    "\t[--labelsector sector] " "\n"
    "\t[-M|--metadatatype 1|2]" "\n"
    "\t[--metadatacopies #copies]" "\n"
-   "\t[--metadatasize MetadataSize[kKmMgGtT]]" "\n"
-   "\t[--setphysicalvolumesize PhysicalVolumeSize[kKmMgGtT]" "\n"
+   "\t[--metadatasize MetadataSize[kKmMgGtTpPeE]]" "\n"
+   "\t[--setphysicalvolumesize PhysicalVolumeSize[kKmMgGtTpPeE]" "\n"
    "\t[-t|--test] " "\n"
    "\t[-u|--uuid uuid] " "\n"
    "\t[-v|--verbose] " "\n"
@@ -527,6 +535,7 @@ xx(pvs,
    "\t[-P|--partial] " "\n"
    "\t[--segments]\n"
    "\t[--separator Separator]\n"
+   "\t[--trustcache]\n"
    "\t[--unbuffered]\n"
    "\t[--units hsbkmgtHKMGT]\n"
    "\t[-v|--verbose]\n"
@@ -535,7 +544,7 @@ xx(pvs,
 
    aligned_ARG, all_ARG, ignorelockingfailure_ARG, noheadings_ARG,
    nolocking_ARG, nosuffix_ARG, options_ARG, partial_ARG, segments_ARG,
-   separator_ARG, sort_ARG, unbuffered_ARG, units_ARG)
+   separator_ARG, sort_ARG, trustcache_ARG, unbuffered_ARG, units_ARG)
 
 xx(pvscan,
    "List all physical volumes",
@@ -605,15 +614,16 @@ xx(vgchange,
    "\t -c|--clustered {y|n} |" "\n"
    "\t -x|--resizeable {y|n} |" "\n"
    "\t -l|--logicalvolume MaxLogicalVolumes |" "\n"
-   "\t -s|--physicalextentsize PhysicalExtentSize[kKmMgGtT] |" "\n"
+   "\t -p|--maxphysicalvolumes MaxPhysicalVolumes |" "\n"
+   "\t -s|--physicalextentsize PhysicalExtentSize[kKmMgGtTpPeE] |" "\n"
    "\t --addtag Tag |\n"
    "\t --deltag Tag}\n"
    "\t[VolumeGroupName...]\n",
 
    addtag_ARG, alloc_ARG, allocation_ARG, autobackup_ARG, available_ARG,
    clustered_ARG, deltag_ARG, ignorelockingfailure_ARG, logicalvolume_ARG,
-   monitor_ARG, partial_ARG, physicalextentsize_ARG, resizeable_ARG,
-   resizable_ARG, test_ARG, uuid_ARG)
+   maxphysicalvolumes_ARG, monitor_ARG, partial_ARG, physicalextentsize_ARG,
+   resizeable_ARG, resizable_ARG, test_ARG, uuid_ARG)
 
 xx(vgck,
    "Check the consistency of volume group(s)",
@@ -632,7 +642,7 @@ xx(vgconvert,
    "\t[--labelsector sector] " "\n"
    "\t[-M|--metadatatype 1|2]" "\n"
    "\t[--metadatacopies #copies]" "\n"
-   "\t[--metadatasize MetadataSize[kKmMgGtT]]" "\n"
+   "\t[--metadatasize MetadataSize[kKmMgGtTpPeE]]" "\n"
    "\t[-t|--test] " "\n"
    "\t[-v|--verbose] " "\n"
    "\t[--version] " "\n"
@@ -647,13 +657,13 @@ xx(vgcreate,
    "\t[-A|--autobackup {y|n}] " "\n"
    "\t[--addtag Tag] " "\n"
    "\t[--alloc AllocationPolicy] " "\n"
-   "\t[-c|--clustered] " "\n"
+   "\t[-c|--clustered {y|n}] " "\n"
    "\t[-d|--debug]" "\n"
    "\t[-h|--help]" "\n"
    "\t[-l|--maxlogicalvolumes MaxLogicalVolumes]" "\n"
    "\t[-M|--metadatatype 1|2] " "\n"
    "\t[-p|--maxphysicalvolumes MaxPhysicalVolumes] " "\n"
-   "\t[-s|--physicalextentsize PhysicalExtentSize[kKmMgGtT]] " "\n"
+   "\t[-s|--physicalextentsize PhysicalExtentSize[kKmMgGtTpPeE]] " "\n"
    "\t[-t|--test] " "\n"
    "\t[-v|--verbose]" "\n"
    "\t[--version] " "\n"
@@ -819,6 +829,7 @@ xx(vgs,
    "\t[-O|--sort [+|-]key1[,[+|-]key2[,...]]]\n"
    "\t[-P|--partial] " "\n"
    "\t[--separator Separator]\n"
+   "\t[--trustcache]\n"
    "\t[--unbuffered]\n"
    "\t[--units hsbkmgtHKMGT]\n"
    "\t[-v|--verbose]\n"
@@ -827,7 +838,7 @@ xx(vgs,
 
    aligned_ARG, all_ARG, ignorelockingfailure_ARG, noheadings_ARG,
    nolocking_ARG, nosuffix_ARG, options_ARG, partial_ARG, separator_ARG,
-   sort_ARG, unbuffered_ARG, units_ARG)
+   sort_ARG, trustcache_ARG, unbuffered_ARG, units_ARG)
 
 xx(vgscan,
    "Search for all volume groups",

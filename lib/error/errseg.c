@@ -23,6 +23,7 @@
 #include "targets.h"
 #include "lvm-string.h"
 #include "activate.h"
+#include "str_list.h"
 
 static const char *_errseg_name(const struct lv_segment *seg)
 {
@@ -40,7 +41,7 @@ static int _errseg_merge_segments(struct lv_segment *seg1, struct lv_segment *se
 #ifdef DEVMAPPER_SUPPORT
 static int _errseg_add_target_line(struct dev_manager *dm __attribute((unused)),
 				struct dm_pool *mem __attribute((unused)),
-				struct config_tree *cft __attribute((unused)),
+				struct cmd_context *cmd __attribute((unused)),
 				void **target_state __attribute((unused)),
 				struct lv_segment *seg __attribute((unused)),
 				struct dm_tree_node *node, uint64_t len,
@@ -49,7 +50,7 @@ static int _errseg_add_target_line(struct dev_manager *dm __attribute((unused)),
 	return dm_tree_node_add_error_target(node, len);
 }
 
-static int _errseg_target_present(void)
+static int _errseg_target_present(const struct lv_segment *seg __attribute((unused)))
 {
 	static int _errseg_checked = 0;
 	static int _errseg_present = 0;
@@ -64,6 +65,18 @@ static int _errseg_target_present(void)
 }
 #endif
 
+static int _errseg_modules_needed(struct dm_pool *mem,
+				  const struct lv_segment *seg,
+				  struct list *modules)
+{
+	if (!str_list_add(mem, modules, "error")) {
+		log_error("error module string list allocation failed");
+		return 0;
+	}
+
+	return 1;
+}
+ 
 static void _errseg_destroy(const struct segment_type *segtype)
 {
 	dm_free((void *)segtype);
@@ -76,6 +89,7 @@ static struct segtype_handler _error_ops = {
 	.add_target_line = _errseg_add_target_line,
 	.target_present = _errseg_target_present,
 #endif
+	.modules_needed = _errseg_modules_needed,
 	.destroy = _errseg_destroy,
 };
 

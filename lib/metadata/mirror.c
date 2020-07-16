@@ -36,20 +36,20 @@ struct lv_segment *find_mirror_seg(struct lv_segment *seg)
 }
 
 /*
- * Ensure region size is compatible with volume size.
+ * Reduce the region size if necessary to ensure
+ * the volume size is a multiple of the region size.
  */
 uint32_t adjusted_mirror_region_size(uint32_t extent_size, uint32_t extents,
 				     uint32_t region_size)
 {
-	uint32_t region_max;
+	uint64_t region_max;
 
-	region_max = (1 << (ffs((int)extents) - 1)) * extent_size;
+	region_max = (1 << (ffs((int)extents) - 1)) * (uint64_t) extent_size;
 
-	if (region_max < region_size) {
-		region_size = region_max;
+	if (region_max < UINT32_MAX && region_size > region_max) {
+		region_size = (uint32_t) region_max;
 		log_print("Using reduced mirror region size of %" PRIu32
-			  " sectors", region_max);
-		return region_max;
+			  " sectors", region_size);
 	}
 
 	return region_size;
@@ -84,6 +84,7 @@ int remove_mirror_images(struct lv_segment *mirrored_seg, uint32_t num_mirrors,
 			 struct list *removable_pvs, int remove_log)
 {
 	uint32_t m;
+	uint32_t extents;
 	uint32_t s, s1;
 	struct logical_volume *sub_lv;
 	struct logical_volume *log_lv = NULL;
@@ -95,6 +96,7 @@ int remove_mirror_images(struct lv_segment *mirrored_seg, uint32_t num_mirrors,
 	struct pv_list *pvl;
 	uint32_t old_area_count = mirrored_seg->area_count;
 	uint32_t new_area_count = mirrored_seg->area_count;
+	struct segment_type *segtype;
 
 	log_very_verbose("Reducing mirror set from %" PRIu32 " to %"
 			 PRIu32 " image(s)%s.",
@@ -156,14 +158,21 @@ int remove_mirror_images(struct lv_segment *mirrored_seg, uint32_t num_mirrors,
 	/* If no more mirrors, remove mirror layer */
 	if (num_mirrors == 1) {
 		lv1 = seg_lv(mirrored_seg, 0);
+		extents = lv1->le_count;
 		_move_lv_segments(mirrored_seg->lv, lv1);
 		mirrored_seg->lv->status &= ~MIRRORED;
 		remove_log = 1;
+		/* Replace mirror with error segment */
+		segtype = get_segtype_from_string(mirrored_seg->lv->vg->cmd, "error");
+		if (!lv_add_virtual_segment(lv1, 0, extents, segtype))
+			return_0;
 	}
 
-	if (remove_log) {
+	if (remove_log && mirrored_seg->log_lv) {
 		log_lv = mirrored_seg->log_lv;
 		mirrored_seg->log_lv = NULL;
+		log_lv->status &= ~MIRROR_LOG;
+		log_lv->status |= VISIBLE_LV;
 	}
 
 	/*
@@ -171,8 +180,6 @@ int remove_mirror_images(struct lv_segment *mirrored_seg, uint32_t num_mirrors,
 	 * remove the LVs from the mirror set, commit that metadata
 	 * then deactivate and remove them fully.
 	 */
-
-	/* FIXME lv1 has no segments here so shouldn't be written to disk! */
 
 	if (!vg_write(mirrored_seg->lv->vg)) {
 		log_error("intermediate VG write failed.");
@@ -199,6 +206,12 @@ int remove_mirror_images(struct lv_segment *mirrored_seg, uint32_t num_mirrors,
 
 	/* Delete the 'orphan' LVs */
 	for (m = num_mirrors; m < old_area_count; m++) {
+		/* LV is now independent of the mirror so must acquire lock. */
+		if (!activate_lv(mirrored_seg->lv->vg->cmd, seg_lv(mirrored_seg, m))) {
+			stack;
+			return 0;
+		}
+
 		if (!deactivate_lv(mirrored_seg->lv->vg->cmd, seg_lv(mirrored_seg, m))) {
 			stack;
 			return 0;
@@ -211,6 +224,11 @@ int remove_mirror_images(struct lv_segment *mirrored_seg, uint32_t num_mirrors,
 	}
 
 	if (lv1) {
+		if (!activate_lv(mirrored_seg->lv->vg->cmd, lv1)) {
+			stack;
+			return 0;
+		}
+
 		if (!deactivate_lv(mirrored_seg->lv->vg->cmd, lv1)) {
 			stack;
 			return 0;
@@ -223,6 +241,11 @@ int remove_mirror_images(struct lv_segment *mirrored_seg, uint32_t num_mirrors,
 	}
 
 	if (log_lv) {
+		if (!activate_lv(mirrored_seg->lv->vg->cmd, log_lv)) {
+			stack;
+			return 0;
+		}
+
 		if (!deactivate_lv(mirrored_seg->lv->vg->cmd, log_lv)) {
 			stack;
 			return 0;
@@ -412,7 +435,7 @@ static int _create_layers_for_mirror(struct alloc_handle *ah,
 		return 0;
 	}
 
-	if (lvm_snprintf(img_name, len, "%s_mimage_%%d", lv->name) < 0) {
+	if (dm_snprintf(img_name, len, "%s_mimage_%%d", lv->name) < 0) {
 		log_error("img_name allocation failed. "
 			  "Remove new LV and retry.");
 		return 0;
@@ -544,7 +567,7 @@ int insert_pvmove_mirrors(struct cmd_context *cmd,
 	}
 
         if (activation() && segtype->ops->target_present &&
-            !segtype->ops->target_present()) {
+            !segtype->ops->target_present(NULL)) {
                 log_error("%s: Required device-mapper target(s) not "
                           "detected in your kernel", segtype->name);
                 return 0;

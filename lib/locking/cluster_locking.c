@@ -94,7 +94,7 @@ static int _open_local_sock(void)
 /* Send a request and return the status */
 static int _send_request(char *inbuf, int inlen, char **retbuf)
 {
-	char outbuf[PIPE_BUF];
+	char outbuf[PIPE_BUF] __attribute((aligned(8)));
 	struct clvm_header *outheader = (struct clvm_header *) outbuf;
 	int len;
 	int off;
@@ -195,8 +195,7 @@ static void _build_header(struct clvm_header *head, int cmd, const char *node,
 static int _cluster_request(char cmd, const char *node, void *data, int len,
 			   lvm_response_t ** response, int *num)
 {
-	char outbuf[sizeof(struct clvm_header) + len + strlen(node) + 1];
-	int *outptr;
+	char outbuf[sizeof(struct clvm_header) + len + strlen(node) + 1] __attribute((aligned(8)));
 	char *inptr;
 	char *retbuf = NULL;
 	int status;
@@ -236,17 +235,13 @@ static int _cluster_request(char cmd, const char *node, void *data, int len,
 	 * With an extra pair of INTs on the front to sanity
 	 * check the pointer when we are given it back to free
 	 */
-	outptr = dm_malloc(sizeof(lvm_response_t) * num_responses +
-			    sizeof(int) * 2);
-	if (!outptr) {
+	*response = dm_malloc(sizeof(lvm_response_t) * num_responses);
+	if (!*response) {
 		errno = ENOMEM;
 		status = 0;
 		goto out;
 	}
 
-	*response = (lvm_response_t *) (outptr + 2);
-	outptr[0] = LVM_SIGNATURE;
-	outptr[1] = num_responses;
 	rarray = *response;
 
 	/* Unpack the response into an lvm_response_t array */
@@ -256,7 +251,7 @@ static int _cluster_request(char cmd, const char *node, void *data, int len,
 		strcpy(rarray[i].node, inptr);
 		inptr += strlen(inptr) + 1;
 
-		rarray[i].status = *(int *) inptr;
+		memcpy(&rarray[i].status, inptr, sizeof(int));
 		inptr += sizeof(int);
 
 		rarray[i].response = dm_malloc(strlen(inptr) + 1);
@@ -265,7 +260,7 @@ static int _cluster_request(char cmd, const char *node, void *data, int len,
 			int j;
 			for (j = 0; j < i; j++)
 				dm_free(rarray[i].response);
-			free(outptr);
+			free(*response);
 			errno = ENOMEM;
 			status = -1;
 			goto out;
@@ -287,25 +282,15 @@ static int _cluster_request(char cmd, const char *node, void *data, int len,
 }
 
 /* Free reply array */
-static int _cluster_free_request(lvm_response_t * response)
+static int _cluster_free_request(lvm_response_t * response, int num)
 {
-	int *ptr = (int *) response - 2;
 	int i;
-	int num;
-
-	/* Check it's ours to free */
-	if (response == NULL || *ptr != LVM_SIGNATURE) {
-		errno = EINVAL;
-		return 0;
-	}
-
-	num = ptr[1];
 
 	for (i = 0; i < num; i++) {
 		dm_free(response[i].response);
 	}
 
-	dm_free(ptr);
+	dm_free(response);
 
 	return 1;
 }
@@ -336,8 +321,8 @@ static int _lock_for_cluster(unsigned char cmd, unsigned int flags, char *name)
 	if (mirror_in_sync())
 		args[1] |= LCK_MIRROR_NOSYNC_MODE;
 
-	if (dmeventd_register_mode())
-		args[1] |= LCK_DMEVENTD_REGISTER_MODE;
+	if (dmeventd_monitor_mode())
+		args[1] |= LCK_DMEVENTD_MONITOR_MODE;
 
 	/*
 	 * VG locks are just that: locks, and have no side effects
@@ -374,7 +359,7 @@ static int _lock_for_cluster(unsigned char cmd, unsigned int flags, char *name)
 	}
 
 	saved_errno = errno;
-	_cluster_free_request(response);
+	_cluster_free_request(response, num_responses);
 	errno = saved_errno;
 
 	return status;
@@ -398,9 +383,9 @@ int lock_resource(struct cmd_context *cmd, const char *resource, int flags)
 	case LCK_VG:
 		/* If the VG name is empty then lock the unused PVs */
 		if (!*resource)
-			lvm_snprintf(lockname, sizeof(lockname), "P_orphans");
+			dm_snprintf(lockname, sizeof(lockname), "P_orphans");
 		else
-			lvm_snprintf(lockname, sizeof(lockname), "V_%s",
+			dm_snprintf(lockname, sizeof(lockname), "V_%s",
 				     resource);
 
 		cluster_cmd = CLVMD_CMD_LOCK_VG;
@@ -452,7 +437,7 @@ void reset_locking(void)
 }
 
 #ifdef CLUSTER_LOCKING_INTERNAL
-int init_cluster_locking(struct locking_type *locking, struct config_tree *cft)
+int init_cluster_locking(struct locking_type *locking, struct cmd_context *cmd)
 {
 	locking->lock_resource = _lock_resource;
 	locking->fin_locking = _locking_end;

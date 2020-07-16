@@ -59,15 +59,13 @@
 #  include <malloc.h>
 #endif
 
-static FILE *_log;
-
 static int _get_env_vars(struct cmd_context *cmd)
 {
 	const char *e;
 
 	/* Set to "" to avoid using any system directory */
 	if ((e = getenv("LVM_SYSTEM_DIR"))) {
-		if (lvm_snprintf(cmd->sys_dir, sizeof(cmd->sys_dir),
+		if (dm_snprintf(cmd->sys_dir, sizeof(cmd->sys_dir),
 				 "%s", e) < 0) {
 			log_error("LVM_SYSTEM_DIR environment variable "
 				  "is too long.");
@@ -84,10 +82,11 @@ static void _init_logging(struct cmd_context *cmd)
 	time_t t;
 
 	const char *log_file;
+	char timebuf[26];
 
 	/* Syslog */
 	cmd->default_settings.syslog =
-	    find_config_int(cmd->cft->root, "log/syslog", DEFAULT_SYSLOG);
+	    find_config_tree_int(cmd, "log/syslog", DEFAULT_SYSLOG);
 	if (cmd->default_settings.syslog != 1)
 		fin_syslog();
 
@@ -96,37 +95,37 @@ static void _init_logging(struct cmd_context *cmd)
 
 	/* Debug level for log file output */
 	cmd->default_settings.debug =
-	    find_config_int(cmd->cft->root, "log/level", DEFAULT_LOGLEVEL);
+	    find_config_tree_int(cmd, "log/level", DEFAULT_LOGLEVEL);
 	init_debug(cmd->default_settings.debug);
 
 	/* Verbose level for tty output */
 	cmd->default_settings.verbose =
-	    find_config_int(cmd->cft->root, "log/verbose", DEFAULT_VERBOSE);
+	    find_config_tree_int(cmd, "log/verbose", DEFAULT_VERBOSE);
 	init_verbose(cmd->default_settings.verbose + VERBOSE_BASE_LEVEL);
 
 	/* Log message formatting */
-	init_indent(find_config_int(cmd->cft->root, "log/indent",
+	init_indent(find_config_tree_int(cmd, "log/indent",
 				    DEFAULT_INDENT));
 
-	cmd->default_settings.msg_prefix = find_config_str(cmd->cft->root,
+	cmd->default_settings.msg_prefix = find_config_tree_str(cmd,
 							   "log/prefix",
 							   DEFAULT_MSG_PREFIX);
 	init_msg_prefix(cmd->default_settings.msg_prefix);
 
-	cmd->default_settings.cmd_name = find_config_int(cmd->cft->root,
+	cmd->default_settings.cmd_name = find_config_tree_int(cmd,
 							 "log/command_names",
 							 DEFAULT_CMD_NAME);
 	init_cmd_name(cmd->default_settings.cmd_name);
 
 	/* Test mode */
 	cmd->default_settings.test =
-	    find_config_int(cmd->cft->root, "global/test", 0);
+	    find_config_tree_int(cmd, "global/test", 0);
 
 	/* Settings for logging to file */
-	if (find_config_int(cmd->cft->root, "log/overwrite", DEFAULT_OVERWRITE))
+	if (find_config_tree_int(cmd, "log/overwrite", DEFAULT_OVERWRITE))
 		append = 0;
 
-	log_file = find_config_str(cmd->cft->root, "log/file", 0);
+	log_file = find_config_tree_str(cmd, "log/file", 0);
 
 	if (log_file) {
 		release_log_memory();
@@ -134,15 +133,17 @@ static void _init_logging(struct cmd_context *cmd)
 		init_log_file(log_file, append);
 	}
 
-	log_file = find_config_str(cmd->cft->root, "log/activate_file", 0);
+	log_file = find_config_tree_str(cmd, "log/activate_file", 0);
 	if (log_file)
 		init_log_direct(log_file, append);
 
-	init_log_while_suspended(find_config_int(cmd->cft->root,
+	init_log_while_suspended(find_config_tree_int(cmd,
 						 "log/activation", 0));
 
 	t = time(NULL);
-	log_verbose("Logging initialised at %s", ctime(&t));
+	ctime_r(&t, &timebuf[0]);
+	timebuf[24] = '\0';
+	log_verbose("Logging initialised at %s", timebuf);
 
 	/* Tell device-mapper about our logging */
 #ifdef DEVMAPPER_SUPPORT
@@ -155,7 +156,7 @@ static int _process_config(struct cmd_context *cmd)
 	mode_t old_umask;
 
 	/* umask */
-	cmd->default_settings.umask = find_config_int(cmd->cft->root,
+	cmd->default_settings.umask = find_config_tree_int(cmd,
 						      "global/umask",
 						      DEFAULT_UMASK);
 
@@ -164,8 +165,8 @@ static int _process_config(struct cmd_context *cmd)
 		log_verbose("Set umask to %04o", cmd->default_settings.umask);
 
 	/* dev dir */
-	if (lvm_snprintf(cmd->dev_dir, sizeof(cmd->dev_dir), "%s/",
-			 find_config_str(cmd->cft->root, "devices/dir",
+	if (dm_snprintf(cmd->dev_dir, sizeof(cmd->dev_dir), "%s/",
+			 find_config_tree_str(cmd, "devices/dir",
 					 DEFAULT_DEV_DIR)) < 0) {
 		log_error("Device directory given in config file too long");
 		return 0;
@@ -175,8 +176,8 @@ static int _process_config(struct cmd_context *cmd)
 #endif
 
 	/* proc dir */
-	if (lvm_snprintf(cmd->proc_dir, sizeof(cmd->proc_dir), "%s",
-			 find_config_str(cmd->cft->root, "global/proc",
+	if (dm_snprintf(cmd->proc_dir, sizeof(cmd->proc_dir), "%s",
+			 find_config_tree_str(cmd, "global/proc",
 					 DEFAULT_PROC_DIR)) < 0) {
 		log_error("Device directory given in config file too long");
 		return 0;
@@ -189,17 +190,17 @@ static int _process_config(struct cmd_context *cmd)
 	}
 
 	/* activation? */
-	cmd->default_settings.activation = find_config_int(cmd->cft->root,
+	cmd->default_settings.activation = find_config_tree_int(cmd,
 							   "global/activation",
 							   DEFAULT_ACTIVATION);
 	set_activation(cmd->default_settings.activation);
 
-	cmd->default_settings.suffix = find_config_int(cmd->cft->root,
+	cmd->default_settings.suffix = find_config_tree_int(cmd,
 						       "global/suffix",
 						       DEFAULT_SUFFIX);
 
 	if (!(cmd->default_settings.unit_factor =
-	      units_to_bytes(find_config_str(cmd->cft->root,
+	      units_to_bytes(find_config_tree_str(cmd,
 					     "global/units",
 					     DEFAULT_UNITS),
 			     &cmd->default_settings.unit_type))) {
@@ -316,7 +317,7 @@ static int _load_config_file(struct cmd_context *cmd, const char *tag)
 	if (*tag)
 		filler = "_";
 
-	if (lvm_snprintf(config_file, sizeof(config_file), "%s/lvm%s%s.conf",
+	if (dm_snprintf(config_file, sizeof(config_file), "%s/lvm%s%s.conf",
 			 cmd->sys_dir, filler, tag) < 0) {
 		log_error("LVM_SYSTEM_DIR or tag was too long");
 		return 0;
@@ -327,7 +328,7 @@ static int _load_config_file(struct cmd_context *cmd, const char *tag)
 		return 0;
 	}
 
-	if (!(cfl->cft = create_config_tree(config_file))) {
+	if (!(cfl->cft = create_config_tree(config_file, 0))) {
 		log_error("config_tree allocation failed");
 		return 0;
 	}
@@ -367,7 +368,7 @@ static int _init_lvm_conf(struct cmd_context *cmd)
 {
 	/* No config file if LVM_SYSTEM_DIR is empty */
 	if (!*cmd->sys_dir) {
-		if (!(cmd->cft = create_config_tree(NULL))) {
+		if (!(cmd->cft = create_config_tree(NULL, 0))) {
 			log_error("Failed to create config tree");
 			return 0;
 		}
@@ -405,7 +406,7 @@ static int _merge_config_files(struct cmd_context *cmd)
 
 	/* Replace temporary duplicate copy of lvm.conf */
 	if (cmd->cft->root) {
-		if (!(cmd->cft = create_config_tree(NULL))) {
+		if (!(cmd->cft = create_config_tree(NULL, 0))) {
 			log_error("Failed to create config tree");
 			return 0;
 		}
@@ -469,7 +470,7 @@ static int _init_dev_cache(struct cmd_context *cmd)
 		return 0;
 	}
 
-	if (!(cn = find_config_node(cmd->cft->root, "devices/scan"))) {
+	if (!(cn = find_config_tree_node(cmd, "devices/scan"))) {
 		if (!dev_cache_add_dir("/dev")) {
 			log_error("Failed to add /dev to internal "
 				  "device cache");
@@ -494,7 +495,7 @@ static int _init_dev_cache(struct cmd_context *cmd)
 		}
 	}
 
-	if (!(cn = find_config_node(cmd->cft->root, "devices/loopfiles")))
+	if (!(cn = find_config_tree_node(cmd, "devices/loopfiles")))
 		return 1;
 
 	for (cv = cn->v; cv; cv = cv->next) {
@@ -536,14 +537,14 @@ static struct dev_filter *_init_filter_components(struct cmd_context *cmd)
 	 * Listed first because it's very efficient at eliminating 
 	 * unavailable devices.
 	 */
-	if (find_config_bool(cmd->cft->root, "devices/sysfs_scan",
+	if (find_config_tree_bool(cmd, "devices/sysfs_scan",
 			     DEFAULT_SYSFS_SCAN)) {
 		if ((filters[nr_filt] = sysfs_filter_create(cmd->proc_dir)))
 			nr_filt++;
 	}
 
 	/* regex filter. Optional. */
-	if (!(cn = find_config_node(cmd->cft->root, "devices/filter")))
+	if (!(cn = find_config_tree_node(cmd, "devices/filter")))
 		log_very_verbose("devices/filter not found in config file: "
 				 "no regex filter installed");
 
@@ -553,14 +554,14 @@ static struct dev_filter *_init_filter_components(struct cmd_context *cmd)
 	}
 
 	/* device type filter. Required. */
-	cn = find_config_node(cmd->cft->root, "devices/types");
+	cn = find_config_tree_node(cmd, "devices/types");
 	if (!(filters[nr_filt++] = lvm_type_filter_create(cmd->proc_dir, cn))) {
 		log_error("Failed to create lvm type filter");
 		return NULL;
 	}
 
 	/* md component filter. Optional, non-critical. */
-	if (find_config_bool(cmd->cft->root, "devices/md_component_detection",
+	if (find_config_tree_bool(cmd, "devices/md_component_detection",
 			     DEFAULT_MD_COMPONENT_DETECTION)) {
 		init_md_filtering(1);
 		if ((filters[nr_filt] = md_filter_create()))
@@ -572,9 +573,9 @@ static struct dev_filter *_init_filter_components(struct cmd_context *cmd)
 	    filters[0] : composite_filter_create(nr_filt, filters);
 }
 
-static int _init_filters(struct cmd_context *cmd)
+static int _init_filters(struct cmd_context *cmd, unsigned load_persistent_cache)
 {
-	const char *dev_cache;
+	const char *dev_cache = NULL, *cache_dir, *cache_file_prefix;
 	struct dev_filter *f3, *f4;
 	struct stat st;
 	char cache_file[PATH_MAX];
@@ -584,30 +585,54 @@ static int _init_filters(struct cmd_context *cmd)
 	if (!(f3 = _init_filter_components(cmd)))
 		return 0;
 
-	if (lvm_snprintf(cache_file, sizeof(cache_file),
-			 "%s/.cache", cmd->sys_dir) < 0) {
-		log_error("Persistent cache filename too long ('%s/.cache').",
-			  cmd->sys_dir);
+	init_ignore_suspended_devices(find_config_tree_int(cmd,
+	    "devices/ignore_suspended_devices", DEFAULT_IGNORE_SUSPENDED_DEVICES));
+
+	/*
+	 * If 'cache_dir' or 'cache_file_prefix' is set, ignore 'cache'.
+	 */
+	cache_dir = find_config_tree_str(cmd, "devices/cache_dir", NULL);
+	cache_file_prefix = find_config_tree_str(cmd, "devices/cache_file_prefix", NULL);
+
+	if (cache_dir || cache_file_prefix) {
+		if (dm_snprintf(cache_file, sizeof(cache_file),
+		    "%s%s%s/%s.cache",
+		    cache_dir ? "" : cmd->sys_dir,
+		    cache_dir ? "" : "/",
+		    cache_dir ? : DEFAULT_CACHE_SUBDIR,
+		    cache_file_prefix ? : DEFAULT_CACHE_FILE_PREFIX) < 0) {
+			log_error("Persistent cache filename too long.");
+			return 0;
+		}
+	} else if (!(dev_cache = find_config_tree_str(cmd, "devices/cache", NULL)) &&
+		   (dm_snprintf(cache_file, sizeof(cache_file),
+				"%s/%s/%s.cache",
+				cmd->sys_dir, DEFAULT_CACHE_SUBDIR,
+				DEFAULT_CACHE_FILE_PREFIX) < 0)) {
+		log_error("Persistent cache filename too long.");
 		return 0;
 	}
 
-	dev_cache = find_config_str(cmd->cft->root, "devices/cache",
-				    cache_file);
-	if (!(f4 = persistent_filter_create(f3, dev_cache))) {
+	if (!(f4 = persistent_filter_create(f3, dev_cache ? : cache_file))) {
 		log_error("Failed to create persistent device filter");
 		return 0;
 	}
 
 	/* Should we ever dump persistent filter state? */
-	if (find_config_int(cmd->cft->root, "devices/write_cache_state", 1))
+	if (find_config_tree_int(cmd, "devices/write_cache_state", 1))
 		cmd->dump_filter = 1;
 
 	if (!*cmd->sys_dir)
 		cmd->dump_filter = 0;
 
-	if (!stat(dev_cache, &st) &&
-	    (st.st_mtime > config_file_timestamp(cmd->cft)) &&
-	    !persistent_filter_load(f4))
+	/*
+	 * Only load persistent filter device cache on startup if it is newer
+	 * than the config file and this is not a long-lived process.
+	 */
+	if (load_persistent_cache && !cmd->is_long_lived &&
+	    !stat(dev_cache, &st) &&
+	    (st.st_ctime > config_file_timestamp(cmd->cft)) &&
+	    !persistent_filter_load(f4, NULL))
 		log_verbose("Failed to load existing device cache from %s",
 			    dev_cache);
 
@@ -643,8 +668,9 @@ static int _init_formats(struct cmd_context *cmd)
 #endif
 
 #ifdef HAVE_LIBDL
-	/* Load any formats in shared libs */
-	if ((cn = find_config_node(cmd->cft->root, "global/format_libraries"))) {
+	/* Load any formats in shared libs if not static */
+	if (!cmd->is_static &&
+	    (cn = find_config_tree_node(cmd, "global/format_libraries"))) {
 
 		struct config_value *cv;
 		struct format_type *(*init_format_fn) (struct cmd_context *);
@@ -656,7 +682,7 @@ static int _init_formats(struct cmd_context *cmd)
 					  "global/format_libraries");
 				return 0;
 			}
-			if (!(lib = load_shared_library(cmd->cft, cv->v.str,
+			if (!(lib = load_shared_library(cmd, cv->v.str,
 							"format", 0))) {
 				stack;
 				return 0;
@@ -684,7 +710,7 @@ static int _init_formats(struct cmd_context *cmd)
 
 	cmd->fmt_backup = fmt;
 
-	format = find_config_str(cmd->cft->root, "global/format",
+	format = find_config_tree_str(cmd, "global/format",
 				 DEFAULT_FORMAT);
 
 	list_iterate_items(fmt, &cmd->formats) {
@@ -737,13 +763,13 @@ static int _init_segtypes(struct cmd_context *cmd)
 #endif
 
 #ifdef HAVE_LIBDL
-	/* Load any formats in shared libs */
-	if ((cn = find_config_node(cmd->cft->root, "global/segment_libraries"))) {
+	/* Load any formats in shared libs unless static */
+	if (!cmd->is_static &&
+	    (cn = find_config_tree_node(cmd, "global/segment_libraries"))) {
 
 		struct config_value *cv;
 		struct segment_type *(*init_segtype_fn) (struct cmd_context *);
 		void *lib;
-		struct list *sgtl, *tmp;
 		struct segment_type *segtype2;
 
 		for (cv = cn->v; cv; cv = cv->next) {
@@ -752,7 +778,7 @@ static int _init_segtypes(struct cmd_context *cmd)
 					  "global/segment_libraries");
 				return 0;
 			}
-			if (!(lib = load_shared_library(cmd->cft, cv->v.str,
+			if (!(lib = load_shared_library(cmd, cv->v.str,
 							"segment type", 0))) {
 				stack;
 				return 0;
@@ -770,18 +796,16 @@ static int _init_segtypes(struct cmd_context *cmd)
 			segtype->library = lib;
 			list_add(&cmd->segtypes, &segtype->list);
 
-			list_iterate_safe(sgtl, tmp, &cmd->segtypes) {
-				segtype2 = list_item(sgtl, struct segment_type);
-				if (!strcmp(segtype2->name, segtype->name)) {
-					log_error("Duplicate segment type %s: "
-						  "unloading shared library %s",
-						  segtype->name, cv->v.str);
-					list_del(&segtype->list);
-					segtype->ops->destroy(segtype);
-					dlclose(lib);
-					break;
-				}
-
+			list_iterate_items(segtype2, &cmd->segtypes) {
+				if ((segtype == segtype2) ||
+				     strcmp(segtype2->name, segtype->name))
+					continue;
+				log_error("Duplicate segment type %s: "
+					  "unloading shared library %s",
+					  segtype->name, cv->v.str);
+				list_del(&segtype->list);
+				segtype->ops->destroy(segtype);
+				dlclose(lib);
 			}
 		}
 	}
@@ -827,16 +851,16 @@ static int _init_backup(struct cmd_context *cmd)
 
 	/* set up archiving */
 	cmd->default_settings.archive =
-	    find_config_bool(cmd->cft->root, "backup/archive",
+	    find_config_tree_bool(cmd, "backup/archive",
 			     DEFAULT_ARCHIVE_ENABLED);
 
-	days = (uint32_t) find_config_int(cmd->cft->root, "backup/retain_days",
+	days = (uint32_t) find_config_tree_int(cmd, "backup/retain_days",
 					  DEFAULT_ARCHIVE_DAYS);
 
-	min = (uint32_t) find_config_int(cmd->cft->root, "backup/retain_min",
+	min = (uint32_t) find_config_tree_int(cmd, "backup/retain_min",
 					 DEFAULT_ARCHIVE_NUMBER);
 
-	if (lvm_snprintf
+	if (dm_snprintf
 	    (default_dir, sizeof(default_dir), "%s/%s", cmd->sys_dir,
 	     DEFAULT_ARCHIVE_SUBDIR) == -1) {
 		log_err("Couldn't create default archive path '%s/%s'.",
@@ -844,7 +868,7 @@ static int _init_backup(struct cmd_context *cmd)
 		return 0;
 	}
 
-	dir = find_config_str(cmd->cft->root, "backup/archive_dir",
+	dir = find_config_tree_str(cmd, "backup/archive_dir",
 			      default_dir);
 
 	if (!archive_init(cmd, dir, days, min)) {
@@ -854,10 +878,10 @@ static int _init_backup(struct cmd_context *cmd)
 
 	/* set up the backup */
 	cmd->default_settings.backup =
-	    find_config_bool(cmd->cft->root, "backup/backup",
+	    find_config_tree_bool(cmd, "backup/backup",
 			     DEFAULT_BACKUP_ENABLED);
 
-	if (lvm_snprintf
+	if (dm_snprintf
 	    (default_dir, sizeof(default_dir), "%s/%s", cmd->sys_dir,
 	     DEFAULT_BACKUP_SUBDIR) == -1) {
 		log_err("Couldn't create default backup path '%s/%s'.",
@@ -865,7 +889,7 @@ static int _init_backup(struct cmd_context *cmd)
 		return 0;
 	}
 
-	dir = find_config_str(cmd->cft->root, "backup/backup_dir", default_dir);
+	dir = find_config_tree_str(cmd, "backup/backup_dir", default_dir);
 
 	if (!backup_init(cmd, dir)) {
 		log_debug("backup_init failed.");
@@ -876,7 +900,8 @@ static int _init_backup(struct cmd_context *cmd)
 }
 
 /* Entry point */
-struct cmd_context *create_toolcontext(struct arg *the_args)
+struct cmd_context *create_toolcontext(struct arg *the_args, unsigned is_static,
+				       unsigned is_long_lived)
 {
 	struct cmd_context *cmd;
 
@@ -899,6 +924,8 @@ struct cmd_context *create_toolcontext(struct arg *the_args)
 	}
 	memset(cmd, 0, sizeof(*cmd));
 	cmd->args = the_args;
+	cmd->is_static = is_static;
+	cmd->is_long_lived = is_long_lived;
 	cmd->hosttags = 0;
 	list_init(&cmd->formats);
 	list_init(&cmd->segtypes);
@@ -921,7 +948,7 @@ struct cmd_context *create_toolcontext(struct arg *the_args)
 
 	if (!(cmd->libmem = dm_pool_create("library", 4 * 1024))) {
 		log_error("Library memory pool creation failed");
-		return 0;
+		goto error;
 	}
 
 	if (!_init_lvm_conf(cmd))
@@ -947,7 +974,7 @@ struct cmd_context *create_toolcontext(struct arg *the_args)
 	if (!_init_dev_cache(cmd))
 		goto error;
 
-	if (!_init_filters(cmd))
+	if (!_init_filters(cmd, 1))
 		goto error;
 
 	if (!(cmd->mem = dm_pool_create("command", 4 * 1024))) {
@@ -1016,12 +1043,12 @@ int refresh_toolcontext(struct cmd_context *cmd)
 {
 	log_verbose("Reloading config files");
 
-	if (cmd->config_valid) {
-		if (cmd->dump_filter)
-			persistent_filter_dump(cmd->filter);
-	}
+	/*
+	 * Don't update the persistent filter cache as we will
+	 * perform a full rescan.
+	 */
 
-	activation_exit();
+	activation_release();
 	lvmcache_destroy();
 	label_exit();
 	_destroy_segtypes(&cmd->segtypes);
@@ -1058,7 +1085,7 @@ int refresh_toolcontext(struct cmd_context *cmd)
 	if (!_init_dev_cache(cmd))
 		return 0;
 
-	if (!_init_filters(cmd))
+	if (!_init_filters(cmd, 0))
 		return 0;
 
 	if (!_init_formats(cmd))
@@ -1066,6 +1093,13 @@ int refresh_toolcontext(struct cmd_context *cmd)
 
 	if (!_init_segtypes(cmd))
 		return 0;
+
+	/*
+	 * If we are a long-lived process, write out the updated persistent
+	 * device cache for the benefit of short-lived processes.
+	 */
+	if (cmd->is_long_lived && cmd->dump_filter)
+		persistent_filter_dump(cmd->filter);
 
 	cmd->config_valid = 1;
 	return 1;
@@ -1094,8 +1128,4 @@ void destroy_toolcontext(struct cmd_context *cmd)
 	activation_exit();
 	fin_log();
 	fin_syslog();
-
-	if (_log)
-		fclose(_log);
-
 }

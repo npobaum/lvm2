@@ -25,6 +25,7 @@
 #include "targets.h"
 #include "config.h"
 #include "filter.h"
+#include "activate.h"
 
 #include <limits.h>
 #include <dirent.h>
@@ -37,6 +38,7 @@ typedef enum {
 	ACTIVATE,
 	DEACTIVATE,
 	SUSPEND,
+	SUSPEND_WITH_LOCKFS,
 	CLEAN
 } action_t;
 
@@ -116,12 +118,10 @@ static struct dm_task *_setup_task(const char *name, const char *uuid,
 }
 
 static int _info_run(const char *name, const char *dlid, struct dm_info *info,
-		     int mknodes, int with_open_count, struct dm_pool *mem,
-		     char **uuid_out)
+		     int mknodes, int with_open_count)
 {
 	int r = 0;
 	struct dm_task *dmt;
-	const char *u;
 	int dmtask;
 
 	dmtask = mknodes ? DM_DEVICE_MKNODES : DM_DEVICE_INFO;
@@ -141,11 +141,58 @@ static int _info_run(const char *name, const char *dlid, struct dm_info *info,
 	if (!dm_task_get_info(dmt, info))
 		goto_out;
 
-	if (info->exists && uuid_out) {
-		if (!(u = dm_task_get_uuid(dmt)))
-			goto_out;
-		*uuid_out = dm_pool_strdup(mem, u);
+	r = 1;
+
+      out:
+	dm_task_destroy(dmt);
+	return r;
+}
+
+int device_is_usable(dev_t dev)
+{
+	struct dm_task *dmt;
+	struct dm_info info;
+	const char *name;
+        uint64_t start, length;
+        char *target_type = NULL;
+        char *params;
+	void *next = NULL;
+	int r = 0;
+
+	if (!(dmt = dm_task_create(DM_DEVICE_STATUS))) {
+		log_error("Failed to allocate dm_task struct to check dev status");
+		return 0;
 	}
+
+	if (!dm_task_set_major(dmt, MAJOR(dev)) || !dm_task_set_minor(dmt, MINOR(dev)))
+		goto_out;
+
+	if (!dm_task_run(dmt)) {
+		log_error("Failed to get state of mapped device");
+		goto out;
+	}
+
+	if (!dm_task_get_info(dmt, &info))
+		goto_out;
+
+	if (!info.exists || info.suspended)
+		goto out;
+
+	name = dm_task_get_name(dmt);
+
+	/* FIXME Also check for mirror block_on_error and mpath no paths */
+	/* For now, we exclude all mirrors */
+
+        do {
+                next = dm_get_next_target(dmt, next, &start, &length,
+                                          &target_type, &params);
+                /* Skip if target type doesn't match */
+                if (!strcmp(target_type, "mirror"))
+			goto out;
+        } while (next);
+
+	/* FIXME Also check dependencies? */
+
 	r = 1;
 
       out:
@@ -154,23 +201,20 @@ static int _info_run(const char *name, const char *dlid, struct dm_info *info,
 }
 
 static int _info(const char *name, const char *dlid, int mknodes,
-		 int with_open_count, struct dm_info *info,
-		 struct dm_pool *mem, char **uuid_out)
+		 int with_open_count, struct dm_info *info)
 {
 	if (!mknodes && dlid && *dlid) {
-		if (_info_run(NULL, dlid, info, 0, with_open_count, mem,
-			      uuid_out) &&
+		if (_info_run(NULL, dlid, info, 0, with_open_count) &&
 	    	    info->exists)
 			return 1;
 		else if (_info_run(NULL, dlid + sizeof(UUID_PREFIX) - 1, info,
-				   0, with_open_count, mem, uuid_out) &&
+				   0, with_open_count) &&
 			 info->exists)
 			return 1;
 	}
 
 	if (name)
-		return _info_run(name, NULL, info, mknodes, with_open_count,
-				 mem, uuid_out);
+		return _info_run(name, NULL, info, mknodes, with_open_count);
 
 	return 0;
 }
@@ -186,8 +230,7 @@ int dev_manager_info(struct dm_pool *mem, const char *name,
 		return 0;
 	}
 
-	return _info(name, dlid, with_mknodes, with_open_count, info,
-		     NULL, NULL);
+	return _info(name, dlid, with_mknodes, with_open_count, info);
 }
 
 /* FIXME Interface must cope with multiple targets */
@@ -329,7 +372,7 @@ static int _percent_run(struct dev_manager *dm, const char *name,
 
 		if (segtype->ops->target_percent &&
 		    !segtype->ops->target_percent(&dm->target_state, dm->mem,
-						  dm->cmd->cft, seg, params,
+						  dm->cmd, seg, params,
 						  &total_numerator,
 						  &total_denominator,
 						  percent))
@@ -401,7 +444,7 @@ struct dev_manager *dev_manager_create(struct cmd_context *cmd,
 	dm->mem = mem;
 
 	if (!stripe_filler) {
-		stripe_filler = find_config_str(cmd->cft->root,
+		stripe_filler = find_config_tree_str(cmd,
 						"activation/missing_stripe_filler",
 						DEFAULT_STRIPE_FILLER);
 	}
@@ -424,6 +467,11 @@ struct dev_manager *dev_manager_create(struct cmd_context *cmd,
 void dev_manager_destroy(struct dev_manager *dm)
 {
 	dm_pool_destroy(dm->mem);
+}
+
+void dev_manager_release(void)
+{
+	dm_lib_release();
 }
 
 void dev_manager_exit(void)
@@ -587,7 +635,7 @@ static int _add_dev_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 		return_0;
 
         log_debug("Getting device info for %s [%s]", name, dlid);
-        if (!_info(name, dlid, 0, 1, &info, dm->mem, NULL)) {
+        if (!_info(name, dlid, 0, 1, &info)) {
                 log_error("Failed to get info for %s [%s].", name, dlid);
                 return 0;
         }
@@ -758,7 +806,7 @@ static int _add_target_to_dtree(struct dev_manager *dm,
 		return 0;
 	}
 
-	return seg->segtype->ops->add_target_line(dm, dm->mem, dm->cmd->cft,
+	return seg->segtype->ops->add_target_line(dm, dm->mem, dm->cmd,
 						  &dm->target_state, seg,
 						  dnode,
 						  extent_size * seg->len,
@@ -776,12 +824,19 @@ static int _add_segment_to_dtree(struct dev_manager *dm,
 {
 	uint32_t s;
 	struct list *snh;
+	struct lv_segment *seg_present;
 
 	/* Ensure required device-mapper targets are loaded */
-	if (seg->segtype->ops->target_present &&
-	    !seg->segtype->ops->target_present()) {
+	seg_present = find_cow(seg->lv) ? : seg;
+
+	log_debug("Checking kernel supports %s segment type for %s%s%s",
+		  seg_present->segtype->name, seg->lv->name,
+		  layer ? "-" : "", layer ? : "");
+
+	if (seg_present->segtype->ops->target_present &&
+	    !seg_present->segtype->ops->target_present(seg_present)) {
 		log_error("Can't expand LV %s: %s target support missing "
-			  "from kernel?", seg->lv->name, seg->segtype->name);
+			  "from kernel?", seg->lv->name, seg_present->segtype->name);
 		return 0;
 	}
 
@@ -861,8 +916,8 @@ static int _add_new_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 	 * Major/minor settings only apply to the visible layer.
 	 */
 	if (!(dnode = dm_tree_add_new_dev(dtree, name, dlid,
-					     layer ? (uint32_t) lv->major : UINT32_C(0),
-					     layer ? (uint32_t) lv->minor : UINT32_C(0),
+					     layer ? UINT32_C(0) : (uint32_t) lv->major,
+					     layer ? UINT32_C(0) : (uint32_t) lv->minor,
 					     _read_only_lv(lv),
 					     (lv->vg->status & PRECOMMITTED) ? 1 : 0,
 					     lvlayer)))
@@ -906,7 +961,7 @@ static int _create_lv_symlinks(struct dev_manager *dm, struct dm_tree_node *root
 		name = dm_tree_node_get_name(child);
 
 		if (name && lvlayer->old_name && *lvlayer->old_name && strcmp(name, lvlayer->old_name)) {
-	        	if (!split_dm_name(dm->mem, lvlayer->old_name, &vgname, &lvname, &layer)) {
+	        	if (!dm_split_lvm_name(dm->mem, lvlayer->old_name, &vgname, &lvname, &layer)) {
                 		log_error("_create_lv_symlinks: Couldn't split up old device name %s", lvlayer->old_name);
                 		return 0;
         		}
@@ -932,7 +987,7 @@ static int _clean_tree(struct dev_manager *dm, struct dm_tree_node *root)
 		if (!(uuid = dm_tree_node_get_uuid(child)))
 			continue;
 
-        	if (!split_dm_name(dm->mem, name, &vgname, &lvname, &layer)) {
+        	if (!dm_split_lvm_name(dm->mem, name, &vgname, &lvname, &layer)) {
                 	log_error("_clean_tree: Couldn't split up device name %s.", name);
                 	return 0;
         	}
@@ -979,8 +1034,10 @@ static int _tree_action(struct dev_manager *dm, struct logical_volume *lv, actio
 			goto_out;
 		break;
 	case SUSPEND:
-		if (!lv_is_origin(lv) && !lv_is_cow(lv))
-			dm_tree_skip_lockfs(root);
+		dm_tree_skip_lockfs(root);
+		if ((lv->status & MIRRORED) && !(lv->status & PVMOVE))
+			dm_tree_use_no_flush_suspend(root);
+	case SUSPEND_WITH_LOCKFS:
 		if (!dm_tree_suspend_children(root, dlid, ID_LEN + sizeof(UUID_PREFIX) - 1))
 			goto_out;
 		break;
@@ -1044,9 +1101,10 @@ int dev_manager_deactivate(struct dev_manager *dm, struct logical_volume *lv)
 	return r;
 }
 
-int dev_manager_suspend(struct dev_manager *dm, struct logical_volume *lv)
+int dev_manager_suspend(struct dev_manager *dm, struct logical_volume *lv,
+			int lockfs)
 {
-	return _tree_action(dm, lv, SUSPEND);
+	return _tree_action(dm, lv, lockfs ? SUSPEND_WITH_LOCKFS : SUSPEND);
 }
 
 /*
@@ -1058,7 +1116,7 @@ int dev_manager_device_uses_vg(struct device *dev,
 {
 	struct dm_tree *dtree;
 	struct dm_tree_node *root;
-	char dlid[sizeof(UUID_PREFIX) + sizeof(struct id) - 1];
+	char dlid[sizeof(UUID_PREFIX) + sizeof(struct id) - 1] __attribute((aligned(8)));
 	int r = 1;
 
 	if (!(dtree = dm_tree_create())) {

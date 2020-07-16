@@ -41,6 +41,13 @@ static int _vgmerge_single(struct cmd_context *cmd, const char *vg_name_to,
 		return ECMD_FAILED;
 	}
 
+	if ((vg_to->status & CLUSTERED) && !locking_is_clustered() &&
+	    !lockingfailed()) {
+		log_error("Skipping clustered volume group %s", vg_name_to);
+		unlock_vg(cmd, vg_name_to);
+		return ECMD_FAILED;
+	}
+
 	if (vg_to->status & EXPORTED_VG) {
 		log_error("Volume group \"%s\" is exported", vg_to->name);
 		unlock_vg(cmd, vg_name_to);
@@ -65,6 +72,12 @@ static int _vgmerge_single(struct cmd_context *cmd, const char *vg_name_to,
 		log_error("Volume group \"%s\" doesn't exist", vg_name_from);
 		goto error;
 	}
+
+        if ((vg_from->status & CLUSTERED) && !locking_is_clustered() &&
+            !lockingfailed()) {
+                log_error("Skipping clustered volume group %s", vg_name_from);
+                goto error;
+        }
 
 	if (vg_from->status & EXPORTED_VG) {
 		log_error("Volume group \"%s\" is exported", vg_from->name);
@@ -163,7 +176,7 @@ static int _vgmerge_single(struct cmd_context *cmd, const char *vg_name_to,
 	/* Fix up LVIDs */
 	list_iterate_items(lvl1, &vg_to->lvs) {
 		union lvid *lvid1 = &lvl1->lv->lvid;
-		char uuid[64];
+		char uuid[64] __attribute((aligned(8)));
 
 		list_iterate_items(lvl2, &vg_from->lvs) {
 			union lvid *lvid2 = &lvl2->lv->lvid;
@@ -231,7 +244,7 @@ static int _vgmerge_single(struct cmd_context *cmd, const char *vg_name_to,
 
 int vgmerge(struct cmd_context *cmd, int argc, char **argv)
 {
-	char *vg_name_to;
+	char *vg_name_to, *vg_name_from;
 	int opt = 0;
 	int ret = 0, ret_max = 0;
 
@@ -240,12 +253,14 @@ int vgmerge(struct cmd_context *cmd, int argc, char **argv)
 		return EINVALID_CMD_LINE;
 	}
 
-	vg_name_to = argv[0];
+	vg_name_to = skip_dev_dir(cmd, argv[0], NULL);
 	argc--;
 	argv++;
 
 	for (; opt < argc; opt++) {
-		ret = _vgmerge_single(cmd, vg_name_to, argv[opt]);
+		vg_name_from = skip_dev_dir(cmd, argv[opt], NULL);
+
+		ret = _vgmerge_single(cmd, vg_name_to, vg_name_from);
 		if (ret > ret_max)
 			ret_max = ret;
 	}

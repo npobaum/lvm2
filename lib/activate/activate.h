@@ -39,7 +39,12 @@ int lvm1_present(struct cmd_context *cmd);
 int target_present(const char *target_name, int use_modprobe);
 int target_version(const char *target_name, uint32_t *maj,
                    uint32_t *min, uint32_t *patchlevel);
+int list_segment_modules(struct dm_pool *mem, const struct lv_segment *seg,
+			 struct list *modules);
+int list_lv_modules(struct dm_pool *mem, const struct logical_volume *lv,
+		    struct list *modules);
 
+void activation_release(void);
 void activation_exit(void);
 
 int lv_suspend(struct cmd_context *cmd, const char *lvid_s);
@@ -78,10 +83,11 @@ int lv_mirror_percent(struct cmd_context *cmd, struct logical_volume *lv,
  * Return number of LVs in the VG that are active.
  */
 int lvs_in_vg_activated(struct volume_group *vg);
+int lvs_in_vg_activated_by_uuid_only(struct volume_group *vg);
 int lvs_in_vg_opened(struct volume_group *vg);
 
 
-int register_dev_for_events(struct cmd_context *cmd,
+int monitor_dev_for_events(struct cmd_context *cmd,
 			    struct logical_volume *lv, int do_reg);
 
 /*
@@ -89,5 +95,10 @@ int register_dev_for_events(struct cmd_context *cmd,
  */
 int pv_uses_vg(struct physical_volume *pv,
 	       struct volume_group *vg);
+
+/*
+ * Returns 1 if mapped device is not suspended.
+ */
+int device_is_usable(dev_t dev);
 
 #endif

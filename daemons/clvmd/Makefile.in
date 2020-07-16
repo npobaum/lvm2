@@ -19,6 +19,7 @@ SOURCES = \
 	clvmd-command.c  \
 	clvmd.c          \
 	lvm-functions.c  \
+	refresh_clvmd.c \
 	system-lv.c
 
 ifeq ("@CLVMD@", "gulm")
@@ -59,9 +60,7 @@ ifeq ("@DMEVENTD@", "yes")
 	LVMLIBS += -ldevmapper-event
 endif
  
-ifeq ("@DEVMAPPER@", "yes")
-	LVMLIBS += -ldevmapper
-endif
+LVMLIBS += -ldevmapper
 
 DEFS += -D_REENTRANT
 CFLAGS += -fno-strict-aliasing
@@ -72,7 +71,8 @@ INSTALL_TARGETS = \
 	install_clvmd
 
 clvmd: $(OBJECTS) $(top_srcdir)/lib/liblvm.a
-	$(CC) -o clvmd $(OBJECTS) $(LDFLAGS) $(LVMLIBS) $(LMLIBS) $(LIBS)
+	$(CC) -o clvmd $(OBJECTS) $(CFLAGS) $(LDFLAGS) \
+		$(LVMLIBS) $(LMLIBS) $(LIBS)
 
 .PHONY: install_clvmd
 
