@@ -23,17 +23,19 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 
-static int _can_handle(struct labeller *l, char *buf, uint64_t sector)
+static int _text_can_handle(struct labeller *l __attribute((unused)),
+			    char *buf,
+			    uint64_t sector __attribute((unused)))
 {
 	struct label_header *lh = (struct label_header *) buf;
 
-	if (!strncmp(lh->type, LVM2_LABEL, sizeof(lh->type)))
+	if (!strncmp((char *)lh->type, LVM2_LABEL, sizeof(lh->type)))
 		return 1;
 
 	return 0;
 }
 
-static int _write(struct label *label, char *buf)
+static int _text_write(struct label *label, char *buf)
 {
 	struct label_header *lh = (struct label_header *) buf;
 	struct pv_header *pvhdr;
@@ -46,7 +48,7 @@ static int _write(struct label *label, char *buf)
 	/* FIXME Move to where label is created */
 	strncpy(label->type, LVM2_LABEL, sizeof(label->type));
 
-	strncpy(lh->type, label->type, sizeof(label->type));
+	strncpy((char *)lh->type, label->type, sizeof(label->type));
 
 	pvhdr = (struct pv_header *) ((void *) buf + xlate32(lh->offset_xl));
 	info = (struct lvmcache_info *) label->info;
@@ -86,7 +88,7 @@ static int _write(struct label *label, char *buf)
 	return 1;
 }
 
-int add_da(const struct format_type *fmt, struct dm_pool *mem, struct list *das,
+int add_da(struct dm_pool *mem, struct list *das,
 	   uint64_t start, uint64_t size)
 {
 	struct data_area_list *dal;
@@ -179,14 +181,15 @@ void del_mdas(struct list *mdas)
 	}
 }
 
-static int _initialise_label(struct labeller *l, struct label *label)
+static int _text_initialise_label(struct labeller *l __attribute((unused)),
+				  struct label *label)
 {
 	strncpy(label->type, LVM2_LABEL, sizeof(label->type));
 
 	return 1;
 }
 
-static int _read(struct labeller *l, struct device *dev, char *buf,
+static int _text_read(struct labeller *l, struct device *dev, char *buf,
 		 struct label **label)
 {
 	struct label_header *lh = (struct label_header *) buf;
@@ -195,13 +198,16 @@ static int _read(struct labeller *l, struct device *dev, char *buf,
 	struct disk_locn *dlocn_xl;
 	uint64_t offset;
 	struct metadata_area *mda;
-	char vgnamebuf[NAME_LEN + 2];
+	struct id vgid;
 	struct mda_context *mdac;
+	const char *vgname;
+	uint32_t vgstatus;
+	char *creation_host;
 
 	pvhdr = (struct pv_header *) ((void *) buf + xlate32(lh->offset_xl));
 
-	if (!(info = lvmcache_add(l, pvhdr->pv_uuid, dev, NULL, NULL)))
-		return 0;
+	if (!(info = lvmcache_add(l, (char *)pvhdr->pv_uuid, dev, NULL, NULL, 0)))
+		return_0;
 	*label = info->label;
 
 	info->device_size = xlate64(pvhdr->device_size_xl);
@@ -217,7 +223,7 @@ static int _read(struct labeller *l, struct device *dev, char *buf,
 	/* Data areas holding the PEs */
 	dlocn_xl = pvhdr->disk_areas_xl;
 	while ((offset = xlate64(dlocn_xl->offset))) {
-		add_da(info->fmt, NULL, &info->das, offset,
+		add_da(NULL, &info->das, offset,
 		       xlate64(dlocn_xl->size));
 		dlocn_xl++;
 	}
@@ -232,10 +238,12 @@ static int _read(struct labeller *l, struct device *dev, char *buf,
 
 	list_iterate_items(mda, &info->mdas) {
 		mdac = (struct mda_context *) mda->metadata_locn;
-		if (vgname_from_mda(info->fmt, &mdac->area, vgnamebuf,
-				    sizeof(vgnamebuf))) {
-			lvmcache_update_vgname(info, vgnamebuf);
-		}
+		if ((vgname = vgname_from_mda(info->fmt, &mdac->area, 
+					      &vgid, &vgstatus, &creation_host)) &&
+		    !lvmcache_update_vgname_and_id(info, vgname,
+						   (char *) &vgid, vgstatus,
+						   creation_host))
+			return_0;
 	}
 
 	info->status &= ~CACHE_INVALID;
@@ -243,7 +251,8 @@ static int _read(struct labeller *l, struct device *dev, char *buf,
 	return 1;
 }
 
-static void _destroy_label(struct labeller *l, struct label *label)
+static void _text_destroy_label(struct labeller *l __attribute((unused)),
+				struct label *label)
 {
 	struct lvmcache_info *info = (struct lvmcache_info *) label->info;
 
@@ -253,19 +262,19 @@ static void _destroy_label(struct labeller *l, struct label *label)
 		del_das(&info->das);
 }
 
-static void _destroy(struct labeller *l)
+static void _fmt_text_destroy(struct labeller *l)
 {
 	dm_free(l);
 }
 
 struct label_ops _text_ops = {
-	can_handle:_can_handle,
-	write:_write,
-	read:_read,
-	verify:_can_handle,
-	initialise_label:_initialise_label,
-	destroy_label:_destroy_label,
-	destroy:_destroy
+	.can_handle = _text_can_handle,
+	.write = _text_write,
+	.read = _text_read,
+	.verify = _text_can_handle,
+	.initialise_label = _text_initialise_label,
+	.destroy_label = _text_destroy_label,
+	.destroy = _fmt_text_destroy,
 };
 
 struct labeller *text_labeller_create(const struct format_type *fmt)

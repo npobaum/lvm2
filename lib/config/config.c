@@ -688,14 +688,20 @@ static void _eat_space(struct parser *p)
 static struct config_value *_create_value(struct parser *p)
 {
 	struct config_value *v = dm_pool_alloc(p->mem, sizeof(*v));
-	memset(v, 0, sizeof(*v));
+
+	if (v)
+		memset(v, 0, sizeof(*v));
+
 	return v;
 }
 
 static struct config_node *_create_node(struct parser *p)
 {
 	struct config_node *n = dm_pool_alloc(p->mem, sizeof(*n));
-	memset(n, 0, sizeof(*n));
+
+	if (n)
+		memset(n, 0, sizeof(*n));
+
 	return n;
 }
 
@@ -752,9 +758,9 @@ const char *find_config_str(const struct config_node *cn,
 {
 	const struct config_node *n = find_config_node(cn, path);
 
-	if (n && n->v->type == CFG_STRING) {
-		if (*n->v->v.str)
-			log_very_verbose("Setting %s to %s", path, n->v->v.str);
+	/* Empty strings are ignored */
+	if ((n && n->v->type == CFG_STRING) && (*n->v->v.str)) {
+		log_very_verbose("Setting %s to %s", path, n->v->v.str);
 		return n->v->v.str;
 	}
 

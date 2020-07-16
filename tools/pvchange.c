@@ -18,7 +18,7 @@
 /* FIXME Locking.  PVs in VG. */
 
 static int _pvchange_single(struct cmd_context *cmd, struct physical_volume *pv,
-			    void *handle)
+			    void *handle __attribute((unused)))
 {
 	struct volume_group *vg = NULL;
 	struct pv_list *pvl;
@@ -60,7 +60,7 @@ static int _pvchange_single(struct cmd_context *cmd, struct physical_volume *pv,
 			return 0;
 		}
 
-		if (!(vg = vg_read(cmd, pv->vg_name, &consistent))) {
+		if (!(vg = vg_read(cmd, pv->vg_name, NULL, &consistent))) {
 			unlock_vg(cmd, pv->vg_name);
 			log_error("Unable to find volume group of \"%s\"",
 				  pv_name);

@@ -16,7 +16,7 @@
 #include "tools.h"
 
 static int lvremove_single(struct cmd_context *cmd, struct logical_volume *lv,
-			   void *handle)
+			   void *handle __attribute((unused)))
 {
 	struct volume_group *vg;
 	struct lvinfo info;
@@ -83,7 +83,7 @@ static int lvremove_single(struct cmd_context *cmd, struct logical_volume *lv,
 	}
 
 	if (lv_is_cow(lv)) {
-		origin = find_cow(lv)->origin;
+		origin = origin_from_cow(lv);
 		log_verbose("Removing snapshot %s", lv->name);
 		if (!vg_remove_snapshot(lv)) {
 			stack;
