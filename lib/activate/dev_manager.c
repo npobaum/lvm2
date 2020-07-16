@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2002-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2016 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2017 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -61,7 +61,7 @@ struct dev_manager {
 	int flush_required;
 	int activation;                 /* building activation tree */
 	int suspend;			/* building suspend tree */
-	int skip_external_lv;
+	unsigned track_external_lv_deps;
 	struct dm_list pending_delete;	/* str_list of dlid(s) with pending delete */
 	unsigned track_pending_delete;
 	unsigned track_pvmove_deps;
@@ -81,12 +81,16 @@ int read_only_lv(const struct logical_volume *lv, const struct lv_activate_opts 
 
 /*
  * Low level device-layer operations.
+ *
+ * Unless task is DM_DEVICE_TARGET_MSG, also calls dm_task_run()
  */
-static struct dm_task *_setup_task(const char *name, const char *uuid,
-				   uint32_t *event_nr, int task,
-				   uint32_t major, uint32_t minor,
-				   int with_open_count,
-				   int with_flush)
+static struct dm_task *_setup_task_run(int task, struct dm_info *info,
+				       const char *name, const char *uuid,
+				       uint32_t *event_nr,
+				       uint32_t major, uint32_t minor,
+				       int with_open_count,
+				       int with_flush,
+				       int query_inactive)
 {
 	struct dm_task *dmt;
 
@@ -108,15 +112,31 @@ static struct dm_task *_setup_task(const char *name, const char *uuid,
 	if (activation_checks() && !dm_task_enable_checks(dmt))
 		goto_out;
 
+	if (query_inactive && !dm_task_query_inactive_table(dmt)) {
+		log_error("Failed to set query_inactive_table.");
+		goto out;
+	}
+
 	if (!with_open_count && !dm_task_no_open_count(dmt))
 		log_warn("WARNING: Failed to disable open_count.");
 
 	if (!with_flush && !dm_task_no_flush(dmt))
 		log_warn("WARNING: Failed to set no_flush.");
 
+	if (task == DM_DEVICE_TARGET_MSG)
+		return dmt; /* TARGET_MSG needs more local tweaking before task_run() */
+
+	if (!dm_task_run(dmt))
+		goto_out;
+
+	if (info && !dm_task_get_info(dmt, info))
+		goto_out;
+
 	return dmt;
-      out:
+
+out:
 	dm_task_destroy(dmt);
+
 	return NULL;
 }
 
@@ -124,40 +144,41 @@ static int _get_segment_status_from_target_params(const char *target_name,
 						  const char *params,
 						  struct lv_seg_status *seg_status)
 {
-	struct segment_type *segtype;
+	const struct lv_segment *seg = seg_status->seg;
+	const struct segment_type *segtype = seg->segtype;
 
-	seg_status->type = SEG_STATUS_UNKNOWN;
+	seg_status->type = SEG_STATUS_UNKNOWN; /* Parsing failed */
 
-	/*
-	 * TODO: Add support for other segment types too!
-	 * The segment to report status for must be properly
-	 * selected for all the other types - mainly make sure
-	 * linear/striped, old snapshots and raids have proper
-	 * segment selected for status!
-	 */
-	if (!strcmp(target_name, TARGET_NAME_SNAPSHOT_MERGE) &&
-	    lv_is_merging_origin(seg_status->seg->lv)) {
-		/* Snapshot merge has started, check snapshot status */
-		if (!(segtype = get_segtype_from_string(seg_status->seg->lv->vg->cmd, TARGET_NAME_SNAPSHOT)))
-			return_0;
-	} else {
-		if (strcmp(target_name, TARGET_NAME_CACHE) &&
-		    strcmp(target_name, TARGET_NAME_SNAPSHOT) &&
-		    strcmp(target_name, TARGET_NAME_THIN_POOL) &&
-		    strcmp(target_name, TARGET_NAME_THIN))
-			return 1; /* TODO: Do not know how to handle yet */
-
-		if (!(segtype = get_segtype_from_string(seg_status->seg->lv->vg->cmd, target_name)))
-			return_0;
-
-		if (segtype != seg_status->seg->segtype) {
-			log_error(INTERNAL_ERROR "_get_segment_status_from_target_params: "
-				  "segment type %s found does not match expected segment type %s",
-				  segtype->name, seg_status->seg->segtype->name);
-			return 0;
+	/* Switch to snapshot segtype status logic for merging origin */
+	/* This is 'dynamic' decision, both states are valid */
+	if (lv_is_merging_origin(seg->lv)) {
+		if (!strcmp(target_name, TARGET_NAME_SNAPSHOT_ORIGIN)) {
+			seg_status->type = SEG_STATUS_NONE;
+			return 1; /* Merge has not yet started */
 		}
+		if (!strcmp(target_name, TARGET_NAME_SNAPSHOT_MERGE) &&
+		    !(segtype = get_segtype_from_string(seg->lv->vg->cmd, TARGET_NAME_SNAPSHOT)))
+			return_0;
+		/* Merging, parse 'snapshot' status of merge progress */
 	}
 
+	if (!params) {
+		log_warn("WARNING: Cannot find matching %s segment for %s.",
+			 segtype->name, display_lvname(seg_status->seg->lv));
+		return 0;
+	}
+
+	/* Validate target_name segtype from DM table with lvm2 metadata segtype */
+	if (strcmp(segtype->name, target_name) &&
+	    /* If kernel's type isn't an exact match is it compatible? */
+	    (!segtype->ops->target_status_compatible ||
+	     !segtype->ops->target_status_compatible(target_name))) {
+		log_warn(INTERNAL_ERROR "WARNING: Segment type %s found does not match expected type %s for %s.",
+			 target_name, segtype->name, display_lvname(seg_status->seg->lv));
+		return 0;
+	}
+
+	/* TODO: move into segtype method */
 	if (segtype_is_cache(segtype)) {
 		if (!dm_get_status_cache(seg_status->mem, params, &(seg_status->cache)))
 			return_0;
@@ -178,10 +199,12 @@ static int _get_segment_status_from_target_params(const char *target_name,
 		if (!dm_get_status_snapshot(seg_status->mem, params, &seg_status->snapshot))
 			return_0;
 		seg_status->type = SEG_STATUS_SNAPSHOT;
-	} else {
-		log_error(INTERNAL_ERROR "Unsupported segment type %s.", segtype->name);
-		return 0;
-	}
+	} else
+		/*
+		 * TODO: Add support for other segment types too!
+		 * Status not supported
+		 */
+		seg_status->type = SEG_STATUS_NONE;
 
 	return 1;
 }
@@ -189,11 +212,18 @@ static int _get_segment_status_from_target_params(const char *target_name,
 typedef enum {
 	INFO,	/* DM_DEVICE_INFO ioctl */
 	STATUS, /* DM_DEVICE_STATUS ioctl */
-	MKNODES
 } info_type_t;
 
-static int _info_run(info_type_t type, const char *name, const char *dlid,
-		     struct dm_info *dminfo, uint32_t *read_ahead,
+/* Return length of segment depending on type and reshape_len */
+static uint32_t _seg_len(const struct lv_segment *seg)
+{
+	uint32_t reshape_len = seg_is_raid(seg) ? ((seg->area_count - seg->segtype->parity_devs) * seg->reshape_len) : 0;
+
+	return seg->len - reshape_len;
+}
+
+static int _info_run(const char *dlid, struct dm_info *dminfo,
+		     uint32_t *read_ahead,
 		     struct lv_seg_status *seg_status,
 		     int with_open_count, int with_read_ahead,
 		     uint32_t major, uint32_t minor)
@@ -201,37 +231,22 @@ static int _info_run(info_type_t type, const char *name, const char *dlid,
 	int r = 0;
 	struct dm_task *dmt;
 	int dmtask;
+	int with_flush; /* TODO: arg for _info_run */
 	void *target = NULL;
-	uint64_t target_start, target_length;
-	char *target_name, *target_params, *params_to_process = NULL;
-	uint32_t extent_size;
-	int with_flush = 1; /* TODO: arg for _info_run */
+	uint64_t target_start, target_length, start, length;
+	char *target_name, *target_params;
 
-	switch (type) {
-		case INFO:
-			dmtask = DM_DEVICE_INFO;
-			break;
-		case STATUS:
-			dmtask = DM_DEVICE_STATUS;
-			with_flush = 0;
-			break;
-		case MKNODES:
-			dmtask = DM_DEVICE_MKNODES;
-			break;
-		default:
-			log_error(INTERNAL_ERROR "_info_run: unhandled info type");
-			return 0;
+	if (seg_status) {
+		dmtask = DM_DEVICE_STATUS;
+		with_flush = 0;
+	} else {
+		dmtask = DM_DEVICE_INFO;
+		with_flush = 1; /* doesn't really matter */
 	}
 
-	if (!(dmt = _setup_task((type == MKNODES) ? name : NULL, dlid, 0, dmtask,
-				major, minor, with_open_count, with_flush)))
+	if (!(dmt = _setup_task_run(dmtask, dminfo, NULL, dlid, 0, major, minor,
+				    with_open_count, with_flush, 0)))
 		return_0;
-
-	if (!dm_task_run(dmt))
-		goto_out;
-
-	if (!dm_task_get_info(dmt, dminfo))
-		goto_out;
 
 	if (with_read_ahead && dminfo->exists) {
 		if (!dm_task_get_read_ahead(dmt, read_ahead))
@@ -239,27 +254,37 @@ static int _info_run(info_type_t type, const char *name, const char *dlid,
 	} else if (read_ahead)
 		*read_ahead = DM_READ_AHEAD_NONE;
 
-	if (type == STATUS) {
-		extent_size = seg_status->seg->lv->vg->extent_size;
+	/* Query status only for active device */
+	if (seg_status && dminfo->exists) {
+		start = length = seg_status->seg->lv->vg->extent_size;
+		start *= seg_status->seg->le;
+		length *= _seg_len(seg_status->seg);
+
+		/* Uses max DM_THIN_MAX_METADATA_SIZE sectors for metadata device */
+		if (lv_is_thin_pool_metadata(seg_status->seg->lv) &&
+		    (length > DM_THIN_MAX_METADATA_SIZE))
+			length = DM_THIN_MAX_METADATA_SIZE;
+
 		do {
 			target = dm_get_next_target(dmt, target, &target_start,
 						    &target_length, &target_name, &target_params);
-			if (((uint64_t) seg_status->seg->le * extent_size == target_start) &&
-			    ((uint64_t) seg_status->seg->len * extent_size == target_length)) {
-				params_to_process = target_params;
-				break;
-			}
+
+			if ((start == target_start) && (length == target_length))
+				break; /* Keep target_params when matching segment is found */
+
+			target_params = NULL; /* Marking this target_params unusable */
 		} while (target);
 
-		if (params_to_process &&
-		    !_get_segment_status_from_target_params(target_name, params_to_process, seg_status))
-			goto_out;
+		if (!target_name ||
+		    !_get_segment_status_from_target_params(target_name, target_params, seg_status))
+			stack;
 	}
 
 	r = 1;
 
       out:
 	dm_task_destroy(dmt);
+
 	return r;
 }
 
@@ -312,14 +337,14 @@ static int _ignore_blocked_mirror_devices(struct device *dev,
 
 	for (i = 0; i < sm->dev_count; ++i)
 		if (sm->devs[i].health != DM_STATUS_MIRROR_ALIVE) {
-			log_debug_activation("%s: Mirror image %d marked as failed",
+			log_debug_activation("%s: Mirror image %d marked as failed.",
 					     dev_name(dev), i);
 			check_for_blocking = 1;
 		}
 
 	if (!check_for_blocking && sm->log_count) {
 		if (sm->logs[0].health != DM_STATUS_MIRROR_ALIVE) {
-			log_debug_activation("%s: Mirror log device marked as failed",
+			log_debug_activation("%s: Mirror log device marked as failed.",
 					     dev_name(dev));
 			check_for_blocking = 1;
 		} else {
@@ -352,11 +377,8 @@ static int _ignore_blocked_mirror_devices(struct device *dev,
 	 * We avoid another system call if we can, but if a device is
 	 * dead, we have no choice but to look up the table too.
 	 */
-	if (!(dmt = _setup_task(NULL, NULL, NULL, DM_DEVICE_TABLE,
-				MAJOR(dev->dev), MINOR(dev->dev), 0, 1)))
-		goto_out;
-
-	if (!dm_task_run(dmt))
+	if (!(dmt = _setup_task_run(DM_DEVICE_TABLE, NULL, NULL, NULL, NULL,
+				    MAJOR(dev->dev), MINOR(dev->dev), 0, 1, 0)))
 		goto_out;
 
 	do {
@@ -371,7 +393,7 @@ static int _ignore_blocked_mirror_devices(struct device *dev,
 			     (p[15] == '\0' || p[15] == ' ')) ||
 			    ((p = strstr(params, " handle_errors")) &&
 			     (p[14] == '\0' || p[14] == ' '))) {
-				log_debug_activation("%s: I/O blocked to mirror device",
+				log_debug_activation("%s: I/O blocked to mirror device.",
 						     dev_name(dev));
 				goto out;
 			}
@@ -392,22 +414,15 @@ static int _device_is_suspended(int major, int minor)
 {
 	struct dm_task *dmt;
 	struct dm_info info;
-	int r = 0;
 
-	if (!(dmt = _setup_task(NULL, NULL, NULL, DM_DEVICE_INFO,
-				major, minor, 0, 0)))
+	if (!(dmt = _setup_task_run(DM_DEVICE_INFO, &info,
+				    NULL, NULL, NULL,
+				    major, minor, 0, 0, 0)))
 		return_0;
 
-	if (!dm_task_run(dmt) ||
-	    !dm_task_get_info(dmt, &info)) {
-		log_error("Failed to get info for device %d:%d", major, minor);
-		goto out;
-	}
-
-	r = info.exists && info.suspended;
-out:
 	dm_task_destroy(dmt);
-	return r;
+
+	return (info.exists && info.suspended);
 }
 
 static int _ignore_suspended_snapshot_component(struct device *dev)
@@ -419,14 +434,10 @@ static int _ignore_suspended_snapshot_component(struct device *dev)
 	int major1, minor1, major2, minor2;
 	int r = 0;
 
-	if (!(dmt = _setup_task(NULL, NULL, NULL, DM_DEVICE_TABLE,
-				MAJOR(dev->dev), MINOR(dev->dev), 0, 1)))
+	if (!(dmt = _setup_task_run(DM_DEVICE_TABLE, NULL,
+				    NULL, NULL, NULL,
+				    MAJOR(dev->dev), MINOR(dev->dev), 0, 1, 0)))
 		return_0;
-
-	if (!dm_task_run(dmt)) {
-		log_error("Failed to get state of snapshot or snapshot origin device.");
-		goto out;
-	}
 
 	do {
 		next = dm_get_next_target(dmt, next, &start, &length, &target_type, &params);
@@ -447,6 +458,7 @@ static int _ignore_suspended_snapshot_component(struct device *dev)
 
 out:
 	dm_task_destroy(dmt);
+
 	return r;
 }
 
@@ -466,14 +478,10 @@ static int _ignore_unusable_thins(struct device *dev)
 	if (!(mem = dm_pool_create("unusable_thins", 128)))
 		return_0;
 
-	if (!(dmt = _setup_task(NULL, NULL, NULL, DM_DEVICE_TABLE,
-				MAJOR(dev->dev), MINOR(dev->dev), 0, 1)))
+	if (!(dmt = _setup_task_run(DM_DEVICE_TABLE, NULL, NULL, NULL, NULL,
+				    MAJOR(dev->dev), MINOR(dev->dev), 0, 1, 0)))
 		goto_out;
 
-	if (!dm_task_run(dmt)) {
-		log_error("Failed to get state of mapped device.");
-		goto out;
-	}
 	dm_get_next_target(dmt, next, &start, &length, &target_type, &params);
 	if (!params || sscanf(params, "%d:%d", &major, &minor) != 2) {
 		log_error("Failed to get thin-pool major:minor for thin device %d:%d.",
@@ -482,14 +490,9 @@ static int _ignore_unusable_thins(struct device *dev)
 	}
 	dm_task_destroy(dmt);
 
-	if (!(dmt = _setup_task(NULL, NULL, NULL, DM_DEVICE_STATUS,
-				major, minor, 0, 0)))
+	if (!(dmt = _setup_task_run(DM_DEVICE_STATUS, NULL, NULL, NULL, NULL,
+				    major, minor, 0, 0, 0)))
 		goto_out;
-
-	if (!dm_task_run(dmt)) {
-		log_error("Failed to get state of mapped device.");
-		goto out;
-	}
 
 	dm_get_next_target(dmt, next, &start, &length, &target_type, &params);
 	if (!dm_get_status_thin_pool(mem, params, &status))
@@ -539,17 +542,9 @@ int device_is_usable(struct device *dev, struct dev_usable_check_params check)
 	int only_error_target = 1;
 	int r = 0;
 
-	if (!(dmt = _setup_task(NULL, NULL, NULL, DM_DEVICE_STATUS,
-				MAJOR(dev->dev), MINOR(dev->dev), 0, 0)))
+	if (!(dmt = _setup_task_run(DM_DEVICE_STATUS, &info, NULL, NULL, NULL,
+				    MAJOR(dev->dev), MINOR(dev->dev), 0, 0, 0)))
 		return_0;
-
-	if (!dm_task_run(dmt)) {
-		log_error("Failed to get state of mapped device");
-		goto out;
-	}
-
-	if (!dm_task_get_info(dmt, &info))
-		goto_out;
 
 	if (!info.exists)
 		goto out;
@@ -688,18 +683,24 @@ static int _original_uuid_format_check_required(struct cmd_context *cmd)
 	return (_kernel_major == -1);
 }
 
-static int _info(struct cmd_context *cmd, const char *dlid, int with_open_count, int with_read_ahead,
+static int _info(struct cmd_context *cmd,
+		 const char *name, const char *dlid,
+		 int with_open_count, int with_read_ahead,
 		 struct dm_info *dminfo, uint32_t *read_ahead,
 		 struct lv_seg_status *seg_status)
 {
-	int r = 0;
 	char old_style_dlid[sizeof(UUID_PREFIX) + 2 * ID_LEN];
 	const char *suffix, *suffix_position;
 	unsigned i = 0;
 
+	log_debug_activation("Getting device info for %s [%s].", name, dlid);
+
 	/* Check for dlid */
-	if ((r = _info_run(seg_status ? STATUS : INFO, NULL, dlid, dminfo, read_ahead,
-			   seg_status, with_open_count, with_read_ahead, 0, 0)) && dminfo->exists)
+	if (!_info_run(dlid, dminfo, read_ahead, seg_status,
+		       with_open_count, with_read_ahead, 0, 0))
+		return_0;
+
+	if (dminfo->exists)
 		return 1;
 
 	/* Check for original version of dlid before the suffixes got added in 2.02.106 */
@@ -710,51 +711,49 @@ static int _info(struct cmd_context *cmd, const char *dlid, int with_open_count,
 
 			(void) strncpy(old_style_dlid, dlid, sizeof(old_style_dlid));
 			old_style_dlid[sizeof(old_style_dlid) - 1] = '\0';
-			if ((r = _info_run(seg_status ? STATUS : INFO, NULL, old_style_dlid, dminfo,
-					   read_ahead, seg_status, with_open_count,
-					   with_read_ahead, 0, 0)) && dminfo->exists)
+			if (!_info_run(old_style_dlid, dminfo, read_ahead, seg_status,
+				       with_open_count, with_read_ahead, 0, 0))
+				return_0;
+			if (dminfo->exists)
 				return 1;
 		}
 	}
 
 	/* Must we still check for the pre-2.02.00 dm uuid format? */
 	if (!_original_uuid_format_check_required(cmd))
-		return r;
-
-	/* Check for dlid before UUID_PREFIX was added */
-	if ((r = _info_run(seg_status ? STATUS : INFO, NULL, dlid + sizeof(UUID_PREFIX) - 1,
-				dminfo, read_ahead, seg_status, with_open_count,
-				with_read_ahead, 0, 0)) && dminfo->exists)
 		return 1;
 
-	return r;
+	/* Check for dlid before UUID_PREFIX was added */
+	if (!_info_run(dlid + sizeof(UUID_PREFIX) - 1, dminfo, read_ahead, seg_status,
+		       with_open_count, with_read_ahead, 0, 0))
+		return_0;
+
+	return 1;
 }
 
 static int _info_by_dev(uint32_t major, uint32_t minor, struct dm_info *info)
 {
-	return _info_run(INFO, NULL, NULL, info, NULL, 0, 0, 0, major, minor);
+	return _info_run(NULL, info, NULL, 0, 0, 0, major, minor);
 }
 
-int dev_manager_info(struct cmd_context *cmd, const struct logical_volume *lv,
-		     const char *layer,
+int dev_manager_info(struct cmd_context *cmd,
+		     const struct logical_volume *lv, const char *layer,
 		     int with_open_count, int with_read_ahead,
 		     struct dm_info *dminfo, uint32_t *read_ahead,
 		     struct lv_seg_status *seg_status)
 {
 	char *dlid, *name;
-	int r;
+	int r = 0;
 
 	if (!(name = dm_build_dm_name(cmd->mem, lv->vg->name, lv->name, layer)))
 		return_0;
 
-	if (!(dlid = build_dm_uuid(cmd->mem, lv, layer))) {
-		r = 0;
+	if (!(dlid = build_dm_uuid(cmd->mem, lv, layer)))
 		goto_out;
-	}
 
-	log_debug_activation("Getting device info for %s [%s]", name, dlid);
-	r = _info(cmd, dlid, with_open_count, with_read_ahead,
-		  dminfo, read_ahead, seg_status);
+	if (!(r = _info(cmd, name, dlid, with_open_count, with_read_ahead,
+			dminfo, read_ahead, seg_status)))
+		stack;
 out:
 	dm_pool_free(cmd->mem, name);
 
@@ -805,29 +804,20 @@ int lv_has_target_type(struct dm_pool *mem, const struct logical_volume *lv,
 	if (!(dlid = build_dm_uuid(mem, lv, layer)))
 		return_0;
 
-	if (!(dmt = _setup_task(NULL, dlid, 0, DM_DEVICE_STATUS, 0, 0, 0, 0)))
+	if (!(dmt = _setup_task_run(DM_DEVICE_STATUS, &info, NULL, dlid, 0, 0, 0, 0, 0, 0)))
 		goto_bad;
 
-	if (!dm_task_run(dmt))
-		goto_out;
-
-	if (!dm_task_get_info(dmt, &info) || !info.exists)
+	if (!info.exists)
 		goto_out;
 
 	/* If there is a preloaded table, use that in preference. */
 	if (info.inactive_table) {
 		dm_task_destroy(dmt);
 
-		if (!(dmt = _setup_task(NULL, dlid, 0, DM_DEVICE_STATUS, 0, 0, 0, 0)))
+		if (!(dmt = _setup_task_run(DM_DEVICE_STATUS, &info, NULL, dlid, 0, 0, 0, 0, 0, 1)))
 			goto_bad;
 
-		if (!dm_task_query_inactive_table(dmt))
-			goto_out;
-
-		if (!dm_task_run(dmt))
-			goto_out;
-
-		if (!dm_task_get_info(dmt, &info) || !info.exists || !info.inactive_table)
+		if (!info.exists || !info.inactive_table)
 			goto_out;
 	}
 
@@ -863,29 +853,20 @@ static int _thin_lv_has_device_id(struct dm_pool *mem, const struct logical_volu
 	if (!(dlid = build_dm_uuid(mem, lv, layer)))
 		return_0;
 
-	if (!(dmt = _setup_task(NULL, dlid, 0, DM_DEVICE_TABLE, 0, 0, 0, 1)))
+	if (!(dmt = _setup_task_run(DM_DEVICE_TABLE, &info, NULL, dlid, 0, 0, 0, 0, 1, 0)))
 		goto_bad;
 
-	if (!dm_task_run(dmt))
-		goto_out;
-
-	if (!dm_task_get_info(dmt, &info) || !info.exists)
+	if (!info.exists)
 		goto_out;
 
 	/* If there is a preloaded table, use that in preference. */
 	if (info.inactive_table) {
 		dm_task_destroy(dmt);
 
-		if (!(dmt = _setup_task(NULL, dlid, 0, DM_DEVICE_TABLE, 0, 0, 0, 1)))
+		if (!(dmt = _setup_task_run(DM_DEVICE_TABLE, &info, NULL, dlid, 0, 0, 0, 0, 1, 1)))
 			goto_bad;
 
-		if (!dm_task_query_inactive_table(dmt))
-			goto_out;
-
-		if (!dm_task_run(dmt))
-			goto_out;
-
-		if (!dm_task_get_info(dmt, &info) || !info.exists || !info.inactive_table)
+		if (!info.exists || !info.inactive_table)
 			goto_out;
 	}
 
@@ -909,7 +890,8 @@ bad:
 	return (device_id == id);
 }
 
-int add_linear_area_to_dtree(struct dm_tree_node *node, uint64_t size, uint32_t extent_size, int use_linear_target, const char *vgname, const char *lvname)
+int add_linear_area_to_dtree(struct dm_tree_node *node, uint64_t size, uint32_t extent_size,
+			     int use_linear_target, const char *vgname, const char *lvname)
 {
 	uint32_t page_size;
 
@@ -930,10 +912,12 @@ int add_linear_area_to_dtree(struct dm_tree_node *node, uint64_t size, uint32_t 
 			if (!dm_tree_node_add_striped_target(node, size, extent_size))
 				return_0;
 			return 1;
-		} else
-			/* Some exotic cases are unsupported by striped. */
-			log_warn("WARNING: Using linear target for %s/%s: Striped requires extent size (%" PRIu32 " sectors) >= page size (%" PRIu32 ").",
-				 vgname, lvname, extent_size, page_size);
+		}
+
+		/* Some exotic cases are unsupported by striped. */
+		log_warn("WARNING: Using linear target for %s/%s: Striped requires extent size "
+			 "(" FMTu32 " sectors) >= page size (" FMTu32 ").",
+			 vgname, lvname, extent_size, page_size);
 	}
 
 	/*
@@ -988,14 +972,11 @@ static int _percent_run(struct dev_manager *dm, const char *name,
 	if (!(segtype = get_segtype_from_string(dm->cmd, target_type)))
 		return_0;
 
-	if (!(dmt = _setup_task(name, dlid, event_nr,
-				wait ? DM_DEVICE_WAITEVENT : DM_DEVICE_STATUS, 0, 0, 0, 0)))
+	if (!(dmt = _setup_task_run(wait ? DM_DEVICE_WAITEVENT : DM_DEVICE_STATUS, &info,
+				    name, dlid, event_nr, 0, 0, 0, 0, 0)))
 		return_0;
 
-	if (!dm_task_run(dmt))
-		goto_out;
-
-	if (!dm_task_get_info(dmt, &info) || !info.exists)
+	if (!info.exists)
 		goto_out;
 
 	if (event_nr)
@@ -1057,7 +1038,8 @@ static int _percent_run(struct dev_manager *dm, const char *name,
 			goto_out;
 	}
 
-	log_debug_activation("LV percent: %.2f", dm_percent_to_float(*overall_percent));
+	log_debug_activation("LV percent: %s",
+			     display_percent(dm->cmd, *overall_percent));
 	r = 1;
 
       out:
@@ -1074,10 +1056,11 @@ static int _percent(struct dev_manager *dm, const char *name, const char *dlid,
 		if (_percent_run(dm, NULL, dlid, target_type, wait, lv, percent,
 				 event_nr, fail_if_percent_unsupported))
 			return 1;
-		else if (_original_uuid_format_check_required(dm->cmd) &&
-			 _percent_run(dm, NULL, dlid + sizeof(UUID_PREFIX) - 1,
-				      target_type, wait, lv, percent,
-				      event_nr, fail_if_percent_unsupported))
+
+		if (_original_uuid_format_check_required(dm->cmd) &&
+		    _percent_run(dm, NULL, dlid + sizeof(UUID_PREFIX) - 1,
+				 target_type, wait, lv, percent,
+				 event_nr, fail_if_percent_unsupported))
 			return 1;
 	}
 
@@ -1106,13 +1089,10 @@ int dev_manager_transient(struct dev_manager *dm, const struct logical_volume *l
 	if (!(dlid = build_dm_uuid(dm->mem, lv, layer)))
 		return_0;
 
-	if (!(dmt = _setup_task(0, dlid, NULL, DM_DEVICE_STATUS, 0, 0, 0, 0)))
+	if (!(dmt = _setup_task_run(DM_DEVICE_STATUS, &info, NULL, dlid, NULL, 0, 0, 0, 0, 0)))
 		return_0;
 
-	if (!dm_task_run(dmt))
-		goto_out;
-
-	if (!dm_task_get_info(dmt, &info) || !info.exists)
+	if (!info.exists)
 		goto_out;
 
 	do {
@@ -1189,6 +1169,7 @@ struct dev_manager *dev_manager_create(struct cmd_context *cmd,
 
       bad:
 	dm_pool_destroy(mem);
+
 	return NULL;
 }
 
@@ -1277,10 +1258,10 @@ int dev_manager_mirror_percent(struct dev_manager *dm,
 	if (!(dlid = build_dm_uuid(dm->mem, lv, layer)))
 		return_0;
 
-	log_debug_activation("Getting device %s status percentage for %s",
+	log_debug_activation("Getting device %s status percentage for %s.",
 			     target_type, name);
-	if (!_percent(dm, name, dlid, target_type, wait, lv, percent,
-		      event_nr, 0))
+
+	if (!_percent(dm, name, dlid, target_type, wait, lv, percent, event_nr, 0))
 		return_0;
 
 	return 1;
@@ -1302,20 +1283,17 @@ int dev_manager_raid_status(struct dev_manager *dm,
 	if (!(dlid = build_dm_uuid(dm->mem, lv, layer)))
 		return_0;
 
-	if (!(dmt = _setup_task(NULL, dlid, 0, DM_DEVICE_STATUS, 0, 0, 0, 0)))
+	if (!(dmt = _setup_task_run(DM_DEVICE_STATUS, &info, NULL, dlid, 0, 0, 0, 0, 0, 0)))
 		return_0;
 
-	if (!dm_task_run(dmt))
-		goto_out;
-
-	if (!dm_task_get_info(dmt, &info) || !info.exists)
+	if (!info.exists)
 		goto_out;
 
 	dm_get_next_target(dmt, NULL, &start, &length, &type, &params);
 
-	if (!type || strcmp(type, "raid")) {
-		log_error("Expected raid segment type but got %s instead",
-			  type ? type : "NULL");
+	if (!type || strcmp(type, TARGET_NAME_RAID)) {
+		log_error("Expected %s segment type but got %s instead.",
+			  TARGET_NAME_RAID, type ? type : "NULL");
 		goto out;
 	}
 
@@ -1341,27 +1319,26 @@ int dev_manager_raid_message(struct dev_manager *dm,
 	const char *layer = lv_layer(lv);
 
 	if (!lv_is_raid(lv)) {
-		log_error(INTERNAL_ERROR "%s is not a RAID logical volume",
+		log_error(INTERNAL_ERROR "%s is not a RAID logical volume.",
 			  display_lvname(lv));
 		return 0;
 	}
 
-	/* These are the supported RAID messages for dm-raid v1.5.0 */
+	/* These are the supported RAID messages for dm-raid v1.9.0 */
 	if (strcmp(msg, "idle") &&
 	    strcmp(msg, "frozen") &&
 	    strcmp(msg, "resync") &&
 	    strcmp(msg, "recover") &&
 	    strcmp(msg, "check") &&
-	    strcmp(msg, "repair") &&
-	    strcmp(msg, "reshape")) {
-		log_error(INTERNAL_ERROR "Unknown RAID message: %s", msg);
+	    strcmp(msg, "repair")) {
+		log_error(INTERNAL_ERROR "Unknown RAID message: %s.", msg);
 		return 0;
 	}
 
 	if (!(dlid = build_dm_uuid(dm->mem, lv, layer)))
 		return_0;
 
-	if (!(dmt = _setup_task(NULL, dlid, 0, DM_DEVICE_TARGET_MSG, 0, 0, 0, 1)))
+	if (!(dmt = _setup_task_run(DM_DEVICE_TARGET_MSG, NULL, NULL, dlid, 0, 0, 0, 0, 1, 0)))
 		return_0;
 
 	if (!dm_task_set_message(dmt, msg))
@@ -1396,20 +1373,17 @@ int dev_manager_cache_status(struct dev_manager *dm,
 	if (!(*status = dm_pool_zalloc(dm->mem, sizeof(struct lv_status_cache))))
 		return_0;
 
-	if (!(dmt = _setup_task(NULL, dlid, 0, DM_DEVICE_STATUS, 0, 0, 0, 0)))
+	if (!(dmt = _setup_task_run(DM_DEVICE_STATUS, &info, NULL, dlid, 0, 0, 0, 0, 0, 0)))
 		return_0;
 
-	if (!dm_task_run(dmt))
-		goto_out;
-
-	if (!dm_task_get_info(dmt, &info) || !info.exists)
+	if (!info.exists)
 		goto_out;
 
 	dm_get_next_target(dmt, NULL, &start, &length, &type, &params);
 
 	if (!type || strcmp(type, TARGET_NAME_CACHE)) {
-		log_error("Expected cache segment type but got %s instead",
-			  type ? type : "NULL");
+		log_error("Expected %s segment type but got %s instead.",
+			  TARGET_NAME_CACHE, type ? type : "NULL");
 		goto out;
 	}
 
@@ -1460,13 +1434,10 @@ int dev_manager_thin_pool_status(struct dev_manager *dm,
 	if (!(dlid = build_dm_uuid(dm->mem, lv, lv_layer(lv))))
 		return_0;
 
-	if (!(dmt = _setup_task(NULL, dlid, 0, DM_DEVICE_STATUS, 0, 0, 0, flush)))
+	if (!(dmt = _setup_task_run(DM_DEVICE_STATUS, &info, NULL, dlid, 0, 0, 0, 0, flush, 0)))
 		return_0;
 
-	if (!dm_task_run(dmt))
-		goto_out;
-
-	if (!dm_task_get_info(dmt, &info) || !info.exists)
+	if (!info.exists)
 		goto_out;
 
 	dm_get_next_target(dmt, NULL, &start, &length, &type, &params);
@@ -1489,16 +1460,17 @@ int dev_manager_thin_pool_percent(struct dev_manager *dm,
 {
 	char *name;
 	const char *dlid;
+	const char *layer = lv_layer(lv);
 
 	/* Build a name for the top layer */
-	if (!(name = dm_build_dm_name(dm->mem, lv->vg->name, lv->name,
-				      lv_layer(lv))))
+	if (!(name = dm_build_dm_name(dm->mem, lv->vg->name, lv->name, layer)))
 		return_0;
 
-	if (!(dlid = build_dm_uuid(dm->mem, lv, lv_layer(lv))))
+	if (!(dlid = build_dm_uuid(dm->mem, lv, layer)))
 		return_0;
 
-	log_debug_activation("Getting device status percentage for %s", name);
+	log_debug_activation("Getting device status percentage for %s.", name);
+
 	if (!(_percent(dm, name, dlid, TARGET_NAME_THIN_POOL, 0,
 		       (metadata) ? lv : NULL, percent, NULL, 1)))
 		return_0;
@@ -1522,6 +1494,7 @@ int dev_manager_thin_percent(struct dev_manager *dm,
 		return_0;
 
 	log_debug_activation("Getting device status percentage for %s", name);
+
 	if (!(_percent(dm, name, dlid, TARGET_NAME_THIN, 0,
 		       (mapped) ? NULL : lv, percent, NULL, 1)))
 		return_0;
@@ -1544,13 +1517,10 @@ int dev_manager_thin_device_id(struct dev_manager *dm,
 	if (!(dlid = build_dm_uuid(dm->mem, lv, lv_layer(lv))))
 		return_0;
 
-	if (!(dmt = _setup_task(NULL, dlid, 0, DM_DEVICE_TABLE, 0, 0, 0, 1)))
+	if (!(dmt = _setup_task_run(DM_DEVICE_TABLE, &info, NULL, dlid, 0, 0, 0, 0, 1, 0)))
 		return_0;
 
-	if (!dm_task_run(dmt))
-		goto_out;
-
-	if (!dm_task_get_info(dmt, &info) || !info.exists)
+	if (!info.exists)
 		goto_out;
 
 	if (dm_get_next_target(dmt, NULL, &start, &length,
@@ -1609,21 +1579,24 @@ static int _lv_has_mknode(const struct logical_volume *lv)
 int dev_manager_mknodes(const struct logical_volume *lv)
 {
 	struct dm_info dminfo;
+	struct dm_task *dmt;
 	char *name;
 	int r = 0;
 
 	if (!(name = dm_build_dm_name(lv->vg->cmd->mem, lv->vg->name, lv->name, NULL)))
 		return_0;
 
-	if ((r = _info_run(MKNODES, name, NULL, &dminfo, NULL, NULL, 0, 0, 0, 0))) {
-		if (dminfo.exists) {
-			if (_lv_has_mknode(lv))
-				r = _dev_manager_lv_mknodes(lv);
-		} else
-			r = _dev_manager_lv_rmnodes(lv);
-	}
+	if (!(dmt = _setup_task_run(DM_DEVICE_MKNODES, &dminfo, name, NULL, 0, 0, 0, 0, 0, 0)))
+		return_0;
 
-	dm_pool_free(lv->vg->cmd->mem, name);
+	if (dminfo.exists) {
+		if (_lv_has_mknode(lv))
+			r = _dev_manager_lv_mknodes(lv);
+	} else
+		r = _dev_manager_lv_rmnodes(lv);
+
+	dm_task_destroy(dmt);
+
 	return r;
 }
 
@@ -1756,11 +1729,8 @@ static int _add_dev_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 	if (!(dlid = build_dm_uuid(dm->mem, lv, layer)))
 		return_0;
 
-	log_debug_activation("Getting device info for %s [%s]", name, dlid);
-	if (!_info(dm->cmd, dlid, 1, 0, &info, NULL, NULL)) {
-		log_error("Failed to get info for %s [%s].", name, dlid);
-		return 0;
-	}
+	if (!_info(dm->cmd, name, dlid, 1, 0, &info, NULL, NULL))
+		return_0;
 
 	/*
 	 * For top level volumes verify that existing device match
@@ -1773,7 +1743,7 @@ static int _add_dev_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 		if (info.exists && ((int) info.minor != lv->minor)) {
 			log_error("Volume %s (%" PRIu32 ":%" PRIu32")"
 				  " differs from already active device "
-				  "(%" PRIu32 ":%" PRIu32")",
+				  "(%" PRIu32 ":%" PRIu32").",
 				  display_lvname(lv), lv->major, lv->minor,
 				  info.major, info.minor);
 			return 0;
@@ -1781,7 +1751,7 @@ static int _add_dev_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 		if (!info.exists && _info_by_dev(lv->major, lv->minor, &info2) &&
 		    info2.exists) {
 			log_error("The requested major:minor pair "
-				  "(%" PRIu32 ":%" PRIu32") is already used",
+				  "(%" PRIu32 ":%" PRIu32") is already used.",
 				  lv->major, lv->minor);
 			return 0;
 		}
@@ -1789,7 +1759,7 @@ static int _add_dev_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 
 	if (info.exists && !dm_tree_add_dev_with_udev_flags(dtree, info.major, info.minor,
 							_get_udev_flags(dm, lv, layer, 0, 0))) {
-		log_error("Failed to add device (%" PRIu32 ":%" PRIu32") to dtree",
+		log_error("Failed to add device (%" PRIu32 ":%" PRIu32") to dtree.",
 			  info.major, info.minor);
 		return 0;
 	}
@@ -1918,7 +1888,7 @@ static int _pool_callback(struct dm_tree_node *node,
 	for (cv = cn->v; cv && args < 16; cv = cv->next) {
 		if (cv->type != DM_CFG_STRING) {
 			log_error("Invalid string in config file: "
-				  "global/%s_check_options",
+				  "global/%s_check_options.",
 				  data->global);
 			return 0;
 		}
@@ -2084,16 +2054,16 @@ static int _add_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 #endif
 	}
 
-	if (origin_only && dm->activation && !dm->skip_external_lv &&
+	if (origin_only && dm->activation && dm->track_external_lv_deps &&
 	    lv_is_external_origin(lv)) {
 		/* Find possible users of external origin lv */
-		dm->skip_external_lv = 1; /* avoid recursion */
+		dm->track_external_lv_deps = 0; /* avoid recursion */
 		dm_list_iterate_items(sl, &lv->segs_using_this_lv)
 			/* Match only external_lv users */
 			if ((sl->seg->external_lv == lv) &&
 			    !_add_lv_to_dtree(dm, dtree, sl->seg->lv, 1))
 				return_0;
-		dm->skip_external_lv = 0;
+		dm->track_external_lv_deps = 1;
 	}
 
 	if (lv_is_thin_pool(lv)) {
@@ -2193,7 +2163,7 @@ static int _add_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 
 	/* Add any LVs used by segments in this LV */
 	dm_list_iterate_items(seg, &lv->segments) {
-		if (seg->external_lv && !dm->skip_external_lv &&
+		if (seg->external_lv && dm->track_external_lv_deps &&
 		    !_add_lv_to_dtree(dm, dtree, seg->external_lv, 1)) /* stack */
 			return_0;
 		if (seg->log_lv &&
@@ -2203,7 +2173,7 @@ static int _add_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 		    !_add_lv_to_dtree(dm, dtree, seg->metadata_lv, 0))
 			return_0;
 		if (seg->pool_lv &&
-		    (lv_is_cache_pool(seg->pool_lv) || !dm->skip_external_lv) &&
+		    (lv_is_cache_pool(seg->pool_lv) || dm->track_external_lv_deps) &&
 		    /* When activating and not origin_only detect linear 'overlay' over pool */
 		    !_add_lv_to_dtree(dm, dtree, seg->pool_lv, dm->activation ? origin_only : 1))
 			return_0;
@@ -2259,7 +2229,7 @@ static char *_add_error_or_zero_device(struct dev_manager *dm, struct dm_tree *d
 	struct lv_segment *seg_i;
 	struct dm_info info;
 	int segno = -1, i = 0;
-	uint64_t size = (uint64_t) seg->len * seg->lv->vg->extent_size;
+	uint64_t size = (uint64_t) _seg_len(seg) * seg->lv->vg->extent_size;
 
 	dm_list_iterate_items(seg_i, &seg->lv->segments) {
 		if (seg == seg_i) {
@@ -2283,11 +2253,8 @@ static char *_add_error_or_zero_device(struct dev_manager *dm, struct dm_tree *d
 				      seg->lv->name, errid)))
 		return_NULL;
 
-	log_debug_activation("Getting device info for %s [%s].", name, dlid);
-	if (!_info(dm->cmd, dlid, 1, 0, &info, NULL, NULL)) {
-		log_error("Failed to get info for %s [%s].", name, dlid);
-		return 0;
-	}
+	if (!_info(dm->cmd, name, dlid, 1, 0, &info, NULL, NULL))
+		return_NULL;
 
 	if (!info.exists) {
 		/* Create new node */
@@ -2541,14 +2508,14 @@ static int _add_target_to_dtree(struct dev_manager *dm,
 
 	if (!seg->segtype->ops->add_target_line) {
 		log_error(INTERNAL_ERROR "_emit_target cannot handle "
-			  "segment type %s", seg->segtype->name);
+			  "segment type %s.", lvseg_name(seg));
 		return 0;
 	}
 
 	return seg->segtype->ops->add_target_line(dm, dm->mem, dm->cmd,
 						  &dm->target_state, seg,
 						  laopts, dnode,
-						  extent_size * seg->len,
+						  extent_size * _seg_len(seg),
 						  &dm->pvmove_mirror_count);
 }
 
@@ -2623,7 +2590,7 @@ static int _add_new_external_lv_to_dtree(struct dev_manager *dm,
 	struct seg_list *sl;
 
 	/* Do not want to recursively add externals again */
-	if (dm->skip_external_lv)
+	if (!dm->track_external_lv_deps)
 		return 1;
 
 	/*
@@ -2631,7 +2598,7 @@ static int _add_new_external_lv_to_dtree(struct dev_manager *dm,
 	 * process all LVs related to this LV, and we want to
 	 * skip repeated invocation of external lv processing
 	 */
-	dm->skip_external_lv = 1;
+	dm->track_external_lv_deps = 0;
 
 	log_debug_activation("Adding external origin LV %s and all active users.",
 			     display_lvname(external_lv));
@@ -2657,7 +2624,7 @@ static int _add_new_external_lv_to_dtree(struct dev_manager *dm,
 	log_debug_activation("Finished adding external origin LV %s and all active users.",
 			     display_lvname(external_lv));
 
-	dm->skip_external_lv = 0;
+	dm->track_external_lv_deps = 1;
 
 	return 1;
 }
@@ -2723,12 +2690,15 @@ static int _add_segment_to_dtree(struct dev_manager *dm,
 	/* Add any LVs used by this segment */
 	for (s = 0; s < seg->area_count; ++s) {
 		if ((seg_type(seg, s) == AREA_LV) &&
+		    /* do not bring up tracked image */
+		    !lv_is_raid_image_with_tracking(seg_lv(seg, s)) &&
 		    /* origin only for cache without pending delete */
 		    (!dm->track_pending_delete || !seg_is_cache(seg)) &&
 		    !_add_new_lv_to_dtree(dm, dtree, seg_lv(seg, s),
 					  laopts, NULL))
 			return_0;
 		if (seg_is_raid_with_meta(seg) && seg->meta_areas && seg_metalv(seg, s) &&
+		    !lv_is_raid_image_with_tracking(seg_lv(seg, s)) &&
 		    !_add_new_lv_to_dtree(dm, dtree, seg_metalv(seg, s),
 					  laopts, NULL))
 			return_0;
@@ -2738,7 +2708,7 @@ static int _add_segment_to_dtree(struct dev_manager *dm,
 		/* Replace target and all its used devs with error mapping */
 		log_debug_activation("Using error for pending delete %s.",
 				     display_lvname(seg->lv));
-		if (!dm_tree_node_add_error_target(dnode, (uint64_t)seg->lv->vg->extent_size * seg->len))
+		if (!dm_tree_node_add_error_target(dnode, (uint64_t)seg->lv->vg->extent_size * _seg_len(seg)))
 			return_0;
 	} else if (!_add_target_to_dtree(dm, dnode, seg, laopts))
 		return_0;
@@ -2763,6 +2733,8 @@ static int _add_new_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 	int save_pending_delete = dm->track_pending_delete;
 	int merge_in_progress = 0;
 
+	log_debug_activation("Adding new LV %s%s%s to dtree", display_lvname(lv),
+			     layer ? "-" : "", layer ? : "");
 	/* LV with pending delete is never put new into a table */
 	if (lv_is_pending_delete(lv) && !_cached_dm_info(dm->mem, dtree, lv, NULL))
 		return 1; /* Replace with error only when already exists */
@@ -2940,6 +2912,10 @@ static int _add_new_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 		return_0;
 
 	if (lv_is_cache(lv) &&
+	    /* Register callback only for layer activation or non-layered cache LV */
+	    (layer || !lv_layer(lv)) &&
+	    /* Register callback when metadata LV is NOT already active */
+	    !_cached_dm_info(dm->mem, dtree, first_seg(first_seg(lv)->pool_lv)->metadata_lv, NULL) &&
 	    !_pool_register_callback(dm, dnode, lv))
 		return_0;
 
@@ -2997,11 +2973,11 @@ static int _create_lv_symlinks(struct dev_manager *dm, struct dm_tree_node *root
 
 		if (name && lvlayer->old_name && *lvlayer->old_name && strcmp(name, lvlayer->old_name)) {
 			if (!dm_split_lvm_name(dm->mem, lvlayer->old_name, &old_vgname, &old_lvname, &old_layer)) {
-				log_error("_create_lv_symlinks: Couldn't split up old device name %s", lvlayer->old_name);
+				log_error("_create_lv_symlinks: Couldn't split up old device name %s.", lvlayer->old_name);
 				return 0;
 			}
 			if (!dm_split_lvm_name(dm->mem, name, &new_vgname, &new_lvname, &new_layer)) {
-				log_error("_create_lv_symlinks: Couldn't split up new device name %s", name);
+				log_error("_create_lv_symlinks: Couldn't split up new device name %s.", name);
 				return 0;
 			}
 			if (!fs_rename_lv(lvlayer->lv, name, old_vgname, old_lvname))
@@ -3114,7 +3090,7 @@ static int _tree_action(struct dev_manager *dm, const struct logical_volume *lv,
 				     (laopts->origin_only) ? " origin-only" : "",
 				     display_lvname(lv));
 
-	/* Some LV can be used for top level tree */
+	/* Some LV cannot be used for top level tree */
 	/* TODO: add more.... */
 	if (lv_is_cache_pool(lv) && !dm_list_empty(&lv->segs_using_this_lv)) {
 		log_error(INTERNAL_ERROR "Cannot create tree for %s.",
@@ -3124,12 +3100,13 @@ static int _tree_action(struct dev_manager *dm, const struct logical_volume *lv,
 	/* Some targets may build bigger tree for activation */
 	dm->activation = ((action == PRELOAD) || (action == ACTIVATE));
 	dm->suspend = (action == SUSPEND_WITH_LOCKFS) || (action == SUSPEND);
+	dm->track_external_lv_deps = 1;
 
 	if (!(dtree = _create_partial_dtree(dm, lv, laopts->origin_only)))
 		return_0;
 
 	if (!(root = dm_tree_find_node(dtree, 0, 0))) {
-		log_error("Lost dependency tree root node");
+		log_error("Lost dependency tree root node.");
 		goto out_no_root;
 	}
 
@@ -3203,7 +3180,6 @@ static int _tree_action(struct dev_manager *dm, const struct logical_volume *lv,
 		log_error(INTERNAL_ERROR "_tree_action: Action %u not supported.", action);
 		goto out;
 	}
-
 	r = 1;
 
 out:
@@ -3276,14 +3252,14 @@ int dev_manager_device_uses_vg(struct device *dev,
 	int r = 1;
 
 	if (!(dtree = dm_tree_create())) {
-		log_error("partial dtree creation failed");
+		log_error("Failed to create partial dtree.");
 		return r;
 	}
 
 	dm_tree_set_optional_uuid_suffixes(dtree, &uuid_suffix_list[0]);
 
 	if (!dm_tree_add_dev(dtree, (uint32_t) MAJOR(dev->dev), (uint32_t) MINOR(dev->dev))) {
-		log_error("Failed to add device %s (%" PRIu32 ":%" PRIu32") to dtree",
+		log_error("Failed to add device %s (%" PRIu32 ":%" PRIu32") to dtree.",
 			  dev_name(dev), (uint32_t) MAJOR(dev->dev), (uint32_t) MINOR(dev->dev));
 		goto out;
 	}
@@ -3292,7 +3268,7 @@ int dev_manager_device_uses_vg(struct device *dev,
 	memcpy(dlid + sizeof(UUID_PREFIX) - 1, &vg->id.uuid[0], sizeof(vg->id));
 
 	if (!(root = dm_tree_find_node(dtree, 0, 0))) {
-		log_error("Lost dependency tree root node");
+		log_error("Lost dependency tree root node.");
 		goto out;
 	}
 
@@ -3303,5 +3279,6 @@ int dev_manager_device_uses_vg(struct device *dev,
 
 out:
 	dm_tree_free(dtree);
+
 	return r;
 }

@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2010 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -37,6 +38,7 @@ lvconvert --mirrorlog core $vg/lv
 
 # Log conversion (core -> mirrored)
 # FIXME on cluster
+SHOULD=""
 test -e LOCAL_CLVMD && SHOULD=should
 $SHOULD lvconvert --mirrorlog mirrored $vg/lv
 

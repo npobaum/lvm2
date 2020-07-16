@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2012 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -26,7 +27,7 @@ check active $vg1 $lv1
 lvchange -an $vg1
 check inactive $vg1 $lv1
 
-kill $(< LOCAL_LVMETAD)
+kill "$(< LOCAL_LVMETAD)"
 
 lvchange -ay $vg1 2>&1 | tee out
 grep "WARNING: Failed to connect" out

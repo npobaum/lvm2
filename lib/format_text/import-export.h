@@ -35,13 +35,15 @@
  * VGs, PVs and LVs all have status bitsets, we gather together
  * common code for reading and writing them.
  */
-enum {
-	COMPATIBLE_FLAG = 0x0,
+enum pv_vg_lv_e {
+	PV_FLAGS = 1,
 	VG_FLAGS,
-	PV_FLAGS,
 	LV_FLAGS,
-	STATUS_FLAG = 0x8,
 };
+
+#define COMPATIBLE_FLAG	0x01
+#define STATUS_FLAG	0x02
+#define SEGTYPE_FLAG	0x04
 
 struct text_vg_version_ops {
 	int (*check_version) (const struct dm_config_tree * cf);
@@ -58,8 +60,11 @@ struct text_vg_version_ops {
 
 struct text_vg_version_ops *text_vg_vsn1_init(void);
 
-int print_flags(uint64_t status, int type, char *buffer, size_t size);
-int read_flags(uint64_t *status, int type, const struct dm_config_value *cv);
+int print_flags(char *buffer, size_t size, enum pv_vg_lv_e type, int mask, uint64_t status);
+int read_flags(uint64_t *status, enum pv_vg_lv_e type, int mask, const struct dm_config_value *cv);
+
+int print_segtype_lvflags(char *buffer, size_t size, uint64_t status);
+int read_segtype_lvflags(uint64_t *status, char *segtype_scr);
 
 int text_vg_export_file(struct volume_group *vg, const char *desc, FILE *fp);
 size_t text_vg_export_raw(struct volume_group *vg, const char *desc, char **buf);

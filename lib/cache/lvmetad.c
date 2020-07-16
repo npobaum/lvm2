@@ -66,7 +66,7 @@ static int _log_debug_inequality(const char *name, struct dm_config_node *a, str
 					log_debug_lvmetad("VG %s metadata inequality at %s / %s: %s / %s",
 							  name, a->key, b->key, av->v.str, bv->v.str);
 				else if (a->v->type == DM_CFG_INT && b->v->type == DM_CFG_INT)
-					log_debug_lvmetad("VG %s metadata inequality at %s / %s: " FMTi64 " / " FMTi64,
+					log_debug_lvmetad("VG %s metadata inequality at %s / %s: " FMTd64 " / " FMTd64,
 							  name, a->key, b->key, av->v.i, bv->v.i);
 				else
 					log_debug_lvmetad("VG %s metadata inequality at %s / %s: type %d / type %d",
@@ -145,13 +145,14 @@ int lvmetad_connect(struct cmd_context *cmd)
 		_lvmetad_use = 1;
 		_lvmetad_cmd = cmd;
 		return 1;
-	} else {
-		log_debug_lvmetad("Failed to connect to lvmetad: %s", strerror(_lvmetad.error));
-		_lvmetad_connected = 0;
-		_lvmetad_use = 0;
-		_lvmetad_cmd = NULL;
-		return 0;
 	}
+
+	log_debug_lvmetad("Failed to connect to lvmetad: %s", strerror(_lvmetad.error));
+	_lvmetad_connected = 0;
+	_lvmetad_use = 0;
+	_lvmetad_cmd = NULL;
+
+	return 0;
 }
 
 int lvmetad_used(void)
@@ -662,7 +663,7 @@ static int _lvmetad_handle_reply(daemon_reply reply, const char *id, const char 
 	}
 
 	if (reply.error) {
-		log_warn("WARNING: lvmetad cannot be used due to error: %s", strerror(reply.error));
+		log_error("lvmetad cannot be used due to error: %s", strerror(reply.error));
 		goto fail;
 	}
 
@@ -1304,7 +1305,7 @@ int lvmetad_vg_remove_pending(struct volume_group *vg)
 	reply = _lvmetad_send(vg->cmd, "set_vg_info",
 			      "name = %s", vg->name,
 			      "uuid = %s", uuid,
-			      "version = %d", 0,
+			      "version = %"PRId64, (int64_t)0,
 			      NULL);
 
 	if (!_lvmetad_handle_reply(reply, "set_vg_info", vg->name, NULL)) {
@@ -2873,6 +2874,9 @@ int lvmetad_is_disabled(struct cmd_context *cmd, const char **reason)
 
 		} else if (strstr(reply_reason, LVMETAD_DISABLE_REASON_DIRECT)) {
 			*reason = "the disable flag was set directly";
+
+		} else if (strstr(reply_reason, LVMETAD_DISABLE_REASON_REPAIR)) {
+			*reason = "a repair command was run";
 
 		} else if (strstr(reply_reason, LVMETAD_DISABLE_REASON_LVM1)) {
 			*reason = "LVM1 metadata was found";

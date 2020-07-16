@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2009 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2017 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -42,7 +42,7 @@ typedef int (*nl_fn) (struct formatter * f);
 #define _out_with_comment(f, buffer, fmt, ap) \
 	do { \
 		va_start(ap, fmt); \
-		r = f->out_with_comment(f, buffer, fmt, ap); \
+		r = (f)->out_with_comment((f), (buffer), (fmt), ap); \
 		va_end(ap); \
 	} while (r == -1)
 
@@ -350,7 +350,7 @@ static int _print_header(struct cmd_context *cmd, struct formatter *f,
 	     _utsname.version, _utsname.machine);
 	if (cmd->system_id && *cmd->system_id)
 		outf(f, "creation_host_system_id = \"%s\"", cmd->system_id);
-	outf(f, "creation_time = %lu\t# %s", t, ctime(&t));
+	outf(f, "creation_time = " FMTu64 "\t# %s", (uint64_t)t, ctime(&t));
 
 	return 1;
 }
@@ -358,11 +358,12 @@ static int _print_header(struct cmd_context *cmd, struct formatter *f,
 static int _print_flag_config(struct formatter *f, uint64_t status, int type)
 {
 	char buffer[4096];
-	if (!print_flags(status, type | STATUS_FLAG, buffer, sizeof(buffer)))
+
+	if (!print_flags(buffer, sizeof(buffer), type, STATUS_FLAG, status))
 		return_0;
 	outf(f, "status = %s", buffer);
 
-	if (!print_flags(status, type, buffer, sizeof(buffer)))
+	if (!print_flags(buffer, sizeof(buffer), type, COMPATIBLE_FLAG, status))
 		return_0;
 	outf(f, "flags = %s", buffer);
 
@@ -501,7 +502,13 @@ static int _print_vg(struct formatter *f, struct volume_group *vg)
  */
 static const char *_get_pv_name_from_uuid(struct formatter *f, char *uuid)
 {
-	return dm_hash_lookup(f->pv_names, uuid);
+	const char *pv_name = dm_hash_lookup(f->pv_names, uuid);
+
+	if (!pv_name)
+		log_error(INTERNAL_ERROR "PV name for uuid %s missing from text metadata export hash table.",
+			  uuid);
+
+	return pv_name;
 }
 
 static const char *_get_pv_name(struct formatter *f, struct physical_volume *pv)
@@ -577,15 +584,23 @@ static int _print_pvs(struct formatter *f, struct volume_group *vg)
 static int _print_segment(struct formatter *f, struct volume_group *vg,
 			  int count, struct lv_segment *seg)
 {
+	char buffer[2048];
+
+	if (!print_segtype_lvflags(buffer, sizeof(buffer), seg->lv->status))
+		return_0;
+
 	outf(f, "segment%u {", count);
 	_inc_indent(f);
 
 	outf(f, "start_extent = %u", seg->le);
 	outsize(f, (uint64_t) seg->len * vg->extent_size,
 		"extent_count = %u", seg->len);
-
 	outnl(f);
-	outf(f, "type = \"%s\"", seg->segtype->name);
+	if (seg->reshape_len)
+		outsize(f, (uint64_t) seg->reshape_len * vg->extent_size,
+			"reshape_count = %u", seg->reshape_len);
+
+	outf(f, "type = \"%s%s\"", seg->segtype->name, buffer);
 
 	if (!_out_list(f, &seg->tags, "tags"))
 		return_0;
@@ -605,6 +620,7 @@ int out_areas(struct formatter *f, const struct lv_segment *seg,
 {
 	const char *name;
 	unsigned int s;
+	struct physical_volume *pv;
 
 	outnl(f);
 
@@ -614,7 +630,13 @@ int out_areas(struct formatter *f, const struct lv_segment *seg,
 	for (s = 0; s < seg->area_count; s++) {
 		switch (seg_type(seg, s)) {
 		case AREA_PV:
-			if (!(name = _get_pv_name(f, seg_pv(seg, s))))
+			if (!(pv = seg_pv(seg, s))) {
+				log_error(INTERNAL_ERROR "Missing PV for area %" PRIu32 " of %s segment of LV %s.",
+					  s, type, display_lvname(seg->lv));
+				return 0;
+			}
+				
+			if (!(name = _get_pv_name(f, pv)))
 				return_0;
 
 			outf(f, "\"%s\", %u%s", name,
@@ -623,7 +645,7 @@ int out_areas(struct formatter *f, const struct lv_segment *seg,
 			break;
 		case AREA_LV:
 			/* FIXME This helper code should be target-independent! Check for metadata LV property. */
-			if (!(seg->status & RAID)) {
+			if (!seg_is_raid(seg)) {
 				outf(f, "\"%s\", %u%s",
 				     seg_lv(seg, s)->name,
 				     seg_le(seg, s),
@@ -648,6 +670,8 @@ int out_areas(struct formatter *f, const struct lv_segment *seg,
 
 			break;
 		case AREA_UNASSIGNED:
+			log_error(INTERNAL_ERROR "Invalid type for area %" PRIu32 " of %s segment of LV %s.",
+				  s, type, display_lvname(seg->lv));
 			return 0;
 		}
 	}
@@ -886,8 +910,8 @@ static int _print_historical_lv(struct formatter *f, struct historical_logical_v
 
 	r = 1;
 out:
-	if (descendants_buffer)
-		dm_free(descendants_buffer);
+	dm_free(descendants_buffer);
+
 	return r;
 }
 

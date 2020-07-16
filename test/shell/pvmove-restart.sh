@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2013-2015 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -23,7 +24,7 @@ vgextend $vg "$dev3"
 
 # Slowdown writes
 # (FIXME: generates interesting race when not used)
-aux delay_dev "$dev3" 0 800 $(get first_extent_sector "$dev3"):
+aux delay_dev "$dev3" 0 800 "$(get first_extent_sector "$dev3"):"
 test -e HAVE_DM_DELAY || skip
 
 for mode in "--atomic" ""
@@ -54,7 +55,7 @@ j=0
 for i in $lv1 pvmove0 pvmove0_mimage_0 pvmove0_mimage_1 ; do
 	while dmsetup status "$vg-$i"; do
 		dmsetup remove "$vg-$i" || {
-			j=$(($j + 1))
+			j=$(( j + 1 ))
 			test $j -le 100 || die "Cannot take down devices."
 			sleep .1;
 		}
@@ -73,7 +74,7 @@ if test -e LOCAL_CLVMD ; then
 	# as clvmd starts to abort on internal errors on various
 	# errors, based on the fact pvmove is killed -9
 	# Restart clvmd
-	kill $(< LOCAL_CLVMD)
+	kill "$(< LOCAL_CLVMD)"
 	for i in $(seq 1 100) ; do
 		test $i -eq 100 && die "Shutdown of clvmd is too slow."
 		pgrep clvmd || break

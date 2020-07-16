@@ -251,6 +251,7 @@ static int _update_extents_params(struct volume_group *vg,
 	uint32_t size_rest;
 	uint32_t stripesize_extents;
 	uint32_t extents;
+	uint32_t base_calc_extents;
 
 	if (lcp->size &&
 	    !(lp->extents = extents_from_size(vg->cmd, lcp->size,
@@ -275,17 +276,17 @@ static int _update_extents_params(struct volume_group *vg,
 
 	switch (lcp->percent) {
 		case PERCENT_VG:
-			extents = percent_of_extents(lp->extents, vg->extent_count, 0);
+			extents = percent_of_extents(lp->extents, base_calc_extents = vg->extent_count, 0);
 			break;
 		case PERCENT_FREE:
-			extents = percent_of_extents(lp->extents, vg->free_count, 0);
+			extents = percent_of_extents(lp->extents, base_calc_extents = vg->free_count, 0);
 			break;
 		case PERCENT_PVS:
 			if (lcp->pv_count) {
 				pv_extent_count = pv_list_extents_free(lp->pvh);
-				extents = percent_of_extents(lp->extents, pv_extent_count, 0);
+				extents = percent_of_extents(lp->extents, base_calc_extents = pv_extent_count, 0);
 			} else
-				extents = percent_of_extents(lp->extents, vg->extent_count, 0);
+				extents = percent_of_extents(lp->extents, base_calc_extents = vg->extent_count, 0);
 			break;
 		case PERCENT_LV:
 			log_error("Please express size as %%FREE%s, %%PVS or %%VG.",
@@ -304,7 +305,7 @@ static int _update_extents_params(struct volume_group *vg,
 			}
 			/* Add whole metadata size estimation */
 			extents = cow_max_extents(origin_lv, lp->chunk_size) - origin_lv->le_count +
-				percent_of_extents(lp->extents, origin_lv->le_count, 1);
+				percent_of_extents(lp->extents, base_calc_extents = origin_lv->le_count, 1);
 			break;
 		case PERCENT_NONE:
 			extents = lp->extents;
@@ -314,10 +315,27 @@ static int _update_extents_params(struct volume_group *vg,
 			return 0;
 	}
 
-	if (lcp->percent) {
+	if (lcp->percent != PERCENT_NONE) {
 		/* FIXME Don't do the adjustment for parallel allocation with PERCENT_ORIGIN! */
 		lp->approx_alloc = 1;
-		log_verbose("Converted %" PRIu32 "%%%s into %" PRIu32 " extents.", lp->extents, get_percent_string(lcp->percent), extents);
+		if (!extents) {
+			log_error("Calculated size of logical volume is 0 extents. Needs to be larger.");
+			return 0;
+		}
+
+		/* For mirrors and raid with percentages based on physical extents, convert the total number of PEs 
+		 * into the number of logical extents per image (minimum 1) */
+		/* FIXME Handle all the supported raid layouts here based on already-known segtype. */
+		if ((lcp->percent != PERCENT_ORIGIN) && lp->mirrors) {
+			extents /= lp->mirrors;
+			if (!extents)
+				extents = 1;
+		}
+
+		log_verbose("Converted %" PRIu32 "%% of %s (%" PRIu32 ") extents into %" PRIu32 " (with mimages %" PRIu32 " and stripes %" PRIu32
+			    " for segtype %s).", lp->extents, get_percent_string(lcp->percent), base_calc_extents,
+			    extents, lp->mirrors, lp->stripes, lp->segtype->name);
+
 		lp->extents = extents;
 	}
 
@@ -361,11 +379,22 @@ static int _update_extents_params(struct volume_group *vg,
 		      extents_from_size(vg->cmd, lp->pool_metadata_size, vg->extent_size)))
 			return_0;
 
-		if (!update_pool_params(lp->segtype, vg, lp->target_attr,
-					lp->passed_args, lp->extents,
-					&lp->pool_metadata_extents,
-					&lp->thin_chunk_size_calc_policy, &lp->chunk_size,
-					&lp->discards, &lp->zero))
+		if (segtype_is_thin_pool(lp->segtype) || segtype_is_thin(lp->segtype)) {
+			if (!update_thin_pool_params(vg->cmd, vg->profile, vg->extent_size,
+						     lp->segtype, lp->target_attr,
+						     lp->extents,
+						     &lp->pool_metadata_extents,
+						     &lp->thin_chunk_size_calc_policy,
+						     &lp->chunk_size,
+						     &lp->discards,
+						     &lp->zero_new_blocks))
+				return_0;
+		} else if (!update_cache_pool_params(vg->cmd, vg->profile, vg->extent_size,
+						     lp->segtype, lp->target_attr,
+						     lp->extents,
+						     &lp->pool_metadata_extents,
+						     &lp->thin_chunk_size_calc_policy,
+						     &lp->chunk_size))
 			return_0;
 
 		if (lcp->percent == PERCENT_FREE || lcp->percent == PERCENT_PVS) {
@@ -376,6 +405,11 @@ static int _update_extents_params(struct volume_group *vg,
 			/* FIXME: persistent hidden space in VG wanted */
 			lp->extents -= (2 * lp->pool_metadata_extents);
 		}
+	}
+
+	if ((lcp->percent != PERCENT_NONE) && !lp->extents) {
+		log_error("Adjusted size of logical volume is 0 extents. Needs to be larger.");
+		return 0;
 	}
 
 	return 1;
@@ -545,7 +579,6 @@ static int _read_raid_params(struct cmd_context *cmd,
 static int _read_mirror_and_raid_params(struct cmd_context *cmd,
 					struct lvcreate_params *lp)
 {
-	int pagesize = lvm_getpagesize();
 	unsigned max_images;
 
 	if (seg_is_raid(lp)) {
@@ -559,8 +592,10 @@ static int _read_mirror_and_raid_params(struct cmd_context *cmd,
 			else if (seg_is_any_raid6(lp))
 				max_images -= 2;
 		}
-	} else
+	} else if (seg_is_mirrored(lp))
 		max_images = DEFAULT_MIRROR_MAX_IMAGES;
+	else
+		max_images = MAX_STRIPES;
 
 	/* Common mirror and raid params */
 	if (arg_is_set(cmd, mirrors_ARG)) {
@@ -593,7 +628,9 @@ static int _read_mirror_and_raid_params(struct cmd_context *cmd,
 		log_error("Only up to %u stripes in %s supported currently.",
 			  max_images / lp->mirrors, lp->segtype->name);
 		return 0;
-	} else if (seg_is_mirrored(lp)) {
+	}
+
+	if (seg_is_mirrored(lp)) {
 		if (lp->mirrors > max_images) {
 			log_error("Only up to %u mirrors in %s supported currently.",
 				  max_images, lp->segtype->name);
@@ -616,19 +653,6 @@ static int _read_mirror_and_raid_params(struct cmd_context *cmd,
 		return 0;
 	}
 
-	if (!is_power_of_2(lp->region_size)) {
-		log_error("Region size (%" PRIu32 ") must be a power of 2",
-			  lp->region_size);
-		return 0;
-	}
-
-	if (lp->region_size % (pagesize >> SECTOR_SHIFT)) {
-		log_error("Region size (%" PRIu32 ") must be a multiple of "
-			  "machine memory page size (%d)",
-			  lp->region_size, pagesize >> SECTOR_SHIFT);
-		return 0;
-	}
-
 	if (seg_is_mirror(lp) && !_read_mirror_params(cmd, lp))
                 return_0;
 
@@ -645,6 +669,8 @@ static int _read_cache_params(struct cmd_context *cmd,
 		return 1;
 
 	if (!get_cache_params(cmd,
+			      &lp->chunk_size,
+			      &lp->cache_metadata_format,
 			      &lp->cache_mode,
 			      &lp->policy_name,
 			      &lp->policy_settings))
@@ -774,6 +800,7 @@ static int _lvcreate_params(struct cmd_context *cmd,
 	contiguous_ARG,\
 	ignoreactivationskip_ARG,\
 	ignoremonitoring_ARG,\
+	metadataprofile_ARG,\
 	monitor_ARG,\
 	mirrors_ARG,\
 	name_ARG,\
@@ -786,6 +813,7 @@ static int _lvcreate_params(struct cmd_context *cmd,
 	type_ARG
 
 #define CACHE_POOL_ARGS \
+	cachemetadataformat_ARG,\
 	cachemode_ARG,\
 	cachepool_ARG,\
 	cachepolicy_ARG,\
@@ -1088,9 +1116,9 @@ static int _lvcreate_params(struct cmd_context *cmd,
 	    !_read_size_params(cmd, lp, lcp) ||
 	    !get_stripe_params(cmd, lp->segtype, &lp->stripes, &lp->stripe_size, &lp->stripes_supplied, &lp->stripe_size_supplied) ||
 	    (lp->create_pool &&
-	     !get_pool_params(cmd, lp->segtype, &lp->passed_args,
+	     !get_pool_params(cmd, lp->segtype,
 			      &lp->pool_metadata_size, &lp->pool_metadata_spare,
-			      &lp->chunk_size, &lp->discards, &lp->zero)) ||
+			      &lp->chunk_size, &lp->discards, &lp->zero_new_blocks)) ||
 	    !_read_cache_params(cmd, lp) ||
 	    !_read_mirror_and_raid_params(cmd, lp))
 		return_0;
@@ -1166,10 +1194,14 @@ static int _determine_cache_argument(struct volume_group *vg,
 		/* Pool exists, create cache volume */
 		lp->create_pool = 0;
 		lp->origin_name = NULL;
-		/* If cache args not given, use those from cache pool */
-		if (!arg_is_set(cmd, chunksize_ARG))
-			lp->chunk_size = first_seg(lv)->chunk_size;
 	} else if (lv) {
+		if (arg_is_set(cmd, cachepool_ARG)) {
+			/* Argument of --cachepool has to be a cache-pool */
+			log_error("Logical volume %s is not a cache pool.",
+				  display_lvname(lv));
+			return 0;
+		}
+
 		/* Origin exists, create cache pool volume */
 		if (!validate_lv_cache_create_origin(lv))
 			return_0;

@@ -320,8 +320,8 @@ static int _compare_paths(const char *path0, const char *path1)
 	/* ASCII comparison */
 	if (strcmp(path0, path1) < 0)
 		return 0;
-	else
-		return 1;
+
+	return 1;
 }
 
 static int _add_alias(struct device *dev, const char *path)
@@ -706,6 +706,12 @@ static int _insert_dev(const char *path, dev_t d)
 		}
 	}
 
+	if (dm_hash_lookup(_cache.names, path) == dev) {
+		/* Hash already has matching entry present */
+		log_debug("Path already cached %s.", path);
+		return 1;
+	}
+
 	if (!(path_copy = dm_pool_strdup(_cache.mem, path))) {
 		log_error("Failed to duplicate path string.");
 		return 0;
@@ -892,10 +898,10 @@ int dev_cache_index_devs(void)
 			if (errno == ENOENT) {
 				sysfs_has_dev_block = 0;
 				return 1;
-			} else {
-				log_sys_error("stat", path);
-				return 0;
 			}
+
+			log_sys_error("stat", path);
+			return 0;
 		}
 	} else if (!sysfs_has_dev_block)
 		return 1;

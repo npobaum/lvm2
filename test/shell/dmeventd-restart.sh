@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2008 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -33,7 +34,7 @@ lvchange --monitor y --verbose $vg/4way 2>&1 | tee lvchange.out
 grep 'already monitored' lvchange.out
 
 # now try what happens if no dmeventd is running
-kill -9 $(< LOCAL_DMEVENTD)
+kill -9 "$(< LOCAL_DMEVENTD)"
 rm LOCAL_DMEVENTD
 
 dmeventd -R -f &
@@ -44,11 +45,6 @@ sleep 7
 # now dmeventd should not be running
 not pgrep dmeventd
 rm LOCAL_DMEVENTD
-
-# set dmeventd path
-if test -n "$abs_top_builddir"; then
-    aux lvmconf "dmeventd/executable=\"$abs_top_builddir/test/lib/dmeventd\""
-fi
 
 lvchange --monitor y --verbose $vg/3way 2>&1 | tee lvchange.out
 pgrep -o dmeventd >LOCAL_DMEVENTD

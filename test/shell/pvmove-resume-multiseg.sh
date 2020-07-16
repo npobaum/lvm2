@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2015 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -33,9 +34,9 @@ test_pvmove_resume() {
 	# next LV on same VG and differetnt PV (we want to test 2 pvmoves per VG)
 	lvcreate -an -Zn -l30 -n $lv2 $vg "$dev3"
 
-	aux delay_dev "$dev4" 0 250
+	aux delay_dev "$dev4" 0 250 "$(get first_extent_sector "$dev4"):"
 	test -e HAVE_DM_DELAY || { lvremove -f $vg; return 0; }
-	aux delay_dev "$dev5" 0 250
+	aux delay_dev "$dev5" 0 250 "$(get first_extent_sector "$dev5"):"
 
 	pvmove -i5 "$dev1" "$dev4" &
 	PVMOVE=$!
@@ -69,7 +70,7 @@ test_pvmove_resume() {
 		# as clvmd starts to abort on internal errors on various
 		# errors, based on the fact pvmove is killed -9
 		# Restart clvmd
-		kill $(< LOCAL_CLVMD)
+		kill "$(< LOCAL_CLVMD)"
 		for i in $(seq 1 100) ; do
 			test $i -eq 100 && die "Shutdown of clvmd is too slow."
 			test -e "$CLVMD_PIDFILE" || break
@@ -89,7 +90,7 @@ test_pvmove_resume() {
 	aux enable_dev "$dev5"
 
 	i=0
-	while get lv_field $vg name -a | egrep "^\[?pvmove"; do
+	while get lv_field $vg name -a | grep -E "^\[?pvmove"; do
 		# wait for 30 secs at max
 		test $i -ge 300 && die "Pvmove is too slow or does not progress."
 		sleep .1
@@ -117,7 +118,7 @@ lvchange_all() {
 		aux check_lvmpolld_init_rq_count 1 "$vg/pvmove0"
 		aux check_lvmpolld_init_rq_count 1 "$vg/pvmove1"
 	else
-		test $(aux count_processes_with_tag) -eq $1
+		test "$(aux count_processes_with_tag)" -eq $1
 	fi
 }
 
@@ -129,7 +130,7 @@ vgchange_single() {
 		aux check_lvmpolld_init_rq_count 1 "$vg/pvmove0"
 		aux check_lvmpolld_init_rq_count 1 "$vg/pvmove1"
 	else
-		test $(aux count_processes_with_tag) -eq $1
+		test "$(aux count_processes_with_tag)" -eq "$1"
 	fi
 }
 
@@ -143,12 +144,12 @@ pvmove_fg() {
 		aux check_lvmpolld_init_rq_count 0 "$vg/pvmove0"
 		aux check_lvmpolld_init_rq_count 0 "$vg/pvmove1"
 	else
-		test $(aux count_processes_with_tag) -eq 0
+		test "$(aux count_processes_with_tag)" -eq 0
 	fi
 
 	# ...thus finish polling
-	get lv_field $vg name -a | egrep "^\[?pvmove0"
-	get lv_field $vg name -a | egrep "^\[?pvmove1"
+	get lv_field $vg name -a | grep -E "^\[?pvmove0"
+	get lv_field $vg name -a | grep -E "^\[?pvmove1"
 
 	# disable delay device
 	# fg pvmove would take ages to complete otherwise
@@ -168,12 +169,12 @@ pvmove_bg() {
 		aux check_lvmpolld_init_rq_count 0 "$vg/pvmove0"
 		aux check_lvmpolld_init_rq_count 0 "$vg/pvmove1"
 	else
-		test $(aux count_processes_with_tag) -eq 0
+		test "$(aux count_processes_with_tag)" -eq 0
 	fi
 
 	# ...thus finish polling
-	get lv_field $vg name -a | egrep "^\[?pvmove0"
-	get lv_field $vg name -a | egrep "^\[?pvmove1"
+	get lv_field $vg name -a | grep -E "^\[?pvmove0"
+	get lv_field $vg name -a | grep -E "^\[?pvmove1"
 
 	LVM_TEST_TAG="kill_me_$PREFIX" pvmove -b
 }
@@ -188,12 +189,12 @@ pvmove_fg_single() {
 		aux check_lvmpolld_init_rq_count 0 "$vg/pvmove0"
 		aux check_lvmpolld_init_rq_count 0 "$vg/pvmove1"
 	else
-		test $(aux count_processes_with_tag) -eq 0
+		test "$(aux count_processes_with_tag)" -eq 0
 	fi
 
 	# ...thus finish polling
-	get lv_field $vg name -a | egrep "^\[?pvmove0"
-	get lv_field $vg name -a | egrep "^\[?pvmove1"
+	get lv_field $vg name -a | grep -E "^\[?pvmove0"
+	get lv_field $vg name -a | grep -E "^\[?pvmove1"
 
 	# disable delay device
 	# fg pvmove would take ages to complete otherwise
@@ -214,12 +215,12 @@ pvmove_bg_single() {
 		aux check_lvmpolld_init_rq_count 0 "$vg/pvmove0"
 		aux check_lvmpolld_init_rq_count 0 "$vg/pvmove1"
 	else
-		test $(aux count_processes_with_tag) -eq 0
+		test "$(aux count_processes_with_tag)" -eq 0
 	fi
 
 	# ...thus finish polling
-	get lv_field $vg name -a | egrep "^\[?pvmove0"
-	get lv_field $vg name -a | egrep "^\[?pvmove1"
+	get lv_field $vg name -a | grep -E "^\[?pvmove0"
+	get lv_field $vg name -a | grep -E "^\[?pvmove1"
 
 	LVM_TEST_TAG="kill_me_$PREFIX" pvmove -b "$dev1"
 	LVM_TEST_TAG="kill_me_$PREFIX" pvmove -b "$dev3"

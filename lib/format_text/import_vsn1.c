@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2011 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2017 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -37,13 +37,13 @@ typedef int (*section_fn) (struct format_instance * fid,
 			   unsigned report_missing_devices);
 
 #define _read_int32(root, path, result) \
-	dm_config_get_uint32(root, path, (uint32_t *) result)
+	dm_config_get_uint32(root, path, (uint32_t *) (result))
 
 #define _read_uint32(root, path, result) \
-	dm_config_get_uint32(root, path, result)
+	dm_config_get_uint32(root, path, (result))
 
 #define _read_uint64(root, path, result) \
-	dm_config_get_uint64(root, path, result)
+	dm_config_get_uint64(root, path, (result))
 
 /*
  * Logs an attempt to read an invalid format file.
@@ -140,13 +140,14 @@ static int _read_flag_config(const struct dm_config_node *n, uint64_t *status, i
 		return 0;
 	}
 
-	if (!(read_flags(status, type | STATUS_FLAG, cv))) {
+	/* For backward compatible metadata accept both type of flags */
+	if (!(read_flags(status, type, STATUS_FLAG | SEGTYPE_FLAG, cv))) {
 		log_error("Could not read status flags.");
 		return 0;
 	}
 
 	if (dm_config_get_list(n, "flags", &cv)) {
-		if (!(read_flags(status, type, cv))) {
+		if (!(read_flags(status, type, COMPATIBLE_FLAG, cv))) {
 			log_error("Could not read flags.");
 			return 0;
 		}
@@ -354,9 +355,10 @@ static int _read_segment(struct logical_volume *lv, const struct dm_config_node 
 	struct lv_segment *seg;
 	const struct dm_config_node *sn_child = sn->child;
 	const struct dm_config_value *cv;
-	uint32_t start_extent, extent_count;
+	uint32_t area_extents, start_extent, extent_count, reshape_count, data_copies;
 	struct segment_type *segtype;
 	const char *segtype_str;
+	char *segtype_with_flags;
 
 	if (!sn_child) {
 		log_error("Empty segment section.");
@@ -375,6 +377,12 @@ static int _read_segment(struct logical_volume *lv, const struct dm_config_node 
 		return 0;
 	}
 
+	if (!_read_int32(sn_child, "reshape_count", &reshape_count))
+		reshape_count = 0;
+
+	if (!_read_int32(sn_child, "data_copies", &data_copies))
+		data_copies = 1;
+
 	segtype_str = SEG_TYPE_NAME_STRIPED;
 
 	if (!dm_config_get_str(sn_child, "type", &segtype_str)) {
@@ -382,16 +390,33 @@ static int _read_segment(struct logical_volume *lv, const struct dm_config_node 
 		return 0;
 	}
 
-	if (!(segtype = get_segtype_from_string(lv->vg->cmd, segtype_str)))
+        /* Locally duplicate to parse out status flag bits */
+	if (!(segtype_with_flags = dm_pool_strdup(mem, segtype_str))) {
+		log_error("Cannot duplicate segtype string.");
+		return 0;
+	}
+
+	if (!read_segtype_lvflags(&lv->status, segtype_with_flags)) {
+		log_error("Couldn't read segtype for logical volume %s.",
+			  display_lvname(lv));
+	       return 0;
+	}
+
+	if (!(segtype = get_segtype_from_string(lv->vg->cmd, segtype_with_flags)))
 		return_0;
+
+	/* Can drop temporary string here as nothing has allocated from VGMEM meanwhile */
+	dm_pool_free(mem, segtype_with_flags);
 
 	if (segtype->ops->text_import_area_count &&
 	    !segtype->ops->text_import_area_count(sn_child, &area_count))
 		return_0;
 
+	area_extents = segtype->parity_devs ?
+		       raid_rimage_extents(segtype, extent_count, area_count - segtype->parity_devs, data_copies) : extent_count;
 	if (!(seg = alloc_lv_segment(segtype, lv, start_extent,
-				     extent_count, 0, 0, NULL, area_count,
-				     extent_count, 0, 0, 0, NULL))) {
+				     extent_count, reshape_count, 0, 0, NULL, area_count,
+				     area_extents, data_copies, 0, 0, 0, NULL))) {
 		log_error("Segment allocation failed");
 		return 0;
 	}
@@ -512,7 +537,7 @@ static int _read_segments(struct logical_volume *lv, const struct dm_config_node
 			count++;
 		}
 		/* FIXME Remove this restriction */
-		if ((lv->status & SNAPSHOT) && count > 1) {
+		if (lv_is_snapshot(lv) && count > 1) {
 			log_error("Only one segment permitted for snapshot");
 			return 0;
 		}

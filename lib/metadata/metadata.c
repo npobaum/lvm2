@@ -198,7 +198,9 @@ static int add_pv_to_vg(struct volume_group *vg, const char *pv_name,
 		log_error("Physical volume '%s' is already in volume group "
 			  "'%s'", pv_name, pv->vg_name);
 		return 0;
-	} else if (!new_pv) {
+	}
+
+	if (!new_pv) {
 		if ((used = is_used_pv(pv)) < 0)
 			return_0;
 
@@ -730,7 +732,9 @@ static int vg_extend_single_pv(struct volume_group *vg, char *pv_name,
 		log_error("%s not identified as an existing "
 			  "physical volume", pv_name);
 		return 0;
-	} else if (!pv && pp) {
+	}
+
+	if (!pv && pp) {
 		if (!(pv = pvcreate_vol(vg->cmd, pv_name, pp, 0)))
 			return_0;
 		new_pv = 1;
@@ -1089,8 +1093,7 @@ static struct volume_group *_vg_make_handle(struct cmd_context *cmd,
 	if (!vg && !(vg = alloc_vg("vg_make_handle", cmd, NULL)))
 		return_NULL;
 
-	if (vg->read_status != failure)
-		vg->read_status = failure;
+	vg->read_status = failure;
 
 	if (vg->fid && !_vg_update_vg_committed(vg))
 		vg->read_status |= FAILED_ALLOCATION;
@@ -1122,6 +1125,7 @@ int vg_has_unknown_segments(const struct volume_group *vg)
 struct volume_group *vg_lock_and_create(struct cmd_context *cmd, const char *vg_name)
 {
 	uint32_t rc;
+	struct volume_group *vg;
 
 	if (!validate_name(vg_name)) {
 		log_error("Invalid vg name %s", vg_name);
@@ -1134,7 +1138,11 @@ struct volume_group *vg_lock_and_create(struct cmd_context *cmd, const char *vg_
 		/* NOTE: let caller decide - this may be check for existence */
 		return _vg_make_handle(cmd, NULL, rc);
 
-	return vg_create(cmd, vg_name);
+	vg = vg_create(cmd, vg_name);
+	if (!vg || vg_read_error(vg))
+		unlock_vg(cmd, NULL, vg_name);
+
+	return vg;
 }
 
 /*
@@ -1256,7 +1264,7 @@ uint32_t extents_from_percent_size(struct volume_group *vg, const struct dm_list
 			}
 			break;
 		}
-		/* Fall back to use all PVs in VG like %FREE */
+		/* fall through to use all PVs in VG like %FREE */
 	case PERCENT_FREE:
 		if (!(extents = vg->free_count)) {
 			log_error("No free extents in Volume group %s.", vg->name);
@@ -1269,11 +1277,11 @@ uint32_t extents_from_percent_size(struct volume_group *vg, const struct dm_list
 	}
 
 	if (!(count = percent_of_extents(size, extents, roundup)))
-		log_error("Converted  %.2f%%%s into 0 extents.",
-			  (double) size / DM_PERCENT_1, get_percent_string(percent));
+		log_error("Converted  %s%%%s into 0 extents.",
+			  display_percent(vg->cmd, size), get_percent_string(percent));
 	else
-		log_verbose("Converted %.2f%%%s into %" PRIu32 " extents.",
-			    (double) size / DM_PERCENT_1, get_percent_string(percent), count);
+		log_verbose("Converted %s%%%s into %" PRIu32 " extents.",
+			    display_percent(vg->cmd, size), get_percent_string(percent), count);
 
 	return count;
 }
@@ -1286,7 +1294,7 @@ static dm_bitset_t _bitset_with_random_bits(struct dm_pool *mem, uint32_t num_bi
 	char buf[32];
 	uint32_t i = num_bits - num_set_bits;
 
-	if (!(bs = dm_bitset_create(mem, (unsigned) num_bits))) {
+	if (!(bs = dm_bitset_create(mem, num_bits))) {
 		log_error("Failed to allocate bitset for setting random bits.");
 		return NULL;
 	}
@@ -2381,7 +2389,7 @@ struct _lv_postorder_baton {
 	void *data;
 };
 
-static int _lv_postorder_visit(struct logical_volume *,
+static int _lv_postorder_visit(struct logical_volume *lv,
 			       int (*fn)(struct logical_volume *lv, void *data),
 			       void *data);
 
@@ -2544,7 +2552,7 @@ static int _lv_mark_if_partial_collect(struct logical_volume *lv, void *data)
 static int _lv_mark_if_partial_single(struct logical_volume *lv, void *data)
 {
 	unsigned s;
-	struct _lv_mark_if_partial_baton baton;
+	struct _lv_mark_if_partial_baton baton = { .partial = 0 };
 	struct lv_segment *lvseg;
 
 	dm_list_iterate_items(lvseg, &lv->segments) {
@@ -2556,7 +2564,6 @@ static int _lv_mark_if_partial_single(struct logical_volume *lv, void *data)
 		}
 	}
 
-	baton.partial = 0;
 	if (!_lv_each_dependency(lv, _lv_mark_if_partial_collect, &baton))
 		return_0;
 
@@ -3708,6 +3715,37 @@ struct _vg_read_orphan_baton {
 	int repair;
 };
 
+/*
+ * If we know that the PV is orphan, meaning there's at least one MDA on
+ * that PV which does not reference any VG and at the same time there's
+ * PV_EXT_USED flag set, we're certainly in an inconsistent state and we
+ * need to fix this.
+ *
+ * For example, such situation can happen during vgremove/vgreduce if we
+ * removed/reduced the VG, but we haven't written PV headers yet because
+ * vgremove stopped abruptly for whatever reason just before writing new
+ * PV headers with updated state, including PV extension flags (and so the
+ * PV_EXT_USED flag).
+ *
+ * However, in case the PV has no MDAs at all, we can't double-check
+ * whether the PV_EXT_USED is correct or not - if that PV is marked
+ * as used, it's either:
+ *  - really used (but other disks with MDAs are missing)
+ *  - or the error state as described above is hit
+ *
+ * User needs to overwrite the PV header directly if it's really clear
+ * the PV having no MDAs does not belong to any VG and at the same time
+ * it's still marked as being in use (pvcreate -ff <dev_name> will fix this).
+ *
+ * Note that the above doesn't account for the case where the PV has
+ * VG metadata that fails to be parsed.  In that case, the PV looks
+ * like an in-use orphan, and is auto-repaired here.  A PV with
+ * unparsable metadata should be kept on a special list of devices
+ * (like duplicate PVs) that are not auto-repaired, cannot be used
+ * by pvcreate, and are displayed with a special flag by 'pvs'.
+ */
+
+#if 0
 static int _check_or_repair_orphan_pv_ext(struct physical_volume *pv,
 					  struct lvmcache_info *info,
 					  struct _vg_read_orphan_baton *b)
@@ -3761,12 +3799,15 @@ static int _check_or_repair_orphan_pv_ext(struct physical_volume *pv,
 
 	return 1;
 }
+#endif
 
 static int _vg_read_orphan_pv(struct lvmcache_info *info, void *baton)
 {
 	struct _vg_read_orphan_baton *b = baton;
 	struct physical_volume *pv = NULL;
 	struct pv_list *pvl;
+	uint32_t ext_version;
+	uint32_t ext_flags;
 
 	if (!(pv = _pv_read(b->vg->cmd, b->vg->vgmem, dev_name(lvmcache_device(info)),
 			    b->vg->fid, b->warn_flags, 0))) {
@@ -3782,9 +3823,58 @@ static int _vg_read_orphan_pv(struct lvmcache_info *info, void *baton)
 	pvl->pv = pv;
 	add_pvl_to_vgs(b->vg, pvl);
 
+	/*
+	 * FIXME: this bit of code that does the auto repair is disabled
+	 * until we can distinguish cases where the repair should not
+	 * happen, i.e. the VG metadata could not be read/parsed.
+	 *
+	 * A PV holding VG metadata that lvm can't understand
+	 * (e.g. damaged, checksum error, unrecognized flag)
+	 * will appear as an in-use orphan, and would be cleared
+	 * by this repair code.  Disable this repair until the
+	 * code can keep track of these problematic PVs, and
+	 * distinguish them from actual in-use orphans.
+	 */
+
+	/*
 	if (!_check_or_repair_orphan_pv_ext(pv, info, baton)) {
 		stack;
 		return 0;
+	}
+	*/
+
+	/*
+	 * Nothing to do if PV header extension < 2:
+	 *  - version 0 is PV header without any extensions,
+	 *  - version 1 has bootloader area support only and
+	 *    we're not checking anything for that one here.
+	 */
+	ext_version = lvmcache_ext_version(info);
+	ext_flags = lvmcache_ext_flags(info);
+
+	/*
+	 * Warn about a PV that has the in-use flag set, but appears in
+	 * the orphan VG (no VG was found referencing it.)
+	 * There are a number of conditions that could lead to this:
+	 *
+	 * . The PV was created with no mdas and is used in a VG with
+	 * other PVs (with metadata) that have not yet appeared on
+	 * the system.  So, no VG metadata is found by lvm which
+	 * references the in-use PV with no mdas.
+	 *
+	 * . vgremove could have failed after clearing mdas but
+	 * before clearing the in-use flag.  In this case, the
+	 * in-use flag needs to be manually cleared on the PV.
+	 *
+	 * . The PV may have damanged/unrecognized VG metadata
+	 * that lvm could not read.
+	 *
+	 * . The PV may have no mdas, and the PVs with the metadata
+	 * may have damaged/unrecognized metadata.
+	 */
+	if ((ext_version >= 2) && (ext_flags & PV_EXT_USED)) {
+		log_warn("WARNING: PV %s is marked in use but no VG was found using it.", pv_dev_name(pv));
+		log_warn("WARNING: PV %s might need repairing.", pv_dev_name(pv));
 	}
 
 	return 1;
@@ -3911,7 +4001,13 @@ static int _check_reappeared_pv(struct volume_group *correct_vg,
          * confusing.
          */
         if (correct_vg->cmd->handles_missing_pvs)
-            return rv;
+		return rv;
+
+	/*
+	 * Skip this if there is no underlying device present for this PV.
+	 */
+	if (!pv->dev)
+		return rv;
 
 	dm_list_iterate_items(pvl, &correct_vg->pvs)
 		if (pv->dev == pvl->pv->dev && is_missing_pv(pvl->pv)) {
@@ -4040,6 +4136,7 @@ static int _check_or_repair_pv_ext(struct cmd_context *cmd,
 				   struct volume_group *vg,
 				   int repair, int *inconsistent_pvs)
 {
+	char uuid[64] __attribute__((aligned(8)));
 	struct lvmcache_info *info;
 	uint32_t ext_version, ext_flags;
 	struct pv_list *pvl;
@@ -4052,6 +4149,15 @@ static int _check_or_repair_pv_ext(struct cmd_context *cmd,
 		/* Missing PV - nothing to do. */
 		if (is_missing_pv(pvl->pv))
 			continue;
+
+		if (!pvl->pv->dev) {
+			/* is_missing_pv doesn't catch NULL dev */
+			memset(&uuid, 0, sizeof(uuid));
+			if (!id_write_format(&pvl->pv->id, uuid, sizeof(uuid)))
+				goto_out;
+			log_warn("WARNING: Not repairing PV %s with missing device.", uuid);
+			continue;
+		}
 
 		if (!(info = lvmcache_info_from_pvid(pvl->pv->dev->pvid, pvl->pv->dev, 0))) {
 			log_error("Failed to find cached info for PV %s.", pv_dev_name(pvl->pv));
@@ -4166,8 +4272,7 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 	if (lvmetad_used() && !use_precommitted) {
 		if ((correct_vg = lvmcache_get_vg(cmd, vgname, vgid, precommitted))) {
 			dm_list_iterate_items(pvl, &correct_vg->pvs)
-				if (pvl->pv->dev)
-					reappeared += _check_reappeared_pv(correct_vg, pvl->pv, *consistent);
+				reappeared += _check_reappeared_pv(correct_vg, pvl->pv, *consistent);
 			if (reappeared && *consistent)
 				*consistent = _repair_inconsistent_vg(correct_vg);
 			else
@@ -5448,6 +5553,19 @@ int vg_flag_write_locked(struct volume_group *vg)
 	return 0;
 }
 
+static int _access_vg_clustered(struct cmd_context *cmd, const struct volume_group *vg)
+{
+	if (vg_is_clustered(vg) && !locking_is_clustered()) {
+		if (!cmd->ignore_clustered_vgs)
+			log_error("Skipping clustered volume group %s", vg->name);
+		else
+			log_verbose("Skipping clustered volume group %s", vg->name);
+		return 0;
+	}
+
+	return 1;
+}
+
 /*
  * Performs a set of checks against a VG according to bits set in status
  * and returns FAILED_* bits for those that aren't acceptable.
@@ -5459,15 +5577,9 @@ static uint32_t _vg_bad_status_bits(const struct volume_group *vg,
 {
 	uint32_t failure = 0;
 
-	if ((status & CLUSTERED) &&
-	    (vg_is_clustered(vg)) && !locking_is_clustered()) {
-		if (!vg->cmd->ignore_clustered_vgs)
-			log_error("Skipping clustered volume group %s", vg->name);
-		else
-			log_verbose("Skipping clustered volume group %s", vg->name);
+	if ((status & CLUSTERED) && !_access_vg_clustered(vg->cmd, vg))
 		/* Return because other flags are considered undefined. */
 		return FAILED_CLUSTERED;
-	}
 
 	if ((status & EXPORTED_VG) &&
 	    vg_is_exported(vg)) {
@@ -5556,19 +5668,6 @@ static int _allow_extra_system_id(struct cmd_context *cmd, const char *system_id
 	return 0;
 }
 
-static int _access_vg_clustered(struct cmd_context *cmd, struct volume_group *vg)
-{
-	if (vg_is_clustered(vg) && !locking_is_clustered()) {
-		if (!cmd->ignore_clustered_vgs)
-			log_error("Skipping clustered volume group %s", vg->name);
-		else
-			log_verbose("Skipping clustered volume group %s", vg->name);
-		return 0;
-	}
-
-	return 1;
-}
-
 static int _access_vg_lock_type(struct cmd_context *cmd, struct volume_group *vg,
 				uint32_t lockd_state, uint32_t *failure)
 {
@@ -5630,10 +5729,15 @@ static int _access_vg_lock_type(struct cmd_context *cmd, struct volume_group *vg
 			log_error("Cannot access VG %s due to failed lock.", vg->name);
 			*failure |= FAILED_LOCK_MODE;
 			return 0;
-		} else {
-			log_warn("Reading VG %s without a lock.", vg->name);
-			return 1;
 		}
+
+		log_warn("Reading VG %s without a lock.", vg->name);
+		return 1;
+	}
+
+	if (test_mode()) {
+		log_error("Test mode is not yet supported with lock type %s.", vg->lock_type);
+		return 0;
 	}
 
 	return 1;
@@ -5865,7 +5969,11 @@ static struct volume_group *_vg_lock_and_read(struct cmd_context *cmd, const cha
 	if (failure)
 		goto_bad;
 
-	return _vg_make_handle(cmd, vg, failure);
+	if (!(vg = _vg_make_handle(cmd, vg, failure)) || vg_read_error(vg))
+		if (!already_locked)
+			unlock_vg(cmd, vg, vg_name);
+
+	return vg;
 
 bad:
 	if (!already_locked)
@@ -5926,7 +6034,12 @@ struct volume_group *vg_read(struct cmd_context *cmd, const char *vg_name,
 struct volume_group *vg_read_for_update(struct cmd_context *cmd, const char *vg_name,
 			 const char *vgid, uint32_t read_flags, uint32_t lockd_state)
 {
-	return vg_read(cmd, vg_name, vgid, read_flags | READ_FOR_UPDATE, lockd_state);
+	struct volume_group *vg = vg_read(cmd, vg_name, vgid, read_flags | READ_FOR_UPDATE, lockd_state);
+
+	if (!vg || vg_read_error(vg))
+		stack;
+
+	return vg;
 }
 
 /*
@@ -5955,9 +6068,8 @@ uint32_t vg_read_error(struct volume_group *vg_handle)
  */
 uint32_t vg_lock_newname(struct cmd_context *cmd, const char *vgname)
 {
-	if (!lock_vol(cmd, vgname, LCK_VG_WRITE, NULL)) {
+	if (!lock_vol(cmd, vgname, LCK_VG_WRITE, NULL))
 		return FAILED_LOCKING;
-	}
 
 	/* Find the vgname in the cache */
 	/* If it's not there we must do full scan to be completely sure */
@@ -6390,7 +6502,7 @@ int vg_strip_outdated_historical_lvs(struct volume_group *vg) {
 		 * Removal time in the future? Not likely,
 		 * but skip this item in any case.
 		*/
-		if ((current_time) < glvl->glv->historical->timestamp_removed)
+		if (current_time < (time_t) glvl->glv->historical->timestamp_removed)
 			continue;
 
 		if ((current_time - glvl->glv->historical->timestamp_removed) > threshold) {

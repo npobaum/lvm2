@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2010-2015 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -17,13 +18,15 @@ export LVM_TEST_LVMETAD_DEBUG_OPTS=${LVM_TEST_LVMETAD_DEBUG_OPTS-}
 . lib/inittest
 
 aux prepare_pvs 5 20
+get_devs
+
 # proper DEVRANGE needs to be set according to extent size
 DEVRANGE="0-32"
-vgcreate -s 32k $vg $(cat DEVICES)
+vgcreate -s 32k "$vg" "${DEVICES[@]}"
 
 # convert from linear to 2-way mirror ("mirror" default type)
 lvcreate -aey -l2 -n $lv1 $vg "$dev1"
-lvconvert -i1 -m+1 $vg/$lv1 "$dev2" "$dev3:0-1" \
+lvconvert -i1 -m+1 -R32k $vg/$lv1 "$dev2" "$dev3:0-1" \
 	--config 'global { mirror_segtype_default = "mirror" }'
 lvs --noheadings -o attr $vg/$lv1 | grep '^[[:space:]]*m'
 lvremove -ff $vg
@@ -85,9 +88,6 @@ offset=$(( offset + 2 ))
 # update in case  mirror ever gets faster and allows parallel read
 aux delay_dev "$dev2" 0 2000 ${offset}:1
 lvcreate -aey -l5 -Zn -Wn --type mirror --regionsize 16K -m2 -n $lv1 $vg "$dev1" "$dev2" "$dev4" "$dev3:$DEVRANGE"
-# FIXME: add a new explicit option to define the polling behavior
-# done here with 'lvconvert vg/lv'.  That option can specify
-# that the command succeeds even if the LV doesn't need polling.
 should not lvconvert -m-1 $vg/$lv1 "$dev1"
 aux enable_dev "$dev2"
 should lvconvert $vg/$lv1 # wait
@@ -95,7 +95,7 @@ lvconvert -m2 $vg/$lv1 "$dev1" "$dev2" "$dev4" "$dev3:0" # If the above "should"
 
 aux wait_for_sync $vg $lv1
 lvconvert -m-1 $vg/$lv1 "$dev1"
-check mirror_images_on $lv1 "$dev2" "$dev4"
+check mirror_images_on $vg $lv1 "$dev2" "$dev4"
 lvconvert -m-1 $vg/$lv1 "$dev2"
 check linear $vg $lv1
 check lv_on $vg $lv1 "$dev4"
@@ -219,10 +219,25 @@ check mirror_no_temporaries $vg $lv1
 check mirror_legs $vg $lv1 2
 lvremove -ff $vg
 
+# Check the same with new --startpool lvconvert command option
+lvcreate -aey -l2 --type mirror -m1 -n $lv1 $vg "$dev1" "$dev2" "$dev3:$DEVRANGE"
+LVM_TEST_TAG="kill_me_$PREFIX" lvconvert -m+1 -b $vg/$lv1 "$dev4"
+# FIXME: Extra wait here for mirror upconvert synchronization
+# otherwise we may fail her on parallel upconvert and downconvert
+# lvconvert-mirror-updown.sh tests this errornous case separately
+should lvconvert --startpoll $vg/$lv1
+lvconvert -m-1 $vg/$lv1 "$dev2"
+should lvconvert --startpoll $vg/$lv1
+
+check mirror $vg $lv1 "$dev3"
+check mirror_no_temporaries $vg $lv1
+check mirror_legs $vg $lv1 2
+lvremove -ff $vg
+
 # ---------------------------------------------------------------------
 
 # "rhbz440405: lvconvert -m0 incorrectly fails if all PEs allocated"
-lvcreate -aey -l$(pvs --noheadings -ope_count "$dev1") --type mirror -m1 -n $lv1 $vg "$dev1" "$dev2" "$dev3:$DEVRANGE"
+lvcreate -aey -l "$(get pv_field "$dev1" pe_count)" --type mirror -m1 -n $lv1 $vg "$dev1" "$dev2" "$dev3:$DEVRANGE"
 aux wait_for_sync $vg $lv1
 lvconvert -m0 $vg/$lv1 "$dev1"
 check linear $vg $lv1
@@ -238,7 +253,7 @@ lvremove -ff $vg
 
 # lvconvert from linear (on multiple PVs) to mirror
 lvcreate -aey -l 8 -n $lv1 $vg "$dev1:0-3" "$dev2:0-3"
-lvconvert --type mirror -vvvv -m1 $vg/$lv1
+lvconvert --type mirror -m1 $vg/$lv1
 
 should check mirror $vg $lv1
 check mirror_legs $vg $lv1 2

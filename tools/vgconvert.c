@@ -97,7 +97,7 @@ static int vgconvert_single(struct cmd_context *cmd, const char *vg_name,
 	if (cmd->fmt->features & FMT_RESTRICTED_LVIDS) {
 		dm_list_iterate_items(lvl, &vg->lvs) {
 			lv = lvl->lv;
-			if (lv->status & SNAPSHOT)
+			if (lv_is_snapshot(lv))
 				continue;
 			if (lvnum_from_lvid(&lv->lvid) < MAX_RESTRICTED_LVS)
 				continue;
@@ -157,21 +157,9 @@ int vgconvert(struct cmd_context *cmd, int argc, char **argv)
 		return EINVALID_CMD_LINE;
 	}
 
-	if (arg_is_set(cmd, metadatacopies_ARG)) {
-		log_error("Invalid option --metadatacopies, "
-			  "use --pvmetadatacopies instead.");
-		return EINVALID_CMD_LINE;
-	}
 	if (!(cmd->fmt->features & FMT_MDAS) &&
-	    (arg_is_set(cmd, pvmetadatacopies_ARG) ||
-	     arg_is_set(cmd, metadatasize_ARG))) {
+	    arg_is_set(cmd, pvmetadatacopies_ARG)) {
 		log_error("Metadata parameters only apply to text format");
-		return EINVALID_CMD_LINE;
-	}
-
-	if (arg_is_set(cmd, pvmetadatacopies_ARG) &&
-	    arg_int_value(cmd, pvmetadatacopies_ARG, -1) > 2) {
-		log_error("Metadatacopies may only be 0, 1 or 2");
 		return EINVALID_CMD_LINE;
 	}
 

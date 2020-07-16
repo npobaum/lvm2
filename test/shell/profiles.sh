@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 
 # Copyright (C) 2013 Red Hat, Inc. All rights reserved.
 #
@@ -81,10 +81,9 @@ aux profileconf valid_cmd_profile 'global/units = "h"' \
 
 aux profileconf valid_mda_profile 'allocation/thin_pool_zero = 0' \
 				  'allocation/thin_pool_discards = "passdown"' \
-				  'allocation/thin_pool_chunk_size = 64'\
+				  'allocation/thin_pool_chunk_size = 64' \
 				  'activation/thin_pool_autoextend_threshold = 100' \
-				  'activation/thin_pool_autoextend_percent = 20' \
-
+				  'activation/thin_pool_autoextend_percent = 20'
 
 aux profileconf extra_mda_profile 'allocation/thin_pool_chunk_size = 128'
 
@@ -131,3 +130,5 @@ lvm dumpconfig --type profilable-command --file etc/profile/generated.profile
 pvs --profile generated &> msg
 not grep "$MSG_NOT_PROFILABLE" msg
 not grep "$MSG_IGNORING_INVALID_CMD_PROFILE" msg
+
+vgremove -ff $vg1

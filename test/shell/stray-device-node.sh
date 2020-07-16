@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2014 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -15,9 +16,11 @@ SKIP_WITH_LVMPOLLD=1
 . lib/inittest
 
 aux prepare_devs 3
+get_devs
+
 cp -r "$dev1" "$DM_DEV_DIR/stray"
 
-vgcreate $vg $(cat DEVICES)
+vgcreate "$vg" "${DEVICES[@]}"
 lvcreate -an -Zn --type mirror -m 1 -l 1 -n mirror $vg
 aux disable_dev "$dev1"
 # FIXME:

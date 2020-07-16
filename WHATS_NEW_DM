@@ -1,3 +1,51 @@
+Version 1.02.142 - 20th July 2017
+=================================
+  Create /dev/disk/by-part{uuid,label} and gpt-auto-root symlinks with udev.
+
+Version 1.02.141 - 28th June 2017
+=================================
+  Fix reusing of dm_task structure for status reading (used by dmeventd).
+  Add dm_percent_to_round_float for adjusted percentage rounding.
+  Reset array with dead rimage devices once raid gets in sync.
+  Drop unneeded --config option from raid dmeventd plugin.
+  dm_get_status_raid() handle better some incosistent md statuses.
+  Accept truncated files in calls to dm_stats_update_regions_from_fd().
+  Restore Warning by 5% increment when thin-pool is over 80% (1.02.138).
+
+Version 1.02.140 - 3rd May 2017
+===============================
+  Add missing configure --enable-dmfilemapd status message and fix --disable.
+
+Version 1.02.139 - 13th April 2017
+==================================
+  Fix assignment in _target_version() when dm task can't run.
+  Flush stdout on each iteration when using --count or --interval.
+  Show detailed error message when execvp fails while starting dmfilemapd.
+  Fix segmentation fault when dmfilemapd is run with no arguments.
+  Numerous minor dmfilemapd fixes from coverity.
+
+Version 1.02.138 - 28th March 2017
+==================================
+  Support additional raid5/6 configurations.
+  Provide dm_tree_node_add_cache_target@base compatible symbol.
+  Support DM_CACHE_FEATURE_METADATA2, new cache metadata format 2.
+  Improve code to handle mode mask for cache nodes.
+  Cache status check for passthrough also require trailing space.
+  Add extra memory page when limiting pthread stack size in dmeventd.
+  Avoids immediate resume when preloaded device is smaller.
+  Do not suppress kernel key description in dmsetup table output for dm-crypt.
+  Support configurable command executed from dmeventd thin plugin.
+  Support new R|r human readable units output format.
+  Thin dmeventd plugin reacts faster on lvextend failure path with umount.
+  Add dm_stats_bind_from_fd() to bind a stats handle from a file descriptor.
+  Do not try call callback when reverting activation on error path.
+  Fix file mapping for extents with physically adjacent extents in dmstats.
+  Validation vsnprintf result in runtime translate of dm_log (1.02.136).
+  Separate filemap extent allocation from region table in dmstats.
+  Fix segmentation fault when filemap region creation fails in dmstats.
+  Fix performance of region cleanup for failed filemap creation in dmstats.
+  Fix very slow region deletion with many regions in dmstats.
+
 Version 1.02.137 - 30th November 2016
 =====================================
   Document raid status values.

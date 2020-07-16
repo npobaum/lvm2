@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2011-2012 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -32,7 +33,7 @@ for i in "$dev1" "$dev2" "$dev3" ; do
 		vgreduce --removemissing --force $vg
 
 		# check if reduced device was removed
-		test "$i" = "$dev1" && dm_table | not egrep "$vg-$lv1: *[^ ]+"
+		test "$i" = "$dev1" && dm_table | not grep -E "$vg-$lv1: *[^ ]+"
 
 		lvcreate -l1 -n $lv2 $vg
 
@@ -100,3 +101,6 @@ vgreduce --removemissing --force $vg
 # Failed to activate new LV.
 
 should lvcreate -l1 $vg "$dev1"
+should not dmsetup remove ${vg}-lvol0
+
+vgremove -ff $vg

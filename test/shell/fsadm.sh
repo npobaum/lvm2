@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2008-2014 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -44,7 +45,8 @@ dev_vg_lv2="$DM_DEV_DIR/$vg_lv2"
 mount_dir="mnt"
 mount_space_dir="mnt space dir"
 # for recursive call
-export LVM_BINARY=$(which lvm)
+LVM_BINARY=$(which lvm)
+export LVM_BINARY
 
 test ! -d "$mount_dir" && mkdir "$mount_dir"
 test ! -d "$mount_space_dir" && mkdir "$mount_space_dir"
@@ -78,7 +80,7 @@ fscheck_reiserfs()
 check_missing()
 {
 	local t
-	eval t=$\check_$1
+	eval "t=\$check_$1"
 	test -z "$t" && return 0
 	test "$t" = skip && return 1
 	echo "WARNING: fsadm test skipped $1 tests, $t tool is missing."
@@ -131,6 +133,7 @@ if check_missing ext3; then
 	not fsadm -y --lvresize resize $vg_lv 4M
 	echo n | not lvresize -L4M -r -n $vg_lv
 	lvresize -L+20M -r -n $vg_lv
+	lvresize -L-10M -r -y $vg_lv
 	umount "$mount_dir"
 	umount "$mount_space_dir"
 	fscheck_ext3

@@ -54,11 +54,12 @@ struct lv_seg_status {
 };
 
 struct lv_with_info_and_seg_status {
-	const struct logical_volume *lv;	/* input */
 	int info_ok;
+	const struct logical_volume *lv;        /* output */
 	struct lvinfo info;			/* output */
 	int seg_part_of_lv;			/* output */
-	struct lv_seg_status seg_status;	/* input/output, see lv_seg_status */
+	struct lv_seg_status seg_status;	/* output, see lv_seg_status */
+	/* TODO: add extra status for snapshot origin */
 };
 
 struct lv_activate_opts {
@@ -123,6 +124,8 @@ int lv_deactivate(struct cmd_context *cmd, const char *lvid_s, const struct logi
 
 int lv_mknodes(struct cmd_context *cmd, const struct logical_volume *lv);
 
+int lv_deactivate_any_missing_subdevs(const struct logical_volume *lv);
+
 /*
  * Returns 1 if info structure has been populated, else 0 on failure.
  * When lvinfo* is NULL, it returns 1 if the device is locally active, 0 otherwise.
@@ -133,21 +136,14 @@ int lv_info_by_lvid(struct cmd_context *cmd, const char *lvid_s, int use_layer,
 		    struct lvinfo *info, int with_open_count, int with_read_ahead);
 
 /*
- * Returns 1 if lv_seg_status structure has been populated,
- * else 0 on failure or if device not active locally.
- */
-int lv_status(struct cmd_context *cmd, const struct lv_segment *lv_seg,
-	      int use_layer, struct lv_seg_status *lv_seg_status);
-
-/*
  * Returns 1 if lv_info_and_seg_status structure has been populated,
  * else 0 on failure or if device not active locally.
  *
  * lv_info_with_seg_status is the same as calling lv_info and then lv_status,
  * but this fn tries to do that with one ioctl if possible.
  */
-int lv_info_with_seg_status(struct cmd_context *cmd, const struct logical_volume *lv,
-			    const struct lv_segment *lv_seg, int use_layer,
+int lv_info_with_seg_status(struct cmd_context *cmd,
+			    const struct lv_segment *lv_seg,
 			    struct lv_with_info_and_seg_status *status,
 			    int with_open_count, int with_read_ahead);
 
@@ -172,6 +168,8 @@ int lv_snapshot_percent(const struct logical_volume *lv, dm_percent_t *percent);
 int lv_mirror_percent(struct cmd_context *cmd, const struct logical_volume *lv,
 		      int wait, dm_percent_t *percent, uint32_t *event_nr);
 int lv_raid_percent(const struct logical_volume *lv, dm_percent_t *percent);
+int lv_raid_dev_count(const struct logical_volume *lv, uint32_t *dev_cnt);
+int lv_raid_data_offset(const struct logical_volume *lv, uint64_t *data_offset);
 int lv_raid_dev_health(const struct logical_volume *lv, char **dev_health);
 int lv_raid_mismatch_count(const struct logical_volume *lv, uint64_t *cnt);
 int lv_raid_sync_action(const struct logical_volume *lv, char **sync_action);

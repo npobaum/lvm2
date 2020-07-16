@@ -130,7 +130,7 @@ static int _lvmetad_clear_dev(dev_t devno, int32_t major, int32_t minor)
 {
 	char buf[24];
 
-	(void) dm_snprintf(buf, sizeof(buf), FMTi32 ":" FMTi32, major, minor);
+	(void) dm_snprintf(buf, sizeof(buf), FMTd32 ":" FMTd32, major, minor);
 
 	if (!lvmetad_pv_gone(devno, buf))
 		return_0;
@@ -284,7 +284,7 @@ static int _pvscan_autoactivate(struct cmd_context *cmd, struct pvscan_aa_params
 	handle->custom_handle = pp;
 
 	if (all_vgs) {
-		cmd->command->flags |= ALL_VGS_IS_DEFAULT;
+		cmd->cname->flags |= ALL_VGS_IS_DEFAULT;
 		pp->refresh_all = 1;
 	}
 

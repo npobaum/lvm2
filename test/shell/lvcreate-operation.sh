@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2008 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -23,8 +24,10 @@ cleanup_lvs() {
 }
 
 aux prepare_pvs 2
+get_devs
+
 aux pvcreate --metadatacopies 0 "$dev1"
-aux vgcreate $vg $(cat DEVICES)
+aux vgcreate "$vg" "${DEVICES[@]}"
 
 # ---
 # Create snapshots of LVs on --metadatacopies 0 PV (bz450651)

@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2008-2013 Red Hat, Inc. All rights reserved.
 # Copyright (C) 2007 NEC Corporation
 #
@@ -25,7 +26,7 @@ which md5sum || skip
 # Utilities
 
 create_vg_() {
-	vgcreate -c n -s 128k $vg $(cat DEVICES)
+	vgcreate -c n -s 128k "$vg" "${DEVICES[@]}"
 }
 
 # ---------------------------------------------------------------------
@@ -83,6 +84,8 @@ check_and_cleanup_lvs_() {
 # Initialize PVs and VGs
 
 aux prepare_pvs 5 5
+get_devs
+
 create_vg_
 
 for mode in "--atomic" ""
@@ -342,7 +345,7 @@ check_and_cleanup_lvs_
 
 #COMM "pvmove out of --metadatacopies 0 PV (bz252150)"
 vgremove -ff $vg
-pvcreate $(cat DEVICES)
+pvcreate "${DEVICES[@]}"
 pvcreate --metadatacopies 0 "$dev1" "$dev2"
 create_vg_
 lvcreate -l4 -n $lv1 $vg "$dev1"
@@ -352,7 +355,7 @@ pvmove $mode "$dev1"
 dmsetup create $vg-pvmove0 --notable
 not pvmove $mode -i 1 "$dev2"
 dmsetup info --noheadings -c -o suspended $vg-$lv1
-test $(dmsetup info --noheadings -c -o suspended $vg-$lv1) = "Active"
+test "$(dmsetup info --noheadings -c -o suspended "$vg-$lv1")" = "Active"
 if dmsetup info $vg-pvmove0_mimage_0 > /dev/null; then
         dmsetup remove $vg-pvmove0 $vg-pvmove0_mimage_0 $vg-pvmove0_mimage_1
 else

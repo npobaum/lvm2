@@ -1,4 +1,5 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 # Copyright (C) 2013-2014 Red Hat, Inc. All rights reserved.
 #
 # This copyrighted material is made available to anyone wishing to use,
@@ -18,9 +19,7 @@ export LVM_TEST_THIN_REPAIR_CMD=${LVM_TEST_THIN_REPAIR_CMD-/bin/false}
 
 aux have_thin 1 10 0 || skip
 
-aux prepare_pvs 3 1256
-
-vgcreate -s 1M $vg $(cat DEVICES)
+aux prepare_vg 3 1256
 
 for deactivate in true false; do
 # Create some thin volumes
