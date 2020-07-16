@@ -604,13 +604,138 @@ static void _check_pv_list(struct cmd_context *cmd, int argc, char **argv,
 	}
 }
 
+static void _del_option_from_list(struct dm_list *sll, const char *prefix,
+				  size_t prefix_len, const char *str)
+{
+	struct dm_list *slh;
+	struct dm_str_list *sl;
+	const char *a = str, *b;
+
+	prefix_len--;
+	dm_list_uniterate(slh, sll, sll) {
+		sl = dm_list_item(slh, struct dm_str_list);
+
+		/* exact match */
+		if (!strcmp(str, sl->str)) {
+			dm_list_del(slh);
+			return;
+		}
+
+		/* also try to match with known prefix */
+		b = sl->str;
+		if (!strncmp(prefix, a, prefix_len)) {
+			a += prefix_len;
+			if (*a == '_')
+				a++;
+		}
+		if (!strncmp(prefix, b, prefix_len)) {
+			b += prefix_len;
+			if (*b == '_')
+				b++;
+		}
+		if (!strcmp(a, b)) {
+			dm_list_del(slh);
+			return;
+		}
+	}
+}
+
+static int _get_report_options(struct cmd_context *cmd,
+			       report_type_t report_type,
+			       const char **options,
+			       const char **fields_to_compact)
+{
+	const char *prefix = report_get_field_prefix(report_type);
+	size_t prefix_len = strlen(prefix);
+	struct arg_value_group_list *current_group;
+	struct dm_list *final_opts_list;
+	struct dm_list *final_compact_list = NULL;
+	struct dm_list *opts_list = NULL;
+	int opts_list_destroy = 1;
+	struct dm_str_list *sl;
+	const char *opts;
+	int r = ECMD_PROCESSED;
+
+
+	if (!(final_opts_list = str_to_str_list(NULL, *options, ",", 1))) {
+		r = ECMD_FAILED;
+		goto_out;
+	}
+
+	dm_list_iterate_items(current_group, &cmd->arg_value_groups) {
+		if (!grouped_arg_is_set(current_group->arg_values, options_ARG))
+			continue;
+
+		opts = grouped_arg_str_value(current_group->arg_values, options_ARG, NULL);
+		if (!opts || !*opts) {
+			log_error("Invalid options string: %s", opts);
+			r = EINVALID_CMD_LINE;
+			goto out;
+		}
+
+		switch (*opts) {
+			case '+':
+				/* fall through */
+			case '-':
+				/* fall through */
+			case '#':
+				if (!(opts_list = str_to_str_list(NULL, opts + 1, ",", 1))) {
+					r = ECMD_FAILED;
+					goto_out;
+				}
+				if (*opts == '+') {
+					dm_list_splice(final_opts_list, opts_list);
+				} else if (*opts == '-') {
+					dm_list_iterate_items(sl, opts_list)
+						_del_option_from_list(final_opts_list, prefix,
+								      prefix_len, sl->str);
+				} else if (*opts == '#') {
+					if (!final_compact_list) {
+						final_compact_list = opts_list;
+						opts_list_destroy = 0;
+					} else
+						dm_list_splice(final_compact_list, opts_list);
+				}
+				if (opts_list_destroy)
+					str_list_destroy(opts_list, 1);
+				else
+					opts_list_destroy = 1;
+				opts_list = NULL;
+				break;
+			default:
+				str_list_destroy(final_opts_list, 1);
+				if (!(final_opts_list = str_to_str_list(NULL, opts, ",", 1))) {
+					r = ECMD_FAILED;
+					goto out;
+				}
+		}
+	}
+
+	if (!(*options = str_list_to_str(cmd->mem, final_opts_list, ","))) {
+		r = ECMD_FAILED;
+		goto out;
+	}
+	if (final_compact_list &&
+	    !(*fields_to_compact = str_list_to_str(cmd->mem, final_compact_list, ","))) {
+		dm_pool_free(cmd->mem, (char *) *options);
+		r = ECMD_FAILED;
+		goto out;
+	}
+out:
+	if (opts_list)
+		str_list_destroy(final_opts_list, 1);
+	if (final_compact_list)
+		str_list_destroy(final_compact_list, 1);
+	if (final_opts_list)
+		str_list_destroy(final_opts_list, 1);
+	return r;
+}
+
 static int _report(struct cmd_context *cmd, int argc, char **argv,
 		   report_type_t report_type)
 {
 	void *report_handle;
 	struct processing_handle handle = {0};
-	const char *opts;
-	char *str;
 	const char *keys = NULL, *options = NULL, *selection = NULL, *separator;
 	int r = ECMD_PROCESSED;
 	int aligned, buffered, headings, field_prefixes, quoted;
@@ -618,6 +743,7 @@ static int _report(struct cmd_context *cmd, int argc, char **argv,
 	unsigned args_are_pvs;
 	int lv_info_needed, lv_segment_status_needed;
 	int lock_global = 0;
+	const char *fields_to_compact = NULL;
 
 	aligned = find_config_tree_bool(cmd, report_aligned_CFG, NULL);
 	buffered = find_config_tree_bool(cmd, report_buffered_CFG, NULL);
@@ -688,23 +814,9 @@ static int _report(struct cmd_context *cmd, int argc, char **argv,
 	}
 
 	/* If -o supplied use it, else use default for report_type */
-	if (arg_count(cmd, options_ARG)) {
-		opts = arg_str_value(cmd, options_ARG, "");
-		if (!opts || !*opts) {
-			log_error("Invalid options string: %s", opts);
-			return EINVALID_CMD_LINE;
-		}
-		if (*opts == '+') {
-			if (!(str = dm_pool_alloc(cmd->mem,
-					 strlen(options) + strlen(opts) + 1))) {
-				log_error("options string allocation failed");
-				return ECMD_FAILED;
-			}
-			(void) sprintf(str, "%s,%s", options, opts + 1);
-			options = str;
-		} else
-			options = opts;
-	}
+	if (arg_count(cmd, options_ARG) &&
+	    ((r = _get_report_options(cmd, report_type, &options, &fields_to_compact) != ECMD_PROCESSED)))
+		return r;
 
 	/* -O overrides default sort settings */
 	keys = arg_str_value(cmd, sort_ARG, keys);
@@ -817,9 +929,14 @@ static int _report(struct cmd_context *cmd, int argc, char **argv,
 		break;
 	}
 
-	if (find_config_tree_bool(cmd, report_compact_output_CFG, NULL) &&
-	    !dm_report_compact_fields(report_handle))
-		log_error("Failed to compact report output.");
+	if (find_config_tree_bool(cmd, report_compact_output_CFG, NULL)) {
+		if (!dm_report_compact_fields(report_handle))
+			log_error("Failed to compact report output.");
+	} else if (fields_to_compact ||
+		   (fields_to_compact = find_config_tree_str_allow_empty(cmd, report_compact_output_cols_CFG, NULL))) {
+		if (!dm_report_compact_given_fields(report_handle, fields_to_compact))
+			log_error("Failed to compact given columns in report output.");
+	}
 
 	dm_report_output(report_handle);
 

@@ -63,6 +63,8 @@
 #define DEFAULT_MIRROR_LOG_FAULT_POLICY "allocate"
 #define DEFAULT_MIRROR_IMAGE_FAULT_POLICY "remove"
 #define DEFAULT_MIRROR_MAX_IMAGES 8 /* limited by kernel DM_KCOPYD_MAX_REGIONS */
+#define DEFAULT_RAID_MAX_IMAGES 8
+
 #define DEFAULT_RAID_FAULT_POLICY "warn"
 
 #define DEFAULT_DMEVENTD_RAID_LIB "libdevmapper-event-lvm2raid.so"
@@ -117,8 +119,8 @@
 #define DEFAULT_CACHE_POOL_CHUNK_SIZE 64 /* KB */
 #define DEFAULT_CACHE_POOL_MIN_METADATA_SIZE 2048  /* KB */
 #define DEFAULT_CACHE_POOL_MAX_METADATA_SIZE (16 * 1024 * 1024)  /* KB */
-#define DEFAULT_CACHE_POOL_CACHEMODE "writethrough"
-#define DEFAULT_CACHE_POOL_POLICY "mq"
+#define DEFAULT_CACHE_POLICY "mq"
+#define DEFAULT_CACHE_MODE "writethrough"
 
 #define DEFAULT_UMASK 0077
 
@@ -198,6 +200,8 @@
 #define DEFAULT_REP_SEPARATOR " "
 #define DEFAULT_REP_LIST_ITEM_SEPARATOR ","
 #define DEFAULT_TIME_FORMAT "%Y-%m-%d %T %z"
+
+#define DEFAULT_COMPACT_OUTPUT_COLS ""
 
 #define DEFAULT_LVS_COLS "lv_name,vg_name,lv_attr,lv_size,pool_lv,origin,data_percent,metadata_percent,move_pv,mirror_log,copy_percent,convert_lv"
 #define DEFAULT_VGS_COLS "vg_name,pv_count,lv_count,snap_count,vg_attr,vg_size,vg_free"

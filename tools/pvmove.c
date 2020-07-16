@@ -32,7 +32,7 @@ static int _pvmove_target_present(struct cmd_context *cmd, int clustered)
 	if (clustered && _clustered_found >= 0)
 		return _clustered_found;
 
-	if (!(segtype = get_segtype_from_string(cmd, "mirror")))
+	if (!(segtype = get_segtype_from_string(cmd, SEG_TYPE_NAME_MIRROR)))
 		return_0;
 
 	if (activation() && segtype->ops->target_present &&
@@ -712,7 +712,8 @@ out_ret:
 	 * for some time monitoring the progress, and we don not want
 	 * or need the lockd lock held over that.
 	 */
-	lockd_vg(cmd, vg_name, "un", 0, &lockd_state);
+	if (!lockd_vg(cmd, vg_name, "un", 0, &lockd_state))
+		stack;
 
 	return r;
 }
@@ -762,7 +763,8 @@ static int _read_poll_id_from_pvname(struct cmd_context *cmd, const char *pv_nam
 
 	unlock_and_release_vg(cmd, vg, vg_name);
 out:
-	lockd_vg(cmd, vg_name, "un", 0, &lockd_state);
+	if (!lockd_vg(cmd, vg_name, "un", 0, &lockd_state))
+		stack;
 	free_pv_fid(pv);
 	return ret;
 }
@@ -815,9 +817,6 @@ int pvmove_poll(struct cmd_context *cmd, const char *pv_name,
 	int r;
 	struct poll_operation_id *id = NULL;
 
-	if (test_mode())
-		return ECMD_PROCESSED;
-
 	if (uuid) {
 		id = _create_id(cmd, pv_name, vg_name, lv_name, uuid);
 		if (!id) {
@@ -826,7 +825,10 @@ int pvmove_poll(struct cmd_context *cmd, const char *pv_name,
 		}
 	}
 
-	r = poll_daemon(cmd, background, PVMOVE, &_pvmove_fns, "Moved", id);
+	if (test_mode())
+		r = ECMD_PROCESSED;
+	else
+		r = poll_daemon(cmd, background, PVMOVE, &_pvmove_fns, "Moved", id);
 
 	_destroy_id(cmd, id);
 

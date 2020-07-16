@@ -71,6 +71,16 @@ static void _dev_init(struct device *dev, int max_error_count)
 	dm_list_init(&dev->open_list);
 }
 
+void dev_destroy_file(struct device *dev)
+{
+	if (!(dev->flags & DEV_ALLOCED))
+		return;
+
+	dm_free((void *) dm_list_item(dev->aliases.n, struct dm_str_list)->str);
+	dm_free(dev->aliases.n);
+	dm_free(dev);
+}
+
 struct device *dev_create_file(const char *filename, struct device *dev,
 			       struct dm_str_list *alias, int use_malloc)
 {
@@ -331,11 +341,13 @@ static int _add_alias(struct device *dev, const char *path)
 	if (!dm_list_empty(&dev->aliases)) {
 		oldpath = dm_list_item(dev->aliases.n, struct dm_str_list)->str;
 		prefer_old = _compare_paths(path, oldpath);
-		log_debug_devs("%s: Aliased to %s in device cache%s",
-			       path, oldpath, prefer_old ? "" : " (preferred name)");
+		log_debug_devs("%s: Aliased to %s in device cache%s (%d:%d)",
+			       path, oldpath, prefer_old ? "" : " (preferred name)",
+			       (int) MAJOR(dev->dev), (int) MINOR(dev->dev));
 
 	} else
-		log_debug_devs("%s: Added to device cache", path);
+		log_debug_devs("%s: Added to device cache (%d:%d)", path,
+			       (int) MAJOR(dev->dev), (int) MINOR(dev->dev));
 
 	if (prefer_old)
 		dm_list_add(&dev->aliases, &sl->list);
@@ -936,6 +948,7 @@ struct device *dev_cache_get(const char *name, struct dev_filter *f)
 {
 	struct stat buf;
 	struct device *d = (struct device *) dm_hash_lookup(_cache.names, name);
+	int info_available = 0;
 
 	if (d && (d->flags & DEV_REGULAR))
 		return d;
@@ -946,7 +959,8 @@ struct device *dev_cache_get(const char *name, struct dev_filter *f)
 			dm_hash_remove(_cache.names, name);
 		log_sys_very_verbose("stat", name);
 		d = NULL;
-	}
+	} else
+		info_available = 1;
 
 	if (d && (buf.st_rdev != d->dev)) {
 		dm_hash_remove(_cache.names, name);
@@ -954,7 +968,7 @@ struct device *dev_cache_get(const char *name, struct dev_filter *f)
 	}
 
 	if (!d) {
-		_insert(name, &buf, 0, obtain_device_list_from_udev());
+		_insert(name, info_available ? &buf : NULL, 0, obtain_device_list_from_udev());
 		d = (struct device *) dm_hash_lookup(_cache.names, name);
 		if (!d) {
 			_full_scan(0);

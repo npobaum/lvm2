@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2012 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2005-2015 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -13,19 +13,23 @@
  */
 
 #include "lib.h"
-
 #include "libdevmapper-event.h"
 #include "dmeventd_lvm.h"
 #include "defaults.h"
 
-#include <syslog.h> /* FIXME Replace syslog with multilog */
-/* FIXME Missing openlog? */
-/* FIXME Replace most syslogs with log_error() style messages and add complete context. */
 /* FIXME Reformat to 80 char lines. */
 
 #define ME_IGNORE    0
 #define ME_INSYNC    1
 #define ME_FAILURE   2
+
+struct dso_state {
+	struct dm_pool *mem;
+	char cmd_lvscan[512];
+	char cmd_lvconvert[512];
+};
+
+DM_EVENT_LOG_FN("mirr")
 
 static int _process_status_code(const char status_code, const char *dev_name,
 				const char *dev_type, int r)
@@ -39,18 +43,15 @@ static int _process_status_code(const char status_code, const char *dev_name,
 	 *    U => Unclassified failure (bug)
 	 */ 
 	if (status_code == 'F') {
-		syslog(LOG_ERR, "%s device %s flush failed.",
-		       dev_type, dev_name);
+		log_error("%s device %s flush failed.", dev_type, dev_name);
 		r = ME_FAILURE;
 	} else if (status_code == 'S')
-		syslog(LOG_ERR, "%s device %s sync failed.",
-		       dev_type, dev_name);
+		log_error("%s device %s sync failed.", dev_type, dev_name);
 	else if (status_code == 'R')
-		syslog(LOG_ERR, "%s device %s read failed.",
-		       dev_type, dev_name);
+		log_error("%s device %s read failed.", dev_type, dev_name);
 	else if (status_code != 'A') {
-		syslog(LOG_ERR, "%s device %s has failed (%c).",
-		       dev_type, dev_name, status_code);
+		log_error("%s device %s has failed (%c).",
+			  dev_type, dev_name, status_code);
 		r = ME_FAILURE;
 	}
 
@@ -125,62 +126,49 @@ out:
 
 out_parse:
 	dm_free(args);
-	syslog(LOG_ERR, "Unable to parse mirror status string.");
+	log_error("Unable to parse mirror status string.");
+
 	return ME_IGNORE;
 }
 
-static int _remove_failed_devices(const char *device)
+static int _remove_failed_devices(const char *cmd_lvscan, const char *cmd_lvconvert)
 {
 	int r;
-#define CMD_SIZE 256	/* FIXME Use system restriction */
-	char cmd_str[CMD_SIZE];
 
-	if (!dmeventd_lvm2_command(dmeventd_lvm2_pool(), cmd_str, sizeof(cmd_str),
-				   "lvscan --cache", device))
-		return -1;
-
-	r = dmeventd_lvm2_run(cmd_str);
-
-	if (!r)
-		syslog(LOG_INFO, "Re-scan of mirror device %s failed.", device);
-
-	if (!dmeventd_lvm2_command(dmeventd_lvm2_pool(), cmd_str, sizeof(cmd_str),
-				  "lvconvert --config devices{ignore_suspended_devices=1} "
-				  "--repair --use-policies", device))
-		return -ENAMETOOLONG; /* FIXME Replace with generic error return - reason for failure has already got logged */
+	if (!dmeventd_lvm2_run_with_lock(cmd_lvscan))
+		log_info("Re-scan of mirrored device failed.");
 
 	/* if repair goes OK, report success even if lvscan has failed */
-	r = dmeventd_lvm2_run(cmd_str);
+	r = dmeventd_lvm2_run_with_lock(cmd_lvconvert);
 
-	syslog(LOG_INFO, "Repair of mirrored device %s %s.", device,
-	       (r) ? "finished successfully" : "failed");
+	log_info("Repair of mirrored device %s.",
+		 (r) ? "finished successfully" : "failed");
 
-	return (r) ? 0 : -1;
+	return r;
 }
 
 void process_event(struct dm_task *dmt,
 		   enum dm_event_mask event __attribute__((unused)),
-		   void **unused __attribute__((unused)))
+		   void **user)
 {
+	struct dso_state *state = *user;
 	void *next = NULL;
 	uint64_t start, length;
 	char *target_type = NULL;
 	char *params;
 	const char *device = dm_task_get_name(dmt);
 
-	dmeventd_lvm2_lock();
-
 	do {
 		next = dm_get_next_target(dmt, next, &start, &length,
 					  &target_type, &params);
 
 		if (!target_type) {
-			syslog(LOG_INFO, "%s mapping lost.", device);
+			log_info("%s mapping lost.", device);
 			continue;
 		}
 
 		if (strcmp(target_type, "mirror")) {
-			syslog(LOG_INFO, "%s has unmirrored portion.", device);
+			log_info("%s has unmirrored portion.", device);
 			continue;
 		}
 
@@ -190,54 +178,75 @@ void process_event(struct dm_task *dmt,
 			   _part_ of the device is in sync
 			   Also, this is not an error
 			*/
-			syslog(LOG_NOTICE, "%s is now in-sync.", device);
+			log_notice("%s is now in-sync.", device);
 			break;
 		case ME_FAILURE:
-			syslog(LOG_ERR, "Device failure in %s.", device);
-			if (_remove_failed_devices(device))
+			log_error("Device failure in %s.", device);
+			if (!_remove_failed_devices(state->cmd_lvscan,
+						    state->cmd_lvconvert))
 				/* FIXME Why are all the error return codes unused? Get rid of them? */
-				syslog(LOG_ERR, "Failed to remove faulty devices in %s.",
-				       device);
+				log_error("Failed to remove faulty devices in %s.",
+					  device);
 			/* Should check before warning user that device is now linear
 			else
-				syslog(LOG_NOTICE, "%s is now a linear device.\n",
-					device);
+				log_notice("%s is now a linear device.",
+					   device);
 			*/
 			break;
 		case ME_IGNORE:
 			break;
 		default:
 			/* FIXME Provide value then! */
-			syslog(LOG_INFO, "Unknown event received.");
+			log_info("Unknown event received.");
 		}
 	} while (next);
-
-	dmeventd_lvm2_unlock();
 }
 
 int register_device(const char *device,
 		    const char *uuid __attribute__((unused)),
 		    int major __attribute__((unused)),
 		    int minor __attribute__((unused)),
-		    void **unused __attribute__((unused)))
+		    void **user)
 {
-	if (!dmeventd_lvm2_init())
-		return 0;
+	struct dso_state *state;
 
-	syslog(LOG_INFO, "Monitoring mirror device %s for events.", device);
+	if (!dmeventd_lvm2_init_with_pool("mirror_state", state))
+		goto_bad;
+
+	if (!dmeventd_lvm2_command(state->mem, state->cmd_lvscan, sizeof(state->cmd_lvscan),
+				   "lvscan --cache", device)) {
+		dmeventd_lvm2_exit_with_pool(state);
+		goto_bad;
+	}
+
+	if (!dmeventd_lvm2_command(state->mem, state->cmd_lvconvert, sizeof(state->cmd_lvconvert),
+				   "lvconvert --repair --use-policies", device)) {
+		dmeventd_lvm2_exit_with_pool(state);
+		goto_bad;
+	}
+
+	*user = state;
+
+	log_info("Monitoring mirror device %s for events.", device);
 
 	return 1;
+bad:
+	log_error("Failed to monitor mirror %s.", device);
+
+	return 0;
 }
 
 int unregister_device(const char *device,
 		      const char *uuid __attribute__((unused)),
 		      int major __attribute__((unused)),
 		      int minor __attribute__((unused)),
-		      void **unused __attribute__((unused)))
+		      void **user)
 {
-	syslog(LOG_INFO, "No longer monitoring mirror device %s for events.",
-	       device);
-	dmeventd_lvm2_exit();
+	struct dso_state *state = *user;
+
+	dmeventd_lvm2_exit_with_pool(state);
+	log_info("No longer monitoring mirror device %s for events.",
+		 device);
 
 	return 1;
 }

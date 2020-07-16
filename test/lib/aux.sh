@@ -70,7 +70,7 @@ prepare_dmeventd() {
 
 	local run_valgrind=
 	test "${LVM_VALGRIND_DMEVENTD:-0}" -eq 0 || run_valgrind="run_valgrind"
-	LVM_LOG_FILE_EPOCH=DMEVENTD $run_valgrind dmeventd -f "$@" &
+	LVM_LOG_FILE_EPOCH=DMEVENTD $run_valgrind dmeventd -fddddl "$@" >debug.log_DMEVENTD_out 2>&1 &
 	echo $! > LOCAL_DMEVENTD
 
 	# FIXME wait for pipe in /var/run instead
@@ -253,7 +253,7 @@ teardown_devs() {
 		test ${#stray_loops[@]} -eq 0 || {
 			teardown_devs_prefixed "$COMMON_PREFIX" 1
 			echo "Removing stray loop devices containing $COMMON_PREFIX: ${stray_loops[@]}"
-			for i in "${stray_loops[@]}" ; do losetup -d $i ; done
+			for i in "${stray_loops[@]}" ; do test ! -b $i || losetup -d $i ; done
 			# Leave test when udev processed all removed devices
 			udev_wait
 		}
@@ -1108,6 +1108,13 @@ have_raid() {
 		return 1;
 	}
 	target_at_least dm-raid "$@"
+
+	# some kernels have broken mdraid bitmaps, don't use them!
+	# may oops kernel, we know for sure all FC24 are currently broken
+	# in general any 4.1, 4.2 is likely useless unless patched
+	case "$(uname -r)" in
+	  4.[12].*fc24*) return 1 ;;
+	esac
 }
 
 have_cache() {

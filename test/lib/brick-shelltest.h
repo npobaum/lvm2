@@ -17,7 +17,7 @@
  */
 
 /*
- * (c) 2014 Petr Ročkai <me@mornfall.net>
+ * (c) 2014 Petr Rockai <me@mornfall.net>
  * (c) 2014 Red Hat, Inc.
  */
 
@@ -80,6 +80,9 @@
 #endif
 
 #include "configure.h"
+
+/*  Timeout for the whole test suite in hours */
+static const time_t TEST_SUITE_TIMEOUT = 4;
 
 #ifndef BRICK_SHELLTEST_H
 #define BRICK_SHELLTEST_H
@@ -267,7 +270,7 @@ struct Journal {
         std::cout << std::endl << "### " << status.size() << " tests: "
                   << count( PASSED ) << " passed, "
                   << count( SKIPPED ) << " skipped, "
-                  << count( TIMEOUT ) + count( WARNED ) << " broken, "
+                  << count( TIMEOUT ) << " timed out, " << count( WARNED ) << " warned, "
                   << count( FAILED ) << " failed" << std::endl;
     }
 
@@ -1034,8 +1037,8 @@ struct Main {
                 die = 1;
             }
 
-            if ( time(0) - start > 3 * 3600 ) {
-                std::cerr << "3 hours passed, giving up..." << std::endl;
+            if ( time(0) - start > (TEST_SUITE_TIMEOUT * 3600) ) {
+                std::cerr << TEST_SUITE_TIMEOUT << " hours passed, giving up..." << std::endl;
                 die = 1;
             }
 
@@ -1047,7 +1050,7 @@ struct Main {
         if ( die || fatal_signal )
             return 1;
 
-        return journal.count( Journal::FAILED ) ? 1 : 0;
+        return journal.count( Journal::FAILED ) || journal.count( Journal::TIMEOUT ) ? 1 : 0;
     }
 
     Main( Options o ) : die( false ), journal( o.outdir ), options( o ) {}

@@ -1542,10 +1542,6 @@ int lvmcache_update_vgname_and_id(struct lvmcache_info *info, struct lvmcache_vg
 		vgid = vgname;
 	}
 
-	/* When using lvmetad, the PV could not have become orphaned. */
-	if (lvmetad_active() && is_orphan_vg(vgname) && info->vginfo)
-		return 1;
-
 	/* If PV without mdas is already in a real VG, don't make it orphan */
 	if (is_orphan_vg(vgname) && info->vginfo &&
 	    mdas_empty_or_ignored(&info->mdas) &&
@@ -1871,8 +1867,8 @@ struct lvmcache_info *lvmcache_add(struct labeller *labeller, const char *pvid,
 			 * device already exists?  Things don't seem to work
 			 * if we do that for some reason.
 			 */
-			log_verbose("Found same device %s with same pvid %s",
-				    dev_name(existing->dev), pvid_s);
+			log_debug_cache("Found same device %s with same pvid %s",
+					dev_name(existing->dev), pvid_s);
 		}
 
 		/*
@@ -2356,5 +2352,29 @@ int lvmcache_contains_lock_type_sanlock(struct cmd_context *cmd)
 	}
 
 	return 0;
+}
+
+void lvmcache_get_max_name_lengths(struct cmd_context *cmd,
+				   unsigned *pv_max_name_len,
+				   unsigned *vg_max_name_len)
+{
+	struct lvmcache_vginfo *vginfo;
+	struct lvmcache_info *info;
+	unsigned len;
+
+	*vg_max_name_len = 0;
+	*pv_max_name_len = 0;
+
+	dm_list_iterate_items(vginfo, &_vginfos) {
+		len = strlen(vginfo->vgname);
+		if (*vg_max_name_len < len)
+			*vg_max_name_len = len;
+
+		dm_list_iterate_items(info, &vginfo->infos) {
+			len = strlen(dev_name(info->dev));
+			if (*pv_max_name_len < len)
+				*pv_max_name_len = len;
+		}
+	}
 }
 

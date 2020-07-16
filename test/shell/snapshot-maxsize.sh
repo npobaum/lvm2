@@ -12,9 +12,9 @@
 # Testing calculation of snapshot space
 # https://bugzilla.redhat.com/show_bug.cgi?id=1035871
 
-. lib/inittest
+SKIP_WITH_LVMPOLLD=1
 
-test -e LOCAL_LVMPOLLD && skip
+. lib/inittest
 
 aux prepare_pvs 1
 
@@ -24,7 +24,7 @@ lvcreate -aey -L1 -n $lv1 $vg
 # Snapshot should be large enough to handle any writes
 lvcreate -L2 -s $vg/$lv1 -n $lv2
 
-dd if=/dev/zero of="$DM_DEV_DIR/$vg/$lv2" bs=1M count=1 oflag=direct
+dd if=/dev/zero of="$DM_DEV_DIR/$vg/$lv2" bs=1M count=1 conv=fdatasync
 
 # Snapshot must not be 'I'nvalid here
 check lv_attr_bit state $vg/$lv2 "a"

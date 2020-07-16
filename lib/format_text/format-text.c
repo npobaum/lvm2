@@ -453,8 +453,9 @@ static struct raw_locn *_find_vg_rlocn(struct device_area *dev_area,
 				   "not match expected name %s.", vgname);
 
       bad:
-	if ((info = lvmcache_info_from_pvid(dev_area->dev->pvid, 0)))
-		lvmcache_update_vgname_and_id(info, &vgsummary_orphan);
+	if ((info = lvmcache_info_from_pvid(dev_area->dev->pvid, 0)) &&
+	    !lvmcache_update_vgname_and_id(info, &vgsummary_orphan))
+		stack;
 
 	return NULL;
 }
@@ -653,7 +654,7 @@ static int _vg_write_raw(struct format_instance *fid, struct volume_group *vg,
 
 	if ((new_wrap && old_wrap) ||
 	    (rlocn && (new_wrap || old_wrap) && (new_end > rlocn->offset)) ||
-	    (mdac->rlocn.size >= mdah->size)) {
+	    (MDA_HEADER_SIZE + (rlocn ? rlocn->size : 0) + mdac->rlocn.size >= mdah->size)) {
 		log_error("VG %s metadata too large for circular buffer",
 			  vg->name);
 		goto out;
@@ -1338,6 +1339,7 @@ static int _text_pv_write(const struct format_type *fmt, struct physical_volume 
 
 	label = lvmcache_get_label(info);
 	label->sector = pv->label_sector;
+	label->dev = pv->dev;
 
 	lvmcache_update_pv(info, pv, fmt);
 
@@ -2144,7 +2146,6 @@ static int _text_pv_add_metadata_area(const struct format_type *fmt,
 					goto bad;
 			}
 			/* Otherwise, give up and take any usable space. */
-			/* FIXME: We should probably check for some minimum MDA size here. */
 			else
 				mda_size = limit - mda_start;
 
@@ -2241,6 +2242,12 @@ static int _text_pv_add_metadata_area(const struct format_type *fmt,
 				  mda_size, limit_name, limit);
 
 	if (mda_size) {
+		if (mda_size < MDA_SIZE_MIN) {
+			log_error("Metadata area size too small: %" PRIu64" bytes. "
+				  "It must be at least %u bytes.", mda_size, MDA_SIZE_MIN);
+			goto bad;
+		}
+
 		/* Wipe metadata area with zeroes. */
 		if (!dev_set((struct device *) pv->dev, mda_start,
 			(size_t) ((mda_size > wipe_size) ?

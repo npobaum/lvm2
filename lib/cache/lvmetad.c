@@ -37,6 +37,70 @@ static struct cmd_context *_lvmetad_cmd = NULL;
 
 static struct volume_group *lvmetad_pvscan_vg(struct cmd_context *cmd, struct volume_group *vg);
 
+static int _log_debug_inequality(const char *name, struct dm_config_node *a, struct dm_config_node *b)
+{
+	int result = 0;
+	int final_result = 0;
+
+	if (a->v && b->v) {
+		result = compare_value(a->v, b->v);
+		if (result) {
+			struct dm_config_value *av = a->v;
+			struct dm_config_value *bv = b->v;
+
+			if (!strcmp(a->key, b->key)) {
+				if (a->v->type == DM_CFG_STRING && b->v->type == DM_CFG_STRING)
+					log_debug_lvmetad("VG %s metadata inequality at %s / %s: %s / %s",
+							  name, a->key, b->key, av->v.str, bv->v.str);
+				else if (a->v->type == DM_CFG_INT && b->v->type == DM_CFG_INT)
+					log_debug_lvmetad("VG %s metadata inequality at %s / %s: " FMTi64 " / " FMTi64,
+							  name, a->key, b->key, av->v.i, bv->v.i);
+				else
+					log_debug_lvmetad("VG %s metadata inequality at %s / %s: type %d / type %d",
+							  name, a->key, b->key, av->type, bv->type);
+			} else {
+				log_debug_lvmetad("VG %s metadata inequality at %s / %s", name, a->key, b->key);
+			}
+			final_result = result;
+		}
+	}
+
+	if (a->v && !b->v) {
+		log_debug_lvmetad("VG %s metadata inequality at %s / %s", name, a->key, b->key);
+		final_result = 1;
+	}
+
+	if (!a->v && b->v) {
+		log_debug_lvmetad("VG %s metadata inequality at %s / %s", name, a->key, b->key);
+		final_result = -1;
+	}
+
+	if (a->child && b->child) {
+		result = _log_debug_inequality(name, a->child, b->child);
+		if (result)
+			final_result = result;
+	}
+
+	if (a->sib && b->sib) {
+		result = _log_debug_inequality(name, a->sib, b->sib);
+		if (result)
+			final_result = result;
+	}
+	
+
+	if (a->sib && !b->sib) {
+		log_debug_lvmetad("VG %s metadata inequality at %s / %s", name, a->key, b->key);
+		final_result = 1;
+	}
+
+	if (!a->sib && b->sib) {
+		log_debug_lvmetad("VG %s metadata inequality at %s / %s", name, a->key, b->key);
+		final_result = -1;
+	}
+
+	return final_result;
+}
+
 void lvmetad_disconnect(void)
 {
 	if (_lvmetad_connected)
@@ -434,6 +498,7 @@ struct volume_group *lvmetad_vg_lookup(struct cmd_context *cmd, const char *vgna
 	struct format_type *fmt;
 	struct dm_config_node *pvcn;
 	struct pv_list *pvl;
+	int rescan = 0;
 
 	if (!lvmetad_active())
 		return NULL;
@@ -493,15 +558,55 @@ struct volume_group *lvmetad_vg_lookup(struct cmd_context *cmd, const char *vgna
 			goto_out;
 
 		/*
+		 * Read the VG from disk, ignoring the lvmetad copy in these
+		 * cases:
+		 *
+		 * 1. The host is not using lvmlockd, but is reading lockd VGs
+		 * using the --shared option.  The shared option is meant to
+		 * let hosts not running lvmlockd look at lockd VGs, like the
+		 * foreign option allows hosts to look at foreign VGs.  When
+		 * --foreign is used, the code forces a rescan since the local
+		 * lvmetad cache of foreign VGs is likely stale.  Similarly,
+		 * for --shared, have the code reading the shared VGs below
+		 * not use the cached copy from lvmetad but to rescan the VG.
+		 *
+		 * 2. The host failed to acquire the VG lock from lvmlockd for
+		 * the lockd VG.  In this case, the usual mechanisms for
+		 * updating the lvmetad copy of the VG have been missed.  Since
+		 * we don't know if the cached copy is valid, assume it's not.
+		 *
+		 * 3. lvmetad has returned the "vg_invalid" flag, which is the
+		 * usual mechanism used by lvmlockd/lvmetad to cause a host to
+		 * reread a VG from disk that has been modified from another
+		 * host.
+		 */
+
+		if (is_lockd_type(vg->lock_type) && cmd->include_shared_vgs) {
+			log_debug_lvmetad("Rescan VG %s because including shared", vgname);
+			rescan = 1;
+		} else if (is_lockd_type(vg->lock_type) && cmd->lockd_vg_rescan) {
+			log_debug_lvmetad("Rescan VG %s because no lvmlockd lock is held", vgname);
+			rescan = 1;
+		} else if (dm_config_find_node(reply.cft->root, "vg_invalid")) {
+			log_debug_lvmetad("Rescan VG %s because lvmetad returned invalid", vgname);
+			rescan = 1;
+		}
+
+		/*
 		 * locking may have detected a newer vg version and
 		 * invalidated the cached vg.
 		 */
-		if (dm_config_find_node(reply.cft->root, "vg_invalid")) {
+		if (rescan) {
 			log_debug_lvmetad("Update invalid lvmetad cache for VG %s", vgname);
 			vg2 = lvmetad_pvscan_vg(cmd, vg);
 			release_vg(vg);
 			vg = vg2;
-			fid = vg->fid;
+			if (!vg) {
+				log_debug_lvmetad("VG %s from lvmetad not found during rescan.", vgname);
+				fid = NULL;
+				goto out;
+			} else
+				fid = vg->fid;
 		}
 
 		dm_list_iterate_items(pvl, &vg->pvs) {
@@ -1081,6 +1186,8 @@ static int _lvmetad_pvscan_single(struct metadata_area *mda, void *baton)
  * due to something like an lvcreate from another host.
  * This is limited to changes that only affect the vg (not global state like
  * orphan PVs), so we only need to reread mdas on the vg's existing pvs.
+ * But, a previous PV in the VG may have been removed since we last read
+ * the VG, and that PV may have been reused for another VG.
  */
 
 static struct volume_group *lvmetad_pvscan_vg(struct cmd_context *cmd, struct volume_group *vg)
@@ -1093,6 +1200,7 @@ static struct volume_group *lvmetad_pvscan_vg(struct cmd_context *cmd, struct vo
 	struct format_instance *fid;
 	struct format_instance_ctx fic = { .type = 0 };
 	struct _lvmetad_pvscan_baton baton;
+	struct device *save_dev = NULL;
 
 	dm_list_iterate_items(pvl, &vg->pvs) {
 		/* missing pv */
@@ -1119,9 +1227,25 @@ static struct volume_group *lvmetad_pvscan_vg(struct cmd_context *cmd, struct vo
 
 		lvmcache_foreach_mda(info, _lvmetad_pvscan_single, &baton);
 
+		/*
+		 * The PV may have been removed from the VG by another host
+		 * since we last read the VG.
+		 */
 		if (!baton.vg) {
+			log_debug_lvmetad("Did not find VG %s in scan of PV %s", vg->name, dev_name(pvl->pv->dev));
 			lvmcache_fmt(info)->ops->destroy_instance(baton.fid);
-			return NULL;
+			continue;
+		}
+
+		/*
+		 * The PV may have been removed from the VG and used for a
+		 * different VG since we last read the VG.
+		 */
+		if (strcmp(baton.vg->name, vg->name)) {
+			log_debug_lvmetad("Did not find VG %s in scan of PV %s which is now VG %s",
+					  vg->name, dev_name(pvl->pv->dev), baton.vg->name);
+			release_vg(baton.vg);
+			continue;
 		}
 
 		if (!(vgmeta = export_vg_to_config_tree(baton.vg))) {
@@ -1132,9 +1256,12 @@ static struct volume_group *lvmetad_pvscan_vg(struct cmd_context *cmd, struct vo
 
 		if (!vgmeta_ret) {
 			vgmeta_ret = vgmeta;
+			save_dev = pvl->pv->dev;
 		} else {
-			if (!compare_config(vgmeta_ret->root, vgmeta->root)) {
-				log_error("VG metadata comparison failed");
+			if (compare_config(vgmeta_ret->root, vgmeta->root)) {
+				log_error("VG %s metadata comparison failed for device %s vs %s",
+					  vg->name, dev_name(pvl->pv->dev), save_dev ? dev_name(save_dev) : "none");
+				_log_debug_inequality(vg->name, vgmeta_ret->root, vgmeta->root);
 				dm_config_destroy(vgmeta);
 				dm_config_destroy(vgmeta_ret);
 				release_vg(baton.vg);
@@ -1204,7 +1331,7 @@ int lvmetad_pvscan_single(struct cmd_context *cmd, struct device *dev,
 			log_warn("WARNING: Ignoring obsolete format of metadata (%s) on device %s when using lvmetad",
 				  baton.fid->fmt->name, dev_name(dev));
 		else
-			log_error("WARNING: Ignoring obsolete format of metadata (%s) on device %s when using lvmetad",
+			log_error("Ignoring obsolete format of metadata (%s) on device %s when using lvmetad.",
 				  baton.fid->fmt->name, dev_name(dev));
 		lvmcache_fmt(info)->ops->destroy_instance(baton.fid);
 
@@ -1556,7 +1683,7 @@ void lvmetad_validate_global_cache(struct cmd_context *cmd, int force)
 		return;
 	}
 
-	if (!lvmetad_used())
+	if (!lvmetad_active())
 		return;
 
 	log_debug_lvmetad("Validating global lvmetad cache");

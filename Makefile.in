@@ -131,6 +131,9 @@ rpm: dist
 generate: conf.generate
 	$(MAKE) -C conf generate
 
+all_man:
+	$(MAKE) -C man all_man
+
 install_system_dirs:
 	$(INSTALL_DIR) $(DESTDIR)$(DEFAULT_SYS_DIR)
 	$(INSTALL_ROOT_DIR) $(DESTDIR)$(DEFAULT_ARCHIVE_DIR)
@@ -149,6 +152,9 @@ install_systemd_generators:
 
 install_systemd_units:
 	$(MAKE) -C scripts install_systemd_units
+
+install_all_man:
+	$(MAKE) -C man install_all_man
 
 ifeq ("@PYTHON_BINDINGS@", "yes")
 install_python_bindings:
@@ -226,10 +232,9 @@ endif
 
 ifneq ($(shell which ctags),)
 .PHONY: tags
-all: tags
 tags:
-	test -z "$(shell find $(top_srcdir) -type f -name '*.[ch]' -newer tags | head -1)" || $(RM) tags
-	test -f tags || find $(top_srcdir) -maxdepth 4 -type f -name '*.[ch]' -exec ctags -a '{}' +
+	test -z "$(shell find $(top_srcdir) -type f -name '*.[ch]' -newer tags 2>/dev/null | head -1)" || $(RM) tags
+	test -f tags || find $(top_srcdir) -maxdepth 5 -type f -name '*.[ch]' -exec ctags -a '{}' +
 
-DISTCLEAN_TARGETS += tags
+CLEAN_TARGETS += tags
 endif

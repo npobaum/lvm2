@@ -568,9 +568,17 @@ static int _vgchange_locktype(struct cmd_context *cmd,
 	}
 
 	if (!strcmp(vg->lock_type, lock_type)) {
-		log_warn("New lock_type %s matches the current lock_type %s.",
+		log_warn("New lock type %s matches the current lock type %s.",
 			 lock_type, vg->lock_type);
 		return 1;
+	}
+
+	if (is_lockd_type(vg->lock_type) && is_lockd_type(lock_type)) {
+		log_error("Cannot change lock type directly from \"%s\" to \"%s\".",
+			  vg->lock_type, lock_type);
+		log_error("First change lock type to \"none\", then to \"%s\".",
+			  lock_type);
+		return 0;
 	}
 
 	/*
@@ -627,17 +635,19 @@ static int _vgchange_locktype(struct cmd_context *cmd,
 
 	/*
 	 * lockd type to ..., first undo lockd type
-	 *
-	 * To allow this, we need to do:
-	 * lockd_stop_vg();
-	 * lockd_free_vg_before();
-	 * lockd_free_vg_after();
 	 */
 	if (is_lockd_type(vg->lock_type)) {
-		/* FIXME: implement full undoing of the lock_type */
-		log_error("Changing VG %s from lock type %s not yet allowed.",
-			  vg->name, vg->lock_type);
-		return 0;
+		if (!lockd_free_vg_before(cmd, vg, 1))
+			return 0;
+
+		lockd_free_vg_final(cmd, vg);
+
+		vg->status &= ~CLUSTERED;
+		vg->lock_type = "none";
+		vg->lock_args = NULL;
+
+		dm_list_iterate_items(lvl, &vg->lvs)
+			lvl->lv->lock_args = NULL;
 	}
 
 	/* ... to clvm */
@@ -716,7 +726,14 @@ static int _vgchange_locktype(struct cmd_context *cmd,
 		return 1;
 	}
 
-	log_error("Unknown lock type");
+	/* ... to none */
+	if (!strcmp(lock_type, "none")) {
+		vg->lock_type = NULL;
+		vg->system_id = cmd->system_id ? dm_pool_strdup(vg->vgmem, cmd->system_id) : NULL;
+		return 1;
+	}
+
+	log_error("Cannot change to unknown lock type %s", lock_type);
 	return 0;
 }
 
@@ -791,10 +808,6 @@ static int _vgchange_system_id(struct cmd_context *cmd, struct volume_group *vg)
 	if (vg->lvm1_system_id)
 		*vg->lvm1_system_id = '\0';
 
-	/* update system_id in lvmlockd's record for this vg */
-	if (!lockd_start_vg(cmd, vg))
-		log_debug("Failed to update lvmlockd.");
-
 	return 1;
 }
 
@@ -865,7 +878,7 @@ static int _vgchange_lock_start(struct cmd_context *cmd, struct volume_group *vg
 	}
 
 do_start:
-	return lockd_start_vg(cmd, vg);
+	return lockd_start_vg(cmd, vg, 0);
 }
 
 static int _vgchange_lock_stop(struct cmd_context *cmd, struct volume_group *vg)
@@ -1031,18 +1044,12 @@ static int _lockd_vgchange(struct cmd_context *cmd, int argc, char **argv)
 			cmd->lockd_vg_enforce_sh = 1;
 	}
 
+	if (arg_is_set(cmd, lockstop_ARG))
+		cmd->lockd_vg_default_sh = 1;
+
 	/* Starting a vg lockspace means there are no locks available yet. */
 
 	if (arg_is_set(cmd, lockstart_ARG))
-		cmd->lockd_vg_disable = 1;
-
-	/*
-	 * In most cases, lockd_vg does not apply when changing lock type.
-	 * (We don't generally allow changing *from* lockd type yet.)
-	 * lockd_vg could be called within _vgchange_locktype as needed.
-	 */
-
-	if (arg_is_set(cmd, locktype_ARG))
 		cmd->lockd_vg_disable = 1;
 
 	/*
@@ -1227,7 +1234,8 @@ int vgchange(struct cmd_context *cmd, int argc, char **argv)
 	if (arg_is_set(cmd, lockstart_ARG)) {
 		const char *start_opt = arg_str_value(cmd, lockopt_ARG, NULL);
 
-		lockd_gl(cmd, "un", 0);
+		if (!lockd_gl(cmd, "un", 0))
+			stack;
 
 		if (!start_opt || !strcmp(start_opt, "auto")) {
 			log_print_unless_silent("Starting locking.  Waiting until locks are ready...");

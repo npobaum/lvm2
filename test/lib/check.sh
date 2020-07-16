@@ -189,16 +189,17 @@ in_sync() {
 	local lvm_name="$1/$2"
 	local dm_name=$(echo $lvm_name | sed s:-:--: | sed s:/:-:)
 
-	if ! a=(`dmsetup status $dm_name`); then
+	a=( $(dmsetup status $dm_name) )  || \
 		die "Unable to get sync status of $1"
-	elif [ ${a[2]} = "snapshot-origin" ]; then
-		if ! a=(`dmsetup status ${dm_name}-real`); then
+
+	if [ ${a[2]} = "snapshot-origin" ]; then
+		a=( $(dmsetup status ${dm_name}-real) ) || \
 			die "Unable to get sync status of $1"
-		fi
 		snap=": under snapshot"
 	fi
 
-	if [ ${a[2]} = "raid" ]; then
+	case ${a[2]} in
+	"raid")
 		# 6th argument is the sync ratio for RAID
 		idx=6
 		type=${a[3]}
@@ -206,13 +207,16 @@ in_sync() {
 			echo "$lvm_name ($type$snap) is not in-sync"
 			return 1
 		fi
-	elif [ ${a[2]} = "mirror" ]; then
+		;;
+	"mirror")
 		# 4th Arg tells us how far to the sync ratio
 		idx=$((${a[3]} + 4))
 		type=${a[2]}
-	else
+		;;
+	*)
 		die "Unable to get sync ratio for target type '${a[2]}'"
-	fi
+		;;
+	esac
 
 	b=( $(echo ${a[$idx]} | sed s:/:' ':) )
 
@@ -221,11 +225,10 @@ in_sync() {
 		return 1
 	fi
 
-	if [[ ${a[$(($idx - 1))]} =~ a ]]; then
+	[[ ${a[$(($idx - 1))]} =~ a ]] && \
 		die "$lvm_name ($type$snap) in-sync, but 'a' characters in health status"
-	fi
 
-	echo "$lvm_name ($type$snap) is in-sync"
+	echo "$lvm_name ($type$snap) is in-sync \"${a[@]}\""
 }
 
 active() {
@@ -268,8 +271,7 @@ lv_not_exists() {
 	else
 		while [ $# -gt 1 ]; do
 			shift
-			lvl $vg/$1 &>/dev/null || continue
-			die "$vg/$1 expected to not exist but it does!"
+			not lvl $vg/$1 &>/dev/null || die "$vg/$1 expected to not exist but it does!"
 		done
 	fi
 	rm -f debug.log
@@ -306,6 +308,12 @@ lv_field() {
 	local actual=$(get lv_field "$1" "$2" "${@:4}")
 	test "$actual" = "$3" || \
 		die "lv_field: lv=$1, field=\"$2\", actual=\"$actual\", expected=\"$3\""
+}
+
+lva_field() {
+	local actual=$(get lva_field "$1" "$2" "${@:4}")
+	test "$actual" = "$3" || \
+		die "lva_field: lv=$1, field=\"$2\", actual=\"$actual\", expected=\"$3\""
 }
 
 lv_attr_bit() {

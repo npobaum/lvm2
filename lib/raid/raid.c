@@ -55,7 +55,7 @@ static int _raid_text_import_areas(struct lv_segment *seg,
 				   const struct dm_config_value *cv)
 {
 	unsigned int s;
-	struct logical_volume *lv1;
+	struct logical_volume *lv;
 	const char *seg_name = dm_config_parent_name(sn);
 
 	if (!seg->area_count) {
@@ -75,23 +75,23 @@ static int _raid_text_import_areas(struct lv_segment *seg,
 		}
 
 		/* Metadata device comes first */
-		if (!(lv1 = find_lv(seg->lv->vg, cv->v.str))) {
+		if (!(lv = find_lv(seg->lv->vg, cv->v.str))) {
 			log_error("Couldn't find volume '%s' for segment '%s'.",
 				  cv->v.str ? : "NULL", seg_name);
 			return 0;
 		}
-		if (!set_lv_segment_area_lv(seg, s, lv1, 0, RAID_META))
-				return_0;
+		if (!set_lv_segment_area_lv(seg, s, lv, 0, RAID_META))
+			return_0;
 
 		/* Data device comes second */
 		cv = cv->next;
-		if (!(lv1 = find_lv(seg->lv->vg, cv->v.str))) {
+		if (!(lv = find_lv(seg->lv->vg, cv->v.str))) {
 			log_error("Couldn't find volume '%s' for segment '%s'.",
 				  cv->v.str ? : "NULL", seg_name);
 			return 0;
 		}
-		if (!set_lv_segment_area_lv(seg, s, lv1, 0, RAID_IMAGE))
-				return_0;
+		if (!set_lv_segment_area_lv(seg, s, lv, 0, RAID_IMAGE))
+			return_0;
 	}
 
 	/*
@@ -111,49 +111,28 @@ static int _raid_text_import(struct lv_segment *seg,
 			     struct dm_hash_table *pv_hash)
 {
 	const struct dm_config_value *cv;
+	const struct {
+		const char *name;
+		uint32_t *var;
+	} raid_attr_import[] = {
+		{ "region_size",	&seg->region_size },
+		{ "stripe_size",	&seg->stripe_size },
+		{ "writebehind",	&seg->writebehind },
+		{ "min_recovery_rate",	&seg->min_recovery_rate },
+		{ "max_recovery_rate",	&seg->max_recovery_rate },
+	}, *aip = raid_attr_import;
+	int i;
 
-	if (dm_config_has_node(sn, "region_size")) {
-		if (!dm_config_get_uint32(sn, "region_size", &seg->region_size)) {
-			log_error("Couldn't read 'region_size' for "
-				  "segment %s of logical volume %s.",
-				  dm_config_parent_name(sn), seg->lv->name);
-			return 0;
+	for (i = 0; i < DM_ARRAY_SIZE(raid_attr_import); i++, aip++) {
+		if (dm_config_has_node(sn, aip->name)) {
+			if (!dm_config_get_uint32(sn, aip->name, aip->var)) {
+				log_error("Couldn't read '%s' for segment %s of logical volume %s.",
+					  aip->name, dm_config_parent_name(sn), seg->lv->name);
+				return 0;
+			}
 		}
 	}
-	if (dm_config_has_node(sn, "stripe_size")) {
-		if (!dm_config_get_uint32(sn, "stripe_size", &seg->stripe_size)) {
-			log_error("Couldn't read 'stripe_size' for "
-				  "segment %s of logical volume %s.",
-				  dm_config_parent_name(sn), seg->lv->name);
-			return 0;
-		}
-	}
-	if (dm_config_has_node(sn, "writebehind")) {
-		if (!dm_config_get_uint32(sn, "writebehind", &seg->writebehind)) {
-			log_error("Couldn't read 'writebehind' for "
-				  "segment %s of logical volume %s.",
-				  dm_config_parent_name(sn), seg->lv->name);
-			return 0;
-		}
-	}
-	if (dm_config_has_node(sn, "min_recovery_rate")) {
-		if (!dm_config_get_uint32(sn, "min_recovery_rate",
-					  &seg->min_recovery_rate)) {
-			log_error("Couldn't read 'min_recovery_rate' for "
-				  "segment %s of logical volume %s.",
-				  dm_config_parent_name(sn), seg->lv->name);
-			return 0;
-		}
-	}
-	if (dm_config_has_node(sn, "max_recovery_rate")) {
-		if (!dm_config_get_uint32(sn, "max_recovery_rate",
-					  &seg->max_recovery_rate)) {
-			log_error("Couldn't read 'max_recovery_rate' for "
-				  "segment %s of logical volume %s.",
-				  dm_config_parent_name(sn), seg->lv->name);
-			return 0;
-		}
-	}
+
 	if (!dm_config_get_list(sn, "raids", &cv)) {
 		log_error("Couldn't find RAID array for "
 			  "segment %s of logical volume %s.",
@@ -162,7 +141,7 @@ static int _raid_text_import(struct lv_segment *seg,
 	}
 
 	if (!_raid_text_import_areas(seg, sn, cv)) {
-		log_error("Failed to import RAID images");
+		log_error("Failed to import RAID component pairs.");
 		return 0;
 	}
 
@@ -242,7 +221,7 @@ static int _raid_add_target_line(struct dev_manager *dm __attribute__((unused)),
 		/* RAID 4/5/6 */
 		params.mirrors = 1;
 		params.stripes = seg->area_count - seg->segtype->parity_devs;
-	} else if (strcmp(seg->segtype->name, SEG_TYPE_NAME_RAID10)) {
+	} else if (seg_is_raid10(seg)) {
 		/* RAID 10 only supports 2 mirrors now */
 		params.mirrors = 2;
 		params.stripes = seg->area_count / 2;
@@ -301,8 +280,8 @@ static int _raid_target_percent(void **target_state,
 		else
 			break;
 	}
-	if (!pos || (sscanf(pos, FMTu64 "/" FMTu64 "%n",
-			    &numerator, &denominator, &i) != 2)) {
+	if (!pos || (sscanf(pos, FMTu64 "/" FMTu64 "%n", &numerator, &denominator, &i) != 2) ||
+	    !denominator) {
 		log_error("Failed to parse %s status fraction: %s",
 			  (seg) ? seg->segtype->name : "segment", params);
 		return 0;
@@ -331,6 +310,7 @@ static int _raid_target_present(struct cmd_context *cmd,
 		const char *feature;
 	} _features[] = {
 		{ 1, 3, RAID_FEATURE_RAID10, SEG_TYPE_NAME_RAID10 },
+		{ 1, 7, RAID_FEATURE_RAID0, SEG_TYPE_NAME_RAID0 },
 	};
 
 	static int _raid_checked = 0;
@@ -434,25 +414,25 @@ static struct segtype_handler _raid_ops = {
 static const struct raid_type {
 	const char name[12];
 	unsigned parity;
-	int extra_flags;
+	uint64_t extra_flags;
 } _raid_types[] = {
-	{ SEG_TYPE_NAME_RAID1,    0, SEG_AREAS_MIRRORED },
-	{ SEG_TYPE_NAME_RAID10,   0, SEG_AREAS_MIRRORED },
-	{ SEG_TYPE_NAME_RAID4,    1 },
-	{ SEG_TYPE_NAME_RAID5,    1 },
-	{ SEG_TYPE_NAME_RAID5_LA, 1 },
-	{ SEG_TYPE_NAME_RAID5_LS, 1 },
-	{ SEG_TYPE_NAME_RAID5_RA, 1 },
-	{ SEG_TYPE_NAME_RAID5_RS, 1 },
-	{ SEG_TYPE_NAME_RAID6,    2 },
-	{ SEG_TYPE_NAME_RAID6_NC, 2 },
-	{ SEG_TYPE_NAME_RAID6_NR, 2 },
-	{ SEG_TYPE_NAME_RAID6_ZR, 2 }
+	{ SEG_TYPE_NAME_RAID1,    0, SEG_RAID1 | SEG_AREAS_MIRRORED },
+	{ SEG_TYPE_NAME_RAID10,   0, SEG_RAID10 | SEG_AREAS_MIRRORED },
+	{ SEG_TYPE_NAME_RAID4,    1, SEG_RAID4 },
+	{ SEG_TYPE_NAME_RAID5,    1, SEG_RAID5 },
+	{ SEG_TYPE_NAME_RAID5_LA, 1, SEG_RAID5_LA },
+	{ SEG_TYPE_NAME_RAID5_LS, 1, SEG_RAID5_LS },
+	{ SEG_TYPE_NAME_RAID5_RA, 1, SEG_RAID5_RA },
+	{ SEG_TYPE_NAME_RAID5_RS, 1, SEG_RAID5_RS },
+	{ SEG_TYPE_NAME_RAID6,    2, SEG_RAID6 },
+	{ SEG_TYPE_NAME_RAID6_NC, 2, SEG_RAID6_NC },
+	{ SEG_TYPE_NAME_RAID6_NR, 2, SEG_RAID6_NR },
+	{ SEG_TYPE_NAME_RAID6_ZR, 2, SEG_RAID6_ZR }
 };
 
 static struct segment_type *_init_raid_segtype(struct cmd_context *cmd,
 					       const struct raid_type *rt,
-					       int monitored)
+					       uint64_t monitored)
 {
 	struct segment_type *segtype = dm_zalloc(sizeof(*segtype));
 
@@ -482,7 +462,7 @@ int init_multiple_segtypes(struct cmd_context *cmd, struct segtype_library *segl
 {
 	struct segment_type *segtype;
 	unsigned i;
-	int monitored = 0;
+	uint64_t monitored = 0;
 
 #ifdef DEVMAPPER_SUPPORT
 #  ifdef DMEVENTD

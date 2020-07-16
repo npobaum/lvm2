@@ -50,9 +50,9 @@ enum {
 	LD_OP_RENAME_FINAL,
 	LD_OP_RUNNING_LM,
 	LD_OP_FIND_FREE_LOCK,
-	LD_OP_FORGET_VG_NAME,
 	LD_OP_KILL_VG,
 	LD_OP_DROP_VG,
+	LD_OP_BUSY,
 };
 
 /* resource types */
@@ -85,11 +85,12 @@ struct client {
 	unsigned int recv : 1;
 	unsigned int dead : 1;
 	unsigned int poll_ignore : 1;
+	unsigned int lock_ops : 1;
 	char name[MAX_NAME+1];
 };
 
 #define LD_AF_PERSISTENT           0x00000001
-#define LD_AF_UNUSED               0x00000002 /* use me */
+#define LD_AF_NO_CLIENT            0x00000002
 #define LD_AF_UNLOCK_CANCEL        0x00000004
 #define LD_AF_NEXT_VERSION         0x00000008
 #define LD_AF_WAIT                 0x00000010
@@ -100,10 +101,10 @@ struct client {
 #define LD_AF_SEARCH_LS            0x00000200
 #define LD_AF_WAIT_STARTING        0x00001000
 #define LD_AF_DUP_GL_LS            0x00002000
-#define LD_AF_INACTIVE_LS          0x00004000
-#define LD_AF_ADD_LS_ERROR         0x00008000
 #define LD_AF_ADOPT                0x00010000
 #define LD_AF_WARN_GL_REMOVED	   0x00020000
+#define LD_AF_LV_LOCK              0x00040000
+#define LD_AF_LV_UNLOCK            0x00080000
 
 /*
  * Number of times to repeat a lock request after
@@ -142,12 +143,13 @@ struct resource {
 	int8_t mode;
 	unsigned int sh_count;		/* number of sh locks on locks list */
 	uint32_t version;
+	uint32_t last_client_id;	/* last client_id to lock or unlock resource */
 	unsigned int lm_init : 1;	/* lm_data is initialized */
 	unsigned int adopt : 1;		/* temp flag in remove_inactive_lvs */
 	unsigned int version_zero_valid : 1;
+	unsigned int use_vb : 1;
 	struct list_head locks;
 	struct list_head actions;
-	struct val_blk *vb;
 	char lv_args[MAX_ARGS+1];
 	char lm_data[0];		/* lock manager specific data */
 };
@@ -193,7 +195,11 @@ struct lockspace {
 	struct list_head resources;	/* resource/lock state for gl/vg/lv */
 };
 
+/* val_blk version */
 #define VAL_BLK_VERSION 0x0101
+
+/* val_blk flags */
+#define VBF_REMOVED 0x0001
 
 struct val_blk {
 	uint16_t version;
@@ -311,14 +317,12 @@ static inline int list_empty(const struct list_head *head)
  * or when disable_gl matches.
  */
 
-EXTERN int gl_running_dlm;
 EXTERN int gl_type_static;
 EXTERN int gl_use_dlm;
 EXTERN int gl_use_sanlock;
-EXTERN pthread_mutex_t gl_type_mutex;
-
 EXTERN char gl_lsname_dlm[MAX_NAME+1];
 EXTERN char gl_lsname_sanlock[MAX_NAME+1];
+EXTERN int global_dlm_lockspace_exists;
 
 EXTERN int daemon_test; /* run as much as possible without a live lock manager */
 EXTERN int daemon_debug;
@@ -355,7 +359,7 @@ int lm_prepare_lockspace_dlm(struct lockspace *ls);
 int lm_add_lockspace_dlm(struct lockspace *ls, int adopt);
 int lm_rem_lockspace_dlm(struct lockspace *ls, int free_vg);
 int lm_lock_dlm(struct lockspace *ls, struct resource *r, int ld_mode,
-		uint32_t *r_version, int adopt);
+		struct val_blk *vb_out, int adopt);
 int lm_convert_dlm(struct lockspace *ls, struct resource *r,
 		   int ld_mode, uint32_t r_version);
 int lm_unlock_dlm(struct lockspace *ls, struct resource *r,
@@ -364,6 +368,7 @@ int lm_rem_resource_dlm(struct lockspace *ls, struct resource *r);
 int lm_get_lockspaces_dlm(struct list_head *ls_rejoin);
 int lm_data_size_dlm(void);
 int lm_is_running_dlm(void);
+int lm_hosts_dlm(struct lockspace *ls, int notify);
 
 static inline int lm_support_dlm(void)
 {
@@ -393,7 +398,7 @@ static inline int lm_rem_lockspace_dlm(struct lockspace *ls, int free_vg)
 }
 
 static inline int lm_lock_dlm(struct lockspace *ls, struct resource *r, int ld_mode,
-		uint32_t *r_version, int adopt)
+		struct val_blk *vb_out, int adopt)
 {
 	return -1;
 }
@@ -435,6 +440,11 @@ static inline int lm_support_dlm(void)
 	return 0;
 }
 
+static inline int lm_hosts_dlm(struct lockspace *ls, int notify)
+{
+	return 0;
+}
+
 #endif /* dlm support */
 
 #ifdef LOCKDSANLOCK_SUPPORT
@@ -447,7 +457,7 @@ int lm_prepare_lockspace_sanlock(struct lockspace *ls);
 int lm_add_lockspace_sanlock(struct lockspace *ls, int adopt);
 int lm_rem_lockspace_sanlock(struct lockspace *ls, int free_vg);
 int lm_lock_sanlock(struct lockspace *ls, struct resource *r, int ld_mode,
-		    uint32_t *r_version, int *retry, int adopt);
+		    struct val_blk *vb_out, int *retry, int adopt);
 int lm_convert_sanlock(struct lockspace *ls, struct resource *r,
 		       int ld_mode, uint32_t r_version);
 int lm_unlock_sanlock(struct lockspace *ls, struct resource *r,
@@ -505,7 +515,7 @@ static inline int lm_rem_lockspace_sanlock(struct lockspace *ls, int free_vg)
 }
 
 static inline int lm_lock_sanlock(struct lockspace *ls, struct resource *r, int ld_mode,
-		    uint32_t *r_version, int *retry, int adopt)
+		    struct val_blk *vb_out, int *retry, int adopt)
 {
 	return -1;
 }

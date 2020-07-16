@@ -50,7 +50,7 @@ struct profile_params {
 	struct dm_list profiles;                 /* list of profiles which are loaded already and which are ready for use */
 };
 
-#define CFG_PATH_MAX_LEN 64
+#define CFG_PATH_MAX_LEN 128
 
 /*
  * Structures used for definition of a configuration tree.
@@ -296,5 +296,7 @@ int get_default_allocation_thin_pool_chunk_size_CFG(struct cmd_context *cmd, str
 #define get_default_unconfigured_allocation_thin_pool_chunk_size_CFG NULL
 int get_default_allocation_cache_pool_chunk_size_CFG(struct cmd_context *cmd, struct profile *profile);
 #define get_default_unconfigured_allocation_cache_pool_chunk_size_CFG NULL
+const char *get_default_allocation_cache_policy_CFG(struct cmd_context *cmd, struct profile *profile);
+#define get_default_unconfigured_allocation_cache_policy_CFG NULL
 
 #endif

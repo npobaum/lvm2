@@ -11,11 +11,11 @@
 
 # test pool behaviour when volume_list masks activation
 
+SKIP_WITH_LVMPOLLD=1
+
 export LVM_TEST_THIN_REPAIR_CMD=${LVM_TEST_THIN_REPAIR_CMD-/bin/false}
 
 . lib/inittest
-
-test -e LOCAL_LVMPOLLD && skip
 
 #
 # Main
@@ -29,8 +29,11 @@ lvcreate -T -L8M $vg/pool -V10M -n $lv1
 # skip $vg from activation
 aux lvmconf "activation/volume_list = [ \"$vg1\" ]"
 
-# We cannot pass - pool volume cannot be manipulated
-not lvcreate -V10 -n $lv2 -T $vg/pool
+# We still could pass - since pool is still active
+lvcreate -V10 -n $lv2 -T $vg/pool
+
+# but $lv2 is not active
+check inactive $vg $lv2
 
 vgchange -an $vg
 

@@ -179,7 +179,6 @@ dm_task_destroy
 dm_task_enable_checks
 dm_task_get_deps
 dm_task_get_driver_version
-dm_task_get_info
 dm_task_get_info_with_deferred_remove
 dm_task_get_message_response
 dm_task_get_name
@@ -263,7 +262,6 @@ dm_tree_node_set_thin_external_origin
 dm_tree_node_set_thin_pool_discard
 dm_tree_node_set_thin_pool_error_if_no_space
 dm_tree_node_set_udev_flags
-dm_tree_node_size_changed
 dm_tree_preload_children
 dm_tree_retry_remove
 dm_tree_set_cookie

@@ -352,6 +352,7 @@ struct dm_status_snapshot {
 	unsigned has_metadata_sectors : 1; /* set when metadata_sectors is present */
 	unsigned invalid : 1;		/* set when snapshot is invalidated */
 	unsigned merge_failed : 1;	/* set when snapshot merge failed */
+	unsigned overflow : 1;		/* set when snapshot overflows */
 };
 
 int dm_get_status_snapshot(struct dm_pool *mem, const char *params,
@@ -434,6 +435,19 @@ int dm_get_status_thin(struct dm_pool *mem, const char *params,
 struct dm_stats;
 
 /*
+ * Histogram handle.
+ *
+ * A histogram object represents the latency histogram values and bin
+ * boundaries of the histogram associated with a particular area.
+ *
+ * Operations on the handle allow the number of bins, bin boundaries,
+ * counts and relative proportions to be obtained as well as the
+ * conversion of a histogram or its bounds to a compact string
+ * representation.
+ */
+struct dm_histogram;
+
+/*
  * Allocate a dm_stats handle to use for subsequent device-mapper
  * statistics operations. A program_id may be specified and will be
  * used by default for subsequent operations on this handle.
@@ -463,6 +477,39 @@ int dm_stats_bind_name(struct dm_stats *dms, const char *name);
  * data contained in the handle is released.
  */
 int dm_stats_bind_uuid(struct dm_stats *dms, const char *uuid);
+
+/*
+ * Test whether the running kernel supports the precise_timestamps
+ * feature. Presence of this feature also implies histogram support.
+ * The library will check this call internally and fails any attempt
+ * to use nanosecond counters or histograms on kernels that fail to
+ * meet this check.
+ */
+int dm_message_supports_precise_timestamps(void);
+
+/*
+ * Precise timetamps and histogram support.
+ * 
+ * Test for the presence of precise_timestamps and histogram support.
+ */
+int dm_stats_driver_supports_precise(void);
+int dm_stats_driver_supports_histogram(void);
+
+/*
+ * Returns 1 if the specified region has the precise_timestamps feature
+ * enabled (i.e. produces nanosecond-precision counter values) or 0 for
+ * a region using the default milisecond precision.
+ */
+int dm_stats_get_region_precise_timestamps(const struct dm_stats *dms,
+					   uint64_t region_id);
+
+/*
+ * Returns 1 if the region at the current cursor location has the
+ * precise_timestamps feature enabled (i.e. produces
+ * nanosecond-precision counter values) or 0 for a region using the
+ * default milisecond precision.
+ */
+int dm_stats_get_current_region_precise_timestamps(const struct dm_stats *dms);
 
 #define DM_STATS_ALL_PROGRAMS ""
 /*
@@ -526,6 +573,31 @@ int dm_stats_populate(struct dm_stats *dms, const char *program_id,
  *
  *   dm_stats_create_region(dms, 1024, 1 << 11, -2, p, a);
  *
+ * If precise is non-zero attempt to create a region with nanosecond
+ * precision counters using the kernel precise_timestamps feature.
+ *
+ * precise - A flag to request nanosecond precision counters
+ * to be used for this region.
+ *
+ * histogram_bounds - specify the boundaries of a latency histogram to
+ * be tracked for the region. The values are expressed as an array of
+ * uint64_t terminated with a zero. Values must be in order of ascending
+ * magnitude and specify the upper bounds of successive histogram bins
+ * in nanoseconds (with an implicit lower bound of zero on the first bin
+ * and an implicit upper bound of infinity on the final bin). For
+ * example:
+ *
+ *   uint64_t bounds_ary[] = { 1000, 2000, 3000, 0 };
+ *
+ * Specifies a histogram with four bins: 0-1000ns, 1000-2000ns,
+ * 2000-3000ns and >3000ns.
+ *
+ * The smallest latency value that can be tracked for a region not using
+ * precise_timestamps is 1ms: attempting to create a region with
+ * histogram boundaries < 1ms will cause the precise_timestamps feature
+ * to be enabled for that region automatically if it was not requested
+ * explicitly.
+ *
  * program_id is an optional string argument that identifies the
  * program creating the region. If program_id is NULL or the empty
  * string the default program_id stored in the handle will be used.
@@ -539,6 +611,7 @@ int dm_stats_populate(struct dm_stats *dms, const char *program_id,
  */
 int dm_stats_create_region(struct dm_stats *dms, uint64_t *region_id,
 			   uint64_t start, uint64_t len, int64_t step,
+			   int precise, struct dm_histogram *bounds,
 			   const char *program_id, const char *aux_data);
 
 /*
@@ -624,8 +697,74 @@ uint64_t dm_stats_get_region_nr_areas(const struct dm_stats *dms,
 uint64_t dm_stats_get_nr_areas(const struct dm_stats *dms);
 
 /*
- * Destroy a dm_stats object and all associated regions and counter
- * sets.
+ * Return the number of bins in the histogram configuration for the
+ * specified region or zero if no histogram specification is configured.
+ * Valid following a dm_stats_list() or dm_stats_populate() operation.
+ */
+int dm_stats_get_region_nr_histogram_bins(const struct dm_stats *dms,
+					  uint64_t region_id);
+
+/*
+ * Parse a histogram string with optional unit suffixes into a
+ * dm_histogram bounds description.
+ *
+ * A histogram string is a string of numbers "n1,n2,n3,..." that
+ * represent the boundaries of a histogram. The first and final bins
+ * have implicit lower and upper bounds of zero and infinity
+ * respectively and boundary values must occur in order of ascending
+ * magnitude.  Unless a unit suffix is given all values are specified in
+ * nanoseconds.
+ *
+ * For example, if bounds_str="300,600,900", the region will be created
+ * with a histogram containing four bins. Each report will include four
+ * numbers a:b:c:d. a is the number of requests that took between 0 and
+ * 300ns to complete, b is the number of requests that took 300-600ns to
+ * complete, c is the number of requests that took 600-900ns to complete
+ * and d is the number of requests that took more than 900ns to
+ * complete.
+ *
+ * An optional unit suffix of 's', 'ms', 'us', or 'ns' may be used to
+ * specify units of seconds, miliseconds, microseconds, or nanoseconds:
+ *
+ *   bounds_str="1ns,1us,1ms,1s"
+ *   bounds_str="500us,1ms,1500us,2ms"
+ *   bounds_str="200ms,400ms,600ms,800ms,1s"
+ *
+ * The smallest valid unit of time for a histogram specification depends
+ * on whether the region uses precise timestamps: for a region with the
+ * default milisecond precision the smallest possible histogram boundary
+ * magnitude is one milisecond: attempting to use a histogram with a
+ * boundary less than one milisecond when creating a region will cause
+ * the region to be created with the precise_timestamps feature enabled.
+ */
+struct dm_histogram *dm_histogram_bounds_from_string(const char *bounds_str);
+
+/*
+ * Parse a zero terminated array of uint64_t into a dm_histogram bounds
+ * description.
+ *
+ * Each value in the array specifies the upper bound of a bin in the
+ * latency histogram in nanoseconds. Values must appear in ascending
+ * order of magnitude.
+ *
+ * The smallest valid unit of time for a histogram specification depends
+ * on whether the region uses precise timestamps: for a region with the
+ * default milisecond precision the smallest possible histogram boundary
+ * magnitude is one milisecond: attempting to use a histogram with a
+ * boundary less than one milisecond when creating a region will cause
+ * the region to be created with the precise_timestamps feature enabled.
+ */
+struct dm_histogram *dm_histogram_bounds_from_uint64(const uint64_t *bounds);
+
+/*
+ * Destroy the histogram bounds array obtained from a call to
+ * dm_histogram_bounds_from_string().
+ */
+void dm_histogram_bounds_destroy(struct dm_histogram *bounds);
+
+/*
+ * Destroy a dm_stats object and all associated regions, counter
+ * sets and histograms.
  */
 void dm_stats_destroy(struct dm_stats *dms);
 
@@ -697,26 +836,36 @@ int dm_stats_set_program_id(struct dm_stats *dms, int allow_empty,
  *
  * All values are returned in units of 512b sectors.
  */
-uint64_t dm_stats_get_region_start(const struct dm_stats *dms, uint64_t *start,
-				   uint64_t region_id);
-uint64_t dm_stats_get_region_len(const struct dm_stats *dms, uint64_t *len,
-				 uint64_t region_id);
-uint64_t dm_stats_get_region_area_len(const struct dm_stats *dms,
-				      uint64_t *area_len, uint64_t region_id);
+int dm_stats_get_region_start(const struct dm_stats *dms, uint64_t *start,
+			      uint64_t region_id);
+
+int dm_stats_get_region_len(const struct dm_stats *dms, uint64_t *len,
+			    uint64_t region_id);
+
+int dm_stats_get_region_area_len(const struct dm_stats *dms,
+				 uint64_t *len, uint64_t region_id);
 
 /*
- * Area properties: start and length.
+ * Area properties: start, offset and length.
  *
  * The area length is always equal to the area length of the region
  * that contains it and is obtained from dm_stats_get_region_area_len().
  *
- * The start offset of an area is a function of the area_id and the
- * containing region's start and area length.
+ * The start of an area is a function of the area_id and the containing
+ * region's start and area length: it gives the absolute offset into the
+ * containing device of the beginning of the area.
+ *
+ * The offset expresses the area's relative offset into the current
+ * region. I.e. the area start minus the start offset of the containing
+ * region.
  *
  * All values are returned in units of 512b sectors.
  */
-uint64_t dm_stats_get_area_start(const struct dm_stats *dms, uint64_t *start,
-				 uint64_t region_id, uint64_t area_id);
+int dm_stats_get_area_start(const struct dm_stats *dms, uint64_t *start,
+			    uint64_t region_id, uint64_t area_id);
+
+int dm_stats_get_area_offset(const struct dm_stats *dms, uint64_t *offset,
+			     uint64_t region_id, uint64_t area_id);
 
 /*
  * Retrieve program_id and aux_data for a specific region. Only valid
@@ -856,14 +1005,14 @@ uint64_t dm_stats_get_current_area(const struct dm_stats *dms);
  *
  * All values are returned in units of 512b sectors.
  */
-uint64_t dm_stats_get_current_region_start(const struct dm_stats *dms,
-					   uint64_t *start);
+int dm_stats_get_current_region_start(const struct dm_stats *dms,
+				      uint64_t *start);
 
-uint64_t dm_stats_get_current_region_len(const struct dm_stats *dms,
-					 uint64_t *len);
+int dm_stats_get_current_region_len(const struct dm_stats *dms,
+				    uint64_t *len);
 
-uint64_t dm_stats_get_current_region_area_len(const struct dm_stats *dms,
-					      uint64_t *area_len);
+int dm_stats_get_current_region_area_len(const struct dm_stats *dms,
+					 uint64_t *area_len);
 
 /*
  * Current area properties: start and length.
@@ -873,10 +1022,13 @@ uint64_t dm_stats_get_current_region_area_len(const struct dm_stats *dms,
  *
  * All values are returned in units of 512b sectors.
  */
-uint64_t dm_stats_get_current_area_start(const struct dm_stats *dms,
-					 uint64_t *start);
+int dm_stats_get_current_area_start(const struct dm_stats *dms,
+				    uint64_t *start);
 
-uint64_t dm_stats_get_current_area_len(const struct dm_stats *dms,
+int dm_stats_get_current_area_offset(const struct dm_stats *dms,
+				     uint64_t *offset);
+
+int dm_stats_get_current_area_len(const struct dm_stats *dms,
 				       uint64_t *start);
 
 /*
@@ -1016,6 +1168,9 @@ void dm_lib_init(void) __attribute__((constructor));
 void dm_lib_release(void);
 void dm_lib_exit(void) __attribute__((destructor));
 
+/* An optimisation for clients making repeated calls involving dm ioctls */
+void dm_hold_control_dev(int hold_open);
+
 /*
  * Use NULL for all devices.
  */
@@ -1101,6 +1256,11 @@ const char *dm_tree_node_get_name(const struct dm_tree_node *node);
 const char *dm_tree_node_get_uuid(const struct dm_tree_node *node);
 const struct dm_info *dm_tree_node_get_info(const struct dm_tree_node *node);
 void *dm_tree_node_get_context(const struct dm_tree_node *node);
+/*
+ * Returns  0 when node size and its children is unchanged.
+ * Returns  1 when node or any of its children has increased size.
+ * Rerurns -1 when node or any of its children has reduced size.
+ */
 int dm_tree_node_size_changed(const struct dm_tree_node *dnode);
 
 /*
@@ -1308,7 +1468,7 @@ int dm_tree_node_add_cache_target(struct dm_tree_node *node,
 				  const char *origin_uuid,
 				  const char *policy_name,
 				  const struct dm_config_node *policy_settings,
-				  uint32_t chunk_size);
+				  uint32_t data_block_size);
 
 /*
  * FIXME Add individual cache policy pairs  <key> = value, like:
@@ -2183,6 +2343,11 @@ struct dm_timestamp *dm_timestamp_alloc(void);
 int dm_timestamp_get(struct dm_timestamp *ts);
 
 /*
+ * Copy a timestamp from ts_old to ts_new.
+ */
+void dm_timestamp_copy(struct dm_timestamp *ts_new, struct dm_timestamp *ts_old);
+
+/*
  * Compare two timestamps.
  *
  * Return: -1 if ts1 is less than ts2
@@ -2391,6 +2556,18 @@ int dm_report_object_is_selected(struct dm_report *rh, void *object, int do_outp
  */
 int dm_report_compact_fields(struct dm_report *rh);
 
+/*
+ * The same as dm_report_compact_fields, but for selected fields only.
+ * The "fields" arg is comma separated list of field names (the same format
+ * as used for "output_fields" arg in dm_report_init fn).
+ */
+int dm_report_compact_given_fields(struct dm_report *rh, const char *fields);
+
+/*
+ * Returns 1 if there is no data waiting to be output.
+ */
+int dm_report_is_empty(struct dm_report *rh);
+
 int dm_report_output(struct dm_report *rh);
 
 /*
@@ -2583,6 +2760,125 @@ int dm_stats_get_throughput(const struct dm_stats *dms, double *tput,
 
 int dm_stats_get_utilization(const struct dm_stats *dms, dm_percent_t *util,
 			     uint64_t region_id, uint64_t area_id);
+
+/*
+ * Statistics histogram access methods.
+ *
+ * Methods to access latency histograms for regions that have them
+ * enabled. Each histogram contains a configurable number of bins
+ * spanning a user defined latency interval.
+ *
+ * The bin count, upper and lower bin bounds, and bin values are
+ * made available via the following area methods.
+ *
+ * Methods to obtain a simple string representation of the histogram
+ * and its bounds are also provided.
+ */
+
+/*
+ * Retrieve a pointer to the histogram associated with the specified
+ * area. If the area does not have a histogram configured this function
+ * returns NULL.
+ *
+ * The pointer does not need to be freed explicitly by the caller: it
+ * will become invalid following a subsequent dm_stats_list(),
+ * dm_stats_populate() or dm_stats_destroy() of the corresponding
+ * dm_stats handle.
+ *
+ * If region_id or area_id is one of the special values
+ * DM_STATS_REGION_CURRENT or DM_STATS_AREA_CURRENT the current cursor
+ * value is used to select the region or area.
+ */
+struct dm_histogram *dm_stats_get_histogram(const struct dm_stats *dms,
+					    uint64_t region_id,
+					    uint64_t area_id);
+
+/*
+ * Return the number of bins in the specified histogram handle.
+ */
+int dm_histogram_get_nr_bins(const struct dm_histogram *dmh);
+
+/*
+ * Get the lower bound of the specified bin of the histogram for the
+ * area specified by region_id and area_id. The value is returned in
+ * nanoseconds.
+ */
+uint64_t dm_histogram_get_bin_lower(const struct dm_histogram *dmh, int bin);
+
+/*
+ * Get the upper bound of the specified bin of the histogram for the
+ * area specified by region_id and area_id. The value is returned in
+ * nanoseconds.
+ */
+uint64_t dm_histogram_get_bin_upper(const struct dm_histogram *dmh, int bin);
+
+/*
+ * Get the width of the specified bin of the histogram for the area
+ * specified by region_id and area_id. The width is equal to the bin
+ * upper bound minus the lower bound and yields the range of latency
+ * values covered by this bin. The value is returned in nanoseconds.
+ */
+uint64_t dm_histogram_get_bin_width(const struct dm_histogram *dmh, int bin);
+
+/*
+ * Get the value of the specified bin of the histogram for the area
+ * specified by region_id and area_id.
+ */
+uint64_t dm_histogram_get_bin_count(const struct dm_histogram *dmh, int bin);
+
+/*
+ * Get the percentage (relative frequency) of the specified bin of the
+ * histogram for the area specified by region_id and area_id.
+ */
+dm_percent_t dm_histogram_get_bin_percent(const struct dm_histogram *dmh,
+					  int bin);
+
+/*
+ * Return the total observations (sum of bin counts) for the histogram
+ * of the area specified by region_id and area_id.
+ */
+uint64_t dm_histogram_get_sum(const struct dm_histogram *dmh);
+
+/*
+ * Histogram formatting flags.
+ */
+#define DM_HISTOGRAM_SUFFIX  0x1
+#define DM_HISTOGRAM_VALUES  0x2
+#define DM_HISTOGRAM_PERCENT 0X4
+#define DM_HISTOGRAM_BOUNDS_LOWER 0x10
+#define DM_HISTOGRAM_BOUNDS_UPPER 0x20
+#define DM_HISTOGRAM_BOUNDS_RANGE 0x30
+
+/*
+ * Return a string representation of the supplied histogram's values and
+ * bin boundaries.
+ *
+ * The bin argument selects the bin to format. If this argument is less
+ * than zero all bins will be included in the resulting string.
+ *
+ * width specifies a minimum width for the field in characters; if it is
+ * zero the width will be determined automatically based on the options
+ * selected for formatting. A value less than zero disables field width
+ * control: bin boundaries and values will be output with a minimum
+ * amount of whitespace.
+ *
+ * flags is a collection of flag arguments that control the string format:
+ *
+ * DM_HISTOGRAM_VALUES  - Include bin values in the string.
+ * DM_HISTOGRAM_SUFFIX  - Include time unit suffixes when printing bounds.
+ * DM_HISTOGRAM_PERCENT - Format bin values as a percentage.
+ *
+ * DM_HISTOGRAM_BOUNDS_LOWER - Include the lower bound of each bin.
+ * DM_HISTOGRAM_BOUNDS_UPPER - Include the upper bound of each bin.
+ * DM_HISTOGRAM_BOUNDS_RANGE - Show the span of each bin as "lo-up".
+ *
+ * The returned pointer does not need to be freed explicitly by the
+ * caller: it will become invalid following a subsequent
+ * dm_stats_list(), dm_stats_populate() or dm_stats_destroy() of the
+ * corresponding dm_stats handle.
+ */
+const char *dm_histogram_to_string(const struct dm_histogram *dmh, int bin,
+				   int width, int flags);
 
 /*************************
  * config file parse/print
