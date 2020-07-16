@@ -483,7 +483,7 @@ static struct dm_list *_failed_pv_list(struct volume_group *vg)
 		if (pvl->pv->pe_alloc_count == 0)
 			continue;
 
-		if (!(new_pvl = dm_pool_alloc(vg->vgmem, sizeof(*new_pvl)))) {
+		if (!(new_pvl = dm_pool_zalloc(vg->vgmem, sizeof(*new_pvl)))) {
 			log_error("Allocation of failed_pvs list entry failed.");
 			return NULL;
 		}
@@ -1261,11 +1261,6 @@ static int _lvconvert_mirrors(struct cmd_context *cmd,
 	    (old_log_count == new_log_count))
 		return 1;
 
-	if ((old_log_count != new_log_count) &&
-	    (new_log_count == MIRROR_LOG_MIRRORED)) {
-		log_warn("WARNING: Log type \"mirrored\" is DEPRECATED and will be removed in the future. Use RAID1 LV or disk log instead.");
-	}
-
 	if (!_lvconvert_mirrors_aux(cmd, lv, lp, NULL,
 				    new_mimage_count, new_log_count, lp->pvh))
 		return_0;
@@ -1990,19 +1985,9 @@ static int _lvconvert_snapshot(struct cmd_context *cmd,
 
 	if (!zero || !(lv->status & LVM_WRITE))
 		log_warn("WARNING: %s not zeroed.", snap_name);
-	else {
-		lv->status |= LV_TEMPORARY;
-		if (!activate_lv(cmd, lv) ||
-		    !wipe_lv(lv, (struct wipe_params) { .do_zero = 1 })) {
-			log_error("Aborting. Failed to wipe snapshot exception store.");
-			return 0;
-		}
-		lv->status &= ~LV_TEMPORARY;
-		/* Deactivates cleared metadata LV */
-		if (!deactivate_lv(lv->vg->cmd, lv)) {
-			log_error("Failed to deactivate zeroed snapshot exception store.");
-			return 0;
-		}
+	else if (!activate_and_wipe_lv(lv, 0)) {
+		log_error("Aborting. Failed to wipe snapshot exception store.");
+		return 0;
 	}
 
 	if (!archive(lv->vg))
@@ -3153,12 +3138,12 @@ static int _lvconvert_to_pool(struct cmd_context *cmd,
 			goto_bad;
 
 		if (zero_metadata) {
-			metadata_lv->status |= LV_TEMPORARY;
+			metadata_lv->status |= LV_ACTIVATION_SKIP;
 			if (!activate_lv(cmd, metadata_lv)) {
 				log_error("Aborting. Failed to activate metadata lv.");
 				goto bad;
 			}
-			metadata_lv->status &= ~LV_TEMPORARY;
+			metadata_lv->status &= ~LV_ACTIVATION_SKIP;
 
 			if (!wipe_lv(metadata_lv, (struct wipe_params) { .do_zero = 1 })) {
 				log_error("Aborting. Failed to wipe metadata lv.");
@@ -3449,6 +3434,18 @@ static int _lvconvert_repair_pvs_mirror(struct cmd_context *cmd, struct logical_
 	int ret;
 
 	/*
+	 * We want to allow cmirror active on multiple nodes to be repaired,
+	 * but normal mirror to only be repaired if active exclusively here.
+	 * If the LV is active it already has the necessary lock, but if not
+	 * active, then require ex since we cannot know the active state on
+	 * other hosts.
+	 */
+	if (!lv_is_active(lv)) {
+		if (!lockd_lv(cmd, lv, "ex", 0))
+			return_0;
+	}
+
+	/*
 	 * FIXME: temporary use of lp because _lvconvert_mirrors_repair()
 	 * and _aux() still use lp fields everywhere.
 	 * Migrate them away from using lp (for the most part just use
@@ -3577,6 +3574,10 @@ static int _lvconvert_repair_cachepool_thinpool(struct cmd_context *cmd, struct 
 {
 	int poolmetadataspare = arg_int_value(cmd, poolmetadataspare_ARG, DEFAULT_POOL_METADATA_SPARE);
 	struct dm_list *use_pvh;
+
+	/* ensure it's not active elsewhere. */
+	if (!lockd_lv(cmd, lv, "ex", 0))
+		return_0;
 
 	if (cmd->position_argc > 1) {
 		/* First pos arg is required LV, remaining are optional PVs. */

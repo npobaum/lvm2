@@ -28,6 +28,7 @@ SOURCES =\
 	lvextend.c \
 	lvmcmdline.c \
 	lvmdiskscan.c \
+	lvpoll.c \
 	lvreduce.c \
 	lvremove.c \
 	lvrename.c \
@@ -56,10 +57,9 @@ SOURCES =\
 	vgexport.c \
 	vgextend.c \
 	vgimport.c \
+	vgimportclone.c \
 	vgmerge.c \
 	vgmknodes.c \
-	lvpoll.c \
-	vgimportclone.c \
 	vgreduce.c \
 	vgremove.c \
 	vgrename.c \
@@ -89,8 +89,9 @@ ifeq ("@STATIC_LINK@", "yes")
   INSTALL_CMDLIB_TARGETS += install_cmdlib_static
 endif
 
-LVMLIBS = $(LVMINTERNAL_LIBS) -laio
+LVMLIBS = $(SYSTEMD_LIBS) -L$(top_builddir)/libdm -ldevmapper $(LIBS) -laio
 LIB_VERSION = $(LIB_VERSION_LVM)
+INCLUDES = -I$(top_builddir)/tools
 
 CLEAN_TARGETS = liblvm2cmd.$(LIB_SUFFIX) $(TARGETS_DM) \
 	liblvm2cmd.$(LIB_SUFFIX).$(LIB_VERSION) lvm-static.o \
@@ -118,12 +119,10 @@ all: device-mapper
 
 CFLAGS_lvm.o += $(EXTRA_EXEC_CFLAGS)
 
-INCLUDES += -I$(top_builddir)/tools
-
-lvm: $(OBJECTS) lvm.o $(top_builddir)/lib/liblvm-internal.a $(INTERNAL_LIBS)
+lvm: $(OBJECTS) lvm.o $(LVMINTERNAL_LIBS)
 	@echo "    [CC] $@"
 	$(Q) $(CC) $(CFLAGS) $(LDFLAGS) $(EXTRA_EXEC_LDFLAGS) $(ELDFLAGS) -o $@ $+ \
-		$(LVMLIBS) $(READLINE_LIBS) $(LIBS) -lm
+		$(DMEVENT_LIBS) $(READLINE_LIBS) $(LVMLIBS)
 
 DEFS_man-generator.o += -DMAN_PAGE_GENERATOR
 
@@ -133,12 +132,12 @@ man-generator.c: command.c
 
 man-generator: man-generator.o
 	@echo "    [CC] $@"
-	$(CC) $(CFLAGS) -o $@ $<
+	$(Q) $(CC) $(CFLAGS) -o $@ $<
 
-lvm.static: $(OBJECTS) lvm-static.o $(top_builddir)/lib/liblvm-internal.a $(INTERNAL_LIBS)
+lvm.static: $(OBJECTS) lvm-static.o $(LVMINTERNAL_LIBS)
 	@echo "    [CC] $@"
-	$(Q) $(CC) $(CFLAGS) $(LDFLAGS) -static -L$(interfacebuilddir) -o $@ \
-	      $(OBJECTS) lvm-static.o $(LVMLIBS) $(STATIC_LIBS) $(LIBS)
+	$(Q) $(CC) $(CFLAGS) $(LDFLAGS) -static -L$(interfacebuilddir) -o $@ $+ \
+	      $(DMEVENT_LIBS) $(STATIC_LIBS) $(LVMLIBS)
 
 liblvm2cmd.a: $(top_builddir)/lib/liblvm-internal.a $(OBJECTS) lvmcmdlib.o lvm2cmd.o
 	@echo "    [AR] $@"
@@ -155,7 +154,7 @@ liblvm2cmd.$(LIB_SUFFIX): liblvm2cmd.a $(LDDEPS)
 	$(Q) $(CC) -shared -Wl,-soname,$@.$(LIB_VERSION) \
 		$(CFLAGS) $(CLDFLAGS) -o $@ \
 		@CLDWHOLEARCHIVE@ liblvm2cmd.a @CLDNOWHOLEARCHIVE@ \
-		$(LVMLIBS) $(INTERNAL_LIBS) $(LIBS)
+		$(LVMINTERNAL_LIBS) $(LVMLIBS)
 
 liblvm2cmd.$(LIB_SUFFIX).$(LIB_VERSION): liblvm2cmd.$(LIB_SUFFIX)
 	@echo "    [LN] $@"
@@ -225,7 +224,7 @@ install_tools_dynamic: lvm .commands
 	$(Q) $(INSTALL_PROGRAM) -D lvm $(sbindir)/lvm
 	@echo Creating symbolic links for individual commands in $(sbindir)
 	@for v in `cat .commands`; do \
-		echo "$(LN_S) -f lvm $(sbindir)/$$v"; \
+		test -n "$(Q)" || echo "$(LN_S) -f lvm $(sbindir)/$$v"; \
 		$(LN_S) -f lvm $(sbindir)/$$v; \
 	done;
 

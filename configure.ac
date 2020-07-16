@@ -144,6 +144,11 @@ AC_TYPE_UINT64_T
 AX_GCC_BUILTIN([__builtin_clz])
 AX_GCC_BUILTIN([__builtin_clzll])
 
+
+AC_DEFINE([_GNU_SOURCE], 1, [Define to get access to GNU/Linux extension])
+AC_DEFINE([_REENTRANT], 1, [Define to use re-entrant thread safe versions])
+
+
 ################################################################################
 dnl -- Check for functions
 AC_CHECK_FUNCS([ftruncate gethostname getpagesize gettimeofday localtime_r \
@@ -1154,7 +1159,6 @@ AS_IF([test "$NOTIFYDBUS_SUPPORT" = yes && test "BUILD_LVMDBUSD" = yes],
 dnl -- Enable Python dbus library
 
 if test "$BUILD_LVMDBUSD" = yes; then
-	unset PYTHON_CONFIG
 	unset am_cv_pathless_PYTHON ac_cv_path_PYTHON am_cv_python_platform
 	unset am_cv_python_pythondir am_cv_python_version am_cv_python_pyexecdir
 	unset ac_cv_path_PYTHON_CONFIG ac_cv_path_ac_pt_PYTHON_CONFIG
@@ -1810,6 +1814,7 @@ libdm/dm-tools/Makefile
 libdm/libdevmapper.pc
 man/Makefile
 po/Makefile
+scripts/lvm2-pvscan.service
 scripts/blkdeactivate.sh
 scripts/blk_availability_init_red_hat
 scripts/blk_availability_systemd_red_hat.service

@@ -13,8 +13,6 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#define _GNU_SOURCE
-
 #include "base/memory/zalloc.h"
 #include "lib/misc/lib.h"
 #include "lib/label/label.h"
@@ -356,7 +354,7 @@ static int _process_block(struct cmd_context *cmd, struct dev_filter *f,
 	char label_buf[LABEL_SIZE] __attribute__((aligned(8)));
 	struct label *label = NULL;
 	struct labeller *labeller;
-	uint64_t sector;
+	uint64_t sector = 0;
 	int ret = 0;
 	int pass;
 
@@ -799,7 +797,7 @@ out:
 
 static int _setup_bcache(int cache_blocks)
 {
-	struct io_engine *ioe;
+	struct io_engine *ioe = NULL;
 
 	if (cache_blocks < MIN_BCACHE_BLOCKS)
 		cache_blocks = MIN_BCACHE_BLOCKS;
@@ -807,9 +805,18 @@ static int _setup_bcache(int cache_blocks)
 	if (cache_blocks > MAX_BCACHE_BLOCKS)
 		cache_blocks = MAX_BCACHE_BLOCKS;
 
-	if (!(ioe = create_async_io_engine())) {
-		log_error("Failed to create bcache io engine.");
-		return 0;
+	if (use_aio()) {
+		if (!(ioe = create_async_io_engine())) {
+			log_warn("Failed to set up async io, using sync io.");
+			init_use_aio(0);
+		}
+	}
+
+	if (!ioe) {
+		if (!(ioe = create_sync_io_engine())) {
+			log_error("Failed to set up sync io.");
+			return 0;
+		}
 	}
 
 	if (!(scan_bcache = bcache_create(BCACHE_BLOCK_SIZE_IN_SECTORS, cache_blocks, ioe))) {
@@ -846,7 +853,7 @@ int label_scan(struct cmd_context *cmd)
 	 */
 	dev_cache_scan();
 
-	if (!(iter = dev_iter_create(cmd->full_filter, 0))) {
+	if (!(iter = dev_iter_create(cmd->filter, 0))) {
 		log_error("Scanning failed to get devices.");
 		return 0;
 	}
@@ -889,7 +896,7 @@ int label_scan(struct cmd_context *cmd)
 			return 0;
 	}
 
-	_scan_list(cmd, cmd->full_filter, &all_devs, NULL);
+	_scan_list(cmd, cmd->filter, &all_devs, NULL);
 
 	dm_list_iterate_items_safe(devl, devl2, &all_devs) {
 		dm_list_del(&devl->list);
@@ -1299,9 +1306,7 @@ bool dev_set_bytes(struct device *dev, uint64_t start, size_t len, uint8_t val)
 		log_debug("Close and reopen to write %s", dev_name(dev));
 		bcache_invalidate_fd(scan_bcache, dev->bcache_fd);
 		_scan_dev_close(dev);
-
-		dev->flags |= DEV_BCACHE_WRITE;
-		label_scan_open(dev);
+		/* goes to label_scan_open() since bcache_fd < 0 */
 	}
 
 	if (dev->bcache_fd <= 0) {
@@ -1341,7 +1346,11 @@ void dev_set_last_byte(struct device *dev, uint64_t offset)
 	unsigned int phys_block_size = 0;
 	unsigned int block_size = 0;
 
-	dev_get_block_size(dev, &phys_block_size, &block_size);
+	if (!dev_get_block_size(dev, &phys_block_size, &block_size)) {
+		stack;
+		/* FIXME  ASSERT or regular error testing is missing */
+		return;
+	}
 
 	bcache_set_last_byte(scan_bcache, dev->bcache_fd, offset, phys_block_size);
 }

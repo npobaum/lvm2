@@ -32,10 +32,6 @@
 #include "lib/format_text/archiver.h"
 #include "lib/lvmpolld/lvmpolld-client.h"
 
-#ifdef HAVE_LIBDL
-#include "lib/misc/sharedlib.h"
-#endif
-
 #include <locale.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
@@ -330,6 +326,8 @@ static void _init_logging(struct cmd_context *cmd)
 	cmd->default_settings.test =
 	    find_config_tree_bool(cmd, global_test_CFG, NULL);
 	init_test(cmd->default_settings.test);
+
+	init_use_aio(find_config_tree_bool(cmd, global_use_aio_CFG, NULL));
 
 	/* Settings for logging to file */
 	if (find_config_tree_bool(cmd, log_overwrite_CFG, NULL))
@@ -1032,7 +1030,7 @@ static int _init_dev_cache(struct cmd_context *cmd)
 
 #define MAX_FILTERS 10
 
-static struct dev_filter *_init_lvmetad_filter_chain(struct cmd_context *cmd)
+static struct dev_filter *_init_filter_chain(struct cmd_context *cmd)
 {
 	int nr_filt = 0;
 	const struct dm_config_node *cn;
@@ -1141,27 +1139,9 @@ bad:
 }
 
 /*
- * The way the filtering is initialized depends on whether lvmetad is uesd or not.
- *
- * If lvmetad is used, there are three filter chains:
- *
- *   - cmd->lvmetad_filter - the lvmetad filter chain used when scanning devs for lvmetad update:
- *     sysfs filter -> internal filter -> global regex filter -> type filter ->
- *     usable device filter(FILTER_MODE_PRE_LVMETAD) ->
- *     mpath component filter -> partitioned filter ->
- *     md component filter -> fw raid filter
- *
- *   - cmd->filter - the filter chain used for lvmetad responses:
- *     persistent filter -> regex_filter -> usable device filter(FILTER_MODE_POST_LVMETAD)
- *
- *   - cmd->full_filter - the filter chain used for all the remaining situations:
- *     cmd->lvmetad_filter -> cmd->filter
- *
- * If lvmetad is not used, there's just one filter chain:
- *
- *   - cmd->filter == cmd->full_filter:
- *     persistent filter -> sysfs filter -> internal filter -> global regex filter ->
- *     regex_filter -> type filter -> usable device filter(FILTER_MODE_NO_LVMETAD) ->
+ *   cmd->filter == 
+ *     persistent(cache) filter -> sysfs filter -> internal filter -> global regex filter ->
+ *     regex_filter -> type filter -> usable device filter ->
  *     mpath component filter -> partitioned filter -> md component filter -> fw raid filter
  *
  */
@@ -1174,32 +1154,30 @@ int init_filters(struct cmd_context *cmd, unsigned load_persistent_cache)
 		return 0;
 	}
 
-	cmd->lvmetad_filter = _init_lvmetad_filter_chain(cmd);
-	if (!cmd->lvmetad_filter)
+	filter = _init_filter_chain(cmd);
+	if (!filter)
 		goto_bad;
 
 	init_ignore_suspended_devices(find_config_tree_bool(cmd, devices_ignore_suspended_devices_CFG, NULL));
 	init_ignore_lvm_mirrors(find_config_tree_bool(cmd, devices_ignore_lvm_mirrors_CFG, NULL));
 
 	/*
-	 * If lvmetad is used, there's a separation between pre-lvmetad filter chain
-	 * ("cmd->lvmetad_filter") applied only if scanning for lvmetad update and
-	 * post-lvmetad filter chain ("filter") applied on each lvmetad response.
-	 * However, if lvmetad is not used, these two chains are not separated
-	 * and we use exactly one filter chain during device scanning ("filter"
-	 * that includes also "cmd->lvmetad_filter" chain).
+	 * persisent filter is a cache of the previous result real filter result.
+	 * If a dev is found in persistent filter, the pass/fail result saved by
+	 * the pfilter is used.  If a dev does not existing in the persistent
+	 * filter, the dev is passed on to the real filter, and when the result
+	 * of the real filter is saved in the persistent filter.
+	 *
+	 * FIXME: we should apply the filter once at the start of the command,
+	 * and not call the filters repeatedly.  In that case we would not need
+	 * the persistent/caching filter layer.
 	 */
-	filter = cmd->lvmetad_filter;
-	cmd->lvmetad_filter = NULL;
-
 	if (!(pfilter = persistent_filter_create(cmd->dev_types, filter))) {
 		log_verbose("Failed to create persistent device filter.");
 		goto bad;
 	}
 
-	cmd->filter = filter = pfilter;
-
-	cmd->full_filter = filter;
+	cmd->filter = pfilter;
 
 	cmd->initialized.filters = 1;
 	return 1;
@@ -1220,10 +1198,6 @@ bad:
 		 */
 		filter->destroy(filter);
 	}
-
-	/* if lvmetad is used, the cmd->lvmetad_filter is separate */
-	if (cmd->lvmetad_filter)
-		cmd->lvmetad_filter->destroy(cmd->lvmetad_filter);
 
 	cmd->initialized.filters = 0;
 	return 0;
@@ -1298,24 +1272,6 @@ int lvm_register_segtype(struct segtype_library *seglib,
 	return 1;
 }
 
-static int _init_single_segtype(struct cmd_context *cmd,
-				struct segtype_library *seglib)
-{
-	struct segment_type *(*init_segtype_fn) (struct cmd_context *);
-	struct segment_type *segtype;
-
-	if (!(init_segtype_fn = dlsym(seglib->lib, "init_segtype"))) {
-		log_error("Shared library %s does not contain segment type "
-			  "functions", seglib->libname);
-		return 0;
-	}
-
-	if (!(segtype = init_segtype_fn(seglib->cmd)))
-		return_0;
-
-	return lvm_register_segtype(seglib, segtype);
-}
-
 static int _init_segtypes(struct cmd_context *cmd)
 {
 	int i;
@@ -1335,10 +1291,6 @@ static int _init_segtypes(struct cmd_context *cmd)
 #endif
 		NULL
 	};
-
-#ifdef HAVE_LIBDL
-	const struct dm_config_node *cn;
-#endif
 
 	for (i = 0; init_segtype_array[i]; i++) {
 		if (!(segtype = init_segtype_array[i](cmd)))
@@ -1365,57 +1317,6 @@ static int _init_segtypes(struct cmd_context *cmd)
 #ifdef VDO_INTERNAL
 	if (!init_vdo_segtypes(cmd, &seglib))
 		return_0;
-#endif
-
-#ifdef HAVE_LIBDL
-	/* Load any formats in shared libs unless static */
-	if (!is_static() &&
-	    (cn = find_config_tree_array(cmd, global_segment_libraries_CFG, NULL))) {
-
-		const struct dm_config_value *cv;
-		int (*init_multiple_segtypes_fn) (struct cmd_context *,
-						  struct segtype_library *);
-
-		for (cv = cn->v; cv; cv = cv->next) {
-			if (cv->type != DM_CFG_STRING) {
-				log_error("Invalid string in config file: "
-					  "global/segment_libraries");
-				return 0;
-			}
-			seglib.libname = cv->v.str;
-			if (!(seglib.lib = load_shared_library(cmd,
-							seglib.libname,
-							"segment type", 0)))
-				return_0;
-
-			if ((init_multiple_segtypes_fn =
-			    dlsym(seglib.lib, "init_multiple_segtypes"))) {
-				if (dlsym(seglib.lib, "init_segtype"))
-					log_warn("WARNING: Shared lib %s has "
-						 "conflicting init fns.  Using"
-						 " init_multiple_segtypes().",
-						 seglib.libname);
-			} else
-				init_multiple_segtypes_fn =
-				    _init_single_segtype;
- 
-			if (!init_multiple_segtypes_fn(cmd, &seglib)) {
-				struct dm_list *sgtl, *tmp;
-				log_error("init_multiple_segtypes() failed: "
-					  "Unloading shared library %s",
-					  seglib.libname);
-				dm_list_iterate_safe(sgtl, tmp, &cmd->segtypes) {
-					segtype = dm_list_item(sgtl, struct segment_type);
-					if (segtype->library == seglib.lib) {
-						dm_list_del(&segtype->list);
-						segtype->ops->destroy(segtype);
-					}
-				}
-				dlclose(seglib.lib);
-				return_0;
-			}
-		}
-	}
 #endif
 
 	return 1;
@@ -1814,27 +1715,11 @@ static void _destroy_segtypes(struct dm_list *segtypes)
 {
 	struct dm_list *sgtl, *tmp;
 	struct segment_type *segtype;
-	void *lib;
 
 	dm_list_iterate_safe(sgtl, tmp, segtypes) {
 		segtype = dm_list_item(sgtl, struct segment_type);
 		dm_list_del(&segtype->list);
-		lib = segtype->library;
 		segtype->ops->destroy(segtype);
-#ifdef HAVE_LIBDL
-		/*
-		 * If no segtypes remain from this library, close it.
-		 */
-		if (lib) {
-			struct segment_type *segtype2;
-			dm_list_iterate_items(segtype2, segtypes)
-				if (segtype2->library == lib)
-					goto skip_dlclose;
-			dlclose(lib);
-skip_dlclose:
-			;
-		}
-#endif
 	}
 }
 
@@ -1849,9 +1734,9 @@ static void _destroy_dev_types(struct cmd_context *cmd)
 
 static void _destroy_filters(struct cmd_context *cmd)
 {
-	if (cmd->full_filter) {
-		cmd->full_filter->destroy(cmd->full_filter);
-		cmd->lvmetad_filter = cmd->filter = cmd->full_filter = NULL;
+	if (cmd->filter) {
+		cmd->filter->destroy(cmd->filter);
+		cmd->filter = NULL;
 	}
 	cmd->initialized.filters = 0;
 }

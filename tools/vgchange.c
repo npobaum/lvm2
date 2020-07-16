@@ -607,7 +607,7 @@ static int _vgchange_single(struct cmd_context *cmd, const char *vg_name,
 {
 	int ret = ECMD_PROCESSED;
 	unsigned i;
-	activation_change_t activate = CHANGE_AN;
+	activation_change_t activate;
 
 	static const struct {
 		int arg;
@@ -993,6 +993,18 @@ static int _vgchange_locktype_single(struct cmd_context *cmd, const char *vg_nam
 
 	backup(vg);
 
+	/*
+	 * When init_vg_sanlock is called for vgcreate, the lockspace remains
+	 * started and lvmlock remains active, but when called for
+	 * vgchange --locktype sanlock, the lockspace is not started so the
+	 * lvmlock LV should be deactivated at the end.  vg_write writes the
+	 * new leases to lvmlock, so we need to wait until after vg_write to
+	 * deactivate it.
+	 */
+	if (vg->lock_type && !strcmp(vg->lock_type, "sanlock") &&
+	    (cmd->command->command_enum == vgchange_locktype_CMD))
+		deactivate_lv(cmd, vg->sanlock_lv);
+
 	log_print_unless_silent("Volume group \"%s\" successfully changed", vg->name);
 
 	return ECMD_PROCESSED;
@@ -1033,7 +1045,8 @@ int vgchange_locktype_cmd(struct cmd_context *cmd, int argc, char **argv)
 			return 0;
 		}
 
-		if (yes_no_prompt("Forcibly change VG lock type to none? [y/n]: ") == 'n') {
+		if (!arg_is_set(cmd, yes_ARG) &&
+		     yes_no_prompt("Forcibly change VG lock type to none? [y/n]: ") == 'n') {
 			log_error("VG lock type not changed.");
 			return 0;
 		}

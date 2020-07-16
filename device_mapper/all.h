@@ -17,6 +17,8 @@
 #ifndef LIB_DEVICE_MAPPER_H
 #define LIB_DEVICE_MAPPER_H
 
+#include "configure.h"
+
 #include "base/data-struct/list.h"
 #include "base/data-struct/hash.h"
 #include "vdo/target.h"
@@ -116,10 +118,12 @@ enum {
 	DM_DEVICE_MKNODES,
 
 	DM_DEVICE_LIST_VERSIONS,
-	
+
 	DM_DEVICE_TARGET_MSG,
 
-	DM_DEVICE_SET_GEOMETRY
+	DM_DEVICE_SET_GEOMETRY,
+
+	DM_DEVICE_ARM_POLL
 };
 
 /*

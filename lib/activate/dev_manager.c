@@ -374,7 +374,7 @@ static int _ignore_blocked_mirror_devices(struct device *dev,
 			if (!(tmp_dev = dev_create_file(buf, NULL, NULL, 0)))
 				goto_out;
 
-			tmp_dev->dev = MKDEV((dev_t)sm->logs[0].major, (dev_t)sm->logs[0].minor);
+			tmp_dev->dev = MKDEV(sm->logs[0].major, sm->logs[0].minor);
 			if (device_is_usable(tmp_dev, (struct dev_usable_check_params)
 					     { .check_empty = 1,
 					       .check_blocked = 1,
@@ -1916,7 +1916,8 @@ static int _check_holder(struct dev_manager *dm, struct dm_tree *dtree,
 
 		if (!strncmp(uuid, (char*)&lv->vg->id, sizeof(lv->vg->id)) &&
 		    !dm_tree_find_node_by_uuid(dtree, uuid)) {
-			dm_strncpy((char*)&id, uuid, 2 * sizeof(struct id) + 1);
+			/* trims any UUID suffix (i.e. -cow) */
+			(void) dm_strncpy((char*)&id, uuid, 2 * sizeof(struct id) + 1);
 
 			/* If UUID is not yet in dtree, look for matching LV */
 			if (!(lv_det = find_lv_in_vg_by_lvid(lv->vg, &id))) {

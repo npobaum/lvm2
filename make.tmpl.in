@@ -61,8 +61,7 @@ PYTHON2 = @PYTHON2@
 PYTHON3 = @PYTHON3@
 PYCOMPILE = $(top_srcdir)/autoconf/py-compile
 
-LIBS = @LIBS@
-LIBS += $(SELINUX_LIBS) $(UDEV_LIBS) $(BLKID_LIBS) $(RT_LIBS) -lm
+LIBS += @LIBS@ $(SELINUX_LIBS) $(UDEV_LIBS) $(BLKID_LIBS) $(RT_LIBS) $(M_LIBS)
 # Extra libraries always linked with static binaries
 STATIC_LIBS = $(SELINUX_LIBS) $(UDEV_LIBS) $(BLKID_LIBS)
 DEFS += @DEFS@
@@ -73,9 +72,6 @@ CLDFLAGS += @CLDFLAGS@
 ELDFLAGS += @ELDFLAGS@
 LDDEPS += @LDDEPS@
 LIB_SUFFIX = @LIB_SUFFIX@
-LVMINTERNAL_LIBS=\
-	-llvm-internal \
-	$(DMEVENT_LIBS) $(DAEMON_LIBS) $(SYSTEMD_LIBS) $(UDEV_LIBS) $(DL_LIBS) $(BLKID_LIBS)
 DL_LIBS = @DL_LIBS@
 RT_LIBS = @RT_LIBS@
 M_LIBS = @M_LIBS@
@@ -258,9 +254,7 @@ endif
   ifneq ("@BUILD_DMEVENTD@", "yes")
   ifneq ("@BUILD_LVMLOCKD@", "yes")
   ifneq ("@BUILD_LVMPOLLD@", "yes")
-  ifneq ("@BUILD_LVMETAD@", "yes")
     DEFS += -DDEBUG_MEM
-  endif
   endif
   endif
   endif
@@ -268,15 +262,6 @@ endif
 
 # end of fPIC protection
 endif
-
-DEFS += -D_BUILDING_LVM
-
-LDFLAGS += -L$(top_builddir)/lib
-CLDFLAGS += -L$(top_builddir)/lib
-
-DAEMON_LIBS = -ldaemonclient
-LDFLAGS += -L$(top_builddir)/libdaemon/client
-CLDFLAGS += -L$(top_builddir)/libdaemon/client
 
 ifeq ("@BUILD_DMEVENTD@", "yes")
   DMEVENT_LIBS = -ldevmapper-event
@@ -309,7 +294,7 @@ LIB_VERSION_DM := $(shell $(AWK) -F '.' '{printf "%s.%s",$$1,$$2}' $(top_srcdir)
 
 LIB_VERSION_APP := $(shell $(AWK) -F '[(). ]' '{printf "%s.%s",$$1,$$4}' $(top_srcdir)/VERSION)
 
-INCLUDES += -I$(top_srcdir) -I$(srcdir) -I$(top_builddir)/include
+INCLUDES += -I$(srcdir) -I$(top_srcdir) -I$(top_builddir)/include
 
 #VDO_INCLUDES=-I@VDO_INCLUDE@
 
@@ -343,11 +328,13 @@ SUBDIRS.distclean := $(SUBDIRS:=.distclean)
 
 TARGETS += $(LIB_SHARED) $(LIB_STATIC)
 
-INTERNAL_LIBS=\
+INTERNAL_LIBS = \
+	$(top_builddir)/libdaemon/client/libdaemonclient.a \
 	$(top_builddir)/device_mapper/libdevice-mapper.a \
 	$(top_builddir)/base/libbase.a
-	
-all: $(INTERNAL_LIBS) $(SUBDIRS) $(TARGETS)
+LVMINTERNAL_LIBS = $(top_builddir)/lib/liblvm-internal.a $(INTERNAL_LIBS)
+
+all: $(SUBDIRS) $(TARGETS)
 
 install: all $(SUBDIRS.install)
 install_cluster: all $(SUBDIRS.install_cluster)
@@ -356,7 +343,7 @@ install_lvm2: $(SUBDIRS.install_lvm2)
 install_ocf: $(SUBDIRS.install_ocf)
 cflow: $(SUBDIRS.cflow)
 
-$(SUBDIRS): $(SUBDIRS.device-mapper) $(INTERNAL_LIBS)
+$(SUBDIRS): $(SUBDIRS.device-mapper)
 	$(MAKE) -C $@
 
 $(SUBDIRS.device-mapper):
@@ -481,7 +468,7 @@ ifeq ("@LIB_SUFFIX@","dylib")
 endif
 
 $(LIB_SHARED): $(LIB_SHARED).$(LIB_VERSION)
-	@echo "    [LN] $<"
+	@echo "    [LN] $@"
 	$(Q) $(LN_S) -f $(<F) $@
 
 CLEAN_TARGETS += $(LDDEPS) .exported_symbols_generated
@@ -534,18 +521,20 @@ CLEAN_TARGETS += \
 	$(POTFILES) $(CLEAN_CFLOW)
 
 cleandir:
+	@echo "    [CLEANDIR]"
 ifneq (,$(firstword $(CLEAN_DIRS)))
-	$(RM) -r $(CLEAN_DIRS)
+	$(Q) $(RM) -r $(CLEAN_DIRS)
 endif
-	$(RM) $(OBJECTS) $(TARGETS) $(CLEAN_TARGETS) core
+	$(Q) $(RM) $(OBJECTS) $(TARGETS) $(CLEAN_TARGETS) core
 
 clean: $(SUBDIRS.clean) cleandir
 
 distclean: cleandir $(SUBDIRS.distclean)
+	@echo "    [DISTCLEAN]"
 ifneq (,$(firstword $(DISTCLEAN_DIRS)))
-	$(RM) -r $(DISTCLEAN_DIRS)
+	$(Q) $(RM) -r $(DISTCLEAN_DIRS)
 endif
-	$(RM) $(DISTCLEAN_TARGETS) Makefile
+	$(Q) $(RM) $(DISTCLEAN_TARGETS) Makefile
 
 .exported_symbols_generated: $(EXPORTED_HEADER) .exported_symbols $(DEPS)
 	$(Q) set -e; \
@@ -580,13 +569,15 @@ else
 endif
 
 ifeq ("$(USE_TRACKING)","yes")
-ifeq (,$(findstring $(MAKECMDGOALS),cscope.out cflow clean distclean lcov \
- help check check_local check_cluster check_lvmetad check_lvmpolld))
+ifeq (,$(findstring $(MAKECMDGOALS),cscope.out cflow clean distclean lcov lcov-reset \
+ help check check_local check_cluster check_lvmpolld run-unit-test tags))
+# Note: no tabs before -include
     ifdef SOURCES
        -include $(SOURCES:.c=.d) $(CXXSOURCES:.cpp=.d)
     endif
     ifdef SOURCES2
        -include $(SOURCES2:.c=.d)
     endif
+    DEPENDS = yes
 endif
 endif

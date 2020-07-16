@@ -49,8 +49,9 @@ install_localconf: $(CONFLOCAL)
 	fi
 
 install_profiles: $(PROFILES)
-	$(INSTALL_DIR) $(profiledir)
-	$(INSTALL_DATA) $(PROFILES) $(profiledir)/
+	@echo "    [INSTALL] $<"
+	$(Q) $(INSTALL_DIR) $(profiledir)
+	$(Q) $(INSTALL_DATA) $(PROFILES) $(profiledir)/
 
 install_lvm2: install_conf install_localconf install_profiles
 
