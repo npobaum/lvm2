@@ -1,14 +1,14 @@
 /*
- * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -27,7 +27,7 @@ int emit_to_buffer(char **buffer, size_t *size, const char *fmt, ...)
 	n = vsnprintf(*buffer, *size, fmt, ap);
 	va_end(ap);
 
-	if (n < 0 || (n == *size))
+	if (n < 0 || ((size_t)n == *size))
 		return 0;
 
 	*buffer += n;
@@ -39,16 +39,16 @@ int emit_to_buffer(char **buffer, size_t *size, const char *fmt, ...)
  * Count occurences of 'c' in 'str' until we reach a null char.
  *
  * Returns:
- *  len - incremented for each char we encounter, whether 'c' or not.
- *  count - number of occurences of 'c'
+ *  len - incremented for each char we encounter.
+ *  count - number of occurrences of 'c' and 'c2'.
  */
-void count_chars(const char *str, size_t *len, int *count,
-		 const char c)
+static void _count_chars(const char *str, size_t *len, int *count,
+			 const int c1, const int c2)
 {
 	const char *ptr;
 
 	for (ptr = str; *ptr; ptr++, (*len)++)
-		if (*ptr == c)
+		if (*ptr == c1 || *ptr == c2)
 			(*count)++;
 }
 
@@ -56,18 +56,68 @@ void count_chars(const char *str, size_t *len, int *count,
  * Count occurences of 'c' in 'str' of length 'size'.
  *
  * Returns:
- *   # of occurences of 'c'
+ *   Number of occurrences of 'c'
  */
-unsigned count_chars_len(const char *str, size_t size, const char c)
+unsigned count_chars(const char *str, size_t len, const int c)
 {
-	int i;
-	unsigned count=0;
+	size_t i;
+	unsigned count = 0;
 
-	for (i=0; i < size; i++)
+	for (i = 0; i < len; i++)
 		if (str[i] == c)
 			count++;
-	return count;
 
+	return count;
+}
+
+/*
+ * Length of string after escaping double quotes and backslashes.
+ */
+size_t escaped_len(const char *str)
+{
+	size_t len = 1;
+	int count = 0;
+
+	_count_chars(str, &len, &count, '\"', '\\');
+
+	return count + len;
+}
+
+/*
+ * Copies a string, quoting orig_char with quote_char.
+ * Optionally also quote quote_char.
+ */
+static void _quote_characters(char **out, const char *src,
+			      const int orig_char, const int quote_char,
+			      int quote_quote_char)
+{
+	while (*src) {
+		if (*src == orig_char ||
+		    (*src == quote_char && quote_quote_char))
+			*(*out)++ = quote_char;
+
+		*(*out)++ = *src++;
+	}
+}
+
+/*
+ * Unquote orig_char in string.
+ * Also unquote quote_char.
+ */
+static void _unquote_characters(char *src, const int orig_char,
+				const int quote_char)
+{
+	char *out = src;
+
+	while (*src) {
+		if (*src == quote_char &&
+		    (*(src + 1) == orig_char || *(src + 1) == quote_char))
+			src++;
+
+		*out++ = *src++;
+	}
+
+	*out = '\0';
 }
 
 /*
@@ -75,12 +125,7 @@ unsigned count_chars_len(const char *str, size_t size, const char c)
  */
 static void _quote_hyphens(char **out, const char *src)
 {
-	while (*src) {
-		if (*src == '-')
-			*(*out)++ = '-';
-
-		*(*out)++ = *src++;
-	}
+	return _quote_characters(out, src, '-', '-', 0);
 }
 
 /*
@@ -93,11 +138,11 @@ char *build_dm_name(struct dm_pool *mem, const char *vgname,
 	int hyphens = 1;
 	char *r, *out;
 
-	count_chars(vgname, &len, &hyphens, '-');
-	count_chars(lvname, &len, &hyphens, '-');
+	_count_chars(vgname, &len, &hyphens, '-', 0);
+	_count_chars(lvname, &len, &hyphens, '-', 0);
 
 	if (layer && *layer) {
-		count_chars(layer, &len, &hyphens, '-');
+		_count_chars(layer, &len, &hyphens, '-', 0);
 		hyphens++;
 	}
 
@@ -123,6 +168,27 @@ char *build_dm_name(struct dm_pool *mem, const char *vgname,
 	*out = '\0';
 
 	return r;
+}
+
+/*
+ * Copies a string, quoting double quotes with backslashes.
+ */
+char *escape_double_quotes(char *out, const char *src)
+{
+	char *buf = out;
+
+	_quote_characters(&buf, src, '\"', '\\', 1);
+	*buf = '\0';
+
+	return out;
+}
+
+/*
+ * Undo quoting in situ.
+ */
+void unescape_double_quotes(char *src)
+{
+	_unquote_characters(src, '\"', '\\');
 }
 
 /*

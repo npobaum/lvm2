@@ -1,14 +1,14 @@
 /*
- * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.   
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -20,6 +20,7 @@
 
 #include "stub.h"
 #include "lvm2cmd.h"
+#include "last-path-component.h"
 
 #include <signal.h>
 #include <syslog.h>
@@ -45,7 +46,7 @@ extern char *optarg;
  * Table of valid switches
  */
 static struct arg _the_args[ARG_COUNT + 1] = {
-#define arg(a, b, c, d) {b, "", "--" c, d, 0, NULL, 0, 0, INT64_C(0), UINT64_C(0), SIGN_NONE, PERCENT_NONE, NULL},
+#define arg(a, b, c, d, e) {b, "", "--" c, d, e, 0, NULL, 0, 0, INT64_C(0), UINT64_C(0), SIGN_NONE, PERCENT_NONE, NULL},
 #include "args.h"
 #undef arg
 };
@@ -168,6 +169,7 @@ static int _get_int_arg(struct arg *a, char **ptr)
 	return 1;
 }
 
+/* Size stored in sectors */
 static int _size_arg(struct cmd_context *cmd __attribute((unused)), struct arg *a, int factor)
 {
 	char *ptr;
@@ -210,6 +212,8 @@ static int _size_arg(struct cmd_context *cmd __attribute((unused)), struct arg *
 
 		while (i-- > 0)
 			v *= 1024;
+
+		v *= 2;
 	} else
 		v *= factor;
 
@@ -223,12 +227,12 @@ static int _size_arg(struct cmd_context *cmd __attribute((unused)), struct arg *
 
 int size_kb_arg(struct cmd_context *cmd, struct arg *a)
 {
-	return _size_arg(cmd, a, 1);
+	return _size_arg(cmd, a, 2);
 }
 
 int size_mb_arg(struct cmd_context *cmd, struct arg *a)
 {
-	return _size_arg(cmd, a, 1024);
+	return _size_arg(cmd, a, 2048);
 }
 
 int int_arg(struct cmd_context *cmd __attribute((unused)), struct arg *a)
@@ -269,6 +273,9 @@ int int_arg_with_sign_and_percent(struct cmd_context *cmd __attribute((unused)),
 		a->percent = PERCENT_VG;
 	else if (!strcasecmp(ptr, "L") || !strcasecmp(ptr, "LV"))
 		a->percent = PERCENT_LV;
+	else if (!strcasecmp(ptr, "P") || !strcasecmp(ptr, "PV") ||
+		 !strcasecmp(ptr, "PVS"))
+		a->percent = PERCENT_PVS;
 	else if (!strcasecmp(ptr, "F") || !strcasecmp(ptr, "FR") ||
 		 !strcasecmp(ptr, "FREE"))
 		a->percent = PERCENT_FREE;
@@ -326,6 +333,8 @@ int tag_arg(struct cmd_context *cmd __attribute((unused)), struct arg *a)
 	if (!validate_name(pos))
 		return 0;
 
+	a->value = pos;
+
 	return 1;
 }
 
@@ -368,35 +377,28 @@ int segtype_arg(struct cmd_context *cmd, struct arg *a)
 	return 1;
 }
 
-char yes_no_prompt(const char *prompt, ...)
+/*
+ * Positive integer, zero or "auto".
+ */
+int readahead_arg(struct cmd_context *cmd __attribute((unused)), struct arg *a)
 {
-	int c = 0, ret = 0;
-	va_list ap;
+	if (!strcasecmp(a->value, "auto")) {
+		a->ui_value = DM_READ_AHEAD_AUTO;
+		return 1;
+	}
 
-	sigint_allow();
-	do {
-		if (c == '\n' || !c) {
-			va_start(ap, prompt);
-			vprintf(prompt, ap);
-			va_end(ap);
-		}
+	if (!strcasecmp(a->value, "none")) {
+		a->ui_value = DM_READ_AHEAD_NONE;
+		return 1;
+	}
 
-		if ((c = getchar()) == EOF) {
-			ret = 'n';
-			break;
-		}
+	if (!_size_arg(cmd, a, 1))
+		return 0;
 
-		c = tolower(c);
-		if ((c == 'y') || (c == 'n'))
-			ret = c;
-	} while (!ret || c != '\n');
+	if (a->sign == SIGN_MINUS)
+		return 0;
 
-	sigint_restore();
-
-	if (c != '\n')
-		printf("\n");
-
-	return ret;
+	return 1;
 }
 
 static void __alloc(int size)
@@ -419,6 +421,7 @@ static void _alloc_command(void)
 }
 
 static void _create_new_command(const char *name, command_fn command,
+				unsigned flags,
 				const char *desc, const char *usagestr,
 				int nargs, int *args)
 {
@@ -432,12 +435,13 @@ static void _create_new_command(const char *name, command_fn command,
 	nc->desc = desc;
 	nc->usage = usagestr;
 	nc->fn = command;
+	nc->flags = flags;
 	nc->num_args = nargs;
 	nc->valid_args = args;
 }
 
-static void _register_command(const char *name, command_fn fn,
-			      const char *desc, const char *usagestr, ...)
+static void _register_command(const char *name, command_fn fn, const char *desc,
+			      unsigned flags, const char *usagestr, ...)
 {
 	int nargs = 0, i;
 	int *args;
@@ -462,16 +466,16 @@ static void _register_command(const char *name, command_fn fn,
 	va_end(ap);
 
 	/* enter the command in the register */
-	_create_new_command(name, fn, desc, usagestr, nargs, args);
+	_create_new_command(name, fn, flags, desc, usagestr, nargs, args);
 }
 
 void lvm_register_commands(void)
 {
-#define xx(a, b, c...) _register_command(# a, a, b, ## c, \
-					driverloaded_ARG, \
-					debug_ARG, help_ARG, help2_ARG, \
-					version_ARG, verbose_ARG, \
-					quiet_ARG, config_ARG, -1);
+#define xx(a, b, c, d...) _register_command(# a, a, b, c, ## d, \
+					    driverloaded_ARG, \
+					    debug_ARG, help_ARG, help2_ARG, \
+					    version_ARG, verbose_ARG, \
+					    quiet_ARG, config_ARG, -1);
 #include "commands.h"
 #undef xx
 }
@@ -479,22 +483,24 @@ void lvm_register_commands(void)
 static struct command *_find_command(const char *name)
 {
 	int i;
-	char *namebase, *base;
+	char *base;
 
-	namebase = strdup(name);
-	base = basename(namebase);
+	base = last_path_component(name);
 
 	for (i = 0; i < _cmdline.num_commands; i++) {
 		if (!strcmp(base, _cmdline.commands[i].name))
 			break;
 	}
 
-	free(namebase);
-
 	if (i >= _cmdline.num_commands)
 		return 0;
 
 	return _cmdline.commands + i;
+}
+
+static void _short_usage(const char *name)
+{
+	log_error("Run `%s --help' for more information.", name);
 }
 
 static void _usage(const char *name)
@@ -504,7 +510,7 @@ static void _usage(const char *name)
 	if (!com)
 		return;
 
-	log_error("%s: %s\n\n%s", com->name, com->desc, com->usage);
+	log_print("%s: %s\n\n%s", com->name, com->desc, com->usage);
 }
 
 /*
@@ -602,16 +608,16 @@ static int _process_command_line(struct cmd_context *cmd, int *argc,
 			return 0;
 		}
 
-		if (a->fn) {
-			if (a->count) {
-				log_error("Option%s%c%s%s may not be repeated",
-					  a->short_arg ? " -" : "",
-					  a->short_arg ? : ' ',
-					  (a->short_arg && a->long_arg) ?
-					  "/" : "", a->long_arg ? : "");
-				return 0;
-			}
+		if (a->count && !(a->flags & ARG_REPEATABLE)) {
+			log_error("Option%s%c%s%s may not be repeated",
+				  a->short_arg ? " -" : "",
+				  a->short_arg ? : ' ',
+				  (a->short_arg && a->long_arg) ?
+				  "/" : "", a->long_arg ? : "");
+			return 0;
+		}
 
+		if (a->fn) {
 			if (!optarg) {
 				log_error("Option requires argument.");
 				return 0;
@@ -703,6 +709,7 @@ static int _get_settings(struct cmd_context *cmd)
 
 	cmd->current_settings.archive = arg_int_value(cmd, autobackup_ARG, cmd->current_settings.archive);
 	cmd->current_settings.backup = arg_int_value(cmd, autobackup_ARG, cmd->current_settings.backup);
+	cmd->current_settings.cache_vgmetadata = cmd->command->flags & CACHE_VGMETADATA ? 1 : 0;
 
 	if (arg_count(cmd, partial_ARG)) {
 		init_partial(1);
@@ -733,7 +740,7 @@ static int _get_settings(struct cmd_context *cmd)
 			return EINVALID_CMD_LINE;
 		}
 		init_trust_cache(1);
-		log_print("WARNING: Cache file of PVs will be trusted.  "
+		log_warn("WARNING: Cache file of PVs will be trusted.  "
 			  "New devices holding PVs may get ignored.");
 	} else
 		init_trust_cache(0);
@@ -868,6 +875,8 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 	int ret = 0;
 	int locking_type;
 
+	init_error_message_produced(0);
+
 	/* each command should start out with sigint flag cleared */
 	sigint_clear();
 
@@ -931,7 +940,7 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
       out:
 	if (test_mode()) {
 		log_verbose("Test mode: Wiping internal cache");
-		lvmcache_destroy();
+		lvmcache_destroy(cmd, 1);
 	}
 
 	if (cmd->cft_override) {
@@ -941,7 +950,7 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 		if (!refresh_toolcontext(cmd))
 			stack;
 	}
- 
+
 	/* FIXME Move this? */
 	cmd->current_settings = cmd->default_settings;
 	_apply_settings(cmd);
@@ -952,7 +961,7 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 	dm_pool_empty(cmd->mem);
 
 	if (ret == EINVALID_CMD_LINE && !_cmdline.interactive)
-		_usage(cmd->command->name);
+		_short_usage(cmd->command->name);
 
 	log_debug("Completed: %s", cmd->cmd_line);
 
@@ -1024,10 +1033,8 @@ struct cmd_context *init_lvm(unsigned is_static)
 
 	_cmdline.the_args = &_the_args[0];
 
-	if (!(cmd = create_toolcontext(_cmdline.the_args, is_static, 0))) {
-		stack;
-		return NULL;
-	}
+	if (!(cmd = create_toolcontext(_cmdline.the_args, is_static, 0)))
+		return_NULL;
 
 	_init_rand();
 
@@ -1091,7 +1098,14 @@ static int _run_script(struct cmd_context *cmd, int argc, char **argv)
 			continue;
 		if (!strcmp(argv[0], "quit") || !strcmp(argv[0], "exit"))
 			break;
-		lvm_run_command(cmd, argc, argv);
+		ret = lvm_run_command(cmd, argc, argv);
+		if (ret != ECMD_PROCESSED) {
+			if (!error_message_produced()) {
+				log_debug("Internal error: Failed command did not use log_error");
+				log_error("Command failed with status code %d.", ret);
+			}
+			break;
+		}
 	}
 
 	if (fclose(script))
@@ -1136,31 +1150,34 @@ static void _exec_lvm1_command(char **argv)
 	log_sys_error("execvp", path);
 }
 
+static void _nonroot_warning()
+{
+	if (getuid() || geteuid())
+		log_warn("WARNING: Running as a non-root user. Functionality may be unavailable.");
+}
+
 int lvm2_main(int argc, char **argv, unsigned is_static)
 {
-	char *namebase, *base;
+	char *base;
 	int ret, alias = 0;
 	struct cmd_context *cmd;
 
 	_close_stray_fds();
 
-	namebase = strdup(argv[0]);
-	base = basename(namebase);
+	base = last_path_component(argv[0]);
 	while (*base == '/')
 		base++;
 	if (strcmp(base, "lvm") && strcmp(base, "lvm.static") &&
 	    strcmp(base, "initrd-lvm"))
 		alias = 1;
 
-	if (is_static && strcmp(base, "lvm.static") && 
+	if (is_static && strcmp(base, "lvm.static") &&
 	    path_exists(LVM_SHARED_PATH) &&
 	    !getenv("LVM_DID_EXEC")) {
 		setenv("LVM_DID_EXEC", base, 1);
 		execvp(LVM_SHARED_PATH, argv);
 		unsetenv("LVM_DID_EXEC");
 	}
-
-	free(namebase);
 
 	if (!(cmd = init_lvm(is_static)))
 		return -1;
@@ -1185,6 +1202,7 @@ int lvm2_main(int argc, char **argv, unsigned is_static)
 	}
 #ifdef READLINE_SUPPORT
 	if (!alias && argc == 1) {
+		_nonroot_warning();
 		ret = lvm_shell(cmd, &_cmdline);
 		goto out;
 	}
@@ -1202,11 +1220,17 @@ int lvm2_main(int argc, char **argv, unsigned is_static)
 		argv++;
 	}
 
+	_nonroot_warning();
 	ret = lvm_run_command(cmd, argc, argv);
 	if ((ret == ENO_SUCH_CMD) && (!alias))
 		ret = _run_script(cmd, argc, argv);
 	if (ret == ENO_SUCH_CMD)
 		log_error("No such command.  Try 'help'.");
+
+	if ((ret != ECMD_PROCESSED) && !error_message_produced()) {
+		log_debug("Internal error: Failed command did not use log_error");
+		log_error("Command failed with status code %d.", ret);
+	}
 
       out:
 	lvm_fin(cmd);

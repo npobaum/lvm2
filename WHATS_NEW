@@ -1,3 +1,332 @@
+Version 2.02.39 - 27th June 2008
+================================
+  Enable readline by default if available.
+  Update autoconf to 2008-01-16.
+  Add $DISTCLEAN_DIRS to make.tmpl.in.
+  Create coverage reports with --enable-profiling and make lcov or lcov-dated.
+  Fix up cache for PVs without mdas after consistent VG metadata is processed.
+  Update validation of safe mirror log type conversions in lvconvert.
+  Fix lvconvert to disallow snapshot and mirror combinations.
+  Fix reporting of LV fields alongside unallocated PV segments.
+  Add --unquoted and --rows to reporting tools.
+  Add and use uninitialized_var() macro to suppress invalid compiler warnings.
+  Introduce enum for md minor sb version to suppress compiler warning.
+  Avoid undefined return value after _memlock manipulation in lvm2_run.
+  Avoid link failure if configured without --enable-cmdlib or --enable-readline.
+  Make clvmd return at once if other nodes down in a gulm or openais cluster.
+  Fix and improve readahead 'auto' calculation for stripe_size.
+  Fix lvchange output for -r auto setting if auto is already set.
+  Add test case for readahead.
+  Fix ambiguous use of identifier error_message_produced.
+  Begin syncing configure.in for merge/unification with device-mapper.
+  Fix add_mirror_images not to dereference uninitialized log_lv upon failure.
+  Don't call openlog for every debug line output by clvmd.
+  Add --force to lvextend and lvresize.
+  Fix vgchange to not activate mirror leg and log volumes directly.
+  Fix test directory clean up in make distclean.
+
+Version 2.02.38 - 11th June 2008
+================================
+  Fix tracking of validity of PVs with no mdas in lvmcache.
+  Fix return values for reporting commands when run with no PVs, LVs, or VGs.
+  Add omitted unlock_vg() call when sigint_caught() during vg processing.
+  Fix free_count when reading pool metadata.
+  Fix segfault when using pvcreate on a device containing pool metadata.
+  Fix segfault after _free_vginfo by remembering to remove vginfo from list.
+  Tweak detection of invalid fid after changes to PVs in VG in _vg_read.
+  Revert assuming precommitted metadata is live when activating (unnecessary).
+  Drop cached metadata for disappearing VG in vgmerge.
+  In script-processing mode, stop if any command fails.
+  Warn if command exits with non-zero status code without a prior log_error.
+  Check lv_count in vg_validate.
+  Add --nameprefixes to reporting tools for field name prefix output format.
+
+Version 2.02.37 - 6th June 2008
+===============================
+  Make clvmd-cman use a hash rather than an array for node updown info.
+  Correct config file line numbers in messages when parsing comments.
+  Drop cached metadata when renaming a VG.
+  Allow for vginfo changing during _vg_read.
+  Decode numbers in clvmd debugging output.
+  Add missing deactivation after activation failure in lvcreate -Zy.
+  When activating, if precommitted metadata is still cached, assume it's live.
+  When removing LV symlinks, skip any where the VG name is not determined.
+  Drop metadata cache if update fails in vg_revert or vg_commit.
+  Avoid spurious duplicate VG messages referring to VGs that are gone.
+  Drop dev_name_confirmed error message to debug level.
+  Fix setpriority error message to signed int.
+  Temporarily disable dmeventd mirror monitoring during lvchange --resync.
+  Refactor some vginfo manipulation code.
+  Add assertions to trap deprecated P_ and V_ lock usage.
+  Add missing mutex around clvmd lvmcache_drop_metadata library call.
+  Fix uninitialised mutex in clvmd if all daemons are not running at startup.
+  Avoid using DLM locks with LCK_CACHE type P_ lock requests.
+  When asked to drop cached committed VG metadata, invalidate cached PV labels.
+  Drop metadata cache before writing precommitted metadata instead of after.
+  Don't touch /dev in vgrename if activation is disabled.
+
+Version 2.02.36 - 29th April 2008
+=================================
+  Fix fsadm.sh to work with older blockdev, blkid & readlink binaries.
+  Fix lvresize to pass new size to fsadm when extending device.
+  Remove unused struct in clvmd-openais, and use correct node count.
+  Fix nodes list in clvmd-openais, and allow for broadcast messages.
+  Exclude VG_GLOBAL from internal concurrent VG lock counter.
+  Fix vgsplit internal counting of snapshot LVs.
+  Fix vgmerge snapshot_count when source VG contains snapshots.
+  Simplify clvmd-openais by using non-async saLckResourceLock.
+  Fix internal LV counter when a snapshot is removed.
+  Fix metadata corruption writing lvm1-formatted metadata with snapshots.
+  Fix lvconvert -m0 allocatable space check.
+
+Version 2.02.35 - 15th April 2008
+=================================
+  Drop cached VG metadata before and after committing changes to it.
+  Rename P_global to P_#global.
+  Don't attempt remote metadata backups of non-clustered VGs. (2.02.29)
+  Don't store fid in VG metadata cache to avoid clvmd segfault. (2.02.34)
+  Update vgsplit tests to verify loosening of active LV restriction.
+  Update vgsplit to only restrict split with active LVs involved in split.
+  Add lv_is_active() to determine whether an lv is active.
+
+Version 2.02.34 - 10th April 2008
+=================================
+  Improve preferred_names lvm.conf example.
+  Fix vgdisplay 'Cur LV' field to match lvdisplay output.
+  Fix lv_count report field to exclude hidden LVs.
+  Add vg_is_clustered() helper function.
+  Fix vgsplit to only move hidden 'snapshotN' LVs when necessary.
+  Update vgsplit tests for lvnames on the cmdline.
+  Update vgsplit man page to reflect lvnames on the cmdline.
+  Update vgsplit to take "-n LogicalVolumeName" on the cmdline.
+  Use clustered mirror log with pvmove in clustered VGs, if available.
+  Fix some pvmove error status codes.
+  Fix vgsplit error paths to release vg_to lock.
+  Indicate whether or not VG is clustered in vgcreate log message.
+  Mention default --clustered setting in vgcreate man page.
+  Add config file overrides to clvmd when it reads the active LVs list.
+  Fix vgreduce to use vg_split_mdas to check sufficient mdas remain.
+  Add (empty) orphan VGs to lvmcache during initialisation.
+  Fix orphan VG name used for format_pool.
+  Create a fid for internal orphan VGs.
+  Update lvmcache VG lock state for all locking types now.
+  Fix output if overriding command_names on cmdline.
+  Add detection of clustered mirror log capability.
+  Add check to vg_commit() ensuring VG lock held before writing new VG metadata.
+  Add validation of LV name to pvmove -n.
+  Make clvmd refresh the context correctly when lvm.conf is updated.
+  Add some basic internal VG lock validation.
+  Add per-command flags to control which commands use the VG metadata cache.
+  Fix vgsplit locking of new VG (2.02.30).
+  Avoid erroneous vgsplit error message for new VG. (2.02.29)
+  Suppress duplicate message when lvresize fails because of invalid vgname.
+  Cache VG metadata internally while VG lock is held.
+  Fix redundant lvresize message if vg doesn't exist.
+  Fix another allocation bug with clvmd and large node IDs.
+  Add find_lv_in_lv_list() and find_pv_in_pv_list().
+  Fix uninitialised variable in clvmd that could cause odd hangs.
+  Add vgmerge tests.
+  Add pvseg_is_allocated() for identifying a PV segment allocated to a LV.
+  Add list_move() for moving elements from one list to another.
+  Add 'is_reserved_lvname()' for identifying hidden LVs.
+  Correct command name in lvmdiskscan man page.
+  clvmd no longer crashes if it sees nodeids over 50.
+  Fix potential deadlock in clvmd thread handling.
+  Refactor text format initialisation into _init_text_import.
+  Escape double quotes and backslashes in external metadata and config data.
+  Add functions for escaping double quotes in strings.
+  Rename count_chars_len to count_chars.
+  Use return_0 in a couple more places.
+  Correct a function name typo in _line_append error message.
+  Include limits.h in clvmd so it compiles with newer headers.
+  Add VirtIO disks (virtblk) to filters.
+  Fix resetting of MIRROR_IMAGE and VISIBLE_LV after removal of LV. (2.02.30)
+  Fix remove_layer_from_lv to empty the LV before removing it. (2.02.30)
+  Add missing no-longer-used segs_using_this_lv test to check_lv_segments.
+  Remove redundant non-NULL tests before calling free in clvmd.c.
+  Avoid a compiler warning: make is_orphan's parameter const.
+  Fix lvconvert detection of mirror conversion in progress. (2.02.30)
+  Avoid automatic lvconvert polldaemon invocation when -R specified. (2.02.30)
+  Fix 'pvs -a' to detect VGs of PVs without metadata areas.
+  Divide up internal orphan volume group by format type.
+  Update usage message for clvmd.
+  Fix clvmd man page not to print <br> and clarified debug options.
+  Fix lvresize to support /dev/mapper prefix in the LV name.
+  Fix unfilled parameter passed to fsadm from lvresize.
+  Update fsadm to call lvresize if the partition size differs (with option -l).
+  Fix fsadm to support VG/LV names.
+
+Version 2.02.33 - 31st January 2008
+===================================
+  Fix mirror log name construction during lvconvert. (2.02.30)
+  Make monitor_dev_for_events recurse through the stack of LVs.
+  Clean up some more compiler warnings.
+  Some whitespace tidy-ups.
+  Use stack return macros throughout.
+  Rely upon internally-cached PV labels while corresponding VG lock is held.
+
+Version 2.02.32 - 29th January 2008
+===================================
+  Fix two check_lv_segments error messages to show whole segment.
+  Refactor mirror log attachment code.
+  Fix internal metadata corruption in lvchange --resync. (2.02.30)
+  Fix new parameter validation in vgsplit and test mode. (2.02.30)
+  Remove redundant cnxman-socket.h file from clvmd directory.
+  Fix pvs, vgs, lvs error exit status on some error paths.
+
+Version 2.02.31 - 19th January 2008
+===================================
+  Fix lvcreate --nosync not to wait for non-happening sync. (2.02.30)
+  Add very_verbose lvconvert messages.
+  Avoid readahead error message with default setting of lvcreate -M1. (2.02.29)
+
+Version 2.02.30 - 17th January 2008
+===================================
+  Set default readahead to twice maximium stripe size.
+  Reinstate VG extent size and stripe size defaults (halved). (2.02.29)
+  Add lists of stacked LV segments using each LV to the internal metadata.
+  Change vgsplit -l (for unimplemented --list) into --maxlogicalvolumes.
+  Fix process_all_pvs to detect non-orphans with no MDAs correctly.
+  Don't use block_on_error with mirror targets version 1.12 and above.
+  Update vgsplit to accept vgcreate options when new VG is destination.
+  Update vgsplit to accept existing VG as destination.
+  lvconvert waits for completion of initial sync by default.
+  Refactor vgcreate for parameter validation and add tests.
+  Add new convert_lv field to lvs output.
+  Print warning when lvm tools are running as non-root.
+  Add snapshot dmeventd library (enables dmeventd snapshot monitoring).
+  Prevent pvcreate from overwriting MDA-less PVs belonging to active VGs.
+  Fix a segfault if using pvs with --all argument. (2.02.29)
+  Update --uuid argument description in man pages.
+  Fix vgreduce PV list processing not to process every PV in the VG. (2.02.29)
+  Extend lvconvert to use polldaemon.
+  Add support for stacked mirrors.
+  Major restructuring of pvmove and lvconvert layer manipulation code.
+  Replace tools/fsadm with scripts/fsadm.sh.
+  Append fields to report/pvsegs_cols_verbose.
+  Permit LV segment fields with PV segment reports.
+  Add seg_start_pe and seg_pe_ranges to reports.
+
+Version 2.02.29 - 5th December 2007
+===================================
+  Make clvmd backup vg metadata on remote nodes.
+  Refactor pvmove allocation code.
+  Decode cluster locking state in log message.
+  Change file locking state messages from debug to very verbose.
+  Fix --addtag to drop @ prefix from name.
+  Stop clvmd going haywire if a pre_function fails.
+  Convert some vg_reads into vg_lock_and_reads.
+  Avoid nested vg_reads when processing PVs in VGs and fix associated locking.
+  Accept sizes with --readahead argument.
+  Store size arguments as sectors internally.
+  Attempt to remove incomplete LVs with lvcreate zeroing/activation problems.
+  Add read_ahead activation code.
+  Add activation/readahead configuration option and FMT_RESTRICTED_READAHEAD.
+  Extend readahead arg to accept "auto" and "none".
+  Add lv_read_ahead and lv_kernel_read_ahead fields to reports and lvdisplay.
+  Prevent lvconvert -s from using same LV as origin and snapshot.
+  Fix human-readable output of odd numbers of sectors.
+  Add pv_mda_free and vg_mda_free fields to reports for raw text format.
+  Add LVM2 version to 'Generated by' comment in metadata.
+  Show 'not usable' space when PV is too large for device in pvdisplay.
+  Ignore and fix up any excessive device size found in metadata.
+  Fix error message when fixing up PV size in lvm2 metadata (2.02.11).
+  Fix orphan-related locking in pvdisplay and pvs.
+  Fix missing VG unlocks in some pvchange error paths.
+  Add some missing validation of VG names.
+  Rename validate_vg_name() to validate_new_vg_name().
+  Change orphan lock to VG_ORPHANS.
+  Change format1 to use ORPHAN as orphan VG name.
+  Convert pvchange, pvdisplay, pvscan to use is_orphan()
+  Add is_orphan_vg() and change all hard-coded checks to use it.
+  Detect md superblocks version 1.0, 1.1 and 1.2.
+  Add _alloc_pv() and _free_pv() from _pv_create() code and fix error paths.
+  Add pv_dev_name() to access PV device name.
+  Add const attributes to pv accessor functions.
+  Refactor vg_add_snapshot() and lv_create_empty().
+  Handle new sysfs subsystem/block/devices directory structure.
+  Run test with LVM_SYSTEM_DIR pointing to private root and /dev dirs.
+  Fix a bug in lvm_dump.sh checks for lvm/dmsetup binaries.
+  Fix underquotations in lvm_dump.sh.
+  Refactor lvcreate stripe and mirror parameter validation.
+  Print --help output to stdout, not stderr.
+  After a cmdline processing error, don't print help text but suggest --help.
+  Add %PVS extents option to lvresize, lvextend, and lvcreate.
+  Add 'make check' to run tests in new subdirectory 'test'.
+  Moved the obsolete test subdirectory to old-tests.
+  Cope with relative paths in configure --with-dmdir.
+  Remove no-longer-correct restrictions on PV arg count with stripes/mirrors.
+  Fix strdup memory leak in str_list_dup().
+  Link with -lpthread when static SELinux libraries require that.
+  Detect command line PE values that exceed their 32-bit range.
+  Include strerror string in dev_open_flags' stat failure message.
+  Move guts of pvresize into library.
+  Avoid error when --corelog is provided without --mirrorlog. (2.02.28)
+  Correct --mirrorlog argument name in man pages (not --log).
+  Clear MIRROR_NOTSYNCED LV flag when converting from mirror to linear.
+  Modify lvremove to prompt for removal if LV active on other cluster nodes.
+  Add '-f' to vgremove to force removal of VG even if LVs exist.
+
+Version 2.02.28 - 24th August 2007
+==================================
+  Fix clvmd logging so you can get lvm-level debugging out of it.
+  Introduce VG_GLOBAL lock type for vgscan/pvscan to trigger clvmd -R.
+  Change locking_flags from int to uint32_t.
+  Fix clvmd -R, so it fully refreshes the caches.
+  Change lvconvert_mirrors to use mirror segtype not striped.
+  Fix lvconvert_mirrors detection of number of existing mirrors.
+  Clean up numerous compiler warnings that appeared in recent releases.
+  Remove several unused parameters from _allocate().
+  Only permit --force, --verbose and --debug arguments to be repeated.
+  Fix inconsistent licence notices: executables are GPLv2; libraries LGPLv2.1.
+  Move guts of vgremove and lvremove into library, including yes_no_prompt.
+  Allow clvmd debug to be turned on in a running daemon using clvmd -d [-C].
+  Update to use autoconf 2.61, while still supporting 2.57.
+  Add more cluster info to lvmdump.
+  Add further const attributes throughout.
+  Add support for renaming mirrored LVs.
+  Factor out core of lvrename() to library function.
+  Add --mirrorlog argument to specify log type for mirrors.
+  Don't attempt to monitor devices if their creation failed in _lv_activate.
+  Don't leak a file descriptor in fcntl_lock_file() when fcntl fails.
+  Replace create_dir with dm_create_dir.
+  Detect stream write failure reliably with lvm_fclose using dm_fclose.
+  Fix clvmd if compiled with gulm support. (2.02.26)
+  Fix lvdisplay man page to say LV size is reported in sectors, not KB.
+  Add vg_lock_and_read() external library function.
+  Fix loading of persistent cache if cache_dir is used. (2.02.23)
+  Reduce _compare_paths lstat error message from log_error to log_very_verbose.
+  Create util.h with last_path_component replacing strdup + basename.
+  Use gcc's printf attribute wherever possible.
+  In _line_append, use "sizeof buf - 1" rather than equivalent "4095".
+  Introduce is_same_inode macro, now including a comparison of st_dev.
+  Don't leak a file descriptor in _lock_file() when flock fails.
+  Add SUN's LDOM virtual block device (vdisk) and ps3disk to filters.
+  Split metadata-external.h out from metadata.h for the tools to use.
+
+Version 2.02.27 - 17th July 2007
+================================
+  Fix snapshot cow area deactivation if origin is not active. (2.02.13)
+  Fix configure libdevmapper.h check when --with-dmdir is used.
+  Turn _add_pv_to_vg() into external library function add_pv_to_vg().
+  Add pv_by_path() external library function.
+  Tidy clvmd-openais of redundant bits, and improve an error report.
+  Cope with find_seg_by_le() failure in check_lv_segments().
+  Call dev_iter_destroy() if _process_all_devs() is interrupted by sigint.
+  Add vg_mda_count and pv_mda_count columns to reports.
+  Fix dumpconfig to use log_print instead of stdout directly.
+  Remove unused parameter 'fid' from _add_pv_to_vg.
+  Add kernel and device-mapper targets versions to lvmdump.
+  Replace BSD (r)index with C89 str(r)chr.
+  Handle vgsplit of an entire VG as a vgrename.
+  Reinitialise internal lvmdiskscan variables when called repeatedly.
+  Fix missing lvm_shell symbol in lvm2cmd library. (2.02.23)
+  Add vg_status function and clean up vg->status in tools directory.
+  Add --ignoremonitoring to disable all dmeventd interaction.
+  Remove get_ prefix from get_pv_* functions.
+  clvmd-openais now uses cpg_local_get() to get nodeid, rather than Clm.
+  Print warnings to stderr instead of stdout.
+
 Version 2.02.26 - 15th June 2007
 ================================
   Update vgcfgrestore man page.
@@ -900,7 +1229,7 @@ Some bug fixes & minor enhancements, including:
 
 You need to update libdevmapper before using 'vgmknodes' or 'vgscan --mknodes'.
 If your root filesystem is on an LV, you should run one of those two
-commands to fix up the special files in /dev in your real root filesystem 
+commands to fix up the special files in /dev in your real root filesystem
 after finishing with your initrd.  Also, remember you can use
 'vgchange --ignorelockingfailure' on your initrd if the tool fails because
 it can't write a lock file to a read-only filesystem.
@@ -910,7 +1239,7 @@ Wednesday 30th April 2003
 A pvmove implementation is now available for the new metadata format.
 
 When running a command that allocates space (e.g. lvcreate), you can now
-restrict not only which disk(s) may be used but also the Physical Extents 
+restrict not only which disk(s) may be used but also the Physical Extents
 on those disks.  e.g. lvcreate -L 10 vg1 /dev/hda6:1000-2000:3000-4000
 
 
@@ -922,12 +1251,12 @@ The new format of LVM metadata is ready for you to test!
   It's more compact and supports transactional changes and replication.
   Should things go wrong on a system, it's human-readable (and editable).
 
-Please report any problems you find to the mailing list, 
+Please report any problems you find to the mailing list,
 linux-lvm@sistina.com.  The software has NOT yet been thoroughly
 tested and so quite possibly there'll still be some bugs in it.
 Be aware of the disclaimer in the COPYING file.
 
-While testing, we recommend turning logging on in the configuration file 
+While testing, we recommend turning logging on in the configuration file
 to provide us with diagnostic information:
   log {
         file="/tmp/lvm2.log"
@@ -938,7 +1267,7 @@ to provide us with diagnostic information:
 You should schedule regular backups of your configuration file and
 metadata backups and archives (normally kept under /etc/lvm).
 
-Please read docs/example.conf and "man lvm.conf" to find out more about 
+Please read docs/example.conf and "man lvm.conf" to find out more about
 the configuration file.
 
 To convert an existing volume group called vg1 to the new format using
@@ -967,7 +1296,7 @@ first segment could have 3 stripes while the second segment has just 2.
 LVM2 maintains a backup of the current metadata for each volume group
 in /etc/lvm/backup, and puts copies of previous versions in
 /etc/lvm/archive.  "vgcfgbackup" and "vgcfgrestore" can be used to
-create and restore from these files.  If you fully understand what 
+create and restore from these files.  If you fully understand what
 you're doing, metadata can be changed by editing a copy of a current
 backup file and using vgcfgrestore to reload it.
 
@@ -984,8 +1313,8 @@ What's not finished?
 The internal cache.  If you turn on debugging output you'll see lots of
 repeated messages, many of which will eventually get optimised out.
 
---test sometimes causes a command to fail (e.g. vgconvert --test) even 
-though the real command would work: again, fixing this is waiting for 
+--test sometimes causes a command to fail (e.g. vgconvert --test) even
+though the real command would work: again, fixing this is waiting for
 the work on the cache.
 
 Several of the tools do not yet contain the logic to handle full
@@ -998,4 +1327,3 @@ Display output.  Some metadata information cannot yet be displayed.
 
 Recovery tools to salvage "lost" metadata directly from the disks:
 but we hope the new format will mean such tools are hardly ever needed!
-

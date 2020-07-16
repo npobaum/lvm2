@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2002-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2008 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -42,9 +42,11 @@
 
 /* LVM2 headers */
 #include "toolcontext.h"
+#include "lvmcache.h"
 #include "log.h"
 #include "activate.h"
 #include "locking.h"
+#include "archiver.h"
 #include "defaults.h"
 
 static struct cmd_context *cmd = NULL;
@@ -52,11 +54,100 @@ static struct dm_hash_table *lv_hash = NULL;
 static pthread_mutex_t lv_hash_lock;
 static pthread_mutex_t lvm_lock;
 static char last_error[1024];
+static int suspended = 0;
 
 struct lv_info {
 	int lock_id;
 	int lock_mode;
 };
+
+#define LCK_MASK (LCK_TYPE_MASK | LCK_SCOPE_MASK)
+
+static const char *decode_locking_cmd(unsigned char cmdl)
+{
+	static char buf[128];
+	const char *type;
+	const char *scope;
+	const char *command;
+
+	switch (cmdl & LCK_TYPE_MASK) {
+	case LCK_NULL:   
+		type = "NULL";   
+		break;
+	case LCK_READ:   
+		type = "READ";   
+		break;
+	case LCK_PREAD:  
+		type = "PREAD";  
+		break;
+	case LCK_WRITE:  
+		type = "WRITE";  
+		break;
+	case LCK_EXCL:   
+		type = "EXCL";   
+		break;
+	case LCK_UNLOCK: 
+		type = "UNLOCK"; 
+		break;
+	default:
+		type = "unknown";
+		break;
+	}
+
+	switch (cmdl & LCK_SCOPE_MASK) {
+	case LCK_VG: 
+		scope = "VG"; 
+		break;
+	case LCK_LV: 
+		scope = "LV"; 
+		break;
+	default:
+		scope = "unknown";
+		break;
+	}
+
+	switch (cmdl & LCK_MASK) {
+	case LCK_LV_EXCLUSIVE & LCK_MASK:
+		command = "LCK_LV_EXCLUSIVE";  
+		break;
+	case LCK_LV_SUSPEND & LCK_MASK:    
+		command = "LCK_LV_SUSPEND";    
+		break;
+	case LCK_LV_RESUME & LCK_MASK:     
+		command = "LCK_LV_RESUME";     
+		break;
+	case LCK_LV_ACTIVATE & LCK_MASK:   
+		command = "LCK_LV_ACTIVATE";   
+		break;
+	case LCK_LV_DEACTIVATE & LCK_MASK: 
+		command = "LCK_LV_DEACTIVATE"; 
+		break;
+	default:
+		command = "unknown";
+		break;
+	}
+
+	sprintf(buf, "0x%x %s (%s|%s%s%s%s%s%s)", cmdl, command, type, scope,
+		cmdl & LCK_NONBLOCK   ? "|NONBLOCK" : "",
+		cmdl & LCK_HOLD       ? "|HOLD" : "",
+		cmdl & LCK_LOCAL      ? "|LOCAL" : "",
+		cmdl & LCK_CLUSTER_VG ? "|CLUSTER_VG" : "",
+		cmdl & LCK_CACHE      ? "|CACHE" : "");
+
+	return buf;
+}
+
+static const char *decode_flags(unsigned char flags)
+{
+	static char buf[128];
+
+	sprintf(buf, "0x%x (%s%s%s)", flags,
+		flags & LCK_PARTIAL_MODE	  ? "PARTIAL " : "",
+		flags & LCK_MIRROR_NOSYNC_MODE	  ? "MIRROR_NOSYNC " : "",
+		flags & LCK_DMEVENTD_MONITOR_MODE ? "DMEVENTD_MONITOR " : "");
+
+	return buf;
+}
 
 char *get_last_lvm_error()
 {
@@ -222,7 +313,7 @@ static int do_activate_lv(char *resource, unsigned char lock_flags, int mode)
 	}
 
 	/* If it's suspended then resume it */
-	if (!lv_info_by_lvid(cmd, resource, &lvi, 0))
+	if (!lv_info_by_lvid(cmd, resource, &lvi, 0, 0))
 		return EIO;
 
 	if (lvi.suspended)
@@ -268,7 +359,7 @@ static int do_suspend_lv(char *resource)
 	}
 
 	/* Only suspend it if it exists */
-	if (!lv_info_by_lvid(cmd, resource, &lvi, 0))
+	if (!lv_info_by_lvid(cmd, resource, &lvi, 0, 0))
 		return EIO;
 
 	if (lvi.exists) {
@@ -309,13 +400,13 @@ int do_lock_lv(unsigned char command, unsigned char lock_flags, char *resource)
 {
 	int status = 0;
 
-	DEBUGLOG("do_lock_lv: resource '%s', cmd = 0x%x, flags = %x\n",
-		 resource, command, lock_flags);
+	DEBUGLOG("do_lock_lv: resource '%s', cmd = %s, flags = %s\n",
+		 resource, decode_locking_cmd(command), decode_flags(lock_flags));
 
 	pthread_mutex_lock(&lvm_lock);
 	if (!cmd->config_valid || config_files_changed(cmd)) {
 		/* Reinitialise various settings inc. logging, filters */
-		if (!refresh_toolcontext(cmd)) {
+		if (do_refresh_cache()) {
 			log_error("Updated config file invalid. Aborting.");
 			pthread_mutex_unlock(&lvm_lock);
 			return EINVAL;
@@ -338,11 +429,15 @@ int do_lock_lv(unsigned char command, unsigned char lock_flags, char *resource)
 
 	case LCK_LV_SUSPEND:
 		status = do_suspend_lv(resource);
+		if (!status)
+			suspended++;
 		break;
 
 	case LCK_UNLOCK:
 	case LCK_LV_RESUME:	/* if active */
 		status = do_resume_lv(resource);
+		if (!status)
+			suspended--;
 		break;
 
 	case LCK_LV_ACTIVATE:
@@ -384,8 +479,8 @@ int pre_lock_lv(unsigned char command, unsigned char lock_flags, char *resource)
 	   before suspending cluster-wide.
 	 */
 	if (command == LCK_LV_SUSPEND) {
-		DEBUGLOG("pre_lock_lv: resource '%s', cmd = 0x%x, flags = %d\n",
-			 resource, command, lock_flags);
+		DEBUGLOG("pre_lock_lv: resource '%s', cmd = %s, flags = %s\n",
+			 resource, decode_locking_cmd(command), decode_flags(lock_flags));
 
 		if (hold_lock(resource, LKM_PWMODE, LKF_NOQUEUE))
 			return errno;
@@ -404,8 +499,8 @@ int post_lock_lv(unsigned char command, unsigned char lock_flags,
 		int oldmode;
 
 		DEBUGLOG
-		    ("post_lock_lv: resource '%s', cmd = 0x%x, flags = %d\n",
-		     resource, command, lock_flags);
+		    ("post_lock_lv: resource '%s', cmd = %s, flags = %s\n",
+		     resource, decode_locking_cmd(command), decode_flags(lock_flags));
 
 		/* If the lock state is PW then restore it to what it was */
 		oldmode = get_current_lock(resource);
@@ -413,7 +508,7 @@ int post_lock_lv(unsigned char command, unsigned char lock_flags,
 			struct lvinfo lvi;
 
 			pthread_mutex_lock(&lvm_lock);
-			status = lv_info_by_lvid(cmd, resource, &lvi, 0);
+			status = lv_info_by_lvid(cmd, resource, &lvi, 0, 0);
 			pthread_mutex_unlock(&lvm_lock);
 			if (!status)
 				return EIO;
@@ -430,8 +525,8 @@ int post_lock_lv(unsigned char command, unsigned char lock_flags,
 	return 0;
 }
 
-/* Check if a VG is un use by LVM1 so we don't stomp on it */
-int do_check_lvm1(char *vgname)
+/* Check if a VG is in use by LVM1 so we don't stomp on it */
+int do_check_lvm1(const char *vgname)
 {
 	int status;
 
@@ -442,9 +537,15 @@ int do_check_lvm1(char *vgname)
 
 int do_refresh_cache()
 {
+	int ret;
 	DEBUGLOG("Refreshing context\n");
 	log_notice("Refreshing context");
-	return refresh_toolcontext(cmd)==1?0:-1;
+
+	ret = refresh_toolcontext(cmd);
+	init_full_scan_done(0);
+	lvmcache_label_scan(cmd, 2);
+
+	return ret==1?0:-1;
 }
 
 
@@ -457,9 +558,10 @@ static void drop_vg_locks()
 	char line[255];
 	FILE *vgs =
 	    popen
-	    ("lvm pvs --nolocking --noheadings -o vg_name", "r");
+	    ("lvm pvs  --config 'log{command_names=0 prefix=\"\"}' --nolocking --noheadings -o vg_name", "r");
 
-	sync_unlock("P_orphans", LCK_EXCL);
+	sync_unlock("P_" VG_ORPHANS, LCK_EXCL);
+	sync_unlock("P_" VG_GLOBAL, LCK_EXCL);
 
 	if (!vgs)
 		return;
@@ -487,6 +589,17 @@ static void drop_vg_locks()
 }
 
 /*
+ * Drop lvmcache metadata
+ */
+void drop_metadata(const char *vgname)
+{
+	DEBUGLOG("Dropping metadata for VG %s\n", vgname);
+	pthread_mutex_lock(&lvm_lock);
+	lvmcache_drop_metadata(vgname);
+	pthread_mutex_unlock(&lvm_lock);
+}
+
+/*
  * Ideally, clvmd should be started before any LVs are active
  * but this may not be the case...
  * I suppose this also comes in handy if clvmd crashes, not that it would!
@@ -498,7 +611,7 @@ static void *get_initial_state()
 	char line[255];
 	FILE *lvs =
 	    popen
-	    ("lvm lvs --nolocking --noheadings -o vg_uuid,lv_uuid,lv_attr,vg_attr",
+	    ("lvm lvs  --config 'log{command_names=0 prefix=\"\"}' --nolocking --noheadings -o vg_uuid,lv_uuid,lv_attr,vg_attr",
 	     "r");
 
 	if (!lvs)
@@ -541,6 +654,15 @@ static void *get_initial_state()
 static void lvm2_log_fn(int level, const char *file, int line,
 			const char *message)
 {
+
+	/* Send messages to the normal LVM2 logging system too,
+	   so we get debug output when it's asked for.
+ 	   We need to NULL the function ptr otherwise it will just call
+	   back into here! */
+	init_log_fn(NULL);
+	print_log(level, file, line, "%s", message);
+	init_log_fn(lvm2_log_fn);
+
 	/*
 	 * Ignore non-error messages, but store the latest one for returning
 	 * to the user.
@@ -584,6 +706,24 @@ void init_lvhash()
 	pthread_mutex_init(&lvm_lock, NULL);
 }
 
+/* Backups up the LVM metadata if it's changed */
+void lvm_do_backup(const char *vgname)
+{
+	struct volume_group * vg;
+	int consistent = 0;
+
+	DEBUGLOG("Triggering backup of VG metadata for %s. suspended=%d\n", vgname, suspended);
+
+	vg = vg_read(cmd, vgname, NULL /*vgid*/, &consistent);
+	if (vg) {
+		if (consistent)
+			check_current_backup(vg);
+	}
+	else {
+		log_error("Error backing up metadata, can't find VG for group %s", vgname);
+	}
+}
+
 /* Called to initialise the LVM context of the daemon */
 int init_lvm(int using_gulm)
 {
@@ -594,7 +734,13 @@ int init_lvm(int using_gulm)
 
 	/* Use LOG_DAEMON for syslog messages instead of LOG_USER */
 	init_syslog(LOG_DAEMON);
-	init_debug(_LOG_ERR);
+	openlog("clvmd", LOG_PID, LOG_DAEMON);
+	init_debug(cmd->current_settings.debug);
+	init_verbose(cmd->current_settings.verbose + VERBOSE_BASE_LEVEL);
+	set_activation(cmd->current_settings.activation);
+	archive_enable(cmd, cmd->current_settings.archive);
+	backup_enable(cmd, cmd->current_settings.backup);
+	cmd->cmd_line = (char *)"clvmd";
 
 	/* Check lvm.conf is setup for cluster-LVM */
 	check_config();

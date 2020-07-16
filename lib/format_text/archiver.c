@@ -1,14 +1,14 @@
 /*
- * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -78,17 +78,13 @@ static char *_build_desc(struct dm_pool *mem, const char *line, int before)
 	size_t len = strlen(line) + 32;
 	char *buffer;
 
-	if (!(buffer = dm_pool_zalloc(mem, strlen(line) + 32))) {
-		stack;
-		return NULL;
-	}
+	if (!(buffer = dm_pool_zalloc(mem, strlen(line) + 32)))
+		return_NULL;
 
 	if (snprintf(buffer, len,
 		     "Created %s executing '%s'",
-		     before ? "*before*" : "*after*", line) < 0) {
-		stack;
-		return NULL;
-	}
+		     before ? "*before*" : "*after*", line) < 0)
+		return_NULL;
 
 	return buffer;
 }
@@ -97,10 +93,8 @@ static int __archive(struct volume_group *vg)
 {
 	char *desc;
 
-	if (!(desc = _build_desc(vg->cmd->mem, vg->cmd->cmd_line, 1))) {
-		stack;
-		return 0;
-	}
+	if (!(desc = _build_desc(vg->cmd->mem, vg->cmd->cmd_line, 1)))
+		return_0;
 
 	return archive_vg(vg, vg->cmd->archive_params->dir, desc,
 			  vg->cmd->archive_params->keep_days,
@@ -117,13 +111,13 @@ int archive(struct volume_group *vg)
 		return 1;
 	}
 
-	if (!create_dir(vg->cmd->archive_params->dir))
+	if (!dm_create_dir(vg->cmd->archive_params->dir))
 		return 0;
 
 	/* Trap a read-only file system */
-        if ((access(vg->cmd->archive_params->dir, R_OK | W_OK | X_OK) == -1) &&
+	if ((access(vg->cmd->archive_params->dir, R_OK | W_OK | X_OK) == -1) &&
 	     (errno == EROFS))
-                return 0;
+		return 0;
 
 	log_verbose("Archiving volume group \"%s\" metadata (seqno %u).", vg->name,
 		    vg->seqno);
@@ -196,10 +190,8 @@ static int __backup(struct volume_group *vg)
 	char name[PATH_MAX];
 	char *desc;
 
-	if (!(desc = _build_desc(vg->cmd->mem, vg->cmd->cmd_line, 0))) {
-		stack;
-		return 0;
-	}
+	if (!(desc = _build_desc(vg->cmd->mem, vg->cmd->cmd_line, 0)))
+		return_0;
 
 	if (dm_snprintf(name, sizeof(name), "%s/%s",
 			 vg->cmd->backup_params->dir, vg->name) < 0) {
@@ -214,7 +206,7 @@ static int __backup(struct volume_group *vg)
 int backup(struct volume_group *vg)
 {
 	if (!vg->cmd->backup_params->enabled || !vg->cmd->backup_params->dir) {
-		log_print("WARNING: This metadata update is NOT backed up");
+		log_warn("WARNING: This metadata update is NOT backed up");
 		return 1;
 	}
 
@@ -223,13 +215,13 @@ int backup(struct volume_group *vg)
 		return 1;
 	}
 
-	if (!create_dir(vg->cmd->backup_params->dir))
+	if (!dm_create_dir(vg->cmd->backup_params->dir))
 		return 0;
 
 	/* Trap a read-only file system */
-        if ((access(vg->cmd->backup_params->dir, R_OK | W_OK | X_OK) == -1) &&
+	if ((access(vg->cmd->backup_params->dir, R_OK | W_OK | X_OK) == -1) &&
 	    (errno == EROFS))
-                return 0;
+		return 0;
 
 	if (!__backup(vg)) {
 		log_error("Backup of volume group %s metadata failed.",
@@ -305,29 +297,27 @@ int backup_restore_vg(struct cmd_context *cmd, struct volume_group *vg)
 	/* Add any metadata areas on the PVs */
 	list_iterate_items(pvl, &vg->pvs) {
 		pv = pvl->pv;
-		if (!(info = info_from_pvid(pv->dev->pvid))) {
+		if (!(info = info_from_pvid(pv->dev->pvid, 0))) {
 			log_error("PV %s missing from cache",
-				  dev_name(pv->dev));
+				  pv_dev_name(pv));
 			return 0;
 		}
 		if (cmd->fmt != info->fmt) {
 			log_error("PV %s is a different format (seqno %s)",
-				  dev_name(pv->dev), info->fmt->name);
+				  pv_dev_name(pv), info->fmt->name);
 			return 0;
 		}
 		if (!vg->fid->fmt->ops->
 		    pv_setup(vg->fid->fmt, UINT64_C(0), 0, 0, 0,
 			     UINT64_C(0), &vg->fid->metadata_areas, pv, vg)) {
 			log_error("Format-specific setup for %s failed",
-				  dev_name(pv->dev));
+				  pv_dev_name(pv));
 			return 0;
 		}
 	}
 
-	if (!vg_write(vg) || !vg_commit(vg)) {
-		stack;
-		return 0;
-	}
+	if (!vg_write(vg) || !vg_commit(vg))
+		return_0;
 
 	return 1;
 }
@@ -341,10 +331,8 @@ int backup_restore_from_file(struct cmd_context *cmd, const char *vg_name,
 	/*
 	 * Read in the volume group from the text file.
 	 */
-	if (!(vg = backup_read_vg(cmd, vg_name, file))) {
-		stack;
-		return 0;
-	}
+	if (!(vg = backup_read_vg(cmd, vg_name, file)))
+		return_0;
 
 	return backup_restore_vg(cmd, vg);
 }

@@ -1,14 +1,14 @@
 /*
  * Copyright (C) 2002-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -50,22 +50,22 @@ static int pvremove_check(struct cmd_context *cmd, const char *name)
 	/* we must have -ff to overwrite a non orphan */
 	if (arg_count(cmd, force_ARG) < 2) {
 		log_error("Can't pvremove physical volume \"%s\" of "
-			  "volume group \"%s\" without -ff", name, get_pv_vg_name(pv));
+			  "volume group \"%s\" without -ff", name, pv_vg_name(pv));
 		return 0;
 	}
 
 	/* prompt */
 	if (!arg_count(cmd, yes_ARG) &&
-	    yes_no_prompt(_really_wipe, name, get_pv_vg_name(pv)) == 'n') {
+	    yes_no_prompt(_really_wipe, name, pv_vg_name(pv)) == 'n') {
 		log_print("%s: physical volume label not removed", name);
 		return 0;
 	}
 
 	if (arg_count(cmd, force_ARG)) {
-		log_print("WARNING: Wiping physical volume label from "
+		log_warn("WARNING: Wiping physical volume label from "
 			  "%s%s%s%s", name,
 			  !is_orphan(pv) ? " of volume group \"" : "",
-			  !is_orphan(pv) ? get_pv_vg_name(pv) : "",
+			  !is_orphan(pv) ? pv_vg_name(pv) : "",
 			  !is_orphan(pv) ? "\"" : "");
 	}
 
@@ -76,8 +76,9 @@ static int pvremove_single(struct cmd_context *cmd, const char *pv_name,
 			   void *handle __attribute((unused)))
 {
 	struct device *dev;
+	int ret = ECMD_FAILED;
 
-	if (!lock_vol(cmd, ORPHAN, LCK_VG_WRITE)) {
+	if (!lock_vol(cmd, VG_ORPHANS, LCK_VG_WRITE)) {
 		log_error("Can't get lock for orphan PVs");
 		return ECMD_FAILED;
 	}
@@ -92,6 +93,7 @@ static int pvremove_single(struct cmd_context *cmd, const char *pv_name,
 	}
 
 	if (!dev_test_excl(dev)) {
+		/* FIXME Detect whether device-mapper is still using the device */
 		log_error("Can't open %s exclusively - not removing. "
 			  "Mounted filesystem?", dev_name(dev));
 		goto error;
@@ -106,12 +108,12 @@ static int pvremove_single(struct cmd_context *cmd, const char *pv_name,
 	log_print("Labels on physical volume \"%s\" successfully wiped",
 		  pv_name);
 
-	unlock_vg(cmd, ORPHAN);
-	return ECMD_PROCESSED;
+	ret = ECMD_PROCESSED;
 
       error:
-	unlock_vg(cmd, ORPHAN);
-	return ECMD_FAILED;
+	unlock_vg(cmd, VG_ORPHANS);
+
+	return ret;
 }
 
 int pvremove(struct cmd_context *cmd, int argc, char **argv)

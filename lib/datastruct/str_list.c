@@ -1,14 +1,14 @@
 /*
  * Copyright (C) 2003-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2005 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -20,10 +20,8 @@ struct list *str_list_create(struct dm_pool *mem)
 {
 	struct list *sl;
 
-	if (!(sl = dm_pool_alloc(mem, sizeof(struct list)))) {
-		stack;
-		return NULL;
-	}
+	if (!(sl = dm_pool_alloc(mem, sizeof(struct list))))
+		return_NULL;
 
 	list_init(sl);
 
@@ -34,19 +32,15 @@ int str_list_add(struct dm_pool *mem, struct list *sll, const char *str)
 {
 	struct str_list *sln;
 
-	if (!str) {
-		stack;
-		return 0;
-	}
+	if (!str)
+		return_0;
 
 	/* Already in list? */
 	if (str_list_match_item(sll, str))
 		return 1;
 
-	if (!(sln = dm_pool_alloc(mem, sizeof(*sln)))) {
-		stack;
-		return 0;
-	}
+	if (!(sln = dm_pool_alloc(mem, sizeof(*sln))))
+		return_0;
 
 	sln->str = str;
 	list_add(sll, &sln->list);
@@ -66,17 +60,16 @@ int str_list_del(struct list *sll, const char *str)
 	return 1;
 }
 
-int str_list_dup(struct dm_pool *mem, struct list *sllnew, struct list *sllold)
+int str_list_dup(struct dm_pool *mem, struct list *sllnew,
+		 const struct list *sllold)
 {
 	struct str_list *sl;
 
 	list_init(sllnew);
 
 	list_iterate_items(sl, sllold) {
-		if (!str_list_add(mem, sllnew, strdup(sl->str))) {
-			stack;
-			return 0;
-		}
+		if (!str_list_add(mem, sllnew, dm_pool_strdup(mem, sl->str)))
+			return_0;
 	}
 
 	return 1;
@@ -85,7 +78,7 @@ int str_list_dup(struct dm_pool *mem, struct list *sllnew, struct list *sllold)
 /*
  * Is item on list?
  */
-int str_list_match_item(struct list *sll, const char *str)
+int str_list_match_item(const struct list *sll, const char *str)
 {
 	struct str_list *sl;
 
@@ -99,7 +92,7 @@ int str_list_match_item(struct list *sll, const char *str)
 /*
  * Is at least one item on both lists?
  */
-int str_list_match_list(struct list *sll, struct list *sll2)
+int str_list_match_list(const struct list *sll, const struct list *sll2)
 {
 	struct str_list *sl;
 
@@ -113,7 +106,7 @@ int str_list_match_list(struct list *sll, struct list *sll2)
 /*
  * Do both lists contain the same set of items?
  */
-int str_list_lists_equal(struct list *sll, struct list *sll2)
+int str_list_lists_equal(const struct list *sll, const struct list *sll2)
 {
 	struct str_list *sl;
 

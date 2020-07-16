@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.   
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
@@ -121,7 +121,8 @@ static char *_list_args(const char *text, int state)
 }
 
 /* Custom completion function */
-static char **_completion(const char *text, int start_pos, int end_pos)
+static char **_completion(const char *text, int start_pos,
+			  int end_pos __attribute((unused)))
 {
 	char **match_list = NULL;
 	int p = 0;
@@ -235,6 +236,10 @@ int lvm_shell(struct cmd_context *cmd, struct cmdline_context *cmdline)
 			log_error("No such command '%s'.  Try 'help'.",
 				  argv[0]);
 
+                if ((ret != ECMD_PROCESSED) && !error_message_produced()) {
+			log_debug("Internal error: Failed command did not use log_error");
+			log_error("Command failed with status code %d.", ret);
+		}
 		_write_history();
 	}
 

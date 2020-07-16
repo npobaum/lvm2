@@ -1,14 +1,14 @@
 /*
- * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved. 
- * Copyright (C) 2004-2005 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -125,14 +125,18 @@ static int _lvcreate_name_params(struct lvcreate_params *lp,
 		}
 	}
 
+	if (!validate_name(lp->vg_name)) {
+		log_error("Volume group name %s has invalid characters",
+			  lp->vg_name);
+		return 0;
+	}
+
 	if (lp->lv_name) {
 		if ((ptr = strrchr(lp->lv_name, '/')))
 			lp->lv_name = ptr + 1;
 
-		if (!apply_lvname_restrictions(lp->lv_name)) {
-			stack;
-			return 0;
-		}
+		if (!apply_lvname_restrictions(lp->lv_name))
+			return_0;
 
 		if (!validate_name(lp->lv_name)) {
 			log_error("Logical volume name \"%s\" is invalid",
@@ -167,37 +171,20 @@ static int _read_size_params(struct lvcreate_params *lp,
 			log_error("Negative size is invalid");
 			return 0;
 		}
-		lp->size = arg_uint64_value(cmd, size_ARG, UINT64_C(0)) * 2;
+		lp->size = arg_uint64_value(cmd, size_ARG, UINT64_C(0));
 		lp->percent = PERCENT_NONE;
 	}
 
 	return 1;
 }
 
-/* The stripe size is limited by the size of a uint32_t, but since the
- * value given by the user is doubled, and the final result must be a
- * power of 2, we must divide UINT_MAX by four and add 1 (to round it
- * up to the power of 2) */
-static int _read_stripe_params(struct lvcreate_params *lp,
-			       struct cmd_context *cmd,
-			       int *pargc)
+/*
+ * Generic stripe parameter checks.
+ * FIXME: Should eventually be moved into lvm library.
+ */
+static int _validate_stripe_params(struct cmd_context *cmd,
+				   struct lvcreate_params *lp)
 {
-	int argc = *pargc;
-
-	if (arg_count(cmd, stripesize_ARG)) {
-		if (arg_sign_value(cmd, stripesize_ARG, 0) == SIGN_MINUS) {
-			log_error("Negative stripesize is invalid");
-			return 0;
-		}
-		/* Check to make sure we won't overflow lp->stripe_size */
-		if(arg_uint_value(cmd, stripesize_ARG, 0) > STRIPE_SIZE_LIMIT) {
-			log_error("Stripe size cannot be larger than %s",
-				  display_size(cmd, (uint64_t) STRIPE_SIZE_LIMIT));
-			return 0;
-		}
-		lp->stripe_size = 2 * arg_uint_value(cmd, stripesize_ARG, 0);
-	}
-
 	if (lp->stripes == 1 && lp->stripe_size) {
 		log_print("Ignoring stripesize argument with single stripe");
 		lp->stripe_size = 0;
@@ -209,12 +196,6 @@ static int _read_stripe_params(struct lvcreate_params *lp,
 						  DEFAULT_STRIPESIZE) * 2;
 		log_print("Using default stripesize %s",
 			  display_size(cmd, (uint64_t) lp->stripe_size));
-	}
-
-	if (argc && (unsigned) argc < lp->stripes) {
-		log_error("Too few physical volumes on "
-			  "command line for %d-way striping", lp->stripes);
-		return 0;
 	}
 
 	if (lp->stripes < 1 || lp->stripes > MAX_STRIPES) {
@@ -234,37 +215,42 @@ static int _read_stripe_params(struct lvcreate_params *lp,
 	return 1;
 }
 
-static int _read_mirror_params(struct lvcreate_params *lp,
-			       struct cmd_context *cmd,
-			       int *pargc)
+/* The stripe size is limited by the size of a uint32_t, but since the
+ * value given by the user is doubled, and the final result must be a
+ * power of 2, we must divide UINT_MAX by four and add 1 (to round it
+ * up to the power of 2) */
+static int _read_stripe_params(struct lvcreate_params *lp,
+			       struct cmd_context *cmd)
 {
-	int argc = *pargc;
-	int region_size;
-	int pagesize = lvm_getpagesize();
+	if (arg_count(cmd, stripesize_ARG)) {
+		if (arg_sign_value(cmd, stripesize_ARG, 0) == SIGN_MINUS) {
+			log_error("Negative stripesize is invalid");
+			return 0;
+		}
+		/* Check to make sure we won't overflow lp->stripe_size */
+		if(arg_uint_value(cmd, stripesize_ARG, 0) > STRIPE_SIZE_LIMIT * 2) {
+			log_error("Stripe size cannot be larger than %s",
+				  display_size(cmd, (uint64_t) STRIPE_SIZE_LIMIT));
+			return 0;
+		}
+		lp->stripe_size = arg_uint_value(cmd, stripesize_ARG, 0);
+	}
 
-	if (argc && (unsigned) argc < lp->mirrors) {
-		log_error("Too few physical volumes on "
-			  "command line for %d-way mirroring", lp->mirrors);
+
+	if (!_validate_stripe_params(cmd, lp))
 		return 0;
-	}
 
-	if (arg_count(cmd, regionsize_ARG)) {
-		if (arg_sign_value(cmd, regionsize_ARG, 0) == SIGN_MINUS) {
-			log_error("Negative regionsize is invalid");
-			return 0;
-		}
-		lp->region_size = 2 * arg_uint_value(cmd, regionsize_ARG, 0);
-	} else {
-		region_size = 2 * find_config_tree_int(cmd,
-					"activation/mirror_region_size",
-					DEFAULT_MIRROR_REGION_SIZE);
-		if (region_size < 0) {
-			log_error("Negative regionsize in configuration file "
-				  "is invalid");
-			return 0;
-		}
-		lp->region_size = region_size;
-	}
+	return 1;
+}
+
+/*
+ * Generic mirror parameter checks.
+ * FIXME: Should eventually be moved into lvm library.
+ */
+static int _validate_mirror_params(const struct cmd_context *cmd __attribute((unused)),
+				   const struct lvcreate_params *lp)
+{
+	int pagesize = lvm_getpagesize();
 
 	if (lp->region_size & (lp->region_size - 1)) {
 		log_error("Region size (%" PRIu32 ") must be a power of 2",
@@ -284,8 +270,59 @@ static int _read_mirror_params(struct lvcreate_params *lp,
 		return 0;
 	}
 
-	lp->corelog = arg_count(cmd, corelog_ARG) ? 1 : 0;
+	return 1;
+}
+
+static int _read_mirror_params(struct lvcreate_params *lp,
+			       struct cmd_context *cmd)
+{
+	int region_size;
+	const char *mirrorlog;
+
+	if (arg_count(cmd, corelog_ARG))
+		lp->corelog = 1;
+
+	mirrorlog = arg_str_value(cmd, mirrorlog_ARG,
+				  lp->corelog ? "core" : DEFAULT_MIRRORLOG);
+
+	if (!strcmp("disk", mirrorlog)) {
+		if (lp->corelog) {
+			log_error("--mirrorlog disk and --corelog "
+				  "are incompatible");
+			return 0;
+		}
+		lp->corelog = 0;
+	} else if (!strcmp("core", mirrorlog))
+		lp->corelog = 1;
+	else {
+		log_error("Unknown mirrorlog type: %s", mirrorlog);
+		return 0;
+	}
+
+	log_verbose("Setting logging type to %s", mirrorlog);
+
 	lp->nosync = arg_count(cmd, nosync_ARG) ? 1 : 0;
+
+	if (arg_count(cmd, regionsize_ARG)) {
+		if (arg_sign_value(cmd, regionsize_ARG, 0) == SIGN_MINUS) {
+			log_error("Negative regionsize is invalid");
+			return 0;
+		}
+		lp->region_size = arg_uint_value(cmd, regionsize_ARG, 0);
+	} else {
+		region_size = 2 * find_config_tree_int(cmd,
+					"activation/mirror_region_size",
+					DEFAULT_MIRROR_REGION_SIZE);
+		if (region_size < 0) {
+			log_error("Negative regionsize in configuration file "
+				  "is invalid");
+			return 0;
+		}
+		lp->region_size = region_size;
+	}
+
+	if (!_validate_mirror_params(cmd, lp))
+		return 0;
 
 	return 1;
 }
@@ -294,6 +331,7 @@ static int _lvcreate_params(struct lvcreate_params *lp, struct cmd_context *cmd,
 			    int argc, char **argv)
 {
 	int contiguous;
+	unsigned pagesize;
 
 	memset(lp, 0, sizeof(*lp));
 
@@ -336,7 +374,7 @@ static int _lvcreate_params(struct lvcreate_params *lp, struct cmd_context *cmd,
 			log_error("Negative chunk size is invalid");
 			return 0;
 		}
-		lp->chunk_size = 2 * arg_uint_value(cmd, chunksize_ARG, 8);
+		lp->chunk_size = arg_uint_value(cmd, chunksize_ARG, 8);
 		if (lp->chunk_size < 8 || lp->chunk_size > 1024 ||
 		    (lp->chunk_size & (lp->chunk_size - 1))) {
 			log_error("Chunk size must be a power of 2 in the "
@@ -345,10 +383,8 @@ static int _lvcreate_params(struct lvcreate_params *lp, struct cmd_context *cmd,
 		}
 		log_verbose("Setting chunksize to %d sectors.", lp->chunk_size);
 
-		if (!(lp->segtype = get_segtype_from_string(cmd, "snapshot"))) {
-			stack;
-			return 0;
-		}
+		if (!(lp->segtype = get_segtype_from_string(cmd, "snapshot")))
+			return_0;
 	} else {
 		if (arg_count(cmd, chunksize_ARG)) {
 			log_error("-c is only available with snapshots");
@@ -369,10 +405,8 @@ static int _lvcreate_params(struct lvcreate_params *lp, struct cmd_context *cmd,
 			return 0;
 		}
 
-		if (!(lp->segtype = get_segtype_from_string(cmd, "mirror"))) {
-			stack;
-			return 0;
-		}
+		if (!(lp->segtype = get_segtype_from_string(cmd, "striped")))
+			return_0;
 	} else {
 		if (arg_count(cmd, corelog_ARG)) {
 			log_error("--corelog is only available with mirrors");
@@ -386,7 +420,7 @@ static int _lvcreate_params(struct lvcreate_params *lp, struct cmd_context *cmd,
 	}
 
 	if (activation() && lp->segtype->ops->target_present &&
-	    !lp->segtype->ops->target_present(NULL)) {
+	    !lp->segtype->ops->target_present(NULL, NULL)) {
 		log_error("%s: Required device-mapper target(s) not "
 			  "detected in your kernel", lp->segtype->name);
 		return 0;
@@ -394,16 +428,14 @@ static int _lvcreate_params(struct lvcreate_params *lp, struct cmd_context *cmd,
 
 	if (!_lvcreate_name_params(lp, cmd, &argc, &argv) ||
 	    !_read_size_params(lp, cmd) ||
-	    !_read_stripe_params(lp, cmd, &argc) ||
-	    !_read_mirror_params(lp, cmd, &argc)) {
-		stack;
-		return 0;
-	}
+	    !_read_stripe_params(lp, cmd) ||
+	    !_read_mirror_params(lp, cmd))
+		return_0;
 
 	/*
 	 * Should we zero the lv.
 	 */
-	lp->zero = strcmp(arg_str_value(cmd, zero_ARG, 
+	lp->zero = strcmp(arg_str_value(cmd, zero_ARG,
 		(lp->segtype->flags & SEG_CANNOT_BE_ZEROED) ? "n" : "y"), "n");
 
 	/*
@@ -423,8 +455,15 @@ static int _lvcreate_params(struct lvcreate_params *lp, struct cmd_context *cmd,
 	/*
 	 * Read ahead.
 	 */
-	if (arg_count(cmd, readahead_ARG))
-		lp->read_ahead = arg_uint_value(cmd, readahead_ARG, 0);
+	lp->read_ahead = arg_uint_value(cmd, readahead_ARG, DM_READ_AHEAD_NONE);
+	pagesize = lvm_getpagesize() >> SECTOR_SHIFT;
+	if (lp->read_ahead != DM_READ_AHEAD_AUTO &&
+	    lp->read_ahead != DM_READ_AHEAD_NONE &&
+	    lp->read_ahead % pagesize) {
+		lp->read_ahead = (lp->read_ahead / pagesize) * pagesize;
+		log_verbose("Rounding down readahead to %u sectors, a multiple "
+			    "of page size %u.", lp->read_ahead, pagesize);
+	}
 
 	/*
 	 * Permissions.
@@ -469,32 +508,22 @@ static int _lvcreate_params(struct lvcreate_params *lp, struct cmd_context *cmd,
 	return 1;
 }
 
-static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
+static int _lvcreate(struct cmd_context *cmd, struct volume_group *vg,
+		     struct lvcreate_params *lp)
 {
 	uint32_t size_rest;
 	uint32_t status = 0;
 	uint64_t tmp_size;
-	struct volume_group *vg;
-	struct logical_volume *lv, *org = NULL, *log_lv = NULL;
-	struct list *pvh, tags;
+	struct logical_volume *lv, *org = NULL;
+	struct list *pvh;
 	const char *tag = NULL;
-	int consistent = 1;
-	struct alloc_handle *ah = NULL;
+	int origin_active = 0;
 	char lv_name_buf[128];
 	const char *lv_name;
+	struct lvinfo info;
+	uint32_t pv_extent_count;
 
 	status |= lp->permission | VISIBLE_LV;
-
-	/* does VG exist? */
-	log_verbose("Finding volume group \"%s\"", lp->vg_name);
-
-	if (!(vg = vg_read(cmd, lp->vg_name, NULL, &consistent))) {
-		log_error("Volume group \"%s\" doesn't exist", lp->vg_name);
-		return 0;
-	}
-
-	if (!vg_check_status(vg, CLUSTERED | EXPORTED_VG | LVM_WRITE))
-		return 0;
 
 	if (lp->lv_name && find_lv_in_vg(vg, lp->lv_name)) {
 		log_error("Logical volume \"%s\" already exists in "
@@ -507,15 +536,21 @@ static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 		return 0;
 	}
 
+	if (lp->read_ahead != DM_READ_AHEAD_AUTO &&
+	    lp->read_ahead != DM_READ_AHEAD_NONE &&
+	    (vg->fid->fmt->features & FMT_RESTRICTED_READAHEAD) &&
+	    (lp->read_ahead < 2 || lp->read_ahead > 120)) {
+		log_error("Metadata only supports readahead values between 2 and 120.");
+		return 0;
+	}
+
 	/*
 	 * Create the pv list.
 	 */
 	if (lp->pv_count) {
 		if (!(pvh = create_pv_list(cmd->mem, vg,
-					   lp->pv_count, lp->pvs, 1))) {
-			stack;
-			return 0;
-		}
+					   lp->pv_count, lp->pvs, 1)))
+			return_0;
 	} else
 		pvh = &vg->pvs;
 
@@ -551,7 +586,7 @@ static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 			log_error("Volume too large (%s) for extent size %s. "
 				  "Upper limit is %s.",
 				  display_size(cmd, tmp_size),
-				  display_size(cmd, vg->extent_size),
+				  display_size(cmd, (uint64_t) vg->extent_size),
 				  display_size(cmd, (uint64_t) UINT32_MAX *
 						   vg->extent_size));
 			return 0;
@@ -566,8 +601,18 @@ static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 		case PERCENT_FREE:
 			lp->extents = lp->extents * vg->free_count / 100;
 			break;
+		case PERCENT_PVS:
+			if (!lp->pv_count) {
+				log_error("Please specify physical volume(s) "
+					  "with %%PVS");
+				return 0;
+			}
+			pv_extent_count = pv_list_extents_free(pvh);
+			lp->extents = lp->extents * pv_extent_count / 100;
+			break;
 		case PERCENT_LV:
-			log_error("Please express size as %%VG or %%FREE.");
+			log_error("Please express size as %%VG, %%PVS, or "
+				  "%%FREE.");
 			return 0;
 		case PERCENT_NONE:
 			break;
@@ -580,6 +625,12 @@ static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 		lp->extents = lp->extents - size_rest + lp->stripes;
 	}
 
+	if (lp->zero && !activation()) {
+		log_error("Can't wipe start of new LV without using "
+			  "device-mapper kernel driver");
+		return 0;
+	}
+
 	if (lp->snapshot) {
 		if (!activation()) {
 			log_error("Can't create snapshot without using "
@@ -587,7 +638,7 @@ static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 			return 0;
 		}
 		/* FIXME Allow exclusive activation. */
-		if (vg->status & CLUSTERED) {
+		if (vg_is_clustered(vg)) {
 			log_error("Clustered snapshots are not yet supported.");
 			return 0;
 		}
@@ -612,9 +663,16 @@ static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 			log_error("Snapshots and mirrors may not yet be mixed.");
 			return 0;
 		}
- 
+
 		/* Must zero cow */
 		status |= LVM_WRITE;
+
+		if (!lv_info(cmd, org, &info, 0, 0)) {
+			log_error("Check for existence of snapshot origin "
+				  "'%s' failed.", org->name);
+			return 0;
+		}
+		origin_active = info.exists;
 	}
 
 	if (!lp->extents) {
@@ -644,10 +702,8 @@ static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 
 	/* The snapshot segment gets created later */
 	if (lp->snapshot &&
-	    !(lp->segtype = get_segtype_from_string(cmd, "striped"))) {
-		stack;
-		return 0;
-	}
+	    !(lp->segtype = get_segtype_from_string(cmd, "striped")))
+		return_0;
 
 	if (!archive(vg))
 		return 0;
@@ -676,45 +732,18 @@ static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 	}
 
 	if (lp->mirrors > 1) {
-		/* FIXME Calculate how many extents needed for the log */
-
-		if (!(ah = allocate_extents(vg, NULL, lp->segtype, lp->stripes,
-					    lp->mirrors, lp->corelog ? 0 : 1,
-					    lp->extents, NULL, 0, 0,
-					    pvh, lp->alloc, NULL))) {
-			stack;
-			return 0;
-		}
-
-		lp->region_size = adjusted_mirror_region_size(vg->extent_size,
-							      lp->extents,
-							      lp->region_size);
-
 		init_mirror_in_sync(lp->nosync);
 
 		if (lp->nosync) {
-			log_print("WARNING: New mirror won't be synchronised. "
+			log_warn("WARNING: New mirror won't be synchronised. "
 				  "Don't read what you didn't write!");
 			status |= MIRROR_NOTSYNCED;
 		}
-
-		list_init(&tags);
-		if (tag)
-			str_list_add(cmd->mem, &tags, tag);
-
-		if (!lp->corelog &&
-		    !(log_lv = create_mirror_log(cmd, vg, ah, lp->alloc,
-						 lv_name, lp->nosync, &tags))) {
-			log_error("Failed to create mirror log.");
-			return 0;
-		}
 	}
 
-	if (!(lv = lv_create_empty(vg->fid, lv_name ? lv_name : "lvol%d", NULL,
-				   status, lp->alloc, 0, vg))) {
-		stack;
-		goto error;
-	}
+	if (!(lv = lv_create_empty(lv_name ? lv_name : "lvol%d", NULL,
+				   status, lp->alloc, 0, vg)))
+		return_0;
 
 	if (lp->read_ahead) {
 		log_verbose("Setting read ahead sectors");
@@ -732,59 +761,59 @@ static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 	if (tag && !str_list_add(cmd->mem, &lv->tags, tag)) {
 		log_error("Failed to add tag %s to %s/%s",
 			  tag, lv->vg->name, lv->name);
-		goto error;
+		return 0;
 	}
 
-	if (lp->mirrors > 1) {
-		if (!create_mirror_layers(ah, 0, lp->mirrors, lv,
-					  lp->segtype, 0,
-					  lp->region_size, log_lv)) {
-			stack;
-			goto error;
-		}
+	if (!lv_extend(lv, lp->segtype, lp->stripes, lp->stripe_size,
+		       1, lp->extents, NULL, 0u, 0u, pvh, lp->alloc))
+		return_0;
 
-		alloc_destroy(ah);
-		ah = NULL;
-	} else if (!lv_extend(lv, lp->segtype, lp->stripes, lp->stripe_size,
-		       lp->mirrors, lp->extents, NULL, 0u, 0u, pvh, lp->alloc)) {
-		stack;
-		return 0;
+	if (lp->mirrors > 1) {
+		if (!lv_add_mirrors(cmd, lv, lp->mirrors - 1, lp->stripes,
+				    adjusted_mirror_region_size(
+						vg->extent_size,
+						lv->le_count,
+						lp->region_size),
+				    lp->corelog ? 0U : 1U, pvh, lp->alloc,
+				    MIRROR_BY_LV |
+				    (lp->nosync ? MIRROR_SKIP_INIT_SYNC : 0))) {
+			stack;
+			goto revert_new_lv;
+		}
 	}
 
 	/* store vg on disk(s) */
-	if (!vg_write(vg)) {
-		stack;
-		return 0;
-	}
+	if (!vg_write(vg))
+		return_0;
 
 	backup(vg);
 
-	if (!vg_commit(vg)) {
-		stack;
-		return 0;
-	}
+	if (!vg_commit(vg))
+		return_0;
 
 	if (lp->snapshot) {
 		if (!activate_lv_excl(cmd, lv)) {
 			log_error("Aborting. Failed to activate snapshot "
-				  "exception store. Remove new LV and retry.");
-			return 0;
+				  "exception store.");
+			goto revert_new_lv;
 		}
 	} else if (!activate_lv(cmd, lv)) {
+		if (lp->zero) {
+			log_error("Aborting. Failed to activate new LV to wipe "
+				  "the start of it.");
+			goto deactivate_and_revert_new_lv;
+		}
 		log_error("Failed to activate new LV.");
 		return 0;
 	}
 
-	if ((lp->zero || lp->snapshot) && activation()) {
-		if (!set_lv(cmd, lv, 0, 0) && lp->snapshot) {
-			/* FIXME Remove the failed lv we just added */
-			log_error("Aborting. Failed to wipe snapshot "
-				  "exception store. Remove new LV and retry.");
-			return 0;
-		}
-	} else {
+	if (!lp->zero && !lp->snapshot)
 		log_error("WARNING: \"%s\" not zeroed", lv->name);
-		/* FIXME Remove the failed lv we just added */
+	else if (!set_lv(cmd, lv, UINT64_C(0), 0)) {
+		log_error("Aborting. Failed to wipe %s.",
+			  lp->snapshot ? "snapshot exception store" :
+					 "start of new LV");
+		goto deactivate_and_revert_new_lv;
 	}
 
 	if (lp->snapshot) {
@@ -792,17 +821,24 @@ static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 		if (!(lp->permission & LVM_WRITE))
 			lv->status &= ~LVM_WRITE;
 
+		/* COW area must be deactivated if origin is not active */
+		if (!origin_active && !deactivate_lv(cmd, lv)) {
+			log_error("Aborting. Couldn't deactivate snapshot "
+				  "COW area. Manual intervention required.");
+			return 0;
+		}
+
 		/* cow LV remains active and becomes snapshot LV */
 
-		if (!vg_add_snapshot(vg->fid, NULL, org, lv, NULL,
+		if (!vg_add_snapshot(NULL, org, lv, NULL,
 				     org->le_count, lp->chunk_size)) {
-			log_err("Couldn't create snapshot.");
+			log_error("Couldn't create snapshot.");
 			return 0;
 		}
 
 		/* store vg on disk(s) */
 		if (!vg_write(vg))
-			return 0;
+			return_0;
 
 		if (!suspend_lv(cmd, org)) {
 			log_error("Failed to suspend origin %s", org->name);
@@ -811,7 +847,7 @@ static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 		}
 
 		if (!vg_commit(vg))
-			return 0;
+			return_0;
 
 		if (!resume_lv(cmd, org)) {
 			log_error("Problem reactivating origin %s", org->name);
@@ -830,35 +866,41 @@ static int _lvcreate(struct cmd_context *cmd, struct lvcreate_params *lp)
 
 	return 1;
 
-error:
-	if (ah)
-		alloc_destroy(ah);
+deactivate_and_revert_new_lv:
+	if (!deactivate_lv(cmd, lv)) {
+		log_error("Unable to deactivate failed new LV. "
+			  "Manual intervention required.");
+		return 0;
+	}
+
+revert_new_lv:
+	/* FIXME Better to revert to backup of metadata? */
+	if (!lv_remove(lv) || !vg_write(vg) || (backup(vg), !vg_commit(vg)))
+		log_error("Manual intervention may be required to remove "
+			  "abandoned LV(s) before retrying.");
 	return 0;
 }
 
 int lvcreate(struct cmd_context *cmd, int argc, char **argv)
 {
-	int r = ECMD_FAILED;
+	int r = ECMD_PROCESSED;
 	struct lvcreate_params lp;
+	struct volume_group *vg;
 
 	memset(&lp, 0, sizeof(lp));
 
 	if (!_lvcreate_params(&lp, cmd, argc, argv))
 		return EINVALID_CMD_LINE;
 
-	if (!lock_vol(cmd, lp.vg_name, LCK_VG_WRITE)) {
-		log_error("Can't get lock for %s", lp.vg_name);
+	log_verbose("Finding volume group \"%s\"", lp.vg_name);
+	if (!(vg = vg_lock_and_read(cmd, lp.vg_name, NULL, LCK_VG_WRITE,
+				    CLUSTERED | EXPORTED_VG | LVM_WRITE,
+				    CORRECT_INCONSISTENT)))
 		return ECMD_FAILED;
-	}
 
-	if (!_lvcreate(cmd, &lp)) {
-		stack;
-		goto out;
-	}
+	if (!_lvcreate(cmd, vg, &lp))
+		r = ECMD_FAILED;
 
-	r = ECMD_PROCESSED;
-
-      out:
 	unlock_vg(cmd, lp.vg_name);
 	return r;
 }

@@ -1,14 +1,14 @@
 /*
- * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -140,56 +140,6 @@ int dir_exists(const char *path)
 	return 1;
 }
 
-static int _create_dir_recursive(const char *dir)
-{
-	char *orig, *s;
-	int rc;
-
-	log_verbose("Creating directory \"%s\"", dir);
-	/* Create parent directories */
-	orig = s = dm_strdup(dir);
-	while ((s = strchr(s, '/')) != NULL) {
-		*s = '\0';
-		if (*orig) {
-			rc = mkdir(orig, 0777);
-			if (rc < 0 && errno != EEXIST) {
-				if (errno != EROFS)
-					log_sys_error("mkdir", orig);
-				dm_free(orig);
-				return 0;
-			}
-		}
-		*s++ = '/';
-	}
-	dm_free(orig);
-
-	/* Create final directory */
-	rc = mkdir(dir, 0777);
-	if (rc < 0 && errno != EEXIST) {
-		if (errno != EROFS)
-			log_sys_error("mkdir", dir);
-		return 0;
-	}
-	return 1;
-}
-
-int create_dir(const char *dir)
-{
-	struct stat info;
-
-	if (!*dir)
-		return 1;
-
-	if (stat(dir, &info) < 0)
-		return _create_dir_recursive(dir);
-
-	if (S_ISDIR(info.st_mode))
-		return 1;
-
-	log_error("Directory \"%s\" not found", dir);
-	return 0;
-}
-
 int is_empty_dir(const char *dir)
 {
 	struct dirent *dirent;
@@ -273,7 +223,7 @@ int fcntl_lock_file(const char *file, short lock_type, int warn_if_read_only)
 	if ((c = strrchr(dir, '/')))
 		*c = '\0';
 
-	if (!create_dir(dir)) {
+	if (!dm_create_dir(dir)) {
 		dm_free(dir);
 		return -1;
 	}
@@ -295,6 +245,7 @@ int fcntl_lock_file(const char *file, short lock_type, int warn_if_read_only)
 
 	if (fcntl(lockfd, F_SETLKW, &lock)) {
 		log_sys_error("fcntl", file);
+		close(lockfd);
 		return -1;
 	}
 
@@ -321,3 +272,13 @@ void fcntl_unlock_file(int lockfd)
 			  strerror(errno));
 }
 
+int lvm_fclose(FILE *fp, const char *filename)
+{
+	if (!dm_fclose(fp))
+		return 0;
+	if (errno == 0)
+		log_error("%s: write error", filename);
+	else
+		log_sys_error("write error", filename);
+	return EOF;
+}

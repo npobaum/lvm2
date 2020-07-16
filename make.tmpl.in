@@ -1,9 +1,9 @@
 # @configure_input@
 #
 # Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
-# Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+# Copyright (C) 2004, 2008 Red Hat, Inc. All rights reserved.
 #
-# This file is part of the LVM2.
+# This file is part of LVM2.
 #
 # This copyrighted material is made available to anyone wishing to use,
 # modify, copy, or redistribute it subject to the terms and conditions
@@ -21,7 +21,10 @@ CC = @CC@
 RANLIB = @RANLIB@
 SHELL = /bin/sh
 INSTALL = @INSTALL@
+MKDIR_P = @MKDIR_P@
 MSGFMT = @MSGFMT@
+LCOV = @LCOV@
+GENHTML = @GENHTML@
 LN_S = @LN_S@
 LIBS = @LIBS@
 DEFS += @DEFS@
@@ -204,11 +207,15 @@ $(LIB_STATIC): $(OBJECTS)
 
 clean: $(SUBDIRS.clean)
 	$(RM) $(OBJECTS) $(TARGETS) $(CLEAN_TARGETS) $(SOURCES:%.c=%.d) \
-	      $(SOURCES:%.c=%.pot) $(LDDEPS)
+	      $(SOURCES:%.c=%.pot) $(SOURCES:%.c=%.gcno) \
+	      $(SOURCES:%.c=%.gcda) $(LDDEPS)
 
 distclean: $(SUBDIRS.distclean)
-	$(RM) $(OBJECTS) $(TARGETS) $(CLEAN_TARGETS) $(DISTCLEAN_TARGETS) \
-	      $(SOURCES:%.c=%.d) $(SOURCES:%.c=%.pot) $(LDDEPS) \
+	$(RM) -rf $(DISTCLEAN_DIRS)
+	$(RM) $(DISTCLEAN_TARGETS) \
+	      $(OBJECTS) $(TARGETS) $(CLEAN_TARGETS) $(SOURCES:%.c=%.d) \
+	      $(SOURCES:%.c=%.pot) $(SOURCES:%.c=%.gcno) \
+	      $(SOURCES:%.c=%.gcda) $(LDDEPS) \
 	      config.cache config.log config.status \
 	      Makefile make.tmpl core \
 	      version.h lvm2.po

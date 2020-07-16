@@ -1,14 +1,14 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2006 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -40,13 +40,11 @@ static int _create_single_area(struct dm_pool *mem, struct pv_map *pvm,
 {
 	struct pv_area *pva;
 
-	if (!(pva = dm_pool_zalloc(mem, sizeof(*pva)))) {
-		stack;
-		return 0;
-	}
+	if (!(pva = dm_pool_zalloc(mem, sizeof(*pva))))
+		return_0;
 
 	log_debug("Allowing allocation on %s start PE %" PRIu32 " length %"
-		  PRIu32, dev_name(pvm->pv->dev), start, length);
+		  PRIu32, pv_dev_name(pvm->pv), start, length);
 	pva->map = pvm;
 	pva->start = start;
 	pva->count = length;
@@ -58,7 +56,7 @@ static int _create_single_area(struct dm_pool *mem, struct pv_map *pvm,
 static int _create_alloc_areas_for_pv(struct dm_pool *mem, struct pv_map *pvm,
 				      uint32_t start, uint32_t count)
 {
-        struct pv_segment *peg;
+	struct pv_segment *peg;
 	uint32_t pe, end, area_len;
 
 	/* Only select extents from start to end inclusive */
@@ -69,7 +67,7 @@ static int _create_alloc_areas_for_pv(struct dm_pool *mem, struct pv_map *pvm,
 	pe = start;
 
 	/* Walk through complete ordered list of device segments */
-        list_iterate_items(peg, &pvm->pv->segments) {
+	list_iterate_items(peg, &pvm->pv->segments) {
 		/* pe holds the next extent we want to check */
 
 		/* Beyond the range we're interested in? */
@@ -88,14 +86,12 @@ static int _create_alloc_areas_for_pv(struct dm_pool *mem, struct pv_map *pvm,
 		area_len = (end >= peg->pe + peg->len - 1) ?
 			   peg->len - (pe - peg->pe) : end - pe + 1;
 
-		if (!_create_single_area(mem, pvm, pe, area_len)) {
-			stack;
-			return 0;
-		}
+		if (!_create_single_area(mem, pvm, pe, area_len))
+			return_0;
 
       next:
 		pe = peg->pe + peg->len;
-        }
+	}
 
 	return 1;
 }
@@ -108,20 +104,16 @@ static int _create_all_areas_for_pv(struct dm_pool *mem, struct pv_map *pvm,
 	if (!pe_ranges) {
 		/* Use whole PV */
 		if (!_create_alloc_areas_for_pv(mem, pvm, UINT32_C(0),
-						pvm->pv->pe_count)) {
-			stack;
-			return 0;
-		}
+						pvm->pv->pe_count))
+			return_0;
 
 		return 1;
 	}
 
 	list_iterate_items(aa, pe_ranges) {
 		if (!_create_alloc_areas_for_pv(mem, pvm, aa->start,
-						aa->count)) {
-			stack;
-			return 0;
-		}
+						aa->count))
+			return_0;
 	}
 
 	return 1;
@@ -145,20 +137,16 @@ static int _create_maps(struct dm_pool *mem, struct list *pvs, struct list *pvms
 			}
 
 		if (!pvm) {
-			if (!(pvm = dm_pool_zalloc(mem, sizeof(*pvm)))) {
-				stack;
-				return 0;
-			}
+			if (!(pvm = dm_pool_zalloc(mem, sizeof(*pvm))))
+				return_0;
 
 			pvm->pv = pvl->pv;
 			list_init(&pvm->areas);
 			list_add(pvms, &pvm->list);
 		}
 
-		if (!_create_all_areas_for_pv(mem, pvm, pvl->pe_ranges)) {
-			stack;
-			return 0;
-		}
+		if (!_create_all_areas_for_pv(mem, pvm, pvl->pe_ranges))
+			return_0;
 	}
 
 	return 1;

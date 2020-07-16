@@ -1,14 +1,14 @@
 /*
- * Copyright (C) 2003-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2003-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2008 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -21,6 +21,10 @@
 #include "config.h"
 #include "activate.h"
 #include "str_list.h"
+#ifdef DMEVENTD
+#  include "sharedlib.h"
+#  include <libdevmapper-event.h>
+#endif
 
 static const char *_snap_name(const struct lv_segment *seg)
 {
@@ -69,11 +73,9 @@ static int _snap_text_import(struct lv_segment *seg, const struct config_node *s
 		return 0;
 	}
 
-	if (!vg_add_snapshot(seg->lv->vg->fid, seg->lv->name, org, cow,
-			     &seg->lv->lvid, seg->len, chunk_size)) {
-		stack;
-		return 0;
-	}
+	if (!vg_add_snapshot(seg->lv->name, org, cow,
+			     &seg->lv->lvid, seg->len, chunk_size))
+		return_0;
 
 	return 1;
 }
@@ -98,7 +100,7 @@ static int _snap_target_percent(void **target_state __attribute((unused)),
 	float percent2;
 	uint64_t numerator, denominator;
 
-	if (index(params, '/')) {
+	if (strchr(params, '/')) {
 		if (sscanf(params, "%" PRIu64 "/%" PRIu64,
 			   &numerator, &denominator) == 2) {
 			*total_numerator += numerator;
@@ -112,7 +114,8 @@ static int _snap_target_percent(void **target_state __attribute((unused)),
 	return 1;
 }
 
-static int _snap_target_present(const struct lv_segment *seg __attribute((unused)))
+static int _snap_target_present(const struct lv_segment *seg __attribute((unused)),
+				unsigned *attributes __attribute((unused)))
 {
 	static int _snap_checked = 0;
 	static int _snap_present = 0;
@@ -125,10 +128,138 @@ static int _snap_target_present(const struct lv_segment *seg __attribute((unused
 
 	return _snap_present;
 }
+
+#ifdef DMEVENTD
+static int _get_snapshot_dso_path(struct cmd_context *cmd, char **dso)
+{
+	char *path;
+	const char *libpath;
+
+	if (!(path = dm_pool_alloc(cmd->mem, PATH_MAX))) {
+		log_error("Failed to allocate dmeventd library path.");
+		return 0;
+	}
+
+	libpath = find_config_tree_str(cmd, "dmeventd/snapshot_library", NULL);
+	if (!libpath)
+		return 0;
+
+	get_shared_library_path(cmd, libpath, path, PATH_MAX);
+
+	*dso = path;
+
+	return 1;
+}
+
+static struct dm_event_handler *_create_dm_event_handler(const char *dmname,
+							 const char *dso,
+							 const int timeout,
+							 enum dm_event_mask mask)
+{
+	struct dm_event_handler *dmevh;
+
+	if (!(dmevh = dm_event_handler_create()))
+		return_0;
+
+       if (dm_event_handler_set_dso(dmevh, dso))
+		goto fail;
+
+	if (dm_event_handler_set_dev_name(dmevh, dmname))
+		goto fail;
+
+	dm_event_handler_set_timeout(dmevh, timeout);
+	dm_event_handler_set_event_mask(dmevh, mask);
+	return dmevh;
+
+fail:
+	dm_event_handler_destroy(dmevh);
+	return NULL;
+}
+
+static int _target_registered(struct lv_segment *seg, int *pending)
+{
+	char *dso, *name;
+	struct logical_volume *lv;
+	struct volume_group *vg;
+	enum dm_event_mask evmask = 0;
+	struct dm_event_handler *dmevh;
+
+	lv = seg->lv;
+	vg = lv->vg;
+
+	*pending = 0;
+	if (!_get_snapshot_dso_path(vg->cmd, &dso))
+		return_0;
+
+	if (!(name = build_dm_name(vg->cmd->mem, vg->name, seg->cow->name, NULL)))
+		return_0;
+
+	if (!(dmevh = _create_dm_event_handler(name, dso, 0, DM_EVENT_ALL_ERRORS)))
+		return_0;
+
+	if (dm_event_get_registered_device(dmevh, 0)) {
+		dm_event_handler_destroy(dmevh);
+		return 0;
+	}
+
+	evmask = dm_event_handler_get_event_mask(dmevh);
+	if (evmask & DM_EVENT_REGISTRATION_PENDING) {
+		*pending = 1;
+		evmask &= ~DM_EVENT_REGISTRATION_PENDING;
+	}
+
+	dm_event_handler_destroy(dmevh);
+
+	return evmask;
+}
+
+/* FIXME This gets run while suspended and performs banned operations. */
+static int _target_set_events(struct lv_segment *seg,
+			      int events __attribute((unused)), int set)
+{
+	char *dso, *name;
+	struct volume_group *vg = seg->lv->vg;
+	struct dm_event_handler *dmevh;
+	int r;
+
+	if (!_get_snapshot_dso_path(vg->cmd, &dso))
+		return_0;
+
+	if (!(name = build_dm_name(vg->cmd->mem, vg->name, seg->cow->name, NULL)))
+		return_0;
+
+	/* FIXME: make timeout configurable */
+	if (!(dmevh = _create_dm_event_handler(name, dso, 10,
+		DM_EVENT_ALL_ERRORS|DM_EVENT_TIMEOUT)))
+		return_0;
+
+	r = set ? dm_event_register_handler(dmevh) : dm_event_unregister_handler(dmevh);
+	dm_event_handler_destroy(dmevh);
+	if (!r)
+		return_0;
+
+	log_info("%s %s for events", set ? "Registered" : "Unregistered", name);
+
+	return 1;
+}
+
+static int _target_register_events(struct lv_segment *seg,
+				   int events)
+{
+	return _target_set_events(seg, events, 1);
+}
+
+static int _target_unregister_events(struct lv_segment *seg,
+				     int events)
+{
+	return _target_set_events(seg, events, 0);
+}
+
+#endif /* DMEVENTD */
 #endif
 
 static int _snap_modules_needed(struct dm_pool *mem,
-				const struct lv_segment *seg,
+				const struct lv_segment *seg __attribute((unused)),
 				struct list *modules)
 {
 	if (!str_list_add(mem, modules, "snapshot")) {
@@ -151,6 +282,11 @@ static struct segtype_handler _snapshot_ops = {
 #ifdef DEVMAPPER_SUPPORT
 	.target_percent = _snap_target_percent,
 	.target_present = _snap_target_present,
+#ifdef DMEVENTD
+	.target_monitored = _target_registered,
+	.target_monitor_events = _target_register_events,
+	.target_unmonitor_events = _target_unregister_events,
+#endif
 #endif
 	.modules_needed = _snap_modules_needed,
 	.destroy = _snap_destroy,
@@ -164,11 +300,12 @@ struct segment_type *init_segtype(struct cmd_context *cmd)
 #endif
 {
 	struct segment_type *segtype = dm_malloc(sizeof(*segtype));
+#ifdef DMEVENTD
+	char *dso;
+#endif
 
-	if (!segtype) {
-		stack;
-		return NULL;
-	}
+	if (!segtype)
+		return_NULL;
 
 	segtype->cmd = cmd;
 	segtype->ops = &_snapshot_ops;
@@ -176,6 +313,10 @@ struct segment_type *init_segtype(struct cmd_context *cmd)
 	segtype->private = NULL;
 	segtype->flags = SEG_SNAPSHOT;
 
+#ifdef DMEVENTD
+	if (_get_snapshot_dso_path(cmd, &dso))
+		segtype->flags |= SEG_MONITORED;
+#endif
 	log_very_verbose("Initialised segtype: %s", segtype->name);
 
 	return segtype;

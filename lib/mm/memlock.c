@@ -1,14 +1,14 @@
 /*
- * Copyright (C) 2003-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2003-2004 Sistina Software, Inc. All rights reserved.
+ * Copyright (C) 2004-2006 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
@@ -105,7 +105,7 @@ static void _lock_mem(void)
 		log_sys_error("getpriority", "");
 	else
 		if (setpriority(PRIO_PROCESS, 0, _default_priority))
-			log_error("setpriority %u failed: %s",
+			log_error("setpriority %d failed: %s",
 				  _default_priority, strerror(errno));
 }
 
@@ -151,8 +151,8 @@ void memlock_init(struct cmd_context *cmd)
 					   "activation/reserved_memory",
 					   DEFAULT_RESERVED_MEMORY) * 1024;
 	_default_priority = find_config_tree_int(cmd,
-				            "activation/process_priority",
-				            DEFAULT_PROCESS_PRIORITY);
+					    "activation/process_priority",
+					    DEFAULT_PROCESS_PRIORITY);
 }
 
 #endif

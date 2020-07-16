@@ -75,6 +75,7 @@
 #include "clvm.h"
 #include "clvmd.h"
 
+extern debug_t debug;
 extern struct cluster_ops *clops;
 
 /* This is where all the real work happens:
@@ -114,8 +115,15 @@ int do_command(struct local_client *client, struct clvm_header *msg, int msglen,
 		break;
 
 	case CLVMD_CMD_LOCK_VG:
+		lockname = &args[2];
 		/* Check to see if the VG is in use by LVM1 */
-		status = do_check_lvm1(&args[2]);
+		status = do_check_lvm1(lockname);
+		/* P_#global causes a full cache refresh */
+		if (!strcmp(lockname, "P_" VG_GLOBAL))
+			do_refresh_cache();
+		else
+			drop_metadata(lockname + 2);
+
 		break;
 
 	case CLVMD_CMD_LOCK_LV:
@@ -137,10 +145,18 @@ int do_command(struct local_client *client, struct clvm_header *msg, int msglen,
 		do_refresh_cache();
 		break;
 
+	case CLVMD_CMD_SET_DEBUG:
+		debug = args[0];
+		break;
+
 	case CLVMD_CMD_GET_CLUSTERNAME:
 		status = clops->get_cluster_name(*buf, buflen);
 		if (!status)
 			*retlen = strlen(*buf)+1;
+		break;
+
+	case CLVMD_CMD_VG_BACKUP:
+		lvm_do_backup(&args[2]);
 		break;
 
 	default:
@@ -237,7 +253,11 @@ int do_pre_command(struct local_client *client)
 		break;
 
 	case CLVMD_CMD_LOCK_VG:
-       	        status = lock_vg(client);
+		lockname = &args[2];
+		/* We take out a real lock unless LCK_CACHE was set */
+		if (!strncmp(lockname, "V_", 2) ||
+		    !strncmp(lockname, "P_#", 3))
+			status = lock_vg(client);
 		break;
 
 	case CLVMD_CMD_LOCK_LV:
@@ -249,6 +269,8 @@ int do_pre_command(struct local_client *client)
 
 	case CLVMD_CMD_REFRESH:
 	case CLVMD_CMD_GET_CLUSTERNAME:
+	case CLVMD_CMD_SET_DEBUG:
+	case CLVMD_CMD_VG_BACKUP:
 		break;
 
 	default:
@@ -278,6 +300,7 @@ int do_post_command(struct local_client *client)
 		break;
 
 	case CLVMD_CMD_LOCK_VG:
+	case CLVMD_CMD_VG_BACKUP:
 		/* Nothing to do here */
 		break;
 

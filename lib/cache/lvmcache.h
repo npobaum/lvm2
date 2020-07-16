@@ -1,17 +1,16 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.  
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2008 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
  *
  * This copyrighted material is made available to anyone wishing to use,
  * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
+ * of the GNU Lesser General Public License v.2.1.
  *
- * You should have received a copy of the GNU General Public License
+ * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
- *
  */
 
 #ifndef _LVM_CACHE_H
@@ -21,7 +20,8 @@
 #include "uuid.h"
 #include "label.h"
 
-#define ORPHAN ""
+#define ORPHAN_PREFIX "#"
+#define ORPHAN_VG_NAME(fmt) ORPHAN_PREFIX "orphans_" fmt
 
 #define CACHE_INVALID	0x00000001
 #define CACHE_LOCKED	0x00000002
@@ -44,6 +44,8 @@ struct lvmcache_vginfo {
 	char _padding[7];
 	struct lvmcache_vginfo *next; /* Another VG with same name? */
 	char *creation_host;
+	char *vgmetadata;	/* Copy of VG metadata as format_text string */
+	unsigned precommitted;	/* Is vgmetadata live or precommitted? */
 };
 
 /* One per device */
@@ -60,7 +62,7 @@ struct lvmcache_info {
 };
 
 int lvmcache_init(void);
-void lvmcache_destroy(void);
+void lvmcache_destroy(struct cmd_context *cmd, int retain_orphans);
 
 /* Set full_scan to 1 to reread every filtered device label or
  * 2 to rescan /dev for new devices */
@@ -71,13 +73,14 @@ struct lvmcache_info *lvmcache_add(struct labeller *labeller, const char *pvid,
 				   struct device *dev,
 				   const char *vgname, const char *vgid,
 				   uint32_t vgstatus);
+int lvmcache_add_orphan_vginfo(const char *vgname, struct format_type *fmt);
 void lvmcache_del(struct lvmcache_info *info);
 
 /* Update things */
 int lvmcache_update_vgname_and_id(struct lvmcache_info *info,
 				  const char *vgname, const char *vgid,
 				  uint32_t vgstatus, const char *hostname);
-int lvmcache_update_vg(struct volume_group *vg);
+int lvmcache_update_vg(struct volume_group *vg, unsigned precommitted);
 
 void lvmcache_lock_vgname(const char *vgname, int read_only);
 void lvmcache_unlock_vgname(const char *vgname);
@@ -87,7 +90,7 @@ const struct format_type *fmt_from_vgname(const char *vgname, const char *vgid);
 struct lvmcache_vginfo *vginfo_from_vgname(const char *vgname,
 					   const char *vgid);
 struct lvmcache_vginfo *vginfo_from_vgid(const char *vgid);
-struct lvmcache_info *info_from_pvid(const char *pvid);
+struct lvmcache_info *info_from_pvid(const char *pvid, int valid_only);
 const char *vgname_from_vgid(struct dm_pool *mem, const char *vgid);
 struct device *device_from_pvid(struct cmd_context *cmd, struct id *pvid);
 int vgs_locked(void);
@@ -104,5 +107,9 @@ struct list *lvmcache_get_vgids(struct cmd_context *cmd, int full_scan);
 /* Returns list of struct str_lists containing pool-allocated copy of pvids */
 struct list *lvmcache_get_pvids(struct cmd_context *cmd, const char *vgname,
 				const char *vgid);
+
+/* Returns cached volume group metadata. */
+struct volume_group *lvmcache_get_vg(const char *vgid, unsigned precommitted);
+void lvmcache_drop_metadata(const char *vgname);
 
 #endif
