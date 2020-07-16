@@ -1102,7 +1102,7 @@ int dm_task_set_newname(struct dm_task *dmt, const char *newname)
 int dm_task_set_message(struct dm_task *dmt, const char *message)
 {
 	if (!(dmt->message = dm_strdup(message))) {
-		log_error("dm_task_set_message: strdup(%s) failed", message);
+		log_error("dm_task_set_message: strdup failed");
 		return 0;
 	}
 
@@ -1546,6 +1546,7 @@ static int _create_and_load_v4(struct dm_task *dmt)
 {
 	struct dm_task *task;
 	int r;
+	uint32_t cookie;
 
 	/* Use new task struct to create the device */
 	if (!(task = dm_task_create(DM_DEVICE_CREATE))) {
@@ -1625,7 +1626,18 @@ static int _create_and_load_v4(struct dm_task *dmt)
  	dmt->type = DM_DEVICE_REMOVE;
 	dm_free(dmt->uuid);
 	dmt->uuid = NULL;
-	dmt->cookie_set = 0;
+
+	/*
+	 * Also udev-synchronize "remove" dm task that is a part of this revert!
+	 * But only if the original dm task was supposed to be synchronized.
+	 */
+	if (dmt->cookie_set) {
+		cookie = (dmt->event_nr & ~DM_UDEV_FLAGS_MASK) |
+			 (DM_COOKIE_MAGIC << DM_UDEV_FLAGS_SHIFT);
+		dm_task_set_cookie(dmt, &cookie,
+				   (dmt->event_nr & DM_UDEV_FLAGS_MASK) >>
+				    DM_UDEV_FLAGS_SHIFT);
+	}
 
 	if (!dm_task_run(dmt))
 		log_error("Failed to revert device creation.");
@@ -1712,6 +1724,18 @@ no_match:
 	return r;
 }
 
+static const char *_sanitise_message(char *message)
+{
+	const char *sanitised_message = message ?: "";
+
+	/* FIXME: Check for whitespace variations. */
+	/* This traps what cryptsetup sends us. */
+	if (message && !strncasecmp(message, "key set", 7))
+		sanitised_message = "key set";
+
+	return sanitised_message;
+}
+
 static struct dm_ioctl *_do_dm_ioctl(struct dm_task *dmt, unsigned command,
 				     unsigned repeat_count)
 {
@@ -1758,11 +1782,13 @@ static struct dm_ioctl *_do_dm_ioctl(struct dm_task *dmt, unsigned command,
 		 * libdevmapper's node and symlink creation code.
 		 */
 		if (!dmt->cookie_set && dm_udev_get_sync_support()) {
-			log_debug("Cookie value is not set while trying to call "
-				  "DM_DEVICE_RESUME, DM_DEVICE_REMOVE or DM_DEVICE_RENAME "
+			log_debug("Cookie value is not set while trying to call %s "
 				  "ioctl. Please, consider using libdevmapper's udev "
 				  "synchronisation interface or disable it explicitly "
-				  "by calling dm_udev_set_sync_support(0).");
+				  "by calling dm_udev_set_sync_support(0).",
+				  dmt->type == DM_DEVICE_RESUME ? "DM_DEVICE_RESUME" :
+				  dmt->type == DM_DEVICE_REMOVE ? "DM_DEVICE_REMOVE" :
+								  "DM_DEVICE_RENAME");
 			log_debug("Switching off device-mapper and all subsystem related "
 				  "udev rules. Falling back to libdevmapper node creation.");
 			/*
@@ -1791,7 +1817,7 @@ static struct dm_ioctl *_do_dm_ioctl(struct dm_task *dmt, unsigned command,
 		  dmt->no_flush ? 'N' : 'F',
 		  dmt->skip_lockfs ? "S " : "",
 		  dmt->query_inactive_table ? "I " : "",
-		  dmt->sector, dmt->message ? dmt->message : "",
+		  dmt->sector, _sanitise_message(dmt->message),
 		  dmi->data_size);
 #ifdef DM_IOCTLS
 	if (ioctl(_control_fd, command, dmi) < 0) {

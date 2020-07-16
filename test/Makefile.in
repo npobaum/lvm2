@@ -26,7 +26,7 @@ abs_top_builddir = @abs_top_builddir@
 abs_top_srcdir = @abs_top_srcdir@
 
 T ?= .
-RUN = $(shell find -regextype posix-egrep -name t-\*.sh -and -regex ".*($(T)).*")
+RUN = $(shell find -regextype posix-egrep -name t-\*.sh -and -regex ".*($(T)).*" | sort)
 
 # Shell quote;
 SHELL_PATH_SQ = $(subst ','\'',$(SHELL_PATH))
@@ -78,8 +78,13 @@ init.sh: $(srcdir)/Makefile.in .bin-dir-stamp bin/not bin/check bin/harness $(SC
 	echo 'abs_top_srcdir=$(abs_top_builddir)' >> $@-t
 	echo 'PATH=$$abs_top_builddir/test/bin:$$PATH' >> $@-t
 	LDLPATH="\$$abs_top_builddir/libdm"; \
+	LDLPATH="$$LDLPATH:\$$abs_top_builddir/tools"; \
 	LDLPATH="$$LDLPATH:\$$abs_top_builddir/daemons/dmeventd"; \
+	LDLPATH="$$LDLPATH:\$$abs_top_builddir/daemons/dmeventd/plugins/lvm2"; \
+	LDLPATH="$$LDLPATH:\$$abs_top_builddir/daemons/dmeventd/plugins/mirror"; \
+	LDLPATH="$$LDLPATH:\$$abs_top_builddir/daemons/dmeventd/plugins/snapshot"; \
 	echo "export LD_LIBRARY_PATH=\"$$LDLPATH\"" >> $@-t
+	echo 'top_srcdir=$(top_srcdir)' >> $@-t
 	echo 'abs_srcdir=$(abs_srcdir)' >> $@-t
 	echo 'abs_builddir=$(abs_builddir)' >> $@-t
 	echo 'export PATH' >> $@-t
@@ -99,6 +104,7 @@ Makefile: $(srcdir)/Makefile.in $(top_builddir)/config.status
 	done
 	ln -s "$(abs_top_builddir)/tools/dmsetup" bin/dmsetup
 	ln -s "$(abs_top_builddir)/daemons/clvmd/clvmd" bin/clvmd
+	ln -s "$(abs_top_builddir)/daemons/dmeventd/dmeventd" bin/dmeventd
 	touch $@
 
 lvm-wrapper: Makefile

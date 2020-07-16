@@ -649,10 +649,12 @@ interface
 WRITE_INSTALL
 UDEV_SYNC
 UDEV_RULES
+UDEV_PC
 UDEV_LIBS
 STATIC_LINK
 STATICDIR
 SNAPSHOTS
+SELINUX_PC
 SELINUX_LIBS
 READLINE_LIBS
 PTHREAD_LIBS
@@ -687,6 +689,11 @@ DM_COMPAT
 DMEVENTD
 DL_LIBS
 DEVMAPPER
+DEFAULT_LOCK_DIR
+DEFAULT_CACHE_SUBDIR
+DEFAULT_BACKUP_SUBDIR
+DEFAULT_ARCHIVE_SUBDIR
+DEFAULT_SYS_DIR
 DEBUG
 COPTIMISE_FLAG
 CONFDIR
@@ -849,6 +856,11 @@ with_udev_prefix
 with_udevdir
 with_dmeventd_pidfile
 with_dmeventd_path
+with_default_system_dir
+with_default_archive_subdir
+with_default_backup_subdir
+with_default_cache_subdir
+with_default_locking_dir
 with_interface
 '
       ac_precious_vars='build_alias
@@ -1571,6 +1583,11 @@ Optional Packages:
   --with-udevdir=DIR      udev rules in DIR [UPREFIX/lib/udev/rules.d]
   --with-dmeventd-pidfile=PATH    dmeventd pidfile [/var/run/dmeventd.pid]
   --with-dmeventd-path=PATH       dmeventd path [EPREFIX/sbin/dmeventd]
+  --with-default-system-dir=DIR        Default LVM system directory [/etc/lvm]
+  --with-default-archive-subdir=SUBDIR Default metadata archive subdir [archive]
+  --with-default-backup-subdir=SUBDIR  Default metadata backup subdir [backup]
+  --with-default-cache-subdir=SUBDIR   Default metadata cache subdir [cache]
+  --with-default-locking-dir=DIR       Default locking directory [/var/lock/lvm]
   --with-interface=IFACE  Choose kernel interface (ioctl) [ioctl]
 
 Some influential environment variables:
@@ -12327,7 +12344,7 @@ fi
 { $as_echo "$as_me:$LINENO: result: $ac_cv_lib_udev_udev_queue_get_udev_is_active" >&5
 $as_echo "$ac_cv_lib_udev_udev_queue_get_udev_is_active" >&6; }
 if test "x$ac_cv_lib_udev_udev_queue_get_udev_is_active" = x""yes; then
-  UDEV_LIBS="-ludev"
+  UDEV_PC="libudev"; UDEV_LIBS="-ludev"
 else
   { { $as_echo "$as_me:$LINENO: error: bailing out... libudev library is required" >&5
 $as_echo "$as_me: error: bailing out... libudev library is required" >&2;}
@@ -13141,12 +13158,14 @@ cat >>confdefs.h <<\_ACEOF
 _ACEOF
 
 		SELINUX_LIBS="-lselinux $SELINUX_LIBS"
+		SELINUX_PC="libselinux"
 		HAVE_SELINUX=yes
 else
 
 		{ $as_echo "$as_me:$LINENO: WARNING: Disabling selinux" >&5
 $as_echo "$as_me: WARNING: Disabling selinux" >&2;}
 		SELINUX_LIBS=
+		SELINUX_PC=
 		HAVE_SELINUX=no
 fi
 
@@ -15481,6 +15500,82 @@ fi
 fi
 
 ################################################################################
+
+
+
+# Check whether --with-default-system-dir was given.
+if test "${with_default_system_dir+set}" = set; then
+  withval=$with_default_system_dir;  DEFAULT_SYS_DIR="$withval"
+else
+   DEFAULT_SYS_DIR="/etc/lvm"
+fi
+
+cat >>confdefs.h <<_ACEOF
+#define DEFAULT_SYS_DIR "$DEFAULT_SYS_DIR"
+_ACEOF
+
+
+
+
+
+# Check whether --with-default-archive-subdir was given.
+if test "${with_default_archive_subdir+set}" = set; then
+  withval=$with_default_archive_subdir;  DEFAULT_ARCHIVE_SUBDIR="$withval"
+else
+   DEFAULT_ARCHIVE_SUBDIR="archive"
+fi
+
+cat >>confdefs.h <<_ACEOF
+#define DEFAULT_ARCHIVE_SUBDIR "$DEFAULT_ARCHIVE_SUBDIR"
+_ACEOF
+
+
+
+
+
+# Check whether --with-default-backup-subdir was given.
+if test "${with_default_backup_subdir+set}" = set; then
+  withval=$with_default_backup_subdir;  DEFAULT_BACKUP_SUBDIR="$withval"
+else
+   DEFAULT_BACKUP_SUBDIR="backup"
+fi
+
+cat >>confdefs.h <<_ACEOF
+#define DEFAULT_BACKUP_SUBDIR "$DEFAULT_BACKUP_SUBDIR"
+_ACEOF
+
+
+
+
+
+# Check whether --with-default-cache-subdir was given.
+if test "${with_default_cache_subdir+set}" = set; then
+  withval=$with_default_cache_subdir;  DEFAULT_CACHE_SUBDIR="$withval"
+else
+   DEFAULT_CACHE_SUBDIR="cache"
+fi
+
+cat >>confdefs.h <<_ACEOF
+#define DEFAULT_CACHE_SUBDIR "$DEFAULT_CACHE_SUBDIR"
+_ACEOF
+
+
+
+
+
+# Check whether --with-default-locking-dir was given.
+if test "${with_default_locking_dir+set}" = set; then
+  withval=$with_default_locking_dir;  DEFAULT_LOCK_DIR="$withval"
+else
+   DEFAULT_LOCK_DIR="/var/lock/lvm"
+fi
+
+cat >>confdefs.h <<_ACEOF
+#define DEFAULT_LOCK_DIR "$DEFAULT_LOCK_DIR"
+_ACEOF
+
+
+################################################################################
 { $as_echo "$as_me:$LINENO: checking for kernel interface choice" >&5
 $as_echo_n "checking for kernel interface choice... " >&6; }
 
@@ -15610,8 +15705,15 @@ LVM_LIBAPI=`echo "$VER" | $AWK -F '[()]' '{print $2}'`
 
 
 
+
+
+
+
+
+
+
 ################################################################################
-ac_config_files="$ac_config_files Makefile make.tmpl daemons/Makefile daemons/clvmd/Makefile daemons/cmirrord/Makefile daemons/dmeventd/Makefile daemons/dmeventd/libdevmapper-event.pc daemons/dmeventd/plugins/Makefile daemons/dmeventd/plugins/lvm2/Makefile daemons/dmeventd/plugins/mirror/Makefile daemons/dmeventd/plugins/snapshot/Makefile doc/Makefile include/.symlinks include/Makefile lib/Makefile lib/format1/Makefile lib/format_pool/Makefile lib/locking/Makefile lib/mirror/Makefile lib/misc/lvm-version.h lib/snapshot/Makefile libdm/Makefile libdm/libdevmapper.pc liblvm/Makefile liblvm/liblvm2app.pc man/Makefile po/Makefile scripts/clvmd_init_red_hat scripts/cmirrord_init_red_hat scripts/lvm2_monitoring_init_red_hat scripts/Makefile test/Makefile test/api/Makefile tools/Makefile udev/Makefile"
+ac_config_files="$ac_config_files Makefile make.tmpl daemons/Makefile daemons/clvmd/Makefile daemons/cmirrord/Makefile daemons/dmeventd/Makefile daemons/dmeventd/libdevmapper-event.pc daemons/dmeventd/plugins/Makefile daemons/dmeventd/plugins/lvm2/Makefile daemons/dmeventd/plugins/mirror/Makefile daemons/dmeventd/plugins/snapshot/Makefile doc/Makefile doc/example.conf include/.symlinks include/Makefile lib/Makefile lib/format1/Makefile lib/format_pool/Makefile lib/locking/Makefile lib/mirror/Makefile lib/misc/lvm-version.h lib/snapshot/Makefile libdm/Makefile libdm/libdevmapper.pc liblvm/Makefile liblvm/liblvm2app.pc man/Makefile po/Makefile scripts/clvmd_init_red_hat scripts/cmirrord_init_red_hat scripts/lvm2_monitoring_init_red_hat scripts/Makefile test/Makefile test/api/Makefile tools/Makefile udev/Makefile"
 
 cat >confcache <<\_ACEOF
 # This file is a shell script that caches the results of configure
@@ -16222,6 +16324,7 @@ do
     "daemons/dmeventd/plugins/mirror/Makefile") CONFIG_FILES="$CONFIG_FILES daemons/dmeventd/plugins/mirror/Makefile" ;;
     "daemons/dmeventd/plugins/snapshot/Makefile") CONFIG_FILES="$CONFIG_FILES daemons/dmeventd/plugins/snapshot/Makefile" ;;
     "doc/Makefile") CONFIG_FILES="$CONFIG_FILES doc/Makefile" ;;
+    "doc/example.conf") CONFIG_FILES="$CONFIG_FILES doc/example.conf" ;;
     "include/.symlinks") CONFIG_FILES="$CONFIG_FILES include/.symlinks" ;;
     "include/Makefile") CONFIG_FILES="$CONFIG_FILES include/Makefile" ;;
     "lib/Makefile") CONFIG_FILES="$CONFIG_FILES lib/Makefile" ;;

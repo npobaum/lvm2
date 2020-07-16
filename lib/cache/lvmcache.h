@@ -19,9 +19,10 @@
 #include "dev-cache.h"
 #include "uuid.h"
 #include "label.h"
+#include "locking.h"
 
-#define ORPHAN_PREFIX "#"
-#define ORPHAN_VG_NAME(fmt) ORPHAN_PREFIX "orphans_" fmt
+#define ORPHAN_PREFIX VG_ORPHANS
+#define ORPHAN_VG_NAME(fmt) ORPHAN_PREFIX "_" fmt
 
 #define CACHE_INVALID	0x00000001
 #define CACHE_LOCKED	0x00000002
@@ -95,6 +96,9 @@ struct lvmcache_info *info_from_pvid(const char *pvid, int valid_only);
 const char *vgname_from_vgid(struct dm_pool *mem, const char *vgid);
 struct device *device_from_pvid(struct cmd_context *cmd, struct id *pvid,
 				unsigned *scan_done_once);
+const char *pvid_from_devname(struct cmd_context *cmd,
+			      const char *dev_name);
+char *lvmcache_vgname_from_pvid(struct cmd_context *cmd, const char *pvid);
 int vgs_locked(void);
 int vgname_is_locked(const char *vgname);
 

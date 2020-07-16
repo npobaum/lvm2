@@ -53,7 +53,8 @@ include $(top_builddir)/make.tmpl
 all: device-mapper
 device-mapper: $(TARGETS)
 
-LVMLIBS += -ldevmapper-event -ldevmapper $(PTHREAD_LIBS)
+LIBS += -ldevmapper
+LVMLIBS += -ldevmapper-event $(PTHREAD_LIBS)
 
 dmeventd: $(LIB_SHARED) dmeventd.o
 	$(CC) $(CFLAGS) $(LDFLAGS) -L. -o $@ dmeventd.o \
@@ -61,7 +62,7 @@ dmeventd: $(LIB_SHARED) dmeventd.o
 
 dmeventd.static: $(LIB_STATIC) dmeventd.o $(interfacebuilddir)/libdevmapper.a
 	$(CC) $(CFLAGS) $(LDFLAGS) -static -L. -L$(interfacebuilddir) -o $@ \
-	dmeventd.o $(DL_LIBS) $(LVMLIBS) $(STATIC_LIBS) $(LIBS)
+	dmeventd.o $(DL_LIBS) $(LVMLIBS) $(LIBS) $(STATIC_LIBS)
 
 ifeq ("@PKGCONFIG@", "yes")
   INSTALL_LIB_TARGETS += install_pkgconfig
@@ -80,7 +81,7 @@ install_include: $(srcdir)/libdevmapper-event.h
 	$(INSTALL_DATA) -D $< $(includedir)/$(<F)
 
 install_pkgconfig: libdevmapper-event.pc
-	$(INSTALL_DATA) -D $< $(usrlibdir)/pkgconfig/devmapper-event.pc
+	$(INSTALL_DATA) -D $< $(pkgconfigdir)/devmapper-event.pc
 
 install_lib_dynamic: install_lib_shared
 

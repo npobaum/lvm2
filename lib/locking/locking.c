@@ -217,10 +217,8 @@ static void _update_vg_lock_count(const char *resource, uint32_t flags)
  * Select a locking type
  * type: locking type; if < 0, then read config tree value
  */
-int init_locking(int type, struct cmd_context *cmd)
+int init_locking(int type, struct cmd_context *cmd, int suppress_messages)
 {
-	int suppress_messages = 0;
-
 	if (ignorelockingfailure() && getenv("LVM_SUPPRESS_LOCKING_FAILURE_MESSAGES"))
 		suppress_messages = 1;
 
@@ -327,7 +325,7 @@ int check_lvm1_vg_inactive(struct cmd_context *cmd, const char *vgname)
 	char path[PATH_MAX];
 
 	/* We'll allow operations on orphans */
-	if (is_orphan_vg(vgname))
+	if (is_orphan_vg(vgname) || is_global_vg(vgname))
 		return 1;
 
 	/* LVM1 is only present in 2.4 kernels. */
@@ -371,7 +369,7 @@ static int _lock_vol(struct cmd_context *cmd, const char *resource,
 		return 0;
 	}
 
-	if (*resource == '#' && (flags & LCK_CACHE)) {
+	if ((is_orphan_vg(resource) || is_global_vg(resource)) && (flags & LCK_CACHE)) {
 		log_error(INTERNAL_ERROR "P_%s referenced", resource);
 		return 0;
 	}
@@ -419,16 +417,16 @@ int lock_vol(struct cmd_context *cmd, const char *vol, uint32_t flags)
 
 	switch (flags & LCK_SCOPE_MASK) {
 	case LCK_VG:
-		/*
-		 * VG locks alphabetical, ORPHAN lock last
-		 */
 		if (!_blocking_supported)
 			flags |= LCK_NONBLOCK;
 
-		if (vol[0] != '#' &&
-		    ((flags & LCK_TYPE_MASK) != LCK_UNLOCK) &&
-		    (!(flags & LCK_CACHE)) &&
-		    !lvmcache_verify_lock_order(vol))
+		/* Global VG_ORPHANS lock covers all orphan formats. */
+		if (is_orphan_vg(vol))
+			vol = VG_ORPHANS;
+		/* VG locks alphabetical, ORPHAN lock last */
+		if (((flags & LCK_TYPE_MASK) != LCK_UNLOCK) &&
+			 !(flags & LCK_CACHE) &&
+			 !lvmcache_verify_lock_order(vol))
 			return 0;
 
 		/* Lock VG to change on-disk metadata. */

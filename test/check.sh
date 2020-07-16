@@ -1,9 +1,26 @@
 #!/bin/bash
 
+# check.sh: assert various things about volumes
+
+# USAGE
+#  check linear VG LV
+#  check lv_on VG LV PV
+
+#  check mirror VG LV [LOGDEV|core]
+#  check mirror_nonredundant VG LV
+#  check mirror_legs VG LV N
+#  check mirror_images_on VG LV DEV [DEV...]
+
+# ...
+
 set -e -o pipefail
 
+lvl() {
+	lvs -a --noheadings "$@"
+}
+
 lvdevices() {
-	lvs -a -odevices --noheadings "$@" | sed 's/([^)]*)//g; s/,/ /g'
+	lvl -odevices "$@" | sed 's/([^)]*)//g; s/,/ /g'
 }
 
 mirror_images_redundant()
@@ -11,7 +28,7 @@ mirror_images_redundant()
   vg=$1
   lv=$vg/$2
 
-  lvs -a $vg
+  lvs -a $vg -o+devices
   for i in `lvdevices $lv`; do
 	  echo "# $i:"
 	  lvdevices $vg/$i | sort | uniq
@@ -27,23 +44,26 @@ mirror_images_redundant()
 }
 
 mirror_images_on() {
-	lv=$1
+	vg=$1
+	lv=$2
+
+	shift 2
 
 	for i in `lvdevices $lv`; do
+		lv_on $vg $lv $1
 		shift
-		lv_on $lv $1
 	done
 }
 
 lv_on()
 {
-	lv="$1"
-	lvdevices $lv | grep -F "$2" || {
-		echo "LV $lv expected on $2 but is not:" >&2
+	lv="$1/$2"
+	lvdevices $lv | grep -F "$3" || {
+		echo "LV $lv expected on $3 but is not:" >&2
 		lvdevices $lv >&2
 		exit 1
 	}
-	test `lvdevices $lv | grep -vF "$2" | wc -l` -eq 0 || {
+	test `lvdevices $lv | grep -vF "$3" | wc -l` -eq 0 || {
 		echo "LV $lv contains unexpected devices:" >&2
 		lvdevices $lv >&2
 		exit 1
@@ -52,14 +72,21 @@ lv_on()
 
 mirror_log_on()
 {
-	lv_on "${1}_mlog" "$2"
+	vg="$1"
+	lv="$2"
+	where="$3"
+	if test "$where" = "core"; then
+		lvl -omirror_log "$vg/$lv" | not grep mlog
+	else
+		lv_on $vg "${lv}_mlog" "$where"
+	fi
 }
 
 lv_is_contiguous()
 {
-	test `lvs -a --segments --noheadings $1 | wc -l` -eq 1 || {
+	test `lvl --segments $1 | wc -l` -eq 1 || {
 		echo "LV $1 expected to be contiguous, but is not:"
-		lvs -a --segments --noheadings $1
+		lvl --segments $1
 		exit 1
 	}
 }
@@ -88,21 +115,72 @@ mirror_images_clung()
 }
 
 mirror() {
+	mirror_nonredundant "$@"
+	mirror_images_redundant "$1" "$2"
+}
+
+mirror_nonredundant() {
 	lv="$1/$2"
-	lvs -oattr "$lv" | grep "m" || {
+	lvs -oattr "$lv" | grep -q "^ *m.....$" || {
 		echo "$lv expected a mirror, but is not:"
 		lvs -a $lv
 		exit 1
 	}
-	mirror_images_redundant "$1" "$2"
-	if test -n "$3"; then mirror_log_on "$lv" "$3"; fi
+	if test -n "$3"; then mirror_log_on "$1" "$2" "$3"; fi
+}
+
+mirror_legs() {
+	lv="$1/$2"
+	expect="$3"
+	lvdevices "$lv"
+	real=`lvdevices "$lv" | wc -w`
+	test "$expect" = "$real"
+}
+
+mirror_no_temporaries()
+{
+	vg=$1
+	lv=$2
+	lvl -oname $vg | grep $lv | not grep "tmp" || {
+		echo "$lv has temporary mirror images unexpectedly:"
+		lvl $vg | grep $lv
+		exit 1
+	}
 }
 
 linear() {
 	lv="$1/$2"
-	lvs -ostripes "$lv" | grep -q "1" || {
+	lvl -ostripes "$lv" | grep -q "1" || {
 		echo "$lv expected linear, but is not:"
-		lvs -a "$lv" -o+devices
+		lvl "$lv" -o+devices
+		exit 1
+	}
+}
+
+active() {
+	lv="$1/$2"
+	lvl -oattr "$lv" 2> /dev/null | grep -q "^ *....a.$" || {
+		echo "$lv expected active, but lvs says it's not:"
+		lvl "$lv" -o+devices 2>/dev/null
+		exit 1
+	}
+	dmsetup table | egrep -q "$1-$2: *[^ ]+" || {
+		echo "$lv expected active, lvs thinks it is but there are no mappings!"
+		dmsetup table | grep $1-$2:
+		exit 1
+	}
+}
+
+inactive() {
+	lv="$1/$2"
+	lvl -oattr "$lv" 2> /dev/null | grep -q '^ *....[-isd].$' || {
+		echo "$lv expected inactive, but lvs says it's not:"
+		lvl "$lv" -o+devices 2>/dev/null
+		exit 1
+	}
+	dmsetup table | not egrep -q "$1-$2: *[^ ]+" || {
+		echo "$lv expected inactive, lvs thinks it is but there are mappings!"
+		dmsetup table | grep $1-$2:
 		exit 1
 	}
 }

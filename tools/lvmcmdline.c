@@ -793,7 +793,7 @@ static int _get_settings(struct cmd_context *cmd)
 			  "be activated read-only.");
 	}
 
-	if (arg_count(cmd, ignorelockingfailure_ARG))
+	if (arg_count(cmd, ignorelockingfailure_ARG) || arg_count(cmd, sysinit_ARG))
 		init_ignorelockingfailure(1);
 	else
 		init_ignorelockingfailure(0);
@@ -1049,7 +1049,7 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 	else
 		locking_type = -1;
 
-	if (!init_locking(locking_type, cmd)) {
+	if (!init_locking(locking_type, cmd, arg_count(cmd, sysinit_ARG))) {
 		ret = ECMD_FAILED;
 		goto out;
 	}
@@ -1087,6 +1087,7 @@ int lvm_run_command(struct cmd_context *cmd, int argc, char **argv)
 	dm_pool_empty(cmd->mem);
 
 	reset_lvm_errno(1);
+	reset_log_duplicated();
 
 	return ret;
 }
