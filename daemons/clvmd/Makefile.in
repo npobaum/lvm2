@@ -19,8 +19,7 @@ SOURCES = \
 	clvmd-command.c  \
 	clvmd.c          \
 	lvm-functions.c  \
-	refresh_clvmd.c \
-	system-lv.c
+	refresh_clvmd.c
 
 ifeq ("@CLVMD@", "gulm")
 	GULM = yes
@@ -30,9 +29,16 @@ ifeq ("@CLVMD@", "cman")
 	CMAN = yes
 endif
 
+ifeq ("@CLVMD@", "openais")
+	OPENAIS = yes
+	GULM = no
+	CMAN = no
+endif
+
 ifeq ("@CLVMD@", "all")
 	GULM = yes
 	CMAN = yes
+	OPENAIS = no
 endif
 
 ifeq ("@DEBUG@", "yes")
@@ -49,6 +55,12 @@ ifeq ("$(CMAN)", "yes")
 	SOURCES += clvmd-cman.c
 	LMLIBS += -ldlm -lcman
 	DEFS += -DUSE_CMAN
+endif
+
+ifeq ("$(OPENAIS)", "yes")
+	SOURCES += clvmd-openais.c
+	LMLIBS += -lSaLck -lSaClm -lcpg
+	DEFS += -DUSE_OPENAIS
 endif
 
 TARGETS = \

@@ -19,36 +19,48 @@ static int _pvdisplay_single(struct cmd_context *cmd,
 			     struct volume_group *vg __attribute((unused)),
 			     struct physical_volume *pv, void *handle)
 {
+	struct pv_list *pvl;
 	int consistent = 0;
 	int ret = ECMD_PROCESSED;
 	uint64_t size;
 
-	const char *pv_name = dev_name(pv->dev);
+	const char *pv_name = dev_name(get_pv_dev(pv));
 
-	 if (pv->vg_name) {
-	         if (!lock_vol(cmd, pv->vg_name, LCK_VG_READ)) {
-	                 log_error("Can't lock %s: skipping", pv->vg_name);
+	 if (get_pv_vg_name(pv)) {
+	         if (!lock_vol(cmd, get_pv_vg_name(pv), LCK_VG_READ)) {
+	                 log_error("Can't lock %s: skipping", get_pv_vg_name(pv));
 	                 return ECMD_FAILED;
 	         }
 
-	         if (!(vg = vg_read(cmd, pv->vg_name, (char *)&pv->vgid, &consistent))) {
-	                 log_error("Can't read %s: skipping", pv->vg_name);
+	         if (!(vg = vg_read(cmd, get_pv_vg_name(pv), (char *)&pv->vgid, &consistent))) {
+	                 log_error("Can't read %s: skipping", get_pv_vg_name(pv));
 	                 goto out;
 	         }
 
-	         if ((vg->status & CLUSTERED) && !locking_is_clustered() &&
-	             !lockingfailed()) {
-	                 log_error("Skipping clustered volume group %s",
-	                           vg->name);
+		 if (!vg_check_status(vg, CLUSTERED)) {
 	                 ret = ECMD_FAILED;
 	                 goto out;
 	         }
-	 }
 
-	if (!*pv->vg_name)
-		size = pv->size;
+		 /*
+		  * Replace possibly incomplete PV structure with new one
+		  * allocated in vg_read() path.
+		  */
+		 if (!(pvl = find_pv_in_vg(vg, pv_name))) {
+			 log_error("Unable to find \"%s\" in volume group \"%s\"",
+				   pv_name, vg->name);
+	                 ret = ECMD_FAILED;
+	                 goto out;
+		 }
+
+		 pv = pvl->pv;
+	}
+
+	if (!*get_pv_vg_name(pv))
+		size = get_pv_size(pv);
 	else
-		size = (pv->pe_count - pv->pe_alloc_count) * pv->pe_size;
+		size = (get_pv_pe_count(pv) - get_pv_pe_alloc_count(pv)) * 
+			get_pv_pe_size(pv);
 
 	if (arg_count(cmd, short_ARG)) {
 		log_print("Device \"%s\" has a capacity of %s", pv_name,
@@ -56,11 +68,11 @@ static int _pvdisplay_single(struct cmd_context *cmd,
 		goto out;
 	}
 
-	if (pv->status & EXPORTED_VG)
+	if (get_pv_status(pv) & EXPORTED_VG)
 		log_print("Physical volume \"%s\" of volume group \"%s\" "
-			  "is exported", pv_name, pv->vg_name);
+			  "is exported", pv_name, get_pv_vg_name(pv));
 
-	if (!pv->vg_name)
+	if (!get_pv_vg_name(pv))
 		log_print("\"%s\" is a new physical volume of \"%s\"",
 			  pv_name, display_size(cmd, size));
 
@@ -71,12 +83,12 @@ static int _pvdisplay_single(struct cmd_context *cmd,
 
 	pvdisplay_full(cmd, pv, handle);
 
-	if (!arg_count(cmd, maps_ARG))
-		goto out;
+	if (arg_count(cmd, maps_ARG))
+		pvdisplay_segments(pv);
 
 out:
-        if (pv->vg_name)
-                unlock_vg(cmd, pv->vg_name);
+        if (get_pv_vg_name(pv))
+                unlock_vg(cmd, get_pv_vg_name(pv));
 
 	return ret;
 }

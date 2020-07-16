@@ -258,6 +258,33 @@ void pvdisplay_colons(struct physical_volume *pv)
 	return;
 }
 
+void pvdisplay_segments(struct physical_volume *pv)
+{
+	struct pv_segment *pvseg;
+
+	if (pv->pe_size)
+		log_print("--- Physical Segments ---");
+
+	list_iterate_items(pvseg, &pv->segments) {
+		log_print("Physical extent %u to %u:",
+			  pvseg->pe, pvseg->pe + pvseg->len - 1);
+
+		if (pvseg->lvseg) {
+			log_print("  Logical volume\t%s%s/%s",
+				  pvseg->lvseg->lv->vg->cmd->dev_dir,
+				  pvseg->lvseg->lv->vg->name,
+				  pvseg->lvseg->lv->name);
+			log_print("  Logical extents\t%d to %d",
+				  pvseg->lvseg->le, pvseg->lvseg->le +
+				  pvseg->lvseg->len - 1);
+		} else
+			log_print("  FREE");
+	}
+
+	log_print(" ");
+	return;
+}
+
 /* FIXME Include label fields */
 void pvdisplay_full(struct cmd_context *cmd, struct physical_volume *pv,
 		    void *handle __attribute((unused)))

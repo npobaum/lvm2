@@ -33,7 +33,7 @@ static int _pvresize_single(struct cmd_context *cmd,
 	uint64_t size = 0;
 	uint32_t new_pe_count = 0;
 	struct list mdas;
-	const char *pv_name = dev_name(pv->dev);
+	const char *pv_name = dev_name(get_pv_dev(pv));
 	struct pvresize_params *params = (struct pvresize_params *) handle;
 	const char *vg_name;
 
@@ -41,7 +41,7 @@ static int _pvresize_single(struct cmd_context *cmd,
 
 	params->total++;
 
-	if (!*pv->vg_name) {
+	if (!*get_pv_vg_name(pv)) {
 		vg_name = ORPHAN;
 
 		if (!lock_vol(cmd, vg_name, LCK_VG_WRITE)) {
@@ -63,10 +63,10 @@ static int _pvresize_single(struct cmd_context *cmd,
 			return ECMD_FAILED;
 		}
 	} else {
-		vg_name = pv->vg_name;
+		vg_name = get_pv_vg_name(pv);
 
 		if (!lock_vol(cmd, vg_name, LCK_VG_WRITE)) {
-			log_error("Can't get lock for %s", pv->vg_name);
+			log_error("Can't get lock for %s", get_pv_vg_name(pv));
 			return ECMD_FAILED;
 		}
 
@@ -77,22 +77,8 @@ static int _pvresize_single(struct cmd_context *cmd,
 			return ECMD_FAILED;
 		}
 
-		if ((vg->status & CLUSTERED) && !locking_is_clustered() &&
-		    !lockingfailed()) {
+		if (!vg_check_status(vg, CLUSTERED | EXPORTED_VG | LVM_WRITE)) {
 			unlock_vg(cmd, vg_name);
-			log_error("Skipping clustered volume group %s", vg->name);
-			return ECMD_FAILED;
-		}
-
-		if (vg->status & EXPORTED_VG) {
-			unlock_vg(cmd, vg_name);
-			log_error("Volume group \"%s\" is exported", vg->name);
-			return ECMD_FAILED;
-		}
-
-		if (!(vg->status & LVM_WRITE)) {
-			unlock_vg(cmd, pv->vg_name);
-			log_error("Volume group \"%s\" is read-only", vg->name);
 			return ECMD_FAILED;
 		}
 
@@ -117,7 +103,7 @@ static int _pvresize_single(struct cmd_context *cmd,
 	}
 
 	/* Get new size */
-	if (!dev_get_size(pv->dev, &size)) {
+	if (!dev_get_size(get_pv_dev(pv), &size)) {
 		log_error("%s: Couldn't get size.", pv_name);
 		unlock_vg(cmd, vg_name);
 		return ECMD_FAILED;
@@ -128,7 +114,7 @@ static int _pvresize_single(struct cmd_context *cmd,
 			log_print("WARNING: %s: Overriding real size. "
 				  "You could lose data.", pv_name);
 		log_verbose("%s: Pretending size is %" PRIu64 " not %" PRIu64
-			    " sectors.", pv_name, params->new_size, pv->size);
+			    " sectors.", pv_name, params->new_size, get_pv_size(pv));
 		size = params->new_size;
 	}
 
@@ -139,9 +125,9 @@ static int _pvresize_single(struct cmd_context *cmd,
 		return ECMD_FAILED;
 	}
 
-	if (size < pv->pe_start) {
+	if (size < get_pv_pe_start(pv)) {
 		log_error("%s: Size must exceed physical extent start of "
-			  "%" PRIu64 " sectors.", pv_name, pv->pe_start);
+			  "%" PRIu64 " sectors.", pv_name, get_pv_pe_start(pv));
 		unlock_vg(cmd, vg_name);
 		return ECMD_FAILED;
 	}
@@ -149,14 +135,14 @@ static int _pvresize_single(struct cmd_context *cmd,
 	pv->size = size;
 
 	if (vg) {
-		pv->size -= pv->pe_start;
-		new_pe_count = pv->size / vg->extent_size;
+		pv->size -= get_pv_pe_start(pv);
+		new_pe_count = get_pv_size(pv) / vg->extent_size;
 		
  		if (!new_pe_count) {
 			log_error("%s: Size must leave space for at "
 				  "least one physical extent of "
 				  "%" PRIu32 " sectors.", pv_name,
-				  pv->pe_size);
+				  get_pv_pe_size(pv));
 			unlock_vg(cmd, vg_name);
 			return ECMD_FAILED;
 		}
@@ -169,12 +155,12 @@ static int _pvresize_single(struct cmd_context *cmd,
 	}
 
 	log_verbose("Resizing volume \"%s\" to %" PRIu64 " sectors.",
-		    pv_name, pv->size);
+		    pv_name, get_pv_size(pv));
 
 	log_verbose("Updating physical volume \"%s\"", pv_name);
-	if (*pv->vg_name) {
+	if (*get_pv_vg_name(pv)) {
 		if (!vg_write(vg) || !vg_commit(vg)) {
-			unlock_vg(cmd, pv->vg_name);
+			unlock_vg(cmd, get_pv_vg_name(pv));
 			log_error("Failed to store physical volume \"%s\" in "
 				  "volume group \"%s\"", pv_name, vg->name);
 			return ECMD_FAILED;

@@ -1,3 +1,54 @@
+Version 2.02.26 - 15th June 2007
+================================
+  Update vgcfgrestore man page.
+  Allow keyboard interrupt during user prompts when appropriate.
+  Remove unused clvmd system-lv code.
+  Replace many physical_volume struct dereferences with new get_pv_* functions.
+  Suppress a benign compile-time warning.
+  Convert find_pv_in_vg_by_uuid and pv_create to use PV handles.
+  Add wrappers to some functions in preparation for external LVM library.
+  Add -f to vgcfgrestore to list metadata backup files.
+  Add vg_check_status to consolidate vg status checks and error messages.
+  Add pvdisplay --maps implementation.
+  Remove unsupported LVM1 options from vgcfgrestore man page.
+  Update vgcfgrestore man page to show mandatory VG name.
+  Update vgrename man page to include UUID and be consistent with lvrename.
+  Add (experimental) OpenAIS support to clvmd.
+  Fix deactivation code to follow dependencies and remove symlinks.
+  Fix and clarify vgsplit error messages.
+  Fix a segfault in device_is_usable() if a device has no table.
+  Add some more debug messages to clvmd startup.
+  Misc clvmd cleanups.
+
+Version 2.02.25 - 27th April 2007
+=================================
+  Fix get_config_uint64() to read a 64-bit value not a 32-bit one.
+  Add -Wformat-security and change one fprintf() to fputs().
+  Move regex functions into libdevmapper.
+  Change some #include lines to search only standard system directories.
+  Add devices/preferred_names config regex list for displayed device names.
+  Free a temporary dir string in fcntl_lock_file() after use.
+  Fix a dm_pool_destroy() in matcher_create().
+  Introduce goto_bad macro.
+  Fix warnings on x86_64 involving ptrdiff_t in log_error messages.
+  Update pvck to include text metadata area and record detection.
+  Add support functions for token counting in config file extracts.
+  Update pvck to read labels on disk, with --labelsector parameter.
+  Add count_chars and count_chars_len functions.
+  Add /sys/block listings to lvm_dump.sh.
+  Make lvm_dump.sh list /dev recursively.
+  Fix thread race in clvmd.
+  Add scan_sector param to label_read and _find_labeller.
+  Make clvmd cope with quorum devices.
+  Add extra internal error checking to clvmd.
+  Add dev_read_circular.
+  Add pvck command stub.
+  Update lists of attribute characters in man pages.
+  Change cling alloc policy attribute character from 'C' to l'.
+  Fix creation and conversion of mirrors with tags.
+  Fix vgsplit for lvm1 format (set and validate VG name in PVs metadata).
+  Split metadata areas in vgsplit properly.
+
 Version 2.02.24 - 19th March 2007
 =================================
   Fix processing of exit status in init scripts
