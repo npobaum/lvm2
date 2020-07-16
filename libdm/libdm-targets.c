@@ -55,6 +55,35 @@ int dm_get_status_snapshot(struct dm_pool *mem, const char *params,
 }
 
 /*
+ * Skip nr fields each delimited by a single space.
+ * FIXME Don't assume single space.
+ */
+static const char *_skip_fields(const char *p, unsigned nr)
+{
+	while (p && nr-- && (p = strchr(p, ' ')))
+		p++;
+
+	return p;
+}
+
+/*
+ * Count number of single-space delimited fields.
+ * Number of fields is number of spaces plus one.
+ */
+static unsigned _count_fields(const char *p)
+{
+	unsigned nr = 1;
+
+	if (!p || !*p)
+		return 0;
+
+	while ((p = _skip_fields(p, 1)))
+		nr++;
+
+	return nr;
+}
+
+/*
  * Various RAID status versions include:
  * Versions < 1.5.0 (4 fields):
  *   <raid_type> <#devs> <health_str> <sync_ratio>
@@ -65,83 +94,73 @@ int dm_get_status_raid(struct dm_pool *mem, const char *params,
 		       struct dm_status_raid **status)
 {
 	int i;
-	const char *pp, *p;
-	struct dm_status_raid *s;
+	unsigned num_fields;
+	const char *p, *pp, *msg_fields = "";
+	struct dm_status_raid *s = NULL;
 
-	if (!params || !(p = strchr(params, ' '))) {
-		log_error("Failed to parse invalid raid params.");
-		return 0;
-	}
-	p++;
+	if ((num_fields = _count_fields(params)) < 4)
+		goto_bad;
 
-	/* second field holds the device count */
-	if (sscanf(p, "%d", &i) != 1)
-		return_0;
+	/* Second field holds the device count */
+	msg_fields = "<#devs> ";
+	if (!(p = _skip_fields(params, 1)) || (sscanf(p, "%d", &i) != 1))
+		goto_bad;
 
+	msg_fields = "";
 	if (!(s = dm_pool_zalloc(mem, sizeof(struct dm_status_raid))))
-		return_0;
+		goto_bad;
 
 	if (!(s->raid_type = dm_pool_zalloc(mem, p - params)))
 		goto_bad; /* memory is freed when pool is destroyed */
 
-	if (!(s->dev_health = dm_pool_zalloc(mem, i + 1)))
+	if (!(s->dev_health = dm_pool_zalloc(mem, i + 1))) /* Space for health chars */
 		goto_bad;
 
+	msg_fields = "<raid_type> <#devices> <health_chars> and <sync_ratio> ";
 	if (sscanf(params, "%s %u %s %" PRIu64 "/%" PRIu64,
 		   s->raid_type,
 		   &s->dev_count,
 		   s->dev_health,
 		   &s->insync_regions,
-		   &s->total_regions) != 5) {
-		log_error("Failed to parse raid params: %s", params);
-		goto bad;
-	}
-
-	*status = s;
+		   &s->total_regions) != 5)
+		goto_bad;
 
 	/*
 	 * All pre-1.5.0 version parameters are read.  Now we check
-	 * for additional 1.5.0+ parameters.
+	 * for additional 1.5.0+ parameters (i.e. num_fields at least 6).
 	 *
 	 * Note that 'sync_action' will be NULL (and mismatch_count
 	 * will be 0) if the kernel returns a pre-1.5.0 status.
 	 */
-	for (p = params, i = 0; i < 4; i++, p++)
-		if (!(p = strchr(p, ' ')))
-			return 1;  /* return pre-1.5.0 status */
+	if (num_fields < 6)
+		goto out;
 
-	pp = p;
-	if (!(p = strchr(p, ' '))) {
-		log_error(INTERNAL_ERROR "Bad RAID status received.");
-		goto bad;
-	}
-	p++;
+	msg_fields = "<sync_action> and <mismatch_cnt> ";
 
-	if (!(s->sync_action = dm_pool_zalloc(mem, p - pp)))
+	/* Skip pre-1.5.0 params */
+	if (!(p = _skip_fields(params, 4)) || !(pp = _skip_fields(p, 1)))
 		goto_bad;
 
-	if (sscanf(pp, "%s %" PRIu64, s->sync_action, &s->mismatch_count) != 2) {
-		log_error("Failed to parse raid params: %s", params);
-		goto bad;
-	}
+	if (!(s->sync_action = dm_pool_zalloc(mem, pp - p)))
+		goto_bad;
+
+	if (sscanf(p, "%s %" PRIu64, s->sync_action, &s->mismatch_count) != 2)
+		goto_bad;
+
+out:
+	*status = s;
 
 	return 1;
+
 bad:
-	dm_pool_free(mem, s);
+	log_error("Failed to parse %sraid params: %s", msg_fields, params);
+
+	if (s)
+		dm_pool_free(mem, s);
+
+	*status = NULL;
 
 	return 0;
-}
-
-static const char *_advance_to_next_word(const char *str, int count)
-{
-	int i;
-	const char *p;
-
-	for (p = str, i = 0; i < count; i++, p++)
-		if (!(p = strchr(p, ' ')))
-			return NULL;
-
-	return p;
 }
 
 /*
@@ -228,7 +247,7 @@ int dm_get_status_cache(struct dm_pool *mem, const char *params,
 		goto bad;
 
 	/* Now jump to "features" section */
-	if (!(p = _advance_to_next_word(params, 12)))
+	if (!(p = _skip_fields(params, 12)))
 		goto bad;
 
 	/* Read in features */
@@ -240,31 +259,31 @@ int dm_get_status_cache(struct dm_pool *mem, const char *params,
 		else
 			log_error("Unknown feature in status: %s", params);
 
-		if (!(p = _advance_to_next_word(p, 1)))
+		if (!(p = _skip_fields(p, 1)))
 			goto bad;
 	}
 
 	/* Read in core_args. */
 	if (sscanf(p, "%d ", &s->core_argc) != 1)
 		goto bad;
-	if (s->core_argc &&
+	if ((s->core_argc > 0) &&
 	    (!(s->core_argv = dm_pool_zalloc(mem, sizeof(char *) * s->core_argc)) ||
-	     !(p = _advance_to_next_word(p, 1)) ||
+	     !(p = _skip_fields(p, 1)) ||
 	     !(str = dm_pool_strdup(mem, p)) ||
-	     !(p = _advance_to_next_word(p, s->core_argc)) ||
+	     !(p = _skip_fields(p, (unsigned) s->core_argc)) ||
 	     (dm_split_words(str, s->core_argc, 0, s->core_argv) != s->core_argc)))
 		goto bad;
 
 	/* Read in policy args */
 	pp = p;
-	if (!(p = _advance_to_next_word(p, 1)) ||
+	if (!(p = _skip_fields(p, 1)) ||
 	    !(s->policy_name = dm_pool_zalloc(mem, (p - pp))))
 		goto bad;
 	if (sscanf(pp, "%s %d", s->policy_name, &s->policy_argc) != 2)
 		goto bad;
 	if (s->policy_argc &&
 	    (!(s->policy_argv = dm_pool_zalloc(mem, sizeof(char *) * s->policy_argc)) ||
-	     !(p = _advance_to_next_word(p, 1)) ||
+	     !(p = _skip_fields(p, 1)) ||
 	     !(str = dm_pool_strdup(mem, p)) ||
 	     (dm_split_words(str, s->policy_argc, 0, s->policy_argv) != s->policy_argc)))
 		goto bad;
@@ -444,7 +463,7 @@ int dm_get_status_mirror(struct dm_pool *mem, const char *params,
 	for (i = 0; i < num_devs ; ++i)
 		s->devs[i].health = pos[i];
 
-	if (!(pos = _advance_to_next_word(pos, argc)))
+	if (!(pos = _skip_fields(pos, argc)))
 		goto_out;
 
 	if (sscanf(pos, "%u %n", &argc, &used) != 1)
@@ -458,7 +477,7 @@ int dm_get_status_mirror(struct dm_pool *mem, const char *params,
 			goto out;
 		}
 	} else {
-		if (!(p = _advance_to_next_word(pos, 1)))
+		if (!(p = _skip_fields(pos, 1)))
 			goto_out;
 
 		/* disk, cluster-disk */
