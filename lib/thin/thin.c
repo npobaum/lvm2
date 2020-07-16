@@ -13,18 +13,13 @@
  */
 
 #include "lib.h"
-#include "toolcontext.h"
+#include "display.h"
 #include "metadata.h"
 #include "segtype.h"
 #include "text_export.h"
 #include "config.h"
 #include "activate.h"
 #include "str_list.h"
-#include "defaults.h"
-
-#ifdef DMEVENTD
-#  include "libdevmapper-event.h"
-#endif
 
 /* Dm kernel module name for thin provisiong */
 static const char _thin_pool_module[] = "thin-pool";
@@ -44,6 +39,20 @@ static unsigned _feature_mask;
 static const char *_thin_pool_name(const struct lv_segment *seg)
 {
 	return seg->segtype->name;
+}
+
+static void _thin_pool_display(const struct lv_segment *seg)
+{
+	log_print("  Chunk size\t\t%s",
+		  display_size(seg->lv->vg->cmd, seg->chunk_size));
+	log_print("  Discards\t\t%s", get_pool_discards_name(seg->discards));
+	log_print("  Thin count\t\t%u",
+		  dm_list_size(&seg->lv->segs_using_this_lv));
+	log_print("  Transaction ID\t%" PRIu64, seg->transaction_id);
+	log_print("  Zero new blocks\t%s",
+		  seg->zero_new_blocks ? "yes" : "no");
+
+	log_print(" ");
 }
 
 static int _thin_pool_add_message(struct lv_segment *seg,
@@ -373,7 +382,7 @@ static int _thin_pool_add_target_line(struct dev_manager *dm,
 }
 
 static int _thin_pool_target_percent(void **target_state __attribute__((unused)),
-				     percent_t *percent,
+				     dm_percent_t *percent,
 				     struct dm_pool *mem,
 				     struct cmd_context *cmd __attribute__((unused)),
 				     struct lv_segment *seg,
@@ -388,13 +397,13 @@ static int _thin_pool_target_percent(void **target_state __attribute__((unused))
 
 	/* With 'seg' report metadata percent, otherwice data percent */
 	if (seg) {
-		*percent = make_percent(s->used_metadata_blocks,
-					s->total_metadata_blocks);
+		*percent = dm_make_percent(s->used_metadata_blocks,
+					   s->total_metadata_blocks);
 		*total_numerator += s->used_metadata_blocks;
 		*total_denominator += s->total_metadata_blocks;
 	} else {
-		*percent = make_percent(s->used_data_blocks,
-					s->total_data_blocks);
+		*percent = dm_make_percent(s->used_data_blocks,
+					   s->total_data_blocks);
 		*total_numerator += s->used_data_blocks;
 		*total_denominator += s->total_data_blocks;
 	}
@@ -443,6 +452,13 @@ static int _target_unregister_events(struct lv_segment *seg,
 static const char *_thin_name(const struct lv_segment *seg)
 {
 	return seg->segtype->name;
+}
+
+static void _thin_display(const struct lv_segment *seg)
+{
+	log_print("  Device ID\t\t%u", seg->device_id);
+
+	log_print(" ");
 }
 
 static int _thin_text_import(struct lv_segment *seg,
@@ -587,7 +603,7 @@ static int _thin_add_target_line(struct dev_manager *dm,
 }
 
 static int _thin_target_percent(void **target_state __attribute__((unused)),
-				percent_t *percent,
+				dm_percent_t *percent,
 				struct dm_pool *mem,
 				struct cmd_context *cmd __attribute__((unused)),
 				struct lv_segment *seg,
@@ -602,11 +618,11 @@ static int _thin_target_percent(void **target_state __attribute__((unused)),
 		return_0;
 
 	if (seg) {
-		*percent = make_percent(s->mapped_sectors, seg->lv->size);
+		*percent = dm_make_percent(s->mapped_sectors, seg->lv->size);
 		*total_denominator += seg->lv->size;
 	} else {
 		/* No lv_segment info here */
-		*percent = PERCENT_INVALID;
+		*percent = DM_PERCENT_INVALID;
 		/* FIXME: Using denominator to pass the mapped info upward? */
 		*total_denominator += s->highest_mapped_sector;
 	}
@@ -705,6 +721,7 @@ static void _thin_destroy(struct segment_type *segtype)
 
 static struct segtype_handler _thin_pool_ops = {
 	.name = _thin_pool_name,
+	.display = _thin_pool_display,
 	.text_import = _thin_pool_text_import,
 	.text_import_area_count = _thin_pool_text_import_area_count,
 	.text_export = _thin_pool_text_export,
@@ -712,20 +729,19 @@ static struct segtype_handler _thin_pool_ops = {
 	.add_target_line = _thin_pool_add_target_line,
 	.target_percent = _thin_pool_target_percent,
 	.target_present = _thin_target_present,
+	.modules_needed = _thin_pool_modules_needed,
 #  ifdef DMEVENTD
 	.target_monitored = _target_registered,
 	.target_monitor_events = _target_register_events,
 	.target_unmonitor_events = _target_unregister_events,
 #  endif /* DMEVENTD */
 #endif
-#ifdef DEVMAPPER_SUPPORT
-	.modules_needed = _thin_pool_modules_needed,
-#endif
 	.destroy = _thin_destroy,
 };
 
 static struct segtype_handler _thin_ops = {
 	.name = _thin_name,
+	.display = _thin_display,
 	.text_import = _thin_text_import,
 	.text_export = _thin_text_export,
 #ifdef DEVMAPPER_SUPPORT

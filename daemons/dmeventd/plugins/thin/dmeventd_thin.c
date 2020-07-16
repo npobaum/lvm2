@@ -14,12 +14,12 @@
 
 #include "lib.h"
 
-#include "lvm2cmd.h"
 #include "libdevmapper-event.h"
 #include "dmeventd_lvm.h"
 
 #include <sys/wait.h>
 #include <syslog.h> /* FIXME Replace syslog with multilog */
+#include <stdarg.h>
 /* FIXME Missing openlog? */
 
 /* First warning when thin is 80% full. */
@@ -146,7 +146,7 @@ static int _extend(struct dso_state *state)
 #if THIN_DEBUG
 	syslog(LOG_INFO, "dmeventd executes: %s.\n", state->cmd_str);
 #endif
-	return (dmeventd_lvm2_run(state->cmd_str) == LVM2_COMMAND_SUCCEEDED);
+	return dmeventd_lvm2_run(state->cmd_str);
 }
 
 static int _run(const char *cmd, ...)
@@ -218,7 +218,8 @@ static int _umount_device(char *buffer, unsigned major, unsigned minor,
  */
 static void _umount(struct dm_task *dmt, const char *device)
 {
-	static const size_t MINORS = 4096;
+	/* TODO: Convert to use hash to reduce memory usage */
+	static const size_t MINORS = (1U << 20); /* 20 bit */
 	struct mountinfo_s data = {
 		.device = device,
 	};

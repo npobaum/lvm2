@@ -16,8 +16,7 @@
 #ifndef _LVM_CONFIG_H
 #define _LVM_CONFIG_H
 
-#include "lvm-types.h"
-#include "defaults.h"
+#include "libdevmapper.h"
 
 /* 16 bits: 3 bits for major, 4 bits for minor, 9 bits for patchlevel */
 /* FIXME Max LVM version supported: 7.15.511. Extend bits when needed. */
@@ -31,20 +30,24 @@ typedef enum {
 	CONFIG_FILE,		/* one file config */
 	CONFIG_MERGED_FILES,	/* config that is a result of merging more config files */
 	CONFIG_STRING,		/* config string typed on cmdline using '--config' arg */
-	CONFIG_PROFILE		/* profile config */
+	CONFIG_PROFILE_COMMAND,	/* command profile config */
+	CONFIG_PROFILE_METADATA,/* metadata profile config */
+	CONFIG_FILE_SPECIAL	/* special purpose file config (e.g. metadata, persistent filter...) */
 } config_source_t;
 
 struct profile {
 	struct dm_list list;
+	config_source_t source; /* either CONFIG_PROFILE_COMMAND or CONFIG_PROFILE_METADATA */
 	const char *name;
 	struct dm_config_tree *cft;
 };
 
 struct profile_params {
-	const char *dir;                /* subdir in LVM_SYSTEM_DIR where LVM looks for profiles */
-	struct profile *global_profile; /* profile that overrides any other VG/LV-based profile ('--profile' cmd line arg) */
-	struct dm_list profiles_to_load;/* list of profiles which are only added, but still need to be loaded for any use */
-	struct dm_list profiles;	/* list of profiles which are loaded already and which are ready for use */
+	char dir[PATH_MAX];                      /* subdir in LVM_SYSTEM_DIR where LVM looks for profiles */
+	struct profile *global_command_profile;  /* profile (as given by --commandprofile cmd arg) used as global command profile */
+	struct profile *global_metadata_profile; /* profile (as given by --metadataprofile cmd arg) that overrides any other VG/LV-based profile */
+	struct dm_list profiles_to_load;         /* list of profiles which are only added, but still need to be loaded for any use */
+	struct dm_list profiles;                 /* list of profiles which are loaded already and which are ready for use */
 };
 
 #define CFG_PATH_MAX_LEN 64
@@ -97,10 +100,14 @@ typedef union {
 #define CFG_UNSUPPORTED		0x08
 /* whether the configuration item is customizable by a profile */
 #define CFG_PROFILABLE		0x10
+/* whether the configuration item is customizable by a profile */
+/* and whether it can be attached to VG/LV metadata at the same time
+ * The CFG_PROFILABLE_METADATA flag incorporates CFG_PROFILABLE flag!!! */
+#define CFG_PROFILABLE_METADATA 0x30
 /* whether the default value is undefned */
-#define CFG_DEFAULT_UNDEFINED	0x20
+#define CFG_DEFAULT_UNDEFINED	0x40
 /* whether the defualt value is calculated during run time */
-#define CFG_DEFAULT_RUN_TIME	0x40
+#define CFG_DEFAULT_RUN_TIME	0x80
 
 /* configuration definition item structure */
 typedef struct cfg_def_item {
@@ -122,6 +129,8 @@ typedef enum {
 	CFG_DEF_TREE_DEFAULT,		/* tree of all possible config nodes with default values */
 	CFG_DEF_TREE_NEW,		/* tree of all new nodes that appeared in given version */
 	CFG_DEF_TREE_PROFILABLE,	/* tree of all nodes that are customizable by profiles */
+	CFG_DEF_TREE_PROFILABLE_CMD,	/* tree of all nodes that are customizable by command profiles (subset of PROFILABLE) */
+	CFG_DEF_TREE_PROFILABLE_MDA,	/* tree of all nodes that are customizable by metadata profiles (subset of PROFILABLE) */
 	CFG_DEF_TREE_DIFF,		/* tree of all nodes that differ from defaults */
 } cfg_def_tree_t;
 
@@ -162,7 +171,7 @@ enum {
 #undef cfg_array_runtime
 };
 
-struct profile *add_profile(struct cmd_context *cmd, const char *profile_name);
+struct profile *add_profile(struct cmd_context *cmd, const char *profile_name, config_source_t source);
 int load_profile(struct cmd_context *cmd, struct profile *profile);
 int load_pending_profiles(struct cmd_context *cmd);
 
@@ -183,7 +192,9 @@ int config_def_check(struct cft_check_handle *handle);
 
 int override_config_tree_from_string(struct cmd_context *cmd, const char *config_settings);
 int override_config_tree_from_profile(struct cmd_context *cmd, struct profile *profile);
+struct dm_config_tree *get_config_tree_by_source(struct cmd_context *, config_source_t source);
 struct dm_config_tree *remove_config_tree_by_source(struct cmd_context *cmd, config_source_t source);
+struct cft_check_handle *get_config_tree_check_handle(struct cmd_context *cmd, struct dm_config_tree *cft);
 config_source_t config_get_source_type(struct dm_config_tree *cft);
 
 typedef uint32_t (*checksum_fn_t) (uint32_t initial, const uint8_t *buf, uint32_t size);
@@ -193,7 +204,8 @@ int config_file_read_fd(struct dm_config_tree *cft, struct device *dev,
 			off_t offset, size_t size, off_t offset2, size_t size2,
 			checksum_fn_t checksum_fn, uint32_t checksum);
 int config_file_read(struct dm_config_tree *cft);
-struct dm_config_tree *config_file_open_and_read(const char *config_file, config_source_t source);
+struct dm_config_tree *config_file_open_and_read(const char *config_file, config_source_t source,
+						 struct cmd_context *cmd);
 int config_write(struct dm_config_tree *cft, struct config_def_tree_spec *tree_spec,
 		 const char *file, int argc, char **argv);
 struct dm_config_tree *config_def_create_tree(struct config_def_tree_spec *spec);

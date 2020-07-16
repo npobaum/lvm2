@@ -526,6 +526,11 @@ struct dm_tree *dm_tree_create(void);
 void dm_tree_free(struct dm_tree *tree);
 
 /*
+ * List of suffixes to be ignored when matching uuids against existing devices.
+ */
+void dm_tree_set_optional_uuid_suffixes(struct dm_tree *dtree, const char **optional_uuid_suffixes);
+
+/*
  * Add nodes to the tree for a given device and all the devices it uses.
  */
 int dm_tree_add_dev(struct dm_tree *tree, uint32_t major, uint32_t minor);
@@ -1179,6 +1184,14 @@ struct dm_list {
 };
 
 /*
+ * String list.
+ */
+struct dm_str_list {
+	struct dm_list list;
+	const char *str;
+};
+
+/*
  * Initialise a list before use.
  * The list head's next and previous pointers point back to itself.
  */
@@ -1454,6 +1467,50 @@ void dm_unescape_colons_and_at_signs(char *src,
  */
 int dm_strncpy(char *dest, const char *src, size_t n);
 
+/*
+ * Recognize unit specifier in the 'units' arg and return a factor
+ * representing that unit. If the 'units' contains a prefix with digits,
+ * the 'units' is considered to be a custom unit.
+ *
+ * Also, set 'unit_type' output arg to the character that represents
+ * the unit specified. The 'unit_type' character equals to the unit
+ * character itself recognized in the 'units' arg for canonical units.
+ * Otherwise, the 'unit_type' character is set to 'U' for custom unit.
+ *
+ * An example for k/K canonical units and 8k/8K custom units:
+ *
+ *   units  unit_type  return value (factor)
+ *   k      k          1024
+ *   K      K          1000
+ *   8k     U          1024*8
+ *   8K     U          1000*8
+ *   etc...
+ *
+ * Recognized units:
+ *
+ *   h/H - human readable (returns 1 for both)
+ *   b/B - byte (returns 1 for both)
+ *   s/S - sector (returns 512 for both)
+ *   k/K - kilo (returns 1024/1000 respectively)
+ *   m/M - mega (returns 1024^2/1000^2 respectively)
+ *   g/G - giga (returns 1024^3/1000^3 respectively)
+ *   t/T - tera (returns 1024^4/1000^4 respectively)
+ *   p/P - peta (returns 1024^5/1000^5 respectively)
+ *   e/E - exa (returns 1024^6/1000^6 respectively)
+ *
+ * Only one units character is allowed in the 'units' arg
+ * if strict mode is enabled by 'strict' arg.
+ *
+ * The 'endptr' output arg, if not NULL, saves the pointer
+ * in the 'units' string which follows the unit specifier
+ * recognized (IOW the position where the parsing of the
+ * unit specifier stopped).
+ *
+ * Returns the unit factor or 0 if no unit is recognized.
+ */
+uint64_t dm_units_to_factor(const char *units, char *unit_type,
+			    int strict, const char **endptr);
+
 /**************************
  * file/stream manipulation
  **************************/
@@ -1530,6 +1587,36 @@ int dm_regex_match(struct dm_regex *regex, const char *s);
  */
 uint32_t dm_regex_fingerprint(struct dm_regex *regex);
 
+/******************
+ * percent handling
+ ******************/
+/*
+ * A fixed-point representation of percent values. One percent equals to
+ * DM_PERCENT_1 as defined below. Values that are not multiples of DM_PERCENT_1
+ * represent fractions, with precision of 1/1000000 of a percent. See
+ * dm_percent_to_float for a conversion to a floating-point representation.
+ *
+ * You should always use dm_make_percent when building dm_percent_t values. The
+ * implementation of dm_make_percent is biased towards the middle: it ensures that
+ * the result is DM_PERCENT_0 or DM_PERCENT_100 if and only if this is the actual
+ * value -- it never rounds any intermediate value (> 0 or < 100) to either 0
+ * or 100.
+*/
+#define DM_PERCENT_CHAR '%'
+
+typedef enum {
+	DM_PERCENT_0 = 0,
+	DM_PERCENT_1 = 1000000,
+	DM_PERCENT_100 = 100 * DM_PERCENT_1,
+	DM_PERCENT_INVALID = -1,
+	DM_PERCENT_FAILED = -2
+} dm_percent_range_t;
+
+typedef int32_t dm_percent_t;
+
+float dm_percent_to_float(dm_percent_t percent);
+dm_percent_t dm_make_percent(uint64_t numerator, uint64_t denominator);
+
 /*********************
  * reporting functions
  *********************/
@@ -1546,13 +1633,17 @@ struct dm_report_field;
 /*
  * dm_report_field_type flags
  */
-#define DM_REPORT_FIELD_MASK		0x000000FF
-#define DM_REPORT_FIELD_ALIGN_MASK	0x0000000F
-#define DM_REPORT_FIELD_ALIGN_LEFT	0x00000001
-#define DM_REPORT_FIELD_ALIGN_RIGHT	0x00000002
-#define DM_REPORT_FIELD_TYPE_MASK	0x000000F0
-#define DM_REPORT_FIELD_TYPE_STRING	0x00000010
-#define DM_REPORT_FIELD_TYPE_NUMBER	0x00000020
+#define DM_REPORT_FIELD_MASK			0x00000FFF
+#define DM_REPORT_FIELD_ALIGN_MASK		0x0000000F
+#define DM_REPORT_FIELD_ALIGN_LEFT		0x00000001
+#define DM_REPORT_FIELD_ALIGN_RIGHT		0x00000002
+#define DM_REPORT_FIELD_TYPE_MASK		0x00000FF0
+#define DM_REPORT_FIELD_TYPE_NONE		0x00000000
+#define DM_REPORT_FIELD_TYPE_STRING		0x00000010
+#define DM_REPORT_FIELD_TYPE_NUMBER		0x00000020
+#define DM_REPORT_FIELD_TYPE_SIZE		0x00000040
+#define DM_REPORT_FIELD_TYPE_PERCENT		0x00000080
+#define DM_REPORT_FIELD_TYPE_STRING_LIST	0x00000100
 
 #define DM_REPORT_FIELD_TYPE_ID_LEN 32
 #define DM_REPORT_FIELD_TYPE_HEADING_LEN 32
@@ -1574,6 +1665,43 @@ struct dm_report_field_type {
 };
 
 /*
+ * Per-field reserved value.
+ */
+struct dm_report_field_reserved_value {
+	/* field_num is the position of the field in 'fields'
+	   array passed to dm_report_init_with_selection */
+	uint32_t field_num;
+	/* the value is of the same type as the field
+	   identified by field_num */
+	const void *value;
+};
+
+/*
+ * Reserved value is a 'value' that is used directly if any of the 'names' is hit.
+ *
+ * If type is any of DM_REPORT_FIELD_TYPE_*, the reserved value is recognized
+ * for all fields of that type.
+ *
+ * If type is DM_REPORT_FIELD_TYPE_NONE, the reserved value is recognized
+ * for the exact field specified - hence the type of the value is automatically
+ * the same as the type of the field itself.
+ *
+ * The array of reserved values is used to initialize reporting with
+ * selection enabled (see also dm_report_init_with_selection function).
+ */
+struct dm_report_reserved_value {
+	const unsigned type;		/* DM_REPORT_FIELD_TYPE_* */
+	const void *value;		/* reserved value:
+						struct dm_report_field_reserved_value for DM_REPORT_FIELD_TYPE_NONE
+						uint64_t for DM_REPORT_FIELD_TYPE_NUMBER
+						uint64_t for DM_REPORT_FIELD_TYPE_SIZE (number of 512-byte sectors)
+						uint64_t for DM_REPORT_FIELD_TYPE_PERCENT
+						const char * for DM_REPORT_FIELD_TYPE_STRING */
+	const char **names;		/* null-terminated array of names for this reserved value */
+	const char *description;	/* description of the reserved value */
+};
+
+/*
  * dm_report_init output_flags
  */
 #define DM_REPORT_OUTPUT_MASK			0x000000FF
@@ -1592,7 +1720,19 @@ struct dm_report *dm_report_init(uint32_t *report_types,
 				 uint32_t output_flags,
 				 const char *sort_keys,
 				 void *private_data);
+struct dm_report *dm_report_init_with_selection(uint32_t *report_types,
+						const struct dm_report_object_type *types,
+						const struct dm_report_field_type *fields,
+						const char *output_fields,
+						const char *output_separator,
+						uint32_t output_flags,
+						const char *sort_keys,
+						const char *selection,
+						const struct dm_report_reserved_value reserved_values[],
+						void *private_data);
 int dm_report_object(struct dm_report *rh, void *object);
+int dm_report_set_output_selection(struct dm_report *rh, uint32_t *report_types,
+				   const char *selection);
 int dm_report_output(struct dm_report *rh);
 void dm_report_free(struct dm_report *rh);
 
@@ -1608,6 +1748,8 @@ int dm_report_set_output_field_name_prefix(struct dm_report *rh,
  */
 int dm_report_field_string(struct dm_report *rh, struct dm_report_field *field,
 			   const char *const *data);
+int dm_report_field_string_list(struct dm_report *rh, struct dm_report_field *field,
+				const struct dm_list *data, const char *delimiter);
 int dm_report_field_int32(struct dm_report *rh, struct dm_report_field *field,
 			  const int32_t *data);
 int dm_report_field_uint32(struct dm_report *rh, struct dm_report_field *field,
@@ -1616,6 +1758,8 @@ int dm_report_field_int(struct dm_report *rh, struct dm_report_field *field,
 			const int *data);
 int dm_report_field_uint64(struct dm_report *rh, struct dm_report_field *field,
 			   const uint64_t *data);
+int dm_report_field_percent(struct dm_report *rh, struct dm_report_field *field,
+			    const dm_percent_t *data);
 
 /*
  * For custom fields, allocate the data in 'mem' and use
@@ -1829,7 +1973,7 @@ struct dm_pool *dm_config_memory(struct dm_config_tree *cft);
 #define DM_SUBSYSTEM_UDEV_FLAG4 0x1000
 #define DM_SUBSYSTEM_UDEV_FLAG5 0x2000
 #define DM_SUBSYSTEM_UDEV_FLAG6 0x4000
-#define DM_SUBSSYTEM_UDEV_FLAG7 0x8000
+#define DM_SUBSYSTEM_UDEV_FLAG7 0x8000
 
 int dm_cookie_supported(void);
 

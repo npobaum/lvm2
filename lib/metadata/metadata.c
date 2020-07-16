@@ -19,6 +19,7 @@
 #include "toolcontext.h"
 #include "lvm-string.h"
 #include "lvm-file.h"
+#include "lvm-signal.h"
 #include "lvmcache.h"
 #include "lvmetad.h"
 #include "memlock.h"
@@ -360,14 +361,23 @@ out:
 	return r;
 }
 
-int move_pv(struct volume_group *vg_from, struct volume_group *vg_to,
-	    const char *pv_name)
+static int _move_pv(struct volume_group *vg_from, struct volume_group *vg_to,
+		    const char *pv_name, int enforce_pv_from_source)
 {
 	struct physical_volume *pv;
 	struct pv_list *pvl;
 
 	/* FIXME: handle tags */
 	if (!(pvl = find_pv_in_vg(vg_from, pv_name))) {
+		if (!enforce_pv_from_source &&
+		    find_pv_in_vg(vg_to, pv_name))
+			/*
+			 * PV has already been moved.  This can happen if an
+			 * LV is being moved that has multiple sub-LVs on the
+			 * same PV.
+			 */
+			return 1;
+
 		log_error("Physical volume %s not in volume group %s",
 			  pv_name, vg_from->name);
 		return 0;
@@ -389,6 +399,12 @@ int move_pv(struct volume_group *vg_from, struct volume_group *vg_to,
 	vg_to->free_count += pv_pe_count(pv) - pv_pe_alloc_count(pv);
 
 	return 1;
+}
+
+int move_pv(struct volume_group *vg_from, struct volume_group *vg_to,
+	    const char *pv_name)
+{
+	return _move_pv(vg_from, vg_to, pv_name, 1);
 }
 
 int move_pvs_used_by_lv(struct volume_group *vg_from,
@@ -418,8 +434,8 @@ int move_pvs_used_by_lv(struct volume_group *vg_from,
 				return_0;
 		for (s = 0; s < lvseg->area_count; s++) {
 			if (seg_type(lvseg, s) == AREA_PV) {
-				if (!move_pv(vg_from, vg_to,
-					      pv_dev_name(seg_pv(lvseg, s))))
+				if (!_move_pv(vg_from, vg_to,
+					      pv_dev_name(seg_pv(lvseg, s)), 0))
 					return_0;
 			} else if (seg_type(lvseg, s) == AREA_LV) {
 				lv = seg_lv(lvseg, s);
@@ -586,7 +602,7 @@ int vg_remove(struct volume_group *vg)
 		log_verbose("Removing physical volume \"%s\" from "
 			    "volume group \"%s\"", pv_dev_name(pv), vg->name);
 		pv->vg_name = vg->fid->fmt->orphan_vg_name;
-		pv->status = ALLOCATABLE_PV;
+		pv->status &= ~ALLOCATABLE_PV;
 
 		if (!dev_get_size(pv_dev(pv), &pv->size)) {
 			log_error("%s: Couldn't get size.", pv_dev_name(pv));
@@ -669,8 +685,8 @@ static int vg_extend_single_pv(struct volume_group *vg, char *pv_name,
 {
 	struct physical_volume *pv;
 
-	if (!(pv = find_pv_by_name(vg->cmd, pv_name, 1, 1)))
-		stack;
+	pv = find_pv_by_name(vg->cmd, pv_name, 1, 1);
+
 	if (!pv && !pp) {
 		log_error("%s not identified as an existing "
 			  "physical volume", pv_name);
@@ -753,7 +769,7 @@ int vg_reduce(struct volume_group *vg, const char *pv_name)
 	}
 
 	log_error("Unable to remove physical volume '%s' from "
-				"volume group '%s'.", pv_name, vg->name);
+		  "volume group '%s'.", pv_name, vg->name);
 
 	return 0;
 }
@@ -1576,7 +1592,6 @@ static struct physical_volume *_alloc_pv(struct dm_pool *mem, struct device *dev
 	}
 
 	pv->dev = dev;
-	pv->status = ALLOCATABLE_PV;
 
 	dm_list_init(&pv->tags);
 	dm_list_init(&pv->segments);
@@ -1836,7 +1851,8 @@ struct physical_volume *find_pv_by_name(struct cmd_context *cmd,
 	lvmcache_seed_infos_from_lvmetad(cmd);
 
 	if (!(dev = dev_cache_get(pv_name, cmd->filter))) {
-		log_error("Physical volume %s not found", pv_name);
+		if (!allow_unformatted)
+			log_error("Physical volume %s not found", pv_name);
 		return_NULL;
 	}
 
@@ -2306,8 +2322,9 @@ int vg_validate(struct volume_group *vg)
 	struct pv_list *pvl;
 	struct lv_list *lvl;
 	struct lv_segment *seg;
-	struct str_list *sl;
+	struct dm_str_list *sl;
 	char uuid[64] __attribute__((aligned(8)));
+	char uuid2[64] __attribute__((aligned(8)));
 	int r = 1;
 	unsigned hidden_lv_count = 0, lv_count = 0, lv_visible_count = 0;
 	unsigned pv_count = 0;
@@ -2404,6 +2421,17 @@ int vg_validate(struct volume_group *vg)
 			r = 0;
 		}
 
+		if (!id_equal(&lvl->lv->lvid.id[0], &lvl->lv->vg->id)) {
+			if (!id_write_format(&lvl->lv->lvid.id[0], uuid,
+					     sizeof(uuid)))
+				stack;
+			if (!id_write_format(&lvl->lv->vg->id, uuid2,
+					     sizeof(uuid2)))
+				stack;
+			log_error(INTERNAL_ERROR "LV %s has VG UUID %s but its VG %s has UUID %s",
+				  lvl->lv->name, uuid, lvl->lv->vg->name, uuid2);
+			r = 0;
+		}
 
 		if (lv_is_cow(lvl->lv))
 			num_snapshots++;
@@ -2597,6 +2625,7 @@ int vg_write(struct volume_group *vg)
 	struct dm_list *mdah;
         struct pv_to_create *pv_to_create;
 	struct metadata_area *mda;
+	int revert = 0, wrote = 0;
 
 	if (!vg_validate(vg))
 		return_0;
@@ -2649,39 +2678,45 @@ int vg_write(struct volume_group *vg)
 		if (!mda->ops->vg_write) {
 			log_error("Format does not support writing volume"
 				  "group metadata areas");
-			/* Revert */
-			dm_list_uniterate(mdah, &vg->fid->metadata_areas_in_use, &mda->list) {
-				mda = dm_list_item(mdah, struct metadata_area);
-
-				if (mda->ops->vg_revert &&
-				    !mda->ops->vg_revert(vg->fid, vg, mda)) {
-					stack;
-				}
-			}
-			return 0;
+			revert = 1;
+			break;
 		}
 		if (!mda->ops->vg_write(vg->fid, vg, mda)) {
-			stack;
-			/* Revert */
-			dm_list_uniterate(mdah, &vg->fid->metadata_areas_in_use, &mda->list) {
-				mda = dm_list_item(mdah, struct metadata_area);
-
-				if (mda->ops->vg_revert &&
-				    !mda->ops->vg_revert(vg->fid, vg, mda)) {
-					stack;
-				}
+			if (vg->cmd->handles_missing_pvs) {
+				log_warn("WARNING: Failed to write an MDA of VG %s.", vg->name);
+				mda->status |= MDA_FAILED;
+			} else {
+				stack;
+				revert = 1;
+				break;
 			}
-			return 0;
+		} else
+			++ wrote;
+	}
+
+	if (revert || !wrote) {
+		dm_list_uniterate(mdah, &vg->fid->metadata_areas_in_use, &mda->list) {
+			mda = dm_list_item(mdah, struct metadata_area);
+
+			if (mda->ops->vg_revert &&
+			    !mda->ops->vg_revert(vg->fid, vg, mda)) {
+				stack;
+			}
 		}
+		return 0;
 	}
 
 	/* Now pre-commit each copy of the new metadata */
 	dm_list_iterate_items(mda, &vg->fid->metadata_areas_in_use) {
+		if (mda->status & MDA_FAILED)
+			continue;
 		if (mda->ops->vg_precommit &&
 		    !mda->ops->vg_precommit(vg->fid, vg, mda)) {
 			stack;
 			/* Revert */
 			dm_list_iterate_items(mda, &vg->fid->metadata_areas_in_use) {
+				if (mda->status & MDA_FAILED)
+					continue;
 				if (mda->ops->vg_revert &&
 				    !mda->ops->vg_revert(vg->fid, vg, mda)) {
 					stack;
@@ -2722,6 +2757,8 @@ static int _vg_commit_mdas(struct volume_group *vg)
 
 	/* Commit to each copy of the metadata area */
 	dm_list_iterate_items(mda, &vg->fid->metadata_areas_in_use) {
+		if (mda->status & MDA_FAILED)
+			continue;
 		failed = 0;
 		if (mda->ops->vg_commit &&
 		    !mda->ops->vg_commit(vg->fid, vg, mda)) {
@@ -3546,7 +3583,7 @@ static struct volume_group *_vg_read_by_vgid(struct cmd_context *cmd,
 	const char *vgname;
 	struct dm_list *vgnames;
 	struct volume_group *vg;
-	struct str_list *strl;
+	struct dm_str_list *strl;
 	int consistent = 0;
 
 	/* Is corresponding vgname already cached? */
@@ -3777,7 +3814,7 @@ struct dm_list *get_vgids(struct cmd_context *cmd, int include_internal)
 static int _get_pvs(struct cmd_context *cmd, int warnings,
 		struct dm_list *pvslist, struct dm_list *vgslist)
 {
-	struct str_list *strl;
+	struct dm_str_list *strl;
 	const char *vgname, *vgid;
 	struct pv_list *pvl, *pvl_copy;
 	struct dm_list *vgids;
@@ -4105,6 +4142,9 @@ int vg_check_status(const struct volume_group *vg, uint64_t status)
 	return !_vg_bad_status_bits(vg, status);
 }
 
+/*
+ * VG is left unlocked on failure
+ */
 static struct volume_group *_recover_vg(struct cmd_context *cmd,
 			 const char *vg_name, const char *vgid)
 {
@@ -4118,11 +4158,14 @@ static struct volume_group *_recover_vg(struct cmd_context *cmd,
 	if (!lock_vol(cmd, vg_name, LCK_VG_WRITE, NULL))
 		return_NULL;
 
-	if (!(vg = vg_read_internal(cmd, vg_name, vgid, 1, &consistent)))
+	if (!(vg = vg_read_internal(cmd, vg_name, vgid, 1, &consistent))) {
+		unlock_vg(cmd, vg_name);
 		return_NULL;
+	}
 
 	if (!consistent) {
 		release_vg(vg);
+		unlock_vg(cmd, vg_name);
 		return_NULL;
 	}
 
@@ -4202,7 +4245,7 @@ static struct volume_group *_vg_lock_and_read(struct cmd_context *cmd, const cha
 			log_error("Recovery of volume group \"%s\" failed.",
 				  vg_name);
 			failure |= FAILED_INCONSISTENT;
-			goto bad;
+			goto bad_no_unlock;
 		}
 	}
 
@@ -4237,6 +4280,7 @@ bad:
 	if (!already_locked && !(misc_flags & READ_WITHOUT_LOCK))
 		unlock_vg(cmd, vg_name);
 
+bad_no_unlock:
 	return _vg_make_handle(cmd, vg, failure);
 }
 
@@ -4680,7 +4724,7 @@ int pv_change_metadataignore(struct physical_volume *pv, uint32_t mda_ignored)
 
 char *tags_format_and_copy(struct dm_pool *mem, const struct dm_list *tagsl)
 {
-	struct str_list *sl;
+	struct dm_str_list *sl;
 
 	if (!dm_pool_begin_object(mem, 256)) {
 		log_error("dm_pool_begin_object failed");

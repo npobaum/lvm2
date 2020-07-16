@@ -18,15 +18,17 @@
 
 #include "metadata-exported.h"
 #include "label.h"
+#include "activate.h"
 
 typedef enum {
 	LVS		= 1,
-	PVS		= 2,
-	VGS		= 4,
-	SEGS		= 8,
-	PVSEGS		= 16,
-	LABEL		= 32,
-	DEVTYPES	= 64
+	LVSINFO		= 2,
+	PVS		= 4,
+	VGS		= 8,
+	SEGS		= 16,
+	PVSEGS		= 32,
+	LABEL		= 64,
+	DEVTYPES	= 128
 } report_type_t;
 
 struct field;
@@ -38,12 +40,12 @@ typedef int (*field_report_fn) (struct report_handle * dh, struct field * field,
 void *report_init(struct cmd_context *cmd, const char *format, const char *keys,
 		  report_type_t *report_type, const char *separator,
 		  int aligned, int buffered, int headings, int field_prefixes,
-		  int quoted, int columns_as_rows);
+		  int quoted, int columns_as_rows, const char *selection);
 void report_free(void *handle);
 int report_object(void *handle, struct volume_group *vg,
 		  struct logical_volume *lv, struct physical_volume *pv,
 		  struct lv_segment *seg, struct pv_segment *pvseg,
-		  struct label *label);
+		  struct lvinfo *lvinfo, struct label *label);
 int report_devtypes(void *handle);
 int report_output(void *handle);
 

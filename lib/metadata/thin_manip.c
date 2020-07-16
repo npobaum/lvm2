@@ -20,24 +20,6 @@
 #include "defaults.h"
 #include "display.h"
 
-int detach_pool_metadata_lv(struct lv_segment *pool_seg, struct logical_volume **metadata_lv)
-{
-	struct logical_volume *lv = pool_seg->metadata_lv;
-
-	if (!lv || !lv_is_thin_pool_metadata(lv) ||
-	    !remove_seg_from_segs_using_this_lv(lv, pool_seg)) {
-		log_error(INTERNAL_ERROR "LV %s is invalid thin pool.", pool_seg->lv->name);
-		return 0;
-	}
-
-	lv_set_visible(lv);
-	lv->status &= ~THIN_POOL_METADATA;
-	*metadata_lv = lv;
-	pool_seg->metadata_lv = NULL;
-
-	return 1;
-}
-
 int attach_pool_message(struct lv_segment *pool_seg, dm_thin_message_t type,
 			struct logical_volume *lv, uint32_t delete_id,
 			int no_update)
@@ -231,8 +213,8 @@ int thin_pool_feature_supported(const struct logical_volume *lv, int feature)
 
 int pool_below_threshold(const struct lv_segment *pool_seg)
 {
-	percent_t percent;
-	int threshold = PERCENT_1 *
+	dm_percent_t percent;
+	int threshold = DM_PERCENT_1 *
 		find_config_tree_int(pool_seg->lv->vg->cmd, activation_thin_pool_autoextend_threshold_CFG,
 				     lv_config_profile(pool_seg->lv));
 
@@ -366,16 +348,24 @@ int update_pool_lv(struct logical_volume *lv, int activate)
 	return 1;
 }
 
-int update_profilable_pool_params(struct cmd_context *cmd, struct profile *profile,
-				  int passed_args, int *chunk_size_calc_method,
-				  uint32_t *chunk_size, thin_discards_t *discards,
-				  int *zero)
+int update_thin_pool_params(struct volume_group *vg,
+			    unsigned attr, int passed_args, uint32_t data_extents,
+			    uint64_t *pool_metadata_size,
+			    int *chunk_size_calc_method, uint32_t *chunk_size,
+			    thin_discards_t *discards, int *zero)
 {
+	struct cmd_context *cmd = vg->cmd;
+	struct profile *profile = vg->profile;
+	uint32_t extent_size = vg->extent_size;
+	size_t estimate_chunk_size;
 	const char *str;
 
 	if (!(passed_args & PASS_ARG_CHUNK_SIZE)) {
 		if (!(*chunk_size = find_config_tree_int(cmd, allocation_thin_pool_chunk_size_CFG, profile) * 2)) {
-			str = find_config_tree_str(cmd, allocation_thin_pool_chunk_size_policy_CFG, profile);
+			if (!(str = find_config_tree_str(cmd, allocation_thin_pool_chunk_size_policy_CFG, profile))) {
+				log_error(INTERNAL_ERROR "Could not find configuration.");
+				return 0;
+			}
 			if (!strcasecmp(str, "generic"))
 				*chunk_size_calc_method = THIN_CHUNK_SIZE_CALC_METHOD_GENERIC;
 			else if (!strcasecmp(str, "performance"))
@@ -384,7 +374,8 @@ int update_profilable_pool_params(struct cmd_context *cmd, struct profile *profi
 				log_error("Thin pool chunk size calculation policy \"%s\" is unrecognised.", str);
 				return 0;
 			}
-			*chunk_size = get_default_allocation_thin_pool_chunk_size_CFG(cmd, profile) * 2;
+			if (!(*chunk_size = get_default_allocation_thin_pool_chunk_size_CFG(cmd, profile)))
+				return_0;
 		}
 	}
 
@@ -397,31 +388,16 @@ int update_profilable_pool_params(struct cmd_context *cmd, struct profile *profi
 	}
 
 	if (!(passed_args & PASS_ARG_DISCARDS)) {
-		str = find_config_tree_str(cmd, allocation_thin_pool_discards_CFG, profile);
+		if (!(str = find_config_tree_str(cmd, allocation_thin_pool_discards_CFG, profile))) {
+			log_error(INTERNAL_ERROR "Could not find configuration.");
+			return 0;
+		}
 		if (!get_pool_discards(str, discards))
 			return_0;
 	}
 
 	if (!(passed_args & PASS_ARG_ZERO))
 		*zero = find_config_tree_bool(cmd, allocation_thin_pool_zero_CFG, profile);
-
-	return 1;
-}
-
-int update_thin_pool_params(struct volume_group *vg, unsigned attr,
-			    int passed_args,
-			    uint32_t data_extents, uint32_t extent_size,
-			    int *chunk_size_calc_method, uint32_t *chunk_size,
-			    thin_discards_t *discards,
-			    uint64_t *pool_metadata_size, int *zero)
-{
-	size_t estimate_chunk_size;
-	struct cmd_context *cmd = vg->cmd;
-
-	if (!update_profilable_pool_params(cmd, vg->profile, passed_args,
-					   chunk_size_calc_method, chunk_size,
-					   discards, zero))
-		return_0;
 
 	if (!(attr & THIN_FEATURE_BLOCK_SIZE) &&
 	    (*chunk_size & (*chunk_size - 1))) {
@@ -447,11 +423,10 @@ int update_thin_pool_params(struct volume_group *vg, unsigned attr,
 			}
 			log_verbose("Setting chunk size to %s.",
 				    display_size(cmd, *chunk_size));
-		} else if (*pool_metadata_size > (2 * DEFAULT_THIN_POOL_MAX_METADATA_SIZE)) {
+		} else if (*pool_metadata_size > (DEFAULT_THIN_POOL_MAX_METADATA_SIZE * 2)) {
 			/* Suggest bigger chunk size */
 			estimate_chunk_size = (uint64_t) data_extents * extent_size /
-				(2 * DEFAULT_THIN_POOL_MAX_METADATA_SIZE *
-				 (SECTOR_SIZE / UINT64_C(64)));
+				(DEFAULT_THIN_POOL_MAX_METADATA_SIZE * 2 * (SECTOR_SIZE / UINT64_C(64)));
 			log_warn("WARNING: Chunk size is too small for pool, suggested minimum is %s.",
 				 display_size(cmd, UINT64_C(1) << (ffs(estimate_chunk_size) + 1)));
 		}
@@ -460,19 +435,17 @@ int update_thin_pool_params(struct volume_group *vg, unsigned attr,
 		if (*pool_metadata_size % extent_size)
 			*pool_metadata_size += extent_size - *pool_metadata_size % extent_size;
 	} else {
-		estimate_chunk_size =  (uint64_t) data_extents * extent_size /
+		estimate_chunk_size = (uint64_t) data_extents * extent_size /
 			(*pool_metadata_size * (SECTOR_SIZE / UINT64_C(64)));
+		if (estimate_chunk_size < DM_THIN_MIN_DATA_BLOCK_SIZE)
+			estimate_chunk_size = DM_THIN_MIN_DATA_BLOCK_SIZE;
+		else if (estimate_chunk_size > DM_THIN_MAX_DATA_BLOCK_SIZE)
+			estimate_chunk_size = DM_THIN_MAX_DATA_BLOCK_SIZE;
+
 		/* Check to eventually use bigger chunk size */
 		if (!(passed_args & PASS_ARG_CHUNK_SIZE)) {
 			*chunk_size = estimate_chunk_size;
-
-			if (*chunk_size < DM_THIN_MIN_DATA_BLOCK_SIZE)
-				*chunk_size = DM_THIN_MIN_DATA_BLOCK_SIZE;
-			else if (*chunk_size > DM_THIN_MAX_DATA_BLOCK_SIZE)
-				*chunk_size = DM_THIN_MAX_DATA_BLOCK_SIZE;
-
-			log_verbose("Setting chunk size %s.",
-				    display_size(cmd, *chunk_size));
+			log_verbose("Setting chunk size %s.", display_size(cmd, *chunk_size));
 		} else if (*chunk_size < estimate_chunk_size) {
 			/* Suggest bigger chunk size */
 			log_warn("WARNING: Chunk size is smaller then suggested minimum size %s.",
@@ -480,25 +453,17 @@ int update_thin_pool_params(struct volume_group *vg, unsigned attr,
 		}
 	}
 
-	if ((uint64_t) *chunk_size > (uint64_t) data_extents * extent_size) {
-		log_error("Chunk size is bigger then pool data size.");
-		return 0;
-	}
-
 	if (*pool_metadata_size > (2 * DEFAULT_THIN_POOL_MAX_METADATA_SIZE)) {
+		*pool_metadata_size = 2 * DEFAULT_THIN_POOL_MAX_METADATA_SIZE;
 		if (passed_args & PASS_ARG_POOL_METADATA_SIZE)
 			log_warn("WARNING: Maximum supported pool metadata size is %s.",
-				 display_size(cmd, 2 * DEFAULT_THIN_POOL_MAX_METADATA_SIZE));
-		*pool_metadata_size = 2 * DEFAULT_THIN_POOL_MAX_METADATA_SIZE;
+				 display_size(cmd, *pool_metadata_size));
 	} else if (*pool_metadata_size < (2 * DEFAULT_THIN_POOL_MIN_METADATA_SIZE)) {
+		*pool_metadata_size = 2 * DEFAULT_THIN_POOL_MIN_METADATA_SIZE;
 		if (passed_args & PASS_ARG_POOL_METADATA_SIZE)
 			log_warn("WARNING: Minimum supported pool metadata size is %s.",
-				 display_size(cmd, 2 * DEFAULT_THIN_POOL_MIN_METADATA_SIZE));
-		*pool_metadata_size = 2 * DEFAULT_THIN_POOL_MIN_METADATA_SIZE;
+				 display_size(cmd, *pool_metadata_size));
 	}
-
-	log_verbose("Setting pool metadata size to %s.",
-		    display_size(cmd, *pool_metadata_size));
 
 	return 1;
 }
@@ -533,216 +498,4 @@ const char *get_pool_discards_name(thin_discards_t discards)
 	log_error(INTERNAL_ERROR "Unknown discards type encountered.");
 
 	return "unknown";
-}
-
-struct logical_volume *alloc_pool_metadata(struct logical_volume *pool_lv,
-					   const char *name, uint32_t read_ahead,
-					   uint32_t stripes, uint32_t stripe_size,
-					   uint64_t size, alloc_policy_t alloc,
-					   struct dm_list *pvh)
-{
-	struct logical_volume *metadata_lv;
-	/* FIXME: Make lvm2api usable */
-	struct lvcreate_params lvc = {
-		.activate = CHANGE_ALY,
-		.alloc = alloc,
-		.lv_name = name,
-		.major = -1,
-		.minor = -1,
-		.permission = LVM_READ | LVM_WRITE,
-		.pvh = pvh,
-		.read_ahead = read_ahead,
-		.stripe_size = stripe_size,
-		.stripes = stripes,
-		.vg_name = pool_lv->vg->name,
-		.zero = 1,
-	};
-
-	dm_list_init(&lvc.tags);
-
-	if (!(lvc.extents = extents_from_size(pool_lv->vg->cmd, size,
-					      pool_lv->vg->extent_size)))
-		return_0;
-
-	if (!(lvc.segtype = get_segtype_from_string(pool_lv->vg->cmd, "striped")))
-		return_0;
-
-	/* FIXME: allocate properly space for metadata_lv */
-
-	if (!(metadata_lv = lv_create_single(pool_lv->vg, &lvc)))
-		return_0;
-
-	return metadata_lv;
-}
-
-static struct logical_volume *_alloc_pool_metadata_spare(struct volume_group *vg,
-							 uint32_t extents,
-							 struct dm_list *pvh)
-{
-	struct logical_volume *lv;
-
-	/* FIXME: Make lvm2api usable */
-	struct lvcreate_params lp = {
-		.activate = CHANGE_ALY,
-		.alloc = ALLOC_INHERIT,
-		.extents = extents,
-		.major = -1,
-		.minor = -1,
-		.permission = LVM_READ | LVM_WRITE,
-		.pvh = pvh ? : &vg->pvs,
-		.read_ahead = DM_READ_AHEAD_AUTO,
-		.stripes = 1,
-		.vg_name = vg->name,
-		.zero = 1,
-		.temporary = 1,
-	};
-
-	dm_list_init(&lp.tags);
-
-	if (!(lp.segtype = get_segtype_from_string(vg->cmd, "striped")))
-		return_0;
-
-	/* FIXME: Maybe using silent mode ? */
-	if (!(lv = lv_create_single(vg, &lp)))
-		return_0;
-
-	/* Spare LV should not be active */
-	if (!deactivate_lv_local(vg->cmd, lv)) {
-		log_error("Unable to deactivate pool metadata spare LV. "
-			  "Manual intervention required.");
-		return 0;
-	}
-
-	if (!vg_set_pool_metadata_spare(lv))
-		return_0;
-
-	return lv;
-}
-
-/*
- * Create/resize pool metadata spare LV
- * Caller does vg_write(), vg_commit() with pool creation
- * extents is 0, max size is determined
- */
-int handle_pool_metadata_spare(struct volume_group *vg, uint32_t extents,
-			       struct dm_list *pvh, int poolmetadataspare)
-{
-	struct logical_volume *lv = vg->pool_metadata_spare_lv;
-	uint32_t seg_mirrors;
-	struct lv_segment *seg;
-	const struct lv_list *lvl;
-
-	if (!extents)
-		/* Find maximal size of metadata LV */
-		dm_list_iterate_items(lvl, &vg->lvs)
-			if (lv_is_thin_pool_metadata(lvl->lv) &&
-			    (lvl->lv->le_count > extents))
-				extents = lvl->lv->le_count;
-
-	if (!poolmetadataspare) {
-		/* TODO: Not showing when lvm.conf would define 'n' ? */
-		if (DEFAULT_POOL_METADATA_SPARE && extents)
-			/* Warn if there would be any user */
-			log_warn("WARNING: recovery of pools without pool "
-				 "metadata spare LV is not automated.");
-		return 1;
-	}
-
-	if (!lv) {
-		if (!_alloc_pool_metadata_spare(vg, extents, pvh))
-			return_0;
-
-		return 1;
-	}
-
-	seg = last_seg(lv);
-	seg_mirrors = lv_mirror_count(lv);
-
-	/* Check spare LV is big enough and preserve segtype */
-	if ((lv->le_count < extents) && seg &&
-	    !lv_extend(lv, seg->segtype,
-		       seg->area_count / seg_mirrors,
-		       seg->stripe_size,
-		       seg_mirrors,
-		       seg->region_size,
-		       extents - lv->le_count, NULL,
-		       pvh, lv->alloc, 0))
-		return_0;
-
-	return 1;
-}
-
-int vg_set_pool_metadata_spare(struct logical_volume *lv)
-{
-	char new_name[NAME_LEN];
-	struct volume_group *vg = lv->vg;
-
-	if (vg->pool_metadata_spare_lv) {
-		if (vg->pool_metadata_spare_lv == lv)
-			return 1;
-		if (!vg_remove_pool_metadata_spare(vg))
-			return_0;
-	}
-
-	if (dm_snprintf(new_name, sizeof(new_name), "%s_pmspare", lv->name) < 0) {
-		log_error("Can't create pool metadata spare. Name of pool LV "
-			  "%s is too long.", lv->name);
-		return 0;
-	}
-
-	if (!lv_rename_update(vg->cmd, lv, new_name, 0))
-		return_0;
-
-	lv_set_hidden(lv);
-	lv->status |= POOL_METADATA_SPARE;
-	vg->pool_metadata_spare_lv = lv;
-
-	return 1;
-}
-
-int vg_remove_pool_metadata_spare(struct volume_group *vg)
-{
-	char new_name[NAME_LEN];
-	char *c;
-
-	struct logical_volume *lv = vg->pool_metadata_spare_lv;
-
-	if (!(lv->status & POOL_METADATA_SPARE)) {
-		log_error(INTERNAL_ERROR "LV %s is not pool metadata spare.",
-			  lv->name);
-		return 0;
-	}
-
-	vg->pool_metadata_spare_lv = NULL;
-	lv->status &= ~POOL_METADATA_SPARE;
-	lv_set_visible(lv);
-
-	/* Cut off suffix _pmspare */
-	(void) dm_strncpy(new_name, lv->name, sizeof(new_name));
-	if (!(c = strchr(new_name, '_'))) {
-		log_error(INTERNAL_ERROR "LV %s has no suffix for pool metadata spare.",
-			  new_name);
-		return 0;
-	}
-	*c = 0;
-
-	/* If the name is in use, generate new lvol%d */
-	if (find_lv_in_vg(vg, new_name) &&
-	    !generate_lv_name(vg, "lvol%d", new_name, sizeof(new_name))) {
-		log_error("Failed to generate unique name for "
-			  "pool metadata spare logical volume.");
-		return 0;
-	}
-
-	log_print_unless_silent("Renaming existing pool metadata spare "
-				"logical volume \"%s/%s\" to \"%s/%s\".",
-                                vg->name, lv->name, vg->name, new_name);
-
-	if (!lv_rename_update(vg->cmd, lv, new_name, 0))
-		return_0;
-
-	/* To display default warning */
-	(void) handle_pool_metadata_spare(vg, 0, 0, 0);
-
-	return 1;
 }

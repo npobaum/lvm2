@@ -11,13 +11,24 @@
 
 # 'Test pvchange option values'
 
-. lib/test
+. lib/inittest
 
 check_changed_uuid_() {
 	test "$1" != "$(get pv_field "$2" uuid)" || die "UUID has not changed!"
 }
 
 aux prepare_pvs 4
+
+# check 'allocatable' pv attribute
+pvcreate $dev1
+check pv_field "$dev1" pv_attr ---
+vgcreate $vg1 "$dev1"
+check pv_field "$dev1" pv_attr a--
+pvchange --allocatable n "$dev1"
+check pv_field "$dev1" pv_attr ---
+vgremove -ff $vg1
+not pvchange --allocatable y "$dev1"
+pvremove -ff "$dev1"
 
 for mda in 0 1 2
 do
@@ -77,7 +88,11 @@ check pvlv_counts $vg1 2 0 0
 
 # some args are needed
 invalid pvchange
-
+# some PV needed
+invalid pvchange --addtag tag
+invalid pvchange --deltag tag
+# some --all & PV can go together
+invalid pvchange -a "$dev1" --addtag tag
 # '-a' needs more params
 invalid pvchange -a
 # '-a' is searching for devs, so specifying device is invalid
@@ -91,6 +106,11 @@ not pvchange -u "$dev1"
 
 vgremove -f $vg1
 
-# "pvchange reject --addtag to lvm1 pv"
+# cannot change PV tag to PV that is not in VG"
+fail pvchange "$dev1" --addtag test
+fail pvchange "$dev1" --deltag test
+
+# cannot add PV tag to lvm1 format
 pvcreate -M1 "$dev1"
-not pvchange "$dev1" --addtag test
+vgcreate -M1 $vg1 "$dev1"
+fail pvchange "$dev1" --addtag test

@@ -1062,7 +1062,6 @@ static int _drop_vginfo(struct lvmcache_info *info, struct lvmcache_vginfo *vgin
 	return 1;
 }
 
-/* Unused
 void lvmcache_del(struct lvmcache_info *info)
 {
 	if (info->dev->pvid[0] && _pvid_hash)
@@ -1071,11 +1070,11 @@ void lvmcache_del(struct lvmcache_info *info)
 	_drop_vginfo(info, info->vginfo);
 
 	info->label->labeller->ops->destroy_label(info->label->labeller,
-						info->label);
+						  info->label);
 	dm_free(info);
 
 	return;
-} */
+}
 
 static int _lvmcache_update_pvid(struct lvmcache_info *info, const char *pvid)
 {
@@ -1708,7 +1707,7 @@ static int _get_pv_if_in_vg(struct lvmcache_info *info,
 		 * lvmcache_label_scan() and drop cached
 		 * vginfo so make a local copy of string.
 		 */
-		strcpy(vgname, info->vginfo->vgname);
+		(void) dm_strncpy(vgname, info->vginfo->vgname, sizeof(vgname));
 		memcpy(vgid, info->vginfo->vgid, sizeof(vgid));
 
 		if (get_pv_from_vg_by_id(info->fmt, vgname, vgid,

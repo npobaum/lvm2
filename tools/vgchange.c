@@ -317,6 +317,25 @@ static int _vgchange_clustered(struct cmd_context *cmd,
 		return 0;
 	}
 
+	if (clustered && !arg_count(cmd, yes_ARG)) {
+		if (!clvmd_is_running()) {
+			if (yes_no_prompt("LVM cluster daemon (clvmd) is not"
+					  " running.\n"
+					  "Make volume group \"%s\" clustered"
+					  " anyway? [y/n]: ", vg->name) == 'n') {
+				log_error("No volume groups changed.");
+				return 0;
+			}
+
+		} else if (!locking_is_clustered() &&
+			   (yes_no_prompt("LVM locking type is not clustered.\n"
+					  "Make volume group \"%s\" clustered"
+					  " anyway? [y/n]: ", vg->name) == 'n')) {
+			log_error("No volume groups changed.");
+			return 0;
+		}
+	}
+
 	if (!vg_set_clustered(vg, clustered))
 		return_0;
 
@@ -441,8 +460,11 @@ static int _vgchange_profile(struct cmd_context *cmd,
 		new_profile_name = "(no profile)";
 		vg->profile = NULL;
 	} else {
-		new_profile_name = arg_str_value(cmd, profile_ARG, NULL);
-		if (!(new_profile = add_profile(cmd, new_profile_name)))
+		if (arg_count(cmd, metadataprofile_ARG))
+			new_profile_name = arg_str_value(cmd, metadataprofile_ARG, NULL);
+		else
+			new_profile_name = arg_str_value(cmd, profile_ARG, NULL);
+		if (!(new_profile = add_profile(cmd, new_profile_name, CONFIG_PROFILE_METADATA)))
 			return_0;
 		vg->profile = new_profile;
 	}
@@ -473,6 +495,7 @@ static int vgchange_single(struct cmd_context *cmd, const char *vg_name,
 		{ alloc_ARG, &_vgchange_alloc },
 		{ clustered_ARG, &_vgchange_clustered },
 		{ vgmetadatacopies_ARG, &_vgchange_metadata_copies },
+		{ metadataprofile_ARG, &_vgchange_profile },
 		{ profile_ARG, &_vgchange_profile},
 		{ detachprofile_ARG, &_vgchange_profile},
 	};
@@ -547,6 +570,7 @@ int vgchange(struct cmd_context *cmd, int argc, char **argv)
 	int update_partial_safe =
 		arg_count(cmd, deltag_ARG) ||
 		arg_count(cmd, addtag_ARG) ||
+		arg_count(cmd, metadataprofile_ARG) ||
 		arg_count(cmd, profile_ARG) ||
 		arg_count(cmd, detachprofile_ARG);
 	int update_partial_unsafe =
@@ -572,8 +596,9 @@ int vgchange(struct cmd_context *cmd, int argc, char **argv)
 		return EINVALID_CMD_LINE;
 	}
 
-	if (arg_count(cmd, profile_ARG) && arg_count(cmd, detachprofile_ARG)) {
-		log_error("Only one of --profile and --detachprofile permitted.");
+	if ((arg_count(cmd, profile_ARG) || arg_count(cmd, metadataprofile_ARG)) &&
+	     arg_count(cmd, detachprofile_ARG)) {
+		log_error("Only one of --metadataprofile and --detachprofile permitted.");
 		return EINVALID_CMD_LINE;
 	}
 
@@ -590,7 +615,7 @@ int vgchange(struct cmd_context *cmd, int argc, char **argv)
 
 	if (arg_count(cmd, activate_ARG) &&
 	    (arg_count(cmd, monitor_ARG) || arg_count(cmd, poll_ARG))) {
-		if (!is_change_activating(arg_uint_value(cmd, activate_ARG, 0))) {
+		if (!is_change_activating((activation_change_t) arg_uint_value(cmd, activate_ARG, 0))) {
 			log_error("Only -ay* allowed with --monitor or --poll.");
 			return EINVALID_CMD_LINE;
 		}

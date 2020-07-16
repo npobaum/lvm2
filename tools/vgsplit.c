@@ -16,16 +16,12 @@
 #include "tools.h"
 #include "metadata.h"  /* for 'get_only_segment_using_this_lv' */
 
-/* FIXME Why not (lv->vg == vg) ? */
 static int _lv_is_in_vg(struct volume_group *vg, struct logical_volume *lv)
 {
-	struct lv_list *lvl;
+	if (!lv || lv->vg != vg)
+		return 0;
 
-	dm_list_iterate_items(lvl, &vg->lvs)
-		if (lv == lvl->lv)
-			 return 1;
-
-	return 0;
+	return 1;
 }
 
 static int _move_one_lv(struct volume_group *vg_from,
@@ -33,14 +29,20 @@ static int _move_one_lv(struct volume_group *vg_from,
 			 struct dm_list *lvh)
 {
 	struct logical_volume *lv = dm_list_item(lvh, struct lv_list)->lv;
+	struct logical_volume *parent_lv;
+
+	if (lv_is_active(lv)) {
+		if ((parent_lv = lv_parent(lv)))
+			log_error("Logical volume %s (part of %s) must be inactive.", display_lvname(lv), parent_lv->name);
+		else
+			log_error("Logical volume %s must be inactive.", display_lvname(lv));
+		return 0;
+	}
 
 	dm_list_move(&vg_to->lvs, lvh);
 	lv->vg = vg_to;
 
-	if (lv_is_active(lv)) {
-		log_error("Logical volume \"%s\" must be inactive", lv->name);
-		return 0;
-	}
+	lv->lvid.id[0] = lv->vg->id;
 
 	/* Moved pool metadata spare LV */
 	if (vg_from->pool_metadata_spare_lv == lv) {
@@ -64,6 +66,9 @@ static int _move_lvs(struct volume_group *vg_from, struct volume_group *vg_to)
 		lv = dm_list_item(lvh, struct lv_list)->lv;
 
 		if ((lv->status & SNAPSHOT))
+			continue;
+
+		if (lv_is_raid(lv))
 			continue;
 
 		if ((lv->status & MIRRORED))
@@ -184,6 +189,9 @@ static int _move_mirrors(struct volume_group *vg_from,
 	dm_list_iterate_safe(lvh, lvht, &vg_from->lvs) {
 		lv = dm_list_item(lvh, struct lv_list)->lv;
 
+		if (lv_is_raid(lv))
+			continue;
+
 		if (!(lv->status & MIRRORED))
 			continue;
 
@@ -221,6 +229,43 @@ static int _move_mirrors(struct volume_group *vg_from,
 			if (!_move_one_lv(vg_from, vg_to, lvh))
 				return_0;
 		}
+	}
+
+	return 1;
+}
+
+static int _move_raid(struct volume_group *vg_from,
+		      struct volume_group *vg_to)
+{
+	struct dm_list *lvh, *lvht;
+	struct logical_volume *lv;
+	struct lv_segment *seg;
+	unsigned s, seg_in;
+
+	dm_list_iterate_safe(lvh, lvht, &vg_from->lvs) {
+		lv = dm_list_item(lvh, struct lv_list)->lv;
+
+		if (!lv_is_raid(lv))
+			continue;
+
+		seg = first_seg(lv);
+
+		seg_in = 0;
+		for (s = 0; s < seg->area_count; s++) {
+			if (_lv_is_in_vg(vg_to, seg_lv(seg, s)))
+				seg_in++;
+			if (_lv_is_in_vg(vg_to, seg_metalv(seg, s)))
+				seg_in++;
+		}
+
+		if (seg_in && seg_in != (seg->area_count * 2)) {
+			log_error("Can't split RAID %s between "
+				  "two Volume Groups", lv->name);
+			return 0;
+		}
+
+		if (!_move_one_lv(vg_from, vg_to, lvh))
+			return_0;
 	}
 
 	return 1;
@@ -547,6 +592,10 @@ int vgsplit(struct cmd_context *cmd, int argc, char **argv)
 		goto_bad;
 
 	/* FIXME Separate the 'move' from the 'validation' to fix dev stacks */
+	/* Move required RAID across */
+	if (!(_move_raid(vg_from, vg_to)))
+		goto_bad;
+
 	/* Move required mirrors across */
 	if (!(_move_mirrors(vg_from, vg_to)))
 		goto_bad;

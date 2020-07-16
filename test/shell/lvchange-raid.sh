@@ -9,7 +9,7 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
-. lib/test
+. lib/inittest
 
 # Writemostly has been in every version since the begining
 # Device refresh in 1.5.1 upstream and 1.3.4 < x < 1.4.0 in RHEL6
@@ -17,9 +17,9 @@
 # Proper mismatch count 1.5.2 upstream,1.3.5 < x < 1.4.0 in RHEL6
 #
 # We will simplify and simple test for 1.5.2 and 1.3.5 < x < 1.4.0
-aux target_at_least dm-raid 1 3 5 &&
-  ! aux target_at_least dm-raid 1 4 0 ||
-  aux target_at_least dm-raid 1 5 2 || skip
+aux have_raid 1 3 5 &&
+  ! aux have_raid 1 4 0 ||
+  aux have_raid 1 5 2 || skip
 
 # DEVICE "$dev6" is reserved for non-RAID LVs that
 # will not undergo failure
@@ -29,16 +29,20 @@ aux prepare_vg 6
 run_writemostly_check() {
 	local vg=$1
 	local lv=${2}${THIN_POSTFIX}
-	local segtype=$(get lv_field $vg/$lv segtype -a)
-	local d0=$(get lv_devices $vg/${lv}_rimage_0)
-	local d1=$(get lv_devices $vg/${lv}_rimage_1)
+	local segtype=
+	local d0
+	local d1
+
+	segtype=$(get lv_field $vg/$lv segtype -a)
+	d0=$(get lv_devices $vg/${lv}_rimage_0)
+	d1=$(get lv_devices $vg/${lv}_rimage_1)
 
 	printf "#\n#\n#\n# %s/%s (%s): run_writemostly_check\n#\n#\n#\n" \
 		$vg $lv $segtype
 
 	# No writemostly flag should be there yet.
-	get lv_field $vg/${lv}_rimage_0 lv_attr -a | grep '.*-.$'
-	get lv_field $vg/${lv}_rimage_1 lv_attr -a | grep '.*-.$'
+	check lv_attr_bit health $vg/${lv}_rimage_0 "-"
+	check lv_attr_bit health $vg/${lv}_rimage_1 "-"
 
 	if [ "$segtype" != "raid1" ]; then
 		not lvchange --writemostly $d0 $vg/$lv
@@ -47,71 +51,71 @@ run_writemostly_check() {
 
 	# Set the flag
 	lvchange --writemostly $d0 $vg/$lv
-	get lv_field $vg/${lv}_rimage_0 lv_attr -a | grep '.*w.$'
+	check lv_attr_bit health $vg/${lv}_rimage_0 "w"
 
 	# Running again should leave it set (not toggle)
 	lvchange --writemostly $d0 $vg/$lv
-	get lv_field $vg/${lv}_rimage_0 lv_attr -a | grep '.*w.$'
+	check lv_attr_bit health $vg/${lv}_rimage_0 "w"
 
 	# Running again with ':y' should leave it set
 	lvchange --writemostly $d0:y $vg/$lv
-	get lv_field $vg/${lv}_rimage_0 lv_attr -a | grep '.*w.$'
+	check lv_attr_bit health $vg/${lv}_rimage_0 "w"
 
 	# ':n' should unset it
 	lvchange --writemostly $d0:n $vg/$lv
-	get lv_field $vg/${lv}_rimage_0 lv_attr -a | grep '.*-.$'
+	check lv_attr_bit health $vg/${lv}_rimage_0 "-"
 
 	# ':n' again should leave it unset
 	lvchange --writemostly $d0:n $vg/$lv
-	get lv_field $vg/${lv}_rimage_0 lv_attr -a | grep '.*-.$'
+	check lv_attr_bit health $vg/${lv}_rimage_0 "-"
 
 	# ':t' toggle to set
 	lvchange --writemostly $d0:t $vg/$lv
-	get lv_field $vg/${lv}_rimage_0 lv_attr -a | grep '.*w.$'
+	check lv_attr_bit health $vg/${lv}_rimage_0 "w"
 
 	# ':t' toggle to unset
 	lvchange --writemostly $d0:t $vg/$lv
-	get lv_field $vg/${lv}_rimage_0 lv_attr -a | grep '.*-.$'
+	check lv_attr_bit health $vg/${lv}_rimage_0 "-"
 
 	# ':y' to set
 	lvchange --writemostly $d0:y $vg/$lv
-	get lv_field $vg/${lv}_rimage_0 lv_attr -a | grep '.*w.$'
+	check lv_attr_bit health $vg/${lv}_rimage_0 "w"
 
 	# Toggle both at once
 	lvchange --writemostly $d0:t --writemostly $d1:t $vg/$lv
-	get lv_field $vg/${lv}_rimage_0 lv_attr -a | grep '.*-.$'
-	get lv_field $vg/${lv}_rimage_1 lv_attr -a | grep '.*w.$'
+	check lv_attr_bit health $vg/${lv}_rimage_0 "-"
+	check lv_attr_bit health $vg/${lv}_rimage_1 "w"
 
 	# Toggle both at once again
 	lvchange --writemostly $d0:t --writemostly $d1:t $vg/$lv
-	get lv_field $vg/${lv}_rimage_0 lv_attr -a | grep '.*w.$'
-	get lv_field $vg/${lv}_rimage_1 lv_attr -a | grep '.*-.$'
+	check lv_attr_bit health $vg/${lv}_rimage_0 "w"
+	check lv_attr_bit health $vg/${lv}_rimage_1 "-"
 
 	# Toggle one, unset the other
 	lvchange --writemostly $d0:n --writemostly $d1:t $vg/$lv
-	get lv_field $vg/${lv}_rimage_0 lv_attr -a | grep '.*-.$'
-	get lv_field $vg/${lv}_rimage_1 lv_attr -a | grep '.*w.$'
+	check lv_attr_bit health $vg/${lv}_rimage_0 "-"
+	check lv_attr_bit health $vg/${lv}_rimage_1 "w"
 
 	# Toggle one, set the other
 	lvchange --writemostly $d0:y --writemostly $d1:t $vg/$lv
-	get lv_field $vg/${lv}_rimage_0 lv_attr -a | grep '.*w.$'
-	get lv_field $vg/${lv}_rimage_1 lv_attr -a | grep '.*-.$'
+	check lv_attr_bit health $vg/${lv}_rimage_0 "w"
+	check lv_attr_bit health $vg/${lv}_rimage_1 "-"
 
 	# Partial flag supercedes writemostly flag
 	aux disable_dev $d0
-	get lv_field $vg/${lv}_rimage_0 lv_attr -a | grep '.*p.$'
+	check lv_attr_bit health $vg/${lv}_rimage_0 "p"
 
 	# It is possible for the kernel to detect the failed device before
 	# we re-enable it.  If so, the field will be set to 'r'efresh since
 	# that also takes precedence over 'w'ritemostly.  If this has happened,
 	# we refresh the LV and then check for 'w'.
 	aux enable_dev $d0
-	get lv_field $vg/${lv}_rimage_0 lv_attr -a | grep '.*r.$' && lvchange --refresh $vg/$lv
-	get lv_field $vg/${lv}_rimage_0 lv_attr -a | grep '.*w.$'
+	check lv_attr_bit health $vg/${lv}_rimage_0 "r" && lvchange --refresh $vg/$lv
+	check lv_attr_bit health $vg/${lv}_rimage_0 "w"
 
 	# Catch Bad writebehind values
-	not lvchange --writebehind "invalid" $vg/$lv
-	not lvchange --writebehind -256 $vg/$lv
+	invalid lvchange --writebehind "invalid" $vg/$lv
+	invalid lvchange --writebehind -256 $vg/$lv
 
 	# Set writebehind
 	check lv_field $vg/$lv raid_write_behind ""
@@ -122,8 +126,8 @@ run_writemostly_check() {
 	lvconvert -m 0 $vg/$lv $d1
 	lvconvert --type raid1 -m 1 $vg/$lv $d1
 	check lv_field $vg/$lv raid_write_behind ""
-	get lv_field $vg/${lv}_rimage_0 lv_attr -a  | grep '.*-.$'
-	get lv_field $vg/${lv}_rimage_1 lv_attr -a  | grep '.*-.$'
+	check lv_attr_bit health $vg/${lv}_rimage_0 "-"
+	check lv_attr_bit health $vg/${lv}_rimage_1 "-"
 }
 
 # run_syncaction_check <VG> <LV>
@@ -152,27 +156,12 @@ run_syncaction_check() {
 
 	seek=$(($seek + $size)) # Jump halfway through the RAID image
 
-	get lv_field $vg/$lv lv_attr | grep '.*-.$'
+	check lv_attr_bit health $vg/$lv "-"
 	check lv_field $vg/$lv raid_mismatch_count "0"
 
 	# Overwrite the last half of one of the PVs with crap
 	dd if=/dev/urandom of="$device" bs=1k count=$size seek=$seek
-
-	if [ -n "$THIN_POSTFIX" ]; then
-		#
-		# Seems to work fine on real devices,
-		# but can't make the system notice the bad blocks
-		# in the testsuite - especially when thin is layered
-		# on top of RAID.  In other cases, I can deactivate
-		# and reactivate and it works.  Here, even that doesn't
-		# work.
-		return 0
-		lvchange -an $vg/$2
-		lvchange -ay $vg/$2
-	else
-		lvchange -an $vg/$lv
-		lvchange -ay $vg/$lv
-	fi
+	sync
 
 	# "check" should find discrepancies but not change them
 	# 'lvs' should show results
@@ -192,7 +181,7 @@ run_syncaction_check() {
 	# 'lvs' should show results
 	lvchange --syncaction check $vg/$lv
 	aux wait_for_sync $vg $lv
-	get lv_field $vg/$lv lv_attr | grep '.*-.$'
+	check lv_attr_bit health $vg/$lv "-"
 	check lv_field $vg/$lv raid_mismatch_count "0"
 }
 
@@ -220,7 +209,7 @@ run_refresh_check() {
 	sync
 
 	# Check for 'p'artial flag
-	get lv_field $vg/$lv lv_attr | grep '.*p.$'
+	check lv_attr_bit health $vg/$lv "p"
 	dmsetup status
 	lvs -a -o name,attr,devices $vg
 
@@ -230,18 +219,18 @@ run_refresh_check() {
 	lvs -a -o name,attr,devices $vg
 
 	# Check for 'r'efresh flag
-	get lv_field $vg/$lv lv_attr | grep '.*r.$'
+	check lv_attr_bit health $vg/$lv "r"
 
 	lvchange --refresh $vg/$lv
 	aux wait_for_sync $vg $lv
-	get lv_field $vg/$lv lv_attr | grep '.*-.$'
+	check lv_attr_bit health $vg/$lv "-"
 
 	# Writing random data above should mean that the devices
 	# were out-of-sync.  The refresh should have taken care
 	# of properly reintegrating the device.
 	lvchange --syncaction repair $vg/$lv
 	aux wait_for_sync $vg $lv
-	get lv_field $vg/$lv lv_attr | grep '.*-.$'
+	check lv_attr_bit health $vg/$lv "-"
 }
 
 # run_recovery_rate_check <VG> <LV>

@@ -9,10 +9,10 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
-. lib/test
+. lib/inittest
 
+aux have_raid 1 3 0 || skip
 aux raid456_replace_works || skip
-aux target_at_least dm-raid 1 1 0 || skip
 
 aux lvmconf 'allocation/maximise_cling = 0'
 aux lvmconf 'allocation/mirror_logs_require_separate_pvs = 1'

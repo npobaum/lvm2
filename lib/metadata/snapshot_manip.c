@@ -41,7 +41,7 @@ int lv_is_cow(const struct logical_volume *lv)
 static uint64_t _cow_extra_chunks(struct cmd_context *cmd, uint64_t n_chunks)
 {
 	const struct segment_type *segtype;
-	unsigned attrs;
+	unsigned attrs = 0;
 
 	if (activation() &&
 	    (segtype = get_segtype_from_string(cmd, "snapshot")) &&
@@ -141,8 +141,9 @@ int lv_is_merging_origin(const struct logical_volume *origin)
 
 int lv_is_merging_cow(const struct logical_volume *snapshot)
 {
+	struct lv_segment *snap_seg = find_snapshot(snapshot);
 	/* checks lv_segment's status to see if cow is merging */
-	return (find_snapshot(snapshot)->status & MERGING) ? 1 : 0;
+	return (snap_seg && (snap_seg->status & MERGING)) ? 1 : 0;
 }
 
 struct lv_segment *find_snapshot(const struct logical_volume *lv)

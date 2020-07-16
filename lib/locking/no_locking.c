@@ -37,6 +37,8 @@ static int _no_lock_resource(struct cmd_context *cmd, const char *resource,
 			     uint32_t flags, struct logical_volume *lv)
 {
 	switch (flags & LCK_SCOPE_MASK) {
+	case LCK_ACTIVATION:
+		break;
 	case LCK_VG:
 		if (!strcmp(resource, VG_SYNC_NAMES))
 			fs_unlock();
@@ -91,7 +93,7 @@ static int _readonly_lock_resource(struct cmd_context *cmd,
 	return _no_lock_resource(cmd, resource, flags, lv);
 }
 
-int init_no_locking(struct locking_type *locking, struct cmd_context *cmd __attribute__((unused)),
+void init_no_locking(struct locking_type *locking, struct cmd_context *cmd __attribute__((unused)),
 		    int suppress_messages)
 {
 	locking->lock_resource = _no_lock_resource;
@@ -99,8 +101,6 @@ int init_no_locking(struct locking_type *locking, struct cmd_context *cmd __attr
 	locking->reset_locking = _no_reset_locking;
 	locking->fin_locking = _no_fin_locking;
 	locking->flags = LCK_CLUSTERED;
-
-	return 1;
 }
 
 int init_readonly_locking(struct locking_type *locking, struct cmd_context *cmd __attribute__((unused)),
@@ -113,4 +113,14 @@ int init_readonly_locking(struct locking_type *locking, struct cmd_context *cmd 
 	locking->flags = 0;
 
 	return 1;
+}
+
+void init_dummy_locking(struct locking_type *locking, struct cmd_context *cmd __attribute__((unused)),
+		    int suppress_messages)
+{
+	locking->lock_resource = _readonly_lock_resource;
+	locking->query_resource = _no_query_resource;
+	locking->reset_locking = _no_reset_locking;
+	locking->fin_locking = _no_fin_locking;
+	locking->flags = LCK_CLUSTERED;
 }

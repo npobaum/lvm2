@@ -11,11 +11,14 @@
 
 # Check pvmove behavior when it's progress and machine is rebooted
 
-. lib/test
+. lib/inittest
 
 aux prepare_pvs 3 60
 
 vgcreate -s 128k $vg "$dev1" "$dev2" "$dev3"
+
+for mode in "--atomic" ""
+do
 
 # Create multisegment LV
 lvcreate -an -Zn -l5 -n $lv1 $vg "$dev1"
@@ -37,21 +40,31 @@ wait
 
 # Simulate reboot - forcibly remove related devices
 dmsetup remove $vg-$lv1
-dmsetup remove $vg-pvmove0
+dmsetup remove /dev/mapper/$vg-pvmove0*
+
+# Check we really have pvmove volume
+check lv_attr_bit type $vg/pvmove0 "p"
 
 if test -e LOCAL_CLVMD ; then
 	# giveup all clvmd locks (faster then restarting clvmd)
 	# no deactivation happen, nodes are already removed
-	vgchange -an $vg
+	#vgchange -an $vg
+	# FIXME: However above solution has one big problem
+	# as clvmd starts to abort on internal errors on various
+	# errors, based on the fact pvmove is killed -9
 	# Restart clvmd
-	#kill $(cat LOCAL_CLVMD)
-	#while test -e "/var/run/clvmd.pid"; do echo -n .; sleep .1; done # wait for the pid removal
-	#aux prepare_clvmd
+	kill $(< LOCAL_CLVMD)
+	for i in $(seq 1 100) ; do
+		test $i -eq 100 && die "Shutdown of clvmd is too slow."
+		test -e "$CLVMD_PIDFILE" || break
+		sleep .1
+	done # wait for the pid removal
+	aux prepare_clvmd
 fi
 
 if test -e LOCAL_LVMETAD ; then
 	# Restart lvmetad
-	kill $(cat LOCAL_LVMETAD)
+	kill $(< LOCAL_LVMETAD)
 	aux prepare_lvmetad
 fi
 
@@ -60,9 +73,8 @@ dmsetup table
 
 # Restart pvmove
 # use exclusive activation to have usable pvmove without cmirrord
-#vgchange -vvvv -ay $vg
 vgchange -aey $vg
-dmsetup table
+#sleep 2
 #pvmove
 
 pvmove --abort
@@ -71,5 +83,8 @@ pvmove --abort
 aux delay_dev "$dev3"
 
 lvs -a -o+devices $vg
+
+lvremove -ff $vg
+done
 
 vgremove -ff $vg

@@ -15,7 +15,6 @@
 #include "lib.h"
 #include "properties.h"
 #include "activate.h"
-#include "lvm-types.h"
 #include "metadata.h"
 
 
@@ -48,12 +47,12 @@
 #define GET_PVSEG_STR_PROPERTY_FN(NAME, VALUE) \
 	GET_STR_PROPERTY_FN(NAME, VALUE, pv_segment, pvseg)
 
-static percent_t _copy_percent(const struct logical_volume *lv)
+static dm_percent_t _copy_percent(const struct logical_volume *lv)
 {
-	percent_t percent;
+	dm_percent_t percent;
 
 	if (!lv_mirror_percent(lv->vg->cmd, lv, 0, &percent, NULL))
-		percent = PERCENT_INVALID;
+		percent = DM_PERCENT_INVALID;
 
 	return percent;
 }
@@ -92,34 +91,34 @@ static uint32_t _raidmaxrecoveryrate(const struct logical_volume *lv)
 	return first_seg(lv)->max_recovery_rate;
 }
 
-static percent_t _snap_percent(const struct logical_volume *lv)
+static dm_percent_t _snap_percent(const struct logical_volume *lv)
 {
-	percent_t percent;
+	dm_percent_t percent;
 
 	if (!lv_is_cow(lv) || !lv_snapshot_percent(lv, &percent))
-		percent = PERCENT_INVALID;
+		percent = DM_PERCENT_INVALID;
 
 	return percent;
 }
 
-static percent_t _data_percent(const struct logical_volume *lv)
+static dm_percent_t _data_percent(const struct logical_volume *lv)
 {
-	percent_t percent;
+	dm_percent_t percent;
 
 	if (lv_is_cow(lv))
 		return _snap_percent(lv);
 
 	if (lv_is_thin_volume(lv))
-		return lv_thin_percent(lv, 0, &percent) ? percent : PERCENT_INVALID;
+		return lv_thin_percent(lv, 0, &percent) ? percent : DM_PERCENT_INVALID;
 
-	return lv_thin_pool_percent(lv, 0, &percent) ? percent : PERCENT_INVALID;
+	return lv_thin_pool_percent(lv, 0, &percent) ? percent : DM_PERCENT_INVALID;
 }
 
-static percent_t _metadata_percent(const struct logical_volume *lv)
+static dm_percent_t _metadata_percent(const struct logical_volume *lv)
 {
-	percent_t percent;
+	dm_percent_t percent;
 
-	return lv_thin_pool_percent(lv, 1, &percent) ? percent : PERCENT_INVALID;
+	return lv_thin_pool_percent(lv, 1, &percent) ? percent : DM_PERCENT_INVALID;
 }
 
 /* PV */
@@ -160,13 +159,83 @@ GET_PV_NUM_PROPERTY_FN(pv_ba_start, SECTOR_SIZE * pv->ba_start)
 GET_PV_NUM_PROPERTY_FN(pv_ba_size, SECTOR_SIZE * pv->ba_size)
 #define _pv_ba_size_set prop_not_implemented_set
 
+#define _pv_allocatable_set prop_not_implemented_set
+#define _pv_allocatable_get prop_not_implemented_get
+#define _pv_exported_set prop_not_implemented_set
+#define _pv_exported_get prop_not_implemented_get
+#define _pv_missing_set prop_not_implemented_set
+#define _pv_missing_get prop_not_implemented_get
+
+#define _vg_permissions_set prop_not_implemented_set
+#define _vg_permissions_get prop_not_implemented_get
+#define _vg_extendable_set prop_not_implemented_set
+#define _vg_extendable_get prop_not_implemented_get
+#define _vg_exported_set prop_not_implemented_set
+#define _vg_exported_get prop_not_implemented_get
+#define _vg_partial_set prop_not_implemented_set
+#define _vg_partial_get prop_not_implemented_get
+#define _vg_allocation_policy_set prop_not_implemented_set
+#define _vg_allocation_policy_get prop_not_implemented_get
+#define _vg_clustered_set prop_not_implemented_set
+#define _vg_clustered_get prop_not_implemented_get
+
+//#define _lv_volume_type_set prop_not_implemented_set
+//#define _lv_volume_type_get prop_not_implemented_get
+#define _lv_initial_image_sync_set prop_not_implemented_set
+#define _lv_initial_image_sync_get prop_not_implemented_get
+#define _lv_image_synced_get prop_not_implemented_get
+#define _lv_image_synced_set prop_not_implemented_set
+#define _lv_image_synced_get prop_not_implemented_get
+#define _lv_merging_set prop_not_implemented_set
+#define _lv_merging_get prop_not_implemented_get
+#define _lv_converting_set prop_not_implemented_set
+#define _lv_converting_get prop_not_implemented_get
+#define _lv_permissions_set prop_not_implemented_set
+#define _lv_permissions_get prop_not_implemented_get
+#define _lv_allocation_policy_set prop_not_implemented_set
+#define _lv_allocation_policy_get prop_not_implemented_get
+#define _lv_allocation_locked_set prop_not_implemented_set
+#define _lv_allocation_locked_get prop_not_implemented_get
+#define _lv_active_locally_set prop_not_implemented_set
+#define _lv_active_locally_get prop_not_implemented_get
+#define _lv_active_remotely_set prop_not_implemented_set
+#define _lv_active_remotely_get prop_not_implemented_get
+#define _lv_active_exclusively_set prop_not_implemented_set
+#define _lv_active_exclusively_get prop_not_implemented_get
+#define _lv_fixed_minor_set prop_not_implemented_set
+#define _lv_fixed_minor_get prop_not_implemented_get
+#define _lv_merge_failed_set prop_not_implemented_set
+#define _lv_merge_failed_get prop_not_implemented_get
+#define _lv_snapshot_invalid_set prop_not_implemented_set
+#define _lv_snapshot_invalid_get prop_not_implemented_get
+#define _lv_suspended_set prop_not_implemented_set
+#define _lv_suspended_get prop_not_implemented_get
+#define _lv_live_table_set prop_not_implemented_set
+#define _lv_live_table_get prop_not_implemented_get
+#define _lv_inactive_table_set prop_not_implemented_set
+#define _lv_inactive_table_get prop_not_implemented_get
+#define _lv_device_open_set prop_not_implemented_set
+#define _lv_device_open_get prop_not_implemented_get
+//#define _lv_target_type_set prop_not_implemented_set
+//#define _lv_target_type_get prop_not_implemented_get
+#define _lv_health_status_set prop_not_implemented_set
+#define _lv_health_status_get prop_not_implemented_get
+#define _lv_skip_activation_set prop_not_implemented_set
+#define _lv_skip_activation_get prop_not_implemented_get
+
 /* LV */
 GET_LV_STR_PROPERTY_FN(lv_uuid, lv_uuid_dup(lv))
 #define _lv_uuid_set prop_not_implemented_set
 GET_LV_STR_PROPERTY_FN(lv_name, lv_name_dup(lv->vg->vgmem, lv))
 #define _lv_name_set prop_not_implemented_set
+GET_LV_STR_PROPERTY_FN(lv_full_name, lv_fullname_dup(lv->vg->vgmem, lv))
+#define _lv_full_name_set prop_not_implemented_set
 GET_LV_STR_PROPERTY_FN(lv_path, lv_path_dup(lv->vg->vgmem, lv))
 #define _lv_path_set prop_not_implemented_set
+GET_LV_STR_PROPERTY_FN(lv_dm_path, lv_dmpath_dup(lv->vg->vgmem, lv))
+#define _lv_dm_path_set prop_not_implemented_set
+GET_LV_STR_PROPERTY_FN(lv_parent, lv_parent_dup(lv->vg->vgmem, lv))
+#define _lv_parent_set prop_not_implemented_set
 GET_LV_STR_PROPERTY_FN(lv_attr, lv_attr_dup(lv->vg->vgmem, lv))
 #define _lv_attr_set prop_not_implemented_set
 GET_LV_NUM_PROPERTY_FN(lv_major, lv->major)
@@ -335,6 +404,7 @@ GET_PVSEG_NUM_PROPERTY_FN(pvseg_start, pvseg->pe)
 GET_PVSEG_NUM_PROPERTY_FN(pvseg_size, (SECTOR_SIZE * pvseg->len))
 #define _pvseg_size_set prop_not_implemented_set
 
+
 struct lvm_property_type _properties[] = {
 #include "columns.h"
 	{ 0, "", 0, 0, 0, { .integer = 0 }, prop_not_implemented_get, prop_not_implemented_set },
@@ -342,6 +412,10 @@ struct lvm_property_type _properties[] = {
 
 #undef STR
 #undef NUM
+#undef BIN
+#undef SIZ
+#undef PCT
+#undef STR_LIST
 #undef FIELD
 
 int lvseg_get_property(const struct lv_segment *lvseg,

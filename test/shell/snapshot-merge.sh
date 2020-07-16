@@ -9,7 +9,7 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
-. lib/test
+. lib/inittest
 
 which mkfs.ext3 || skip
 
@@ -25,7 +25,9 @@ setup_merge_() {
     local VG_NAME=$1
     local LV_NAME=$2
     local NUM_EXTRA_SNAPS=${3:-0}
-    local BASE_SNAP_LV_NAME=$(snap_lv_name_ $LV_NAME)
+    local BASE_SNAP_LV_NAME
+
+    BASE_SNAP_LV_NAME=$(snap_lv_name_ $LV_NAME)
 
     lvcreate -aey -n $LV_NAME -l 50%FREE $VG_NAME
     lvcreate -s -n $BASE_SNAP_LV_NAME -l 20%FREE ${VG_NAME}/${LV_NAME}
@@ -33,7 +35,7 @@ setup_merge_() {
 
     if [ $NUM_EXTRA_SNAPS -gt 0 ]; then
 	for i in $(seq 1 $NUM_EXTRA_SNAPS); do
-	    lvcreate -s -n ${BASE_SNAP_LV_NAME}_${i} -l 20%FREE ${VG_NAME}/${LV_NAME}
+	    lvcreate -s -n ${BASE_SNAP_LV_NAME}_${i} -l 20%ORIGIN ${VG_NAME}/${LV_NAME}
 	done
     fi
 }

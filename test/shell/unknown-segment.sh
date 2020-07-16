@@ -9,7 +9,7 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
-. lib/test
+. lib/inittest
 
 aux prepare_vg 4
 
@@ -21,6 +21,10 @@ sed -e 's,striped,unstriped,;s,mirror,unmirror,' -i.orig bak0
 vgcfgrestore -f bak0 $vg
 
 # we have on-disk metadata with unknown segments now
+not lvchange -aey $vg/$lv1 # check that activation is refused
+
+# try once more to catch invalid memory access with valgrind
+# when clvmd flushes cmd mem pool
 not lvchange -aey $vg/$lv1 # check that activation is refused
 
 vgcfgbackup -f bak1 $vg

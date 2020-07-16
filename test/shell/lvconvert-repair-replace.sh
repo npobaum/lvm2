@@ -9,7 +9,7 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
-. lib/test
+. lib/inittest
 
 aux prepare_vg 6
 aux lvmconf 'allocation/maximise_cling = 0'
@@ -51,19 +51,21 @@ check mirror $vg 2way
 aux enable_dev "$dev1" "$dev2"
 vgremove -ff $vg
 
+# FIXME  - exclusive activation for mirrors should work here
+# conversion of inactive cluster logs is also unsupported
+test -e LOCAL_CLVMD && exit 0
+
+
 # Test repair of inactive mirror with log failure
 #  Replacement should fail, but convert should succeed (switch to corelog)
 vgcreate $vg "$dev1" "$dev2" "$dev3" "$dev4"
-lvcreate -aey --type mirror -m 2 --ignoremonitoring --nosync -l 2 -n mirror2 $vg "$dev1" "$dev2" "$dev3" "$dev4":0
+lvcreate -aey --type mirror -m 2 --ignoremonitoring -l 2 -n mirror2 $vg "$dev1" "$dev2" "$dev3" "$dev4":0
 vgchange -a n $vg
 pvremove -ff -y "$dev4"
 lvconvert -y --repair $vg/mirror2
 check mirror $vg mirror2
 vgs $vg
 vgremove -ff $vg
-
-# FIXME  - exclusive activation for mirrors should work here
-test -e LOCAL_CLVMD && exit 0
 
 if kernel_at_least 3 0 0; then
 	# 2-way, mirrored log

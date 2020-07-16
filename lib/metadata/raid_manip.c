@@ -87,7 +87,7 @@ static int _activate_sublv_preserving_excl(struct logical_volume *top_lv,
  */
 static int _raid_in_sync(struct logical_volume *lv)
 {
-	percent_t sync_percent;
+	dm_percent_t sync_percent;
 
 	if (!lv_raid_percent(lv, &sync_percent)) {
 		log_error("Unable to determine sync status of %s/%s.",
@@ -95,7 +95,7 @@ static int _raid_in_sync(struct logical_volume *lv)
 		return 0;
 	}
 
-	return (sync_percent == PERCENT_100) ? 1 : 0;
+	return (sync_percent == DM_PERCENT_100) ? 1 : 0;
 }
 
 /*
@@ -392,7 +392,7 @@ static int _alloc_image_components(struct logical_volume *lv,
 	if (!lvl_array)
 		return_0;
 
-	if (!(parallel_areas = build_parallel_areas_from_lv(lv, 0)))
+	if (!(parallel_areas = build_parallel_areas_from_lv(lv, 0, 1)))
 		return_0;
 
 	if (seg_is_linear(seg))
@@ -544,16 +544,10 @@ static int _raid_add_images(struct logical_volume *lv,
 		log_error("Unable to add RAID images to %s of segment type %s",
 			  lv->name, seg->segtype->ops->name(seg));
 		return 0;
-	} else if (!_raid_in_sync(lv)) {
-		log_error("Unable to add RAID images until %s is in-sync",
-			  lv->name);
-		return 0;
 	}
 
-	if (!_alloc_image_components(lv, pvs, count, &meta_lvs, &data_lvs)) {
-		log_error("Failed to allocate new image components");
-		return 0;
-	}
+	if (!_alloc_image_components(lv, pvs, count, &meta_lvs, &data_lvs))
+		return_0;
 
 	/*
 	 * If linear, we must correct data LV names.  They are off-by-one
@@ -570,7 +564,7 @@ static int _raid_add_images(struct logical_volume *lv,
 		dm_list_iterate(l, &data_lvs) {
 			if (l == dm_list_last(&data_lvs)) {
 				lvl = dm_list_item(l, struct lv_list);
-				len = strlen(lv->name) + strlen("_rimage_XXX");
+				len = strlen(lv->name) + sizeof("_rimage_XXX");
 				if (!(name = dm_pool_alloc(lv->vg->vgmem, len))) {
 					log_error("Failed to allocate rimage name.");
 					return 0;
@@ -607,8 +601,7 @@ static int _raid_add_images(struct logical_volume *lv,
 			log_very_verbose("Setting RAID1 region_size to %uS",
 					 seg->region_size);
 		}
-		seg->segtype = get_segtype_from_string(lv->vg->cmd, "raid1");
-		if (!seg->segtype)
+		if (!(seg->segtype = get_segtype_from_string(lv->vg->cmd, "raid1")))
 			return_0;
 	}
 /*
@@ -624,15 +617,19 @@ to be left for these sub-lvs.
 */
 	/* Expand areas array */
 	if (!(new_areas = dm_pool_zalloc(lv->vg->cmd->mem,
-					 new_count * sizeof(*new_areas))))
+					 new_count * sizeof(*new_areas)))) {
+		log_error("Allocation of new areas failed.");
 		goto fail;
+	}
 	memcpy(new_areas, seg->areas, seg->area_count * sizeof(*seg->areas));
 	seg->areas = new_areas;
 
 	/* Expand meta_areas array */
 	if (!(new_areas = dm_pool_zalloc(lv->vg->cmd->mem,
-					 new_count * sizeof(*new_areas))))
+					 new_count * sizeof(*new_areas)))) {
+		log_error("Allocation of new meta areas failed.");
 		goto fail;
+	}
 	if (seg->meta_areas)
 		memcpy(new_areas, seg->meta_areas,
 		       seg->area_count * sizeof(*seg->meta_areas));
@@ -738,7 +735,7 @@ fail:
 	dm_list_iterate_items(lvl, &data_lvs)
 		if (!lv_remove(lvl->lv))
 			return_0;
-	return_0;
+	return 0;
 }
 
 /*
@@ -868,7 +865,7 @@ static int _raid_extract_images(struct logical_volume *lv, uint32_t new_count,
 			    (first_seg(seg_metalv(seg, s))->segtype != error_segtype))
 				continue;
 
-			if (target_pvs && !dm_list_empty(target_pvs) &&
+			if (!dm_list_empty(target_pvs) &&
 			    (target_pvs != &lv->vg->pvs)) {
 				/*
 				 * User has supplied a list of PVs, but we
@@ -1504,6 +1501,85 @@ int lv_raid_reshape(struct logical_volume *lv,
 	return 0;
 }
 
+
+static int _remove_partial_multi_segment_image(struct logical_volume *lv,
+					       struct dm_list *remove_pvs)
+{
+	uint32_t s, extents_needed;
+	struct lv_segment *rm_seg, *raid_seg = first_seg(lv);
+	struct logical_volume *rm_image = NULL;
+	struct physical_volume *pv;
+
+	if (!(lv->status & PARTIAL_LV))
+		return_0;
+
+	for (s = 0; s < raid_seg->area_count; s++) {
+		extents_needed = 0;
+		if ((seg_lv(raid_seg, s)->status & PARTIAL_LV) &&
+		    lv_is_on_pvs(seg_lv(raid_seg, s), remove_pvs) &&
+		    (dm_list_size(&(seg_lv(raid_seg, s)->segments)) > 1)) {
+			rm_image = seg_lv(raid_seg, s);
+
+			/* First, how many damaged extents are there */
+			if (seg_metalv(raid_seg, s)->status & PARTIAL_LV)
+				extents_needed += seg_metalv(raid_seg, s)->le_count;
+			dm_list_iterate_items(rm_seg, &rm_image->segments) {
+				/*
+				 * segment areas are for stripe, mirror, raid,
+				 * etc.  We only need to check the first area
+				 * if we are dealing with RAID image LVs.
+				 */
+				if (seg_type(rm_seg, 0) != AREA_PV)
+					continue;
+				pv = seg_pv(rm_seg, 0);
+				if (pv->status & MISSING_PV)
+					extents_needed += rm_seg->len;
+			}
+			log_debug("%u extents needed to repair %s",
+				  extents_needed, rm_image->name);
+
+			/* Second, do the other PVs have the space */
+			dm_list_iterate_items(rm_seg, &rm_image->segments) {
+				if (seg_type(rm_seg, 0) != AREA_PV)
+					continue;
+				pv = seg_pv(rm_seg, 0);
+				if (pv->status & MISSING_PV)
+					continue;
+
+				if ((pv->pe_count - pv->pe_alloc_count) >
+				    extents_needed) {
+					log_debug("%s has enough space for %s",
+						  pv_dev_name(pv),
+						  rm_image->name);
+					goto has_enough_space;
+				}
+				log_debug("Not enough space on %s for %s",
+					  pv_dev_name(pv), rm_image->name);
+			}
+		}
+	}
+
+	/*
+	 * This is likely to be the normal case - single
+	 * segment images.
+	 */
+	return_0;
+
+has_enough_space:
+	/*
+	 * Now we have a multi-segment, partial image that has enough
+	 * space on just one of its PVs for the entire image to be
+	 * replaced.  So, we replace the image's space with an error
+	 * target so that the allocator can find that space (along with
+	 * the remaining free space) in order to allocate the image
+	 * anew.
+	 */
+	if (!replace_lv_with_error_segment(rm_image))
+		return_0;
+
+	return 1;
+}
+
 /*
  * lv_raid_replace
  * @lv
@@ -1516,6 +1592,7 @@ int lv_raid_replace(struct logical_volume *lv,
 		    struct dm_list *remove_pvs,
 		    struct dm_list *allocate_pvs)
 {
+	int partial_segment_removed = 0;
 	uint32_t s, sd, match_count = 0;
 	struct dm_list old_lvs;
 	struct dm_list new_meta_lvs, new_data_lvs;
@@ -1608,25 +1685,40 @@ int lv_raid_replace(struct logical_volume *lv,
 try_again:
 	if (!_alloc_image_components(lv, allocate_pvs, match_count,
 				     &new_meta_lvs, &new_data_lvs)) {
-		log_error("Failed to allocate replacement images for %s/%s",
-			  lv->vg->name, lv->name);
+		if (!(lv->status & PARTIAL_LV))
+			return 0;
 
-		/*
-		 * If this is a repair, then try to
-		 * do better than all-or-nothing
-		 */
-		if (match_count > 1) {
-			log_error("Attempting replacement of %u devices"
-				  " instead of %u", match_count - 1, match_count);
-			match_count--;
-
+		/* This is a repair, so try to do better than all-or-nothing */
+		match_count--;
+		if (match_count > 0) {
+			log_error("Failed to replace %u devices."
+				  "  Attempting to replace %u instead.",
+				  match_count, match_count+1);
 			/*
 			 * Since we are replacing some but not all of the bad
 			 * devices, we must set partial_activation
 			 */
 			lv->vg->cmd->partial_activation = 1;
 			goto try_again;
+		} else if (!match_count && !partial_segment_removed) {
+			/*
+			 * We are down to the last straw.  We can only hope
+			 * that a failed PV is just one of several PVs in
+			 * the image; and if we extract the image, there may
+			 * be enough room on the image's other PVs for a
+			 * reallocation of the image.
+			 */
+			if (!_remove_partial_multi_segment_image(lv, remove_pvs))
+				return_0;
+
+			match_count = 1;
+			partial_segment_removed = 1;
+			lv->vg->cmd->partial_activation = 1;
+			goto try_again;
 		}
+		log_error("Failed to allocate replacement images for %s/%s",
+			  lv->vg->name, lv->name);
+
 		return 0;
 	}
 
@@ -1635,9 +1727,17 @@ try_again:
 	 * - If we did this before the allocate, we wouldn't have to rename
 	 *   the allocated images, but it'd be much harder to avoid the right
 	 *   PVs during allocation.
+	 *
+	 * - If this is a repair and we were forced to call
+	 *   _remove_partial_multi_segment_image, then the remove_pvs list
+	 *   is no longer relevant - _raid_extract_images is forced to replace
+	 *   the image with the error target.  Thus, the full set of PVs is
+	 *   supplied - knowing that only the image with the error target
+	 *   will be affected.
 	 */
 	if (!_raid_extract_images(lv, raid_seg->area_count - match_count,
-				  remove_pvs, 0,
+				  partial_segment_removed ?
+				  &lv->vg->pvs : remove_pvs, 0,
 				  &old_lvs, &old_lvs)) {
 		log_error("Failed to remove the specified images from %s/%s",
 			  lv->vg->name, lv->name);
@@ -1837,4 +1937,109 @@ int lv_raid_remove_missing(struct logical_volume *lv)
 		return_0;
 
 	return 1;
+}
+
+/* Return 1 if a partial raid LV can be activated redundantly */
+static int _partial_raid_lv_is_redundant(struct logical_volume *lv)
+{
+	struct lv_segment *raid_seg = first_seg(lv);
+	uint32_t copies;
+	uint32_t i, s, rebuilds_per_group = 0;
+	uint32_t failed_components = 0;
+
+	if (!strcmp(raid_seg->segtype->name, "raid10")) {
+                /* FIXME: We only support 2-way mirrors in RAID10 currently */
+		copies = 2;
+                for (i = 0; i < raid_seg->area_count * copies; i++) {
+                        s = i % raid_seg->area_count;
+
+                        if (!(i % copies))
+                                rebuilds_per_group = 0;
+
+                        if ((seg_lv(raid_seg, s)->status & PARTIAL_LV) ||
+                            (seg_metalv(raid_seg, s)->status & PARTIAL_LV) ||
+                            lv_is_virtual(seg_lv(raid_seg, s)) ||
+                            lv_is_virtual(seg_metalv(raid_seg, s)))
+                                rebuilds_per_group++;
+
+                        if (rebuilds_per_group >= copies) {
+				log_verbose("An entire mirror group has failed in %s",
+					    display_lvname(lv));
+                		return 0;	/* Insufficient redundancy to activate */
+			}
+                }
+
+		return 1; /* Redundant */
+        }
+
+	for (s = 0; s < raid_seg->area_count; s++) {
+		if ((seg_lv(raid_seg, s)->status & PARTIAL_LV) ||
+		    (seg_metalv(raid_seg, s)->status & PARTIAL_LV) ||
+		    lv_is_virtual(seg_lv(raid_seg, s)) ||
+		    lv_is_virtual(seg_metalv(raid_seg, s)))
+			failed_components++;
+	}
+
+        if (failed_components == raid_seg->area_count) {
+		log_verbose("All components of raid LV %s have failed",
+			    display_lvname(lv));
+                return 0;	/* Insufficient redundancy to activate */
+        } else if (raid_seg->segtype->parity_devs &&
+                   (failed_components > raid_seg->segtype->parity_devs)) {
+                log_verbose("More than %u components from %s %s have failed",
+			    raid_seg->segtype->parity_devs,
+                          raid_seg->segtype->ops->name(raid_seg),
+                          display_lvname(lv));
+                return 0;	/* Insufficient redundancy to activate */
+        }
+
+	return 1;
+}
+
+/* Sets *data to 1 if the LV cannot be activated without data loss */
+static int _lv_may_be_activated_in_degraded_mode(struct logical_volume *lv, void *data)
+{
+	int *not_capable = (int *)data;
+	uint32_t s;
+	struct lv_segment *seg;
+
+	if (*not_capable)
+		return 1;	/* No further checks needed */
+
+	if (!(lv->status & PARTIAL_LV))
+		return 1;
+
+	if (lv_is_raid(lv)) {
+		*not_capable = !_partial_raid_lv_is_redundant(lv);
+		return 1;
+	}
+
+	/* Ignore RAID sub-LVs. */
+	if (lv_is_raid_type(lv))
+		return 1;
+
+	dm_list_iterate_items(seg, &lv->segments)
+		for (s = 0; s < seg->area_count; s++)
+			if (seg_type(seg, s) != AREA_LV) {
+				log_verbose("%s contains a segment incapable of degraded activation",
+					    display_lvname(lv));
+				*not_capable = 1;
+			}
+
+	return 1;
+}
+
+int partial_raid_lv_supports_degraded_activation(struct logical_volume *lv)
+{
+	int not_capable = 0;
+
+	if (!_lv_may_be_activated_in_degraded_mode(lv, &not_capable) || not_capable)
+		return 0;
+
+	if (!for_each_sub_lv(lv, _lv_may_be_activated_in_degraded_mode, &not_capable)) {
+		log_error(INTERNAL_ERROR "for_each_sub_lv failure.");
+		return 0;
+	}
+
+	return !not_capable;
 }
