@@ -181,6 +181,12 @@ static int _process_config(struct cmd_context *cmd)
 		return 0;
 	}
 
+	if (*cmd->proc_dir && !dir_exists(cmd->proc_dir)) {
+		log_error("Warning: proc dir %s not found - some checks will be bypassed",
+			  cmd->proc_dir);
+		cmd->proc_dir[0] = '\0';
+	}
+
 	/* activation? */
 	cmd->default_settings.activation = find_config_int(cmd->cft->root,
 							   "global/activation",
@@ -519,8 +525,8 @@ static struct dev_filter *_init_filter_components(struct cmd_context *cmd)
 
 	/* regex filter. Optional. */
 	if (!(cn = find_config_node(cmd->cft->root, "devices/filter")))
-		log_debug("devices/filter not found in config file: no regex "
-			  "filter installed");
+		log_very_verbose("devices/filter not found in config file: "
+				 "no regex filter installed");
 
 	else if (!(filters[nr_filt++] = regex_filter_create(cn->v))) {
 		log_error("Failed to create regex device filter");
@@ -537,6 +543,7 @@ static struct dev_filter *_init_filter_components(struct cmd_context *cmd)
 	/* md component filter. Optional, non-critical. */
 	if (find_config_bool(cmd->cft->root, "devices/md_component_detection",
 			     DEFAULT_MD_COMPONENT_DETECTION)) {
+		init_md_filtering(1);
 		if ((filters[nr_filt] = md_filter_create()))
 			nr_filt++;
 	}
@@ -824,10 +831,15 @@ struct cmd_context *create_toolcontext(struct arg *the_args)
 		goto error;
 
 	/* Create system directory if it doesn't already exist */
-	if (*cmd->sys_dir && !create_dir(cmd->sys_dir))
+	if (*cmd->sys_dir && !create_dir(cmd->sys_dir)) {
+		log_error("Failed to create LVM2 system dir for metadata backups, config "
+			  "files and internal cache.");
+		log_error("Set environment variable LVM_SYSTEM_DIR to alternative location "
+			  "or empty string.");
 		goto error;
+	}
 
-	if (!(cmd->libmem = pool_create(4 * 1024))) {
+	if (!(cmd->libmem = pool_create("library", 4 * 1024))) {
 		log_error("Library memory pool creation failed");
 		return 0;
 	}
@@ -858,7 +870,7 @@ struct cmd_context *create_toolcontext(struct arg *the_args)
 	if (!_init_filters(cmd))
 		goto error;
 
-	if (!(cmd->mem = pool_create(4 * 1024))) {
+	if (!(cmd->mem = pool_create("command", 4 * 1024))) {
 		log_error("Command memory pool creation failed");
 		return 0;
 	}

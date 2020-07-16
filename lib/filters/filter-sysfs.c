@@ -194,8 +194,10 @@ static int _read_devs(struct dev_set *ds, const char *dir)
 		dtype = d->d_type;
 
 		if (dtype == DT_UNKNOWN) {
-			if (stat(path, &info) >= 0) {
-				if (S_ISDIR(info.st_mode))
+			if (lstat(path, &info) >= 0) {
+				if (S_ISLNK(info.st_mode))
+					dtype = DT_LNK;
+				else if (S_ISDIR(info.st_mode))
 					dtype = DT_DIR;
 				else if (S_ISREG(info.st_mode))
 					dtype = DT_REG;
@@ -246,7 +248,11 @@ static int _accept_p(struct dev_filter *f, struct device *dev)
 	if (ds->initialised != 1)
 		return 1;
 
-	return _set_lookup(ds, dev->dev);
+	if (!_set_lookup(ds, dev->dev)) {
+		log_debug("%s: Skipping (sysfs)", dev_name(dev));
+		return 0;
+	} else
+		return 1;
 }
 
 static void _destroy(struct dev_filter *f)
@@ -265,7 +271,7 @@ struct dev_filter *sysfs_filter_create(const char *proc)
 	if (!_locate_sysfs_blocks(proc, sys_block, sizeof(sys_block)))
 		return NULL;
 
-	if (!(mem = pool_create(256))) {
+	if (!(mem = pool_create("sysfs", 256))) {
 		log_error("sysfs pool creation failed");
 		return NULL;
 	}

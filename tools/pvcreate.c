@@ -15,6 +15,10 @@
 
 #include "tools.h"
 
+struct pvcreate_params {
+	int zero;
+};
+
 const char _really_init[] =
     "Really INITIALIZE physical volume \"%s\" of volume group \"%s\" [y/n]? ";
 
@@ -25,6 +29,8 @@ const char _really_init[] =
 static int pvcreate_check(struct cmd_context *cmd, const char *name)
 {
 	struct physical_volume *pv;
+	struct device *dev;
+	uint64_t md_superblock;
 
 	/* is the partition type set correctly ? */
 	if ((arg_count(cmd, force_ARG) < 1) && !is_lvm_partition(name)) {
@@ -33,31 +39,65 @@ static int pvcreate_check(struct cmd_context *cmd, const char *name)
 		return 0;
 	}
 
-	/* is there a pv here already */
+	/* Is there a pv here already? */
 	/* FIXME Use partial mode here? */
-	if (!(pv = pv_read(cmd, name, NULL, NULL, 0)))
-		return 1;
-
-	/* orphan ? */
-	if (!pv->vg_name[0])
-		return 1;
+	pv = pv_read(cmd, name, NULL, NULL, 0);
 
 	/* Allow partial & exported VGs to be destroyed. */
-	/* we must have -ff to overwrite a non orphan */
-	if (arg_count(cmd, force_ARG) < 2) {
+	/* We must have -ff to overwrite a non orphan */
+	if (pv && pv->vg_name[0] && arg_count(cmd, force_ARG) != 2) {
 		log_error("Can't initialize physical volume \"%s\" of "
 			  "volume group \"%s\" without -ff", name, pv->vg_name);
 		return 0;
 	}
 
 	/* prompt */
-	if (!arg_count(cmd, yes_ARG) &&
+	if (pv && pv->vg_name[0] && !arg_count(cmd, yes_ARG) &&
 	    yes_no_prompt(_really_init, name, pv->vg_name) == 'n') {
 		log_print("%s: physical volume not initialized", name);
 		return 0;
 	}
 
-	if (arg_count(cmd, force_ARG)) {
+	dev = dev_cache_get(name, cmd->filter);
+
+	/* Is there an md superblock here? */
+	if (!dev && md_filtering()) {
+		unlock_vg(cmd, "");
+		log_verbose("Wiping cache of LVM-capable devices");
+		persistent_filter_wipe(cmd->filter);
+		log_verbose("Wiping internal cache");
+		lvmcache_destroy();
+		init_md_filtering(0);
+		if (!lock_vol(cmd, "", LCK_VG_WRITE)) {
+			log_error("Can't get lock for orphan PVs");
+			init_md_filtering(1);
+			return 0;
+		}
+		dev = dev_cache_get(name, cmd->filter);
+		init_md_filtering(1);
+	}
+
+	if (!dev) {
+		log_error("Device %s not found.", name);
+		return 0;
+	}
+
+	/* Wipe superblock? */
+	if (dev_is_md(dev, &md_superblock) &&
+	    ((!arg_count(cmd, uuidstr_ARG) &&
+	      !arg_count(cmd, restorefile_ARG)) ||
+	     arg_count(cmd, yes_ARG) || 
+	     (yes_no_prompt("Software RAID md superblock "
+			    "detected on %s. Wipe it? [y/n] ", name) == 'y'))) {
+		log_print("Wiping software RAID md superblock on %s", name);
+		if (!dev_zero(dev, md_superblock, 4)) {
+			log_error("Failed to wipe RAID md superblock on %s",
+				  name);
+			return 0;
+		}
+	}
+
+	if (pv && pv->vg_name[0] && arg_count(cmd, force_ARG)) {
 		log_print("WARNING: Forcing physical volume creation on "
 			  "%s%s%s%s", name,
 			  pv->vg_name[0] ? " of volume group \"" : "",
@@ -71,6 +111,7 @@ static int pvcreate_check(struct cmd_context *cmd, const char *name)
 static int pvcreate_single(struct cmd_context *cmd, const char *pv_name,
 			   void *handle)
 {
+	struct pvcreate_params *pp = (struct pvcreate_params *) handle;
 	struct physical_volume *pv, *existing_pv;
 	struct id id, *idp = NULL;
 	const char *uuid = NULL;
@@ -171,6 +212,17 @@ static int pvcreate_single(struct cmd_context *cmd, const char *pv_name,
 		goto error;
 	}
 
+	if (pp->zero) {
+		log_verbose("Zeroing start of device %s", pv_name);
+		if (!dev_open_quiet(dev)) {
+			log_error("%s not opened: device not zeroed", pv_name);
+			goto error;
+		}
+			
+		dev_zero(dev, UINT64_C(0), (size_t) 2048);
+		dev_close(dev);
+	}
+
 	log_very_verbose("Writing physical volume data to disk \"%s\"",
 			 pv_name);
 	if (!(pv_write(cmd, pv, &mdas, arg_int64_value(cmd, labelsector_ARG,
@@ -193,6 +245,7 @@ int pvcreate(struct cmd_context *cmd, int argc, char **argv)
 {
 	int i, r;
 	int ret = ECMD_PROCESSED;
+	struct pvcreate_params pp;
 
 	if (!argc) {
 		log_error("Please enter a physical volume path");
@@ -233,8 +286,15 @@ int pvcreate(struct cmd_context *cmd, int argc, char **argv)
 		return EINVALID_CMD_LINE;
 	}
 
+	if (arg_count(cmd, zero_ARG))
+		pp.zero = strcmp(arg_str_value(cmd, zero_ARG, "y"), "n");
+	else if (arg_count(cmd, restorefile_ARG) || arg_count(cmd, uuidstr_ARG))
+		pp.zero = 0;
+	else
+		pp.zero = 1;
+
 	for (i = 0; i < argc; i++) {
-		r = pvcreate_single(cmd, argv[i], NULL);
+		r = pvcreate_single(cmd, argv[i], &pp);
 		if (r > ret)
 			ret = r;
 	}

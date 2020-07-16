@@ -513,7 +513,7 @@ static int _print_snapshot(struct formatter *f, struct snapshot *snap,
 	}
 
 	seg.le = 0;
-	seg.len = snap->origin->le_count;
+	seg.len = snap->le_count;
 	seg.origin = snap->origin;
 	seg.cow = snap->cow;
 	seg.chunk_size = snap->chunk_size;
@@ -652,7 +652,7 @@ static int _build_pv_names(struct formatter *f, struct volume_group *vg)
 	struct physical_volume *pv;
 	char buffer[32], *name;
 
-	if (!(f->mem = pool_create(512))) {
+	if (!(f->mem = pool_create("text pv_names", 512))) {
 		stack;
 		goto bad;
 	}

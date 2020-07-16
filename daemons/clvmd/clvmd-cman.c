@@ -55,7 +55,6 @@ static int max_updown_nodes = 50;	/* Current size of the allocated array */
 static int *node_updown = NULL;
 static dlm_lshandle_t *lockspace;
 
-static void sigusr1_handler(int sig);
 static void count_clvmds_running(void);
 static void get_members(void);
 static int nodeid_from_csid(char *csid);
@@ -67,7 +66,7 @@ struct lock_wait {
 	struct dlm_lksb lksb;
 };
 
-int init_cluster()
+static int _init_cluster(void)
 {
 	struct sockaddr_cl saddr;
 	int port = CLUSTER_PORT_CLVMD;
@@ -75,7 +74,7 @@ int init_cluster()
 	/* Open the cluster communication socket */
 	cluster_sock = socket(AF_CLUSTER, SOCK_DGRAM, CLPROTO_CLIENT);
 	if (cluster_sock == -1) {
-		perror("Can't open cluster socket");
+		/* Don't print an error here because we could be just probing for CMAN */
 		return -1;
 	}
 
@@ -87,7 +86,7 @@ int init_cluster()
 	if (bind
 	    (cluster_sock, (struct sockaddr *) &saddr,
 	     sizeof(struct sockaddr_cl))) {
-		log_error("Can't bind cluster socket: %m");
+		syslog(LOG_ERR, "Can't bind cluster socket: %m");
 		return -1;
 	}
 
@@ -98,25 +97,30 @@ int init_cluster()
 	/* Create a lockspace for LV & VG locks to live in */
 	lockspace = dlm_create_lockspace(LOCKSPACE_NAME, 0600);
 	if (!lockspace) {
-		log_error("Unable to create lockspace for CLVM\n");
+		syslog(LOG_ERR, "Unable to create lockspace for CLVM: %m");
 		return -1;
 	}
 	dlm_ls_pthread_init(lockspace);
 	return 0;
 }
 
-int get_main_cluster_fd()
+static void _cluster_init_completed(void)
+{
+	clvmd_cluster_init_completed();
+}
+
+static int _get_main_cluster_fd()
 {
 	return cluster_sock;
 }
 
-int get_num_nodes()
+static int _get_num_nodes()
 {
 	return num_nodes;
 }
 
 /* send_message with the fd check removed */
-int cluster_send_message(void *buf, int msglen, char *csid, const char *errtext)
+static int _cluster_send_message(void *buf, int msglen, char *csid, const char *errtext)
 {
 	struct iovec iov[2];
 	struct msghdr msg;
@@ -136,7 +140,7 @@ int cluster_send_message(void *buf, int msglen, char *csid, const char *errtext)
 	if (csid) {
 		msg.msg_name = &saddr;
 		msg.msg_namelen = sizeof(saddr);
-		memcpy(&saddr.scl_nodeid, csid, MAX_CSID_LEN);
+		memcpy(&saddr.scl_nodeid, csid, CMAN_MAX_CSID_LEN);
 	} else {		/* Cluster broadcast */
 
 		msg.msg_name = NULL;
@@ -152,26 +156,26 @@ int cluster_send_message(void *buf, int msglen, char *csid, const char *errtext)
 	return len;
 }
 
-void get_our_csid(char *csid)
+static void _get_our_csid(char *csid)
 {
 	int i;
-	memset(csid, 0, MAX_CSID_LEN);
+	memset(csid, 0, CMAN_MAX_CSID_LEN);
 
 	for (i = 0; i < num_nodes; i++) {
 		if (nodes[i].us)
-			memcpy(csid, &nodes[i].node_id, MAX_CSID_LEN);
+			memcpy(csid, &nodes[i].node_id, CMAN_MAX_CSID_LEN);
 	}
 }
 
 /* Call a callback routine for each node that known (down mean not running a clvmd) */
-int cluster_do_node_callback(struct local_client *client,
+static int _cluster_do_node_callback(struct local_client *client,
 			     void (*callback) (struct local_client *, char *,
 					       int))
 {
 	int i;
 	int somedown = 0;
 
-	for (i = 0; i < get_num_nodes(); i++) {
+	for (i = 0; i < _get_num_nodes(); i++) {
 		callback(client, (char *)&nodes[i].node_id, node_updown[nodes[i].node_id]);
 		if (!node_updown[nodes[i].node_id])
 			somedown = -1;
@@ -203,7 +207,7 @@ static void process_oob_msg(char *buf, int len, int nodeid)
 	}
 }
 
-int cluster_fd_callback(struct local_client *fd, char *buf, int len, char *csid,
+static int _cluster_fd_callback(struct local_client *client, char *buf, int len, char *csid,
 			struct local_client **new_client)
 {
 	struct iovec iov[2];
@@ -247,34 +251,39 @@ int cluster_fd_callback(struct local_client *fd, char *buf, int len, char *csid,
 		len = -1;
 		errno = EAGAIN;
 	}
-	memcpy(csid, &saddr.scl_nodeid, sizeof(saddr.scl_nodeid));
+	else {
+		memcpy(csid, &saddr.scl_nodeid, sizeof(saddr.scl_nodeid));
+		/* Send it back to clvmd */
+		process_message(client, buf, len, csid);
+	}
 	return len;
 }
 
-void add_up_node(char *csid)
+static void _add_up_node(char *csid)
 {
 	/* It's up ! */
 	int nodeid = nodeid_from_csid(csid);
 
 	if (nodeid >= max_updown_nodes) {
-		int *new_updown = realloc(node_updown, max_updown_nodes + 10);
+	        int new_size = nodeid + 10;
+		int *new_updown = realloc(node_updown, new_size);
 
 		if (new_updown) {
 			node_updown = new_updown;
-			max_updown_nodes += 10;
+			max_updown_nodes = new_size;
 			DEBUGLOG("realloced more space for nodes. now %d\n",
 				 max_updown_nodes);
 		} else {
 			log_error
-			    ("Realloc failed. Node status for clvmd will be wrong\n");
-			return;
+			    ("Realloc failed. Node status for clvmd will be wrong. quitting\n");
+			exit(999);
 		}
 	}
 	node_updown[nodeid] = 1;
 	DEBUGLOG("Added new node %d to updown list\n", nodeid);
 }
 
-void cluster_closedown()
+static void _cluster_closedown()
 {
 	unlock_all();
 	dlm_release_lockspace(LOCKSPACE_NAME, lockspace, 1);
@@ -303,7 +312,7 @@ static int is_listening(int nodeid)
 
 /* Populate the list of CLVMDs running.
    called only at startup time */
-void count_clvmds_running(void)
+static void count_clvmds_running(void)
 {
 	int i;
 
@@ -319,7 +328,7 @@ static void get_members()
 
 	num_nodes = ioctl(cluster_sock, SIOCCLUSTER_GETMEMBERS, 0);
 	if (num_nodes == -1) {
-		perror("get nodes");
+		log_error("Unable to get node count");
 	} else {
 	        /* Not enough room for new nodes list ? */
 	        if (num_nodes > count_nodes && nodes) {
@@ -331,7 +340,7 @@ static void get_members()
 		        count_nodes = num_nodes + 10; /* Overallocate a little */
 		        nodes = malloc(count_nodes * sizeof(struct cl_cluster_node));
 			if (!nodes) {
-			        perror("Unable to allocate nodes array\n");
+			        log_error("Unable to allocate nodes array\n");
 				exit(5);
 			}
 		}
@@ -340,7 +349,7 @@ static void get_members()
 
 		num_nodes = ioctl(cluster_sock, SIOCCLUSTER_GETMEMBERS, &nodelist);
 		if (num_nodes <= 0) {
-		        perror("get node details");
+		        log_error("Unable to get node details");
 			exit(6);
 		}
 
@@ -362,13 +371,13 @@ static void get_members()
 }
 
 /* Convert a node name to a CSID */
-int csid_from_name(char *csid, char *name)
+static int _csid_from_name(char *csid, char *name)
 {
 	int i;
 
 	for (i = 0; i < num_nodes; i++) {
 		if (strcmp(name, nodes[i].name) == 0) {
-			memcpy(csid, &nodes[i].node_id, MAX_CSID_LEN);
+			memcpy(csid, &nodes[i].node_id, CMAN_MAX_CSID_LEN);
 			return 0;
 		}
 	}
@@ -376,12 +385,12 @@ int csid_from_name(char *csid, char *name)
 }
 
 /* Convert a CSID to a node name */
-int name_from_csid(char *csid, char *name)
+static int _name_from_csid(char *csid, char *name)
 {
 	int i;
 
 	for (i = 0; i < num_nodes; i++) {
-		if (memcmp(csid, &nodes[i].node_id, MAX_CSID_LEN) == 0) {
+		if (memcmp(csid, &nodes[i].node_id, CMAN_MAX_CSID_LEN) == 0) {
 			strcpy(name, nodes[i].name);
 			return 0;
 		}
@@ -392,7 +401,7 @@ int name_from_csid(char *csid, char *name)
 }
 
 /* Convert a node ID to a node name */
-int name_from_nodeid(int nodeid, char *name)
+static int name_from_nodeid(int nodeid, char *name)
 {
 	int i;
 
@@ -412,12 +421,12 @@ static int nodeid_from_csid(char *csid)
 {
         int nodeid;
 
-	memcpy(&nodeid, csid, MAX_CSID_LEN);
+	memcpy(&nodeid, csid, CMAN_MAX_CSID_LEN);
 
 	return nodeid;
 }
 
-int is_quorate()
+static int _is_quorate()
 {
 	return ioctl(cluster_sock, SIOCCLUSTER_ISQUORATE, 0);
 }
@@ -431,7 +440,7 @@ static void sync_ast_routine(void *arg)
 	pthread_mutex_unlock(&lwait->mutex);
 }
 
-int sync_lock(const char *resource, int mode, int flags, int *lockid)
+static int _sync_lock(const char *resource, int mode, int flags, int *lockid)
 {
 	int status;
 	struct lock_wait lwait;
@@ -474,7 +483,7 @@ int sync_lock(const char *resource, int mode, int flags, int *lockid)
 		return 0;
 }
 
-int sync_unlock(const char *resource /* UNUSED */, int lockid)
+static int _sync_unlock(const char *resource /* UNUSED */, int lockid)
 {
 	int status;
 	struct lock_wait lwait;
@@ -500,4 +509,29 @@ int sync_unlock(const char *resource /* UNUSED */, int lockid)
 	else
 		return 0;
 
+}
+
+static struct cluster_ops _cluster_cman_ops = {
+	.cluster_init_completed   = _cluster_init_completed,
+	.cluster_send_message     = _cluster_send_message,
+	.name_from_csid           = _name_from_csid,
+	.csid_from_name           = _csid_from_name,
+	.get_num_nodes            = _get_num_nodes,
+	.cluster_fd_callback      = _cluster_fd_callback,
+	.get_main_cluster_fd      = _get_main_cluster_fd,
+	.cluster_do_node_callback = _cluster_do_node_callback,
+	.is_quorate               = _is_quorate,
+	.get_our_csid             = _get_our_csid,
+	.add_up_node              = _add_up_node,
+	.cluster_closedown        = _cluster_closedown,
+	.sync_lock                = _sync_lock,
+	.sync_unlock              = _sync_unlock,
+};
+
+struct cluster_ops *init_cman_cluster(void)
+{
+	if (!_init_cluster())
+		return &_cluster_cman_ops;
+	else
+		return NULL;
 }

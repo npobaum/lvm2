@@ -81,7 +81,9 @@ static int _io(struct device_area *where, void *buffer, int should_write)
 	}
 
 	if (lseek(fd, (off_t) where->start, SEEK_SET) < 0) {
-		log_sys_error("lseek", dev_name(where->dev));
+		log_error("%s: lseek %" PRIu64 " failed: %s",
+			  dev_name(where->dev), (uint64_t) where->start,
+			  strerror(errno));
 		return 0;
 	}
 
@@ -91,6 +93,14 @@ static int _io(struct device_area *where, void *buffer, int should_write)
 			    write(fd, buffer, (size_t) where->size - total) :
 			    read(fd, buffer, (size_t) where->size - total);
 		while ((n < 0) && ((errno == EINTR) || (errno == EAGAIN)));
+
+		if (n < 0)
+			log_error("%s: %s failed after %" PRIu64 " of %" PRIu64
+				  " at %" PRIu64 ": %s", dev_name(where->dev),
+				  should_write ? "write" : "read",
+				  (uint64_t) total,
+				  (uint64_t) where->size,
+				  (uint64_t) where->start, strerror(errno));
 
 		if (n <= 0)
 			break;
@@ -114,14 +124,18 @@ static int _io(struct device_area *where, void *buffer, int should_write)
  */
 static int _get_block_size(struct device *dev, unsigned int *size)
 {
-	int s;
+	const char *name = dev_name(dev);
 
-	if (ioctl(dev_fd(dev), BLKBSZGET, &s) < 0) {
-		log_sys_error("ioctl BLKBSZGET", dev_name(dev));
-		return 0;
+	if ((dev->block_size == -1)) {
+		if (ioctl(dev_fd(dev), BLKBSZGET, &dev->block_size) < 0) {
+			log_sys_error("ioctl BLKBSZGET", name);
+			return 0;
+		}
+		log_debug("%s: block size is %u bytes", name, dev->block_size);
 	}
 
-	*size = (unsigned int) s;
+	*size = (unsigned int) dev->block_size;
+
 	return 1;
 }
 
@@ -217,7 +231,6 @@ int dev_get_size(const struct device *dev, uint64_t *size)
 	int fd;
 	const char *name = dev_name(dev);
 
-	log_very_verbose("Getting size of %s", name);
 	if ((fd = open(name, O_RDONLY)) < 0) {
 		log_sys_error("open", name);
 		return 0;
@@ -225,22 +238,27 @@ int dev_get_size(const struct device *dev, uint64_t *size)
 
 	if (ioctl(fd, BLKGETSIZE64, size) < 0) {
 		log_sys_error("ioctl BLKGETSIZE64", name);
-		close(fd);
+		if (close(fd))
+			log_sys_error("close", name);
 		return 0;
 	}
 
 	*size >>= BLKSIZE_SHIFT;	/* Convert to sectors */
-	close(fd);
+	if (close(fd))
+		log_sys_error("close", name);
+
+	log_very_verbose("%s: size is %" PRIu64 " sectors", name, *size);
+
 	return 1;
 }
 
+/* FIXME Unused
 int dev_get_sectsize(struct device *dev, uint32_t *size)
 {
 	int fd;
 	int s;
 	const char *name = dev_name(dev);
 
-	log_very_verbose("Getting size of %s", name);
 	if ((fd = open(name, O_RDONLY)) < 0) {
 		log_sys_error("open", name);
 		return 0;
@@ -254,8 +272,12 @@ int dev_get_sectsize(struct device *dev, uint32_t *size)
 
 	close(fd);
 	*size = (uint32_t) s;
+
+	log_very_verbose("%s: sector size is %" PRIu32 " bytes", name, *size);
+
 	return 1;
 }
+*/
 
 void dev_flush(struct device *dev)
 {
@@ -274,8 +296,20 @@ int dev_open_flags(struct device *dev, int flags, int direct, int quiet)
 	const char *name;
 
 	if (dev->fd >= 0) {
-		dev->open_count++;
-		return 1;
+		if ((dev->flags & DEV_OPENED_RW) ||
+		    ((flags & O_ACCMODE) != O_RDWR)) {
+			dev->open_count++;
+			return 1;
+		}
+
+		if (dev->open_count) {
+			/* FIXME Ensure we never get here */
+			log_debug("WARNING: %s already opened read-only", 
+				  dev_name(dev));
+			dev->open_count++;
+		}
+
+		dev_close_immediate(dev);
 	}
 
 	if (memlock())
@@ -311,14 +345,18 @@ int dev_open_flags(struct device *dev, int flags, int direct, int quiet)
 		return 0;
 	}
 
-	dev->open_count = 1;
+	dev->open_count++;
 	dev->flags &= ~DEV_ACCESSED_W;
+	if ((flags & O_ACCMODE) == O_RDWR)
+		dev->flags |= DEV_OPENED_RW;
+	else
+		dev->flags &= ~DEV_OPENED_RW;
 
 	if (!(dev->flags & DEV_REGULAR) &&
 	    ((fstat(dev->fd, &buf) < 0) || (buf.st_rdev != dev->dev))) {
 		log_error("%s: fstat failed: Has device name changed?", name);
-		dev_close(dev);
-		dev->fd = -1;
+		dev_close_immediate(dev);
+		dev->open_count = 0;
 		return 0;
 	}
 
@@ -327,12 +365,13 @@ int dev_open_flags(struct device *dev, int flags, int direct, int quiet)
 		dev_flush(dev);
 #endif
 
-	if ((flags & O_CREAT) && !(flags & O_TRUNC)) {
+	if ((flags & O_CREAT) && !(flags & O_TRUNC))
 		dev->end = lseek(dev->fd, (off_t) 0, SEEK_END);
-	}
 
 	list_add(&_open_devices, &dev->open_list);
-	log_debug("Opened %s", dev_name(dev));
+
+	log_debug("Opened %s %s", dev_name(dev),
+		  dev->flags & DEV_OPENED_RW ? "RW" : "RO");
 
 	return 1;
 }
@@ -360,6 +399,7 @@ static void _close(struct device *dev)
 	if (close(dev->fd))
 		log_sys_error("close", dev_name(dev));
 	dev->fd = -1;
+	dev->block_size = -1;
 	list_del(&dev->open_list);
 
 	log_debug("Closed %s", dev_name(dev));
@@ -385,8 +425,11 @@ static int _dev_close(struct device *dev, int immediate)
 		dev_flush(dev);
 #endif
 
+	if (dev->open_count > 0)
+		dev->open_count--;
+
 	/* FIXME lookup device in cache to get vgname and see if it's locked? */
-	if (--dev->open_count < 1 && (immediate || !vgs_locked()))
+	if (immediate || (dev->open_count < 1 && !vgs_locked()))
 		_close(dev);
 
 	return 1;
@@ -418,8 +461,10 @@ int dev_read(struct device *dev, uint64_t offset, size_t len, void *buffer)
 {
 	struct device_area where;
 
-	if (!dev->open_count)
+	if (!dev->open_count) {
+		stack;
 		return 0;
+	}
 
 	where.dev = dev;
 	where.start = offset;
@@ -437,8 +482,10 @@ int dev_append(struct device *dev, size_t len, void *buffer)
 {
 	int r;
 
-	if (!dev->open_count)
+	if (!dev->open_count) {
+		stack;
 		return 0;
+	}
 
 	r = dev_write(dev, dev->end, len, buffer);
 	dev->end += (uint64_t) len;
@@ -453,8 +500,10 @@ int dev_write(struct device *dev, uint64_t offset, size_t len, void *buffer)
 {
 	struct device_area where;
 
-	if (!dev->open_count)
+	if (!dev->open_count) {
+		stack;
 		return 0;
+	}
 
 	where.dev = dev;
 	where.start = offset;
@@ -501,6 +550,5 @@ int dev_zero(struct device *dev, uint64_t offset, size_t len)
 	if (!dev_close(dev))
 		stack;
 
-	/* FIXME: Always display error */
 	return (len == 0);
 }

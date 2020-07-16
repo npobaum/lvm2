@@ -19,6 +19,7 @@
 #include "metadata.h"
 #include "lvmcache.h"
 #include "disk_rep.h"
+#include "sptype_names.h"
 #include "lv_alloc.h"
 #include "str_list.h"
 #include "display.h"
@@ -107,7 +108,7 @@ int import_pool_lvs(struct volume_group *vg, struct pool *mem, struct list *pls)
 		/* for pool a minor of 0 is dynamic */
 		if (pl->pd.pl_minor) {
 			lv->status |= FIXED_MINOR;
-			lv->minor = pl->pd.pl_minor;
+			lv->minor = pl->pd.pl_minor + MINOR_OFFSET;
 		} else {
 			lv->minor = -1;
 		}

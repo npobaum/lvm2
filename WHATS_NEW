@@ -1,3 +1,122 @@
+Version 2.01.04 - 9th February 2005
+===================================
+  Add fixed offset to imported pool minor numbers.
+  Update binary pathnames in clvmd_init_rhel4.
+  lvm2cmd.so should skip the check for open fds.
+  Remove unused -f from pvmove.
+  Gulm clvmd doesn't report "connection refused" errors.
+  clvmd does a basic config file sanity check at startup.
+  Fix potential thread shutdown race in clvmd.
+
+Version 2.01.03 - 1st February 2005
+===================================
+  More 64-bit display/report fixes.
+  More informative startup mesg if can't create /etc/lvm.
+  Fix snapshot device size bug (since 2.01.01).
+  clvmd announces startup and cluster connection in syslog.
+  Gulm clvmd doesn't hang trying to talk to a rebooted node.
+  Gulm clvmd doesn't print cman error on startup.
+
+Version 2.01.02 - 21st January 2005
+===================================
+  Update clvmd_init_rhel4: use lvm.static and don't load dlm.
+  Fix some size_t printing.
+  Fix 64 bit xlate consts.
+  Split out pool sptype_names to avoid unused const.
+  Always fail if random id generation fails.
+  Recognise gnbd devices.
+  Fix clvmd startup bug introduced in cman/gulm amalgamation.
+  Improve reporting of node-specific locking errors.
+
+Version 2.01.01 - 19th January 2005
+===================================
+  Fix clvmd lv_info_by_lvid open_count.
+  Store snapshot and origin sizes separately.
+  Update vgcreate man page.
+
+Version 2.01.00 - 17th January 2005
+===================================
+  Fix vgscan metadata auto-correction.
+  Only ask libdevmapper for open_count when we need it.
+  Adjust RHEL4 clvmd init script priority.
+  Enable building of CMAN & GULM versions of clvmd into a single binary
+
+Version 2.00.33 - 7th January 2005
+==================================
+  pvcreate wipes first 4 sectors unless given --zero n.
+  gulm clvmd now uses new ccsd key names.
+  gulm clvmd now doesn't ignore the first node in cluster.conf
+  Improve clvmd failure message if it's already running.
+  Allow user to kill clvmd during initialisation.
+  Fix off-by-one error in cluster_locking that could cause read hangs.
+
+Version 2.00.32 - 22nd December 2004
+====================================
+  Drop static/dl restriction for now.
+  Fix an error fprintf.
+  Fix vgdisplay -s. Breaks (undocumented) lvs/pvs/vgs -s instead for now.
+  Fix device reference counting on re-opens.
+  Ignore sysfs symlinks when DT_UNKNOWN.
+  Add clvmd init script for RHEL4.
+  Skip devices that are too small to be PVs.
+  Fix pvchange -x segfault with lvm2-format orphan.
+  Cope with empty msdos partition tables.
+  Add CONTRIBUTORS file.
+
+Version 2.00.31 - 12th December 2004
+====================================
+  Reopen RO file descriptors RW if necessary.
+
+Version 2.00.30 - 10th December 2004
+====================================
+  Additional device-handling debug messages.
+  Additional verbosity level -vvvv includes line numbers and backtraces.
+  Verbose messages now go to stderr not stdout.
+  Close any stray file descriptors before starting.
+  Refine partitionable checks for certain device types.
+  Allow devices/types to override built-ins.
+  Fix lvreduce man page .i->.I
+  Fix vgsplit man page title.
+  Fix clvmd man makefile.
+  Extend dev_open logging.
+  Make clvmd_fix_conf.sh UNDOable.
+
+Version 2.00.29 - 27th November 2004
+====================================
+  xlate compilation fix.
+
+Version 2.00.28 - 27th November 2004
+====================================
+  Fix partition table & md signature detection.
+  Minor configure/makefile tidy.
+  Export version.h from tools for clvmd.
+
+Version 2.00.27 - 24th November 2004
+====================================
+  Trap large memory allocation requests.
+  Fix to partition table detection code.
+  Improve filter debug mesgs.
+  Make clvmd_fix_conf.sh UNDOable
+
+Version 2.00.26 - 23rd November 2004
+====================================
+  Improve pool debugging stats.
+  Detect partition table signature.
+  pvcreate wipes md superblocks. (With --uuid or --restorefile it prompts.)
+  Separate out md superblock detection code.
+  Prevent snapshot origin resizing.
+  Improve a vgremove error message.
+  Update some man pages.
+  Allow y/n with -ae args (exclusive activation).
+  Fixes to lvcreate vgname parsing.
+  Fix dm_name string size calculation.
+  Improve clvmd error reporting during startup.
+  Make clvmd cope with large gaps in node numbers IDs.
+  Make clvmd initialisation cope better with debugging output.
+  Tidy clvmd socket callbacks so all work happens outside main loop.
+  clvmd -V now displays lvm version too.
+  Add optional gulm build for clvmd
+
 Version 2.00.25 - 29th September 2004
 =====================================
   Fix return code from rm_link for vgmknodes.

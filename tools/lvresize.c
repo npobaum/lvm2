@@ -180,6 +180,11 @@ static int _lvresize(struct cmd_context *cmd, struct lvresize_params *lp)
 		return ECMD_FAILED;
 	}
 
+	if (lv_is_origin(lv)) {
+		log_error("Snapshot origin volumes cannot be resized yet.");
+		return ECMD_FAILED;
+	}
+
 	alloc = (alloc_policy_t) arg_uint_value(cmd, alloc_ARG, lv->alloc);
 
 	if (lp->size) {
@@ -359,7 +364,7 @@ static int _lvresize(struct cmd_context *cmd, struct lvresize_params *lp)
 	if (lp->resize == LV_REDUCE || lp->resizefs) {
 		memset(&info, 0, sizeof(info));
 
-		if (!lv_info(lv, &info) && driver_version(NULL, 0)) {
+		if (!lv_info(lv, &info, 1) && driver_version(NULL, 0)) {
 			log_error("lv_info failed: aborting");
 			return ECMD_FAILED;
 		}
