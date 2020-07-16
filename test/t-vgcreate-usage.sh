@@ -17,9 +17,9 @@ aux prepare_devs 3
 pvcreate $dev1 $dev2
 pvcreate --metadatacopies 0 $dev3
 
-#COMM 'vgcreate accepts 8.00M physicalextentsize for VG'
-vgcreate $vg --physicalextentsize 8.00M $dev1 $dev2 
-check_vg_field_ $vg vg_extent_size 8.00M 
+#COMM 'vgcreate accepts 8.00m physicalextentsize for VG'
+vgcreate $vg --physicalextentsize 8.00m $dev1 $dev2
+check_vg_field_ $vg vg_extent_size 8.00m
 vgremove $vg
 # try vgck and to remove it again - should fail (but not segfault)
 not vgremove $vg
@@ -71,19 +71,76 @@ grep "^  Number of volumes may not exceed 255\$" err
 not vgcreate $vg $dev3
 
 # Test default (4MB) vg_extent_size as well as limits of extent_size
-not vgcreate --physicalextentsize 0K $vg $dev1 $dev2
-vgcreate --physicalextentsize 1K $vg $dev1 $dev2
-check_vg_field_ $vg vg_extent_size 1.00K
+not vgcreate --physicalextentsize 0k $vg $dev1 $dev2
+vgcreate --physicalextentsize 1k $vg $dev1 $dev2
+check_vg_field_ $vg vg_extent_size 1.00k
 vgremove -ff $vg
 not vgcreate --physicalextentsize 3K $vg $dev1 $dev2
-not vgcreate --physicalextentsize 1024T $vg $dev1 $dev2
+not vgcreate --physicalextentsize 1024t $vg $dev1 $dev2
 #not vgcreate --physicalextentsize 1T $vg $dev1 $dev2
 # FIXME: vgcreate allows physicalextentsize larger than pv size!
 
 # Test default max_lv, max_pv, extent_size, alloc_policy, clustered
 vgcreate $vg $dev1 $dev2
-check_vg_field_ $vg vg_extent_size 4.00M
+check_vg_field_ $vg vg_extent_size 4.00m
 check_vg_field_ $vg max_lv 0
 check_vg_field_ $vg max_pv 0
 check_vg_field_ $vg vg_attr "wz--n-"
 vgremove -ff $vg
+
+# Implicit pvcreate tests, test pvcreate options on vgcreate
+# --force, --yes, --metadata{size|copies|type}, --zero
+# --dataalignment[offset]
+pvremove $dev1 $dev2
+vgcreate --force --yes --zero y $vg $dev1 $dev2
+vgremove -f $vg
+pvremove -f $dev1
+
+for i in 0 1 2 3
+do
+# vgcreate (lvm2) succeeds writing LVM label at sector $i
+    vgcreate --labelsector $i $vg $dev1
+    dd if=$dev1 bs=512 skip=$i count=1 2>/dev/null | strings | grep -q LABELONE;
+    vgremove -f $vg
+    pvremove -f $dev1
+done
+
+# pvmetadatacopies
+for i in 1 2
+do
+    vgcreate --pvmetadatacopies $i $vg $dev1
+    check_pv_field_ $dev1 pv_mda_count $i
+    vgremove -f $vg
+    pvremove -f $dev1
+done
+not vgcreate --metadatacopies 0 $vg $dev1
+pvcreate --metadatacopies 1 $dev2
+vgcreate --pvmetadatacopies 0 $vg $dev1 $dev2
+check_pv_field_ $dev1 pv_mda_count 0
+check_pv_field_ $dev2 pv_mda_count 1
+vgremove -f $vg
+pvremove -f $dev1
+
+# metadatasize, dataalignment, dataalignmentoffset
+#COMM 'pvcreate sets data offset next to mda area'
+vgcreate --metadatasize 100k --dataalignment 100k $vg $dev1
+check_pv_field_ $dev1 pe_start 200.00k
+vgremove -f $vg
+pvremove -f $dev1
+
+# data area is aligned to 64k by default,
+# data area start is shifted by the specified alignment_offset
+pv_align="195.50k"
+vgcreate --metadatasize 128k --dataalignmentoffset 7s $vg $dev1
+check_pv_field_ $dev1 pe_start $pv_align
+vgremove -f $vg
+pvremove -f $dev1
+
+# metadatatype
+for i in 1 2
+do
+    vgcreate -M $i $vg $dev1
+    check_vg_field_ $vg vg_fmt lvm$i
+    vgremove -f $vg
+    pvremove -f $dev1
+done

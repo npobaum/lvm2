@@ -41,7 +41,9 @@ the volume group can be extended ( see
 ) with other physical volumes or by reducing existing logical volumes
 of this volume group in size ( see
 .B lvreduce(8)
-).
+). If you specify one or more PhysicalVolumes, allocation of physical
+extents will be restricted to these volumes.
+.br
 .br
 The second form supports the creation of snapshot logical volumes which 
 keep the contents of the original logical volume for backup purposes.
@@ -205,7 +207,7 @@ contains a file system, you can mount the snapshot logical volume on an
 arbitrary directory in order to access the contents of the filesystem to run
 a backup while the original filesystem continues to get updated.
 
-"lvcreate --virtualoriginsize 1T --size 100M --snapshot --name sparse vg1"
+"lvcreate --virtualsize 1T --size 100M --snapshot --name sparse vg1"
 .br
 creates a sparse device named /dev/vg1/sparse of size 1TB with space for just
 under 100MB of actual data on it.

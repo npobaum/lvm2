@@ -1,3 +1,40 @@
+Version 2.02.54 - 26th October 2009
+===================================
+  Update lvcreate/lvconvert man pages to explain PhysicalVolume parameter.
+  Document --all option in man pages, cleanup {pv|vg|lv}{s|display} man pages.
+  Permit snapshots of mirrors.
+  Cleanup mimagetmp LV if allocation fails for new lvconvert mimage.
+  Fix clvmd segfault when refresh_toolcontext fails.
+  Remember to clear 'global lock held during cache refresh' state after use.
+  Use udev flags support in LVM and apply various fixes to udev rules.
+  Delay announcing mirror monitoring to syslog until initialisation succeeded.
+  Handle metadata with unknown segment types more gracefully.
+  Set default owner and group to null.
+  Add dmeventd.static to the build.
+  Disable realtime support code by default.
+  Make clvmd return 0 on success rather than 1.
+  Add --pvmetadatacopies for pvcreate, vgcreate, vgextend, vgconvert.
+  Add implict pvcreate support to vgcreate and vgextend.
+  Correct example.conf to indicate that lvm2 not lvm1 is the default format.
+  Remove an unused stray LVM1_SUPPORT ifdef.
+  Only include selinux libs in libdevmapper.pc when selinux build enabled.
+  Allow for a build directory separate from the source.
+  Update distclean target for rename clogd to cmirrord. (2.02.52)
+  Only do lock conversions in clvmd if we are explicitly asked for one.
+  Introduce percent_range_t and centralise snapshot full/mirror in-sync checks.
+  Factor out poll_mirror_progress and introduce progress_t.
+  Distinguish between powers of 1000 and powers of 1024 in unit suffixes.
+  Restart lvconverts in vgchange by sharing lv_spawn_background_polling.
+  Generalise polldaemon code by changing mirror-specific variable names.
+  Don't attempt to deactivate an LV if any of its snapshots are in use.
+  Return error if lv_deactivate fails to remove device from kernel.
+  Provide alternative implementation of obsolete siginterrupt().
+  Consolidate LV allocation into alloc_lv().
+  Treat input units of both 's' and 'S' as 512-byte sectors.  (2.02.49)
+  Use standard output units for 'PE Size' and 'Stripe size' in pv/lvdisplay.
+  Add configure --enable-units-compat to set si_unit_consistency off by default.
+  Add global/si_unit_consistency to enable cleaned-up use of units in output.
+
 Version 2.02.53 - 25th September 2009
 =====================================
   Create any directories in /dev with DM_DEV_DIR_UMASK (022).

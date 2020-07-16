@@ -136,6 +136,13 @@ typedef enum {
 	DONT_PROMPT_OVERRIDE = 2 /* Skip prompt + override a second condition */
 } force_t;
 
+typedef enum {
+	PERCENT_0 = 0,
+	PERCENT_0_TO_100 = 1,
+	PERCENT_100 = 2,
+	PERCENT_INVALID = 3
+} percent_range_t;
+
 struct cmd_context;
 struct format_handler;
 struct labeller;
@@ -291,6 +298,7 @@ struct lv_segment {
 	uint32_t region_size;	/* For mirrors - in sectors */
 	uint32_t extents_copied;
 	struct logical_volume *log_lv;
+	void *segtype_private;
 
 	struct dm_list tags;
 
@@ -364,6 +372,7 @@ struct pvcreate_params {
 struct physical_volume *pvcreate_single(struct cmd_context *cmd,
 					const char *pv_name,
 					struct pvcreate_params *pp);
+void fill_default_pvcreate_params(struct pvcreate_params *pp);
 
 /*
 * Utility functions
@@ -446,7 +455,8 @@ int vg_remove_check(struct volume_group *vg);
 int vg_remove(struct volume_group *vg);
 int vg_rename(struct cmd_context *cmd, struct volume_group *vg,
 	      const char *new_name);
-int vg_extend(struct volume_group *vg, int pv_count, char **pv_names);
+int vg_extend(struct volume_group *vg, int pv_count, char **pv_names,
+	      struct pvcreate_params *pp);
 int vg_reduce(struct volume_group *vg, char *pv_name);
 int vg_set_extent_size(struct volume_group *vg, uint32_t new_extent_size);
 int vg_set_max_lv(struct volume_group *vg, uint32_t max_lv);
@@ -684,7 +694,8 @@ struct logical_volume *find_pvmove_lv_from_pvname(struct cmd_context *cmd,
 						  uint32_t lv_type);
 const char *get_pvmove_pvname_from_lv(struct logical_volume *lv);
 const char *get_pvmove_pvname_from_lv_mirr(struct logical_volume *lv_mirr);
-float copy_percent(struct logical_volume *lv_mirr);
+float copy_percent(struct logical_volume *lv_mirr,
+		   percent_range_t *percent_range);
 struct dm_list *lvs_using_lv(struct cmd_context *cmd, struct volume_group *vg,
 			  struct logical_volume *lv);
 
@@ -723,6 +734,9 @@ int vg_check_write_mode(struct volume_group *vg);
 #define vg_is_clustered(vg) (vg_status((vg)) & CLUSTERED)
 #define vg_is_exported(vg) (vg_status((vg)) & EXPORTED_VG)
 #define vg_is_resizeable(vg) (vg_status((vg)) & RESIZEABLE_VG)
+
+int lv_has_unknown_segments(const struct logical_volume *lv);
+int vg_has_unknown_segments(const struct volume_group *vg);
 
 struct vgcreate_params {
 	char *vg_name;

@@ -23,6 +23,7 @@
 #include "memlock.h"
 #include "str_list.h"
 #include "pv_alloc.h"
+#include "segtype.h"
 #include "activate.h"
 #include "display.h"
 #include "locking.h"
@@ -67,7 +68,7 @@ unsigned long set_pe_align(struct physical_volume *pv, unsigned long data_alignm
 
 	if (data_alignment)
 		pv->pe_align = data_alignment;
-	else 
+	else
 		pv->pe_align = MAX(65536UL, lvm_getpagesize()) >> SECTOR_SHIFT;
 
 	if (!pv->dev)
@@ -553,22 +554,56 @@ int vg_remove(struct volume_group *vg)
 	return ret;
 }
 
-int vg_extend(struct volume_group *vg, int pv_count, char **pv_names)
+/*
+ * Extend a VG by a single PV / device path
+ *
+ * Parameters:
+ * - vg: handle of volume group to extend by 'pv_name'
+ * - pv_name: device path of PV to add to VG
+ * - pp: parameters to pass to implicit pvcreate; if NULL, do not pvcreate
+ *
+ */
+static int vg_extend_single_pv(struct volume_group *vg, char *pv_name,
+			       struct pvcreate_params *pp)
+{
+	struct physical_volume *pv;
+
+	pv = pv_by_path(vg->fid->fmt->cmd, pv_name);
+	if (!pv && !pp) {
+		log_error("%s not identified as an existing "
+			  "physical volume", pv_name);
+		return 0;
+	} else if (!pv && pp) {
+		pv = pvcreate_single(vg->cmd, pv_name, pp);
+		if (!pv)
+			return 0;
+	}
+	if (!add_pv_to_vg(vg, pv_name, pv))
+		return 0;
+	return 1;
+}
+
+/*
+ * Extend a VG by a single PV / device path
+ *
+ * Parameters:
+ * - vg: handle of volume group to extend by 'pv_name'
+ * - pv_count: count of device paths of PVs
+ * - pv_names: device paths of PVs to add to VG
+ * - pp: parameters to pass to implicit pvcreate; if NULL, do not pvcreate
+ *
+ */
+int vg_extend(struct volume_group *vg, int pv_count, char **pv_names,
+	      struct pvcreate_params *pp)
 {
 	int i;
-	struct physical_volume *pv;
 
 	if (_vg_bad_status_bits(vg, RESIZEABLE_VG))
 		return 0;
 
 	/* attach each pv */
 	for (i = 0; i < pv_count; i++) {
-		if (!(pv = pv_by_path(vg->fid->fmt->cmd, pv_names[i]))) {
-			log_error("%s not identified as an existing "
-				  "physical volume", pv_names[i]);
-			goto bad;
-		}
-		if (!add_pv_to_vg(vg, pv_names[i], pv))
+		if (!vg_extend_single_pv(vg, pv_names[i], pp))
 			goto bad;
 	}
 
@@ -702,6 +737,27 @@ static struct volume_group *_vg_make_handle(struct cmd_context *cmd,
 	vg->read_status = failure;
 
 	return (struct volume_group *)vg;
+}
+
+int lv_has_unknown_segments(const struct logical_volume *lv)
+{
+	struct lv_segment *seg;
+	/* foreach segment */
+	dm_list_iterate_items(seg, &lv->segments)
+		if (seg_unknown(seg))
+			return 1;
+	return 0;
+}
+
+int vg_has_unknown_segments(const struct volume_group *vg)
+{
+	struct lv_list *lvl;
+
+	/* foreach LV */
+	dm_list_iterate_items(lvl, &vg->lvs)
+		if (lv_has_unknown_segments(lvl->lv))
+			return 1;
+	return 0;
 }
 
 /*
@@ -1238,10 +1294,10 @@ static int pvcreate_check(struct cmd_context *cmd, const char *name,
 	return 1;
 }
 
-static void fill_default_pvcreate_params(struct pvcreate_params *pp)
+void fill_default_pvcreate_params(struct pvcreate_params *pp)
 {
 	memset(pp, 0, sizeof(*pp));
-	pp->zero = 0;
+	pp->zero = 1;
 	pp->size = 0;
 	pp->data_alignment = UINT64_C(0);
 	pp->data_alignment_offset = UINT64_C(0);
@@ -1258,18 +1314,19 @@ static void fill_default_pvcreate_params(struct pvcreate_params *pp)
 }
 
 /*
- * pvcreate_single() - initialize a device with PV label and metadata
+ * pvcreate_single() - initialize a device with PV label and metadata area
  *
  * Parameters:
  * - pv_name: device path to initialize
- * - handle: options to pass to pv_create; NULL indicates use defaults
+ * - pp: parameters to pass to pv_create; if NULL, use default values
  *
  * Returns:
  * NULL: error
  * struct physical_volume * (non-NULL): handle to physical volume created
  */
-struct physical_volume * pvcreate_single(struct cmd_context *cmd, const char *pv_name,
-		       struct pvcreate_params *pp)
+struct physical_volume * pvcreate_single(struct cmd_context *cmd,
+					 const char *pv_name,
+					 struct pvcreate_params *pp)
 {
 	void *pv;
 	struct device *dev;
@@ -2156,6 +2213,13 @@ int vg_write(struct volume_group *vg)
 			  "volumes are missing.", vg->name);
 		return 0;
 	}
+
+	if (vg_has_unknown_segments(vg) && !vg->cmd->handles_unknown_segments) {
+		log_error("Cannot update volume group %s with unknown segments in it!",
+			  vg->name);
+		return 0;
+	}
+
 
 	if (dm_list_empty(&vg->fid->metadata_areas)) {
 		log_error("Aborting vg_write: No metadata areas to write to!");
@@ -3282,9 +3346,22 @@ static struct volume_group *_vg_lock_and_read(struct cmd_context *cmd, const cha
 		}
 	}
 
+	/*
+	 * Check that the tool can handle tricky cases -- missing PVs and
+	 * unknown segment types.
+	 */
+
 	if (!cmd->handles_missing_pvs && vg_missing_pv_count(vg) &&
 	    (lock_flags & LCK_WRITE)) {
 		log_error("Cannot change VG %s while PVs are missing!",
+			  vg->name);
+		failure |= FAILED_INCONSISTENT; /* FIXME new failure code here? */
+		goto_bad;
+	}
+
+	if (!cmd->handles_unknown_segments && vg_has_unknown_segments(vg) &&
+	    (lock_flags & LCK_WRITE)) {
+		log_error("Cannot change VG %s with unknown segments in it!",
 			  vg->name);
 		failure |= FAILED_INCONSISTENT; /* FIXME new failure code here? */
 		goto_bad;
