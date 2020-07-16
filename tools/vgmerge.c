@@ -20,6 +20,7 @@ static int _vgmerge_single(struct cmd_context *cmd, const char *vg_name_to,
 {
 	struct volume_group *vg_to, *vg_from;
 	struct lv_list *lvl1, *lvl2;
+	struct pv_list *pvl;
 	int active;
 	int consistent = 1;
 
@@ -122,6 +123,25 @@ static int _vgmerge_single(struct cmd_context *cmd, const char *vg_name_to,
 		}
 	}
 
+	/* Check no PVs are constructed from either VG */
+	list_iterate_items(pvl, &vg_to->pvs) {
+		if (pv_uses_vg(cmd, pvl->pv, vg_from)) {
+			log_error("Physical volume %s might be constructed "
+				  "from same volume group %s.",
+				  dev_name(pvl->pv->dev), vg_from->name);
+			goto error;
+		}
+	}
+
+	list_iterate_items(pvl, &vg_from->pvs) {
+		if (pv_uses_vg(cmd, pvl->pv, vg_to)) {
+			log_error("Physical volume %s might be constructed "
+				  "from same volume group %s.",
+				  dev_name(pvl->pv->dev), vg_to->name);
+			goto error;
+		}
+	}
+
 	/* FIXME List arg: vg_show_with_pv_and_lv(vg_to); */
 
 	if (!archive(vg_from) || !archive(vg_to))
@@ -136,7 +156,7 @@ static int _vgmerge_single(struct cmd_context *cmd, const char *vg_name_to,
 		list_add(&vg_to->pvs, pvh);
 
 		pv = list_item(pvh, struct pv_list)->pv;
-		pv->vg_name = pool_strdup(cmd->mem, vg_to->name);
+		pv->vg_name = dm_pool_strdup(cmd->mem, vg_to->name);
 	}
 	vg_to->pv_count += vg_from->pv_count;
 

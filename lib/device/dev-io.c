@@ -418,7 +418,6 @@ int dev_open_flags(struct device *dev, int flags, int direct, int quiet)
 	    ((fstat(dev->fd, &buf) < 0) || (buf.st_rdev != dev->dev))) {
 		log_error("%s: fstat failed: Has device name changed?", name);
 		dev_close_immediate(dev);
-		dev->open_count = 0;
 		return 0;
 	}
 
@@ -484,15 +483,17 @@ static void _close(struct device *dev)
 	log_debug("Closed %s", dev_name(dev));
 
 	if (dev->flags & DEV_ALLOCED) {
-		dbg_free((void *) list_item(dev->aliases.n, struct str_list)->
+		dm_free((void *) list_item(dev->aliases.n, struct str_list)->
 			 str);
-		dbg_free(dev->aliases.n);
-		dbg_free(dev);
+		dm_free(dev->aliases.n);
+		dm_free(dev);
 	}
 }
 
 static int _dev_close(struct device *dev, int immediate)
 {
+	struct lvmcache_info *info;
+
 	if (dev->fd < 0) {
 		log_error("Attempt to close device '%s' "
 			  "which is not open.", dev_name(dev));
@@ -507,13 +508,16 @@ static int _dev_close(struct device *dev, int immediate)
 	if (dev->open_count > 0)
 		dev->open_count--;
 
-	if (immediate && dev->open_count) {
-		log_debug("%s: Immediate close attempt while still referenced");
-		dev->open_count = 0;
-	}
+	if (immediate && dev->open_count)
+		log_debug("%s: Immediate close attempt while still referenced",
+			  dev_name(dev));
 
-	/* FIXME lookup device in cache to get vgname and see if it's locked? */
-	if (immediate || (dev->open_count < 1 && !vgs_locked()))
+	/* Close unless device is known to belong to a locked VG */
+	if (immediate ||
+	    (dev->open_count < 1 && 
+	     (!(info = info_from_pvid(dev->pvid)) ||
+	      !info->vginfo ||
+	      !vgname_is_locked(info->vginfo->vgname))))
 		_close(dev);
 
 	return 1;

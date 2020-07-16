@@ -58,6 +58,7 @@
 #define MIRROR_LOG		0x00020000	/* LV */
 #define MIRROR_IMAGE		0x00040000	/* LV */
 #define ACTIVATE_EXCL		0x00080000	/* LV - internal use only */
+#define PRECOMMITTED		0x00100000	/* VG - internal use only */
 
 #define LVM_READ              	0x00000100	/* LV VG */
 #define LVM_WRITE             	0x00000200	/* LV VG */
@@ -72,6 +73,7 @@
 #define FMT_RESTRICTED_LVIDS	0x00000010	/* LVID <= 255 */
 #define FMT_ORPHAN_ALLOCATABLE	0x00000020	/* Orphan PV allocatable? */
 #define FMT_PRECOMMIT		0x00000040	/* Supports pre-commit? */
+#define FMT_RESIZE_PV		0x00000080	/* Supports pvresize? */
 
 typedef enum {
 	ALLOC_INVALID,
@@ -181,6 +183,7 @@ struct metadata_area {
 struct format_instance {
 	const struct format_type *fmt;
 	struct list metadata_areas;	/* e.g. metadata locations */
+	void *private;
 };
 
 struct volume_group {
@@ -214,6 +217,20 @@ struct volume_group {
 	struct list tags;
 };
 
+/* There will be one area for each stripe */
+struct lv_segment_area {
+	area_type_t type;
+	union {
+		struct {
+			struct pv_segment *pvseg;
+		} pv;
+		struct {
+			struct logical_volume *lv;
+			uint32_t le;
+		} lv;
+	} u;
+};
+
 struct segment_type;
 struct lv_segment {
 	struct list list;
@@ -236,31 +253,20 @@ struct lv_segment {
 	uint32_t region_size;	/* For mirrors - in sectors */
 	uint32_t extents_copied;
 	struct logical_volume *log_lv;
+	struct lv_segment *mirror_seg;
 
 	struct list tags;
 
-	/* There will be one area for each stripe */
-	struct {
-		area_type_t type;
-		union {
-			struct {
-				struct pv_segment *pvseg;
-			} pv;
-			struct {
-				struct logical_volume *lv;
-				uint32_t le;
-			} lv;
-		} u;
-	} area[0];
+	struct lv_segment_area *areas;
 };
 
-#define seg_type(seg, s)	(seg)->area[(s)].type
-#define seg_pvseg(seg, s)	(seg)->area[(s)].u.pv.pvseg
-#define seg_pv(seg, s)		(seg)->area[(s)].u.pv.pvseg->pv
-#define seg_dev(seg, s)		(seg)->area[(s)].u.pv.pvseg->pv->dev
-#define seg_pe(seg, s)		(seg)->area[(s)].u.pv.pvseg->pe
-#define seg_lv(seg, s)		(seg)->area[(s)].u.lv.lv
-#define seg_le(seg, s)		(seg)->area[(s)].u.lv.le
+#define seg_type(seg, s)	(seg)->areas[(s)].type
+#define seg_pvseg(seg, s)	(seg)->areas[(s)].u.pv.pvseg
+#define seg_pv(seg, s)		(seg)->areas[(s)].u.pv.pvseg->pv
+#define seg_dev(seg, s)		(seg)->areas[(s)].u.pv.pvseg->pv->dev
+#define seg_pe(seg, s)		(seg)->areas[(s)].u.pv.pvseg->pe
+#define seg_lv(seg, s)		(seg)->areas[(s)].u.lv.lv
+#define seg_le(seg, s)		(seg)->areas[(s)].u.lv.le
 
 struct logical_volume {
 	union lvid lvid;
@@ -398,10 +404,6 @@ int vg_commit(struct volume_group *vg);
 int vg_revert(struct volume_group *vg);
 struct volume_group *vg_read(struct cmd_context *cmd, const char *vg_name,
 			     int *consistent);
-struct volume_group *vg_read_precommitted(struct cmd_context *cmd,
-					  const char *vg_name,
-					  int *consistent);
-struct volume_group *vg_read_by_vgid(struct cmd_context *cmd, const char *vgid);
 struct physical_volume *pv_read(struct cmd_context *cmd, const char *pv_name,
 				struct list *mdas, uint64_t *label_sector,
 				int warnings);
@@ -424,6 +426,8 @@ struct physical_volume *pv_create(const struct format_type *fmt,
 				  uint32_t existing_extent_size,
 				  int pvmetadatacopies,
 				  uint64_t pvmetadatasize, struct list *mdas);
+int pv_resize(struct physical_volume *pv, struct volume_group *vg,
+              uint32_t new_pe_count);
 
 struct volume_group *vg_create(struct cmd_context *cmd, const char *name,
 			       uint32_t extent_size, uint32_t max_pv,
@@ -487,7 +491,8 @@ struct volume_group *find_vg_with_lv(const char *lv_name);
 
 /* Find LV with given lvid (used during activation) */
 struct logical_volume *lv_from_lvid(struct cmd_context *cmd,
-				    const char *lvid_s);
+				    const char *lvid_s,
+				    int precommitted);
 
 /* FIXME Merge these functions with ones above */
 struct physical_volume *find_pv(struct volume_group *vg, struct device *dev);
@@ -497,6 +502,7 @@ struct physical_volume *find_pv_by_name(struct cmd_context *cmd,
 
 /* Find LV segment containing given LE */
 struct lv_segment *find_seg_by_le(struct logical_volume *lv, uint32_t le);
+struct lv_segment *first_seg(struct logical_volume *lv);
 
 /* Find PV segment containing given LE */
 struct pv_segment *find_peg_by_pe(struct physical_volume *pv, uint32_t pe);
@@ -508,8 +514,9 @@ const char *strip_dir(const char *vg_name, const char *dir);
 
 /*
  * Checks that an lv has no gaps or overlapping segments.
+ * Set complete_vg to perform additional VG level checks.
  */
-int check_lv_segments(struct logical_volume *lv);
+int check_lv_segments(struct logical_volume *lv, int complete_vg);
 
 /*
  * Sometimes (eg, after an lvextend), it is possible to merge two
@@ -554,8 +561,19 @@ int create_mirror_layers(struct alloc_handle *ah,
 			 uint32_t status,
 			 uint32_t region_size,
 			 struct logical_volume *log_lv);
-int remove_mirror_images(struct lv_segment *mirrored_seg, uint32_t num_mirrors);
-int remove_all_mirror_images(struct logical_volume *lv);
+int add_mirror_layers(struct alloc_handle *ah,
+		      uint32_t num_mirrors,
+		      uint32_t existing_mirrors,
+		      struct logical_volume *lv,
+		      struct segment_type *segtype);
+
+int remove_mirror_images(struct lv_segment *mirrored_seg, uint32_t num_mirrors,
+			 struct list *removable_pvs, int remove_log);
+/*
+ * Given mirror image or mirror log segment, find corresponding mirror segment 
+ */
+struct lv_segment *find_mirror_seg(struct lv_segment *seg);
+int fixup_imported_mirrors(struct volume_group *vg);
 
 int insert_pvmove_mirrors(struct cmd_context *cmd,
 			  struct logical_volume *lv_mirr,

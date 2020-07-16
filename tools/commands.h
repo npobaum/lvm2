@@ -85,11 +85,12 @@ xx(lvconvert,
    "\t[-d|--debug]\n"
    "\t[-h|-?|--help]\n"
    "\t[-m|--mirrors Mirrors]\n"
+   "\t[-R|--regionsize MirrorLogRegionSize]\n"
    "\t[-v|--verbose]\n"
    "\t[--version]" "\n"
    "\tLogicalVolume[Path] [PhysicalVolume[Path]...]\n",
 
-   alloc_ARG, mirrors_ARG, test_ARG)
+   alloc_ARG, mirrors_ARG, regionsize_ARG, test_ARG)
 
 xx(lvcreate,
    "Create a logical volume",
@@ -343,6 +344,7 @@ xx(lvs,
 xx(lvscan,
    "List all logical volumes in all volume groups",
    "lvscan " "\n"
+   "\t[-a|--all]\n"
    "\t[-b|--blockdevice] " "\n"
    "\t[-d|--debug] " "\n"
    "\t[-h|-?|--help] " "\n"
@@ -351,7 +353,7 @@ xx(lvscan,
    "\t[-v|--verbose] " "\n"
    "\t[--version]\n",
 
-   blockdevice_ARG, disk_ARG, ignorelockingfailure_ARG, partial_ARG)
+   all_ARG, blockdevice_ARG, disk_ARG, ignorelockingfailure_ARG, partial_ARG)
 
 xx(pvchange,
    "Change attributes of physical volume(s)",
@@ -371,6 +373,19 @@ xx(pvchange,
 
    all_ARG, allocatable_ARG, allocation_ARG, autobackup_ARG, deltag_ARG,
    addtag_ARG, test_ARG, uuid_ARG)
+
+xx(pvresize,
+   "Resize physical volume(s)",
+   "pvresize " "\n"
+   "\t[-d|--debug]" "\n"
+   "\t[-h|-?|--help] " "\n"
+   "\t[--setphysicalvolumesize PhysicalVolumeSize[kKmMgGtT]" "\n"
+   "\t[-t|--test] " "\n"
+   "\t[-v|--verbose] " "\n"
+   "\t[--version] " "\n"
+   "\tPhysicalVolume [PhysicalVolume...]\n",
+
+   physicalvolumesize_ARG, test_ARG)
 
 xx(pvcreate,
    "Initialize physical volume(s) for use by LVM",
@@ -755,6 +770,7 @@ xx(vgreduce,
    "\t[-A|--autobackup y|n]\n"
    "\t[-d|--debug]\n"
    "\t[-h|--help]\n"
+   "\t[--mirrorsonly]\n"
    "\t[--removemissing]\n"
    "\t[-t|--test]\n"
    "\t[-v|--verbose]\n"
@@ -762,7 +778,7 @@ xx(vgreduce,
    "\tVolumeGroupName\n"
    "\t[PhysicalVolumePath...]\n",
 
-   all_ARG, autobackup_ARG, removemissing_ARG, test_ARG)
+   all_ARG, autobackup_ARG, mirrorsonly_ARG, removemissing_ARG, test_ARG)
 
 xx(vgremove,
    "Remove volume group(s)",

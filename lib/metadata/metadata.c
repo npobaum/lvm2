@@ -14,7 +14,6 @@
  */
 
 #include "lib.h"
-#include "pool.h"
 #include "device.h"
 #include "metadata.h"
 #include "toolcontext.h"
@@ -23,19 +22,20 @@
 #include "memlock.h"
 #include "str_list.h"
 #include "pv_alloc.h"
+#include "activate.h"
 
 static int _add_pv_to_vg(struct format_instance *fid, struct volume_group *vg,
 			 const char *pv_name)
 {
 	struct pv_list *pvl;
 	struct physical_volume *pv;
-	struct pool *mem = fid->fmt->cmd->mem;
+	struct dm_pool *mem = fid->fmt->cmd->mem;
 	struct list mdas;
 
 	log_verbose("Adding physical volume '%s' to volume group '%s'",
 		    pv_name, vg->name);
 
-	if (!(pvl = pool_zalloc(mem, sizeof(*pvl)))) {
+	if (!(pvl = dm_pool_zalloc(mem, sizeof(*pvl)))) {
 		log_error("pv_list allocation for '%s' failed", pv_name);
 		return 0;
 	}
@@ -59,7 +59,14 @@ static int _add_pv_to_vg(struct format_instance *fid, struct volume_group *vg,
 		return 0;
 	}
 
-	if (!(pv->vg_name = pool_strdup(mem, vg->name))) {
+	/* Ensure PV doesn't depend on another PV already in the VG */
+	if (pv_uses_vg(fid->fmt->cmd, pv, vg)) {
+		log_error("Physical volume %s might be constructed from same "
+			  "volume group %s", pv_name, vg->name);
+		return 0;
+	}
+
+	if (!(pv->vg_name = dm_pool_strdup(mem, vg->name))) {
 		log_error("vg->name allocation failed for '%s'", pv_name);
 		return 0;
 	}
@@ -168,16 +175,16 @@ int get_pv_from_vg_by_id(const struct format_type *fmt, const char *vg_name,
 int vg_rename(struct cmd_context *cmd, struct volume_group *vg,
 	      const char *new_name)
 {
-	struct pool *mem = cmd->mem;
+	struct dm_pool *mem = cmd->mem;
 	struct pv_list *pvl;
 
-	if (!(vg->name = pool_strdup(mem, new_name))) {
+	if (!(vg->name = dm_pool_strdup(mem, new_name))) {
 		log_error("vg->name allocation failed for '%s'", new_name);
 		return 0;
 	}
 
 	list_iterate_items(pvl, &vg->pvs) {
-		if (!(pvl->pv->vg_name = pool_strdup(mem, new_name))) {
+		if (!(pvl->pv->vg_name = dm_pool_strdup(mem, new_name))) {
 			log_error("pv->vg_name allocation failed for '%s'",
 				  dev_name(pvl->pv->dev));
 			return 0;
@@ -220,11 +227,11 @@ struct volume_group *vg_create(struct cmd_context *cmd, const char *vg_name,
 			       int pv_count, char **pv_names)
 {
 	struct volume_group *vg;
-	struct pool *mem = cmd->mem;
+	struct dm_pool *mem = cmd->mem;
 	int consistent = 0;
 	int old_partial;
 
-	if (!(vg = pool_zalloc(mem, sizeof(*vg)))) {
+	if (!(vg = dm_pool_zalloc(mem, sizeof(*vg)))) {
 		stack;
 		return NULL;
 	}
@@ -248,7 +255,7 @@ struct volume_group *vg_create(struct cmd_context *cmd, const char *vg_name,
 
 	vg->cmd = cmd;
 
-	if (!(vg->name = pool_strdup(mem, vg_name))) {
+	if (!(vg->name = dm_pool_strdup(mem, vg_name))) {
 		stack;
 		goto bad;
 	}
@@ -256,7 +263,7 @@ struct volume_group *vg_create(struct cmd_context *cmd, const char *vg_name,
 	vg->seqno = 0;
 
 	vg->status = (RESIZEABLE_VG | LVM_READ | LVM_WRITE);
-	vg->system_id = pool_alloc(mem, NAME_LEN);
+	vg->system_id = dm_pool_alloc(mem, NAME_LEN);
 	*vg->system_id = '\0';
 
 	vg->extent_size = extent_size;
@@ -298,7 +305,7 @@ struct volume_group *vg_create(struct cmd_context *cmd, const char *vg_name,
 	return vg;
 
       bad:
-	pool_free(mem, vg);
+	dm_pool_free(mem, vg);
 	return NULL;
 }
 
@@ -488,8 +495,8 @@ struct physical_volume *pv_create(const struct format_type *fmt,
 				  int pvmetadatacopies,
 				  uint64_t pvmetadatasize, struct list *mdas)
 {
-	struct pool *mem = fmt->cmd->mem;
-	struct physical_volume *pv = pool_alloc(mem, sizeof(*pv));
+	struct dm_pool *mem = fmt->cmd->mem;
+	struct physical_volume *pv = dm_pool_alloc(mem, sizeof(*pv));
 
 	if (!pv) {
 		stack;
@@ -506,7 +513,7 @@ struct physical_volume *pv_create(const struct format_type *fmt,
 
 	pv->dev = dev;
 
-	if (!(pv->vg_name = pool_zalloc(mem, NAME_LEN))) {
+	if (!(pv->vg_name = dm_pool_zalloc(mem, NAME_LEN))) {
 		stack;
 		goto bad;
 	}
@@ -553,7 +560,7 @@ struct physical_volume *pv_create(const struct format_type *fmt,
 	return pv;
 
       bad:
-	pool_free(mem, pv);
+	dm_pool_free(mem, pv);
 	return NULL;
 }
 
@@ -668,6 +675,16 @@ struct lv_segment *find_seg_by_le(struct logical_volume *lv, uint32_t le)
 	return NULL;
 }
 
+struct lv_segment *first_seg(struct logical_volume *lv)
+{
+	struct lv_segment *seg = NULL;
+
+	list_iterate_items(seg, &lv->segments)
+		break;
+
+	return seg;
+}
+
 /* Find segment at a given physical extent in a PV */
 struct pv_segment *find_peg_by_pe(struct physical_volume *pv, uint32_t pe)
 {
@@ -708,7 +725,7 @@ int vg_validate(struct volume_group *vg)
 	}
 
 	list_iterate_items(lvl, &vg->lvs) {
-		if (!check_lv_segments(lvl->lv)) {
+		if (!check_lv_segments(lvl->lv, 1)) {
 			log_error("Internal error: LV segments corrupted in %s.",
 				  lvl->lv->name);
 			return 0;
@@ -850,7 +867,7 @@ static struct volume_group *_vg_read_orphans(struct cmd_context *cmd)
 		return NULL;
 	}
 
-	if (!(vg = pool_zalloc(cmd->mem, sizeof(*vg)))) {
+	if (!(vg = dm_pool_zalloc(cmd->mem, sizeof(*vg)))) {
 		log_error("vg allocation failed");
 		return NULL;
 	}
@@ -858,7 +875,7 @@ static struct volume_group *_vg_read_orphans(struct cmd_context *cmd)
 	list_init(&vg->lvs);
 	list_init(&vg->tags);
 	vg->cmd = cmd;
-	if (!(vg->name = pool_strdup(cmd->mem, ORPHAN))) {
+	if (!(vg->name = dm_pool_strdup(cmd->mem, ORPHAN))) {
 		log_error("vg name allocation failed");
 		return NULL;
 	}
@@ -867,7 +884,7 @@ static struct volume_group *_vg_read_orphans(struct cmd_context *cmd)
 		if (!(pv = pv_read(cmd, dev_name(info->dev), NULL, NULL, 1))) {
 			continue;
 		}
-		if (!(pvl = pool_zalloc(cmd->mem, sizeof(*pvl)))) {
+		if (!(pvl = dm_pool_zalloc(cmd->mem, sizeof(*pvl)))) {
 			log_error("pv_list allocation failed");
 			return NULL;
 		}
@@ -885,6 +902,8 @@ static struct volume_group *_vg_read_orphans(struct cmd_context *cmd)
  * If consistent is 0, caller must check whether consistent == 1 on return
  * and take appropriate action if it isn't (e.g. abort; get write lock 
  * and call vg_read again).
+ *
+ * If precommitted is set, use precommitted metadata if present.
  */
 static struct volume_group *_vg_read(struct cmd_context *cmd,
 				     const char *vgname,
@@ -895,9 +914,10 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 	struct volume_group *vg, *correct_vg = NULL;
 	struct metadata_area *mda;
 	int inconsistent = 0;
+	int use_precommitted = precommitted;
 
 	if (!*vgname) {
-		if (precommitted) {
+		if (use_precommitted) {
 			log_error("Internal error: vg_read requires vgname "
 				  "with pre-commit.");
 			return NULL;
@@ -923,11 +943,8 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 		}
 	}
 
-	if (precommitted && !(fmt->features & FMT_PRECOMMIT)) {
-		log_error("Internal error: %s doesn't support "
-			  "pre-commit", fmt->name);
-		return NULL;
-	}
+	if (use_precommitted && !(fmt->features & FMT_PRECOMMIT))
+		use_precommitted = 0;
 
 	/* create format instance with appropriate metadata area */
 	if (!(fid = fmt->ops->create_instance(fmt, vgname, NULL))) {
@@ -937,9 +954,9 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 
 	/* Ensure contents of all metadata areas match - else do recovery */
 	list_iterate_items(mda, &fid->metadata_areas) {
-		if ((precommitted &&
+		if ((use_precommitted &&
 		     !(vg = mda->ops->vg_read_precommit(fid, vgname, mda))) ||
-		    (!precommitted &&
+		    (!use_precommitted &&
 		     !(vg = mda->ops->vg_read(fid, vgname, mda)))) {
 			inconsistent = 1;
 			continue;
@@ -966,11 +983,8 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 			return NULL;
 		}
 
-		if (precommitted && !(fmt->features & FMT_PRECOMMIT)) {
-			log_error("Internal error: %s doesn't support "
-				  "pre-commit", fmt->name);
-			return NULL;
-		}
+		if (precommitted && !(fmt->features & FMT_PRECOMMIT))
+			use_precommitted = 0;
 
 		/* create format instance with appropriate metadata area */
 		if (!(fid = fmt->ops->create_instance(fmt, vgname, NULL))) {
@@ -980,10 +994,10 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 
 		/* Ensure contents of all metadata areas match - else recover */
 		list_iterate_items(mda, &fid->metadata_areas) {
-			if ((precommitted &&
+			if ((use_precommitted &&
 			     !(vg = mda->ops->vg_read_precommit(fid, vgname,
 								mda))) ||
-			    (!precommitted &&
+			    (!use_precommitted &&
 			     !(vg = mda->ops->vg_read(fid, vgname, mda)))) {
 				inconsistent = 1;
 				continue;
@@ -1010,7 +1024,8 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 	lvmcache_update_vg(correct_vg);
 
 	if (inconsistent) {
-		if (precommitted) {
+		/* FIXME Test should be if we're *using* precommitted metadata not if we were searching for it */
+		if (use_precommitted) {
 			log_error("Inconsistent pre-commit metadata copies "
 				  "for volume group %s", vgname);
 			return NULL;
@@ -1069,7 +1084,7 @@ struct volume_group *vg_read(struct cmd_context *cmd, const char *vgname,
 	}
 
 	list_iterate_items(lvl, &vg->lvs) {
-		if (!check_lv_segments(lvl->lv)) {
+		if (!check_lv_segments(lvl->lv, 1)) {
 			log_error("Internal error: LV segments corrupted in %s.",
 				  lvl->lv->name);
 			return NULL;
@@ -1079,18 +1094,13 @@ struct volume_group *vg_read(struct cmd_context *cmd, const char *vgname,
 	return vg;
 }
 
-struct volume_group *vg_read_precommitted(struct cmd_context *cmd,
-					  const char *vgname,
-					  int *consistent)
-{
-	return _vg_read(cmd, vgname, consistent, 1);
-}
-
 /* This is only called by lv_from_lvid, which is only called from 
  * activate.c so we know the appropriate VG lock is already held and 
  * the vg_read is therefore safe.
  */
-struct volume_group *vg_read_by_vgid(struct cmd_context *cmd, const char *vgid)
+static struct volume_group *_vg_read_by_vgid(struct cmd_context *cmd,
+					    const char *vgid,
+					    int precommitted)
 {
 	const char *vgname;
 	struct list *vgnames;
@@ -1102,7 +1112,8 @@ struct volume_group *vg_read_by_vgid(struct cmd_context *cmd, const char *vgid)
 	/* Is corresponding vgname already cached? */
 	if ((vginfo = vginfo_from_vgid(vgid)) &&
 	    vginfo->vgname && *vginfo->vgname) {
-		if ((vg = vg_read(cmd, vginfo->vgname, &consistent)) &&
+		if ((vg = _vg_read(cmd, vginfo->vgname,
+				   &consistent, precommitted)) &&
 		    !strncmp(vg->id.uuid, vgid, ID_LEN)) {
 			if (!consistent) {
 				log_error("Volume group %s metadata is "
@@ -1132,7 +1143,8 @@ struct volume_group *vg_read_by_vgid(struct cmd_context *cmd, const char *vgid)
 		if (!vgname || !*vgname)
 			continue;	// FIXME Unnecessary? 
 		consistent = 0;
-		if ((vg = vg_read(cmd, vgname, &consistent)) &&
+		if ((vg = _vg_read(cmd, vgname, &consistent,
+				   precommitted)) &&
 		    !strncmp(vg->id.uuid, vgid, ID_LEN)) {
 			if (!consistent) {
 				log_error("Volume group %s metadata is "
@@ -1147,7 +1159,8 @@ struct volume_group *vg_read_by_vgid(struct cmd_context *cmd, const char *vgid)
 }
 
 /* Only called by activate.c */
-struct logical_volume *lv_from_lvid(struct cmd_context *cmd, const char *lvid_s)
+struct logical_volume *lv_from_lvid(struct cmd_context *cmd, const char *lvid_s,
+				    int precommitted)
 {
 	struct lv_list *lvl;
 	struct volume_group *vg;
@@ -1156,7 +1169,7 @@ struct logical_volume *lv_from_lvid(struct cmd_context *cmd, const char *lvid_s)
 	lvid = (const union lvid *) lvid_s;
 
 	log_very_verbose("Finding volume group for uuid %s", lvid_s);
-	if (!(vg = vg_read_by_vgid(cmd, lvid->id[0].uuid))) {
+	if (!(vg = _vg_read_by_vgid(cmd, lvid->id[0].uuid, precommitted))) {
 		log_error("Volume group for uuid not found: %s", lvid_s);
 		return NULL;
 	}
@@ -1200,7 +1213,7 @@ struct physical_volume *pv_read(struct cmd_context *cmd, const char *pv_name,
 	if (label_sector && *label_sector)
 		*label_sector = label->sector;
 
-	if (!(pv = pool_zalloc(cmd->mem, sizeof(*pv)))) {
+	if (!(pv = dm_pool_zalloc(cmd->mem, sizeof(*pv)))) {
 		log_error("pv allocation for '%s' failed", pv_name);
 		return NULL;
 	}
@@ -1246,7 +1259,7 @@ struct list *get_pvs(struct cmd_context *cmd)
 
 	lvmcache_label_scan(cmd, 0);
 
-	if (!(results = pool_alloc(cmd->mem, sizeof(*results)))) {
+	if (!(results = dm_pool_alloc(cmd->mem, sizeof(*results)))) {
 		log_error("PV list allocation failed");
 		return NULL;
 	}

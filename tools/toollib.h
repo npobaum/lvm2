@@ -17,7 +17,6 @@
 #define _LVM_TOOLLIB_H
 
 #include "metadata.h"
-#include "pool.h"
 
 int autobackup_set(void);
 int autobackup_init(const char *backup_dir, int keep_days, int keep_number,
@@ -82,13 +81,10 @@ const char *extract_vgname(struct cmd_context *cmd, const char *lv_name);
  * Builds a list of pv's from the names in argv.  Used in
  * lvcreate/extend.
  */
-struct list *create_pv_list(struct pool *mem, struct volume_group *vg, int argc,
+struct list *create_pv_list(struct dm_pool *mem, struct volume_group *vg, int argc,
 			    char **argv, int allocatable_only);
 
-struct list *clone_pv_list(struct pool *mem, struct list *pvs);
-
-int exec_cmd(const char *command, const char *fscmd, const char *lv_path,
-	     const char *size);
+struct list *clone_pv_list(struct dm_pool *mem, struct list *pvs);
 
 int apply_lvname_restrictions(const char *name);
 
@@ -96,6 +92,12 @@ int validate_vg_name(struct cmd_context *cmd, const char *vg_name);
 
 int generate_log_name_format(struct volume_group *vg, const char *lv_name,
                              char *buffer, size_t size);
+
+struct logical_volume *create_mirror_log(struct cmd_context *cmd,
+					 struct volume_group *vg,
+					 struct alloc_handle *ah,
+					 alloc_policy_t alloc,
+					 const char *lv_name);
 
 int zero_lv(struct cmd_context *cmd, struct logical_volume *lv);
 
