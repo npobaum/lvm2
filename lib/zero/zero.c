@@ -16,7 +16,7 @@
 #include "pool.h"
 #include "list.h"
 #include "toolcontext.h"
-#include "segtypes.h"
+#include "segtype.h"
 #include "display.h"
 #include "text_export.h"
 #include "text_import.h"
@@ -96,6 +96,8 @@ struct segment_type *init_zero_segtype(struct cmd_context *cmd)
 	segtype->name = "zero";
 	segtype->private = NULL;
 	segtype->flags = SEG_CAN_SPLIT | SEG_VIRTUAL;
+
+	log_very_verbose("Initialised segtype: %s", segtype->name);
 
 	return segtype;
 }

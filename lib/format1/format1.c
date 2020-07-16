@@ -24,6 +24,7 @@
 #include "lvmcache.h"
 #include "lvm1-label.h"
 #include "format1.h"
+#include "segtype.h"
 
 #define FMT_LVM1_NAME "lvm1"
 
@@ -182,7 +183,7 @@ static struct volume_group *_vg_read(struct format_instance *fid,
 				     const char *vg_name,
 				     struct metadata_area *mda)
 {
-	struct pool *mem = pool_create(1024 * 10);
+	struct pool *mem = pool_create("lvm1 vg_read", 1024 * 10);
 	struct list pvs;
 	struct volume_group *vg = NULL;
 	list_init(&pvs);
@@ -275,7 +276,7 @@ static int _flatten_vg(struct format_instance *fid, struct pool *mem,
 static int _vg_write(struct format_instance *fid, struct volume_group *vg,
 		     struct metadata_area *mda)
 {
-	struct pool *mem = pool_create(1024 * 10);
+	struct pool *mem = pool_create("lvm1 vg_write", 1024 * 10);
 	struct list pvds;
 	int r = 0;
 
@@ -298,7 +299,7 @@ static int _vg_write(struct format_instance *fid, struct volume_group *vg,
 static int _pv_read(const struct format_type *fmt, const char *pv_name,
 		    struct physical_volume *pv, struct list *mdas)
 {
-	struct pool *mem = pool_create(1024);
+	struct pool *mem = pool_create("lvm1 pv_read", 1024);
 	struct disk_list *dl;
 	struct device *dev;
 	int r = 0;
@@ -420,7 +421,7 @@ static int _pv_write(const struct format_type *fmt, struct physical_volume *pv,
 	pv->pe_size = pv->pe_count = 0;
 	pv->pe_start = PE_ALIGN;
 
-	if (!(mem = pool_create(1024))) {
+	if (!(mem = pool_create("lvm1 pv_write", 1024))) {
 		stack;
 		return 0;
 	}
@@ -492,6 +493,17 @@ static int _vg_setup(struct format_instance *fid, struct volume_group *vg)
 	return 1;
 }
 
+static int _segtype_supported (struct format_instance *fid, 
+			       struct segment_type *segtype)
+{
+	if (!(segtype->flags & SEG_FORMAT1_SUPPORT)) {
+		stack;
+		return 0;
+	}
+
+	return 1;
+}
+
 static struct metadata_area_ops _metadata_format1_ops = {
 	vg_read:_vg_read,
 	vg_write:_vg_write,
@@ -542,6 +554,7 @@ static struct format_handler _format1_ops = {
 	pv_write:_pv_write,
 	lv_setup:_lv_setup,
 	vg_setup:_vg_setup,
+	segtype_supported:_segtype_supported,
 	create_instance:_create_instance,
 	destroy_instance:_destroy_instance,
 	destroy:_destroy,
@@ -577,6 +590,8 @@ struct format_type *init_format(struct cmd_context *cmd)
 		log_error("Couldn't register lvm1 label handler.");
 		return NULL;
 	}
+
+	log_very_verbose("Initialised format: %s", fmt->name);
 
 	return fmt;
 }

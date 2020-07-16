@@ -21,7 +21,7 @@
 #include "toolcontext.h"
 #include "lv_alloc.h"
 #include "display.h"
-#include "segtypes.h"
+#include "segtype.h"
 
 /*
  * These functions adjust the pe counts in pv's
@@ -458,7 +458,7 @@ static int _allocate(struct volume_group *vg, struct logical_volume *lv,
 	if (segtype->flags & SEG_VIRTUAL)
 		return _alloc_virtual(lv, allocated, segtype);
 
-	if (!(scratch = pool_create(1024))) {
+	if (!(scratch = pool_create("allocation", 1024))) {
 		stack;
 		return 0;
 	}
@@ -622,6 +622,16 @@ int lv_extend(struct format_instance *fid,
 
 	lv->le_count += extents;
 	lv->size += (uint64_t) extents *lv->vg->extent_size;
+
+	if (fid->fmt->ops->segtype_supported &&
+	    !fid->fmt->ops->segtype_supported(fid, segtype)) {
+		log_error("Metadata format (%s) does not support required "
+			  "LV segment type (%s).", fid->fmt->name,
+			  segtype->name);
+		log_error("Consider changing the metadata format by running "
+			  "vgconvert.");
+		return 0;
+	}
 
 	if (!_allocate(lv->vg, lv, allocatable_pvs, old_le_count, alloc,
 		       segtype, stripes, stripe_size, mirrors, mirrored_pv,

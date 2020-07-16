@@ -16,7 +16,7 @@
 #include "lib.h"
 #include "metadata.h"
 #include "toolcontext.h"
-#include "segtypes.h"
+#include "segtype.h"
 #include "display.h"
 #include "activate.h"
 
@@ -149,8 +149,8 @@ int insert_pvmove_mirrors(struct cmd_context *cmd,
 				       	seg->area[s].u.pv.pe,
 				       	PVMOVE, allocatable_pvs,
 				       	lv->alloc)) {
-					log_error("Allocation for temporary "
-					  	"pvmove LV failed");
+					log_error("Unable to allocate "
+						  "temporary LV for pvmove.");
 					return 0;
 				}
 				seg->area[s].type = AREA_LV;

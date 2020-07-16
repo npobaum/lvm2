@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2003-2004 Sistina Software, Inc. All rights reserved.  
+ * Copyright (C) 2003-2004 Sistina Software, Inc. All rights reserved. 
  * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
  *
  * This file is part of LVM2.
@@ -13,20 +13,11 @@
  * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
-#include "lib.h"
-#include "toolcontext.h"
-#include "segtypes.h"
+#include "tools.h"
 
-struct segment_type *get_segtype_from_string(struct cmd_context *cmd,
-					     const char *str)
+int segtypes(struct cmd_context *cmd, int argc, char **argv)
 {
-	struct segment_type *segtype;
+	display_segtypes(cmd);
 
-	list_iterate_items(segtype, &cmd->segtypes) {
-		if (!strcmp(segtype->name, str))
-			return segtype;
-	}
-
-	log_error("Unrecognised segment type %s", str);
-	return NULL;
+	return ECMD_PROCESSED;
 }

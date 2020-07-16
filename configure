@@ -874,7 +874,8 @@ Optional Packages:
                           TYPE=internal
   --with-mirrors=TYPE     Mirror support: internal/shared/none
                           TYPE=internal
-  --with-clvmd            Build cluster LVM Daemon
+  --with-clvmd=TYPE       Build cluster LVM Daemon: cman/gulm/none
+                          TYPE=none
   --with-optimisation=OPT C optimisation flag OPT=-O2
   --with-localedir=DIR    Translation files in DIR PREFIX/share/locale
   --with-confdir=DIR      Configuration files in DIR /etc
@@ -6855,14 +6856,17 @@ echo $ECHO_N "checking whether to build cluster LVM daemon... $ECHO_C" >&6
 # Check whether --with-clvmd or --without-clvmd was given.
 if test "${with_clvmd+set}" = set; then
   withval="$with_clvmd"
-  CLVMD=$withval
+   CLVMD="$withval"
 else
-  CLVMD=no
+   CLVMD="none"
 fi;
+if test x$CLVMD = xyes; then
+	CLVMD=cman
+fi
 echo "$as_me:$LINENO: result: $CLVMD" >&5
 echo "${ECHO_T}$CLVMD" >&6
 
-if  test x$CLVMD = xyes && test x$CLUSTER = xnone; then
+if  test x$CLVMD != xnone && test x$CLUSTER = xnone; then
 	CLUSTER=internal
 fi
 
@@ -7520,7 +7524,7 @@ else
 fi
 
 
-if [ "x$HAVE_LIBDL" = xyes -a "x$STATIC_LINK" = xno ]; then
+if [ "x$HAVE_LIBDL" = xyes ]; then
 	CFLAGS="$CFLAGS -DHAVE_LIBDL"
 	LIBS="-ldl $LIBS"
 else

@@ -22,6 +22,7 @@
 #define DEV_ACCESSED_W		0x00000001	/* Device written to? */
 #define DEV_REGULAR		0x00000002	/* Regular file? */
 #define DEV_ALLOCED		0x00000004	/* dbg_malloc used */
+#define DEV_OPENED_RW		0x00000008	/* Opened RW */
 
 /*
  * All devices in LVM will be represented by one of these.
@@ -34,6 +35,7 @@ struct device {
 	/* private */
 	int fd;
 	int open_count;
+	int block_size;
 	uint32_t flags;
 	uint64_t end;
 	struct list open_list;
@@ -89,15 +91,14 @@ static inline const char *dev_name(const struct device *dev)
 /* Return a valid device name from the alias list; NULL otherwise */
 const char *dev_name_confirmed(struct device *dev, int quiet);
 
+/* Does device contain md superblock?  If so, where? */
+int dev_is_md(struct device *dev, uint64_t *sb);
+
 /* FIXME Check partition type if appropriate */
 
 #define is_lvm_partition(a) 1
+/* int is_lvm_partition(const char *name); */
 
-/*
-static inline int is_lvm_partition(const char *name)
-{
-	return 1;
-}
-*/
+int is_partitioned_dev(struct device *dev);
 
 #endif
