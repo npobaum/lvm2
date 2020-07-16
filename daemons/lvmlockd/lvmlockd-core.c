@@ -741,24 +741,6 @@ static const char *op_str(int x)
 	};
 }
 
-static const char *mode_str(int x)
-{
-	switch (x) {
-	case LD_LK_IV:
-		return "iv";
-	case LD_LK_UN:
-		return "un";
-	case LD_LK_NL:
-		return "nl";
-	case LD_LK_SH:
-		return "sh";
-	case LD_LK_EX:
-		return "ex";
-	default:
-		return ".";
-	};
-}
-
 int last_string_from_args(char *args_in, char *last)
 {
 	const char *args = args_in;
@@ -1365,7 +1347,7 @@ static int res_convert(struct lockspace *ls, struct resource *r,
 
 	r->last_client_id = act->client_id;
 
-	log_debug("S %s R %s res_convert cl %u mode %d", ls->name, r->name, act->client_id, act->mode);
+	log_debug("S %s R %s res_convert cl %u mode %s", ls->name, r->name, act->client_id, mode_str(act->mode));
 
 	if (act->mode == LD_LK_EX && lk->mode == LD_LK_SH && r->sh_count > 1)
 		return -EAGAIN;
@@ -1379,12 +1361,16 @@ static int res_convert(struct lockspace *ls, struct resource *r,
 		r->version++;
 		lk->version = r->version;
 		r_version = r->version;
+		r->version_zero_valid = 0;
+
 		log_debug("S %s R %s res_convert r_version inc %u",
 			  ls->name, r->name, r_version);
 
 	} else if ((r->type == LD_RT_VG) && (r->mode == LD_LK_EX) && (lk->version > r->version)) {
 		r->version = lk->version;
 		r_version = r->version;
+		r->version_zero_valid = 0;
+
 		log_debug("S %s R %s res_convert r_version new %u", ls->name, r->name, r_version);
 	} else {
 		r_version = 0;
@@ -1579,8 +1565,23 @@ static int res_update(struct lockspace *ls, struct resource *r,
 
 	if (act->flags & LD_AF_NEXT_VERSION)
 		lk->version = r->version + 1;
-	else
+	else {
+		if (r->version >= act->version) {
+			/*
+			 * This update is done from vg_write. If the metadata with
+			 * this seqno is not committed by vg_commit, then next
+			 * vg_write can use the same seqno, causing us to see no
+			 * increase in seqno here as expected.
+			 * FIXME: In this case, do something like setting the lvb
+			 * version to 0 to instead of the same seqno which will
+			 * force an invalidation on other hosts.  The next change
+			 * will return to using the seqno again.
+			 */
+			log_error("S %s R %s res_update cl %u old version %u new version %u too small",
+			  	  ls->name, r->name, act->client_id, r->version, act->version);
+		}
 		lk->version = act->version;
+	}
 
 	log_debug("S %s R %s res_update cl %u lk version to %u", ls->name, r->name, act->client_id, lk->version);
 
@@ -5920,7 +5921,7 @@ static int main_loop(daemon_state *ds_arg)
 	close_client_thread();
 	closelog();
 	daemon_close(lvmetad_handle);
-	return 0;
+	return 1; /* libdaemon uses 1 for success */
 }
 
 static void usage(char *prog, FILE *file)
@@ -6027,7 +6028,7 @@ int main(int argc, char *argv[])
 			else if (lm == LD_LM_SANLOCK && lm_support_sanlock())
 				gl_use_sanlock = 1;
 			else {
-				fprintf(stderr, "invalid gl-type option");
+				fprintf(stderr, "invalid gl-type option\n");
 				exit(EXIT_FAILURE);
 			}
 			break;

@@ -9,7 +9,7 @@
  *
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #include "tools.h"
@@ -3431,6 +3431,13 @@ static int lvconvert_single(struct cmd_context *cmd, struct lvconvert_params *lp
 	vg = vg_read(cmd, lp->vg_name, NULL, READ_FOR_UPDATE, lockd_state);
 	if (vg_read_error(vg)) {
 		release_vg(vg);
+		goto_out;
+	}
+
+	if (test_mode() && is_lockd_type(vg->lock_type)) {
+		log_error("Test mode is not yet supported with lock type %s",
+			  vg->lock_type);
+		unlock_and_release_vg(cmd, vg, lp->vg_name);
 		goto_out;
 	}
 

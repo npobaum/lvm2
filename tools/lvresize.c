@@ -10,7 +10,7 @@
  *
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #include "tools.h"
@@ -46,6 +46,16 @@ static int _lvresize_params(struct cmd_context *cmd, int argc, char **argv,
 		 * then metadata will be extended there.
 		 */
 		lp->sizeargs = arg_count(cmd, extents_ARG) + arg_count(cmd, size_ARG);
+
+		if (arg_count(cmd, poolmetadatasize_ARG)) {
+			lp->poolmetadatasize = arg_uint64_value(cmd, poolmetadatasize_ARG, 0);
+			lp->poolmetadatasign = arg_sign_value(cmd, poolmetadatasize_ARG, SIGN_NONE);
+			if (lp->poolmetadatasign == SIGN_MINUS) {
+				log_error("Can't reduce pool metadata size.");
+				return 0;
+			}
+		}
+
 		if ((lp->sizeargs == 0) && (argc >= 2)) {
 			lp->extents = 100;
 			lp->percent = PERCENT_PVS;
@@ -70,15 +80,6 @@ static int _lvresize_params(struct cmd_context *cmd, int argc, char **argv,
 			lp->size = arg_uint64_value(cmd, size_ARG, 0);
 			lp->sign = arg_sign_value(cmd, size_ARG, SIGN_NONE);
 			lp->percent = PERCENT_NONE;
-		}
-
-		if (arg_count(cmd, poolmetadatasize_ARG)) {
-			lp->poolmetadatasize = arg_uint64_value(cmd, poolmetadatasize_ARG, 0);
-			lp->poolmetadatasign = arg_sign_value(cmd, poolmetadatasize_ARG, SIGN_NONE);
-			if (lp->poolmetadatasign == SIGN_MINUS) {
-				log_error("Can't reduce pool metadata size.");
-				return 0;
-			}
 		}
 	}
 

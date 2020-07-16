@@ -9,7 +9,7 @@
  *
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #include "lib.h"
@@ -678,13 +678,17 @@ static int _thin_target_present(struct cmd_context *cmd,
 	const struct dm_config_value *cv;
 	const char *str;
 
-	if (!_checked) {
-		_present = target_present(cmd, _thin_pool_module, 1);
+	if (!activation())
+		return 0;
 
-		if (!target_version(_thin_pool_module, &maj, &min, &patchlevel)) {
-			log_error("Cannot read %s target version.", _thin_pool_module);
+	if (!_checked) {
+		_checked = 1;
+
+		if (!(_present = target_present(cmd, _thin_pool_module, 1)))
 			return 0;
-		}
+
+		if (!target_version(_thin_pool_module, &maj, &min, &patchlevel))
+			return_0;
 
 		for (i = 0; i < DM_ARRAY_SIZE(_features); ++i)
 			if ((maj > _features[i].maj) ||
@@ -694,8 +698,6 @@ static int _thin_target_present(struct cmd_context *cmd,
 				log_very_verbose("Target %s does not support %s.",
 						 _thin_pool_module,
 						 _features[i].feature);
-
-		_checked = 1;
 	}
 
 	if (attributes) {
@@ -704,7 +706,7 @@ static int _thin_target_present(struct cmd_context *cmd,
 			if ((cn = find_config_tree_array(cmd, global_thin_disabled_features_CFG, NULL))) {
 				for (cv = cn->v; cv; cv = cv->next) {
 					if (cv->type != DM_CFG_STRING) {
-						log_error("Ignoring invalid string in config file %s.",
+						log_warn("WARNING: Ignoring invalid string in config file %s.",
 							  _lvmconf);
 						continue;
 					}

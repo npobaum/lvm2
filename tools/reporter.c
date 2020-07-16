@@ -10,7 +10,7 @@
  *
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #include "tools.h"
@@ -582,7 +582,7 @@ static void _check_pv_list(struct cmd_context *cmd, int argc, char **argv,
 			if (!rescan_done && !dev_cache_get(argv[i], cmd->full_filter)) {
 				cmd->filter->wipe(cmd->filter);
 				/* FIXME scan only one device */
-				lvmcache_label_scan(cmd, 0);
+				lvmcache_label_scan(cmd);
 				rescan_done = 1;
 			}
 			if (*argv[i] == '@') {

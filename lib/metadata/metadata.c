@@ -10,7 +10,7 @@
  *
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #include "lib.h"
@@ -226,6 +226,10 @@ int add_pv_to_vg(struct volume_group *vg, const char *pv_name,
 	 * pe_count must always be calculated by pv_setup
 	 */
 	pv->pe_alloc_count = 0;
+
+	/* LVM1 stores this outside a VG; LVM2 only stores it inside */
+	/* FIXME Default from config file? vgextend cmdline flag? */
+	pv->status |= ALLOCATABLE_PV;
 
 	if (!fid->fmt->ops->pv_setup(fid->fmt, pv, vg)) {
 		log_error("Format-specific setup of physical volume '%s' "
@@ -662,6 +666,35 @@ int vg_check_pv_dev_block_sizes(const struct volume_group *vg)
 	return 1;
 }
 
+static int _check_pv_dev_sizes(struct volume_group *vg)
+{
+	struct pv_list *pvl;
+	uint64_t dev_size, size;
+	int r = 1;
+
+	if (!vg->cmd->check_pv_dev_sizes ||
+	    is_orphan_vg(vg->name))
+		return 1;
+
+	dm_list_iterate_items(pvl, &vg->pvs) {
+		if (is_missing_pv(pvl->pv))
+			continue;
+
+		dev_size = pv_dev_size(pvl->pv);
+		size = pv_size(pvl->pv);
+
+		if (dev_size < size) {
+			log_warn("Device %s has size of %" PRIu64 " sectors which "
+				 "is smaller than corresponding PV size of %" PRIu64
+				  " sectors. Was device resized?",
+				  pv_dev_name(pvl->pv), dev_size, size);
+			r = 0;
+		}
+	}
+
+	return r;
+}
+
 /*
  * Extend a VG by a single PV / device path
  *
@@ -737,6 +770,8 @@ int vg_extend(struct volume_group *vg, int pv_count, const char *const *pv_names
 		}
 		dm_free(pv_name);
 	}
+
+	(void) _check_pv_dev_sizes(vg);
 
 /* FIXME Decide whether to initialise and add new mdahs to format instance */
 
@@ -1089,7 +1124,7 @@ uint32_t extents_from_size(struct cmd_context *cmd, uint64_t size,
 
 	if (size > (uint64_t) MAX_EXTENT_COUNT * extent_size) {
 		log_error("Volume too large (%s) for extent size %s. "
-			  "Upper limit is %s.",
+			  "Upper limit is less then %s.",
 			  display_size(cmd, size),
 			  display_size(cmd, (uint64_t) extent_size),
 			  display_size(cmd, (uint64_t) MAX_EXTENT_COUNT *
@@ -1539,7 +1574,8 @@ out:
 		}
 
 	if (scan_needed) {
-		if (!lvmcache_label_scan(cmd, 2)) {
+		lvmcache_force_next_label_scan();
+		if (!lvmcache_label_scan(cmd)) {
 			stack;
 			r = 0;
 		}
@@ -3137,6 +3173,8 @@ int vg_write(struct volume_group *vg)
 	if (!(vg->fid->fmt->features & FMT_PRECOMMIT) && !lvmetad_vg_update(vg))
 		return_0;
 
+	lockd_vg_update(vg);
+
 	return 1;
 }
 
@@ -3192,8 +3230,6 @@ int vg_commit(struct volume_group *vg)
 		return_0;
 
 	cache_updated = _vg_commit_mdas(vg);
-
-	lockd_vg_update(vg);
 
 	if (cache_updated) {
 		/* Instruct remote nodes to upgrade cached metadata. */
@@ -3299,7 +3335,7 @@ static struct volume_group *_vg_read_orphans(struct cmd_context *cmd,
 	struct pv_list head;
 
 	dm_list_init(&head.list);
-	lvmcache_label_scan(cmd, 0);
+	lvmcache_label_scan(cmd);
 	lvmcache_seed_infos_from_lvmetad(cmd);
 
 	if (!(vginfo = lvmcache_vginfo_from_vgname(orphan_vgname, NULL)))
@@ -3605,12 +3641,13 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 	/* Find the vgname in the cache */
 	/* If it's not there we must do full scan to be completely sure */
 	if (!(fmt = lvmcache_fmt_from_vgname(cmd, vgname, vgid, 1))) {
-		lvmcache_label_scan(cmd, 0);
+		lvmcache_label_scan(cmd);
 		if (!(fmt = lvmcache_fmt_from_vgname(cmd, vgname, vgid, 1))) {
 			/* Independent MDAs aren't supported under low memory */
 			if (!cmd->independent_metadata_areas && critical_section())
 				return_NULL;
-			lvmcache_label_scan(cmd, 2);
+			lvmcache_force_next_label_scan();
+			lvmcache_label_scan(cmd);
 			if (!(fmt = lvmcache_fmt_from_vgname(cmd, vgname, vgid, 0)))
 				return_NULL;
 		}
@@ -3820,7 +3857,8 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 		/* Independent MDAs aren't supported under low memory */
 		if (!cmd->independent_metadata_areas && critical_section())
 			return_NULL;
-		lvmcache_label_scan(cmd, 2);
+		lvmcache_force_next_label_scan();
+		lvmcache_label_scan(cmd);
 		if (!(fmt = lvmcache_fmt_from_vgname(cmd, vgname, vgid, 0)))
 			return_NULL;
 
@@ -4024,6 +4062,10 @@ struct volume_group *vg_read_internal(struct cmd_context *cmd, const char *vgnam
 	if (!(vg = _vg_read(cmd, vgname, vgid, warn_flags, consistent, 0)))
 		goto_out;
 
+	if (!_check_pv_dev_sizes(vg))
+		log_warn("One or more devices used as PVs in VG %s "
+			 "have changed sizes.", vg->name);
+
 	if (!check_pv_segments(vg)) {
 		log_error(INTERNAL_ERROR "PV segments corrupted in %s.",
 			  vg->name);
@@ -4113,7 +4155,8 @@ static struct volume_group *_vg_read_by_vgid(struct cmd_context *cmd,
 	 *       allowed to do a full scan here any more. */
 
 	// The slow way - full scan required to cope with vgrename
-	lvmcache_label_scan(cmd, 2);
+	lvmcache_force_next_label_scan();
+	lvmcache_label_scan(cmd);
 	if (!(vgnames = get_vgnames(cmd, 0))) {
 		log_error("vg_read_by_vgid: get_vgnames failed");
 		return NULL;
@@ -4374,7 +4417,7 @@ static int _get_pvs(struct cmd_context *cmd, uint32_t warn_flags,
 	struct vg_list *vgl_item = NULL;
 	int have_pv = 0;
 
-	lvmcache_label_scan(cmd, 0);
+	lvmcache_label_scan(cmd);
 
 	/* Get list of VGs */
 	if (!(vgids = get_vgids(cmd, 1))) {
@@ -5179,7 +5222,7 @@ uint32_t vg_lock_newname(struct cmd_context *cmd, const char *vgname)
 	/* Find the vgname in the cache */
 	/* If it's not there we must do full scan to be completely sure */
 	if (!lvmcache_fmt_from_vgname(cmd, vgname, NULL, 1)) {
-		lvmcache_label_scan(cmd, 0);
+		lvmcache_label_scan(cmd);
 		if (!lvmcache_fmt_from_vgname(cmd, vgname, NULL, 1)) {
 			/* Independent MDAs aren't supported under low memory */
 			if (!cmd->independent_metadata_areas && critical_section()) {
@@ -5190,7 +5233,8 @@ uint32_t vg_lock_newname(struct cmd_context *cmd, const char *vgname)
 				unlock_vg(cmd, vgname);
 				return FAILED_LOCKING;
 			}
-			lvmcache_label_scan(cmd, 2);
+			lvmcache_force_next_label_scan();
+			lvmcache_label_scan(cmd);
 			if (!lvmcache_fmt_from_vgname(cmd, vgname, NULL, 0)) {
 				/* vgname not found after scanning */
 				return SUCCESS;

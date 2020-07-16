@@ -9,7 +9,7 @@
  *
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 */
 
 /*
@@ -1066,8 +1066,8 @@ cfg_array(activation_volume_list_CFG, "volume_list", activation_CFG_SECTION, CFG
 	"    or VG.\n"
 	"  @*\n"
 	"    Selects an LV if a tag defined on the host is also set on the LV\n"
-	"    or VG. See tags/hosttags. If any host tags exist but the volume\n"
-	"    list is not defined, a default single-entry list containing '@*'\n"
+	"    or VG. See tags/hosttags. If any host tags exist but volume_list\n"
+	"    is not defined, a default single-entry list containing '@*'\n"
 	"    is assumed.\n"
 	"#\n"
 	"Example\n"
@@ -1102,8 +1102,8 @@ cfg_array(activation_auto_activation_volume_list_CFG, "auto_activation_volume_li
 	"    or VG.\n"
 	"  @*\n"
 	"    Selects an LV if a tag defined on the host is also set on the LV\n"
-	"    or VG. See tags/hosttags. If any host tags exist but the volume\n"
-	"    list is not defined, a default single-entry list containing '@*'\n"
+	"    or VG. See tags/hosttags. If any host tags exist but volume_list\n"
+	"    is not defined, a default single-entry list containing '@*'\n"
 	"    is assumed.\n"
 	"#\n"
 	"Example\n"
@@ -1127,8 +1127,8 @@ cfg_array(activation_read_only_volume_list_CFG, "read_only_volume_list", activat
 	"    or VG.\n"
 	"  @*\n"
 	"    Selects an LV if a tag defined on the host is also set on the LV\n"
-	"    or VG. See tags/hosttags. If any host tags exist but the volume\n"
-	"    list is not defined, a default single-entry list containing '@*'\n"
+	"    or VG. See tags/hosttags. If any host tags exist but volume_list\n"
+	"    is not defined, a default single-entry list containing '@*'\n"
 	"    is assumed.\n"
 	"#\n"
 	"Example\n"
@@ -1351,6 +1351,14 @@ cfg_array(activation_lock_start_list_CFG, "lock_start_list", activation_CFG_SECT
 cfg_array(activation_auto_lock_start_list_CFG, "auto_lock_start_list", activation_CFG_SECTION, CFG_ALLOW_EMPTY|CFG_DEFAULT_UNDEFINED, CFG_TYPE_STRING, NULL, vsn(2, 2, 124), NULL, 0, NULL,
 	"Locking is auto-started only for VGs selected by this list.\n"
 	"The rules are the same as those for auto_activation_volume_list.\n")
+
+cfg(metadata_check_pv_device_sizes_CFG, "check_pv_device_sizes", metadata_CFG_SECTION, CFG_ADVANCED | CFG_DEFAULT_COMMENTED, CFG_TYPE_BOOL, 1, vsn(2, 2, 141), NULL, 0, NULL,
+	"Check device sizes are not smaller than corresponding PV sizes.\n"
+	"If device size is less than corresponding PV size found in metadata,\n"
+	"there is always a risk of data loss. If this option is set, then LVM\n"
+	"issues a warning message each time it finds that the device size is\n"
+	"less than corresponding PV size. You should not disable this unless\n"
+	"you are absolutely sure about what you are doing!\n")
 
 cfg(metadata_pvmetadatacopies_CFG, "pvmetadatacopies", metadata_CFG_SECTION, CFG_ADVANCED | CFG_DEFAULT_COMMENTED, CFG_TYPE_INT, DEFAULT_PVMETADATACOPIES, vsn(1, 0, 0), NULL, 0, NULL,
 	"Number of copies of metadata to store on each PV.\n"
@@ -1670,6 +1678,9 @@ cfg(report_pvsegs_cols_CFG, "pvsegs_cols", report_CFG_SECTION, CFG_PROFILABLE | 
 cfg(report_pvsegs_cols_verbose_CFG, "pvsegs_cols_verbose", report_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED, CFG_TYPE_STRING, DEFAULT_PVSEGS_COLS_VERB, vsn(1, 1, 3), NULL, 0, NULL,
 	"List of columns to sort by when reporting 'pvs --segments' command in verbose mode.\n"
 	"See 'pvs --segments -o help' for the list of possible fields.\n")
+
+cfg(report_mark_hidden_devices_CFG, "mark_hidden_devices", report_CFG_SECTION, CFG_PROFILABLE | CFG_DEFAULT_COMMENTED, CFG_TYPE_BOOL, 1, vsn(2, 2, 140), NULL, 0, NULL,
+	"Use brackets [] to mark hidden devices.\n")
 
 cfg(dmeventd_mirror_library_CFG, "mirror_library", dmeventd_CFG_SECTION, 0, CFG_TYPE_STRING, DEFAULT_DMEVENTD_MIRROR_LIB, vsn(1, 2, 3), NULL, 0, NULL,
 	"The library dmeventd uses when monitoring a mirror device.\n"

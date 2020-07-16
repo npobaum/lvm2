@@ -1,3 +1,39 @@
+Version 2.02.141 - 25th January 2016
+====================================
+  Add metadata/check_pv_device_sizes switch to lvm.conf for device size checks.
+  Warn if device size is less than corresponding PV size in metadata.
+  Cache device sizes internally.
+  Restore support for command breaking in process_each_lv_in_vg() (2.02.118).
+  Use correct mempool when process_each_lv_in_vg() (2.02.118).
+  Fix lvm.8 man to show again prohibited suffixes.
+  Fix configure to set proper use_blkid_wiping if autodetected as disabled.
+  Initialise udev in clvmd for use in device scanning. (2.02.116)
+  Add seg_le_ranges report field for common format when displaying seg devices.
+  Honour report/list_item_separator for seg_metadata_le_ranges report field.
+  Don't mark hidden devs in -o devices,metadata_devices,seg_pe_ranges.(2.02.140)
+  Change LV sizes in seg_pe_ranges report field to match underlying devices.
+  Add kernel_cache_settings report field for cache LV settings used in kernel.
+
+Version 2.02.140 - 16th January 2016
+====================================
+  Fix lvm2app to return either 0 or 1 for lvm_vg_is_{clustered,exported}.
+  Add kernel_discards report field to display thin pool discard used in kernel.
+  Correct checking of target presence when driver access is disabled.
+  Eval poolmetadatasize arg earlier in lvresize.
+  Fix vgcfgrestore to respect allocatable attribute of PVs.
+  Add report/mark_hidden_devices to lvm.conf.
+  Use brackets consistently in report fields to mark hidden devices.
+  Restore background polling processing during auto-activation (2.02.119).
+  Fix invalid memory read when reporting cache LV policy_name (2.02.126).
+
+Version 2.02.139 - 8th January 2016
+===================================
+  Update lvmlockd with the new VG seqno before devices are suspended.
+  Rework vgrename to use the common processing code in toollib.
+  Make pvs show new devices on the system since the last .cache update.
+  Document F,D and M thin pool health status chars for lv_attr in lvs man page.
+  Also add lvm2-activation{-early,-net}.service systemd status for lvmdump -s.
+
 Version 2.02.138 - 14th December 2015
 =====================================
   Support lvrename for hidden (used) cache pools.

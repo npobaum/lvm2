@@ -9,7 +9,7 @@
  *
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #include "lib.h"
@@ -49,13 +49,16 @@ static int _errseg_target_present(struct cmd_context *cmd,
 	static int _errseg_checked = 0;
 	static int _errseg_present = 0;
 
-	/* Reported truncated in older kernels */
-	if (!_errseg_checked &&
-	    (target_present(cmd, "error", 0) ||
-	     target_present(cmd, "erro", 0)))
-		_errseg_present = 1;
+	if (!activation())
+		return 0;
 
-	_errseg_checked = 1;
+	/* Reported truncated in older kernels */
+	if (!_errseg_checked) {
+		_errseg_checked = 1;
+		_errseg_present = target_present(cmd, "error", 0) ||
+			target_present(cmd, "erro", 0);
+	}
+
 	return _errseg_present;
 }
 

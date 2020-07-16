@@ -10,7 +10,7 @@
  *
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #include "lib.h"
@@ -1026,6 +1026,16 @@ struct device *dev_cache_get_by_devt(dev_t dev, struct dev_filter *f)
 		      f->passes_filter(f, d))) ? d : NULL;
 }
 
+void dev_cache_full_scan(struct dev_filter *f)
+{
+	if (f && f->wipe) {
+		f->wipe(f); /* might call _full_scan(1) */
+		if (!full_scan_done())
+			_full_scan(1);
+	} else
+		_full_scan(1);
+}
+
 struct dev_iter *dev_iter_create(struct dev_filter *f, int dev_scan)
 {
 	struct dev_iter *di = dm_malloc(sizeof(*di));
@@ -1037,14 +1047,8 @@ struct dev_iter *dev_iter_create(struct dev_filter *f, int dev_scan)
 
 	if (dev_scan && !trust_cache()) {
 		/* Flag gets reset between each command */
-		if (!full_scan_done()) {
-			if (f && f->wipe) {
-				f->wipe(f); /* might call _full_scan(1) */
-				if (!full_scan_done())
-					_full_scan(1);
-			} else
-				_full_scan(1);
-		}
+		if (!full_scan_done())
+			dev_cache_full_scan(f);
 	} else
 		_full_scan(0);
 
