@@ -119,13 +119,11 @@ static int _get_mirror_event(char *params)
 		goto out_parse;
 
 out:
-	if (args)
-		dm_free(args);
+	dm_free(args);
 	return r;
 	
 out_parse:
-	if (args)
-		dm_free(args);
+	dm_free(args);
 	syslog(LOG_ERR, "Unable to parse mirror status string.");
 	return ME_IGNORE;
 }
@@ -167,8 +165,8 @@ static int _remove_failed_devices(const char *device)
 }
 
 void process_event(struct dm_task *dmt,
-		   enum dm_event_mask event __attribute((unused)),
-		   void **unused __attribute((unused)))
+		   enum dm_event_mask event __attribute__((unused)),
+		   void **unused __attribute__((unused)))
 {
 	void *next = NULL;
 	uint64_t start, length;
@@ -224,10 +222,10 @@ void process_event(struct dm_task *dmt,
 }
 
 int register_device(const char *device,
-		    const char *uuid __attribute((unused)),
-		    int major __attribute((unused)),
-		    int minor __attribute((unused)),
-		    void **unused __attribute((unused)))
+		    const char *uuid __attribute__((unused)),
+		    int major __attribute__((unused)),
+		    int minor __attribute__((unused)),
+		    void **unused __attribute__((unused)))
 {
 	int r = dmeventd_lvm2_init();
 	syslog(LOG_INFO, "Monitoring mirror device %s for events.", device);
@@ -235,10 +233,10 @@ int register_device(const char *device,
 }
 
 int unregister_device(const char *device,
-		      const char *uuid __attribute((unused)),
-		      int major __attribute((unused)),
-		      int minor __attribute((unused)),
-		      void **unused __attribute((unused)))
+		      const char *uuid __attribute__((unused)),
+		      int major __attribute__((unused)),
+		      int minor __attribute__((unused)),
+		      void **unused __attribute__((unused)))
 {
 	syslog(LOG_INFO, "No longer monitoring mirror device %s for events.",
 	       device);

@@ -49,6 +49,7 @@ struct config_info {
 struct config_tree;
 struct archive_params;
 struct backup_params;
+struct arg_values;
 
 /* FIXME Split into tool & library contexts */
 /* command-instance-related variables needed by library */
@@ -68,11 +69,16 @@ struct cmd_context {
 	const char *cmd_line;
 	struct command *command;
 	char **argv;
+	struct arg_values *arg_values;
+	struct dm_list arg_value_groups;
 	unsigned is_long_lived:1;	/* Optimises persistent_filter handling */
 	unsigned handles_missing_pvs:1;
 	unsigned handles_unknown_segments:1;
 	unsigned partial_activation:1;
 	unsigned si_unit_consistency:1;
+	unsigned metadata_read_only:1;
+
+	unsigned independent_metadata_areas:1;	/* Active formats have MDAs outside PVs */
 
 	struct dev_filter *filter;
 	int dump_filter;	/* Dump filter when exiting? */
@@ -95,7 +101,7 @@ struct cmd_context {
 	char system_dir[PATH_MAX];
 	char dev_dir[PATH_MAX];
 	char proc_dir[PATH_MAX];
-	char sysfs_dir[PATH_MAX];
+	char sysfs_dir[PATH_MAX]; /* FIXME Use global value instead. */
 };
 
 /*

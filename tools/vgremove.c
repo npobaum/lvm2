@@ -17,7 +17,7 @@
 
 static int vgremove_single(struct cmd_context *cmd, const char *vg_name,
 			   struct volume_group *vg,
-			   void *handle __attribute((unused)))
+			   void *handle __attribute__((unused)))
 {
 	unsigned lv_count, missing;
 	force_t force;
@@ -49,10 +49,12 @@ static int vgremove_single(struct cmd_context *cmd, const char *vg_name,
 		}
 	}
 
-	if (!vg_remove_check(vg)) {
+	if (!force && !vg_remove_check(vg)) {
 		stack;
 		return ECMD_FAILED;
 	}
+
+	vg_remove_pvs(vg);
 
 	if (!vg_remove(vg)) {
 		stack;

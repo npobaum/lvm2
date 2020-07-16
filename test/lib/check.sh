@@ -1,5 +1,15 @@
 #!/bin/bash
 
+# Copyright (C) 2010 Red Hat, Inc. All rights reserved.
+#
+# This copyrighted material is made available to anyone wishing to use,
+# modify, copy, or redistribute it subject to the terms and conditions
+# of the GNU General Public License v.2.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software Foundation,
+# Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+
 # check.sh: assert various things about volumes
 
 # USAGE
@@ -14,6 +24,14 @@
 # ...
 
 set -e -o pipefail
+
+trim()
+{
+    trimmed=${1%% }
+    trimmed=${trimmed## }
+
+    echo "$trimmed"
+}
 
 lvl() {
 	lvs -a --noheadings "$@"
@@ -121,10 +139,16 @@ mirror() {
 
 mirror_nonredundant() {
 	lv="$1/$2"
-	lvs -oattr "$lv" | grep -q "^ *m.....$" || {
-		echo "$lv expected a mirror, but is not:"
-		lvs -a $lv
-		exit 1
+	lvs -oattr "$lv" | grep "^ *m.....$" >/dev/null || {
+		if lvs -oattr "$lv" | grep "^ *o.....$" >/dev/null &&
+		   lvs -a | fgrep "[${2}_mimage" >/dev/null; then
+			echo "TEST WARNING: $lv is a snapshot origin and looks like a mirror,"
+			echo "assuming it is actually a mirror"
+		else
+			echo "$lv expected a mirror, but is not:"
+			lvs -a $lv
+			exit 1
+		fi
 	}
 	if test -n "$3"; then mirror_log_on "$1" "$2" "$3"; fi
 }
@@ -150,7 +174,7 @@ mirror_no_temporaries()
 
 linear() {
 	lv="$1/$2"
-	lvl -ostripes "$lv" | grep -q "1" || {
+	lvl -ostripes "$lv" | grep "1" >/dev/null || {
 		echo "$lv expected linear, but is not:"
 		lvl "$lv" -o+devices
 		exit 1
@@ -159,12 +183,12 @@ linear() {
 
 active() {
 	lv="$1/$2"
-	lvl -oattr "$lv" 2> /dev/null | grep -q "^ *....a.$" || {
+	lvl -oattr "$lv" 2> /dev/null | grep "^ *....a.$" >/dev/null || {
 		echo "$lv expected active, but lvs says it's not:"
 		lvl "$lv" -o+devices 2>/dev/null
 		exit 1
 	}
-	dmsetup table | egrep -q "$1-$2: *[^ ]+" || {
+	dmsetup table | egrep "$1-$2: *[^ ]+" >/dev/null || {
 		echo "$lv expected active, lvs thinks it is but there are no mappings!"
 		dmsetup table | grep $1-$2:
 		exit 1
@@ -173,16 +197,91 @@ active() {
 
 inactive() {
 	lv="$1/$2"
-	lvl -oattr "$lv" 2> /dev/null | grep -q '^ *....[-isd].$' || {
+	lvl -oattr "$lv" 2> /dev/null | grep '^ *....[-isd].$' >/dev/null || {
 		echo "$lv expected inactive, but lvs says it's not:"
 		lvl "$lv" -o+devices 2>/dev/null
 		exit 1
 	}
-	dmsetup table | not egrep -q "$1-$2: *[^ ]+" || {
+	dmsetup table | not egrep "$1-$2: *[^ ]+" >/dev/null || {
 		echo "$lv expected inactive, lvs thinks it is but there are mappings!"
 		dmsetup table | grep $1-$2:
 		exit 1
 	}
+}
+
+pv_field()
+{
+    actual=$(trim $(pvs --noheadings $4 -o $2 $1))
+
+    test "$actual" = "$3" || {
+        echo "pv_field: PV=$1, field=$2, actual=$actual, expected=$3"
+        exit 1
+    }
+}
+
+vg_field()
+{
+    actual=$(trim $(vgs --noheadings $4 -o $2 $1))
+    test "$actual" = "$3" || {
+        echo "vg_field: vg=$1, field=$2, actual=$actual, expected=$3"
+        exit 1
+    }
+}
+
+lv_field()
+{
+    actual=$(trim $(lvs --noheadings $4 -o $2 $1))
+    test "$actual" = "$3" || {
+        echo "lv_field: lv=$1, field=$2, actual=$actual, expected=$3"
+        exit 1
+    }
+}
+
+compare_fields()
+{
+    local cmd1=$1;
+    local obj1=$2;
+    local field1=$3;
+    local cmd2=$4;
+    local obj2=$5;
+    local field2=$6;
+    local val1;
+    local val2;
+
+    val1=$($cmd1 --noheadings -o $field1 $obj1)
+    val2=$($cmd2 --noheadings -o $field2 $obj2)
+    test "$val1" = "$val2" || {
+        echo "compare_fields $obj1($field1): $val1 $obj2($field2): $val2"
+        exit 1
+    }
+}
+
+compare_vg_field()
+{
+    local vg1=$1;
+    local vg2=$2;
+    local field=$3;
+
+    val1=$(vgs --noheadings -o $field $vg1)
+    val2=$(vgs --noheadings -o $field $vg2)
+    test "$val1" = "$val2" || {
+        echo "compare_vg_field: $vg1: $val1, $vg2: $val2"
+        exit 1
+    }
+}
+
+pvlv_counts()
+{
+	local local_vg=$1
+	local num_pvs=$2
+	local num_lvs=$3
+	local num_snaps=$4
+
+	lvs -a -o+devices $local_vg
+
+	vg_field $local_vg pv_count $num_pvs
+	vg_field $local_vg lv_count $num_lvs
+	vg_field $local_vg snap_count $num_snaps
 }
 
 "$@"

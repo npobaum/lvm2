@@ -9,7 +9,7 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
-. ./test-utils.sh
+. lib/test
 
 # convert from linear to 2-way mirror
 aux prepare_vg 5
@@ -222,8 +222,10 @@ check mirror_legs $vg $lv1 2
 # BZ 463272: disk log mirror convert option is lost if downconvert option is also given
 aux prepare_vg 5
 lvcreate -l1 -m2 --corelog -n $lv1 $vg $dev1 $dev2 $dev3
-lvconvert -m1 --mirrorlog disk $vg/$lv1 $dev1
-check mirror $vg $lv1 $dev1
+while [ `lvs --noheadings -o copy_percent $vg/$lv1` != "100.00" ]; do sleep 1; done
+lvconvert -m1 --mirrorlog disk $vg/$lv1
+check mirror $vg $lv1
+not check mirror $vg $lv1 core
 
 # ---
 # add mirror and disk log

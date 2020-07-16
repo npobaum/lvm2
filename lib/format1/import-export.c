@@ -137,7 +137,7 @@ static int _system_id(struct cmd_context *cmd, char *s, const char *prefix)
 	return 1;
 }
 
-int export_pv(struct cmd_context *cmd, struct dm_pool *mem __attribute((unused)),
+int export_pv(struct cmd_context *cmd, struct dm_pool *mem __attribute__((unused)),
 	      struct volume_group *vg,
 	      struct pv_disk *pvd, struct physical_volume *pv)
 {
@@ -185,7 +185,7 @@ int export_pv(struct cmd_context *cmd, struct dm_pool *mem __attribute((unused))
 	}
 
 	/* Generate system_id if PV is in VG */
-	if (!pvd->system_id || !*pvd->system_id)
+	if (!pvd->system_id[0])
 		if (!_system_id(cmd, (char *)pvd->system_id, ""))
 			return_0;
 
@@ -506,9 +506,8 @@ int export_lvs(struct disk_list *dl, struct volume_group *vg,
 	 * setup the pv's extents array
 	 */
 	len = sizeof(struct pe_disk) * dl->pvd.pe_total;
-	if (!(dl->extents = dm_pool_alloc(dl->mem, len)))
+	if (!(dl->extents = dm_pool_zalloc(dl->mem, len)))
 		goto_out;
-	memset(dl->extents, 0, len);
 
 	dm_list_iterate_items(ll, &vg->lvs) {
 		if (ll->lv->status & SNAPSHOT)
@@ -552,7 +551,7 @@ int export_lvs(struct disk_list *dl, struct volume_group *vg,
 /*
  * FIXME: More inefficient code.
  */
-int import_snapshots(struct dm_pool *mem __attribute((unused)), struct volume_group *vg,
+int import_snapshots(struct dm_pool *mem __attribute__((unused)), struct volume_group *vg,
 		     struct dm_list *pvds)
 {
 	struct logical_volume *lvs[MAX_LV];
@@ -641,7 +640,7 @@ int export_uuids(struct disk_list *dl, struct volume_group *vg)
  * This calculates the nasty pv_number field
  * used by LVM1.
  */
-void export_numbers(struct dm_list *pvds, struct volume_group *vg __attribute((unused)))
+void export_numbers(struct dm_list *pvds, struct volume_group *vg __attribute__((unused)))
 {
 	struct disk_list *dl;
 	int pv_num = 1;

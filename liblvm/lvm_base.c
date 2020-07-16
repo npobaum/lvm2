@@ -13,11 +13,11 @@
  */
 
 #include "lib.h"
-#include "lvm2app.h"
 #include "toolcontext.h"
 #include "locking.h"
 #include "lvm-version.h"
 #include "metadata-exported.h"
+#include "lvm2app.h"
 
 const char *lvm_library_get_version(void)
 {
@@ -61,7 +61,7 @@ lvm_t lvm_init(const char *system_dir)
 	 * archive() call.  Possible example:
 	 * cmd_line = "lvm_vg_create: vg1\nlvm_vg_extend vg1 /dev/sda1\n"
 	 */
-	cmd->cmd_line = (char *)"liblvm";
+	cmd->cmd_line = "liblvm";
 
 	return (lvm_t) cmd;
 }

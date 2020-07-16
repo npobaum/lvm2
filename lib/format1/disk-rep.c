@@ -247,7 +247,7 @@ static int _read_uuids(struct disk_list *data)
 {
 	unsigned num_read = 0;
 	struct uuid_list *ul;
-	char buffer[NAME_LEN] __attribute((aligned(8)));
+	char buffer[NAME_LEN] __attribute__((aligned(8)));
 	uint64_t pos = data->pvd.pv_uuidlist_on_disk.base;
 	uint64_t end = pos + data->pvd.pv_uuidlist_on_disk.size;
 
@@ -471,7 +471,7 @@ int read_pvs_in_vg(const struct format_type *fmt, const char *vg_name,
 	    vginfo->infos.n) {
 		dm_list_iterate_items(info, &vginfo->infos) {
 			dev = info->dev;
-			if (dev && !(data = read_disk(fmt, dev, mem, vg_name)))
+			if (!dev || !(data = read_disk(fmt, dev, mem, vg_name)))
 				break;
 			_add_pv_to_list(head, data);
 		}
@@ -624,13 +624,12 @@ static int _write_pvd(struct disk_list *data)
 	/* Make sure that the gap between the PV structure and
 	   the next one is zeroed in order to make non LVM tools
 	   happy (idea from AED) */
-	buf = dm_malloc(size);
+	buf = dm_zalloc(size);
 	if (!buf) {
 		log_error("Couldn't allocate temporary PV buffer.");
 		return 0;
 	}
 
-	memset(buf, 0, size);
 	memcpy(buf, &data->pvd, sizeof(struct pv_disk));
 
 	log_debug("Writing %s PV metadata to %s at %" PRIu64 " len %"
@@ -650,7 +649,7 @@ static int _write_pvd(struct disk_list *data)
 /*
  * assumes the device has been opened.
  */
-static int __write_all_pvd(const struct format_type *fmt __attribute((unused)),
+static int __write_all_pvd(const struct format_type *fmt __attribute__((unused)),
 			   struct disk_list *data)
 {
 	const char *pv_name = dev_name(data->dev);

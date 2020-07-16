@@ -51,9 +51,10 @@ SnapshotLogicalVolume[Path]...
 [\-\-version]
 LogicalVolume[Path] [PhysicalVolume[Path]...]
 .SH DESCRIPTION
-lvconvert will change a linear logical volume to a mirror
-logical volume or to a snapshot of linear volume and vice versa.
-It is also used to add and remove disk logs from mirror devices.
+lvconvert is used to change the segment type (i.e. linear, mirror, etc) or
+characteristics of a logical volume.  For example, it can add or remove the
+redundant images of a logical volume, change the log type of a mirror, or
+designate a logical volume as a snapshot repository.
 .br
 If the conversion requires allocation of physical extents (for
 example, when converting from linear to mirror) and you specify
@@ -135,8 +136,10 @@ Controls zeroing of the first KB of data in the snapshot.
 If the volume is read-only the snapshot will not be zeroed.
 .TP
 .I \-\-merge
-Merges a snapshot into its origin volume. If both the origin and snapshot volume
-are not open the merge will start immediately.  Otherwise, the merge will start
+Merges a snapshot into its origin volume.  To check if your kernel
+supports this feature, look for 'snapshot-merge' in the output
+of 'dmsetup targets'.  If both the origin and snapshot volume are not
+open the merge will start immediately.  Otherwise, the merge will start
 the first time either the origin or snapshot are activated and both are closed.
 Merging a snapshot into an origin that cannot be closed, for example a root
 filesystem, is deferred until the next time the origin volume is activated.

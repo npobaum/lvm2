@@ -40,6 +40,8 @@ int archive_init(struct cmd_context *cmd, const char *dir,
 		 unsigned int keep_days, unsigned int keep_min,
 		 int enabled)
 {
+	archive_exit(cmd);
+
 	if (!(cmd->archive_params = dm_pool_zalloc(cmd->libmem,
 						sizeof(*cmd->archive_params)))) {
 		log_error("archive_params alloc failed");
@@ -67,8 +69,7 @@ void archive_exit(struct cmd_context *cmd)
 {
 	if (!cmd->archive_params)
 		return;
-	if (cmd->archive_params->dir)
-		dm_free(cmd->archive_params->dir);
+	dm_free(cmd->archive_params->dir);
 	memset(cmd->archive_params, 0, sizeof(*cmd->archive_params));
 }
 
@@ -156,6 +157,8 @@ int archive_display_file(struct cmd_context *cmd, const char *file)
 int backup_init(struct cmd_context *cmd, const char *dir,
 		int enabled)
 {
+	backup_exit(cmd);
+
 	if (!(cmd->backup_params = dm_pool_zalloc(cmd->libmem,
 					       sizeof(*cmd->backup_params)))) {
 		log_error("backup_params alloc failed");
@@ -179,8 +182,7 @@ void backup_exit(struct cmd_context *cmd)
 {
 	if (!cmd->backup_params)
 		return;
-	if (cmd->backup_params->dir)
-		dm_free(cmd->backup_params->dir);
+	dm_free(cmd->backup_params->dir);
 	memset(cmd->backup_params, 0, sizeof(*cmd->backup_params));
 }
 
@@ -257,7 +259,9 @@ int backup_remove(struct cmd_context *cmd, const char *vg_name)
 	/*
 	 * Let this fail silently.
 	 */
-	unlink(path);
+	if (unlink(path))
+		log_sys_debug("unlink", path);
+
 	return 1;
 }
 
@@ -277,7 +281,7 @@ struct volume_group *backup_read_vg(struct cmd_context *cmd,
 		return NULL;
 	}
 
-	dm_list_iterate_items(mda, &tf->metadata_areas) {
+	dm_list_iterate_items(mda, &tf->metadata_areas_in_use) {
 		if (!(vg = mda->ops->vg_read(tf, vg_name, mda)))
 			stack;
 		break;
@@ -327,7 +331,8 @@ int backup_restore_vg(struct cmd_context *cmd, struct volume_group *vg)
 		}
 		if (!vg->fid->fmt->ops->
 		    pv_setup(vg->fid->fmt, UINT64_C(0), 0, 0, 0, 0, 0UL,
-			     UINT64_C(0), &vg->fid->metadata_areas, pv, vg)) {
+			     UINT64_C(0), 0,
+			     &vg->fid->metadata_areas_in_use, pv, vg)) {
 			log_error("Format-specific setup for %s failed",
 				  pv_dev_name(pv));
 			return 0;
@@ -360,7 +365,7 @@ int backup_restore_from_file(struct cmd_context *cmd, const char *vg_name,
 		log_error("Cannot restore Volume Group %s with %i PVs "
 			  "marked as missing.", vg->name, missing_pvs);
 
-	vg_release(vg);
+	free_vg(vg);
 	return r;
 }
 
@@ -396,8 +401,13 @@ int backup_to_file(const char *file, const char *desc, struct volume_group *vg)
 		return 0;
 	}
 
+	if (!dm_list_size(&tf->metadata_areas_in_use)) {
+		log_error(INTERNAL_ERROR "No in use metadata areas to write.");
+		return 0;
+	}
+
 	/* Write and commit the metadata area */
-	dm_list_iterate_items(mda, &tf->metadata_areas) {
+	dm_list_iterate_items(mda, &tf->metadata_areas_in_use) {
 		if (!(r = mda->ops->vg_write(tf, vg, mda))) {
 			stack;
 			continue;
@@ -436,15 +446,18 @@ void check_current_backup(struct volume_group *vg)
 	    (vg->seqno == vg_backup->seqno) &&
 	    (id_equal(&vg->id, &vg_backup->id))) {
 		log_suppress(old_suppress);
-		vg_release(vg_backup);
+		free_vg(vg_backup);
 		return;
 	}
 	log_suppress(old_suppress);
 
 	if (vg_backup) {
-		archive(vg_backup);
-		vg_release(vg_backup);
+		if (!archive(vg_backup))
+			stack;
+		free_vg(vg_backup);
 	}
-	archive(vg);
-	backup_locally(vg);
+	if (!archive(vg))
+		stack;
+	if (!backup_locally(vg))
+		stack;
 }

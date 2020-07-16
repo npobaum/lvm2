@@ -1,10 +1,20 @@
-. ./test-utils.sh
+# Copyright (C) 2010 Red Hat, Inc. All rights reserved.
+#
+# This copyrighted material is made available to anyone wishing to use,
+# modify, copy, or redistribute it subject to the terms and conditions
+# of the GNU General Public License v.2.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software Foundation,
+# Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+
+. lib/test
 
 log_name_to_count()
 {
-	if [ $1 == "mirrored" ]; then
+	if [ "$1" = "mirrored" ]; then
 		echo 2
-	elif [ $1 == "disk" ]; then
+	elif [ "$1" = "disk" ]; then
 		echo 1
 	else
 		echo 0
@@ -44,12 +54,6 @@ test_lvconvert()
 	local active=true
 	local i
 
-	if [ $start_log_type == "disk" ] &&
-		[ $finish_log_type == "mirrored" ]; then
-		echo "FIXME:  disk -> mirrored log conversion not yet supported by LVM"
-		return 0
-	fi
-
 	test "$5" = "active" && active=false
 	#test $finish_count -gt $start_count && up=true
 
@@ -72,8 +76,6 @@ test_lvconvert()
 	else
 		max_log_count=$start_log_count
 	fi
-
-	prepare_vg 5
 
 	if [ $start_count -gt 0 ]; then
 		# Are there extra devices for the log or do we overlap
@@ -119,7 +121,7 @@ test_lvconvert()
 	fi
 }
 
-aux prepare_vg 5
+aux prepare_vg 5 16
 
 test_many() {
 	i=$1
@@ -131,7 +133,9 @@ test_many() {
 				: "Testing mirror conversion -m$i/$k -> -m$j/$l"
 				: ----------------------------------------------------
 				test_lvconvert $i $k $j $l 0
+				lvremove -ff $vg
 				test_lvconvert $i $k $j $l 1
+				lvremove -ff $vg
 			done
 		done
 	done

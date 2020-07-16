@@ -26,14 +26,16 @@ typedef enum { SIZE_LONG = 0, SIZE_SHORT = 1, SIZE_UNIT = 2 } size_len_t;
 
 static const struct {
 	alloc_policy_t alloc;
-	const char str[12]; /* must be changed when size extends 11 chars */
+	const char str[14]; /* must be changed when size extends 13 chars */
+	const char repchar;
 } _policies[] = {
 	{
-	ALLOC_CONTIGUOUS, "contiguous"}, {
-	ALLOC_CLING, "cling"}, {
-	ALLOC_NORMAL, "normal"}, {
-	ALLOC_ANYWHERE, "anywhere"}, {
-	ALLOC_INHERIT, "inherit"}
+	ALLOC_CONTIGUOUS, "contiguous", 'c'}, {
+	ALLOC_CLING, "cling", 'l'}, {
+	ALLOC_CLING_BY_TAGS, "cling_by_tags", 't'}, {	/* Only used in log mesgs */
+	ALLOC_NORMAL, "normal", 'n'}, {
+	ALLOC_ANYWHERE, "anywhere", 'a'}, {
+	ALLOC_INHERIT, "inherit", 'i'}
 };
 
 static const int _num_policies = sizeof(_policies) / sizeof(*_policies);
@@ -120,6 +122,17 @@ uint64_t units_to_bytes(const char *units, char *unit_type)
 	return v;
 }
 
+const char alloc_policy_char(alloc_policy_t alloc)
+{
+	int i;
+
+	for (i = 0; i < _num_policies; i++)
+		if (_policies[i].alloc == alloc)
+			return _policies[i].repchar;
+
+	return '-';
+}
+
 const char *get_alloc_string(alloc_policy_t alloc)
 {
 	int i;
@@ -135,12 +148,16 @@ alloc_policy_t get_alloc_from_string(const char *str)
 {
 	int i;
 
+	/* cling_by_tags is part of cling */
+	if (!strcmp("cling_by_tags", str))
+		return ALLOC_CLING;
+
 	for (i = 0; i < _num_policies; i++)
 		if (!strcmp(_policies[i].str, str))
 			return _policies[i].alloc;
 
 	/* Special case for old metadata */
-	if(!strcmp("next free", str))
+	if (!strcmp("next free", str))
 		return ALLOC_NORMAL;
 
 	log_error("Unrecognised allocation policy %s", str);
@@ -307,7 +324,7 @@ const char *display_size(const struct cmd_context *cmd, uint64_t size)
 
 void pvdisplay_colons(const struct physical_volume *pv)
 {
-	char uuid[64] __attribute((aligned(8)));
+	char uuid[64] __attribute__((aligned(8)));
 
 	if (!pv)
 		return;
@@ -358,9 +375,9 @@ void pvdisplay_segments(const struct physical_volume *pv)
 /* FIXME Include label fields */
 void pvdisplay_full(const struct cmd_context *cmd,
 		    const struct physical_volume *pv,
-		    void *handle __attribute((unused)))
+		    void *handle __attribute__((unused)))
 {
-	char uuid[64] __attribute((aligned(8)));
+	char uuid[64] __attribute__((aligned(8)));
 	const char *size;
 
 	uint32_t pe_free;
@@ -423,12 +440,12 @@ void pvdisplay_full(const struct cmd_context *cmd,
 	log_print(" ");
 }
 
-int pvdisplay_short(const struct cmd_context *cmd __attribute((unused)),
-		    const struct volume_group *vg __attribute((unused)),
+int pvdisplay_short(const struct cmd_context *cmd __attribute__((unused)),
+		    const struct volume_group *vg __attribute__((unused)),
 		    const struct physical_volume *pv,
-		    void *handle __attribute((unused)))
+		    void *handle __attribute__((unused)))
 {
-	char uuid[64] __attribute((aligned(8)));
+	char uuid[64] __attribute__((aligned(8)));
 
 	if (!pv)
 		return 0;
@@ -452,7 +469,7 @@ void lvdisplay_colons(const struct logical_volume *lv)
 {
 	int inkernel;
 	struct lvinfo info;
-	inkernel = lv_info(lv->vg->cmd, lv, &info, 1, 0) && info.exists;
+	inkernel = lv_info(lv->vg->cmd, lv, 0, &info, 1, 0) && info.exists;
 
 	log_print("%s%s/%s:%s:%" PRIu64 ":%d:-1:%d:%" PRIu64 ":%d:-1:%d:%d:%d:%d",
 		  lv->vg->cmd->dev_dir,
@@ -469,19 +486,18 @@ void lvdisplay_colons(const struct logical_volume *lv)
 
 int lvdisplay_full(struct cmd_context *cmd,
 		   const struct logical_volume *lv,
-		   void *handle __attribute((unused)))
+		   void *handle __attribute__((unused)))
 {
 	struct lvinfo info;
 	int inkernel, snap_active = 0;
-	char uuid[64] __attribute((aligned(8)));
+	char uuid[64] __attribute__((aligned(8)));
 	struct lv_segment *snap_seg = NULL, *mirror_seg = NULL;
-	float snap_percent;	/* fused, fsize; */
-	percent_range_t percent_range;
+	percent_t snap_percent;
 
 	if (!id_write_format(&lv->lvid.id[1], uuid, sizeof(uuid)))
 		return_0;
 
-	inkernel = lv_info(cmd, lv, &info, 1, 1) && info.exists;
+	inkernel = lv_info(cmd, lv, 0, &info, 1, 1) && info.exists;
 
 	log_print("--- Logical volume ---");
 
@@ -501,9 +517,8 @@ int lvdisplay_full(struct cmd_context *cmd,
 				       origin_list) {
 			if (inkernel &&
 			    (snap_active = lv_snapshot_percent(snap_seg->cow,
-							       &snap_percent,
-							       &percent_range)))
-				if (percent_range == PERCENT_INVALID)
+							       &snap_percent)))
+				if (snap_percent == PERCENT_INVALID)
 					snap_active = 0;
 			log_print("                       %s%s/%s [%s]",
 				  lv->vg->cmd->dev_dir, lv->vg->name,
@@ -514,9 +529,8 @@ int lvdisplay_full(struct cmd_context *cmd,
 	} else if ((snap_seg = find_cow(lv))) {
 		if (inkernel &&
 		    (snap_active = lv_snapshot_percent(snap_seg->cow,
-						       &snap_percent,
-						       &percent_range)))
-			if (percent_range == PERCENT_INVALID)
+						       &snap_percent)))
+			if (snap_percent == PERCENT_INVALID)
 				snap_active = 0;
 
 		log_print("LV snapshot status     %s destination for %s%s/%s",
@@ -551,7 +565,8 @@ int lvdisplay_full(struct cmd_context *cmd,
 		log_print("COW-table LE           %u", lv->le_count);
 
 		if (snap_active)
-			log_print("Allocated to snapshot  %.2f%% ", snap_percent);	
+			log_print("Allocated to snapshot  %.2f%% ",
+				  percent_to_float(snap_percent));
 
 		log_print("Snapshot chunk size    %s",
 			  display_size(cmd, (uint64_t) snap_seg->chunk_size));
@@ -646,7 +661,7 @@ int lvdisplay_segments(const struct logical_volume *lv)
 	return 1;
 }
 
-void vgdisplay_extents(const struct volume_group *vg __attribute((unused)))
+void vgdisplay_extents(const struct volume_group *vg __attribute__((unused)))
 {
 }
 
@@ -654,7 +669,7 @@ void vgdisplay_full(const struct volume_group *vg)
 {
 	uint32_t access_str;
 	uint32_t active_pvs;
-	char uuid[64] __attribute((aligned(8)));
+	char uuid[64] __attribute__((aligned(8)));
 
 	active_pvs = vg->pv_count - vg_missing_pv_count(vg);
 
@@ -664,7 +679,7 @@ void vgdisplay_full(const struct volume_group *vg)
 	log_print("Format                %s", vg->fid->fmt->name);
 	if (vg->fid->fmt->features & FMT_MDAS) {
 		log_print("Metadata Areas        %d",
-			  dm_list_size(&vg->fid->metadata_areas));
+			  vg_mda_count(vg));
 		log_print("Metadata Sequence No  %d", vg->seqno);
 	}
 	access_str = vg->status & (LVM_READ | LVM_WRITE);
@@ -728,7 +743,7 @@ void vgdisplay_colons(const struct volume_group *vg)
 {
 	uint32_t active_pvs;
 	const char *access_str;
-	char uuid[64] __attribute((aligned(8)));
+	char uuid[64] __attribute__((aligned(8)));
 
 	active_pvs = vg->pv_count - vg_missing_pv_count(vg);
 

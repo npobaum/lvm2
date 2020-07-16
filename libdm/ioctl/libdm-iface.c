@@ -58,11 +58,24 @@
 
 #define NUMBER_OF_MAJORS 4096
 
+/*
+ * Static minor number assigned since kernel version 2.6.36.
+ * The original definition is in kernel's include/linux/miscdevice.h.
+ * This number is also visible in modules.devname exported by depmod
+ * utility (support included in module-init-tools version >= 3.12).
+ */
+#define MAPPER_CTRL_MINOR 236
+#define MISC_MAJOR 10
+
 /* dm major version no for running kernel */
 static unsigned _dm_version = DM_VERSION_MAJOR;
 static unsigned _dm_version_minor = 0;
 static unsigned _dm_version_patchlevel = 0;
 static int _log_suppress = 0;
+
+static int _kernel_major;
+static int _kernel_minor;
+static int _kernel_release;
 
 /*
  * If the kernel dm driver only supports one major number
@@ -78,7 +91,6 @@ static int _control_fd = -1;
 static int _version_checked = 0;
 static int _version_ok = 1;
 static unsigned _ioctl_buffer_double_factor = 0;
-
 
 /*
  * Support both old and new major numbers to ease the transition.
@@ -134,6 +146,30 @@ static void *_align(void *ptr, unsigned int a)
 	register unsigned long agn = --a;
 
 	return (void *) (((unsigned long) ptr + agn) & ~agn);
+}
+
+static int _uname(void)
+{
+	static int _uts_set = 0;
+	struct utsname _uts;
+
+	if (_uts_set)
+		return 1;
+
+	if (uname(&_uts)) {
+		log_error("uname failed: %s", strerror(errno));
+		return 0;
+	}
+	if (sscanf(_uts.release, "%d.%d.%d",
+			&_kernel_major,
+			&_kernel_minor,
+			&_kernel_release) != 3) {
+		log_error("Could not determine kernel version used.");
+		return 0;
+	}
+
+	_uts_set = 1;
+	return 1;
 }
 
 #ifdef DM_IOCTLS
@@ -234,27 +270,27 @@ static int _create_control(const char *control, uint32_t major, uint32_t minor)
 	if (!major)
 		return 0;
 
+	(void) dm_prepare_selinux_context(dm_dir(), S_IFDIR);
 	old_umask = umask(DM_DEV_DIR_UMASK);
 	ret = dm_create_dir(dm_dir());
 	umask(old_umask);
+	(void) dm_prepare_selinux_context(NULL, 0);
 
 	if (!ret)
 		return 0;
 
 	log_verbose("Creating device %s (%u, %u)", control, major, minor);
 
+	(void) dm_prepare_selinux_context(control, S_IFCHR);
+	old_umask = umask(DM_CONTROL_NODE_UMASK);
 	if (mknod(control, S_IFCHR | S_IRUSR | S_IWUSR,
 		  MKDEV(major, minor)) < 0)  {
 		log_sys_error("mknod", control);
+		(void) dm_prepare_selinux_context(NULL, 0);
 		return 0;
 	}
-
-#ifdef HAVE_SELINUX
-	if (!dm_set_selinux_context(control, S_IFCHR)) {
-		stack;
-		return 0;
-	}
-#endif
+	umask(old_umask);
+	(void) dm_prepare_selinux_context(NULL, 0);
 
 	return 1;
 }
@@ -266,12 +302,10 @@ static int _create_control(const char *control, uint32_t major, uint32_t minor)
 static int _create_dm_bitset(void)
 {
 #ifdef DM_IOCTLS
-	struct utsname uts;
-
 	if (_dm_bitset || _dm_device_major)
 		return 1;
 
-	if (uname(&uts))
+	if (!_uname())
 		return 0;
 
 	/*
@@ -279,7 +313,8 @@ static int _create_dm_bitset(void)
 	 * Assume 2.4 kernels are patched not to.
 	 * FIXME Check _dm_version and _dm_version_minor if 2.6 changes this.
 	 */
-	if (!strncmp(uts.release, "2.6.", 4))
+	if (KERNEL_VERSION(_kernel_major, _kernel_minor, _kernel_release) >=
+	    KERNEL_VERSION(2, 6, 0))
 		_dm_multiple_major_support = 0;
 
 	if (!_dm_multiple_major_support) {
@@ -315,28 +350,99 @@ int dm_is_dm_major(uint32_t major)
 		return (major == _dm_device_major) ? 1 : 0;
 }
 
+static void _close_control_fd(void)
+{
+	if (_control_fd != -1) {
+		if (close(_control_fd) < 0)
+			log_sys_error("close", "_control_fd");
+		_control_fd = -1;
+	}
+}
+
+static int _open_and_assign_control_fd(const char *control,
+				       int ignore_nodev)
+{
+	_close_control_fd();
+
+	if ((_control_fd = open(control, O_RDWR)) < 0) {
+		if (!(ignore_nodev && errno == ENODEV))
+			log_sys_error("open", control);
+		return 0;
+	}
+
+	return 1;
+}
+
 static int _open_control(void)
 {
 #ifdef DM_IOCTLS
 	char control[PATH_MAX];
 	uint32_t major = 0, minor;
+	int dm_mod_autoload_support, needs_open;
 
 	if (_control_fd != -1)
 		return 1;
 
-	snprintf(control, sizeof(control), "%s/control", dm_dir());
+	if (!_uname())
+		return 0;
 
+	snprintf(control, sizeof(control), "%s/%s", dm_dir(), DM_CONTROL_NODE);
+
+	/*
+	 * dm-mod autoloading is supported since kernel 2.6.36.
+	 * Udev daemon will try to read modules.devname file extracted
+	 * by depmod and create any static nodes needed.
+	 * The /dev/mapper/control node can be created and prepared this way.
+	 * First access to such node should load dm-mod module automatically.
+	 */
+	dm_mod_autoload_support = KERNEL_VERSION(_kernel_major, _kernel_minor,
+				  _kernel_release) >= KERNEL_VERSION(2, 6, 36);
+
+	/*
+	 *  If dm-mod autoloading is supported and the control node exists
+	 *  already try to open it now. This should autoload dm-mod module.
+	 */
+	if (dm_mod_autoload_support) {
+		if (!_get_proc_number(PROC_DEVICES, MISC_NAME, &major))
+			/* If major not found, just fallback to hardcoded value. */
+			major = MISC_MAJOR;
+
+		/* Recreate the node with correct major and minor if needed. */
+		if (!_control_exists(control, major, MAPPER_CTRL_MINOR) &&
+		    !_create_control(control, major, MAPPER_CTRL_MINOR))
+			goto error;
+
+		_open_and_assign_control_fd(control, 1);
+	}
+
+	/*
+	 * Get major and minor number assigned for the control node.
+	 * In case we make use of the module autoload support, this
+	 * information should be accessible now as well.
+	 */
 	if (!_control_device_number(&major, &minor))
 		log_error("Is device-mapper driver missing from kernel?");
 
-	if (!_control_exists(control, major, minor) &&
-	    !_create_control(control, major, minor))
-		goto error;
-
-	if ((_control_fd = open(control, O_RDWR)) < 0) {
-		log_sys_error("open", control);
+	/*
+	 * Check the control node and its major and minor number.
+	 * If there's anything wrong, remove the old node and create
+	 * a correct one.
+	 */
+	if ((needs_open = !_control_exists(control, major, minor)) &&
+	    !_create_control(control, major, minor)) {
+		_close_control_fd();
 		goto error;
 	}
+
+	/*
+	 * For older kernels without dm-mod autoloading support, we always
+	 * need to open the control node here - we still haven't done that!
+	 * For newer kernels with dm-mod autoloading, we open it only if the
+	 * node was recreated and corrected in previous step.
+	 */
+	if ((!dm_mod_autoload_support || needs_open) &&
+	     !_open_and_assign_control_fd(control, 0))
+		goto error;
 
 	if (!_create_dm_bitset()) {
 		log_error("Failed to set up list of device-mapper major numbers");
@@ -380,20 +486,11 @@ void dm_task_destroy(struct dm_task *dmt)
 		dm_free(t);
 	}
 
-	if (dmt->dev_name)
-		dm_free(dmt->dev_name);
-
-	if (dmt->newname)
-		dm_free(dmt->newname);
-
-	if (dmt->message)
-		dm_free(dmt->message);
-
 	_dm_zfree_dmi(dmt->dmi.v4);
-
-	if (dmt->uuid)
-		dm_free(dmt->uuid);
-
+	dm_free(dmt->dev_name);
+	dm_free(dmt->newname);
+	dm_free(dmt->message);
+	dm_free(dmt->uuid);
 	dm_free(dmt);
 }
 
@@ -710,7 +807,7 @@ static int _dm_task_run_v1(struct dm_task *dmt)
 
 	if ((unsigned) dmt->type >=
 	    (sizeof(_cmd_data_v1) / sizeof(*_cmd_data_v1))) {
-		log_error(INTERNAL ERROR "unknown device-mapper task %d",
+		log_error(INTERNAL_ERROR "unknown device-mapper task %d",
 			  dmt->type);
 		goto bad;
 	}
@@ -719,6 +816,11 @@ static int _dm_task_run_v1(struct dm_task *dmt)
 
 	if (dmt->type == DM_DEVICE_TABLE)
 		dmi->flags |= DM_STATUS_TABLE_FLAG;
+
+	if (dmt->new_uuid) {
+		log_error("Changing UUID is not supported by kernel.");
+		goto bad;
+	}
 
 	log_debug("dm %s %s %s%s%s [%u]", _cmd_data_v1[dmt->type].name,
 		  dmi->name, dmi->uuid, dmt->newname ? " " : "",
@@ -1037,7 +1139,7 @@ struct dm_deps *dm_task_get_deps(struct dm_task *dmt)
 		return _dm_task_get_deps_v1(dmt);
 #endif
 
-	return (struct dm_deps *) (((void *) dmt->dmi.v4) +
+	return (struct dm_deps *) (((char *) dmt->dmi.v4) +
 				   dmt->dmi.v4->data_start);
 }
 
@@ -1048,13 +1150,13 @@ struct dm_names *dm_task_get_names(struct dm_task *dmt)
 		return _dm_task_get_names_v1(dmt);
 #endif
 
-	return (struct dm_names *) (((void *) dmt->dmi.v4) +
+	return (struct dm_names *) (((char *) dmt->dmi.v4) +
 				    dmt->dmi.v4->data_start);
 }
 
 struct dm_versions *dm_task_get_versions(struct dm_task *dmt)
 {
-	return (struct dm_versions *) (((void *) dmt->dmi.v4) +
+	return (struct dm_versions *) (((char *) dmt->dmi.v4) +
 				       dmt->dmi.v4->data_start);
 }
 
@@ -1079,6 +1181,35 @@ int dm_task_suppress_identical_reload(struct dm_task *dmt)
 	return 1;
 }
 
+int dm_task_set_add_node(struct dm_task *dmt, dm_add_node_t add_node)
+{
+	switch (add_node) {
+	case DM_ADD_NODE_ON_RESUME:
+	case DM_ADD_NODE_ON_CREATE:
+		dmt->add_node = add_node;
+		return 1;
+	default:
+		log_error("Unknown add node parameter");
+		return 0;
+	}
+}
+
+int dm_task_set_newuuid(struct dm_task *dmt, const char *newuuid)
+{
+	if (strlen(newuuid) >= DM_UUID_LEN) {
+		log_error("Uuid \"%s\" too long", newuuid);
+		return 0;
+	}
+
+	if (!(dmt->newname = dm_strdup(newuuid))) {
+		log_error("dm_task_set_newuuid: strdup(%s) failed", newuuid);
+		return 0;
+	}
+	dmt->new_uuid = 1;
+
+	return 1;
+}
+
 int dm_task_set_newname(struct dm_task *dmt, const char *newname)
 {
 	if (strchr(newname, '/')) {
@@ -1095,6 +1226,7 @@ int dm_task_set_newname(struct dm_task *dmt, const char *newname)
 		log_error("dm_task_set_newname: strdup(%s) failed", newname);
 		return 0;
 	}
+	dmt->new_uuid = 0;
 
 	return 1;
 }
@@ -1150,6 +1282,13 @@ int dm_task_no_open_count(struct dm_task *dmt)
 int dm_task_skip_lockfs(struct dm_task *dmt)
 {
 	dmt->skip_lockfs = 1;
+
+	return 1;
+}
+
+int dm_task_secure_data(struct dm_task *dmt)
+{
+	dmt->secure_data = 1;
 
 	return 1;
 }
@@ -1293,7 +1432,7 @@ static struct dm_ioctl *_flatten(struct dm_task *dmt, unsigned repeat_count)
 	}
 
 	if (count && dmt->newname) {
-		log_error("targets and newname are incompatible");
+		log_error("targets and rename are incompatible");
 		return NULL;
 	}
 
@@ -1303,12 +1442,12 @@ static struct dm_ioctl *_flatten(struct dm_task *dmt, unsigned repeat_count)
 	}
 
 	if (dmt->newname && (dmt->sector || dmt->message)) {
-		log_error("message and newname are incompatible");
+		log_error("message and rename are incompatible");
 		return NULL;
 	}
 
 	if (dmt->newname && dmt->geometry) {
-		log_error("geometry and newname are incompatible");
+		log_error("geometry and rename are incompatible");
 		return NULL;
 	}
 
@@ -1402,11 +1541,25 @@ static struct dm_ioctl *_flatten(struct dm_task *dmt, unsigned repeat_count)
 		dmi->flags |= DM_READONLY_FLAG;
 	if (dmt->skip_lockfs)
 		dmi->flags |= DM_SKIP_LOCKFS_FLAG;
+	if (dmt->secure_data) {
+		if (_dm_version_minor < 20)
+			log_warn("WARNING: Secure data flag unsupported by "
+				 "kernel.  Buffers will not be wiped after use.");
+		dmi->flags |= DM_SECURE_DATA_FLAG;
+	}
 	if (dmt->query_inactive_table) {
 		if (_dm_version_minor < 16)
 			log_warn("WARNING: Inactive table query unsupported "
 				 "by kernel.  It will use live table.");
 		dmi->flags |= DM_QUERY_INACTIVE_TABLE_FLAG;
+	}
+	if (dmt->new_uuid) {
+		if (_dm_version_minor < 19) {
+			log_error("WARNING: Setting UUID unsupported by "
+				  "kernel.  Aborting operation.");
+			goto bad;
+		}
+		dmi->flags |= DM_UUID_FLAG;
 	}
 
 	dmi->target_count = count;
@@ -1458,8 +1611,15 @@ static int _process_mapper_dir(struct dm_task *dmt)
 		    !strcmp(dirent->d_name, "..") ||
 		    !strcmp(dirent->d_name, "control"))
 			continue;
-		dm_task_set_name(dmt, dirent->d_name);
-		dm_task_run(dmt);
+		if (!dm_task_set_name(dmt, dirent->d_name)) {
+			r = 0;
+			stack;
+			continue; /* try next name */
+		}
+		if (!dm_task_run(dmt)) {
+			r = 0;
+			stack;  /* keep going */
+		}
 	}
 
 	if (closedir(d))
@@ -1588,19 +1748,22 @@ static int _create_and_load_v4(struct dm_task *dmt)
 	if (!(task = dm_task_create(DM_DEVICE_RELOAD))) {
 		log_error("Failed to create device-mapper task struct");
 		_udev_complete(dmt);
-		return 0;
+		r = 0;
+		goto revert;
 	}
 
 	/* Copy across relevant fields */
 	if (dmt->dev_name && !dm_task_set_name(task, dmt->dev_name)) {
 		dm_task_destroy(task);
 		_udev_complete(dmt);
-		return 0;
+		r = 0;
+		goto revert;
 	}
 
 	task->read_only = dmt->read_only;
 	task->head = dmt->head;
 	task->tail = dmt->tail;
+	task->secure_data = dmt->secure_data;
 
 	r = dm_task_run(task);
 
@@ -1634,9 +1797,10 @@ static int _create_and_load_v4(struct dm_task *dmt)
 	if (dmt->cookie_set) {
 		cookie = (dmt->event_nr & ~DM_UDEV_FLAGS_MASK) |
 			 (DM_COOKIE_MAGIC << DM_UDEV_FLAGS_SHIFT);
-		dm_task_set_cookie(dmt, &cookie,
-				   (dmt->event_nr & DM_UDEV_FLAGS_MASK) >>
-				    DM_UDEV_FLAGS_SHIFT);
+		if (!dm_task_set_cookie(dmt, &cookie,
+					(dmt->event_nr & DM_UDEV_FLAGS_MASK) >>
+					DM_UDEV_FLAGS_SHIFT))
+                        stack; /* keep going */
 	}
 
 	if (!dm_task_run(dmt))
@@ -1802,9 +1966,10 @@ static struct dm_ioctl *_do_dm_ioctl(struct dm_task *dmt, unsigned command,
 		}
 	}
 
-	log_debug("dm %s %s %s%s%s %s%.0d%s%.0d%s"
-		  "%s%c%c%s%s %.0" PRIu64 " %s [%u]",
+	log_debug("dm %s %s%s %s%s%s %s%.0d%s%.0d%s"
+		  "%s%c%c%s%s%s %.0" PRIu64 " %s [%u]",
 		  _cmd_data_v4[dmt->type].name,
+		  dmt->new_uuid ? "UUID " : "",
 		  dmi->name, dmi->uuid, dmt->newname ? " " : "",
 		  dmt->newname ? dmt->newname : "",
 		  dmt->major > 0 ? "(" : "",
@@ -1816,6 +1981,7 @@ static struct dm_ioctl *_do_dm_ioctl(struct dm_task *dmt, unsigned command,
 		  dmt->no_open_count ? 'N' : 'O',
 		  dmt->no_flush ? 'N' : 'F',
 		  dmt->skip_lockfs ? "S " : "",
+		  dmt->secure_data ? "W " : "",
 		  dmt->query_inactive_table ? "I " : "",
 		  dmt->sector, _sanitise_message(dmt->message),
 		  dmi->data_size);
@@ -1841,8 +2007,11 @@ static struct dm_ioctl *_do_dm_ioctl(struct dm_task *dmt, unsigned command,
 		}
 	}
 
-	if (ioctl_with_uevent && !_check_uevent_generated(dmi))
+	if (ioctl_with_uevent && !_check_uevent_generated(dmi)) {
+		log_debug("Uevent not generated! Calling udev_complete "
+			  "internally to avoid process lock-up.");
 		_udev_complete(dmt);
+	}
 
 #else /* Userspace alternative for testing */
 #endif
@@ -1923,7 +2092,8 @@ repeat_ioctl:
 
 	switch (dmt->type) {
 	case DM_DEVICE_CREATE:
-		if (dmt->dev_name && *dmt->dev_name && !udev_only)
+	    if ((dmt->add_node == DM_ADD_NODE_ON_CREATE) &&
+		dmt->dev_name && *dmt->dev_name && !udev_only)
 			add_dev_node(dmt->dev_name, MAJOR(dmi->dev),
 				     MINOR(dmi->dev), dmt->uid, dmt->gid,
 				     dmt->mode, check_udev);
@@ -1936,12 +2106,17 @@ repeat_ioctl:
 
 	case DM_DEVICE_RENAME:
 		/* FIXME Kernel needs to fill in dmi->name */
-		if (dmt->dev_name && !udev_only)
+		if (!dmt->new_uuid && dmt->dev_name && !udev_only)
 			rename_dev_node(dmt->dev_name, dmt->newname,
 					check_udev);
 		break;
 
 	case DM_DEVICE_RESUME:
+		if ((dmt->add_node == DM_ADD_NODE_ON_RESUME) &&
+		    dmt->dev_name && *dmt->dev_name && !udev_only)
+			add_dev_node(dmt->dev_name, MAJOR(dmi->dev),
+				     MINOR(dmi->dev), dmt->uid, dmt->gid,
+				     dmt->mode, check_udev);
 		/* FIXME Kernel needs to fill in dmi->name */
 		set_dev_node_read_ahead(dmt->dev_name, dmt->read_ahead,
 					dmt->read_ahead_flags);
@@ -1976,10 +2151,7 @@ repeat_ioctl:
 
 void dm_lib_release(void)
 {
-	if (_control_fd != -1) {
-		close(_control_fd);
-		_control_fd = -1;
-	}
+	_close_control_fd();
 	update_devs();
 }
 
@@ -1988,6 +2160,7 @@ void dm_pools_check_leaks(void);
 void dm_lib_exit(void)
 {
 	dm_lib_release();
+	selinux_release();
 	if (_dm_bitset)
 		dm_bitset_destroy(_dm_bitset);
 	_dm_bitset = NULL;

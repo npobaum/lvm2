@@ -17,7 +17,7 @@
 
 static int vgconvert_single(struct cmd_context *cmd, const char *vg_name,
 			    struct volume_group *vg,
-			    void *handle __attribute((unused)))
+			    void *handle __attribute__((unused)))
 {
 	struct physical_volume *pv, *existing_pv;
 	struct logical_volume *lv;
@@ -98,7 +98,7 @@ static int vgconvert_single(struct cmd_context *cmd, const char *vg_name,
 				continue;
 			if (lvnum_from_lvid(&lv->lvid) < MAX_RESTRICTED_LVS)
 				continue;
-			if (lv_info(cmd, lv, &info, 0, 0) && info.exists) {
+			if (lv_info(cmd, lv, 0, &info, 0, 0) && info.exists) {
 				log_error("Logical volume %s must be "
 					  "deactivated before conversion.",
 					   lv->name);
@@ -127,7 +127,7 @@ static int vgconvert_single(struct cmd_context *cmd, const char *vg_name,
 				     &existing_pv->id, size, 0, 0,
 				     pe_start, pv_pe_count(existing_pv),
 				     pv_pe_size(existing_pv), pvmetadatacopies,
-				     pvmetadatasize, &mdas))) {
+				     pvmetadatasize, 0, &mdas))) {
 			log_error("Failed to setup physical volume \"%s\"",
 				  pv_dev_name(existing_pv));
 			if (change_made)

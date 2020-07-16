@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2001-2004 Sistina Software, Inc. All rights reserved.
- * Copyright (C) 2004-2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2010 Red Hat, Inc. All rights reserved.
  *
  * This file is part of the device-mapper userspace tools.
  *
@@ -28,6 +28,14 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+
+#ifndef __GNUC__
+# define __typeof__ typeof
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /*****************************************************************
  * The first section of this file provides direct access to the
@@ -58,6 +66,7 @@ void dm_log_init_verbose(int level);
 typedef void (*dm_log_fn) (int level, const char *file, int line,
 			   const char *f, ...)
     __attribute__ ((format(printf, 4, 5)));
+
 void dm_log_init(dm_log_fn fn);
 /*
  * For backward-compatibility, indicate that dm_log_init() was used
@@ -158,6 +167,7 @@ struct dm_versions *dm_task_get_versions(struct dm_task *dmt);
 
 int dm_task_set_ro(struct dm_task *dmt);
 int dm_task_set_newname(struct dm_task *dmt, const char *newname);
+int dm_task_set_newuuid(struct dm_task *dmt, const char *newuuid);
 int dm_task_set_minor(struct dm_task *dmt, int minor);
 int dm_task_set_major(struct dm_task *dmt, int major);
 int dm_task_set_major_minor(struct dm_task *dmt, int major, int minor, int allow_default_major_fallback);
@@ -174,6 +184,12 @@ int dm_task_no_open_count(struct dm_task *dmt);
 int dm_task_skip_lockfs(struct dm_task *dmt);
 int dm_task_query_inactive_table(struct dm_task *dmt);
 int dm_task_suppress_identical_reload(struct dm_task *dmt);
+int dm_task_secure_data(struct dm_task *dmt);
+typedef enum {
+	DM_ADD_NODE_ON_RESUME, /* add /dev/mapper node with dmsetup resume */
+	DM_ADD_NODE_ON_CREATE  /* add /dev/mapper node with dmsetup create */
+} dm_add_node_t;
+int dm_task_set_add_node(struct dm_task *dmt, dm_add_node_t add_node);
 
 /*
  * Control read_ahead.
@@ -235,7 +251,7 @@ int dm_is_dm_major(uint32_t major);
  * Release library resources
  */
 void dm_lib_release(void);
-void dm_lib_exit(void) __attribute((destructor));
+void dm_lib_exit(void) __attribute__((destructor));
 
 /*
  * Use NULL for all devices.
@@ -439,6 +455,44 @@ int dm_tree_node_add_mirror_target_log(struct dm_tree_node *node,
 					  const char *log_uuid,
 					  unsigned area_count,
 					  uint32_t flags);
+
+/*
+ * Replicator operation mode
+ * Note: API for Replicator is not yet stable
+ */
+typedef enum {
+	DM_REPLICATOR_SYNC,			/* Synchronous replication */
+	DM_REPLICATOR_ASYNC_WARN,		/* Warn if async replicator is slow */
+	DM_REPLICATOR_ASYNC_STALL,		/* Stall replicator if not fast enough */
+	DM_REPLICATOR_ASYNC_DROP,		/* Drop sites out of sync */
+	DM_REPLICATOR_ASYNC_FAIL,		/* Fail replicator if slow */
+	NUM_DM_REPLICATOR_MODES
+} dm_replicator_mode_t;
+
+int dm_tree_node_add_replicator_target(struct dm_tree_node *node,
+				       uint64_t size,
+				       const char *rlog_uuid,
+				       const char *rlog_type,
+				       unsigned rsite_index,
+				       dm_replicator_mode_t mode,
+				       uint32_t async_timeout,
+				       uint64_t fall_behind_data,
+				       uint32_t fall_behind_ios);
+
+int dm_tree_node_add_replicator_dev_target(struct dm_tree_node *node,
+					   uint64_t size,
+					   const char *replicator_uuid,	/* Replicator control device */
+					   uint64_t rdevice_index,
+					   const char *rdev_uuid,	/* Rimage device name/uuid */
+					   unsigned rsite_index,
+					   const char *slog_uuid,
+					   uint32_t slog_flags,		/* Mirror log flags */
+					   uint32_t slog_region_size);
+/* End of Replicator API */
+
+void dm_tree_node_set_presuspend_node(struct dm_tree_node *node,
+				      struct dm_tree_node *presuspend_node);
+
 int dm_tree_node_add_target_area(struct dm_tree_node *node,
 				    const char *dev_name,
 				    const char *dlid,
@@ -464,6 +518,8 @@ uint32_t dm_tree_get_cookie(struct dm_tree_node *node);
 
 void *dm_malloc_aux(size_t s, const char *file, int line);
 void *dm_malloc_aux_debug(size_t s, const char *file, int line);
+void *dm_zalloc_aux(size_t s, const char *file, int line);
+void *dm_zalloc_aux_debug(size_t s, const char *file, int line);
 char *dm_strdup_aux(const char *str, const char *file, int line);
 void dm_free_aux(void *p);
 void *dm_realloc_aux(void *p, unsigned int s, const char *file, int line);
@@ -473,6 +529,7 @@ void dm_bounds_check_debug(void);
 #ifdef DEBUG_MEM
 
 #  define dm_malloc(s) dm_malloc_aux_debug((s), __FILE__, __LINE__)
+#  define dm_zalloc(s) dm_zalloc_aux_debug((s), __FILE__, __LINE__)
 #  define dm_strdup(s) dm_strdup_aux((s), __FILE__, __LINE__)
 #  define dm_free(p) dm_free_aux(p)
 #  define dm_realloc(p, s) dm_realloc_aux(p, s, __FILE__, __LINE__)
@@ -482,6 +539,7 @@ void dm_bounds_check_debug(void);
 #else
 
 #  define dm_malloc(s) dm_malloc_aux((s), __FILE__, __LINE__)
+#  define dm_zalloc(s) dm_zalloc_aux((s), __FILE__, __LINE__)
 #  define dm_strdup(s) strdup(s)
 #  define dm_free(p) free(p)
 #  define dm_realloc(p, s) realloc(p, s)
@@ -610,22 +668,22 @@ int dm_bit_get_next(dm_bitset_t bs, int last_bit);
 #define DM_BITS_PER_INT (sizeof(int) * CHAR_BIT)
 
 #define dm_bit(bs, i) \
-   (bs[(i / DM_BITS_PER_INT) + 1] & (0x1 << (i & (DM_BITS_PER_INT - 1))))
+   ((bs)[((i) / DM_BITS_PER_INT) + 1] & (0x1 << ((i) & (DM_BITS_PER_INT - 1))))
 
 #define dm_bit_set(bs, i) \
-   (bs[(i / DM_BITS_PER_INT) + 1] |= (0x1 << (i & (DM_BITS_PER_INT - 1))))
+   ((bs)[((i) / DM_BITS_PER_INT) + 1] |= (0x1 << ((i) & (DM_BITS_PER_INT - 1))))
 
 #define dm_bit_clear(bs, i) \
-   (bs[(i / DM_BITS_PER_INT) + 1] &= ~(0x1 << (i & (DM_BITS_PER_INT - 1))))
+   ((bs)[((i) / DM_BITS_PER_INT) + 1] &= ~(0x1 << ((i) & (DM_BITS_PER_INT - 1))))
 
 #define dm_bit_set_all(bs) \
-   memset(bs + 1, -1, ((*bs / DM_BITS_PER_INT) + 1) * sizeof(int))
+   memset((bs) + 1, -1, ((*(bs) / DM_BITS_PER_INT) + 1) * sizeof(int))
 
 #define dm_bit_clear_all(bs) \
-   memset(bs + 1, 0, ((*bs / DM_BITS_PER_INT) + 1) * sizeof(int))
+   memset((bs) + 1, 0, ((*(bs) / DM_BITS_PER_INT) + 1) * sizeof(int))
 
 #define dm_bit_copy(bs1, bs2) \
-   memcpy(bs1 + 1, bs2 + 1, ((*bs1 / DM_BITS_PER_INT) + 1) * sizeof(int))
+   memcpy((bs1) + 1, (bs2) + 1, ((*(bs1) / DM_BITS_PER_INT) + 1) * sizeof(int))
 
 /* Returns number of set bits */
 static inline unsigned hweight32(uint32_t i)
@@ -669,8 +727,8 @@ struct dm_hash_node *dm_hash_get_first(struct dm_hash_table *t);
 struct dm_hash_node *dm_hash_get_next(struct dm_hash_table *t, struct dm_hash_node *n);
 
 #define dm_hash_iterate(v, h) \
-	for (v = dm_hash_get_first(h); v; \
-	     v = dm_hash_get_next(h, v))
+	for (v = dm_hash_get_first((h)); v; \
+	     v = dm_hash_get_next((h), v))
 
 /****************
  * list functions
@@ -762,7 +820,7 @@ struct dm_list *dm_list_next(const struct dm_list *head, const struct dm_list *e
  * contained in a structure of type t, return the containing structure.
  */
 #define dm_list_struct_base(v, t, head) \
-    ((t *)((char*)(v) - (char*)&((t *) 0)->head))
+    ((t *)((const char *)(v) - (const char *)&((t *) 0)->head))
 
 /*
  * Given the address v of an instance of 'struct dm_list list' contained in
@@ -813,9 +871,9 @@ struct dm_list *dm_list_next(const struct dm_list *head, const struct dm_list *e
  * The 'struct dm_list' variable within the containing structure is 'field'.
  */
 #define dm_list_iterate_items_gen(v, head, field) \
-	for (v = dm_list_struct_base((head)->n, typeof(*v), field); \
+	for (v = dm_list_struct_base((head)->n, __typeof__(*v), field); \
 	     &v->field != (head); \
-	     v = dm_list_struct_base(v->field.n, typeof(*v), field))
+	     v = dm_list_struct_base(v->field.n, __typeof__(*v), field))
 
 /*
  * Walk a list, setting 'v' in turn to the containing structure of each item.
@@ -831,10 +889,10 @@ struct dm_list *dm_list_next(const struct dm_list *head, const struct dm_list *e
  * t must be defined as a temporary variable of the same type as v.
  */
 #define dm_list_iterate_items_gen_safe(v, t, head, field) \
-	for (v = dm_list_struct_base((head)->n, typeof(*v), field), \
-	     t = dm_list_struct_base(v->field.n, typeof(*v), field); \
+	for (v = dm_list_struct_base((head)->n, __typeof__(*v), field), \
+	     t = dm_list_struct_base(v->field.n, __typeof__(*v), field); \
 	     &v->field != (head); \
-	     v = t, t = dm_list_struct_base(v->field.n, typeof(*v), field))
+	     v = t, t = dm_list_struct_base(v->field.n, __typeof__(*v), field))
 /*
  * Walk a list, setting 'v' in turn to the containing structure of each item.
  * The containing structure should be the same type as 'v'.
@@ -851,9 +909,9 @@ struct dm_list *dm_list_next(const struct dm_list *head, const struct dm_list *e
  * The 'struct dm_list' variable within the containing structure is 'field'.
  */
 #define dm_list_iterate_back_items_gen(v, head, field) \
-	for (v = dm_list_struct_base((head)->p, typeof(*v), field); \
+	for (v = dm_list_struct_base((head)->p, __typeof__(*v), field); \
 	     &v->field != (head); \
-	     v = dm_list_struct_base(v->field.p, typeof(*v), field))
+	     v = dm_list_struct_base(v->field.p, __typeof__(*v), field))
 
 /*
  * Walk a list backwards, setting 'v' in turn to the containing structure 
@@ -871,6 +929,17 @@ unsigned int dm_list_size(const struct dm_list *head);
 /*********
  * selinux
  *********/
+
+/*
+ * Obtain SELinux security context assigned for the path and set this
+ * context for creating a new file system object. This security context
+ * is global and it is used until reset to default policy behaviour
+ * by calling 'dm_prepare_selinux_context(NULL, 0)'.
+ */
+int dm_prepare_selinux_context(const char *path, mode_t mode);
+/*
+ * Set SELinux context for existing file system object.
+ */
 int dm_set_selinux_context(const char *path, mode_t mode);
 
 /*********************
@@ -897,12 +966,13 @@ int dm_split_words(char *buffer, unsigned max,
 /* 
  * Returns -1 if buffer too small
  */
-int dm_snprintf(char *buf, size_t bufsize, const char *format, ...);
+int dm_snprintf(char *buf, size_t bufsize, const char *format, ...)
+    __attribute__ ((format(printf, 3, 4)));
 
 /*
  * Returns pointer to the last component of the path.
  */
-char *dm_basename(const char *path);
+const char *dm_basename(const char *path);
 
 /**************************
  * file/stream manipulation
@@ -929,7 +999,23 @@ int dm_fclose(FILE *stream);
  * Pointer to the buffer is stored in *buf.
  * Returns -1 on failure leaving buf undefined.
  */
-int dm_asprintf(char **buf, const char *format, ...);
+int dm_asprintf(char **buf, const char *format, ...)
+    __attribute__ ((format(printf, 2, 3)));
+
+/*
+ * create lockfile (pidfile) - create and lock a lock file
+ * @lockfile: location of lock file
+ *
+ * Returns: 1 on success, 0 otherwise, errno is handled internally
+ */
+int dm_create_lockfile(const char* lockfile);
+
+/*
+ * Query whether a daemon is running based on its lockfile
+ *
+ * Returns: 1 if running, 0 if not
+ */
+int dm_daemon_is_running(const char* lockfile);
 
 /*********************
  * regular expressions
@@ -940,7 +1026,7 @@ struct dm_regex;
  * Initialise an array of num patterns for matching.
  * Uses memory from mem.
  */
-struct dm_regex *dm_regex_create(struct dm_pool *mem, const char **patterns,
+struct dm_regex *dm_regex_create(struct dm_pool *mem, const char * const *patterns,
 				 unsigned num_patterns);
 
 /*
@@ -949,6 +1035,16 @@ struct dm_regex *dm_regex_create(struct dm_pool *mem, const char **patterns,
  * or -1 if none match.
  */
 int dm_regex_match(struct dm_regex *regex, const char *s);
+
+/*
+ * This is useful for regression testing only.  The idea is if two
+ * fingerprints are different, then the two dfas are certainly not
+ * isomorphic.  If two fingerprints _are_ the same then it's very likely
+ * that the dfas are isomorphic.
+ *
+ * This function must be called before any matching is done.
+ */
+uint32_t dm_regex_fingerprint(struct dm_regex *regex);
 
 /*********************
  * reporting functions
@@ -974,17 +1070,22 @@ struct dm_report_field;
 #define DM_REPORT_FIELD_TYPE_STRING	0x00000010
 #define DM_REPORT_FIELD_TYPE_NUMBER	0x00000020
 
+#define DM_REPORT_FIELD_TYPE_ID_LEN 32
+#define DM_REPORT_FIELD_TYPE_HEADING_LEN 32
+
 struct dm_report;
 struct dm_report_field_type {
 	uint32_t type;		/* object type id */
 	uint32_t flags;		/* DM_REPORT_FIELD_* */
 	uint32_t offset;	/* byte offset in the object */
 	int32_t width;		/* default width */
-	const char id[32];	/* string used to specify the field */
-	const char heading[32];	/* string printed in header */
+	/* string used to specify the field */
+	const char id[DM_REPORT_FIELD_TYPE_ID_LEN];
+	/* string printed in header */
+	const char heading[DM_REPORT_FIELD_TYPE_HEADING_LEN];
 	int (*report_fn)(struct dm_report *rh, struct dm_pool *mem,
 			 struct dm_report_field *field, const void *data,
-			 void *private);
+			 void *private_data);
 	const char *desc;	/* description of the field */
 };
 
@@ -1006,7 +1107,7 @@ struct dm_report *dm_report_init(uint32_t *report_types,
 				 const char *output_separator,
 				 uint32_t output_flags,
 				 const char *sort_keys,
-				 void *private);
+				 void *private_data);
 int dm_report_object(struct dm_report *rh, void *object);
 int dm_report_output(struct dm_report *rh);
 void dm_report_free(struct dm_report *rh);
@@ -1119,10 +1220,19 @@ void dm_udev_set_sync_support(int sync_with_udev);
 int dm_udev_get_sync_support(void);
 void dm_udev_set_checking(int checking);
 int dm_udev_get_checking(void);
+
+/*
+ * Default value to get new auto generated cookie created
+ */
+#define DM_COOKIE_AUTO_CREATE 0
 int dm_udev_create_cookie(uint32_t *cookie);
 int dm_udev_complete(uint32_t cookie);
 int dm_udev_wait(uint32_t cookie);
 
 #define DM_DEV_DIR_UMASK 0022
+#define DM_CONTROL_NODE_UMASK 0177
 
+#ifdef __cplusplus
+}
+#endif
 #endif				/* LIB_DEVICE_MAPPER_H */

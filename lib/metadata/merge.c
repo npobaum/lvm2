@@ -72,6 +72,8 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 	uint32_t area_multiplier, s;
 	struct seg_list *sl;
 	int error_count = 0;
+	struct replicator_site *rsite;
+	struct replicator_device *rdev;
 
 	dm_list_iterate_items(seg, &lv->segments) {
 		seg_count++;
@@ -134,6 +136,9 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 				inc_error_count;
 			}
 		}
+
+		if (seg_is_replicator(seg) && !check_replicator_segment(seg))
+			inc_error_count;
 
 		for (s = 0; s < seg->area_count; s++) {
 			if (seg_type(seg, s) == AREA_UNASSIGNED) {
@@ -213,6 +218,18 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 			if (lv == seg_lv(seg, s))
 				seg_found++;
 		}
+		if (seg_is_replicator_dev(seg)) {
+			dm_list_iterate_items(rsite, &seg->replicator->rsites) {
+				dm_list_iterate_items(rdev, &rsite->rdevices) {
+					if (lv == rdev->lv || lv == rdev->slog)
+						seg_found++;
+				}
+			}
+			if (lv == seg->replicator)
+				seg_found++;
+		}
+		if (seg_is_replicator(seg) && lv == seg->rlog_lv)
+				seg_found++;
 		if (seg->log_lv == lv)
 			seg_found++;
 		if (!seg_found) {

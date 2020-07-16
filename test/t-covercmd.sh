@@ -12,7 +12,7 @@
 # tests basic functionality of read-ahead and ra regressions
 #
 
-. ./test-utils.sh
+. lib/test
 
 TEST_UUID="aaaaaa-aaaa-aaaa-aaaa-aaaa-aaaa-aaaaaa"
 
@@ -30,8 +30,8 @@ pvcreate $dev1
 pvcreate --metadatacopies 0 $dev2
 pvcreate --metadatacopies 0 $dev3
 pvcreate $dev4
-pvcreate -u $TEST_UUID --metadatacopies 0 $dev5
-vgcreate -c n $vg $devs
+pvcreate --norestorefile -u $TEST_UUID --metadatacopies 0 $dev5
+vgcreate -c n $vg $(cat DEVICES)
 lvcreate -n $lv -l 5 -i5 -I256 $vg
 
 # test *scan and *display tools
@@ -63,7 +63,7 @@ for i in pr "p rw" an ay "-monitor y" "-monitor n" \
     lvchange -$i "$vg"/"$lv"
 done
 
-pvck "$d1"
+pvck "$dev1"
 vgck "$vg"
 lvrename "$vg" "$lv" "$lv-rename"
 vgcfgbackup -f "$(pwd)/backup.$$" "$vg"

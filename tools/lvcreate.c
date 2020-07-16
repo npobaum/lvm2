@@ -19,7 +19,7 @@
 #include <fcntl.h>
 
 struct lvcreate_cmdline_params {
-	percent_t percent;
+	percent_type_t percent;
 	uint64_t size;
 	char **pvs;
 	int pv_count;
@@ -179,6 +179,10 @@ static int _update_extents_params(struct volume_group *vg,
 					  lp->origin);
 				return 0;
 			}
+			if (!origin) {
+				log_error(INTERNAL_ERROR "Couldn't find origin volume.");
+				return 0;
+			}
 			lp->extents = lp->extents * origin->le_count / 100;
 			break;
 		case PERCENT_NONE:
@@ -236,7 +240,7 @@ static int _read_size_params(struct lvcreate_params *lp,
  * Generic mirror parameter checks.
  * FIXME: Should eventually be moved into lvm library.
  */
-static int _validate_mirror_params(const struct cmd_context *cmd __attribute((unused)),
+static int _validate_mirror_params(const struct cmd_context *cmd __attribute__((unused)),
 				   const struct lvcreate_params *lp)
 {
 	int pagesize = lvm_getpagesize();
@@ -323,9 +327,12 @@ static int _lvcreate_params(struct lvcreate_params *lp,
 {
 	int contiguous;
 	unsigned pagesize;
+	struct arg_value_group_list *current_group;
+	const char *tag;
 
 	memset(lp, 0, sizeof(*lp));
 	memset(lcp, 0, sizeof(*lcp));
+	dm_list_init(&lp->tags);
 
 	/*
 	 * Check selected options are compatible and determine segtype
@@ -503,7 +510,20 @@ static int _lvcreate_params(struct lvcreate_params *lp,
 		return 0;
 	}
 
-	lp->tag = arg_str_value(cmd, addtag_ARG, NULL);
+	dm_list_iterate_items(current_group, &cmd->arg_value_groups) {
+		if (!grouped_arg_is_set(current_group->arg_values, addtag_ARG))
+			continue;
+
+		if (!(tag = grouped_arg_str_value(current_group->arg_values, addtag_ARG, NULL))) {
+			log_error("Failed to get tag");
+			return 0;
+		}
+
+		if (!str_list_add(cmd->mem, &lp->tags, tag)) {
+                	log_error("Unable to allocate memory for tag %s", tag);
+			return 0;
+		}
+        }
 
 	lcp->pv_count = argc;
 	lcp->pvs = argv;
@@ -518,15 +538,13 @@ int lvcreate(struct cmd_context *cmd, int argc, char **argv)
 	struct lvcreate_cmdline_params lcp;
 	struct volume_group *vg;
 
-	memset(&lp, 0, sizeof(lp));
-
 	if (!_lvcreate_params(&lp, &lcp, cmd, argc, argv))
 		return EINVALID_CMD_LINE;
 
 	log_verbose("Finding volume group \"%s\"", lp.vg_name);
 	vg = vg_read_for_update(cmd, lp.vg_name, NULL, 0);
 	if (vg_read_error(vg)) {
-		vg_release(vg);
+		free_vg(vg);
 		stack;
 		return ECMD_FAILED;
 	}
@@ -541,6 +559,6 @@ int lvcreate(struct cmd_context *cmd, int argc, char **argv)
 		r = ECMD_FAILED;
 	}
 out:
-	unlock_and_release_vg(cmd, vg, lp.vg_name);
+	unlock_and_free_vg(cmd, vg, lp.vg_name);
 	return r;
 }

@@ -30,7 +30,7 @@ xx(e2fsadm,
 
 xx(dumpconfig,
    "Dump active configuration",
-   0,
+   PERMITTED_READ_ONLY,
    "dumpconfig "
    "\t[-f|--file filename] " "\n"
    "[ConfigurationVariable...]\n",
@@ -38,12 +38,12 @@ xx(dumpconfig,
 
 xx(formats,
    "List available metadata formats",
-   0,
+   PERMITTED_READ_ONLY,
    "formats\n")
 
 xx(help,
    "Display help for commands",
-   0,
+   PERMITTED_READ_ONLY,
    "help <command>" "\n")
 
 /*********
@@ -58,7 +58,7 @@ xx(lvactivate,
 
 xx(lvchange,
    "Change the attributes of logical volume(s)",
-   CACHE_VGMETADATA,
+   CACHE_VGMETADATA | PERMITTED_READ_ONLY,
    "lvchange\n"
    "\t[-A|--autobackup y|n]\n"
    "\t[-a|--available [e|l]y|n]\n"
@@ -207,7 +207,7 @@ xx(lvcreate,
 
 xx(lvdisplay,
    "Display information about a logical volume",
-   0,
+   PERMITTED_READ_ONLY,
    "lvdisplay\n"
    "\t[-a|--all]\n"
    "\t[-c|--colon]\n"
@@ -259,6 +259,7 @@ xx(lvextend,
    "\t{-l|--extents [+]LogicalExtentsNumber[%{VG|LV|PVS|FREE|ORIGIN}] |\n"
    "\t -L|--size [+]LogicalVolumeSize[bBsSkKmMgGtTpPeE]}\n"
    "\t[-m|--mirrors Mirrors]\n"
+   "\t[--use-policies]\n"
    "\t[-n|--nofsck]\n"
    "\t[--noudevsync]\n"
    "\t[-r|--resizefs]\n"
@@ -270,7 +271,7 @@ xx(lvextend,
 
    alloc_ARG, autobackup_ARG, extents_ARG, force_ARG, mirrors_ARG,
    nofsck_ARG, noudevsync_ARG, resizefs_ARG, size_ARG, stripes_ARG,
-   stripesize_ARG, test_ARG, type_ARG)
+   stripesize_ARG, test_ARG, type_ARG, use_policies_ARG)
 
 xx(lvmchange,
    "With the device mapper, this is obsolete and does nothing.",
@@ -286,7 +287,7 @@ xx(lvmchange,
 
 xx(lvmdiskscan,
    "List devices that may be used as physical volumes",
-   0,
+   PERMITTED_READ_ONLY,
    "lvmdiskscan\n"
    "\t[-d|--debug]\n"
    "\t[-h|--help]\n"
@@ -400,7 +401,7 @@ xx(lvresize,
 
 xx(lvs,
    "Display information about logical volumes",
-   0,
+   PERMITTED_READ_ONLY,
    "lvs" "\n"
    "\t[-a|--all]\n"
    "\t[--aligned]\n"
@@ -431,7 +432,7 @@ xx(lvs,
 
 xx(lvscan,
    "List all logical volumes in all volume groups",
-   0,
+   PERMITTED_READ_ONLY,
    "lvscan " "\n"
    "\t[-a|--all]\n"
    "\t[-b|--blockdevice] " "\n"
@@ -451,10 +452,12 @@ xx(pvchange,
    "\t[-a|--all]\n"
    "\t[-A|--autobackup y|n]\n"
    "\t[-d|--debug]\n"
+   "\t[-f|--force]\n"
    "\t[-h|--help]\n"
    "\t[-t|--test]\n"
    "\t[-u|--uuid]\n"
    "\t[-x|--allocatable y|n]\n"
+   "\t[--metadataignore y|n]\n"
    "\t[-v|--verbose]\n"
    "\t[--addtag Tag]\n"
    "\t[--deltag Tag]\n"
@@ -462,7 +465,7 @@ xx(pvchange,
    "\t[PhysicalVolumePath...]\n",
 
    all_ARG, allocatable_ARG, allocation_ARG, autobackup_ARG, deltag_ARG,
-   addtag_ARG, test_ARG, uuid_ARG)
+   addtag_ARG, force_ARG, metadataignore_ARG, test_ARG, uuid_ARG)
 
 xx(pvresize,
    "Resize physical volume(s)",
@@ -495,6 +498,7 @@ xx(pvcreate,
    "Initialize physical volume(s) for use by LVM",
    0,
    "pvcreate " "\n"
+   "\t[--norestorefile]\n"
    "\t[--restorefile file]\n"
    "\t[-d|--debug]" "\n"
    "\t[-f[f]|--force [--force]] " "\n"
@@ -515,9 +519,10 @@ xx(pvcreate,
    "\tPhysicalVolume [PhysicalVolume...]\n",
 
    dataalignment_ARG, dataalignmentoffset_ARG, force_ARG, test_ARG,
-   labelsector_ARG, metadatatype_ARG, metadatacopies_ARG, pvmetadatacopies_ARG,
-   metadatasize_ARG, physicalvolumesize_ARG, restorefile_ARG, uuidstr_ARG,
-   yes_ARG, zero_ARG)
+   labelsector_ARG, metadatatype_ARG, metadatacopies_ARG,
+   metadatasize_ARG, metadataignore_ARG, norestorefile_ARG,
+   physicalvolumesize_ARG, pvmetadatacopies_ARG,
+   restorefile_ARG, uuidstr_ARG, yes_ARG, zero_ARG)
 
 xx(pvdata,
    "Display the on-disk metadata for physical volume(s)",
@@ -540,7 +545,7 @@ xx(pvdata,
 
 xx(pvdisplay,
    "Display various attributes of physical volume(s)",
-   CACHE_VGMETADATA,
+   CACHE_VGMETADATA | PERMITTED_READ_ONLY,
    "pvdisplay\n"
    "\t[-c|--colon]\n"
    "\t[-d|--debug]\n"
@@ -615,7 +620,7 @@ xx(pvremove,
 
 xx(pvs,
    "Display information about physical volumes",
-   CACHE_VGMETADATA,
+   CACHE_VGMETADATA | PERMITTED_READ_ONLY,
    "pvs" "\n"
    "\t[-a|--all]\n"
    "\t[--aligned]\n"
@@ -646,7 +651,7 @@ xx(pvs,
 
 xx(pvscan,
    "List all physical volumes",
-   0,
+   PERMITTED_READ_ONLY,
    "pvscan " "\n"
    "\t[-d|--debug] " "\n"
    "\t{-e|--exported | -n|--novolumegroup} " "\n"
@@ -663,12 +668,12 @@ xx(pvscan,
 
 xx(segtypes,
    "List available segment types",
-   0,
+   PERMITTED_READ_ONLY,
    "segtypes\n")
 
 xx(vgcfgbackup,
    "Backup volume group configuration(s)",
-   0,
+   PERMITTED_READ_ONLY,
    "vgcfgbackup " "\n"
    "\t[-d|--debug] " "\n"
    "\t[-f|--file filename] " "\n"
@@ -699,7 +704,7 @@ xx(vgcfgrestore,
 
 xx(vgchange,
    "Change volume group attributes",
-   CACHE_VGMETADATA,
+   CACHE_VGMETADATA | PERMITTED_READ_ONLY,
    "vgchange" "\n"
    "\t[-A|--autobackup {y|n}] " "\n"
    "\t[--alloc AllocationPolicy] " "\n"
@@ -709,6 +714,7 @@ xx(vgchange,
    "\t[--ignorelockingfailure]\n"
    "\t[--ignoremonitoring]\n"
    "\t[--monitor {y|n}]\n"
+   "\t[--[vg]metadatacopies #copies] " "\n"
    "\t[--poll {y|n}]\n"
    "\t[--noudevsync]\n"
    "\t[--refresh]\n"
@@ -730,7 +736,8 @@ xx(vgchange,
    addtag_ARG, alloc_ARG, allocation_ARG, autobackup_ARG, available_ARG,
    clustered_ARG, deltag_ARG, ignorelockingfailure_ARG, ignoremonitoring_ARG,
    logicalvolume_ARG, maxphysicalvolumes_ARG, monitor_ARG, noudevsync_ARG,
-   partial_ARG, physicalextentsize_ARG, poll_ARG, refresh_ARG, resizeable_ARG,
+   metadatacopies_ARG, vgmetadatacopies_ARG, partial_ARG,
+   physicalextentsize_ARG, poll_ARG, refresh_ARG, resizeable_ARG,
    resizable_ARG, sysinit_ARG, test_ARG, uuid_ARG)
 
 xx(vgck,
@@ -773,6 +780,7 @@ xx(vgcreate,
    "\t[-h|--help]" "\n"
    "\t[-l|--maxlogicalvolumes MaxLogicalVolumes]" "\n"
    "\t[-M|--metadatatype 1|2] " "\n"
+   "\t[--[vg]metadatacopies #copies] " "\n"
    "\t[-p|--maxphysicalvolumes MaxPhysicalVolumes] " "\n"
    "\t[-s|--physicalextentsize PhysicalExtentSize[bBsSkKmMgGtTpPeE]] " "\n"
    "\t[-t|--test] " "\n"
@@ -784,12 +792,12 @@ xx(vgcreate,
    addtag_ARG, alloc_ARG, autobackup_ARG, clustered_ARG, maxlogicalvolumes_ARG,
    maxphysicalvolumes_ARG, metadatatype_ARG, physicalextentsize_ARG, test_ARG,
    force_ARG, yes_ARG, zero_ARG, labelsector_ARG, metadatasize_ARG,
-   pvmetadatacopies_ARG, metadatacopies_ARG, dataalignment_ARG,
-   dataalignmentoffset_ARG)
+   pvmetadatacopies_ARG, metadatacopies_ARG, vgmetadatacopies_ARG,
+   dataalignment_ARG, dataalignmentoffset_ARG)
 
 xx(vgdisplay,
    "Display volume group information",
-   0,
+   PERMITTED_READ_ONLY,
    "vgdisplay " "\n"
    "\t[-A|--activevolumegroups]" "\n"
    "\t[-c|--colon | -s|--short | -v|--verbose]" "\n"
@@ -841,7 +849,9 @@ xx(vgextend,
    0,
    "vgextend\n"
    "\t[-A|--autobackup y|n]\n"
+   "\t[--restoremissing]\n"
    "\t[-d|--debug]\n"
+   "\t[-f|--force]\n"
    "\t[-h|--help]\n"
    "\t[-t|--test]\n"
    "\t[-v|--verbose]\n"
@@ -852,7 +862,8 @@ xx(vgextend,
    autobackup_ARG, test_ARG,
    force_ARG, yes_ARG, zero_ARG, labelsector_ARG, metadatatype_ARG,
    metadatasize_ARG, pvmetadatacopies_ARG, metadatacopies_ARG,
-   dataalignment_ARG, dataalignmentoffset_ARG)
+   metadataignore_ARG, dataalignment_ARG, dataalignmentoffset_ARG,
+   restoremissing_ARG)
 
 xx(vgimport,
    "Register exported volume group with system",
@@ -950,7 +961,7 @@ xx(vgrename,
 
 xx(vgs,
    "Display information about volume groups",
-   0,
+   PERMITTED_READ_ONLY,
    "vgs" "\n"
    "\t[--aligned]\n"
    "\t[-a|--all]\n"
@@ -980,7 +991,7 @@ xx(vgs,
 
 xx(vgscan,
    "Search for all volume groups",
-   0,
+   PERMITTED_READ_ONLY,
    "vgscan "
    "\t[-d|--debug]\n"
    "\t[-h|--help]\n"
@@ -1003,6 +1014,7 @@ xx(vgsplit,
    "\t[-h|--help] " "\n"
    "\t[-l|--maxlogicalvolumes MaxLogicalVolumes]" "\n"
    "\t[-M|--metadatatype 1|2] " "\n"
+   "\t[--[vg]metadatacopies #copies] " "\n"
    "\t[-n|--name LogicalVolumeName]\n"
    "\t[-p|--maxphysicalvolumes MaxPhysicalVolumes] " "\n"
    "\t[-t|--test] " "\n"
@@ -1013,10 +1025,10 @@ xx(vgsplit,
 
    alloc_ARG, autobackup_ARG, clustered_ARG,
    maxlogicalvolumes_ARG, maxphysicalvolumes_ARG,
-   metadatatype_ARG, name_ARG, test_ARG)
+   metadatatype_ARG, vgmetadatacopies_ARG, name_ARG, test_ARG)
 
 xx(version,
    "Display software and driver version information",
-   0,
+   PERMITTED_READ_ONLY,
    "version\n" )
 

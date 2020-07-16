@@ -67,6 +67,8 @@ static const struct flag _lv_flags[] = {
 	{PARTIAL_LV, NULL, 0},
 	{POSTORDER_FLAG, NULL, 0},
 	{VIRTUAL_ORIGIN, NULL, 0},
+	{REPLICATOR, NULL, 0},
+	{REPLICATOR_LOG, NULL, 0},
 	{0, NULL, 0}
 };
 
@@ -136,7 +138,7 @@ int print_flags(uint64_t status, int type, char *buffer, size_t size)
 	return 1;
 }
 
-int read_flags(uint64_t *status, int type, struct config_value *cv)
+int read_flags(uint64_t *status, int type, const struct config_value *cv)
 {
 	int f;
 	uint64_t s = UINT64_C(0);

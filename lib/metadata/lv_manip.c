@@ -462,6 +462,15 @@ int replace_lv_with_error_segment(struct logical_volume *lv)
 	if (!lv_empty(lv))
 		return_0;
 
+	/*
+	 * Since we are replacing the whatever-was-there with
+	 * an error segment, we should also clear any flags
+	 * that suggest it is anything other than "error".
+	 */
+	lv->status &= ~MIRRORED;
+
+	/* FIXME: Should we bug if we find a log_lv attached? */
+
 	if (!lv_add_virtual_segment(lv, 0, len,
 				    get_segtype_from_string(lv->vg->cmd,
 							    "error")))
@@ -516,6 +525,8 @@ struct alloc_handle {
 	uint32_t log_len;		/* Length of log */
 	uint32_t region_size;		/* Mirror region size */
 	uint32_t total_area_len;	/* Total number of parallel extents */
+
+	const struct config_node *cling_tag_list_cn;
 
 	struct dm_list *parallel_areas;	/* PVs to avoid */
 
@@ -630,6 +641,8 @@ static struct alloc_handle *_alloc_init(struct cmd_context *cmd,
 		dm_list_init(&ah->alloced_areas[s]);
 
 	ah->parallel_areas = parallel_areas;
+
+	ah->cling_tag_list_cn = find_config_tree_node(cmd, "allocation/cling_tag_list");
 
 	return ah;
 }
@@ -918,18 +931,19 @@ static int _comp_area(const void *l, const void *r)
  * Search for pvseg that matches condition
  */
 struct pv_match {
-	int (*condition)(struct pv_segment *pvseg, struct pv_area *pva);
+	int (*condition)(struct pv_match *pvmatch, struct pv_segment *pvseg, struct pv_area *pva);
 
 	struct pv_area_used *areas;
 	struct pv_area *pva;
 	uint32_t areas_size;
+	const struct config_node *cling_tag_list_cn;
 	int s;	/* Area index of match */
 };
 
 /*
  * Is PV area on the same PV?
  */
-static int _is_same_pv(struct pv_segment *pvseg, struct pv_area *pva)
+static int _is_same_pv(struct pv_match *pvmatch __attribute((unused)), struct pv_segment *pvseg, struct pv_area *pva)
 {
 	if (pvseg->pv != pva->map->pv)
 		return 0;
@@ -938,9 +952,70 @@ static int _is_same_pv(struct pv_segment *pvseg, struct pv_area *pva)
 }
 
 /*
+ * Does PV area have a tag listed in allocation/cling_tag_list that 
+ * matches a tag of the PV of the existing segment?
+ */
+static int _has_matching_pv_tag(struct pv_match *pvmatch, struct pv_segment *pvseg, struct pv_area *pva)
+{
+	const struct config_value *cv;
+	const char *str;
+	const char *tag_matched;
+
+	for (cv = pvmatch->cling_tag_list_cn->v; cv; cv = cv->next) {
+		if (cv->type != CFG_STRING) {
+			log_error("Ignoring invalid string in config file entry "
+				  "allocation/cling_tag_list");
+			continue;
+		}
+		str = cv->v.str;
+		if (!*str) {
+			log_error("Ignoring empty string in config file entry "
+				  "allocation/cling_tag_list");
+			continue;
+		}
+
+		if (*str != '@') {
+			log_error("Ignoring string not starting with @ in config file entry "
+				  "allocation/cling_tag_list: %s", str);
+			continue;
+		}
+
+		str++;
+
+		if (!*str) {
+			log_error("Ignoring empty tag in config file entry "
+				  "allocation/cling_tag_list");
+			continue;
+		}
+
+		/* Wildcard matches any tag against any tag. */
+		if (!strcmp(str, "*")) {
+			if (!str_list_match_list(&pvseg->pv->tags, &pva->map->pv->tags, &tag_matched))
+				continue;
+			else {
+				log_debug("Matched allocation PV tag %s on existing %s with free space on %s.",
+					  tag_matched, pv_dev_name(pvseg->pv), pv_dev_name(pva->map->pv));
+				return 1;
+			}
+		}
+
+		if (!str_list_match_item(&pvseg->pv->tags, str) ||
+		    !str_list_match_item(&pva->map->pv->tags, str))
+			continue;
+		else {
+			log_debug("Matched allocation PV tag %s on existing %s with free space on %s.",
+				  str, pv_dev_name(pvseg->pv), pv_dev_name(pva->map->pv));
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
+/*
  * Is PV area contiguous to PV segment?
  */
-static int _is_contiguous(struct pv_segment *pvseg, struct pv_area *pva)
+static int _is_contiguous(struct pv_match *pvmatch __attribute((unused)), struct pv_segment *pvseg, struct pv_area *pva)
 {
 	if (pvseg->pv != pva->map->pv)
 		return 0;
@@ -951,13 +1026,13 @@ static int _is_contiguous(struct pv_segment *pvseg, struct pv_area *pva)
 	return 1;
 }
 
-static int _is_condition(struct cmd_context *cmd __attribute((unused)),
+static int _is_condition(struct cmd_context *cmd __attribute__((unused)),
 			 struct pv_segment *pvseg, uint32_t s,
 			 void *data)
 {
 	struct pv_match *pvmatch = data;
 
-	if (!pvmatch->condition(pvseg, pvmatch->pva))
+	if (!pvmatch->condition(pvmatch, pvseg, pvmatch->pva))
 		return 1;	/* Continue */
 
 	if (s >= pvmatch->areas_size)
@@ -982,16 +1057,18 @@ static int _is_condition(struct cmd_context *cmd __attribute((unused)),
  * Is pva on same PV as any existing areas?
  */
 static int _check_cling(struct cmd_context *cmd,
+			const struct config_node *cling_tag_list_cn,
 			struct lv_segment *prev_lvseg, struct pv_area *pva,
 			struct pv_area_used *areas, uint32_t areas_size)
 {
 	struct pv_match pvmatch;
 	int r;
 
-	pvmatch.condition = _is_same_pv;
+	pvmatch.condition = cling_tag_list_cn ? _has_matching_pv_tag : _is_same_pv;
 	pvmatch.areas = areas;
 	pvmatch.areas_size = areas_size;
 	pvmatch.pva = pva;
+	pvmatch.cling_tag_list_cn = cling_tag_list_cn;
 
 	/* FIXME Cope with stacks by flattening */
 	if (!(r = _for_each_pv(cmd, prev_lvseg->lv,
@@ -1020,6 +1097,7 @@ static int _check_contiguous(struct cmd_context *cmd,
 	pvmatch.areas = areas;
 	pvmatch.areas_size = areas_size;
 	pvmatch.pva = pva;
+	pvmatch.cling_tag_list_cn = NULL;
 
 	/* FIXME Cope with stacks by flattening */
 	if (!(r = _for_each_pv(cmd, prev_lvseg->lv,
@@ -1047,7 +1125,7 @@ static int _find_parallel_space(struct alloc_handle *ah, alloc_policy_t alloc,
 	struct pv_area *pva;
 	struct pv_list *pvl;
 	unsigned already_found_one = 0;
-	unsigned contiguous = 0, cling = 0, preferred_count = 0;
+	unsigned contiguous = 0, cling = 0, use_cling_tags = 0, preferred_count = 0;
 	unsigned ix, last_ix;
 	unsigned ix_offset = 0;	/* Offset for non-preferred allocations */
 	unsigned ix_log_offset; /* Offset to start of areas to use for log */
@@ -1080,7 +1158,10 @@ static int _find_parallel_space(struct alloc_handle *ah, alloc_policy_t alloc,
 			contiguous = 1;
 		else if ((alloc == ALLOC_CLING))
 			cling = 1;
-		else
+		else if ((alloc == ALLOC_CLING_BY_TAGS)) {
+			cling = 1;
+			use_cling_tags = 1;
+		} else
 			ix_offset = 0;
 	}
 
@@ -1167,9 +1248,10 @@ static int _find_parallel_space(struct alloc_handle *ah, alloc_policy_t alloc,
 					if (cling) {
 						if (prev_lvseg &&
 						    _check_cling(ah->cmd,
-								   prev_lvseg,
-								   pva, *areas_ptr,
-								   *areas_size_ptr)) {
+								 use_cling_tags ? ah->cling_tag_list_cn : NULL,
+								 prev_lvseg,
+								 pva, *areas_ptr,
+								 *areas_size_ptr)) {
 							preferred_count++;
 						}
 						goto next_pv;
@@ -1220,7 +1302,12 @@ static int _find_parallel_space(struct alloc_handle *ah, alloc_policy_t alloc,
 					/* Expand areas array if needed after an area was split. */
 					if (ix + ix_offset > *areas_size_ptr) {
 						*areas_size_ptr *= 2;
-						*areas_ptr = dm_realloc(*areas_ptr, sizeof(**areas_ptr) * (*areas_size_ptr));
+						if (!(*areas_ptr = dm_realloc(*areas_ptr,
+									     sizeof(**areas_ptr) *
+									     (*areas_size_ptr)))) {
+							log_error("Memory reallocation for parallel areas failed.");
+							return 0;
+						}
 					}
 					(*areas_ptr)[ix + ix_offset - 1].pva = pva;
 						(*areas_ptr)[ix + ix_offset - 1].used = required;
@@ -1352,8 +1439,18 @@ static int _allocate(struct alloc_handle *ah,
 		return 0;
 	}
 
+	/*
+	 * cling includes implicit cling_by_tags
+	 * but it does nothing unless the lvm.conf setting is present.
+	 */
+	if (ah->alloc == ALLOC_CLING)
+		ah->alloc = ALLOC_CLING_BY_TAGS;
+
 	/* Attempt each defined allocation policy in turn */
 	for (alloc = ALLOC_CONTIGUOUS; alloc < ALLOC_INHERIT; alloc++) {
+		/* Skip cling_by_tags if no list defined */
+		if (alloc == ALLOC_CLING_BY_TAGS && !ah->cling_tag_list_cn)
+			continue;
 		old_allocated = allocated;
 		log_debug("Trying allocation using %s policy.  "
 			  "Need %" PRIu32 " extents for %" PRIu32 " parallel areas and %" PRIu32 " log areas of %" PRIu32 " extents. "
@@ -1384,7 +1481,7 @@ static int _allocate(struct alloc_handle *ah,
 	}
 
 	if (log_needs_allocating) {
-		log_error("Insufficient extents for log allocation "
+		log_error("Insufficient free space for log allocation "
 			  "for logical volume %s.",
 			  lv ? lv->name : "");
 		goto out;
@@ -1460,8 +1557,7 @@ struct alloc_handle *allocate_extents(struct volume_group *vg,
 			       parallel_areas)))
 		return_NULL;
 
-	if (!segtype_is_virtual(segtype) &&
-	    !_allocate(ah, vg, lv, 1, allocatable_pvs)) {
+	if (!_allocate(ah, vg, lv, 1, allocatable_pvs)) {
 		alloc_destroy(ah);
 		return_NULL;
 	}
@@ -1743,8 +1839,8 @@ int lv_extend(struct logical_volume *lv,
 	      const struct segment_type *segtype,
 	      uint32_t stripes, uint32_t stripe_size,
 	      uint32_t mirrors, uint32_t extents,
-	      struct physical_volume *mirrored_pv __attribute((unused)),
-	      uint32_t mirrored_pe __attribute((unused)),
+	      struct physical_volume *mirrored_pv __attribute__((unused)),
+	      uint32_t mirrored_pe __attribute__((unused)),
 	      uint64_t status, struct dm_list *allocatable_pvs,
 	      alloc_policy_t alloc)
 {
@@ -1820,8 +1916,8 @@ static int _rename_sub_lv(struct cmd_context *cmd,
 	/*
 	 * Compose a new name for sub lv:
 	 *   e.g. new name is "lvol1_mlog"
-	 *        if the sub LV is "lvol0_mlog" and
-	 *        a new name for main LV is "lvol1"
+	 *	if the sub LV is "lvol0_mlog" and
+	 *	a new name for main LV is "lvol1"
 	 */
 	len = strlen(lv_name_new) + strlen(suffix) + 1;
 	new_name = dm_pool_alloc(cmd->mem, len);
@@ -2008,6 +2104,7 @@ struct logical_volume *alloc_lv(struct dm_pool *mem)
 	dm_list_init(&lv->segments);
 	dm_list_init(&lv->tags);
 	dm_list_init(&lv->segs_using_this_lv);
+	dm_list_init(&lv->rsites);
 
 	return lv;
 }
@@ -2071,7 +2168,7 @@ bad:
 }
 
 static int _add_pvs(struct cmd_context *cmd, struct pv_segment *peg,
-		    uint32_t s __attribute((unused)), void *data)
+		    uint32_t s __attribute__((unused)), void *data)
 {
 	struct seg_pvs *spvs = (struct seg_pvs *) data;
 	struct pv_list *pvl;
@@ -2236,7 +2333,7 @@ int lv_remove_single(struct cmd_context *cmd, struct logical_volume *lv,
 
 	/* FIXME Ensure not referred to by another existing LVs */
 
-	if (lv_info(cmd, lv, &info, 1, 0)) {
+	if (lv_info(cmd, lv, 0, &info, 1, 0)) {
 		if (info.open_count) {
 			log_error("Can't remove open logical volume \"%s\"",
 				  lv->name);
@@ -2329,7 +2426,7 @@ int lv_remove_with_dependencies(struct cmd_context *cmd, struct logical_volume *
 		}
 	}
 
-        return lv_remove_single(cmd, lv, force);
+	return lv_remove_single(cmd, lv, force);
 }
 
 /*
@@ -2924,6 +3021,8 @@ int set_lv(struct cmd_context *cmd, struct logical_volume *lv,
 		return 0;
 	}
 
+	sync_local_dev_names(cmd);  /* Wait until devices are available */
+
 	log_verbose("Clearing start of logical volume \"%s\"", lv->name);
 
 	if (!(dev = dev_cache_get(name, NULL))) {
@@ -2940,9 +3039,13 @@ int set_lv(struct cmd_context *cmd, struct logical_volume *lv,
 	if (sectors > lv->size)
 		sectors = lv->size;
 
-	dev_set(dev, UINT64_C(0), (size_t) sectors << SECTOR_SHIFT, value);
+	if (!dev_set(dev, UINT64_C(0), (size_t) sectors << SECTOR_SHIFT, value))
+		stack;
+
 	dev_flush(dev);
-	dev_close_immediate(dev);
+
+	if (!dev_close_immediate(dev))
+                stack;
 
 	return 1;
 }
@@ -3061,11 +3164,6 @@ int lv_create_single(struct volume_group *vg,
 				  "device-mapper kernel driver");
 			return 0;
 		}
-		/* FIXME Allow exclusive activation. */
-		if (vg_is_clustered(vg)) {
-			log_error("Clustered snapshots are not yet supported.");
-			return 0;
-		}
 
 		/* Must zero cow */
 		status |= LVM_WRITE;
@@ -3108,12 +3206,19 @@ int lv_create_single(struct volume_group *vg,
 				return 0;
 			}
 
-			if (!lv_info(cmd, org, &info, 0, 0)) {
+			if (!lv_info(cmd, org, 0, &info, 0, 0)) {
 				log_error("Check for existence of snapshot "
 					  "origin '%s' failed.", org->name);
 				return 0;
 			}
 			origin_active = info.exists;
+
+			if (vg_is_clustered(vg) &&
+			    !lv_is_active_exclusive_locally(org)) {
+				log_error("%s must be active exclusively to"
+					  " create snapshot", org->name);
+				return 0;
+			}
 		}
 	}
 
@@ -3122,10 +3227,16 @@ int lv_create_single(struct volume_group *vg,
 		return 0;
 	}
 
+	if (lp->snapshot && (lp->extents * vg->extent_size < 2 * lp->chunk_size)) {
+		log_error("Unable to create a snapshot smaller than 2 chunks.");
+		return 0;
+	}
+
 	if (!seg_is_virtual(lp) &&
 	    vg->free_count < lp->extents) {
-		log_error("Insufficient free extents (%u) in volume group %s: "
-			  "%u required", vg->free_count, vg->name, lp->extents);
+		log_error("Volume group \"%s\" has insufficient free space "
+			  "(%u extents): %u required.",
+			  vg->name, vg->free_count, lp->extents);
 		return 0;
 	}
 
@@ -3150,7 +3261,7 @@ int lv_create_single(struct volume_group *vg,
 	if (!archive(vg))
 		return 0;
 
-	if (lp->tag) {
+	if (!dm_list_empty(&lp->tags)) {
 		if (!(vg->fid->fmt->features & FMT_TAGS)) {
 			log_error("Volume group %s does not support tags",
 				  vg->name);
@@ -3185,11 +3296,8 @@ int lv_create_single(struct volume_group *vg,
 			    lv->minor);
 	}
 
-	if (lp->tag && !str_list_add(cmd->mem, &lv->tags, lp->tag)) {
-		log_error("Failed to add tag %s to %s/%s",
-			  lp->tag, lv->vg->name, lv->name);
-		return 0;
-	}
+	if (!dm_list_empty(&lp->tags))
+		dm_list_splice(&lv->tags, &lp->tags);
 
 	if (!lv_extend(lv, lp->segtype, lp->stripes, lp->stripe_size,
 		       1, lp->extents, NULL, 0u, 0u, lp->pvh, lp->alloc))
@@ -3216,6 +3324,11 @@ int lv_create_single(struct volume_group *vg,
 
 	backup(vg);
 
+	if (test_mode()) {
+		log_verbose("Test mode: Skipping activation and zeroing.");
+		goto out;
+	}
+
 	init_dmeventd_monitor(lp->activation_monitoring);
 
 	if (lp->snapshot) {
@@ -3225,12 +3338,9 @@ int lv_create_single(struct volume_group *vg,
 			goto revert_new_lv;
 		}
 	} else if (!activate_lv(cmd, lv)) {
-		if (lp->zero) {
-			log_error("Aborting. Failed to activate new LV to wipe "
-				  "the start of it.");
-			goto deactivate_and_revert_new_lv;
-		}
 		log_error("Failed to activate new LV.");
+		if (lp->zero)
+			goto deactivate_and_revert_new_lv;
 		return 0;
 	}
 
@@ -3297,6 +3407,7 @@ int lv_create_single(struct volume_group *vg,
 	/* FIXME out of sequence */
 	backup(vg);
 
+out:
 	log_print("Logical volume \"%s\" created", lv->name);
 
 	/*

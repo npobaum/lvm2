@@ -26,6 +26,7 @@
 #include "format-text.h"
 #include "format_pool.h"
 #include "format1.h"
+#include "config.h"
 
 static struct dm_hash_table *_pvid_hash = NULL;
 static struct dm_hash_table *_vgid_hash = NULL;
@@ -82,6 +83,12 @@ static void _free_cached_vgmetadata(struct lvmcache_vginfo *vginfo)
 
 	vginfo->vgmetadata = NULL;
 
+	/* Release also cached config tree */
+	if (vginfo->cft) {
+		destroy_config_tree(vginfo->cft);
+		vginfo->cft = NULL;
+	}
+
 	log_debug("Metadata cache: VG %s wiped.", vginfo->vgname);
 }
 
@@ -90,7 +97,7 @@ static void _free_cached_vgmetadata(struct lvmcache_vginfo *vginfo)
  */
 static void _store_metadata(struct volume_group *vg, unsigned precommitted)
 {
-	char uuid[64] __attribute((aligned(8)));
+	char uuid[64] __attribute__((aligned(8)));
 	struct lvmcache_vginfo *vginfo;
 	int size;
 
@@ -275,7 +282,7 @@ int lvmcache_verify_lock_order(const char *vgname)
 	return 1;
 }
 
-void lvmcache_lock_vgname(const char *vgname, int read_only __attribute((unused)))
+void lvmcache_lock_vgname(const char *vgname, int read_only __attribute__((unused)))
 {
 	if (!_lock_hash && !lvmcache_init()) {
 		log_error("Internal cache initialisation failed");
@@ -366,7 +373,7 @@ struct lvmcache_vginfo *vginfo_from_vgname(const char *vgname, const char *vgid)
 	return vginfo;
 }
 
-const struct format_type *fmt_from_vgname(const char *vgname, const char *vgid)
+const struct format_type *fmt_from_vgname(const char *vgname, const char *vgid, unsigned revalidate_labels)
 {
 	struct lvmcache_vginfo *vginfo;
 	struct lvmcache_info *info;
@@ -374,13 +381,21 @@ const struct format_type *fmt_from_vgname(const char *vgname, const char *vgid)
 	struct dm_list *devh, *tmp;
 	struct dm_list devs;
 	struct device_list *devl;
-	char vgid_found[ID_LEN + 1] __attribute((aligned(8)));
+	char vgid_found[ID_LEN + 1] __attribute__((aligned(8)));
 
 	if (!(vginfo = vginfo_from_vgname(vgname, vgid)))
 		return NULL;
 
-	/* This function is normally called before reading metadata so
- 	 * we check cached labels here. Unfortunately vginfo is volatile. */
+	/*
+	 * If this function is called repeatedly, only the first one needs to revalidate.
+	 */
+	if (!revalidate_labels)
+		goto out;
+
+	/*
+	 * This function is normally called before reading metadata so
+ 	 * we check cached labels here. Unfortunately vginfo is volatile.
+ 	 */
 	dm_list_init(&devs);
 	dm_list_iterate_items(info, &vginfo->infos) {
 		if (!(devl = dm_malloc(sizeof(*devl)))) {
@@ -405,13 +420,14 @@ const struct format_type *fmt_from_vgname(const char *vgname, const char *vgid)
 	    strncmp(vginfo->vgid, vgid_found, ID_LEN))
 		return NULL;
 
+out:
 	return vginfo->fmt;
 }
 
 struct lvmcache_vginfo *vginfo_from_vgid(const char *vgid)
 {
 	struct lvmcache_vginfo *vginfo;
-	char id[ID_LEN + 1] __attribute((aligned(8)));
+	char id[ID_LEN + 1] __attribute__((aligned(8)));
 
 	if (!_vgid_hash || !vgid)
 		return NULL;
@@ -492,7 +508,7 @@ static int _vginfo_is_invalid(struct lvmcache_vginfo *vginfo)
 struct lvmcache_info *info_from_pvid(const char *pvid, int valid_only)
 {
 	struct lvmcache_info *info;
-	char id[ID_LEN + 1] __attribute((aligned(8)));
+	char id[ID_LEN + 1] __attribute__((aligned(8)));
 
 	if (!_pvid_hash || !pvid)
 		return NULL;
@@ -514,7 +530,7 @@ char *lvmcache_vgname_from_pvid(struct cmd_context *cmd, const char *pvid)
 	struct lvmcache_info *info;
 	char *vgname;
 
-	if (!device_from_pvid(cmd, (struct id *)pvid, NULL)) {
+	if (!device_from_pvid(cmd, (const struct id *)pvid, NULL)) {
 		log_error("Couldn't find device with uuid %s.", pvid);
 		return NULL;
 	}
@@ -570,7 +586,7 @@ int lvmcache_label_scan(struct cmd_context *cmd, int full_scan)
 		goto out;
 	}
 
-	if (full_scan == 2 && !refresh_filters(cmd)) {
+	if (full_scan == 2 && !cmd->filter->use_count && !refresh_filters(cmd)) {
 		log_error("refresh filters failed");
 		goto out;
 	}
@@ -588,10 +604,10 @@ int lvmcache_label_scan(struct cmd_context *cmd, int full_scan)
 	_has_scanned = 1;
 
 	/* Perform any format-specific scanning e.g. text files */
-	dm_list_iterate_items(fmt, &cmd->formats) {
-		if (fmt->ops->scan && !fmt->ops->scan(fmt))
-			goto out;
-	}
+	if (cmd->independent_metadata_areas)
+		dm_list_iterate_items(fmt, &cmd->formats)
+			if (fmt->ops->scan && !fmt->ops->scan(fmt, NULL))
+				goto out;
 
 	/*
 	 * If we are a long-lived process, write out the updated persistent
@@ -641,9 +657,17 @@ struct volume_group *lvmcache_get_vg(const char *vgid, unsigned precommitted)
 						      vgid, NULL)))
 		return_NULL;
 
-	if (!(vg = import_vg_from_buffer(vginfo->vgmetadata, fid))) {
+	/* Build config tree from vgmetadata, if not yet cached */
+	if (!vginfo->cft &&
+	    !(vginfo->cft =
+	      create_config_tree_from_string(fid->fmt->cmd,
+					     vginfo->vgmetadata))) {
 		_free_cached_vgmetadata(vginfo);
-		vg_release(vg);
+		return_NULL;
+	}
+
+	if (!(vg = import_vg_from_config_tree(vginfo->cft, fid))) {
+		_free_cached_vgmetadata(vginfo);
 		return_NULL;
 	}
 
@@ -733,14 +757,14 @@ struct dm_list *lvmcache_get_pvids(struct cmd_context *cmd, const char *vgname,
 	return pvids;
 }
 
-struct device *device_from_pvid(struct cmd_context *cmd, struct id *pvid,
+struct device *device_from_pvid(struct cmd_context *cmd, const struct id *pvid,
 				unsigned *scan_done_once)
 {
 	struct label *label;
 	struct lvmcache_info *info;
 
 	/* Already cached ? */
-	if ((info = info_from_pvid((char *) pvid, 0))) {
+	if ((info = info_from_pvid((const char *) pvid, 0))) {
 		if (label_read(info->dev, &label, UINT64_C(0))) {
 			info = (struct lvmcache_info *) label->info;
 			if (id_equal(pvid, (struct id *) &info->dev->pvid))
@@ -751,7 +775,7 @@ struct device *device_from_pvid(struct cmd_context *cmd, struct id *pvid,
 	lvmcache_label_scan(cmd, 0);
 
 	/* Try again */
-	if ((info = info_from_pvid((char *) pvid, 0))) {
+	if ((info = info_from_pvid((const char *) pvid, 0))) {
 		if (label_read(info->dev, &label, UINT64_C(0))) {
 			info = (struct lvmcache_info *) label->info;
 			if (id_equal(pvid, (struct id *) &info->dev->pvid))
@@ -767,7 +791,7 @@ struct device *device_from_pvid(struct cmd_context *cmd, struct id *pvid,
 		*scan_done_once = 1;
 
 	/* Try again */
-	if ((info = info_from_pvid((char *) pvid, 0))) {
+	if ((info = info_from_pvid((const char *) pvid, 0))) {
 		if (label_read(info->dev, &label, UINT64_C(0))) {
 			info = (struct lvmcache_info *) label->info;
 			if (id_equal(pvid, (struct id *) &info->dev->pvid))
@@ -930,8 +954,8 @@ static int _insert_vginfo(struct lvmcache_vginfo *new_vginfo, const char *vgid,
 			  struct lvmcache_vginfo *primary_vginfo)
 {
 	struct lvmcache_vginfo *last_vginfo = primary_vginfo;
-	char uuid_primary[64] __attribute((aligned(8)));
-	char uuid_new[64] __attribute((aligned(8)));
+	char uuid_primary[64] __attribute__((aligned(8)));
+	char uuid_new[64] __attribute__((aligned(8)));
 	int use_new = 0;
 
 	/* Pre-existing VG takes precedence. Unexported VG takes precedence. */
@@ -1064,11 +1088,10 @@ static int _lvmcache_update_vgname(struct lvmcache_info *info,
 			}
 		} else {
 ***/
-		if (!(vginfo = dm_malloc(sizeof(*vginfo)))) {
+		if (!(vginfo = dm_zalloc(sizeof(*vginfo)))) {
 			log_error("lvmcache_update_vgname: list alloc failed");
 			return 0;
 		}
-		memset(vginfo, 0, sizeof(*vginfo));
 		if (!(vginfo->vgname = dm_strdup(vgname))) {
 			dm_free(vginfo);
 			log_error("cache vgname alloc failed for %s", vgname);
@@ -1084,6 +1107,13 @@ static int _lvmcache_update_vgname(struct lvmcache_info *info,
 		       _scanning_in_progress && _vginfo_is_invalid(primary_vginfo))
 			dm_list_iterate_items_safe(info2, info3, &primary_vginfo->infos) {
 				orphan_vginfo = vginfo_from_vgname(primary_vginfo->fmt->orphan_vg_name, NULL);
+				if (!orphan_vginfo) {
+					log_error(INTERNAL_ERROR "Orphan vginfo %s lost from cache.",
+						  primary_vginfo->fmt->orphan_vg_name);
+					dm_free(vginfo->vgname);
+					dm_free(vginfo);
+					return 0;
+				}
 				_drop_vginfo(info2, primary_vginfo);	
 				_vginfo_attach_info(orphan_vginfo, info2);
 				if (info2->mdas.n)
@@ -1197,7 +1227,8 @@ int lvmcache_update_vgname_and_id(struct lvmcache_info *info,
 	}
 
 	/* If PV without mdas is already in a real VG, don't make it orphan */
-	if (is_orphan_vg(vgname) && info->vginfo && !dm_list_size(&info->mdas) &&
+	if (is_orphan_vg(vgname) && info->vginfo &&
+	    mdas_empty_or_ignored(&info->mdas) &&
 	    !is_orphan_vg(info->vginfo->vgname) && memlock())
 		return 1;
 
@@ -1218,7 +1249,7 @@ int lvmcache_update_vg(struct volume_group *vg, unsigned precommitted)
 {
 	struct pv_list *pvl;
 	struct lvmcache_info *info;
-	char pvid_s[ID_LEN + 1] __attribute((aligned(8)));
+	char pvid_s[ID_LEN + 1] __attribute__((aligned(8)));
 
 	pvid_s[sizeof(pvid_s) - 1] = '\0';
 
@@ -1246,7 +1277,7 @@ struct lvmcache_info *lvmcache_add(struct labeller *labeller, const char *pvid,
 {
 	struct label *label;
 	struct lvmcache_info *existing, *info;
-	char pvid_s[ID_LEN + 1] __attribute((aligned(8)));
+	char pvid_s[ID_LEN + 1] __attribute__((aligned(8)));
 
 	if (!_vgname_hash && !lvmcache_init()) {
 		log_error("Internal cache initialisation failed");
@@ -1260,12 +1291,11 @@ struct lvmcache_info *lvmcache_add(struct labeller *labeller, const char *pvid,
 	    !(existing = info_from_pvid(dev->pvid, 0))) {
 		if (!(label = label_create(labeller)))
 			return_NULL;
-		if (!(info = dm_malloc(sizeof(*info)))) {
+		if (!(info = dm_zalloc(sizeof(*info)))) {
 			log_error("lvmcache_info allocation failed");
 			label_destroy(label);
 			return NULL;
 		}
-		memset(info, 0, sizeof(*info));
 
 		label->info = info;
 		info->label = label;
