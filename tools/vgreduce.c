@@ -49,9 +49,9 @@ static int _remove_pv(struct volume_group *vg, struct pv_list *pvl)
 static int _remove_lv(struct cmd_context *cmd, struct logical_volume *lv,
 		      int *list_unsafe)
 {
-	struct snapshot *snap;
-	struct snapshot_list *snl;
-	struct list *snaplist;
+	struct lv_segment *snap_seg;
+	struct list *snh, *snht;
+	struct logical_volume *cow;
 
 	log_verbose("%s/%s has missing extents: removing (including "
 		    "dependencies)", lv->vg->name, lv->name);
@@ -65,36 +65,34 @@ static int _remove_lv(struct cmd_context *cmd, struct logical_volume *lv,
 			log_error("Failed to deactivate LV %s", lv->name);
 			return 0;
 		}
-	} else if ((snap = find_cow(lv))) {
+	} else if ((snap_seg = find_cow(lv))) {
 		log_verbose("Deactivating (if active) logical volume %s "
-			    "(origin of %s)", snap->origin->name, lv->name);
+			    "(origin of %s)", snap_seg->origin->name, lv->name);
 
-		if (!deactivate_lv(cmd, snap->origin->lvid.s)) {
+		if (!deactivate_lv(cmd, snap_seg->origin->lvid.s)) {
 			log_error("Failed to deactivate LV %s",
-				  snap->origin->name);
+				  snap_seg->origin->name);
 			return 0;
 		}
 
 		/* Use the origin LV */
-		lv = snap->origin;
+		lv = snap_seg->origin;
 	}
 
 	/* Remove snapshot dependencies */
-	if (!(snaplist = find_snapshots(lv))) {
-		stack;
-		return 0;
-	}
-	/* List may be empty */
-	list_iterate_items(snl, snaplist) {
+	list_iterate_safe(snh, snht, &lv->snapshot_segs) {
+		snap_seg = list_struct_base(snh, struct lv_segment,
+					    origin_list);
+		cow = snap_seg->cow;
+
 		*list_unsafe = 1;	/* May remove caller's lvht! */
-		snap = snl->snapshot;
-		if (!vg_remove_snapshot(lv->vg, snap->cow)) {
+		if (!vg_remove_snapshot(cow)) {
 			stack;
 			return 0;
 		}
-		log_verbose("Removing LV %s from VG %s", snap->cow->name,
+		log_verbose("Removing LV %s from VG %s", cow->name,
 			    lv->vg->name);
-		if (!lv_remove(lv->vg, snap->cow)) {
+		if (!lv_remove(cow)) {
 			stack;
 			return 0;
 		}
@@ -102,7 +100,7 @@ static int _remove_lv(struct cmd_context *cmd, struct logical_volume *lv,
 
 	/* Remove the LV itself */
 	log_verbose("Removing LV %s from VG %s", lv->name, lv->vg->name);
-	if (!lv_remove(lv->vg, lv)) {
+	if (!lv_remove(lv)) {
 		stack;
 		return 0;
 	}
@@ -131,12 +129,12 @@ static int _make_vg_consistent(struct cmd_context *cmd, struct volume_group *vg)
 		/* Are any segments of this LV on missing PVs? */
 		list_iterate_items(seg, &lv->segments) {
 			for (s = 0; s < seg->area_count; s++) {
-				if (seg->area[s].type != AREA_PV)
+				if (seg_type(seg, s) != AREA_PV)
 					continue;
 
 				/* FIXME Also check for segs on deleted LVs */
 
-				pv = seg->area[s].u.pv.pv;
+				pv = seg_pv(seg, s);
 				if (!pv || !pv->dev) {
 					if (!_remove_lv(cmd, lv, &list_unsafe)) {
 						stack;
@@ -192,6 +190,13 @@ static int _vgreduce_single(struct cmd_context *cmd, struct volume_group *vg,
 		list_del(&pvl->list);
 
 	pv->vg_name = ORPHAN;
+        pv->status = ALLOCATABLE_PV;
+
+	if (!dev_get_size(pv->dev, &pv->size)) {
+		log_error("%s: Couldn't get size.", dev_name(pv->dev));
+		return ECMD_FAILED;
+	}
+
 	vg->pv_count--;
 	vg->free_count -= pv->pe_count - pv->pe_alloc_count;
 	vg->extent_count -= pv->pe_count;

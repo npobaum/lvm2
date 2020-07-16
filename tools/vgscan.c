@@ -36,6 +36,8 @@ static int vgscan_single(struct cmd_context *cmd, const char *vg_name,
 		  (vg->status & EXPORTED_VG) ? "exported " : "", vg_name,
 		  vg->fid->fmt->name);
 
+	check_current_backup(vg);
+
 	return ECMD_PROCESSED;
 }
 
@@ -48,10 +50,7 @@ int vgscan(struct cmd_context *cmd, int argc, char **argv)
 		return EINVALID_CMD_LINE;
 	}
 
-	log_verbose("Wiping cache of LVM-capable devices");
 	persistent_filter_wipe(cmd->filter);
-
-	log_verbose("Wiping internal cache");
 	lvmcache_destroy();
 
 	log_print("Reading all physical volumes.  This may take a while...");

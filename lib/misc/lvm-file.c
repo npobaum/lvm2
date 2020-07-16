@@ -86,7 +86,11 @@ int lvm_rename(const char *old, const char *new)
 {
 	struct stat buf;
 
-	link(old, new);
+	if (link(old, new)) {
+		log_error("%s: rename to %s failed: %s", old, new,
+			  strerror(errno));
+		return 0;
+	}
 
 	if (stat(old, &buf)) {
 		log_sys_error("stat", old);
@@ -148,7 +152,8 @@ static int _create_dir_recursive(const char *dir)
 		if (*orig) {
 			rc = mkdir(orig, 0777);
 			if (rc < 0 && errno != EEXIST) {
-				log_sys_error("mkdir", orig);
+				if (errno != EROFS)
+					log_sys_error("mkdir", orig);
 				dbg_free(orig);
 				return 0;
 			}
@@ -160,7 +165,8 @@ static int _create_dir_recursive(const char *dir)
 	/* Create final directory */
 	rc = mkdir(dir, 0777);
 	if (rc < 0 && errno != EEXIST) {
-		log_sys_error("mkdir", dir);
+		if (errno != EROFS)
+			log_sys_error("mkdir", dir);
 		return 0;
 	}
 	return 1;

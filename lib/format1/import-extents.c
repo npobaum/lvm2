@@ -48,7 +48,6 @@ static struct hash_table *_create_lv_maps(struct pool *mem,
 					  struct volume_group *vg)
 {
 	struct hash_table *maps = hash_create(32);
-	struct list *llh;
 	struct lv_list *ll;
 	struct lv_map *lvm;
 
@@ -58,8 +57,9 @@ static struct hash_table *_create_lv_maps(struct pool *mem,
 		return NULL;
 	}
 
-	list_iterate(llh, &vg->lvs) {
-		ll = list_item(llh, struct lv_list);
+	list_iterate_items(ll, &vg->lvs) {
+		if (ll->lv->status & SNAPSHOT)
+			continue;
 
 		if (!(lvm = pool_alloc(mem, sizeof(*lvm)))) {
 			stack;
@@ -89,13 +89,12 @@ static struct hash_table *_create_lv_maps(struct pool *mem,
 static int _fill_lv_array(struct lv_map **lvs,
 			  struct hash_table *maps, struct disk_list *dl)
 {
-	struct list *lvh;
+	struct lvd_list *ll;
 	struct lv_map *lvm;
 
 	memset(lvs, 0, sizeof(*lvs) * MAX_LV);
-	list_iterate(lvh, &dl->lvds) {
-		struct lvd_list *ll = list_item(lvh, struct lvd_list);
 
+	list_iterate_items(ll, &dl->lvds) {
 		if (!(lvm = hash_lookup(maps, strrchr(ll->lvd.lv_name, '/')
 					+ 1))) {
 			log_err("Physical volume (%s) contains an "
@@ -116,15 +115,13 @@ static int _fill_lv_array(struct lv_map **lvs,
 static int _fill_maps(struct hash_table *maps, struct volume_group *vg,
 		      struct list *pvds)
 {
-	struct list *pvdh;
 	struct disk_list *dl;
 	struct physical_volume *pv;
 	struct lv_map *lvms[MAX_LV], *lvm;
 	struct pe_disk *e;
 	uint32_t i, lv_num, le;
 
-	list_iterate(pvdh, pvds) {
-		dl = list_item(pvdh, struct disk_list);
+	list_iterate_items(dl, pvds) {
 		pv = find_pv(vg, dl->dev);
 		e = dl->extents;
 
@@ -205,58 +202,59 @@ static int _check_maps_are_complete(struct hash_table *maps)
 
 static int _read_linear(struct cmd_context *cmd, struct lv_map *lvm)
 {
-	uint32_t le = 0;
+	uint32_t le = 0, len;
 	struct lv_segment *seg;
+	struct segment_type *segtype;
+
+	if (!(segtype = get_segtype_from_string(cmd, "striped"))) {
+		stack;
+		return 0;
+	}
 
 	while (le < lvm->lv->le_count) {
-		seg = alloc_lv_segment(cmd->mem, 1);
+		len = 0;
 
-		seg->lv = lvm->lv;
-		if (!(seg->segtype = get_segtype_from_string(cmd, "striped"))) {
+		do
+			len++;
+		while ((lvm->map[le + len].pv == lvm->map[le].pv) &&
+			 (lvm->map[le].pv &&
+			  lvm->map[le + len].pe == lvm->map[le].pe + len));
+
+		if (!(seg = alloc_lv_segment(cmd->mem, segtype, lvm->lv, le,
+					     len, 0, 0, NULL, 1, len, 0, 0, 0))) {
+			log_error("Failed to allocate linear segment.");
+			return 0;
+		}
+
+		if (!set_lv_segment_area_pv(seg, 0, lvm->map[le].pv,
+					    lvm->map[le].pe)) {
 			stack;
 			return 0;
 		}
 
-		seg->le = le;
-		seg->len = 0;
-		seg->area_len = 0;
-		seg->stripe_size = 0;
-
-		seg->area[0].type = AREA_PV;
-		seg->area[0].u.pv.pv = lvm->map[le].pv;
-		seg->area[0].u.pv.pe = lvm->map[le].pe;
-
-		do {
-			seg->len++;
-			seg->area_len++;
-		} while ((lvm->map[le + seg->len].pv == seg->area[0].u.pv.pv) &&
-			 (seg->area[0].u.pv.pv &&
-			  lvm->map[le + seg->len].pe == seg->area[0].u.pv.pe +
-			  seg->len));
+		list_add(&lvm->lv->segments, &seg->list);
 
 		le += seg->len;
-
-		list_add(&lvm->lv->segments, &seg->list);
 	}
 
 	return 1;
 }
 
-static int _check_stripe(struct lv_map *lvm, struct lv_segment *seg,
-			 uint32_t base_le, uint32_t len)
+static int _check_stripe(struct lv_map *lvm, uint32_t area_count,
+			 uint32_t seg_len, uint32_t base_le, uint32_t len)
 {
-	uint32_t le, st;
-
-	le = base_le + seg->len;
+	uint32_t st;
 
 	/*
 	 * Is the next physical extent in every stripe adjacent to the last?
 	 */
-	for (st = 0; st < seg->area_count; st++)
-		if ((lvm->map[le + st * len].pv != seg->area[st].u.pv.pv) ||
-		    (seg->area[st].u.pv.pv &&
-		     lvm->map[le + st * len].pe !=
-		     seg->area[st].u.pv.pe + seg->len)) return 0;
+	for (st = 0; st < area_count; st++)
+		if ((lvm->map[base_le + st * len + seg_len].pv !=
+		     lvm->map[base_le + st * len].pv) ||
+		    (lvm->map[base_le + st * len].pv &&
+		     lvm->map[base_le + st * len + seg_len].pe !=
+		     lvm->map[base_le + st * len].pe + seg_len))
+			return 0;
 
 	return 1;
 }
@@ -264,7 +262,9 @@ static int _check_stripe(struct lv_map *lvm, struct lv_segment *seg,
 static int _read_stripes(struct cmd_context *cmd, struct lv_map *lvm)
 {
 	uint32_t st, le = 0, len;
+	uint32_t area_len;
 	struct lv_segment *seg;
+	struct segment_type *segtype;
 
 	/*
 	 * Work out overall striped length
@@ -276,43 +276,46 @@ static int _read_stripes(struct cmd_context *cmd, struct lv_map *lvm)
 	}
 	len = lvm->lv->le_count / lvm->stripes;
 
+	if (!(segtype = get_segtype_from_string(cmd, "striped"))) {
+		stack;
+		return 0;
+	}
+
 	while (le < len) {
-		if (!(seg = alloc_lv_segment(cmd->mem, lvm->stripes))) {
-			stack;
-			return 0;
-		}
-
-		seg->lv = lvm->lv;
-		if (!(seg->segtype = get_segtype_from_string(cmd, "striped"))) {
-			stack;
-			return 0;
-		}
-		seg->stripe_size = lvm->stripe_size;
-		seg->le = seg->area_count * le;
-		seg->len = 1;
-		seg->area_len = 1;
-
-		/*
-		 * Set up start positions of each stripe in this segment
-		 */
-		for (st = 0; st < seg->area_count; st++) {
-			seg->area[st].u.pv.pv = lvm->map[le + st * len].pv;
-			seg->area[st].u.pv.pe = lvm->map[le + st * len].pe;
-		}
+		area_len = 1;
 
 		/* 
 		 * Find how many blocks are contiguous in all stripes
 		 * and so can form part of this segment
 		 */
-		while (_check_stripe(lvm, seg, le, len)) {
-			seg->len++;
-			seg->area_len++;
+		while (_check_stripe(lvm, lvm->stripes,
+				     area_len * lvm->stripes, le, len))
+			area_len++;
+
+		if (!(seg = alloc_lv_segment(cmd->mem, segtype, lvm->lv,
+					     lvm->stripes * le,
+					     lvm->stripes * area_len,
+					     0, lvm->stripe_size, NULL,
+					     lvm->stripes,
+					     area_len, 0, 0, 0))) {
+			log_error("Failed to allocate striped segment.");
+			return 0;
 		}
 
-		le += seg->len;
-		seg->len *= seg->area_count;
+		/*
+		 * Set up start positions of each stripe in this segment
+		 */
+		for (st = 0; st < seg->area_count; st++)
+			if (!set_lv_segment_area_pv(seg, st,
+						    lvm->map[le + st * len].pv,
+						    lvm->map[le + st * len].pe)) {
+				stack;
+				return 0;
+			}
 
 		list_add(&lvm->lv->segments, &seg->list);
+
+		le += seg->len;
 	}
 
 	return 1;

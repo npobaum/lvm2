@@ -16,5 +16,68 @@
 #ifndef _LVM_LV_ALLOC_H
 #include "pool.h"
 
-struct lv_segment *alloc_lv_segment(struct pool *mem, uint32_t num_areas);
+struct lv_segment *alloc_lv_segment(struct pool *mem,
+				    struct segment_type *segtype,
+				    struct logical_volume *lv,
+				    uint32_t le, uint32_t len,
+				    uint32_t status,
+				    uint32_t stripe_size,
+				    struct logical_volume *log_lv,
+				    uint32_t area_count,
+				    uint32_t area_len,
+				    uint32_t chunk_size,
+				    uint32_t region_size,
+				    uint32_t extents_copied);
+
+struct lv_segment *alloc_snapshot_seg(struct logical_volume *lv,
+				      uint32_t status, uint32_t old_le_count);
+
+int set_lv_segment_area_pv(struct lv_segment *seg, uint32_t area_num,
+			   struct physical_volume *pv, uint32_t pe);
+void set_lv_segment_area_lv(struct lv_segment *seg, uint32_t area_num,
+			    struct logical_volume *lv, uint32_t le,
+			    uint32_t flags);
+int move_lv_segment_area(struct lv_segment *seg_to, uint32_t area_to,
+			 struct lv_segment *seg_from, uint32_t area_from);
+void release_lv_segment_area(struct lv_segment *seg, uint32_t s,
+			     uint32_t area_reduction);
+
+struct alloc_handle;
+struct alloc_handle *allocate_extents(struct volume_group *vg,
+				      struct logical_volume *lv,
+                                      struct segment_type *segtype,
+                                      uint32_t stripes,
+                                      uint32_t mirrors, uint32_t log_count,
+				      uint32_t extents,
+                                      struct physical_volume *mirrored_pv,
+                                      uint32_t mirrored_pe,
+                                      uint32_t status,
+                                      struct list *allocatable_pvs,
+                                      alloc_policy_t alloc);
+
+int lv_add_segment(struct alloc_handle *ah,
+		   uint32_t first_area, uint32_t num_areas,
+		   struct logical_volume *lv,
+                   struct segment_type *segtype,
+                   uint32_t stripe_size,
+                   struct physical_volume *mirrored_pv,
+                   uint32_t mirrored_pe,
+                   uint32_t status,   
+		   uint32_t region_size,
+                   struct logical_volume *log_lv);
+
+int lv_add_log_segment(struct alloc_handle *ah, struct logical_volume *log_lv);
+int lv_add_virtual_segment(struct logical_volume *lv, uint32_t status,
+                           uint32_t extents, struct segment_type *segtype);
+int lv_add_mirror_segment(struct alloc_handle *ah,
+			  struct logical_volume *lv,
+			  struct logical_volume **sub_lvs,
+			  uint32_t mirrors,
+			  struct segment_type *segtype,
+			  uint32_t status,
+			  uint32_t region_size,
+			  struct logical_volume *log_lv);
+
+void alloc_destroy(struct alloc_handle *ah);
+
 #endif

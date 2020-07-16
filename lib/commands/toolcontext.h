@@ -32,20 +32,20 @@ struct config_info {
 	int syslog;
 	int activation;
 	int suffix;
-	uint64_t unit_factor;
-	char unit_type;
-	const char *msg_prefix;
-	int cmd_name;		/* Show command name? */
-
 	int archive;		/* should we archive ? */
 	int backup;		/* should we backup ? */
-
+	const char *msg_prefix;
 	struct format_type *fmt;
-
+	uint64_t unit_factor;
+	int cmd_name;		/* Show command name? */
 	mode_t umask;
+	char unit_type;
+	char _padding[1];
 };
 
 struct config_tree;
+struct archive_params;
+struct backup_params;
 
 /* FIXME Split into tool & library contexts */
 /* command-instance-related variables needed by library */
@@ -74,6 +74,9 @@ struct cmd_context {
 	struct config_tree *cft;
 	struct config_info default_settings;
 	struct config_info current_settings;
+
+	struct archive_params *archive_params;
+	struct backup_params *backup_params;
 
 	/* List of defined tags */
 	struct list tags;

@@ -86,6 +86,7 @@ struct local_client {
 	struct local_client *next;
 	unsigned short xid;
 	fd_callback_t callback;
+	uint8_t removeme;
 
 	union {
 		struct localsock_bits localsock;
@@ -93,9 +94,9 @@ struct local_client {
 		struct netsock_bits net;
 	} bits;
 };
-#define DEBUG
+
 #ifdef DEBUG
-#define DEBUGLOG(fmt, args...) fprintf(stderr, "CLVMD[%d]: %ld ", getpid(), time(NULL) ); fprintf(stderr, fmt, ## args)
+#define DEBUGLOG(fmt, args...) {time_t P; time(&P); fprintf(stderr, "CLVMD[%x]: %.15s ", (int)pthread_self(), ctime(&P)+4 ); fprintf(stderr, fmt, ## args);}
 #else
 #define DEBUGLOG(fmt, args...)
 #endif

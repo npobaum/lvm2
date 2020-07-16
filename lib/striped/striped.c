@@ -26,6 +26,7 @@
 #include "targets.h"
 #include "lvm-string.h"
 #include "activate.h"
+#include "pv_alloc.h"
 
 static const char *_name(const struct lv_segment *seg)
 {
@@ -81,7 +82,7 @@ static int _text_import(struct lv_segment *seg, const struct config_node *sn,
 
 	seg->area_len /= seg->area_count;
 
-	return text_import_areas(seg, sn, cn, pv_hash);
+	return text_import_areas(seg, sn, cn, pv_hash, 0);
 }
 
 static int _text_export(const struct lv_segment *seg, struct formatter *f)
@@ -114,12 +115,15 @@ static int _segments_compatible(struct lv_segment *first,
 		/* FIXME Relax this to first area type != second area type */
 		/*       plus the additional AREA_LV checks needed */
 		if ((first->area[s].type != AREA_PV) ||
-		    (second->area[s].type != AREA_PV)) return 0;
+		    (second->area[s].type != AREA_PV))
+			return 0;
 
 		width = first->area_len;
 
-		if ((first->area[s].u.pv.pv != second->area[s].u.pv.pv) ||
-		    (first->area[s].u.pv.pe + width != second->area[s].u.pv.pe))
+		if ((seg_pv(first, s) !=
+		     seg_pv(second, s)) ||
+		    (seg_pe(first, s) + width !=
+		     seg_pe(second, s)))
 			return 0;
 	}
 
@@ -131,11 +135,18 @@ static int _segments_compatible(struct lv_segment *first,
 
 static int _merge_segments(struct lv_segment *seg1, struct lv_segment *seg2)
 {
+	uint32_t s;
+
 	if (!_segments_compatible(seg1, seg2))
 		return 0;
 
 	seg1->len += seg2->len;
 	seg1->area_len += seg2->area_len;
+
+	for (s = 0; s < seg1->area_count; s++)
+		if (seg1->area[s].type == AREA_PV)
+			merge_pv_segments(seg_pvseg(seg1, s),
+					  seg_pvseg(seg2, s));
 
 	return 1;
 }

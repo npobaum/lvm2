@@ -19,6 +19,16 @@
 
 #include <stdarg.h>
 
+char *dbg_strdup(const char *str)
+{
+	char *ret = dbg_malloc(strlen(str) + 1);
+
+	if (ret)
+		strcpy(ret, str);
+
+	return ret;
+}
+
 #ifdef DEBUG_MEM
 
 struct memblock {
@@ -102,6 +112,9 @@ void *malloc_aux(size_t s, const char *file, int line)
 	if (_mem_stats.bytes > _mem_stats.mbytes)
 		_mem_stats.mbytes = _mem_stats.bytes;
 
+	/* log_debug("Allocated: %u %u %u", nb->id, _mem_stats.blocks_allocated,
+		  _mem_stats.bytes); */
+
 	return nb + 1;
 }
 
@@ -183,6 +196,8 @@ int dump_memory(void)
 		for (c = 0; c < sizeof(str) - 1; c++) {
 			if (c >= mb->length)
 				str[c] = ' ';
+			else if (*(char *)(mb->magic + c) == '\0')
+				str[c] = '\0';
 			else if (*(char *)(mb->magic + c) < ' ')
 				str[c] = '?';
 			else

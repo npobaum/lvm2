@@ -31,6 +31,7 @@ static union {
 	struct logical_volume _lv;
 	struct volume_group _vg;
 	struct lv_segment _seg;
+	struct pv_segment _pvseg;
 } _dummy;
 
 /*
@@ -153,17 +154,17 @@ static int _devices_disp(struct report_handle *rh, struct field *field,
 	}
 
 	for (s = 0; s < seg->area_count; s++) {
-		switch (seg->area[s].type) {
+		switch (seg_type(seg, s)) {
 		case AREA_LV:
-			name = seg->area[s].u.lv.lv->name;
-			extent = seg->area[s].u.lv.le;
+			name = seg_lv(seg, s)->name;
+			extent = seg_le(seg, s);
 			break;
 		case AREA_PV:
-			name = dev_name(seg->area[s].u.pv.pv->dev);
-			extent = seg->area[s].u.pv.pe;
+			name = dev_name(seg_dev(seg, s));
+			extent = seg_pe(seg, s);
 			break;
-		default:
-			name = "unknown";
+		case AREA_UNASSIGNED:
+			name = "unassigned";
 			extent = 0;
 		}
 
@@ -324,7 +325,7 @@ static int _lvstatus_disp(struct report_handle *rh, struct field *field,
 	const struct logical_volume *lv = (const struct logical_volume *) data;
 	struct lvinfo info;
 	char *repstr;
-	struct snapshot *snap;
+	struct lv_segment *snap_seg;
 	float snap_percent;
 
 	if (!(repstr = pool_zalloc(rh->mem, 7))) {
@@ -336,6 +337,10 @@ static int _lvstatus_disp(struct report_handle *rh, struct field *field,
 		repstr[0] = 'p';
 	else if (lv->status & MIRRORED)
 		repstr[0] = 'm';
+	else if (lv->status & MIRROR_IMAGE)
+		repstr[0] = 'i';
+	else if (lv->status & MIRROR_LOG)
+		repstr[0] = 'l';
 	else if (lv->status & VIRTUAL)
 		repstr[0] = 'v';
 	else if (lv_is_origin(lv))
@@ -373,8 +378,8 @@ static int _lvstatus_disp(struct report_handle *rh, struct field *field,
 			repstr[5] = '-';
 
 		/* Snapshot dropped? */
-		if ((snap = find_cow(lv)) &&
-		    (!lv_snapshot_percent(snap->cow, &snap_percent) ||
+		if ((snap_seg = find_cow(lv)) &&
+		    (!lv_snapshot_percent(snap_seg->cow, &snap_percent) ||
 		     snap_percent < 0 || snap_percent >= 100)) {
 			repstr[0] = toupper(repstr[0]);
 			if (info.suspended)
@@ -478,13 +483,64 @@ static int _origin_disp(struct report_handle *rh, struct field *field,
 			const void *data)
 {
 	const struct logical_volume *lv = (const struct logical_volume *) data;
-	struct snapshot *snap;
+	struct lv_segment *snap_seg;
 
-	if ((snap = find_cow(lv)))
-		return _string_disp(rh, field, &snap->origin->name);
+	if ((snap_seg = find_cow(lv)))
+		return _string_disp(rh, field, &snap_seg->origin->name);
 
 	field->report_string = "";
 	field->sort_value = (const void *) field->report_string;
+
+	return 1;
+}
+
+static int _loglv_disp(struct report_handle *rh, struct field *field,
+		       const void *data)
+{
+	const struct logical_volume *lv = (const struct logical_volume *) data;
+	struct lv_segment *seg;
+
+	list_iterate_items(seg, &lv->segments) {
+		if (!seg_is_mirrored(seg) || !seg->log_lv)
+			continue;
+		return _string_disp(rh, field, &seg->log_lv->name);
+	}
+
+	field->report_string = "";
+	field->sort_value = (const void *) field->report_string;
+
+	return 1;
+}
+
+static int _lvname_disp(struct report_handle *rh, struct field *field,
+			const void *data)
+{
+	const struct logical_volume *lv = (const struct logical_volume *) data;
+	char *repstr;
+	size_t len;
+
+	if (lv->status & VISIBLE_LV) {
+		repstr = lv->name;
+		return _string_disp(rh, field, &repstr);
+	}
+
+	len = strlen(lv->name) + 3;
+	if (!(repstr = pool_zalloc(rh->mem, len))) {
+		log_error("pool_alloc failed");
+		return 0;
+	}
+
+	if (lvm_snprintf(repstr, len, "[%s]", lv->name) < 0) {
+		log_error("lvname snprintf failed");
+		return 0;
+	}
+
+	field->report_string = repstr;
+
+	if (!(field->sort_value = pool_strdup(rh->mem, lv->name))) {
+		log_error("pool_strdup failed");
+		return 0;
+	}
 
 	return 1;
 }
@@ -494,14 +550,12 @@ static int _movepv_disp(struct report_handle *rh, struct field *field,
 {
 	const struct logical_volume *lv = (const struct logical_volume *) data;
 	const char *name;
-	struct list *segh;
 	struct lv_segment *seg;
 
-	list_iterate(segh, &lv->segments) {
-		seg = list_item(segh, struct lv_segment);
+	list_iterate_items(seg, &lv->segments) {
 		if (!(seg->status & PVMOVE))
 			continue;
-		name = dev_name(seg->area[0].u.pv.pv->dev);
+		name = dev_name(seg_dev(seg, 0));
 		return _string_disp(rh, field, &name);
 	}
 
@@ -762,7 +816,7 @@ static int _snpercent_disp(struct report_handle *rh, struct field *field,
 			   const void *data)
 {
 	const struct logical_volume *lv = (const struct logical_volume *) data;
-	struct snapshot *snap;
+	struct lv_segment *snap_seg;
 	struct lvinfo info;
 	float snap_percent;
 	uint64_t *sortval;
@@ -773,15 +827,16 @@ static int _snpercent_disp(struct report_handle *rh, struct field *field,
 		return 0;
 	}
 
-	if (!(snap = find_cow(lv)) ||
-	    (lv_info(snap->cow, &info, 0) && !info.exists)) {
+	if (!(snap_seg = find_cow(lv)) ||
+	    (lv_info(snap_seg->cow, &info, 0) && !info.exists)) {
 		field->report_string = "";
 		*sortval = UINT64_C(0);
 		field->sort_value = sortval;
 		return 1;
 	}
 
-	if (!lv_snapshot_percent(snap->cow, &snap_percent) || snap_percent < 0) {
+	if (!lv_snapshot_percent(snap_seg->cow, &snap_percent)
+	    || snap_percent < 0) {
 		field->report_string = "100.00";
 		*sortval = UINT64_C(100);
 		field->sort_value = sortval;
@@ -855,9 +910,9 @@ static int _copypercent_disp(struct report_handle *rh, struct field *field,
 
 static struct {
 	report_type_t type;
-	const char id[30];
+	const char id[32];
 	off_t offset;
-	const char heading[30];
+	const char heading[32];
 	int width;
 	uint32_t flags;
 	field_report_fn report_fn;
@@ -915,12 +970,9 @@ static int _field_match(struct report_handle *rh, const char *field, size_t len)
 static int _add_sort_key(struct report_handle *rh, uint32_t field_num,
 			 uint32_t flags)
 {
-	struct list *fh;
 	struct field_properties *fp, *found = NULL;
 
-	list_iterate(fh, &rh->field_props) {
-		fp = list_item(fh, struct field_properties);
-
+	list_iterate_items(fp, &rh->field_props) {
 		if (fp->field_num == field_num) {
 			found = fp;
 			break;
@@ -1077,6 +1129,9 @@ void *report_init(struct cmd_context *cmd, const char *format, const char *keys,
 	case SEGS:
 		rh->field_prefix = "seg_";
 		break;
+	case PVSEGS:
+		rh->field_prefix = "pvseg_";
+		break;
 	default:
 		rh->field_prefix = "";
 	}
@@ -1096,6 +1151,8 @@ void *report_init(struct cmd_context *cmd, const char *format, const char *keys,
 	/* Ensure options selected are compatible */
 	if (rh->type & SEGS)
 		rh->type |= LVS;
+	if (rh->type & PVSEGS)
+		rh->type |= PVS;
 	if ((rh->type & LVS) && (rh->type & PVS)) {
 		log_error("Can't report LV and PV fields at the same time");
 		return NULL;
@@ -1106,6 +1163,8 @@ void *report_init(struct cmd_context *cmd, const char *format, const char *keys,
 		*report_type = SEGS;
 	else if (rh->type & LVS)
 		*report_type = LVS;
+	else if (rh->type & PVSEGS)
+		*report_type = PVSEGS;
 	else if (rh->type & PVS)
 		*report_type = PVS;
 
@@ -1126,10 +1185,9 @@ void report_free(void *handle)
  */
 int report_object(void *handle, struct volume_group *vg,
 		  struct logical_volume *lv, struct physical_volume *pv,
-		  struct lv_segment *seg)
+		  struct lv_segment *seg, struct pv_segment *pvseg)
 {
 	struct report_handle *rh = handle;
-	struct list *fh;
 	struct field_properties *fp;
 	struct row *row;
 	struct field *field;
@@ -1159,9 +1217,7 @@ int report_object(void *handle, struct volume_group *vg,
 	list_add(&rh->rows, &row->list);
 
 	/* For each field to be displayed, call its report_fn */
-	list_iterate(fh, &rh->field_props) {
-		fp = list_item(fh, struct field_properties);
-
+	list_iterate_items(fp, &rh->field_props) {
 		skip = 0;
 
 		if (!(field = pool_zalloc(rh->mem, sizeof(*field)))) {
@@ -1186,6 +1242,9 @@ int report_object(void *handle, struct volume_group *vg,
 			break;
 		case SEGS:
 			data = (void *) seg + _fields[fp->field_num].offset;
+			break;
+		case PVSEGS:
+			data = (void *) pvseg + _fields[fp->field_num].offset;
 		}
 
 		if (skip) {
@@ -1219,7 +1278,6 @@ int report_object(void *handle, struct volume_group *vg,
 static int _report_headings(void *handle)
 {
 	struct report_handle *rh = handle;
-	struct list *fh;
 	struct field_properties *fp;
 	const char *heading;
 	char buf[1024];
@@ -1238,8 +1296,7 @@ static int _report_headings(void *handle)
 	}
 
 	/* First heading line */
-	list_iterate(fh, &rh->field_props) {
-		fp = list_item(fh, struct field_properties);
+	list_iterate_items(fp, &rh->field_props) {
 		if (fp->flags & FLD_HIDDEN)
 			continue;
 
@@ -1256,7 +1313,7 @@ static int _report_headings(void *handle)
 		} else if (!pool_grow_object(rh->mem, heading, strlen(heading)))
 			goto bad;
 
-		if (!list_end(&rh->field_props, fh))
+		if (!list_end(&rh->field_props, &fp->list))
 			if (!pool_grow_object(rh->mem, rh->separator,
 					      strlen(rh->separator)))
 				goto bad;
@@ -1324,7 +1381,6 @@ static int _row_compare(const void *a, const void *b)
 static int _sort_rows(struct report_handle *rh)
 {
 	struct row *(*rows)[];
-	struct list *rowh;
 	uint32_t count = 0;
 	struct row *row;
 
@@ -1334,10 +1390,8 @@ static int _sort_rows(struct report_handle *rh)
 		return 0;
 	}
 
-	list_iterate(rowh, &rh->rows) {
-		row = list_item(rowh, struct row);
+	list_iterate_items(row, &rh->rows)
 		(*rows)[count++] = row;
-	}
 
 	qsort(rows, count, sizeof(**rows), _row_compare);
 

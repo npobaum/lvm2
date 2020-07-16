@@ -65,11 +65,13 @@ void init_test(int level);
 void init_partial(int level);
 void init_md_filtering(int level);
 void init_pvmove(int level);
+void init_full_scan_done(int level);
 void init_debug(int level);
 void init_cmd_name(int status);
 void init_msg_prefix(const char *prefix);
 void init_indent(int indent);
 void init_ignorelockingfailure(int level);
+void init_lockingfailed(int level);
 void init_security_level(int level);
 
 void set_cmd_name(const char *cmd_name);
@@ -78,8 +80,10 @@ int test_mode(void);
 int partial_mode(void);
 int md_filtering(void);
 int pvmove_mode(void);
+int full_scan_done(void);
 int debug_level(void);
 int ignorelockingfailure(void);
+int lockingfailed(void);
 int security_level(void);
 
 /* Suppress messages to stdout/stderr */

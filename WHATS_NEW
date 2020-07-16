@@ -1,3 +1,128 @@
+Version 2.01.14 - 4th August 2005
+=================================
+  Fix lvconvert PV parameter in help string.
+  Prevent snapshots getting activated in a clustered VG.
+  Separate out _build_dev_string.
+  Move zero_lv to toollib.
+  Fix pool format handler to work with pv segment code.
+
+Version 2.01.13 - 13th July 2005
+================================
+  Fix pvmove segment splitting.
+  Abstract vg_validate.
+  Only make one attempt at contiguous allocation.
+  Fix lvm1 format metadata read.
+  Fix lvm1 format non-mirror lvcreate.
+
+Version 2.01.12 - 14th June 2005
+================================
+  Various allocation-related pvmove fixes.
+  Log an error if clvmd can't resolve a host name got from CCS.
+  Fix potential spin loop in clvmd.
+
+Version 2.01.11 - 13th June 2005
+================================
+  Added lvmconf.sh.
+  Use matchpathcon mode parameter.
+  Don't defer closing dead FDs in clvmd.
+  Remove hard-coded 64k text metadata writing restriction.
+  Make VG name restrictions consistent.
+  Introduce lvconvert.  So far only removes mirror images.
+  Allow mirror images to be resized.
+  Allow mirror images to have more than one segment.
+  Centralise restrictions on LV names.
+  Always insert an intermediate layer for mirrors.
+  Suppress hidden LVs from reports unless --all is given.
+  Use square brackets for hidden LVs in reports.
+  Allow the creation of mirrors with contiguous extents.
+  Always perform sanity checks against metadata before committing it to disk.
+  Split lv_extend into two steps: choosing extents + allocation to LV(s).
+  Add mirror log region size to metadata.
+  Use list_iterate_items throughout and add list*back macros.
+  Introduce seg_ macros to access areas.
+  Add segtype_is_ macros.
+  Support tiny metadata areas for pool conversions.
+  Mirror activation handles disk log as well as core.
+  Activation code recognises mirror log dependency.
+  Add mirror_log and regionsize fields to report.
+  Fix non-orphan pvchange -u.
+  Fix vgmerge to handle duplicate LVIDs.
+  Move archiver code from tools into library.
+  vgscan/change/display/vgs automatically create metadata backups if needed.
+  Merge cloned allocation functions.
+  Fix contiguous allocation policy with linear.
+  Cope with missing format1 PVs again.
+  Remove lists of free PV segments.
+  Simplify pv_maps code and remove slow bitset algorithm.
+  Red-Hat-ify the clvmd rhel4 initscript.
+  %Zu->%zu
+  Fix loopfiles alias alloc & mem debugging.
+  Un-inline dbg_strdup.
+  lv_reduce tidying.
+  Remove some unnecessary parameters.
+  Introduce seg_is macros.
+
+Version 2.01.10 - 3rd May 2005
+==============================
+  Don't create backup and archive dirs till needed.
+  Reinstate full PV size when removing from VG.
+  Support loopfiles for testing.
+  Tidy lv_segment interface.
+  pv_segment support.
+  vgchange --physicalextentsize
+  Internal snapshot restructuring.
+  Remove unused internal non-persistent snapshot option.
+  Allow offline extension of snapshot volumes.
+  Move from 2-step to 3-step on-disk metadata commit.
+  Scan ramdisks too and allow non-O_DIRECT fallback.
+  Annotate, tidy and extend list.h.
+  Alignment tidying.
+  Make clvmd work around some "bugs" in gulm's node state notifications.
+  Tidy clvmd's SIGHUP handler
+
+Version 2.01.09 - 4th April 2005
+================================
+  Add --ignorelockingfailure to vgmknodes.
+  clvmd: Don't allow user operations to start until the lvm thread is fully up.
+  clvmd-gulm: set KEEPALIVE on sockets.
+
+Version 2.01.08 - 22nd March 2005
+=================================
+  Add clustered attribute so vgchange can identify clustered VGs w/o locking.
+  Improve detection of external changes affecting internal cache.
+  Add 'already in device cache' debug message.
+  Add -a to pvdisplay -C.
+  Avoid rmdir opendir error messsages when dir was already removed.
+  Tighten signal handlers.
+  Avoid some compiler warnings.
+  Additional rename failure error message.
+  read/write may be macros.
+  clvmd: don't take out lvm thread lock at startup, it only protects jobs list.
+
+Version 2.01.07 - 8th March 2005
+================================
+  Cope with new devices appearing by rescanning /dev if a uuid can't be found.
+  Remove DESTDIR from LVM_SHARED_PATH.
+  clvmd fixes: make FDs close-on-exec
+               gulm unlocks VG & orphan locks at startup in case they are stale
+               gulm now unlocks VG & orphan locks if client dies.
+
+Version 2.01.06 - 1st March 2005
+================================
+  Suppress 'open failed' error messages during scanning.
+  Option to suppress warnings of file descriptors left open.
+  Fix default value of metadatacopies in documentation (2->1).
+  Fix clvmd-gulm locking.
+  ./configure --enable-debug now enables debugging code in clvmd.
+  Fix clvmd-gulm node up/down code so it actually works.
+  clvmd-gulm now releases locks when shut down.
+
+Version 2.01.05 - 18th February 2005
+====================================
+  Static binary invokes dynamic binary if appropriate.
+  Make clvmd config check a little more tolerant.
+  gulm clvmd can now cope with >1 message arriving in a TCP message.
+
 Version 2.01.04 - 9th February 2005
 ===================================
   Add fixed offset to imported pool minor numbers.

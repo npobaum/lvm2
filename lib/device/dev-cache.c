@@ -21,6 +21,7 @@
 #include "lvm-types.h"
 #include "btree.h"
 #include "filter.h"
+#include "filter-persistent.h"
 
 #include <unistd.h>
 #include <sys/param.h>
@@ -43,39 +44,60 @@ static struct {
 
 	int has_scanned;
 	struct list dirs;
+	struct list files;
 
 } _cache;
 
-#define _alloc(x) pool_alloc(_cache.mem, (x))
+#define _alloc(x) pool_zalloc(_cache.mem, (x))
 #define _free(x) pool_free(_cache.mem, (x))
+#define _strdup(x) pool_strdup(_cache.mem, (x))
 
 static int _insert(const char *path, int rec);
 
 struct device *dev_create_file(const char *filename, struct device *dev,
-			       struct str_list *alias)
+			       struct str_list *alias, int use_malloc)
 {
 	int allocate = !dev;
 
-	if (allocate && !(dev = dbg_malloc(sizeof(*dev)))) {
-		log_error("struct device allocation failed");
-		return NULL;
-	}
-	if (allocate && !(alias = dbg_malloc(sizeof(*alias)))) {
-		log_error("struct str_list allocation failed");
-		dbg_free(dev);
-		return NULL;
-	}
-	if (!(alias->str = dbg_strdup(filename))) {
-		log_error("filename strdup failed");
-		if (allocate) {
-			dbg_free(dev);
-			dbg_free(alias);
+	if (allocate) {
+		if (use_malloc) {
+			if (!(dev = dbg_malloc(sizeof(*dev)))) {
+				log_error("struct device allocation failed");
+				return NULL;
+			}
+			if (!(alias = dbg_malloc(sizeof(*alias)))) {
+				log_error("struct str_list allocation failed");
+				dbg_free(dev);
+				return NULL;
+			}
+			if (!(alias->str = dbg_strdup(filename))) {
+				log_error("filename strdup failed");
+				dbg_free(dev);
+				dbg_free(alias);
+				return NULL;
+			}
+			dev->flags = DEV_ALLOCED;
+		} else {
+			if (!(dev = _alloc(sizeof(*dev)))) {
+				log_error("struct device allocation failed");
+				return NULL;
+			}
+			if (!(alias = _alloc(sizeof(*alias)))) {
+				log_error("struct str_list allocation failed");
+				_free(dev);
+				return NULL;
+			}
+			if (!(alias->str = _strdup(filename))) {
+				log_error("filename strdup failed");
+				return NULL;
+			}
 		}
+	} else if (!(alias->str = dbg_strdup(filename))) {
+		log_error("filename strdup failed");
 		return NULL;
 	}
-	dev->flags = DEV_REGULAR;
-	if (allocate)
-		dev->flags |= DEV_ALLOCED;
+
+	dev->flags |= DEV_REGULAR;
 	list_init(&dev->aliases);
 	list_add(&dev->aliases, &alias->list);
 	dev->end = UINT64_C(0);
@@ -174,7 +196,7 @@ static int _compare_paths(const char *path0, const char *path1)
 static int _add_alias(struct device *dev, const char *path)
 {
 	struct str_list *sl = _alloc(sizeof(*sl));
-	struct list *ah;
+	struct str_list *strl;
 	const char *oldpath;
 	int prefer_old = 1;
 
@@ -184,9 +206,9 @@ static int _add_alias(struct device *dev, const char *path)
 	}
 
 	/* Is name already there? */
-	list_iterate(ah, &dev->aliases) {
-		if (!strcmp(list_item(ah, struct str_list)->str, path)) {
-			stack;
+	list_iterate_items(strl, &dev->aliases) {
+		if (!strcmp(strl->str, path)) {
+			log_debug("%s: Already in device cache", path);
 			return 1;
 		}
 	}
@@ -220,12 +242,27 @@ static int _add_alias(struct device *dev, const char *path)
 static int _insert_dev(const char *path, dev_t d)
 {
 	struct device *dev;
+	static dev_t loopfile_count = 0;
+	int loopfile = 0;
+
+	/* Generate pretend device numbers for loopfiles */
+	if (!d) {
+		if (hash_lookup(_cache.names, path))
+			return 1;
+		d = ++loopfile_count;
+		loopfile = 1;
+	}
 
 	/* is this device already registered ? */
 	if (!(dev = (struct device *) btree_lookup(_cache.devices,
 						   (uint32_t) d))) {
 		/* create new device */
-		if (!(dev = _dev_create(d))) {
+		if (loopfile) {
+			if (!(dev = dev_create_file(path, NULL, NULL, 0))) {
+				stack;
+				return 0;
+			}
+		} else if (!(dev = _dev_create(d))) {
 			stack;
 			return 0;
 		}
@@ -237,7 +274,7 @@ static int _insert_dev(const char *path, dev_t d)
 		}
 	}
 
-	if (!_add_alias(dev, path)) {
+	if (!loopfile && !_add_alias(dev, path)) {
 		log_err("Couldn't add alias to dev cache.");
 		return 0;
 	}
@@ -313,6 +350,28 @@ static int _insert_dir(const char *dir)
 	return r;
 }
 
+static int _insert_file(const char *path)
+{
+	struct stat info;
+
+	if (stat(path, &info) < 0) {
+		log_sys_very_verbose("stat", path);
+		return 0;
+	}
+
+	if (!S_ISREG(info.st_mode)) {
+		log_debug("%s: Not a regular file", path);
+		return 0;
+	}
+
+	if (!_insert_dev(path, 0)) {
+		stack;
+		return 0;
+	}
+
+	return 1;
+}
+
 static int _insert(const char *path, int rec)
 {
 	struct stat info;
@@ -355,19 +414,21 @@ static int _insert(const char *path, int rec)
 	return r;
 }
 
-static void _full_scan(void)
+static void _full_scan(int dev_scan)
 {
-	struct list *dh;
+	struct dir_list *dl;
 
-	if (_cache.has_scanned)
+	if (_cache.has_scanned && !dev_scan)
 		return;
 
-	list_iterate(dh, &_cache.dirs) {
-		struct dir_list *dl = list_item(dh, struct dir_list);
+	list_iterate_items(dl, &_cache.dirs)
 		_insert_dir(dl->dir);
-	};
+
+	list_iterate_items(dl, &_cache.files)
+		_insert_file(dl->dir);
 
 	_cache.has_scanned = 1;
+	init_full_scan_done(1);
 }
 
 int dev_cache_has_scanned(void)
@@ -379,15 +440,14 @@ void dev_cache_scan(int do_scan)
 {
 	if (!do_scan)
 		_cache.has_scanned = 1;
-	else {
-		_cache.has_scanned = 0;
-		_full_scan();
-	}
+	else
+		_full_scan(1);
 }
 
 int dev_cache_init(void)
 {
 	_cache.names = NULL;
+	_cache.has_scanned = 0;
 
 	if (!(_cache.mem = pool_create("dev_cache", 10 * 1024))) {
 		stack;
@@ -407,6 +467,7 @@ int dev_cache_init(void)
 	}
 
 	list_init(&_cache.dirs);
+	list_init(&_cache.files);
 
 	return 1;
 
@@ -444,6 +505,7 @@ void dev_cache_exit(void)
 	_cache.devices = NULL;
 	_cache.has_scanned = 0;
 	list_init(&_cache.dirs);
+	list_init(&_cache.files);
 }
 
 int dev_cache_add_dir(const char *path)
@@ -472,6 +534,32 @@ int dev_cache_add_dir(const char *path)
 	return 1;
 }
 
+int dev_cache_add_loopfile(const char *path)
+{
+	struct dir_list *dl;
+	struct stat st;
+
+	if (stat(path, &st)) {
+		log_error("Ignoring %s: %s", path, strerror(errno));
+		/* But don't fail */
+		return 1;
+	}
+
+	if (!S_ISREG(st.st_mode)) {
+		log_error("Ignoring %s: Not a regular file", path);
+		return 1;
+	}
+
+	if (!(dl = _alloc(sizeof(*dl) + strlen(path) + 1))) {
+		log_error("dir_list allocation failed for file");
+		return 0;
+	}
+
+	strcpy(dl->dir, path);
+	list_add(&_cache.files, &dl->list);
+	return 1;
+}
+
 /* Check cached device name is still valid before returning it */
 /* This should be a rare occurrence */
 /* set quiet if the cache is expected to be out-of-date */
@@ -481,6 +569,9 @@ const char *dev_name_confirmed(struct device *dev, int quiet)
 	struct stat buf;
 	const char *name;
 	int r;
+
+	if ((dev->flags & DEV_REGULAR))
+		return dev_name(dev);
 
 	while ((r = stat(name = list_item(dev->aliases.n,
 					  struct str_list)->str, &buf)) ||
@@ -526,6 +617,9 @@ struct device *dev_cache_get(const char *name, struct dev_filter *f)
 	struct stat buf;
 	struct device *d = (struct device *) hash_lookup(_cache.names, name);
 
+	if (d && (d->flags & DEV_REGULAR))
+		return d;
+
 	/* If the entry's wrong, remove it */
 	if (d && (stat(name, &buf) || (buf.st_rdev != d->dev))) {
 		hash_remove(_cache.names, name);
@@ -535,12 +629,17 @@ struct device *dev_cache_get(const char *name, struct dev_filter *f)
 	if (!d) {
 		_insert(name, 0);
 		d = (struct device *) hash_lookup(_cache.names, name);
+		if (!d) {
+			_full_scan(0);
+			d = (struct device *) hash_lookup(_cache.names, name);
+		}
 	}
 
-	return (d && (!f || f->passes_filter(f, d))) ? d : NULL;
+	return (d && (!f || (d->flags & DEV_REGULAR) ||
+		      f->passes_filter(f, d))) ? d : NULL;
 }
 
-struct dev_iter *dev_iter_create(struct dev_filter *f)
+struct dev_iter *dev_iter_create(struct dev_filter *f, int dev_scan)
 {
 	struct dev_iter *di = dbg_malloc(sizeof(*di));
 
@@ -549,7 +648,14 @@ struct dev_iter *dev_iter_create(struct dev_filter *f)
 		return NULL;
 	}
 
-	_full_scan();
+
+	if (dev_scan) {
+		/* Flag gets reset between each command */
+		if (!full_scan_done())
+			persistent_filter_wipe(f); /* Calls _full_scan(1) */
+	} else
+		_full_scan(0);
+
 	di->current = btree_first(_cache.devices);
 	di->filter = f;
 
@@ -572,7 +678,7 @@ struct device *dev_iter_get(struct dev_iter *iter)
 {
 	while (iter->current) {
 		struct device *d = _iter_next(iter);
-		if (!iter->filter ||
+		if (!iter->filter || (d->flags & DEV_REGULAR) ||
 		    iter->filter->passes_filter(iter->filter, d))
 			return d;
 	}

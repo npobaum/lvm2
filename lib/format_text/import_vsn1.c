@@ -22,6 +22,7 @@
 #include "toolcontext.h"
 #include "lvmcache.h"
 #include "lv_alloc.h"
+#include "pv_alloc.h"
 #include "segtype.h"
 #include "text_import.h"
 
@@ -31,7 +32,7 @@ typedef int (*section_fn) (struct format_instance * fid, struct pool * mem,
 			   struct hash_table * pv_hash);
 
 #define _read_int32(root, path, result) \
-	get_config_uint32(root, path, result)
+	get_config_uint32(root, path, (uint32_t *) result)
 
 #define _read_uint32(root, path, result) \
 	get_config_uint32(root, path, result)
@@ -190,6 +191,7 @@ static int _read_pv(struct format_instance *fid, struct pool *mem,
 	}
 
 	list_init(&pv->tags);
+	list_init(&pv->segments);
 
 	/* Optional tags */
 	if ((cn = find_config_node(pvn, "tags")) &&
@@ -208,6 +210,11 @@ static int _read_pv(struct format_instance *fid, struct pool *mem,
 	pv->pe_alloc_count = 0;
 	pv->fmt = fid->fmt;
 
+	if (!alloc_pv_segment_whole_pv(mem, pv)) {
+		stack;
+		return 0;
+	}
+
 	vg->pv_count++;
 	list_add(&vg->pvs, &pvl->list);
 
@@ -216,12 +223,9 @@ static int _read_pv(struct format_instance *fid, struct pool *mem,
 
 static void _insert_segment(struct logical_volume *lv, struct lv_segment *seg)
 {
-	struct list *segh;
 	struct lv_segment *comp;
 
-	list_iterate(segh, &lv->segments) {
-		comp = list_item(segh, struct lv_segment);
-
+	list_iterate_items(comp, &lv->segments) {
 		if (comp->le > seg->le) {
 			list_add(&comp->list, &seg->list);
 			return;
@@ -283,18 +287,12 @@ static int _read_segment(struct pool *mem, struct volume_group *vg,
 		return 0;
 	}
 
-	if (!(seg = alloc_lv_segment(mem, area_count))) {
+	if (!(seg = alloc_lv_segment(mem, segtype, lv, start_extent,
+				     extent_count, 0, 0, NULL, area_count,
+				     extent_count, 0, 0, 0))) {
 		log_error("Segment allocation failed");
 		return 0;
 	}
-
-	seg->lv = lv;
-	seg->le = start_extent;
-	seg->len = extent_count;
-	seg->area_len = extent_count;
-	seg->status = 0u;
-	seg->segtype = segtype;
-	seg->extents_copied = 0u;
 
 	if (seg->segtype->ops->text_import &&
 	    !seg->segtype->ops->text_import(seg, sn, pv_hash)) {
@@ -315,17 +313,18 @@ static int _read_segment(struct pool *mem, struct volume_group *vg,
 	 */
 	_insert_segment(lv, seg);
 
-	if (seg->segtype->flags & SEG_AREAS_MIRRORED)
+	if (seg_is_mirrored(seg))
 		lv->status |= MIRRORED;
 
-	if (seg->segtype->flags & SEG_VIRTUAL)
+	if (seg_is_virtual(seg))
 		lv->status |= VIRTUAL;
 
 	return 1;
 }
 
 int text_import_areas(struct lv_segment *seg, const struct config_node *sn,
-		      const struct config_node *cn, struct hash_table *pv_hash)
+		      const struct config_node *cn, struct hash_table *pv_hash,
+		      uint32_t flags)
 {
 	unsigned int s;
 	struct config_value *cv;
@@ -361,19 +360,13 @@ int text_import_areas(struct lv_segment *seg, const struct config_node *sn,
 
 		/* FIXME Cope if LV not yet read in */
 		if ((pv = hash_lookup(pv_hash, cv->v.str))) {
-			seg->area[s].type = AREA_PV;
-			seg->area[s].u.pv.pv = pv;
-			seg->area[s].u.pv.pe = cv->next->v.i;
-			/*
-			 * Adjust extent counts in the pv and vg.
-			 */
-			pv->pe_alloc_count += seg->area_len;
-			seg->lv->vg->free_count -= seg->area_len;
-
+			if (!set_lv_segment_area_pv(seg, s, pv, cv->next->v.i)) {
+				stack;
+				return 0;
+			}
 		} else if ((lv1 = find_lv(seg->lv->vg, cv->v.str))) {
-			seg->area[s].type = AREA_LV;
-			seg->area[s].u.lv.lv = lv1;
-			seg->area[s].u.lv.le = cv->next->v.i;
+			set_lv_segment_area_lv(seg, s, lv1, cv->next->v.i,
+					       flags);
 		} else {
 			log_error("Couldn't find volume '%s' "
 				  "for segment '%s'.",
@@ -437,7 +430,7 @@ static int _read_segments(struct pool *mem, struct volume_group *vg,
 	/*
 	 * Check there are no gaps or overlaps in the lv.
 	 */
-	if (!lv_check_segments(lv)) {
+	if (!check_lv_segments(lv)) {
 		stack;
 		return 0;
 	}
@@ -508,6 +501,8 @@ static int _read_lvnames(struct format_instance *fid, struct pool *mem,
 	if (!_read_int32(lvn, "read_ahead", &lv->read_ahead))
 		lv->read_ahead = 0;
 
+	lv->snapshot = NULL;
+	list_init(&lv->snapshot_segs);
 	list_init(&lv->segments);
 	list_init(&lv->tags);
 
@@ -561,24 +556,29 @@ static int _read_lvsegs(struct format_instance *fid, struct pool *mem,
 
 	lv->size = (uint64_t) lv->le_count * (uint64_t) vg->extent_size;
 
-	/* Skip this for now for snapshots */
-	if (!(lv->status & SNAPSHOT)) {
-		lv->minor = -1;
-		if ((lv->status & FIXED_MINOR) &&
-		    !_read_int32(lvn, "minor", &lv->minor)) {
-			log_error("Couldn't read minor number for logical "
-				  "volume %s.", lv->name);
-			return 0;
-		}
-		lv->major = -1;
-		if ((lv->status & FIXED_MINOR) &&
-		    !_read_int32(lvn, "major", &lv->major)) {
-			log_error("Couldn't read major number for logical "
-				  "volume %s.", lv->name);
-		}
-	} else {
+	/*
+	 * FIXME We now have 2 LVs for each snapshot. The real one was
+	 * created by vg_add_snapshot from the segment text_import.
+	 */
+	if (lv->status & SNAPSHOT) {
 		vg->lv_count--;
 		list_del(&lvl->list);
+		return 1;
+	}
+
+	lv->minor = -1;
+	if ((lv->status & FIXED_MINOR) &&
+	    !_read_int32(lvn, "minor", &lv->minor)) {
+		log_error("Couldn't read minor number for logical "
+			  "volume %s.", lv->name);
+		return 0;
+	}
+
+	lv->major = -1;
+	if ((lv->status & FIXED_MINOR) &&
+	    !_read_int32(lvn, "major", &lv->major)) {
+		log_error("Couldn't read major number for logical "
+			  "volume %s.", lv->name);
 	}
 
 	return 1;
@@ -736,7 +736,6 @@ static struct volume_group *_read_vg(struct format_instance *fid,
 	}
 
 	list_init(&vg->lvs);
-	list_init(&vg->snapshots);
 	list_init(&vg->tags);
 
 	/* Optional tags */

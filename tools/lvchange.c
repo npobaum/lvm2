@@ -94,6 +94,12 @@ static int lvchange_availability(struct cmd_context *cmd,
 			return 0;
 		}
 	} else {
+		if (lockingfailed() && (lv->vg->status & CLUSTERED)) {
+                	log_verbose("Locking failed: ignoring clustered "
+				    "logical volume %s", lv->name);
+                	return 0;
+        	}
+
 		if (lv_is_origin(lv) || (activate == CHANGE_AE)) {
 			log_verbose("Activating logical volume \"%s\" "
 				    "exclusively", lv->name);
@@ -361,6 +367,7 @@ static int lvchange_tag(struct cmd_context *cmd, struct logical_volume *lv,
 
 	return 1;
 }
+
 static int lvchange_single(struct cmd_context *cmd, struct logical_volume *lv,
 			   void *handle)
 {
@@ -395,6 +402,23 @@ static int lvchange_single(struct cmd_context *cmd, struct logical_volume *lv,
 		log_error("Unable to change pvmove LV %s", lv->name);
 		if (arg_count(cmd, available_ARG))
 			log_error("Use 'pvmove --abort' to abandon a pvmove");
+		return ECMD_FAILED;
+	}
+
+	if (lv->status & MIRROR_LOG) {
+		log_error("Unable to change mirror log LV %s directly", lv->name);
+		return ECMD_FAILED;
+	}
+
+	if (lv->status & MIRROR_IMAGE) {
+		log_error("Unable to change mirror image LV %s directly",
+			  lv->name);
+		return ECMD_FAILED;
+	}
+
+	if (!(lv->status & VISIBLE_LV)) {
+		log_error("Unable to change internal LV %s directly",
+			  lv->name);
 		return ECMD_FAILED;
 	}
 
