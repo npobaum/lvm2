@@ -1,3 +1,8 @@
+Version 1.02.116 - 15th February 2016
+=====================================
+  Use fully aligned allocations for dm_pool_strdup/strndup() (1.02.64).
+  Fix thin-pool table parameter feature order to match kernel output.
+
 Version 1.02.115 - 25th January 2016
 ====================================
   Fix man page for dmsetup udevcreatecookie.
