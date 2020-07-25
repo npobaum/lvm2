@@ -1,6 +1,6 @@
-# generated automatically by aclocal 1.15.1 -*- Autoconf -*-
+# generated automatically by aclocal 1.16.2 -*- Autoconf -*-
 
-# Copyright (C) 1996-2017 Free Software Foundation, Inc.
+# Copyright (C) 1996-2020 Free Software Foundation, Inc.
 
 # This file is free software; the Free Software Foundation
 # gives unlimited permission to copy and/or distribute it,
@@ -12,65 +12,8 @@
 # PARTICULAR PURPOSE.
 
 m4_ifndef([AC_CONFIG_MACRO_DIRS], [m4_defun([_AM_CONFIG_MACRO_DIRS], [])m4_defun([AC_CONFIG_MACRO_DIRS], [_AM_CONFIG_MACRO_DIRS($@)])])
-# ===========================================================================
-#     https://www.gnu.org/software/autoconf-archive/ax_python_module.html
-# ===========================================================================
-#
-# SYNOPSIS
-#
-#   AX_PYTHON_MODULE(modname[, fatal, python])
-#
-# DESCRIPTION
-#
-#   Checks for Python module.
-#
-#   If fatal is non-empty then absence of a module will trigger an error.
-#   The third parameter can either be "python" for Python 2 or "python3" for
-#   Python 3; defaults to Python 3.
-#
-# LICENSE
-#
-#   Copyright (c) 2008 Andrew Collier
-#
-#   Copying and distribution of this file, with or without modification, are
-#   permitted in any medium without royalty provided the copyright notice
-#   and this notice are preserved. This file is offered as-is, without any
-#   warranty.
-
-#serial 9
-
-AU_ALIAS([AC_PYTHON_MODULE], [AX_PYTHON_MODULE])
-AC_DEFUN([AX_PYTHON_MODULE],[
-    if test -z $PYTHON;
-    then
-        if test -z "$3";
-        then
-            PYTHON="python3"
-        else
-            PYTHON="$3"
-        fi
-    fi
-    PYTHON_NAME=`basename $PYTHON`
-    AC_MSG_CHECKING($PYTHON_NAME module: $1)
-    $PYTHON -c "import $1" 2>/dev/null
-    if test $? -eq 0;
-    then
-        AC_MSG_RESULT(yes)
-        eval AS_TR_CPP(HAVE_PYMOD_$1)=yes
-    else
-        AC_MSG_RESULT(no)
-        eval AS_TR_CPP(HAVE_PYMOD_$1)=no
-        #
-        if test -n "$2"
-        then
-            AC_MSG_ERROR(failed to find required module $1)
-            exit 1
-        fi
-    fi
-])
-
 # pkg.m4 - Macros to locate and utilise pkg-config.   -*- Autoconf -*-
-# serial 11 (pkg-config-0.29.1)
+# serial 12 (pkg-config-0.29.2)
 
 dnl Copyright © 2004 Scott James Remnant <scott@netsplit.com>.
 dnl Copyright © 2012-2015 Dan Nicholson <dbn.lists@gmail.com>
@@ -112,7 +55,7 @@ dnl
 dnl See the "Since" comment for each macro you use to see what version
 dnl of the macros you require.
 m4_defun([PKG_PREREQ],
-[m4_define([PKG_MACROS_VERSION], [0.29.1])
+[m4_define([PKG_MACROS_VERSION], [0.29.2])
 m4_if(m4_version_compare(PKG_MACROS_VERSION, [$1]), -1,
     [m4_fatal([pkg.m4 version $1 or higher is required but ]PKG_MACROS_VERSION[ found])])
 ])dnl PKG_PREREQ
@@ -213,7 +156,7 @@ AC_ARG_VAR([$1][_CFLAGS], [C compiler flags for $1, overriding pkg-config])dnl
 AC_ARG_VAR([$1][_LIBS], [linker flags for $1, overriding pkg-config])dnl
 
 pkg_failed=no
-AC_MSG_CHECKING([for $1])
+AC_MSG_CHECKING([for $2])
 
 _PKG_CONFIG([$1][_CFLAGS], [cflags], [$2])
 _PKG_CONFIG([$1][_LIBS], [libs], [$2])
@@ -223,11 +166,11 @@ and $1[]_LIBS to avoid the need to call pkg-config.
 See the pkg-config man page for more details.])
 
 if test $pkg_failed = yes; then
-   	AC_MSG_RESULT([no])
+        AC_MSG_RESULT([no])
         _PKG_SHORT_ERRORS_SUPPORTED
         if test $_pkg_short_errors_supported = yes; then
 	        $1[]_PKG_ERRORS=`$PKG_CONFIG --short-errors --print-errors --cflags --libs "$2" 2>&1`
-        else 
+        else
 	        $1[]_PKG_ERRORS=`$PKG_CONFIG --print-errors --cflags --libs "$2" 2>&1`
         fi
 	# Put the nasty error message in config.log where it belongs
@@ -244,7 +187,7 @@ installed software in a non-standard prefix.
 _PKG_TEXT])[]dnl
         ])
 elif test $pkg_failed = untried; then
-     	AC_MSG_RESULT([no])
+        AC_MSG_RESULT([no])
 	m4_default([$4], [AC_MSG_FAILURE(
 [The pkg-config script could not be found or is too old.  Make sure it
 is in your PATH or set the PKG_CONFIG environment variable to the full
@@ -345,75 +288,7 @@ AS_VAR_COPY([$1], [pkg_cv_][$1])
 AS_VAR_IF([$1], [""], [$5], [$4])dnl
 ])dnl PKG_CHECK_VAR
 
-dnl PKG_WITH_MODULES(VARIABLE-PREFIX, MODULES,
-dnl   [ACTION-IF-FOUND],[ACTION-IF-NOT-FOUND],
-dnl   [DESCRIPTION], [DEFAULT])
-dnl ------------------------------------------
-dnl
-dnl Prepare a "--with-" configure option using the lowercase
-dnl [VARIABLE-PREFIX] name, merging the behaviour of AC_ARG_WITH and
-dnl PKG_CHECK_MODULES in a single macro.
-AC_DEFUN([PKG_WITH_MODULES],
-[
-m4_pushdef([with_arg], m4_tolower([$1]))
-
-m4_pushdef([description],
-           [m4_default([$5], [build with ]with_arg[ support])])
-
-m4_pushdef([def_arg], [m4_default([$6], [auto])])
-m4_pushdef([def_action_if_found], [AS_TR_SH([with_]with_arg)=yes])
-m4_pushdef([def_action_if_not_found], [AS_TR_SH([with_]with_arg)=no])
-
-m4_case(def_arg,
-            [yes],[m4_pushdef([with_without], [--without-]with_arg)],
-            [m4_pushdef([with_without],[--with-]with_arg)])
-
-AC_ARG_WITH(with_arg,
-     AS_HELP_STRING(with_without, description[ @<:@default=]def_arg[@:>@]),,
-    [AS_TR_SH([with_]with_arg)=def_arg])
-
-AS_CASE([$AS_TR_SH([with_]with_arg)],
-            [yes],[PKG_CHECK_MODULES([$1],[$2],$3,$4)],
-            [auto],[PKG_CHECK_MODULES([$1],[$2],
-                                        [m4_n([def_action_if_found]) $3],
-                                        [m4_n([def_action_if_not_found]) $4])])
-
-m4_popdef([with_arg])
-m4_popdef([description])
-m4_popdef([def_arg])
-
-])dnl PKG_WITH_MODULES
-
-dnl PKG_HAVE_WITH_MODULES(VARIABLE-PREFIX, MODULES,
-dnl   [DESCRIPTION], [DEFAULT])
-dnl -----------------------------------------------
-dnl
-dnl Convenience macro to trigger AM_CONDITIONAL after PKG_WITH_MODULES
-dnl check._[VARIABLE-PREFIX] is exported as make variable.
-AC_DEFUN([PKG_HAVE_WITH_MODULES],
-[
-PKG_WITH_MODULES([$1],[$2],,,[$3],[$4])
-
-AM_CONDITIONAL([HAVE_][$1],
-               [test "$AS_TR_SH([with_]m4_tolower([$1]))" = "yes"])
-])dnl PKG_HAVE_WITH_MODULES
-
-dnl PKG_HAVE_DEFINE_WITH_MODULES(VARIABLE-PREFIX, MODULES,
-dnl   [DESCRIPTION], [DEFAULT])
-dnl ------------------------------------------------------
-dnl
-dnl Convenience macro to run AM_CONDITIONAL and AC_DEFINE after
-dnl PKG_WITH_MODULES check. HAVE_[VARIABLE-PREFIX] is exported as make
-dnl and preprocessor variable.
-AC_DEFUN([PKG_HAVE_DEFINE_WITH_MODULES],
-[
-PKG_HAVE_WITH_MODULES([$1],[$2],[$3],[$4])
-
-AS_IF([test "$AS_TR_SH([with_]m4_tolower([$1]))" = "yes"],
-        [AC_DEFINE([HAVE_][$1], 1, [Enable ]m4_tolower([$1])[ support])])
-])dnl PKG_HAVE_DEFINE_WITH_MODULES
-
-# Copyright (C) 1999-2017 Free Software Foundation, Inc.
+# Copyright (C) 1999-2020 Free Software Foundation, Inc.
 #
 # This file is free software; the Free Software Foundation
 # gives unlimited permission to copy and/or distribute it,
@@ -446,10 +321,12 @@ AC_DEFUN([AM_PATH_PYTHON],
  [
   dnl Find a Python interpreter.  Python versions prior to 2.0 are not
   dnl supported. (2.0 was released on October 16, 2000).
-  dnl FIXME: Remove the need to hard-code Python versions here.
   m4_define_default([_AM_PYTHON_INTERPRETER_LIST],
-[python python2 python3 python3.5 python3.4 python3.3 python3.2 python3.1 python3.0 python2.7 dnl
- python2.6 python2.5 python2.4 python2.3 python2.2 python2.1 python2.0])
+[python python2 python3 dnl
+ python3.9 python3.8 python3.7 python3.6 python3.5 python3.4 python3.3 dnl
+ python3.2 python3.1 python3.0 dnl
+ python2.7 python2.6 python2.5 python2.4 python2.3 python2.2 python2.1 dnl
+ python2.0])
 
   AC_ARG_VAR([PYTHON], [the Python interpreter])
 
@@ -649,7 +526,7 @@ for i in list(range(0, 4)): minverhex = (minverhex << 8) + minver[[i]]
 sys.exit(sys.hexversion < minverhex)"
   AS_IF([AM_RUN_LOG([$1 -c "$prog"])], [$3], [$4])])
 
-# Copyright (C) 2001-2017 Free Software Foundation, Inc.
+# Copyright (C) 2001-2020 Free Software Foundation, Inc.
 #
 # This file is free software; the Free Software Foundation
 # gives unlimited permission to copy and/or distribute it,
