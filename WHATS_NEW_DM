@@ -1,3 +1,12 @@
+Version 1.02.171 - 26th March 2020
+==================================
+  Fix dm_list interators with gcc 10 optimization (-ftree-pta).
+  Dmeventd handles timer without looping on short intervals.
+
+Version 1.02.169 - 11th February 2020
+=====================================
+  Enhance error messages for device creation.
+
 Version 1.02.167 - 30th November 2019
 =====================================
 

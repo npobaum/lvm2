@@ -1,3 +1,25 @@
+Version 2.03.09 - 26th March 2020
+=================================
+  Fix formating of vdopool (vdo_slab_size_mb was smaller by 2 bits).
+  Fix showing of a dm kernel error when uncaching a volume with cachevol.
+
+Version 2.03.08 - 11th February 2020
+====================================
+  Prevent problematic snapshots of writecache volumes.
+  Add error handling for failing allocation in _reserve_area().
+  Fix memleak in syncing of internal cache.
+  Fix pvck dump_current_text memleak.
+  Fix lvmlockd result code on error path for _query_lock_lv().
+  Update pvck man page and help output.
+  Reject invalid writecache high/low_watermark setting.
+  Report writecache status.
+  Accept more output lines from vdo_format.
+  Prohibit reshaping of stacked raid LVs.
+  Avoid running cache input arg validation when creating vdo pool.
+  Prevent raid reshaping of stacked volumes.
+  Added VDO lvmdbusd methods for enable/disable compression & dedupe.
+  Added VDO lvmdbusd method for converting LV to VDO pool.
+
 Version 2.03.07 - 30th November 2019
 ====================================
   Subcommand in vgck for repairing headers and metadata.

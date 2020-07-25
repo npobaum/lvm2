@@ -3104,8 +3104,9 @@ static int _lvconvert_to_pool(struct cmd_context *cmd,
 			return 0;
 		}
 
-		/* FIXME Tidy up all these type restrictions. */
+		/* FIXME Tidy up all these type restrictions. (Use a type whitelist?) */
 		if (lv_is_cache_type(metadata_lv) ||
+		    lv_is_writecache(metadata_lv) ||
 		    lv_is_thin_type(metadata_lv) ||
 		    lv_is_cow(metadata_lv) || lv_is_merging_cow(metadata_lv) ||
 		    lv_is_origin(metadata_lv) || lv_is_merging_origin(metadata_lv) ||
@@ -5351,6 +5352,14 @@ static int _writecache_zero(struct cmd_context *cmd, struct logical_volume *lv)
 	};
 	int ret;
 
+	if (!(lv->status & LVM_WRITE)) {
+		log_error("Cannot initialize readonly LV %s", display_lvname(lv));
+		return 0;
+	}
+
+	if (test_mode())
+		return 1;
+
 	if (!activate_lv(cmd, lv)) {
 		log_error("Failed to activate LV %s for zeroing.", display_lvname(lv));
 		return 0;
@@ -5386,12 +5395,16 @@ static int _get_one_writecache_setting(struct cmd_context *cmd, struct writecach
 	if (!strncmp(key, "high_watermark", strlen("high_watermark"))) {
 		if (sscanf(val, "%llu", (unsigned long long *)&settings->high_watermark) != 1)
 			goto_bad;
+		if (settings->high_watermark > 100)
+			goto_bad;
 		settings->high_watermark_set = 1;
 		return 1;
 	}
 
 	if (!strncmp(key, "low_watermark", strlen("low_watermark"))) {
 		if (sscanf(val, "%llu", (unsigned long long *)&settings->low_watermark) != 1)
+			goto_bad;
+		if (settings->low_watermark > 100)
 			goto_bad;
 		settings->low_watermark_set = 1;
 		return 1;
@@ -5504,6 +5517,12 @@ static int _get_writecache_settings(struct cmd_context *cmd, struct writecache_s
 		}
 	}
 
+	if (settings->high_watermark_set && settings->low_watermark_set &&
+	    (settings->high_watermark <= settings->low_watermark)) {
+		log_error("High watermark must be greater than low watermark.");
+		return 0;
+	}
+
 	return 1;
 }
 
@@ -5521,6 +5540,8 @@ static struct logical_volume *_lv_writecache_create(struct cmd_context *cmd,
 
 	if (!(segtype = get_segtype_from_string(cmd, SEG_TYPE_NAME_WRITECACHE)))
 		return_NULL;
+
+	lv->status |= WRITECACHE;
 
 	/*
 	 * "lv_wcorig" is a new LV with new id, but with the segments from "lv".
@@ -5572,15 +5593,30 @@ static int _lvconvert_writecache_attach_single(struct cmd_context *cmd,
 		goto bad;
 	}
 
+	if (lv_fast == lv) {
+		log_error("Invalid cachevol LV.");
+		goto bad;
+	}
+
 	if (!seg_is_linear(first_seg(lv_fast))) {
 		log_error("LV %s must be linear to use as a writecache.", display_lvname(lv_fast));
-		return 0;
+		goto bad;
+	}
+
+	/*
+	 * To permit this we need to check the block size of the fs using lv
+	 * (recently in libblkid) so that we can use a matching writecache
+	 * block size.  We also want to do that if the lv is inactive.
+	 */
+	if (lv_is_active(lv)) {
+		log_error("LV %s must be inactive to attach writecache.", display_lvname(lv));
+		goto bad;
 	}
 
 	/* fast LV shouldn't generally be active by itself, but just in case. */
 	if (lv_info(cmd, lv_fast, 1, NULL, 0, 0)) {
 		log_error("LV %s must be inactive to attach.", display_lvname(lv_fast));
-		return 0;
+		goto bad;
 	}
 
 	memset(&settings, 0, sizeof(settings));
@@ -5588,13 +5624,13 @@ static int _lvconvert_writecache_attach_single(struct cmd_context *cmd,
 
 	if (!_get_writecache_settings(cmd, &settings, &block_size_sectors)) {
 		log_error("Invalid writecache settings.");
-		return 0;
+		goto bad;
 	}
 
 	if (!arg_is_set(cmd, yes_ARG) &&
 	    yes_no_prompt("Erase all existing data on %s? [y/n]: ", display_lvname(lv_fast)) == 'n') {
 		log_error("Conversion aborted.");
-		return 0;
+		goto bad;
 	}
 
 	/* Ensure the two LVs are not active elsewhere. */
@@ -5616,15 +5652,6 @@ static int _lvconvert_writecache_attach_single(struct cmd_context *cmd,
 		lockd_fast_name = dm_pool_strdup(cmd->mem, lv_fast->name);
 		memcpy(&lockd_fast_id, &lv_fast->lvid.id[1], sizeof(struct id));
 	}
-
-	/*
-	 * TODO: use libblkid to get the sector size of lv.  If it doesn't
-	 * match the block_size we are using for the writecache, then warn that
-	 * an existing file system on lv may become unmountable with the
-	 * writecache attached because of the changing sector size.  If this
-	 * happens, then use --splitcache, and reattach the writecache using a
-	 * writecache block_size value matching the sector size of lv.
-	 */
 
 	if (!_writecache_zero(cmd, lv_fast)) {
 		log_error("LV %s could not be zeroed.", display_lvname(lv_fast));

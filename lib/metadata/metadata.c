@@ -3564,7 +3564,8 @@ static void _set_pv_device(struct format_instance *fid,
 		if (!id_write_format(&pv->id, buffer, sizeof(buffer)))
 			buffer[0] = '\0';
 
-		if (cmd && !cmd->pvscan_cache_single)
+		if (cmd && !cmd->pvscan_cache_single &&
+		    (!vg_is_foreign(vg) && !cmd->include_foreign_vgs))
 			log_warn("WARNING: Couldn't find device with uuid %s.", buffer);
 		else
 			log_debug_metadata("Couldn't find device with uuid %s.", buffer);
@@ -4878,10 +4879,7 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 
 		if (vg->seqno == vg_ret->seqno) {
 			release_vg(vg);
-			continue;
-		}
-
-		if (vg->seqno > vg_ret->seqno) {
+		} else if (vg->seqno > vg_ret->seqno) {
 			log_warn("WARNING: ignoring metadata seqno %u on %s for seqno %u on %s for VG %s.",
 				 vg_ret->seqno, dev_name(dev_ret),
 				 vg->seqno, dev_name(mda_dev), vg->name);
@@ -4890,22 +4888,18 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 			vg_ret = vg;
 			dev_ret = mda_dev;
 			vg_fmtdata = NULL;
-			continue;
-		}
-
-		if (vg_ret->seqno > vg->seqno) {
+		} else { /* vg->seqno < vg_ret->seqno */
 			log_warn("WARNING: ignoring metadata seqno %u on %s for seqno %u on %s for VG %s.",
 				 vg->seqno, dev_name(mda_dev),
 				 vg_ret->seqno, dev_name(dev_ret), vg->name);
 			found_old_metadata = 1;
 			release_vg(vg);
 			vg_fmtdata = NULL;
-			continue;
 		}
 	}
 
 	if (found_old_metadata)
-		log_warn("WARNING: Inconsistent metadata found for VG %s", vgname);
+		log_warn("WARNING: Inconsistent metadata found for VG %s.", vgname);
 
 	vg = NULL;
 
@@ -4936,16 +4930,15 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 			if (!(dev->flags & DEV_IS_MD_COMPONENT))
 				continue;
 
-			log_debug_metadata("Drop dev for MD component from cache %s", dev_name(dev));
+			log_debug_metadata("Drop dev for MD component from cache %s.", dev_name(dev));
 			lvmcache_del_dev(dev);
 
-			dm_list_iterate_items(mda, &fid->metadata_areas_in_use) {
-				if (mda_get_device(mda) != dev)
-					continue;
-				log_debug_metadata("Drop mda from MD component from mda list %s", dev_name(dev));
-				dm_list_del(&mda->list);
-				break;
-			}
+			dm_list_iterate_items(mda, &fid->metadata_areas_in_use)
+				if (mda_get_device(mda) == dev) {
+					log_debug_metadata("Drop mda from MD component from mda list %s.", dev_name(dev));
+					dm_list_del(&mda->list);
+					break;
+				}
 		}
 	}
 
@@ -5010,7 +5003,7 @@ struct volume_group *vg_read(struct cmd_context *cmd, const char *vg_name, const
 	int activating = (vg_read_flags & READ_FOR_ACTIVATE);
 
 	if (is_orphan_vg(vg_name)) {
-		log_very_verbose("Reading orphan VG %s", vg_name);
+		log_very_verbose("Reading orphan VG %s.", vg_name);
 		vg = vg_read_orphans(cmd, vg_name);
 		*error_flags = 0;
 		*error_vg = NULL;
@@ -5020,7 +5013,7 @@ struct volume_group *vg_read(struct cmd_context *cmd, const char *vg_name, const
 	if (!validate_name(vg_name)) {
 		log_error("Volume group name \"%s\" has invalid characters.", vg_name);
 		failure |= FAILED_NOTFOUND;
-		goto_bad;
+		goto bad;
 	}
 
 	/*
@@ -5035,15 +5028,15 @@ struct volume_group *vg_read(struct cmd_context *cmd, const char *vg_name, const
 
 	if (!(vg_read_flags & READ_WITHOUT_LOCK) &&
 	    !lock_vol(cmd, vg_name, (writing || activating) ? LCK_VG_WRITE : LCK_VG_READ, NULL)) {
-		log_error("Can't get lock for %s", vg_name);
+		log_error("Can't get lock for %s.", vg_name);
 		failure |= FAILED_LOCKING;
-		goto_bad;
+		goto bad;
 	}
 
 	if (!(vg = _vg_read(cmd, vg_name, vgid, 0, writing))) {
 		/* Some callers don't care if the VG doesn't exist and don't want an error message. */
 		if (!(vg_read_flags & READ_OK_NOTFOUND))
-			log_error("Volume group \"%s\" not found", vg_name);
+			log_error("Volume group \"%s\" not found.", vg_name);
 		failure |= FAILED_NOTFOUND;
 		goto_bad;
 	}
@@ -5087,7 +5080,9 @@ struct volume_group *vg_read(struct cmd_context *cmd, const char *vg_name, const
 		if (!pvl->pv->dev) {
 			/* The obvious and common case of a missing device. */
 
-			if (pvl->pv->device_hint)
+			if (vg_is_foreign(vg) && !cmd->include_foreign_vgs)
+				log_debug("VG %s is missing PV %s (last written to %s)", vg_name, uuidstr, pvl->pv->device_hint ?: "na");
+			else if (pvl->pv->device_hint)
 				log_warn("WARNING: VG %s is missing PV %s (last written to %s).", vg_name, uuidstr, pvl->pv->device_hint);
 			else
 				log_warn("WARNING: VG %s is missing PV %s.", vg_name, uuidstr);
@@ -5114,14 +5109,14 @@ struct volume_group *vg_read(struct cmd_context *cmd, const char *vg_name, const
 	if (!check_pv_segments(vg)) {
 		log_error(INTERNAL_ERROR "PV segments corrupted in %s.", vg->name);
 		failure |= FAILED_INTERNAL_ERROR;
-		goto_bad;
+		goto bad;
 	}
 
 	dm_list_iterate_items(lvl, &vg->lvs) {
 		if (!check_lv_segments(lvl->lv, 0)) {
 			log_error(INTERNAL_ERROR "LV segments corrupted in %s.", lvl->lv->name);
 			failure |= FAILED_INTERNAL_ERROR;
-			goto_bad;
+			goto bad;
 		}
 	}
 
@@ -5130,7 +5125,7 @@ struct volume_group *vg_read(struct cmd_context *cmd, const char *vg_name, const
 		if (!check_lv_segments(lvl->lv, 1)) {
 			log_error(INTERNAL_ERROR "LV segments corrupted in %s.", lvl->lv->name);
 			failure |= FAILED_INTERNAL_ERROR;
-			goto_bad;
+			goto bad;
 		}
 	}
 
@@ -5166,23 +5161,23 @@ struct volume_group *vg_read(struct cmd_context *cmd, const char *vg_name, const
 	 */
 	if (writing || activating) {
 		if (!(vg->status & LVM_WRITE)) {
-			log_error("Volume group %s is read-only", vg->name);
+			log_error("Volume group %s is read-only.", vg->name);
 			failure |= FAILED_READ_ONLY;
-			goto_bad;
+			goto bad;
 		}
 
 		if (!cmd->handles_missing_pvs && (missing_pv_dev || missing_pv_flag)) {
 			log_error("Cannot change VG %s while PVs are missing.", vg->name);
 			log_error("See vgreduce --removemissing and vgextend --restoremissing.");
 			failure |= FAILED_NOT_ENABLED;
-			goto_bad;
+			goto bad;
 		}
 	}
 
 	if (writing && !cmd->handles_unknown_segments && vg_has_unknown_segments(vg)) {
 		log_error("Cannot change VG %s with unknown segments in it!", vg->name);
 		failure |= FAILED_NOT_ENABLED; /* FIXME new failure code here? */
-		goto_bad;
+		goto bad;
 	}
 
 	/*
@@ -5197,31 +5192,31 @@ struct volume_group *vg_read(struct cmd_context *cmd, const char *vg_name, const
 
 		if (dm_pool_locked(vg->vgmem)) {
 			/* FIXME: can this happen? */
-			log_warn("WARNING: vg_read no vg copy: pool locked");
+			log_warn("WARNING: vg_read no vg copy: pool locked.");
 			goto out;
 		}
 
 		if (vg->vg_committed) {
 			/* FIXME: can this happen? */
-			log_warn("WARNING: vg_read no vg copy: copy exists");
+			log_warn("WARNING: vg_read no vg copy: copy exists.");
 			release_vg(vg->vg_committed);
 			vg->vg_committed = NULL;
 		}
 
 		if (vg->vg_precommitted) {
 			/* FIXME: can this happen? */
-			log_warn("WARNING: vg_read no vg copy: pre copy exists");
+			log_warn("WARNING: vg_read no vg copy: pre copy exists.");
 			release_vg(vg->vg_precommitted);
 			vg->vg_precommitted = NULL;
 		}
 
 		if (!(cft = export_vg_to_config_tree(vg))) {
-			log_warn("WARNING: vg_read no vg copy: copy export failed");
+			log_warn("WARNING: vg_read no vg copy: copy export failed.");
 			goto out;
 		}
 
 		if (!(vg->vg_committed = import_vg_from_config_tree(cmd, vg->fid, cft)))
-			log_warn("WARNING: vg_read no vg copy: copy import failed");
+			log_warn("WARNING: vg_read no vg copy: copy import failed.");
 
 		dm_config_destroy(cft);
 	} else {

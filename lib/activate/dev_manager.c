@@ -86,7 +86,7 @@ int read_only_lv(const struct logical_volume *lv, const struct lv_activate_opts 
 		return 0; /* Keep RAID SubLvs writable */
 
 	if (!layer) {
-		if (lv_is_thin_pool(lv))
+		if (lv_is_thin_pool(lv) || lv_is_vdo_pool(lv))
 			return 1;
 	}
 
@@ -3161,8 +3161,8 @@ static int _add_new_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 		char *dlid_meta;
 		char *dlid_data;
 		char *dlid_pool;
-		uint64_t meta_len = first_seg(lv)->metadata_len;
-		uint64_t data_len = first_seg(lv)->data_len;
+		uint64_t meta_size = first_seg(lv)->metadata_len;
+		uint64_t data_size = first_seg(lv)->data_len;
 		uint16_t udev_flags = _get_udev_flags(dm, lv, layer,
 					     laopts->noscan, laopts->temporary,
 					     0);
@@ -3210,12 +3210,12 @@ static int _add_new_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 
 		if (dm->track_pending_delete) {
 			log_debug_activation("Using error for pending meta delete %s.", display_lvname(lv));
-			if (!dm_tree_node_add_error_target(dnode_meta, (uint64_t)lv->vg->extent_size * meta_len))
+			if (!dm_tree_node_add_error_target(dnode_meta, meta_size))
 				return_0;
 		} else {
 			/* add load_segment to meta dnode: linear, size of meta area */
 			if (!add_linear_area_to_dtree(dnode_meta,
-						      meta_len,
+						      meta_size,
 						      lv->vg->extent_size,
 						      lv->vg->cmd->use_linear_target,
 						      lv->vg->name, lv->name))
@@ -3239,19 +3239,19 @@ static int _add_new_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 
 		if (dm->track_pending_delete) {
 			log_debug_activation("Using error for pending data delete %s.", display_lvname(lv));
-			if (!dm_tree_node_add_error_target(dnode_data, (uint64_t)lv->vg->extent_size * data_len))
+			if (!dm_tree_node_add_error_target(dnode_data, data_size))
 				return_0;
 		} else {
 			/* add load_segment to data dnode: linear, size of data area */
 			if (!add_linear_area_to_dtree(dnode_data,
-						      data_len,
+						      data_size,
 						      lv->vg->extent_size,
 						      lv->vg->cmd->use_linear_target,
 						      lv->vg->name, lv->name))
 				return_0;
 
 			/* add seg_area to prev load_seg: offset 0 maps to cachepool lv after meta */
-			if (!dm_tree_node_add_target_area(dnode_data, NULL, dlid_pool, meta_len))
+			if (!dm_tree_node_add_target_area(dnode_data, NULL, dlid_pool, meta_size))
 				return_0;
 		}
 	}
@@ -3315,6 +3315,10 @@ static int _add_new_lv_to_dtree(struct dev_manager *dm, struct dm_tree *dtree,
 	/* Even unused thin-pool still needs to get layered  UUID -suffix */
 	if (!layer && lv_is_new_thin_pool(lv))
 		layer = lv_layer(lv);
+
+	/* Adds -real to the dm uuid of wcorig LV. */
+	if (!layer && lv_is_writecache_origin(lv))
+		layer = lv_layer(lv); /* "real" */
 
 	if (!(dlid = build_dm_uuid(dm->mem, lv, layer)))
 		return_0;

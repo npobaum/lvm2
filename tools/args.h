@@ -213,7 +213,7 @@ arg(driverloaded_ARG, '\0', "driverloaded", bool_VAL, 0, 0,
     "If set to no, the command will not attempt to use device-mapper.\n"
     "For testing and debugging.\n")
 
-arg(dump_ARG, '\0', "dump", string_VAL, 0, 0,
+arg(dump_ARG, '\0', "dump", dumptype_VAL, 0, 0,
     "Dump headers and metadata from a PV for debugging and repair.\n"
     "Option values include: \\fBheaders\\fP to print and check LVM headers,\n"
     "\\fBmetadata\\fP to print or save the current text metadata,\n"
@@ -463,7 +463,8 @@ arg(setphysicalvolumesize_ARG, '\0', "setphysicalvolumesize", sizemb_VAL, 0, 0,
 
 arg(settings_ARG, '\0', "settings", string_VAL, ARG_GROUPABLE, 0,
     "Specifies command specific settings in \"Key = Value\" form.\n"
-    "Repeat this option to specify multiple values.\n")
+    "Combine multiple settings in quotes, or repeat the settings\n"
+    "option for each.\n")
 
 arg(poll_ARG, '\0', "poll", bool_VAL, 0, 0,
     "When yes, start the background transformation of an LV.\n"

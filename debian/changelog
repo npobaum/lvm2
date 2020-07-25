@@ -1,3 +1,12 @@
+lvm2 (2.03.09-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Drop not longer needed breaks and conflicts.
+  * Detect systemd at run-time in udev, patch by Julian Andres Klode.
+    (closes: #933011)
+
+ -- Bastian Blank <waldi@debian.org>  Sat, 25 Jul 2020 21:14:19 +0200
+
 lvm2 (2.03.07-1) unstable; urgency=medium
 
   * New upstream release.

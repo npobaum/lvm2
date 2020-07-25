@@ -2428,20 +2428,22 @@ static int _is_contiguous(struct pv_match *pvmatch __attribute((unused)), struct
 	return 1;
 }
 
-static void _reserve_area(struct alloc_handle *ah, struct alloc_state *alloc_state, struct pv_area *pva,
+static int _reserve_area(struct alloc_handle *ah, struct alloc_state *alloc_state, struct pv_area *pva,
 			  uint32_t required, uint32_t ix_pva, uint32_t unreserved)
 {
 	struct pv_area_used *area_used = &alloc_state->areas[ix_pva];
 	const char *pv_tag_list = NULL;
 
 	if (ah->cling_tag_list_cn) {
-		if (!dm_pool_begin_object(ah->mem, 256))
-			log_error("PV tags string allocation failed");
-		else if (!_tags_list_str(ah->mem, pva->map->pv, ah->cling_tag_list_cn))
+		if (!dm_pool_begin_object(ah->mem, 256)) {
+			log_error("PV tags string allocation failed.");
+			return 0;
+		} else if (!_tags_list_str(ah->mem, pva->map->pv, ah->cling_tag_list_cn))
 			dm_pool_abandon_object(ah->mem);
 		else if (!dm_pool_grow_object(ah->mem, "\0", 1)) {
 			dm_pool_abandon_object(ah->mem);
 			log_error("PV tags string extension failed.");
+			return 0;
 		} else
 			pv_tag_list = dm_pool_end_object(ah->mem);
 	}
@@ -2459,25 +2461,30 @@ static void _reserve_area(struct alloc_handle *ah, struct alloc_state *alloc_sta
 
 	area_used->pva = pva;
 	area_used->used = required;
+
+	return 1;
 }
 
 static int _reserve_required_area(struct alloc_handle *ah, struct alloc_state *alloc_state, struct pv_area *pva,
 				  uint32_t required, uint32_t ix_pva, uint32_t unreserved)
 {
 	uint32_t s;
+	struct pv_area_used *new_state;
 
 	/* Expand areas array if needed after an area was split. */
 	if (ix_pva >= alloc_state->areas_size) {
 		alloc_state->areas_size *= 2;
-		if (!(alloc_state->areas = realloc(alloc_state->areas, sizeof(*alloc_state->areas) * (alloc_state->areas_size)))) {
+		if (!(new_state = realloc(alloc_state->areas, sizeof(*alloc_state->areas) * (alloc_state->areas_size)))) {
 			log_error("Memory reallocation for parallel areas failed.");
 			return 0;
 		}
+		alloc_state->areas = new_state;
 		for (s = alloc_state->areas_size / 2; s < alloc_state->areas_size; s++)
 			alloc_state->areas[s].pva = NULL;
 	}
 
-	_reserve_area(ah, alloc_state, pva, required, ix_pva, unreserved);
+	if (!_reserve_area(ah, alloc_state, pva, required, ix_pva, unreserved))
+		return_0;
 
 	return 1;
 }
@@ -2506,8 +2513,9 @@ static int _is_condition(struct cmd_context *cmd __attribute__((unused)),
 	 * Only used for cling and contiguous policies (which only make one allocation per PV)
 	 * so it's safe to say all the available space is used.
 	 */
-	if (positional)
-		_reserve_required_area(pvmatch->ah, pvmatch->alloc_state, pvmatch->pva, pvmatch->pva->count, s, 0);
+	if (positional &&
+	    !_reserve_required_area(pvmatch->ah, pvmatch->alloc_state, pvmatch->pva, pvmatch->pva->count, s, 0))
+		return_0;
 
 	return 2;	/* Finished */
 }
@@ -2604,8 +2612,9 @@ static int _check_cling_to_alloced(struct alloc_handle *ah, const struct dm_conf
 		dm_list_iterate_items(aa, &ah->alloced_areas[s]) {
 			if ((!cling_tag_list_cn && (pva->map->pv == aa[0].pv)) ||
 			    (cling_tag_list_cn && _pvs_have_matching_tag(cling_tag_list_cn, pva->map->pv, aa[0].pv, 0))) {
-				if (positional)
-					_reserve_required_area(ah, alloc_state, pva, pva->count, s, 0);
+				if (positional &&
+				    !_reserve_required_area(ah, alloc_state, pva, pva->count, s, 0))
+					return_0;
 				return 1;
 			}
 		}
@@ -4524,6 +4533,9 @@ static int _for_each_sub_lv(struct logical_volume *lv, int level,
 			return_0;
 
 		if (!_for_each_sub_lv(seg->pool_lv, level, fn, data))
+			return_0;
+
+		if (!_for_each_sub_lv(seg->writecache, level, fn, data))
 			return_0;
 
 		for (s = 0; s < seg->area_count; s++) {
@@ -6626,7 +6638,7 @@ int lv_remove_with_dependencies(struct cmd_context *cmd, struct logical_volume *
 		return 0;
 	}
 
-	if (lv_is_cache_origin(lv)) {
+	if (lv_is_cache_origin(lv) || lv_is_writecache_origin(lv)) {
 		if (!_lv_remove_segs_using_this_lv(cmd, lv, force, level, "cache origin"))
 			return_0;
 		/* Removal of cache LV also removes caching origin */
@@ -6980,7 +6992,7 @@ int move_lv_segments(struct logical_volume *lv_to,
 int remove_layer_from_lv(struct logical_volume *lv,
 			 struct logical_volume *layer_lv)
 {
-	static const char _suffixes[][8] = { "_tdata", "_cdata", "_corig", "_vdata" };
+	static const char _suffixes[][8] = { "_tdata", "_cdata", "_corig", "_wcorig", "_vdata" };
 	struct logical_volume *parent_lv;
 	struct lv_segment *parent_seg;
 	struct segment_type *segtype;
@@ -7060,8 +7072,8 @@ int remove_layer_from_lv(struct logical_volume *lv,
 	 *   currently supported only for thin data layer
 	 *   FIXME: without strcmp it breaks mirrors....
 	 */
-	if (!strstr(layer_lv->name, "_mimage"))
-		for (r = 0; r < DM_ARRAY_SIZE(_suffixes); ++r)
+	if (!strstr(layer_lv->name, "_mimage")) {
+		for (r = 0; r < DM_ARRAY_SIZE(_suffixes); ++r) {
 			if (strstr(layer_lv->name, _suffixes[r]) == 0) {
 				lv_names.old = layer_lv->name;
 				lv_names.new = parent_lv->name;
@@ -7069,6 +7081,8 @@ int remove_layer_from_lv(struct logical_volume *lv,
 					return_0;
 				break;
 			}
+		}
+	}
 
 	return 1;
 }
@@ -7084,7 +7098,7 @@ struct logical_volume *insert_layer_for_lv(struct cmd_context *cmd,
 					   uint64_t status,
 					   const char *layer_suffix)
 {
-	static const char _suffixes[][8] = { "_tdata", "_cdata", "_corig", "_vdata" };
+	static const char _suffixes[][8] = { "_tdata", "_cdata", "_corig", "_wcorig", "_vdata" };
 	int r;
 	char name[NAME_LEN];
 	struct dm_str_list *sl;
@@ -8363,7 +8377,8 @@ static struct logical_volume *_lv_create_an_lv(struct volume_group *vg,
 		 * COW LV is activated via implicit activation of origin LV
 		 * Only the snapshot origin holds the LV lock in cluster
 		 */
-		if (!vg_add_snapshot(origin_lv, lv, NULL,
+		if (!origin_lv ||
+		    !vg_add_snapshot(origin_lv, lv, NULL,
 				     origin_lv->le_count, lp->chunk_size)) {
 			log_error("Couldn't create snapshot.");
 			goto deactivate_and_revert_new_lv;

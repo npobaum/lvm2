@@ -382,7 +382,7 @@ teardown_devs_prefixed() {
 
 		while :; do
 			local sortby="name"
-			local num_devs=0
+			local progress=0
 
 			# HACK: sort also by minors - so we try to close 'possibly later' created device first
 			test "$i" = 0 || sortby="-minor"
@@ -392,23 +392,23 @@ teardown_devs_prefixed() {
 				DM_NAME=${dm##DM_NAME=}
 				DM_NAME=${DM_NAME%%;DM_OPEN*}
 				DM_OPEN=${dm##*;DM_OPEN=}
+				local force="-f"
 				if test "$i" = 0; then
 					if test "$once" = 1 ; then
 						once=0
 						echo "## removing stray mapped devices with names beginning with $prefix: "
 					fi
 					test "$DM_OPEN" = 0 || break  # stop loop with 1st. opened device
-					dmsetup remove "$DM_NAME" --mangle none || true # &>/dev/null || touch REMOVE_FAILED &
-				else
-					dmsetup remove -f "$DM_NAME" --mangle none || true
+					force=""
 				fi
 
-				num_devs=$(( num_devs + 1 ))
+				# Succesfull 'remove' signals progress
+				dmsetup remove $force "$DM_NAME" --mangle none && progress=1
 			done
 
 			test "$i" = 0 || break
 
-			test "$num_devs" -gt 0 || break
+			test "$progress" = 1 || break
 
 			udev_wait
 			wait
@@ -515,6 +515,8 @@ teardown() {
 	local TEST_LEAKED_DEVICES=""
 	echo -n "## teardown..."
 	unset LVM_LOG_FILE_EPOCH
+
+	test ! -f ERR_DEV || should dmsetup remove $(cat ERR_DEV_NAME)
 
 	if test -f TESTNAME ; then
 
@@ -874,7 +876,11 @@ prepare_devs() {
 	wait
 	finish_udev_transaction
 
-	if test -f CREATE_FAILED -a -n "$LVM_TEST_BACKING_DEVICE"; then
+	if test -f CREATE_FAILED ; then
+		if test -z "$LVM_TEST_BACKING_DEVICE"; then
+			echo "failed"
+			return 1
+		fi
 		LVM_TEST_BACKING_DEVICE=
 		rm -f BACKING_DEV CREATE_FAILED
 		prepare_devs "$@"
@@ -950,6 +956,8 @@ common_dev_() {
 		case "$tgtype" in
 		delay)
 			echo "$from $len delay $pvdev $(( pos + offset )) $read_ms $pvdev $(( pos + offset )) $write_ms" ;;
+		writeerror)
+			echo "$from $len delay $pvdev $(( pos + offset )) 0 $(cat ERR_DEV) 0 0" ;;
 		error|zero)
 			echo "$from $len $tgtype" ;;
 		esac
@@ -1078,6 +1086,29 @@ error_dev() {
 }
 
 #
+# Convert device to device with write errors but normal reads.
+# For this 'delay' dev is used and reroutes 'reads' back to original device
+# and for writes it will use extra new TEST-errordev (huge error target)
+# i.e.  writeerror_dev "$dev1" 8:32
+writeerror_dev() {
+	local name=${PREFIX}-errordev
+
+	if test ! -e ERR_DEV; then
+		# delay target is used for error mapping
+		if test ! -f HAVE_DM_DELAY ; then
+			target_at_least dm-delay 1 1 0 || return 0
+			touch HAVE_DM_DELAY
+		fi
+		dmsetup create -u "TEST-$name" "$name" --table "0 4611686018427387904 error"
+		# Take major:minor of our error device
+		echo "$name" > ERR_DEV_NAME
+		dmsetup info -c  --noheadings -o major,minor "$name" > ERR_DEV
+	fi
+
+	common_dev_ writeerror "$@"
+}
+
+#
 # Convert existing device to a device with zero segments
 # Takes the list of pairs of zero segment from:len
 # Combination with error or delay is unsupported
@@ -1202,6 +1233,7 @@ activation/udev_sync = 1
 activation/verify_udev_operations = $LVM_VERIFY_UDEV
 activation/raid_region_size = 512
 allocation/wipe_signatures_when_zeroing_new_lvs = 0
+allocation/vdo_slab_size_mb = 128
 backup/archive = 0
 backup/backup = 0
 devices/cache_dir = "$TESTDIR/etc"

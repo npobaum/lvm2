@@ -123,6 +123,7 @@ static inline int reportformat_arg(struct cmd_context *cmd __attribute__((unused
 static inline int configreport_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_values *av) { return 0; }
 static inline int configtype_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_values *av) { return 0; }
 static inline int repairtype_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_values *av) { return 0; }
+static inline int dumptype_arg(struct cmd_context *cmd __attribute__((unused)), struct arg_values *av) { return 0; }
 
 /* needed to include commands.h when building man page generator */
 #define CACHE_VGMETADATA        0x00000001
@@ -998,8 +999,8 @@ static void __add_optional_opt_line(struct cmd_context *cmdtool, struct command 
 		else if (takes_arg)
 			_update_prev_opt_arg(cmdtool, cmd, argv[i], OPTIONAL);
 		else {
-			log_error("Parsing command defs: can't parse argc %d argv %s prev %s.",
-				i, argv[i], argv[i-1]);
+			log_error("Parsing command defs: can't parse argc %d argv %s%s%s.",
+				i, argv[i], (i > 0) ? " prev " : "", (i > 0) ? argv[i - 1] : "");
 			cmd->cmd_flags |= CMD_FLAG_PARSE_ERROR;
 			return;
 		}
@@ -1024,8 +1025,8 @@ static void _add_ignore_opt_line(struct cmd_context *cmdtool, struct command *cm
 		else if (takes_arg)
 			_update_prev_opt_arg(cmdtool, cmd, argv[i], IGNORE);
 		else {
-			log_error("Parsing command defs: can't parse argc %d argv %s prev %s.",
-				i, argv[i], argv[i-1]);
+			log_error("Parsing command defs: can't parse argc %d argv %s%s%s.",
+				  i, argv[i], (i > 0) ? " prev " : "", (i > 0) ? argv[i - 1] : "");
 			cmd->cmd_flags |= CMD_FLAG_PARSE_ERROR;
 			return;
 		}
@@ -1059,8 +1060,8 @@ static void _add_required_opt_line(struct cmd_context *cmdtool, struct command *
 		else if (takes_arg)
 			_update_prev_opt_arg(cmdtool, cmd, argv[i], REQUIRED);
 		else {
-			log_error("Parsing command defs: can't parse argc %d argv %s prev %s.",
-				  i, argv[i], argv[i-1]);
+			log_error("Parsing command defs: can't parse argc %d argv %s%s%s.",
+				  i, argv[i], (i > 0) ? " prev " : "", (i > 0) ? argv[i - 1] : "");
 			cmd->cmd_flags |= CMD_FLAG_PARSE_ERROR;
 			return;
 		}
@@ -1149,8 +1150,8 @@ static void _add_required_line(struct cmd_context *cmdtool, struct command *cmd,
 			/* set property for previous required_pos_arg */
 			_update_prev_pos_arg(cmd, argv[i], REQUIRED);
 		} else {
-			log_error("Parsing command defs: can't parse argc %d argv %s prev %s.",
-				  i, argv[i], argv[i-1]);
+			log_error("Parsing command defs: can't parse argc %d argv %s%s%s.",
+				  i, argv[i], (i > 0) ? " prev " : "", (i > 0) ? argv[i - 1] : "");
 			cmd->cmd_flags |= CMD_FLAG_PARSE_ERROR;
 			return;
 		}
