@@ -126,3 +126,34 @@ vgchange -an $vg
 vgextend --restoremissing $vg "$dev3"
 
 vgremove -ff $vg
+
+#
+# splitcache when origin is raid
+#
+
+vgcreate $vg "$dev1" "$dev2" "$dev3" "$dev4"
+
+lvcreate --type raid1 -m1 -L6 -n $lv1 -an $vg "$dev1" "$dev2"
+lvcreate -L6 -n $lv2 -an $vg "$dev3"
+lvconvert -y --type writecache --cachevol $lv2 $vg/$lv1
+lvchange -ay $vg/$lv1
+lvchange -an $vg/$lv1
+lvconvert --splitcache $vg/$lv1
+lvs $vg/$lv1
+lvs $vg/$lv2
+
+vgremove -ff $vg
+
+#
+# vgsplit should not separate cachevol from main lv
+#
+
+vgcreate $vg "$dev1" "$dev2" "$dev3" "$dev4"
+lvcreate -L6 -n $lv1 -an $vg "$dev2"
+lvcreate -L6 -n $lv2 -an $vg "$dev3"
+lvconvert -y --type writecache --cachevol $lv2 $vg/$lv1
+fail vgsplit $vg $vg1 "$dev2"
+fail vgsplit $vg $vg1 "$dev3"
+lvremove $vg/$lv1
+
+vgremove -ff $vg

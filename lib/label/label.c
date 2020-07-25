@@ -13,8 +13,8 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include "base/memory/zalloc.h"
 #include "lib/misc/lib.h"
+#include "base/memory/zalloc.h"
 #include "lib/label/label.h"
 #include "lib/misc/crc.h"
 #include "lib/mm/xlate.h"
@@ -24,7 +24,6 @@
 #include "lib/activate/activate.h"
 #include "lib/label/hints.h"
 #include "lib/metadata/metadata.h"
-#include "lib/format_text/format-text.h"
 #include "lib/format_text/layout.h"
 
 #include <sys/stat.h>
@@ -858,16 +857,6 @@ static int _setup_bcache(void)
 	return 1;
 }
 
-static void _free_hints(struct dm_list *hints)
-{
-	struct hint *hint, *hint2;
-
-	dm_list_iterate_items_safe(hint, hint2, hints) {
-		dm_list_del(&hint->list);
-		free(hint);
-	}
-}
-
 /*
  * We don't know how many of num_devs will be PVs that we need to
  * keep open, but if it's greater than the soft limit, then we'll
@@ -1166,7 +1155,7 @@ int label_scan(struct cmd_context *cmd)
 		if (!validate_hints(cmd, &hints_list)) {
 			log_debug("Will scan %d remaining devices", dm_list_size(&all_devs));
 			_scan_list(cmd, cmd->filter, &all_devs, NULL);
-			_free_hints(&hints_list);
+			free_hints(&hints_list);
 			using_hints = 0;
 			create_hints = 0;
 		} else {

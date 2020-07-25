@@ -2092,7 +2092,8 @@ static int _query_lock_lv(struct cmd_context *cmd, struct volume_group *vg,
 		log_error("Lock query failed for LV %s/%s", vg->name, lv_name);
 		return 0;
 	} else {
-		ret = (result < 0) ? 0 : 1;
+		/* ENOENT => The lv was not active/locked. */
+		ret = (result < 0 && (result != -ENOENT)) ? 0 : 1;
 	}
 
 	if (!ret)
@@ -2110,11 +2111,7 @@ static int _query_lock_lv(struct cmd_context *cmd, struct volume_group *vg,
 
 	daemon_reply_destroy(reply);
 
-	/* The lv was not active/locked. */
-	if (result == -ENOENT)
-		return 1;
-
-	return 1;
+	return ret;
 }
 
 /*
@@ -2682,7 +2679,7 @@ int lockd_init_lv(struct cmd_context *cmd, struct volume_group *vg, struct logic
 			log_error("Failed to find origin LV %s/%s", vg->name, lp->origin_name);
 			return 0;
 		}
-		if (!lockd_lv(cmd, origin_lv, "ex", LDLV_PERSISTENT)) {
+		if (!lockd_lv(cmd, origin_lv, "ex", 0)) {
 			log_error("Failed to lock origin LV %s/%s", vg->name, lp->origin_name);
 			return 0;
 		}

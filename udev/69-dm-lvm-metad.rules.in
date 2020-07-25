@@ -78,17 +78,15 @@ GOTO="lvm_end"
 # For "systemd_background" mode, systemd takes care of this by activating
 # the lvm2-pvscan@.service only once.
 LABEL="next"
-ACTION!="(PVSCAN_ACTION)", GOTO="lvm_end"
+TEST!="/run/systemd/system", ACTION!="add", GOTO="lvm_end"
+TEST=="/run/systemd/system", ACTION!="add|change", GOTO="lvm_end"
 
 LABEL="lvm_scan"
 
 ENV{SYSTEMD_READY}="1"
 
-# The method for invoking pvscan is selected at build time with the option
-# --(enable|disable)-udev-systemd-background-jobs to "configure".
-# On modern distributions with recent systemd, it's "systemd_background";
-# on others, "direct_pvscan".
-GOTO="(PVSCAN_RULE)"
+TEST!="/run/systemd/system", GOTO="direct_pvscan"
+TEST=="/run/systemd/system", GOTO="systemd_background"
 
 LABEL="systemd_background"
 

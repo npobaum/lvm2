@@ -1238,8 +1238,12 @@ static struct dm_ioctl *_flatten(struct dm_task *dmt, unsigned repeat_count)
 	}
 
 	/* FIXME Until resume ioctl supplies name, use dev_name for readahead */
-	if (DEV_NAME(dmt) && (dmt->type != DM_DEVICE_RESUME || dmt->minor < 0 ||
-			      dmt->major < 0))
+	if (DEV_NAME(dmt) &&
+	    (((dmt->type != DM_DEVICE_RESUME) &&
+	      (dmt->type != DM_DEVICE_RELOAD)) ||
+	     (dmt->minor < 0) || (dmt->major < 0)))
+		/* When RESUME or RELOAD sets maj:min and dev_name, use just maj:min,
+		 * passed dev_name is useful for better error/debug messages */
 		strncpy(dmi->name, DEV_NAME(dmt), sizeof(dmi->name));
 
 	if (DEV_UUID(dmt))
@@ -1425,6 +1429,7 @@ static int _check_uevent_generated(struct dm_ioctl *dmi)
 
 static int _create_and_load_v4(struct dm_task *dmt)
 {
+	struct dm_info info;
 	struct dm_task *task;
 	int r;
 	uint32_t cookie;
@@ -1455,6 +1460,9 @@ static int _create_and_load_v4(struct dm_task *dmt)
 	if (!dm_task_run(task))
 		goto_bad;
 
+	if (!dm_task_get_info(task, &info) || !info.exists)
+		goto_bad;
+
 	dm_task_destroy(task);
 
 	/* Next load the table */
@@ -1472,6 +1480,8 @@ static int _create_and_load_v4(struct dm_task *dmt)
 		goto revert;
 	}
 
+	task->major = info.major;
+	task->minor = info.minor;
 	task->read_only = dmt->read_only;
 	task->head = dmt->head;
 	task->tail = dmt->tail;
@@ -1904,7 +1914,8 @@ static struct dm_ioctl *_do_dm_ioctl(struct dm_task *dmt, unsigned command,
 				log_verbose("device-mapper: %s ioctl on %s %s%s%.0d%s%.0d%s%s "
 					    "failed: %s",
 					    _cmd_data_v4[dmt->type].name,
-					    dmi->name, dmi->uuid,
+					    dmi->name[0] ? dmi->name : DEV_NAME(dmt) ? : "",
+					    dmi->uuid[0] ? dmi->uuid : DEV_UUID(dmt) ? : "",
 					    dmt->major > 0 ? "(" : "",
 					    dmt->major > 0 ? dmt->major : 0,
 					    dmt->major > 0 ? ":" : "",
@@ -1916,7 +1927,8 @@ static struct dm_ioctl *_do_dm_ioctl(struct dm_task *dmt, unsigned command,
 				log_error("device-mapper: %s ioctl on %s %s%s%.0d%s%.0d%s%s "
 					  "failed: %s",
 					  _cmd_data_v4[dmt->type].name,
-					  dmi->name, dmi->uuid,
+					  dmi->name[0] ? dmi->name : DEV_NAME(dmt) ? : "",
+					  dmi->uuid[0] ? dmi->uuid : DEV_UUID(dmt) ? : "",
 					  dmt->major > 0 ? "(" : "",
 					  dmt->major > 0 ? dmt->major : 0,
 					  dmt->major > 0 ? ":" : "",

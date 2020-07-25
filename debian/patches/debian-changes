@@ -1,5 +1,228 @@
+diff --git a/aclocal.m4 b/aclocal.m4
+index c57b12939..c7b905388 100644
+--- a/aclocal.m4
++++ b/aclocal.m4
+@@ -1,6 +1,6 @@
+-# generated automatically by aclocal 1.15.1 -*- Autoconf -*-
++# generated automatically by aclocal 1.16.2 -*- Autoconf -*-
+ 
+-# Copyright (C) 1996-2017 Free Software Foundation, Inc.
++# Copyright (C) 1996-2020 Free Software Foundation, Inc.
+ 
+ # This file is free software; the Free Software Foundation
+ # gives unlimited permission to copy and/or distribute it,
+@@ -12,65 +12,8 @@
+ # PARTICULAR PURPOSE.
+ 
+ m4_ifndef([AC_CONFIG_MACRO_DIRS], [m4_defun([_AM_CONFIG_MACRO_DIRS], [])m4_defun([AC_CONFIG_MACRO_DIRS], [_AM_CONFIG_MACRO_DIRS($@)])])
+-# ===========================================================================
+-#     https://www.gnu.org/software/autoconf-archive/ax_python_module.html
+-# ===========================================================================
+-#
+-# SYNOPSIS
+-#
+-#   AX_PYTHON_MODULE(modname[, fatal, python])
+-#
+-# DESCRIPTION
+-#
+-#   Checks for Python module.
+-#
+-#   If fatal is non-empty then absence of a module will trigger an error.
+-#   The third parameter can either be "python" for Python 2 or "python3" for
+-#   Python 3; defaults to Python 3.
+-#
+-# LICENSE
+-#
+-#   Copyright (c) 2008 Andrew Collier
+-#
+-#   Copying and distribution of this file, with or without modification, are
+-#   permitted in any medium without royalty provided the copyright notice
+-#   and this notice are preserved. This file is offered as-is, without any
+-#   warranty.
+-
+-#serial 9
+-
+-AU_ALIAS([AC_PYTHON_MODULE], [AX_PYTHON_MODULE])
+-AC_DEFUN([AX_PYTHON_MODULE],[
+-    if test -z $PYTHON;
+-    then
+-        if test -z "$3";
+-        then
+-            PYTHON="python3"
+-        else
+-            PYTHON="$3"
+-        fi
+-    fi
+-    PYTHON_NAME=`basename $PYTHON`
+-    AC_MSG_CHECKING($PYTHON_NAME module: $1)
+-    $PYTHON -c "import $1" 2>/dev/null
+-    if test $? -eq 0;
+-    then
+-        AC_MSG_RESULT(yes)
+-        eval AS_TR_CPP(HAVE_PYMOD_$1)=yes
+-    else
+-        AC_MSG_RESULT(no)
+-        eval AS_TR_CPP(HAVE_PYMOD_$1)=no
+-        #
+-        if test -n "$2"
+-        then
+-            AC_MSG_ERROR(failed to find required module $1)
+-            exit 1
+-        fi
+-    fi
+-])
+-
+ # pkg.m4 - Macros to locate and utilise pkg-config.   -*- Autoconf -*-
+-# serial 11 (pkg-config-0.29.1)
++# serial 12 (pkg-config-0.29.2)
+ 
+ dnl Copyright © 2004 Scott James Remnant <scott@netsplit.com>.
+ dnl Copyright © 2012-2015 Dan Nicholson <dbn.lists@gmail.com>
+@@ -112,7 +55,7 @@ dnl
+ dnl See the "Since" comment for each macro you use to see what version
+ dnl of the macros you require.
+ m4_defun([PKG_PREREQ],
+-[m4_define([PKG_MACROS_VERSION], [0.29.1])
++[m4_define([PKG_MACROS_VERSION], [0.29.2])
+ m4_if(m4_version_compare(PKG_MACROS_VERSION, [$1]), -1,
+     [m4_fatal([pkg.m4 version $1 or higher is required but ]PKG_MACROS_VERSION[ found])])
+ ])dnl PKG_PREREQ
+@@ -213,7 +156,7 @@ AC_ARG_VAR([$1][_CFLAGS], [C compiler flags for $1, overriding pkg-config])dnl
+ AC_ARG_VAR([$1][_LIBS], [linker flags for $1, overriding pkg-config])dnl
+ 
+ pkg_failed=no
+-AC_MSG_CHECKING([for $1])
++AC_MSG_CHECKING([for $2])
+ 
+ _PKG_CONFIG([$1][_CFLAGS], [cflags], [$2])
+ _PKG_CONFIG([$1][_LIBS], [libs], [$2])
+@@ -223,11 +166,11 @@ and $1[]_LIBS to avoid the need to call pkg-config.
+ See the pkg-config man page for more details.])
+ 
+ if test $pkg_failed = yes; then
+-   	AC_MSG_RESULT([no])
++        AC_MSG_RESULT([no])
+         _PKG_SHORT_ERRORS_SUPPORTED
+         if test $_pkg_short_errors_supported = yes; then
+ 	        $1[]_PKG_ERRORS=`$PKG_CONFIG --short-errors --print-errors --cflags --libs "$2" 2>&1`
+-        else 
++        else
+ 	        $1[]_PKG_ERRORS=`$PKG_CONFIG --print-errors --cflags --libs "$2" 2>&1`
+         fi
+ 	# Put the nasty error message in config.log where it belongs
+@@ -244,7 +187,7 @@ installed software in a non-standard prefix.
+ _PKG_TEXT])[]dnl
+         ])
+ elif test $pkg_failed = untried; then
+-     	AC_MSG_RESULT([no])
++        AC_MSG_RESULT([no])
+ 	m4_default([$4], [AC_MSG_FAILURE(
+ [The pkg-config script could not be found or is too old.  Make sure it
+ is in your PATH or set the PKG_CONFIG environment variable to the full
+@@ -345,75 +288,7 @@ AS_VAR_COPY([$1], [pkg_cv_][$1])
+ AS_VAR_IF([$1], [""], [$5], [$4])dnl
+ ])dnl PKG_CHECK_VAR
+ 
+-dnl PKG_WITH_MODULES(VARIABLE-PREFIX, MODULES,
+-dnl   [ACTION-IF-FOUND],[ACTION-IF-NOT-FOUND],
+-dnl   [DESCRIPTION], [DEFAULT])
+-dnl ------------------------------------------
+-dnl
+-dnl Prepare a "--with-" configure option using the lowercase
+-dnl [VARIABLE-PREFIX] name, merging the behaviour of AC_ARG_WITH and
+-dnl PKG_CHECK_MODULES in a single macro.
+-AC_DEFUN([PKG_WITH_MODULES],
+-[
+-m4_pushdef([with_arg], m4_tolower([$1]))
+-
+-m4_pushdef([description],
+-           [m4_default([$5], [build with ]with_arg[ support])])
+-
+-m4_pushdef([def_arg], [m4_default([$6], [auto])])
+-m4_pushdef([def_action_if_found], [AS_TR_SH([with_]with_arg)=yes])
+-m4_pushdef([def_action_if_not_found], [AS_TR_SH([with_]with_arg)=no])
+-
+-m4_case(def_arg,
+-            [yes],[m4_pushdef([with_without], [--without-]with_arg)],
+-            [m4_pushdef([with_without],[--with-]with_arg)])
+-
+-AC_ARG_WITH(with_arg,
+-     AS_HELP_STRING(with_without, description[ @<:@default=]def_arg[@:>@]),,
+-    [AS_TR_SH([with_]with_arg)=def_arg])
+-
+-AS_CASE([$AS_TR_SH([with_]with_arg)],
+-            [yes],[PKG_CHECK_MODULES([$1],[$2],$3,$4)],
+-            [auto],[PKG_CHECK_MODULES([$1],[$2],
+-                                        [m4_n([def_action_if_found]) $3],
+-                                        [m4_n([def_action_if_not_found]) $4])])
+-
+-m4_popdef([with_arg])
+-m4_popdef([description])
+-m4_popdef([def_arg])
+-
+-])dnl PKG_WITH_MODULES
+-
+-dnl PKG_HAVE_WITH_MODULES(VARIABLE-PREFIX, MODULES,
+-dnl   [DESCRIPTION], [DEFAULT])
+-dnl -----------------------------------------------
+-dnl
+-dnl Convenience macro to trigger AM_CONDITIONAL after PKG_WITH_MODULES
+-dnl check._[VARIABLE-PREFIX] is exported as make variable.
+-AC_DEFUN([PKG_HAVE_WITH_MODULES],
+-[
+-PKG_WITH_MODULES([$1],[$2],,,[$3],[$4])
+-
+-AM_CONDITIONAL([HAVE_][$1],
+-               [test "$AS_TR_SH([with_]m4_tolower([$1]))" = "yes"])
+-])dnl PKG_HAVE_WITH_MODULES
+-
+-dnl PKG_HAVE_DEFINE_WITH_MODULES(VARIABLE-PREFIX, MODULES,
+-dnl   [DESCRIPTION], [DEFAULT])
+-dnl ------------------------------------------------------
+-dnl
+-dnl Convenience macro to run AM_CONDITIONAL and AC_DEFINE after
+-dnl PKG_WITH_MODULES check. HAVE_[VARIABLE-PREFIX] is exported as make
+-dnl and preprocessor variable.
+-AC_DEFUN([PKG_HAVE_DEFINE_WITH_MODULES],
+-[
+-PKG_HAVE_WITH_MODULES([$1],[$2],[$3],[$4])
+-
+-AS_IF([test "$AS_TR_SH([with_]m4_tolower([$1]))" = "yes"],
+-        [AC_DEFINE([HAVE_][$1], 1, [Enable ]m4_tolower([$1])[ support])])
+-])dnl PKG_HAVE_DEFINE_WITH_MODULES
+-
+-# Copyright (C) 1999-2017 Free Software Foundation, Inc.
++# Copyright (C) 1999-2020 Free Software Foundation, Inc.
+ #
+ # This file is free software; the Free Software Foundation
+ # gives unlimited permission to copy and/or distribute it,
+@@ -446,10 +321,12 @@ AC_DEFUN([AM_PATH_PYTHON],
+  [
+   dnl Find a Python interpreter.  Python versions prior to 2.0 are not
+   dnl supported. (2.0 was released on October 16, 2000).
+-  dnl FIXME: Remove the need to hard-code Python versions here.
+   m4_define_default([_AM_PYTHON_INTERPRETER_LIST],
+-[python python2 python3 python3.5 python3.4 python3.3 python3.2 python3.1 python3.0 python2.7 dnl
+- python2.6 python2.5 python2.4 python2.3 python2.2 python2.1 python2.0])
++[python python2 python3 dnl
++ python3.9 python3.8 python3.7 python3.6 python3.5 python3.4 python3.3 dnl
++ python3.2 python3.1 python3.0 dnl
++ python2.7 python2.6 python2.5 python2.4 python2.3 python2.2 python2.1 dnl
++ python2.0])
+ 
+   AC_ARG_VAR([PYTHON], [the Python interpreter])
+ 
+@@ -649,7 +526,7 @@ for i in list(range(0, 4)): minverhex = (minverhex << 8) + minver[[i]]
+ sys.exit(sys.hexversion < minverhex)"
+   AS_IF([AM_RUN_LOG([$1 -c "$prog"])], [$3], [$4])])
+ 
+-# Copyright (C) 2001-2017 Free Software Foundation, Inc.
++# Copyright (C) 2001-2020 Free Software Foundation, Inc.
+ #
+ # This file is free software; the Free Software Foundation
+ # gives unlimited permission to copy and/or distribute it,
 diff --git a/configure.ac b/configure.ac
-index 74ca20191..fc05c7e33 100644
+index 74ca20191..5a82509c7 100644
 --- a/configure.ac
 +++ b/configure.ac
 @@ -671,7 +671,7 @@ esac
@@ -11,7 +234,37 @@ index 74ca20191..fc05c7e33 100644
  
  ################################################################################
  dnl -- Disable realtime clock support
-@@ -1310,21 +1310,9 @@ AC_MSG_RESULT($SELINUX)
+@@ -1056,29 +1056,6 @@ AC_MSG_RESULT($BLKID_WIPING)
+ AC_DEFINE_UNQUOTED(DEFAULT_USE_BLKID_WIPING, [$DEFAULT_USE_BLKID_WIPING],
+ 		   [Use blkid wiping by default.])
+ 
+-################################################################################
+-dnl -- Enable udev-systemd protocol to instantiate a service for background jobs
+-dnl -- Requires systemd version 205 at least (including support for systemd-run)
+-AC_ARG_ENABLE(udev-systemd-background-jobs,
+-	      AC_HELP_STRING([--disable-udev-systemd-background-jobs],
+-			     [disable udev-systemd protocol to instantiate a service for background job]),
+-	      UDEV_SYSTEMD_BACKGROUND_JOBS=$enableval,
+-	      UDEV_SYSTEMD_BACKGROUND_JOBS=maybe)
+-
+-if test "$UDEV_SYSTEMD_BACKGROUND_JOBS" != no; then
+-	pkg_config_init
+-	PKG_CHECK_MODULES(SYSTEMD, systemd >= 205,
+-			  [UDEV_SYSTEMD_BACKGROUND_JOBS=yes],
+-			  [if test "$UDEV_SYSTEMD_BACKGROUND_JOBS" = maybe; then
+-				UDEV_SYSTEMD_BACKGROUND_JOBS=no
+-			   else
+-				AC_MSG_ERROR([bailing out... systemd >= 205 is required])
+-			   fi])
+-fi
+-
+-AC_MSG_CHECKING(whether to use udev-systemd protocol for jobs in background)
+-AC_MSG_RESULT($UDEV_SYSTEMD_BACKGROUND_JOBS)
+-
+ ################################################################################
+ dnl -- Enable udev synchronisation
+ AC_MSG_CHECKING(whether to enable synchronisation with udev processing)
+@@ -1310,21 +1287,9 @@ AC_MSG_RESULT($SELINUX)
  ################################################################################
  dnl -- Check for selinux
  if test "$SELINUX" = yes; then
@@ -36,7 +289,7 @@ index 74ca20191..fc05c7e33 100644
  fi
  
  ################################################################################
-@@ -1360,50 +1348,6 @@ AC_IF_YES(ac_cv_stat_st_ctim,
+@@ -1360,50 +1325,6 @@ AC_IF_YES(ac_cv_stat_st_ctim,
  dnl -- Check for getopt
  AC_CHECK_HEADERS(getopt.h, AC_DEFINE([HAVE_GETOPTLONG], 1, [Define to 1 if getopt_long is available.]))
  
@@ -87,7 +340,7 @@ index 74ca20191..fc05c7e33 100644
  ################################################################################
  dnl -- Internationalisation stuff
  AC_MSG_CHECKING(whether to enable internationalisation)
-@@ -1487,7 +1431,8 @@ AC_ARG_WITH(tmpfilesdir,
+@@ -1487,7 +1408,8 @@ AC_ARG_WITH(tmpfilesdir,
  ################################################################################
  dnl -- Ensure additional headers required
  if test "$READLINE" = yes; then
@@ -97,7 +350,7 @@ index 74ca20191..fc05c7e33 100644
  fi
  AC_MSG_CHECKING(whether to enable readline)
  AC_MSG_RESULT($READLINE)
-@@ -1527,11 +1472,7 @@ if test "$BUILD_DMFILEMAPD" = yes; then
+@@ -1527,11 +1449,7 @@ if test "$BUILD_DMFILEMAPD" = yes; then
  fi
  
  ################################################################################
@@ -110,7 +363,7 @@ index 74ca20191..fc05c7e33 100644
  
  SYSCONFDIR="$(eval echo $(eval echo $sysconfdir))"
  
-@@ -1754,6 +1695,7 @@ AC_SUBST(SALCK_CFLAGS)
+@@ -1754,6 +1672,7 @@ AC_SUBST(SALCK_CFLAGS)
  AC_SUBST(SALCK_LIBS)
  AC_SUBST(SBINDIR)
  AC_SUBST(SELINUX_LIBS)
@@ -118,6 +371,14 @@ index 74ca20191..fc05c7e33 100644
  AC_SUBST(SELINUX_PC)
  AC_SUBST(SYSCONFDIR)
  AC_SUBST(SYSTEMD_LIBS)
+@@ -1773,7 +1692,6 @@ AC_SUBST(CACHE_RESTORE_CMD)
+ AC_SUBST(UDEV_PC)
+ AC_SUBST(UDEV_RULES)
+ AC_SUBST(UDEV_SYNC)
+-AC_SUBST(UDEV_SYSTEMD_BACKGROUND_JOBS)
+ AC_SUBST(UDEV_RULE_EXEC_DETECTION)
+ AC_SUBST(UDEV_HAS_BUILTIN_BLKID)
+ AC_SUBST(USE_TRACKING)
 diff --git a/daemons/dmeventd/.exported_symbols b/daemons/dmeventd/.exported_symbols
 index fab74dc1d..46c14fb5a 100644
 --- a/daemons/dmeventd/.exported_symbols
@@ -131,10 +392,10 @@ index fab74dc1d..46c14fb5a 100644
 +dm_event_daemon_talk
  dm_event_get_version
 diff --git a/daemons/dmeventd/dmeventd.c b/daemons/dmeventd/dmeventd.c
-index ae1e6a61a..134979116 100644
+index 96e70919b..d38350c1e 100644
 --- a/daemons/dmeventd/dmeventd.c
 +++ b/daemons/dmeventd/dmeventd.c
-@@ -1975,7 +1975,7 @@ static int _reinstate_registrations(struct dm_event_fifos *fifos)
+@@ -1981,7 +1981,7 @@ static int _reinstate_registrations(struct dm_event_fifos *fifos)
  	unsigned long mask_value, timeout_value;
  	int i, ret;
  
@@ -143,7 +404,7 @@ index ae1e6a61a..134979116 100644
  	free(msg.data);
  	msg.data = NULL;
  
-@@ -2008,7 +2008,7 @@ static int _reinstate_registrations(struct dm_event_fifos *fifos)
+@@ -2014,7 +2014,7 @@ static int _reinstate_registrations(struct dm_event_fifos *fifos)
  			continue;
  		}
  
@@ -152,7 +413,7 @@ index ae1e6a61a..134979116 100644
  				dso_name,
  				dev_name,
  				(enum dm_event_mask) mask_value,
-@@ -2035,7 +2035,7 @@ static void _restart_dmeventd(void)
+@@ -2041,7 +2041,7 @@ static void _restart_dmeventd(void)
  	const char *e;
  
  	/* Get the list of registrations from the running daemon. */
@@ -161,7 +422,7 @@ index ae1e6a61a..134979116 100644
  		fprintf(stderr, "WARNING: Could not initiate communication with existing dmeventd.\n");
  		exit(EXIT_FAILURE);
  	}
-@@ -2052,7 +2052,7 @@ static void _restart_dmeventd(void)
+@@ -2058,7 +2058,7 @@ static void _restart_dmeventd(void)
  		goto bad;
  	}
  
@@ -170,7 +431,7 @@ index ae1e6a61a..134979116 100644
  		goto bad;
  
  	message = strchr(msg.data, ' ') + 1;
-@@ -2077,7 +2077,7 @@ static void _restart_dmeventd(void)
+@@ -2083,7 +2083,7 @@ static void _restart_dmeventd(void)
  	_initial_registrations[count] = NULL;
  
  	if (version >= 2) {
@@ -179,7 +440,7 @@ index ae1e6a61a..134979116 100644
  			fprintf(stderr, "Failed to acquire parameters from old dmeventd.\n");
  			goto bad;
  		}
-@@ -2097,7 +2097,7 @@ static void _restart_dmeventd(void)
+@@ -2103,7 +2103,7 @@ static void _restart_dmeventd(void)
  	}
  #endif
  
@@ -188,7 +449,7 @@ index ae1e6a61a..134979116 100644
  		fprintf(stderr, "Old dmeventd refused to die.\n");
  		goto bad;
  	}
-@@ -2113,13 +2113,13 @@ static void _restart_dmeventd(void)
+@@ -2119,13 +2119,13 @@ static void _restart_dmeventd(void)
  	}
  
  	if (!_systemd_activation) {
@@ -205,7 +466,7 @@ index ae1e6a61a..134979116 100644
  		fprintf(stderr, "Could not initiate communication with new instance of dmeventd.\n");
  		exit(EXIT_FAILURE);
  	}
-@@ -2129,10 +2129,10 @@ static void _restart_dmeventd(void)
+@@ -2135,10 +2135,10 @@ static void _restart_dmeventd(void)
  		goto bad;
  	}
  
@@ -219,10 +480,10 @@ index ae1e6a61a..134979116 100644
  }
  
 diff --git a/daemons/dmeventd/libdevmapper-event.c b/daemons/dmeventd/libdevmapper-event.c
-index 491374e67..1193ed758 100644
+index 780d10db9..7cd59db47 100644
 --- a/daemons/dmeventd/libdevmapper-event.c
 +++ b/daemons/dmeventd/libdevmapper-event.c
-@@ -342,7 +342,7 @@ static int _daemon_write(struct dm_event_fifos *fifos,
+@@ -349,7 +349,7 @@ static int _daemon_write(struct dm_event_fifos *fifos,
  	return bytes == size;
  }
  
@@ -231,7 +492,7 @@ index 491374e67..1193ed758 100644
  		struct dm_event_daemon_message *msg, int cmd,
  		const char *dso_name, const char *dev_name,
  		enum dm_event_mask evmask, uint32_t timeout)
-@@ -492,7 +492,7 @@ start_server:
+@@ -499,7 +499,7 @@ start_server:
  	return ret;
  }
  
@@ -240,7 +501,7 @@ index 491374e67..1193ed758 100644
  {
  	/* FIXME? Is fifo the most suitable method? Why not share
  	   comms/daemon code with something else e.g. multipath? */
-@@ -530,10 +530,10 @@ static int _init_client(char *dmeventd_path, struct dm_event_fifos *fifos)
+@@ -537,10 +537,10 @@ static int _init_client(char *dmeventd_path, struct dm_event_fifos *fifos)
  	if (!_start_daemon(dmeventd_path, fifos))
  		return_0;
  
@@ -253,7 +514,7 @@ index 491374e67..1193ed758 100644
  {
  	if (fifos->client >= 0 && close(fifos->client))
  		log_sys_debug("close", fifos->client_path);
-@@ -620,16 +620,16 @@ static int _do_event(int cmd, char *dmeventd_path, struct dm_event_daemon_messag
+@@ -627,16 +627,16 @@ static int _do_event(int cmd, char *dmeventd_path, struct dm_event_daemon_messag
  		goto_out;
  	}
  
@@ -273,7 +534,7 @@ index 491374e67..1193ed758 100644
  
  	return ret;
  }
-@@ -842,7 +842,7 @@ int dm_event_get_version(struct dm_event_fifos *fifos, int *version) {
+@@ -849,7 +849,7 @@ int dm_event_get_version(struct dm_event_fifos *fifos, int *version) {
  	char *p;
  	struct dm_event_daemon_message msg = { 0 };
  
@@ -434,7 +695,7 @@ index b4fa52ab7..69d2c47ec 100644
  
  ENV{DM_UDEV_DISABLE_DM_RULES_FLAG}!="1", ENV{DM_NAME}=="?*", SYMLINK+="(DM_DIR)/$env{DM_NAME}"
 diff --git a/udev/69-dm-lvm-metad.rules.in b/udev/69-dm-lvm-metad.rules.in
-index d51006496..adef86a58 100644
+index d51006496..b16a74415 100644
 --- a/udev/69-dm-lvm-metad.rules.in
 +++ b/udev/69-dm-lvm-metad.rules.in
 @@ -19,6 +19,11 @@ SUBSYSTEM!="block", GOTO="lvm_end"
@@ -467,7 +728,29 @@ index d51006496..adef86a58 100644
  ENV{LVM_LOOP_PV_ACTIVATED}!="1", ENV{SYSTEMD_READY}="0"
  GOTO="lvm_end"
  
-@@ -130,6 +135,6 @@ LABEL="direct_pvscan"
+@@ -73,17 +78,15 @@ GOTO="lvm_end"
+ # For "systemd_background" mode, systemd takes care of this by activating
+ # the lvm2-pvscan@.service only once.
+ LABEL="next"
+-ACTION!="(PVSCAN_ACTION)", GOTO="lvm_end"
++TEST!="/run/systemd/system", ACTION!="add", GOTO="lvm_end"
++TEST=="/run/systemd/system", ACTION!="add|change", GOTO="lvm_end"
+ 
+ LABEL="lvm_scan"
+ 
+ ENV{SYSTEMD_READY}="1"
+ 
+-# The method for invoking pvscan is selected at build time with the option
+-# --(enable|disable)-udev-systemd-background-jobs to "configure".
+-# On modern distributions with recent systemd, it's "systemd_background";
+-# on others, "direct_pvscan".
+-GOTO="(PVSCAN_RULE)"
++TEST!="/run/systemd/system", GOTO="direct_pvscan"
++TEST=="/run/systemd/system", GOTO="systemd_background"
+ 
+ LABEL="systemd_background"
+ 
+@@ -130,6 +133,6 @@ LABEL="direct_pvscan"
  #  MD    |          |      X      |       X*       |                   |
  #  loop  |          |      X      |       X*       |                   |
  #  other |    X     |             |       X        |                   |   X
@@ -486,7 +769,7 @@ index 80d59d37d..d22abba1a 100644
 -ENV{DM_COOKIE}=="?*", RUN+="(DM_EXEC)/dmsetup udevcomplete $env{DM_COOKIE}"
 +ENV{DM_COOKIE}=="?*", RUN+="/sbin/dmsetup udevcomplete $env{DM_COOKIE}"
 diff --git a/udev/Makefile.in b/udev/Makefile.in
-index e32cba921..4a4ef8795 100644
+index e32cba921..03b4da6ca 100644
 --- a/udev/Makefile.in
 +++ b/udev/Makefile.in
 @@ -17,8 +17,8 @@ top_builddir = @top_builddir@
@@ -500,10 +783,22 @@ index e32cba921..4a4ef8795 100644
  
  DM_DIR=$(shell $(GREP) "\#define DM_DIR" $(top_srcdir)/libdm/misc/dm-ioctl.h | $(AWK) '{print $$3}')
  
-@@ -54,6 +54,18 @@ endif
- %.rules: $(srcdir)/%.rules.in
- 	$(Q) $(SED) -e "s+(DM_DIR)+$(DM_DIR)+;s+(BINDIR)+$(BINDIR)+;s+(BLKID_RULE)+$(BLKID_RULE)+;s+(PVSCAN_RULE)+$(PVSCAN_RULE)+;s+(PVSCAN_ACTION)+$(PVSCAN_ACTION)+;s+(DM_EXEC_RULE)+$(DM_EXEC_RULE)+;s+(DM_EXEC)+$(DM_EXEC)+;s+(LVM_EXEC_RULE)+$(LVM_EXEC_RULE)+;s+(LVM_EXEC)+$(LVM_EXEC)+;" $< >$@
+@@ -43,16 +43,20 @@ else
+ BLKID_RULE=IMPORT{program}=\"${SBIN}\/blkid -o udev -p \$$tempnode\"
+ endif
  
+-ifeq ("@UDEV_SYSTEMD_BACKGROUND_JOBS@", "yes")
+-PVSCAN_RULE=systemd_background
+-PVSCAN_ACTION=add|change
+-else
+-PVSCAN_RULE=direct_pvscan
+-PVSCAN_ACTION=add
+-endif
+-
+ %.rules: $(srcdir)/%.rules.in
+-	$(Q) $(SED) -e "s+(DM_DIR)+$(DM_DIR)+;s+(BINDIR)+$(BINDIR)+;s+(BLKID_RULE)+$(BLKID_RULE)+;s+(PVSCAN_RULE)+$(PVSCAN_RULE)+;s+(PVSCAN_ACTION)+$(PVSCAN_ACTION)+;s+(DM_EXEC_RULE)+$(DM_EXEC_RULE)+;s+(DM_EXEC)+$(DM_EXEC)+;s+(LVM_EXEC_RULE)+$(LVM_EXEC_RULE)+;s+(LVM_EXEC)+$(LVM_EXEC)+;" $< >$@
++	$(Q) $(SED) -e "s+(DM_DIR)+$(DM_DIR)+;s+(BINDIR)+$(BINDIR)+;s+(BLKID_RULE)+$(BLKID_RULE)+;s+(DM_EXEC_RULE)+$(DM_EXEC_RULE)+;s+(DM_EXEC)+$(DM_EXEC)+;s+(LVM_EXEC_RULE)+$(LVM_EXEC_RULE)+;s+(LVM_EXEC)+$(LVM_EXEC)+;" $< >$@
++
 +55-dm.rules: 10-dm.rules
 +	ln -s $< $@
 +
@@ -515,7 +810,6 @@ index e32cba921..4a4ef8795 100644
 +
 +69-lvm-metad.rules: 69-dm-lvm-metad.rules
 +	ln -s $< $@
-+
+ 
  %_install: %.rules
  	@echo "    [INSTALL] $<"
- 	$(Q) $(INSTALL_DATA) -D $< $(udevdir)/$(<F)

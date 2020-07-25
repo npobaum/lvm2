@@ -21,8 +21,8 @@ TMP="$(mktemp -d --suffix=.lvm2.orig)"
 
 (
   cd $TMP
-  curl --fail -O https://www.sourceware.org/pub/lvm2/LVM2.${VERSION}.tgz
-  curl --fail -O https://www.sourceware.org/pub/lvm2/LVM2.${VERSION}.tgz.asc
+  curl --fail -O https://sourceware.org/pub/lvm2/LVM2.${VERSION}.tgz
+  curl --fail -O https://sourceware.org/pub/lvm2/LVM2.${VERSION}.tgz.asc
   gpg --verify LVM2.${VERSION}.tgz.asc
   gunzip -c LVM2.${VERSION}.tgz | xz > lvm2_${VERSION}.orig.tar.xz
 )
