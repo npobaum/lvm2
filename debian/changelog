@@ -1,3 +1,13 @@
+lvm2 (2.03.09-2) unstable; urgency=medium
+
+  * Use debhelper compat 13.
+  * Consider using /usr the default case. (closes: #929437)
+  * Enable hardening.
+  * Properly declare modified dm-event api.
+  * Do not require root for building.
+
+ -- Bastian Blank <waldi@debian.org>  Sun, 02 Aug 2020 12:09:54 +0200
+
 lvm2 (2.03.09-1) unstable; urgency=medium
 
   * New upstream release.
