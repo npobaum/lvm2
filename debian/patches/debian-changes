@@ -432,15 +432,14 @@ index 8a2081897..f44a112d3 100644
  %.so: %.o
  	@echo "    [CC] $<"
 diff --git a/scripts/blk_availability_systemd_red_hat.service.in b/scripts/blk_availability_systemd_red_hat.service.in
-index 82d3b82d0..c556e1c8d 100644
+index 82d3b82d0..c7df95cc0 100644
 --- a/scripts/blk_availability_systemd_red_hat.service.in
 +++ b/scripts/blk_availability_systemd_red_hat.service.in
-@@ -7,7 +7,7 @@ Conflicts=shutdown.target
+@@ -7,7 +7,6 @@ Conflicts=shutdown.target
  
  [Service]
  Type=oneshot
 -ExecStart=/usr/bin/true
-+ExecStart=@bindir@/true
  ExecStop=@SBINDIR@/blkdeactivate -u -l wholevg -m disablequeueing -r wait
  RemainAfterExit=yes
  
