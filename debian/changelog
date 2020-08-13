@@ -1,3 +1,10 @@
+lvm2 (2.03.09-3) unstable; urgency=medium
+
+  * Make lvm2-dbusd package arch-all. (closes: #908908)
+  * Fix blk-availability.service. (closes: #966816)
+
+ -- Bastian Blank <bastian.blank@credativ.de>  Thu, 13 Aug 2020 16:40:23 +0200
+
 lvm2 (2.03.09-2) unstable; urgency=medium
 
   * Use debhelper compat 13.
