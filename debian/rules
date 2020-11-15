@@ -16,6 +16,8 @@ DEVMAPPER_VERSION = 2:$(DEVMAPPER_VERSION_PLAIN)
 DEVMAPPER_VERSION_DEBIAN = $(DEVMAPPER_VERSION)-$(VERSION_DEBIAN)
 DEVMAPPER_VERSION_FILE = $(DEVMAPPER_VERSION_PLAIN)-$(VERSION_DEBIAN)
 
+GENCONTROL_ARGS = -Vdevmapper:Version=$(DEVMAPPER_VERSION_DEBIAN)
+
 ifeq (,$(findstring noopt,$(DEB_BUILD_OPTIONS)))
 CFLAGS_OPT_DEB = -O2
 CFLAGS_OPT_UDEB = -Os
@@ -115,8 +117,9 @@ override_dh_gencontrol:
 		-plibdevmapper$(DEVMAPPER_ABINAME) \
 		-plibdevmapper$(DEVMAPPER_ABINAME)-udeb \
 		-plibdevmapper-event$(DEVMAPPER_ABINAME) \
-		-- -v$(DEVMAPPER_VERSION_DEBIAN)
-	dh_gencontrol --remaining-packages
+		-- -v$(DEVMAPPER_VERSION_DEBIAN) $(GENCONTROL_ARGS)
+	dh_gencontrol --remaining-packages \
+		-- $(GENCONTROL_ARGS)
 
 override_dh_install:
 	dh_install --sourcedir=debian/build/install_udeb \

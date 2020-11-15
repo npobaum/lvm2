@@ -3666,7 +3666,7 @@ int pv_write(struct cmd_context *cmd,
 		return 0;
 	}
 
-	if (!pv->fmt->ops->pv_write(pv->fmt, pv))
+	if (!pv->fmt->ops->pv_write(cmd, pv->fmt, pv))
 		return_0;
 
 	pv->status &= ~UNLABELLED_PV;
@@ -4008,17 +4008,6 @@ static int _access_vg_exported(struct cmd_context *cmd, struct volume_group *vg)
 	/* Silently ignore exported vgs. */
 
 	return 0;
-}
-
-/*
- * Test the validity of a VG handle returned by vg_read() or vg_read_for_update().
- */
-uint32_t vg_read_error(struct volume_group *vg_handle)
-{
-	if (!vg_handle)
-		return FAILED_ALLOCATION;
-
-	return SUCCESS;
 }
 
 struct format_instance *alloc_fid(const struct format_type *fmt,
@@ -4751,18 +4740,6 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 			lvmcache_label_rescan_vg(cmd, vgname, vgid);
 	}
 
-	/* Now determine the correct vgname if none was supplied */
-	if (!vgname && !(vgname = lvmcache_vgname_from_vgid(cmd->mem, vgid))) {
-		log_debug_metadata("Cache did not find VG name from vgid %s", vgid);
-		return NULL;
-	}
-
-	/* Determine the correct vgid if none was supplied */
-	if (!vgid && !(vgid = lvmcache_vgid_from_vgname(cmd, vgname))) {
-		log_debug_metadata("Cache did not find VG vgid from name %s", vgname);
-		return NULL;
-	}
-
 	/*
 	 * A "format instance" is an abstraction for a VG location,
 	 * i.e. where a VG's metadata exists on disk.
@@ -4841,7 +4818,7 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 			log_debug_metadata("Reading VG %s precommit metadata from %s %llu",
 				 vgname, dev_name(mda_dev), (unsigned long long)mda->header_start);
 
-			vg = mda->ops->vg_read_precommit(fid, vgname, mda, &vg_fmtdata, &use_previous_vg);
+			vg = mda->ops->vg_read_precommit(cmd, fid, vgname, mda, &vg_fmtdata, &use_previous_vg);
 
 			if (!vg && !use_previous_vg) {
 				log_warn("WARNING: Reading VG %s precommit on %s failed.", vgname, dev_name(mda_dev));
@@ -4852,7 +4829,7 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 			log_debug_metadata("Reading VG %s metadata from %s %llu",
 				 vgname, dev_name(mda_dev), (unsigned long long)mda->header_start);
 
-			vg = mda->ops->vg_read(fid, vgname, mda, &vg_fmtdata, &use_previous_vg);
+			vg = mda->ops->vg_read(cmd, fid, vgname, mda, &vg_fmtdata, &use_previous_vg);
 
 			if (!vg && !use_previous_vg) {
 				log_warn("WARNING: Reading VG %s on %s failed.", vgname, dev_name(mda_dev));
@@ -4898,8 +4875,10 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 		}
 	}
 
-	if (found_old_metadata)
+	if (found_old_metadata) {
 		log_warn("WARNING: Inconsistent metadata found for VG %s.", vgname);
+		log_warn("See vgck --updatemetadata to correct inconsistency.");
+	}
 
 	vg = NULL;
 
@@ -4999,6 +4978,7 @@ struct volume_group *vg_read(struct cmd_context *cmd, const char *vg_name, const
 	int missing_pv_dev = 0;
 	int missing_pv_flag = 0;
 	uint32_t failure = 0;
+	int original_vgid_set = vgid ? 1 : 0;
 	int writing = (vg_read_flags & READ_FOR_UPDATE);
 	int activating = (vg_read_flags & READ_FOR_ACTIVATE);
 
@@ -5033,7 +5013,45 @@ struct volume_group *vg_read(struct cmd_context *cmd, const char *vg_name, const
 		goto bad;
 	}
 
+	/* I belive this is unused, the name is always set. */
+	if (!vg_name && !(vg_name = lvmcache_vgname_from_vgid(cmd->mem, vgid))) {
+		unlock_vg(cmd, NULL, vg_name);
+		log_error("VG name not found for vgid %s", vgid);
+		failure |= FAILED_NOTFOUND;
+		goto_bad;
+	}
+
+	/*
+	 * If the command is process all vgs, process_each will get a list of vgname+vgid
+	 * pairs, and then call vg_read() for each vgname+vigd.  In this case we know
+	 * which VG to read even if there are duplicate names, and we don't fail.
+	 *
+	 * If the user has requested one VG by name, process_each passes only the vgname
+	 * to vg_read(), and we look up the vgid from lvmcache.  lvmcache finds duplicate
+	 * vgnames, doesn't know which is intended, returns a NULL vgid, and we fail.
+	 */
+
+	if (!vgid)
+		vgid = lvmcache_vgid_from_vgname(cmd, vg_name);
+
+	if (!vgid) {
+		unlock_vg(cmd, NULL, vg_name);
+		/* Some callers don't care if the VG doesn't exist and don't want an error message. */
+		if (!(vg_read_flags & READ_OK_NOTFOUND))
+			log_error("Volume group \"%s\" not found", vg_name);
+		failure |= FAILED_NOTFOUND;
+		goto_bad;
+	}
+
+	/*
+	 * vgchange -ay (no vgname arg) will activate multiple local VGs with the same
+	 * name, but if the vgs have the same lv name, activating those lvs will fail.
+	 */
+	if (activating && original_vgid_set && lvmcache_has_duplicate_local_vgname(vgid, vg_name))
+		log_warn("WARNING: activating multiple VGs with the same name is dangerous and may fail.");
+
 	if (!(vg = _vg_read(cmd, vg_name, vgid, 0, writing))) {
+		unlock_vg(cmd, NULL, vg_name);
 		/* Some callers don't care if the VG doesn't exist and don't want an error message. */
 		if (!(vg_read_flags & READ_OK_NOTFOUND))
 			log_error("Volume group \"%s\" not found.", vg_name);

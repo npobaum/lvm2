@@ -84,12 +84,13 @@
 #define CONVERTING		UINT64_C(0x0000000000400000)	/* LV */
 
 #define MISSING_PV		UINT64_C(0x0000000000800000)	/* PV */
+#define INTEGRITY		UINT64_C(0x0000000000800000)	/* LV - Internal use only */
 #define PV_MOVED_VG		UINT64_C(0x4000000000000000)	/* PV - Moved to a new VG */
 #define PARTIAL_LV		UINT64_C(0x0000000001000000)	/* LV - derived flag, not
 							   written out in metadata*/
 
-//#define POSTORDER_FLAG	UINT64_C(0x0000000002000000) /* Not real flags, reserved for
-//#define POSTORDER_OPEN_FLAG	UINT64_C(0x0000000004000000)    temporary use inside vg_read_internal. */
+#define WRITECACHE_ORIGIN	UINT64_C(0x0000000002000000)
+#define INTEGRITY_METADATA	UINT64_C(0x0000000004000000)    /* LV - Internal use only */
 #define VIRTUAL_ORIGIN		UINT64_C(0x0000000008000000)	/* LV - internal use only */
 
 #define MERGING			UINT64_C(0x0000000010000000)	/* LV SEG */
@@ -261,6 +262,8 @@
 #define lv_is_pool_metadata_spare(lv)	(((lv)->status & POOL_METADATA_SPARE) ? 1 : 0)
 #define lv_is_lockd_sanlock_lv(lv)	(((lv)->status & LOCKD_SANLOCK_LV) ? 1 : 0)
 #define lv_is_writecache(lv)   (((lv)->status & WRITECACHE) ? 1 : 0)
+#define lv_is_integrity(lv)            (((lv)->status & INTEGRITY) ? 1 : 0)
+#define lv_is_integrity_metadata(lv)   (((lv)->status & INTEGRITY_METADATA) ? 1 : 0)
 
 #define lv_is_vdo(lv)		(((lv)->status & LV_VDO) ? 1 : 0)
 #define lv_is_vdo_pool(lv)	(((lv)->status & LV_VDO_POOL) ? 1 : 0)
@@ -272,9 +275,11 @@
 /* Recognize component LV (matching lib/misc/lvm-string.c _lvname_has_reserved_component_string()) */
 #define lv_is_component(lv) (lv_is_cache_origin(lv) || \
 			     lv_is_writecache_origin(lv) || \
+			     lv_is_integrity_origin(lv) || \
 			     ((lv)->status & (\
 					      CACHE_POOL_DATA |\
 					      CACHE_POOL_METADATA |\
+					      INTEGRITY_METADATA |\
 					      LV_CACHE_VOL |\
 					      LV_VDO_POOL_DATA |\
 					      MIRROR_IMAGE |\
@@ -519,6 +524,11 @@ struct lv_segment {
 	uint32_t writecache_block_size;		/* For writecache */
 	struct writecache_settings writecache_settings; /* For writecache */
 
+	uint64_t integrity_data_sectors;
+	struct logical_volume *integrity_meta_dev;
+	struct integrity_settings integrity_settings;
+	uint32_t integrity_recalculate;
+
 	struct dm_vdo_target_params vdo_params;	/* For VDO-pool */
 	uint32_t vdo_pool_header_size;		/* For VDO-pool */
 	uint32_t vdo_pool_virtual_extents;	/* For VDO-pool */
@@ -733,9 +743,6 @@ struct volume_group *vg_read_for_update(struct cmd_context *cmd, const char *vg_
 			 const char *vgid, uint32_t read_flags, uint32_t lockd_state);
 struct volume_group *vg_read_orphans(struct cmd_context *cmd, const char *orphan_vgname);
 
-/* this is historical and being removed, don't use */
-uint32_t vg_read_error(struct volume_group *vg_handle);
-
 /* pe_start and pe_end relate to any existing data so that new metadata
 * areas can avoid overlap */
 struct physical_volume *pv_create(const struct cmd_context *cmd,
@@ -796,6 +803,7 @@ struct wipe_params {
 	int do_wipe_signatures;	/* should we wipe known signatures found on LV? */
 	int yes;		/* answer yes automatically to all questions */
 	force_t force;		/* force mode */
+	int is_metadata;	/* wipe volume is metadata LV */
 };
 
 /* Zero out LV and/or wipe signatures */
@@ -947,6 +955,8 @@ struct lvcreate_params {
 	int thin_chunk_size_calc_policy;
 	unsigned suppress_zero_warn : 1;
 	unsigned needs_lockd_init : 1;
+	unsigned ignore_type : 1;
+	unsigned is_metadata : 1; /* created LV will be used as metadata LV (and can be zeroed) */
 
 	const char *vg_name; /* only-used when VG is not yet opened (in /tools) */
 	const char *lv_name; /* all */
@@ -991,6 +1001,10 @@ struct lvcreate_params {
 	int approx_alloc;     /* all */
 	alloc_policy_t alloc; /* all */
 	struct dm_vdo_target_params vdo_params; /* vdo */
+
+	int raidintegrity;
+	const char *raidintegritymode;
+	struct integrity_settings integrity_settings;
 
 	struct dm_list tags;	/* all */
 
@@ -1085,6 +1099,9 @@ int lv_is_cow(const struct logical_volume *lv);
 int lv_is_cache_origin(const struct logical_volume *lv);
 int lv_is_writecache_origin(const struct logical_volume *lv);
 int lv_is_writecache_cachevol(const struct logical_volume *lv);
+int writecache_settings_to_str_list(struct writecache_settings *settings, struct dm_list *result, struct dm_pool *mem);
+
+int lv_is_integrity_origin(const struct logical_volume *lv);
 
 int lv_is_merging_cow(const struct logical_volume *cow);
 uint32_t cow_max_extents(const struct logical_volume *origin, uint32_t chunk_size);
@@ -1384,5 +1401,18 @@ int lv_on_pmem(struct logical_volume *lv);
 int vg_is_foreign(struct volume_group *vg);
 
 void vg_write_commit_bad_mdas(struct cmd_context *cmd, struct volume_group *vg);
+
+struct dm_list *create_pv_list(struct dm_pool *mem, struct volume_group *vg, int argc,
+		                                            char **argv, int allocatable_only);
+struct dm_list *clone_pv_list(struct dm_pool *mem, struct dm_list *pvsl);
+
+int lv_add_integrity_to_raid(struct logical_volume *lv, struct integrity_settings *settings, struct dm_list *pvh,
+			     struct logical_volume *lv_imeta_0);
+int lv_remove_integrity_from_raid(struct logical_volume *lv);
+void lv_clear_integrity_recalculate_metadata(struct logical_volume *lv);
+int lv_has_integrity_recalculate_metadata(struct logical_volume *lv);
+int lv_raid_has_integrity(struct logical_volume *lv);
+int lv_extend_integrity_in_raid(struct logical_volume *lv, struct dm_list *pvh);
+int lv_get_raid_integrity_settings(struct logical_volume *lv, struct integrity_settings **isettings);
 
 #endif

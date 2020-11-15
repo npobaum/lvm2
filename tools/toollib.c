@@ -457,276 +457,6 @@ const char *extract_vgname(struct cmd_context *cmd, const char *lv_name)
 	return vg_name;
 }
 
-/*
- * Process physical extent range specifiers
- */
-static int _add_pe_range(struct dm_pool *mem, const char *pvname,
-			 struct dm_list *pe_ranges, uint32_t start, uint32_t count)
-{
-	struct pe_range *per;
-
-	log_debug("Adding PE range: start PE " FMTu32 " length " FMTu32 " on %s.",
-		  start, count, pvname);
-
-	/* Ensure no overlap with existing areas */
-	dm_list_iterate_items(per, pe_ranges) {
-		if (((start < per->start) && (start + count - 1 >= per->start)) ||
-		    ((start >= per->start) &&
-			(per->start + per->count - 1) >= start)) {
-			log_error("Overlapping PE ranges specified (" FMTu32
-				  "-" FMTu32 ", " FMTu32 "-" FMTu32 ") on %s.",
-				  start, start + count - 1, per->start,
-				  per->start + per->count - 1, pvname);
-			return 0;
-		}
-	}
-
-	if (!(per = dm_pool_alloc(mem, sizeof(*per)))) {
-		log_error("Allocation of list failed.");
-		return 0;
-	}
-
-	per->start = start;
-	per->count = count;
-	dm_list_add(pe_ranges, &per->list);
-
-	return 1;
-}
-
-static int _xstrtouint32(const char *s, char **p, int base, uint32_t *result)
-{
-	unsigned long ul;
-
-	errno = 0;
-	ul = strtoul(s, p, base);
-
-	if (errno || *p == s || ul > UINT32_MAX)
-		return 0;
-
-	*result = ul;
-
-	return 1;
-}
-
-static int _parse_pes(struct dm_pool *mem, char *c, struct dm_list *pe_ranges,
-		      const char *pvname, uint32_t size)
-{
-	char *endptr;
-	uint32_t start, end, len;
-
-	/* Default to whole PV */
-	if (!c) {
-		if (!_add_pe_range(mem, pvname, pe_ranges, UINT32_C(0), size))
-			return_0;
-		return 1;
-	}
-
-	while (*c) {
-		if (*c != ':')
-			goto error;
-
-		c++;
-
-		/* Disallow :: and :\0 */
-		if (*c == ':' || !*c)
-			goto error;
-
-		/* Default to whole range */
-		start = UINT32_C(0);
-		end = size - 1;
-
-		/* Start extent given? */
-		if (isdigit(*c)) {
-			if (!_xstrtouint32(c, &endptr, 10, &start))
-				goto error;
-			c = endptr;
-			/* Just one number given? */
-			if (!*c || *c == ':')
-				end = start;
-		}
-		/* Range? */
-		if (*c == '-') {
-			c++;
-			if (isdigit(*c)) {
-				if (!_xstrtouint32(c, &endptr, 10, &end))
-					goto error;
-				c = endptr;
-			}
-		} else if (*c == '+') {	/* Length? */
-			c++;
-			if (isdigit(*c)) {
-				if (!_xstrtouint32(c, &endptr, 10, &len))
-					goto error;
-				c = endptr;
-				end = start + (len ? (len - 1) : 0);
-			}
-		}
-
-		if (*c && *c != ':')
-			goto error;
-
-		if ((start > end) || (end > size - 1)) {
-			log_error("PE range error: start extent %" PRIu32 " to "
-				  "end extent %" PRIu32 ".", start, end);
-			return 0;
-		}
-
-		if (!_add_pe_range(mem, pvname, pe_ranges, start, end - start + 1))
-			return_0;
-
-	}
-
-	return 1;
-
-      error:
-	log_error("Physical extent parsing error at %s.", c);
-	return 0;
-}
-
-static int _create_pv_entry(struct dm_pool *mem, struct pv_list *pvl,
-			     char *colon, int allocatable_only, struct dm_list *r)
-{
-	const char *pvname;
-	struct pv_list *new_pvl = NULL, *pvl2;
-	struct dm_list *pe_ranges;
-
-	pvname = pv_dev_name(pvl->pv);
-	if (allocatable_only && !(pvl->pv->status & ALLOCATABLE_PV)) {
-		log_warn("WARNING: Physical volume %s not allocatable.", pvname);
-		return 1;
-	}
-
-	if (allocatable_only && is_missing_pv(pvl->pv)) {
-		log_warn("WARNING: Physical volume %s is missing.", pvname);
-		return 1;
-	}
-
-	if (allocatable_only &&
-	    (pvl->pv->pe_count == pvl->pv->pe_alloc_count)) {
-		log_warn("WARNING: No free extents on physical volume \"%s\".", pvname);
-		return 1;
-	}
-
-	dm_list_iterate_items(pvl2, r)
-		if (pvl->pv->dev == pvl2->pv->dev) {
-			new_pvl = pvl2;
-			break;
-		}
-
-	if (!new_pvl) {
-		if (!(new_pvl = dm_pool_alloc(mem, sizeof(*new_pvl)))) {
-			log_error("Unable to allocate physical volume list.");
-			return 0;
-		}
-
-		memcpy(new_pvl, pvl, sizeof(*new_pvl));
-
-		if (!(pe_ranges = dm_pool_alloc(mem, sizeof(*pe_ranges)))) {
-			log_error("Allocation of pe_ranges list failed.");
-			return 0;
-		}
-		dm_list_init(pe_ranges);
-		new_pvl->pe_ranges = pe_ranges;
-		dm_list_add(r, &new_pvl->list);
-	}
-
-	/* Determine selected physical extents */
-	if (!_parse_pes(mem, colon, new_pvl->pe_ranges, pv_dev_name(pvl->pv),
-			pvl->pv->pe_count))
-		return_0;
-
-	return 1;
-}
-
-struct dm_list *create_pv_list(struct dm_pool *mem, struct volume_group *vg, int argc,
-			    char **argv, int allocatable_only)
-{
-	struct dm_list *r;
-	struct pv_list *pvl;
-	struct dm_list tagsl, arg_pvnames;
-	char *pvname = NULL;
-	char *colon, *at_sign, *tagname;
-	int i;
-
-	/* Build up list of PVs */
-	if (!(r = dm_pool_alloc(mem, sizeof(*r)))) {
-		log_error("Allocation of list failed.");
-		return NULL;
-	}
-	dm_list_init(r);
-
-	dm_list_init(&tagsl);
-	dm_list_init(&arg_pvnames);
-
-	for (i = 0; i < argc; i++) {
-		dm_unescape_colons_and_at_signs(argv[i], &colon, &at_sign);
-
-		if (at_sign && (at_sign == argv[i])) {
-			tagname = at_sign + 1;
-			if (!validate_tag(tagname)) {
-				log_error("Skipping invalid tag %s.", tagname);
-				continue;
-			}
-			dm_list_iterate_items(pvl, &vg->pvs) {
-				if (str_list_match_item(&pvl->pv->tags,
-							tagname)) {
-					if (!_create_pv_entry(mem, pvl, NULL,
-							      allocatable_only,
-							      r))
-						return_NULL;
-				}
-			}
-			continue;
-		}
-
-		pvname = argv[i];
-
-		if (colon && !(pvname = dm_pool_strndup(mem, pvname,
-					(unsigned) (colon - pvname)))) {
-			log_error("Failed to clone PV name.");
-			return NULL;
-		}
-
-		if (!(pvl = find_pv_in_vg(vg, pvname))) {
-			log_error("Physical Volume \"%s\" not found in "
-				  "Volume Group \"%s\".", pvname, vg->name);
-			return NULL;
-		}
-		if (!_create_pv_entry(mem, pvl, colon, allocatable_only, r))
-			return_NULL;
-	}
-
-	if (dm_list_empty(r))
-		log_error("No specified PVs have space available.");
-
-	return dm_list_empty(r) ? NULL : r;
-}
-
-struct dm_list *clone_pv_list(struct dm_pool *mem, struct dm_list *pvsl)
-{
-	struct dm_list *r;
-	struct pv_list *pvl, *new_pvl;
-
-	/* Build up list of PVs */
-	if (!(r = dm_pool_alloc(mem, sizeof(*r)))) {
-		log_error("Allocation of list failed.");
-		return NULL;
-	}
-	dm_list_init(r);
-
-	dm_list_iterate_items(pvl, pvsl) {
-		if (!(new_pvl = dm_pool_zalloc(mem, sizeof(*new_pvl)))) {
-			log_error("Unable to allocate physical volume list.");
-			return NULL;
-		}
-
-		memcpy(new_pvl, pvl, sizeof(*new_pvl));
-		dm_list_add(r, &new_pvl->list);
-	}
-
-	return r;
-}
-
 const char _pe_size_may_not_be_negative_msg[] = "Physical extent size may not be negative.";
 
 int vgcreate_params_set_defaults(struct cmd_context *cmd,
@@ -988,11 +718,26 @@ int vgcreate_params_set_from_args(struct cmd_context *cmd,
 	return 1;
 }
 
+int integrity_mode_set(const char *mode, struct integrity_settings *settings)
+{
+	if (!mode || !strcmp(mode, "bitmap") || !strcmp(mode, "B"))
+		settings->mode[0] = 'B';
+	else if (!strcmp(mode, "journal") || !strcmp(mode, "J"))
+		settings->mode[0] = 'J';
+	else {
+		/* FIXME: the kernel has other modes, should we allow any of those? */
+		log_error("Invalid raid integrity mode (use \"bitmap\" or \"journal\")");
+		return 0;
+	}
+	return 1;
+}
+
 /* Shared code for changing activation state for vgchange/lvchange */
 int lv_change_activate(struct cmd_context *cmd, struct logical_volume *lv,
 		       activation_change_t activate)
 {
 	int r = 1;
+	int integrity_recalculate;
 	struct logical_volume *snapshot_lv;
 
 	if (lv_is_cache_pool(lv)) {
@@ -1050,8 +795,33 @@ int lv_change_activate(struct cmd_context *cmd, struct logical_volume *lv,
 		return 0;
 	}
 
+	if ((integrity_recalculate = lv_has_integrity_recalculate_metadata(lv))) {
+		/* Don't want pvscan to write VG while running from systemd service. */
+		if (!strcmp(cmd->name, "pvscan")) {
+			log_error("Cannot activate uninitialized integrity LV %s from pvscan.",
+				  display_lvname(lv));
+			return 0;
+		}
+
+		if (vg_is_shared(lv->vg)) {
+			uint32_t lockd_state = 0;
+			if (!lockd_vg(cmd, lv->vg->name, "ex", 0, &lockd_state)) {
+				log_error("Cannot activate uninitialized integrity LV %s without lock.",
+					  display_lvname(lv));
+				return 0;
+			}
+		}
+	}
+
 	if (!lv_active_change(cmd, lv, activate))
 		return_0;
+
+	/* Write VG metadata to clear the integrity recalculate flag. */
+	if (integrity_recalculate && lv_is_active(lv)) {
+		log_print_unless_silent("Updating VG to complete initialization of integrity LV %s.",
+			  display_lvname(lv));
+		lv_clear_integrity_recalculate_metadata(lv);
+	}
 
 	set_lv_notify(lv->vg->cmd);
 
@@ -1412,6 +1182,171 @@ out:
 	*settings = result;
 
 	return ok;
+}
+
+static int _get_one_writecache_setting(struct cmd_context *cmd, struct writecache_settings *settings,
+				       char *key, char *val, uint32_t *block_size_sectors)
+{
+	/* special case: block_size is not a setting but is set with the --cachesettings option */
+	if (!strncmp(key, "block_size", strlen("block_size"))) {
+		uint32_t block_size = 0;
+		if (sscanf(val, "%u", &block_size) != 1)
+			goto_bad;
+		if (block_size == 512)
+			*block_size_sectors = 1;
+		else if (block_size == 4096)
+			*block_size_sectors = 8;
+		else
+			goto_bad;
+		return 1;
+	}
+
+	if (!strncmp(key, "high_watermark", strlen("high_watermark"))) {
+		if (sscanf(val, "%llu", (unsigned long long *)&settings->high_watermark) != 1)
+			goto_bad;
+		if (settings->high_watermark > 100)
+			goto_bad;
+		settings->high_watermark_set = 1;
+		return 1;
+	}
+
+	if (!strncmp(key, "low_watermark", strlen("low_watermark"))) {
+		if (sscanf(val, "%llu", (unsigned long long *)&settings->low_watermark) != 1)
+			goto_bad;
+		if (settings->low_watermark > 100)
+			goto_bad;
+		settings->low_watermark_set = 1;
+		return 1;
+	}
+
+	if (!strncmp(key, "writeback_jobs", strlen("writeback_jobs"))) {
+		if (sscanf(val, "%llu", (unsigned long long *)&settings->writeback_jobs) != 1)
+			goto_bad;
+		settings->writeback_jobs_set = 1;
+		return 1;
+	}
+
+	if (!strncmp(key, "autocommit_blocks", strlen("autocommit_blocks"))) {
+		if (sscanf(val, "%llu", (unsigned long long *)&settings->autocommit_blocks) != 1)
+			goto_bad;
+		settings->autocommit_blocks_set = 1;
+		return 1;
+	}
+
+	if (!strncmp(key, "autocommit_time", strlen("autocommit_time"))) {
+		if (sscanf(val, "%llu", (unsigned long long *)&settings->autocommit_time) != 1)
+			goto_bad;
+		settings->autocommit_time_set = 1;
+		return 1;
+	}
+
+	if (!strncmp(key, "fua", strlen("fua"))) {
+		if (settings->nofua_set) {
+			log_error("Setting fua and nofua cannot both be set.");
+			return 0;
+		}
+		if (sscanf(val, "%u", &settings->fua) != 1)
+			goto_bad;
+		settings->fua_set = 1;
+		return 1;
+	}
+
+	if (!strncmp(key, "nofua", strlen("nofua"))) {
+		if (settings->fua_set) {
+			log_error("Setting fua and nofua cannot both be set.");
+			return 0;
+		}
+		if (sscanf(val, "%u", &settings->nofua) != 1)
+			goto_bad;
+		settings->nofua_set = 1;
+		return 1;
+	}
+
+	if (!strncmp(key, "cleaner", strlen("cleaner"))) {
+		if (sscanf(val, "%u", &settings->cleaner) != 1)
+			goto_bad;
+		settings->cleaner_set = 1;
+		return 1;
+	}
+
+	if (!strncmp(key, "max_age", strlen("max_age"))) {
+		if (sscanf(val, "%u", &settings->max_age) != 1)
+			goto_bad;
+		settings->max_age_set = 1;
+		return 1;
+	}
+
+	if (settings->new_key) {
+		log_error("Setting %s is not recognized. Only one unrecognized setting is allowed.", key);
+		return 0;
+	}
+
+	log_warn("Unrecognized writecache setting \"%s\" may cause activation failure.", key);
+	if (yes_no_prompt("Use unrecognized writecache setting? [y/n]: ") == 'n') {
+		log_error("Aborting writecache conversion.");
+		return 0;
+	}
+
+	log_warn("Using unrecognized writecache setting: %s = %s.", key, val);
+
+	settings->new_key = dm_pool_strdup(cmd->mem, key);
+	settings->new_val = dm_pool_strdup(cmd->mem, val);
+	return 1;
+
+ bad:
+	log_error("Invalid setting: %s", key);
+	return 0;
+}
+
+int get_writecache_settings(struct cmd_context *cmd, struct writecache_settings *settings,
+			    uint32_t *block_size_sectors)
+{
+	struct arg_value_group_list *group;
+	const char *str;
+	char key[64];
+	char val[64];
+	int num;
+	int pos;
+
+	/*
+	 * "grouped" means that multiple --cachesettings options can be used.
+	 * Each option is also allowed to contain multiple key = val pairs.
+	 */
+
+	dm_list_iterate_items(group, &cmd->arg_value_groups) {
+		if (!grouped_arg_is_set(group->arg_values, cachesettings_ARG))
+			continue;
+
+		if (!(str = grouped_arg_str_value(group->arg_values, cachesettings_ARG, NULL)))
+			break;
+
+		pos = 0;
+
+		while (pos < strlen(str)) {
+			/* scan for "key1=val1 key2 = val2  key3= val3" */
+
+			memset(key, 0, sizeof(key));
+			memset(val, 0, sizeof(val));
+
+			if (sscanf(str + pos, " %63[^=]=%63s %n", key, val, &num) != 2) {
+				log_error("Invalid setting at: %s", str+pos);
+				return 0;
+			}
+
+			pos += num;
+
+			if (!_get_one_writecache_setting(cmd, settings, key, val, block_size_sectors))
+				return_0;
+		}
+	}
+
+	if (settings->high_watermark_set && settings->low_watermark_set &&
+	    (settings->high_watermark <= settings->low_watermark)) {
+		log_error("High watermark must be greater than low watermark.");
+		return 0;
+	}
+
+	return 1;
 }
 
 /* FIXME move to lib */
@@ -2082,8 +2017,6 @@ static int _resolve_duplicate_vgnames(struct cmd_context *cmd,
 			if (lvmcache_vg_is_foreign(cmd, vgnl->vg_name, vgnl->vgid)) {
 				if (!id_write_format((const struct id*)vgnl->vgid, uuid, sizeof(uuid)))
 					stack;
-				log_warn("WARNING: Ignoring foreign VG with matching name %s UUID %s.",
-					 vgnl->vg_name, uuid);
 				dm_list_del(&vgnl->list);
 			} else {
 				found++;
@@ -2525,6 +2458,8 @@ static int _lv_is_prop(struct cmd_context *cmd, struct logical_volume *lv, int l
 		return lv_is_historical(lv);
 	case is_raid_with_tracking_LVP:
 		return lv_is_raid_with_tracking(lv);
+	case is_raid_with_integrity_LVP:
+		return lv_raid_has_integrity(lv);
 	default:
 		log_error(INTERNAL_ERROR "unknown lv property value lvp_enum %d", lvp_enum);
 	}
@@ -2579,6 +2514,8 @@ static int _lv_is_type(struct cmd_context *cmd, struct logical_volume *lv, int l
 		return seg_is_raid10(seg);
 	case writecache_LVT:
 		return seg_is_writecache(seg);
+	case integrity_LVT:
+		return seg_is_integrity(seg);
 	case error_LVT:
 		return !strcmp(seg->segtype->name, SEG_TYPE_NAME_ERROR);
 	case zero_LVT:
@@ -2637,6 +2574,8 @@ int get_lvt_enum(struct logical_volume *lv)
 		return raid10_LVT;
 	if (seg_is_writecache(seg))
 		return writecache_LVT;
+	if (seg_is_integrity(seg))
+		return integrity_LVT;
 
 	if (!strcmp(seg->segtype->name, SEG_TYPE_NAME_ERROR))
 		return error_LVT;

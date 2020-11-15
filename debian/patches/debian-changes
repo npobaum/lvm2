@@ -1,8 +1,8 @@
 diff --git a/configure.ac b/configure.ac
-index 74ca20191..5a82509c7 100644
+index 9a0e41a81..c2a6188d8 100644
 --- a/configure.ac
 +++ b/configure.ac
-@@ -671,7 +671,7 @@ esac
+@@ -689,7 +689,7 @@ esac
  dnl -- Disable readline
  AC_ARG_ENABLE([readline],
  	      AC_HELP_STRING([--disable-readline], [disable readline support]),
@@ -11,7 +11,7 @@ index 74ca20191..5a82509c7 100644
  
  ################################################################################
  dnl -- Disable realtime clock support
-@@ -1056,29 +1056,6 @@ AC_MSG_RESULT($BLKID_WIPING)
+@@ -1074,29 +1074,6 @@ AC_MSG_RESULT($BLKID_WIPING)
  AC_DEFINE_UNQUOTED(DEFAULT_USE_BLKID_WIPING, [$DEFAULT_USE_BLKID_WIPING],
  		   [Use blkid wiping by default.])
  
@@ -41,7 +41,7 @@ index 74ca20191..5a82509c7 100644
  ################################################################################
  dnl -- Enable udev synchronisation
  AC_MSG_CHECKING(whether to enable synchronisation with udev processing)
-@@ -1310,21 +1287,9 @@ AC_MSG_RESULT($SELINUX)
+@@ -1328,21 +1305,9 @@ AC_MSG_RESULT($SELINUX)
  ################################################################################
  dnl -- Check for selinux
  if test "$SELINUX" = yes; then
@@ -66,7 +66,7 @@ index 74ca20191..5a82509c7 100644
  fi
  
  ################################################################################
-@@ -1360,50 +1325,6 @@ AC_IF_YES(ac_cv_stat_st_ctim,
+@@ -1378,50 +1343,6 @@ AC_IF_YES(ac_cv_stat_st_ctim,
  dnl -- Check for getopt
  AC_CHECK_HEADERS(getopt.h, AC_DEFINE([HAVE_GETOPTLONG], 1, [Define to 1 if getopt_long is available.]))
  
@@ -117,7 +117,7 @@ index 74ca20191..5a82509c7 100644
  ################################################################################
  dnl -- Internationalisation stuff
  AC_MSG_CHECKING(whether to enable internationalisation)
-@@ -1487,7 +1408,8 @@ AC_ARG_WITH(tmpfilesdir,
+@@ -1505,7 +1426,8 @@ AC_ARG_WITH(tmpfilesdir,
  ################################################################################
  dnl -- Ensure additional headers required
  if test "$READLINE" = yes; then
@@ -127,7 +127,7 @@ index 74ca20191..5a82509c7 100644
  fi
  AC_MSG_CHECKING(whether to enable readline)
  AC_MSG_RESULT($READLINE)
-@@ -1527,11 +1449,7 @@ if test "$BUILD_DMFILEMAPD" = yes; then
+@@ -1545,11 +1467,7 @@ if test "$BUILD_DMFILEMAPD" = yes; then
  fi
  
  ################################################################################
@@ -140,7 +140,7 @@ index 74ca20191..5a82509c7 100644
  
  SYSCONFDIR="$(eval echo $(eval echo $sysconfdir))"
  
-@@ -1754,6 +1672,7 @@ AC_SUBST(SALCK_CFLAGS)
+@@ -1772,6 +1690,7 @@ AC_SUBST(SALCK_CFLAGS)
  AC_SUBST(SALCK_LIBS)
  AC_SUBST(SBINDIR)
  AC_SUBST(SELINUX_LIBS)
@@ -148,7 +148,7 @@ index 74ca20191..5a82509c7 100644
  AC_SUBST(SELINUX_PC)
  AC_SUBST(SYSCONFDIR)
  AC_SUBST(SYSTEMD_LIBS)
-@@ -1773,7 +1692,6 @@ AC_SUBST(CACHE_RESTORE_CMD)
+@@ -1791,7 +1710,6 @@ AC_SUBST(CACHE_RESTORE_CMD)
  AC_SUBST(UDEV_PC)
  AC_SUBST(UDEV_RULES)
  AC_SUBST(UDEV_SYNC)

@@ -1,3 +1,12 @@
+lvm2 (2.03.10-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Auto-generate slightly more strict and correct dependencies.
+    - Also fixes the broken dmsetup dependency. (closes: #928700)
+  * Add raid modules to initramfs by default. (closes: #868268)
+
+ -- Bastian Blank <waldi@debian.org>  Sun, 15 Nov 2020 18:28:02 +0100
+
 lvm2 (2.03.09-3) unstable; urgency=medium
 
   * Make lvm2-dbusd package arch-all. (closes: #908908)

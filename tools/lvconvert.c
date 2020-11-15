@@ -1319,6 +1319,8 @@ static int _raid4_conversion_supported(struct logical_volume *lv, struct lvconve
 static int _lvconvert_raid(struct logical_volume *lv, struct lvconvert_params *lp)
 {
 	int image_count = 0;
+	int images_reduced = 0;
+	int type_enforced = 0;
 	struct cmd_context *cmd = lv->vg->cmd;
 	struct lv_segment *seg = first_seg(lv);
 
@@ -1357,6 +1359,8 @@ static int _lvconvert_raid(struct logical_volume *lv, struct lvconvert_params *l
 		else
 			image_count = lp->mirrors + 1;
 
+		images_reduced = (image_count < lv_raid_image_count(lv));
+
 		if (image_count < 1) {
 			log_error("Unable to %s images by specified amount.",
 				  lp->keep_mimages ? "split" : "reduce");
@@ -1368,6 +1372,12 @@ static int _lvconvert_raid(struct logical_volume *lv, struct lvconvert_params *l
 			log_error("Exactly one image must be split off from %s when tracking changes.",
 				  display_lvname(lv));
 			return 0;
+		}
+
+		if (!*lp->type_str) {
+			lp->type_str = SEG_TYPE_NAME_RAID1;
+			lp->segtype = get_segtype_from_string(lv->vg->cmd, SEG_TYPE_NAME_RAID1);
+			type_enforced = 1;
 		}
 	}
 
@@ -1383,7 +1393,7 @@ static int _lvconvert_raid(struct logical_volume *lv, struct lvconvert_params *l
 		return lv_raid_split(lv, lp->yes, lp->lv_split_name, image_count, lp->pvh);
 
 	if (lp->mirrors_supplied) {
-		if ((seg_is_striped(seg) && seg->area_count == 1) || seg_is_raid1(seg)) { /* ??? */
+		if (seg_is_linear(seg) || seg_is_raid1(seg)) { /* ??? */
 		if (!*lp->type_str || !strcmp(lp->type_str, SEG_TYPE_NAME_RAID1) || !strcmp(lp->type_str, SEG_TYPE_NAME_LINEAR) ||
 		    (!strcmp(lp->type_str, SEG_TYPE_NAME_STRIPED) && image_count == 1)) {
 			if (image_count > DEFAULT_RAID1_MAX_IMAGES) {
@@ -1391,10 +1401,22 @@ static int _lvconvert_raid(struct logical_volume *lv, struct lvconvert_params *l
 					  DEFAULT_RAID1_MAX_IMAGES, lp->segtype->name, display_lvname(lv));
 				return 0;
 			}
+			if (!seg_is_raid1(seg) && lv_raid_has_integrity(lv)) {
+				log_error("Cannot add raid images with integrity for this raid level.");
+				return 0;
+			}
 			if (!lv_raid_change_image_count(lv, lp->yes, image_count,
 							(lp->region_size_supplied || !seg->region_size) ?
 							lp->region_size : seg->region_size , lp->pvh))
 				return_0;
+
+			if (lv_raid_has_integrity(lv) && !images_reduced) {
+				struct integrity_settings *isettings = NULL;
+				if (!lv_get_raid_integrity_settings(lv, &isettings))
+					return_0;
+				if (!lv_add_integrity_to_raid(lv, isettings, lp->pvh, NULL))
+					return_0;
+			}
 
 			log_print_unless_silent("Logical volume %s successfully converted.",
 						display_lvname(lv));
@@ -1425,10 +1447,16 @@ static int _lvconvert_raid(struct logical_volume *lv, struct lvconvert_params *l
 			return 0;
 		}
 
+		if (lv_raid_has_integrity(lv)) {
+			/* FIXME: which conversions are happening here? */
+			log_error("This conversion is not supported for raid with integrity.");
+			return 0;
+		}
+
 		/* FIXME This needs changing globally. */
 		if (!arg_is_set(cmd, stripes_long_ARG))
 			lp->stripes = 0;
-		if (!arg_is_set(cmd, type_ARG))
+		if (!type_enforced && !arg_is_set(cmd, type_ARG))
 		       lp->segtype = NULL;
 		if (!arg_is_set(cmd, regionsize_ARG))
 		       lp->region_size = 0;
@@ -1444,13 +1472,19 @@ static int _lvconvert_raid(struct logical_volume *lv, struct lvconvert_params *l
 	}
 
 try_new_takeover_or_reshape:
+	if (lv_raid_has_integrity(lv)) {
+		/* FIXME: which conversions are happening here? */
+		log_error("This conversion is not supported for raid with integrity.");
+		return 0;
+	}
+
 	if (!_raid4_conversion_supported(lv, lp))
 		return 0;
 
 	/* FIXME This needs changing globally. */
 	if (!arg_is_set(cmd, stripes_long_ARG))
 		lp->stripes = 0;
-	if (!arg_is_set(cmd, type_ARG))
+	if (!type_enforced && !arg_is_set(cmd, type_ARG))
 	       lp->segtype = NULL;
 
 	if (!lv_raid_convert(lv, lp->segtype,
@@ -2388,7 +2422,8 @@ static int _lvconvert_thin_pool_repair(struct cmd_context *cmd,
 		goto deactivate_mlv;
 	}
 
-	if (thin_dump[0]) {
+	/* Check matching transactionId when thin-pool is used by lvm2 (transactionId != 0) */
+	if (first_seg(pool_lv)->transaction_id && thin_dump[0]) {
 		argv[0] = thin_dump;
 		argv[1] = pms_path;
 		argv[2] = NULL;
@@ -3251,7 +3286,11 @@ static int _lvconvert_to_pool(struct cmd_context *cmd,
 			}
 			metadata_lv->status &= ~LV_ACTIVATION_SKIP;
 
-			if (!wipe_lv(metadata_lv, (struct wipe_params) { .do_zero = 1 })) {
+			if (!wipe_lv(metadata_lv, (struct wipe_params) {
+						  .do_wipe_signatures = 1,
+						  .is_metadata = 1,
+						  .yes = arg_count(cmd, yes_ARG),
+						  .force = arg_count(cmd, force_ARG) } )) {
 				log_error("Aborting. Failed to wipe metadata lv.");
 				goto bad;
 			}
@@ -4220,46 +4259,205 @@ int lvconvert_to_pool_cmd(struct cmd_context *cmd, int argc, char **argv)
 			       NULL, NULL, &_lvconvert_to_pool_single);
 }
 
-static int _lvconvert_cachevol_attach_single(struct cmd_context *cmd,
-					  struct logical_volume *lv,
-					  struct processing_handle *handle)
+#define MAX_CACHEDEVS 8
+
+static int _lv_create_cachevol(struct cmd_context *cmd,
+			       struct volume_group *vg,
+			       struct logical_volume *lv,
+			       struct logical_volume **cachevol_lv)
+{
+	char cvname[NAME_LEN];
+	char format[NAME_LEN];
+	struct dm_list *use_pvh;
+	struct pv_list *pvl;
+	char *dev_name;
+	struct device *dev_fast;
+	char *dev_argv[MAX_CACHEDEVS];
+	int dev_argc = 0;
+	uint64_t cache_size_sectors = 0;
+	uint64_t full_size_sectors = 0;
+	uint64_t pv_size_sectors;
+	struct logical_volume *cachevol;
+	struct arg_value_group_list *group;
+	struct lvcreate_params lp = {
+		.activate = CHANGE_AN,
+		.alloc = ALLOC_INHERIT,
+		.major = -1,
+		.minor = -1,
+		.permission = LVM_READ | LVM_WRITE,
+		.pvh = &vg->pvs,
+		.read_ahead = DM_READ_AHEAD_NONE,
+		.stripes = 1,
+		.vg_name = vg->name,
+		.zero = 0,
+		.wipe_signatures = 0,
+		.suppress_zero_warn = 1,
+	};
+
+	/*
+	 * If cache size is not set, and all cachedevice's are unused,
+	 * then the cache size is the sum of all cachedevice sizes.
+	 */
+	cache_size_sectors = arg_uint64_value(cmd, cachesize_ARG, 0);
+
+	dm_list_iterate_items(group, &cmd->arg_value_groups) {
+		if (!grouped_arg_is_set(group->arg_values, cachedevice_ARG))
+			continue;
+
+		if (!(dev_name = (char *)grouped_arg_str_value(group->arg_values, cachedevice_ARG, NULL)))
+			break;
+
+		if (dev_name[0] == '@') {
+			if (!cache_size_sectors) {
+				log_error("With tag as cachedevice, --cachesize is required.");
+				return 0;
+			}
+			goto add_dev_arg;
+		}
+
+		if (!(dev_fast = dev_cache_get(cmd, dev_name, cmd->filter))) {
+			log_error("Device %s not found.", dev_name);
+			return 0;
+		}
+
+		if (!(pvl = find_pv_in_vg(vg, dev_name))) {
+			log_error("PV %s not found in VG.", dev_name);
+			return 0;
+		}
+
+		/*
+		 * If the dev is used in the VG, then require a cachesize to allocate
+		 * from it.  If it is not used in the VG, then prompt asking if the
+		 * entire dev should be used.
+		 */
+		if (!cache_size_sectors && pvl->pv->pe_alloc_count) {
+			log_error("PV %s is in use, --cachesize is required.", dev_name);
+			return 0;
+		}
+
+		if (!cache_size_sectors) {
+			pv_size_sectors = (pvl->pv->pe_count * vg->extent_size);
+
+			if (!arg_is_set(cmd, yes_ARG) &&
+			    yes_no_prompt("Use all %s from %s for cache? [y/n]: ",
+					  display_size(cmd, pv_size_sectors), dev_name) == 'n') {
+				log_print("Use --cachesize SizeMB to use a part of the cachedevice.");
+				log_error("Conversion aborted.");
+				return 0;
+			}
+			full_size_sectors += pv_size_sectors;
+		}
+ add_dev_arg:
+		if (dev_argc >= MAX_CACHEDEVS) {
+			log_error("Cannot allocate from more than %u cache devices.", MAX_CACHEDEVS);
+			return 0;
+		}
+
+		dev_argv[dev_argc++] = dev_name;
+	}
+
+	if (!cache_size_sectors)
+		cache_size_sectors = full_size_sectors;
+
+	if (!dev_argc) {
+		log_error("No cachedevice specified to create a cachevol.");
+		return 0;
+	}
+
+	if (!(use_pvh = create_pv_list(cmd->mem, vg, dev_argc, dev_argv, 1))) {
+		log_error("cachedevice not found in VG %s.", dev_name);
+		return 0;
+	}
+
+	if (dm_snprintf(cvname, NAME_LEN, "%s_cache", lv->name) < 0) {
+		log_error("Failed to create cachevol LV name.");
+		return 0;
+	}
+
+	if (find_lv(vg, cvname)) {
+		memset(format, 0, sizeof(cvname));
+		memset(cvname, 0, sizeof(cvname));
+		if (dm_snprintf(format, sizeof(format), "%s_cache%%d", lv->name) < 0) {
+			log_error("Failed to generate cachevol LV format.");
+			return 0;
+		}
+		if (!generate_lv_name(vg, format, cvname, sizeof(cvname))) {
+			log_error("Failed to generate cachevol LV name.");
+			return 0;
+		}
+	}
+
+	lp.lv_name = cvname;
+	lp.pvh = use_pvh;
+	lp.extents = cache_size_sectors / vg->extent_size;
+
+	log_print("Creating cachevol LV %s with size %s.",
+		  cvname, display_size(cmd, cache_size_sectors));
+
+	dm_list_init(&lp.tags);
+
+	if (!(lp.segtype = get_segtype_from_string(cmd, SEG_TYPE_NAME_STRIPED)))
+		return_0;
+
+	if (!(cachevol = lv_create_single(vg, &lp))) {
+		log_error("Failed to create cachevol LV");
+		return 0;
+	}
+
+	*cachevol_lv = cachevol;
+	return 1;
+}
+
+int lvconvert_cachevol_attach_single(struct cmd_context *cmd,
+				     struct logical_volume *lv,
+				     struct processing_handle *handle)
 {
 	struct volume_group *vg = lv->vg;
-	struct logical_volume *cachevol_lv;
-	const char *cachevol_name;
+	struct logical_volume *lv_fast;
+	const char *fast_name;
 
-	if (!(cachevol_name = arg_str_value(cmd, cachevol_ARG, NULL)))
-		goto_out;
+	/*
+	 * User specifies an existing cachevol to use or a cachedevice
+	 * to create a cachevol from.
+	 */
+	if ((fast_name = arg_str_value(cmd, cachevol_ARG, NULL))) {
+		if (!validate_lvname_param(cmd, &vg->name, &fast_name))
+			goto_bad;
 
-	if (!validate_lvname_param(cmd, &vg->name, &cachevol_name))
-		goto_out;
+		if (!(lv_fast = find_lv(vg, fast_name))) {
+			log_error("LV %s not found.", fast_name);
+			goto bad;
+		}
 
-	if (!(cachevol_lv = find_lv(vg, cachevol_name))) {
-		log_error("Cache single %s not found.", cachevol_name);
-		goto out;
+		if (lv_is_cache_vol(lv_fast)) {
+			log_error("LV %s is already used as a cachevol.", display_lvname(lv_fast));
+			goto bad;
+		}
+
+		if (!dm_list_empty(&lv_fast->segs_using_this_lv)) {
+			log_error("LV %s is already in use.", display_lvname(lv_fast));
+			goto bad;
+		}
+
+		if (!arg_is_set(cmd, yes_ARG) &&
+		    yes_no_prompt("Erase all existing data on %s? [y/n]: ", display_lvname(lv_fast)) == 'n') {
+			log_error("Conversion aborted.");
+			goto bad;
+		}
+
+		if (!lockd_lv(cmd, lv_fast, "ex", 0))
+			goto_bad;
+	} else {
+		if (!_lv_create_cachevol(cmd, vg, lv, &lv_fast))
+			goto_bad;
 	}
 
 	/* Ensure the LV is not active elsewhere. */
 	if (!lockd_lv(cmd, lv, "ex", 0))
-		goto_out;
+		goto_bad;
 
-	if (!dm_list_empty(&cachevol_lv->segs_using_this_lv)) {
-		log_error("LV %s is already in use.", display_lvname(cachevol_lv));
-		goto out;
-	}
-
-	if (!arg_is_set(cmd, yes_ARG) &&
-	    yes_no_prompt("Erase all existing data on %s? [y/n]: ", display_lvname(cachevol_lv)) == 'n') {
-		log_error("Conversion aborted.");
-		goto out;
-	}
-
-	/* Ensure the LV is not active elsewhere. */
-	if (!lockd_lv(cmd, cachevol_lv, "ex", LDLV_PERSISTENT))
-		goto_out;
-
-	if (!wipe_cache_pool(cachevol_lv))
-		goto_out;
+	if (!wipe_cache_pool(lv_fast))
+		goto_bad;
 
 	/* When the lv arg is a thinpool, redirect command to data sub lv. */
 
@@ -4269,17 +4467,17 @@ static int _lvconvert_cachevol_attach_single(struct cmd_context *cmd,
 	}
 
 	if (_raid_split_image_conversion(lv))
-		goto_out;
+		goto_bad;
 
 	/* Attach the cache to the main LV. */
 
-	if (!_cache_vol_attach(cmd, lv, cachevol_lv))
-		goto_out;
+	if (!_cache_vol_attach(cmd, lv, lv_fast))
+		goto_bad;
 
 	log_print_unless_silent("Logical volume %s is now cached.", display_lvname(lv));
 
 	return ECMD_PROCESSED;
- out:
+ bad:
 	return ECMD_FAILED;
 }
 
@@ -4319,6 +4517,11 @@ static int _lvconvert_cachepool_attach_single(struct cmd_context *cmd,
 		if (lvt_enum != striped_LVT && lvt_enum != linear_LVT && lvt_enum != raid_LVT) {
 			log_error("LV %s with type %s cannot be converted to a cache pool.",
 				  display_lvname(cachepool_lv), lvtype ? lvtype->name : "unknown");
+			goto out;
+		}
+
+		if (lv_is_cache_vol(cachepool_lv)) {
+			log_error("LV %s is already used as a cachevol.", display_lvname(cachepool_lv));
 			goto out;
 		}
 
@@ -5273,18 +5476,7 @@ static int _lvconvert_detach_writecache(struct cmd_context *cmd,
 					struct logical_volume *lv,
 					struct logical_volume *lv_fast)
 {
-	char cvol_name[NAME_LEN];
-	char *c;
 	int noflush = 0;
-
-	/*
-	 * LV must be inactive externally before detaching cache.
-	 */
-
-	if (lv_info(cmd, lv, 1, NULL, 0, 0)) {
-		log_error("LV %s must be inactive to detach writecache.", display_lvname(lv));
-		return 0;
-	}
 
 	if (!archive(lv->vg))
 		return_0;
@@ -5309,36 +5501,23 @@ static int _lvconvert_detach_writecache(struct cmd_context *cmd,
 		noflush = 1;
 	}
 
-	if (!lv_detach_writecache_cachevol(lv, noflush))
-		return_0;
-
 	/*
-	 * Rename lv_fast back to its original name, without the _cvol
-	 * suffix that was added when lv_fast was attached for caching.
+	 * TODO: send a message to writecache in the kernel to start writing
+	 * back cache data to the origin.  Then release the vg lock and monitor
+	 * the progress of that writeback.  When it's complete we can reacquire
+	 * the vg lock, rescan the vg (ensure it hasn't changed), and do the
+	 * detach which should be quick since the writeback is complete.  If
+	 * this command is canceled while monitoring writeback, it should just
+	 * be rerun.  The LV will continue to have the writecache until this
+	 * command is run to completion.
 	 */
-	if (!dm_strncpy(cvol_name, lv_fast->name, sizeof(cvol_name)) ||
-	    !(c = strstr(cvol_name, "_cvol"))) {
-		log_debug("LV %s has no suffix for cachevol (skipping rename).",
-			display_lvname(lv_fast));
-	} else {
-		*c = 0;
-		/* If the name is in use, generate new lvol%d */
-		if (lv_name_is_used_in_vg(lv->vg, cvol_name, NULL) &&
-		    !generate_lv_name(lv->vg, "lvol%d", cvol_name, sizeof(cvol_name))) {
-			log_error("Failed to generate unique name for unused logical volume.");
-			return 0;
-		}
 
-		if (!lv_rename_update(cmd, lv_fast, cvol_name, 0))
-			return_0;
-	}
-
-	if (!vg_write(lv->vg) || !vg_commit(lv->vg))
+	if (!lv_detach_writecache_cachevol(lv, noflush))
 		return_0;
 
 	backup(lv->vg);
 
-	log_print_unless_silent("Logical volume %s write cache has been detached.",
+	log_print_unless_silent("Logical volume %s writecache has been detached.",
 				display_lvname(lv));
 	return 1;
 }
@@ -5348,7 +5527,8 @@ static int _writecache_zero(struct cmd_context *cmd, struct logical_volume *lv)
 	struct wipe_params wp = {
 		.do_wipe_signatures = 1, /* optional, to print warning if clobbering something */
 		.do_zero = 1,            /* required for dm-writecache to work */
-		.zero_sectors = 1
+		.yes = arg_count(cmd, yes_ARG),
+		.force = arg_count(cmd, force_ARG)
 	};
 	int ret;
 
@@ -5365,7 +5545,8 @@ static int _writecache_zero(struct cmd_context *cmd, struct logical_volume *lv)
 		return 0;
 	}
 
-	ret = wipe_lv(lv, wp);
+	if (!(ret = wipe_lv(lv, wp)))
+		stack;
 
 	if (!deactivate_lv(cmd, lv)) {
 		log_error("Failed to deactivate LV %s for zeroing.", display_lvname(lv));
@@ -5373,157 +5554,6 @@ static int _writecache_zero(struct cmd_context *cmd, struct logical_volume *lv)
 	}
 
 	return ret;
-}
-
-static int _get_one_writecache_setting(struct cmd_context *cmd, struct writecache_settings *settings,
-				       char *key, char *val, uint32_t *block_size_sectors)
-{
-	/* special case: block_size is not a setting but is set with the --cachesettings option */
-	if (!strncmp(key, "block_size", strlen("block_size"))) {
-		uint32_t block_size = 0;
-		if (sscanf(val, "%u", &block_size) != 1)
-			goto_bad;
-		if (block_size == 512)
-			*block_size_sectors = 1;
-		else if (block_size == 4096)
-			*block_size_sectors = 8;
-		else
-			goto_bad;
-		return 1;
-	}
-
-	if (!strncmp(key, "high_watermark", strlen("high_watermark"))) {
-		if (sscanf(val, "%llu", (unsigned long long *)&settings->high_watermark) != 1)
-			goto_bad;
-		if (settings->high_watermark > 100)
-			goto_bad;
-		settings->high_watermark_set = 1;
-		return 1;
-	}
-
-	if (!strncmp(key, "low_watermark", strlen("low_watermark"))) {
-		if (sscanf(val, "%llu", (unsigned long long *)&settings->low_watermark) != 1)
-			goto_bad;
-		if (settings->low_watermark > 100)
-			goto_bad;
-		settings->low_watermark_set = 1;
-		return 1;
-	}
-
-	if (!strncmp(key, "writeback_jobs", strlen("writeback_jobs"))) {
-		if (sscanf(val, "%llu", (unsigned long long *)&settings->writeback_jobs) != 1)
-			goto_bad;
-		settings->writeback_jobs_set = 1;
-		return 1;
-	}
-
-	if (!strncmp(key, "autocommit_blocks", strlen("autocommit_blocks"))) {
-		if (sscanf(val, "%llu", (unsigned long long *)&settings->autocommit_blocks) != 1)
-			goto_bad;
-		settings->autocommit_blocks_set = 1;
-		return 1;
-	}
-
-	if (!strncmp(key, "autocommit_time", strlen("autocommit_time"))) {
-		if (sscanf(val, "%llu", (unsigned long long *)&settings->autocommit_time) != 1)
-			goto_bad;
-		settings->autocommit_time_set = 1;
-		return 1;
-	}
-
-	if (!strncmp(key, "fua", strlen("fua"))) {
-		if (settings->nofua_set) {
-			log_error("Setting fua and nofua cannot both be set.");
-			return 0;
-		}
-		if (sscanf(val, "%u", &settings->fua) != 1)
-			goto_bad;
-		settings->fua_set = 1;
-		return 1;
-	}
-
-	if (!strncmp(key, "nofua", strlen("nofua"))) {
-		if (settings->fua_set) {
-			log_error("Setting fua and nofua cannot both be set.");
-			return 0;
-		}
-		if (sscanf(val, "%u", &settings->nofua) != 1)
-			goto_bad;
-		settings->nofua_set = 1;
-		return 1;
-	}
-
-	if (settings->new_key) {
-		log_error("Setting %s is not recognized. Only one unrecognized setting is allowed.", key);
-		return 0;
-	}
-
-	log_warn("Unrecognized writecache setting \"%s\" may cause activation failure.", key);
-	if (yes_no_prompt("Use unrecognized writecache setting? [y/n]: ") == 'n') {
-		log_error("Aborting writecache conversion.");
-		return 0;
-	}
-
-	log_warn("Using unrecognized writecache setting: %s = %s.", key, val);
-
-	settings->new_key = dm_pool_strdup(cmd->mem, key);
-	settings->new_val = dm_pool_strdup(cmd->mem, val);
-	return 1;
-
- bad:
-	log_error("Invalid setting: %s", key);
-	return 0;
-}
-
-static int _get_writecache_settings(struct cmd_context *cmd, struct writecache_settings *settings,
-				    uint32_t *block_size_sectors)
-{
-	struct arg_value_group_list *group;
-	const char *str;
-	char key[64];
-	char val[64];
-	int num;
-	int pos;
-
-	/*
-	 * "grouped" means that multiple --cachesettings options can be used.
-	 * Each option is also allowed to contain multiple key = val pairs.
-	 */
-
-	dm_list_iterate_items(group, &cmd->arg_value_groups) {
-		if (!grouped_arg_is_set(group->arg_values, cachesettings_ARG))
-			continue;
-
-		if (!(str = grouped_arg_str_value(group->arg_values, cachesettings_ARG, NULL)))
-			break;
-
-		pos = 0;
-
-		while (pos < strlen(str)) {
-			/* scan for "key1=val1 key2 = val2  key3= val3" */
-
-			memset(key, 0, sizeof(key));
-			memset(val, 0, sizeof(val));
-
-			if (sscanf(str + pos, " %63[^=]=%63s %n", key, val, &num) != 2) {
-				log_error("Invalid setting at: %s", str+pos);
-				return 0;
-			}
-
-			pos += num;
-
-			if (!_get_one_writecache_setting(cmd, settings, key, val, block_size_sectors))
-				return_0;
-		}
-	}
-
-	if (settings->high_watermark_set && settings->low_watermark_set &&
-	    (settings->high_watermark <= settings->low_watermark)) {
-		log_error("High watermark must be greater than low watermark.");
-		return 0;
-	}
-
-	return 1;
 }
 
 static struct logical_volume *_lv_writecache_create(struct cmd_context *cmd,
@@ -5564,14 +5594,183 @@ static struct logical_volume *_lv_writecache_create(struct cmd_context *cmd,
 
 	memcpy(&seg->writecache_settings, settings, sizeof(struct writecache_settings));
 
-	add_seg_to_segs_using_this_lv(lv_fast, seg);
+	if (!add_seg_to_segs_using_this_lv(lv_fast, seg))
+		return_NULL;
 
 	return lv_wcorig;
 }
 
-#define DEFAULT_WRITECACHE_BLOCK_SIZE_SECTORS 8 /* 4K */
+/*
+ * Currently only supports writecache block sizes 512 and 4096.
+ * This could be expanded later.
+ */
+static int _set_writecache_block_size(struct cmd_context *cmd,
+				      struct logical_volume *lv,
+				      uint32_t *block_size_sectors)
+{
+	char pathname[PATH_MAX];
+	struct device *fs_dev;
+	struct dm_list pvs;
+	struct pv_list *pvl;
+	uint32_t fs_block_size = 0;
+	uint32_t block_size_setting = 0;
+	uint32_t block_size = 0;
+	int lbs_unknown = 0, lbs_4k = 0, lbs_512 = 0;
+	int pbs_unknown = 0, pbs_4k = 0, pbs_512 = 0;
+	int rv;
 
-static int _lvconvert_writecache_attach_single(struct cmd_context *cmd,
+	/* This is set if the user specified a writecache block size on the command line. */
+	if (*block_size_sectors)
+		block_size_setting = *block_size_sectors * 512;
+
+	dm_list_init(&pvs);
+
+	if (!get_pv_list_for_lv(cmd->mem, lv, &pvs)) {
+		log_error("Failed to build list of PVs for %s.", display_lvname(lv));
+		goto_bad;
+	}
+
+	dm_list_iterate_items(pvl, &pvs) {
+		unsigned int pbs = 0;
+		unsigned int lbs = 0;
+
+		if (!dev_get_direct_block_sizes(pvl->pv->dev, &pbs, &lbs)) {
+			lbs_unknown++;
+			pbs_unknown++;
+			continue;
+		}
+
+		if (lbs == 4096)
+			lbs_4k++;
+		else if (lbs == 512)
+			lbs_512++;
+		else
+			lbs_unknown++;
+
+		if (pbs == 4096)
+			pbs_4k++;
+		else if (pbs == 512)
+			pbs_512++;
+		else
+			pbs_unknown++;
+	}
+
+	if (lbs_4k && lbs_512) {
+		log_error("Writecache requires consistent logical block size for LV devices.");
+		goto_bad;
+	}
+
+	if (lbs_4k && block_size_setting && (block_size_setting < 4096)) {
+		log_error("Writecache block size %u not allowed with device logical block size 4096.",
+			  block_size_setting);
+		goto_bad;
+	}
+
+	if (dm_snprintf(pathname, sizeof(pathname), "%s/%s/%s", cmd->dev_dir,
+			lv->vg->name, lv->name) < 0) {
+		log_error("Path name too long to get LV block size %s", display_lvname(lv));
+		goto_bad;
+	}
+
+	if (!sync_local_dev_names(cmd))
+		stack;
+
+	if (!(fs_dev = dev_cache_get(cmd, pathname, NULL))) {
+		if (test_mode()) {
+			log_print("Test mode skips checking fs block size.");
+			fs_block_size = 0;
+			goto skip_fs;
+		}
+		log_error("Device for LV not found to check block size %s", pathname);
+		goto_bad;
+	}
+
+	/*
+	 * get_fs_block_size() returns the libblkid BLOCK_SIZE value,
+	 * where libblkid has fs-specific code to set BLOCK_SIZE to the
+	 * value we need here.
+	 *
+	 * The term "block size" here may not equate directly to what the fs
+	 * calls the block size, e.g. xfs calls this the sector size (and
+	 * something different the block size); while ext4 does call this
+	 * value the block size, but it's possible values are not the same
+	 * as xfs's, and do not seem to relate directly to the device LBS.
+	 *
+	 * With 512 LBS and 4K PBS, mkfs.xfs will use xfs sector size 4K.
+	 */
+	rv = get_fs_block_size(fs_dev, &fs_block_size);
+skip_fs:
+	if (!rv || !fs_block_size) {
+		if (lbs_4k && pbs_4k && !pbs_512) {
+			block_size = 4096;
+		} else if (lbs_512 && pbs_512 && !pbs_4k) {
+			block_size = 512;
+		} else if (lbs_512 && pbs_4k) {
+			if (block_size_setting == 4096)
+				block_size = 4096;
+			else
+				block_size = 512;
+		} else {
+			block_size = 512;
+		}
+
+		if (block_size_setting && (block_size_setting != block_size)) {
+			log_error("Cannot use writecache block size %u with unknown file system block size, logical block size %u, physical block size %u.",
+				  block_size_setting, lbs_4k ? 4096 : 512, pbs_4k ? 4096 : 512);
+			goto bad;
+		}
+
+		if (block_size != 512) {
+			log_warn("WARNING: unable to detect a file system block size on %s", display_lvname(lv));
+			log_warn("WARNING: using a writecache block size larger than the file system block size may corrupt the file system.");
+			if (!arg_is_set(cmd, yes_ARG) &&
+			    yes_no_prompt("Use writecache block size %u? [y/n]: ", block_size) == 'n')  {
+				log_error("Conversion aborted.");
+				goto bad;
+			}
+		}
+
+		log_print("Using writecache block size %u for unknown file system block size, logical block size %u, physical block size %u.",
+			 block_size, lbs_4k ? 4096 : 512, pbs_4k ? 4096 : 512);
+		goto out;
+	}
+
+	if (!block_size_setting) {
+		/* User did not specify a block size, so choose according to fs block size. */
+		if (fs_block_size == 4096)
+			block_size = 4096;
+		else if (fs_block_size == 512)
+			block_size = 512;
+		else if (fs_block_size > 4096)
+			block_size = 4096;
+		else if (fs_block_size < 4096)
+			block_size = 512;
+		else
+			goto_bad;
+	} else {
+		if (block_size_setting <= fs_block_size)
+			block_size = block_size_setting;
+		else {
+			log_error("Writecache block size %u cannot be larger than file system block size %u.",
+				  block_size_setting, fs_block_size);
+			goto_bad;
+		}
+	}
+
+out:
+	if (block_size == 512)
+		*block_size_sectors = 1;
+	else if (block_size == 4096)
+		*block_size_sectors = 8;
+	else
+		goto_bad;
+
+	return 1;
+bad:
+	return 0;
+}
+
+int lvconvert_writecache_attach_single(struct cmd_context *cmd,
 					struct logical_volume *lv,
 					struct processing_handle *handle)
 {
@@ -5580,63 +5779,91 @@ static int _lvconvert_writecache_attach_single(struct cmd_context *cmd,
 	struct logical_volume *lv_fast;
 	struct writecache_settings settings;
 	const char *fast_name;
-	uint32_t block_size_sectors;
+	uint32_t block_size_sectors = 0;
 	char *lockd_fast_args = NULL;
 	char *lockd_fast_name = NULL;
 	struct id lockd_fast_id;
 	char cvol_name[NAME_LEN];
-
-	fast_name = arg_str_value(cmd, cachevol_ARG, "");
-
-	if (!(lv_fast = find_lv(vg, fast_name))) {
-		log_error("LV %s not found.", fast_name);
-		goto bad;
-	}
-
-	if (lv_fast == lv) {
-		log_error("Invalid cachevol LV.");
-		goto bad;
-	}
-
-	if (!seg_is_linear(first_seg(lv_fast))) {
-		log_error("LV %s must be linear to use as a writecache.", display_lvname(lv_fast));
-		goto bad;
-	}
+	int is_active;
 
 	/*
-	 * To permit this we need to check the block size of the fs using lv
-	 * (recently in libblkid) so that we can use a matching writecache
-	 * block size.  We also want to do that if the lv is inactive.
+	 * User specifies an existing cachevol to use or a cachedevice
+	 * to create a cachevol from.
 	 */
-	if (lv_is_active(lv)) {
-		log_error("LV %s must be inactive to attach writecache.", display_lvname(lv));
-		goto bad;
+	if ((fast_name = arg_str_value(cmd, cachevol_ARG, NULL))) {
+		if (!validate_lvname_param(cmd, &vg->name, &fast_name))
+			goto_bad;
+
+		if (!(lv_fast = find_lv(vg, fast_name))) {
+			log_error("LV %s not found.", fast_name);
+			goto bad;
+		}
+
+		if (lv_fast == lv) {
+			log_error("Invalid cachevol LV.");
+			goto bad;
+		}
+
+		if (lv_is_cache_vol(lv_fast)) {
+			log_error("LV %s is already used as a cachevol.", display_lvname(lv_fast));
+			goto bad;
+		}
+
+		if (!seg_is_linear(first_seg(lv_fast))) {
+			log_error("LV %s must be linear to use as a writecache.", display_lvname(lv_fast));
+			goto bad;
+		}
+
+		/* fast LV shouldn't generally be active by itself, but just in case. */
+		if (lv_is_active(lv_fast)) {
+			log_error("LV %s must be inactive to attach.", display_lvname(lv_fast));
+			goto bad;
+		}
+
+		if (!arg_is_set(cmd, yes_ARG) &&
+		     yes_no_prompt("Erase all existing data on %s? [y/n]: ", display_lvname(lv_fast)) == 'n') {
+			log_error("Conversion aborted.");
+			goto bad;
+		}
+	} else {
+		if (!_lv_create_cachevol(cmd, vg, lv, &lv_fast))
+			goto_bad;
 	}
 
-	/* fast LV shouldn't generally be active by itself, but just in case. */
-	if (lv_info(cmd, lv_fast, 1, NULL, 0, 0)) {
-		log_error("LV %s must be inactive to attach.", display_lvname(lv_fast));
-		goto bad;
-	}
+	is_active = lv_is_active(lv);
 
 	memset(&settings, 0, sizeof(settings));
-	block_size_sectors = DEFAULT_WRITECACHE_BLOCK_SIZE_SECTORS;
 
-	if (!_get_writecache_settings(cmd, &settings, &block_size_sectors)) {
+	if (!get_writecache_settings(cmd, &settings, &block_size_sectors)) {
 		log_error("Invalid writecache settings.");
 		goto bad;
 	}
 
-	if (!arg_is_set(cmd, yes_ARG) &&
-	    yes_no_prompt("Erase all existing data on %s? [y/n]: ", display_lvname(lv_fast)) == 'n') {
-		log_error("Conversion aborted.");
-		goto bad;
+	if (!is_active) {
+		/* checking block size of fs on the lv requires the lv to be active */
+		if (!activate_lv(cmd, lv)) {
+			log_error("Failed to activate LV to check block size %s", display_lvname(lv));
+			goto bad;
+		}
 	}
 
-	/* Ensure the two LVs are not active elsewhere. */
+	if (!_set_writecache_block_size(cmd, lv, &block_size_sectors)) {
+		if (!is_active && !deactivate_lv(cmd, lv))
+			stack;
+		goto_bad;
+	}
+
+	if (!is_active) {
+		if (!deactivate_lv(cmd, lv)) {
+			log_error("Failed to deactivate LV after checking block size %s", display_lvname(lv));
+			goto bad;
+		}
+	}
+
+	/* Ensure the LV is not active elsewhere. */
 	if (!lockd_lv(cmd, lv, "ex", 0))
 		goto_bad;
-	if (!lockd_lv(cmd, lv_fast, "ex", 0))
+	if (fast_name && !lockd_lv(cmd, lv_fast, "ex", 0))
 		goto_bad;
 
 	if (!archive(vg))
@@ -5703,7 +5930,7 @@ static int _lvconvert_writecache_attach_single(struct cmd_context *cmd,
 			log_error("Failed to unlock fast LV %s/%s", vg->name, lockd_fast_name);
 	}
 
-	log_print_unless_silent("Logical volume %s now has write cache.",
+	log_print_unless_silent("Logical volume %s now has writecache.",
 				display_lvname(lv));
 	return ECMD_PROCESSED;
 bad:
@@ -5727,7 +5954,7 @@ int lvconvert_to_writecache_cmd(struct cmd_context *cmd, int argc, char **argv)
 	cmd->cname->flags &= ~GET_VGNAME_FROM_OPTIONS;
 
 	ret = process_each_lv(cmd, cmd->position_argc, cmd->position_argv, NULL, NULL, READ_FOR_UPDATE, handle, NULL,
-			      &_lvconvert_writecache_attach_single);
+			      &lvconvert_writecache_attach_single);
 
 	destroy_processing_handle(cmd, handle);
 
@@ -5750,7 +5977,120 @@ int lvconvert_to_cache_with_cachevol_cmd(struct cmd_context *cmd, int argc, char
 	cmd->cname->flags &= ~GET_VGNAME_FROM_OPTIONS;
 
 	ret = process_each_lv(cmd, cmd->position_argc, cmd->position_argv, NULL, NULL, READ_FOR_UPDATE, handle, NULL,
-			      &_lvconvert_cachevol_attach_single);
+			      &lvconvert_cachevol_attach_single);
+
+	destroy_processing_handle(cmd, handle);
+
+	return ret;
+}
+
+static int _lvconvert_integrity_remove(struct cmd_context *cmd, struct logical_volume *lv)
+{
+	struct volume_group *vg = lv->vg;
+	int ret = 0;
+
+	if (!lv_is_integrity(lv) && !lv_is_raid(lv)) {
+		log_error("LV does not have integrity.");
+		return 0;
+	}
+
+	/* ensure it's not active elsewhere. */
+	if (!lockd_lv(cmd, lv, "ex", 0))
+		return_0;
+
+	if (!archive(vg))
+		return_0;
+
+	if (lv_is_raid(lv))
+		ret = lv_remove_integrity_from_raid(lv);
+	if (!ret)
+		return_0;
+
+	backup(vg);
+
+	log_print_unless_silent("Logical volume %s has removed integrity.", display_lvname(lv));
+	return 1;
+}
+
+static int _lvconvert_integrity_add(struct cmd_context *cmd, struct logical_volume *lv,
+				    struct integrity_settings *set)
+{
+	struct volume_group *vg = lv->vg;
+	struct dm_list *use_pvh;
+	int ret = 0;
+
+	/* ensure it's not active elsewhere. */
+	if (!lockd_lv(cmd, lv, "ex", 0))
+		return_0;
+
+	if (cmd->position_argc > 1) {
+		/* First pos arg is required LV, remaining are optional PVs. */
+		if (!(use_pvh = create_pv_list(cmd->mem, vg, cmd->position_argc - 1, cmd->position_argv + 1, 0)))
+			return_0;
+	} else
+		use_pvh = &vg->pvs;
+
+	if (!archive(vg))
+		return_0;
+
+	if (lv_is_partial(lv)) {
+		log_error("Cannot add integrity while LV is missing PVs.");
+		return 0;
+	}
+
+	if (lv_is_raid(lv))
+		ret = lv_add_integrity_to_raid(lv, set, use_pvh, NULL);
+	if (!ret)
+		return_0;
+
+	backup(vg);
+
+	log_print_unless_silent("Logical volume %s has added integrity.", display_lvname(lv));
+	return 1;
+}
+
+static int _lvconvert_integrity_single(struct cmd_context *cmd,
+					struct logical_volume *lv,
+					struct processing_handle *handle)
+{
+	struct integrity_settings settings;
+	int ret = 0;
+
+	memset(&settings, 0, sizeof(settings));
+
+	if (!integrity_mode_set(arg_str_value(cmd, raidintegritymode_ARG, NULL), &settings))
+		return_ECMD_FAILED;
+
+	if (arg_is_set(cmd, raidintegrityblocksize_ARG))
+		settings.block_size = arg_int_value(cmd, raidintegrityblocksize_ARG, 0);
+
+	if (arg_int_value(cmd, raidintegrity_ARG, 0))
+		ret = _lvconvert_integrity_add(cmd, lv, &settings);
+	else
+		ret = _lvconvert_integrity_remove(cmd, lv);
+
+	if (!ret)
+		return ECMD_FAILED;
+	return ECMD_PROCESSED;
+}
+
+int lvconvert_integrity_cmd(struct cmd_context *cmd, int argc, char **argv)
+{
+	struct processing_handle *handle;
+	int ret;
+
+	if (!(handle = init_processing_handle(cmd, NULL))) {
+		log_error("Failed to initialize processing handle.");
+		return ECMD_FAILED;
+	}
+
+	/* Want to be able to remove integrity from partial LV */
+	cmd->handles_missing_pvs = 1;
+
+	cmd->cname->flags &= ~GET_VGNAME_FROM_OPTIONS;
+
+	ret = process_each_lv(cmd, cmd->position_argc, cmd->position_argv, NULL, NULL, READ_FOR_UPDATE, handle, NULL,
+			      &_lvconvert_integrity_single);
 
 	destroy_processing_handle(cmd, handle);
 

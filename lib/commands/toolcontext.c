@@ -1276,7 +1276,7 @@ int init_lvmcache_orphans(struct cmd_context *cmd)
 	struct format_type *fmt;
 
 	dm_list_iterate_items(fmt, &cmd->formats)
-		if (!lvmcache_add_orphan_vginfo(fmt->orphan_vg_name, fmt))
+		if (!lvmcache_add_orphan_vginfo(cmd, fmt->orphan_vg_name, fmt))
 			return_0;
 
 	return 1;
@@ -1359,6 +1359,11 @@ static int _init_segtypes(struct cmd_context *cmd)
 
 #ifdef WRITECACHE_INTERNAL
 	if (!init_writecache_segtypes(cmd, &seglib))
+		return 0;
+#endif
+
+#ifdef INTEGRITY_INTERNAL
+	if (!init_integrity_segtypes(cmd, &seglib))
 		return 0;
 #endif
 
@@ -1593,6 +1598,7 @@ struct cmd_context *create_toolcontext(unsigned is_clvmd,
 	dm_list_init(&cmd->formats);
 	dm_list_init(&cmd->segtypes);
 	dm_list_init(&cmd->tags);
+	dm_list_init(&cmd->hints);
 	dm_list_init(&cmd->config_files);
 	label_init();
 

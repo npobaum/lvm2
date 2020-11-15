@@ -531,6 +531,9 @@
 /* Define to 1 if the system has the `__builtin_clzll' built-in function */
 #undef HAVE___BUILTIN_CLZLL
 
+/* Define to 1 to include built-in support for integrity. */
+#undef INTEGRITY_INTERNAL
+
 /* Internalization package */
 #undef INTL_PACKAGE
 

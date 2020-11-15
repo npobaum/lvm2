@@ -126,6 +126,12 @@ arg(cachepool_ARG, '\0', "cachepool", lv_VAL, 0, 0,
 arg(cachevol_ARG, '\0', "cachevol", lv_VAL, 0, 0,
     "The name of a cache volume.\n")
 
+arg(cachedevice_ARG, '\0', "cachedevice", pv_VAL, ARG_GROUPABLE, 0,
+    "The name of a device to use for a cache.\n")
+
+arg(cachesize_ARG, '\0', "cachesize", sizemb_VAL, 0, 0,
+    "The size of cache to use.\n")
+
 arg(commandprofile_ARG, '\0', "commandprofile", string_VAL, 0, 0,
     "The command profile to use for command configuration.\n"
     "See \\fBlvm.conf\\fP(5) for more information about profiles.\n")
@@ -511,6 +517,26 @@ arg(pvmetadatacopies_ARG, '\0', "pvmetadatacopies", pvmetadatacopies_VAL, 0, 0,
     "When 0, no copies of the VG metadata are stored on the given PV.\n"
     "This may be useful in VGs containing many PVs (this places limitations\n"
     "on the ability to use vgsplit later.)\n")
+
+arg(raidintegrity_ARG, '\0', "raidintegrity", bool_VAL, 0, 0,
+    "Enable or disable data integrity checksums for raid images.\n")
+
+arg(raidintegrityblocksize_ARG, '\0', "raidintegrityblocksize", number_VAL, 0, 0,
+    "The block size to use for dm-integrity on raid images.\n"
+    "The integrity block size should usually match the device\n"
+    "logical block size, or the file system block size.\n"
+    "It may be less than the file system block size, but not\n"
+    "less than the device logical block size.\n"
+    "Possible values: 512, 1024, 2048, 4096.\n")
+
+arg(raidintegritymode_ARG, '\0', "raidintegritymode", string_VAL, 0, 0,
+    "Use a journal (default) or bitmap for keeping integrity checksums consistent\n"
+    "in case of a crash. The bitmap areas are recalculated after a crash, so corruption\n"
+    "in those areas would not be detected. A journal does not have this problem.\n"
+    "The journal mode doubles writes to storage, but can improve performance for\n"
+    "scattered writes packed into a single journal write.\n"
+    "bitmap mode can in theory achieve full write throughput of the device,\n"
+    "but would not benefit from the potential scattered write optimization.\n")
 
 arg(readonly_ARG, '\0', "readonly", 0, 0, 0,
     "Run the command in a special read-only mode which will read on-disk\n"
@@ -1408,7 +1434,16 @@ arg(thin_ARG, 'T', "thin", 0, 0, 0,
     "See \\fBlvmthin\\fP(7) for more information about LVM thin provisioning.\n")
 
 arg(updatemetadata_ARG, '\0', "updatemetadata", 0, 0, 0,
-    "Update VG metadata to correct problems.\n")
+    "Update VG metadata to correct problems.\n"
+    "If VG metadata was updated while a PV was missing, and the PV\n"
+    "reappears with an old version of metadata, then this option\n"
+    "(or any other command that writes metadata) will update the\n"
+    "metadata on the previously missing PV. If a PV was removed\n"
+    "from a VG while it was missing, and the PV reappears, using\n"
+    "this option will clear the outdated metadata from the previously\n"
+    "missing PV. If metadata text is damaged on one PV, using this\n"
+    "option will replace the damaged metadata text. For more severe\n"
+    "damage, e.g. with headers, see \\fBpvck\\fP(8).\n")
 
 arg(uuid_ARG, 'u', "uuid", 0, 0, 0,
     "#pvchange\n"

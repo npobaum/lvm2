@@ -1,3 +1,17 @@
+Version 2.03.10 - 09th August 2020
+==================================
+  Add writecache and integrity support to lvmdbusd.
+  Generate unique cachevol name when default required from lvcreate.
+  Converting RAID1 volume to one with same number of legs now succeeds with a
+  warning.
+  Fix conversion to raid from striped lagging type.
+  Fix conversion to 'mirrored' mirror log with larger regionsize.
+  Zero pool metadata on allocation (disable with allocation/zero_metadata=0).
+  Failure in zeroing or wiping will fail command (bypass with -Zn, -Wn).
+  Fix running out of free buffers for async writing for larger writes.
+  Add integrity with raid capability.
+  Fix support for lvconvert --repair used by foreign apps (i.e. Docker).
+
 Version 2.03.09 - 26th March 2020
 =================================
   Fix formating of vdopool (vdo_slab_size_mb was smaller by 2 bits).
