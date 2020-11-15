@@ -441,7 +441,8 @@ static void _check_lv_segment(struct logical_volume *lv, struct lv_segment *seg,
 		if (seg_is_mirror(seg)) {
 			if (!seg->region_size)
 				seg_error("region size is zero");
-			else if (seg->region_size > seg->lv->size)
+			/* Avoid regionsize check in case of 'mirrored' mirror log or larger than mlog regionsize will fail */
+			else if (!strstr(seg->lv->name, "_mlog") && (seg->region_size > seg->lv->size))
 				seg_error("region size is bigger then LV itself");
 			else if (!is_power_of_2(seg->region_size))
 				seg_error("region size is non power of 2");
@@ -741,6 +742,8 @@ int check_lv_segments(struct logical_volume *lv, int complete_vg)
 		if (seg->log_lv == lv)
 			seg_found++;
 		if (seg->metadata_lv == lv || seg->pool_lv == lv || seg->writecache == lv)
+			seg_found++;
+		if (seg->integrity_meta_dev == lv)
 			seg_found++;
 		if (seg_is_thin_volume(seg) && (seg->origin == lv || seg->external_lv == lv))
 			seg_found++;

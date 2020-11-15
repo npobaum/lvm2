@@ -23,6 +23,10 @@ lvconvert - Change logical volume layout
 .ad b
 .br
 .ad l
+    \fB--cachedevice\fP \fIPV\fP
+.ad b
+.br
+.ad l
     \fB--cachemetadataformat\fP \fBauto\fP|\fB1\fP|\fB2\fP
 .ad b
 .br
@@ -40,6 +44,10 @@ lvconvert - Change logical volume layout
 .br
 .ad l
     \fB--cachesettings\fP \fIString\fP
+.ad b
+.br
+.ad l
+    \fB--cachesize\fP \fISize\fP[m|UNIT]
 .ad b
 .br
 .ad l
@@ -160,6 +168,18 @@ lvconvert - Change logical volume layout
 .br
 .ad l
  \fB-q\fP|\fB--quiet\fP
+.ad b
+.br
+.ad l
+    \fB--raidintegrity\fP \fBy\fP|\fBn\fP
+.ad b
+.br
+.ad l
+    \fB--raidintegrityblocksize\fP \fINumber\fP
+.ad b
+.br
+.ad l
+    \fB--raidintegritymode\fP \fIString\fP
 .ad b
 .br
 .ad l
@@ -726,6 +746,44 @@ Attach a cache to an LV, converts the LV to type cache.
 .br
 -
 
+Add a writecache to an LV, using a specified cache device.
+.br
+.P
+\fBlvconvert\fP \fB--type\fP \fBwritecache\fP \fB--cachedevice\fP \fIPV\fP \fILV\fP\fI_linear_striped_raid\fP
+.br
+.RS 4
+.ad l
+[    \fB--cachesize\fP \fISize\fP[m|UNIT] ]
+.ad b
+.br
+.ad l
+[    \fB--cachesettings\fP \fIString\fP ]
+.ad b
+.br
+[ COMMON_OPTIONS ]
+.RE
+.br
+-
+
+Add a cache to an LV, using a specified cache device.
+.br
+.P
+\fBlvconvert\fP \fB--type\fP \fBcache\fP \fB--cachedevice\fP \fIPV\fP \fILV\fP\fI_linear_striped_thinpool_raid\fP
+.br
+.RS 4
+.ad l
+[    \fB--cachesize\fP \fISize\fP[m|UNIT] ]
+.ad b
+.br
+.ad l
+[    \fB--cachesettings\fP \fIString\fP ]
+.ad b
+.br
+[ COMMON_OPTIONS ]
+.RE
+.br
+-
+
 Convert LV to type thin-pool.
 .br
 .P
@@ -982,6 +1040,28 @@ Poll LV to continue conversion.
 .br
 -
 
+Add or remove data integrity checksums to raid images.
+.br
+.P
+\fBlvconvert\fP \fB--raidintegrity\fP \fBy\fP|\fBn\fP \fILV\fP\fI_raid\fP
+.br
+.RS 4
+.ad l
+[    \fB--raidintegritymode\fP \fIString\fP ]
+.ad b
+.br
+.ad l
+[    \fB--raidintegrityblocksize\fP \fINumber\fP ]
+.ad b
+.br
+[ COMMON_OPTIONS ]
+.RE
+.br
+.RS 4
+[ \fIPV\fP ... ]
+.RE
+-
+
 Common options for command:
 .
 .RS 4
@@ -1101,6 +1181,12 @@ See \fBlvmcache\fP(7) for more information about LVM caching.
 .ad b
 .HP
 .ad l
+\fB--cachedevice\fP \fIPV\fP
+.br
+The name of a device to use for a cache.
+.ad b
+.HP
+.ad l
 \fB--cachemetadataformat\fP \fBauto\fP|\fB1\fP|\fB2\fP
 .br
 Specifies the cache metadata format used by cache target.
@@ -1145,6 +1231,12 @@ The special string value \fBdefault\fP switches
 settings back to their default kernel values and removes
 them from the list of settings stored in LVM metadata.
 See \fBlvmcache\fP(7) for more information.
+.ad b
+.HP
+.ad l
+\fB--cachesize\fP \fISize\fP[m|UNIT]
+.br
+The size of cache to use.
 .ad b
 .HP
 .ad l
@@ -1402,6 +1494,35 @@ on the command.
 .br
 Suppress output and log messages. Overrides --debug and --verbose.
 Repeat once to also suppress any prompts with answer 'no'.
+.ad b
+.HP
+.ad l
+\fB--raidintegrity\fP \fBy\fP|\fBn\fP
+.br
+Enable or disable data integrity checksums for raid images.
+.ad b
+.HP
+.ad l
+\fB--raidintegrityblocksize\fP \fINumber\fP
+.br
+The block size to use for dm-integrity on raid images.
+The integrity block size should usually match the device
+logical block size, or the file system block size.
+It may be less than the file system block size, but not
+less than the device logical block size.
+Possible values: 512, 1024, 2048, 4096.
+.ad b
+.HP
+.ad l
+\fB--raidintegritymode\fP \fIString\fP
+.br
+Use a journal (default) or bitmap for keeping integrity checksums consistent
+in case of a crash. The bitmap areas are recalculated after a crash, so corruption
+in those areas would not be detected. A journal does not have this problem.
+The journal mode doubles writes to storage, but can improve performance for
+scattered writes packed into a single journal write.
+bitmap mode can in theory achieve full write throughput of the device,
+but would not benefit from the potential scattered write optimization.
 .ad b
 .HP
 .ad l

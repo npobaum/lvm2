@@ -71,16 +71,16 @@ int lvmcache_label_rescan_vg(struct cmd_context *cmd, const char *vgname, const 
 int lvmcache_label_rescan_vg_rw(struct cmd_context *cmd, const char *vgname, const char *vgid);
 
 /* Add/delete a device */
-struct lvmcache_info *lvmcache_add(struct labeller *labeller, const char *pvid,
+struct lvmcache_info *lvmcache_add(struct cmd_context *cmd, struct labeller *labeller, const char *pvid,
                                    struct device *dev, uint64_t label_sector,
                                    const char *vgname, const char *vgid,
                                    uint32_t vgstatus, int *is_duplicate);
-int lvmcache_add_orphan_vginfo(const char *vgname, struct format_type *fmt);
+int lvmcache_add_orphan_vginfo(struct cmd_context *cmd, const char *vgname, struct format_type *fmt);
 void lvmcache_del(struct lvmcache_info *info);
 void lvmcache_del_dev(struct device *dev);
 
 /* Update things */
-int lvmcache_update_vgname_and_id(struct lvmcache_info *info,
+int lvmcache_update_vgname_and_id(struct cmd_context *cmd, struct lvmcache_info *info,
 				  struct lvmcache_vgsummary *vgsummary);
 int lvmcache_update_vg_from_read(struct volume_group *vg, unsigned precommitted);
 int lvmcache_update_vg_from_write(struct volume_group *vg);
@@ -161,11 +161,6 @@ struct device *lvmcache_device(struct lvmcache_info *info);
 unsigned lvmcache_mda_count(struct lvmcache_info *info);
 uint64_t lvmcache_smallest_mda_size(struct lvmcache_info *info);
 
-struct metadata_area *lvmcache_get_mda(struct cmd_context *cmd,
-                                      const char *vgname,
-                                      struct device *dev,
-                                      int use_mda_num);
-
 bool lvmcache_has_duplicate_devs(void);
 void lvmcache_del_dev_from_duplicates(struct device *dev);
 bool lvmcache_dev_is_unused_duplicate(struct device *dev);
@@ -174,6 +169,7 @@ int lvmcache_get_unused_duplicates(struct cmd_context *cmd, struct dm_list *head
 int vg_has_duplicate_pvs(struct volume_group *vg);
 
 int lvmcache_found_duplicate_vgnames(void);
+bool lvmcache_has_duplicate_local_vgname(const char *vgid, const char *vgname);
 
 int lvmcache_contains_lock_type_sanlock(struct cmd_context *cmd);
 

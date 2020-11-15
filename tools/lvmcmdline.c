@@ -124,8 +124,10 @@ static const struct command_function _command_functions[CMD_COUNT] = {
 	{ lvconvert_to_cachepool_CMD,			lvconvert_to_pool_cmd },
 	{ lvconvert_to_thin_with_external_CMD,		lvconvert_to_thin_with_external_cmd },
 	{ lvconvert_to_cache_with_cachevol_CMD,		lvconvert_to_cache_with_cachevol_cmd },
+	{ lvconvert_to_cache_with_device_CMD,		lvconvert_to_cache_with_cachevol_cmd },
 	{ lvconvert_to_cache_with_cachepool_CMD,	lvconvert_to_cache_with_cachepool_cmd },
 	{ lvconvert_to_writecache_CMD,			lvconvert_to_writecache_cmd },
+	{ lvconvert_to_writecache_with_device_CMD,	lvconvert_to_writecache_cmd },
 	{ lvconvert_swap_pool_metadata_CMD,		lvconvert_swap_pool_metadata_cmd },
 	{ lvconvert_to_thinpool_or_swap_metadata_CMD,   lvconvert_to_pool_or_swap_metadata_cmd },
 	{ lvconvert_to_cachepool_or_swap_metadata_CMD,  lvconvert_to_pool_or_swap_metadata_cmd },
@@ -148,6 +150,15 @@ static const struct command_function _command_functions[CMD_COUNT] = {
 	/* lvconvert VDO pool */
 	{ lvconvert_to_vdopool_CMD, lvconvert_to_vdopool_cmd },
 	{ lvconvert_to_vdopool_param_CMD, lvconvert_to_vdopool_param_cmd },
+
+	/* lvconvert for integrity */
+	{ lvconvert_integrity_CMD, lvconvert_integrity_cmd },
+
+	/* lvcreate */
+	{ lvcreate_and_attach_cachevol_for_cache_CMD,		lvcreate_and_attach_cache_cmd },
+	{ lvcreate_and_attach_cachedevice_for_cache_CMD,	lvcreate_and_attach_cache_cmd },
+	{ lvcreate_and_attach_cachevol_for_writecache_CMD,	lvcreate_and_attach_writecache_cmd },
+	{ lvcreate_and_attach_cachedevice_for_writecache_CMD,	lvcreate_and_attach_writecache_cmd },
 
 	{ pvscan_display_CMD, pvscan_display_cmd },
 	{ pvscan_cache_CMD, pvscan_cache_cmd },

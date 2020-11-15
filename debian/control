@@ -42,8 +42,8 @@ Depends:
  ${shlibs:Depends},
  ${misc:Depends},
  lsb-base,
- dmsetup (>= 1.02.145-2~),
- dmeventd,
+ dmsetup (>= ${devmapper:Version}~),
+ dmeventd (>= ${devmapper:Version}~),
 Recommends:
  thin-provisioning-tools
 Multi-Arch: foreign
@@ -80,7 +80,7 @@ Depends:
  ${shlibs:Depends},
  ${python3:Depends},
  ${misc:Depends},
- lvm2 (= ${binary:Version}),
+ lvm2 (>= ${source:Version}~),
  dbus,
  python3-dbus,
  python3-gi,
@@ -102,7 +102,7 @@ Pre-Depends:
 Depends:
  ${shlibs:Depends},
  ${misc:Depends},
- lvm2 (= ${binary:Version}),
+ lvm2 (>= ${source:Version}~),
 Multi-Arch: foreign
 Description: LVM locking daemon
  This is LVM2, the rewrite of The Linux Logical Volume Manager.  LVM
@@ -144,7 +144,7 @@ Pre-Depends:
 Depends:
  ${shlibs:Depends},
  ${misc:Depends},
- dmsetup (>= ${binary:Version}),
+ dmsetup (>= ${devmapper:Version}~),
 Multi-Arch: same
 Description: Linux Kernel Device Mapper userspace library
  The Linux Kernel Device Mapper is the LVM (Linux Logical Volume Management)

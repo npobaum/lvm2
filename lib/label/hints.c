@@ -351,6 +351,7 @@ static void _unlock_hints(struct cmd_context *cmd)
 
 void hints_exit(struct cmd_context *cmd)
 {
+	free_hints(&cmd->hints);
 	if (_hints_fd == -1)
 		return;
 	return _unlock_hints(cmd);
@@ -418,6 +419,9 @@ static struct hint *_find_hint_name(struct dm_list *hints, const char *name)
 static int _dev_in_hint_hash(struct cmd_context *cmd, struct device *dev)
 {
 	uint64_t devsize = 0;
+
+	if (dm_list_empty(&dev->aliases))
+		return 0;
 
 	if (!cmd->filter->passes_filter(cmd, cmd->filter, dev, "regex"))
 		return 0;
@@ -797,10 +801,8 @@ static int _read_hint_file(struct cmd_context *cmd, struct dm_list *hints, int *
 	if (fclose(fp))
 		stack;
 
-	if (!ret) {
-		free_hints(hints);
+	if (!ret)
 		return 0;
-	}
 
 	if (!found)
 		return 1;
@@ -1318,6 +1320,7 @@ int get_hints(struct cmd_context *cmd, struct dm_list *hints_out, int *newhints,
 	 */
 	if (!_read_hint_file(cmd, &hints_list, &needs_refresh)) {
 		log_debug("get_hints: read fail");
+		free_hints(&hints_list);
 		_unlock_hints(cmd);
 		return 0;
 	}
@@ -1330,6 +1333,7 @@ int get_hints(struct cmd_context *cmd, struct dm_list *hints_out, int *newhints,
 	 */
 	if (needs_refresh) {
 		log_debug("get_hints: needs refresh");
+		free_hints(&hints_list);
 
 		if (!_lock_hints(cmd, LOCK_EX, NONBLOCK))
 			return 0;

@@ -388,7 +388,7 @@ class LvCommon(AutomatedProperties):
 					'l': 'mirror log device', 'c': 'under conversion',
 					'V': 'thin Volume', 't': 'thin pool', 'T': 'Thin pool data',
 					'e': 'raid or pool metadata or pool metadata spare',
-					'd': 'vdo pool', 'D': 'vdo pool data',
+					'd': 'vdo pool', 'D': 'vdo pool data', 'g': 'integrity',
 					'-': 'Unspecified'}
 		return self.attr_struct(0, type_map)
 
@@ -742,6 +742,49 @@ class Lv(LvCommon):
 			None, tags, tag_options),
 			cb, cbe, return_tuple=False)
 		cfg.worker_q.put(r)
+
+	@staticmethod
+	def _writecache_lv(lv_uuid, lv_name, lv_object_path, cache_options):
+		# Make sure we have a dbus object representing it
+		dbo = LvCommon.validate_dbus_object(lv_uuid, lv_name)
+
+		# Make sure we have dbus object representing lv to cache
+		lv_to_cache = cfg.om.get_object_by_path(lv_object_path)
+
+		if lv_to_cache:
+			fcn = lv_to_cache.lv_full_name()
+			rc, out, err = cmdhandler.lv_writecache_lv(
+				dbo.lv_full_name(), fcn, cache_options)
+			if rc == 0:
+				# When we cache an LV, the cache pool and the lv that is getting
+				# cached need to be removed from the object manager and
+				# re-created as their interfaces have changed!
+				mt_remove_dbus_objects((dbo, lv_to_cache))
+				cfg.load()
+
+				lv_converted = cfg.om.get_object_path_by_lvm_id(fcn)
+			else:
+				raise dbus.exceptions.DBusException(
+					LV_INTERFACE,
+					'Exit code %s, stderr = %s' % (str(rc), err))
+		else:
+			raise dbus.exceptions.DBusException(
+				LV_INTERFACE, 'LV to cache with object path %s not present!' %
+				lv_object_path)
+		return lv_converted
+
+	@dbus.service.method(
+		dbus_interface=LV_INTERFACE,
+		in_signature='oia{sv}',
+		out_signature='(oo)',
+		async_callbacks=('cb', 'cbe'))
+	def WriteCacheLv(self, lv_object, tmo, cache_options, cb, cbe):
+		r = RequestEntry(
+			tmo, Lv._writecache_lv,
+			(self.Uuid, self.lvm_id, lv_object,
+			cache_options), cb, cbe)
+		cfg.worker_q.put(r)
+
 
 # noinspection PyPep8Naming
 @utils.dbus_property(VDO_POOL_INTERFACE, 'OperatingMode', 's')
