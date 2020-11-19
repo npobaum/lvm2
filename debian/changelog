@@ -1,3 +1,9 @@
+lvm2 (2.03.07-1ubuntu4) hirsute; urgency=medium
+
+  * No-change rebuild to build with python3.9 as default.
+
+ -- Matthias Klose <doko@ubuntu.com>  Thu, 19 Nov 2020 20:19:25 +0100
+
 lvm2 (2.03.07-1ubuntu3) groovy; urgency=medium
 
   * Revert "Fix incorrect path to mountroot fail hook. LP: #1871154"
