@@ -607,7 +607,7 @@ AC_MSG_CHECKING(whether to include vdo)
 AC_ARG_WITH(vdo,
 	    AC_HELP_STRING([--with-vdo=TYPE],
 			   [vdo support: internal/none [internal]]),
-			   VDO=$withval, VDO="none")
+			   VDO=$withval, VDO="internal")
 
 AC_MSG_RESULT($VDO)
 
@@ -654,8 +654,8 @@ dnl -- writecache inclusion type
 AC_MSG_CHECKING(whether to include writecache)
 AC_ARG_WITH(writecache,
 	    AC_HELP_STRING([--with-writecache=TYPE],
-			   [writecache support: internal/none [none]]),
-			   WRITECACHE=$withval, WRITECACHE="none")
+			   [writecache support: internal/none [internal]]),
+			   WRITECACHE=$withval, WRITECACHE="internal")
 
 AC_MSG_RESULT($WRITECACHE)
 
@@ -672,8 +672,8 @@ dnl -- integrity inclusion type
 AC_MSG_CHECKING(whether to include integrity)
 AC_ARG_WITH(integrity,
 	    AC_HELP_STRING([--with-integrity=TYPE],
-			   [integrity support: internal/none [none]]),
-			   INTEGRITY=$withval, INTEGRITY="none")
+			   [integrity support: internal/none [internal]]),
+			   INTEGRITY=$withval, INTEGRITY="internal")
 
 AC_MSG_RESULT($INTEGRITY)
 
@@ -690,6 +690,12 @@ dnl -- Disable readline
 AC_ARG_ENABLE([readline],
 	      AC_HELP_STRING([--disable-readline], [disable readline support]),
 	      READLINE=$enableval, READLINE=maybe)
+
+################################################################################
+dnl -- Disable editline
+AC_ARG_ENABLE([editline],
+	      AC_HELP_STRING([--enable-editline], [enable editline support]),
+	      EDITLINE=$enableval, EDITLINE=no)
 
 ################################################################################
 dnl -- Disable realtime clock support
@@ -734,7 +740,7 @@ dnl -- Set up pidfile and run directory
 AH_TEMPLATE(DEFAULT_PID_DIR)
 AC_ARG_WITH(default-pid-dir,
 	    AC_HELP_STRING([--with-default-pid-dir=PID_DIR],
-			   [Default directory to keep PID files in. [autodetect]]),
+			   [default directory to keep PID files in [autodetect]]),
 	    DEFAULT_PID_DIR="$withval", DEFAULT_PID_DIR=$RUN_DIR)
 AC_DEFINE_UNQUOTED(DEFAULT_PID_DIR, ["$DEFAULT_PID_DIR"],
 		   [Default directory to keep PID files in.])
@@ -742,7 +748,7 @@ AC_DEFINE_UNQUOTED(DEFAULT_PID_DIR, ["$DEFAULT_PID_DIR"],
 AH_TEMPLATE(DEFAULT_DM_RUN_DIR, [Name of default DM run directory.])
 AC_ARG_WITH(default-dm-run-dir,
 	    AC_HELP_STRING([--with-default-dm-run-dir=DM_RUN_DIR],
-			   [ Default DM run directory. [autodetect]]),
+			   [default DM run directory [autodetect]]),
 	    DEFAULT_DM_RUN_DIR="$withval", DEFAULT_DM_RUN_DIR=$RUN_DIR)
 AC_DEFINE_UNQUOTED(DEFAULT_DM_RUN_DIR, ["$DEFAULT_DM_RUN_DIR"],
 		   [Default DM run directory.])
@@ -750,7 +756,7 @@ AC_DEFINE_UNQUOTED(DEFAULT_DM_RUN_DIR, ["$DEFAULT_DM_RUN_DIR"],
 AH_TEMPLATE(DEFAULT_RUN_DIR, [Name of default LVM run directory.])
 AC_ARG_WITH(default-run-dir,
 	    AC_HELP_STRING([--with-default-run-dir=RUN_DIR],
-			   [Default LVM run directory. [autodetect_run_dir/lvm]]),
+			   [default LVM run directory [autodetect_run_dir/lvm]]),
 	    DEFAULT_RUN_DIR="$withval", DEFAULT_RUN_DIR="$RUN_DIR/lvm")
 AC_DEFINE_UNQUOTED(DEFAULT_RUN_DIR, ["$DEFAULT_RUN_DIR"],
 		   [Default LVM run directory.])
@@ -1218,6 +1224,9 @@ if test "$BUILD_LVMDBUSD" = yes; then
 	unset am_cv_pathless_PYTHON ac_cv_path_PYTHON am_cv_python_platform
 	unset am_cv_python_pythondir am_cv_python_version am_cv_python_pyexecdir
 	unset ac_cv_path_PYTHON_CONFIG ac_cv_path_ac_pt_PYTHON_CONFIG
+	m4_define_default([_AM_PYTHON_INTERPRETER_LIST],[ python3 python2 python dnl
+	python3.9 python3.8 python3.7 python3.6 python3.5 python3.4 python3.3 python3.2 python3.1 python3.0 dnl
+	python2.7 python2.6 python2.5 python2.4 python2.3 python2.2 python2.1 python2.0 ])
 	AM_PATH_PYTHON([3])
 	PYTHON3=$PYTHON
 	test -z "$PYTHON3" && AC_MSG_ERROR([python3 is required for --enable-python3_bindings or --enable-dbus-service but cannot be found])
@@ -1346,6 +1355,33 @@ if test "$SELINUX" = yes; then
 fi
 
 ################################################################################
+dnl -- Check BLKZEROOUT support
+
+AC_CACHE_CHECK([for BLKZEROOUT in sys/ioctl.h.],
+	[ac_cv_have_blkzeroout],
+	[AC_COMPILE_IFELSE([AC_LANG_PROGRAM(
+[#include <sys/ioctl.h>
+#include <linux/fs.h>
+int bar(void) { return ioctl(0, BLKZEROOUT, 0); }]
+	 )], [ac_cv_have_blkzeroout=yes], [ac_cv_have_blkzeroout=no])])
+
+
+AC_ARG_ENABLE(blkzeroout,
+	      AC_HELP_STRING([--disable-blkzeroout],
+			     [do not use BLKZEROOUT for device zeroing]),
+	      BLKZEROOUT=$enableval, BLKZEROOUT=yes)
+
+AC_MSG_CHECKING(whether to use BLKZEROOUT for device zeroing)
+if test "$BLKZEROOUT" = yes; then
+	AC_IF_YES(ac_cv_have_blkzeroout,
+		  AC_DEFINE(HAVE_BLKZEROOUT, 1,
+			    [Define if ioctl BLKZEROOUT can be used for device zeroing.]),
+		  BLKZEROOUT=no)
+fi
+AC_MSG_RESULT($BLKZEROOUT)
+
+
+################################################################################
 dnl -- Check for realtime clock support
 RT_LIBS=
 HAVE_REALTIME=no
@@ -1377,6 +1413,16 @@ AC_IF_YES(ac_cv_stat_st_ctim,
 ################################################################################
 dnl -- Check for getopt
 AC_CHECK_HEADERS(getopt.h, AC_DEFINE([HAVE_GETOPTLONG], 1, [Define to 1 if getopt_long is available.]))
+
+################################################################################
+dnl -- Check for editline
+if test "$EDITLINE" == yes; then
+	PKG_CHECK_MODULES([EDITLINE], [libedit], [
+		AC_DEFINE([EDITLINE_SUPPORT], 1,
+			[Define to 1 to include the LVM editline shell.])], AC_MSG_ERROR(
+[libedit could not be found which is required for the --enable-readline option.])
+	)
+fi
 
 ################################################################################
 dnl -- Check for readline (Shamelessly copied from parted 1.4.17)
@@ -1509,6 +1555,12 @@ if test "$READLINE" = yes; then
 fi
 AC_MSG_CHECKING(whether to enable readline)
 AC_MSG_RESULT($READLINE)
+
+if test "$EDITLINE" = yes; then
+	AC_CHECK_HEADERS(editline/readline.h editline/history.h,,hard_bailout)
+fi
+AC_MSG_CHECKING(whether to enable editline)
+AC_MSG_RESULT($EDITLINE)
 
 if test "$BUILD_CMIRRORD" = yes; then
 	AC_CHECK_FUNCS(atexit,,hard_bailout)
@@ -1765,6 +1817,7 @@ AC_SUBST(QUORUM_CFLAGS)
 AC_SUBST(QUORUM_LIBS)
 AC_SUBST(RT_LIBS)
 AC_SUBST(READLINE_LIBS)
+AC_SUBST(EDITLINE_LIBS)
 AC_SUBST(REPLICATORS)
 AC_SUBST(SACKPT_CFLAGS)
 AC_SUBST(SACKPT_LIBS)
@@ -1900,7 +1953,7 @@ AS_IF([test -n "$CACHE_CHECK_VERSION_WARN"],
       [AC_MSG_WARN([You should install latest cache_check vsn 0.7.0 to use lvm2 cache metadata format 2])])
 
 AS_IF([test -n "$VDO_CONFIGURE_WARN"],
-      [AC_MSG_WARN([unrecognized 'vdoformat' tool is REQUIRED for VDO logical volume creation!])])
+      [AC_MSG_WARN([Unrecognized 'vdoformat' tool is REQUIRED for VDO logical volume creation!])])
 
 
 AS_IF([test "$ODIRECT" != yes],

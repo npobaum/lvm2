@@ -44,14 +44,15 @@ define CONFARGS.deb
 	--enable-blkid_wiping
 	--enable-cmdlib
 	--enable-dmeventd
+	--enable-editline
 	--enable-lvmlockd-dlm
 	--enable-lvmlockd-sanlock
 	--enable-lvmpolld
 	--enable-notify-dbus
 	--enable-pkgconfig
-	--enable-readline
 	--enable-udev_rules
 	--enable-udev_sync
+	--disable-readline
 endef
 
 define CONFARGS.deb_all

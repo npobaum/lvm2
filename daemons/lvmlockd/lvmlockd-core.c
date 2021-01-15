@@ -887,8 +887,8 @@ static int read_adopt_file(struct list_head *vg_lockd)
 			continue;
 		else if (!strncmp(adopt_line, "lvmlockd", 8)) {
 			unsigned int v_major = 0, v_minor = 0;
-			sscanf(adopt_line, "lvmlockd adopt_version %u.%u", &v_major, &v_minor);
-			if (v_major != ADOPT_VERSION_MAJOR)
+			if ((sscanf(adopt_line, "lvmlockd adopt_version %u.%u", &v_major, &v_minor) != 2) ||
+			    (v_major != ADOPT_VERSION_MAJOR))
 				goto fail;
 
 		} else if (!strncmp(adopt_line, "VG:", 3)) {
@@ -6038,14 +6038,14 @@ static void usage(char *prog, FILE *file)
 int main(int argc, char *argv[])
 {
 	daemon_state ds = {
-		.daemon_main = main_loop,
-		.daemon_init = NULL,
-		.daemon_fini = NULL,
+		.name = "lvmlockd",
 		.pidfile = getenv("LVM_LVMLOCKD_PIDFILE"),
 		.socket_path = getenv("LVM_LVMLOCKD_SOCKET"),
 		.protocol = lvmlockd_protocol,
 		.protocol_version = lvmlockd_protocol_version,
-		.name = "lvmlockd",
+		.daemon_init = NULL,
+		.daemon_fini = NULL,
+		.daemon_main = main_loop,
 	};
 
 	static struct option long_options[] = {

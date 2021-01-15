@@ -516,13 +516,14 @@ teardown() {
 	echo -n "## teardown..."
 	unset LVM_LOG_FILE_EPOCH
 
-	test ! -f ERR_DEV || should dmsetup remove $(cat ERR_DEV_NAME)
-
 	if test -f TESTNAME ; then
 
 	if test ! -f SKIP_THIS_TEST ; then
 		# Evaluate left devices only for non-skipped tests
-		TEST_LEAKED_DEVICES=$(dmsetup table | grep "$PREFIX" | grep -Ev "${PREFIX}(pv|[0-9])") || true
+		TEST_LEAKED_DEVICES=$(dmsetup table | grep "$PREFIX" | \
+			grep -Ev "${PREFIX}(pv|[0-9])" | \
+			grep -v "$(cat ERR_DEV_NAME 2>/dev/null)" | \
+			grep -v "$(cat ZERO_DEV_NAME 2>/dev/null)") || true
 	fi
 
 	kill_tagged_processes
@@ -926,6 +927,11 @@ common_dev_() {
 		}
 		shift 2
 		;;
+	delayzero)
+		shift 2
+		# zero delay is just equivalent to 'zero_dev'
+		test "$read_ms" -eq 0 && test "$write_ms" -eq 0 && tgtype="zero"
+		;;
 	# error|zero target does not take read_ms & write_ms only offset list
 	esac
 
@@ -958,6 +964,8 @@ common_dev_() {
 			echo "$from $len delay $pvdev $(( pos + offset )) $read_ms $pvdev $(( pos + offset )) $write_ms" ;;
 		writeerror)
 			echo "$from $len delay $pvdev $(( pos + offset )) 0 $(cat ERR_DEV) 0 0" ;;
+		delayzero)
+			echo "$from $len delay $(cat ZERO_DEV) 0 $read_ms $(cat ZERO_DEV) 0 $write_ms" ;;
 		error|zero)
 			echo "$from $len $tgtype" ;;
 		esac
@@ -1070,7 +1078,13 @@ restore_from_devtable() {
 	for dev in "$@"; do
 		local name=${dev##*/}
 		dmsetup load "$name" "$name.devtable"
-		dmsetup resume "$name"
+		if not dmsetup resume "$name" ; then
+			dmsetup clear $name
+			dmsetup resume $name
+			finish_udev_transaction
+			echo "Device $name has unusable table \"$(cat $name.devtable)\""
+			return 1
+		fi
 	done
 	finish_udev_transaction
 }
@@ -1106,6 +1120,29 @@ writeerror_dev() {
 	fi
 
 	common_dev_ writeerror "$@"
+}
+
+#
+# Convert device to device with sections of delayed zero read and writes.
+# For this 'delay' dev will use extra new TEST-zerodev (huge zero target)
+# and reroutes reads and writes
+# i.e.  delayzero_dev "$dev1" 8:32
+delayzero_dev() {
+	local name=${PREFIX}-zerodev
+
+	if test ! -e ZERO_DEV; then
+		# delay target is used for error mapping
+		if test ! -f HAVE_DM_DELAY ; then
+			target_at_least dm-delay 1 1 0 || return 0
+			touch HAVE_DM_DELAY
+		fi
+		dmsetup create -u "TEST-$name" "$name" --table "0 4611686018427387904 zero"
+		# Take major:minor of our error device
+		echo "$name" > ZERO_DEV_NAME
+		dmsetup info -c  --noheadings -o major,minor "$name" > ZERO_DEV
+	fi
+
+	common_dev_ delayzero "$@"
 }
 
 #
@@ -1430,6 +1467,14 @@ thin_pool_error_works_32() {
 	esac
 }
 
+thin_restore_needs_more_volumes() {
+	case $("$LVM_TEST_THIN_RESTORE_CMD" -V) in
+		# With older version of thin-tool we got slightly more compact metadata
+		0.[0-6]*|0.7.0*) return 0 ;;
+	esac
+	return 1
+}
+
 udev_wait() {
 	pgrep udev >/dev/null || return 0
 	which udevadm &>/dev/null || return 0
@@ -1449,6 +1494,7 @@ wait_for_sync() {
 	done
 
 	echo "Sync is taking too long - assume stuck"
+	echo t >/proc/sysrq-trigger 2>/dev/null
 	return 1
 }
 
@@ -1549,7 +1595,7 @@ have_thin() {
 }
 
 have_vdo() {
-	lvm segtypes 2>/dev/null | grep vdo$ >/dev/null || {
+	lvm segtypes 2>/dev/null | grep 'vdo$' >/dev/null || {
 		echo "VDO is not built-in." >&2
 		return 1
 	}
@@ -1557,7 +1603,7 @@ have_vdo() {
 }
 
 have_writecache() {
-	lvm segtypes 2>/dev/null | grep -q writecache$ || {
+	lvm segtypes 2>/dev/null | grep 'writecache$' >/dev/null || {
 		echo "writecache is not built-in." >&2
 		return 1
 	}
@@ -1565,7 +1611,7 @@ have_writecache() {
 }
 
 have_integrity() {
-	lvm segtypes 2>/dev/null | grep -q integrity$ || {
+	lvm segtypes 2>/dev/null | grep 'integrity$' >/dev/null || {
 		echo "integrity is not built-in." >&2
 		return 1
 	}
@@ -1593,7 +1639,7 @@ have_raid4 () {
 }
 
 have_cache() {
-	lvm segtypes 2>/dev/null | grep cache$ >/dev/null || {
+	lvm segtypes 2>/dev/null | grep ' cache-pool$' >/dev/null || {
 		echo "Cache is not built-in." >&2
 		return 1
 	}

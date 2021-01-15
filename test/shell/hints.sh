@@ -330,13 +330,28 @@ rm $HINTS $PREV
 pvs
 cp $HINTS $PREV
 # this next pvscan creates newhints to trigger a refresh
-pvscan --cache "$dev5"
+pvscan --cache "$dev4"
 cat $NEWHINTS
 # this next pvs creates new hints
 pvs
 # the only diff will be "Created by..."
 not diff $HINTS $PREV
 
+
+#
+# Test pvck --repair forces refresh
+#
+
+rm $HINTS $PREV
+pvs
+cp $HINTS $PREV
+pvck --repairtype label_header -y "$dev3"
+cat $NEWHINTS
+grep 'Created empty by pvck' $HINTS
+# this next pvs creates new hints
+pvs
+# the only diff will be "Created by..."
+not diff $HINTS $PREV
 
 
 #

@@ -35,7 +35,7 @@ struct dev_iter {
 
 struct dir_list {
 	struct dm_list list;
-	char dir[0];
+	char dir[];
 };
 
 static struct {
@@ -66,6 +66,7 @@ static void _dev_init(struct device *dev)
 {
 	dev->fd = -1;
 	dev->bcache_fd = -1;
+	dev->bcache_di = -1;
 	dev->read_ahead = -1;
 
 	dev->ext.enabled = 0;
@@ -1157,13 +1158,13 @@ static int _insert(const char *path, const struct stat *info,
 		}
 
 		if (rec && !_insert_dir(path))
-			return_0;
+			return 0;
 	} else {		/* add a device */
 		if (!S_ISBLK(info->st_mode))
 			return 1;
 
 		if (!_insert_dev(path, info->st_rdev))
-			return_0;
+			return 0;
 	}
 
 	return 1;
@@ -1422,17 +1423,9 @@ const char *dev_name_confirmed(struct device *dev, int quiet)
 	return dev_name(dev);
 }
 
-/* Provide a custom reason when a device is ignored */
-const char *dev_cache_filtered_reason(const char *name)
+struct device *dev_hash_get(const char *name)
 {
-	const char *reason = "not found";
-	struct device *d = (struct device *) dm_hash_lookup(_cache.names, name);
-
-	if (d)
-		/* FIXME Record which filter caused the exclusion */
-		reason = "excluded by a filter";
-
-	return reason;
+	return (struct device *) dm_hash_lookup(_cache.names, name);
 }
 
 struct device *dev_cache_get(struct cmd_context *cmd, const char *name, struct dev_filter *f)
@@ -1656,4 +1649,3 @@ bool dev_cache_has_md_with_end_superblock(struct dev_types *dt)
 
 	return false;
 }
-

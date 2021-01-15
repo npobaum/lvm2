@@ -16,6 +16,7 @@
 #include "base/memory/zalloc.h"
 #include "lib/misc/lib.h"
 #include "lib/filters/filter.h"
+#include "lib/commands/toolcontext.h"
 
 #define MSG_SKIPPING "%s: Skipping: Partition table signature found"
 
@@ -23,6 +24,11 @@ static int _passes_partitioned_filter(struct cmd_context *cmd, struct dev_filter
 {
 	struct dev_types *dt = (struct dev_types *) f->private;
 	int ret;
+
+	if (cmd->filter_nodata_only)
+		return 1;
+
+	dev->filtered_flags &= ~DEV_FILTERED_PARTITIONED;
 
 	ret = dev_is_partitioned(dt, dev);
 
@@ -39,6 +45,7 @@ static int _passes_partitioned_filter(struct cmd_context *cmd, struct dev_filter
 		else
 			log_debug_devs(MSG_SKIPPING " [%s:%p]", dev_name(dev),
 					dev_ext_name(dev), dev->ext.handle);
+		dev->filtered_flags |= DEV_FILTERED_PARTITIONED;
 		return 0;
 	}
 

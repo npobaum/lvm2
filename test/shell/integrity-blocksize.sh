@@ -18,6 +18,24 @@ aux have_integrity 1 5 0 || skip
 
 losetup -h | grep sector-size || skip
 
+
+cleanup_mounted_and_teardown()
+{
+	umount "$mnt" || true
+	vgremove -ff $vg1 $vg2 || true
+
+	test -n "${LOOP1-}" && { losetup -d "$LOOP1" || true ; }
+	test -n "${LOOP2-}" && { losetup -d "$LOOP2" || true ; }
+	test -n "${LOOP3-}" && { losetup -d "$LOOP3" || true ; }
+	test -n "${LOOP4-}" && { losetup -d "$LOOP4" || true ; }
+
+	rm -f loop[abcd]
+	aux teardown
+}
+
+mnt="mnt"
+mkdir -p $mnt
+
 # Tests with fs block sizes require a libblkid version that shows BLOCK_SIZE
 aux prepare_devs 1
 vgcreate $vg "$dev1"
@@ -27,14 +45,23 @@ blkid "$DM_DEV_DIR/$vg/$lv1" | grep BLOCK_SIZE || skip
 lvchange -an $vg
 vgremove -ff $vg
 
-dd if=/dev/zero of=loopa bs=$((1024*1024)) count=64 2> /dev/null
-dd if=/dev/zero of=loopb bs=$((1024*1024)) count=64 2> /dev/null
-dd if=/dev/zero of=loopc bs=$((1024*1024)) count=64 2> /dev/null
-dd if=/dev/zero of=loopd bs=$((1024*1024)) count=64 2> /dev/null
-LOOP1=$(losetup -f loopa --show)
-LOOP2=$(losetup -f loopb --show)
-LOOP3=$(losetup -f loopc --sector-size 4096 --show)
-LOOP4=$(losetup -f loopd --sector-size 4096 --show)
+trap 'cleanup_mounted_and_teardown' EXIT
+
+# Currently (5.9-rc5 hits  'blkdev_issue_discard()' kernel WARNING)
+#truncate -s 64M loopa
+#truncate -s 64M loopb
+#truncate -s 64M loopc
+#truncate -s 64M loopd
+
+dd if=/dev/zero of=loopa bs=1M count=64 oflag=sync
+dd if=/dev/zero of=loopb bs=1M count=64 oflag=sync
+dd if=/dev/zero of=loopc bs=1M count=64 oflag=sync
+dd if=/dev/zero of=loopd bs=1M count=64 oflag=sync
+
+LOOP1=$(losetup -f loopa --show) || skip "Cannot find free loop device"
+LOOP2=$(losetup -f loopb --show) || skip "Cannot find free loop device"
+LOOP3=$(losetup -f loopc --sector-size 4096 --show) || skip "Loop cannot handle --sector-size 4096"
+LOOP4=$(losetup -f loopd --sector-size 4096 --show) || skip "Loop cannot handle --sector-size 4096"
 
 echo $LOOP1
 echo $LOOP2
@@ -47,9 +74,6 @@ aux extend_filter "a|$LOOP3|"
 aux extend_filter "a|$LOOP4|"
 
 aux lvmconf 'devices/scan = "/dev"'
-
-mnt="mnt"
-mkdir -p $mnt
 
 vgcreate $vg1 $LOOP1 $LOOP2
 vgcreate $vg2 $LOOP3 $LOOP4
@@ -81,6 +105,7 @@ not lvcreate --type raid1 -m1 --raidintegrity y --raidintegrityblocksize 512 -l 
 
 # lvcreate --bs 4096 on dev512, result 4k
 lvcreate --type raid1 -m1 --raidintegrity y --raidintegrityblocksize 4096 -l 8 -n $lv1 $vg1
+lvs -o raidintegrityblocksize $vg1/$lv1 | grep 4096
 pvck --dump metadata $LOOP1 | grep 'block_size = 4096'
 lvremove -y $vg1/$lv1
 
@@ -184,6 +209,7 @@ aux wipefs_a /dev/$vg1/$lv1
 mkfs.xfs -f -s size=4096 "$DM_DEV_DIR/$vg1/$lv1"
 blkid "$DM_DEV_DIR/$vg1/$lv1" | grep BLOCK_SIZE=\"4096\"
 lvconvert --raidintegrity y --raidintegrityblocksize 512 $vg1/$lv1
+lvs -o raidintegrityblocksize $vg1/$lv1 | grep 512
 blkid "$DM_DEV_DIR/$vg1/$lv1" | grep BLOCK_SIZE=\"4096\"
 mount "$DM_DEV_DIR/$vg1/$lv1" $mnt
 umount $mnt
@@ -198,6 +224,7 @@ blkid "$DM_DEV_DIR/$vg1/$lv1" | grep BLOCK_SIZE=\"4096\"
 lvchange -an $vg1/$lv1
 # lv needs to be inactive to increase LBS from 512
 lvconvert --raidintegrity y --raidintegrityblocksize 1024 $vg1/$lv1
+lvs -o raidintegrityblocksize $vg1/$lv1 | grep 1024
 lvchange -ay $vg1/$lv1
 blkid "$DM_DEV_DIR/$vg1/$lv1" | grep BLOCK_SIZE=\"4096\"
 mount "$DM_DEV_DIR/$vg1/$lv1" $mnt
@@ -267,15 +294,4 @@ pvck --dump metadata $LOOP3 | grep 'block_size = 4096'
 lvchange -an $vg2/$lv1
 lvremove -y $vg2/$lv1
 
-vgremove -ff $vg1
-vgremove -ff $vg2
-
-losetup -d $LOOP1
-losetup -d $LOOP2
-losetup -d $LOOP3
-losetup -d $LOOP4
-rm loopa
-rm loopb
-rm loopc
-rm loopd
-
+# remove of $vg1, $vg2 and loops in cleanup_mounted_and_teardown()

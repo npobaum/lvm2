@@ -109,8 +109,8 @@ struct arg_values {
 
 struct arg_value_group_list {
         struct dm_list list;
-        struct arg_values arg_values[0];
 	uint32_t prio;
+	struct arg_values arg_values[];
 };
 
 #define PERMITTED_READ_ONLY 	0x00000002
@@ -211,8 +211,6 @@ unsigned grouped_arg_count(const struct arg_values *av, int a);
 unsigned grouped_arg_is_set(const struct arg_values *av, int a);
 const char *grouped_arg_str_value(const struct arg_values *av, int a, const char *def);
 int32_t grouped_arg_int_value(const struct arg_values *av, int a, const int32_t def); 
-
-int integrity_mode_set(const char *mode, struct integrity_settings *settings);
 
 const char *command_name(struct cmd_context *cmd);
 

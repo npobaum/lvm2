@@ -23,7 +23,6 @@
 #include "stub.h"
 #include "lib/misc/last-path-component.h"
 
-#include <signal.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <sys/resource.h>
@@ -2901,13 +2900,8 @@ static void _init_md_checks(struct cmd_context *cmd)
 
 	if (!strcmp(cmd->md_component_checks, "full"))
 		cmd->use_full_md_check = 1;
-	else if (!strcmp(cmd->md_component_checks, "auto")) {
-		/* use_full_md_check can also be set later */
-		if (!strcmp(cmd->name, "pvcreate") ||
-		    !strcmp(cmd->name, "vgcreate") ||
-		    !strcmp(cmd->name, "vgextend"))
-			cmd->use_full_md_check = 1;
-	}
+
+	/* use_full_md_check can also be set later */
 
 	log_debug("Using md_component_checks %s use_full_md_check %d",
 		  cmd->md_component_checks, cmd->use_full_md_check);
@@ -3435,7 +3429,9 @@ static int _close_stray_fds(const char *command, struct custom_fds *custom_fds)
 	return 1;
 }
 
-struct cmd_context *init_lvm(unsigned set_connections, unsigned set_filters)
+struct cmd_context *init_lvm(unsigned set_connections,
+			     unsigned set_filters,
+			     unsigned threaded)
 {
 	struct cmd_context *cmd;
 
@@ -3449,7 +3445,7 @@ struct cmd_context *init_lvm(unsigned set_connections, unsigned set_filters)
 	 */
 	dm_set_name_mangling_mode(DM_STRING_MANGLING_NONE);
 
-	if (!(cmd = create_toolcontext(0, NULL, 1, 0,
+	if (!(cmd = create_toolcontext(0, NULL, 1, threaded,
 			set_connections, set_filters))) {
 		udev_fin_library_context();
 		return_NULL;
@@ -3603,7 +3599,7 @@ int lvm2_main(int argc, char **argv)
 	if (!alias && (argc > 2) && !strcmp(argv[2], "-?"))
 		argv[2] = (char *)"-h";
 
-	if (!(cmd = init_lvm(0, 0)))
+	if (!(cmd = init_lvm(0, 0, 0)))
 		return EINIT_FAILED;
 
 	/* Store original argv location so we may customise it if we become a daemon */
@@ -3647,7 +3643,7 @@ int lvm2_main(int argc, char **argv)
 	}
 
 	if (run_shell) {
-#ifdef READLINE_SUPPORT
+#if defined(READLINE_SUPPORT) || defined(EDITLINE_SUPPORT)
 		_nonroot_warning();
 		if (!_prepare_profiles(cmd)) {
 			ret = ECMD_FAILED;

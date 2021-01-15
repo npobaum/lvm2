@@ -23,9 +23,11 @@ mkdir -p $mnt
 
 aux prepare_devs 5 64
 
-printf "%0.sA" {1..16384} >> fileA
-printf "%0.sB" {1..16384} >> fileB
-printf "%0.sC" {1..16384} >> fileC
+# Use awk instead of anoyingly long log out from printf
+#printf "%0.sA" {1..16384} >> fileA
+awk 'BEGIN { while (z++ < 16384) printf "A" }' > fileA
+awk 'BEGIN { while (z++ < 16384) printf "B" }' > fileB
+awk 'BEGIN { while (z++ < 16384) printf "C" }' > fileC
 
 # generate random data
 dd if=/dev/urandom of=randA bs=512K count=2
@@ -35,21 +37,23 @@ dd if=/dev/urandom of=randC bs=512K count=4
 _prepare_vg() {
 	# zero devs so we are sure to find the correct file data
 	# on the underlying devs when corrupting it
-	dd if=/dev/zero of="$dev1" || true
-	dd if=/dev/zero of="$dev2" || true
-	dd if=/dev/zero of="$dev3" || true
-	dd if=/dev/zero of="$dev4" || true
-	dd if=/dev/zero of="$dev5" || true
+	dd if=/dev/zero of="$dev1" bs=1M oflag=direct || true
+	dd if=/dev/zero of="$dev2" bs=1M oflag=direct || true
+	dd if=/dev/zero of="$dev3" bs=1M oflag=direct || true
+	dd if=/dev/zero of="$dev4" bs=1M oflag=direct || true
+	dd if=/dev/zero of="$dev5" bs=1M oflag=direct || true
 	vgcreate $SHARED $vg "$dev1" "$dev2" "$dev3" "$dev4" "$dev5"
 	pvs
 }
 
-_test_fs_with_error() {
-	mkfs.xfs -f "$DM_DEV_DIR/$vg/$lv1"
+_test_fs_with_read_repair() {
+	mkfs.xfs -f -s size=4096 "$DM_DEV_DIR/$vg/$lv1"
 
 	mount "$DM_DEV_DIR/$vg/$lv1" $mnt
 
-	# add original data
+	cp randA $mnt
+	cp randB $mnt
+	cp randC $mnt
 	cp fileA $mnt
 	cp fileB $mnt
 	cp fileC $mnt
@@ -57,82 +61,26 @@ _test_fs_with_error() {
 	umount $mnt
 	lvchange -an $vg/$lv1
 
-	# corrupt the original data on the underying dev
-	# flip one bit in fileB, changing a 0x42 to 0x43
-	# the bit is changed in the last 4096 byte block
-	# of the file, so when reading back the file we
-	# will get the first three 4096 byte blocks, for
-	# a total of 12288 bytes before getting an error
-	# on the last 4096 byte block.
-	xxd "$dev1" > dev1.txt
-	tac dev1.txt > dev1.rev
-	sed -e '0,/4242 4242 4242 4242 4242 4242 4242 4242/ s/4242 4242 4242 4242 4242 4242 4242 4242/4242 4242 4242 4242 4242 4242 4242 4243/' dev1.rev > dev1.rev.bad
-	tac dev1.rev.bad > dev1.bad
-	xxd -r dev1.bad > "$dev1"
-	rm dev1.txt dev1.rev dev1.rev.bad dev1.bad
+	for dev in "$@"; do
+		xxd "$dev" > dev.txt
+		# corrupt fileB
+		sed -e 's/4242 4242 4242 4242 4242 4242 4242 4242/4242 4242 4242 4242 4242 4242 4242 4243/' dev.txt > dev.bad
+		rm -f dev.txt
+		xxd -r dev.bad > "$dev"
+		rm -f dev.bad
+	done
 
 	lvchange -ay $vg/$lv1
-	mount "$DM_DEV_DIR/$vg/$lv1" $mnt
-
-	# read complete fileA which was not corrupted
-	dd if=$mnt/fileA of=tmp bs=1k
-	ls -l tmp
-	stat -c %s tmp
-	cmp -b fileA tmp
-	rm tmp
-
-	# read partial fileB which was corrupted
-	not dd if=$mnt/fileB of=tmp bs=1k
-	ls -l tmp
-	stat -c %s tmp | grep 12288
-	not cmp -b fileB tmp
-	rm tmp
-
-	umount $mnt
-}
-
-_test_fs_with_raid() {
-	mkfs.xfs -f "$DM_DEV_DIR/$vg/$lv1"
 
 	mount "$DM_DEV_DIR/$vg/$lv1" $mnt
-
-	# add original data
-	cp fileA $mnt
-	cp fileB $mnt
-	cp fileC $mnt
-
-	umount $mnt
-	lvchange -an $vg/$lv1
-
-	xxd "$dev1" > dev1.txt
-	tac dev1.txt > dev1.rev
-	sed -e '0,/4242 4242 4242 4242 4242 4242 4242 4242/ s/4242 4242 4242 4242 4242 4242 4242 4242/4242 4242 4242 4242 4242 4242 4242 4243/' dev1.rev > dev1.rev.bad
-	tac dev1.rev.bad > dev1.bad
-	xxd -r dev1.bad > "$dev1"
-	rm dev1.txt dev1.rev dev1.rev.bad dev1.bad
-
-	lvchange -ay $vg/$lv1
-	mount "$DM_DEV_DIR/$vg/$lv1" $mnt
-
-	# read complete fileA which was not corrupted
-	dd if=$mnt/fileA of=tmp bs=1k
-	ls -l tmp
-	stat -c %s tmp | grep 16384
-	cmp -b fileA tmp
-	rm tmp
-
-	# read complete fileB, corruption is corrected by raid
-	dd if=$mnt/fileB of=tmp bs=1k
-	ls -l tmp
-	stat -c %s tmp | grep 16384
-	cmp -b fileB tmp
-	rm tmp
-
+	cmp -b $mnt/fileA fileA
+	cmp -b $mnt/fileB fileB
+	cmp -b $mnt/fileC fileC
 	umount $mnt
 }
 
 _add_new_data_to_mnt() {
-	mkfs.xfs -f "$DM_DEV_DIR/$vg/$lv1"
+	mkfs.xfs -f -s size=4096 "$DM_DEV_DIR/$vg/$lv1"
 
 	mount "$DM_DEV_DIR/$vg/$lv1" $mnt
 
@@ -208,7 +156,7 @@ _wait_recalc() {
 	# enabled never gets in sync. I saw this in BB, but not when executing
 	# the commands manually
 	if test -z "$sync"; then
-		echo "TEST WARNING: Resync of dm-integrity device '$checklv' failed"
+		echo "TEST\ WARNING: Resync of dm-integrity device '$checklv' failed"
                 dmsetup status "$DM_DEV_DIR/mapper/${checklv/\//-}"
 		exit
 	fi
@@ -220,68 +168,105 @@ _wait_recalc() {
 # it is detected by integrity and corrected by raid.
 
 _prepare_vg
-lvcreate --type raid1 -m1 --raidintegrity y -n $lv1 -l 8 $vg
+lvcreate --type raid1 -m1 --raidintegrity y -n $lv1 -l 8 $vg "$dev1" "$dev2"
 _wait_recalc $vg/${lv1}_rimage_0
 _wait_recalc $vg/${lv1}_rimage_1
-_test_fs_with_raid
+_wait_recalc $vg/$lv1
+_test_fs_with_read_repair "$dev1"
+lvs -o integritymismatches $vg/${lv1}_rimage_0 |tee mismatch
+not grep 0 mismatch
+lvs -o integritymismatches $vg/$lv1 |tee mismatch
+not grep 0 mismatch
 lvchange -an $vg/$lv1
 lvconvert --raidintegrity n $vg/$lv1
 lvremove $vg/$lv1
 vgremove -ff $vg
 
 _prepare_vg
-lvcreate --type raid1 -m2 --raidintegrity y -n $lv1 -l 8 $vg
-_wait_recalc $vg/${lv1}_rimage_0
-_wait_recalc $vg/${lv1}_rimage_1
-_wait_recalc $vg/${lv1}_rimage_2
-_test_fs_with_raid
-lvchange -an $vg/$lv1
-lvconvert --raidintegrity n $vg/$lv1
-lvremove $vg/$lv1
-vgremove -ff $vg
-
-_prepare_vg
-lvcreate --type raid4 --raidintegrity y -n $lv1 -l 8 $vg
+lvcreate --type raid1 -m2 --raidintegrity y -n $lv1 -l 8 $vg "$dev1" "$dev2" "$dev3"
 _wait_recalc $vg/${lv1}_rimage_0
 _wait_recalc $vg/${lv1}_rimage_1
 _wait_recalc $vg/${lv1}_rimage_2
-_test_fs_with_raid
+_wait_recalc $vg/$lv1
+_test_fs_with_read_repair "$dev1" "$dev2"
+lvs -o integritymismatches $vg/${lv1}_rimage_0 |tee mismatch
+not grep 0 mismatch
+lvs -o integritymismatches $vg/$lv1 |tee mismatch
+not grep 0 mismatch
 lvchange -an $vg/$lv1
 lvconvert --raidintegrity n $vg/$lv1
 lvremove $vg/$lv1
 vgremove -ff $vg
 
 _prepare_vg
-lvcreate --type raid5 --raidintegrity y -n $lv1 -l 8 $vg
+lvcreate --type raid4 --raidintegrity y -n $lv1 -l 8 $vg "$dev1" "$dev2" "$dev3"
 _wait_recalc $vg/${lv1}_rimage_0
 _wait_recalc $vg/${lv1}_rimage_1
 _wait_recalc $vg/${lv1}_rimage_2
-_test_fs_with_raid
+_wait_recalc $vg/$lv1
+_test_fs_with_read_repair "$dev1" "$dev2" "$dev3"
+lvs -o integritymismatches $vg/${lv1}_rimage_0
+lvs -o integritymismatches $vg/${lv1}_rimage_1
+lvs -o integritymismatches $vg/${lv1}_rimage_2
+lvs -o integritymismatches $vg/$lv1 |tee mismatch
+not grep 0 mismatch
 lvchange -an $vg/$lv1
 lvconvert --raidintegrity n $vg/$lv1
 lvremove $vg/$lv1
 vgremove -ff $vg
 
 _prepare_vg
-lvcreate --type raid6 --raidintegrity y -n $lv1 -l 8 $vg
+lvcreate --type raid5 --raidintegrity y -n $lv1 -l 8 $vg "$dev1" "$dev2" "$dev3"
+_wait_recalc $vg/${lv1}_rimage_0
+_wait_recalc $vg/${lv1}_rimage_1
+_wait_recalc $vg/${lv1}_rimage_2
+_wait_recalc $vg/$lv1
+_test_fs_with_read_repair "$dev1" "$dev2" "$dev3"
+lvs -o integritymismatches $vg/${lv1}_rimage_0
+lvs -o integritymismatches $vg/${lv1}_rimage_1
+lvs -o integritymismatches $vg/${lv1}_rimage_2
+lvs -o integritymismatches $vg/$lv1 |tee mismatch
+not grep 0 mismatch
+lvchange -an $vg/$lv1
+lvconvert --raidintegrity n $vg/$lv1
+lvremove $vg/$lv1
+vgremove -ff $vg
+
+_prepare_vg
+lvcreate --type raid6 --raidintegrity y -n $lv1 -l 8 $vg "$dev1" "$dev2" "$dev3" "$dev4" "$dev5"
 _wait_recalc $vg/${lv1}_rimage_0
 _wait_recalc $vg/${lv1}_rimage_1
 _wait_recalc $vg/${lv1}_rimage_2
 _wait_recalc $vg/${lv1}_rimage_3
 _wait_recalc $vg/${lv1}_rimage_4
-_test_fs_with_raid
+_wait_recalc $vg/$lv1
+_test_fs_with_read_repair "$dev1" "$dev2" "$dev3" "$dev4" "$dev5"
+lvs -o integritymismatches $vg/${lv1}_rimage_0
+lvs -o integritymismatches $vg/${lv1}_rimage_1
+lvs -o integritymismatches $vg/${lv1}_rimage_2
+lvs -o integritymismatches $vg/${lv1}_rimage_3
+lvs -o integritymismatches $vg/${lv1}_rimage_4
+lvs -o integritymismatches $vg/$lv1 |tee mismatch
+not grep 0 mismatch
 lvchange -an $vg/$lv1
 lvconvert --raidintegrity n $vg/$lv1
 lvremove $vg/$lv1
 vgremove -ff $vg
 
 _prepare_vg
-lvcreate --type raid10 --raidintegrity y -n $lv1 -l 8 $vg
+lvcreate --type raid10 --raidintegrity y -n $lv1 -l 8 $vg "$dev1" "$dev2" "$dev3" "$dev4"
 _wait_recalc $vg/${lv1}_rimage_0
 _wait_recalc $vg/${lv1}_rimage_1
 _wait_recalc $vg/${lv1}_rimage_2
 _wait_recalc $vg/${lv1}_rimage_3
-_test_fs_with_raid
+_wait_recalc $vg/$lv1
+_test_fs_with_read_repair "$dev1" "$dev3"
+lvs -o integritymismatches $vg/${lv1}_rimage_0
+lvs -o integritymismatches $vg/${lv1}_rimage_1
+lvs -o integritymismatches $vg/${lv1}_rimage_2
+lvs -o integritymismatches $vg/${lv1}_rimage_3
+lvs -o integritymismatches $vg/$lv1 |tee mismatch
+not grep 0 mismatch
 lvchange -an $vg/$lv1
 lvconvert --raidintegrity n $vg/$lv1
 lvremove $vg/$lv1
@@ -293,6 +278,7 @@ _prepare_vg
 lvcreate --type raid1 -m1 --raidintegrity y -n $lv1 -l 8 $vg
 _wait_recalc $vg/${lv1}_rimage_0
 _wait_recalc $vg/${lv1}_rimage_1
+_wait_recalc $vg/$lv1
 _add_new_data_to_mnt
 lvconvert --raidintegrity n $vg/$lv1
 _add_more_data_to_mnt
@@ -307,6 +293,8 @@ _prepare_vg
 lvcreate --type raid4 --raidintegrity y -n $lv1 -l 8 $vg
 _wait_recalc $vg/${lv1}_rimage_0
 _wait_recalc $vg/${lv1}_rimage_1
+_wait_recalc $vg/${lv1}_rimage_2
+_wait_recalc $vg/$lv1
 _add_new_data_to_mnt
 lvconvert --raidintegrity n $vg/$lv1
 _add_more_data_to_mnt
@@ -321,6 +309,8 @@ _prepare_vg
 lvcreate --type raid5 --raidintegrity y -n $lv1 -l 8 $vg
 _wait_recalc $vg/${lv1}_rimage_0
 _wait_recalc $vg/${lv1}_rimage_1
+_wait_recalc $vg/${lv1}_rimage_2
+_wait_recalc $vg/$lv1
 _add_new_data_to_mnt
 lvconvert --raidintegrity n $vg/$lv1
 _add_more_data_to_mnt
@@ -335,6 +325,10 @@ _prepare_vg
 lvcreate --type raid6 --raidintegrity y -n $lv1 -l 8 $vg
 _wait_recalc $vg/${lv1}_rimage_0
 _wait_recalc $vg/${lv1}_rimage_1
+_wait_recalc $vg/${lv1}_rimage_2
+_wait_recalc $vg/${lv1}_rimage_3
+_wait_recalc $vg/${lv1}_rimage_4
+_wait_recalc $vg/$lv1
 _add_new_data_to_mnt
 lvconvert --raidintegrity n $vg/$lv1
 _add_more_data_to_mnt
@@ -349,6 +343,7 @@ _prepare_vg
 lvcreate --type raid10 --raidintegrity y -n $lv1 -l 8 $vg
 _wait_recalc $vg/${lv1}_rimage_0
 _wait_recalc $vg/${lv1}_rimage_1
+_wait_recalc $vg/$lv1
 _add_new_data_to_mnt
 lvconvert --raidintegrity n $vg/$lv1
 _add_more_data_to_mnt
@@ -363,6 +358,7 @@ vgremove -ff $vg
 
 _prepare_vg
 lvcreate --type raid1 -m1 -n $lv1 -l 8 $vg
+_wait_recalc $vg/$lv1
 _add_new_data_to_mnt
 lvconvert --raidintegrity y $vg/$lv1
 _wait_recalc $vg/${lv1}_rimage_0
@@ -377,6 +373,7 @@ vgremove -ff $vg
 
 _prepare_vg
 lvcreate --type raid4 -n $lv1 -l 8 $vg
+_wait_recalc $vg/$lv1
 _add_new_data_to_mnt
 lvconvert --raidintegrity y $vg/$lv1
 _wait_recalc $vg/${lv1}_rimage_0
@@ -391,6 +388,7 @@ vgremove -ff $vg
 
 _prepare_vg
 lvcreate --type raid5 -n $lv1 -l 8 $vg
+_wait_recalc $vg/$lv1
 _add_new_data_to_mnt
 lvconvert --raidintegrity y $vg/$lv1
 _wait_recalc $vg/${lv1}_rimage_0
@@ -405,6 +403,12 @@ vgremove -ff $vg
 
 _prepare_vg
 lvcreate --type raid6 -n $lv1 -l 8 $vg
+_wait_recalc $vg/${lv1}_rimage_0
+_wait_recalc $vg/${lv1}_rimage_1
+_wait_recalc $vg/${lv1}_rimage_2
+_wait_recalc $vg/${lv1}_rimage_3
+_wait_recalc $vg/${lv1}_rimage_4
+_wait_recalc $vg/$lv1
 _add_new_data_to_mnt
 lvconvert --raidintegrity y $vg/$lv1
 _wait_recalc $vg/${lv1}_rimage_0
@@ -419,6 +423,7 @@ vgremove -ff $vg
 
 _prepare_vg
 lvcreate --type raid10 -n $lv1 -l 8 $vg
+_wait_recalc $vg/$lv1
 _add_new_data_to_mnt
 lvconvert --raidintegrity y $vg/$lv1
 _wait_recalc $vg/${lv1}_rimage_0
@@ -437,6 +442,7 @@ _prepare_vg
 lvcreate --type raid1 -m1 --raidintegrity y -n $lv1 -l 8 $vg
 _wait_recalc $vg/${lv1}_rimage_0
 _wait_recalc $vg/${lv1}_rimage_1
+_wait_recalc $vg/$lv1
 lvs -a -o+devices $vg
 _add_new_data_to_mnt
 umount $mnt
@@ -460,6 +466,10 @@ _prepare_vg
 lvcreate --type raid6 --raidintegrity y -n $lv1 -l 8 $vg
 _wait_recalc $vg/${lv1}_rimage_0
 _wait_recalc $vg/${lv1}_rimage_1
+_wait_recalc $vg/${lv1}_rimage_2
+_wait_recalc $vg/${lv1}_rimage_3
+_wait_recalc $vg/${lv1}_rimage_4
+_wait_recalc $vg/$lv1
 lvs -a -o+devices $vg
 _add_new_data_to_mnt
 umount $mnt
@@ -485,6 +495,7 @@ _prepare_vg
 lvcreate --type raid1 -m1 --raidintegrity y -n $lv1 -l 8 $vg
 _wait_recalc $vg/${lv1}_rimage_0
 _wait_recalc $vg/${lv1}_rimage_1
+_wait_recalc $vg/$lv1
 lvs -a -o+devices $vg
 _add_new_data_to_mnt
 lvextend -l 16 $vg/$lv1
@@ -504,6 +515,8 @@ _prepare_vg
 lvcreate --type raid5 --raidintegrity y -n $lv1 -l 8 $vg
 _wait_recalc $vg/${lv1}_rimage_0
 _wait_recalc $vg/${lv1}_rimage_1
+_wait_recalc $vg/${lv1}_rimage_2
+_wait_recalc $vg/$lv1
 lvs -a -o+devices $vg
 _add_new_data_to_mnt
 lvextend -l 16 $vg/$lv1
@@ -523,6 +536,7 @@ _prepare_vg
 lvcreate --type raid10 --raidintegrity y -n $lv1 -l 8 $vg
 _wait_recalc $vg/${lv1}_rimage_0
 _wait_recalc $vg/${lv1}_rimage_1
+_wait_recalc $vg/$lv1
 lvs -a -o+devices $vg
 _add_new_data_to_mnt
 lvextend -l 16 $vg/$lv1
@@ -544,6 +558,7 @@ _prepare_vg
 lvcreate --type raid1 -m1 --raidintegrity y -n $lv1 -l 8 $vg
 _wait_recalc $vg/${lv1}_rimage_0
 _wait_recalc $vg/${lv1}_rimage_1
+_wait_recalc $vg/$lv1
 lvs -a -o+devices $vg
 _add_new_data_to_mnt
 lvconvert -y -m+1 $vg/$lv1
@@ -566,6 +581,7 @@ lvcreate --type raid1 -m2 --raidintegrity y -n $lv1 -l 8 $vg
 _wait_recalc $vg/${lv1}_rimage_0
 _wait_recalc $vg/${lv1}_rimage_1
 _wait_recalc $vg/${lv1}_rimage_2
+_wait_recalc $vg/$lv1
 lvs -a -o+devices $vg
 _add_new_data_to_mnt
 lvconvert -y -m-1 $vg/$lv1
@@ -584,12 +600,12 @@ _prepare_vg
 lvcreate --type raid1 -m1 --raidintegrity y -n $lv1 -l 8 $vg
 _wait_recalc $vg/${lv1}_rimage_0
 _wait_recalc $vg/${lv1}_rimage_1
+_wait_recalc $vg/$lv1
 lvs -a -o+devices $vg
 _add_new_data_to_mnt
 not lvconvert -y -m-1 $vg/$lv1
 not lvconvert --splitmirrors 1 -n tmp -y $vg/$lv1
 not lvconvert --splitmirrors 1 --trackchanges -y $vg/$lv1
-not lvchange --syncaction check $vg/$lv1
 not lvchange --syncaction repair $vg/$lv1
 not lvreduce -L4M $vg/$lv1
 not lvcreate -s -n snap -L4M $vg/$lv1
@@ -605,16 +621,36 @@ vgremove -ff $vg
 # Repeat many of the tests above using bitmap mode
 
 _prepare_vg
-lvcreate --type raid1 -m1 --raidintegrity y --raidintegritymode bitmap -n $lv1 -l 8 $vg
-_test_fs_with_raid
+lvcreate --type raid1 -m1 --raidintegrity y --raidintegritymode bitmap -n $lv1 -l 8 $vg "$dev1 "$dev2"
+_wait_recalc $vg/${lv1}_rimage_0
+_wait_recalc $vg/${lv1}_rimage_1
+_wait_recalc $vg/$lv1
+_test_fs_with_read_repair "$dev1"
+lvs -o integritymismatches $vg/${lv1}_rimage_0 |tee mismatch
+not grep 0 mismatch
+lvs -o integritymismatches $vg/$lv1 |tee mismatch
+not grep 0 mismatch
 lvchange -an $vg/$lv1
 lvconvert --raidintegrity n $vg/$lv1
 lvremove $vg/$lv1
 vgremove -ff $vg
 
 _prepare_vg
-lvcreate --type raid6 --raidintegrity y --raidintegritymode bitmap -n $lv1 -l 8 $vg
-_test_fs_with_raid
+lvcreate --type raid6 --raidintegrity y --raidintegritymode bitmap -n $lv1 -l 8 $vg "$dev1" "$dev2" "$dev3" "$dev4" "$dev5"
+_wait_recalc $vg/${lv1}_rimage_0
+_wait_recalc $vg/${lv1}_rimage_1
+_wait_recalc $vg/${lv1}_rimage_2
+_wait_recalc $vg/${lv1}_rimage_3
+_wait_recalc $vg/${lv1}_rimage_4
+_wait_recalc $vg/$lv1
+_test_fs_with_read_repair "$dev1" "$dev2" "$dev3" "$dev4" "$dev5"
+lvs -o integritymismatches $vg/${lv1}_rimage_0
+lvs -o integritymismatches $vg/${lv1}_rimage_1
+lvs -o integritymismatches $vg/${lv1}_rimage_2
+lvs -o integritymismatches $vg/${lv1}_rimage_3
+lvs -o integritymismatches $vg/${lv1}_rimage_4
+lvs -o integritymismatches $vg/$lv1 |tee mismatch
+not grep 0 mismatch
 lvchange -an $vg/$lv1
 lvconvert --raidintegrity n $vg/$lv1
 lvremove $vg/$lv1
@@ -622,7 +658,7 @@ vgremove -ff $vg
 
 # remove from active lv
 _prepare_vg
-lvcreate --type raid1 -m1 --raidintegrity y --raidintegritymode bitmap -n $lv1 -l 8 $vg
+lvcreate --type raid1 -m1 --raidintegrity y --raidintegritymode bitmap -n $lv1 -l 8 $vg "$dev1" "$dev2"
 _wait_recalc $vg/${lv1}_rimage_0
 _wait_recalc $vg/${lv1}_rimage_1
 _add_new_data_to_mnt
@@ -743,7 +779,7 @@ lvcreate --type raid1 -m1 -n $lv1 -l 8 $vg
 lvcreate --type raid1 -m1 -n $lv2 -l 8 $vg
 lvconvert -y --type cache --cachevol $lv2 $vg/$lv1
 not lvconvert --raidintegrity y $vg/${lv1}_corig
-not lvconvert --raidintegrity y $vg/${lv2}_vol
+not lvconvert --raidintegrity y $vg/${lv2}_cvol
 lvremove -y $vg/$lv1
 
 lvcreate --type raid1 -m1 -n $lv1 -l 8 $vg
@@ -751,6 +787,7 @@ lvcreate --type raid1 -m1 -n $lv2 -l 8 $vg
 lvconvert -y --type cache --cachepool $lv2 $vg/$lv1
 not lvconvert --raidintegrity y $vg/${lv1}_corig
 not lvconvert --raidintegrity y $vg/${lv2}_cpool_cdata
+not lvconvert --raidintegrity y $vg/${lv2}_cpool_cmeta
 lvremove -y $vg/$lv1
 
 # cannot add integrity to raid that has a snapshot
