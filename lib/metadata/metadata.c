@@ -1916,6 +1916,10 @@ static int _lv_each_dependency(struct logical_volume *lv,
 			return_0;
 		if (lvseg->metadata_lv && !fn(lvseg->metadata_lv, data))
 			return_0;
+		if (lvseg->writecache && !fn(lvseg->writecache, data))
+			return_0;
+		if (lvseg->integrity_meta_dev && !fn(lvseg->integrity_meta_dev, data))
+			return_0;
 		for (s = 0; s < lvseg->area_count; ++s) {
 			if (seg_type(lvseg, s) == AREA_LV && !fn(seg_lv(lvseg,s), data))
 				return_0;
@@ -1945,7 +1949,7 @@ static int _lv_postorder_level(struct logical_volume *lv, void *data)
 {
 	struct _lv_postorder_baton *baton = data;
 	return (data) ? _lv_postorder_visit(lv, baton->fn, baton->data) : 0;
-};
+}
 
 static int _lv_postorder_visit(struct logical_volume *lv,
 			       int (*fn)(struct logical_volume *lv, void *data),
@@ -3578,13 +3582,17 @@ static void _set_pv_device(struct format_instance *fid,
 	 * full a md check in label scan
 	 */
 	if (dev && cmd && cmd->md_component_detection && !cmd->use_full_md_check) {
+		uint64_t devsize = dev->size;
+
+		if (!devsize && !dev_get_size(dev, &devsize))
+			log_debug("No size for %s when setting PV dev.", dev_name(dev));
 
 		/* PV larger than dev not common, check for md component */
-		if (pv->size > dev->size)
+		else if (pv->size > devsize)
 			do_check = 1;
 
 		/* dev larger than PV can be common, limit check to auto mode */
-		else if ((pv->size < dev->size) && !strcmp(cmd->md_component_checks, "auto"))
+		else if ((pv->size < devsize) && !strcmp(cmd->md_component_checks, "auto"))
 			do_check = 1;
 
 		if (do_check && dev_is_md_component(dev, NULL, 1)) {
@@ -4679,7 +4687,7 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 	struct volume_group *vg, *vg_ret = NULL;
 	struct metadata_area *mda, *mda2;
 	unsigned use_precommitted = precommitted;
-	struct device *mda_dev, *dev_ret, *dev;
+	struct device *mda_dev, *dev_ret = NULL, *dev;
 	struct cached_vg_fmtdata *vg_fmtdata = NULL;	/* Additional format-specific data about the vg */
 	struct pv_list *pvl;
 	int found_old_metadata = 0;
@@ -4687,6 +4695,15 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 	unsigned use_previous_vg;
 
 	log_debug_metadata("Reading VG %s %s", vgname ?: "<no name>", vgid ?: "<no vgid>");
+
+	/*
+	 * Devices are generally open readonly from scanning, and we need to
+	 * reopen them rw to update metadata.  We want to reopen them rw before
+	 * before rescanning and/or writing.  Reopening rw preserves the existing
+	 * bcache blocks for the devs.
+	 */
+	if (writing)
+		lvmcache_label_reopen_vg_rw(cmd, vgname, vgid);
 
 	/*
 	 * Rescan the devices that are associated with this vg in lvmcache.
@@ -4732,6 +4749,7 @@ static struct volume_group *_vg_read(struct cmd_context *cmd,
 	 * we check that they are unchanged in all mdas.  This added checking is
 	 * probably unnecessary; all commands could likely just check a single mda.
 	 */
+
 	if (lvmcache_scan_mismatch(cmd, vgname, vgid) || _scan_text_mismatch(cmd, vgname, vgid)) {
 		log_debug_metadata("Rescanning devices for %s %s", vgname, writing ? "rw" : "");
 		if (writing)
@@ -5239,9 +5257,9 @@ struct volume_group *vg_read(struct cmd_context *cmd, const char *vg_name, const
 		dm_config_destroy(cft);
 	} else {
 		if (vg->vg_precommitted)
-			log_error(INTERNAL_ERROR "vg_read vg %p vg_precommitted %p", vg, vg->vg_precommitted);
+			log_error(INTERNAL_ERROR "vg_read vg %p vg_precommitted %p", (void *)vg, (void *)vg->vg_precommitted);
 		if (vg->vg_committed)
-			log_error(INTERNAL_ERROR "vg_read vg %p vg_committed %p", vg, vg->vg_committed);
+			log_error(INTERNAL_ERROR "vg_read vg %p vg_committed %p", (void *)vg, (void *)vg->vg_committed);
 	}
 out:
 	/* We return with the VG lock held when read is successful. */
@@ -5265,9 +5283,9 @@ bad:
 	 */
 	if (error_vg && vg) {
 		if (vg->vg_precommitted)
-			log_error(INTERNAL_ERROR "vg_read vg %p vg_precommitted %p", vg, vg->vg_precommitted);
+			log_error(INTERNAL_ERROR "vg_read vg %p vg_precommitted %p", (void *)vg, (void *)vg->vg_precommitted);
 		if (vg->vg_committed)
-			log_error(INTERNAL_ERROR "vg_read vg %p vg_committed %p", vg, vg->vg_committed);
+			log_error(INTERNAL_ERROR "vg_read vg %p vg_committed %p", (void *)vg, (void *)vg->vg_committed);
 
 		/* caller must unlock_vg and release_vg */
 		*error_vg = vg;

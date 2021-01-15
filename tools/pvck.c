@@ -66,9 +66,9 @@ struct metadata_file {
 	char vgid_str[ID_STR_SIZE];
 };
 
-static char *_chars_to_str(void *in, void *out, int num, int max, const char *field)
+static char *_chars_to_str(const void *in, void *out, int num, int max, const char *field)
 {
-	char *i = in;
+	const char *i = in;
 	char *o = out;
 	int n;
 
@@ -95,10 +95,10 @@ static char *_chars_to_str(void *in, void *out, int num, int max, const char *fi
  * This is used to print mda_header.magic as a series of hex values
  * since it only contains some printable chars.
  */
-static char *_chars_to_hexstr(void *in, void *out, int num, int max, const char *field)
+static char *_chars_to_hexstr(const void *in, void *out, int num, int max, const char *field)
 {
 	char *tmp;
-	char *i = in;
+	const char *i = in;
 	int n;
 	int off = 0;
 	int ret;
@@ -732,7 +732,7 @@ static int _check_mda_header(struct mda_header *mh, int mda_num, uint64_t mda_of
 	}
 
 	if (memcmp(mh->magic, FMTT_MAGIC, sizeof(mh->magic))) {
-		log_print("CHECK: mda_header_%d.magic expected 0x%s", mda_num, _chars_to_hexstr((void *)&FMTT_MAGIC, str, 16, 256, "mda_header.magic"));
+		log_print("CHECK: mda_header_%d.magic expected 0x%s", mda_num, _chars_to_hexstr((const void *)&FMTT_MAGIC, str, 16, 256, "mda_header.magic"));
 		good_magic = 0;
 		bad++;
 	}
@@ -846,6 +846,7 @@ static int _dump_meta_area(struct device *dev, struct devicefile *def, const cha
 {
 	FILE *fp;
 	char *meta_buf;
+	int ret = 1;
 
 	if (!tofile)
 		return_0;
@@ -866,7 +867,11 @@ static int _dump_meta_area(struct device *dev, struct devicefile *def, const cha
 		return 0;
 	}
 
-	fwrite(meta_buf, mda_size - 512, 1, fp);
+	if (fwrite(meta_buf, mda_size - 512, 1, fp) != 1) {
+		log_error("Failed to write file %s metadata area size %llu.",
+			  tofile, (unsigned long long)mda_size);
+		ret = 0;
+	}
 
 	free(meta_buf);
 
@@ -874,7 +879,7 @@ static int _dump_meta_area(struct device *dev, struct devicefile *def, const cha
 		stack;
 	if (fclose(fp))
 		stack;
-	return 1;
+	return ret;
 }
 
 /* all sizes and offsets in bytes */
@@ -1033,13 +1038,6 @@ static int _dump_label_and_pv_header(struct cmd_context *cmd, uint64_t labelsect
 			  (unsigned long long)lh_offset);
 		return 0;
 	}
-
-	/*
-	 * Not invalidating this range can cause an error reading
-	 * a larger range that overlaps this.
-	 */
-	if (dev && !dev_invalidate_bytes(dev, lh_offset, 512))
-		stack;
 
 	lh = (struct label_header *)buf;
 
@@ -1401,9 +1399,10 @@ static int _dump_headers(struct cmd_context *cmd, const char *dump, struct setti
 	}
 
 	/*
-	 * The first mda is always 4096 bytes from the start of the device.
+	 * The first mda is usually 4096 bytes from the start of the device.
+	 * (If created by a machine with larger pages it could be 8k/16k/64k.)
 	 */
-	if (!_dump_mda_header(cmd, set, 1, 0, 0, NULL, dev, def, 4096, mda1_size, &mda1_checksum, NULL))
+	if (!_dump_mda_header(cmd, set, 1, 0, 0, NULL, dev, def, mda1_offset, mda1_size, &mda1_checksum, NULL))
 		bad++;
 
 	if (mda2_offset) {
@@ -1458,7 +1457,7 @@ static int _dump_metadata(struct cmd_context *cmd, const char *dump, struct sett
 	 * The first mda is always 4096 bytes from the start of the device.
 	 */
 	if (mda_num == 1) {
-		if (!_dump_mda_header(cmd, set, 0, print_metadata, print_area, tofile, dev, def, 4096, mda1_size, &mda1_checksum, NULL))
+		if (!_dump_mda_header(cmd, set, 0, print_metadata, print_area, tofile, dev, def, mda1_offset, mda1_size, &mda1_checksum, NULL))
 			bad++;
 	} else if (mda_num == 2) {
 		if (!mda2_offset) {
@@ -1492,7 +1491,7 @@ static int _dump_found(struct cmd_context *cmd, struct settings *set, uint64_t l
 		bad++;
 
 	if (found_label && mda1_offset) {
-		if (!_dump_mda_header(cmd, set, 0, 0, 0, NULL, dev, NULL, 4096, mda1_size, &mda1_checksum, &found_header1))
+		if (!_dump_mda_header(cmd, set, 0, 0, 0, NULL, dev, NULL, mda1_offset, mda1_size, &mda1_checksum, &found_header1))
 			bad++;
 	}
 
@@ -1676,7 +1675,7 @@ static int _dump_search(struct cmd_context *cmd, const char *dump, struct settin
 	 */
 	if ((mda_num == 1) && found_label && mda1_offset && mda1_size) {
 		/* use header values when available */
-		mda_offset = 4096;
+		mda_offset = mda1_offset;
 		mda_size = mda1_size;
 
 	} else if (mda_num == 1) {
@@ -2498,7 +2497,7 @@ fail:
 static int _update_mda(struct cmd_context *cmd, struct metadata_file *mf, struct device *dev,
 		       int mda_num, uint64_t mda_offset, uint64_t mda_size)
 {
-	char *buf[512];
+	char buf[512];
 	struct mda_header *mh;
 	struct raw_locn *rlocn0, *rlocn1;
 	uint64_t max_size;
@@ -2514,7 +2513,7 @@ static int _update_mda(struct cmd_context *cmd, struct metadata_file *mf, struct
 		goto fail;
 	}
 
-	if (!dev_read_bytes(dev, mda_offset, 512, buf)) {
+	if (!dev_read_bytes(dev, mda_offset, sizeof(buf), buf)) {
 		log_print("CHECK: failed to read mda_header_%d at %llu",
 			  mda_num, (unsigned long long)mda_offset);
 		goto fail;
@@ -3032,8 +3031,10 @@ int pvck(struct cmd_context *cmd, int argc, char **argv)
 	if (arg_is_set(cmd, repairtype_ARG) || arg_is_set(cmd, repair_ARG)) {
 		pv_name = argv[0];
 
-		if (!(dev = dev_cache_get(cmd, pv_name, cmd->filter))) {
-			log_error("No device found for %s %s.", pv_name, dev_cache_filtered_reason(pv_name));
+		clear_hint_file(cmd);
+
+		if (!(dev = dev_cache_get(cmd, pv_name, NULL))) {
+			log_error("Cannot use %s: %s.", pv_name, devname_error_reason(pv_name));
 			return ECMD_FAILED;
 		}
 	}
@@ -3041,13 +3042,13 @@ int pvck(struct cmd_context *cmd, int argc, char **argv)
 	if (arg_is_set(cmd, dump_ARG)) {
 		pv_name = argv[0];
 
-		dev = dev_cache_get(cmd, pv_name, cmd->filter);
+		dev = dev_cache_get(cmd, pv_name, NULL);
 
 		if (!dev)
 			def = get_devicefile(pv_name);
 
 		if (!dev && !def) {
-			log_error("No device found for %s %s.", pv_name, dev_cache_filtered_reason(pv_name));
+			log_error("Cannot use %s: %s.", pv_name, devname_error_reason(pv_name));
 			return ECMD_FAILED;
 		}
 	}
@@ -3064,6 +3065,24 @@ int pvck(struct cmd_context *cmd, int argc, char **argv)
 	}
 
 	label_scan_setup_bcache();
+
+	if (dev) {
+		char buf[4096];
+
+		/*
+		 * This buf is not used, but bcache data is used for subsequent
+		 * reads in the filters and by _read_bytes for other disk structs.
+		 */
+		if (!dev_read_bytes(dev, 0, 4096, buf)) {
+	        	log_error("Failed to read the first 4096 bytes of device %s.", dev_name(dev));
+			return ECMD_FAILED;
+		}
+
+		if (!cmd->filter->passes_filter(cmd, cmd->filter, dev, NULL)) {
+			log_error("Cannot use %s: %s.", pv_name, dev_filtered_reason(dev));
+			return ECMD_FAILED;
+		}
+	}
 
 	if ((dump = arg_str_value(cmd, dump_ARG, NULL))) {
 		cmd->use_hints = 0;
@@ -3136,7 +3155,7 @@ int pvck(struct cmd_context *cmd, int argc, char **argv)
 		pv_name = argv[i];
 
 		if (!(dev = dev_cache_get(cmd, argv[i], cmd->filter))) {
-			log_error("Device %s %s.", pv_name, dev_cache_filtered_reason(pv_name));
+			log_error("Cannot use %s: %s.", pv_name, devname_error_reason(pv_name));
 			continue;
 		}
 

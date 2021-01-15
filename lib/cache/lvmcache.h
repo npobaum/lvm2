@@ -69,6 +69,7 @@ void lvmcache_destroy(struct cmd_context *cmd, int retain_orphans, int reset);
 int lvmcache_label_scan(struct cmd_context *cmd);
 int lvmcache_label_rescan_vg(struct cmd_context *cmd, const char *vgname, const char *vgid);
 int lvmcache_label_rescan_vg_rw(struct cmd_context *cmd, const char *vgname, const char *vgid);
+int lvmcache_label_reopen_vg_rw(struct cmd_context *cmd, const char *vgname, const char *vgid);
 
 /* Add/delete a device */
 struct lvmcache_info *lvmcache_add(struct cmd_context *cmd, struct labeller *labeller, const char *pvid,
@@ -215,5 +216,10 @@ void lvmcache_get_bad_mdas(struct cmd_context *cmd,
 void lvmcache_get_mdas(struct cmd_context *cmd,
                        const char *vgname, const char *vgid,
                        struct dm_list *mda_list);
+
+const char *dev_filtered_reason(struct device *dev);
+const char *devname_error_reason(const char *devname);
+
+struct metadata_area *lvmcache_get_dev_mda(struct device *dev, int mda_num);
 
 #endif

@@ -22,9 +22,11 @@ mkdir -p $mnt
 
 aux prepare_devs 5 64
 
-printf "%0.sA" {1..16384} >> fileA
-printf "%0.sB" {1..16384} >> fileB
-printf "%0.sC" {1..16384} >> fileC
+# Use awk instead of anoyingly long log out from printf
+#printf "%0.sA" {1..16384} >> fileA
+awk 'BEGIN { while (z++ < 16384) printf "A" }' > fileA
+awk 'BEGIN { while (z++ < 16384) printf "B" }' > fileB
+awk 'BEGIN { while (z++ < 16384) printf "C" }' > fileC
 
 # generate random data
 dd if=/dev/urandom of=randA bs=512K count=2
@@ -113,7 +115,7 @@ _wait_sync() {
 	# enabled never gets in sync. I saw this in BB, but not when executing
 	# the commands manually
 	if test -z "$sync"; then
-		echo "TEST WARNING: Resync of dm-integrity device '$checklv' failed"
+		echo "TEST\ WARNING: Resync of dm-integrity device '$checklv' failed"
                 dmsetup status "$DM_DEV_DIR/mapper/${checklv/\//-}"
 		exit
 	fi
@@ -145,6 +147,7 @@ lvcreate --type raid1 -m1 --raidintegrity y -n $lv1 -l 8 $vg "$dev1" "$dev2"
 _wait_sync $vg/${lv1}_rimage_0
 _wait_sync $vg/${lv1}_rimage_1
 _wait_sync $vg/$lv1
+lvs -o raidintegritymode $vg/$lv1 | grep journal
 _add_new_data_to_mnt
 lvconvert --replace "$dev1" $vg/$lv1 "$dev3"
 lvs -a -o+devices $vg > out
@@ -167,6 +170,7 @@ lvcreate --type raid1 -m1 --raidintegrity y --raidintegritymode bitmap -n $lv1 -
 _wait_sync $vg/${lv1}_rimage_0
 _wait_sync $vg/${lv1}_rimage_1
 _wait_sync $vg/$lv1
+lvs -o raidintegritymode $vg/$lv1 | grep bitmap
 _add_new_data_to_mnt
 lvconvert --replace "$dev1" $vg/$lv1 "$dev3"
 lvs -a -o+devices $vg > out

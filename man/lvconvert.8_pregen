@@ -929,6 +929,10 @@ Detach a cache from an LV.
 \fBlvconvert\fP \fB--splitcache\fP \fILV\fP\fI_thinpool_cache_cachepool_vdopool_writecache\fP
 .br
 .RS 4
+.ad l
+[    \fB--cachesettings\fP \fIString\fP ]
+.ad b
+.br
 [ COMMON_OPTIONS ]
 .RE
 .br
@@ -1784,9 +1788,8 @@ Input units are always treated as base two values, regardless of
 capitalization, e.g. 'k' and 'K' both refer to 1024.
 The default input unit is specified by letter, followed by |UNIT.
 UNIT represents other possible input units: \fBbBsSkKmMgGtTpPeE\fP.
-b|B is bytes, s|S is sectors of 512 bytes, k|K is kilobytes,
-m|M is megabytes, g|G is gigabytes, t|T is terabytes,
-p|P is petabytes, e|E is exabytes.
+b|B is bytes, s|S is sectors of 512 bytes, k|K is KiB,
+m|M is MiB, g|G is GiB, t|T is TiB, p|P is PiB, e|E is EiB.
 (This should not be confused with the output control --units, where
 capital letters mean multiple of 1000.)
 .SH ENVIRONMENT VARIABLES
@@ -2004,6 +2007,10 @@ Detach and delete a cache from an LV.
 \fBlvconvert\fP \fB--uncache\fP \fILV\fP\fI_thinpool_cache_vdopool_writecache\fP
 .br
 .RS 4
+.ad l
+[    \fB--cachesettings\fP \fIString\fP ]
+.ad b
+.br
 [ COMMON_OPTIONS ]
 .RE
 .br

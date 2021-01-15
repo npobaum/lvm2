@@ -797,9 +797,9 @@ struct logical_volume *lv_create_empty(const char *name,
 				       struct volume_group *vg);
 
 struct wipe_params {
-	int do_zero;		/* should we do zeroing of LV start? */
 	uint64_t zero_sectors;	/* sector count to zero */
-	int zero_value;		/* zero-out with this value */
+	uint8_t zero_value;	/* zero-out with this value */
+	int do_zero;		/* should we do zeroing of LV start? */
 	int do_wipe_signatures;	/* should we wipe known signatures found on LV? */
 	int yes;		/* answer yes automatically to all questions */
 	force_t force;		/* force mode */
@@ -887,6 +887,20 @@ int update_thin_pool_params(struct cmd_context *cmd,
 			    uint32_t *pool_metadata_extents,
 			    int *chunk_size_calc_method, uint32_t *chunk_size,
 			    thin_discards_t *discards, thin_zero_t *zero_new_blocks);
+
+struct lv_status_thin_pool {
+	struct dm_pool *mem;
+	struct dm_status_thin_pool *thin_pool;
+	dm_percent_t data_usage;
+	dm_percent_t metadata_usage;
+};
+
+struct lv_status_thin {
+	struct dm_pool *mem;
+	struct dm_status_thin *thin;
+	dm_percent_t usage;
+};
+
 const char *get_pool_discards_name(thin_discards_t discards);
 int set_pool_discards(thin_discards_t *discards, const char *str);
 struct logical_volume *alloc_pool_metadata(struct logical_volume *pool_lv,
@@ -1100,6 +1114,9 @@ int lv_is_cache_origin(const struct logical_volume *lv);
 int lv_is_writecache_origin(const struct logical_volume *lv);
 int lv_is_writecache_cachevol(const struct logical_volume *lv);
 int writecache_settings_to_str_list(struct writecache_settings *settings, struct dm_list *result, struct dm_pool *mem);
+int lv_writecache_set_cleaner(struct logical_volume *lv);
+bool lv_writecache_is_clean(struct cmd_context *cmd, struct logical_volume *lv, uint64_t *dirty_blocks);
+bool writecache_cleaner_supported(struct cmd_context *cmd);
 
 int lv_is_integrity_origin(const struct logical_volume *lv);
 
@@ -1152,7 +1169,7 @@ int vg_max_lv_reached(struct volume_group *vg);
 /*
 * Mirroring functions
 */
-int get_default_region_size(struct cmd_context *cmd);  /* in lv_manip.c */
+uint32_t get_default_region_size(struct cmd_context *cmd);  /* in lv_manip.c */
 struct lv_segment *find_mirror_seg(struct lv_segment *seg);
 int lv_add_mirrors(struct cmd_context *cmd, struct logical_volume *lv,
 		   uint32_t mirrors, uint32_t stripes, uint32_t stripe_size,
@@ -1414,5 +1431,8 @@ int lv_has_integrity_recalculate_metadata(struct logical_volume *lv);
 int lv_raid_has_integrity(struct logical_volume *lv);
 int lv_extend_integrity_in_raid(struct logical_volume *lv, struct dm_list *pvh);
 int lv_get_raid_integrity_settings(struct logical_volume *lv, struct integrity_settings **isettings);
+int integrity_mode_set(const char *mode, struct integrity_settings *settings);
+int lv_integrity_mismatches(struct cmd_context *cmd, const struct logical_volume *lv, uint64_t *mismatches);
+int lv_raid_integrity_total_mismatches(struct cmd_context *cmd, const struct logical_volume *lv, uint64_t *mismatches);
 
 #endif

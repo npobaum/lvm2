@@ -1,3 +1,13 @@
+lvm2 (2.03.11-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Use libedit instead of old readline. (closes: #966152)
+  * Drop dev symlink to internal lib for good. (closes: #857954)
+  * Fix watch file and signing key. (closes: #979584)
+  * Use per-arch pkg-config. (closes: #968411)
+
+ -- Bastian Blank <waldi@debian.org>  Fri, 15 Jan 2021 20:08:29 +0100
+
 lvm2 (2.03.10-1) unstable; urgency=medium
 
   * New upstream release.

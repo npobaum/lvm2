@@ -21,6 +21,10 @@ which md5sum || skip
 which mkfs.ext4 || skip
 aux have_raid 1 13 2 || skip
 
+case "$(uname -r)" in
+  5.[89]*|3.10.0-862*) die "Cannot run this test on unfixed kernel." ;;
+esac
+
 mount_dir="mnt"
 
 cleanup_mounted_and_teardown()
@@ -86,7 +90,7 @@ wait
 
 checksum_ "$mount_dir/random" >MD5_new
 
-umount $mount_dir
+umount "$mount_dir"
 
 fsck -fn "$DM_DEV_DIR/$vg/$lv1"
 

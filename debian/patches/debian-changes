@@ -1,5 +1,5 @@
 diff --git a/configure.ac b/configure.ac
-index 9a0e41a81..c2a6188d8 100644
+index ee21b879d..f8d8a0cd5 100644
 --- a/configure.ac
 +++ b/configure.ac
 @@ -689,7 +689,7 @@ esac
@@ -10,8 +10,8 @@ index 9a0e41a81..c2a6188d8 100644
 +	      READLINE=$enableval, READLINE=yes)
  
  ################################################################################
- dnl -- Disable realtime clock support
-@@ -1074,29 +1074,6 @@ AC_MSG_RESULT($BLKID_WIPING)
+ dnl -- Disable editline
+@@ -1080,29 +1080,6 @@ AC_MSG_RESULT($BLKID_WIPING)
  AC_DEFINE_UNQUOTED(DEFAULT_USE_BLKID_WIPING, [$DEFAULT_USE_BLKID_WIPING],
  		   [Use blkid wiping by default.])
  
@@ -41,7 +41,7 @@ index 9a0e41a81..c2a6188d8 100644
  ################################################################################
  dnl -- Enable udev synchronisation
  AC_MSG_CHECKING(whether to enable synchronisation with udev processing)
-@@ -1328,21 +1305,9 @@ AC_MSG_RESULT($SELINUX)
+@@ -1337,21 +1314,9 @@ AC_MSG_RESULT($SELINUX)
  ################################################################################
  dnl -- Check for selinux
  if test "$SELINUX" = yes; then
@@ -61,63 +61,12 @@ index 9a0e41a81..c2a6188d8 100644
 -		SELINUX_PC=
 -		HAVE_SELINUX=no ])
 +	AC_DEFINE([HAVE_SELINUX], 1, [Define to 1 to include support for selinux.])
-+	SELINUX_LIBS="$(pkg-config --libs libselinux)"
-+	SELINUX_LIBS_STATIC="$(pkg-config --libs --static libselinux)"
++	SELINUX_LIBS="$($PKG_CONFIG --libs libselinux)"
++	SELINUX_LIBS_STATIC="$($PKG_CONFIG --libs --static libselinux)"
  fi
  
  ################################################################################
-@@ -1378,50 +1343,6 @@ AC_IF_YES(ac_cv_stat_st_ctim,
- dnl -- Check for getopt
- AC_CHECK_HEADERS(getopt.h, AC_DEFINE([HAVE_GETOPTLONG], 1, [Define to 1 if getopt_long is available.]))
- 
--################################################################################
--dnl -- Check for readline (Shamelessly copied from parted 1.4.17)
--if test "$READLINE" != no; then
--	lvm_saved_libs=$LIBS
--	AC_SEARCH_LIBS([tgetent], [tinfo ncurses curses termcap termlib],
--		READLINE_LIBS=$ac_cv_search_tgetent, [
--		if test "$READLINE" = yes; then
--			AC_MSG_ERROR(
--[termcap could not be found which is required for the
----enable-readline option (which is enabled by default).  Either disable readline
--support with --disable-readline or download and install termcap from:
--	ftp.gnu.org/gnu/termcap
--Note: if you are using precompiled packages you will also need the development
--  package as well (which may be called termcap-devel or something similar).
--Note: (n)curses also seems to work as a substitute for termcap.  This was
--  not found either - but you could try installing that as well.])
--		fi])
--	dnl -- Old systems may need extra termcap dependency explicitly in LIBS
--	AC_CHECK_LIB([readline], [readline], [
--		AC_DEFINE([READLINE_SUPPORT], 1,
--			[Define to 1 to include the LVM readline shell.])
--		dnl -- Try only with -lreadline and check for different symbol
--		READLINE=yes
--		LIBS=$lvm_saved_libs
--		AC_CHECK_LIB([readline], [rl_line_buffer],
--			[ READLINE_LIBS="-lreadline" ], [
--			  AC_MSG_RESULT([linking -lreadline with $READLINE_LIBS needed])
--			  READLINE_LIBS="-lreadline $READLINE_LIBS"
--			]) ], [
--		READLINE_LIBS=
--		if test "$READLINE" = yes; then
--			AC_MSG_ERROR(
--[GNU Readline could not be found which is required for the
----enable-readline option (which is enabled by default).  Either disable readline
--support with --disable-readline or download and install readline from:
--	ftp.gnu.org/gnu/readline
--Note: if you are using precompiled packages you will also need the development
--package as well (which may be called readline-devel or something similar).])
--		fi ])
--	LIBS="$READLINE_LIBS $lvm_saved_libs"
--	AC_CHECK_FUNCS([rl_completion_matches])
--	LIBS=$lvm_saved_libs
--fi
--
- ################################################################################
- dnl -- Internationalisation stuff
- AC_MSG_CHECKING(whether to enable internationalisation)
-@@ -1505,7 +1426,8 @@ AC_ARG_WITH(tmpfilesdir,
+@@ -1551,7 +1516,8 @@ AC_ARG_WITH(tmpfilesdir,
  ################################################################################
  dnl -- Ensure additional headers required
  if test "$READLINE" = yes; then
@@ -127,7 +76,7 @@ index 9a0e41a81..c2a6188d8 100644
  fi
  AC_MSG_CHECKING(whether to enable readline)
  AC_MSG_RESULT($READLINE)
-@@ -1545,11 +1467,7 @@ if test "$BUILD_DMFILEMAPD" = yes; then
+@@ -1597,11 +1563,7 @@ if test "$BUILD_DMFILEMAPD" = yes; then
  fi
  
  ################################################################################
@@ -140,7 +89,25 @@ index 9a0e41a81..c2a6188d8 100644
  
  SYSCONFDIR="$(eval echo $(eval echo $sysconfdir))"
  
-@@ -1772,6 +1690,7 @@ AC_SUBST(SALCK_CFLAGS)
+@@ -1702,6 +1664,9 @@ AC_ARG_WITH(interface,
+ test "$interface" != ioctl && AC_MSG_ERROR([--with-interface=ioctl required. fs no longer supported.])
+ AC_MSG_RESULT($interface)
+ 
++################################################################################
++PKG_CHECK_MODULES([LIBSYSTEMD],[libsystemd],[HAVE_LIBSYSTEMD=yes],[HAVE_LIBSYSTEMD=no])
++
+ ################################################################################
+ read DM_LIB_VERSION < "$srcdir"/VERSION_DM 2>/dev/null || DM_LIB_VERSION=Unknown
+ AC_DEFINE_UNQUOTED(DM_LIB_VERSION, "$DM_LIB_VERSION", [Library version])
+@@ -1777,6 +1742,7 @@ AC_SUBST(FSADM)
+ AC_SUBST(FSADM_PATH)
+ AC_SUBST(BLKDEACTIVATE)
+ AC_SUBST(HAVE_LIBDL)
++AC_SUBST(HAVE_LIBSYSTEMD)
+ AC_SUBST(HAVE_REALTIME)
+ AC_SUBST(HAVE_VALGRIND)
+ AC_SUBST(INTL)
+@@ -1825,6 +1791,7 @@ AC_SUBST(SALCK_CFLAGS)
  AC_SUBST(SALCK_LIBS)
  AC_SUBST(SBINDIR)
  AC_SUBST(SELINUX_LIBS)
@@ -148,7 +115,7 @@ index 9a0e41a81..c2a6188d8 100644
  AC_SUBST(SELINUX_PC)
  AC_SUBST(SYSCONFDIR)
  AC_SUBST(SYSTEMD_LIBS)
-@@ -1791,7 +1710,6 @@ AC_SUBST(CACHE_RESTORE_CMD)
+@@ -1844,7 +1811,6 @@ AC_SUBST(CACHE_RESTORE_CMD)
  AC_SUBST(UDEV_PC)
  AC_SUBST(UDEV_RULES)
  AC_SUBST(UDEV_SYNC)
@@ -169,7 +136,7 @@ index fab74dc1d..46c14fb5a 100644
 +dm_event_daemon_talk
  dm_event_get_version
 diff --git a/daemons/dmeventd/dmeventd.c b/daemons/dmeventd/dmeventd.c
-index 96e70919b..d38350c1e 100644
+index 4c3ef74f1..881394ed5 100644
 --- a/daemons/dmeventd/dmeventd.c
 +++ b/daemons/dmeventd/dmeventd.c
 @@ -1981,7 +1981,7 @@ static int _reinstate_registrations(struct dm_event_fifos *fifos)
@@ -277,7 +244,7 @@ index afe0b0c4b..a3dad10a0 100644
  
  #endif /* __DMEVENTD_DOT_H__ */
 diff --git a/daemons/dmeventd/libdevmapper-event.c b/daemons/dmeventd/libdevmapper-event.c
-index 780d10db9..7cd59db47 100644
+index 7e09ff07b..add23ef2d 100644
 --- a/daemons/dmeventd/libdevmapper-event.c
 +++ b/daemons/dmeventd/libdevmapper-event.c
 @@ -349,7 +349,7 @@ static int _daemon_write(struct dm_event_fifos *fifos,
@@ -340,8 +307,34 @@ index 780d10db9..7cd59db47 100644
  		return 0;
  	p = msg.data;
  	*version = 0;
+diff --git a/daemons/lvmlockd/Makefile.in b/daemons/lvmlockd/Makefile.in
+index 9c0340145..228275fed 100644
+--- a/daemons/lvmlockd/Makefile.in
++++ b/daemons/lvmlockd/Makefile.in
+@@ -15,8 +15,6 @@ srcdir = @srcdir@
+ top_srcdir = @top_srcdir@
+ top_builddir = @top_builddir@
+ 
+-USE_SD_NOTIFY=yes
+-
+ SOURCES = lvmlockd-core.c
+ 
+ ifeq ("@BUILD_LOCKDSANLOCK@", "yes")
+@@ -44,9 +42,9 @@ LDFLAGS += -L$(top_builddir)/libdaemon/server $(EXTRA_EXEC_LDFLAGS) $(ELDFLAGS)
+ LIBS += $(RT_LIBS) $(DAEMON_LIBS) $(PTHREAD_LIBS)
+ 
+ 
+-ifeq ($(USE_SD_NOTIFY),yes)
+-	CFLAGS += $(shell pkg-config --cflags libsystemd) -DUSE_SD_NOTIFY
+-	LIBS += $(shell pkg-config --libs libsystemd)
++ifeq ($(HAVE_LIBSYSTEMD),yes)
++	CFLAGS += $(LIBSYSTEMD_CFLAGS) -DUSE_SD_NOTIFY
++	LIBS += $(LIBSYSTEMD_LIBS)
+ endif
+ 
+ lvmlockd: $(OBJECTS) $(top_builddir)/libdaemon/client/libdaemonclient.a \
 diff --git a/make.tmpl.in b/make.tmpl.in
-index 8a2081897..f44a112d3 100644
+index 4549746ab..9cd9cca71 100644
 --- a/make.tmpl.in
 +++ b/make.tmpl.in
 @@ -27,20 +27,10 @@ SHELL = @SHELL@
@@ -375,7 +368,16 @@ index 8a2081897..f44a112d3 100644
  LDFLAGS ?= @LDFLAGS@
  CLDFLAGS += @CLDFLAGS@
  ELDFLAGS += @ELDFLAGS@
-@@ -123,8 +114,7 @@ pythonprefix = $(DESTDIR)$(prefix)
+@@ -85,6 +76,8 @@ BLKID_CFLAGS = @BLKID_CFLAGS@
+ BLKID_LIBS = @BLKID_LIBS@
+ SYSTEMD_LIBS = @SYSTEMD_LIBS@
+ VALGRIND_CFLAGS = @VALGRIND_CFLAGS@
++LIBSYSTEMD_CFLAGS = @LIBSYSTEMD_CFLAGS@
++LIBSYSTEMD_LIBS = @LIBSYSTEMD_LIBS@
+ USE_TRACKING = @USE_TRACKING@
+ 
+ # Setup directory variables
+@@ -124,8 +117,7 @@ pythonprefix = $(DESTDIR)$(prefix)
  python2dir = @PYTHON2DIR@
  python3dir = @PYTHON3DIR@
  
@@ -385,7 +387,7 @@ index 8a2081897..f44a112d3 100644
  
  SYSTEMD_GENERATOR_DIR = @systemdutildir@/system-generators
  DEFAULT_SYS_DIR = @DEFAULT_SYS_DIR@
-@@ -153,22 +143,14 @@ MAKEFLAGS = @JOBS@
+@@ -154,22 +146,14 @@ MAKEFLAGS = @JOBS@
  endif
  
  # Handle installation of files
@@ -412,7 +414,7 @@ index 8a2081897..f44a112d3 100644
  
  .SUFFIXES:
  .SUFFIXES: .c .cpp .d .o .so .a .po .pot .mo .dylib
-@@ -439,15 +421,15 @@ DEFS+=-D_FILE_OFFSET_BITS=64
+@@ -440,15 +424,15 @@ DEFS+=-D_FILE_OFFSET_BITS=64
  
  %.o: %.c
  	@echo "    [CC] $<"
@@ -456,21 +458,6 @@ index 0f4ac8da2..fd60f1345 100644
  	} else {
  		if (unit == UNIT_EARLY)
  			fputs("After=systemd-udev-settle.service\n"
-diff --git a/tools/lvm.c b/tools/lvm.c
-index 4bfa6f5c2..65bc88df4 100644
---- a/tools/lvm.c
-+++ b/tools/lvm.c
-@@ -26,10 +26,6 @@ int main(int argc, char **argv)
- 
- #  include <readline/readline.h>
- #  include <readline/history.h>
--#  ifndef HAVE_RL_COMPLETION_MATCHES
--#    define rl_completion_matches(a, b) completion_matches((char *)a, b)
--#    define rl_completion_func_t CPPFunction
--#  endif
- 
- static struct cmdline_context *_cmdline;
- 
 diff --git a/udev/10-dm.rules.in b/udev/10-dm.rules.in
 index b4fa52ab7..69d2c47ec 100644
 --- a/udev/10-dm.rules.in
@@ -518,10 +505,10 @@ index b4fa52ab7..69d2c47ec 100644
  
  ENV{DM_UDEV_DISABLE_DM_RULES_FLAG}!="1", ENV{DM_NAME}=="?*", SYMLINK+="(DM_DIR)/$env{DM_NAME}"
 diff --git a/udev/69-dm-lvm-metad.rules.in b/udev/69-dm-lvm-metad.rules.in
-index d51006496..b16a74415 100644
+index 78f506520..237b714d7 100644
 --- a/udev/69-dm-lvm-metad.rules.in
 +++ b/udev/69-dm-lvm-metad.rules.in
-@@ -19,6 +19,11 @@ SUBSYSTEM!="block", GOTO="lvm_end"
+@@ -12,6 +12,11 @@ SUBSYSTEM!="block", GOTO="lvm_end"
  
  ENV{DM_UDEV_DISABLE_OTHER_RULES_FLAG}=="1", GOTO="lvm_end"
  
@@ -530,10 +517,10 @@ index d51006496..b16a74415 100644
 +IMPORT{builtin}="blkid"
 +LABEL="next"
 +
- # If the PV label got lost, inform lvmetad immediately.
- # Detect the lost PV label by comparing previous ID_FS_TYPE value with current one.
+ # Detect removed PV label by comparing previous ID_FS_TYPE value with current one.
  ENV{.ID_FS_TYPE_NEW}="$env{ID_FS_TYPE}"
-@@ -55,7 +60,7 @@ LABEL="next"
+ IMPORT{db}="ID_FS_TYPE"
+@@ -46,7 +51,7 @@ LABEL="next"
  KERNEL!="md[0-9]*", GOTO="next"
  IMPORT{db}="LVM_MD_PV_ACTIVATED"
  ACTION=="add", ENV{LVM_MD_PV_ACTIVATED}=="1", GOTO="lvm_scan"
@@ -542,7 +529,7 @@ index d51006496..b16a74415 100644
  ACTION=="add", KERNEL=="md[0-9]*p[0-9]*", GOTO="lvm_scan"
  ENV{LVM_MD_PV_ACTIVATED}!="1", ENV{SYSTEMD_READY}="0"
  GOTO="lvm_end"
-@@ -64,7 +69,7 @@ GOTO="lvm_end"
+@@ -55,7 +60,7 @@ GOTO="lvm_end"
  LABEL="next"
  KERNEL!="loop[0-9]*", GOTO="next"
  ACTION=="add", ENV{LVM_LOOP_PV_ACTIVATED}=="1", GOTO="lvm_scan"
@@ -551,7 +538,7 @@ index d51006496..b16a74415 100644
  ENV{LVM_LOOP_PV_ACTIVATED}!="1", ENV{SYSTEMD_READY}="0"
  GOTO="lvm_end"
  
-@@ -73,17 +78,15 @@ GOTO="lvm_end"
+@@ -63,17 +68,15 @@ GOTO="lvm_end"
  # For "systemd_background" mode, systemd takes care of this by activating
  # the lvm2-pvscan@.service only once.
  LABEL="next"
@@ -573,7 +560,7 @@ index d51006496..b16a74415 100644
  
  LABEL="systemd_background"
  
-@@ -130,6 +133,6 @@ LABEL="direct_pvscan"
+@@ -121,6 +124,6 @@ LABEL="direct_pvscan"
  #  MD    |          |      X      |       X*       |                   |
  #  loop  |          |      X      |       X*       |                   |
  #  other |    X     |             |       X        |                   |   X

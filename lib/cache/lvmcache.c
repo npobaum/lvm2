@@ -23,6 +23,7 @@
 #include "lib/mm/memlock.h"
 #include "lib/format_text/format-text.h"
 #include "lib/config/config.h"
+#include "lib/filters/filter.h"
 
 /* One per device */
 struct lvmcache_info {
@@ -42,9 +43,9 @@ struct lvmcache_info {
 	bool mda1_bad;		/* label scan found bad metadata in mda1 */
 	bool mda2_bad;		/* label scan found bad metadata in mda2 */
 	bool summary_seqno_mismatch; /* two mdas on this dev has mismatching metadata */
-	int summary_seqno;      /* vg seqno found on this dev during scan */
-	int mda1_seqno;
-	int mda2_seqno;
+	uint32_t summary_seqno;      /* vg seqno found on this dev during scan */
+	uint32_t mda1_seqno;
+	uint32_t mda2_seqno;
 };
 
 /* One per VG */
@@ -63,7 +64,7 @@ struct lvmcache_vginfo {
 	char *lock_type;
 	uint32_t mda_checksum;
 	size_t mda_size;
-	int seqno;
+	uint32_t seqno;
 	bool scan_summary_mismatch; /* vgsummary from devs had mismatching seqno or checksum */
 	bool has_duplicate_local_vgname;   /* this local vg and another local vg have same name */
 	bool has_duplicate_foreign_vgname; /* this foreign vg and another foreign vg have same name */
@@ -270,6 +271,21 @@ void lvmcache_get_mdas(struct cmd_context *cmd,
 	}
 }
 
+struct metadata_area *lvmcache_get_dev_mda(struct device *dev, int mda_num)
+{
+	struct lvmcache_info *info;
+	struct metadata_area *mda;
+
+	if (!(info = lvmcache_info_from_pvid(dev->pvid, dev, 0)))
+		return NULL;
+
+	dm_list_iterate_items(mda, &info->mdas) {
+		if (mda->mda_num == mda_num)
+			return mda;
+	}
+	return NULL;
+}
+
 static void _vginfo_detach_info(struct lvmcache_info *info)
 {
 	if (!dm_list_empty(&info->list)) {
@@ -325,7 +341,7 @@ static struct lvmcache_vginfo *_vginfo_lookup(const char *vgname, const char *vg
 		if ((vginfo = dm_hash_lookup(_vgname_hash, vgname))) {
 			if (vginfo->has_duplicate_local_vgname) {
 				/* should never happen, found_duplicate_vgnames should be set */
-				log_error(INTERNAL_ERROR "vginfo_lookup %s %s has_duplicate_local_vgname", vgname, vgid);
+				log_error(INTERNAL_ERROR "vginfo_lookup %s has_duplicate_local_vgname.", vgname);
 				return NULL;
 			}
 			return vginfo;
@@ -335,7 +351,7 @@ static struct lvmcache_vginfo *_vginfo_lookup(const char *vgname, const char *vg
 	if (vgname && _found_duplicate_vgnames) {
 		if ((vginfo = _search_vginfos_list(vgname, vgid))) {
 			if (vginfo->has_duplicate_local_vgname) {
-				log_debug("vginfo_lookup %s %s has_duplicate_local_vgname return none", vgname, vgid);
+				log_debug("vginfo_lookup %s has_duplicate_local_vgname return none.", vgname);
 				return NULL;
 			}
 			return vginfo;
@@ -996,6 +1012,22 @@ int lvmcache_label_rescan_vg_rw(struct cmd_context *cmd, const char *vgname, con
 	return _label_rescan_vg(cmd, vgname, vgid, 1);
 }
 
+int lvmcache_label_reopen_vg_rw(struct cmd_context *cmd, const char *vgname, const char *vgid)
+{
+	struct lvmcache_vginfo *vginfo;
+	struct lvmcache_info *info;
+
+	if (!(vginfo = lvmcache_vginfo_from_vgname(vgname, vgid)))
+		return_0;
+
+	dm_list_iterate_items(info, &vginfo->infos) {
+		if (!label_scan_reopen_rw(info->dev))
+			return_0;
+	}
+
+	return 1;
+}
+
 /*
  * Uses label_scan to populate lvmcache with 'vginfo' struct for each VG
  * and associated 'info' structs for those VGs.  Only VG summary information
@@ -1084,7 +1116,7 @@ int lvmcache_label_scan(struct cmd_context *cmd)
 
 		dm_list_iterate_items(devl, &add_cache_devs) {
 			log_debug_cache("Adding chosen duplicate %s", dev_name(devl->dev));
-			label_read(devl->dev);
+			label_scan_dev(devl->dev);
 		}
 
 		dm_list_splice(&_unused_duplicates, &del_cache_devs);
@@ -1647,6 +1679,9 @@ int lvmcache_update_vgname_and_id(struct cmd_context *cmd, struct lvmcache_info 
 		 * second updated to seqno 4, first comes back and second goes
 		 * missing, first updated to seqno 4, second comes back, now
 		 * both are present with same seqno but different checksums.
+		 * FIXME: we should check if the majority of mda copies have one
+		 * checksum and if so use that copy of metadata, but if there's
+		 * not a majority, don't allow the VG to be modified/activated.
 		 */
 
 		if ((vginfo->mda_size != vgsummary->mda_size) || (vginfo->mda_checksum != vgsummary->mda_checksum)) {
@@ -1708,8 +1743,8 @@ int lvmcache_update_vg_from_write(struct volume_group *vg)
 	char pvid_s[ID_LEN + 1] __attribute__((aligned(8)));
 	struct lvmcache_vgsummary vgsummary = {
 		.vgname = vg->name,
-		.vgstatus = vg->status,
 		.vgid = vg->id,
+		.vgstatus = vg->status,
 		.system_id = vg->system_id,
 		.lock_type = vg->lock_type
 	};
@@ -1745,8 +1780,8 @@ int lvmcache_update_vg_from_read(struct volume_group *vg, unsigned precommitted)
 	char pvid_s[ID_LEN + 1] __attribute__((aligned(8)));
 	struct lvmcache_vgsummary vgsummary = {
 		.vgname = vg->name,
-		.vgstatus = vg->status,
 		.vgid = vg->id,
+		.vgstatus = vg->status,
 		.system_id = vg->system_id,
 		.lock_type = vg->lock_type
 	};
@@ -2664,3 +2699,50 @@ bool lvmcache_is_outdated_dev(struct cmd_context *cmd,
 
 	return false;
 }
+
+const char *dev_filtered_reason(struct device *dev)
+{
+	if (dev->filtered_flags & DEV_FILTERED_REGEX)
+		return "device is rejected by filter config";
+	if (dev->filtered_flags & DEV_FILTERED_INTERNAL)
+		return "device is restricted internally";
+	if (dev->filtered_flags & DEV_FILTERED_MD_COMPONENT)
+		return "device is an md component";
+	if (dev->filtered_flags & DEV_FILTERED_MPATH_COMPONENT)
+		return "device is a multipath component";
+	if (dev->filtered_flags & DEV_FILTERED_PARTITIONED)
+		return "device is partitioned";
+	if (dev->filtered_flags & DEV_FILTERED_SIGNATURE)
+		return "device has a signature";
+	if (dev->filtered_flags & DEV_FILTERED_SYSFS)
+		return "device is missing sysfs info";
+	if (dev->filtered_flags & DEV_FILTERED_DEVTYPE)
+		return "device type is unknown";
+	if (dev->filtered_flags & DEV_FILTERED_MINSIZE)
+		return "device is too small (pv_min_size)";
+	if (dev->filtered_flags & DEV_FILTERED_UNUSABLE)
+		return "device is not in a usable state";
+
+	/* flag has not been added here */
+	if (dev->filtered_flags)
+		return "device is filtered";
+
+	return "device cannot be used";
+}
+
+const char *devname_error_reason(const char *devname)
+{
+	struct device *dev;
+
+	if ((dev = dev_hash_get(devname))) {
+		if (dev->filtered_flags)
+			return dev_filtered_reason(dev);
+		if (lvmcache_dev_is_unused_duplicate(dev))
+			return "device is a duplicate";
+		/* Avoid this case by adding by adding other more descriptive checks above. */
+		return "device cannot be used";
+	}
+
+	return "device not found";
+}
+

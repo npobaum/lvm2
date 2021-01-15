@@ -99,6 +99,11 @@ lvchange -an $vg/$lv1
 
 aux disable_dev "$dev2"
 
+lvs -a -o+lv_health_status $vg |tee out
+grep $lv1 out | grep partial
+grep $lv2 out | grep partial
+check lv_attr_bit health $vg/$lv1 "p"
+
 not lvconvert --splitcache $vg/$lv1
 lvconvert --splitcache --force --yes $vg/$lv1
 
@@ -127,6 +132,11 @@ mkfs_mount_umount $lv1
 lvchange -an $vg/$lv1
 
 aux disable_dev "$dev3"
+
+lvs -a -o+lv_health_status $vg |tee out
+grep $lv1 out | grep partial
+grep $lv2 out | grep partial
+check lv_attr_bit health $vg/$lv1 "p"
 
 not lvconvert --splitcache $vg/$lv1
 lvconvert --splitcache --force --yes $vg/$lv1
@@ -171,5 +181,51 @@ lvconvert -y --type writecache --cachevol $lv2 $vg/$lv1
 fail vgsplit $vg $vg1 "$dev2"
 fail vgsplit $vg $vg1 "$dev3"
 lvremove $vg/$lv1
+vgremove $vg
+
+#
+# uncache
+#
+vgcreate $SHARED $vg "$dev1" "$dev2" "$dev3" "$dev4"
+
+# while inactive
+
+lvcreate -n $lv1 -l 16 -an $vg "$dev1" "$dev4"
+lvcreate -n $lv2 -l 4 -an $vg "$dev2"
+
+lvconvert -y --type writecache --cachevol $lv2 $vg/$lv1
+
+lvchange -ay $vg/$lv1
+mkfs_mount_umount $lv1
+lvchange -an $vg/$lv1
+
+lvconvert --uncache $vg/$lv1
+lvs -o segtype $vg/$lv1 | grep linear
+not lvs $vg/$lv2
+
+lvchange -ay $vg/$lv1
+mount_umount $lv1
+lvchange -an $vg/$lv1
+lvremove -y $vg/$lv1
+
+# while active
+
+lvcreate -n $lv1 -l 16 -an $vg "$dev1" "$dev4"
+lvcreate -n $lv2 -l 4 -an $vg "$dev2"
+
+lvconvert -y --type writecache --cachevol $lv2 $vg/$lv1
+
+lvchange -ay $vg/$lv1
+mkfs_mount_umount $lv1
+
+lvconvert --uncache $vg/$lv1
+lvs -o segtype $vg/$lv1 | grep linear
+not lvs $vg/$lv2
+
+lvchange -an $vg/$lv1
+lvchange -ay $vg/$lv1
+mount_umount $lv1
+lvchange -an $vg/$lv1
+lvremove -y $vg/$lv1
 
 vgremove -ff $vg

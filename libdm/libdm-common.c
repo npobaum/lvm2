@@ -510,7 +510,7 @@ int unmangle_string(const char *str, const char *str_name, size_t len,
 	int strict = mode != DM_STRING_MANGLING_NONE;
 	char str_rest[DM_NAME_LEN];
 	size_t i, j;
-	int code;
+	unsigned int code;
 	int r = 0;
 
 	if (!str || !buf)
@@ -1443,7 +1443,7 @@ struct node_op_parms {
 	char *old_name;
 	int warn_if_udev_failed;
 	unsigned rely_on_udev;
-	char names[0];
+	char names[];
 };
 
 static void _store_str(char **pos, char **ptr, const char *str)

@@ -104,19 +104,21 @@ extern struct bcache *scan_bcache;
 
 int label_scan(struct cmd_context *cmd);
 int label_scan_devs(struct cmd_context *cmd, struct dev_filter *f, struct dm_list *devs);
+int label_scan_devs_cached(struct cmd_context *cmd, struct dev_filter *f, struct dm_list *devs);
 int label_scan_devs_rw(struct cmd_context *cmd, struct dev_filter *f, struct dm_list *devs);
-int label_scan_devs_excl(struct dm_list *devs);
+int label_scan_devs_excl(struct cmd_context *cmd, struct dev_filter *f, struct dm_list *devs);
+int label_scan_dev(struct device *dev);
 void label_scan_invalidate(struct device *dev);
 void label_scan_invalidate_lv(struct cmd_context *cmd, struct logical_volume *lv);
 void label_scan_drop(struct cmd_context *cmd);
 void label_scan_destroy(struct cmd_context *cmd);
-int label_read(struct device *dev);
-int label_read_sector(struct device *dev, uint64_t scan_sector);
 void label_scan_confirm(struct device *dev);
 int label_scan_setup_bcache(void);
 int label_scan_open(struct device *dev);
 int label_scan_open_excl(struct device *dev);
 int label_scan_open_rw(struct device *dev);
+int label_scan_reopen_rw(struct device *dev);
+int label_read_pvid(struct device *dev);
 
 int label_scan_for_pvid(struct cmd_context *cmd, char *pvid, struct device **dev_out);
 

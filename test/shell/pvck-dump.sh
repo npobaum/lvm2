@@ -12,16 +12,16 @@
 
 . lib/inittest
 
-# 4 devs each 128MB
-aux prepare_devs 4 128
+SIZE_MB=80
+# 4 devs each $SIZE_MB
+aux prepare_devs 4 $SIZE_MB
 get_devs
 
-dd if=/dev/zero of="$dev1" bs=1M count=32 || true
-dd if=/dev/zero of="$dev2" bs=1M count=32 || true
-dd if=/dev/zero of="$dev3" bs=1M count=32 || true
-dd if=/dev/zero of="$dev4" bs=1M count=32 || true
+dd if=/dev/zero of="$dev1" bs=1M count=2 oflag=direct
+dd if=/dev/zero of="$dev2" bs=1M count=2 oflag=direct
 # clear entire dev to cover mda2
-dd if=/dev/zero of="$dev3" || true
+dd if=/dev/zero of="$dev3" bs=1M count=$SIZE_MB oflag=direct
+dd if=/dev/zero of="$dev4" bs=1M count=2 oflag=direct
 
 pvcreate "$dev1"
 pvcreate "$dev2"
@@ -135,18 +135,17 @@ diff area1 area3b
 vgremove -ff $vg
 
 
-dd if=/dev/zero of="$dev1" bs=1M count=32 || true
-dd if=/dev/zero of="$dev2" bs=1M count=32 || true
-dd if=/dev/zero of="$dev3" bs=1M count=32 || true
-dd if=/dev/zero of="$dev4" bs=1M count=32 || true
 # clear entire dev to cover mda2
-dd if=/dev/zero of="$dev1" || true
+dd if=/dev/zero of="$dev1" bs=1M count=$SIZE_MB oflag=direct
+dd if=/dev/zero of="$dev2" bs=1M count=32 oflag=direct
+dd if=/dev/zero of="$dev3" bs=1M count=32 oflag=direct
+dd if=/dev/zero of="$dev4" bs=1M count=32 oflag=direct
 
 pvcreate --pvmetadatacopies 2 --metadatasize 32M "$dev1"
 
-vgcreate $SHARED -s 512K --metadatasize 32M $vg "$dev1" "$dev2" "$dev3" "$dev4"
+vgcreate $SHARED -s 64K --metadatasize 32M $vg "$dev1" "$dev2" "$dev3" "$dev4"
 
-for i in `seq 1 500`; do lvcreate -an -n lv$i -l1 $vg; done
+for i in $(seq 1 500); do echo "lvcreate -an -n lv$i -l1 $vg"; done | lvm
 
 pvck --dump headers "$dev1" > h1
 
@@ -161,7 +160,7 @@ dd if="$dev1" of=dev1dd bs=1M count=34
 # Clear the header so that we force metadata_search to use
 # the settings instead of getting the mda_size/mda_offset
 # from the headers.
-dd if=/dev/zero of="$dev1" bs=4K count=1
+dd if=/dev/zero of="$dev1" bs=4K count=1 oflag=direct
 
 # Warning: these checks are based on copying specific numbers
 # seen when running these commands, but these numbers could
@@ -193,6 +192,6 @@ grep "seqno 477" m1b
 grep "seqno 478" m1b
 grep "seqno 500" m2
 
-dd if=dev1dd of="$dev1" bs=4K count=1
+dd if=dev1dd of="$dev1" bs=4K count=1 oflag=direct
 
 vgremove -ff $vg

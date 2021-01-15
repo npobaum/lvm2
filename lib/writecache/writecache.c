@@ -238,23 +238,36 @@ static int _target_present(struct cmd_context *cmd,
 
 	if (!_writecache_checked) {
 		_writecache_checked = 1;
-		_writecache_present =  target_present(cmd, TARGET_NAME_WRITECACHE, 1);
+		_writecache_present = target_present(cmd, TARGET_NAME_WRITECACHE, 1);
 
-		if (!target_version(TARGET_NAME_WRITECACHE, &maj, &min, &patchlevel))
-			return_0;
-
-		if (maj < 1) {
-			log_error("writecache target version older than minimum 1.0.0");
+		if (!_writecache_present) {
+			log_error("dm-writecache module not found in kernel.");
 			return 0;
 		}
 
-		if (min >= 2) {
+		if (!target_version(TARGET_NAME_WRITECACHE, &maj, &min, &patchlevel)) {
+			log_error("dm-writecache module version not found.");
+			return_0;
+		}
+
+		if (maj < 1) {
+			log_error("dm-writecache module version older than minimum 1.0.0");
+			return 0;
+		}
+
+		if (min >= 3) {
 			_writecache_cleaner_supported = 1;
 			_writecache_max_age_supported = 1;
 		}
 	}
 
 	return _writecache_present;
+}
+
+bool writecache_cleaner_supported(struct cmd_context *cmd)
+{
+	_target_present(cmd, NULL, NULL);
+	return _writecache_cleaner_supported ? true : false;
 }
 
 static int _modules_needed(struct dm_pool *mem,
@@ -267,6 +280,12 @@ static int _modules_needed(struct dm_pool *mem,
 	}
 
 	return 1;
+}
+
+#else
+bool writecache_cleaner_supported(struct cmd_context *cmd)
+{
+	return 0;
 }
 #endif /* DEVMAPPER_SUPPORT */
 

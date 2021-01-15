@@ -165,20 +165,20 @@ struct dm_info {
 struct dm_deps {
 	uint32_t count;
 	uint32_t filler;
-	uint64_t device[0];
+	uint64_t device[];
 };
 
 struct dm_names {
 	uint64_t dev;
 	uint32_t next;		/* Offset to next struct from start of this struct */
-	char name[0];
+	char name[];
 };
 
 struct dm_versions {
 	uint32_t next;		/* Offset to next struct from start of this struct */
 	uint32_t version[3];
 
-	char name[0];
+	char name[];
 };
 
 int dm_get_library_version(char *version, size_t size);
@@ -2242,7 +2242,7 @@ int dm_bit_get_next(dm_bitset_t bs, int last_bit);
 int dm_bit_get_last(dm_bitset_t bs);
 int dm_bit_get_prev(dm_bitset_t bs, int last_bit);
 
-#define DM_BITS_PER_INT (sizeof(int) * CHAR_BIT)
+#define DM_BITS_PER_INT ((unsigned)sizeof(int) * CHAR_BIT)
 
 #define dm_bit(bs, i) \
    ((bs)[((i) / DM_BITS_PER_INT) + 1] & (0x1 << ((i) & (DM_BITS_PER_INT - 1))))
@@ -2471,7 +2471,7 @@ struct dm_list *dm_list_next(const struct dm_list *head, const struct dm_list *e
  * contained in a structure of type t, return the containing structure.
  */
 #define dm_list_struct_base(v, t, head) \
-    ((t *)((const char *)(v) - offsetof(t, head)))
+    ((t *)((char *)(v) - offsetof(t, head)))
 
 /*
  * Given the address v of an instance of 'struct dm_list list' contained in

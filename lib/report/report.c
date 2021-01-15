@@ -348,39 +348,39 @@ struct time_info {
 static int _is_time_num(time_id_t id)
 {
 	return ((id > TIME_NUM__START) && (id < TIME_NUM__END));
-};
+}
 
 /*
 static int _is_time_frame(time_id_t id)
 {
 	return ((id > TIME_FRAME__START) && (id < TIME_FRAME__END));
-};
+}
 */
 
 static int _is_time_label_date(time_id_t id)
 {
 	return ((id > TIME_LABEL_DATE__START) && (id < TIME_LABEL_DATE__END));
-};
+}
 
 static int _is_time_label_time(time_id_t id)
 {
 	return ((id > TIME_LABEL_TIME__START) && (id < TIME_LABEL_TIME__END));
-};
+}
 
 static int _is_time_unit(time_id_t id)
 {
 	return ((id > TIME_UNIT__START) && (id < TIME_UNIT__END));
-};
+}
 
 static int _is_time_weekday(time_id_t id)
 {
 	return ((id > TIME_WEEKDAY__START) && (id < TIME_WEEKDAY__END));
-};
+}
 
 static int _is_time_month(time_id_t id)
 {
 	return ((id > TIME_MONTH__START) && (id < TIME_MONTH__END));
-};
+}
 
 static const char *_skip_space(const char *s)
 {
@@ -3267,6 +3267,80 @@ static int _raidmaxrecoveryrate_disp(struct dm_report *rh __attribute__((unused)
 	if (lv_is_raid_type(lv) && first_seg(lv)->max_recovery_rate)
 		return dm_report_field_uint32(rh, field,
 					      &first_seg(lv)->max_recovery_rate);
+
+	return _field_set_value(field, "", &GET_TYPE_RESERVED_VALUE(num_undef_64));
+}
+
+static int _raidintegritymode_disp(struct dm_report *rh __attribute__((unused)),
+				   struct dm_pool *mem,
+				   struct dm_report_field *field,
+				   const void *data,
+				   void *private __attribute__((unused)))
+{
+	struct logical_volume *lv = (struct logical_volume *) data;
+	struct integrity_settings *settings;
+	const char *mode = NULL;
+	char *repstr;
+
+	if (lv_raid_has_integrity(lv))
+		lv_get_raid_integrity_settings(lv, &settings);
+	else if (lv_is_integrity(lv))
+		settings = &first_seg(lv)->integrity_settings;
+	else
+		goto out;
+
+	if (settings->mode[0]) {
+		if (settings->mode[0] == 'B')
+			mode = "bitmap";
+		else if (settings->mode[0] == 'J')
+			mode = "journal";
+
+		if (mode) {
+			if (!(repstr = dm_pool_strdup(mem, mode))) {
+				log_error("Failed to allocate buffer for mode.");
+				return 0;
+			}
+			return _field_set_value(field, repstr, NULL);
+		}
+	}
+out:
+	return _field_set_value(field, "", NULL);
+}
+
+static int _raidintegrityblocksize_disp(struct dm_report *rh __attribute__((unused)),
+				   struct dm_pool *mem,
+				   struct dm_report_field *field,
+				   const void *data,
+				   void *private __attribute__((unused)))
+{
+	struct logical_volume *lv = (struct logical_volume *) data;
+	struct integrity_settings *settings;
+
+	if (lv_raid_has_integrity(lv))
+		lv_get_raid_integrity_settings(lv, &settings);
+	else if (lv_is_integrity(lv))
+		settings = &first_seg(lv)->integrity_settings;
+	else
+		return dm_report_field_int32(rh, field, &GET_TYPE_RESERVED_VALUE(num_undef_32));
+
+	return dm_report_field_uint32(rh, field, &settings->block_size);
+}
+
+static int _integritymismatches_disp(struct dm_report *rh __attribute__((unused)),
+				   struct dm_pool *mem,
+				   struct dm_report_field *field,
+				   const void *data,
+				   void *private __attribute__((unused)))
+{
+	struct logical_volume *lv = (struct logical_volume *) data;
+	uint64_t mismatches = 0;
+
+	if (lv_is_integrity(lv) && lv_integrity_mismatches(lv->vg->cmd, lv, &mismatches))
+		return dm_report_field_uint64(rh, field, &mismatches);
+
+	if (lv_is_raid(lv) && lv_raid_has_integrity(lv) &&
+	    lv_raid_integrity_total_mismatches(lv->vg->cmd, lv, &mismatches))
+		return dm_report_field_uint64(rh, field, &mismatches);
 
 	return _field_set_value(field, "", &GET_TYPE_RESERVED_VALUE(num_undef_64));
 }

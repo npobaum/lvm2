@@ -202,7 +202,7 @@ static int _lvchange_activate(struct cmd_context *cmd, struct logical_volume *lv
 	    strcmp(lv->vg->system_id, cmd->system_id) &&
 	    is_change_activating(activate)) {
 		log_error("Cannot activate LVs in a foreign VG.");
-		return ECMD_FAILED;
+		return 0;
 	}
 
 	if (lv_activation_skip(lv, activate, arg_is_set(cmd, ignoreactivationskip_ARG)))
@@ -1658,8 +1658,10 @@ static int _lvchange_syncaction_single(struct cmd_context *cmd,
 				       struct logical_volume *lv,
 				       struct processing_handle *handle)
 {
-	if (lv_raid_has_integrity(lv)) {
-		log_error("Integrity must be removed to use syncaction commands.");
+	const char *msg = arg_str_value(cmd, syncaction_ARG, NULL);
+
+	if (lv_raid_has_integrity(lv) && !strcmp(msg, "repair")) {
+		log_error("Use syncaction check to detect and correct integrity checksum mismatches.");
 		return_ECMD_FAILED;
 	}
 
@@ -1667,7 +1669,7 @@ static int _lvchange_syncaction_single(struct cmd_context *cmd,
 	if (!lockd_lv(cmd, lv, "ex", 0))
 		return_ECMD_FAILED;
 
-	if (!lv_raid_message(lv, arg_str_value(cmd, syncaction_ARG, NULL)))
+	if (!lv_raid_message(lv, msg))
 		return_ECMD_FAILED;
 
 	return ECMD_PROCESSED;

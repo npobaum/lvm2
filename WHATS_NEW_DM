@@ -1,9 +1,13 @@
+Version 1.02.175 - 08th January 2021
+====================================
+
 Version 1.02.173 - 09th August 2020
 ===================================
   Add support for VDO in blkdeactivate script.
 
 Version 1.02.171 - 26th March 2020
 ==================================
+  Try to remove all created devices on dm preload tree error path.
   Fix dm_list interators with gcc 10 optimization (-ftree-pta).
   Dmeventd handles timer without looping on short intervals.
 

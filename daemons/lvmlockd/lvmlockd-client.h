@@ -23,9 +23,9 @@ static inline daemon_handle lvmlockd_open(const char *sock)
 	daemon_info lvmlockd_info = {
 		.path = "lvmlockd",
 		.socket = sock ?: LVMLOCKD_SOCKET,
+		.autostart = 0,
 		.protocol = "lvmlockd",
 		.protocol_version = 1,
-		.autostart = 0
 	};
 
 	return daemon_open(lvmlockd_info);
@@ -33,7 +33,7 @@ static inline daemon_handle lvmlockd_open(const char *sock)
 
 static inline void lvmlockd_close(daemon_handle h)
 {
-	return daemon_close(h);
+	daemon_close(h);
 }
 
 /*

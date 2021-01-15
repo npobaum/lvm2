@@ -155,6 +155,9 @@ int lv_extend_integrity_in_raid(struct logical_volume *lv, struct dm_list *pvh)
 	uint32_t meta_extents, prev_meta_extents;
 	uint32_t area_count, s;
 
+	if (!lv_is_raid(lv))
+		return_0;
+
 	seg_top = first_seg(lv);
 		                
 	if (!(segtype = get_segtype_from_string(cmd, SEG_TYPE_NAME_STRIPED)))
@@ -300,6 +303,21 @@ int lv_remove_integrity_from_raid(struct logical_volume *lv)
 	if (!vg_write(vg) || !vg_commit(vg))
 		return_0;
 
+	return 1;
+}
+
+int integrity_mode_set(const char *mode, struct integrity_settings *settings)
+{
+	if (!mode)
+		settings->mode[0] = DEFAULT_MODE;
+	else if (!strcmp(mode, "bitmap") || !strcmp(mode, "B"))
+		settings->mode[0] = 'B';
+	else if (!strcmp(mode, "journal") || !strcmp(mode, "J"))
+		settings->mode[0] = 'J';
+	else {
+		log_error("Invalid raid integrity mode (use \"bitmap\" or \"journal\")");
+		return 0;
+	}
 	return 1;
 }
 
@@ -515,7 +533,7 @@ int lv_add_integrity_to_raid(struct logical_volume *lv, struct integrity_setting
 	 */
 	for (s = 0; s < area_count; s++) {
 		struct logical_volume *meta_lv;
-		struct wipe_params wipe = { .do_zero = 1, .zero_sectors = 8 };
+		struct wipe_params wipe = { .do_zero = 1 };
 
 		if (s >= DEFAULT_RAID_MAX_IMAGES)
 			goto_bad;
@@ -779,6 +797,11 @@ void lv_clear_integrity_recalculate_metadata(struct logical_volume *lv)
 	struct lv_segment *seg, *seg_image;
 	uint32_t s;
 
+	if (!lv_is_raid(lv) && !lv_is_integrity(lv)) {
+		log_error("Invalid LV type for clearing integrity");
+		return;
+	}
+
 	seg = first_seg(lv);
 
 	if (seg_is_raid(seg)) {
@@ -789,9 +812,6 @@ void lv_clear_integrity_recalculate_metadata(struct logical_volume *lv)
 		}
 	} else if (seg_is_integrity(seg)) {
 		seg->integrity_recalculate = 0;
-	} else {
-		log_error("Invalid LV type for clearing integrity");
-		return;
 	}
 
 	if (!vg_write(vg) || !vg_commit(vg)) {
@@ -806,6 +826,9 @@ int lv_has_integrity_recalculate_metadata(struct logical_volume *lv)
 	struct lv_segment *seg, *seg_image;
 	uint32_t s;
 	int ret = 0;
+
+	if (!lv_is_raid(lv) && !lv_is_integrity(lv))
+		return 0;
 
 	seg = first_seg(lv);
 
@@ -832,16 +855,17 @@ int lv_raid_has_integrity(struct logical_volume *lv)
 	struct lv_segment *seg, *seg_image;
 	uint32_t s;
 
+	if (!lv_is_raid(lv))
+		return 0;
+
 	seg = first_seg(lv);
 
-	if (seg_is_raid(seg)) {
-		for (s = 0; s < seg->area_count; s++) {
-			lv_image = seg_lv(seg, s);
-			seg_image = first_seg(lv_image);
+	for (s = 0; s < seg->area_count; s++) {
+		lv_image = seg_lv(seg, s);
+		seg_image = first_seg(lv_image);
 
-			if (seg_is_integrity(seg_image))
-				return 1;
-		}
+		if (seg_is_integrity(seg_image))
+			return 1;
 	}
 
 	return 0;
@@ -853,20 +877,105 @@ int lv_get_raid_integrity_settings(struct logical_volume *lv, struct integrity_s
 	struct lv_segment *seg, *seg_image;
 	uint32_t s;
 
+	if (!lv_is_raid(lv))
+		return_0;
+
 	seg = first_seg(lv);
 
-	if (seg_is_raid(seg)) {
-		for (s = 0; s < seg->area_count; s++) {
-			lv_image = seg_lv(seg, s);
-			seg_image = first_seg(lv_image);
+	for (s = 0; s < seg->area_count; s++) {
+		lv_image = seg_lv(seg, s);
+		seg_image = first_seg(lv_image);
 
-			if (seg_is_integrity(seg_image)) {
-				*isettings = &seg_image->integrity_settings;
-				return 1;
-			}
+		if (seg_is_integrity(seg_image)) {
+			*isettings = &seg_image->integrity_settings;
+			return 1;
 		}
 	}
 
+	return 0;
+}
+
+int lv_raid_integrity_total_mismatches(struct cmd_context *cmd,
+			    const struct logical_volume *lv,
+			    uint64_t *mismatches)
+{
+	struct logical_volume *lv_image;
+	struct lv_segment *seg, *seg_image;
+	uint32_t s;
+	uint64_t mismatches_image;
+	uint64_t total = 0;
+	int errors = 0;
+
+	if (!lv_is_raid(lv))
+		return 0;
+
+	seg = first_seg(lv);
+
+	for (s = 0; s < seg->area_count; s++) {
+		lv_image = seg_lv(seg, s);
+		seg_image = first_seg(lv_image);
+
+		if (!seg_is_integrity(seg_image))
+			continue;
+
+		mismatches_image = 0;
+
+		if (!lv_integrity_mismatches(cmd, lv_image, &mismatches_image))
+			errors++;
+
+		total += mismatches_image;
+	}
+	*mismatches = total;
+
+	if (errors)
+		return 0;
+	return 1;
+}
+
+int lv_integrity_mismatches(struct cmd_context *cmd,
+			    const struct logical_volume *lv,
+			    uint64_t *mismatches)
+{
+	struct lv_with_info_and_seg_status status;
+
+	if (lv_is_raid(lv) && lv_raid_has_integrity((struct logical_volume *)lv))
+		return lv_raid_integrity_total_mismatches(cmd, lv, mismatches);
+
+	if (!lv_is_integrity(lv))
+		return_0;
+
+	memset(&status, 0, sizeof(status));
+	status.seg_status.type = SEG_STATUS_NONE;
+
+	status.seg_status.seg = first_seg(lv);
+
+	/* FIXME: why reporter_pool? */
+	if (!(status.seg_status.mem = dm_pool_create("reporter_pool", 1024))) {
+		log_error("Failed to get mem for LV status.");
+		return 0;
+	}
+
+	if (!lv_info_with_seg_status(cmd, first_seg(lv), &status, 1, 1)) {
+		log_error("Failed to get device mapper status for %s", display_lvname(lv));
+		goto fail;
+	}
+
+	if (!status.info.exists)
+		goto fail;
+
+	if (status.seg_status.type != SEG_STATUS_INTEGRITY) {
+		log_error("Invalid device mapper status type (%d) for %s",
+			  (uint32_t)status.seg_status.type, display_lvname(lv));
+		goto fail;
+	}
+
+	*mismatches = status.seg_status.integrity->number_of_mismatches;
+
+	dm_pool_destroy(status.seg_status.mem);
+	return 1;
+
+fail:
+	dm_pool_destroy(status.seg_status.mem);
 	return 0;
 }
 

@@ -190,8 +190,10 @@ static int _hints_exists(void)
 
 	if (!stat(_hints_file, &buf))
 		return 1;
+
 	if (errno != ENOENT)
-		log_debug("hints_exist errno %d", errno);
+		log_debug("hints_exist errno %d %s", errno, _hints_file);
+
 	return 0;
 }
 
@@ -201,8 +203,10 @@ static int _nohints_exists(void)
 
 	if (!stat(_nohints_file, &buf))
 		return 1;
+
 	if (errno != ENOENT)
-		log_debug("nohints_exist errno %d", errno);
+		log_debug("nohints_exist errno %d %s", errno, _nohints_file);
+
 	return 0;
 }
 
@@ -212,8 +216,10 @@ static int _newhints_exists(void)
 
 	if (!stat(_newhints_file, &buf))
 		return 1;
+
 	if (errno != ENOENT)
-		log_debug("newhints_exist errno %d", errno);
+		log_debug("newhints_exist errno %d %s", errno, _newhints_file);
+
 	return 0;
 }
 
@@ -243,29 +249,33 @@ static int _touch_hints(void)
 {
 	FILE *fp;
 
-	if (!(fp = fopen(_hints_file, "w")))
-		return_0;
+	if (!(fp = fopen(_hints_file, "w"))) {
+		log_debug("touch_hints errno %d %s", errno, _hints_file);
+		return 0;
+	}
 	if (fclose(fp))
-		stack;
+		log_debug("touch_hints close errno %d %s", errno, _hints_file);
+
 	return 1;
 }
 
 static void _unlink_nohints(void)
 {
 	if (unlink(_nohints_file))
-		log_debug("unlink_nohints errno %d", errno);
+		log_debug("unlink_nohints errno %d %s", errno, _nohints_file);
 }
+
 
 static void _unlink_hints(void)
 {
 	if (unlink(_hints_file))
-		log_debug("unlink_hints errno %d", errno);
+		log_debug("unlink_hints errno %d %s", errno, _hints_file);
 }
 
 static void _unlink_newhints(void)
 {
 	if (unlink(_newhints_file))
-		log_debug("unlink_newhints errno %d", errno);
+		log_debug("unlink_newhints errno %d %s", errno, _newhints_file);
 }
 
 static int _clear_hints(struct cmd_context *cmd)
@@ -274,7 +284,7 @@ static int _clear_hints(struct cmd_context *cmd)
 	time_t t;
 
 	if (!(fp = fopen(_hints_file, "w"))) {
-		log_warn("Failed to clear hint file.");
+		log_debug("clear_hints open errno %d", errno);
 		/* shouldn't happen, but try to unlink in case */
 		_unlink_hints();
 		return 0;
@@ -285,10 +295,10 @@ static int _clear_hints(struct cmd_context *cmd)
 	fprintf(fp, "# Created empty by %s pid %d %s", cmd->name, getpid(), ctime(&t));
 
 	if (fflush(fp))
-		log_debug("clear_hints flush errno %d", errno);
+		log_debug("clear_hints flush errno %d %s", errno, _hints_file);
 
 	if (fclose(fp))
-		log_debug("clear_hints close errno %d", errno);
+		log_debug("clear_hints close errno %d %s", errno, _hints_file);
 
 	return 1;
 }
@@ -312,7 +322,7 @@ static int _lock_hints(struct cmd_context *cmd, int mode, int nonblock)
 
 	fd = open(_hints_file, O_RDWR);
 	if (fd < 0) {
-		log_debug("lock_hints open errno %d", errno);
+		log_debug("lock_hints open errno %d %s", errno, _hints_file);
 		return 0;
 	}
 
@@ -324,7 +334,8 @@ static int _lock_hints(struct cmd_context *cmd, int mode, int nonblock)
 	}
 
 	if (close(fd))
-		stack;
+		log_debug("lock_hints close errno %d %s", errno, _hints_file);
+
 	return 0;
 }
 
@@ -354,7 +365,7 @@ void hints_exit(struct cmd_context *cmd)
 	free_hints(&cmd->hints);
 	if (_hints_fd == -1)
 		return;
-	return _unlock_hints(cmd);
+	_unlock_hints(cmd);
 }
 
 void free_hints(struct dm_list *hints)
@@ -434,7 +445,7 @@ static int _dev_in_hint_hash(struct cmd_context *cmd, struct device *dev)
 		return 0;
 
 	if (!dev_get_size(dev, &devsize) || !devsize)
-		return 0;
+		return_0;
 
 	return 1;
 }
@@ -663,7 +674,7 @@ static int _read_hint_file(struct cmd_context *cmd, struct dm_list *hints, int *
 	int found = 0;
 	int keylen;
 	int hv_major, hv_minor;
-	int major, minor;
+	int major = -1, minor = -1;
 	int ret = 1;
 	int i;
 
@@ -737,7 +748,7 @@ static int _read_hint_file(struct cmd_context *cmd, struct dm_list *hints, int *
 
 		keylen = strlen("scan_lvs:");
 		if (!strncmp(_hint_line, "scan_lvs:", keylen)) {
-			int scan_lvs = 0;
+			unsigned scan_lvs = 0;
 			if ((sscanf(_hint_line + keylen, "%u", &scan_lvs) != 1) ||
 			    scan_lvs != cmd->scan_lvs) {
 				log_debug("ignore hints with different or unreadable scan_lvs");
@@ -799,7 +810,7 @@ static int _read_hint_file(struct cmd_context *cmd, struct dm_list *hints, int *
 	}
 
 	if (fclose(fp))
-		stack;
+		log_debug("read_hint_file close errno %d", errno);
 
 	if (!ret)
 		return 0;
@@ -818,8 +829,7 @@ static int _read_hint_file(struct cmd_context *cmd, struct dm_list *hints, int *
 	while ((dev = dev_iter_get(cmd, iter))) {
 		if (!_dev_in_hint_hash(cmd, dev))
 			continue;
-		memset(devpath, 0, sizeof(devpath));
-		strncpy(devpath, dev_name(dev), PATH_MAX);
+		(void) dm_strncpy(devpath, dev_name(dev), sizeof(devpath));
 		calc_hash = calc_crc(calc_hash, (const uint8_t *)devpath, strlen(devpath));
 		calc_count++;
 	}
@@ -967,7 +977,7 @@ int write_hint_file(struct cmd_context *cmd, int newhints)
 		 * detect when the devices on the system change, which
 		 * invalidates the existing hints.
 		 */
-		strncpy(devpath, dev_name(dev), PATH_MAX);
+		(void) dm_strncpy(devpath, dev_name(dev), sizeof(devpath));
 		hash = calc_crc(hash, (const uint8_t *)devpath, strlen(devpath));
 		count++;
 
@@ -1021,7 +1031,7 @@ int write_hint_file(struct cmd_context *cmd, int newhints)
 
  out_close:
 	if (fclose(fp))
-		stack;
+		log_debug("write_hint_file close errno %d", errno);
 
  out_unlock:
 	/* get_hints() took ex lock before returning with newhints set */
@@ -1119,8 +1129,10 @@ void pvscan_recreate_hints_begin(struct cmd_context *cmd)
 
 	log_debug("pvscan_recreate_hints_begin");
 
-	if (!_touch_hints())
+	if (!_touch_hints()) {
+		stack;
 		return;
+	}
 
 	/* limit potential delay blocking on hints lock next */
 	if (!_touch_nohints())

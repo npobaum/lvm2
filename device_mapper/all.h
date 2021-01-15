@@ -164,20 +164,20 @@ struct dm_info {
 struct dm_deps {
 	uint32_t count;
 	uint32_t filler;
-	uint64_t device[0];
+	uint64_t device[];
 };
 
 struct dm_names {
 	uint64_t dev;
 	uint32_t next;		/* Offset to next struct from start of this struct */
-	char name[0];
+	char name[];
 };
 
 struct dm_versions {
 	uint32_t next;		/* Offset to next struct from start of this struct */
 	uint32_t version[3];
 
-	char name[0];
+	char name[];
 };
 
 int dm_get_library_version(char *version, size_t size);
@@ -1019,6 +1019,7 @@ int dm_tree_node_add_integrity_target(struct dm_tree_node *node,
  */
 int dm_tree_node_add_vdo_target(struct dm_tree_node *node,
 				uint64_t size,
+				const char *vdo_pool_name,
 				const char *data_uuid,
 				uint64_t data_size,
 				const struct dm_vdo_target_params *param);
@@ -1317,7 +1318,7 @@ int dm_bit_get_next(dm_bitset_t bs, int last_bit);
 int dm_bit_get_last(dm_bitset_t bs);
 int dm_bit_get_prev(dm_bitset_t bs, int last_bit);
 
-#define DM_BITS_PER_INT (sizeof(int) * CHAR_BIT)
+#define DM_BITS_PER_INT ((unsigned)sizeof(int) * CHAR_BIT)
 
 #define dm_bit(bs, i) \
    ((bs)[((i) / DM_BITS_PER_INT) + 1] & (0x1 << ((i) & (DM_BITS_PER_INT - 1))))
