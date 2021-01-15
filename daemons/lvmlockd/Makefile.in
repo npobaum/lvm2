@@ -15,8 +15,6 @@ srcdir = @srcdir@
 top_srcdir = @top_srcdir@
 top_builddir = @top_builddir@
 
-USE_SD_NOTIFY=yes
-
 SOURCES = lvmlockd-core.c
 
 ifeq ("@BUILD_LOCKDSANLOCK@", "yes")
@@ -44,9 +42,9 @@ LDFLAGS += -L$(top_builddir)/libdaemon/server $(EXTRA_EXEC_LDFLAGS) $(ELDFLAGS)
 LIBS += $(RT_LIBS) $(DAEMON_LIBS) $(PTHREAD_LIBS)
 
 
-ifeq ($(USE_SD_NOTIFY),yes)
-	CFLAGS += $(shell pkg-config --cflags libsystemd) -DUSE_SD_NOTIFY
-	LIBS += $(shell pkg-config --libs libsystemd)
+ifeq ($(HAVE_LIBSYSTEMD),yes)
+	CFLAGS += $(LIBSYSTEMD_CFLAGS) -DUSE_SD_NOTIFY
+	LIBS += $(LIBSYSTEMD_LIBS)
 endif
 
 lvmlockd: $(OBJECTS) $(top_builddir)/libdaemon/client/libdaemonclient.a \
