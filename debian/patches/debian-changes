@@ -308,7 +308,7 @@ index 7e09ff07b..add23ef2d 100644
  	p = msg.data;
  	*version = 0;
 diff --git a/daemons/lvmlockd/Makefile.in b/daemons/lvmlockd/Makefile.in
-index 9c0340145..228275fed 100644
+index 9c0340145..c4409b33f 100644
 --- a/daemons/lvmlockd/Makefile.in
 +++ b/daemons/lvmlockd/Makefile.in
 @@ -15,8 +15,6 @@ srcdir = @srcdir@
@@ -320,19 +320,25 @@ index 9c0340145..228275fed 100644
  SOURCES = lvmlockd-core.c
  
  ifeq ("@BUILD_LOCKDSANLOCK@", "yes")
-@@ -44,9 +42,9 @@ LDFLAGS += -L$(top_builddir)/libdaemon/server $(EXTRA_EXEC_LDFLAGS) $(ELDFLAGS)
- LIBS += $(RT_LIBS) $(DAEMON_LIBS) $(PTHREAD_LIBS)
+@@ -38,16 +36,10 @@ TARGETS = lvmlockd lvmlockctl
  
+ include $(top_builddir)/make.tmpl
  
+-CFLAGS += $(EXTRA_EXEC_CFLAGS)
++CFLAGS += $(EXTRA_EXEC_CFLAGS) $(LIBSYSTEMD_CFLAGS) -DUSE_SD_NOTIFY
+ INCLUDES += -I$(top_srcdir)/libdaemon/server
+ LDFLAGS += -L$(top_builddir)/libdaemon/server $(EXTRA_EXEC_LDFLAGS) $(ELDFLAGS)
+-LIBS += $(RT_LIBS) $(DAEMON_LIBS) $(PTHREAD_LIBS)
+-
+-
 -ifeq ($(USE_SD_NOTIFY),yes)
 -	CFLAGS += $(shell pkg-config --cflags libsystemd) -DUSE_SD_NOTIFY
 -	LIBS += $(shell pkg-config --libs libsystemd)
-+ifeq ($(HAVE_LIBSYSTEMD),yes)
-+	CFLAGS += $(LIBSYSTEMD_CFLAGS) -DUSE_SD_NOTIFY
-+	LIBS += $(LIBSYSTEMD_LIBS)
- endif
+-endif
++LIBS += $(RT_LIBS) $(DAEMON_LIBS) $(PTHREAD_LIBS) $(LIBSYSTEMD_LIBS)
  
  lvmlockd: $(OBJECTS) $(top_builddir)/libdaemon/client/libdaemonclient.a \
+ 		    $(top_builddir)/libdaemon/server/libdaemonserver.a
 diff --git a/make.tmpl.in b/make.tmpl.in
 index 4549746ab..9cd9cca71 100644
 --- a/make.tmpl.in
