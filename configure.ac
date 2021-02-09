@@ -689,7 +689,7 @@ esac
 dnl -- Disable readline
 AC_ARG_ENABLE([readline],
 	      AC_HELP_STRING([--disable-readline], [disable readline support]),
-	      READLINE=$enableval, READLINE=maybe)
+	      READLINE=$enableval, READLINE=yes)
 
 ################################################################################
 dnl -- Disable editline
@@ -1081,29 +1081,6 @@ AC_DEFINE_UNQUOTED(DEFAULT_USE_BLKID_WIPING, [$DEFAULT_USE_BLKID_WIPING],
 		   [Use blkid wiping by default.])
 
 ################################################################################
-dnl -- Enable udev-systemd protocol to instantiate a service for background jobs
-dnl -- Requires systemd version 205 at least (including support for systemd-run)
-AC_ARG_ENABLE(udev-systemd-background-jobs,
-	      AC_HELP_STRING([--disable-udev-systemd-background-jobs],
-			     [disable udev-systemd protocol to instantiate a service for background job]),
-	      UDEV_SYSTEMD_BACKGROUND_JOBS=$enableval,
-	      UDEV_SYSTEMD_BACKGROUND_JOBS=maybe)
-
-if test "$UDEV_SYSTEMD_BACKGROUND_JOBS" != no; then
-	pkg_config_init
-	PKG_CHECK_MODULES(SYSTEMD, systemd >= 205,
-			  [UDEV_SYSTEMD_BACKGROUND_JOBS=yes],
-			  [if test "$UDEV_SYSTEMD_BACKGROUND_JOBS" = maybe; then
-				UDEV_SYSTEMD_BACKGROUND_JOBS=no
-			   else
-				AC_MSG_ERROR([bailing out... systemd >= 205 is required])
-			   fi])
-fi
-
-AC_MSG_CHECKING(whether to use udev-systemd protocol for jobs in background)
-AC_MSG_RESULT($UDEV_SYSTEMD_BACKGROUND_JOBS)
-
-################################################################################
 dnl -- Enable udev synchronisation
 AC_MSG_CHECKING(whether to enable synchronisation with udev processing)
 AC_ARG_ENABLE(udev_sync,
@@ -1337,21 +1314,9 @@ AC_MSG_RESULT($SELINUX)
 ################################################################################
 dnl -- Check for selinux
 if test "$SELINUX" = yes; then
-	AC_CHECK_LIB([sepol], [sepol_check_context], [
-		AC_DEFINE([HAVE_SEPOL], 1, [Define to 1 if sepol_check_context is available.])
-		SELINUX_LIBS="-lsepol"])
-
-	AC_CHECK_LIB([selinux], [is_selinux_enabled], [
-		AC_CHECK_HEADERS([selinux/selinux.h],, hard_bailout)
-		AC_CHECK_HEADERS([selinux/label.h])
-		AC_DEFINE([HAVE_SELINUX], 1, [Define to 1 to include support for selinux.])
-		SELINUX_LIBS="-lselinux $SELINUX_LIBS"
-		SELINUX_PC="libselinux"
-		HAVE_SELINUX=yes ], [
-		AC_MSG_WARN(Disabling selinux)
-		SELINUX_LIBS=
-		SELINUX_PC=
-		HAVE_SELINUX=no ])
+	AC_DEFINE([HAVE_SELINUX], 1, [Define to 1 to include support for selinux.])
+	SELINUX_LIBS="$($PKG_CONFIG --libs libselinux)"
+	SELINUX_LIBS_STATIC="$($PKG_CONFIG --libs --static libselinux)"
 fi
 
 ################################################################################
@@ -1551,7 +1516,8 @@ AC_ARG_WITH(tmpfilesdir,
 ################################################################################
 dnl -- Ensure additional headers required
 if test "$READLINE" = yes; then
-	AC_CHECK_HEADERS(readline/readline.h readline/history.h,,hard_bailout)
+	AC_CHECK_LIB([readline], [readline], [READLINE_LIBS="-lreadline"], AC_MSG_ERROR(bailing out))
+	AC_DEFINE([READLINE_SUPPORT], 1, [Define to 1 to include the LVM readline shell.])
 fi
 AC_MSG_CHECKING(whether to enable readline)
 AC_MSG_RESULT($READLINE)
@@ -1597,11 +1563,7 @@ if test "$BUILD_DMFILEMAPD" = yes; then
 fi
 
 ################################################################################
-AC_PATH_TOOL(MODPROBE_CMD, modprobe, [], [$PATH_SBIN])
-
-if test -n "$MODPROBE_CMD"; then
-	AC_DEFINE_UNQUOTED([MODPROBE_CMD], ["$MODPROBE_CMD"], [The path to 'modprobe', if available.])
-fi
+AC_DEFINE_UNQUOTED([MODPROBE_CMD], ["/sbin/modprobe"], [The path to 'modprobe', if available.])
 
 SYSCONFDIR="$(eval echo $(eval echo $sysconfdir))"
 
@@ -1703,6 +1665,9 @@ test "$interface" != ioctl && AC_MSG_ERROR([--with-interface=ioctl required. fs 
 AC_MSG_RESULT($interface)
 
 ################################################################################
+PKG_CHECK_MODULES([LIBSYSTEMD],[libsystemd],[HAVE_LIBSYSTEMD=yes],[HAVE_LIBSYSTEMD=no])
+
+################################################################################
 read DM_LIB_VERSION < "$srcdir"/VERSION_DM 2>/dev/null || DM_LIB_VERSION=Unknown
 AC_DEFINE_UNQUOTED(DM_LIB_VERSION, "$DM_LIB_VERSION", [Library version])
 
@@ -1777,6 +1742,7 @@ AC_SUBST(FSADM)
 AC_SUBST(FSADM_PATH)
 AC_SUBST(BLKDEACTIVATE)
 AC_SUBST(HAVE_LIBDL)
+AC_SUBST(HAVE_LIBSYSTEMD)
 AC_SUBST(HAVE_REALTIME)
 AC_SUBST(HAVE_VALGRIND)
 AC_SUBST(INTL)
@@ -1825,6 +1791,7 @@ AC_SUBST(SALCK_CFLAGS)
 AC_SUBST(SALCK_LIBS)
 AC_SUBST(SBINDIR)
 AC_SUBST(SELINUX_LIBS)
+AC_SUBST(SELINUX_LIBS_STATIC)
 AC_SUBST(SELINUX_PC)
 AC_SUBST(SYSCONFDIR)
 AC_SUBST(SYSTEMD_LIBS)
@@ -1844,7 +1811,6 @@ AC_SUBST(CACHE_RESTORE_CMD)
 AC_SUBST(UDEV_PC)
 AC_SUBST(UDEV_RULES)
 AC_SUBST(UDEV_SYNC)
-AC_SUBST(UDEV_SYSTEMD_BACKGROUND_JOBS)
 AC_SUBST(UDEV_RULE_EXEC_DETECTION)
 AC_SUBST(UDEV_HAS_BUILTIN_BLKID)
 AC_SUBST(USE_TRACKING)
