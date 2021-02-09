@@ -71,6 +71,9 @@ define CONFARGS.udeb
 	--with-pool=none
 	--disable-readline
 	--disable-selinux
+	--with-udev-prefix=/
+	--enable-udev_rules
+	--enable-udev_sync
 endef
 
 BUILDS :=
@@ -92,6 +95,7 @@ dh_auto_configure.%:
 	mkdir -p debian/build/build_$*
 	cp -al $(filter-out debian, $(wildcard * .[^.]*)) debian/build/build_$*/
 	dh_auto_configure --sourcedirectory=debian/build/build_$* -- $(strip $(CONFARGS.$*))
+	cp po/lvm2.po po/lvm2.pot
 
 dh_auto_build.%:
 	dh_auto_build --sourcedirectory=debian/build/build_$* -- \
@@ -108,6 +112,7 @@ dh_auto_install.%:
 
 override_dh_auto_clean:
 	rm -rf debian/build
+	rm -f po/lvm2.pot
 
 override_dh_gencontrol:
 	dh_gencontrol \
