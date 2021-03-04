@@ -1,3 +1,9 @@
+lvm2 (2.03.11-2ubuntu3) hirsute; urgency=medium
+
+  * Fix file mode of debian/initramfs-tools/lvm2/hooks/lvm2 (LP: #1915579)
+
+ -- Lukas Märdian <slyon@ubuntu.com>  Thu, 04 Mar 2021 11:00:58 +0100
+
 lvm2 (2.03.11-2ubuntu2) hirsute; urgency=medium
 
   * No-change rebuild to drop the udeb package.
