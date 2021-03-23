@@ -3,7 +3,7 @@
 # output every command that modifies files on the build system.
 #export DH_VERBOSE = 1
 
-DEB_BUILD_MAINT_OPTIONS = hardening=+all
+DEB_BUILD_MAINT_OPTIONS = hardening=+all optimize=-lto
 DEB_CFLAGS_MAINT_STRIP = -O2
 
 include /usr/share/dpkg/default.mk
