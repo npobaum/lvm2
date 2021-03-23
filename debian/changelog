@@ -1,3 +1,10 @@
+lvm2 (2.03.11-2ubuntu4) hirsute; urgency=medium
+
+  * Disable lto build. Other distros build it with lto, however Debian has
+    an old work around from 2015 for an ABI break. See #791888.
+
+ -- Matthias Klose <doko@ubuntu.com>  Tue, 23 Mar 2021 12:36:07 +0100
+
 lvm2 (2.03.11-2ubuntu3) hirsute; urgency=medium
 
   * Fix file mode of debian/initramfs-tools/lvm2/hooks/lvm2 (LP: #1915579)
