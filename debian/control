@@ -1,7 +1,8 @@
 Source: lvm2
 Section: admin
 Priority: optional
-Maintainer: Debian LVM Team <team+lvm@tracker.debian.org>
+Maintainer: Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>
+XSBC-Original-Maintainer: Debian LVM Team <team+lvm@tracker.debian.org>
 Uploaders: Bastian Blank <waldi@debian.org>
 Build-Depends:
  debhelper-compat (= 13),
@@ -11,6 +12,7 @@ Build-Depends:
  libblkid-dev,
  pkg-config,
  systemd,
+ thin-provisioning-tools
 Build-Depends-Arch:
  libcmap-dev,
  libcorosync-common-dev,
@@ -144,6 +146,7 @@ Pre-Depends:
 Depends:
  ${shlibs:Depends},
  ${misc:Depends},
+Recommends:
  dmsetup (>= ${devmapper:Version}~),
 Multi-Arch: same
 Description: Linux Kernel Device Mapper userspace library
@@ -166,6 +169,8 @@ Pre-Depends:
 Depends:
  ${shlibs:Depends},
  ${misc:Depends},
+Recommends:
+ dmsetup-udeb,
 Description: Linux Kernel Device Mapper userspace library
  This is a udeb, or a microdeb, for the debian-installer.
  .
