@@ -5,7 +5,7 @@ Maintainer: Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>
 XSBC-Original-Maintainer: Debian LVM Team <team+lvm@tracker.debian.org>
 Uploaders: Bastian Blank <waldi@debian.org>
 Build-Depends:
- debhelper-compat (= 13),
+ debhelper-compat (= 12),
  autoconf-archive,
  automake,
  libaio-dev,
@@ -105,6 +105,8 @@ Depends:
  ${shlibs:Depends},
  ${misc:Depends},
  lvm2 (>= ${source:Version}~),
+Breaks:
+ sanlock (<< 3.8.0),
 Multi-Arch: foreign
 Description: LVM locking daemon
  This is LVM2, the rewrite of The Linux Logical Volume Manager.  LVM
