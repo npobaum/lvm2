@@ -1,3 +1,11 @@
+lvm2 (2.03.11-2ubuntu4~ubuntu20.10.1) groovy-backports; urgency=medium
+
+  * Backport from Hirsute to Groovy (LP: #1929432):
+    - add Breaks: sanlock (<< 3.8.0) for lvm2-lockd to prevent incompatibility
+       with shared leases.
+
+ -- Heitor Alves de Siqueira <halves@canonical.com>  Tue, 08 Jun 2021 18:37:35 +0000
+
 lvm2 (2.03.11-2ubuntu4) hirsute; urgency=medium
 
   * Disable lto build. Other distros build it with lto, however Debian has

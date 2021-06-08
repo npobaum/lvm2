@@ -105,6 +105,8 @@ Depends:
  ${shlibs:Depends},
  ${misc:Depends},
  lvm2 (>= ${source:Version}~),
+Breaks:
+ sanlock (<< 3.8.0),
 Multi-Arch: foreign
 Description: LVM locking daemon
  This is LVM2, the rewrite of The Linux Logical Volume Manager.  LVM
