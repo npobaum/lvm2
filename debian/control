@@ -58,6 +58,7 @@ Description: Linux Logical Volume Manager
 
 Package: lvm2-udeb
 Package-Type: udeb
+Build-Profiles: <!noudeb>
 Section: debian-installer
 Architecture: linux-any
 Pre-Depends:
@@ -162,6 +163,7 @@ Description: Linux Kernel Device Mapper userspace library
 
 Package: libdevmapper1.02.1-udeb
 Package-Type: udeb
+Build-Profiles: <!noudeb>
 Section: debian-installer
 Architecture: linux-any
 Pre-Depends:
@@ -199,6 +201,7 @@ Description: Linux Kernel Device Mapper userspace library
 
 Package: dmsetup-udeb
 Package-Type: udeb
+Build-Profiles: <!noudeb>
 Section: debian-installer
 Architecture: linux-any
 Pre-Depends:
