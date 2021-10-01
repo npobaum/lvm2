@@ -1,3 +1,11 @@
+lvm2 (2.03.11-2.1ubuntu2) impish; urgency=medium
+
+  * Don't build udeb targets.
+  * Work around an installation issue about installing python files into
+    lib/python* instead of usr/lib/python*.
+
+ -- Matthias Klose <doko@ubuntu.com>  Fri, 01 Oct 2021 10:49:59 +0200
+
 lvm2 (2.03.11-2.1ubuntu1) impish; urgency=medium
 
   * Merge from Debian unstable. Remaining changes:
