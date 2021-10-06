@@ -79,6 +79,9 @@ BUILDS :=
 ifneq ($(filter lvm2,$(shell dh_listpackages)),)
 BUILDS += deb
 endif
+ifneq ($(filter lvm2-udeb,$(shell dh_listpackages)),)
+BUILDS += udeb
+endif
 ifneq ($(filter lvm2-dbusd,$(shell dh_listpackages)),)
 BUILDS += deb_all
 endif
@@ -127,14 +130,12 @@ override_dh_gencontrol:
 		-- $(GENCONTROL_ARGS)
 
 override_dh_install:
+ifneq ($(filter lvm2-udeb,$(shell dh_listpackages)),)
 	dh_install --sourcedir=debian/build/install_udeb \
 		-pdmsetup-udeb \
 		-plibdevmapper$(DEVMAPPER_ABINAME)-udeb \
 		-plvm2-udeb
-	: FIXME: why?
-	mkdir -p debian/build/install_deb_all/usr/lib
-	mv debian/build/install_deb_all/lib/python* debian/build/install_deb_all/usr/lib/.
-
+endif
 	dh_install --sourcedir=debian/build/install_deb_all \
 		-plvm2-dbusd
 	dh_install --sourcedir=debian/build/install_deb \
