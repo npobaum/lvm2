@@ -115,6 +115,7 @@ pythonprefix = $(DESTDIR)$(prefix)
 
 # N.B. No $(DESTDIR) prefix here.
 python2dir = @PYTHON2DIR@
+PYTHON_PREFIX = @PYTHON_PREFIX@
 python3dir = @PYTHON3DIR@
 
 USRLIB_RELPATH = @libdir@/
