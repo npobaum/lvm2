@@ -1,3 +1,11 @@
+lvm2 (2.03.11-2.1ubuntu3) impish; urgency=medium
+
+  * Fix-up noudeb build profile support.
+  * Define PYTHON_PREFIX in make.tmpl.in for new ax-python.
+  * Fixes FTBFS in impish.
+
+ -- Dimitri John Ledkov <dimitri.ledkov@canonical.com>  Wed, 06 Oct 2021 10:31:36 +0100
+
 lvm2 (2.03.11-2.1ubuntu2) impish; urgency=medium
 
   * Don't build udeb targets.
